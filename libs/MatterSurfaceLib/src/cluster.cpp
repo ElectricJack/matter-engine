@@ -18,23 +18,21 @@ extern "C" {
 #include <memory>
 
 
-// Raymath function prototypes we need (without including the problematic header)
-extern "C" {
-    Quaternion QuaternionIdentity(void);
-    Vector3 Vector3RotateByQuaternion(Vector3 v, Quaternion q);
-    Quaternion QuaternionInvert(Quaternion q);
-    Vector3 Vector3Add(Vector3 v1, Vector3 v2);
-    Vector3 Vector3Subtract(Vector3 v1, Vector3 v2);
-    Vector3 Vector3Scale(Vector3 v, float scalar);
-    float Vector3Length(Vector3 v);
-    float Vector3DotProduct(Vector3 v1, Vector3 v2);
-    Matrix MatrixTranslate(float x, float y, float z);
-}
+// Cluster's own Vector3/Vector4/Quaternion/Matrix math moved off raylib's
+// Vector3Add/Subtract/DotProduct/Length, QuaternionIdentity/Invert,
+// Vector3RotateByQuaternion and MatrixTranslate onto MathLib's mm::
+// equivalents in Phase 4 (Step 4) of
+// docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md.
+// mm::quat_invert()/rotate() are ported element-for-element from
+// vulkan_only_compat.cpp's QuaternionInvert/Vector3RotateByQuaternion (the
+// CPU-only replacements this MATTER_VULKAN_ONLY build actually links against,
+// not raymath.h's canonical formulas -- see matter_math.h's comment above
+// quat_invert() for why that distinction matters for bit-identical output).
 
 Cluster::Cluster(uint32_t cluster_id, BLASManager& blas_manager, TLASManager& tlas_manager, float smallest_cell_size)
     : cluster_id_(cluster_id),
       position_({0.0f, 0.0f, 0.0f}),
-      rotation_(QuaternionIdentity()),
+      rotation_(mm::quat_identity()),
       blas_manager_(blas_manager),
       tlas_manager_(tlas_manager),
       next_particle_id_(0),
@@ -72,17 +70,17 @@ Cluster::~Cluster() {
     printf("Destroyed cluster %u\n", cluster_id_);
 }
 
-Vector3 Cluster::local_to_world(const Vector3& local_pos) const {
-    Vector3 rotated = Vector3RotateByQuaternion(local_pos, rotation_);
-    return Vector3Add(position_, rotated);
+mm::Vec3 Cluster::local_to_world(const mm::Vec3& local_pos) const {
+    mm::Vec3 rotated = mm::rotate(local_pos, rotation_);
+    return mm::add(position_, rotated);
 }
 
-Vector3 Cluster::world_to_local(const Vector3& world_pos) const {
-    Vector3 relative = Vector3Subtract(world_pos, position_);
-    return Vector3RotateByQuaternion(relative, QuaternionInvert(rotation_));
+mm::Vec3 Cluster::world_to_local(const mm::Vec3& world_pos) const {
+    mm::Vec3 relative = mm::sub(world_pos, position_);
+    return mm::rotate(relative, mm::quat_invert(rotation_));
 }
 
-uint32_t Cluster::add_particle(const Vector3& local_position, float radius, uint32_t material_id) {
+uint32_t Cluster::add_particle(const mm::Vec3& local_position, float radius, uint32_t material_id) {
     uint32_t particle_id = next_particle_id_++;
     
     // Add particle to storage
@@ -97,15 +95,15 @@ uint32_t Cluster::add_particle(const Vector3& local_position, float radius, uint
     return particle_id;
 }
 
-uint32_t Cluster::add_particle(const Vector3& local_position, float radius, uint32_t material_id, const Vector4& tint) {
+uint32_t Cluster::add_particle(const mm::Vec3& local_position, float radius, uint32_t material_id, const mm::Vec4& tint) {
     uint32_t particle_id = next_particle_id_++;
     particles_.emplace_back(local_position, radius, material_id, tint);
     mark_cells_dirty_around_particle(local_position, radius);
     return particle_id;
 }
 
-uint32_t Cluster::add_particle(const Vector3& local_position, float radius, uint32_t material_id,
-                               const Vector4& tint, float detail_size) {
+uint32_t Cluster::add_particle(const mm::Vec3& local_position, float radius, uint32_t material_id,
+                               const mm::Vec4& tint, float detail_size) {
     uint32_t particle_id = next_particle_id_++;
     particles_.emplace_back(local_position, radius, material_id, tint, detail_size);
     mark_cells_dirty_around_particle(local_position, radius);
@@ -144,7 +142,7 @@ bool Cluster::remove_particle(uint32_t particle_id) {
     return true;
 }
 
-bool Cluster::update_particle_position(uint32_t particle_id, const Vector3& new_local_position) {
+bool Cluster::update_particle_position(uint32_t particle_id, const mm::Vec3& new_local_position) {
     if (particle_id >= particles_.size()) {
         return false;
     }
@@ -161,28 +159,28 @@ bool Cluster::update_particle_position(uint32_t particle_id, const Vector3& new_
     return true;
 }
 
-void Cluster::mark_cells_dirty_around_particle(const Vector3& local_position, float radius) {
+void Cluster::mark_cells_dirty_around_particle(const mm::Vec3& local_position, float radius) {
     // Calculate the range of cell coordinates that might be affected
     float influence_radius = radius * 2.0f; // Conservative estimate
     float cell_size = smallest_cell_size_;
-    
+
     // Calculate cell coordinate range for the current LOD level only
-    Vector3 min_cell = {
+    mm::Vec3 min_cell = {
         floorf((local_position.x - influence_radius) / cell_size),
         floorf((local_position.y - influence_radius) / cell_size),
         floorf((local_position.z - influence_radius) / cell_size)
     };
-    Vector3 max_cell = {
+    mm::Vec3 max_cell = {
         floorf((local_position.x + influence_radius) / cell_size),
         floorf((local_position.y + influence_radius) / cell_size),
         floorf((local_position.z + influence_radius) / cell_size)
     };
-    
+
     // Mark cells in this range as dirty
     for (int x = (int)min_cell.x; x <= (int)max_cell.x; ++x) {
         for (int y = (int)min_cell.y; y <= (int)max_cell.y; ++y) {
             for (int z = (int)min_cell.z; z <= (int)max_cell.z; ++z) {
-                Vector3 cell_coords = {(float)x, (float)y, (float)z};
+                mm::Vec3 cell_coords = {(float)x, (float)y, (float)z};
                 Cell* cell = find_or_create_cell(cell_coords);
                 if (cell) {
                     cell->is_dirty = true;
@@ -192,20 +190,20 @@ void Cluster::mark_cells_dirty_around_particle(const Vector3& local_position, fl
     }
 }
 
-Vector3 Cluster::get_cell_coordinates(const Vector3& local_position) const {
+mm::Vec3 Cluster::get_cell_coordinates(const mm::Vec3& local_position) const {
     float cell_size = smallest_cell_size_;
-    return Vector3{
+    return mm::Vec3{
         floorf(local_position.x / cell_size),
         floorf(local_position.y / cell_size),
         floorf(local_position.z / cell_size)
     };
 }
 
-Cell* Cluster::find_or_create_cell(const Vector3& cell_coords) {
+Cell* Cluster::find_or_create_cell(const mm::Vec3& cell_coords) {
     float cell_size = smallest_cell_size_;
-    
+
     // Calculate cell center for spatial hash lookup
-    Vector3 cell_center = {
+    mm::Vec3 cell_center = {
         (cell_coords.x + 0.5f) * cell_size,
         (cell_coords.y + 0.5f) * cell_size,
         (cell_coords.z + 0.5f) * cell_size
@@ -230,10 +228,10 @@ Cell* Cluster::find_or_create_cell(const Vector3& cell_coords) {
     return cell_ptr;
 }
 
-void Cluster::set_no_mesh_cells(const std::vector<Vector3>& coords) {
+void Cluster::set_no_mesh_cells(const std::vector<mm::Vec3>& coords) {
     no_mesh_cells_.clear();
     no_mesh_cells_.reserve(coords.size());
-    for (const Vector3& c : coords) {
+    for (const mm::Vec3& c : coords) {
         no_mesh_cells_.insert(pack_slot(SlotCoord{
             (int)lroundf(c.x), (int)lroundf(c.y), (int)lroundf(c.z)}));
     }
@@ -280,7 +278,7 @@ void Cluster::rebuild_dirty_cells() {
         particle_hash = sh_create(smallest_cell_size_, (int)particles_.size());
         if (particle_hash) {
             for (uint32_t i = 0; i < (uint32_t)particles_.size(); ++i) {
-                const Vector3& pos = particles_[i].position;
+                const mm::Vec3& pos = particles_[i].position;
                 // Store index as pointer: (void*)(uintptr_t)(i+1) to distinguish 0 from null.
                 sh_insert(particle_hash, pos.x, pos.y, pos.z, (void*)(uintptr_t)(i + 1));
             }
@@ -386,13 +384,13 @@ void Cluster::rebuild_dirty_cells() {
                 if (ci >= (uint32_t)carve_particles_.size()) continue;
                 const Particle& cpart = carve_particles_[ci];
                 // cpart.position is Particle's MtVec3 (Phase 4 Step 3); intersects_sphere
-                // still takes raylib's Vector3 until Phase 4 Step 4 migrates cell.h.
-                if (cell->intersects_sphere(Vector3{cpart.position.x, cpart.position.y, cpart.position.z}, cpart.radius * 1.5f))
+                // takes mm::Vec3 as of Phase 4 Step 4 -- cross via mm::from_c().
+                if (cell->intersects_sphere(mm::from_c(cpart.position), cpart.radius * 1.5f))
                     job.carve.push_back(cpart);
             }
         } else {
             for (const Particle& cpart : carve_particles_) {
-                if (cell->intersects_sphere(Vector3{cpart.position.x, cpart.position.y, cpart.position.z}, cpart.radius * 1.5f))
+                if (cell->intersects_sphere(mm::from_c(cpart.position), cpart.radius * 1.5f))
                     job.carve.push_back(cpart);
             }
         }
@@ -456,21 +454,21 @@ float Cluster::compute_finest_detail() const {
     return finest;
 }
 
-std::vector<Cell*> Cluster::get_cells_in_region(const Vector3& min_bound, const Vector3& max_bound) {
+std::vector<Cell*> Cluster::get_cells_in_region(const mm::Vec3& min_bound, const mm::Vec3& max_bound) {
     std::vector<Cell*> result;
-    
+
     // Query spatial hash for cells in region
-    Vector3 region_center = {
+    mm::Vec3 region_center = {
         (min_bound.x + max_bound.x) * 0.5f,
         (min_bound.y + max_bound.y) * 0.5f,
         (min_bound.z + max_bound.z) * 0.5f
     };
-    Vector3 region_size = {
+    mm::Vec3 region_size = {
         max_bound.x - min_bound.x,
         max_bound.y - min_bound.y,
         max_bound.z - min_bound.z
     };
-    float search_radius = Vector3Length(region_size) * 0.5f;
+    float search_radius = mm::length(region_size) * 0.5f;
     
     void* query_results[1000];
     int found_count = sh_query_radius(cell_spatial_hash_, 
@@ -497,7 +495,7 @@ void Cluster::accept(CellVisitor& visitor) const {
 
 void Cluster::visit_cells(CellRenderVisitor& visitor) const {
     // Create transform matrix for cluster world position
-    Matrix cluster_transform = MatrixTranslate(position_.x, position_.y, position_.z);
+    mm::Mat4 cluster_transform = mm::translation(position_);
     
     uint32_t cells_with_meshes = 0;
     for (const auto& cell : cells_) {

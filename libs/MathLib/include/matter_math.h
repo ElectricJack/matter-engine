@@ -623,4 +623,68 @@ inline Quat quat_from_axis_angle(const Vec3& axis, float radians) {
     return {axis.x * s, axis.y * s, axis.z * s, std::cos(half)};
 }
 
+// ---------------------------------------------------------------------------
+// Quaternion algebra -- added in Phase 4 (Step 4) of
+// docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md to replace
+// libs/MatterSurfaceLib's QuaternionIdentity/QuaternionInvert/
+// Vector3RotateByQuaternion call sites (cluster.cpp).
+//
+// These are ported ELEMENT-FOR-ELEMENT from
+// MatterEngine3/src/render/vulkan_only_compat.cpp's QuaternionInvert and
+// Vector3RotateByQuaternion -- NOT re-derived, and NOT copied from raymath.h.
+// Under MATTER_VULKAN_ONLY (the build this engine actually ships), raymath.h
+// is not linked at all; vulkan_only_compat.cpp's hand-written CPU-only
+// replacements are the functions that actually run today. They are
+// mathematically equivalent to raymath's canonical formulas but not
+// guaranteed bit-identical to them (e.g. QuaternionInvert here divides by
+// the squared length directly rather than multiplying by its reciprocal), so
+// porting the ACTUALLY-EXECUTING implementation, not the "textbook" one, is
+// what keeps a migrated call site byte-identical rather than merely
+// equally-correct.
+// ---------------------------------------------------------------------------
+
+inline Quat quat_identity() { return Quat{}; } // {0,0,0,1}, matches Quat's own default
+
+// General inverse (divides by squared length, so this also handles non-unit
+// input, not just the conjugate). Falls back to quat_identity() on a
+// zero-length quaternion, matching vulkan_only_compat.cpp's QuaternionInvert
+// guard (`n > 0.0f`, not `!= 0.0f`).
+inline Quat quat_invert(const Quat& q) {
+    const float n = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+    if (n > 0.0f) {
+        return Quat{-q.x / n, -q.y / n, -q.z / n, q.w / n};
+    }
+    return quat_identity();
+}
+
+// Hamilton product a*b (raymath's QuaternionMultiply convention). No call
+// site in this migration composes two quaternions directly today, but
+// quat_invert()/rotate() below are meaningless without a multiply alongside
+// them, and the next caller that needs one should not have to hand-roll it.
+inline Quat quat_multiply(const Quat& a, const Quat& b) {
+    return Quat{
+        a.x * b.w + a.w * b.x + a.y * b.z - a.z * b.y,
+        a.y * b.w + a.w * b.y + a.z * b.x - a.x * b.z,
+        a.z * b.w + a.w * b.z + a.x * b.y - a.y * b.x,
+        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    };
+}
+
+// Rotate v by q. Ported element-for-element from vulkan_only_compat.cpp's
+// Vector3RotateByQuaternion (see the section comment above) -- deliberately
+// NOT implemented as quat_multiply(quat_multiply(q, {v,0}), quat_invert(q)),
+// which would be a different (if mathematically equivalent) sequence of
+// float operations and so not guaranteed to round the same way.
+inline Vec3 rotate(const Vec3& v, const Quat& q) {
+    const Vec3 u{q.x, q.y, q.z};
+    const float uv = dot(u, v);
+    const float uu = dot(u, u);
+    const Vec3 c = cross(u, v);
+    return Vec3{
+        2.0f * uv * u.x + (q.w * q.w - uu) * v.x + 2.0f * q.w * c.x,
+        2.0f * uv * u.y + (q.w * q.w - uu) * v.y + 2.0f * q.w * c.y,
+        2.0f * uv * u.z + (q.w * q.w - uu) * v.z + 2.0f * q.w * c.z,
+    };
+}
+
 } // namespace mm

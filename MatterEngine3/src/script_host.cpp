@@ -862,7 +862,7 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
         for (int x=x0;x<=x1;++x) for (int y=y0;y<=y1;++y) for (int z=z0;z<=z1;++z) {
             auto k = cell_key(x,y,z);
             auto& cp = cells[k];
-            if (!cp) cp = std::make_unique<Cell>(Vector3{(float)x,(float)y,(float)z},
+            if (!cp) cp = std::make_unique<Cell>(mm::Vec3{(float)x,(float)y,(float)z},
                                                  0, cell_size);
             // Use unchecked variant: each (i, cell) pair is visited at most once.
             if (cp->intersects_sphere(sp.position, sp.radius))
@@ -887,7 +887,7 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
         for (int x=x0;x<=x1;++x) for (int y=y0;y<=y1;++y) for (int z=z0;z<=z1;++z) {
             auto k = cell_key(x,y,z);
             if (!cells[k])
-                cells[k] = std::make_unique<Cell>(Vector3{(float)x,(float)y,(float)z},
+                cells[k] = std::make_unique<Cell>(mm::Vec3{(float)x,(float)y,(float)z},
                                                   0, cell_size);
         }
     }
@@ -908,8 +908,8 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
             if (cells.count(k)) {
                 // Mirrors the original 1.5x slack test from the per-cell loop.
                 // cp.position is Particle's MtVec3 (Phase 4 Step 3); Cell::intersects_sphere
-                // still takes raylib's Vector3 until Phase 4 Step 4 migrates cell.h.
-                if (cells[k]->intersects_sphere(Vector3{cp.position.x, cp.position.y, cp.position.z}, cp.radius * 1.5f))
+                // takes mm::Vec3 as of Phase 4 Step 4 -- cross via mm::from_c().
+                if (cells[k]->intersects_sphere(mm::from_c(cp.position), cp.radius * 1.5f))
                     cell_carve[k].push_back(cp);
             }
         }
@@ -941,8 +941,8 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
             // prims never need to seed a bucket.
             if (f.stages[fp.stage] != CSG_STAGE_UNION) continue;
             // fp.center is FatPrim's MtVec3 (Phase 4 Step 3); Cell::intersects_sphere
-            // still takes raylib's Vector3 until Phase 4 Step 4 migrates cell.h.
-            if (cell->intersects_sphere(Vector3{fp.center.x, fp.center.y, fp.center.z}, fp.boundRadius * 1.5f)) {
+            // takes mm::Vec3 as of Phase 4 Step 4 -- cross via mm::from_c().
+            if (cell->intersects_sphere(mm::from_c(fp.center), fp.boundRadius * 1.5f)) {
                 uint32_t g = (uint32_t)MaterialMergeGroup(fp.materialId);
                 cell->material_particle_indices[g]; // default-inserts empty bucket
             }

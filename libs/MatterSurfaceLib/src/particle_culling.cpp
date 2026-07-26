@@ -88,7 +88,10 @@ static EmittedParticle make_sub_particle(const Lattice& lat, SlotCoord c, int ti
     float frz = (oz + 0.5f) * inv - 0.5f;
     float cfx = c.x + frx, cfy = c.y + fry, cfz = c.z + frz;
 
-    Vector3 base = lat.slot_position(c);
+    // lat.slot_position() returns mm::Vec3 as of Phase 4 Step 4; EmittedParticle
+    // itself stays raylib Vector3 (dead code today -- see the Step 4 report),
+    // so only this local's declared type needs to track the new return type.
+    mm::Vec3 base = lat.slot_position(c);
     float spacing = p.spacing;
     float jamt = p.jitter_amount * inv;       // jitter proportional to sub-spacing
     float jx = (lattice_vhash(fx * 2 + 1 + s, fy, fz) - 0.5f) * jamt;
@@ -96,7 +99,7 @@ static EmittedParticle make_sub_particle(const Lattice& lat, SlotCoord c, int ti
     float jz = (lattice_vhash(fx, fy, fz * 2 + 1 + s) - 0.5f) * jamt;
 
     EmittedParticle ep;
-    ep.position = Vector3{ base.x + frx * spacing + jx,
+    ep.position = mm::Vec3{ base.x + frx * spacing + jx,
                           base.y + fry * spacing + jy,
                           base.z + frz * spacing + jz };
 
@@ -121,19 +124,19 @@ static EmittedParticle make_sub_particle(const Lattice& lat, SlotCoord c, int ti
         float L = (0.92f - 0.55f * vein) + mottle;
         if (L < 0.05f) L = 0.05f;
         if (L > 1.0f)  L = 1.0f;
-        ep.tint = Vector4{ L, L * 0.97f, L * 0.92f, p.tint_alpha };
+        ep.tint = mm::Vec4{ L, L * 0.97f, L * 0.92f, p.tint_alpha };
     } else {
         float tr = lattice_vhash(fx + 101 + s, fy, fz);
         float tg = lattice_vhash(fx, fy + 101 + s, fz);
         float tb = lattice_vhash(fx, fy, fz + 101 + s);
-        ep.tint = Vector4{ tr, tg, tb, p.tint_alpha };
+        ep.tint = mm::Vec4{ tr, tg, tb, p.tint_alpha };
     }
     return ep;
 }
 
 // Integer cell coordinate of a slot, on the same grid the Cluster keys cells on.
 static SlotCoord cell_coord_of(const Lattice& lat, SlotCoord c, const CullParams& p) {
-    Vector3 base = lat.slot_position(c);
+    mm::Vec3 base = lat.slot_position(c);
     int cx = (int)floorf((base.x + p.cell_origin_offset.x) / p.cell_size);
     int cy = (int)floorf((base.y + p.cell_origin_offset.y) / p.cell_size);
     int cz = (int)floorf((base.z + p.cell_origin_offset.z) / p.cell_size);

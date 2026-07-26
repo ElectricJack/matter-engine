@@ -1,5 +1,11 @@
 #pragma once
 
+// Phase 4 (Step 4) of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md:
+// EmittedParticle/CullParams used to rely on raylib.h being transitively
+// available via lattice.h. lattice.h no longer includes it (mm::Vec3 instead),
+// so this header (C++-only, no C consumer) uses matter_math.h's mm::Vec3/
+// mm::Vec4 directly rather than depending on a transitive include.
+#include "matter_math.h"
 #include "lattice.h"
 #include "occupancy.h"
 #include "particle.h"
@@ -8,10 +14,10 @@
 
 // A particle ready to hand to Cluster::add_particle (jitter already applied).
 struct EmittedParticle {
-    Vector3 position;   // local-space
+    mm::Vec3 position;  // local-space
     float radius;
     uint32_t materialId;
-    Vector4 tint;       // RGBA; w = blend strength
+    mm::Vec4 tint;       // RGBA; w = blend strength
     float detail_size;  // nominal lattice spacing at this particle's tier (S / 2^tier)
 };
 
@@ -31,7 +37,7 @@ struct CullParams {
     float spacing  = 0.0f;// lattice tier-0 spacing S (GridLattice::spacing())
     uint32_t seed;       // determinism seed for jitter/tint
     float cell_size;     // meshing cell size used to bucket slots into cells
-    Vector3 cell_origin_offset; // added to slot_position before bucketing so the
+    mm::Vec3 cell_origin_offset; // added to slot_position before bucketing so the
                                 // cull grid matches the Cluster's recentered grid
     uint64_t coarse_material_mask = 0; // bit m set => material m emits one particle
                                        // per slot (forced tier 0), regardless of

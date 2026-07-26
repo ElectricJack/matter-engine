@@ -515,6 +515,74 @@ void test_c_pod_mat4_memory_layout_interchangeable() {
     PASS();
 }
 
+// ---------------------------------------------------------------------------
+// Extra (Phase 4 Step 4): quat_identity/quat_invert/quat_multiply, added to
+// replace libs/MatterSurfaceLib/src/cluster.cpp's QuaternionIdentity/
+// QuaternionInvert call sites.
+// ---------------------------------------------------------------------------
+void test_quat_identity_invert_multiply() {
+    const mm::Quat id = mm::quat_identity();
+    if (!nearly_equal(id.x, 0.0f, 1e-6f) || !nearly_equal(id.y, 0.0f, 1e-6f) ||
+        !nearly_equal(id.z, 0.0f, 1e-6f) || !nearly_equal(id.w, 1.0f, 1e-6f)) {
+        FAIL("quat_identity() != {0,0,0,1}");
+    }
+
+    const mm::Quat q = mm::quat_from_axis_angle(mm::normalize({1.0f, 2.0f, 3.0f}), 0.9f);
+    const mm::Quat qi = mm::quat_invert(q);
+    const mm::Quat should_be_identity = mm::quat_multiply(q, qi);
+    if (!nearly_equal(should_be_identity.x, 0.0f, 1e-4f) ||
+        !nearly_equal(should_be_identity.y, 0.0f, 1e-4f) ||
+        !nearly_equal(should_be_identity.z, 0.0f, 1e-4f) ||
+        !nearly_equal(should_be_identity.w, 1.0f, 1e-4f)) {
+        FAIL("quat_multiply(q, quat_invert(q)) did not converge to the identity quaternion");
+    }
+
+    // quat_invert() on the zero quaternion must fall back to identity rather
+    // than divide by zero (matches vulkan_only_compat.cpp's `n > 0.0f` guard).
+    const mm::Quat zero_invert = mm::quat_invert(mm::Quat{0.0f, 0.0f, 0.0f, 0.0f});
+    if (!nearly_equal(zero_invert.x, 0.0f, 1e-6f) || !nearly_equal(zero_invert.y, 0.0f, 1e-6f) ||
+        !nearly_equal(zero_invert.z, 0.0f, 1e-6f) || !nearly_equal(zero_invert.w, 1.0f, 1e-6f)) {
+        FAIL("quat_invert({0,0,0,0}) did not fall back to quat_identity()");
+    }
+
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
+// Extra (Phase 4 Step 4): rotate() cross-checked against the INDEPENDENT
+// from_trs() quaternion-to-matrix path -- rotate() is the closed-form vector
+// rotation ported from vulkan_only_compat.cpp's Vector3RotateByQuaternion;
+// from_trs() is a completely separate quaternion-to-matrix derivation. If
+// rotate() had, say, a transposed cross product or a wrong sign on the q.w
+// term, it would still "look plausible" (unit-length preserving) but this
+// would catch it.
+// ---------------------------------------------------------------------------
+void test_rotate_matches_from_trs_quaternion_path() {
+    const mm::Vec3 axis = mm::normalize({1.0f, -2.0f, 0.5f});
+    const mm::Quat q = mm::quat_from_axis_angle(axis, 1.1f);
+    const mm::Vec3 p{3.0f, -1.0f, 2.0f};
+
+    const mm::Vec3 via_rotate = mm::rotate(p, q);
+
+    const mm::Mat4 via_matrix = mm::from_trs({0.0f, 0.0f, 0.0f}, q, {1.0f, 1.0f, 1.0f});
+    const mm::Vec3 via_matrix_point = mm::transform_point(via_matrix, p);
+
+    if (!nearly_equal(via_rotate.x, via_matrix_point.x, 1e-4f) ||
+        !nearly_equal(via_rotate.y, via_matrix_point.y, 1e-4f) ||
+        !nearly_equal(via_rotate.z, via_matrix_point.z, 1e-4f)) {
+        FAIL("rotate(v, q) diverged from from_trs(q)'s equivalent point transform");
+    }
+
+    // Rotating by q then by quat_invert(q) must return to the original point.
+    const mm::Vec3 round_trip = mm::rotate(via_rotate, mm::quat_invert(q));
+    if (!nearly_equal(round_trip.x, p.x, 1e-3f) || !nearly_equal(round_trip.y, p.y, 1e-3f) ||
+        !nearly_equal(round_trip.z, p.z, 1e-3f)) {
+        FAIL("rotate(rotate(p, q), quat_invert(q)) did not round-trip to p");
+    }
+
+    PASS();
+}
+
 } // namespace
 
 int main() {
@@ -531,6 +599,8 @@ int main() {
     RUN_TEST(test_multiply_composition_order);
     RUN_TEST(test_c_pod_conversions_round_trip);
     RUN_TEST(test_c_pod_mat4_memory_layout_interchangeable);
+    RUN_TEST(test_quat_identity_invert_multiply);
+    RUN_TEST(test_rotate_matches_from_trs_quaternion_path);
 
     std::printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

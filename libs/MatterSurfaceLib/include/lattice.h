@@ -1,6 +1,9 @@
 #pragma once
 
-#include "raylib.h"
+// Phase 4 (Step 4) of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md:
+// this header used to include raylib.h for Vector3. It is C++-only (no C
+// consumer), so it uses matter_math.h's mm::Vec3 instead.
+#include "matter_math.h"
 #include <vector>
 
 // Integer coordinate of a lattice slot.
@@ -13,7 +16,7 @@ class Lattice {
 public:
     virtual ~Lattice() = default;
     // Base (un-jittered) local-space center of a slot.
-    virtual Vector3 slot_position(SlotCoord c) const = 0;
+    virtual mm::Vec3 slot_position(SlotCoord c) const = 0;
     // Adjacency offsets defining a slot's immediate neighbors.
     virtual const std::vector<SlotCoord>& neighbor_offsets() const = 0;
 };
@@ -22,7 +25,7 @@ public:
 class GridLattice : public Lattice {
 public:
     explicit GridLattice(float spacing);
-    Vector3 slot_position(SlotCoord c) const override;
+    mm::Vec3 slot_position(SlotCoord c) const override;
     const std::vector<SlotCoord>& neighbor_offsets() const override;
     float spacing() const { return spacing_; }
 private:

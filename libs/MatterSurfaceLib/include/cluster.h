@@ -1,7 +1,11 @@
 #ifndef CLUSTER_H
 #define CLUSTER_H
 
-#include "raylib.h"
+// Phase 4 (Step 4) of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md:
+// this header used to include raylib.h for Vector3/Vector4/Quaternion. It is
+// C++-only (no C consumer), so it uses matter_math.h's mm::Vec3/mm::Vec4/
+// mm::Quat instead.
+#include "matter_math.h"
 #include "particle.h"
 #include "vertex_ao.h"  // AoGrid, AoParams, Occupancy
 #include <vector>
@@ -21,14 +25,14 @@ class MeshWorkerPool;
 
 // Static particle structure for matter representation
 struct StaticParticle {
-    Vector3 position;       // Position in local cluster space
+    mm::Vec3 position;      // Position in local cluster space
     float radius;          // Particle radius
     uint32_t materialId;   // Material identifier
-    Vector4 tint;          // RGBA tint; a = blend strength. (1,1,1,0) = no tint.
+    mm::Vec4 tint;          // RGBA tint; a = blend strength. (1,1,1,0) = no tint.
     float detail_size;     // tier-0 spacing / 2^tier; 0 => fall back to tier 0
 
-    StaticParticle(const Vector3& pos = {0,0,0}, float r = 1.0f, uint32_t mat = 0,
-                   const Vector4& t = {1.0f, 1.0f, 1.0f, 0.0f}, float ds = 0.0f)
+    StaticParticle(const mm::Vec3& pos = {0,0,0}, float r = 1.0f, uint32_t mat = 0,
+                   const mm::Vec4& t = {1.0f, 1.0f, 1.0f, 0.0f}, float ds = 0.0f)
         : position(pos), radius(r), materialId(mat), tint(t), detail_size(ds) {}
 };
 
@@ -41,22 +45,22 @@ public:
     uint32_t get_id() const { return cluster_id_; }
     
     // Transform operations (position + rotation, no scale)
-    Vector3 get_position() const { return position_; }
-    Quaternion get_rotation() const { return rotation_; }
-    void set_position(const Vector3& pos) { position_ = pos; }
-    void set_rotation(const Quaternion& rot) { rotation_ = rot; }
-    
+    mm::Vec3 get_position() const { return position_; }
+    mm::Quat get_rotation() const { return rotation_; }
+    void set_position(const mm::Vec3& pos) { position_ = pos; }
+    void set_rotation(const mm::Quat& rot) { rotation_ = rot; }
+
     // Transform particles between local and world space
-    Vector3 local_to_world(const Vector3& local_pos) const;
-    Vector3 world_to_local(const Vector3& world_pos) const;
-    
+    mm::Vec3 local_to_world(const mm::Vec3& local_pos) const;
+    mm::Vec3 world_to_local(const mm::Vec3& world_pos) const;
+
     // Particle management
-    uint32_t add_particle(const Vector3& local_position, float radius = 1.0f, uint32_t material_id = 0);
-    uint32_t add_particle(const Vector3& local_position, float radius, uint32_t material_id, const Vector4& tint);
-    uint32_t add_particle(const Vector3& local_position, float radius, uint32_t material_id,
-                          const Vector4& tint, float detail_size);
+    uint32_t add_particle(const mm::Vec3& local_position, float radius = 1.0f, uint32_t material_id = 0);
+    uint32_t add_particle(const mm::Vec3& local_position, float radius, uint32_t material_id, const mm::Vec4& tint);
+    uint32_t add_particle(const mm::Vec3& local_position, float radius, uint32_t material_id,
+                          const mm::Vec4& tint, float detail_size);
     bool remove_particle(uint32_t particle_id);
-    bool update_particle_position(uint32_t particle_id, const Vector3& new_local_position);
+    bool update_particle_position(uint32_t particle_id, const mm::Vec3& new_local_position);
     // Drop all additive particles (cells/BLAS are reclaimed by the next
     // force_rebuild_all_cells). Used to re-emit the scene with new parameters.
     void clear_particles();
@@ -66,9 +70,9 @@ public:
     uint32_t get_particle_count() const { return static_cast<uint32_t>(particles_.size()); }
     
     // Cell management
-    void mark_cells_dirty_around_particle(const Vector3& local_position, float radius);
+    void mark_cells_dirty_around_particle(const mm::Vec3& local_position, float radius);
     void rebuild_dirty_cells();
-    std::vector<Cell*> get_cells_in_region(const Vector3& min_bound, const Vector3& max_bound);
+    std::vector<Cell*> get_cells_in_region(const mm::Vec3& min_bound, const mm::Vec3& max_bound);
     
     // Visitor pattern support
     void accept(CellVisitor& visitor) const;
@@ -88,7 +92,7 @@ public:
     // Skip-meshing: cells whose packed integer coordinate is in this set are
     // created/tracked but never meshed (they hold no mesh, register no BLAS).
     // Coordinates use the same floor(local/cell_size) basis as get_cell_coordinates.
-    void set_no_mesh_cells(const std::vector<Vector3>& coords);
+    void set_no_mesh_cells(const std::vector<mm::Vec3>& coords);
     void clear_no_mesh_cells() { no_mesh_cells_.clear(); }
 
     // Subtractive carve particles (smooth-CSG). Distributed per-cell by the same
@@ -131,8 +135,8 @@ public:
 private:
     // Cluster identification and transform
     uint32_t cluster_id_;
-    Vector3 position_;          // World position
-    Quaternion rotation_;       // World rotation
+    mm::Vec3 position_;         // World position
+    mm::Quat rotation_;         // World rotation
     
     // Manager references (set at construction time)
     BLASManager& blas_manager_;
@@ -163,8 +167,8 @@ private:
     AoParams  ao_params_{};
 
     // Helper methods
-    Vector3 get_cell_coordinates(const Vector3& local_position) const;
-    Cell* find_or_create_cell(const Vector3& cell_coords);
+    mm::Vec3 get_cell_coordinates(const mm::Vec3& local_position) const;
+    Cell* find_or_create_cell(const mm::Vec3& cell_coords);
     void clear_all_cells();
 
     // Finest detail_size across all particles (seeded with base_detail_size_).

@@ -1,7 +1,13 @@
 #ifndef MESH_SIMPLIFIER_HPP
 #define MESH_SIMPLIFIER_HPP
 
+// Phase 4 (Step 4) of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md:
+// CellBounds moved off raylib's Vector3 onto matter_math.h's mm::Vec3 (C++-
+// only, no C consumer). raylib.h stays included -- simplify_mesh's Mesh
+// parameter/return type is out of this phase's scope (Mesh migration is
+// deferred; see the Phase 4 brief).
 #include "raylib.h"
+#include "matter_math.h"
 #include <cfloat>
 
 // Options controlling QEM edge-collapse decimation.
@@ -25,8 +31,8 @@ struct SimplifyOptions {
 // simplify_mesh and lock_boundary is true, vertices on any of the 6 face
 // planes are never moved or removed (guarantees watertight same-level seams).
 struct CellBounds {
-    Vector3 min_bound;
-    Vector3 max_bound;
+    mm::Vec3 min_bound;
+    mm::Vec3 max_bound;
 };
 
 // Returns a NEW indexed Mesh allocated with raylib's allocator (MemAlloc),

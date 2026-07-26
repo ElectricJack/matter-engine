@@ -1,7 +1,13 @@
 #ifndef CELL_H
 #define CELL_H
 
-#include "raylib.h"
+// Phase 4 (Step 4) of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md:
+// this header used to include raylib.h for Vector3/Matrix. It is C++-only (no
+// C consumer), so it uses matter_math.h's mm::Vec3/mm::Mat4 instead.
+// material_meshes below still holds raylib's Mesh -- that comes in
+// transitively via surface.h (included below), which keeps raylib.h because
+// Mesh migration is out of this phase's scope.
+#include "matter_math.h"
 #include <vector>
 #include <cstdint>
 #include <map>
@@ -45,12 +51,12 @@ int choose_division_pow(float detail_size_min, float base_detail, int base_pow, 
 
 struct Cell {
     // Cell identification and spatial properties
-    Vector3 coordinates;        // Integer coordinates in cluster space (stored as floats for convenience)
+    mm::Vec3 coordinates;      // Integer coordinates in cluster space (stored as floats for convenience)
     int size_power;            // Cell size = smallest_cell_size * (2^size_power)
     float actual_size;         // Computed actual size of the cell
-    Vector3 center;            // Center position in cluster local space
-    Vector3 min_bound;         // Minimum bound in cluster local space
-    Vector3 max_bound;         // Maximum bound in cluster local space
+    mm::Vec3 center;           // Center position in cluster local space
+    mm::Vec3 min_bound;        // Minimum bound in cluster local space
+    mm::Vec3 max_bound;        // Maximum bound in cluster local space
     
     // Merge-group-based mesh data. The map key is a merge-group id (not a shading
     // material): shades of the same material merge into one group/mesh, while
@@ -65,7 +71,7 @@ struct Cell {
     std::map<uint32_t, std::vector<uint32_t>> material_particle_indices;
     
     // Construction and lifecycle
-    Cell(const Vector3& coords, int size_pow, float smallest_cell_size);
+    Cell(const mm::Vec3& coords, int size_pow, float smallest_cell_size);
     ~Cell();
     
     // Mesh management
@@ -103,8 +109,8 @@ struct Cell {
     // Drops this cell's meshes. When blas_manager is provided, the cell's BLAS
     // references are released so stale entries don't accumulate on the GPU.
     void clear_meshes(BLASManager* blas_manager = nullptr);
-    bool contains_point(const Vector3& local_point) const;
-    bool intersects_sphere(const Vector3& center, float radius) const;
+    bool contains_point(const mm::Vec3& local_point) const;
+    bool intersects_sphere(const mm::Vec3& center, float radius) const;
     
     // Particle management
     void add_particle_index(uint32_t particle_index, uint32_t material_id);
@@ -116,14 +122,14 @@ struct Cell {
     
     // Visitor pattern support
     void accept(CellVisitor& visitor) const;
-    void accept_transformed(CellRenderVisitor& visitor, const Matrix& transform) const;
-    
+    void accept_transformed(CellRenderVisitor& visitor, const mm::Mat4& transform) const;
+
     // BLAS access
     const std::map<uint32_t, BLASHandle>& get_material_blas() const { return material_blas; }
-    
+
     // Utilities
     float get_diagonal_length() const;
-    Vector3 get_size() const { return Vector3{actual_size, actual_size, actual_size}; }
+    mm::Vec3 get_size() const { return mm::Vec3{actual_size, actual_size, actual_size}; }
     
 private:
     void calculate_bounds(float smallest_cell_size);

@@ -13,19 +13,12 @@
 // Particle/FatPrim (particle.h/fat_primitive.h) moved off raylib Vector3/
 // Matrix/Vector4 onto matter_math_c.h's MtVec3/MtMat4/MtVec4 in Phase 4 Step 3
 // (mathlib-and-raylib-removal) -- this file computes in mm:: and crosses that
-// boundary via mm::to_c() (matter_math.h). StaticParticle (cluster.h) is a
-// SEPARATE MatterSurfaceLib type that still takes a raylib Vector3; it stays
-// that way until Phase 4 Step 4 migrates cluster.h, so to_raylib() below
-// survives -- with exactly one remaining caller -- until then.
+// boundary via mm::to_c() (matter_math.h). StaticParticle (cluster.h) moved
+// off raylib Vector3/Vector4 onto mm::Vec3/mm::Vec4 in Phase 4 Step 4, so this
+// file no longer produces any raylib type at all -- the to_raylib() helper
+// that used to bridge StaticParticle's construction is gone.
 
 namespace dsl {
-
-// mm::Vec3 -> raylib Vector3. Byte-identical fields; used only at the
-// StaticParticle construction boundary (see note above) -- the one raylib
-// type this file still has to produce. Everything that used to go through
-// this for Particle/FatPrim now uses mm::to_c() (matter_math.h) instead,
-// since those two structs moved to matter_math_c.h's MtVec3/MtMat4/MtVec4.
-static Vector3 to_raylib(const mm::Vec3& v) { return Vector3{v.x, v.y, v.z}; }
 
 // General 4x4 inverse, ported element-for-element from the original raylib-
 // Matrix cofactor implementation (NOT swapped for mm::inverse's Gauss-Jordan
@@ -277,7 +270,7 @@ LoweredField lower_build_buffer(const BuildBuffer& buf) {
                 if (subtract) {
                     out.carve.push_back(Particle{ mm::to_c(c), r, (int)o.materialId });
                 } else {
-                    out.additive.push_back(StaticParticle(to_raylib(c), r, o.materialId, {1,1,1,0}, o.spacing));
+                    out.additive.push_back(StaticParticle(c, r, o.materialId, {1,1,1,0}, o.spacing));
                     out.additive_stage.push_back(curStage);
                 }
                 // Every sphere brush (additive AND subtractive) joins the staged

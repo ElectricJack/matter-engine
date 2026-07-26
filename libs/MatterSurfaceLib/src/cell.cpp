@@ -17,26 +17,17 @@ extern "C" {
 #include <cstdlib>
 #include <algorithm>
 
-// Forward declarations we need for surface mesh generation.
-// Bounds/Particle and GenerateMesh/ComputeSurfaceNormals now live in cell.h
-// (the single source), so they are not re-declared here.
-extern "C" {
-    // Raymath and raylib functions we need
-    Vector3 Vector3Add(Vector3 v1, Vector3 v2);
-    Vector3 Vector3Subtract(Vector3 v1, Vector3 v2);
-    Vector3 Vector3Scale(Vector3 v, float scalar);
-    Vector3 Vector3Transform(Vector3 v, Matrix mat);
-    float Vector3Length(Vector3 v);
-    float Vector3DotProduct(Vector3 v1, Vector3 v2);
-    Material LoadMaterialDefault(void);
-    void DrawMesh(Mesh mesh, Material material, Matrix transform);
-    void DrawLine3D(Vector3 startPos, Vector3 endPos, Color color);
-    Matrix MatrixIdentity(void);
-    Matrix MatrixTranslate(float x, float y, float z);
-    void DrawCubeWires(Vector3 position, float width, float height, float length, Color color);
-    void DrawSphere(Vector3 centerPos, float radius, Color color);
-    void RL_FREE(void *ptr);
-}
+// Cell's own Vector3/Matrix math moved off raylib's Vector3Add/Subtract/
+// DotProduct/Length and Matrix onto MathLib's mm:: equivalents in Phase 4
+// (Step 4) of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md.
+// The extern "C" raymath/raylib forward-declaration block that used to sit
+// here (Vector3Add/Subtract/Scale/Transform, LoadMaterialDefault, DrawMesh,
+// DrawLine3D, MatrixIdentity/Translate, DrawCubeWires, DrawSphere, RL_FREE) is
+// gone: none of them were still called after Phase 5a deleted the debug-
+// render call sites that once used them, and the ones that WERE still called
+// (Vector3Add/Subtract/DotProduct/Length) are replaced by mm::add/mm::sub/
+// mm::dot/mm::length below (bit-identical formulas -- see cell.cpp's Step 4
+// commit message for the side-by-side).
 
 int choose_division_pow(float detail_size_min, float base_detail, int base_pow, int max_pow) {
     int tier = 0;
@@ -50,7 +41,7 @@ int choose_division_pow(float detail_size_min, float base_detail, int base_pow, 
     return pow;
 }
 
-Cell::Cell(const Vector3& coords, int size_pow, float smallest_cell_size)
+Cell::Cell(const mm::Vec3& coords, int size_pow, float smallest_cell_size)
     : coordinates(coords),
       size_power(size_pow),
       actual_size(smallest_cell_size * (1 << size_pow)),
@@ -72,35 +63,35 @@ void Cell::calculate_bounds(float smallest_cell_size) {
     // Cluster::get_cell_coordinates and the cell spatial-hash key; otherwise
     // the mesh-generation box is shifted half a cell and spheres render as
     // partial blobs.
-    center = Vector3{
+    center = mm::Vec3{
         (coordinates.x + 0.5f) * actual_size,
         (coordinates.y + 0.5f) * actual_size,
         (coordinates.z + 0.5f) * actual_size
     };
-    
-    Vector3 half_size = Vector3{actual_size * 0.5f, actual_size * 0.5f, actual_size * 0.5f};
-    min_bound = Vector3Subtract(center, half_size);
-    max_bound = Vector3Add(center, half_size);
+
+    mm::Vec3 half_size = mm::Vec3{actual_size * 0.5f, actual_size * 0.5f, actual_size * 0.5f};
+    min_bound = mm::sub(center, half_size);
+    max_bound = mm::add(center, half_size);
 }
 
-bool Cell::contains_point(const Vector3& local_point) const {
+bool Cell::contains_point(const mm::Vec3& local_point) const {
     return (local_point.x >= min_bound.x && local_point.x <= max_bound.x &&
             local_point.y >= min_bound.y && local_point.y <= max_bound.y &&
             local_point.z >= min_bound.z && local_point.z <= max_bound.z);
 }
 
-bool Cell::intersects_sphere(const Vector3& sphere_center, float radius) const {
+bool Cell::intersects_sphere(const mm::Vec3& sphere_center, float radius) const {
     // Find closest point on the cell's bounding box to the sphere center
-    Vector3 closest = {
+    mm::Vec3 closest = {
         fmaxf(min_bound.x, fminf(sphere_center.x, max_bound.x)),
         fmaxf(min_bound.y, fminf(sphere_center.y, max_bound.y)),
         fmaxf(min_bound.z, fminf(sphere_center.z, max_bound.z))
     };
-    
+
     // Calculate distance from sphere center to closest point
-    Vector3 diff = Vector3Subtract(sphere_center, closest);
-    float distance_squared = Vector3DotProduct(diff, diff);
-    
+    mm::Vec3 diff = mm::sub(sphere_center, closest);
+    float distance_squared = mm::dot(diff, diff);
+
     return distance_squared <= (radius * radius);
 }
 
@@ -220,9 +211,10 @@ std::vector<Particle> build_clip_particles(
             float r_eff = (sp.radius < vis_radius) ? vis_radius : sp.radius;
 
             Particle cp;
-            // sp.position is StaticParticle's raylib Vector3 (cluster.h, Phase 4
-            // Step 4 territory); cp.position is Particle's MtVec3 (Phase 4 Step 3).
-            cp.position = MtVec3{sp.position.x, sp.position.y, sp.position.z};
+            // sp.position is StaticParticle's mm::Vec3 (cluster.h, Phase 4 Step 4);
+            // cp.position is Particle's MtVec3 (Phase 4 Step 3) -- cross via the
+            // sanctioned mm::to_c() (matter_math.h), not a hand-rolled literal.
+            cp.position = mm::to_c(sp.position);
             cp.radius = r_eff;
             cp.materialId = static_cast<int>(sp.materialId); // unused by carve math; set for consistency
             clip.push_back(cp);
@@ -257,9 +249,9 @@ GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<Stat
         (group_it != material_particle_indices.end()) ? group_it->second : kEmptyIndices;
 
     Bounds bounds;
-    // center is Cell's raylib Vector3 (Phase 4 Step 4 territory); Bounds.center/
-    // size are MtVec3 as of Phase 4 Step 3.
-    bounds.center = MtVec3{center.x, center.y, center.z};
+    // center is Cell's mm::Vec3 (Phase 4 Step 4); Bounds.center/size are MtVec3
+    // (Phase 4 Step 3) -- cross via mm::to_c().
+    bounds.center = mm::to_c(center);
     bounds.size = MtVec3{actual_size, actual_size, actual_size};
 
     float detail_min;
@@ -300,8 +292,8 @@ GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<Stat
         float r_eff = (sp.radius < vis_radius) ? vis_radius : sp.radius;
 
         Particle surface_particle;
-        // sp.position is StaticParticle's raylib Vector3 (Phase 4 Step 4 territory).
-        surface_particle.position = MtVec3{sp.position.x, sp.position.y, sp.position.z};
+        // sp.position is StaticParticle's mm::Vec3 (Phase 4 Step 4).
+        surface_particle.position = mm::to_c(sp.position);
         surface_particle.radius = r_eff;
         surface_particle.materialId = static_cast<int>(sp.materialId);
         particles.push_back(surface_particle);
@@ -321,8 +313,8 @@ GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<Stat
         cell_fat.reserve(fatCount);
         for (int i = 0; i < fatCount; ++i) {
             // fat[i].center is FatPrim's MtVec3 (Phase 4 Step 3); intersects_sphere
-            // still takes raylib's Vector3 until Phase 4 Step 4 migrates cell.h.
-            if (intersects_sphere(Vector3{fat[i].center.x, fat[i].center.y, fat[i].center.z}, fat[i].boundRadius * 1.5f))
+            // takes mm::Vec3 as of Phase 4 Step 4 -- cross via mm::from_c().
+            if (intersects_sphere(mm::from_c(fat[i].center), fat[i].boundRadius * 1.5f))
                 cell_fat.push_back(fat[i]);
         }
     }
@@ -512,11 +504,11 @@ void Cell::accept(CellVisitor& visitor) const {
     visitor.visit_cell(*this);
 }
 
-void Cell::accept_transformed(CellRenderVisitor& visitor, const Matrix& transform) const {
+void Cell::accept_transformed(CellRenderVisitor& visitor, const mm::Mat4& transform) const {
     visitor.visit_cell_transformed(*this, transform);
 }
 
 float Cell::get_diagonal_length() const {
-    Vector3 size = Vector3Subtract(max_bound, min_bound);
-    return Vector3Length(size);
+    mm::Vec3 size = mm::sub(max_bound, min_bound);
+    return mm::length(size);
 }
