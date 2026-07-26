@@ -694,6 +694,9 @@ public:
     // renderer; the queue must degrade to retained/bind pose transactionally.
     void set_test_animation_skin_failure(uint32_t fail_after_allocations,
                                          uint32_t fail_after_uploads);
+    void set_test_animation_bounds_upload_failure_once() {
+        test_fail_animation_bounds_upload_once_ = true;
+    }
 #endif
 
     VkBuffer indirect_buffer() const {
@@ -1326,6 +1329,7 @@ private:
         std::numeric_limits<uint32_t>::max();
     uint32_t test_fail_after_skin_uploads_ =
         std::numeric_limits<uint32_t>::max();
+    bool test_fail_animation_bounds_upload_once_ = false;
 #endif
 };
 

@@ -115,6 +115,15 @@ void mark_animation_skin_raster_records(
     std::vector<VkAnimationBoundsGpuRecord>& records,
     const std::vector<VkSkinRasterDraw>& draws) noexcept;
 
+// Resolves cull.comp's conservative all-LOD union for one full
+// generational cluster identity. CPU skin-work planning uses this before LOD
+// selection so it cannot disagree with the GPU culler when animation crosses
+// a threshold.
+bool resolve_animation_cluster_union(
+    const std::vector<VkAnimationBoundsGpuRecord>& records,
+    uint32_t instance_slot, uint32_t instance_generation,
+    uint32_t cluster_index, VkAnimationBoundsAabb& out) noexcept;
+
 // Validates immutable serialized joint-local bounds without creating a
 // renderer-side registration.  The skin bridge uses it to reject a malformed
 // ECS binding before any queue or culling state is touched.

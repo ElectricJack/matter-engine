@@ -4265,6 +4265,60 @@ void run_frame_resource_recovery_tests(matter::VulkanDevice& vulkan) {
     CHECK(vulkan.end_frame(frame, error),
           error.empty() ? "end recovered multi-slot Vulkan frame"
                         : error.c_str());
+
+    viewer::VkSceneRenderer bounds_renderer(vulkan);
+    CHECK(bounds_renderer.init(error) &&
+              bounds_renderer.ensure_part(scene.parts[0], error) >= 0 &&
+              bounds_renderer.update_instances({scene.instances[0]}, error),
+          error.empty() ? "prepare animation-bounds descriptor recovery scene"
+                        : error.c_str());
+    viewer::VkAnimationBoundsAsset bounds_asset{};
+    bounds_asset.asset_key = 0x424f554eu;
+    bounds_asset.conservative_asset_bound =
+        {{-2.0f, -2.0f, -2.0f}, {2.0f, 2.0f, 2.0f}};
+    bounds_asset.clusters = {
+        {0, 0, {{0, {{-1.0f, -1.0f, -1.0f},
+                      {1.0f, 1.0f, 1.0f}}}}},
+        {1, 0, {{0, {{-0.5f, -0.5f, -0.5f},
+                      {0.5f, 0.5f, 0.5f}}}}},
+    };
+    viewer::VkSkinJoint bounds_joint{};
+    bounds_joint.position.elements[0] = bounds_joint.position.elements[5] =
+        bounds_joint.position.elements[10] =
+        bounds_joint.position.elements[15] = 1.0f;
+    bounds_joint.normal = bounds_joint.position;
+    viewer::VkSkinPose bounds_pose{};
+    bounds_pose.current = {bounds_joint};
+    bounds_pose.previous = {bounds_joint};
+    CHECK(bounds_renderer.register_animation_bounds_asset(bounds_asset) &&
+              bounds_renderer.update_animation_bounds(
+                  0, 1, bounds_asset.asset_key, bounds_pose, false),
+          "stage two animated records that grow the frame bounds buffer");
+    const uint32_t bounds_validation_before = vulkan.validation_error_count();
+    matter::VulkanFrame bounds_frame{};
+    CHECK(vulkan.begin_frame(bounds_frame, error),
+          error.empty() ? "begin animation-bounds upload-fault frame"
+                        : error.c_str());
+    bounds_renderer.set_test_animation_bounds_upload_failure_once();
+    CHECK(!bounds_renderer.prepare_frame(
+              bounds_frame, scene.frame, scene.eye, 1.0f, error) &&
+              error.find("forced animation bounds upload failure") !=
+                  std::string::npos,
+          "fault after animation-bounds growth leaves a refreshable descriptor");
+    CHECK(bounds_renderer.prepare_frame(
+              bounds_frame, scene.frame, scene.eye, 1.0f, error) &&
+              bounds_renderer.record_cull_and_render(
+                  bounds_frame, scene.frame, scene.eye, 1.0f, error) &&
+              vulkan.end_frame(bounds_frame, error),
+          error.empty() ? "same-slot retry recovers grown bounds descriptor"
+                        : error.c_str());
+    vulkan.wait_idle();
+    std::vector<viewer::DrawCommand> recovered_commands;
+    CHECK(bounds_renderer.readback_commands(recovered_commands, error) &&
+              !recovered_commands.empty(),
+          "recovered descriptor survives submission and command readback");
+    CHECK(vulkan.validation_error_count() == bounds_validation_before,
+          "bounds grow/fault/recovery emits no descriptor validation error");
 }
 
 void run_cull_parity(matter::VulkanDevice& vulkan) {
@@ -5047,8 +5101,24 @@ void run_animation_skin_record_fault_matrix(matter::VulkanDevice& vulkan) {
                   degraded.raster_draws.size() == 1 &&
                   degraded.raster_draws[0].output_frame_slot == seed.frame_slot,
               "real record fault atomically keeps retained pose and bind/static peer");
-        CHECK(renderer.animation_bounds().gpu_records().empty(),
-              "real record fault removes current dynamic bounds before fail-open static cull");
+        const auto degraded_bounds = renderer.animation_bounds().gpu_records();
+        const bool retained_is_conservative = std::any_of(
+            degraded_bounds.begin(), degraded_bounds.end(),
+            [](const viewer::VkAnimationBoundsGpuRecord& value) {
+                return value.instance_slot == 0 &&
+                       (value.flags &
+                        viewer::kVkAnimationBoundsOcclusionEnabled) == 0;
+            });
+        const bool bind_is_conservative = std::any_of(
+            degraded_bounds.begin(), degraded_bounds.end(),
+            [](const viewer::VkAnimationBoundsGpuRecord& value) {
+                return value.instance_slot == 1 &&
+                       (value.flags &
+                        viewer::kVkAnimationBoundsOcclusionEnabled) == 0;
+            });
+        CHECK(degraded_bounds.size() == 2 && retained_is_conservative &&
+                  bind_is_conservative,
+              "record fault keeps conservative bounds for retained and bind fallback ownership");
         CHECK(degraded.gpu_failure ==
                   (allocation_failure ? viewer::VkSkinGpuFailureReason::Allocation
                                       : viewer::VkSkinGpuFailureReason::Upload),
@@ -5075,6 +5145,11 @@ void run_animation_skin_record_fault_matrix(matter::VulkanDevice& vulkan) {
               error.empty() ? "degraded skin frame seals and presents"
                             : error.c_str());
         vulkan.wait_idle();
+        std::vector<viewer::DrawCommand> degraded_commands;
+        CHECK(renderer.readback_commands(degraded_commands, error) &&
+                  !degraded_commands.empty() &&
+                  degraded_commands[0].instance_count == 1,
+              "retained explicit raster does not double-draw through the static indirect command");
         const auto sealed_runtime = renderer.animation_runtime_stats();
         CHECK(diagnostics.gpu_failure_count() == 1 &&
                   diagnostics.gpu_allocation_failure_count() ==

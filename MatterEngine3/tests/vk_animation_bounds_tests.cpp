@@ -82,6 +82,29 @@ void test_missing_history_uses_current_not_stale_previous() {
           "missing history cannot include stale previous pose");
 }
 
+void test_gpu_record_union_is_exact_per_generational_cluster() {
+    std::vector<VkAnimationBoundsGpuRecord> records(3);
+    records[0].instance_slot = 4; records[0].instance_generation = 2;
+    records[0].cluster_index = 7; records[0].lod = 0;
+    records[0].aabb_min[0] = -2.0f; records[0].aabb_max[0] = 1.0f;
+    records[1] = records[0]; records[1].lod = 1;
+    records[1].aabb_min[0] = -1.0f; records[1].aabb_max[0] = 8.0f;
+    records[2] = records[1]; records[2].cluster_index = 8;
+    records[2].aabb_max[0] = 100.0f;
+    VkAnimationBoundsAabb unioned{};
+    CHECK(resolve_animation_cluster_union(records, 4, 2, 7, unioned) &&
+              unioned.min[0] == -2.0f && unioned.max[0] == 8.0f,
+          "CPU skin planning resolves the same all-LOD animated union as cull");
+    const float immutable_projected = 0.25f / 10.0f;
+    const float animated_radius =
+        0.5f * (unioned.max[0] - unioned.min[0]);
+    const float animated_projected = animated_radius / 10.0f;
+    CHECK(immutable_projected < 0.2f && animated_projected >= 0.2f,
+          "animated union crosses the fixture LOD threshold that immutable bounds miss");
+    CHECK(!resolve_animation_cluster_union(records, 4, 3, 7, unioned),
+          "animated union never crosses a recycled slot generation");
+}
+
 void test_corrupt_or_missing_pose_fails_open_to_asset_bound() {
     VkAnimationBounds bounds;
     CHECK(bounds.register_asset(asset(9)), "register fallback asset");
@@ -247,6 +270,7 @@ void test_asset_retirement_removes_fail_open_fallback_for_reused_identity() {
 int main() {
     test_current_and_previous_are_unioned();
     test_missing_history_uses_current_not_stale_previous();
+    test_gpu_record_union_is_exact_per_generational_cluster();
     test_corrupt_or_missing_pose_fails_open_to_asset_bound();
     test_rejects_empty_influences_and_preserves_last_complete_bounds();
     test_static_clusters_keep_static_path();

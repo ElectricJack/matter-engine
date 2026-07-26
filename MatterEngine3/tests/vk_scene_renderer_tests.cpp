@@ -276,6 +276,20 @@ static void test_skin_raster_validation_controls_cull_exclusion() {
     CHECK(accepted.size() == 1 &&
               (records[0].flags & viewer::kVkAnimationBoundsSkinRaster) != 0,
           "validated current source enables the matching skin-raster exclusion");
+
+    records.resize(2);
+    records[0].instance_slot = records[1].instance_slot = draw.instance_slot;
+    records[0].instance_generation = records[1].instance_generation =
+        draw.instance_generation;
+    records[0].lod = records[1].lod = draw.lod;
+    records[0].flags = records[1].flags = 0;
+    records[0].cluster_index = 0;
+    records[1].cluster_index = 1;
+    draw.cluster = 1;
+    viewer::mark_animation_skin_raster_records(records, {draw});
+    CHECK((records[0].flags & viewer::kVkAnimationBoundsSkinRaster) == 0 &&
+              (records[1].flags & viewer::kVkAnimationBoundsSkinRaster) != 0,
+          "same-instance same-LOD clusters preserve independent skin budget ownership");
 }
 
 // This is deliberately the cull.comp lookup contract, rather than a second
@@ -490,7 +504,9 @@ static void test_c3_dynamic_bounds_cull_contract() {
     CHECK(shader_text.find("layout(set = 1, binding = 8, std430)") != std::string::npos &&
               shader_text.find("frame.counts.w") != std::string::npos &&
               shader_text.find("instance_generation") != std::string::npos &&
-              shader_text.find("uses_skin_raster(instance, lod)") !=
+              shader_text.find("uses_skin_raster(instance, cluster, lod)") !=
+                  std::string::npos &&
+              shader_text.find("value.cluster_index == cluster.cluster_index") !=
                   std::string::npos &&
               shader_text.find("ANIMATION_BOUND_SKIN_RASTER") !=
                   std::string::npos,

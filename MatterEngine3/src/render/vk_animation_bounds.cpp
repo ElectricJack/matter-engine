@@ -351,6 +351,28 @@ void mark_animation_skin_raster_records(
     }
 }
 
+bool resolve_animation_cluster_union(
+    const std::vector<VkAnimationBoundsGpuRecord>& records,
+    uint32_t instance_slot, uint32_t instance_generation,
+    uint32_t cluster_index, VkAnimationBoundsAabb& out) noexcept {
+    bool found = false;
+    VkAnimationBoundsAabb unioned{{INFINITY, INFINITY, INFINITY},
+                                  {-INFINITY, -INFINITY, -INFINITY}};
+    for (const VkAnimationBoundsGpuRecord& value : records) {
+        if (value.instance_slot != instance_slot ||
+            value.instance_generation != instance_generation ||
+            value.cluster_index != cluster_index)
+            continue;
+        for (uint32_t axis = 0; axis != 3; ++axis) {
+            unioned.min[axis] = std::min(unioned.min[axis], value.aabb_min[axis]);
+            unioned.max[axis] = std::max(unioned.max[axis], value.aabb_max[axis]);
+        }
+        found = true;
+    }
+    if (found) out = unioned;
+    return found;
+}
+
 bool VkAnimationBounds::has_dynamic_bound(const VkAnimationBoundsKey& key) const noexcept {
     return std::any_of(dynamic_bounds_.begin(), dynamic_bounds_.end(),
                        [&key](const VkAnimationDynamicClusterBound& value) {

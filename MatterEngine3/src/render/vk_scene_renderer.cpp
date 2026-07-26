@@ -1006,10 +1006,30 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
             continue;
         const GpuCluster& cluster =
             cluster_staging_[part.cluster_start + candidate.cluster];
-        const uint32_t selected_lod = vk_scene_detail::select_cluster_lod_view(
+        VkAnimationBoundsAabb planning_bounds{
             {cluster.aabb_min[0], cluster.aabb_min[1], cluster.aabb_min[2]},
-            {cluster.aabb_max[0], cluster.aabb_max[1], cluster.aabb_max[2]},
-            cluster.radius, cluster.thresholds, cluster.lod_count,
+            {cluster.aabb_max[0], cluster.aabb_max[1], cluster.aabb_max[2]}};
+        const bool dynamic_planning_bound = resolve_animation_cluster_union(
+            current_bounds, candidate.instance_slot,
+            candidate.instance_generation, candidate.cluster,
+            planning_bounds);
+        const float planning_dx =
+            planning_bounds.max[0] - planning_bounds.min[0];
+        const float planning_dy =
+            planning_bounds.max[1] - planning_bounds.min[1];
+        const float planning_dz =
+            planning_bounds.max[2] - planning_bounds.min[2];
+        const float planning_radius = dynamic_planning_bound
+            ? 0.5f * std::sqrt(planning_dx * planning_dx +
+                               planning_dy * planning_dy +
+                               planning_dz * planning_dz)
+            : cluster.radius;
+        const uint32_t selected_lod = vk_scene_detail::select_cluster_lod_view(
+            {planning_bounds.min[0], planning_bounds.min[1],
+             planning_bounds.min[2]},
+            {planning_bounds.max[0], planning_bounds.max[1],
+             planning_bounds.max[2]},
+            planning_radius, cluster.thresholds, cluster.lod_count,
             unpack_matrix(instance.object_to_world), camera_eye, pixel_budget);
         if (candidate.lod != selected_lod) continue;
         const auto bounds = std::find_if(
@@ -2697,25 +2717,39 @@ bool VkSceneRenderer::record_animation_skinning(
     const auto downgrade_gpu_skin =
         [this, &resources, &staged, &frame, &error, &publish_ready_draws](
             VkSkinGpuFailureReason reason) {
-            std::vector<std::pair<uint32_t, uint32_t>> affected;
+            std::vector<VkAnimationBoundsInstance> affected;
             affected.reserve(staged.work_items.size());
             for (size_t index = 0; index != staged.work_items.size(); ++index) {
                 const VkSkinWorkItem& work = staged.work_items[index];
-                affected.push_back(
-                    {work.instance_slot,
-                     index < staged.work_instance_generations.size()
-                         ? staged.work_instance_generations[index] : 0});
+                const uint32_t generation =
+                    index < staged.work_instance_generations.size()
+                        ? staged.work_instance_generations[index] : 0;
+                const auto draw = std::find_if(
+                    staged.raster_draws.begin(), staged.raster_draws.end(),
+                    [&work, generation, &frame](const VkSkinRasterDraw& value) {
+                        return value.instance_slot == work.instance_slot &&
+                               value.instance_generation == generation &&
+                               value.output_frame_slot == frame.frame_slot &&
+                               value.lod == vk_skin_work_lod(work.flags) &&
+                               value.cluster ==
+                                   vk_skin_work_cluster(work.flags);
+                    });
+                affected.push_back({
+                    work.instance_slot,
+                    generation,
+                    draw != staged.raster_draws.end() ? draw->asset_key : 0});
             }
             if (!animation_skinning_.reject_gpu_frame(frame.frame_slot, reason))
                 return false;
             // Never let a failed current pose retain a smaller dynamic AABB.
-            // Removing it routes the same compacted record through the
-            // conservative static cull lane; retained raster draws below
-            // remain only when their sealed producer buffers are valid.
+            // Replace it with the asset-wide conservative bound. A retained
+            // explicit draw can then exclude exactly its own static peer,
+            // while bind fallbacks remain in the indirect lane.
+            animation_bounds_.fail_open_instances(affected);
             for (const auto& key : affected) {
-                animation_bounds_.remove_instance(key.first, key.second);
                 pending_visible_skin_instances_.erase(
-                    (uint64_t(key.first) << 32u) | key.second);
+                    (uint64_t(key.instance_slot) << 32u) |
+                    key.instance_generation);
             }
             consumed_animation_skin_fallbacks_ =
                 animation_skinning_.frame(frame.frame_slot).fallbacks;
@@ -6381,21 +6415,33 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     if (animation_bound_records.empty())
         animation_bound_records.push_back({});
     bool animation_bounds_replaced = false;
-    if (!ensure_buffer(selected.animation_bounds,
-                       static_cast<VkDeviceSize>(animation_bound_records.size()) *
-                           sizeof(VkAnimationBoundsGpuRecord),
+    const VkDeviceSize animation_bounds_bytes =
+        static_cast<VkDeviceSize>(animation_bound_records.size()) *
+        sizeof(VkAnimationBoundsGpuRecord);
+    if (!ensure_buffer(selected.animation_bounds, animation_bounds_bytes,
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error,
-                       &animation_bounds_replaced) ||
-        !matter::upload_buffer(
-            *vulkan_, selected.animation_bounds, animation_bound_records.data(),
-            static_cast<VkDeviceSize>(animation_bound_records.size()) *
-                sizeof(VkAnimationBoundsGpuRecord), 0, error)) {
+                       &animation_bounds_replaced)) {
         return false;
     }
+    // A successful replacement is live even when the following upload fails.
+    // Refresh immediately so retrying this frame can never reuse a descriptor
+    // that points at the retired allocation.
     if (animation_bounds_replaced) {
         update_descriptor(selected.descriptor_sets[1], 8,
                           VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                           selected.animation_bounds);
+    }
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_fail_animation_bounds_upload_once_) {
+        test_fail_animation_bounds_upload_once_ = false;
+        error = "forced animation bounds upload failure";
+        return false;
+    }
+#endif
+    if (!matter::upload_buffer(
+            *vulkan_, selected.animation_bounds, animation_bound_records.data(),
+            animation_bounds_bytes, 0, error)) {
+        return false;
     }
     if (!upload_scene_buffers(selected, frame.command_buffer, false, error) ||
         !upload_frame_constants(selected, matrices, camera_eye, pixel_budget,
