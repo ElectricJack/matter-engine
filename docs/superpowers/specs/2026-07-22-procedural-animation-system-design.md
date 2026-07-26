@@ -1,8 +1,31 @@
 # Procedural Animation System — Design
 
-**Date:** 2026-07-22
-**Status:** Revised after adversarial codebase review; awaiting final sign-off
+**Date:** 2026-07-22 (scope revision 2026-07-26)
+**Status:** Phases A–C delivered and merged to `main`; scope reopened for the
+deferred workstreams
 **Primary runtime dependency:** ozz-animation, wrapped behind MatterEngine APIs
+
+## Scope Revision (2026-07-26)
+
+Phases A–C are implemented, merged onto current `main`, and green. Everything this
+document deferred "in v1" is therefore back in scope, and the Non-goals section below
+has been split into the architectural invariants (which stand) and the v1 delivery
+limits (which are lifted). The v1-era wording elsewhere in this document — the
+Adversarial Review Resolution list immediately below, the Decisions of Record rows,
+and Delivery Sequence — is preserved as the record of what was built, with the
+superseded rows marked where they changed.
+
+Three defects found while reviewing the delivered work are worth carrying forward as
+design constraints rather than trivia, because the code they were in is what the
+long-chain solver will extend: a quaternion Hamilton product that disagreed with the
+tree's other three copies; a matrix-to-quaternion helper implementing only the
+positive-trace branch, so any joint past 120 degrees silently became identity; and an
+IK pole converted with the inverse root rotation when ozz consumes `pole_vector` in
+model space. All three were invisible to a test that asserted only that the solve
+succeeded. **Any new solver must be validated on the resulting pose, not the return
+code** — the equivariance property (rotate rig and model-space target by R, hold the
+root-relative pole fixed, require the solution to rotate by R) is the cheapest test
+that catches this whole class.
 
 ## Adversarial Review Resolution (2026-07-22)
 
@@ -89,23 +112,47 @@ character-oriented.
 
 ## Non-goals
 
+Split deliberately (2026-07-26). The first list is architectural: these hold for as
+long as this design does, and a change to any of them is a change to what the system
+*is*. The second list was v1 delivery scoping, and v1 has shipped.
+
+### Enduring non-goals
+
 - Importing production DCC formats, authored meshes, skeletons, or animation clips.
+  JavaScript remains the only authored source of truth.
 - Making ozz types part of MatterEngine's public ABI or JavaScript API.
-- Running arbitrary JavaScript callbacks during frame pose evaluation.
+- Running arbitrary JavaScript callbacks during frame pose evaluation. The gameplay
+  binding writes declared inputs and targets; it never executes inside evaluation.
 - A visual node-graph authoring system. JavaScript remains authoritative.
-- Direct animation-system ownership of gameplay or physics transforms.
-- A fully general inverse-kinematics constraint language in the first delivery.
-- Persisting editor-authored animation state outside the JavaScript module.
-- Building the gameplay-JavaScript host. This design supplies the C++ API that host can
-  expose later.
-- Pose-following physics shapes, skinned-surface collision, and articulated rigid-body
-  dynamics in v1; root/entity collision remains authoritative.
-- Nested animated `.part` attachments in v1; attachments must resolve to static parts.
-- Exact ray tracing of deforming skinned vertices in v1. Rigid animation remains exact.
-- General persistent world save/load in v1. Editor Play/Stop checkpoint behavior is in
-  scope because it already snapshots runtime entities.
-- Network replication of raw poses. A later network layer can replicate semantic inputs,
-  targets, clocks, or authoritative transforms as appropriate.
+- Direct animation-system ownership of gameplay or physics transforms. Animation
+  publishes intent (`DesiredRootMotion`, poses) for an authority to apply or reject.
+  Ragdoll is modelled as an explicit authority *handover* (physics becomes the pose
+  author for that animator), not as animation acquiring transform write access.
+- Persisting editor-authored animation state outside the JavaScript module. Durable
+  saves persist *runtime* state — clocks, inputs, targets, controller state — never
+  authored declarations.
+- Network replication of raw poses. A network layer replicates semantic inputs,
+  targets, clocks, or authoritative transforms.
+- Building the gameplay-JavaScript host itself. This design supplies the C++ API and
+  the binding contract; the host is separate work.
+
+### v1 scope limits, now lifted (Phases A–C complete)
+
+Each of these was written "in v1" / "in the first delivery" and is now in scope. They
+are specified in the sections below and sequenced in Delivery Sequence.
+
+- ~~A fully general inverse-kinematics constraint language in the first delivery.~~
+  Long-chain solving and per-joint constraints are in scope; the authored surface
+  (start joint, end joint) does not change.
+- ~~Pose-following physics shapes, skinned-surface collision, and articulated
+  rigid-body dynamics in v1.~~ In scope as an opt-in authority handover. Root/entity
+  collision remains authoritative for every animator that does not opt in.
+- ~~Nested animated `.part` attachments in v1.~~ In scope, bounded by an explicit
+  nesting depth limit.
+- ~~Exact ray tracing of deforming skinned vertices in v1.~~ In scope. Bind-pose
+  remains the documented fallback for over-budget instances.
+- ~~General persistent world save/load in v1.~~ Durable animator save/restore is in
+  scope, built on the existing checkpoint capture.
 
 ## Decisions of Record
 
@@ -132,9 +179,13 @@ character-oriented.
 | Artifact invalidation | Header/manifest epochs, not ozz pins in every resolved part hash |
 | Animated publication | Validate siblings, then commit them through one atomic manifest |
 | Renderer | Production Vulkan only; legacy renderer displays bind pose |
-| Deforming ray tracing | Bind-pose fallback in v1; exact BLAS updates require a later design |
+| Deforming ray tracing | ~~Bind-pose fallback in v1~~ → in scope; tier chosen per Deforming Ray Tracing below, bind pose stays the over-budget fallback |
 | Skeleton display | Part Workbench debug overlays, never baked render geometry |
 | Event dependency | Core work proceeds independently; editor hub wiring follows the event branch |
+| Attachment nesting | ~~Static parts only~~ → animated attachments allowed to a bounded depth |
+| Physics authority | Animation publishes intent by default; ragdoll is an explicit, opt-in, per-animator authority handover |
+| Durable state | Runtime animator state persists through a versioned save record; authored declarations never do |
+| IK chain length | ~~Exactly two bones~~ → arbitrary inclusive chains; solver chosen internally, authored surface unchanged |
 
 ## Terminology
 
@@ -635,6 +686,11 @@ compiler establishes deterministic target order and, in v1, rejects declared tar
 with overlapping writable joint sets. A future multi-effector solver may explicitly own and
 solve an overlapping set as one node.
 
+> **Phase F supersedes the rejection.** Longer chains make overlap ordinary rather than
+> exceptional (a spine and an arm sharing a clavicle), so Phase F must design
+> deterministic resolution for shared joints instead of refusing them. The rejection
+> stands until it does.
+
 Targets expose transform, desired weight, enable, disable, weight, and snap operations.
 Enable and disable set desired weight to one or zero. The evaluated weight approaches that
 value using the declared half-life. Position and rotation independently approach their
@@ -867,6 +923,11 @@ by declared priority and then stable animator handle, and increments a diagnosti
 Exact deforming BLAS updates have a budget of zero in v1. Budget counters and overflows are
 visible in the Render tab.
 
+> **Phase J raises this budget above zero.** The zero is currently asserted by the Phase C
+> acceptance test; Phase J must replace that assertion with a real limit, its own fallback
+> (bind pose) and its own counter, rather than deleting it — deleting it silently removes
+> the guarantee that nothing is quietly refitting acceleration structures.
+
 Simulation-relevant fixed clocks, markers, and root motion are never skipped. Cosmetic pose
 evaluation may run at 60, 30, or 15 Hz, then freeze the last pose when it falls outside the
 budget; returning to a higher tier resamples current graph time rather than fast-forwarding
@@ -922,7 +983,8 @@ Validation covers at least:
 - invalid radii, degenerate segments, mirror rename-rule violations, and mirror-name
   collisions;
 - invalid geometry selections, duplicate primary bindings, unresolved attachments, or an
-  animated attachment in v1;
+  animated attachment in v1 (Phase G replaces this rejection with cycle detection and a
+  depth-bound check);
 - invalid clip duration, rate, marker, track, loop, or additive metadata;
 - generated callbacks producing missing/non-finite pose values or attempting structural
   session mutation while samples are being captured;
@@ -1071,6 +1133,33 @@ proceed in parallel with that branch. Phase B provides a fully testable C++ cont
 does not depend on runtime JavaScript. Phase C is intentionally its own renderer project
 because compute skinning, buffer arenas, and animated culling are greenfield work.
 
+### Phases F–J — the lifted v1 limits (added 2026-07-26)
+
+A–C are delivered; the event-system architecture has landed, so D is unblocked. The
+remaining phases are the scope limits lifted above. They are largely independent; the
+dependencies that do exist are stated.
+
+- **Phase F — long-chain IK and joint constraints.** Generalize chain resolution beyond
+  two bones, select the solver internally, add per-joint limits (hinge, cone, twist),
+  and design deterministic ordering for chains that share joints. The authored surface
+  does not change. Prerequisite for nothing, but it is the constraint authors hit first.
+- **Phase G — nested animated attachments.** Attachment resolution gains a dependency
+  order (parent pose publishes before child consumes its socket), bake-time cycle
+  detection, a depth bound, and subtree-atomic checkpointing. Benefits from F only
+  insofar as deeper rigs make longer chains likelier.
+- **Phase H — durable animator save/load.** Version the runtime save record against the
+  existing `.anim` compatibility epochs, reuse live-reload's declaration migration, and
+  version controller state bytes per controller type ID. Depends on G for the shape of
+  a nested-animator save record if G lands first; otherwise independent.
+- **Phase I — animation-driven physics and ragdoll.** Opt-in per animator. Pose-following
+  shapes update post-physics; ragdoll is an authority handover with defined blend-in and
+  blend-out. Extends the save record from H with rigid-body state.
+- **Phase J — deforming ray tracing.** Choose the tier (BLAS refit from the existing
+  skinned vertex arena, reduced-rate rebuild, or a decoupled RT proxy), then solve the
+  buffer-lifetime problem that follows: arena slices currently die on their frame fence,
+  and an acceleration-structure build extends that lifetime. Independent of F–I; it is
+  the largest renderer investment and should be scheduled on its own merits.
+
 ## Implementation Decomposition
 
 This document is the architectural contract. Detailed implementation plans should be split
@@ -1091,17 +1180,30 @@ interfaces and invariants established here while refining private representation
 
 ## Deferred Extensions
 
-- Longer-chain, spline, full-body, and multi-effector IK solvers.
-- ECS entity/socket following for target desired transforms.
+Pruned 2026-07-26: the entries now covered by Phases F–J were moved into scope and are
+struck below rather than deleted, so the record of what was once deferred survives.
+
+Still deferred:
+
+- Spline, full-body, and multi-effector IK solvers. Phase F covers longer chains and
+  per-joint constraints; these three are separate solver families, not chain length.
+- ECS entity/socket following for target desired transforms. Targets remain written by
+  an external driver or a controller; auto-following an entity is a new driver kind.
 - Motion matching or large generated clip databases.
 - Retargeting between independently authored rigs.
 - Network synchronization policies.
 - Visual authoring and non-JavaScript persistence.
 - Imported animation data.
-- Exact deforming BLAS update/refit and generated RT animation proxies.
-- Pose-following Box3D shapes, skinned-surface collision, and articulated rigid-body rigs.
-- Persistent world save/load beyond the editor `SimulationControl` checkpoint.
-- Nested animated attachments and recursive animator ownership.
+- Recursive (unbounded-depth) animator ownership. Phase G is depth-bounded on purpose.
+
+Moved into scope (Phases F–J):
+
+- ~~Longer-chain IK solvers~~ → Phase F.
+- ~~Exact deforming BLAS update/refit and generated RT animation proxies~~ → Phase J.
+- ~~Pose-following Box3D shapes, skinned-surface collision, articulated rigid-body rigs~~
+  → Phase I.
+- ~~Persistent world save/load beyond the editor `SimulationControl` checkpoint~~ → Phase H.
+- ~~Nested animated attachments~~ → Phase G (bounded depth).
 
 These extensions fit behind the named-target, native-controller, asset, and snapshot
-boundaries. None is required to validate the procedural-first core.
+boundaries. None was required to validate the procedural-first core, which A–C did.
