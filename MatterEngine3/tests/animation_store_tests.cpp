@@ -1,4 +1,5 @@
 #include "animation/animation_store.h"
+#include "../src/ecs/ecs_runtime.h"
 #include "check.h"
 
 #include <cstring>
@@ -368,10 +369,15 @@ void test_shared_mutable_reservation_releases_and_rolls_back() {
     AnimationStoreConfig config;
     config.mutable_budget_bytes = baseline.mutable_bytes();
     AnimationService service(config);
+    ecs_runtime::Runtime runtime;
+    runtime.attach_animation_service(service);
     const AnimAsset* first = service.insert_asset(asset(93, 1));
     const Animator original = service.create(first, baseline);
     CHECK(original.valid() && service.stats().mutable_bytes == baseline.mutable_bytes(),
           "the full shared runtime reservation admits exactly once");
+    runtime.tick({0.1f, 0.1f, 2});
+    CHECK(service.stats().mutable_bytes == baseline.mutable_bytes(),
+          "the exact reservation remains sufficient after attach, fixed evaluation, and presentation allocation");
 
     AnimationRuntimeDefinition larger = baseline;
     ++larger.pose_scratch_bytes;
@@ -405,6 +411,17 @@ void test_public_runtime_stats_expose_aggregate_counters_and_reasons() {
           "public runtime stats expose aggregate counters and exact fallback reasons without runtime internals");
 }
 
+void test_asset_budget_rejection_records_the_public_reason() {
+    AnimationStoreConfig config;
+    config.asset_capacity = 1;
+    AnimationService service(config);
+    CHECK(service.insert_asset(asset(95, 1)) != nullptr &&
+              service.insert_asset(asset(96, 1)) == nullptr &&
+              service.stats().fallback_count == 1 &&
+              service.stats().fallback_counts[static_cast<size_t>(AnimationRuntimeFallbackReason::AssetLimit)] == 1,
+          "asset admission rejection reports the exact public AssetLimit fallback reason");
+}
+
 } // namespace
 
 int main() {
@@ -417,6 +434,7 @@ int main() {
     test_defaults_budget_accounting_and_migration();
     test_shared_mutable_reservation_releases_and_rolls_back();
     test_public_runtime_stats_expose_aggregate_counters_and_reasons();
+    test_asset_budget_rejection_records_the_public_reason();
     test_hard_caps_and_bind_pose_degradation();
     test_conflicting_deduplicated_schema_is_rejected();
     return check_summary();

@@ -358,7 +358,6 @@ size_t AnimationRuntimeDefinition::mutable_bytes() const {
 
     const size_t joints = binding->evaluation->skeleton->joint_count();
     const size_t nodes = binding->evaluation->nodes.size();
-    const size_t clips = binding->evaluation->clips.size();
     const auto multiply = [kMax](size_t left, size_t right) {
         return left == 0 || right <= kMax / left ? left * right : kMax;
     };
@@ -370,9 +369,19 @@ size_t AnimationRuntimeDefinition::mutable_bytes() const {
     if (pose_bytes == kMax || !add(multiply(pose_bytes, 12u))) return kMax;
     // Graph evaluation owns a bounded temporary result for every graph node,
     // an Ozz context per clip, root deltas, and fixed-clip traversal records.
-    if (!add(multiply(multiply(nodes, joints), sizeof(AnimationTransform))) ||
-        !add(multiply(clips, sizeof(OzzSampleContext))) ||
+    if (!add(multiply(nodes, sizeof(std::vector<AnimationTransform>))) ||
+        !add(multiply(multiply(nodes, joints), sizeof(AnimationTransform))) ||
         !add(multiply(nodes, sizeof(AnimationTransform) + sizeof(RuntimeGraphClipAdvance)))) return kMax;
+    for (const RuntimeGraphClip& clip : binding->evaluation->clips) {
+        if (!clip.animation || !add(OzzSampleContext::mutable_bytes_for_tracks(clip.animation->track_count())))
+            return kMax;
+    }
+    // AnimationSystems retains a value-owned lease for every bound animator.
+    // Account its three converted input streams and all four target arrays;
+    // these are separate allocations from Slot's pending control state.
+    if (!add(sizeof(AnimationRuntimeBindingLease)) ||
+        !add(multiply(inputs.size(), 3u * sizeof(AnimationRuntimeBindingLease::Value))) ||
+        !add(multiply(targets.size(), sizeof(AnimationTransform) + sizeof(float) + 2u * sizeof(uint8_t)))) return kMax;
     // Systems retain runtime target state, controller ownership, and copied
     // fixed-work marker/query vectors. Native layout is validated before this
     // point, so its declared state is the exact controller reservation.
@@ -399,7 +408,10 @@ public:
     ~AnimationServiceImpl() { attach_runtime_systems(nullptr, nullptr); }
 
     const AnimAsset* insert_asset(AnimAsset asset) {
-        if (assets_.size() >= budget_.max_assets && !assets_.find(asset.resolved_hash, asset.nonce)) return nullptr;
+        if (assets_.size() >= budget_.max_assets && !assets_.find(asset.resolved_hash, asset.nonce)) {
+            service_budget_stats_.record_fallback(AnimationFallbackReason::AssetLimit);
+            return nullptr;
+        }
         return assets_.insert(std::move(asset));
     }
 

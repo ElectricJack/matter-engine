@@ -69,6 +69,10 @@ struct OzzSampleContext {
     OzzSampleContext(const OzzSampleContext&) = delete;
     OzzSampleContext& operator=(const OzzSampleContext&) = delete;
 
+    // Exact persistent allocation made by sample() for one context with this
+    // many animation tracks, including adapter and Ozz-owned storage.
+    static std::size_t mutable_bytes_for_tracks(std::size_t track_count) noexcept;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

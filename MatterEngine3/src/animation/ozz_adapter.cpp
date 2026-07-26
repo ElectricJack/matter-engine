@@ -165,6 +165,41 @@ std::string OzzAnimation::name() const {
 }
 OzzSampleContext::OzzSampleContext() : impl_(new Impl) {} OzzSampleContext::~OzzSampleContext() = default; OzzSampleContext::OzzSampleContext(OzzSampleContext&&) noexcept = default; OzzSampleContext& OzzSampleContext::operator=(OzzSampleContext&&) noexcept = default;
 
+std::size_t OzzSampleContext::mutable_bytes_for_tracks(std::size_t track_count) noexcept {
+    // Keep this in lockstep with SamplingJob::Context::Resize(). Ozz allocates
+    // these cache spans as one block, then sample() keeps a SoA output vector
+    // alongside that context for the lifetime of the adapter context.
+    struct InterpSoaFloat3 {
+        ozz::math::SimdFloat4 ratio[2];
+        ozz::math::SoaFloat3 value[2];
+    };
+    struct InterpSoaQuaternion {
+        ozz::math::SimdFloat4 ratio[2];
+        ozz::math::SoaQuaternion value[2];
+    };
+    constexpr std::size_t kMax = std::numeric_limits<std::size_t>::max();
+    const auto add = [kMax](std::size_t left, std::size_t right) {
+        return right > kMax - left ? kMax : left + right;
+    };
+    const auto multiply = [kMax](std::size_t left, std::size_t right) {
+        return left == 0 || right <= kMax / left ? left * right : kMax;
+    };
+    const std::size_t soa_tracks = add(track_count, 3u) / 4u;
+    const std::size_t aligned_tracks = multiply(soa_tracks, 4u);
+    const std::size_t outdated = add(soa_tracks, 7u) / 8u;
+    std::size_t context_allocation = 0;
+    context_allocation = add(context_allocation, multiply(sizeof(InterpSoaFloat3), soa_tracks));
+    context_allocation = add(context_allocation, multiply(sizeof(InterpSoaQuaternion), soa_tracks));
+    context_allocation = add(context_allocation, multiply(sizeof(InterpSoaFloat3), soa_tracks));
+    context_allocation = add(context_allocation, multiply(sizeof(uint32_t), multiply(aligned_tracks, 3u)));
+    context_allocation = add(context_allocation, multiply(sizeof(uint8_t), multiply(outdated, 3u)));
+    std::size_t total = sizeof(OzzSampleContext);
+    total = add(total, sizeof(Impl));
+    total = add(total, sizeof(ozz::animation::SamplingJob::Context));
+    total = add(total, context_allocation);
+    return add(total, multiply(sizeof(ozz::math::SoaTransform), soa_tracks));
+}
+
 bool serialize_skeleton(const OzzSkeleton& skeleton, std::vector<uint8_t>& bytes) {
     if (!skeleton.impl_->runtime) { return false; }
     bytes={'M','O','S','1'}; append_u16(bytes, static_cast<uint16_t>(skeleton.impl_->parents.size()));

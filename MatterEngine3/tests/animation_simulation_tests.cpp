@@ -1088,6 +1088,19 @@ void test_production_pose_lod_freezes_only_presentation_and_resamples_latest_fix
               initial_stats.evaluated_presentation_pose_count == 1,
           "aggregate diagnostics include fixed plus presentation evaluator work while counting presentation once");
 
+    std::vector<AnimationWorldQueryRequest> query_requests;
+    for (uint32_t index = 0; index < kMaxAnimationWorldQueries + 1; ++index)
+        query_requests.push_back({animator.instance, 0, 0, {}, {0, -1, 0}, 1.0f, 0});
+    (void)runtime.animation_systems().execute_fixed_world_queries(std::move(query_requests));
+    const AnimationRuntimeStats public_stats = service.stats();
+    CHECK(public_stats.evaluated_pose_count == 2 &&
+              public_stats.evaluated_joint_count == 2 * fixture.skeleton.joint_count() &&
+              public_stats.evaluated_presentation_pose_count == 1 &&
+              public_stats.world_query_count == kMaxAnimationWorldQueries &&
+              public_stats.world_query_overflow_count == 1 &&
+              public_stats.fallback_count == 0,
+          "public aggregate stats report fixed and presentation evaluation plus admitted and overflow queries exactly once");
+
     runtime.animation_systems().stage_completed_visibility(
         50, {{animator.instance, false, 200.0f, 0}});
     CHECK(runtime.animation_systems().commit_completed_visibility(50),
