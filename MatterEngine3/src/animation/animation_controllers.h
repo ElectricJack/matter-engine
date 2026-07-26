@@ -34,8 +34,8 @@ struct NativeControllerContext {
     // Controller rest/predicted coordinates are rig-relative.  Runtime
     // supplies the post-authority entity world pose at the fixed boundary so
     // native controllers can issue world queries without seeing Flecs.
-    Float3 entity_world_origin{};
-    Quaternion entity_world_rotation{};
+    Mat4f entity_world{};
+    bool has_entity_world = false;
     std::vector<AnimationValue> inputs;
     std::vector<ControllerTargetWrite> writes;
 };

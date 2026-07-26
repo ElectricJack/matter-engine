@@ -54,12 +54,46 @@ Quaternion multiply_quaternion(Quaternion a, Quaternion b) {
                                  a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w,
                                  a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z});
 }
-Quaternion matrix_rotation(const Mat4f& m) {
-    const float trace = m.m[0] + m.m[5] + m.m[10];
-    if (trace > 0.0f) { const float s = std::sqrt(trace + 1.0f) * 2.0f; return normalize_quaternion({(m.m[9]-m.m[6])/s,(m.m[2]-m.m[8])/s,(m.m[4]-m.m[1])/s,0.25f*s}); }
-    if (m.m[0] > m.m[5] && m.m[0] > m.m[10]) { const float s=std::sqrt(1.0f+m.m[0]-m.m[5]-m.m[10])*2.0f; return normalize_quaternion({0.25f*s,(m.m[1]+m.m[4])/s,(m.m[2]+m.m[8])/s,(m.m[9]-m.m[6])/s}); }
-    if (m.m[5] > m.m[10]) { const float s=std::sqrt(1.0f+m.m[5]-m.m[0]-m.m[10])*2.0f; return normalize_quaternion({(m.m[1]+m.m[4])/s,0.25f*s,(m.m[6]+m.m[9])/s,(m.m[2]-m.m[8])/s}); }
-    const float s=std::sqrt(1.0f+m.m[10]-m.m[0]-m.m[5])*2.0f; return normalize_quaternion({(m.m[2]+m.m[8])/s,(m.m[6]+m.m[9])/s,0.25f*s,(m.m[4]-m.m[1])/s});
+bool matrix_rotation(const Mat4f& m, Quaternion& out) {
+    const auto finite3=[](Float3 v){return std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z);};
+    const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};
+    const auto cross=[](Float3 a,Float3 b){return Float3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};
+    const auto unit=[&](Float3 v,Float3& result){const float n=std::sqrt(dot(v,v));if(!finite3(v)||!std::isfinite(n)||n<1e-7f)return false;result={v.x/n,v.y/n,v.z/n};return true;};
+    Float3 x{},y{},z{},cx{m.m[0],m.m[4],m.m[8]},cy{m.m[1],m.m[5],m.m[9]},cz{m.m[2],m.m[6],m.m[10]};
+    if(!unit(cx,x))return false;
+    const float projection=dot(cy,x);
+    if(!unit({cy.x-projection*x.x,cy.y-projection*x.y,cy.z-projection*x.z},y))return false;
+    if(!unit(cross(x,y),z))return false;
+    Float3 cz_unit{}; if(!unit(cz,cz_unit)||std::fabs(dot(z,cz_unit))<1e-5f)return false;
+    if(dot(z,cz_unit)<0.0f) { z={-z.x,-z.y,-z.z}; y={-y.x,-y.y,-y.z}; }
+    Mat4f pure{}; pure.m[0]=x.x;pure.m[4]=x.y;pure.m[8]=x.z;pure.m[1]=y.x;pure.m[5]=y.y;pure.m[9]=y.z;pure.m[2]=z.x;pure.m[6]=z.y;pure.m[10]=z.z;
+    const float trace = pure.m[0] + pure.m[5] + pure.m[10];
+    if (trace > 0.0f) { const float s = std::sqrt(trace + 1.0f) * 2.0f; out=normalize_quaternion({(pure.m[9]-pure.m[6])/s,(pure.m[2]-pure.m[8])/s,(pure.m[4]-pure.m[1])/s,0.25f*s}); return true; }
+    if (pure.m[0] > pure.m[5] && pure.m[0] > pure.m[10]) { const float s=std::sqrt(1.0f+pure.m[0]-pure.m[5]-pure.m[10])*2.0f; out=normalize_quaternion({0.25f*s,(pure.m[1]+pure.m[4])/s,(pure.m[2]+pure.m[8])/s,(pure.m[9]-pure.m[6])/s}); return true; }
+    if (pure.m[5] > pure.m[10]) { const float s=std::sqrt(1.0f+pure.m[5]-pure.m[0]-pure.m[10])*2.0f; out=normalize_quaternion({(pure.m[1]+pure.m[4])/s,0.25f*s,(pure.m[6]+pure.m[9])/s,(pure.m[2]-pure.m[8])/s}); return true; }
+    const float s=std::sqrt(1.0f+pure.m[10]-pure.m[0]-pure.m[5])*2.0f; out=normalize_quaternion({(pure.m[2]+pure.m[8])/s,(pure.m[6]+pure.m[9])/s,0.25f*s,(pure.m[4]-pure.m[1])/s}); return true;
+}
+
+bool current_entity_world(flecs::world& world, uint64_t entity_id, Mat4f& out) {
+    const flecs::entity entity=world.entity(entity_id);
+    if(const ecs::WorldTransform* transform=entity.try_get<ecs::WorldTransform>()) {
+        out=transform->matrix;
+    } else {
+        // A root can be created after the hierarchy system's initial query
+        // cache. Its authoritative world is still exactly its current local
+        // TRS; parented entities must wait for hierarchy propagation.
+        if(entity.target(flecs::ChildOf).is_valid()) return false;
+        const ecs::LocalTransform* local=entity.try_get<ecs::LocalTransform>();
+        if(local==nullptr) return false;
+        const Quaternion q=normalize_quaternion(local->rotation);
+        const float xx=q.x*q.x,yy=q.y*q.y,zz=q.z*q.z,xy=q.x*q.y,xz=q.x*q.z,yz=q.y*q.z,wx=q.w*q.x,wy=q.w*q.y,wz=q.w*q.z;
+        out={};
+        out.m[0]=(1-2*(yy+zz))*local->scale.x; out.m[1]=(2*(xy-wz))*local->scale.y; out.m[2]=(2*(xz+wy))*local->scale.z; out.m[3]=local->translation.x;
+        out.m[4]=(2*(xy+wz))*local->scale.x; out.m[5]=(1-2*(xx+zz))*local->scale.y; out.m[6]=(2*(yz-wx))*local->scale.z; out.m[7]=local->translation.y;
+        out.m[8]=(2*(xz-wy))*local->scale.x; out.m[9]=(2*(yz+wx))*local->scale.y; out.m[10]=(1-2*(xx+yy))*local->scale.z; out.m[11]=local->translation.z; out.m[15]=1;
+    }
+    Quaternion rotation{};
+    return matrix_rotation(out,rotation);
 }
 
 AnimationTransform runtime_root_delta(const AnimationTransform& previous, const AnimationTransform& current) {
@@ -443,15 +477,17 @@ bool AnimationSystems::apply_targets(flecs::world& world, AnimatorInstanceHandle
     if(targets.size()!=runtime->second.targets.size()) return false;
     std::vector<AnimationTargetState> candidate=runtime->second.targets;
     const auto work=fixed_work_.find(slot_key);
-    const ecs::WorldTransform* root_transform=nullptr;
-    if (work != fixed_work_.end() && work->second.root_entity != 0)
-        root_transform=world.entity(work->second.root_entity).try_get<ecs::WorldTransform>();
+    Mat4f root_world{}; bool has_root_world=false;
+    if (work != fixed_work_.end() && work->second.root_entity != 0) {
+        if(!current_entity_world(world,work->second.root_entity,root_world)) return false;
+        has_root_world=true;
+    }
     for(size_t i=0;i<targets.size();++i) {
         const bool mismatch=targets[i].cadence!=cadence;
         if(mismatch) continue;
         if (i >= runtime->second.desired_world.size()) return false;
-        if (root_transform != nullptr && !resolve_world_target(root_transform->matrix, runtime->second.desired_world[i], candidate[i].desired)) return false;
-        if (root_transform == nullptr) candidate[i].desired=runtime->second.desired_world[i];
+        if (has_root_world && !resolve_world_target(root_world, runtime->second.desired_world[i], candidate[i].desired)) return false;
+        if (!has_root_world) candidate[i].desired=runtime->second.desired_world[i];
         if(!smooth_animation_target(targets[i],candidate[i],delta_seconds,cadence)) return false;
     }
     const ecs::AnimationFrameState frame{}; // frame serial is filled by caller's current snapshot path below.
@@ -712,7 +748,7 @@ bool resolve_world_target(const Mat4f& current_root_world,
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return false;
     out_root_relative = desired_world;
     out_root_relative.translation = {x, y, z};
-    const Quaternion root = matrix_rotation(current_root_world);
+    Quaternion root{}; if(!matrix_rotation(current_root_world,root)) return false;
     out_root_relative.rotation = multiply_quaternion({-root.x, -root.y, -root.z, root.w}, desired_world.rotation);
     return true;
 }
@@ -849,11 +885,8 @@ void AnimationSystems::run_fixed_post(flecs::world& world, double fixed_delta) {
         NativeControllerContext context{}; context.fixed_delta_seconds=fixed_delta; context.world_queries=&controller_queries;
         const auto work=fixed_work_.find(job.key);
         if (work != fixed_work_.end() && work->second.root_entity != 0) {
-            const ecs::WorldTransform* transform=world.entity(work->second.root_entity).try_get<ecs::WorldTransform>();
-            if (transform != nullptr) {
-                context.entity_world_origin={transform->matrix.m[3],transform->matrix.m[7],transform->matrix.m[11]};
-                context.entity_world_rotation=matrix_rotation(transform->matrix);
-            }
+            if(!current_entity_world(world,work->second.root_entity,context.entity_world)) continue;
+            context.has_entity_world=true;
         }
         // Snapshot only this controller's declared fixed controls before it
         // executes.  This both fixes ordering and prevents controllers from

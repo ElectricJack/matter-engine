@@ -11,6 +11,7 @@
 #include "check.h"
 
 #include <cstdio>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -58,6 +59,14 @@ struct GaitRuntimeWorldQueries final : AnimationWorldQueries {
     }
 };
 
+struct OrderedMissWorldQueries final : AnimationWorldQueries {
+    mutable std::vector<Float3> origins;
+    bool ray_cast(const Float3& origin, const Float3&, float, uint64_t, WorldRayHit&) const override {
+        origins.push_back(origin);
+        return false;
+    }
+};
+
 // A real evaluator definition deliberately travels through the service-owned
 // runtime descriptor.  The Runtime must not need callers to duplicate this
 // work into AnimationSystems manually.
@@ -84,6 +93,36 @@ struct BoundFixture {
         evaluation->clips = {{&clip, 1.0f, true, false}};
         evaluation->inverse_bind_model = {identity};
         evaluation->nodes = {{RuntimeGraphNodeKind::Clip, {}, 0}, {RuntimeGraphNodeKind::Output, {0}}};
+    }
+};
+
+struct FrameGraphFixture {
+    OzzSkeleton skeleton;
+    std::array<OzzAnimation,4> clips;
+    std::shared_ptr<AnimationEvaluationDefinition> evaluation=std::make_shared<AnimationEvaluationDefinition>();
+    Diagnostics diagnostics;
+    FrameGraphFixture() {
+        RigDefinition rig;rig.joints.push_back({"root","",AnimationTransform{},1,{"test",1,1,"root"}});
+        CHECK(build_skeleton(rig,skeleton,diagnostics),"build frame graph skeleton");
+        const float values[4]={0.0f,2.0f,8.0f,4.0f};
+        for(size_t i=0;i<clips.size();++i) {
+            AnimationTransform value{};value.translation.x=values[i];
+            ClipDefinition source;source.name="frame"+std::to_string(i);source.duration=1;source.rate=30;source.loop=true;source.source={"test",1,1,"frame"};
+            source.tracks.push_back({"root",{{0,value,{"test",1,1,"a"}},{1,value,{"test",1,1,"b"}}},{"test",1,1,"track"}});
+            CHECK(build_clip(rig,source,clips[i],diagnostics),"build nonlinear frame graph clip");
+        }
+        Mat4f identity{};identity.m[0]=identity.m[5]=identity.m[10]=identity.m[15]=1;
+        evaluation->skeleton=&skeleton;evaluation->inverse_bind_model={identity};
+        for(auto& clip:clips)evaluation->clips.push_back({&clip,1,true,false});
+        evaluation->inputs={{AnimationValueType::Number,EvaluationCadence::Frame}};
+        evaluation->nodes={
+            {RuntimeGraphNodeKind::Clip,{},0,UINT16_MAX,{},1,EvaluationCadence::Fixed},
+            {RuntimeGraphNodeKind::Clip,{},1,UINT16_MAX,{},1,EvaluationCadence::Fixed},
+            {RuntimeGraphNodeKind::Clip,{},2,UINT16_MAX,{},1,EvaluationCadence::Fixed},
+            {RuntimeGraphNodeKind::Blend1D,{0,1,2},UINT16_MAX,0,{0,.25f,1},1,EvaluationCadence::Frame},
+            {RuntimeGraphNodeKind::Clip,{},3,UINT16_MAX,{},1,EvaluationCadence::Fixed},
+            {RuntimeGraphNodeKind::Additive,{3,4},UINT16_MAX,UINT16_MAX,{},.5f,EvaluationCadence::Frame},
+            {RuntimeGraphNodeKind::Output,{5},UINT16_MAX,UINT16_MAX,{},1,EvaluationCadence::Frame}};
     }
 };
 
@@ -186,6 +225,15 @@ void test_runtime_fixed_controller_ik_persists_through_frame_and_checkpoint_repl
     descriptor->evaluation = fixture.evaluation;
     descriptor->fixed_work.clip.duration = 1.0f;
     descriptor->fixed_work.clip.loop = true;
+    flecs::entity scaled_root=runtime.world().entity("ScaledExternalIkRoot");
+    ecs::LocalTransform scaled_local{};
+    scaled_local.translation={10.0f,20.0f,30.0f};
+    scaled_local.rotation={0.0f,0.0f,0.70710678f,0.70710678f};
+    scaled_local.scale={2.0f,3.0f,4.0f};
+    scaled_root.set<ecs::LocalTransform>(scaled_local);
+    Mat4f scaled_matrix{};scaled_matrix.m[1]=-3;scaled_matrix.m[3]=10;scaled_matrix.m[4]=2;scaled_matrix.m[7]=20;scaled_matrix.m[10]=4;scaled_matrix.m[11]=30;scaled_matrix.m[15]=1;
+    scaled_root.set<ecs::WorldTransform>({scaled_matrix});
+    descriptor->fixed_work.root_entity=scaled_root.id();
     descriptor->targets = {fixture.target(0, "left", TargetDriverKind::Controller, EvaluationCadence::Fixed),
                            fixture.target(1, "right", TargetDriverKind::Controller, EvaluationCadence::Fixed)};
     GaitControllerParameters parameters{};
@@ -211,19 +259,20 @@ void test_runtime_fixed_controller_ik_persists_through_frame_and_checkpoint_repl
 
     CHECK(runtime.tick({0.1f, 0.1f, 1}).fixed_steps == 1, "controller target runs in the fixed Runtime phase");
     CHECK(queries.calls == 2 && queries.origins.size() == 2 &&
-              same_float(queries.origins[0].x, parameters.left_predicted.x) &&
-              same_float(queries.origins[0].y, parameters.left_predicted.y + parameters.step_height) &&
-              same_float(queries.origins[1].x, parameters.right_predicted.x) &&
-              same_float(queries.origins[1].y, parameters.right_predicted.y + parameters.step_height),
-          "fixed gait controller uses the installed Runtime world-query adapter for both feet");
+              same_float(queries.origins[0].x, 7.75f) && same_float(queries.origins[0].y, 22.75f) &&
+              same_float(queries.origins[0].z, 30.0f) && same_float(queries.origins[1].x, 12.25f) &&
+              same_float(queries.origins[1].y, 22.75f) && same_float(queries.origins[1].z, 30.0f),
+          "fixed gait controller composes translated, rotated, nonuniform-scaled entity world for both feet");
     std::vector<AnimatorCheckpoint> checkpoints;
+    AnimationTransform left_hit_world{};left_hit_world.translation={8.25f,.25f,30.125f};
+    AnimationTransform expected_left{};
+    const ecs::WorldTransform scaled_world=scaled_root.get<ecs::WorldTransform>();
+    CHECK(resolve_world_target(scaled_world.matrix,left_hit_world,expected_left),
+          "derive expected root-relative gait hit at the production IK boundary");
     CHECK(service.capture_runtime_checkpoints(checkpoints) && checkpoints.size() == 1 &&
               checkpoints[0].target_desired.size() == 2 &&
-              same_float(checkpoints[0].target_desired[0].translation.x,
-                         parameters.left_predicted.x + 0.5f) &&
-              same_float(checkpoints[0].target_desired[0].translation.y, 0.25f) &&
-              same_float(checkpoints[0].target_desired[0].translation.z, 0.125f),
-          "query hit becomes the controller-owned left target instead of the authored prediction");
+              same_transform(checkpoints[0].target_desired[0],expected_left),
+          "world query hit becomes the correctly root-relative controller-owned target");
     const AnimationPoseSnapshot fixed = runtime.animation_systems().pose_snapshots().latest(animator.instance);
     CHECK(fixed.local_pose.count == 7 && std::fabs(fixed.local_pose[1].rotation.z) > 1e-3f,
           "fixed controller target solves its IK chain before the presentation snapshot");
@@ -234,6 +283,10 @@ void test_runtime_fixed_controller_ik_persists_through_frame_and_checkpoint_repl
 
     CHECK(runtime.tick({0.02f, 0.1f, 1}).fixed_steps == 0, "presentation-only Runtime tick has no fixed step");
     const AnimationPoseSnapshot frame = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    std::vector<AnimatorCheckpoint> frame_checkpoints;
+    CHECK(service.capture_runtime_checkpoints(frame_checkpoints) && frame_checkpoints.size()==1 &&
+              frame_checkpoints[0].native_controller_checkpoints==checkpoints[0].native_controller_checkpoints,
+          "zero-fixed-step presentation never advances native fixed controllers");
     CHECK(frame.local_pose.count == fixed_locals.size() && same_transform(frame.local_pose[1], fixed_locals[1]),
           "FrameUpdate preserves the fixed controller IK pose");
     CHECK(frame.previous_model_pose.count == fixed_previous.size() &&
@@ -245,9 +298,8 @@ void test_runtime_fixed_controller_ik_persists_through_frame_and_checkpoint_repl
     std::vector<AnimatorCheckpoint> advanced_checkpoints;
     CHECK(service.capture_runtime_checkpoints(advanced_checkpoints) && advanced_checkpoints.size() == 1 &&
               advanced_checkpoints[0].target_desired.size() == 2 &&
-              advanced_checkpoints[0].target_desired[1].translation.y > parameters.right_predicted.y + 1e-3f &&
-              !same_float(advanced_checkpoints[0].target_desired[1].translation.y,
-                          checkpoints[0].target_desired[1].translation.y),
+              !same_transform(advanced_checkpoints[0].target_desired[1],
+                              checkpoints[0].target_desired[1]),
           "advancing the gait state changes the swinging foot target rather than retaining a static default");
     CHECK(service.restore_runtime_checkpoints(checkpoints), "restore controller/target checkpoint through service bridge");
     CHECK(runtime.tick({0.1f, 0.1f, 1}).fixed_steps == 1, "replay restored controller step through Runtime");
@@ -265,6 +317,66 @@ void test_runtime_fixed_controller_ik_persists_through_frame_and_checkpoint_repl
           "controller/IK checkpoint replay is deterministic and publishes fresh model data");
 }
 
+void test_native_gait_query_broker_caps_and_orders_1025_controllers() {
+    ecs_runtime::Runtime runtime;
+    OrderedMissWorldQueries queries;
+    runtime.animation_systems().set_world_queries(&queries);
+    AnimationService service;
+    runtime.attach_animation_service(service);
+    TargetChainFixture fixture(32);
+    std::vector<std::shared_ptr<AnimationRuntimeBindingDescriptor>> descriptors;
+    auto create_animator = [&](uint64_t asset_id, uint32_t controller_count,
+                               int32_t priority, uint32_t first_query) {
+        auto descriptor=std::make_shared<AnimationRuntimeBindingDescriptor>();
+        descriptor->evaluation=fixture.evaluation;
+        descriptor->fixed_work.clip.duration=1.0f;
+        descriptor->fixed_work.clip.loop=true;
+        std::vector<RuntimeTargetDefinition> runtime_targets;
+        for(uint32_t controller_index=0;controller_index<controller_count;++controller_index) {
+            const uint16_t left=uint16_t(controller_index*2), right=uint16_t(left+1);
+            const std::string left_name="left"+std::to_string(controller_index);
+            const std::string right_name="right"+std::to_string(controller_index);
+            descriptor->targets.push_back(fixture.target(left,left_name.c_str(),TargetDriverKind::Controller,EvaluationCadence::Fixed));
+            descriptor->targets.push_back(fixture.target(right,right_name.c_str(),TargetDriverKind::Controller,EvaluationCadence::Fixed));
+            runtime_targets.push_back({left_name,TargetDriverKind::Controller,EvaluationCadence::Fixed,
+                                       descriptor->targets[left].chain,true});
+            runtime_targets.push_back({right_name,TargetDriverKind::Controller,EvaluationCadence::Fixed,
+                                       descriptor->targets[right].chain,true});
+            GaitControllerParameters parameters{};
+            parameters.left_target=left; parameters.right_target=right;
+            parameters.left_predicted={float(first_query+controller_index*2),0,0};
+            parameters.right_predicted={float(first_query+controller_index*2+1),0,0};
+            std::vector<uint8_t> bytes(sizeof(parameters));std::memcpy(bytes.data(),&parameters,sizeof(parameters));
+            AnimationRuntimeBindingDescriptor::Controller controller{};
+            controller.descriptor={kGaitControllerTypeId,std::move(bytes),EvaluationCadence::Fixed};
+            controller.priority=priority; controller.target_indices={left,right};
+            descriptor->controllers.push_back(std::move(controller));
+        }
+        descriptors.push_back(descriptor);
+        return service.create(service.insert_asset({asset_id,{1u,asset_id}}),
+                              target_definition(descriptor,runtime_targets));
+    };
+    const Animator overflow_animator=create_animator(0xB100u,1,1,2048);
+    CHECK(overflow_animator.valid(),
+          "create the higher-priority-order controller first to prove priority sorting");
+    bool admitted=true;
+    for(uint32_t animator=0;animator<64;++animator)
+        admitted=admitted&&create_animator(0xB200u+animator,16,0,animator*32).valid();
+    CHECK(admitted,"production service admits 1,025 gait controllers across bounded animators");
+    CHECK(runtime.tick({0.1f,0.1f,1}).fixed_steps==1,
+          "all gait controllers execute through the fixed production schedule");
+    CHECK(queries.origins.size()==kMaxAnimationWorldQueries &&
+              queries.origins.front().x==0.0f && queries.origins.back().x==2047.0f,
+          "broker sorts priority then animator handle and controller declaration order before admission");
+    CHECK(runtime.animation_systems().world_query_overflow_count()==2,
+          "requests 2,049 and 2,050 are deterministic explicit misses with overflow accounting");
+    AnimationDebugPoseSnapshot overflow_debug{};
+    CHECK(runtime.animation_systems().copy_animation_debug_pose(overflow_animator.instance,overflow_debug)&&
+              overflow_debug.targets.size()==2&&overflow_debug.targets[0].evaluated.translation.x==2048.0f&&
+              overflow_debug.targets[1].evaluated.translation.x==2049.0f,
+          "overflowed gait requests receive explicit no-hit results and retain deterministic predicted targets");
+}
+
 void test_runtime_fixed_and_frame_external_targets_compose_without_fixed_history_mutation() {
     ecs_runtime::Runtime runtime;
     AnimationService service;
@@ -275,6 +387,15 @@ void test_runtime_fixed_and_frame_external_targets_compose_without_fixed_history
     descriptor->evaluation = fixture.evaluation;
     descriptor->fixed_work.clip.duration = 1.0f;
     descriptor->fixed_work.clip.loop = true;
+    flecs::entity scaled_root=runtime.world().entity("ScaledExternalIkRoot");
+    ecs::LocalTransform scaled_local{};
+    scaled_local.translation={10.0f,20.0f,30.0f};
+    scaled_local.rotation={0.0f,0.0f,0.70710678f,0.70710678f};
+    scaled_local.scale={2.0f,3.0f,4.0f};
+    scaled_root.set<ecs::LocalTransform>(scaled_local);
+    Mat4f scaled_matrix{};scaled_matrix.m[1]=-3;scaled_matrix.m[3]=10;scaled_matrix.m[4]=2;scaled_matrix.m[7]=20;scaled_matrix.m[10]=4;scaled_matrix.m[11]=30;scaled_matrix.m[15]=1;
+    scaled_root.set<ecs::WorldTransform>({scaled_matrix});
+    descriptor->fixed_work.root_entity=scaled_root.id();
     descriptor->targets = {fixture.target(0, "fixed", TargetDriverKind::External, EvaluationCadence::Fixed),
                            fixture.target(1, "frame", TargetDriverKind::External, EvaluationCadence::Frame)};
     const Animator animator = service.create(asset, target_definition(descriptor, {
@@ -285,7 +406,8 @@ void test_runtime_fixed_and_frame_external_targets_compose_without_fixed_history
     const AnimationTargetHandle fixed_handle = service.target(animator.instance, "fixed");
     const AnimationTargetHandle frame_handle = service.target(animator.instance, "frame");
     AnimationTransform fixed_target{};
-    fixed_target.translation = {1.2f, 0.7f, 0.0f};
+    fixed_target.translation = {7.9f, 22.4f, 30.0f};
+    fixed_target.rotation=scaled_local.rotation;
     CHECK(service.set_transform(fixed_handle, fixed_target) && service.snap(fixed_handle),
           "fixed target is written through its declared API handle");
     CHECK(runtime.tick({0.1f, 0.1f, 1}).fixed_steps == 1, "fixed target has one authoritative solve");
@@ -298,7 +420,8 @@ void test_runtime_fixed_and_frame_external_targets_compose_without_fixed_history
                                       fixed.previous_model_pose.data + fixed.previous_model_pose.count);
 
     AnimationTransform frame_target{};
-    frame_target.translation = {1.2f, -0.7f, 0.0f};
+    frame_target.translation = {12.1f, 22.4f, 30.0f};
+    frame_target.rotation=scaled_local.rotation;
     CHECK(service.set_transform(frame_handle, frame_target) && service.snap(frame_handle),
           "frame target is written through its separate declared API handle");
     CHECK(runtime.tick({0.02f, 0.1f, 1}).fixed_steps == 0, "frame target is evaluated without a fixed step");
@@ -309,7 +432,30 @@ void test_runtime_fixed_and_frame_external_targets_compose_without_fixed_history
     CHECK(frame.previous_model_pose.count == fixed_previous.size() && same_matrix(frame.previous_model_pose[0], fixed_previous[0]),
           "frame-only target does not mutate fixed previous-model history");
     CHECK(std::fabs(frame.local_pose[4].rotation.z) > 1e-3f,
-          "frame target composes into the presentation pose on its own chain");
+          "frame target composes into the presentation pose on its own chain under translated, rotated, nonuniform entity scale");
+}
+
+void test_zero_fixed_step_evaluates_nonlinear_frame_graph_without_advancing_fixed_state() {
+    ecs_runtime::Runtime runtime;AnimationService service;runtime.attach_animation_service(service);
+    FrameGraphFixture fixture;auto descriptor=std::make_shared<AnimationRuntimeBindingDescriptor>();
+    descriptor->evaluation=fixture.evaluation;descriptor->fixed_work.clip.duration=1;descriptor->fixed_work.clip.loop=true;
+    AnimationRuntimeDefinition definition;definition.inputs={{"blend",AnimationValueType::Number,EvaluationCadence::Frame,AnimationValue(0.0)}};definition.binding=descriptor;
+    const Animator animator=service.create(service.insert_asset({0xF600u,{1,2}}),definition);
+    CHECK(animator.valid()&&runtime.tick({.1f,.1f,1}).fixed_steps==1,"seed nonlinear frame graph with one fixed sample");
+    const auto before=runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    std::vector<AnimatorCheckpoint> before_checkpoints;CHECK(service.capture_runtime_checkpoints(before_checkpoints),"capture fixed state before frame-only control");
+    CHECK(service.set(service.input(animator.instance,"blend"),.5f)&&runtime.tick({.02f,.1f,1}).fixed_steps==0,
+          "frame control samples on a zero-fixed-step presentation");
+    const auto after=runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    std::vector<AnimatorCheckpoint> after_checkpoints;CHECK(service.capture_runtime_checkpoints(after_checkpoints),"capture fixed state after frame-only graph evaluation");
+    CHECK(before.local_pose.count==1&&after.local_pose.count==1&&!same_float(before.local_pose[0].translation.x,after.local_pose[0].translation.x),
+          "nonlinear Blend1D plus additive graph changes the presentation pose at frame cadence");
+    CHECK(before.fixed_tick==after.fixed_tick&&before_checkpoints.size()==1&&after_checkpoints.size()==1&&
+              before_checkpoints[0].last_fixed_tick==after_checkpoints[0].last_fixed_tick&&
+              same_float(before_checkpoints[0].previous_fixed_time,after_checkpoints[0].previous_fixed_time)&&
+              same_float(before_checkpoints[0].current_fixed_time,after_checkpoints[0].current_fixed_time)&&
+              runtime.animation_systems().take_marker_events().empty(),
+          "frame graph leaves fixed tick, clocks, root/marker simulation state unchanged");
 }
 
 void test_animation_debug_snapshot_copies_evaluated_pose_and_live_targets() {
@@ -475,6 +621,35 @@ void test_controller_input_bindings_are_fixed_typed_and_fail_closed() {
           "malformed declared controller input rejects without allocating or publishing runtime state");
 }
 
+void test_runtime_binding_refresh_failure_rolls_back_replace_and_reuses_create_slot() {
+    ecs_runtime::Runtime runtime;AnimationService service;runtime.attach_animation_service(service);
+    BoundFixture fixture;
+    auto make_definition=[&](bool invalid_query) {
+        auto descriptor=std::make_shared<AnimationRuntimeBindingDescriptor>();
+        descriptor->evaluation=fixture.evaluation;descriptor->fixed_work.clip.duration=1;descriptor->fixed_work.clip.loop=true;
+        if(invalid_query)descriptor->fixed_work.queries.push_back({handle(999),0,0,{},{0,-1,0},1,0});
+        AnimationRuntimeDefinition definition;definition.binding=descriptor;return definition;
+    };
+    const AnimationRuntimeStats empty=service.stats();
+    const Animator failed_create=service.create(service.insert_asset({0xFA10u,{1,1}}),make_definition(true));
+    CHECK(failed_create.status==AnimationStatus::LoadFailed&&service.stats().active_instances==empty.active_instances&&service.mutable_bytes()==empty.mutable_bytes,
+          "refresh failure propagates as LoadFailed and rolls back create accounting");
+    const Animator original=service.create(service.insert_asset({0xFA11u,{1,2}}),make_definition(false));
+    CHECK(original.valid()&&original.instance.slot_index==0,
+          "slot from a failed runtime-binding create is reusable");
+    CHECK(runtime.tick({.1f,.1f,1}).fixed_steps==1,"publish original binding before rejected replacement");
+    const AnimationPoseSnapshot before=runtime.animation_systems().pose_snapshots().latest(original.instance);
+    const AnimationRuntimeStats before_stats=service.stats();
+    const Animator rejected=service.replace_asset(original.instance,service.insert_asset({0xFA12u,{1,3}}),make_definition(true));
+    CHECK(rejected.status==AnimationStatus::LoadFailed&&service.status(original.instance)==AnimationStatus::Ok&&
+              service.stats().active_instances==before_stats.active_instances&&service.mutable_bytes()==before_stats.mutable_bytes,
+          "rejected replacement preserves old handle and exact accounting");
+    CHECK(runtime.tick({.1f,.1f,1}).fixed_steps==1,"old fixed work remains scheduled after replacement rollback");
+    const AnimationPoseSnapshot after=runtime.animation_systems().pose_snapshots().latest(original.instance);
+    CHECK(before.instance.valid()&&after.instance.valid()&&after.fixed_tick==before.fixed_tick+1,
+          "old service binding, fixed work, and snapshot remain active after rejected replacement");
+}
+
 void test_service_checkpoint_restores_runtime_tick_deterministically() {
     ecs_runtime::Runtime runtime;
     AnimationService service;
@@ -574,6 +749,22 @@ void test_world_target_is_resolved_at_evaluation_boundary() {
     CHECK(resolve_world_target(rotated, rotated_world, local) &&
               same_float(local.translation.x, 3.0f) && same_float(local.translation.y, 0.0f),
           "evaluation-boundary conversion uses the moved and rotated entity world transform");
+
+    Mat4f scaled_rotation = rotated;
+    scaled_rotation.m[1] = -3.0f;
+    scaled_rotation.m[4] = 2.0f;
+    scaled_rotation.m[10] = 4.0f;
+    AnimationTransform scaled_world{};
+    scaled_world.translation = {10.0f, 6.0f, 0.0f};
+    scaled_world.rotation = {0.0f, 0.0f, 0.70710678f, 0.70710678f};
+    CHECK(resolve_world_target(scaled_rotation, scaled_world, local) &&
+              same_float(local.translation.x, 3.0f) && same_float(local.translation.y, 0.0f) &&
+              std::fabs(local.rotation.z) < 1e-4f && std::fabs(local.rotation.w - 1.0f) < 1e-4f,
+          "world target conversion removes pure root rotation independently of nonuniform scale");
+    Mat4f singular = scaled_rotation;
+    singular.m[0] = singular.m[4] = singular.m[8] = 0.0f;
+    CHECK(!resolve_world_target(singular, scaled_world, local),
+          "singular scaled roots fail closed at the IK conversion boundary");
 }
 
 void test_queries_apply_cap_and_explicit_misses() {
@@ -937,9 +1128,12 @@ int main() {
     test_production_pose_lod_freezes_only_presentation_and_resamples_latest_fixed_pose();
     test_service_bound_runtime_work_is_automatic_and_generation_safe();
     test_controller_input_bindings_are_fixed_typed_and_fail_closed();
+    test_runtime_binding_refresh_failure_rolls_back_replace_and_reuses_create_slot();
     test_service_checkpoint_restores_runtime_tick_deterministically();
     test_runtime_fixed_controller_ik_persists_through_frame_and_checkpoint_replay();
+    test_native_gait_query_broker_caps_and_orders_1025_controllers();
     test_runtime_fixed_and_frame_external_targets_compose_without_fixed_history_mutation();
+    test_zero_fixed_step_evaluates_nonlinear_frame_graph_without_advancing_fixed_state();
     test_animation_debug_snapshot_copies_evaluated_pose_and_live_targets();
     test_animation_debug_draw_contract_rejects_invalid_data_and_rotates_poles();
     if (g_failures) return 1;
