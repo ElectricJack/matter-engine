@@ -149,6 +149,7 @@ AnimAsset encoded_fixture() {
     rigid.name = "fixture";
     rigid.joint = 1;
     rigid.geometry.push_back({0, 1, 0, 0});
+    rigid.lod_geometry.push_back({0, 1});
     binding.rigid_segments.push_back(rigid);
     CHECK(set_anim_binding_bake(asset, binding),
           "runtime-asset fixture carries the committed inverse-bind payload");
@@ -236,9 +237,16 @@ void test_round_trip_builds_real_runtime_definition() {
     AnimAsset asset = encoded_fixture();
     Diagnostics diagnostics;
     DecodedAnimationRuntimeAsset decoded;
-    CHECK(decode_animation_runtime_asset(asset, decoded, diagnostics),
-          "committed runtime sections decode");
+    const bool decoded_ok =
+        decode_animation_runtime_asset(asset, decoded, diagnostics);
+    CHECK(decoded_ok, "committed runtime sections decode");
     CHECK(diagnostics.items.empty(), "successful runtime decode has no diagnostics");
+    if (!decoded_ok) {
+        for (const Diagnostic& diagnostic : diagnostics.items)
+            std::printf("runtime decode diagnostic: %s: %s\n",
+                        diagnostic.code.c_str(), diagnostic.message.c_str());
+        return;
+    }
     CHECK(decoded.rig.joints.size() == 7 && decoded.definition.binding &&
               decoded.definition.binding->evaluation &&
               decoded.definition.binding->evaluation->skeleton->joint_count() == 7,
