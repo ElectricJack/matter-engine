@@ -30,7 +30,7 @@ Cross-refs: `MatterEngine3/tests/Makefile` (`COMMON_MSL_BLAS_SRC` /
 ## autoremesher integration [DONE]
 
 Vendored MIT-licensed headless subset of huxingyi/autoremesher into
-`Libraries/autoremesher_core/`. Added `MeshIndexed`/`MeshTransform` boundary
+`third_party/autoremesher_core/`. Added `MeshIndexed`/`MeshTransform` boundary
 in MatterSurfaceLib and `mesh_retopo` module alongside the QEM simplifier.
 Retopo is per-part opt-in via `static retopo = { enabled: true, ... }` on the
 DSL part class definition, discovered by ScriptHost::eval_retopo_settings.
@@ -208,7 +208,7 @@ in #2 rarer to trip and lets us raise its ceiling.
 
 Cross-refs: `.superpowers/sdd/task-11-report.md`,
 `MatterEngine3/src/part_flatten.cpp` (Gatherer::gather top-down expansion),
-`MatterEngine3/examples/world_demo/schemas/StressForest*.js`.
+`projects/world_demo/schemas/StressForest*.js`.
 
 ---
 
@@ -233,7 +233,15 @@ Cross-refs: `.superpowers/sdd/task-11-report.md`,
 	* Add a makefile [DONE]
 	* Implement the OBJECT_ALLOCATOR.md design following test driven development by writing tests first in main.c and stubbing out the interfaces so the project builds but the tests fail. Then one by one implement the object allocator based on the design document so the tests pass. [DONE]
 
-## OpenParticleSurfaceLib
+## OpenParticleSurfaceLib  *(retired 2026-07-24)*
+
+	> **Status.** Both this project and SurfaceLib have been deleted. Their
+	> descendants live on: `surface.c` was copied SurfaceLib →
+	> OpenParticleSurfaceLib (2025-06-22, byte-identical) → MatterSurfaceLib
+	> (2025-06-28, blob 48747970) and diverged from 2025-07-06, so the shipping
+	> code is `MatterSurfaceLib/src/{surface,open_particle_surface}.c`. Neither
+	> original was ever a linked dependency of anything. History is reachable via
+	> the subtree imports `a6ae37f6` (SurfaceLib) and `6f1630cb` (OPSL).
 
 	Implement test project for dynamically building a mesh for thousands of particles, the shared code should live in src/include
 
@@ -256,9 +264,24 @@ Cross-refs: `.superpowers/sdd/task-11-report.md`,
 	* Run the install script
 	* 
 
-## SpatialQueryLib 
+## SpatialQueryLib
 
 	Implement a series of reusable spatial query data structures
+
+	> **Status (2026-07-24).** The SpatialHash below shipped and is the engine's
+	> only spatial hash — MatterSurfaceLib's copy was retired and it now compiles
+	> `SpatialQueryLib/src/spatial_hash.c` directly.
+	>
+	> The BVH below (`bvh_create` / `bvh_flatten_for_gpu` / `blas_create`, in C)
+	> also shipped: GPURayTraceExample symlinked `src/bvh.c` to it and compiled it
+	> (`1acd1489`, "BVH Tree needs work"). It was then replaced by the proven
+	> `bvh_article` implementation (`bd55d084`) and the symlink cut (`03ca1e4c`)
+	> ~12 hours before the code was finally committed (`b8a85857`). It had no
+	> consumer from that day until it was deleted in 2026-07.
+	>
+	> SpatialQueryLib now holds that *successor* BVH (C++, from `bvh_article`)
+	> along with `precomp.h` and `tri.h`, so the "flatten into node and index
+	> buffer arrays" goal below is met — by different code than it describes.
 
 	# Initial Setup
 
@@ -673,7 +696,7 @@ We want to define a physics system for the matter particles here that supports b
 
 * Create the project directory
 * Create the git repo for the project
-* Download ODE into the Libraries folder
+* Download ODE into the third_party folder
 * Create the app code for a basic test of ODE based off the BasicWindowApp project, but add a rotating cube that contains some particles bouncing around and interacting
 
 * Carefully define the generic properties of all particles

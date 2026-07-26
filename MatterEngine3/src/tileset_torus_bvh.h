@@ -20,10 +20,14 @@ struct BakeInputs;
 // Fail-closed: false + err on missing/corrupt part file, unnormalized
 // quaternion (|q| deviates from 1 by > 1e-3), or empty base grid.
 // On success, blas and tlas are populated and `tlas.build(blas)` has been
-// called; the managers are in a CPU-ready state.
-// NOTE: this does NOT call TLASManager::ensure_gpu_textures_ready(blas),
-// which requires a live GL context. Callers with GL active (Phase 3 Tasks 3+)
-// must call it themselves before bind_to_shader.
+// called; the managers are in a CPU-ready state. No GPU upload happens here
+// (the GL upload path was deleted outright in Phase 5a, tech-debt.md §6).
+// The real consumer (render/tileset_bake_vk.cpp) uploads by walking
+// BLASManager::get_entries()/TLASManager::get_draw_records() and rebuilds
+// unconditionally every bake; BLASManager::content_revision()/
+// TLASManager::content_revision() are a landed but currently-unused
+// incremental-rebuild signal (tech-debt.md §6), not something a consumer
+// reads today.
 bool assemble_torus_bvh(const SettledTorus& settled,
                         const BakeInputs& inputs,
                         BLASManager& blas,

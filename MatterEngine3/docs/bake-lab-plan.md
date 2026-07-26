@@ -10,7 +10,7 @@
 
 ## Working agreement
 
-- **Branch + worktree:** all Bake Lab work on the `feature/bake-lab` branch, executed inside the dedicated worktree `.worktrees/bake-lab` (cut from the docs-spec tip = main + Bake Lab docs commits only). This repo hosts concurrent sessions on other branches (`feature/reversed-z` in flight at time of writing); do not develop this on main directly, and do not build in the primary checkout while it holds another session's work. After (re)creating the worktree, run `bash setup-worktree.sh` inside it once — Windows worktrees render the three tracked directory symlinks (`MatterEngine3/shaders`, `MatterViewer/shaders`, `MatterViewer/shaders_gpu`) as text files; the script replaces them with NTFS junctions the build requires.
+- **Branch + worktree:** all Bake Lab work on the `feature/bake-lab` branch, executed inside the dedicated worktree `.worktrees/bake-lab` (cut from the docs-spec tip = main + Bake Lab docs commits only). This repo hosts concurrent sessions on other branches (`feature/reversed-z` in flight at time of writing); do not develop this on main directly, and do not build in the primary checkout while it holds another session's work. After (re)creating the worktree, run `bash setup-worktree.sh` inside it once — Windows worktrees render the three tracked directory symlinks (`MatterEngine3/shaders`, `MatterEditor/shaders`, `MatterEditor/shaders_gpu`) as text files; the script replaces them with NTFS junctions the build requires.
 - **Build/test commands** (per CLAUDE.md, MSYS2 UCRT64, `TMP`/`TEMP` passed explicitly):
 
 ```bash
@@ -18,11 +18,17 @@ export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
 make -C MatterEngine3            TMP="C:/Users/webde/AppData/Local/Temp" TEMP="C:/Users/webde/AppData/Local/Temp"
 make -C MatterEngine3/tests run-baketrace run-tilesetphysics run-tilesetbake run-settlebench \
                                  TMP=... TEMP=... GRAPHICS=GRAPHICS_API_OPENGL_43
-make -C MatterViewer windows     TMP=... TEMP=...
+make -C MatterEditor windows     TMP=... TEMP=...
 ```
 
-- **Regression floor per commit:** `run-script`, `run-graph`, `run-tilesetbake`, `run-world-definition` (headless, Windows-runnable) plus whatever the task touches.
-- **Spec is authority:** section references below (§) point into the two spec documents; where this plan and a spec disagree, fix the spec first, then the code.
+- **Worktree bootstrap (verified 2026-07-21; all three steps required in a fresh worktree):**
+  1. Shader junctions — `setup-worktree.sh`'s `cmd mklink` fails on this repo path; create the three junctions with PowerShell instead: `New-Item -ItemType Junction -Path <link> -Target <target>` for `MatterEngine3/shaders → MatterSurfaceLib/shaders`, `MatterEditor/shaders → MatterSurfaceLib/shaders`, `MatterEditor/shaders_gpu → MatterEngine3/shaders_gpu` (delete the small placeholder text files first).
+  2. Prebuilt vendored archives are build artifacts, absent from a fresh worktree — copy from the primary checkout: `third_party/raylib/src/libraylib.a`, `third_party/box3d/libbox3d.a`, `third_party/autoremesher_core/libautoremesher_core.a`.
+  3. Baseline-build the kernel (`make -C MatterEngine3 ...`) before running any test target.
+- **Regression floor per commit:** `run-script`, `run-graph`, `run-tilesetbake` (headless; verified green in the worktree at baseline) plus whatever the task touches. `run-world-definition` is **excluded until fixed upstream**: it fails on main itself (`FAIL: Demo root count` — the volumetrics work added ChimneySmoke/WaterfallMist roots to `projects/world_demo/worlds/Demo.js` without updating `world_definition_tests.cpp`, which also wrongly assumes identity root transforms; tracked as a separate out-of-band task, not Bake Lab scope). Note: the tests Makefile historically selected Linux link flags (`-lX11` etc.) on Windows — masked in the primary checkout by stale prebuilt test executables; fixed on this branch with a `MINGW*_NT` platform branch (LDFLAGS `-lm -lpthread`, Win32 libs after `libraylib.a` in LDLIBS).
+- **Spec is authority:** section references below (§) point into the spec documents; where this plan and a spec disagree, fix the spec first, then the code.
+
+> **SCOPE CHANGE (2026-07-21, after M1+2.1/2.2/5.4 landed):** the user redirected the project from comparison/optimization machinery to hands-on tools — see [part-workbench.md](part-workbench.md). **Cancelled:** task 2.3 (diff mode), all of M3 (3.1–3.5), all of M4 (4.1–4.4), and the settle experiment queue as scheduled work (the settle tools from 5.1–5.4 remain, used manually). **Parked:** 5.5–5.7 (Settle Lab UI, optional future). **Active plan:** part-workbench.md Part II milestones W1 (Asset Browser) → W2 (isolation scene + Bake) → W3 (per-rung live watch) → W4 (LOD Inspector, inspection tier) → W5 (per-LOD authoring: `static lods`, inclusion masks, per-level generation params, source write-back). The rows below for cancelled tasks are retained for history only.
 
 ## Subagent execution model
 
@@ -58,8 +64,8 @@ Goal: every existing timing site emits structured spans; the worker's trace is r
 
 | # | Task | Size | Files | Gate |
 |---|---|---|---|---|
-| 2.1 | Bake Lab window shell: tabs Timeline · Part Lab · Settle · Variants (last three placeholder), registration beside `draw_debug_panel` (`ui.cpp:555`), per-frame `bake_lab.tick_frame()` hook in the main loop | S | `MatterViewer/bake_lab.{h,cpp}`, `ui.cpp/.h`, `main.cpp` | viewer builds/runs; empty panel opens |
-| 2.2 | Flamegraph widget: ImGui draw-list rects, zoom/pan, hover tooltip (span path + counters), click-to-pin; source selector (production `last_bake_trace` for now) | L | `MatterViewer/bake_lab_timeline.cpp` | manual: bake demo world → full pipeline flamegraph incl. separated tileset span |
+| 2.1 | Bake Lab window shell: tabs Timeline · Part Lab · Settle · Variants (last three placeholder), registration beside `draw_debug_panel` (`ui.cpp:555`), per-frame `bake_lab.tick_frame()` hook in the main loop | S | `MatterEditor/bake_lab.{h,cpp}`, `ui.cpp/.h`, `main.cpp` | viewer builds/runs; empty panel opens |
+| 2.2 | Flamegraph widget: ImGui draw-list rects, zoom/pan, hover tooltip (span path + counters), click-to-pin; source selector (production `last_bake_trace` for now) | L | `MatterEditor/src/bake_lab_timeline.cpp` | manual: bake demo world → full pipeline flamegraph incl. separated tileset span |
 | 2.3 | Diff mode: pick runs A/B, match span paths, Δms/Δcounter columns with color scale, unmatched-span flags | M | same | manual: two bakes (warm vs cold) show sensible deltas |
 
 **Exit:** bake-lab.md §II.8 item 2 fully.
@@ -70,9 +76,9 @@ Covers "optimize tree generation" profiling and "bake different versions of part
 
 | # | Task | Size | Files | Gate |
 |---|---|---|---|---|
-| 3.1 | `BakeLabJob` part runner: sandbox under Lab scratch, own `ScriptHost` (+shared-lib roots) + `FileModuleResolver` + `HostBaker` + `PartGraph::install`, own collector via `set_current`, dedicated `std::thread`, done-polling; `Cold` policy recreates sandbox; artifacts (hash, path, per-LOD tris via extended `load_v2` reader, sizes) | L | `MatterViewer/bake_lab.{h,cpp}` | sandbox-isolation test (production `parts/` untouched); parity: `Rock` numbers ≈ `tests/rock_bake_profile.cpp` |
+| 3.1 | `BakeLabJob` part runner: sandbox under Lab scratch, own `ScriptHost` (+shared-lib roots) + `FileModuleResolver` + `HostBaker` + `PartGraph::install`, own collector via `set_current`, dedicated `std::thread`, done-polling; `Cold` policy recreates sandbox; artifacts (hash, path, per-LOD tris via extended `load_v2` reader, sizes) | L | `MatterEditor/bake_lab.{h,cpp}` | sandbox-isolation test (production `parts/` untouched); parity: `Rock` numbers ≈ `tests/rock_bake_profile.cpp` |
 | 3.2 | Params editor: module picker over schema dirs; defaults via the canonical merge path (`ScriptHost::last_merged_params()` after `resolve_hash`); key→value grid (numbers/strings/bools; nested objects as raw JSON) → job `params_json` | M | same | manual: `Tree`/`Rock` defaults appear; edited param changes resolved hash |
-| 3.3 | Wireframe preview + LOD gallery: extract a shared world-to-screen wireframe helper (ImGui background draw list + camera view-proj — also used by Settle Lab in M5), render selected artifact's chosen LOD rung with tri count + rung time from trace | M | `MatterViewer/debug_draw.{h,cpp}` (new helper), `bake_lab.cpp` | manual: rung selector steps LOD0→coarsest; counts match artifact |
+| 3.3 | Wireframe preview + LOD gallery: extract a shared world-to-screen wireframe helper (ImGui background draw list + camera view-proj — also used by Settle Lab in M5), render selected artifact's chosen LOD rung with tri count + rung time from trace | M | `MatterEditor/debug_draw.{h,cpp}` (new helper), `bake_lab.cpp` | manual: rung selector steps LOD0→coarsest; counts match artifact |
 | 3.4 | Determinism check: same job twice → identical hash, near-identical trace | S | test or manual | bake-lab.md §II.8 item 4 |
 | 3.5 | LOD ladder-config overrides: `BakeJobDesc.lod_targets`/`flatten_targets` threaded to optional-targets parameters on `lod_bake::bake_lods` / `part_flatten::flatten_part` (defaults = today's values; production call sites unchanged); Part Lab UI for editing the ladders | M | `src/lod_bake.{h,cpp}`, `src/part_flatten.{h,cpp}`, `bake_lab.cpp` | existing flatten/LOD suites green (default-equivalence); override bake shows shifted per-rung tri counts; sandbox-only artifacts |
 
@@ -82,7 +88,7 @@ Covers "optimize tree generation" profiling and "bake different versions of part
 
 | # | Task | Size | Files | Gate |
 |---|---|---|---|---|
-| 4.1 | `VariantRow` + table UI: phase columns, key counters, baseline-row toggle, delta coloring | M | `MatterViewer/bake_lab_variants.cpp` | manual: two `Rock` size variants compare sensibly |
+| 4.1 | `VariantRow` + table UI: phase columns, key counters, baseline-row toggle, delta coloring | M | `MatterEditor/src/bake_lab_variants.cpp` | manual: two `Rock` size variants compare sensibly |
 | 4.2 | Part compare: ghost overlay (baseline gray + candidate colored wireframes via the M3.3 helper), tri/size deltas | S | same | manual |
 | 4.3 | Export/import JSON under `<lab-scratch>/variants/` (descriptor + summaries + hashes, no payloads); imported rows read-only | S | same | bake-lab.md §II.8 item 5 |
 | 4.4 | LOD compare: per-rung sub-table (tris / rung time / deviation vs. baseline LOD0, normalized by bound radius) + **rung substitution** (variant B's LOD0 as candidate rung k of variant A — the per-LOD generation-params experiment) | M | `bake_lab_variants.cpp`, deviation estimator in `bake_lab.cpp` or a small engine helper | bake-lab.md §II.8 item 6: default-vs-overridden `BakeTargets` sub-table sane; substitution row populates cost/tris/deviation + ghost |
@@ -97,7 +103,7 @@ Engine tasks are exactly the settle spec's; UI mounts in the Lab shell instead o
 | 5.2 | `build_settle_plan` extraction (`SettlePlan`, collider-map ownership, ordering preserved) — §II.2 | M | `src/tileset_bake.{h,cpp}` | `run-tilesetbake` ordering contract green; no RNG-draw changes |
 | 5.3 | Pose-delta metric + gate — §II.3 | S | `src/tileset_metrics.{h,cpp}` | metric unit tests (identity, known offset, torus wrap, fail-closed, sphere-orientation skip) |
 | 5.4 | `settle_bench` CLI + `run-settlebench` (dump/compare/ticks-csv; cache bypass) — §II.4 | M | `tests/settle_bench.cpp`, `tests/Makefile` | self-compare = all-zero PASS; synthetic-fixture smoke exits 0 |
-| 5.5 | Settle Lab UI in the Lab's Settle tab: `SettleLab` controller implements `SteppablePhase` (shared transport binds to it); collider wireframes via M3.3 helper colored by sleep state; convergence curves (`PlotLines` over `TickStats` history); blame list with click-to-focus; `SettleParams` editors — §II.5 | L | `MatterViewer/settle_lab.{h,cpp}`, `bake_lab.cpp` | settle spec §II.8 items 4–5 |
+| 5.5 | Settle Lab UI in the Lab's Settle tab: `SettleLab` controller implements `SteppablePhase` (shared transport binds to it); collider wireframes via M3.3 helper colored by sleep state; convergence curves (`PlotLines` over `TickStats` history); blame list with click-to-focus; `SettleParams` editors — §II.5 | L | `MatterEditor/settle_lab.{h,cpp}`, `bake_lab.cpp` | settle spec §II.8 items 4–5 |
 | 5.6 | A/B ghost + gate report in the Variants tab (settle rows get a `PoseDeltaReport` cell) | M | `bake_lab_variants.cpp`, `settle_lab.cpp` | identical params → zero deltas; `sleep_fraction=0.95` → nonzero + plausible ghost |
 | 5.7 | Settle spans feed BakeTrace `TickStats` aggregates (ticks, fall-phase ticks, wake events per layer) | S | `tileset_settle.cpp` / `tileset_bake.cpp` | timeline shows per-layer settle detail |
 

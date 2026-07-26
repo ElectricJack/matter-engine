@@ -19,11 +19,11 @@ MatterEngine2 follows a modular architecture where:
 
 The root directory contains:
 
-- `Libraries/` - Vendored third-party dependencies (raylib, imgui, box3d, quickjs-ng, autoremesher_core, Vulkan-Headers)
-- `Examples/` - Reference material (e.g., `bvh_article`)
+- `third_party/` - Vendored third-party dependencies (raylib, imgui, box3d, quickjs-ng, autoremesher_core, Vulkan-Headers)
+- `libs/` - Foundation libraries beneath MatterEngine3 in the dependency chain: `MemoryLib`, `SpatialQueryLib`, `ParticleFlowLib`, `MatterSurfaceLib`, `MeshChartingLib`
 - `build-all.sh` - Top-level script that builds every project for the current platform; `./build-all.sh test` also runs headless test suites
 - `create_project.sh` - Bootstrap a new sub-project skeleton
-- Individual sub-project directories (e.g., `BasicWindowApp`, `SurfaceLib`, `MatterSurfaceLib`)
+- Individual sub-project directories (e.g., `MatterEngine3`, `MatterEditor`, `BasicWindowApp`)
 - This documentation file and `ROADMAP.md`
 
 Each project follows this general structure:
@@ -43,16 +43,22 @@ ProjectName/
 
 To share code between projects while maintaining independence:
 
-1. Library projects (like `SurfaceLib`, `MemoryLib`, `SpatialQueryLib`) organize reusable code in `include/` and `src/` directories
-2. Consumer projects reference siblings via `-I../OtherProject/include` in their Makefile's CFLAGS (the common approach today; see `ParticleDynamicsExample/Makefile` for an example pulling in `SpatialQueryLib`)
-3. As an alternative, consumer projects can create symlinks to specific files when finer-grained reuse is needed
+1. Library projects (`MemoryLib`, `SpatialQueryLib`, `ParticleFlowLib`) organize reusable code in `include/` and `src/` directories
+2. Consumer projects add `-I../OtherProject/include` to their CFLAGS **and compile the sibling's `.c`/`.cpp` directly from its source directory**. See `MatterEngine3/Makefile`, which compiles `$(SQL_DIR)/src/spatial_hash.c` and `$(MEMLIB_DIR)/src/mem_pool.c` from their source-of-truth libraries. This is the only mechanism actually in use.
 
-Symlink example:
-```bash
-# From a new project that wants to use SurfaceLib
-ln -s ../SurfaceLib/include/surface.h include/surface.h
-ln -s ../SurfaceLib/src/surface.c src/surface.c
-```
+**Do not copy a sibling's sources into your project.** Every duplicate in this
+repo's history began as a copy made at project-creation time and then silently
+diverged — `surface.c` was copied SurfaceLib → OpenParticleSurfaceLib →
+MatterSurfaceLib in 2025-06 and drifted for a year, so the 2026-07 review sweep
+had to land near-identical fixes in each copy. If you need a sibling's code,
+compile it from where it lives.
+
+Symlinks to sibling sources were tried three times (MatterSurfaceLib and
+GPURayTraceExample both symlinked into OpenParticleSurfaceLib / SpatialQueryLib)
+and survive nowhere: git worktrees on Windows materialise tracked symlinks as
+plain text files, which breaks the build in a confusing way. Prefer the `-I` +
+compile-from-source approach above. Directory symlinks that the build genuinely
+requires are recreated as NTFS junctions by `setup-worktree.sh`.
 
 ### Benefits of this approach:
 
@@ -91,8 +97,8 @@ make -C MatterEngine3 \
   TMP="C:/Users/webde/AppData/Local/Temp" \
   TEMP="C:/Users/webde/AppData/Local/Temp"
 
-# Build viewer (Windows target)
-make -C MatterViewer windows \
+# Build editor (Windows target)
+make -C MatterEditor windows \
   TMP="C:/Users/webde/AppData/Local/Temp" \
   TEMP="C:/Users/webde/AppData/Local/Temp"
 
@@ -118,9 +124,9 @@ bash setup-worktree.sh
 ```
 
 This creates NTFS junctions for the three directory symlinks the build requires:
-- `MatterEngine3/shaders` → `MatterSurfaceLib/shaders`
-- `MatterViewer/shaders` → `MatterSurfaceLib/shaders`
-- `MatterViewer/shaders_gpu` → `MatterEngine3/shaders_gpu`
+- `MatterEngine3/shaders` → `libs/MatterSurfaceLib/shaders`
+- `MatterEditor/shaders` → `libs/MatterSurfaceLib/shaders`
+- `MatterEditor/shaders_gpu` → `MatterEngine3/shaders_gpu`
 
 ### Sandbox note for Claude Desktop App
 
@@ -145,27 +151,56 @@ The build system ensures that:
 
 ## Project Relationships
 
-Current projects and their relationships:
+Current projects and their relationships. Dependencies run one way only:
+**MatterEditor → MatterEngine3 → MatterSurfaceLib → SpatialQueryLib → MemoryLib.**
 
-1. **BasicWindowApp** - Simple raylib application showing a rotating cube
-   - Dependencies: raylib
+1. **libs/MemoryLib** - Pool / arena / growable-array allocators (C)
+   - Source of truth for `mem_pool`; no dependencies
 
-2. **SurfaceLib** - Isosurface geometry library with visualization
-   - Dependencies: raylib
-   - Provides: Isosurface generation algorithms
+2. **libs/SpatialQueryLib** - Geometry + spatial acceleration foundation
+   - Dependencies: MemoryLib (`mem_pool`)
+   - Provides: `precomp.h` (float3/float4/ALIGN), `tri.h` (Tri/TriEx/mat4),
+     the BVH/TLAS structures (`bvh.cpp`, `bvh_analyzer.cpp`), and the spatial hash
+   - Note: the name predates its contents — it now owns the engine's core
+     geometry types, not just queries
 
-3. **MatterEngine3** - Kernel library (`libmatter_engine3.a`) for the procedural engine
+3. **libs/ParticleFlowLib** - Particle-flow simulation, fields, path recording (C++)
+   - Compiled directly into MatterEngine3 and MatterEditor
+
+4. **libs/MatterSurfaceLib** - Meshing/surfacing backend + GPU resource management
+   - Dependencies: SpatialQueryLib, MemoryLib, raylib
+   - Provides: marching-cubes/CSG surfacing (`surface.c`), cluster/cell meshing,
+     mesh simplification, and the BLAS/TLAS *GPU* managers (`blas_manager`,
+     `tlas_manager`, `bvh_visualizer` — these own `Texture2D`/`Shader` and are
+     the GL upload path, distinct from the structures in SpatialQueryLib)
+
+5. **MatterEngine3** - Kernel library (`libmatter_engine3.a`) for the procedural engine
    - Provides: script host (QuickJS-ng DSL), bake pipeline (world_flatten/lod_bake/sector_grid),
      render subsystem (renderer/raster_composer/part_store/world_composer/gpu_culler),
      provider subsystem (local_provider/resolvers), facade (matter_engine.cpp)
-   - Build: `make -C MatterEngine3` → `libmatter_engine3.a` + embedded shader header
+   - Build: `make -C MatterEngine3` → `build/libmatter_engine3.a` + embedded shader header
    - Tests: `make -C MatterEngine3/tests run-*` (headless) and GPU suites with `GALLIUM_DRIVER=d3d12`
 
-4. **MatterViewer** - Interactive viewer application linking the kernel library
+6. **MatterEditor** - Interactive editor application linking the kernel library
    - Dependencies: MatterEngine3 (libmatter_engine3.a), MatterSurfaceLib, raylib, Dear ImGui,
      QuickJS-ng, Box3d, optionally autoremesher_core + TBB
-   - Build: `make -C MatterViewer` → `viewer` binary (runs from MatterViewer/ working directory)
-   - Shader symlinks: `MatterViewer/shaders` → MatterSurfaceLib/shaders,
-     `MatterViewer/shaders_gpu` → MatterEngine3/shaders_gpu
+   - Build: `make -C MatterEditor` → `build/linux/editor` (or `make -C MatterEditor windows` →
+     `build/windows/editor.exe`); always launched from the MatterEditor/ working directory
+   - Packaging: `make -C MatterEditor dist` (optionally `PROJECT=<name>`, default `world_demo`)
+     → `build/dist/<PROJECT>/` — the exe plus `projects/<PROJECT>/` (minus `.cache`/`backup`),
+     ready to zip and hand off; shaders are embedded in the exe, not copied
+   - Shader symlinks: `MatterEditor/shaders` → libs/MatterSurfaceLib/shaders,
+     `MatterEditor/shaders_gpu` → MatterEngine3/shaders_gpu
 
-Future projects can build on these existing components by creating the appropriate symlinks.
+7. **libs/MeshChartingLib** - UV chart segmentation + atlas packing (GL-free)
+   - No consumers today; kept for the voxel-box-imposter work
+
+`Prototypes/` holds retired experiments (`BasicWindowApp`, `GPURayTraceExample`).
+They are excluded from `build-all.sh` and their sources are frozen snapshots —
+`GPURayTraceExample` in particular still contains its own diverged copies of
+`blas_manager`, `tlas_manager`, `bvh_visualizer` and `precomp.h`. Do not treat
+those as a reference for current engine code.
+
+Future projects should build on these components via `-I` + compiling from the
+source-of-truth directory (see "Code Sharing Between Projects" above), not by
+copying or symlinking.

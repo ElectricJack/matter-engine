@@ -9,6 +9,7 @@
 #include "tileset_spec.h"
 #include "module_resolver.h"
 #include "script/world_definition_loader.h"
+#include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 
 namespace script_host {
 
@@ -30,6 +31,22 @@ struct BakeOptions {
     // World field binding: threaded through so the terrainVolume verb can call
     // terrain_mesher::mesh_sector. Null field = unbound (terrainVolume fails loudly).
     dsl::WorldBinding world;
+    // W3 (Part Workbench, Lab-only): optional per-rung bake observer. Null
+    // (the default, and the only value production bakes ever set) means
+    // bake_source's observer hooks are skipped entirely — byte-identical to
+    // the pre-W3 code path. See matter/bake_observer.h for the thread contract.
+    BakeObserver* observer = nullptr;
+    // W5 (Part Workbench, static lods — THE SEEDING RULE): when non-empty,
+    // the part RNG seed is derived from THIS canonical merged-params JSON
+    // instead of the params this call actually builds with. A per-LOD-level
+    // bake passes the LOD0 (base) merged params here while `params_json`
+    // carries the level's own params override, so the level's build() sees
+    // the overridden values but draws from the SAME rng stream as LOD0 —
+    // the same structural draws happen in the same order, avoiding a
+    // different-tree-per-LOD pop. Empty (the default, and the only value
+    // every pre-W5 caller ever sets) means "seed from this call's own merged
+    // params" — byte-identical to the pre-W5 code path.
+    std::string seed_params_json;
 };
 
 struct BakeResult {
@@ -40,6 +57,13 @@ struct BakeResult {
     // still the final Part path so existing static callers remain unchanged.
     std::string written_anim_path;
     std::string written_commit_path;
+    // W5: module name of each entry in the written ChildInstance table, in the
+    // SAME order bake_source wrote them (state.children() order) — lets a
+    // caller (HostBaker::bake_static_lods) match a `static lods[i].exclude`
+    // module-name list against child-table positions to build a per-level
+    // presence mask, without re-deriving placement order itself. Empty when
+    // error.ok is false or the part places no children.
+    std::vector<std::string> child_modules_placed;
 };
 
 struct TilesetEvalResult {
@@ -139,6 +163,53 @@ public:
     // number) from the part class. Any eval error, missing/invalid lodBudgets =>
     // empty spec (schema treated as not opted in).
     LodBudgetSpec eval_lod_budgets(const std::string& source);
+
+    // W5 (Part Workbench): one authored `static lods[i]` entry — see
+    // docs/part-workbench.md §I.5. has_params distinguishes "no params key"
+    // (pure decimation from LOD0, today's behavior) from "params key present"
+    // (even `params: {}` opts the level into a fresh build()). params_json is
+    // the RAW (un-merged) override object as canonical (sorted-key) JSON;
+    // callers merge it over the base params themselves (base-then-level, per
+    // the seeding rule — merging happens AFTER seeding). exclude holds child
+    // module names dropped from this level's instance table.
+    struct LodLevelSpec {
+        bool has_params = false;
+        std::string params_json;         // canonical JSON object; "{}" if absent
+        std::vector<std::string> exclude; // child module names to drop at this level
+    };
+    using LodAuthoring = std::vector<LodLevelSpec>;
+
+    // Reads `static lods` from the part class WITHOUT building. Mirrors
+    // eval_lod_budgets's no-build static-reading approach. Fail-closed: any
+    // shape violation (lods not an array; an entry not a plain object; `params`
+    // present but not an object; `exclude` present but not an array of strings)
+    // discards the WHOLE list (empty result == "not opted in", never a partial/
+    // best-effort parse) so a malformed block can't silently half-apply.
+    LodAuthoring eval_lods(const std::string& source);
+
+    // Thin public wrapper around merge_params_canonical for callers (e.g.
+    // HostBaker::bake_static_lods) that need the base (LOD0) canonical merged
+    // params JSON to implement the seeding rule, without duplicating the
+    // static-params-merge logic. Returns "{}" on any merge failure (same
+    // fail-closed convention as merge_params_canonical's return value).
+    std::string merged_params_json(const std::string& source,
+                                   const std::string& params_json) {
+        BakeError err;
+        return merge_params_canonical(source, params_json, err);
+    }
+
+    // W5: shallow JSON-object merge (Object.assign({}, base, override), sorted
+    // keys, no whitespace) via a bare/unrestricted JSON.parse+stringify context
+    // (no part-base injection, no untrusted code execution — both inputs are
+    // already-evaluated canonical JSON data, not script). Used by
+    // HostBaker::bake_static_lods to combine a level's `params` override onto
+    // the instance's own params before handing the result to bake_source as
+    // params_json (bake_source's internal Object.assign(staticParams, o) then
+    // makes the merge three-way: static defaults -> instance -> level,
+    // associative because JS Object.assign chains left-to-right regardless of
+    // grouping). Returns "{}" on any parse/eval failure.
+    std::string merge_json_shallow(const std::string& base_json,
+                                   const std::string& override_json);
 
     // Set the shared-lib root used to resolve `import ... from 'shared-lib/x'`
     // specifiers. When set, both resolve_hash and bake_source fold the part's

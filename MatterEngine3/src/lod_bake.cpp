@@ -1,6 +1,9 @@
 #include "lod_bake.h"
-#include "../../MatterSurfaceLib/include/mesh_simplifier.hpp"
-#include "../../MatterSurfaceLib/include/mesh_indexed.hpp"
+#include "bake_trace.h"        // Bake Lab task 1.5: LOD ladder spans + counters
+#include "bake_trace_names.h"  // kSpanLod, kSpanLodRung
+#include "../../libs/MatterSurfaceLib/include/mesh_simplifier.hpp"
+#include "../../libs/MatterSurfaceLib/include/mesh_indexed.hpp"
+#include <chrono>
 #include <cmath>
 
 namespace lod_bake {
@@ -97,9 +100,20 @@ std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon,
 // because lod_bake's public functions still return std::vector<Tri>.
 
 LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
-                    BLASManager& blas, const std::vector<TriEx>* triex) {
+                    BLASManager& blas, const std::vector<TriEx>* triex,
+                    BakeObserver* observer) {
     LodLevels out;
+    // Bake Lab task 1.5 (docs/bake-lab.md §II.1): one kSpanLod around the
+    // ladder, one kSpanLodRung child per level with tris_in/tris_out/keep_ratio
+    // counters. Observation-only; no-op without a current collector.
+    BAKE_SPAN(bake_trace::kSpanLod);
     for (size_t lvl = 0; lvl < targets.keep_ratio.size(); ++lvl) {
+        BAKE_SPAN(bake_trace::kSpanLodRung);
+        // W3: per-rung wall time for the observer's status line (decimation
+        // cost only; excludes BLAS registration below). std::chrono rather
+        // than the BakeTrace span's own timer so this works even when no
+        // collector is current (observer is independent of tracing).
+        const auto rung_t0 = std::chrono::steady_clock::now();
         float keep = targets.keep_ratio[lvl];
         bool full = (keep >= 0.999f);
         // Perf fix: for the undecimated (full) level, avoid copying `tris` by
@@ -111,6 +125,9 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
             if (decimated.empty()) decimated = tris;  // never register empty geometry
         }
         const std::vector<Tri>& geo = full ? tris : decimated;
+        BAKE_COUNT("tris_in",    (double)tris.size());
+        BAKE_COUNT("tris_out",   (double)geo.size());
+        BAKE_COUNT("keep_ratio", (double)keep);
         // Per-triangle TriEx (materialId/tint/normals/AO) is only valid for the
         // undecimated level: `geo` is then the input triangle set in original order,
         // so triex[i] still describes geo[i]. Decimation reorders/merges triangles,
@@ -132,6 +149,12 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
         L.screen_size_threshold = targets.threshold[lvl];
         if (idx != UINT32_MAX) L.blas_indices.push_back(idx);
         out.push_back(std::move(L));
+
+        if (observer) {
+            const double rung_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - rung_t0).count();
+            observer->on_rung_ready((int)lvl, (int)geo.size(), rung_ms);
+        }
     }
     return out;
 }

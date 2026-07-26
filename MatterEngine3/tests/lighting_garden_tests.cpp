@@ -52,8 +52,8 @@ static constexpr std::array<ExpectedCell, 25> kCells{{
 
 int main() {
     const fs::path original = fs::current_path();
-    const fs::path project = fs::absolute("../examples/world_demo");
-    const fs::path objects = fs::absolute("../examples/world_demo/objects");
+    const fs::path project = fs::absolute("../../projects/world_demo");
+    const fs::path objects = fs::absolute("../../projects/world_demo/objects");
     const fs::path shared_lib = fs::absolute("../shared-lib");
     const fs::path sandbox = fs::temp_directory_path() / "me3_lighting_garden";
     fs::remove_all(sandbox);
@@ -269,7 +269,7 @@ int main() {
     }
     std::printf("[root] triangles=%zu children=%zu\n", triangle_count, children.size());
 
-    std::ifstream schema_file(schemas / "LightingGarden.js");
+    std::ifstream schema_file(objects / "LightingGarden.js");
     std::ostringstream schema_text;
     schema_text << schema_file.rdbuf();
     const std::string source = schema_text.str();

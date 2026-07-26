@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # grep_gate.sh — dependency rule enforcement for app projects.
-# App projects (MatterViewer) may include only:
+# App projects (MatterEditor) may include only:
 #   matter/*.h           — the public kernel API
 #   raylib.h / rlgl.h / raymath.h  — raylib public headers
 #   imgui*.h / rlImGui.h — imgui backends
@@ -12,7 +12,7 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 fail=0
-for app in MatterViewer; do
+for app in MatterEditor; do
   hits=$(grep -rnE '#include\s+"' "$ROOT/$app" --include='*.cpp' --include='*.h' \
     | grep -vE '"(matter/|raylib|rlgl|raymath|imgui|rlImGui|ui\.h"|resource_dir|GLFW/)' || true)
   if [ -n "$hits" ]; then

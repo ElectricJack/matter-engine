@@ -1,7 +1,7 @@
 // End-to-end MatterEngine3 example world: terrain, trees, and grass.
 //
 // Drives the WHOLE pipeline on committed assets under
-// ../examples/world_demo (objects + worlds/Demo.js) and the shared script
+// ../../projects/world_demo (objects + worlds/Demo.js) and the shared script
 // library under ../shared-lib:
 //
 //   SP-3  load_world_definition -> PartGraph::install (walk + dedup + cache)
@@ -42,6 +42,8 @@
 #include <limits.h>
 #include <unistd.h>
 
+#include "portable_realpath.h"
+
 using namespace part_graph;
 
 // Deterministic splitmix64 so the scatter is reproducible across runs/platforms.
@@ -73,17 +75,10 @@ static void set_translate(float m[16], float x, float y, float z) {
     m[3] = x; m[7] = y; m[11] = z;
 }
 
-// Absolute path of `rel` resolved against the current working directory.
-static std::string abspath(const std::string& rel) {
-    char buf[PATH_MAX];
-    if (realpath(rel.c_str(), buf)) return std::string(buf);
-    return rel;   // best-effort; caller will fail loudly if it doesn't exist
-}
-
 int main() {
     // --- Resolve committed asset locations (run from MatterEngine3/tests). ---
-    const std::string project    = abspath("../examples/world_demo");
-    const std::string objects    = abspath("../examples/world_demo/objects");
+    const std::string project    = abspath("../../projects/world_demo");
+    const std::string objects    = abspath("../../projects/world_demo/objects");
     const std::string shared_lib = abspath("../shared-lib");
     printf("objects:    %s\n", objects.c_str());
     printf("shared-lib: %s\n", shared_lib.c_str());

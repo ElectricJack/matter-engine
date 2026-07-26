@@ -2,96 +2,100 @@
 // GpuJobQueue: thread-safe GL-work FIFO; pump() drains on the app/GL thread.
 // CommandQueue: superseding bake command queue for the worker thread.
 // GL-thread guard: register/assert for debug-mode off-thread detection.
+//
+// E2 (event-system.md §II.1): both queues are now thin wrappers over
+// evt::Channel<T>. The Channel owns the mutex+deque+cv transport, the
+// progress-guaranteeing budgeted pump, the run_blocking completion latch, and
+// shutdown draining; this file only layers each queue's specific policy on top.
 #include "async_bake.h"
-#include <cassert>
-#include <chrono>
+
 #include <cstdio>
 #include <exception>
 #include <thread>
 
 namespace matter_async {
 
-// ---------------------------------------------------------------------------
-// GpuJobQueue internals
-// ---------------------------------------------------------------------------
+namespace {
 
-// Completion latch held by run_blocking.
-struct GpuJobQueue::Pending {
-    GpuJob job;
-    // Latch — null when fire-and-forget (no waiter).
-    struct Latch {
-        std::mutex m;
-        std::condition_variable cv;
-        bool done = false;
-        bool ok   = false;
-        std::string err;
-    };
-    std::shared_ptr<Latch> latch; // null for fire-and-forget
-};
+#ifndef NDEBUG
+// Recorded by register_gl_thread(); read by both assert_gl_thread and the
+// off-thread guard below. Empty until the owner registers.
+std::atomic<std::thread::id> s_gl_thread_id{std::thread::id{}};
+#endif
+
+// Owner-thread guard for the blocking-latch path (event-system.md §I.5):
+// GpuJobQueue::run_blocking posts a job and waits for the app/GL thread to pump
+// it. Calling it FROM the GL thread would deadlock (the waiter is the pumper).
+// Channel<T> deliberately does not own this guard — it has no thread registry —
+// so the wrapper layer enforces it, reusing the existing GL-thread registration.
+// Debug-only and a no-op until a GL thread is registered, so it can only convert
+// an already-deadlocking misuse into a fast abort; correct code never trips it.
+void assert_off_gl_thread(const char* where) {
+#ifndef NDEBUG
+    auto gl_id = s_gl_thread_id.load(std::memory_order_relaxed);
+    if (gl_id == std::thread::id{}) return;  // not registered yet, skip
+    if (std::this_thread::get_id() == gl_id) {
+        std::fprintf(stderr,
+                     "assert_off_gl_thread FAILED at %s: blocking call from the "
+                     "GL/pump thread would deadlock\n",
+                     where ? where : "?");
+        std::abort();
+    }
+#else
+    (void)where;
+#endif
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// GpuJobQueue — evt::Channel<JobEnvelope> wrapper
+// ---------------------------------------------------------------------------
 
 void GpuJobQueue::post(GpuJob job) {
-    auto p = std::make_shared<Pending>();
-    p->job = std::move(job);
-    // No latch — caller doesn't wait.
-    {
-        std::lock_guard<std::mutex> lk(m_);
-        if (shut_down_) {
-            // Post after shutdown: silently discard (fire-and-forget; no waiter).
-            return;
-        }
-        q_.push_back(std::move(p));
-    }
-    cv_.notify_one();
+    // Fire-and-forget: no result slot, no waiter. push() returns ShutDown after
+    // shut_down() and the item is silently discarded — matching the original
+    // "post after shutdown: silently discard" behavior.
+    ch_.push(JobEnvelope{std::move(job), nullptr});
 }
 
 bool GpuJobQueue::run_blocking(GpuJob job, std::string& err) {
-    auto latch = std::make_shared<Pending::Latch>();
-    auto p = std::make_shared<Pending>();
-    p->job   = std::move(job);
-    p->latch = latch;
+    assert_off_gl_thread("GpuJobQueue::run_blocking");
 
-    {
-        std::lock_guard<std::mutex> lk(m_);
-        if (shut_down_) {
-            // Post after shutdown: resolve immediately as failed.
-            err = "shutdown";
-            return false;
-        }
-        q_.push_back(p);
+    auto result = std::make_shared<JobResult>();
+    JobEnvelope env{std::move(job), result};
+
+    // Channel::run_blocking returns "was it delivered?" — true once the pump
+    // callback has run for this item, false if it was never delivered (rejected
+    // or shut down). The unbounded RejectNewest policy never rejects, so a false
+    // here means shutdown, exactly the original's "shutdown" failure.
+    const bool delivered = ch_.run_blocking(std::move(env));
+    if (!delivered) {
+        err = "shutdown";
+        return false;
     }
-    cv_.notify_one();
-
-    // Wait for pump to complete the job.
-    std::unique_lock<std::mutex> lk(latch->m);
-    latch->cv.wait(lk, [&] { return latch->done; });
-    err = latch->err;
-    return latch->ok;
+    // The pump callback filled `result` before Channel completed the latch, and
+    // the latch's mutex establishes happens-before, so these reads are safe.
+    err = result->err;
+    return result->ok;
 }
 
 int GpuJobQueue::pump(double ms_budget) {
-    using Clock = std::chrono::steady_clock;
-    auto start = Clock::now();
-    int ran = 0;
-
-    while (true) {
-        std::shared_ptr<Pending> p;
-        {
-            std::lock_guard<std::mutex> lk(m_);
-            if (q_.empty()) break;
-            p = q_.front();
-            q_.pop_front();
-        }
-
-        // Execute or skip.
+    // Channel::pump preserves the progress guarantee (always delivers >= 1 item
+    // when work is pending) and the time budget. The delivery callback runs the
+    // job exactly as the original inline pump did: cancelled-token jobs are
+    // skipped as "cancelled", exceptions are contained, and the (ok, err) result
+    // is stashed for any run_blocking waiter. Returns the count delivered
+    // (skipped-cancelled jobs included).
+    return ch_.pump(ms_budget, [](JobEnvelope& env) {
         bool ok = false;
         std::string job_err;
-        if (p->job.token && p->job.token->is_cancelled()) {
-            // Cancelled: skip fn, mark failed as "cancelled".
+        if (env.job.token && env.job.token->is_cancelled()) {
             job_err = "cancelled";
             ok = false;
         } else {
             try {
-                ok = p->job.fn(job_err);
+                ok = env.job.fn(job_err);
             } catch (const std::exception& exception) {
                 job_err = exception.what();
                 ok = false;
@@ -100,53 +104,26 @@ int GpuJobQueue::pump(double ms_budget) {
                 ok = false;
             }
         }
-        ++ran;
-
-        // Notify waiter if any.
-        if (p->latch) {
-            std::lock_guard<std::mutex> lk(p->latch->m);
-            p->latch->ok  = ok;
-            p->latch->err = std::move(job_err);
-            p->latch->done = true;
-            p->latch->cv.notify_all();
+        if (env.result) {
+            env.result->ok = ok;
+            env.result->err = std::move(job_err);
         }
-
-        // Check budget: always run at least one, then stop if elapsed.
-        auto elapsed = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
-        if (ran > 0 && elapsed >= ms_budget) break;
-    }
-
-    return ran;
+    });
 }
 
 void GpuJobQueue::shut_down() {
-    std::deque<std::shared_ptr<Pending>> local;
-    {
-        std::lock_guard<std::mutex> lk(m_);
-        shut_down_ = true;
-        local = std::move(q_);
-        q_.clear();
-    }
-    // Fail all pending jobs.
-    for (auto& p : local) {
-        if (p->latch) {
-            std::lock_guard<std::mutex> lk(p->latch->m);
-            p->latch->ok   = false;
-            p->latch->err  = "shutdown";
-            p->latch->done = true;
-            p->latch->cv.notify_all();
-        }
-    }
-    cv_.notify_all();
+    // Fails every parked run_blocking latch (delivered=false -> run_blocking
+    // returns "shutdown", false), drops fire-and-forget pending jobs, rejects
+    // future pushes, and wakes all waiters.
+    ch_.shut_down();
 }
 
 bool GpuJobQueue::idle() const {
-    std::lock_guard<std::mutex> lk(m_);
-    return q_.empty();
+    return ch_.empty();
 }
 
 // ---------------------------------------------------------------------------
-// CommandQueue
+// CommandQueue — evt::Channel<Command> wrapper + supersession hook
 // ---------------------------------------------------------------------------
 
 std::shared_ptr<CancelToken> CommandQueue::push(Command c) {
@@ -162,104 +139,107 @@ std::shared_ptr<CancelToken> CommandQueue::push(Command c) {
     }
 
     if (c.kind == CommandKind::Shutdown) {
-        // Cancel in-flight and all queued tokens, then clear queue and wake consumer.
+        // Cancel in-flight and every queued token, then shut the channel down so
+        // the consumer's wait_pop / wait_pop_for wakes with ShutDown and pop()
+        // returns false (drained). Observationally identical to the original
+        // "clear queue, enqueue Shutdown, notify_all, pop returns false" path.
         shut_down_ = true;
         if (in_flight_) in_flight_->cancel();
-        for (auto& cmd : q_) {
-            if (cmd.token) cmd.token->cancel();
+        for (auto& t : pending_) {
+            if (t) t->cancel();
         }
-        q_.clear();
-        q_.push_back(std::move(c));
-        cv_.notify_all();
+        pending_.clear();
+        ch_.shut_down();
         return tok;
     }
 
     if (c.kind == CommandKind::BakeAll || c.kind == CommandKind::Reload) {
-        // Supersession: cancel in-flight + all queued, then enqueue this one.
+        // Supersession: cancel the in-flight command's token and every queued
+        // command's token. The superseded commands stay physically in the
+        // channel (now cancelled) and are skipped when popped, so the consumer's
+        // next real command is this one — exactly the original clear-the-queue
+        // result. pending_ keeps those cancelled tokens in order so the mirror
+        // stays in lockstep with the channel; each drops as its command is
+        // popped-and-skipped.
         if (in_flight_) in_flight_->cancel();
-        for (auto& cmd : q_) {
-            if (cmd.token) cmd.token->cancel();
+        for (auto& t : pending_) {
+            if (t) t->cancel();
         }
-        q_.clear();
-        q_.push_back(std::move(c));
-    } else {
-        // RebakeCone: simple FIFO enqueue.
-        q_.push_back(std::move(c));
     }
-
-    cv_.notify_one();
+    // RebakeCone (and the superseding BakeAll/Reload) enqueue FIFO.
+    ch_.push(std::move(c));
+    pending_.push_back(tok);
     return tok;
 }
 
 bool CommandQueue::pop(Command& out) {
-    std::unique_lock<std::mutex> lk(m_);
-    cv_.wait(lk, [this] { return !q_.empty() || shut_down_; });
-
-    if (q_.empty()) {
-        // Shut down and drained.
-        return false;
+    for (;;) {
+        Command tmp;
+        const matter::evt::WaitResult r = ch_.wait_pop(tmp);
+        if (r != matter::evt::WaitResult::Item) {
+            // ShutDown + drained (wait_pop never times out).
+            return false;
+        }
+        std::lock_guard<std::mutex> lk(m_);
+        if (!pending_.empty()) pending_.pop_front();
+        if (tmp.token && tmp.token->is_cancelled()) {
+            // Superseded/drained before delivery — skip and keep waiting. A
+            // cancelled entry is always followed by its non-cancelled
+            // replacement (supersession enqueues it last), so this loop
+            // terminates at the replacement or at ShutDown.
+            continue;
+        }
+        in_flight_ = tmp.token;
+        out = std::move(tmp);
+        return true;
     }
-
-    out = std::move(q_.front());
-    q_.pop_front();
-    in_flight_ = out.token;
-
-    // If this is a Shutdown command, clear in_flight_ and return false to signal the consumer.
-    if (out.kind == CommandKind::Shutdown) {
-        in_flight_ = nullptr;
-        return false;
-    }
-
-    return true;
 }
 
 bool CommandQueue::pop_wait(Command& out, int ms, bool& out_timed_out) {
     out_timed_out = false;
-    std::unique_lock<std::mutex> lk(m_);
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
-    bool signaled = cv_.wait_until(lk, deadline,
-        [this] { return !q_.empty() || shut_down_; });
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    for (;;) {
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining.count() < 0) remaining = std::chrono::milliseconds(0);
 
-    if (!signaled) {
-        // Timed out — no command arrived.
-        out_timed_out = true;
-        return false;
+        Command tmp;
+        const matter::evt::WaitResult r = ch_.wait_pop_for(tmp, remaining);
+        if (r == matter::evt::WaitResult::Timeout) {
+            out_timed_out = true;
+            return false;
+        }
+        if (r == matter::evt::WaitResult::ShutDown) {
+            return false;  // out_timed_out stays false: shutdown/drained
+        }
+        // WaitResult::Item
+        std::lock_guard<std::mutex> lk(m_);
+        if (!pending_.empty()) pending_.pop_front();
+        if (tmp.token && tmp.token->is_cancelled()) {
+            // Superseded — skip within the remaining time budget.
+            continue;
+        }
+        in_flight_ = tmp.token;
+        out = std::move(tmp);
+        return true;
     }
-    if (q_.empty()) {
-        // Shut down and drained.
-        return false;
-    }
-
-    out = std::move(q_.front());
-    q_.pop_front();
-    in_flight_ = out.token;
-
-    if (out.kind == CommandKind::Shutdown) {
-        in_flight_ = nullptr;
-        return false;
-    }
-
-    return true;
 }
 
 void CommandQueue::shut_down() {
     std::lock_guard<std::mutex> lk(m_);
     shut_down_ = true;
     if (in_flight_) in_flight_->cancel();
-    for (auto& cmd : q_) {
-        if (cmd.token) cmd.token->cancel();
+    for (auto& t : pending_) {
+        if (t) t->cancel();
     }
-    q_.clear();
-    cv_.notify_all();
+    pending_.clear();
+    ch_.shut_down();
 }
 
 // ---------------------------------------------------------------------------
 // GL-thread guard
 // ---------------------------------------------------------------------------
-
-#ifndef NDEBUG
-static std::atomic<std::thread::id> s_gl_thread_id{std::thread::id{}};
-#endif
 
 void register_gl_thread() {
 #ifndef NDEBUG

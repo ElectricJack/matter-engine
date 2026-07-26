@@ -1,5 +1,6 @@
 #pragma once
-#include "raylib.h"   // Vector3, Matrix, Vector4
+#include "raylib.h"   // Vector4 (tint cursor; not migrated -- see matter_math.h scope note)
+#include "matter_math.h"  // mm::Vec3, mm::Mat4 (Phase 3: DSL transform stack + BuildOp)
 #include "dsl_rng.h"
 #include "terrain_field.h"
 #include "tileset_spec.h"
@@ -42,7 +43,7 @@ struct ProfilePoint2 { float x, y; };
 struct RetainedProfile {
     std::vector<ProfilePoint2>              outer;
     std::vector<std::vector<ProfilePoint2>> holes;
-    Matrix   transform;        // matrix-stack top captured at endShape()
+    mm::Mat4 transform;        // matrix-stack top captured at endShape()
     uint32_t materialId = 0;
     Vector4  tint{1,1,1,0};
     bool     valid = false;    // a profile is retained and not yet consumed
@@ -59,12 +60,12 @@ enum class CsgOp     { Union, Difference, Intersection };
 struct BuildOp {
     BrushKind kind;
     CsgOp     op;            // how this brush combines with the accumulated field
-    Matrix    transform;     // world transform at emit (transform stack top)
+    mm::Mat4  transform;     // world transform at emit (transform stack top)
     uint32_t  materialId;    // material cursor at emit
-    Vector3   center;        // brush-local center (sphere/box) or segment a (capsule/cylinder)
+    mm::Vec3  center;        // brush-local center (sphere/box) or segment a (capsule/cylinder)
     float     radius;        // sphere radius / capsule radius / cylinder base radius (r0)
-    Vector3   halfExtents;   // box half-extents (unused for sphere)
-    Vector3   segB;          // segment endpoint b (capsule/cylinder); `center` is endpoint a
+    mm::Vec3  halfExtents;   // box half-extents (unused for sphere)
+    mm::Vec3  segB;          // segment endpoint b (capsule/cylinder); `center` is endpoint a
     float     r1;            // cylinder/cone top radius (capsule unused; cone r1=0)
     float     smoothing;     // smooth-min k cursor at emit
     float     spacing;       // session spacing (resolution floor)
@@ -147,16 +148,17 @@ public:
     // look direction a fallback up is chosen so the basis stays orthonormal.
     void lookAt(float tx, float ty, float tz,
                 float upx, float upy, float upz);
-    Matrix top() const { return stack_.back(); }
+    mm::Mat4 top() const { return stack_.back(); }
     // Depth of the transform stack (1 == balanced; >1 == leaked pushMatrix). G7.
     size_t stack_depth() const { return stack_.size(); }
 
     // Current turtle world position: the translation of the matrix-stack top
     // (the origin transformed by it). Ports v2's Vertex()-captures-position so
     // L-system followers can record skeleton vertices in the part's local frame.
-    Vector3 position() const {
-        Matrix m = stack_.back();
-        return Vector3{ m.m12, m.m13, m.m14 };
+    // m[3],m[7],m[11] is mm::Mat4's translation column (matter_math.h).
+    mm::Vec3 position() const {
+        const mm::Mat4& m = stack_.back();
+        return mm::Vec3{ m.m[3], m.m[7], m.m[11] };
     }
 
     // Material cursor
@@ -267,8 +269,8 @@ public:
     //   Voxels    -> SDF brush into the build buffer (unchanged behavior)
     //   None      -> a triangulated solid into the TriangleBuildBuffer (mesh mode)
     //   Triangles -> set_error (a solid is its own primitive, not loose verts)
-    void sphere(const Vector3& c, float r, CsgOp op);
-    void box(const Vector3& c, const Vector3& halfExtents, CsgOp op);
+    void sphere(const mm::Vec3& c, float r, CsgOp op);
+    void box(const mm::Vec3& c, const mm::Vec3& halfExtents, CsgOp op);
     // Round primitives (Phase 4 / P2). Session-polymorphic:
     //   Voxels    -> analytic SDF brush (capsule = sdSegment - r; cylinder/cone =
     //                sdCappedCone) into the build buffer.
@@ -277,16 +279,16 @@ public:
     //   Triangles -> set_error (a solid is its own primitive, mid-shape misuse).
     // capsule(a,b,r): segment skinned with radius r. cylinder(a,b,r): straight
     // capped cone. cone(a,b,r0,r1): tapered cylinder (sugar; lowers to Cylinder).
-    void capsule(const Vector3& a, const Vector3& b, float r, CsgOp op);
-    void cylinder(const Vector3& a, const Vector3& b, float r, CsgOp op);
-    void cone(const Vector3& a, const Vector3& b, float r0, float r1, CsgOp op);
+    void capsule(const mm::Vec3& a, const mm::Vec3& b, float r, CsgOp op);
+    void cylinder(const mm::Vec3& a, const mm::Vec3& b, float r, CsgOp op);
+    void cone(const mm::Vec3& a, const mm::Vec3& b, float r0, float r1, CsgOp op);
     // Voxel-session brush emit (the SDF path). Defined in dsl_state.cpp; called by
     // the session dispatch in dsl_triangle.cpp (which owns the triangle buffer).
-    void emit_voxel_sphere(const Vector3& c, float r, CsgOp op);
-    void emit_voxel_box(const Vector3& c, const Vector3& halfExtents, CsgOp op);
+    void emit_voxel_sphere(const mm::Vec3& c, float r, CsgOp op);
+    void emit_voxel_box(const mm::Vec3& c, const mm::Vec3& halfExtents, CsgOp op);
     // a = segment endpoint a, b = endpoint b, r0/r1 = end radii. A capsule passes
     // r1=r0 with kind Capsule; a cylinder/cone passes kind Cylinder.
-    void emit_voxel_segment(BrushKind kind, const Vector3& a, const Vector3& b,
+    void emit_voxel_segment(BrushKind kind, const mm::Vec3& a, const mm::Vec3& b,
                             float r0, float r1, CsgOp op);
 
     // Direct-triangle (mesh) session. Mutually exclusive with the voxel session;
@@ -337,8 +339,8 @@ public:
     // the brushes emitted SO FAR in the open voxel session (smoothing cursor at
     // call time). Fail-closed outside a session / with no brushes. Returns true
     // and fills outPoint/outNormal on a hit; false on a miss (no error).
-    bool raycast(const Vector3& origin, const Vector3& dir,
-                 Vector3& outPoint, Vector3& outNormal);
+    bool raycast(const mm::Vec3& origin, const mm::Vec3& dir,
+                 mm::Vec3& outPoint, mm::Vec3& outNormal);
 
     // Set the op applied to the most-recently-emitted brush (postfix CSG verbs).
     // G3: scoped to an OPEN voxel session AND the current session's brush range
@@ -367,6 +369,12 @@ public:
         float transform[16];
         bool instanced = false;
         float inline_below_px = 0.0f;
+        // W5 (Part Workbench, static lods): the module name this placement came
+        // from, so a caller building a per-level `exclude` mask after bake_source
+        // can match placements by module name without re-deriving it. NOT
+        // serialized into ChildInstance (part_asset_v2's on-disk record stays
+        // module-name-free, unchanged layout) — purely an in-memory carry.
+        std::string module;
     };
 
     // Host installs the declared children's placement table before build();
@@ -478,7 +486,7 @@ public:
 
 private:
     std::unique_ptr<tileset::TilesetState> tileset_;
-    std::vector<Matrix> stack_;   // never empty (seeded with identity)
+    std::vector<mm::Mat4> stack_;   // never empty (seeded with identity)
     uint32_t material_ = 0;
     Vector4  tint_ = Vector4{1,1,1,0};  // G4 tint cursor; (1,1,1,0) = neutral
     Session  session_ = Session::None;

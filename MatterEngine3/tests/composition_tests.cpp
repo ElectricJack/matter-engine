@@ -5,8 +5,8 @@
 #include "sector_grid.h"
 #include "lod_select.h"
 #include "part_asset_v2.h"
-#include "../../MatterSurfaceLib/include/blas_manager.hpp"
-#include "../../MatterSurfaceLib/include/tlas_manager.hpp"
+#include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
+#include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
 #include <cstdio>
 #include <cstdint>
 #include <vector>

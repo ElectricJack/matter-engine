@@ -4,29 +4,36 @@
 # so `make` builds a static archive (libmatter_engine3.a) that bundles the full
 # engine — script host, DSL/CSG bake pipeline, part-graph, LOD flatten/select,
 # render/provider/facade, MatterSurfaceLib backend, and vendored QuickJS-ng.
-# MatterViewer links this single archive plus raylib and (optionally) autoremesher.
+# MatterEditor links this single archive plus raylib and (optionally) autoremesher.
 #
 # MatterEngine3 consumes the MatterSurfaceLib prototype READ-ONLY:
 #   new headers via -Iinclude, consumed prototype headers via
-#   -I../MatterSurfaceLib/include. QuickJS-ng is vendored under
-#   ../Libraries/quickjs-ng and compiled with gcc so its extern "C" symbols stay
+#   -I../libs/MatterSurfaceLib/include. QuickJS-ng is vendored under
+#   ../third_party/quickjs-ng and compiled with gcc so its extern "C" symbols stay
 #   unmangled. Per CLAUDE.md memory: after struct/header changes, prefer
 #   `make clean && make` to avoid stale objects.
 #
 # GRAPHICS_API rationale (I1): the old MatterEngine3/viewer/Makefile always used
-# GRAPHICS_API_OPENGL_43 for the render sources (renderer.cpp, raster_composer.cpp,
-# etc.) — confirmed by `git show 75d8e7f:MatterViewer/Makefile | grep GRAPHICS_API`.
-# GL 4.3 is required for compute shaders (cull.comp, hiz_downsample.comp, etc.)
-# used by GpuCuller and the tileset bake pipeline. OPENGL_33 would silently omit
-# gl*Compute* API surface from rlgl.h, breaking any compute-shader dispatch.
-# Keeping OPENGL_43 here matches the viewer and GPU tests; MatterEngine3/tests/Makefile
-# now also uses OPENGL_43 in its GPU-test CFLAGS so the same render sources see
-# the same GL define everywhere they are compiled.
+# GRAPHICS_API_OPENGL_43 for the render sources — confirmed by
+# `git show 75d8e7f:MatterViewer/Makefile | grep GRAPHICS_API`. GL 4.3 is
+# required for compute shaders (cull.comp, hiz_downsample.comp, etc.) used by
+# the tileset bake pipeline. OPENGL_33 would silently omit gl*Compute* API
+# surface from rlgl.h, breaking any compute-shader dispatch. Keeping OPENGL_43
+# here matches the GPU tests; MatterEngine3/tests/Makefile now also uses
+# OPENGL_43 in its GPU-test CFLAGS so the same render sources see the same GL
+# define everywhere they are compiled.
+#
+# Phase 5a (tech-debt.md §6) deleted the GL renderer/raster-composer/GpuCuller
+# path (src/render/renderer.*, raster_composer.*, gpu_culler.*) outright, and
+# this build now always defines MATTER_VULKAN_ONLY (see CFLAGS below) so
+# matter_engine.cpp's facade no longer references those types. GRAPHICS_API_
+# OPENGL_43 remains for the pieces that still are GL (tileset_provider.cpp's
+# atlas compute path, raylib POD types Phase 4 has not yet migrated).
 #
 # Caller can inject extra flags via EXTRA_CFLAGS / EXTRA_INCLUDE:
 #   make -C MatterEngine3 EXTRA_CFLAGS="-DMATTER_HAVE_AUTOREMESHER ..." \
-#        EXTRA_INCLUDE="-I../Libraries/autoremesher_core/include"
-# MatterViewer/Makefile does this when libautoremesher_core.a is present so that
+#        EXTRA_INCLUDE="-I../third_party/autoremesher_core/include"
+# MatterEditor/Makefile does this when libautoremesher_core.a is present so that
 # part_flatten.cpp compiles with the retopo hook enabled.
 #
 # When MATTER_HAVE_AUTOREMESHER is passed via EXTRA_CFLAGS, the caller must also
@@ -49,17 +56,33 @@ endif
 
 CC      = g++
 NM      = nm
+# MATTER_VULKAN_ONLY (Phase 5a, GL-path deletion): matter_engine.cpp's facade has
+# carried #ifndef MATTER_VULKAN_ONLY / #ifdef MATTER_VULKAN_VIEWER branches since
+# before this phase -- the Windows/Vulkan editor.exe build has always defined
+# MATTER_VULKAN_ONLY (MatterEditor/Makefile's CXX_FLAGS_BUILD_WIN_COMMON) and
+# compiled out the #ifndef blocks that reference viewer::Renderer/GpuCuller/
+# RasterComposer. Those classes are now deleted outright (src/render/renderer.*,
+# raster_composer.*, gpu_culler.* -- tech-debt.md §6), so this plain archive
+# build must define the same macro or matter_engine.cpp fails to compile.
+# MATTER_VULKAN_VIEWER is deliberately NOT defined here: this build doesn't
+# compile the vk_*.cpp sources (those live only in MatterEditor/Makefile's
+# WIN_ME3_CPP), so matter_engine.cpp falls through to its existing
+# "#ifndef MATTER_VULKAN_VIEWER" stubs (already-tested headless/no-viewer path).
 CFLAGS  = -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable -O2 -D$(PLATFORM) -D$(GRAPHICS) \
-          -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(EXTRA_CFLAGS)
+          -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -DMATTER_VULKAN_ONLY $(EXTRA_CFLAGS)
 ifeq ($(UNAME_S),Darwin)
     CFLAGS += -mmacosx-version-min=$(MACOS_VERSION)
 endif
 
-RAYLIB_PATH = ../Libraries/raylib/src
-MSL_DIR     = ../MatterSurfaceLib
-PFL_DIR     = ../ParticleFlowLib
-FLECS_DIR   = ../Libraries/flecs
-OZZ_DIR     = ../Libraries/ozz-animation
+RAYLIB_PATH = ../third_party/raylib/src
+MSL_DIR     = ../libs/MatterSurfaceLib
+PFL_DIR     = ../libs/ParticleFlowLib
+FLECS_DIR   = ../third_party/flecs
+# Shared source-of-truth libraries (compiled from source, not copied).
+SQL_DIR     = ../libs/SpatialQueryLib
+MEMLIB_DIR  = ../libs/MemoryLib
+MATHLIB_DIR = ../libs/MathLib
+OZZ_DIR     = ../third_party/ozz-animation
 OZZ_BUILD_DIR = $(OZZ_DIR)/build/matter
 OZZ_INCLUDE = $(OZZ_DIR)/include
 OZZ_BASE_LIB = $(OZZ_BUILD_DIR)/src/base/libozz_base.a
@@ -70,26 +93,28 @@ OZZ_OFFLINE_LIBS = $(OZZ_OFFLINE_LIB) $(OZZ_RUNTIME_LIBS)
 
 # Include directories: NEW MatterEngine3 headers, consumed MatterSurfaceLib
 # headers, vendored QuickJS-ng, then raylib (for the BLAS/Tri/TriEx types).
-QJS_DIR       = ../Libraries/quickjs-ng
-BOX3D_DIR     = ../Libraries/box3d
+QJS_DIR       = ../third_party/quickjs-ng
+BOX3D_DIR     = ../third_party/box3d
 BOX3D_LIB     = $(BOX3D_DIR)/libbox3d.a
 INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(MSL_DIR)/include -I$(MSL_DIR)/src \
+                -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include \
+                -I$(MATHLIB_DIR)/include \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
                 -I$(PFL_DIR)/include \
                 -I$(FLECS_DIR) \
                 -I$(OZZ_INCLUDE) \
-                -I../Libraries/Vulkan-Headers/include $(EXTRA_INCLUDE)
+                -I../third_party/Vulkan-Headers/include $(EXTRA_INCLUDE)
 
 # Vendored QuickJS-ng engine. v0.10.0 needs xsum.c (xsum_small_* symbols) beyond
 # the core four. Compiled via gcc (C) so the embedding symbols stay unmangled.
 QJS_C   = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c \
           $(QJS_DIR)/libunicode.c $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
-QJS_OBJ = quickjs.o libregexp.o libunicode.o cutils.o xsum.o
+QJS_OBJ = $(addprefix $(OBJDIR)/,quickjs.o libregexp.o libunicode.o cutils.o xsum.o)
 
 # Flecs is C17 and must never be compiled by the C++ rule below.
 FLECS_C   = $(FLECS_DIR)/flecs.c
-FLECS_OBJ = flecs.o
+FLECS_OBJ = $(addprefix $(OBJDIR)/,flecs.o)
 
 # MatterEngine3 C++ sources: full pipeline — bake/script/DSL/CSG, part-graph,
 # LOD flatten/select, tileset pipeline, render, provider, and facade.
@@ -108,20 +133,21 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/tileset_layout.cpp src/tileset_collider.cpp src/tileset_settle.cpp \
           src/tileset_placement.cpp src/tileset_part_collider.cpp src/tileset_bake.cpp \
           src/tileset_phase.cpp \
+          src/tileset_metrics.cpp \
           src/tileset_gtex.cpp src/tileset_torus_bvh.cpp \
-          src/tileset_bake_primary.cpp src/tileset_bake_ao.cpp src/tileset_bake_horizon.cpp src/tileset_bake_gpu.cpp \
           src/shader_source.cpp \
-          src/render/renderer.cpp src/render/raster_composer.cpp src/render/raster_mesh.cpp src/render/indexed_part_geometry.cpp \
+          src/render/raster_mesh.cpp src/render/indexed_part_geometry.cpp \
           src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp \
           src/render/part_store.cpp src/render/world_composer.cpp src/render/world_state.cpp \
-          src/render/gpu_culler.cpp \
-          src/render/tileset_provider.cpp src/render/tileset_gl_ctx.cpp \
+          src/render/tileset_provider.cpp \
           src/render/tileset_slicer.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
           src/ecs/ecs_runtime.cpp src/ecs/simulation_control.cpp src/ecs/physics_context.cpp src/ecs/physics_shapes.cpp src/ecs/physics_systems.cpp src/ecs/streaming_systems.cpp src/ecs/transform_system.cpp \
+          src/scene/scene_service.cpp src/scene/scene_change_tracker.cpp \
           src/matter_engine.cpp \
           src/refine_controller.cpp \
           src/async_bake.cpp \
+          src/bake_trace.cpp \
           src/resolve_cache.cpp \
           src/terrain_field.cpp \
           src/terrain_mesher.cpp \
@@ -131,17 +157,19 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/animation/animation_ir.cpp src/animation/animation_validate.cpp src/animation/animation_binding_bake.cpp src/animation/animation_budget.cpp \
           src/animation/anim_asset.cpp src/animation/anim_bundle.cpp src/animation/animation_asset_store.cpp src/animation/animation_runtime_asset.cpp src/animation/animation_store.cpp src/animation/animation_evaluator.cpp src/animation/animation_systems.cpp src/animation/animation_world_queries.cpp src/animation/animation_controllers.cpp src/animation/animation_targets.cpp \
           src/render/animation_rigid_bridge.cpp src/render/animation_skin_bridge.cpp src/render/vk_animation_skinning.cpp src/render/vk_animation_bounds.cpp \
-          src/streaming/sector_streaming_coordinator.cpp
+          src/streaming/sector_streaming_coordinator.cpp \
+          src/event/dispatch_context.cpp src/event/subscription.cpp src/event/event_hub.cpp src/event/command.cpp \
+          src/event/property.cpp
 
-# MatterSurfaceLib C++ backend sources compiled into the archive so MatterViewer
+# MatterSurfaceLib C++ backend sources compiled into the archive so MatterEditor
 # need not compile them directly (no libmsl.a). Same set as the old viewer's MSL_CPP
 # minus mesh_retopo.cpp (handled separately via EXTRA_RETOPO_CPP when AR is present).
 MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
           $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
           $(MSL_DIR)/src/mesh_smooth.cpp \
           $(MSL_DIR)/src/mesh_transform.cpp \
-          $(MSL_DIR)/src/blas_manager.cpp $(MSL_DIR)/src/bvh.cpp \
-          $(MSL_DIR)/src/bvh_analyzer.cpp \
+          $(MSL_DIR)/src/blas_manager.cpp $(SQL_DIR)/src/bvh.cpp \
+          $(SQL_DIR)/src/bvh_analyzer.cpp \
           $(MSL_DIR)/src/mesh_worker_pool.cpp $(MSL_DIR)/src/mesh_build_utils.cpp \
           $(MSL_DIR)/src/meshing_algorithm.cpp \
           $(MSL_DIR)/src/marching_cubes_algorithm.cpp \
@@ -153,13 +181,15 @@ MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
           $(EXTRA_RETOPO_CPP)
 
 # MSL C sources: compiled via gcc to keep extern "C" symbols unmangled.
-MSL_C   = $(MSL_DIR)/src/surface.c $(MSL_DIR)/src/open_particle_surface.c \
-          $(MSL_DIR)/src/spatial_hash.c $(MSL_DIR)/src/object_allocator.c \
+# spatial_hash.c and mem_pool.c are compiled from their source-of-truth libs
+# (SpatialQueryLib / MemoryLib) rather than from copies under MatterSurfaceLib.
+MSL_C   = $(MSL_DIR)/src/surface.c \
+          $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c \
           $(MSL_DIR)/src/material_registry.c $(MSL_DIR)/src/fat_primitive.c
-MSL_C_OBJ = surface.o open_particle_surface.o spatial_hash.o \
-            object_allocator.o material_registry.o fat_primitive.o
+MSL_C_OBJ = $(addprefix $(OBJDIR)/,surface.o spatial_hash.o \
+            mem_pool.o material_registry.o fat_primitive.o)
 
-ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o dsl_animation.o \
+ME3_OBJ = $(addprefix $(OBJDIR)/,script_host.o dsl_state.o dsl_bindings.o dsl_animation.o \
           pf_math.o pf_sim.o pf_fields.o pf_path_recorder.o pf_bindings.o \
           dsl_triangle.o triangle_emit.o polygon_triangulate.o \
           csg_lowering.o module_resolver.o world_definition_loader.o script_rng_binding.o \
@@ -175,47 +205,60 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o dsl_animation.o \
           tileset_layout.o tileset_collider.o \
           tileset_settle.o tileset_placement.o tileset_part_collider.o tileset_bake.o \
           tileset_phase.o \
-          tileset_gtex.o tileset_torus_bvh.o tileset_bake_primary.o \
-          tileset_bake_ao.o tileset_bake_horizon.o tileset_bake_gpu.o shader_source.o \
-          renderer.o raster_composer.o raster_mesh.o indexed_part_geometry.o matrix_math.o frame_matrices.o vk_temporal.o vk_gi_math.o vk_lighting_controls.o \
+          tileset_metrics.o \
+          tileset_gtex.o tileset_torus_bvh.o shader_source.o \
+          raster_mesh.o indexed_part_geometry.o matrix_math.o frame_matrices.o vk_temporal.o vk_gi_math.o vk_lighting_controls.o \
           part_store.o world_composer.o world_state.o \
-          gpu_culler.o tileset_provider.o tileset_gl_ctx.o \
+          tileset_provider.o \
           tileset_slicer.o \
           local_provider.o resolvers.o \
-          ecs_runtime.o physics_context.o physics_shapes.o physics_systems.o streaming_systems.o transform_system.o \
+          ecs_runtime.o simulation_control.o physics_context.o physics_shapes.o physics_systems.o streaming_systems.o transform_system.o \
+          scene_service.o scene_change_tracker.o \
           matter_engine.o \
           refine_controller.o \
           async_bake.o \
+          bake_trace.o \
           resolve_cache.o \
           terrain_field.o \
           terrain_mesher.o \
           sector_streamer.o \
           ozz_adapter.o \
           ozz_bake.o \
-          animation_ir.o animation_validate.o animation_binding_bake.o animation_budget.o anim_asset.o anim_bundle.o animation_asset_store.o animation_store.o animation_evaluator.o animation_systems.o animation_world_queries.o animation_controllers.o animation_targets.o \
+          animation_ir.o animation_validate.o animation_binding_bake.o animation_budget.o anim_asset.o anim_bundle.o animation_asset_store.o animation_runtime_asset.o animation_store.o animation_evaluator.o animation_systems.o animation_world_queries.o animation_controllers.o animation_targets.o \
           animation_rigid_bridge.o animation_skin_bridge.o vk_animation_skinning.o vk_animation_bounds.o \
-          sector_streaming_coordinator.o
+          sector_streaming_coordinator.o \
+          dispatch_context.o subscription.o event_hub.o command.o \
+          property.o)
 
 # MSL C++ object names (basenames; same flat-object model as ME3_OBJ).
-MSL_OBJ = cluster.o cell.o mesh_simplifier.o mesh_indexed.o mesh_smooth.o mesh_transform.o \
+MSL_OBJ = $(addprefix $(OBJDIR)/,cluster.o cell.o mesh_simplifier.o mesh_indexed.o mesh_smooth.o mesh_transform.o \
           blas_manager.o bvh.o bvh_analyzer.o \
           mesh_worker_pool.o mesh_build_utils.o meshing_algorithm.o \
           marching_cubes_algorithm.o oriented_cube_algorithm.o vertex_ao.o \
           occupancy.o tlas_manager.o part_asset.o \
-          lattice.o particle_culling.o $(if $(EXTRA_RETOPO_CPP),mesh_retopo.o)
+          lattice.o particle_culling.o $(if $(EXTRA_RETOPO_CPP),mesh_retopo.o))
 
-LIB = libmatter_engine3.a
+# Build layout: <project>/build/obj/ for objects+deps, <project>/build/ for
+# the archive. Keep the project root source-only.
+OBJDIR = build/obj
+LIB = build/libmatter_engine3.a
+# Flag-set stamp file also counts as build output; keep it out of the root too.
+LIB_FLAGS_STAMP = build/.lib_flags
 
 # Shader embedding codegen (Stage 1a).
 # Base shader list from the brief table + glsl includes found in .fs/.comp sources.
+# shaders_gpu/cull.comp, hiz_downsample.comp, raster_gpu_driven.vs used to be
+# embedded here for the GL GpuCuller/raster-composer path; that path (and its
+# only readers of these three sources) was deleted outright in Phase 5a
+# (tech-debt.md §6), so they are no longer listed. NOTE: this is unrelated to
+# build/shaders_vk/cull.comp.spv below (VK_SPV) -- that is a compiled Vulkan
+# SPIR-V binary built from the separate, live shaders_vk/cull.comp source and
+# must not be confused with the retired shaders_gpu/cull.comp GL source.
 SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.glsl \
     shaders/raytrace_tlas_blas_processed.fs \
-    shaders/materials.glsl shaders/bvh_tlas_common.glsl shaders/lighting.glsl \
-    shaders_gpu/cull.comp shaders_gpu/hiz_downsample.comp \
-    shaders_gpu/raster_gpu_driven.vs shaders_gpu/tileset_bake_primary.comp \
-    shaders_gpu/tileset_bake_ao.comp shaders_gpu/tileset_bake_horizon.comp
+    shaders/materials.glsl shaders/bvh_tlas_common.glsl shaders/lighting.glsl
 # SHADER_FILES resolves logical paths into real filesystem paths under MatterEngine3/:
-# shaders/ is a symlink -> ../MatterSurfaceLib/shaders; shaders_gpu/ is a real dir.
+# shaders/ is a symlink -> ../libs/MatterSurfaceLib/shaders; shaders_gpu/ is a real dir.
 SHADER_FILES := $(SHADER_LOGICAL)
 
 .PHONY: all clean test vulkan-spirv check-animation-production-sources check-animation-runtime-boundary
@@ -223,22 +266,27 @@ SHADER_FILES := $(SHADER_LOGICAL)
 # all MUST be the first target so it is the default goal.
 all: $(LIB)
 
+$(OBJDIR) build:
+	@mkdir -p $@
+
 # Keep the archive's explicit object list in sync with the animation sources
 # consumed by the bake/runtime boundary.  The archive is flat, so a source
 # listed in ME3_CPP but omitted here silently disappears from production links.
+# ME3_OBJ entries carry the $(OBJDIR)/ prefix, so match on "/<object> " rather
+# than " <object> " -- a bare-name match would silently never fire.
 ANIMATION_PRODUCTION_OBJ = dsl_animation.o ozz_adapter.o ozz_bake.o animation_ir.o animation_budget.o \
-                           animation_validate.o animation_binding_bake.o anim_asset.o anim_bundle.o animation_asset_store.o animation_store.o animation_evaluator.o animation_systems.o animation_world_queries.o animation_controllers.o animation_targets.o animation_rigid_bridge.o animation_skin_bridge.o
+                           animation_validate.o animation_binding_bake.o anim_asset.o anim_bundle.o animation_asset_store.o animation_runtime_asset.o animation_store.o animation_evaluator.o animation_systems.o animation_world_queries.o animation_controllers.o animation_targets.o animation_rigid_bridge.o animation_skin_bridge.o
 check-animation-production-sources:
 	@for object in $(ANIMATION_PRODUCTION_OBJ); do \
-		case " $(ME3_OBJ) " in *" $$object "*) ;; *) \
+		case " $(ME3_OBJ) " in *"/$$object "*) ;; *) \
 			echo "ERROR: production archive omits $$object"; exit 1 ;; esac; \
 	done
 
 # The runtime adapter must remain linkable against only Ozz runtime archives.
 # Offline compilation lives in ozz_bake.o, which is retained in this archive
 # for the bake host but is never a Viewer runtime dependency.
-check-animation-runtime-boundary: ozz_adapter.o
-	@if $(NM) -C ozz_adapter.o | grep -q 'ozz::animation::offline::'; then \
+check-animation-runtime-boundary: $(OBJDIR)/ozz_adapter.o
+	@if $(NM) -C $(OBJDIR)/ozz_adapter.o | grep -q 'ozz::animation::offline::'; then \
 		echo "ERROR: runtime adapter references Ozz offline symbols"; exit 1; \
 	fi
 
@@ -270,7 +318,9 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/rt_surface_test.rgen.spv \
          build/shaders_vk/vol_density.comp.spv \
          build/shaders_vk/vol_scatter.comp.spv \
-         build/shaders_vk/vol_integrate.comp.spv
+         build/shaders_vk/vol_integrate.comp.spv \
+         build/shaders_vk/tileset_bake_primary.comp.spv \
+         build/shaders_vk/tileset_bake_ao.comp.spv
 
 build/shaders_vk/%.spv: shaders_vk/%
 	@mkdir -p $(dir $@)
@@ -316,36 +366,46 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/animation src/render src/provider src/script src/ecs src/streaming $(MSL_DIR)/src $(PFL_DIR)/src
+vpath %.cpp src src/animation src/render src/provider src/script src/ecs src/scene src/streaming src/event $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
-$(FLECS_OBJ): $(FLECS_C)
+$(FLECS_OBJ): $(FLECS_C) | $(OBJDIR)
 	gcc -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR)
 
 # QuickJS C sources (gcc, extern "C" safe).
-%.o: $(QJS_DIR)/%.c
+$(OBJDIR)/%.o: $(QJS_DIR)/%.c | $(OBJDIR)
 	gcc -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' -I$(QJS_DIR)
 
 # MSL C sources (gcc, extern "C" safe).
-%.o: $(MSL_DIR)/src/%.c
+$(OBJDIR)/%.o: $(MSL_DIR)/src/%.c | $(OBJDIR)
+	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+
+# Shared library C sources, compiled from their source-of-truth directories.
+# These are explicit (not pattern) rules and the source dirs are deliberately
+# kept off vpath: SpatialQueryLib/src/bvh.c would otherwise shadow
+# SpatialQueryLib/src/bvh.cpp when make resolves bvh.o.
+$(OBJDIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(OBJDIR)
+	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+
+$(OBJDIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(OBJDIR)
 	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
 
 # EXTRA_CFLAGS changes are invisible to make's dependency graph (objects look
 # up-to-date even though they were compiled with different defines, e.g.
-# MATTER_HAVE_AUTOREMESHER). Every C++ object depends on .lib_flags, which is
-# rewritten only when the flag set differs — so a flag change forces a full
-# recompile while same-flag builds stay incremental.
+# MATTER_HAVE_AUTOREMESHER). Every C++ object depends on this stamp file,
+# which is rewritten only when the flag set differs — so a flag change forces
+# a full recompile while same-flag builds stay incremental.
 .PHONY: FORCE
 FORCE:
-.lib_flags: FORCE
+$(LIB_FLAGS_STAMP): FORCE | build
 	@[ "`cat $@ 2>/dev/null`" = '$(EXTRA_CFLAGS)' ] || printf '%s' '$(EXTRA_CFLAGS)' > $@
 
 # ME3 + MSL C++ sources (each source file gets its own .o via pattern rule).
 # ME3 objects depend on the generated shader header.
 $(ME3_OBJ): shaders_gen/embedded_shaders.h
-$(ME3_OBJ) $(MSL_OBJ): .lib_flags
-%.o: %.cpp
+$(ME3_OBJ) $(MSL_OBJ): $(LIB_FLAGS_STAMP)
+$(OBJDIR)/%.o: %.cpp | $(OBJDIR)
 	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS)
 
 $(BOX3D_LIB):
@@ -362,5 +422,5 @@ test:
 	$(MAKE) -C tests run-script
 
 clean:
-	rm -f $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) .lib_flags
+	rm -rf build
 	$(MAKE) -C tests clean

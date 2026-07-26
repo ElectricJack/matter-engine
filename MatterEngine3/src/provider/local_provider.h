@@ -23,6 +23,14 @@
 #include <unordered_map>
 #include <vector>
 
+// Vulkan .gtex bake payload types, passed by reference through the
+// vk_tileset_bake callback below. Declared, never dereferenced here, so the
+// headless kernel library never pulls in the (viewer-only) bake TU.
+namespace tileset {
+struct SettledTorus;
+struct BakeInputs;
+}
+
 namespace viewer {
 
 struct LocalProviderConfig {
@@ -64,25 +72,48 @@ struct LocalProviderConfig {
                        std::string& err)> gpu_run;
 
     // Tileset Vulkan port (spec "Phase 1 - Vulkan tileset consumption",
-    // Task 6): invoked once per tileset root right after the GL bake +
-    // viewer::tileset_provider::load_slot succeed in run_tileset_deferred, so
-    // the Vulkan renderer can mirror the same .gtex atlas into its own
-    // texture-array slot. Null when no Vulkan renderer is active (GL-only
-    // viewer, headless tests, MATTER_VULKAN_ONLY builds that never reach the
-    // GL bake branch below). A false return is logged and otherwise ignored —
-    // the world load still succeeds; ground rendering for that slot just
-    // stays untextured on the Vulkan side (fail-closed, matches the GL path's
-    // own failure handling for a single tileset root).
+    // Task 6): invoked once per tileset root in run_tileset_deferred to upload
+    // the .gtex atlas into the Vulkan renderer's texture-array slot. Since V4
+    // both arms reach it through one shared load step — right after a fresh
+    // vk_tileset_bake, or on a cache hit. Null when no Vulkan renderer is
+    // active (GL-only viewer, headless tests). A false return is logged and
+    // otherwise ignored — the world load still succeeds; ground rendering for
+    // that slot just stays untextured (fail-closed).
     std::function<bool(int slot, const std::string& gtex_path,
                        std::string& err)> vk_tileset_load;
 
-    // True when GLAD function pointers are loaded (i.e., a window was created).
-    // False in headless tests (no window, no GL context): the tileset phase
-    // runs physics-settle only; the .gtex is generated later when a viewer
-    // with a live GL context opens the world (GL 4.6 required by GPU path).
-    // Note: does NOT imply GL 4.6 — contexts with allow_gl_lt_46=true have
-    // GLAD loaded and set this true; gl46_available() then decides success/error.
-    bool gl_available = false;
+    // Vulkan hardware-RT .gtex bake (spec vulkan-rt-gtex-bake.md §I.7, V4):
+    // invoked once per tileset root from run_tileset_deferred's bake-capable
+    // arm, marshaled onto the Vulkan/app thread via gpu_run above. Bound by
+    // matter_engine.cpp to VkSceneRenderer::bake_tileset when a Vulkan
+    // renderer is active; NULL is what selects the load-only arm (headless
+    // kernel builds, GL-only viewer, tests) — settle, probe the cache, load a
+    // hit, leave the ground untextured on a miss.
+    //
+    // The bake performs its OWN cache-hit probe on the same
+    // gtex_content_hash(pose_hash, script_source_hash, kEngineBakeVersion,
+    // kBox3dVersion) key and returns true without work when the on-disk atlas
+    // matches, so the caller must not duplicate the probe; the slot load runs
+    // either way.
+    //
+    // `inputs` carries parts_cache_dir — the provider's absolutized cache root
+    // (abs_cache_root_, resolved in prepare_paths()); only the provider knows
+    // it, and passing the whole BakeInputs rather than a bare path keeps the
+    // binding a straight forward to bake_tileset with nothing re-derived at
+    // the call site (and lets BakeInputs grow without touching this signature).
+    // `dump_png` carries the MATTER_TILESET_DUMP_PNG opt-in, read where it has
+    // always been read: in the provider.
+    //
+    // Unlike vk_tileset_load, a false return is FATAL to the tileset phase:
+    // it propagates out of run_tileset_deferred as BakeError{phase="tileset"}
+    // on the deferred path (world still renders, untextured) and fails
+    // connect() on the sync path.
+    std::function<bool(const tileset::SettledTorus& settled,
+                       uint64_t script_source_hash,
+                       const std::string& gtex_path,
+                       const tileset::BakeInputs& inputs,
+                       bool dump_png,
+                       std::string& err)> vk_tileset_bake;
 
     // Task 7: OOM/error injection hook for testing skip-and-continue.
     // Fired once per part processed (install bake + fetch/load); `part_index` is the
@@ -90,6 +121,12 @@ struct LocalProviderConfig {
     // (std::bad_alloc → OutOfMemory, any other exception → ScriptError/Internal).
     // Null in production (kernel-internal test seam; not part of the public stable API).
     std::function<void(int part_index)> test_fault_hook;
+
+    // W3 (Part Workbench, Lab-only): optional per-rung bake observer, applied
+    // to the HostBaker on every (re)construction so isolation-session bakes
+    // get live LOD0/rung callbacks. Null in production (kernel-internal Lab
+    // seam; see matter/bake_observer.h for the thread contract).
+    BakeObserver* bake_observer = nullptr;
 
     // Phase C Task 7: optional root-params override JSON object, e.g. {"worldSeed": 2}.
     // When non-empty, merged (overrides win) into every manifest root's params before
@@ -106,14 +143,27 @@ inline LocalProviderConfig LocalProviderConfig::for_project(
     const std::string& engine_shared_lib_dir_value) {
     namespace fs = std::filesystem;
     LocalProviderConfig cfg;
-    const fs::path project(project_dir_value);
+    // Phase 1 cache-leak fix: absolutize project_dir_value up front. cache_root
+    // below (and every other field this function derives from `project`) is
+    // composed as `project / <suffix>`; if project_dir_value were left
+    // relative, cache_root would stay relative too, and every downstream
+    // writer that composes an output path directly from cache_root --
+    // PartStore, resolve_cache, live_edit_prod::ProdBaker/ProdFlattener,
+    // WorldTracer (all in matter_engine.cpp), and part_flatten.cpp -- would
+    // then depend on the calling process's cwd at the moment of each write
+    // rather than on the project actually being opened. fs::absolute() is
+    // purely lexical (prepends current_path() when relative) so it is safe to
+    // call before prepare_paths() creates any of these directories.
+    std::error_code ec;
+    fs::path project = fs::absolute(fs::path(project_dir_value), ec);
+    if (ec) project = fs::path(project_dir_value);  // fall back to the given value
     cfg.project_dir = project.string();
     cfg.objects_dir = (project / "objects").string();
     cfg.worlds_dir = (project / "worlds").string();
     cfg.world_name = world_name_value;
     cfg.world_path = (project / "worlds" / (world_name_value + ".js")).string();
     const fs::path project_shared = project / "shared-lib";
-    std::error_code ec;
+    ec.clear();
     if (fs::is_directory(project_shared, ec))
         cfg.project_shared_lib_dir = project_shared.string();
     cfg.engine_shared_lib_dir = engine_shared_lib_dir_value;
@@ -248,7 +298,8 @@ public:
 
     // Run the deferred tileset phase for all tileset roots after BakeFinished.
     // settle_cache_load → on miss: ensure_part_baked children + settle_tileset
-    // + settle_cache_save; then bake_tileset_gpu (if gl_available).
+    // + settle_cache_save; then the Vulkan .gtex bake via cfg_.vk_tileset_bake
+    // when it is bound, else a cache probe + load only.
     // Emits progress via on_tileset_part (done, total, root_module) for each
     // tileset root processed. Returns false on hard failure (sets err).
     bool run_tileset_deferred(

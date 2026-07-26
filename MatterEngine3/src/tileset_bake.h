@@ -10,8 +10,9 @@
 // strip occurrences are kept as ALL occurrence instances (Phase 3 renders each one).
 
 #include "tileset_spec.h"
-#include "tileset_settle.h"  // LayerResult, Pose
+#include "tileset_settle.h"  // LayerResult, Pose, BodySpawn, HeightField
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,75 @@ struct SettledTorus {
 struct BakeInputs {
     std::string parts_cache_dir;   // directory that CONTAINS parts/
 };
+
+// ---------------------------------------------------------------------------
+// Settle plan — everything settle_tileset feeds the SettleWorld, prebuilt.
+// Shared by the batch bake and the interactive Settle Lab so both simulate
+// exactly the same inputs (settle-tick-optimizer.md §II.2).
+// ---------------------------------------------------------------------------
+
+// Scaled-collider memoization key: (child_hash, collider_override, scale).
+// Scale derives deterministically from the RNG so exact float comparison is safe.
+struct ScaledColliderKey {
+    uint64_t    child_hash;
+    std::string override_str;
+    float       scale;
+    bool operator<(const ScaledColliderKey& o) const {
+        if (child_hash != o.child_hash) return child_hash < o.child_hash;
+        if (override_str != o.override_str) return override_str < o.override_str;
+        return scale < o.scale;
+    }
+};
+
+// Provenance record for each spawned physics body (parallel to its BodySpawn).
+struct SpawnProv {
+    uint64_t child_hash = 0;
+    float    scale      = 1.0f;
+    int      layer      = -1;   // -1 = drop
+};
+
+// Non-physics placement, analytically snapped to the base at plan time.
+struct NonPhysInst {
+    uint64_t child_hash = 0;
+    float    scale      = 1.0f;
+    Pose     pose;
+    int      layer      = -1;
+};
+
+// LIFETIME: `colliders` OWNS the ColliderFit objects that every
+// BodySpawn::collider pointer in `drop_spawns` / `layers[*].spawns` borrows.
+// The SettlePlan must therefore outlive any SettleWorld run consuming those
+// spawns. std::map node stability keeps the pointers valid across further
+// insertions and across moves of the SettlePlan itself; copying a SettlePlan
+// would NOT rebind the pointers, so treat it as move-only in practice.
+struct SettlePlan {
+    float       torus_size = 0.0f;               // kTorusN * cfg.size
+    HeightField hf;                              // tiled torus heightfield
+    // Collider storage: owns what BodySpawn::collider pointers reference.
+    std::map<ScaledColliderKey, ColliderFit> colliders;
+    // Sync-group occurrence frames, in add order: plan index == the group id
+    // SettleWorld::add_sync_group returns when groups are added in this order,
+    // which is what BodySpawn::sync_group references.
+    std::vector<std::vector<Pose>> sync_group_frames;
+    std::vector<BodySpawn> drop_spawns;          // shared drops, one batch
+    std::vector<SpawnProv> drop_provs;           // parallel to drop_spawns
+    struct LayerPlan {
+        std::string module;                      // for UI labels
+        bool physics = false;
+        std::vector<BodySpawn>   spawns;         // physics only
+        std::vector<SpawnProv>   provs;          // parallel to spawns
+        std::vector<NonPhysInst> nonphys;        // pass-through placements
+    };
+    std::vector<LayerPlan> layers;               // one per script layer, in order
+};
+
+// Build the settle plan (heightfield, colliders, sync groups, spawn lists,
+// provenance) without creating a physics world. Pure reorganization of what
+// settle_tileset feeds SettleWorld: no RNG draws, no reordering — placements
+// already happened during eval.
+// Fail-closed: returns false + err on any collider/load failure.
+bool build_settle_plan(const TilesetSpec& spec, const BakeInputs& in,
+                       SettlePlan& out, std::string& err);
 
 // Assemble + settle the whole 4x4 torus.
 // Fail-closed: returns false + err on any collider/load failure.

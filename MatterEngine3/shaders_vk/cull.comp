@@ -163,16 +163,33 @@ bool reserve_transform_slot(uint bucket, out uint slot) {
                          : frame.capacities.w;
     if (end < first || end > frame.capacities.w) return false;
     const uint available = end - first;
-    for (;;) {
-        const uint current = atomicAdd(commands[bucket].instance_count, 0u);
-        if (current >= available) return false;
-        const uint observed = atomicCompSwap(commands[bucket].instance_count,
-                                             current, current + 1u);
-        if (observed == current) {
-            slot = current;
-            return true;
-        }
+    // Perf: this used to be an atomicCompSwap retry loop on a single word.
+    // Every instance of a part shares its cluster range, so the bucket index is
+    // identical for thousands of invocations, which turned the CAS into a spin
+    // convoy: with N contenders only one wins per round, so the pass costs
+    // O(N^2) atomic round-trips on one cache line.
+    //
+    // A single atomicAdd reserves a unique index in one round-trip. Invocations
+    // that land past the bucket's capacity give the reservation back with a
+    // compensating decrement, so the counter settles at exactly
+    // min(demand, available) — the same value the CAS loop produced — and the
+    // handed-out slots are still the dense range [0, available). Nothing reads
+    // instance_count during this dispatch (the indirect draw consumes it only
+    // after the compute barrier), so the transient over-count is unobservable,
+    // and it cannot wrap: demand is bounded by instance_count * cluster_count.
+    //
+    // Overflow signalling is unchanged: returning false makes the caller bump
+    // the `overflowed` stat and drop the instance, and a failing invocation
+    // still never writes a draw transform.
+    const uint reserved = atomicAdd(commands[bucket].instance_count, 1u);
+    if (reserved >= available) {
+        // Wrapping add of -1: uint atomics are modular, so this is an exact
+        // undo of this invocation's reservation.
+        atomicAdd(commands[bucket].instance_count, 0xffffffffu);
+        return false;
     }
+    slot = reserved;
+    return true;
 }
 
 void main() {

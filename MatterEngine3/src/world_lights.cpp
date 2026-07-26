@@ -1,5 +1,5 @@
 #include "world_lights.h"
-#include "part_asset.h"   // fnv1a64 (MatterSurfaceLib/include, via -I../../MatterSurfaceLib/include)
+#include "part_asset.h"   // fnv1a64 (MatterSurfaceLib/include, via -I../../libs/MatterSurfaceLib/include)
 
 #include <vector>
 

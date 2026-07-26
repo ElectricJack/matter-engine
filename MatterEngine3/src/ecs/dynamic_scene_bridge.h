@@ -15,6 +15,7 @@
 #include "matter/scene.h"
 #include "render/animation_rigid_bridge.h"
 #include "render/animation_skin_bridge.h"
+#include "ecs/bridge_error_sink.h"  // BridgeErrorSink (extracted, flecs-free)
 #include "render/dynamic_instance_slots.h"
 
 #include "flecs.h"
@@ -26,14 +27,6 @@
 #include <vector>
 
 namespace matter::scene {
-
-// Callback interface for the bridge to report errors on entities.
-// The bridge does NOT mutate the ECS world directly — it reports errors
-// through this callback so the caller can apply them safely.
-struct BridgeErrorSink {
-    std::function<void(SceneEntityId id, PartInstanceError error)> on_error;
-    std::function<void(SceneEntityId id)> on_error_clear;
-};
 
 // Pick result for viewport/editor queries.
 enum class ScenePickKind : uint8_t {

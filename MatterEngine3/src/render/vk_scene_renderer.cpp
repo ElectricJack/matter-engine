@@ -11,6 +11,7 @@
 #include <cstring>
 #include <limits>
 #include <set>
+#include <unordered_map>
 #include <utility>
 
 #include "gpu_matrix_pack.h"
@@ -23,6 +24,7 @@
 #include "tileset_gtex.h"
 #include "tileset_slicer.h"
 #include "vk_volumetrics.h"
+#include "tileset_bake_vk.h"
 
 namespace viewer {
 namespace {
@@ -3253,10 +3255,17 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
         error = "load_tileset_slot: empty gtex_path";
         return false;
     }
-    if (!initialized_ || !tileset_infra_ready_) {
-        error = "load_tileset_slot: VkSceneRenderer not initialized";
-        return false;
-    }
+    // Lazy-init, matching every other GPU entry point (render_frame,
+    // upload_scene, ...): init() is NOT called at construction. The deferred
+    // tileset phase runs before the first frame is ever rendered, so this call
+    // always lost the race and the very first ground atlas of a session failed
+    // with "not initialized" — the .gtex baked fine and then was never
+    // uploaded, leaving the ground untextured. init() is idempotent
+    // (returns true early when already initialized) and itself calls
+    // ensure_tileset_infra(), so this covers both flags. Safe here: the
+    // provider marshals the slot load onto the app/Vulkan thread via gpu_run.
+    if (!initialized_ && !init(error)) return false;
+    if (!tileset_infra_ready_ && !ensure_tileset_infra(error)) return false;
 
     tileset::GTexHeader header;
     std::vector<uint8_t> albedo_rgb8, normal_rg8, orm_rgb8;
@@ -3584,6 +3593,22 @@ void VkSceneRenderer::unload_tileset_slot(int slot) {
     write_tileset_params_buffer();
     for (auto& frame : frames_)
         write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
+}
+
+bool VkSceneRenderer::bake_tileset(const tileset::SettledTorus& settled,
+                                   uint64_t script_source_hash,
+                                   const std::string& gtex_path,
+                                   const tileset::BakeInputs& inputs,
+                                   bool force_rebake, bool dump_png,
+                                   std::string& error) {
+    if (!vulkan_) {
+        error = "VkSceneRenderer::bake_tileset: no Vulkan device";
+        return false;
+    }
+    // Q1: thin passthrough to the free function that owns the bake logic.
+    return tileset::bake_tileset_vk(*vulkan_, settled, script_source_hash,
+                                    gtex_path, inputs, force_rebake, dump_png,
+                                    error);
 }
 
 void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
@@ -5520,6 +5545,25 @@ void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
                                                    lod.material_ids);
                 });
         }
+        // No epoch bump is needed for the promotion itself. Promoting drops the
+        // shared_ptr to the BLAS a candidate replaced, but a candidate can only
+        // exist because build_ray_geometry recorded a build for it earlier in
+        // this same frame, and that already bumped the epoch — which retired
+        // every cached TLAS describing the superseded structure. Bumping again
+        // here would additionally retire the TLAS built alongside the
+        // candidate, which is still perfectly valid (promotion moves ownership,
+        // not the device address).
+    }
+    // Commit or discard this frame's staged TLAS. On success the slot's
+    // structure now genuinely holds the staged records and may be reused; on
+    // failure the frame was never submitted, so the structure's contents are
+    // unknown and the slot must rebuild.
+    for (FrameResources& slot : frames_) {
+        if (slot.rt_tlas_pending_serial != frame_serial) continue;
+        slot.rt_tlas_pending_serial = 0;
+        if (!succeeded) continue;
+        slot.rt_tlas_geometry_epoch = slot.rt_tlas_pending_epoch;
+        slot.rt_tlas_valid = true;
     }
 }
 
@@ -5574,8 +5618,16 @@ void VkSceneRenderer::set_tileset_pom_settings(
 
 void VkSceneRenderer::release_part(uint64_t part_hash) {
     if (poisoned()) return;
+    // Releasing a part destroys its bottom-level structures, so no cached TLAS
+    // may keep referencing them.
+    ++rt_geometry_epoch_;
     const auto found = slot_of_.find(part_hash);
     if (found == slot_of_.end()) return;
+    // Belt and braces for update_instances()' fast path: the slot_of_ erase and
+    // the cluster_start compaction below are both caught by its snapshot
+    // compare, but this rewrites instance_staging_ directly, so retire the
+    // snapshot outright rather than relying on that.
+    instance_snapshot_valid_ = false;
     const uint32_t released_slot = static_cast<uint32_t>(found->second);
     std::vector<GpuCluster> compact_clusters;
     std::vector<std::vector<VkSceneLod>> compact_lods;
@@ -5682,6 +5734,85 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     }
 }
 
+void VkSceneRenderer::set_temporal_frame(const TemporalFrame& frame) {
+    // Track, for update_instances()' unchanged-input fast path, whether the
+    // history data it actually reads changed. That is exactly:
+    //   * `reset` (gates the whole history lookup), and
+    //   * per entry and IN ORDER (the id index keeps the first match, so order
+    //     is load-bearing when ids repeat): instance_id, history_valid, and
+    //     previous_object_to_world -- the last only when history_valid is set,
+    //     because it is not read otherwise.
+    // current_object_to_world is never read by update_instances().
+    //
+    // The flag is sticky: it is only cleared when update_instances() takes a
+    // fresh snapshot, so any number of set_temporal_frame() calls between two
+    // update_instances() calls are covered.
+    if (!temporal_history_changed_) {
+        bool same = temporal_frame_.reset == frame.reset;
+        // When both frames are reset the history contributes nothing to the
+        // output in either case, so the per-entry data cannot matter.
+        if (same && !frame.reset) {
+            same = temporal_frame_.instances.size() == frame.instances.size();
+            for (size_t index = 0; same && index < frame.instances.size();
+                 ++index) {
+                const TemporalInstanceFrame& previous =
+                    temporal_frame_.instances[index];
+                const TemporalInstanceFrame& next = frame.instances[index];
+                if (previous.instance_id != next.instance_id ||
+                    previous.history_valid != next.history_valid ||
+                    (next.history_valid &&
+                     std::memcmp(previous.previous_object_to_world.m,
+                                 next.previous_object_to_world.m,
+                                 sizeof(next.previous_object_to_world.m)) != 0))
+                    same = false;
+            }
+        }
+        if (!same) temporal_history_changed_ = true;
+    }
+    temporal_frame_ = frame;
+}
+
+bool VkSceneRenderer::instance_inputs_match_snapshot(
+    const std::vector<VkSceneInstance>& instances) const noexcept {
+    if (instance_input_snapshot_.size() != instances.size()) return false;
+    // VkSceneInstance is uint64 + float[16] + uint64 with no padding, so a
+    // bytewise compare is exact. It is also bit-exact rather than value-exact,
+    // which only ever makes this MORE conservative: pack_glsl_mat4 copies bits,
+    // so any input bit difference is an output bit difference too.
+    if (!instances.empty() &&
+        std::memcmp(instance_input_snapshot_.data(), instances.data(),
+                    instances.size() * sizeof(VkSceneInstance)) != 0)
+        return false;
+    if (part_cluster_snapshot_.size() != parts_.size()) return false;
+    for (size_t slot = 0; slot < parts_.size(); ++slot) {
+        if (part_cluster_snapshot_[slot].first != parts_[slot].cluster_start ||
+            part_cluster_snapshot_[slot].second != parts_[slot].cluster_count)
+            return false;
+    }
+    if (slot_of_snapshot_.size() != slot_of_.size()) return false;
+    size_t index = 0;
+    for (const auto& entry : slot_of_) {
+        if (slot_of_snapshot_[index].first != entry.first ||
+            slot_of_snapshot_[index].second != entry.second)
+            return false;
+        ++index;
+    }
+    return true;
+}
+
+void VkSceneRenderer::snapshot_instance_inputs(
+    const std::vector<VkSceneInstance>& instances) {
+    instance_input_snapshot_ = instances;
+    slot_of_snapshot_.assign(slot_of_.begin(), slot_of_.end());
+    part_cluster_snapshot_.resize(parts_.size());
+    for (size_t slot = 0; slot < parts_.size(); ++slot)
+        part_cluster_snapshot_[slot] = {parts_[slot].cluster_start,
+                                        parts_[slot].cluster_count};
+    instance_snapshot_generation_ = instance_generation_;
+    temporal_history_changed_ = false;
+    instance_snapshot_valid_ = true;
+}
+
 bool VkSceneRenderer::update_instances(
     const std::vector<VkSceneInstance>& instances, std::string& error) {
     error.clear();
@@ -5697,6 +5828,41 @@ bool VkSceneRenderer::update_instances(
         instance_staging_.resize(static_instance_count_);
     if (rt_instances_.size() > static_rt_instance_count_)
         rt_instances_.resize(static_rt_instance_count_);
+    // Perf: unchanged-input fast path.
+    //
+    // The candidate set built below -- and therefore the `identical` early-out
+    // at the bottom of this function -- is a pure function of five inputs, all
+    // of which are snapshotted by snapshot_instance_inputs() on every call that
+    // returns true:
+    //   1. the `instances` span: part_hash, object_to_world and instance_id,
+    //      in order (bytewise compare).
+    //   2. slot_of_: decides both whether an instance resolves at all and the
+    //      part_slot it gets (flattened compare, O(parts)).
+    //   3. parts_[slot].cluster_start / .cluster_count: the only PartRecord
+    //      fields read here (compare, O(parts)).
+    //   4. temporal_frame_: reset, plus per-entry instance_id/history_valid/
+    //      previous_object_to_world, folded into temporal_history_changed_ by
+    //      set_temporal_frame() while it already has both copies in hand.
+    //   5. instance_staging_ / instance_part_slots_, which the candidate set is
+    //      compared against. Every writer outside this function either bumps
+    //      instance_generation_ (reset(), the release_part() success path,
+    //      prepare_frame()'s dynamic merge) or mutates slot_of_/parts_ and so
+    //      is caught by 2/3 (the release_part() rebuild-failure path erases
+    //      from slot_of_ before clearing the staging vectors).
+    // prepare_frame()'s dynamic tail is stripped immediately above, so the two
+    // vectors hold exactly the static set the snapshot was taken from.
+    //
+    // When all five still match, the build below would reproduce
+    // instance_staging_ byte for byte and fall into `if (identical) return
+    // true;` -- which returns WITHOUT touching the GPU buffer, bumping a
+    // generation, or updating max_clusters_per_instance_. Returning here does
+    // exactly the same thing, minus ~24 MB of per-frame allocation (candidate
+    // instances/slots/RT plus one hash-map node per instance).
+    if (instance_snapshot_valid_ && !temporal_history_changed_ &&
+        instance_generation_ == instance_snapshot_generation_ &&
+        instance_part_slots_.size() == instance_staging_.size() &&
+        instance_inputs_match_snapshot(instances))
+        return true;
     std::vector<GpuInstance> candidate_instances;
     std::vector<uint32_t> candidate_slots;
     std::vector<RtInstance> candidate_rt;
@@ -5704,6 +5870,23 @@ bool VkSceneRenderer::update_instances(
     candidate_slots.reserve(instances.size());
     candidate_rt.reserve(instances.size());
     uint32_t candidate_max_clusters = 0;
+    // Perf: the per-instance history lookup below used to be a std::find_if
+    // linear scan of temporal_frame_.instances — O(instances^2), ~848M
+    // comparisons over a ~6MB array at 41k instances. Index the history once,
+    // then do a single hash lookup per instance.
+    //
+    // Behaviour-preserving details:
+    //   * find_if returned the FIRST entry with a matching id; emplace() keeps
+    //     the first insertion, so duplicate ids resolve to the same entry.
+    //   * the result is only ever consulted under `!temporal_frame_.reset`, so
+    //     on reset frames the index stays empty (every lookup misses, exactly
+    //     as the discarded scan result did) and costs nothing to build.
+    std::unordered_map<uint64_t, const TemporalInstanceFrame*> temporal_by_id;
+    if (!temporal_frame_.reset) {
+        temporal_by_id.reserve(temporal_frame_.instances.size());
+        for (const TemporalInstanceFrame& item : temporal_frame_.instances)
+            temporal_by_id.emplace(item.instance_id, &item);
+    }
     for (size_t source_index = 0; source_index < instances.size();
          ++source_index) {
         const VkSceneInstance& source = instances[source_index];
@@ -5721,12 +5904,10 @@ bool VkSceneRenderer::update_instances(
         instance.animation_instance_slot = source.animation_instance_slot;
         // Static scene records have no generational dynamic-slot identity.
         instance.animation_instance_generation = 0;
-        const auto temporal = std::find_if(
-            temporal_frame_.instances.begin(), temporal_frame_.instances.end(),
-            [stable_id](const TemporalInstanceFrame& item) {
-                return item.instance_id == stable_id;
-            });
-        if (!temporal_frame_.reset && temporal != temporal_frame_.instances.end() &&
+        const auto temporal_hit = temporal_by_id.find(stable_id);
+        const TemporalInstanceFrame* temporal =
+            temporal_hit != temporal_by_id.end() ? temporal_hit->second : nullptr;
+        if (!temporal_frame_.reset && temporal != nullptr &&
             temporal->history_valid) {
             instance.previous_object_to_world =
                 pack_glsl_mat4(temporal->previous_object_to_world);
@@ -5752,7 +5933,10 @@ bool VkSceneRenderer::update_instances(
                    [](const GpuInstance& left, const GpuInstance& right) {
                        return std::memcmp(&left, &right, sizeof(left)) == 0;
                    });
-    if (identical) return true;
+    if (identical) {
+        snapshot_instance_inputs(instances);
+        return true;
+    }
 
     const bool layout_changed = candidate_slots != instance_part_slots_;
     if (!layout_changed) {
@@ -5763,6 +5947,7 @@ bool VkSceneRenderer::update_instances(
         static_instance_count_ = instance_staging_.size();
         static_rt_instance_count_ = rt_instances_.size();
         ++instance_generation_;
+        snapshot_instance_inputs(instances);
         return true;
     }
     auto old_instances = std::move(instance_staging_);
@@ -5790,12 +5975,14 @@ bool VkSceneRenderer::update_instances(
         raster_draw_command_count_ = old_raster_count;
         max_clusters_per_instance_ = old_max_clusters;
         draw_transform_slots_ = old_transform_slots;
+        instance_snapshot_valid_ = false;
         return false;
     }
     static_instance_count_ = instance_staging_.size();
     static_rt_instance_count_ = rt_instances_.size();
     ++instance_generation_;
     if (layout_changed) note_command_layout_rebuild();
+    snapshot_instance_inputs(instances);
     return true;
 }
 
@@ -6763,6 +6950,11 @@ bool VkSceneRenderer::build_ray_geometry(
     std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> batch_ranges;
     size_t batch_begin = 0;
     const bool has_blas_work = !pending.empty();
+    // Any recorded BLAS build changes geometry an already-built TLAS may
+    // reference (rebuilt in place, or relocated to a freshly created candidate
+    // structure). Retire every slot's cached TLAS so none can reference stale
+    // or superseded bottom-level data.
+    if (has_blas_work) ++rt_geometry_epoch_;
     if (has_blas_work)
         write_gpu_timestamp(frame.command_buffer, kGpuZoneBlas, false, selected);
     for (const size_t batch_end : batch_ends) {
@@ -6869,6 +7061,79 @@ bool VkSceneRenderer::emit_ray_instances(
     }
     const VkDeviceSize instance_bytes =
         instances.size() * sizeof(VkAccelerationStructureInstanceKHR);
+
+    // The per-part geometry table is descriptor-bound and read by the RT
+    // shaders every frame, so it is refreshed unconditionally -- before the
+    // acceleration-structure work below, which may be skipped entirely. These
+    // are plain host-visible writes with no command-buffer ordering against the
+    // build, so hoisting them above it is behaviour-neutral.
+    const VkDeviceSize part_bytes = std::max<VkDeviceSize>(
+        sizeof(GpuRtPartRecord),
+        part_records.size() * sizeof(GpuRtPartRecord));
+    if (!ensure_buffer(selected.rt_parts, part_bytes,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error) ||
+        !matter::map_buffer(selected.rt_parts, error) ||
+        !matter::map_buffer(selected.rt_error_counter, error)) return false;
+    std::memset(selected.rt_parts.mapped, 0,
+                static_cast<size_t>(part_bytes));
+    if (!part_records.empty())
+        std::memcpy(selected.rt_parts.mapped, part_records.data(),
+                    part_records.size() * sizeof(GpuRtPartRecord));
+    std::memset(selected.rt_error_counter.mapped, 0, sizeof(GpuRtCounters));
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (!matter::map_buffer(selected.rt_test_output, error)) return false;
+    auto* test_words =
+        static_cast<uint32_t*>(selected.rt_test_output.mapped);
+    test_words[18] = 0u;
+    test_words[19] = 0u;
+    if (!matter::flush_buffer(selected.rt_test_output,
+                              18 * sizeof(uint32_t),
+                              2 * sizeof(uint32_t), error)) return false;
+#endif
+    if (!matter::flush_buffer(selected.rt_parts, 0, part_bytes, error) ||
+        !matter::flush_buffer(selected.rt_error_counter, 0,
+                              sizeof(GpuRtCounters),
+                              error)) return false;
+
+    // Perf: rebuilding the TLAS from scratch every frame was by far the largest
+    // GPU cost in dense streamed scenes (~15 ms at 58k instances) even though
+    // the tracing that consumes it costs a fraction of that. An acceleration
+    // structure is device resident and stays valid until either the records it
+    // was built from or the bottom-level structures they reference change, so a
+    // slot whose TLAS already encodes exactly these records can skip the
+    // rebuild outright.
+    //
+    // Reuse requires ALL of:
+    //   * a previously *completed* build for this slot -- rt_tlas_valid is only
+    //     set from finish_ray_tracing_frame, on a frame that reported success;
+    //   * an unchanged geometry epoch, bumped by every BLAS build, part release
+    //     and reset(), i.e. every event that can change or free memory a cached
+    //     TLAS points at; and
+    //   * byte-identical instance records. Every field of
+    //     VkAccelerationStructureInstanceKHR is assigned above from a
+    //     value-initialised struct and the type is fully packed (each bitfield
+    //     pair shares one 32-bit word), so memcmp is exact -- in particular it
+    //     catches accelerationStructureReference changing when a cluster picks
+    //     a different LOD.
+    //
+    // A slot only ever reuses its own TLAS, and a slot is not re-recorded until
+    // its previous submission has retired, so the structure being read is
+    // always fully built. Any miss falls through to the original full rebuild.
+    const bool tlas_reusable =
+        selected.rt_tlas_valid &&
+        selected.rt_tlas.handle != VK_NULL_HANDLE &&
+        selected.rt_tlas_geometry_epoch == rt_geometry_epoch_ &&
+        selected.rt_tlas_instances.size() == instances.size() &&
+        std::memcmp(selected.rt_tlas_instances.data(), instances.data(),
+                    static_cast<size_t>(instance_bytes)) == 0;
+    if (tlas_reusable) {
+        // No acceleration-structure write is recorded this frame, so the
+        // build->trace barrier below has nothing to order and is skipped too.
+        ++rt_tlas_reuses_;
+        return true;
+    }
+    ++rt_tlas_builds_;
+
     if (!ensure_build_buffer(selected.rt_instances, instance_bytes,
                        VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -6899,6 +7164,8 @@ bool VkSceneRenderer::emit_ray_instances(
               &tlas_build, &instance_count, &tlas_sizes);
     if (selected.rt_tlas.size < tlas_sizes.accelerationStructureSize) {
         selected.rt_tlas.reset();
+        // The previous structure is gone; nothing cached about it survives.
+        selected.rt_tlas_valid = false;
         if (!matter::create_acceleration_structure(
                 *vulkan_, VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
                 tlas_sizes.accelerationStructureSize, selected.rt_tlas,
@@ -6932,33 +7199,15 @@ bool VkSceneRenderer::emit_ray_instances(
     as_dependency.pMemoryBarriers = &as_to_ray;
     vkCmdPipelineBarrier2(frame.command_buffer, &as_dependency);
 
-    const VkDeviceSize part_bytes = std::max<VkDeviceSize>(
-        sizeof(GpuRtPartRecord),
-        part_records.size() * sizeof(GpuRtPartRecord));
-    if (!ensure_buffer(selected.rt_parts, part_bytes,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error) ||
-        !matter::map_buffer(selected.rt_parts, error) ||
-        !matter::map_buffer(selected.rt_error_counter, error)) return false;
-    std::memset(selected.rt_parts.mapped, 0,
-                static_cast<size_t>(part_bytes));
-    if (!part_records.empty())
-        std::memcpy(selected.rt_parts.mapped, part_records.data(),
-                    part_records.size() * sizeof(GpuRtPartRecord));
-    std::memset(selected.rt_error_counter.mapped, 0, sizeof(GpuRtCounters));
-#ifdef MATTER_VK_TEST_FAULT_INJECTION
-    if (!matter::map_buffer(selected.rt_test_output, error)) return false;
-    auto* test_words =
-        static_cast<uint32_t*>(selected.rt_test_output.mapped);
-    test_words[18] = 0u;
-    test_words[19] = 0u;
-    if (!matter::flush_buffer(selected.rt_test_output,
-                              18 * sizeof(uint32_t),
-                              2 * sizeof(uint32_t), error)) return false;
-#endif
-    if (!matter::flush_buffer(selected.rt_parts, 0, part_bytes, error) ||
-        !matter::flush_buffer(selected.rt_error_counter, 0,
-                              sizeof(GpuRtCounters),
-                              error)) return false;
+    // Stage this build as the slot's cache candidate. Deliberately NOT marked
+    // valid here: the build is only *recorded*, and a frame abandoned before
+    // submission would leave the TLAS holding its previous contents.
+    // finish_ray_tracing_frame promotes the candidate once the frame reports
+    // success, and leaves rt_tlas_valid false on failure so the slot rebuilds.
+    selected.rt_tlas_instances = std::move(instances);
+    selected.rt_tlas_pending_epoch = rt_geometry_epoch_;
+    selected.rt_tlas_pending_serial = frame.serial;
+    selected.rt_tlas_valid = false;
     return true;
 }
 
@@ -8443,6 +8692,14 @@ void VkSceneRenderer::reset() {
     cluster_lods_.clear();
     instance_staging_.clear();
     instance_part_slots_.clear();
+    // Retire update_instances()' unchanged-input snapshot with the state it
+    // describes, and force the next set_temporal_frame() to report a change.
+    instance_snapshot_valid_ = false;
+    temporal_history_changed_ = true;
+    instance_input_snapshot_.clear();
+    instance_input_snapshot_.shrink_to_fit();
+    slot_of_snapshot_.clear();
+    part_cluster_snapshot_.clear();
     static_instance_count_ = 0;
     part_instance_counts_.clear();
     command_template_.clear();
@@ -8467,6 +8724,14 @@ void VkSceneRenderer::reset() {
     visible_skin_instances_.clear();
     pending_visible_skin_instances_.clear();
     pending_skin_visibility_frame_slot_ = UINT32_MAX;
+    // Every part (and therefore every bottom-level structure) is gone; retire
+    // all cached top-level structures with it.
+    ++rt_geometry_epoch_;
+    for (FrameResources& frame : frames_) {
+        frame.rt_tlas_instances.clear();
+        frame.rt_tlas_valid = false;
+        frame.rt_tlas_pending_serial = 0;
+    }
     for (FrameResources& frame : frames_) frame.stats_valid = false;
     raster_attachments_ready_ = false;
     ++static_generation_;

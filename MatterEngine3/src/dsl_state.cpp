@@ -1,12 +1,15 @@
 #include "dsl_state.h"
-#define RAYMATH_IMPLEMENTATION
-#include "raymath.h"
 #include <cmath>
 
 // NOTE: The TriangleBuildBuffer-touching members (ctor/dtor + beginShape/vertex/
 // endShape/line) live in dsl_triangle.cpp, NOT here. triangle_emit.hpp pulls in
 // MSL's precomp.h, whose `struct float3` collides with raymath.h's `float3`, so
-// this TU (which needs raymath for the matrix stack) must stay free of it.
+// this TU stayed free of it even back when it needed raymath for the matrix
+// stack. Phase 3 (mathlib-and-raylib-removal) moved the matrix stack onto
+// mm::Mat4/mm::Vec3 (matter_math.h, pulled in via dsl_state.h), so this TU no
+// longer includes raymath.h at all -- kept free of the float3 collision as a
+// side effect rather than by design now, but the split from dsl_triangle.cpp
+// stays since triangle_emit.hpp is still off-limits here.
 //
 // csg_lowering.h carries the same transitive float3 collision (cluster.h ->
 // vertex_ao.h -> bvh.h). Forward-declare the one function we need instead of
@@ -22,6 +25,25 @@ namespace dsl {
 
 namespace dsl {
 
+// --- Transform stack -------------------------------------------------------
+// Phase 3 (mathlib-and-raylib-removal): ported off raymath's MatrixMultiply/
+// MatrixTranslate/MatrixRotate*/MatrixScale onto mm:: (matter_math.h).
+//
+// mm::translation/rotation_x/rotation_y/rotation_z/scale are drop-in
+// replacements for raymath's MatrixTranslate/MatrixRotateX/Y/Z/MatrixScale --
+// verified element-for-element against the vendored third_party/raylib/src/
+// raymath.h source (both produce the identical row-major float[16], no sign
+// or transpose difference for any of the five builders).
+//
+// MatrixMultiply is NOT a drop-in match: raymath's MatrixMultiply(a, b)
+// applies `a` first, then `b`, which is the REVERSE of mm::multiply(a, b)'s
+// convention (matter_math.h's documented policy: MatrixMultiply(a,b) ==
+// mm::multiply(b,a)). Every call below was originally
+// `MatrixMultiply(<new op>, stack_.back())` -- apply the new op first, then
+// the existing stack top -- so the ported form swaps operands to
+// `mm::multiply(stack_.back(), <new op>)`. Getting this backwards would
+// silently reverse the entire DSL transform stack (see
+// dsl_determinism_tests.cpp, which exists specifically to catch it).
 void DslState::pushMatrix() { if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; } stack_.push_back(stack_.back()); }
 void DslState::popMatrix() {
     if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
@@ -31,17 +53,17 @@ void DslState::popMatrix() {
 void DslState::translate(float x, float y, float z) {
     if (animation_ && animation_->clip_open && !animation_->name.empty()) { clip_translate(x,y,z); return; }
     if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
-    stack_.back() = MatrixMultiply(MatrixTranslate(x,y,z), stack_.back());
+    stack_.back() = mm::multiply(stack_.back(), mm::translation({x,y,z}));
 }
-void DslState::rotateX(float r){ if(animation_&&animation_->clip_open&&!animation_->name.empty()){clip_rotate(1,0,0,r);return;} if(generating_animation()){set_error("geometry authoring is forbidden during generate");return;} stack_.back()=MatrixMultiply(MatrixRotateX(r),stack_.back()); }
-void DslState::rotateY(float r){ if(animation_&&animation_->clip_open&&!animation_->name.empty()){clip_rotate(0,1,0,r);return;} if(generating_animation()){set_error("geometry authoring is forbidden during generate");return;} stack_.back()=MatrixMultiply(MatrixRotateY(r),stack_.back()); }
-void DslState::rotateZ(float r){ if(animation_&&animation_->clip_open&&!animation_->name.empty()){clip_rotate(0,0,1,r);return;} if(generating_animation()){set_error("geometry authoring is forbidden during generate");return;} stack_.back()=MatrixMultiply(MatrixRotateZ(r),stack_.back()); }
-void DslState::scale(float x,float y,float z){ if(generating_animation()){set_error("geometry authoring is forbidden during generate");return;} stack_.back()=MatrixMultiply(MatrixScale(x,y,z),stack_.back()); }
+void DslState::rotateX(float r){ if(animation_&&animation_->clip_open&&!animation_->name.empty()){clip_rotate(1,0,0,r);return;} if(generating_animation()){set_error("geometry authoring is forbidden during generate");return;} stack_.back()=mm::multiply(stack_.back(), mm::rotation_x(r)); }
+void DslState::rotateY(float r){ if(animation_&&animation_->clip_open&&!animation_->name.empty()){clip_rotate(0,1,0,r);return;} if(generating_animation()){set_error("geometry authoring is forbidden during generate");return;} stack_.back()=mm::multiply(stack_.back(), mm::rotation_y(r)); }
+void DslState::rotateZ(float r){ if(animation_&&animation_->clip_open&&!animation_->name.empty()){clip_rotate(0,0,1,r);return;} if(generating_animation()){set_error("geometry authoring is forbidden during generate");return;} stack_.back()=mm::multiply(stack_.back(), mm::rotation_z(r)); }
+void DslState::scale(float x,float y,float z){ if(generating_animation()){set_error("geometry authoring is forbidden during generate");return;} stack_.back()=mm::multiply(stack_.back(), mm::scale({x,y,z})); }
 void DslState::applyMatrix(const float m[16]) {
     if(generating_animation()){set_error("geometry authoring is forbidden during generate");return;}
-    Matrix mm = { m[0],m[1],m[2],m[3], m[4],m[5],m[6],m[7],
-                  m[8],m[9],m[10],m[11], m[12],m[13],m[14],m[15] };
-    stack_.back() = MatrixMultiply(mm, stack_.back());
+    mm::Mat4 applied;
+    for (int i = 0; i < 16; ++i) applied.m[i] = m[i];
+    stack_.back() = mm::multiply(stack_.back(), applied);
 }
 void DslState::lookAt(float tx, float ty, float tz,
                       float upx, float upy, float upz) {
@@ -50,35 +72,34 @@ void DslState::lookAt(float tx, float ty, float tz,
     // origin toward the target, composed onto the stack top. The frame origin is
     // the translation of the current matrix (position()). We build a rotation in
     // current-frame-local space, so it composes with the existing rotation/scale.
-    Vector3 origin = position();
-    Vector3 fwd = Vector3Subtract(Vector3{tx,ty,tz}, origin);
-    if (Vector3Length(fwd) < 1e-9f) return;   // degenerate: target == origin, no-op
-    fwd = Vector3Normalize(fwd);
-    Vector3 up = Vector3{upx,upy,upz};
-    if (Vector3Length(up) < 1e-9f) up = Vector3{0,1,0};
-    up = Vector3Normalize(up);
+    mm::Vec3 origin = position();
+    mm::Vec3 fwd = mm::sub({tx,ty,tz}, origin);
+    if (mm::length(fwd) < 1e-9f) return;   // degenerate: target == origin, no-op
+    fwd = mm::normalize(fwd);
+    mm::Vec3 up = {upx,upy,upz};
+    if (mm::length(up) < 1e-9f) up = mm::Vec3{0,1,0};
+    up = mm::normalize(up);
     // Right = up x fwd; if up is parallel to fwd, pick a fallback up.
-    Vector3 right = Vector3CrossProduct(up, fwd);
-    if (Vector3Length(right) < 1e-6f) {
-        up = (fabsf(fwd.y) < 0.9f) ? Vector3{0,1,0} : Vector3{1,0,0};
-        right = Vector3CrossProduct(up, fwd);
+    mm::Vec3 right = mm::cross(up, fwd);
+    if (mm::length(right) < 1e-6f) {
+        up = (fabsf(fwd.y) < 0.9f) ? mm::Vec3{0,1,0} : mm::Vec3{1,0,0};
+        right = mm::cross(up, fwd);
     }
-    right = Vector3Normalize(right);
-    Vector3 trueUp = Vector3CrossProduct(fwd, right);  // orthonormal
-    // Column-basis rotation matrix mapping local +X->right, +Y->trueUp, +Z->fwd.
-    // raylib Matrix is column-major (m0,m4,m8 = first row); basis vectors go in
-    // columns so a local axis maps to its world basis vector.
-    Matrix rot = {
-        right.x, trueUp.x, fwd.x, 0,
-        right.y, trueUp.y, fwd.y, 0,
-        right.z, trueUp.z, fwd.z, 0,
-        0,       0,        0,     1
-    };
+    right = mm::normalize(right);
+    mm::Vec3 trueUp = mm::cross(fwd, right);  // orthonormal
+    // Column-basis rotation matrix mapping local +X->right, +Y->trueUp, +Z->fwd:
+    // basis vectors go in COLUMNS of the row-major mm::Mat4 (column-vector
+    // convention) so a local axis maps to its world basis vector.
+    mm::Mat4 rot = mm::zero();
+    rot.m[0]=right.x; rot.m[1]=trueUp.x; rot.m[2]=fwd.x; rot.m[3]=0;
+    rot.m[4]=right.y; rot.m[5]=trueUp.y; rot.m[6]=fwd.y; rot.m[7]=0;
+    rot.m[8]=right.z; rot.m[9]=trueUp.z; rot.m[10]=fwd.z; rot.m[11]=0;
+    rot.m[12]=0;      rot.m[13]=0;       rot.m[14]=0;     rot.m[15]=1;
     // The basis above is expressed in the SAME space as the target/origin (i.e.
     // already-composed world). Replace the stack top's rotation while preserving
     // its translation (origin) so the oriented frame sits at the current position.
-    Matrix m = MatrixTranslate(origin.x, origin.y, origin.z);
-    stack_.back() = MatrixMultiply(rot, m);
+    mm::Mat4 m = mm::translation(origin);
+    stack_.back() = mm::multiply(m, rot);
 }
 
 void DslState::beginVoxels(float spacing) {
@@ -103,14 +124,14 @@ void DslState::endVoxels() {
     session_ = Session::None;
 }
 
-void DslState::emit_voxel_sphere(const Vector3& c, float r, CsgOp op) {
+void DslState::emit_voxel_sphere(const mm::Vec3& c, float r, CsgOp op) {
     if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     BuildOp o{}; o.kind=BrushKind::Sphere; o.op=op; o.transform=stack_.back();
     o.materialId=material_; o.center=c; o.radius=r; o.smoothing=smoothing_; o.spacing=spacing_;
     o.tint=tint_;
     buffer_.ops.push_back(o);
 }
-void DslState::emit_voxel_box(const Vector3& c, const Vector3& h, CsgOp op) {
+void DslState::emit_voxel_box(const mm::Vec3& c, const mm::Vec3& h, CsgOp op) {
     if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     BuildOp o{}; o.kind=BrushKind::Box; o.op=op; o.transform=stack_.back();
     o.materialId=material_; o.center=c; o.halfExtents=h; o.smoothing=smoothing_; o.spacing=spacing_;
@@ -120,7 +141,7 @@ void DslState::emit_voxel_box(const Vector3& c, const Vector3& h, CsgOp op) {
 // Capsule (sdSegment - r0) / cylinder|cone (sdCappedCone) brush. `center` holds
 // segment endpoint a, `segB` endpoint b, `radius`=r0 and `r1`=r1 (capsule passes
 // r1==r0; lowering uses only r0 for the capsule kind).
-void DslState::emit_voxel_segment(BrushKind kind, const Vector3& a, const Vector3& b,
+void DslState::emit_voxel_segment(BrushKind kind, const mm::Vec3& a, const mm::Vec3& b,
                                   float r0, float r1, CsgOp op) {
     if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     BuildOp o{}; o.kind=kind; o.op=op; o.transform=stack_.back();
@@ -129,8 +150,8 @@ void DslState::emit_voxel_segment(BrushKind kind, const Vector3& a, const Vector
     buffer_.ops.push_back(o);
 }
 
-bool DslState::raycast(const Vector3& origin, const Vector3& dir,
-                       Vector3& outPoint, Vector3& outNormal) {
+bool DslState::raycast(const mm::Vec3& origin, const mm::Vec3& dir,
+                       mm::Vec3& outPoint, mm::Vec3& outNormal) {
     if (session_ != Session::Voxels) {
         set_error("raycast outside an open voxel session");
         return false;
@@ -141,12 +162,14 @@ bool DslState::raycast(const Vector3& origin, const Vector3& dir,
     }
     float len = sqrtf(dir.x*dir.x + dir.y*dir.y + dir.z*dir.z);
     if (len < 1e-9f) { set_error("raycast with zero-length direction"); return false; }
-    Vector3 d = { dir.x/len, dir.y/len, dir.z/len };
+    mm::Vec3 d = { dir.x/len, dir.y/len, dir.z/len };
 
     const size_t b = session_start_, e = buffer_.ops.size();
     const float k = smoothing_;
-    auto field = [&](const Vector3& p) {
-        return field_distance(buffer_, b, e, k, p);
+    // field_distance's public signature stays raylib Vector3 (csg_lowering.h,
+    // shared with test-oracle callers); convert at this one boundary.
+    auto field = [&](const mm::Vec3& p) {
+        return field_distance(buffer_, b, e, k, Vector3{p.x, p.y, p.z});
     };
 
     // Conservative sphere trace. The smin union under-reports distance (safe);
@@ -159,7 +182,7 @@ bool DslState::raycast(const Vector3& origin, const Vector3& dir,
     const float kEps       = 1e-4f;
 
     float t = 0.0f;
-    Vector3 p = origin;
+    mm::Vec3 p = origin;
     float fd = field(p);
     if (fd <= kEps) {
         // Started on/inside the surface: report the origin itself.
@@ -183,7 +206,7 @@ bool DslState::raycast(const Vector3& origin, const Vector3& dir,
         (void)fdPrev;
         for (int i = 0; i < 32; ++i) {
             float mid = 0.5f * (lo + hi);
-            Vector3 mp = { origin.x + d.x*mid, origin.y + d.y*mid, origin.z + d.z*mid };
+            mm::Vec3 mp = { origin.x + d.x*mid, origin.y + d.y*mid, origin.z + d.z*mid };
             if (field(mp) > 0.0f) lo = mid; else hi = mid;
         }
         float tHit = 0.5f * (lo + hi);
@@ -192,7 +215,7 @@ bool DslState::raycast(const Vector3& origin, const Vector3& dir,
 
     // Central-difference gradient, normalized outward.
     const float h = fmaxf(1e-3f, 0.25f * spacing_);
-    Vector3 g = {
+    mm::Vec3 g = {
         field({outPoint.x + h, outPoint.y, outPoint.z}) - field({outPoint.x - h, outPoint.y, outPoint.z}),
         field({outPoint.x, outPoint.y + h, outPoint.z}) - field({outPoint.x, outPoint.y - h, outPoint.z}),
         field({outPoint.x, outPoint.y, outPoint.z + h}) - field({outPoint.x, outPoint.y, outPoint.z - h}),
@@ -203,14 +226,10 @@ bool DslState::raycast(const Vector3& origin, const Vector3& dir,
     return true;
 }
 
-// raylib Matrix stores its 16 floats column-major (m0,m4,m8,m12 = first row of
-// the math matrix). world_flatten / ChildInstance consume row-major, so transpose
-// the storage: translation (m12,m13,m14) lands in out[3],out[7],out[11].
-static void matrix_to_row16(const Matrix& mm, float out[16]) {
-    out[0]=mm.m0;  out[1]=mm.m4;  out[2]=mm.m8;  out[3]=mm.m12;
-    out[4]=mm.m1;  out[5]=mm.m5;  out[6]=mm.m9;  out[7]=mm.m13;
-    out[8]=mm.m2;  out[9]=mm.m6;  out[10]=mm.m10; out[11]=mm.m14;
-    out[12]=mm.m3; out[13]=mm.m7; out[14]=mm.m11; out[15]=mm.m15;
+// mm::Mat4 is already row-major float[16] (matter_math.h), matching what
+// world_flatten / ChildInstance expect -- a straight copy.
+static void matrix_to_row16(const mm::Mat4& m, float out[16]) {
+    for (int i = 0; i < 16; ++i) out[i] = m.m[i];
 }
 
 bool DslState::has_composite_child_key(const std::string& module,
@@ -273,6 +292,7 @@ void DslState::placeChild(const std::string& module,
     matrix_to_row16(top(), p.transform);
     p.instanced = instanced;
     p.inline_below_px = inline_below_px;
+    p.module = module;
     children_.push_back(p);
 }
 

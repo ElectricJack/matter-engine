@@ -1,5 +1,5 @@
 // world_stream_tests.cpp — Phase C Task 9: world-kind session end-to-end test.
-// GPU test (requires GALLIUM_DRIVER=d3d12). Runs from MatterViewer/ directory.
+// GPU test (requires GALLIUM_DRIVER=d3d12). Runs from MatterEditor/ directory.
 //
 // Assertions:
 //   1. Every session owns one ECS world with matter.ecs runtime state.
@@ -230,7 +230,16 @@ int main() {
     }
     uint32_t tris = session->frame_stats().triangles;
     printf("triangles after render: %u\n", tris);
+#ifndef MATTER_VULKAN_ONLY
     assert(tris > 0 && "triangles > 0 after render");
+#else
+    // Phase 5a (tech-debt.md S6) deleted the GL renderer/raster-composer/
+    // GpuCuller path that used to populate frame_stats().triangles.
+    // WorldSession::render(CameraDesc, int, int, RenderOptions) is now the
+    // no-op MATTER_VULKAN_ONLY stub (matter_engine.cpp's #else branch), so
+    // tris is deterministically 0 here -- not a bug, just no render path to
+    // assert on until a Vulkan uploader wires frame_stats() itself.
+#endif
 
     // 4. Bake focus remains a public closed-world ordering control, but no
     //    longer drives infinite sector streaming. Moving the ECS anchor does.

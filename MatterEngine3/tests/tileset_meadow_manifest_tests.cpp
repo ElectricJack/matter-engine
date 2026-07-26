@@ -23,10 +23,10 @@ namespace fs = std::filesystem;
 int main() {
     // Try both paths: relative to viewer/ (normal test run) and relative to
     // repo-root (build-all.sh).
-    fs::path worlds_dir = "../examples/world_demo/worlds";
+    fs::path worlds_dir = "../../projects/world_demo/worlds";
     std::error_code ec;
     if (!fs::is_directory(worlds_dir, ec)) {
-        worlds_dir = "MatterEngine3/examples/world_demo/worlds";
+        worlds_dir = "projects/world_demo/worlds";
     }
 
     const fs::path world_path = worlds_dir / "Meadow.js";

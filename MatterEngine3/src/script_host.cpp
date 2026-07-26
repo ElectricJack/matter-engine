@@ -32,6 +32,8 @@ extern "C" {
 extern "C" {
 #include "material_registry.h"          // MaterialMergeGroup (fat-prim bucket seeding)
 }
+#include "bake_trace.h"        // Bake Lab task 1.4: part-bake phase spans
+#include "bake_trace_names.h"  // kSpanPartBake + fold/ctx/eval/merge/... constants
 #include <cstdio>
 #include <cstdlib>   // std::getenv (MATTER_BAKE_PROFILE)
 #include <cstring>
@@ -814,6 +816,149 @@ ScriptHost::LodBudgetSpec ScriptHost::eval_lod_budgets(const std::string& source
     return out;
 }
 
+// W5 (Part Workbench): static discovery of `static lods` WITHOUT building.
+// Same restricted intrinsics / no-build discipline as eval_lod_budgets and
+// eval_requires. Fail-closed: any shape violation clears the whole list.
+ScriptHost::LodAuthoring ScriptHost::eval_lods(const std::string& source) {
+    LodAuthoring out;
+
+    std::string className = find_part_class_name(source);
+    if (className.empty()) return out;
+
+    ModuleStore store;
+    bool use_module = false;
+    if (!shared_lib_roots_.empty()) {
+        module_resolver::FoldResult fr;
+        std::string ferr;
+        if (!fold_sources_cached(source, fr, ferr)) return out;
+        if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
+    }
+
+    JSRuntime* rt = nullptr; JSContext* ctx = nullptr;
+    BakeError eerr;
+    if (!eval_part_publish_class(source, className, use_module ? &store : nullptr,
+                                 rt, ctx, eerr))
+        return out;
+
+    bool ok = true;
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
+    JS_FreeValue(ctx, global);
+    if (!JS_IsFunction(ctx, authored)) {
+        JS_FreeValue(ctx, authored);
+        JS_FreeContext(ctx); JS_FreeRuntime(rt); return out;
+    }
+
+    // Canonicalizer shared with merge_params_canonical/eval_requires (sorted
+    // keys, no whitespace) so a level's params_json is directly mergeable with
+    // the base merged params by simple JS Object.assign at the call site.
+    static const char* kCanon =
+      "(function(o){if(o===undefined||o===null)return '{}';"
+      "let keys=Object.keys(o).sort();let r={};for(let k of keys)r[k]=o[k];"
+      "return JSON.stringify(r);})";
+    JSValue canonFn = JS_Eval(ctx, kCanon, strlen(kCanon), "<canon>", JS_EVAL_TYPE_GLOBAL);
+
+    JSValue lods = JS_GetPropertyStr(ctx, authored, "lods");
+    if (JS_IsArray(lods)) {
+        uint32_t len = 0;
+        {
+            JSValue lenv = JS_GetPropertyStr(ctx, lods, "length");
+            JS_ToUint32(ctx, &len, lenv); JS_FreeValue(ctx, lenv);
+        }
+        for (uint32_t i = 0; i < len && ok; ++i) {
+            JSValue entry = JS_GetPropertyUint32(ctx, lods, i);
+            // Each entry must be a plain object (not null, not an array/primitive) —
+            // JS_IsObject also accepts arrays/functions, so exclude those explicitly.
+            if (!JS_IsObject(entry) || JS_IsArray(entry) || JS_IsFunction(ctx, entry)) {
+                ok = false; JS_FreeValue(ctx, entry); break;
+            }
+            LodLevelSpec spec;
+
+            JSValue paramsV = JS_GetPropertyStr(ctx, entry, "params");
+            if (!JS_IsUndefined(paramsV)) {
+                if (!JS_IsObject(paramsV) || JS_IsArray(paramsV) || JS_IsFunction(ctx, paramsV)) {
+                    ok = false; JS_FreeValue(ctx, paramsV); JS_FreeValue(ctx, entry); break;
+                }
+                spec.has_params = true;
+                JSValue canonStr = JS_Call(ctx, canonFn, JS_UNDEFINED, 1, &paramsV);
+                if (JS_IsException(canonStr)) { ok = false; JS_FreeValue(ctx, canonStr);
+                    JS_FreeValue(ctx, paramsV); JS_FreeValue(ctx, entry); break; }
+                const char* cs = JS_ToCString(ctx, canonStr);
+                spec.params_json = cs ? cs : "{}";
+                if (cs) JS_FreeCString(ctx, cs);
+                JS_FreeValue(ctx, canonStr);
+            } else {
+                spec.params_json = "{}";
+            }
+            JS_FreeValue(ctx, paramsV);
+
+            JSValue excludeV = JS_GetPropertyStr(ctx, entry, "exclude");
+            if (!JS_IsUndefined(excludeV)) {
+                if (!JS_IsArray(excludeV)) {
+                    ok = false; JS_FreeValue(ctx, excludeV); JS_FreeValue(ctx, entry); break;
+                }
+                uint32_t elen = 0;
+                {
+                    JSValue lenv = JS_GetPropertyStr(ctx, excludeV, "length");
+                    JS_ToUint32(ctx, &elen, lenv); JS_FreeValue(ctx, lenv);
+                }
+                for (uint32_t j = 0; j < elen && ok; ++j) {
+                    JSValue el = JS_GetPropertyUint32(ctx, excludeV, j);
+                    if (!JS_IsString(el)) { ok = false; JS_FreeValue(ctx, el); break; }
+                    const char* s = JS_ToCString(ctx, el);
+                    if (s) { spec.exclude.push_back(s); JS_FreeCString(ctx, s); }
+                    else { ok = false; }
+                    JS_FreeValue(ctx, el);
+                }
+            }
+            JS_FreeValue(ctx, excludeV);
+            JS_FreeValue(ctx, entry);
+            if (ok) out.push_back(std::move(spec));
+        }
+    } else if (!JS_IsUndefined(lods)) {
+        ok = false;  // `static lods` present but not an array: fail closed
+    }
+    JS_FreeValue(ctx, lods);
+    JS_FreeValue(ctx, canonFn);
+    JS_FreeValue(ctx, authored);
+    JS_FreeContext(ctx); JS_FreeRuntime(rt);
+
+    if (!ok) out.clear();  // fail-closed: any malformed entry discards the whole block
+    return out;
+}
+
+std::string ScriptHost::merge_json_shallow(const std::string& base_json,
+                                           const std::string& override_json) {
+    std::string out = "{}";
+    JSRuntime* rt = JS_NewRuntime();
+    if (!rt) return out;
+    JSContext* ctx = JS_NewContext(rt);   // bare context: no part-base, no DSL bindings
+    if (!ctx) { JS_FreeRuntime(rt); return out; }
+
+    JSValue a = JS_ParseJSON(ctx, base_json.c_str(), base_json.size(), "<a>");
+    JSValue b = JS_ParseJSON(ctx, override_json.c_str(), override_json.size(), "<b>");
+    if (!JS_IsException(a) && !JS_IsException(b)) {
+        static const char* kMerge =
+          "(function(d,o){let m=Object.assign({},d,o);"
+          "let keys=Object.keys(m).sort();let r={};for(let k of keys)r[k]=m[k];"
+          "return JSON.stringify(r);})";
+        JSValue fn = JS_Eval(ctx, kMerge, strlen(kMerge), "<merge>", JS_EVAL_TYPE_GLOBAL);
+        JSValue args[2] = { a, b };
+        JSValue res = JS_Call(ctx, fn, JS_UNDEFINED, 2, args);
+        if (!JS_IsException(res)) {
+            const char* s = JS_ToCString(ctx, res);
+            if (s) { out = s; JS_FreeCString(ctx, s); }
+        }
+        JS_FreeValue(ctx, res);
+        JS_FreeValue(ctx, fn);
+    }
+    JS_FreeValue(ctx, a);
+    JS_FreeValue(ctx, b);
+    JS_FreeContext(ctx);
+    JS_FreeRuntime(rt);
+    return out;
+}
+
 uint64_t ScriptHost::resolve_hash(const std::string& source,
                                   const std::string& params_json,
                                   const uint64_t* child_hashes,
@@ -927,7 +1072,7 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
         for (int x=x0;x<=x1;++x) for (int y=y0;y<=y1;++y) for (int z=z0;z<=z1;++z) {
             auto k = cell_key(x,y,z);
             auto& cp = cells[k];
-            if (!cp) cp = std::make_unique<Cell>(Vector3{(float)x,(float)y,(float)z},
+            if (!cp) cp = std::make_unique<Cell>(mm::Vec3{(float)x,(float)y,(float)z},
                                                  0, cell_size);
             // Use unchecked variant: each (i, cell) pair is visited at most once.
             if (cp->intersects_sphere(sp.position, sp.radius))
@@ -952,7 +1097,7 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
         for (int x=x0;x<=x1;++x) for (int y=y0;y<=y1;++y) for (int z=z0;z<=z1;++z) {
             auto k = cell_key(x,y,z);
             if (!cells[k])
-                cells[k] = std::make_unique<Cell>(Vector3{(float)x,(float)y,(float)z},
+                cells[k] = std::make_unique<Cell>(mm::Vec3{(float)x,(float)y,(float)z},
                                                   0, cell_size);
         }
     }
@@ -972,7 +1117,9 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
             auto k = cell_key(x,y,z);
             if (cells.count(k)) {
                 // Mirrors the original 1.5x slack test from the per-cell loop.
-                if (cells[k]->intersects_sphere(cp.position, cp.radius * 1.5f))
+                // cp.position is Particle's MtVec3 (Phase 4 Step 3); Cell::intersects_sphere
+                // takes mm::Vec3 as of Phase 4 Step 4 -- cross via mm::from_c().
+                if (cells[k]->intersects_sphere(mm::from_c(cp.position), cp.radius * 1.5f))
                     cell_carve[k].push_back(cp);
             }
         }
@@ -1003,7 +1150,9 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
             // surface belongs to the additive material's group, so subtractive
             // prims never need to seed a bucket.
             if (f.stages[fp.stage] != CSG_STAGE_UNION) continue;
-            if (cell->intersects_sphere(fp.center, fp.boundRadius * 1.5f)) {
+            // fp.center is FatPrim's MtVec3 (Phase 4 Step 3); Cell::intersects_sphere
+            // takes mm::Vec3 as of Phase 4 Step 4 -- cross via mm::from_c().
+            if (cell->intersects_sphere(mm::from_c(fp.center), fp.boundRadius * 1.5f)) {
                 uint32_t g = (uint32_t)MaterialMergeGroup(fp.materialId);
                 cell->material_particle_indices[g]; // default-inserts empty bucket
             }
@@ -1148,6 +1297,93 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
     }
 }
 
+// ---------------------------------------------------------------------------
+// Bake Lab task 1.4 — part-bake phase spans.
+//
+// ScopedCurrentCollector: bake_source must produce spans even when no
+// collector is current (bakes outside execute_bake, e.g. direct ScriptHost
+// callers), because the MATTER_BAKE_PROFILE=1 stderr line is rendered FROM
+// the span data. When none is current it installs a local throwaway
+// Collector as the thread-local current for the duration of the bake and
+// restores the null on exit; when one is already current (execute_bake /
+// tests) it is a no-op and spans nest into that collector.
+struct ScopedCurrentCollector {
+    bake_trace::Collector local;
+    bool installed = false;
+    ScopedCurrentCollector() {
+        if (bake_trace::current() == nullptr) {
+            bake_trace::set_current(&local);
+            installed = true;
+        }
+    }
+    ~ScopedCurrentCollector() {
+        if (installed) bake_trace::set_current(nullptr);
+    }
+    ScopedCurrentCollector(const ScopedCurrentCollector&) = delete;
+    ScopedCurrentCollector& operator=(const ScopedCurrentCollector&) = delete;
+};
+
+// PartBakePhases: opens the kSpanPartBake parent plus a chain of
+// non-overlapping phase children that tile its duration at exactly the old
+// prof_lap() boundaries — next() closes the open phase and opens the next
+// one at the same instant, so phase spans partition the timeline the same
+// way the laps did. The destructor closes any spans still open, so early
+// returns and the bad_alloc unwind leave the collector balanced.
+struct PartBakePhases {
+    // Phase timings recorded at the instant each span closes: Collector::end()
+    // returns end_ms - begin_ms exactly as stored on the span, so these are by
+    // construction the same values a snapshot would read off the tree — the
+    // MATTER_BAKE_PROFILE line renders from here in O(1) instead of deep-
+    // copying and searching the whole session trace per part.
+    struct Times {
+        double total = 0, fold = 0, ctx = 0, eval = 0, merge = 0,
+               build = 0, mesh = 0, save = 0;
+    } times;
+    bake_trace::Collector* c = nullptr;
+    const char* cur = nullptr;  // name of the open phase (kSpan* constant)
+    int depth = 0;  // 0 = nothing open, 1 = part-bake open, 2 = + phase open
+    void start(bake_trace::Collector* col, const char* first_phase) {
+        c = col;
+        if (!c) return;
+        c->begin(bake_trace::kSpanPartBake);
+        c->begin(first_phase);
+        cur = first_phase;
+        depth = 2;
+    }
+    void next(const char* phase) {  // close the open phase, open `phase`
+        if (!c || depth == 0) return;
+        if (depth == 2) record(c->end());
+        c->begin(phase);
+        cur = phase;
+        depth = 2;
+    }
+    void end_phase() {  // close the open phase; part-bake stays open
+        if (c && depth == 2) { record(c->end()); depth = 1; }
+    }
+    void end_part() {   // close part-bake (and any phase still open)
+        while (c && depth > 0) {
+            const double ms = c->end();
+            if (depth == 2) record(ms);
+            else            times.total = ms;  // the part-bake span itself
+            --depth;
+        }
+    }
+    ~PartBakePhases() { end_part(); }
+
+private:
+    void record(double ms) {  // accumulate the just-closed phase's duration
+        if (cur == nullptr) return;
+        if      (std::strcmp(cur, bake_trace::kSpanFold)  == 0) times.fold  += ms;
+        else if (std::strcmp(cur, bake_trace::kSpanCtx)   == 0) times.ctx   += ms;
+        else if (std::strcmp(cur, bake_trace::kSpanEval)  == 0) times.eval  += ms;
+        else if (std::strcmp(cur, bake_trace::kSpanMerge) == 0) times.merge += ms;
+        else if (std::strcmp(cur, bake_trace::kSpanBuild) == 0) times.build += ms;
+        else if (std::strcmp(cur, bake_trace::kSpanMesh)  == 0) times.mesh  += ms;
+        else if (std::strcmp(cur, bake_trace::kSpanSave)  == 0) times.save  += ms;
+        cur = nullptr;
+    }
+};
+
 BakeResult ScriptHost::bake_source(const std::string& source,
                                    const std::string& params_json,
                                    const BakeOptions& opts,
@@ -1169,19 +1405,21 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     try {
 
     // MATTER_BAKE_PROFILE=1: per-bake phase timing line on stderr (diagnostic).
-    static const bool prof_on = std::getenv("MATTER_BAKE_PROFILE") != nullptr;
-    using prof_clock = std::chrono::steady_clock;
-    prof_clock::time_point prof_t0 = prof_clock::now();
-    prof_clock::time_point prof_t  = prof_t0;
-    double prof_fold = 0, prof_ctx = 0, prof_eval = 0, prof_merge = 0,
-           prof_build = 0, prof_mesh = 0, prof_save = 0;
+    // Task 1.4: the line is rendered from BakeTrace span data — the spans ARE
+    // the timing source (no second clock). Checked per call (not latched in a
+    // function-local static) so tests can toggle the env var; same gate and
+    // same output otherwise.
+    const bool prof_on = std::getenv("MATTER_BAKE_PROFILE") != nullptr;
     std::string prof_class;
-    auto prof_lap = [&]() -> double {
-        prof_clock::time_point n = prof_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(n - prof_t).count();
-        prof_t = n;
-        return ms;
-    };
+
+    // Guarantee a current collector for this bake (local throwaway when none
+    // is installed), then tile the part-bake span with phase children at the
+    // old prof_lap boundaries. Declared before the first `goto done` so both
+    // are in scope at the label and unwound on every exit path.
+    ScopedCurrentCollector bt_guard;
+    bake_trace::Collector* const btc = bake_trace::current();
+    PartBakePhases phases;
+    phases.start(btc, bake_trace::kSpanFold);
 
     // Perf fix: fold sources once (removing the redundant fold that was inside
     // merge_params_canonical) and spin up a single JSRuntime for the whole bake.
@@ -1207,7 +1445,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     // eval) to keep the bake deterministic and file-access-free.
     ModuleStore store = store_from_fold(fold);
     const bool use_module = !store.sources.empty();
-    prof_fold = prof_lap();
+    phases.next(bake_trace::kSpanCtx);
 
     rt = JS_NewRuntime();
     if (use_module) JS_SetModuleLoaderFunc(rt, sh_module_normalize, sh_module_loader, &store);
@@ -1242,7 +1480,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     if (JS_IsException(base)) { r.error = harvest_exception(ctx); JS_FreeValue(ctx,base); goto done; }
     JS_FreeValue(ctx, base);
     dsl::install_bindings(ctx);
-    prof_ctx = prof_lap();
+    phases.next(bake_trace::kSpanEval);
 
     {
         // Eval user source + a generic trampoline that publishes the authored
@@ -1264,7 +1502,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             if (JS_IsException(v)) { r.error = harvest_exception(ctx); JS_FreeValue(ctx,v); goto done; }
             JS_FreeValue(ctx, v);
         }
-        prof_eval = prof_lap();
+        phases.next(bake_trace::kSpanMerge);
 
         JSValue global = JS_GetGlobalObject(ctx);
         JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
@@ -1321,7 +1559,15 @@ BakeResult ScriptHost::bake_source(const std::string& source,
 
             // Seed the deterministic RNG and install the child-hash table now that
             // `merged` is available (deferred from the old pre-eval setup block).
-            state.set_rng(derive_seed(merged));
+            // W5 seeding rule: when the caller supplies opts.seed_params_json (a
+            // per-LOD-level bake seeding from the BASE/LOD0 merged params rather
+            // than this call's own `merged`), derive the seed from THAT instead —
+            // the level's build() still receives `merged` (its own params), only
+            // the rng stream is pinned to LOD0's. Empty (every pre-W5 caller)
+            // means "seed from this call's own merged params", byte-identical to
+            // the pre-W5 code path.
+            state.set_rng(derive_seed(
+                opts.seed_params_json.empty() ? merged : opts.seed_params_json));
             {
                 std::map<std::string, uint64_t> name2hash;
                 std::map<uint64_t, bool> child_animation_status;
@@ -1359,7 +1605,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             // Thread the world field binding so terrainVolume can call the mesher.
             state.set_world(opts.world);
         }
-        prof_merge = prof_lap();
+        phases.next(bake_trace::kSpanBuild);
 
         JSValue inst = JS_CallConstructor(ctx, authored, 0, nullptr);
         JS_FreeValue(ctx, authored);
@@ -1382,7 +1628,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         JS_FreeValue(ctx, bret);
         JS_FreeValue(ctx, paramsObj);
         JS_FreeValue(ctx, inst);
-        prof_build = prof_lap();
+        phases.next(bake_trace::kSpanMesh);
 
         // Capture globalThis.__amb (a probe authored code may set) so tests can
         // assert the bake context exposes no ambient Date/require/fetch/os bindings.
@@ -1610,14 +1856,27 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         }
 
         tlas.build(blas);
+        // W3 (Part Workbench, Lab-only): the part's full-resolution mesh is now
+        // fully registered in `blas` (all marching-cubes cells committed) — this
+        // is "LOD0 mesh ready" from the workbench's point of view. Null-checked;
+        // no-op cost when unset (production bakes never set opts.observer).
+        if (opts.observer) {
+            int mesh_tris = 0;
+            for (const auto& e : blas.get_entries())
+                mesh_tris += (int)e->triangles.size();
+            opts.observer->on_mesh_ready(mesh_tris);
+        }
         // Persist the child instances placed via placeChild() during build().
         std::vector<part_asset::ChildInstance> kids;
         kids.reserve(state.children().size());
+        r.child_modules_placed.reserve(state.children().size());
         for (const auto& c : state.children()) {
             part_asset::ChildInstance ci;
             ci.child_resolved_hash = c.hash;
             std::memcpy(ci.transform, c.transform, sizeof ci.transform);
             kids.push_back(ci);
+            // W5: parallel module-name carry (see BakeResult::child_modules_placed).
+            r.child_modules_placed.push_back(c.module);
         }
         // Build the write path: if opts.parts_dir is non-empty, make it absolute
         // by joining parts_dir + "/" + cache_path_resolved(...).  Otherwise fall
@@ -1644,7 +1903,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             ve.turbulence = e.turbulence;
             emitters.push_back(ve);
         }
-        prof_mesh = prof_lap();
+        phases.next(bake_trace::kSpanSave);
         // Static output deliberately keeps the exact legacy write path.  An
         // authored rig instead writes isolated candidates and publishes the
         // three siblings atomically; an ANLK can never become a static hit.
@@ -1808,23 +2067,32 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                 part_asset::save_flatten_hints(hpath, hints);
             }
         }
-        prof_save = prof_lap();
+        phases.end_phase();  // close kSpanSave; part-bake stays open
     }
 
 done:
+    // Close the phase still open on error paths BEFORE the runtime teardown,
+    // then close part-bake after it: the teardown lands in part-bake's
+    // residual ("free") time, exactly where the old prof_lap accounting put
+    // it on the success path.
+    phases.end_phase();
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
-    if (prof_on) {
-        double total = std::chrono::duration<double, std::milli>(
-                           prof_clock::now() - prof_t0).count();
+    phases.end_part();
+    if (prof_on && btc) {
+        // Render the historical [bake_profile] line from the phase timings
+        // PartBakePhases recorded as it closed each span. Collector::end()
+        // hands back exactly the ms stored on the span, so the printed values
+        // are identical to what a snapshot of the trace would yield — without
+        // the O(session-trace) snapshot + search this path used to do.
+        const PartBakePhases::Times& t = phases.times;
         std::fprintf(stderr,
             "[bake_profile] %s total=%.1f fold=%.1f ctx=%.1f eval=%.1f "
             "merge=%.1f build=%.1f mesh=%.1f save=%.1f free=%.1f\n",
-            prof_class.empty() ? "?" : prof_class.c_str(), total,
-            prof_fold, prof_ctx, prof_eval, prof_merge, prof_build,
-            prof_mesh, prof_save,
-            total - (prof_fold + prof_ctx + prof_eval + prof_merge +
-                     prof_build + prof_mesh + prof_save));
+            prof_class.empty() ? "?" : prof_class.c_str(), t.total,
+            t.fold, t.ctx, t.eval, t.merge, t.build, t.mesh, t.save,
+            t.total - (t.fold + t.ctx + t.eval + t.merge +
+                       t.build + t.mesh + t.save));
     }
     return r;
 
@@ -2503,12 +2771,12 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
                         if (wz < zmin) zmin = wz;
                         if (wz > zmax) zmax = wz;
                     };
-                    // Transform a local point by the op's transform (raylib Matrix,
-                    // column-major: m0-m3=col0, m4-m7=col1, m8-m11=col2, m12-m15=col3/translation).
+                    // Transform a local point by the op's transform (mm::Mat4, row-major:
+                    // m[0..3]=row0, m[4..7]=row1, m[8..11]=row2; m[3]/m[7]/m[11]=translation).
                     auto tx = [&](float lx, float ly, float lz, float& ox, float& oz) {
-                        const Matrix& M = op.transform;
-                        ox = M.m0*lx + M.m4*ly + M.m8*lz  + M.m12;
-                        oz = M.m2*lx + M.m6*ly + M.m10*lz + M.m14;
+                        const mm::Mat4& M = op.transform;
+                        ox = M.m[0]*lx + M.m[1]*ly + M.m[2]*lz  + M.m[3];
+                        oz = M.m[8]*lx + M.m[9]*ly + M.m[10]*lz + M.m[11];
                     };
                     // Initialize to first point.
                     float fx, fz;
@@ -2519,14 +2787,14 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
                         // Exact conservative AABB for a sphere under any affine M:
                         //   world_center = M * center  (already captured in fx, fz above)
                         //   world half-extent along world axis i = r * L2_norm(row_i of linear part of M)
-                        // For raylib's Matrix layout (row names m0,m4,m8 = X-row; m2,m6,m10 = Z-row):
-                        //   hx = r * sqrt(m0^2 + m4^2 + m8^2)
-                        //   hz = r * sqrt(m2^2 + m6^2 + m10^2)
+                        // For mm::Mat4's row-major layout (m[0],m[1],m[2] = X-row; m[8],m[9],m[10] = Z-row):
+                        //   hx = r * sqrt(m[0]^2 + m[1]^2 + m[2]^2)
+                        //   hz = r * sqrt(m[8]^2 + m[9]^2 + m[10]^2)
                         // This is exact for spheres under rotation + non-uniform scale (no probe samples needed).
-                        const Matrix& M = op.transform;
+                        const mm::Mat4& M = op.transform;
                         float r0 = op.radius;
-                        float hx = r0 * std::sqrt(M.m0*M.m0 + M.m4*M.m4 + M.m8*M.m8);
-                        float hz = r0 * std::sqrt(M.m2*M.m2 + M.m6*M.m6 + M.m10*M.m10);
+                        float hx = r0 * std::sqrt(M.m[0]*M.m[0] + M.m[1]*M.m[1] + M.m[2]*M.m[2]);
+                        float hz = r0 * std::sqrt(M.m[8]*M.m[8] + M.m[9]*M.m[9] + M.m[10]*M.m[10]);
                         xmin = fx - hx; xmax = fx + hx;
                         zmin = fz - hz; zmax = fz + hz;
                     } else if (op.kind == dsl::BrushKind::Box) {
@@ -2548,14 +2816,14 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
                         // including rotation + non-uniform scale.  Local-axis ±r probes
                         // are non-conservative when the transform has off-diagonal terms
                         // that route Y into world X (they under-estimate world extent).
-                        const Matrix& M2 = op.transform;
+                        const mm::Mat4& M2 = op.transform;
                         float r0 = op.radius;
                         float ax = op.center.x, ay = op.center.y, az = op.center.z;
                         float bx = op.segB.x,   by = op.segB.y,   bz = op.segB.z;
                         float r1 = op.r1;
                         // Row-norm world-space radial margins for each end radius.
-                        float row_x = std::sqrt(M2.m0*M2.m0 + M2.m4*M2.m4 + M2.m8*M2.m8);
-                        float row_z = std::sqrt(M2.m2*M2.m2 + M2.m6*M2.m6 + M2.m10*M2.m10);
+                        float row_x = std::sqrt(M2.m[0]*M2.m[0] + M2.m[1]*M2.m[1] + M2.m[2]*M2.m[2]);
+                        float row_z = std::sqrt(M2.m[8]*M2.m[8] + M2.m[9]*M2.m[9] + M2.m[10]*M2.m[10]);
                         // Endpoint a (radius r0): world center + ±row-norm margin.
                         float wax, waz;
                         tx(ax, ay, az, wax, waz);

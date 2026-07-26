@@ -158,6 +158,44 @@ bool load_lod_sidecar(const std::string& path, LodVariants& out) {
     return true;
 }
 
+std::string cache_path_static_lods(uint64_t resolved_hash) {
+    char hex[17];
+    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)resolved_hash);
+    return std::string("parts/") + hex + ".static_lods";
+}
+
+bool save_static_lod_plan(const std::string& path, const StaticLodPlan& plan) {
+    if (plan.level_hashes.size() != plan.level_exclude_masks.size()) return false;
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream out(tmp);
+        if (!out) return false;
+        for (size_t i = 0; i < plan.level_hashes.size(); ++i) {
+            char hhex[17], mhex[9];
+            snprintf(hhex, sizeof hhex, "%016llx", (unsigned long long)plan.level_hashes[i]);
+            snprintf(mhex, sizeof mhex, "%08x", plan.level_exclude_masks[i]);
+            out << hhex << " " << mhex << "\n";
+        }
+        if (!out.good()) return false;
+    }
+    return replace_file_atomic(tmp, path);
+}
+
+bool load_static_lod_plan(const std::string& path, StaticLodPlan& out) {
+    std::ifstream in(path);
+    if (!in) return false;
+    StaticLodPlan plan;
+    std::string hhex, mhex;
+    while (in >> hhex >> mhex) {
+        if (hhex.size() != 16 || mhex.size() != 8) return false;
+        plan.level_hashes.push_back((uint64_t)strtoull(hhex.c_str(), nullptr, 16));
+        plan.level_exclude_masks.push_back((uint32_t)strtoull(mhex.c_str(), nullptr, 16));
+    }
+    if (plan.level_hashes.empty()) return false;
+    out = std::move(plan);
+    return true;
+}
+
 std::string cache_path_hints(uint64_t resolved_hash) {
     char buf[64];
     snprintf(buf, sizeof buf, "parts/%016llx.hints",
@@ -406,7 +444,9 @@ struct ParsedBlasEntry {
 struct ParsedDrawInstance {
     uint32_t blas_index = 0;
     uint32_t material_id = 0;
-    Matrix4x4 transform;
+    // Was Matrix4x4 before the Phase 2 MathLib collapse; mm::Mat4 has the same
+    // row-major float[16] layout and identity default, so this is a rename.
+    mm::Mat4 transform;
 };
 struct ParsedCommonBody {
     std::vector<ParsedBlasEntry> blas_entries;
@@ -771,6 +811,37 @@ bool save_v2(const std::string& path, const BLASManager& blas,
     return write_file_atomic(path, kFormatVersionV2, resolved_hash, body);
 }
 
+bool save_v2(const std::string& path, const BLASManager& blas,
+             const TLASManager& tlas,
+             const ChildInstance* children, size_t child_count,
+             const LodLevels& lods,
+             const std::vector<VolumeEmitter>& emitters,
+             const std::vector<uint32_t>& child_level_mask,
+             uint64_t resolved_hash) {
+    // Compat guard: a non-empty mask must be parallel to the children table.
+    if (!child_level_mask.empty() && child_level_mask.size() != child_count)
+        return false;
+    std::vector<uint8_t> body;
+    std::unordered_map<BLASHandle, uint32_t> h2i;
+    if (!append_common_body(body, blas, tlas, children, child_count, lods, h2i))
+        return false;
+    if (!emitters.empty()) {
+        put<uint32_t>(body, 0x454D4954u);  // "EMIT" tag
+        put<uint32_t>(body, static_cast<uint32_t>(emitters.size()));
+        put_bytes(body, emitters.data(), emitters.size() * sizeof(VolumeEmitter));
+    }
+    // W5: LMSK trailer — written ONLY when the caller supplies a mask, so a
+    // part without `static lods` (child_level_mask always empty from every
+    // pre-W5 call site) appends nothing here, same as the EMIT gate above.
+    if (!child_level_mask.empty()) {
+        put<uint32_t>(body, 0x4C4D534Bu);  // "LMSK" tag
+        put<uint32_t>(body, static_cast<uint32_t>(child_level_mask.size()));
+        put_bytes(body, child_level_mask.data(),
+                  child_level_mask.size() * sizeof(uint32_t));
+    }
+    return write_file_atomic(path, kFormatVersionV2, resolved_hash, body);
+}
+
 bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
              BLASManager& blas, TLASManager& tlas,
              std::vector<ChildInstance>& children_out,
@@ -857,6 +928,92 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
         if (failure) *failure = PartAssetLoadFailure::CorruptBody;
         if (reason) *reason = "failed to publish validated part body";
         return false;
+    }
+    return true;
+}
+
+bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
+             BLASManager& blas, TLASManager& tlas,
+             std::vector<ChildInstance>& children_out,
+             LodLevels& lods_out,
+             std::vector<VolumeEmitter>& emitters_out,
+             std::vector<uint32_t>& child_level_mask_out,
+             PartAssetLoadFailure* failure,
+             std::string* reason) {
+    emitters_out.clear();
+    children_out.clear();
+    lods_out.clear();
+    child_level_mask_out.clear();
+    if (failure) *failure = PartAssetLoadFailure::None;
+    if (reason) reason->clear();
+
+    const auto fail = [failure, reason](PartAssetLoadFailure value, const char* message) {
+        if (failure) *failure = value;
+        if (reason) *reason = message;
+        return false;
+    };
+
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return fail(PartAssetLoadFailure::Header, "invalid part header");
+    std::fseek(f, 0, SEEK_END);
+    long sz = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (sz < 40) { std::fclose(f); return fail(PartAssetLoadFailure::Header, "invalid part header"); }
+    std::vector<uint8_t> buf(static_cast<size_t>(sz));
+    bool read_ok = std::fread(buf.data(), 1, buf.size(), f) == buf.size();
+    std::fclose(f);
+    if (!read_ok) return fail(PartAssetLoadFailure::Header, "invalid part header");
+
+    Reader r{ buf.data(), buf.data() + buf.size() };
+    uint64_t content_hash = 0;
+    if (!read_and_validate_header(r, expected_resolved_hash, kFormatVersionV2, content_hash))
+        return fail(PartAssetLoadFailure::Header, "invalid part header");
+    if (fnv1a64(r.p, static_cast<size_t>(r.end - r.p)) != content_hash)
+        return fail(PartAssetLoadFailure::CorruptBody, "corrupt part body");
+
+    std::vector<BLASHandle> handles;
+    if (!read_common_body(r, blas, tlas, children_out, lods_out, handles, failure, reason)) {
+        if (failure && *failure == PartAssetLoadFailure::None)
+            *failure = PartAssetLoadFailure::CorruptBody;
+        if (reason && reason->empty()) *reason = "corrupt part body";
+        return false;
+    }
+
+    // Probe for the optional EMIT trailer (EOF-tolerant; same as the other
+    // emitters-reading overload above).
+    if (r.p < r.end && static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
+        uint32_t tag = 0;
+        std::memcpy(&tag, r.p, sizeof(uint32_t));
+        if (tag == 0x454D4954u) {
+            r.p += sizeof(uint32_t);
+            const uint32_t count = r.get<uint32_t>();
+            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt EMIT trailer");
+            const size_t bytes = static_cast<size_t>(count) * sizeof(VolumeEmitter);
+            const uint8_t* data = r.take(bytes);
+            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt EMIT trailer");
+            emitters_out.resize(count);
+            std::memcpy(emitters_out.data(), data, bytes);
+        }
+    }
+
+    // W5: probe for the optional LMSK trailer (EOF-tolerant, same pattern).
+    // Absent => child_level_mask_out stays empty (compat: all levels).
+    if (r.p < r.end && static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
+        uint32_t tag = 0;
+        std::memcpy(&tag, r.p, sizeof(uint32_t));
+        if (tag == 0x4C4D534Bu) {
+            r.p += sizeof(uint32_t);
+            const uint32_t count = r.get<uint32_t>();
+            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt LMSK trailer");
+            const size_t bytes = static_cast<size_t>(count) * sizeof(uint32_t);
+            const uint8_t* data = r.take(bytes);
+            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt LMSK trailer");
+            if (count != children_out.size())
+                return fail(PartAssetLoadFailure::CorruptBody,
+                            "LMSK trailer size does not match child table");
+            child_level_mask_out.resize(count);
+            std::memcpy(child_level_mask_out.data(), data, bytes);
+        }
     }
     return true;
 }

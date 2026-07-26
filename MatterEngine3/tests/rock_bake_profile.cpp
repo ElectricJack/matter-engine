@@ -15,13 +15,9 @@
 #include <limits.h>
 #include <unistd.h>
 
-using namespace part_graph;
+#include "portable_realpath.h"
 
-static std::string abspath(const std::string& rel) {
-    char buf[PATH_MAX];
-    if (realpath(rel.c_str(), buf)) return std::string(buf);
-    return rel;
-}
+using namespace part_graph;
 
 static size_t load_tri_count(uint64_t h) {
     BLASManager blas; TLASManager tlas(256);
@@ -35,7 +31,7 @@ static size_t load_tri_count(uint64_t h) {
 }
 
 int main(int argc, char** argv) {
-    const std::string schemas    = abspath("../examples/world_demo/schemas");
+    const std::string schemas    = abspath("../../projects/world_demo/objects");
     const std::string shared_lib = abspath("../shared-lib");
 
     const std::string sandbox = "/tmp/me3_rock_profile";

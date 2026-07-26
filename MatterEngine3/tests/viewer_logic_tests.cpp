@@ -15,8 +15,8 @@
 #include "part_asset_v2.h"
 #include "part_flatten.h"  // Task 11: flatten_part for regen sniff test
 #include "world_lights.h"
-#include "../../MatterViewer/camera_controller.h"
-#include "../../MatterViewer/streaming_anchor_controller.h"
+#include "../../MatterEditor/src/camera_controller.h"
+#include "../../MatterEditor/src/streaming_anchor_controller.h"
 #include "matter/ecs.h"
 
 #include <cmath>
@@ -577,7 +577,7 @@ static void test_local_provider_cache() {
 
     // Resolve committed example assets relative to MatterEngine3/tests (cwd).
     auto cfg = viewer::LocalProviderConfig::for_project(
-        "../examples/world_demo", "Demo", "../shared-lib");
+        "../../projects/world_demo", "Demo", "../shared-lib");
     cfg.cache_root = cache;
 
     // --- First connect: bake anything missing, then load into the shared store. ---
@@ -708,7 +708,7 @@ static void test_partstore_keeps_children() {
     // they still resolve from inside the sandbox (they are repo-relative to tests/).
     std::error_code path_error;
     std::string schemas = std::filesystem::absolute(
-        "../examples/world_demo/objects", path_error).string();
+        "../../projects/world_demo/objects", path_error).string();
     path_error.clear();
     std::string sharedlib = std::filesystem::absolute(
         "../shared-lib", path_error).string();
@@ -957,10 +957,6 @@ static void test_raster_mesh_data() {
     CHECK(plainsoup.normals[2] == 1.0f, "geometric normal +z");
     CHECK(plainsoup.texcoords[0] == -1.0f && plainsoup.texcoords[1] == 1.0f, "sentinel mat, AO=1");
     CHECK(plainsoup.colors[3] == 0, "neutral tint alpha 0");
-
-    float rm[16] = {1,0,0, 5,  0,1,0, 6,  0,0,1, 7,  0,0,0,1};    // row-major translate(5,6,7)
-    Matrix m = viewer::row_major_to_matrix(rm);
-    CHECK(m.m12 == 5.0f && m.m13 == 6.0f && m.m14 == 7.0f, "translation lands in m12..m14");
 }
 
 static void test_indexed_weld() {
@@ -1647,7 +1643,7 @@ static void test_install_phase_on_part_progress() {
     std::vector<std::pair<int,int>> callbacks;
 
     auto cfg = viewer::LocalProviderConfig::for_project(
-        "../examples/world_demo", "Demo", "../shared-lib");
+        "../../projects/world_demo", "Demo", "../shared-lib");
     cfg.cache_root = cold_cache;
     cfg.on_part = [&](const char* /*module*/, int done, int total) {
         callbacks.emplace_back(done, total);

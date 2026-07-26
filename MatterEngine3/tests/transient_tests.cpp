@@ -112,7 +112,6 @@ static std::unique_ptr<viewer::LocalProvider> make_provider(
     const std::string& sandbox,
     const std::string& world_name = "Demo") {
     auto cfg = viewer::LocalProviderConfig::for_project(sandbox, world_name, "");
-    cfg.gl_available = false;
     return std::make_unique<viewer::LocalProvider>(std::move(cfg));
 }
 

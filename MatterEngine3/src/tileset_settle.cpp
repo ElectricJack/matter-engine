@@ -1,7 +1,9 @@
 #include "tileset_settle.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 
@@ -65,6 +67,19 @@ struct SettleWorld::Impl {
         std::vector<std::vector<int>> members;       // [occurrence][canonical idx] -> bodies index
     };
     std::vector<SyncGroup> groups;
+
+    // ---- step-mode bookkeeping (reset per layer by begin_layer) ----
+    size_t layer_start = 0;        // first bodies[] index of the current layer
+    int    layer_count = 0;        // bodies spawned by the current layer
+    int    cur_tick = 0;           // 0-based tick counter within the layer
+    float  cur_sim_time = 0.0f;    // accumulated sim seconds this layer
+    bool   first_contact = false;  // latched: layer's max downward vel decreased
+    float  prev_max_down = 0.0f;   // previous tick's max downward velocity
+    bool   have_stats = false;     // true once step() ran for this layer
+    TickStats last_stats;          // counts layer_converged()/end_layer() reuse
+    // Per-body (whole world, spawn order; extended by begin_layer):
+    std::vector<char> prev_awake;  // awake state last tick (wake_events)
+    std::vector<int>  ticks_awake; // total ticks each body has been awake
 
     void wrap_bodies();
     void sync_groups_step(bool force_snap);
@@ -139,8 +154,16 @@ int SettleWorld::add_sync_group(const std::vector<Pose>& occurrence_frames) {
 }
 
 LayerResult SettleWorld::settle_layer(const std::vector<BodySpawn>& spawns) {
+    begin_layer(spawns);
+    const SettleParams& P = impl_->params;
+    while (impl_->cur_sim_time < P.max_sim_time && !layer_converged())
+        step();
+    return end_layer();
+}
+
+void SettleWorld::begin_layer(const std::vector<BodySpawn>& spawns) {
     const float S = impl_->params.sim_scale;
-    const size_t layer_start = impl_->bodies.size();
+    impl_->layer_start = impl_->bodies.size();
 
     for (const BodySpawn& sp : spawns) {
         b3BodyDef bd = b3DefaultBodyDef();
@@ -217,27 +240,110 @@ LayerResult SettleWorld::settle_layer(const std::vector<BodySpawn>& spawns) {
         }
     }
 
-    LayerResult r;
+    // Per-layer telemetry reset. Newly spawned dynamic bodies start awake, so
+    // seed prev_awake=true (they are not wake_events on the first tick).
+    impl_->layer_count = (int)(impl_->bodies.size() - impl_->layer_start);
+    impl_->cur_tick = 0;
+    impl_->cur_sim_time = 0.0f;
+    impl_->first_contact = false;
+    impl_->prev_max_down = -std::numeric_limits<float>::infinity();
+    impl_->have_stats = false;
+    impl_->last_stats = TickStats{};
+    impl_->prev_awake.resize(impl_->bodies.size(), 1);
+    impl_->ticks_awake.resize(impl_->bodies.size(), 0);
+}
+
+TickStats SettleWorld::step() {
+    const auto t0 = std::chrono::steady_clock::now();
     const SettleParams& P = impl_->params;
-    const int layer_count = (int)(impl_->bodies.size() - layer_start);
-    while (r.sim_time < P.max_sim_time) {
-        b3World_Step(impl_->world, P.dt, P.substeps);
-        impl_->wrap_bodies();
-        impl_->sync_groups_step(false);
-        r.sim_time += P.dt;
-        // Count awake only among this layer's bodies so prior settled layers
-        // don't inflate the denominator and make convergence impossible.
-        int layer_awake = 0;
-        for (size_t i = layer_start; i < impl_->bodies.size(); ++i)
-            if (b3Body_IsAwake(impl_->bodies[i].id)) ++layer_awake;
-        r.awake_count = impl_->count_awake();
-        if (layer_awake <= (int)((1.0f - P.sleep_fraction) * layer_count)) {
-            r.converged = true;
-            break;
+
+    // Per-tick operation order must match the historical settle_layer loop
+    // exactly: b3World_Step -> wrap_bodies -> sync_groups_step -> time accum
+    // -> convergence counting (pose_hash golden gate).
+    b3World_Step(impl_->world, P.dt, P.substeps);
+    impl_->wrap_bodies();
+    impl_->sync_groups_step(false);
+    impl_->cur_sim_time += P.dt;
+
+    TickStats ts;
+    ts.tick = impl_->cur_tick++;
+    ts.sim_time = impl_->cur_sim_time;
+
+    // Single read-only pass: whole-world awake bookkeeping plus this layer's
+    // velocity telemetry (the same loop that historically counted awake bodies).
+    float max_down = -std::numeric_limits<float>::infinity();
+    for (size_t i = 0; i < impl_->bodies.size(); ++i) {
+        const b3BodyId id = impl_->bodies[i].id;
+        const bool awake = b3Body_IsAwake(id);
+        if (awake) {
+            ++ts.total_awake;
+            ++impl_->ticks_awake[i];
+            if (!impl_->prev_awake[i]) ++ts.wake_events;
         }
+        impl_->prev_awake[i] = awake ? 1 : 0;
+        if (i < impl_->layer_start) continue;
+        if (awake) ++ts.layer_awake;
+        const b3Vec3 lv = b3Body_GetLinearVelocity(id);
+        const b3Vec3 av = b3Body_GetAngularVelocity(id);
+        const float lin = std::sqrt(lv.x * lv.x + lv.y * lv.y + lv.z * lv.z);
+        const float ang = std::sqrt(av.x * av.x + av.y * av.y + av.z * av.z);
+        if (lin > ts.max_lin_vel) ts.max_lin_vel = lin;
+        if (ang > ts.max_ang_vel) ts.max_ang_vel = ang;
+        if (-lv.y > max_down) max_down = -lv.y;
     }
+
+    // First-contact latch: during free fall the layer's max downward velocity
+    // grows every tick; the first decrease means something hit something.
+    if (!impl_->first_contact && max_down < impl_->prev_max_down)
+        impl_->first_contact = true;
+    impl_->prev_max_down = max_down;
+    ts.first_contact = impl_->first_contact;
+
+    ts.step_ms = std::chrono::duration<float, std::milli>(
+        std::chrono::steady_clock::now() - t0).count();
+    impl_->last_stats = ts;
+    impl_->have_stats = true;
+    return ts;
+}
+
+bool SettleWorld::layer_converged() const {
+    // Same sleep_fraction rule (and int truncation) as the historical loop,
+    // reusing the counts step() computed — no second body pass. False before
+    // the first step so the batch loop always performs at least one tick.
+    if (!impl_->have_stats) return false;
+    const SettleParams& P = impl_->params;
+    return impl_->last_stats.layer_awake
+        <= (int)((1.0f - P.sleep_fraction) * impl_->layer_count);
+}
+
+LayerResult SettleWorld::end_layer() {
+    LayerResult r;
+    r.converged = layer_converged();
+    r.awake_count = impl_->have_stats ? impl_->last_stats.total_awake : 0;
+    r.sim_time = impl_->cur_sim_time;
     impl_->refresh_poses();
     return r;
+}
+
+int SettleWorld::body_count() const { return (int)impl_->bodies.size(); }
+
+BodyState SettleWorld::body_state(int index) const {
+    const Impl::TrackedBody& tb = impl_->bodies[index];
+    const float inv = 1.0f / impl_->params.sim_scale;
+    const b3Pos p = b3Body_GetPosition(tb.id);
+    const b3Quat q = b3Body_GetRotation(tb.id);
+    const b3Vec3 lv = b3Body_GetLinearVelocity(tb.id);
+    const b3Vec3 av = b3Body_GetAngularVelocity(tb.id);
+    BodyState st;
+    st.pose = Pose{ p.x * inv, p.y * inv, p.z * inv, q.v.x, q.v.y, q.v.z, q.s };
+    // Linear velocity in world units (m/s); angular velocity is scale-invariant.
+    st.lin_vel[0] = lv.x * inv; st.lin_vel[1] = lv.y * inv; st.lin_vel[2] = lv.z * inv;
+    st.ang_vel[0] = av.x; st.ang_vel[1] = av.y; st.ang_vel[2] = av.z;
+    st.awake = b3Body_IsAwake(tb.id);
+    st.ticks_awake = index < (int)impl_->ticks_awake.size() ? impl_->ticks_awake[index] : 0;
+    st.sync_group = tb.group;
+    st.instance = tb.instance;
+    return st;
 }
 
 void SettleWorld::finalize() {

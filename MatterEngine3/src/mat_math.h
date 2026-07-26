@@ -9,7 +9,9 @@
 //   NormalMat   — inverse-transpose upper-3×3 for normal transformation
 //
 // NOT covered here (operate on different types / layouts — kept local):
-//   csg_lowering.cpp  mat_invert / mat_mul  — raylib column-major Matrix
+//   csg_lowering.cpp  mat_invert — mm::Mat4, cofactor formula kept bit-exact
+//                       with its pre-Phase-3 raylib-Matrix form rather than
+//                       swapped for mm::inverse (see that file's comment)
 //   world_flatten.cpp mat4_mul              — mat4 struct (row-major but separate type)
 //   tileset_bake.cpp  mat_to_pose (Shepperd) — full TRS extract + orthonorm validation
 //   tileset_settle.cpp axes_to_quat (Shepperd) — column-axes convention, different input
@@ -19,18 +21,29 @@
 #include <cmath>
 #include <cstring>
 
+#include "matter_math.h"
+
 // ---------------------------------------------------------------------------
 // mul16 — row-major 4×4 multiply.
 // Element [r][c] = m[r*4 + c].  Translation lives in m[3], m[7], m[11].
 // Same convention as ChildInstance transforms and WorldComposer.
+//
+// Delegates to mm::multiply (libs/MathLib/include/matter_math.h) — same
+// row-major layout, same a*b operand order (mm::multiply applies b first,
+// same as this function's original triple loop), so this is a straight
+// substitution with no operand swap at any call site. Signature kept as raw
+// float[16] in/out (rather than switching callers to mm::Mat4) because
+// callers here (part_flatten.cpp) still carry raw float[16] arrays end to
+// end; full type migration is Phase 3 of
+// docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md, not this
+// phase.
 // ---------------------------------------------------------------------------
 inline void mul16(const float* a, const float* b, float* out) {
-    for (int i = 0; i < 4; ++i)
-        for (int j = 0; j < 4; ++j) {
-            float s = 0;
-            for (int k = 0; k < 4; ++k) s += a[i*4+k] * b[k*4+j];
-            out[i*4+j] = s;
-        }
+    mm::Mat4 ma, mb;
+    std::memcpy(ma.m, a, sizeof(ma.m));
+    std::memcpy(mb.m, b, sizeof(mb.m));
+    const mm::Mat4 result = mm::multiply(ma, mb);
+    std::memcpy(out, result.m, sizeof(result.m));
 }
 
 // ---------------------------------------------------------------------------

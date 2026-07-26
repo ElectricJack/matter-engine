@@ -29,74 +29,46 @@
 
 namespace {
 
-// Full 4x4 row-major matrix inversion via the adjugate method.
-// Returns false and writes identity if |det| < 1e-12.
+// Full 4x4 row-major matrix inversion, delegated to MathLib's mm::inverse
+// (libs/MathLib/include/matter_math.h). Returns false and writes identity on
+// failure, matching this function's original contract -- the only caller
+// (expand_instance() below) checks the bool for a diagnostic but always goes
+// on to use `out` as the instance's inverse transform, so `out` must be a
+// well-defined matrix on both paths, not merely "unmodified" (mm::inverse's
+// own policy on failure).
+//
+// BEHAVIOUR CHANGE from the deleted cofactor/adjugate implementation: the old
+// code rejected as singular whenever |det| < 1e-12 (a determinant-magnitude
+// threshold over the whole matrix). mm::inverse uses Gauss-Jordan elimination
+// with partial pivoting and rejects only an exactly-zero pivot (plus a
+// finite-output re-check) -- see the "Singular-matrix policy" block in
+// matter_math.h. It is stricter-by-zero (a nonzero-but-tiny pivot no longer
+// trips it) and more permissive near zero than the old |det|<1e-12 gate,
+// though the finite-output re-check still catches cases where a near-zero
+// pivot blew up the result. Net effect here: a handful of near-singular part
+// transforms that previously logged "near-singular transform" and fell back
+// to an identity inverse may now silently invert successfully (producing a
+// large-magnitude but finite inverse) instead.
+//
+// That is mostly a FIX -- the old |det| gate was wrong for small uniform
+// scales, where det = s^4 (a legitimate s=1e-4 part gives det=1e-16 and was
+// wrongly rejected). But note the diagnostic channel narrowed with it: a
+// genuinely degenerate part (say scale.z=1e-20) now inverts to entries ~1e20,
+// so xform_point() sends every ray to local-space infinity and the part is
+// silently invisible to the query API -- where the old code at least printed
+// the warning. If that ever needs catching, test the magnitude of the result
+// rather than restoring the determinant gate.
 static bool invert4x4(const float* m, float* out) {
-    // Cofactor expansion — standard adjugate/det method.
-    // We compute all 16 cofactors then divide by det.
-    // Indexing: m[row*4 + col], same for out.
-    float c[16];
-    // Cofactor C_ij = (-1)^(i+j) * M_ij  (M_ij = 3x3 minor)
-    // We label the original matrix rows r0..r3, cols c0..c3.
-    // Precompute 2x2 sub-determinants of the bottom 3 rows to save work:
-    const float
-        a00=m[0],  a01=m[1],  a02=m[2],  a03=m[3],
-        a10=m[4],  a11=m[5],  a12=m[6],  a13=m[7],
-        a20=m[8],  a21=m[9],  a22=m[10], a23=m[11],
-        a30=m[12], a31=m[13], a32=m[14], a33=m[15];
-
-    // 3×3 minors of m[0..15] — we need them for each cofactor row.
-    // Minor for (0,0): submatrix removing row0, col0
-    auto minor3 = [&](int r0,int r1,int r2,int c0,int c1,int c2) -> float {
-        const float* rows[4] = { m, m+4, m+8, m+12 };
-        return rows[r0][c0]*(rows[r1][c1]*rows[r2][c2]-rows[r1][c2]*rows[r2][c1])
-              -rows[r0][c1]*(rows[r1][c0]*rows[r2][c2]-rows[r1][c2]*rows[r2][c0])
-              +rows[r0][c2]*(rows[r1][c0]*rows[r2][c1]-rows[r1][c1]*rows[r2][c0]);
-    };
-    (void)a00; (void)a01; (void)a02; (void)a03;
-    (void)a10; (void)a11; (void)a12; (void)a13;
-    (void)a20; (void)a21; (void)a22; (void)a23;
-    (void)a30; (void)a31; (void)a32; (void)a33;
-
-    // Cofactors (transposed adjugate). out[col*4 + row] = sign * minor.
-    // We want inv = adjugate^T / det, where adjugate[i][j] = cofactor[j][i].
-    // So out[i*4+j] = cofactor[j][i] / det  — i.e., transpose of cofactor matrix.
-    c[0]  =  minor3(1,2,3, 1,2,3);
-    c[1]  = -minor3(1,2,3, 0,2,3);
-    c[2]  =  minor3(1,2,3, 0,1,3);
-    c[3]  = -minor3(1,2,3, 0,1,2);
-
-    c[4]  = -minor3(0,2,3, 1,2,3);
-    c[5]  =  minor3(0,2,3, 0,2,3);
-    c[6]  = -minor3(0,2,3, 0,1,3);
-    c[7]  =  minor3(0,2,3, 0,1,2);
-
-    c[8]  =  minor3(0,1,3, 1,2,3);
-    c[9]  = -minor3(0,1,3, 0,2,3);
-    c[10] =  minor3(0,1,3, 0,1,3);
-    c[11] = -minor3(0,1,3, 0,1,2);
-
-    c[12] = -minor3(0,1,2, 1,2,3);
-    c[13] =  minor3(0,1,2, 0,2,3);
-    c[14] = -minor3(0,1,2, 0,1,3);
-    c[15] =  minor3(0,1,2, 0,1,2);
-
-    // det = expansion along row 0
-    float det = m[0]*c[0] + m[1]*c[1] + m[2]*c[2] + m[3]*c[3];
-    if (std::fabs(det) < 1e-12f) {
-        // Singular — write identity and warn
-        std::memset(out, 0, 64);
-        out[0] = out[5] = out[10] = out[15] = 1.f;
-        return false;
+    mm::Mat4 in;
+    std::memcpy(in.m, m, sizeof(in.m));
+    mm::Mat4 result;
+    if (mm::inverse(in, result)) {
+        std::memcpy(out, result.m, sizeof(result.m));
+        return true;
     }
-    float id = 1.f / det;
-    // The adjugate is the TRANSPOSE of the cofactor matrix.
-    // cofactor matrix c[i*4+j] → adjugate[j*4+i].
-    // inv = adjugate / det.
-    for (int i = 0; i < 4; ++i)
-        for (int j = 0; j < 4; ++j)
-            out[i*4+j] = c[j*4+i] * id;
-    return true;
+    const mm::Mat4 ident = mm::identity();
+    std::memcpy(out, ident.m, sizeof(ident.m));
+    return false;
 }
 
 // NormalMat (inverse-transpose upper-3×3) is now in mat_math.h.

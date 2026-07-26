@@ -17,6 +17,9 @@
 #include "animation/anim_asset.h"
 #include "animation/anim_bundle.h"
 #include "animation/animation_binding_bake.h"
+#include "bake_trace.h"        // Bake Lab §II.6: install-path trace shape
+#include "bake_trace_names.h"
+#include "matter/bake_observer.h"  // Bake Lab W3: per-rung bake observer seam
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -27,6 +30,14 @@
 #include <vector>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#ifdef _WIN32
+// MinGW-w64 has no realpath(); _fullpath (stdlib.h) is the direct equivalent.
+// Callers here all pass 4096-byte buffers (see main's `abs`).
+static char* realpath(const char* path, char* resolved) {
+    return _fullpath(resolved, path, 4096);
+}
+#endif
 
 #include "check.h"
 
@@ -483,7 +494,7 @@ static void test_install_with_placement() {
 // installed it, and MUST fold the Leaf child hash (kids,1) exactly as the graph did.
 //
 // Paths: the demo schemas/shared-lib are repo-relative to the tests dir
-// (../examples/world_demo/schemas, ../shared-lib). The caller passes ABSOLUTE paths
+// (../../projects/world_demo/objects, ../shared-lib). The caller passes ABSOLUTE paths
 // resolved from the original cwd before any chdir, so resolution survives a chdir.
 // The real demo tree is a faithful port of MatterEngine2's three-mode system:
 //   Tree  -> voxel sphere-sweep trunk + instanced TreeBranch twigs
@@ -746,6 +757,122 @@ static void test_lod_variant_sidecar() {
     printf("  test_lod_variant_sidecar OK\n");
 }
 
+// W5 (Part Workbench, static lods) end-to-end: a schema exporting
+// `static lods = [ {}, { params:{...} }, { exclude:[...] } ]` installed
+// through the REAL FileModuleResolver + HostBaker + PartGraph::install
+// (exercising HostBaker::bake_static_lods exactly as matter_engine.cpp's
+// install pipeline calls it). Asserts:
+//   - parts/<root_hash>.static_lods sidecar has 3 levels
+//   - level 0 (no params/exclude) points at the root hash itself
+//   - level 1 (params) points at a DISTINCT, on-disk .part
+//   - level 2 (exclude) keeps the root hash but sets a non-zero exclude mask,
+//     and the root .part's LMSK trailer reflects it (child excluded at level 2
+//     only)
+// A second install (fully cached) leaves the sidecar and .part untouched.
+static void test_static_lods_end_to_end() {
+    namespace pg = part_graph;
+
+    const std::string root = "/tmp/me3_static_lods_e2e";
+    system(("rm -rf " + root).c_str());
+    const std::string schemas = root + "/schemas";
+    system(("mkdir -p " + schemas + " " + root + "/parts").c_str());
+
+    // Leaf: a childless part placed by Tree so `exclude` has something to drop.
+    write_file(schemas + "/Leaf.js",
+        "class Leaf extends Part {\n"
+        "  build(p) { this.beginVoxels(0.1); this.fill(1);\n"
+        "             this.sphere([0,0,0], 0.1); this.endVoxels(); }\n"
+        "}\n");
+
+    // Tree: opts into static lods. LOD1 regenerates with a different `n`
+    // (params-driven fresh build); LOD2 excludes Leaf. The seeding rule is
+    // exercised indirectly here (both levels bake successfully; the dedicated
+    // unit test in script_host_tests.cpp asserts the rng-stream identity
+    // directly at the ScriptHost layer).
+    write_file(schemas + "/Tree.js",
+        "class Tree extends Part {\n"
+        "  static params = { seed: 3, n: 2 };\n"
+        "  static requires(p) { return [ { module: 'Leaf', params: {} } ]; }\n"
+        "  static lods = [\n"
+        "    {},\n"
+        "    { params: { n: 1 } },\n"
+        "    { exclude: ['Leaf'] }\n"
+        "  ];\n"
+        "  build(p) {\n"
+        "    this.beginVoxels(0.1); this.fill(1);\n"
+        "    this.box([0,0,0],[0.2,0.2,0.2]); this.endVoxels();\n"
+        "    this.placeChild('Leaf');\n"
+        "  }\n"
+        "}\n");
+
+    char prevcwd[4096]; if (!getcwd(prevcwd, sizeof prevcwd)) prevcwd[0] = '\0';
+    CHECK(chdir(root.c_str()) == 0, "static_lods_e2e: chdir into sandbox");
+
+    script_host::ScriptHost host;
+    pg::FileModuleResolver resolver(host, "schemas");
+    pg::HostBaker baker(host, ".");
+    pg::PartGraph graph(resolver, baker);
+
+    pg::InstallResult ir = graph.install({ pg::ChildRequest{"Tree", pg::Params{}} });
+    CHECK(ir.ok, "static_lods_e2e: install ok");
+    if (!ir.ok) printf("  install error: %s\n", ir.error.c_str());
+    CHECK(ir.root_hashes.size() == 1, "static_lods_e2e: one root hash");
+
+    if (ir.ok && ir.root_hashes.size() == 1) {
+        const uint64_t root_hash = ir.root_hashes[0];
+        const std::string sidecar_path =
+            std::string(".") + "/" + part_asset::cache_path_static_lods(root_hash);
+
+        part_asset::StaticLodPlan plan;
+        CHECK(part_asset::load_static_lod_plan(sidecar_path, plan),
+              "static_lods_e2e: sidecar loads");
+        CHECK(plan.level_hashes.size() == 3, "static_lods_e2e: 3 authored levels");
+        if (plan.level_hashes.size() == 3) {
+            CHECK(plan.level_hashes[0] == root_hash,
+                  "static_lods_e2e: level 0 (no params/exclude) == root hash");
+            CHECK(plan.level_hashes[1] != root_hash,
+                  "static_lods_e2e: level 1 (params) is a distinct rebuild");
+            std::ifstream in(part_asset::cache_path_resolved(plan.level_hashes[1]),
+                             std::ios::binary);
+            CHECK(in.good(), "static_lods_e2e: level 1's .part exists on disk");
+            CHECK(plan.level_exclude_masks[1] == 0,
+                  "static_lods_e2e: level 1 excludes nothing");
+            CHECK(plan.level_hashes[2] == root_hash,
+                  "static_lods_e2e: level 2 (exclude only) reuses root hash (decimated)");
+            CHECK(plan.level_exclude_masks[2] != 0,
+                  "static_lods_e2e: level 2 has a non-zero exclude mask");
+        }
+
+        // The root .part's LMSK trailer: the single child (Leaf) must be
+        // ABSENT at level 2 and PRESENT at levels 0/1.
+        BLASManager blas; TLASManager tlas(64);
+        std::vector<part_asset::ChildInstance> kids;
+        part_asset::LodLevels lods_out;
+        std::vector<part_asset::VolumeEmitter> emitters;
+        std::vector<uint32_t> mask;
+        const std::string part_path = part_asset::cache_path_resolved(root_hash);
+        CHECK(part_asset::load_v2(part_path, root_hash, blas, tlas, kids, lods_out,
+                                  emitters, mask),
+              "static_lods_e2e: root .part reloads with LMSK-aware load_v2");
+        CHECK(kids.size() == 1, "static_lods_e2e: one Leaf placement");
+        CHECK(mask.size() == 1, "static_lods_e2e: LMSK trailer present (one child)");
+        if (mask.size() == 1) {
+            CHECK((mask[0] & (1u << 0)) != 0, "static_lods_e2e: Leaf present at level 0");
+            CHECK((mask[0] & (1u << 1)) != 0, "static_lods_e2e: Leaf present at level 1");
+            CHECK((mask[0] & (1u << 2)) == 0, "static_lods_e2e: Leaf ABSENT at level 2 (excluded)");
+        }
+
+        // Re-install: everything cached, sidecar untouched, nothing re-baked.
+        pg::InstallResult ir2 = graph.install({ pg::ChildRequest{"Tree", pg::Params{}} });
+        CHECK(ir2.ok, "static_lods_e2e: second install ok");
+        CHECK(ir2.baked.empty(), "static_lods_e2e: second install bakes nothing");
+    }
+
+    if (prevcwd[0]) (void)chdir(prevcwd);
+    system(("rm -rf " + root).c_str());
+    printf("  test_static_lods_end_to_end OK\n");
+}
+
 static void test_stale_material_cache_migrates() {
     using namespace part_graph;
     namespace fs = std::filesystem;
@@ -811,6 +938,152 @@ static void test_stale_material_cache_migrates() {
     fs::remove_all(root, ec);
 }
 
+// Bake Lab spec §II.6 trace-shape test: a cold-cache PartGraph::install with a
+// bake_trace::Collector current must record at least one part-bake span, with
+// its phase children (fold + ctx at minimum), IN THAT COLLECTOR — guarding
+// against part baking silently moving off the collector's (installing) thread,
+// where the thread-local current() would no longer see it.
+static void test_install_trace_shape() {
+    using namespace part_graph;
+    namespace fs = std::filesystem;
+
+    const fs::path root = fs::absolute("part_graph_trace_shape_test");
+    std::error_code ec;
+    fs::remove_all(root, ec);          // cold cache: no prior parts/
+    fs::create_directories(root / "schemas", ec);
+    fs::create_directories(root / "parts", ec);
+    CHECK(!ec, "trace-shape sandbox created");
+    if (ec) return;
+
+    write_file((root / "schemas" / "TraceBox.js").string(),
+        "class TraceBox extends Part {"
+        " build(p){ this.beginVoxels(0.25); this.fill(MAT.stone);"
+        " this.box([0,0,0],[0.5,0.5,0.5]); this.endVoxels(); } }");
+
+    script_host::ScriptHost host;
+    FileModuleResolver resolver(host, (root / "schemas").string());
+    HostBaker baker(host, root.string());
+    PartGraph graph(resolver, baker);
+
+    bake_trace::Collector col;
+    bake_trace::set_current(&col);
+    InstallResult r = graph.install({ChildRequest{"TraceBox", Params{}}});
+    bake_trace::set_current(nullptr);
+
+    CHECK(r.ok && r.baked.size() == 1 && r.hits == 0,
+          "trace-shape: cold install actually baked");
+
+    // Walk the snapshot for part-bake spans (install may nest them under
+    // other spans; depth-first search keeps the test robust to added layers).
+    bake_trace::Span snap = col.snapshot();
+    int part_bakes = 0;
+    bool have_fold = false, have_ctx = false, all_closed = true;
+    std::vector<const bake_trace::Span*> stack{&snap};
+    while (!stack.empty()) {
+        const bake_trace::Span* s = stack.back();
+        stack.pop_back();
+        if (s->name && std::strcmp(s->name, bake_trace::kSpanPartBake) == 0) {
+            ++part_bakes;
+            if (s->end_ms == bake_trace::kOpenEndMs) all_closed = false;
+            for (const bake_trace::Span& ph : s->children) {
+                if (!ph.name) continue;
+                if (std::strcmp(ph.name, bake_trace::kSpanFold) == 0) have_fold = true;
+                if (std::strcmp(ph.name, bake_trace::kSpanCtx)  == 0) have_ctx  = true;
+                if (ph.end_ms == bake_trace::kOpenEndMs) all_closed = false;
+            }
+        }
+        for (const bake_trace::Span& c : s->children) stack.push_back(&c);
+    }
+    CHECK(part_bakes >= 1,
+          "trace-shape: install recorded a part-bake span in the collector");
+    CHECK(have_fold, "trace-shape: part-bake has a fold phase child");
+    CHECK(have_ctx, "trace-shape: part-bake has a ctx phase child");
+    CHECK(all_closed, "trace-shape: all part-bake/phase spans closed");
+
+    fs::remove_all(root, ec);
+}
+
+// Bake Lab W3: BakeObserver::on_mesh_ready must fire exactly once, with a
+// plausible (>0) triangle count, when a real part with actual geometry bakes
+// through the REAL HostBaker/ScriptHost path (PartGraph::install ->
+// HostBaker::bake -> ScriptHost::bake_source). The ladder-rung hook
+// (on_rung_ready) is exercised separately in part_flatten_tests.cpp against
+// lod_bake::bake_lods() directly -- bake_source itself only produces the
+// full-resolution mesh; the LOD ladder is built later (PartStore's load-time
+// re-bake), a different subsystem this suite doesn't drive. A NULL observer
+// (every other test in this file) must remain completely unaffected -- that
+// byte-identity guarantee is what the rest of this suite's untouched
+// assertions continue to cover.
+struct RecordingMeshObserver : public BakeObserver {
+    int calls = 0;
+    int last_tris = -1;
+    void on_mesh_ready(int tris) override {
+        ++calls;
+        last_tris = tris;
+    }
+    // on_rung_ready deliberately left as the no-op default: bake_source never
+    // builds a LOD ladder, so this observer must see zero rung calls too.
+    int rung_calls = 0;
+    void on_rung_ready(int, int, double) override { ++rung_calls; }
+};
+
+static void test_bake_observer_mesh_ready() {
+    namespace pg = part_graph;
+    namespace fs = std::filesystem;
+
+    const fs::path root = fs::absolute("part_graph_bake_observer_test");
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "schemas", ec);
+    fs::create_directories(root / "parts", ec);
+    CHECK(!ec, "bake_observer sandbox created");
+    if (ec) return;
+
+    write_file((root / "schemas" / "ObserverBox.js").string(),
+        "class ObserverBox extends Part {"
+        " build(p){ this.beginVoxels(0.25); this.fill(MAT.stone);"
+        " this.box([0,0,0],[0.5,0.5,0.5]); this.endVoxels(); } }");
+
+    script_host::ScriptHost host;
+    pg::FileModuleResolver resolver(host, (root / "schemas").string());
+    pg::HostBaker baker(host, root.string());
+    baker.set_bake_observer(nullptr);  // explicit: default is already null
+
+    // --- Pass 1: NULL observer (the production default) -- must bake fine
+    // and (implicitly, via every other cold-cache test in this suite passing
+    // unmodified) be byte-identical to the pre-W3 code path.
+    pg::PartGraph graph_null(resolver, baker);
+    pg::InstallResult r_null = graph_null.install({ pg::ChildRequest{"ObserverBox", pg::Params{}} });
+    CHECK(r_null.ok && r_null.baked.size() == 1,
+          "bake_observer: null-observer bake succeeds (byte-identity baseline)");
+
+    // --- Pass 2: cold rebake of a DIFFERENT box, this time with an observer
+    // wired via HostBaker::set_bake_observer (the W3 facade seam) BEFORE
+    // install. A second, distinct schema keeps this a genuine cold bake
+    // (ObserverBox is already cached from Pass 1).
+    write_file((root / "schemas" / "ObserverBox2.js").string(),
+        "class ObserverBox2 extends Part {"
+        " build(p){ this.beginVoxels(0.25); this.fill(MAT.stone);"
+        " this.box([0,0,0],[0.6,0.6,0.6]); this.endVoxels(); } }");
+
+    RecordingMeshObserver obs;
+    baker.set_bake_observer(&obs);
+    pg::PartGraph graph_obs(resolver, baker);
+    pg::InstallResult r_obs = graph_obs.install({ pg::ChildRequest{"ObserverBox2", pg::Params{}} });
+    baker.set_bake_observer(nullptr);  // don't leak the observer into later tests
+    CHECK(r_obs.ok && r_obs.baked.size() == 1,
+          "bake_observer: observed bake succeeds");
+    CHECK(obs.calls == 1, "bake_observer: on_mesh_ready fired exactly once");
+    CHECK(obs.last_tris > 0, "bake_observer: on_mesh_ready reported a plausible (>0) tri count");
+    CHECK(obs.rung_calls == 0,
+          "bake_observer: on_rung_ready did NOT fire from bake_source "
+          "(the LOD ladder is a separate subsystem -- see part_flatten_tests.cpp)");
+
+    fs::remove_all(root, ec);
+    printf("  test_bake_observer_mesh_ready OK (mesh_ready calls=%d tris=%d)\n",
+           obs.calls, obs.last_tris);
+}
+
 int main(int argc, char** argv) {
     using namespace part_graph;
 
@@ -824,16 +1097,27 @@ int main(int argc, char** argv) {
         return g_failures == 0 ? 0 : 1;
     }
 
+    // Bake Lab §II.6: install-path trace shape with a collector set. Runs
+    // early (and selectable in isolation, like --cache-migration-only above)
+    // because it is cwd-portable via std::filesystem — the sandboxed tests
+    // below assume a POSIX /tmp + shell.
+    test_install_trace_shape();
+    if (argc == 2 && std::strcmp(argv[1], "--trace-shape-only") == 0)
+        return g_failures == 0 ? 0 : 1;
+
+    // W5: static lods end-to-end, selectable in isolation like the two above
+    // (also POSIX /tmp-only, runs before the sandboxed tests below).
+    test_static_lods_end_to_end();
+    if (argc == 2 && std::strcmp(argv[1], "--static-lods-only") == 0)
+        return g_failures == 0 ? 0 : 1;
+
     // Resolve the demo schemas + shared-lib to ABSOLUTE paths NOW, before any test
     // chdir()s into a sandbox, so test_demo_tree_has_leaves can find the real files
     // regardless of cwd. (They are repo-relative to the tests dir we start in.)
     std::string demo_schemas, demo_sharedlib;
-    { std::error_code ec;
-      const auto schemas_path = std::filesystem::absolute("../examples/world_demo/schemas", ec);
-      if (!ec) demo_schemas = schemas_path.string();
-      ec.clear();
-      const auto sharedlib_path = std::filesystem::absolute("../shared-lib", ec);
-      if (!ec) demo_sharedlib = sharedlib_path.string(); }
+    { char abs[4096];
+      if (realpath("../../projects/world_demo/objects", abs)) demo_schemas = abs;
+      if (realpath("../shared-lib", abs)) demo_sharedlib = abs; }
 
     // Fresh sandbox so parts/<hash>.part and the schemas live in a known place.
     const std::string root = "/tmp/me3_graph_integration";
@@ -915,6 +1199,10 @@ int main(int argc, char** argv) {
     test_animated_cache_rejects_changed_link_during_validation();
     test_static_flat_rejects_linked_replacement_during_admission();
     test_scratch_linked_bundle_never_falls_back_to_cache();
+    // Bake Lab W3: per-rung bake observer seam -- on_mesh_ready fires exactly
+    // once with a plausible tri count on an observed bake; a null observer
+    // (every other test above) is unaffected.
+    test_bake_observer_mesh_ready();
 
     if (g_failures == 0) printf("All part_graph integration tests passed\n");
     return g_failures == 0 ? 0 : 1;

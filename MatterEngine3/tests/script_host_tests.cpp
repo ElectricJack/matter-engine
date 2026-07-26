@@ -10,8 +10,8 @@ extern "C" {
 #include "../src/triangle_emit.hpp"   // complete TriangleBuildBuffer for G4/G8 tests
 #include "csg_lowering.h"
 #include "part_asset_v2.h"
-#include "../../MatterSurfaceLib/include/blas_manager.hpp"
-#include "../../MatterSurfaceLib/include/tlas_manager.hpp"
+#include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
+#include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
 #include <sys/stat.h>
 #include <vector>
 
@@ -625,9 +625,9 @@ static void test_g5_lookat() {
     // Look from origin toward +X. Forward +Z (local) should map to +X (world).
     s.lookAt(5, 0, 0, 0, 1, 0);
     CHECK(!s.has_error(), "G5: lookAt has no error");
-    Matrix m = s.top();
-    // Local +Z transformed = third column (m.m8,m.m9,m.m10) should be ~+X.
-    float fx = m.m8, fy = m.m9, fz = m.m10;
+    mm::Mat4 m = s.top();
+    // Local +Z transformed = third column (m.m[2],m.m[6],m.m[10]) should be ~+X.
+    float fx = m.m[2], fy = m.m[6], fz = m.m[10];
     float len = sqrtf(fx*fx+fy*fy+fz*fz);
     fx/=len; fy/=len; fz/=len;
     CHECK(fabsf(fx-1.0f)<1e-4f && fabsf(fy)<1e-4f && fabsf(fz)<1e-4f,
@@ -637,10 +637,10 @@ static void test_g5_lookat() {
     dsl::DslState s2;
     s2.translate(0, 10, 0);
     s2.lookAt(0, 10, 5, 0, 1, 0);   // from (0,10,0) toward (0,10,5) => +Z forward
-    Vector3 p = s2.position();
+    mm::Vec3 p = s2.position();
     CHECK(fabsf(p.y-10.0f)<1e-4f, "G5: lookAt preserves the current frame origin");
-    Matrix m2 = s2.top();
-    float gz = m2.m10 / sqrtf(m2.m8*m2.m8+m2.m9*m2.m9+m2.m10*m2.m10);
+    mm::Mat4 m2 = s2.top();
+    float gz = m2.m[10] / sqrtf(m2.m[2]*m2.m[2]+m2.m[6]*m2.m[6]+m2.m[10]*m2.m[10]);
     CHECK(gz > 0.99f, "G5: forward aims +Z toward target from composed origin");
 }
 
@@ -1047,6 +1047,171 @@ static void test_eval_lod_budgets() {
     const char* broken = "not even javascript {{{";
     assert(host.eval_lod_budgets(broken).budgets.empty());
     printf("  test_eval_lod_budgets OK\n");
+}
+
+// W5 (Part Workbench): ScriptHost::eval_lods schema parsing — mirrors
+// test_eval_lod_budgets's shape (opted-in / plain / malformed variants).
+static void test_eval_lods_schema_parsing() {
+    script_host::ScriptHost host;
+    const char* opted =
+        "class T extends Part {\n"
+        "  static params = { seed: 0, leafDensity: 1.0 };\n"
+        "  static lods = [\n"
+        "    {},\n"
+        "    { params: { leafDensity: 0.3, branchDepth: 2 } },\n"
+        "    { params: { leafDensity: 0 }, exclude: ['Trunk', 'Branch'] },\n"
+        "    { exclude: ['Leaf'] }\n"
+        "  ];\n"
+        "  build(p) {}\n"
+        "}\n";
+    auto lods = host.eval_lods(opted);
+    CHECK(lods.size() == 4, "four authored levels parsed");
+    if (lods.size() == 4) {
+        CHECK(!lods[0].has_params && lods[0].exclude.empty(), "level 0: pure decimation");
+        CHECK(lods[1].has_params, "level 1: has params");
+        CHECK(lods[1].params_json.find("\"leafDensity\":0.3") != std::string::npos,
+              "level 1: params carry leafDensity");
+        CHECK(lods[1].exclude.empty(), "level 1: no exclude");
+        CHECK(lods[2].has_params && lods[2].exclude.size() == 2, "level 2: params + 2 excludes");
+        CHECK(lods[2].exclude[0] == "Trunk" && lods[2].exclude[1] == "Branch",
+              "level 2: exclude order preserved");
+        CHECK(!lods[3].has_params && lods[3].exclude.size() == 1 && lods[3].exclude[0] == "Leaf",
+              "level 3: exclude-only");
+    }
+
+    // Not opted in: no `static lods` at all -> empty, not an error.
+    const char* plain = "class P extends Part { static params = {}; build(p) {} }\n";
+    CHECK(host.eval_lods(plain).empty(), "plain part: empty (not opted in)");
+
+    // Fail-closed shapes: each discards the WHOLE list, not a partial parse.
+    const char* not_array =
+        "class A extends Part { static lods = {}; build(p) {} }\n";
+    CHECK(host.eval_lods(not_array).empty(), "lods not an array -> empty");
+
+    const char* entry_not_object =
+        "class B extends Part { static lods = [{}, 'oops']; build(p) {} }\n";
+    CHECK(host.eval_lods(entry_not_object).empty(), "non-object entry -> whole list empty");
+
+    const char* params_not_object =
+        "class C extends Part { static lods = [{ params: 5 }]; build(p) {} }\n";
+    CHECK(host.eval_lods(params_not_object).empty(), "params not an object -> whole list empty");
+
+    const char* exclude_not_array =
+        "class D extends Part { static lods = [{ exclude: 'Trunk' }]; build(p) {} }\n";
+    CHECK(host.eval_lods(exclude_not_array).empty(), "exclude not an array -> whole list empty");
+
+    const char* exclude_non_string =
+        "class E extends Part { static lods = [{ exclude: ['Trunk', 5] }]; build(p) {} }\n";
+    CHECK(host.eval_lods(exclude_non_string).empty(), "non-string exclude entry -> whole list empty");
+
+    const char* broken = "not even javascript {{{";
+    CHECK(host.eval_lods(broken).empty(), "unparseable source -> empty");
+
+    // eval_lods must not run build() (same no-build discipline as eval_requires
+    // / eval_lod_budgets).
+    host.eval_lods(opted);
+    CHECK(!host.last_build_ran(), "eval_lods did not run build()");
+    printf("  test_eval_lods_schema_parsing OK\n");
+}
+
+// W5 THE SEEDING RULE: a per-LOD-level bake that overrides params but seeds
+// from the BASE (LOD0) merged params must draw the identical rng sequence as
+// LOD0 itself — same structural draws, same order, no different-tree-per-LOD
+// pop. Verified by comparing the DSL op stream (sphere centers driven by
+// Math.random()) byte-for-byte between the two bakes; a control bake WITHOUT
+// seed_params_json confirms the override really would otherwise diverge.
+static void test_bake_seed_invariance_per_lod_params() {
+    using namespace script_host;
+    ScriptHost host;
+    const char* src =
+        "class T extends Part {\n"
+        "  static params = { seed: 7, leafDensity: 1.0 };\n"
+        "  build(p) {\n"
+        "    this.beginVoxels(0.05); this.fill(MAT.leaf);\n"
+        "    this.sphere([Math.random(), Math.random(), Math.random()], 0.02);\n"
+        "    this.endVoxels();\n"
+        "  }\n"
+        "}\n";
+
+    // LOD0: base params, no override.
+    BakeResult r0 = host.bake_source(src, "{}", BakeOptions{});
+    CHECK(r0.error.ok, "LOD0 bakes");
+    dsl::BuildBuffer buf0 = host.last_buffer();
+    std::string base_merged = host.last_merged_params();
+    CHECK(buf0.ops.size() == 1, "LOD0: one sphere op recorded");
+
+    // A per-LOD-level bake: leafDensity overridden, seed pinned to LOD0's base
+    // merged params via seed_params_json -- the seeding rule in action.
+    BakeOptions lvl_opts;
+    lvl_opts.seed_params_json = base_merged;
+    BakeResult r1 = host.bake_source(src, "{\"leafDensity\":0.3}", lvl_opts);
+    CHECK(r1.error.ok, "level bakes with params override + pinned seed");
+    dsl::BuildBuffer buf1 = host.last_buffer();
+    CHECK(buf1.ops.size() == 1, "level: one sphere op recorded");
+    if (buf0.ops.size() == 1 && buf1.ops.size() == 1) {
+        CHECK(buf0.ops[0].center.x == buf1.ops[0].center.x &&
+              buf0.ops[0].center.y == buf1.ops[0].center.y &&
+              buf0.ops[0].center.z == buf1.ops[0].center.z,
+              "seeding rule: level draws the SAME rng stream as LOD0");
+    }
+    // A different resolved hash is expected (different params fold in), even
+    // though the rng draws matched -- the seeding rule only pins the rng, not
+    // content addressing.
+    CHECK(r1.resolved_hash != r0.resolved_hash,
+          "level's resolved hash still differs (params changed the hash)");
+
+    // Control: the SAME params override WITHOUT seed_params_json seeds from
+    // its own (different) merged params, so the draw diverges from LOD0 --
+    // proving the seeding rule is actually doing something, not a no-op.
+    BakeResult r2 = host.bake_source(src, "{\"leafDensity\":0.3}", BakeOptions{});
+    CHECK(r2.error.ok, "control bake (no seed pin) succeeds");
+    dsl::BuildBuffer buf2 = host.last_buffer();
+    if (buf0.ops.size() == 1 && buf2.ops.size() == 1) {
+        CHECK(!(buf0.ops[0].center.x == buf2.ops[0].center.x &&
+                buf0.ops[0].center.y == buf2.ops[0].center.y &&
+                buf0.ops[0].center.z == buf2.ops[0].center.z),
+              "control: without the seed pin, an overridden param DOES change the draw");
+    }
+    printf("  test_bake_seed_invariance_per_lod_params OK\n");
+}
+
+// W5: BakeResult::child_modules_placed carries the module name for each
+// ChildInstance table entry, parallel to state.children() order, so a caller
+// (HostBaker::bake_static_lods) can match a level's `exclude` list against
+// child-table positions without re-deriving placement order.
+static void test_bake_result_child_modules_placed() {
+    using namespace script_host;
+    ScriptHost host;
+    const char* leaf_src =
+        "class Leaf extends Part { build(p){ this.beginVoxels(0.1); this.fill(MAT.leaf);"
+        "  this.sphere([0,0,0],0.1); this.endVoxels(); } }";
+    BakeResult lr = host.bake_source(leaf_src, "{}", BakeOptions{});
+    CHECK(lr.error.ok, "leaf bakes");
+
+    const char* trunk_src =
+        "class Trunk extends Part { build(p){ this.beginVoxels(0.1); this.fill(MAT.bark);"
+        "  this.box([0,0,0],[0.1,0.1,0.1]); this.endVoxels(); } }";
+    BakeResult tr = host.bake_source(trunk_src, "{}", BakeOptions{});
+    CHECK(tr.error.ok, "trunk bakes");
+
+    const char* parent_src =
+        "class P extends Part {"
+        "  build(p){"
+        "    this.pushMatrix(); this.placeChild('Trunk'); this.popMatrix();"
+        "    this.pushMatrix(); this.translate(1,0,0); this.placeChild('Leaf'); this.popMatrix();"
+        "    this.pushMatrix(); this.translate(2,0,0); this.placeChild('Leaf'); this.popMatrix();"
+        "  } }";
+    uint64_t kids[2]      = { tr.resolved_hash, lr.resolved_hash };
+    std::string names[2]  = { std::string("Trunk"), std::string("Leaf") };
+    BakeResult pr = host.bake_source(parent_src, "{}", BakeOptions{}, kids, 2, names);
+    CHECK(pr.error.ok, "parent bakes with placed children");
+    CHECK(pr.child_modules_placed.size() == 3, "three placements recorded");
+    if (pr.child_modules_placed.size() == 3) {
+        CHECK(pr.child_modules_placed[0] == "Trunk", "placement 0 is Trunk");
+        CHECK(pr.child_modules_placed[1] == "Leaf", "placement 1 is Leaf");
+        CHECK(pr.child_modules_placed[2] == "Leaf", "placement 2 is Leaf");
+    }
+    printf("  test_bake_result_child_modules_placed OK\n");
 }
 
 // Modifier region DSL state rules: nesting, ordering, and error cases.
@@ -1713,6 +1878,209 @@ static void test_emit_volume_hash_divergence() {
           "different emitter params produce different bake hashes");
 }
 
+// ===========================================================================
+// Bake Lab task 1.4 — part-bake phase spans + MATTER_BAKE_PROFILE parity.
+// ===========================================================================
+#include "bake_trace.h"
+#include "bake_trace_names.h"
+#include <algorithm>  // std::remove (parity-test \r\n normalization)
+#ifdef _WIN32
+#include <io.h>
+#define SH_DUP    _dup
+#define SH_DUP2   _dup2
+#define SH_CLOSE  _close
+#define SH_FILENO _fileno
+#else
+#include <unistd.h>
+#define SH_DUP    dup
+#define SH_DUP2   dup2
+#define SH_CLOSE  close
+#define SH_FILENO fileno
+#endif
+
+static void sh_set_profile_env(bool on) {
+#ifdef _WIN32
+    _putenv(on ? "MATTER_BAKE_PROFILE=1" : "MATTER_BAKE_PROFILE=");
+#else
+    if (on) setenv("MATTER_BAKE_PROFILE", "1", 1);
+    else    unsetenv("MATTER_BAKE_PROFILE");
+#endif
+}
+
+// A bake with a collector current produces one part-bake span whose children
+// tile it: fold/ctx/eval/merge/build always run; mesh/save additionally run
+// on the success path (a clean bake exercises all seven).
+static void test_part_bake_span_shape() {
+    bake_trace::Collector col;
+    bake_trace::set_current(&col);
+    script_host::ScriptHost host;
+    const char* src =
+        "class SpanProbe extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {}\n"
+        "}\n";
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    bake_trace::set_current(nullptr);
+    CHECK(r.error.ok, "span-shape: bake succeeded");
+
+    bake_trace::Span snap = col.snapshot();
+    CHECK(snap.children.size() == 1, "span-shape: one top-level span");
+    if (snap.children.size() != 1) return;
+    const bake_trace::Span& pb = snap.children[0];
+    CHECK(std::strcmp(pb.name, bake_trace::kSpanPartBake) == 0,
+          "span-shape: top-level span is part-bake");
+    CHECK(pb.end_ms != bake_trace::kOpenEndMs, "span-shape: part-bake closed");
+
+    const char* expect[] = {
+        bake_trace::kSpanFold,  bake_trace::kSpanCtx,  bake_trace::kSpanEval,
+        bake_trace::kSpanMerge, bake_trace::kSpanBuild, bake_trace::kSpanMesh,
+        bake_trace::kSpanSave };
+    CHECK(pb.children.size() == 7,
+          "span-shape: seven phase children on the success path");
+    if (pb.children.size() == 7) {
+        double prev_end = pb.begin_ms;
+        for (size_t i = 0; i < 7; ++i) {
+            const bake_trace::Span& ph = pb.children[i];
+            CHECK(std::strcmp(ph.name, expect[i]) == 0,
+                  "span-shape: phase order fold/ctx/eval/merge/build/mesh/save");
+            CHECK(ph.end_ms != bake_trace::kOpenEndMs, "span-shape: phase closed");
+            CHECK(ph.begin_ms + 1e-9 >= prev_end,
+                  "span-shape: phases are non-overlapping and ordered");
+            prev_end = ph.end_ms;
+        }
+        CHECK(prev_end <= pb.end_ms + 1e-9,
+              "span-shape: phases end inside part-bake");
+    }
+}
+
+// A failed bake (no Part class -> error during the eval phase) truncates the
+// chain: fold/ctx/eval recorded, merge/build/mesh/save never opened. All
+// spans still closed (nothing leaks open past bake_source).
+static void test_part_bake_span_shape_on_error() {
+    bake_trace::Collector col;
+    bake_trace::set_current(&col);
+    script_host::ScriptHost host;
+    script_host::BakeResult r =
+        host.bake_source("class NotAPart {}\n", "{}", {});
+    bake_trace::set_current(nullptr);
+    CHECK(!r.error.ok, "span-error: bake failed as expected");
+
+    bake_trace::Span snap = col.snapshot();
+    CHECK(snap.children.size() == 1 &&
+              std::strcmp(snap.children[0].name, bake_trace::kSpanPartBake) == 0,
+          "span-error: part-bake span present on failure");
+    if (snap.children.size() != 1) return;
+    const bake_trace::Span& pb = snap.children[0];
+    CHECK(pb.end_ms != bake_trace::kOpenEndMs, "span-error: part-bake closed");
+    CHECK(pb.children.size() == 3, "span-error: chain truncated at eval");
+    if (pb.children.size() == 3) {
+        CHECK(std::strcmp(pb.children[0].name, bake_trace::kSpanFold) == 0 &&
+                  std::strcmp(pb.children[1].name, bake_trace::kSpanCtx) == 0 &&
+                  std::strcmp(pb.children[2].name, bake_trace::kSpanEval) == 0,
+              "span-error: children are fold/ctx/eval");
+        CHECK(pb.children[2].end_ms != bake_trace::kOpenEndMs,
+              "span-error: interrupted phase closed at bake exit");
+    }
+}
+
+// With NO collector current, bake_source installs a local one for its own
+// duration and restores the null afterwards — no crash, no leaked current.
+static void test_part_bake_no_collector() {
+    bake_trace::set_current(nullptr);
+    script_host::ScriptHost host;
+    const char* src =
+        "class NoCol extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {}\n"
+        "}\n";
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "no-collector: bake succeeded");
+    CHECK(bake_trace::current() == nullptr,
+          "no-collector: thread-local current restored to null");
+}
+
+// MATTER_BAKE_PROFILE parity: the stderr line is rendered from the span
+// data, so re-rendering the same format string from the collector snapshot
+// must reproduce the captured line byte-for-byte.
+static void test_bake_profile_parity() {
+    const char* kCap = "bake_profile_capture.tmp";
+    sh_set_profile_env(true);
+
+    bake_trace::Collector col;
+    bake_trace::set_current(&col);
+    script_host::ScriptHost host;
+    const char* src =
+        "class ProfPart extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {}\n"
+        "}\n";
+
+    fflush(stderr);
+    int old_fd = SH_DUP(2);
+    FILE* cap = fopen(kCap, "w");
+    CHECK(old_fd >= 0 && cap != nullptr, "parity: stderr capture set up");
+    if (old_fd < 0 || cap == nullptr) {
+        if (cap) fclose(cap);
+        bake_trace::set_current(nullptr);
+        sh_set_profile_env(false);
+        return;
+    }
+    SH_DUP2(SH_FILENO(cap), 2);
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    fflush(stderr);
+    SH_DUP2(old_fd, 2);
+    SH_CLOSE(old_fd);
+    fclose(cap);
+    bake_trace::set_current(nullptr);
+    sh_set_profile_env(false);
+
+    CHECK(r.error.ok, "parity: bake succeeded");
+    std::vector<uint8_t> bytes = read_all(kCap);
+    std::remove(kCap);
+    std::string captured(bytes.begin(), bytes.end());
+    size_t at = captured.find("[bake_profile] ");
+    CHECK(at != std::string::npos, "parity: [bake_profile] line emitted");
+    if (at == std::string::npos) return;
+    size_t nl = captured.find('\n', at);
+    std::string line = captured.substr(
+        at, nl == std::string::npos ? std::string::npos : nl + 1 - at);
+    // Windows text-mode stderr writes \r\n; normalize to \n for the compare.
+    line.erase(std::remove(line.begin(), line.end(), '\r'), line.end());
+
+    // Re-render the expected line from the span data. Spans are immutable
+    // once closed, so this snapshot carries the same values bake_source
+    // rendered from — identical doubles, identical %.1f text.
+    bake_trace::Span snap = col.snapshot();
+    CHECK(snap.children.size() == 1, "parity: one part-bake span");
+    if (snap.children.size() != 1) return;
+    const bake_trace::Span& pb = snap.children[0];
+    double t_total = pb.end_ms - pb.begin_ms;
+    double t_fold = 0, t_ctx = 0, t_eval = 0, t_merge = 0, t_build = 0,
+           t_mesh = 0, t_save = 0;
+    for (const bake_trace::Span& ph : pb.children) {
+        double ms = ph.end_ms - ph.begin_ms;
+        if      (std::strcmp(ph.name, bake_trace::kSpanFold)  == 0) t_fold  += ms;
+        else if (std::strcmp(ph.name, bake_trace::kSpanCtx)   == 0) t_ctx   += ms;
+        else if (std::strcmp(ph.name, bake_trace::kSpanEval)  == 0) t_eval  += ms;
+        else if (std::strcmp(ph.name, bake_trace::kSpanMerge) == 0) t_merge += ms;
+        else if (std::strcmp(ph.name, bake_trace::kSpanBuild) == 0) t_build += ms;
+        else if (std::strcmp(ph.name, bake_trace::kSpanMesh)  == 0) t_mesh  += ms;
+        else if (std::strcmp(ph.name, bake_trace::kSpanSave)  == 0) t_save  += ms;
+    }
+    char expect_line[320];
+    std::snprintf(expect_line, sizeof(expect_line),
+        "[bake_profile] %s total=%.1f fold=%.1f ctx=%.1f eval=%.1f "
+        "merge=%.1f build=%.1f mesh=%.1f save=%.1f free=%.1f\n",
+        "ProfPart", t_total,
+        t_fold, t_ctx, t_eval, t_merge, t_build, t_mesh, t_save,
+        t_total - (t_fold + t_ctx + t_eval + t_merge +
+                   t_build + t_mesh + t_save));
+    CHECK(line == expect_line,
+          "parity: profile line matches span-rendered line byte-for-byte");
+    if (line != expect_line)
+        printf("  captured: %s  expected: %s", line.c_str(), expect_line);
+}
+
 int main() {
     test_embed_eval_1_plus_1();
     test_p5_round_mesh_dispatch();
@@ -1746,6 +2114,9 @@ int main() {
     test_g8_sphere_box_polymorphic();
     test_extrude_dispatch_and_polygon();
     test_eval_lod_budgets();
+    test_eval_lods_schema_parsing();
+    test_bake_seed_invariance_per_lod_params();
+    test_bake_result_child_modules_placed();
     test_modifier_region_state_rules();
     test_modifier_region_bake_rules();
     test_pf_bindings_smoke();
@@ -1769,6 +2140,11 @@ int main() {
     test_emit_volume_missing_pos();
     test_emit_volume_invalid_radius();
     test_emit_volume_hash_divergence();
+    // Bake Lab task 1.4 — part-bake phase spans + profile parity.
+    test_part_bake_span_shape();
+    test_part_bake_span_shape_on_error();
+    test_part_bake_no_collector();
+    test_bake_profile_parity();
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }

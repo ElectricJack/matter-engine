@@ -7,12 +7,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # Source shared pose set.
 # shellcheck source=tools/lib_poses.sh
 source "$HERE/lib_poses.sh"
-cd "$HERE/../../MatterViewer"
+cd "$HERE/../../MatterEditor"
 
 FIFO="/tmp/matter_sweep_$$.fifo"
 LOG="/tmp/matter_sweep_$$.log"
 mkfifo "$FIFO"
-MATTER_WORLD=meadow MATTER_CMD_FIFO="$FIFO" stdbuf -oL ./viewer > "$LOG" 2>&1 &
+MATTER_WORLD=meadow MATTER_CMD_FIFO="$FIFO" stdbuf -oL ./build/windows/editor.exe > "$LOG" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true; rm -f "$FIFO" "$LOG"' EXIT
 

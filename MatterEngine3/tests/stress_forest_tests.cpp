@@ -24,7 +24,7 @@
 // install path exercises real bakes (not warm cache hits) and the two caches
 // are genuinely independent.
 //
-// Must run from MatterEngine3/tests/ so ../examples/world_demo paths resolve.
+// Must run from MatterEngine3/tests/ so ../../projects/world_demo paths resolve.
 
 #include "part_graph.h"        // -DMATTER_HAVE_SCRIPT_HOST pulls in script_host.h
 #include "part_asset_v2.h"     // cache_path_flat, load_flat_v3, FlatInstanceRef
@@ -47,14 +47,9 @@
 using namespace part_graph;
 
 #include "check.h"
+#include "portable_realpath.h"
 
 static const size_t kExpectedCount = 50000;
-
-static std::string abspath(const std::string& rel) {
-    char buf[PATH_MAX];
-    if (realpath(rel.c_str(), buf)) return std::string(buf);
-    return rel;
-}
 
 static std::vector<uint8_t> file_bytes(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
@@ -143,7 +138,7 @@ static BakeRec run_bake(const std::string& sandbox_abs,
 }
 
 int main() {
-    const std::string schemas_abs    = abspath("../examples/world_demo/schemas");
+    const std::string schemas_abs    = abspath("../../projects/world_demo/objects");
     const std::string shared_lib_abs = abspath("../shared-lib");
 
     // Fresh sandbox with two independent cache dirs.

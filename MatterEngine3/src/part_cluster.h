@@ -1,7 +1,7 @@
 #pragma once
 // Spatial cluster split for flattened meshes: recursive longest-axis centroid
 // median split until every cluster is <= target_tris. Deterministic.
-#include "bvh.h"        // Tri, TriEx (MSL include path)
+#include "tri.h"        // Tri, TriEx (MSL include path)
 #include <cstdint>
 #include <vector>
 

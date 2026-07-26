@@ -1,11 +1,11 @@
 # Bake Lab — Workbench for Running, Profiling, and Optimizing Bakes
 
-> Umbrella design spec for a MatterViewer mode that can run, time, step, parameterize, and A/B-compare **any** baking process — a part's `build()` (tree generation), the LOD ladder, tileset physics settle, full world bakes, and phases that don't exist yet. Individual instruments get their own deep-dive specs; this document defines the shared architecture they plug into.
+> Umbrella design spec for a MatterEditor mode that can run, time, step, parameterize, and A/B-compare **any** baking process — a part's `build()` (tree generation), the LOD ladder, tileset physics settle, full world bakes, and phases that don't exist yet. Individual instruments get their own deep-dive specs; this document defines the shared architecture they plug into.
 
-- **Target:** new `MatterEngine3/src/bake_trace.{h,cpp}` + trace hooks across the bake pipeline + new MatterViewer `bake_lab.{h,cpp}` mode
+- **Target:** new `MatterEngine3/src/bake_trace.{h,cpp}` + trace hooks across the bake pipeline + new MatterEditor `bake_lab.{h,cpp}` mode
 - **Baseline:** `d3bb7a5d` (local main)
 - **Status:** Spec — umbrella; foundation (Part II) ready to implement
-- **Instrument specs:** [settle-tick-optimizer.md](settle-tick-optimizer.md) (committed); Part Lab and DSL op stepper to follow as their build stages arrive
+- **Instrument specs:** [settle-tick-optimizer.md](settle-tick-optimizer.md) (committed; engine tools complete, experiment queue unscheduled); [part-workbench.md](part-workbench.md) (**supersedes** this doc's Part Lab §II.3, variant table §II.4, Timeline diff mode in §II.2, and the §I.5 LOD-experimentation machinery — the project pivoted to hands-on tools: asset browser, isolation bake with live LOD watch, and manual per-LOD authoring persisted to part source)
 
 ---
 
@@ -189,28 +189,28 @@ Collector* current();
 }  // namespace bake_trace
 ```
 
-- `bake_trace_names.h`: `kSpanInstall`, `kSpanCompose`, `kSpanScatter`, `kSpanTileset`, `kSpanSettleLayer`, `kSpanPartBake`, `kSpanFold`, `kSpanEval`, `kSpanBuild`, `kSpanMesh`, `kSpanLod`, `kSpanLodRung`, `kSpanFlatten`, `kSpanSave`, `kSpanPublish`, … (one constant per existing timing site; extended as phases arrive).
+- `bake_trace_names.h`: `kSpanInstall`, `kSpanCompose`, `kSpanScatter`, `kSpanTileset`, `kSpanSettleLayer`, `kSpanPartBake`, `kSpanFold`, `kSpanCtx`, `kSpanEval`, `kSpanMerge`, `kSpanBuild`, `kSpanMesh`, `kSpanLod`, `kSpanLodRung`, `kSpanFlatten`, `kSpanSave`, `kSpanPublish`, … (one constant per existing timing site; extended as phases arrive).
 - The thread-local `current()` design means instrumenting a site is one line and library code stays collector-agnostic. The bake worker sets the session collector at `execute_bake` entry; Lab part jobs set their own around `PartGraph::install`.
 
 **Conversion sites (observation-only, no behavior change):**
 
 | Site | Today | Becomes |
 |---|---|---|
-| `execute_bake` stages (`matter_engine.cpp:823-1163`) | `[bake-timing]` stderr | `kSpanInstall/Compose/Publish` spans; tileset split out of compose via a `kSpanTileset` span inside `compose_world` (fixes the `:1090` lump) |
-| `bake_source` `prof_lap` (`script_host.cpp:969-1422`) | env-gated stderr | `kSpanPartBake` parent + fold/ctx/eval/build/mesh/save child spans; stderr line re-rendered from spans when `MATTER_BAKE_PROFILE=1` |
+| `execute_bake` stages (`matter_engine.cpp:823-1163`) | `[bake-timing]` stderr | `kSpanInstall/Compose/Publish` spans; tileset split out of compose via a `kSpanTileset` span inside `LocalProvider::run_tileset_deferred` (fixes the `:1090` lump; nests under publish on the bake path and also covers the eager `connect()` path) |
+| `bake_source` `prof_lap` (`script_host.cpp:969-1422`) | env-gated stderr | `kSpanPartBake` parent + fold/ctx/eval/merge/build/mesh/save child spans (one per prof_lap boundary); stderr line re-rendered from spans when `MATTER_BAKE_PROFILE=1` |
 | `lod_bake::bake_lods` (`lod_bake.cpp:99`) | untimed | `kSpanLod` + per-rung `kSpanLodRung` with `tris_in/tris_out/keep_ratio` counters |
 | `part_flatten` (`part_flatten.cpp:1216`) | `FlattenResult` returned | `kSpanFlatten` + counters `levels/clusters/full_tris/coarsest_tris/instance_refs` |
 | `settle_tileset` (`tileset_bake.cpp:163`) | `SettleReport` | `kSpanSettleLayer` per layer with `bodies/ticks/converged/sim_time` counters |
 
 **Worker-trace retrieval:** `WorldSession::Impl` owns a `Collector`; `execute_bake` resets it and sets it current. New facade accessor `WorldSession::last_bake_trace(bake_trace::Span& out) const` (snapshot; valid after `BakeFinished`). `Event` is unchanged — `BakeFinished` is the "trace ready" signal.
 
-### II.2 Timeline panel — `MatterViewer/bake_lab_timeline.cpp`
+### II.2 Timeline panel — `MatterEditor/src/bake_lab_timeline.cpp`
 
 - Flamegraph rendered with ImGui draw-list rects (same technique as any ImGui profiler widget): x = time, rows = depth, zoom/pan, hover tooltip = full span path + counters, click = pin details.
 - Source selector: production session's last trace (`last_bake_trace`) or any Lab job's collector.
 - **Diff mode:** select run A and run B; matching span paths (name sequence) show Δms and Δcounters, color-scaled; unmatched spans flagged — this is how "did my change speed up tree baking" is read.
 
-### II.3 BakeJob part runner — `MatterViewer/bake_lab.{h,cpp}`
+### II.3 BakeJob part runner — `MatterEditor/bake_lab.{h,cpp}`
 
 ```cpp
 struct BakeJobDesc {
@@ -241,7 +241,7 @@ public:
 - **LOD-target overrides (ladder-config experiments, §I.5):** when `lod_targets`/`flatten_targets` are set, the runner threads them to the bake as optional arguments (`HostBaker`/`lod_bake::bake_lods` and `part_flatten::flatten_part` grow optional-targets parameters defaulting to today's values; production call sites pass nothing and are byte-for-byte unchanged). Override-built artifacts live only in the job sandbox — never the production cache.
 - **World/tileset scopes (stage 3+):** a private `WorldSession` with `cache_root` pointed at the Lab scratch dir; details land with the settle instrument integration.
 
-### II.4 Variant table — `MatterViewer/bake_lab_variants.cpp`
+### II.4 Variant table — `MatterEditor/src/bake_lab_variants.cpp`
 
 - `VariantRow { BakeJobDesc desc; SpanSummary phases; std::map<std::string,double> counters; JobArtifacts artifacts; }`.
 - Table UI (`ImGui::Table`): one column per phase family + key counters; a "baseline" row toggle; delta coloring vs. baseline.
@@ -258,7 +258,7 @@ public:
 ### II.6 Tests
 
 - **`bake_trace` unit tests** (new, headless): nesting, counters, snapshot-under-writer, thread-local current, no-op when unset, overhead micro-benchmark (<0.1% target on a synthetic 10k-span run).
-- **Trace-shape test:** bake a fixture part via `PartGraph::install` with a collector set; assert the expected span tree (`kSpanPartBake` → fold/eval/build/mesh/save) and that counters are present. Guards against silent instrumentation rot.
+- **Trace-shape test:** bake a fixture part via `PartGraph::install` with a collector set; assert the expected span tree (`kSpanPartBake` → fold/ctx/eval/merge/build/mesh/save) and that counters are present. Guards against silent instrumentation rot.
 - **`MATTER_BAKE_PROFILE` parity:** env-gated stderr line still emitted and derived from spans (string-compare against the span values).
 - **Job sandbox isolation:** run a Cold part job; assert production `parts/` untouched and sandbox removed after completion.
 - Existing suites stay green (instrumentation is observation-only): `run-script`, `run-graph`, `run-tilesetbake`, `run-world-definition`.
@@ -266,13 +266,13 @@ public:
 ### II.7 Build integration
 
 - `bake_trace.{h,cpp}` joins the `MatterEngine3` kernel library (no new dependencies).
-- MatterViewer: `bake_lab.o`, `bake_lab_timeline.o`, `bake_lab_variants.o`; no new libraries.
+- MatterEditor: `bake_lab.o`, `bake_lab_timeline.o`, `bake_lab_variants.o`; no new libraries.
 - Standard MSYS2 build commands per CLAUDE.md; trace tests get a `run-baketrace` target in `tests/Makefile` (headless, Windows-runnable).
 
 ### II.8 Validation checklist
 
 1. `run-baketrace` green; overhead micro-benchmark within target.
-2. Bake the demo world: Timeline shows install → compose (with tileset now separated) → per-part → publish; `MATTER_BAKE_PROFILE=1` output unchanged in content.
+2. Bake the demo world: Timeline shows install → compose → per-part → publish, with tileset as its own span under publish; `MATTER_BAKE_PROFILE=1` output unchanged in content.
 3. Part Lab: bake `Rock` with default params → phase breakdown matches the old `rock_bake_profile` numbers (±noise); edit `size`, re-bake, both variants in the table with sensible deltas; LOD gallery steps through rungs.
 4. Bake the same job twice → identical resolved hash and near-identical trace (determinism).
 5. Export a variant set, restart the viewer, import — rows restore.
@@ -289,5 +289,5 @@ public:
 | `MatterEngine3/src/lod_bake.cpp`, `part_flatten.cpp`, `tileset_bake.cpp` | phase spans + counters; `lod_bake`/`part_flatten` additionally grow optional-targets parameters (default = today's values) for Lab ladder-config overrides |
 | `MatterEngine3/include/matter/world_session.h` | `last_bake_trace` accessor |
 | `MatterEngine3/tests/bake_trace_tests.cpp`, `tests/Makefile` | new tests + `run-baketrace` |
-| `MatterViewer/bake_lab.{h,cpp}`, `bake_lab_timeline.cpp`, `bake_lab_variants.cpp` | new — shell, job runner, timeline, variants |
-| `MatterViewer/ui.cpp/.h`, `main.cpp` | Bake Lab window + per-frame hook |
+| `MatterEditor/src/bake_lab.{h,cpp}`, `bake_lab_timeline.cpp`, `bake_lab_variants.cpp` | new — shell, job runner, timeline, variants |
+| `MatterEditor/src/ui.cpp/.h`, `main.cpp` | Bake Lab window + per-frame hook |

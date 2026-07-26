@@ -41,10 +41,12 @@ bool mesh_field_is_solid(const dsl::LoweredField& f, Vector3 p) {
     float blendWidth = 0.0f;
 
     SurfaceScratch* scratch = CreateSurfaceScratch();
+    // p is this function's raylib Vector3 (test-oracle contract, unchanged);
+    // ProbeFieldScalar's point param is MtVec3 as of Phase 4 Step 3.
     float v = ProbeFieldScalar(scratch, particles.empty() ? nullptr : particles.data(), maxR,
                                (int)particles.size(), blendWidth,
                                &stages, f.fat.empty() ? nullptr : f.fat.data(), (int)f.fat.size(),
-                               /*carve*/nullptr, 0, 0.0f, p);
+                               /*carve*/nullptr, 0, 0.0f, MtVec3{p.x, p.y, p.z});
     DestroySurfaceScratch(scratch);
     return v < 0.0f;
 }

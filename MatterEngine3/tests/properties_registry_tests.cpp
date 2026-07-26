@@ -2,7 +2,7 @@
 // entities and properties UI logic layer). Pure CPU logic: exercises the
 // static ComponentDescriptor table via scene_registry, no ImGui, no
 // rendering. Run via `make run-properties-registry`.
-#include "../../MatterViewer/properties_registry.h"
+#include "../../MatterEditor/src/properties_registry.h"
 
 #include "ecs/scene_registry.h"
 

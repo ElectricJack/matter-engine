@@ -9,10 +9,21 @@
 #include "matter/engine_context.h"
 #include "matter/world_session.h"
 
+// E3 event system: per-session evt::Hub carrying typed bake/stream events;
+// the legacy poll_event() API is a compat shim over lane::legacy_poll.
+#include "matter/event/event_hub.h"
+#include "matter/events/bake_events.h"
+#include "matter/events/stream_events.h"
+
 #include "async_bake.h"
+#include "bake_trace.h"        // Bake Lab: per-session stage-span collector
+#include "bake_trace_names.h"
 #include "ecs/ecs_runtime.h"
 #include "ecs/dynamic_scene_bridge.h"
+#include "ecs/bridge_error_hub.h"  // I.11: hub-backed BridgeErrorSink adapter
 #include "ecs/streaming_systems.h"
+#include "scene/scene_service.h"          // E5b SceneService (centralized mutations)
+#include "scene/scene_change_tracker.h"   // E5b SceneChangeTracker (sequenced deltas)
 #include "local_provider.h"
 #include "part_store.h"   // LoadedPart, walk_part_tree
 #include "animation/animation_binding_bake.h"
@@ -44,6 +55,7 @@
 
 // Task 10: live-edit watcher + production seams.
 #include "live_edit.h"
+#include "live_edit_error_hub.h"  // I.11: hub-backed live-edit ErrorSink adapter
 #include "live_edit_prod.h"
 #include "part_graph_snapshot.h"
 
@@ -185,7 +197,8 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         uint64_t part_hash,
                         const viewer::LoadedPart& loaded,
                         bool& drawable,
-                        std::string& error);
+                        std::string& error,
+                        int force_lod = -1);
 #endif
 #ifndef MATTER_VULKAN_ONLY
 // Temporary compatibility boundary for the current OpenGL/raylib renderer.
@@ -267,32 +280,6 @@ void record_streaming_error(
     }
 }
 } // anonymous namespace
-
-// Task 5: standard cofactor-based 4x4 matrix inverse for RT depth unproject.
-static bool invert4x4(const float* m, float* inv) {
-    float d[16];
-    d[0]  =  m[5]*m[10]*m[15] - m[5]*m[11]*m[14] - m[9]*m[6]*m[15] + m[9]*m[7]*m[14] + m[13]*m[6]*m[11] - m[13]*m[7]*m[10];
-    d[4]  = -m[4]*m[10]*m[15] + m[4]*m[11]*m[14] + m[8]*m[6]*m[15] - m[8]*m[7]*m[14] - m[12]*m[6]*m[11] + m[12]*m[7]*m[10];
-    d[8]  =  m[4]*m[9]*m[15]  - m[4]*m[11]*m[13] - m[8]*m[5]*m[15] + m[8]*m[7]*m[13] + m[12]*m[5]*m[11] - m[12]*m[7]*m[9];
-    d[12] = -m[4]*m[9]*m[14]  + m[4]*m[10]*m[13] + m[8]*m[5]*m[14] - m[8]*m[6]*m[13] - m[12]*m[5]*m[10] + m[12]*m[6]*m[9];
-    float det = m[0]*d[0] + m[1]*d[4] + m[2]*d[8] + m[3]*d[12];
-    if (det == 0.0f) return false;
-    float inv_det = 1.0f / det;
-    d[1]  = -m[1]*m[10]*m[15] + m[1]*m[11]*m[14] + m[9]*m[2]*m[15] - m[9]*m[3]*m[14] - m[13]*m[2]*m[11] + m[13]*m[3]*m[10];
-    d[5]  =  m[0]*m[10]*m[15] - m[0]*m[11]*m[14] - m[8]*m[2]*m[15] + m[8]*m[3]*m[14] + m[12]*m[2]*m[11] - m[12]*m[3]*m[10];
-    d[9]  = -m[0]*m[9]*m[15]  + m[0]*m[11]*m[13] + m[8]*m[1]*m[15] - m[8]*m[3]*m[13] - m[12]*m[1]*m[11] + m[12]*m[3]*m[9];
-    d[13] =  m[0]*m[9]*m[14]  - m[0]*m[10]*m[13] - m[8]*m[1]*m[14] + m[8]*m[2]*m[13] + m[12]*m[1]*m[10] - m[12]*m[2]*m[9];
-    d[2]  =  m[1]*m[6]*m[15]  - m[1]*m[7]*m[14]  - m[5]*m[2]*m[15] + m[5]*m[3]*m[14] + m[13]*m[2]*m[7]  - m[13]*m[3]*m[6];
-    d[6]  = -m[0]*m[6]*m[15]  + m[0]*m[7]*m[14]  + m[4]*m[2]*m[15] - m[4]*m[3]*m[14] - m[12]*m[2]*m[7]  + m[12]*m[3]*m[6];
-    d[10] =  m[0]*m[5]*m[15]  - m[0]*m[7]*m[13]  - m[4]*m[1]*m[15] + m[4]*m[3]*m[13] + m[12]*m[1]*m[7]  - m[12]*m[3]*m[5];
-    d[14] = -m[0]*m[5]*m[14]  + m[0]*m[6]*m[13]  + m[4]*m[1]*m[14] - m[4]*m[2]*m[13] - m[12]*m[1]*m[6]  + m[12]*m[2]*m[5];
-    d[3]  = -m[1]*m[6]*m[11]  + m[1]*m[7]*m[10]  + m[5]*m[2]*m[11] - m[5]*m[3]*m[10] - m[9]*m[2]*m[7]   + m[9]*m[3]*m[6];
-    d[7]  =  m[0]*m[6]*m[11]  - m[0]*m[7]*m[10]  - m[4]*m[2]*m[11] + m[4]*m[3]*m[10] + m[8]*m[2]*m[7]   - m[8]*m[3]*m[6];
-    d[11] = -m[0]*m[5]*m[11]  + m[0]*m[7]*m[9]   + m[4]*m[1]*m[11] - m[4]*m[3]*m[9]  - m[8]*m[1]*m[7]   + m[8]*m[3]*m[5];
-    d[15] =  m[0]*m[5]*m[10]  - m[0]*m[6]*m[9]   - m[4]*m[1]*m[10] + m[4]*m[2]*m[9]  + m[8]*m[1]*m[6]   - m[8]*m[2]*m[5];
-    for (int i = 0; i < 16; ++i) inv[i] = d[i] * inv_det;
-    return true;
-}
 
 // Classify a provider-returned error string into a structured code. The
 // executor doesn't get typed errors back from the pipeline (yet — Task 7 wires
@@ -402,10 +389,25 @@ struct WorldSession::Impl {
     // Renderer-side bounds copies are immutable. Track the active ECS asset
     // set so binding removal retires stale copies on the next frame.
     std::set<uint64_t> vk_animation_bounds_assets;
+    // Projection of vk_instance_cache.instances() onto the pair of fields
+    // TemporalState::begin() consumes. Rebuilt only when the expansion behind
+    // it is replaced; see the note at its use site in WorldSession::render.
+    std::vector<viewer::TemporalInstance> vk_temporal_instances;
+    uint64_t vk_temporal_instances_expansion = UINT64_MAX;
     std::vector<MaterialGpuRecord> vk_material_records;
     uint64_t vk_material_shading_revision = 0;
     uint64_t vk_material_geometry_revision = 0;
     matter::scene::DynamicSceneBridge dynamic_bridge{256};
+    // Bake Lab W4 (part-workbench.md SS-I.5): the force_lod value currently
+    // baked into registered Vulkan parts' cluster thresholds (see
+    // ensure_vulkan_part). When RenderOptions::force_lod differs from this,
+    // render() releases the touched parts so they re-register with the new
+    // override — see WorldSession::render(VulkanFrame).
+    int  vk_force_lod_applied_ = -1;
+    // W4: hide_child_instances filters the per-frame expansion walk rather
+    // than baked cluster data, so — like force_lod — a change needs to force
+    // instances_dirty even when the resolved instance set itself is unchanged.
+    bool vk_hide_children_applied_ = false;
 #endif
     lod_select::PartLodTable                lods;
 
@@ -439,12 +441,54 @@ struct WorldSession::Impl {
 
     std::atomic<bool> connected{false};
 
-    // Event queue — capped at 4096 to prevent unbounded growth if the app
-    // never drains (older events dropped when the cap is hit).
-    // Phase B: worker + app thread both touch this, so every access is
-    // guarded by events_mutex.
-    std::deque<Event> events;
-    std::mutex        events_mutex;
+    // E3 (event-system.md S I.13): the per-session event hub. All bake/stream
+    // progress is emitted here as typed events (matter/events/*.h). Declared
+    // BEFORE the async-bake members that emit into it (`gpu_jobs`, `commands`,
+    // `worker`, below) so it OUTLIVES them (members destroy in reverse
+    // declaration order); ~WorldSession additionally stops/joins the worker
+    // and calls hub_.close() explicitly before teardown (S I.13 close order).
+    evt::Hub hub_;
+
+    // E3 legacy compat shim (S I.11 / S II.4 item 6). A private subscription
+    // set feeds every bake/stream typed event — converted back to a legacy
+    // matter::Event — into `legacy_pending_`, exclusively on lane::legacy_poll.
+    // WorldSession::poll_event() owns that lane, pump_one()s it, and returns
+    // one converted Event per call (preserving the pre-E3 one-per-call FIFO
+    // drain) WITHOUT any frame-loop app-lane pump. `legacy_pending_` and
+    // `legacy_lane_claimed_` are touched ONLY on the app thread (inside
+    // poll_event's pump_one dispatch and its own pop), so they need no mutex —
+    // this replaces the old events_mutex-guarded deque. The old silent
+    // drop-oldest 4096 cap is gone: the lane's Channel is bounded DropOldest
+    // and COUNTS drops (hub/Channel::dropped()), never silently.
+    evt::SubscriptionSet   legacy_subs_;
+    std::deque<Event>      legacy_pending_;
+    bool                   legacy_lane_claimed_ = false;
+
+    // E5b (event-system.md S I.14): the session-owned scene-graph model layer.
+    // SceneService centralizes validated create/duplicate/delete/reparent/
+    // rename/component edits; SceneChangeTracker installs lightweight Flecs
+    // observers and publishes sequenced upsert/remove batches onto `hub_` at
+    // end-of-tick flush. Both are app-thread-affine. Declared AFTER
+    // `ecs_runtime` and `hub_` so they construct after (and destruct before)
+    // the world and hub they reference (S I.13 close order); the tracker's
+    // destructor removes its observers before the world is torn down.
+    scene::SceneService        scene_service_{ecs_runtime.world()};
+    scene::SceneChangeTracker  scene_tracker_{ecs_runtime.world(), hub_};
+
+    Impl() {
+        wire_legacy_poll_subs();
+        // E6 (docs/event-system.md S I.11): mirror per-step physics activity
+        // into this session's hub trace. Entity-shaped physics gameplay events
+        // are delivered separately as flecs entity events on the tick thread.
+        ecs_runtime.set_physics_event_hub(&hub_);
+    }
+
+    // Register the private lane::legacy_poll subscriptions (called once from
+    // the ctor, on the app thread, BEFORE any bake can emit).
+    void wire_legacy_poll_subs();
+    // App-thread compat drain: pump_one on lane::legacy_poll until one legacy
+    // Event is available or the lane is empty. Backs WorldSession::poll_event.
+    bool poll_legacy_event(Event& out);
 
     // Phase C Task 3: bake focus point (app thread writes, worker reads).
     // Uses its own mutex (separate from events_mutex) so a set_bake_focus call
@@ -525,6 +569,13 @@ struct WorldSession::Impl {
     // currently always returns false, but the flag also fences future providers.
     std::atomic<bool> bake_active{false};
 
+    // Bake Lab (task 1.2): per-session bake trace. execute_bake resets it and
+    // makes it the worker thread's current collector for the duration of the
+    // command; WorldSession::last_bake_trace() snapshots it from any thread
+    // (Collector::snapshot deep-copies under the collector mutex, so a
+    // concurrent snapshot during a bake yields a consistent partial tree).
+    bake_trace::Collector bake_collector;
+
     // Lazy CPU tracer for the query API (raycast/instance_count/instance_info).
     // Built on first query after a bake. mutable so instance_count() const can build.
     mutable std::unique_ptr<world_tracer::WorldTracer> tracer;
@@ -533,12 +584,18 @@ struct WorldSession::Impl {
     // hash -> module name for expanded_instance info (filled from manifest)
     mutable std::unordered_map<uint64_t, std::string> module_by_hash;
 
+    // Bake Lab W4 (part-workbench.md SS-I.5): hash -> module name for
+    // part_child_summary(), rebuilt from graph_snapshot() (which, unlike
+    // module_by_hash above, covers COMPOSITIONAL children, not just world
+    // roots). Backs the const char* returned in PartChildSummary::module_name
+    // so it stays valid until the next part_child_summary() call, matching
+    // InstanceInfo::module_name's "valid until next bake/reload" contract.
+    mutable std::unordered_map<uint64_t, std::string> lab_child_module_cache_;
+
     // Ensure tracer is built and up-to-date. Returns false if build failed.
     bool ensure_tracer() const;
 
     // --- Phase B: async bake worker helpers (defined below) ------------------
-    // Emit an event onto the queue (thread-safe). Applies the 4096 cap.
-    void emit_event(Event ev);
     // Start the worker thread if not already running.
     void ensure_worker_started();
     // Worker thread entry point.
@@ -761,14 +818,99 @@ struct WorldSession::Impl {
 };
 
 // ---------------------------------------------------------------------------
-// WorldSession::Impl::emit_event / ensure_worker_started / worker_loop
-// Phase B: worker command loop and event fan-out.
+// E3 legacy compat shim: typed hub event -> pre-E3 matter::Event.
+//
+// Each overload reconstructs EXACTLY the fields the corresponding legacy
+// emit_event() call site used to set, leaving all other Event fields at
+// their defaults — the same defaults a fresh `Event ev;` had — so the byte
+// sequence poll_event() returns is identical to the pre-E3 queue (gate 2:
+// run-asyncbake's event stream is unchanged). These run only on the app
+// thread, inside poll_event()'s pump_one dispatch (event-system.md S I.11).
 // ---------------------------------------------------------------------------
+namespace {
+Event to_legacy_event(const events::BakeStarted&) {
+    Event e;
+    e.type = EventType::BakeStarted;
+    return e;
+}
+Event to_legacy_event(const events::BakePartDone& s) {
+    Event e;
+    e.type   = EventType::BakePartDone;
+    e.module = s.module;
+    e.done   = s.done;
+    e.total  = s.total;
+    e.phase  = s.phase;
+    return e;
+}
+Event to_legacy_event(const events::BakeFinished& s) {
+    Event e;
+    e.type   = EventType::BakeFinished;
+    e.errors = s.errors;
+    return e;
+}
+Event to_legacy_event(const events::BakeError& s) {
+    Event e;
+    e.type    = EventType::BakeError;
+    e.module  = s.module;
+    e.message = s.message;
+    e.phase   = s.phase;
+    e.code    = s.code;
+    return e;
+}
+Event to_legacy_event(const events::RefineTileDone& s) {
+    Event e;
+    e.type    = EventType::RefineTileDone;
+    e.module  = s.module;
+    e.done    = s.done;
+    e.total   = s.total;
+    e.phase   = "refine";   // the legacy Event always tagged phase="refine"
+    e.tile_tx = s.tile_tx;
+    e.tile_tz = s.tile_tz;
+    return e;
+}
+}  // namespace
 
-void WorldSession::Impl::emit_event(Event ev) {
-    std::lock_guard<std::mutex> lk(events_mutex);
-    if (events.size() >= 4096) events.pop_front();
-    events.push_back(std::move(ev));
+void WorldSession::Impl::wire_legacy_poll_subs() {
+    // One private subscription per typed bake/stream event, ALL on the
+    // dedicated lane::legacy_poll (never lane::app), converting back into a
+    // legacy Event enqueued into legacy_pending_. Because each emit pushes
+    // exactly one envelope onto this lane (one legacy_poll subscriber per
+    // type), poll_event()'s pump_one yields exactly one legacy Event — the
+    // one-per-call FIFO contract. must_subscribe is thread-safe; this runs
+    // on the app thread at construction, before any bake can emit.
+    legacy_subs_ += hub_.must_subscribe<events::BakeStarted>(
+        "legacy_poll.bake_started", evt::lane::legacy_poll,
+        [this](const events::BakeStarted& e) { legacy_pending_.push_back(to_legacy_event(e)); });
+    legacy_subs_ += hub_.must_subscribe<events::BakePartDone>(
+        "legacy_poll.bake_part_done", evt::lane::legacy_poll,
+        [this](const events::BakePartDone& e) { legacy_pending_.push_back(to_legacy_event(e)); });
+    legacy_subs_ += hub_.must_subscribe<events::BakeFinished>(
+        "legacy_poll.bake_finished", evt::lane::legacy_poll,
+        [this](const events::BakeFinished& e) { legacy_pending_.push_back(to_legacy_event(e)); });
+    legacy_subs_ += hub_.must_subscribe<events::BakeError>(
+        "legacy_poll.bake_error", evt::lane::legacy_poll,
+        [this](const events::BakeError& e) { legacy_pending_.push_back(to_legacy_event(e)); });
+    legacy_subs_ += hub_.must_subscribe<events::RefineTileDone>(
+        "legacy_poll.refine_tile", evt::lane::legacy_poll,
+        [this](const events::RefineTileDone& e) { legacy_pending_.push_back(to_legacy_event(e)); });
+}
+
+bool WorldSession::Impl::poll_legacy_event(Event& out) {
+    // Claim the lane on first poll (the app thread that drains it). Lazy so
+    // the owner is unambiguously whichever thread actually calls poll_event.
+    if (!legacy_lane_claimed_) {
+        hub_.claim_lane(evt::lane::legacy_poll);
+        legacy_lane_claimed_ = true;
+    }
+    // Pump one envelope at a time until a converted Event is buffered or the
+    // lane empties. In practice one pump_one yields exactly one Event; the
+    // loop is defensive (and independent of any E4 app-lane frame pump).
+    while (legacy_pending_.empty()) {
+        if (hub_.pump_one(evt::lane::legacy_poll) == 0) return false;
+    }
+    out = std::move(legacy_pending_.front());
+    legacy_pending_.pop_front();
+    return true;
 }
 
 void WorldSession::Impl::ensure_worker_started() {
@@ -796,14 +938,13 @@ void WorldSession::Impl::worker_loop() {
         }
         if (cleared) return true;
 
-        Event event;
-        event.type = EventType::BakeError;
+        events::BakeError event;
         event.code = BakeErrorCode::GpuError;
         event.phase = "stream";
         event.message = clear_error.empty()
             ? "streaming eviction barrier failed"
             : clear_error;
-        emit_event(std::move(event));
+        hub_.emit(std::move(event));
         return false;
     };
     // Phase C Task 6: refine loop.
@@ -883,21 +1024,19 @@ void WorldSession::Impl::worker_loop() {
                         ecs_runtime.enqueue_world_state(
                             {ecs_runtime::WorldStateCommandKind::Failed});
                     }
-                    Event ev;
-                    ev.type    = EventType::BakeError;
+                    events::BakeError ev;
                     ev.code    = BakeErrorCode::OutOfMemory;
                     ev.message = "std::bad_alloc";
-                    emit_event(std::move(ev));
+                    hub_.emit(std::move(ev));
                 } catch (std::exception& e) {
                     if (!cmd.token || !cmd.token->is_cancelled()) {
                         ecs_runtime.enqueue_world_state(
                             {ecs_runtime::WorldStateCommandKind::Failed});
                     }
-                    Event ev;
-                    ev.type    = EventType::BakeError;
+                    events::BakeError ev;
                     ev.code    = BakeErrorCode::Internal;
                     ev.message = e.what();
-                    emit_event(std::move(ev));
+                    hub_.emit(std::move(ev));
                 }
                 bake_active.store(false, std::memory_order_release);
                 continue;
@@ -915,15 +1054,14 @@ void WorldSession::Impl::worker_loop() {
                    streaming::detail::IdleWorkerFailure failure,
                    const char* message) {
                     auto& self = *static_cast<WorldSession::Impl*>(opaque);
-                    Event event;
-                    event.type = EventType::BakeError;
+                    events::BakeError event;
                     event.code = failure ==
                             streaming::detail::IdleWorkerFailure::OutOfMemory
                         ? BakeErrorCode::OutOfMemory
                         : BakeErrorCode::Internal;
                     event.phase = "stream";
                     event.message = message;
-                    self.emit_event(std::move(event));
+                    self.hub_.emit(std::move(event));
                 });
             if (refine_ctrl) execute_refine_step();
             continue;
@@ -944,13 +1082,20 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     auto& token = cmd.token;
     auto is_cancelled = [&] { return token && token->is_cancelled(); };
 
+    // Bake Lab (task 1.2): fresh trace for this run; make the session collector
+    // current on the worker thread so BAKE_SPAN/BAKE_COUNT sites anywhere below
+    // record into it. RAII clear covers every exit path (error, cancel, return).
+    bake_collector.reset();
+    bake_trace::set_current(&bake_collector);
+    struct TraceCurrentGuard {
+        ~TraceCurrentGuard() { bake_trace::set_current(nullptr); }
+    } trace_current_guard;
+
     // 1) BakeStarted -----------------------------------------------------------
     ecs_runtime.enqueue_world_state(
         {ecs_runtime::WorldStateCommandKind::Loading});
     {
-        Event ev;
-        ev.type = EventType::BakeStarted;
-        emit_event(std::move(ev));
+        hub_.emit(events::BakeStarted{});
     }
 
     // Emit-a-BakeError helper (worker-side, so all call sites just tag phase).
@@ -959,12 +1104,11 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             ecs_runtime.enqueue_world_state(
                 {ecs_runtime::WorldStateCommandKind::Failed});
         }
-        Event ev;
-        ev.type    = EventType::BakeError;
+        events::BakeError ev;
         ev.code    = code;
         ev.phase   = phase;
         ev.message = msg;
-        emit_event(std::move(ev));
+        hub_.emit(std::move(ev));
     };
 
     // 2) Build a fresh provider and install the part graph --------------------
@@ -998,15 +1142,14 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
 
     // Install-phase on_part carries phase="install" (total==0, indeterminate).
     cfg.on_part = [this](const char* module, int done, int total) {
-        Event ev;
-        ev.type   = EventType::BakePartDone;
+        events::BakePartDone ev;
         ev.module = module ? module : "";
         ev.done   = done;
         ev.total  = total;
         // total==0 => install phase; total>0 => fetch/parts phase.
         // Distinguish by total: install fires with 0, per-part with want.size().
         ev.phase  = (total == 0) ? "install" : "parts";
-        emit_event(std::move(ev));
+        hub_.emit(std::move(ev));
     };
     // Bind gpu_run to marshal tileset GL work to the app thread via gpu_jobs.
     cfg.gpu_run = [this, token](const char* name,
@@ -1019,11 +1162,11 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         return gpu_jobs.run_blocking(std::move(j), err);
     };
 #ifdef MATTER_VULKAN_VIEWER
-    // Phase 1 tileset Vulkan port (Task 6): mirrors the GL path's
-    // viewer::tileset_provider::load_slot call (run_tileset_deferred, right
-    // after bake_tileset_gpu) into the Vulkan renderer. Null vk_scene (no
-    // Vulkan render device / GL-only viewer) means the world stays untextured
-    // on the Vulkan side, matching the fail-closed rule.
+    // Phase 1 tileset Vulkan port (Task 6): uploads the .gtex atlas into the
+    // Vulkan renderer from run_tileset_deferred's shared slot-load step (after
+    // a fresh bake, or on a cache hit). Null vk_scene (no Vulkan render device
+    // / GL-only viewer) means the world stays untextured on the Vulkan side,
+    // matching the fail-closed rule.
     cfg.vk_tileset_load = [this](int slot, const std::string& gtex_path,
                                  std::string& err) -> bool {
         if (!vk_scene) {
@@ -1032,18 +1175,45 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         }
         return vk_scene->load_tileset_slot(slot, gtex_path, err);
     };
-#endif
-    // Signal whether GLAD function pointers are loaded (i.e., a window exists)
-    // so the tileset phase can choose between headless settle-only and full GPU
-    // atlas bake. GLAD pointers are process-global and written once at window
-    // init before any bake, so reading them from the worker thread is safe.
-    // Using gl_loaded() rather than engine->gl46 so that RT/viewer contexts
-    // (allow_gl_lt_46=true) still attempt the atlas bake and get a proper
-    // success-or-clear-error from gl46_available(), instead of a silent skip.
-#ifdef MATTER_VULKAN_ONLY
-    cfg.gl_available = false;
-#else
-    cfg.gl_available = viewer::gl_loaded();
+    // Vulkan hardware-RT .gtex bake (vulkan-rt-gtex-bake.md §I.7, V4): binds
+    // run_tileset_deferred's bake-capable arm to the renderer. Runs on the
+    // app/Vulkan thread — the provider marshals it through cfg.gpu_run above.
+    // Leaving this null (no MATTER_VULKAN_VIEWER, i.e. headless kernel builds
+    // and the GL-only viewer) is what selects the load-only arm.
+    //
+    // Capability gate (spec §I.9): bind ONLY when the device can actually
+    // trace. A GPU without ray query is a capability gap, not an error — with
+    // the callback null it takes the load-only arm and behaves exactly like
+    // the old headless branch (serve a cached atlas, else untextured ground).
+    // Binding unconditionally would turn "no RT hardware" into a fatal
+    // BakeError and make tileset worlds unloadable on such a machine. Once
+    // bound, a bake failure IS fatal — a capable device that fails is a real
+    // error, not something to swallow. Note this is the DEVICE capability, not
+    // the RT-rendering toggle in render options; turning off ray-traced
+    // rendering must not disable baking.
+    if (engine->render_device && engine->render_device->ray_tracing_available()) {
+        cfg.vk_tileset_bake = [this](const tileset::SettledTorus& settled,
+                                     uint64_t script_source_hash,
+                                     const std::string& gtex_path,
+                                     const tileset::BakeInputs& inputs,
+                                     bool dump_png, std::string& err) -> bool {
+            if (!vk_scene) {
+                err = "vk_tileset_bake: Vulkan renderer not active";
+                return false;
+            }
+            return vk_scene->bake_tileset(settled, script_source_hash, gtex_path,
+                                          inputs, /*force_rebake=*/false,
+                                          dump_png, err);
+        };
+    } else {
+        fprintf(stderr,
+                "[matter_engine] tileset .gtex bake disabled: %s "
+                "(cached atlases still load; uncached ground stays untextured)\n",
+                engine->render_device
+                    ? engine->render_device->ray_tracing_unavailable_reason().c_str()
+                    : "no Vulkan render device");
+        fflush(stderr);
+    }
 #endif
 
     // Phase C Task 7: snapshot the root-params override (set by regenerate()).
@@ -1119,7 +1289,10 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                         pp_rc.fault_hook            = cfg.test_fault_hook;
                         pp_rc.load_msg_include_hash = true;
                         pp_rc.provider_ref          = provider;
-                        publish_pipeline(token, std::move(cached_manifest), pp_rc);
+                        {
+                            BAKE_SPAN(bake_trace::kSpanPublish);
+                            publish_pipeline(token, std::move(cached_manifest), pp_rc);
+                        }
                         double publish_ms_rc = std::chrono::duration<double, std::milli>(
                             clk_t::now() - t_publish_start_rc).count();
                         double total_ms2 = std::chrono::duration<double, std::milli>(
@@ -1147,6 +1320,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     int count_errors = 0;
     auto t_install_start = clk_t::now();
     {
+        BAKE_SPAN(bake_trace::kSpanInstall);   // same region install_ms measures
         std::string err;
         if (!provider->install_graph(err, part_graph::BakePolicy::RootsOnly)) {
             printf("install: %s\n", err.c_str());
@@ -1158,13 +1332,12 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         // Emit per-part errors for any parts that failed during install.
         for (const auto& fp : provider->install_result().failed) {
             BakeErrorCode code = classify_error(fp.error);
-            Event ev;
-            ev.type    = EventType::BakeError;
+            events::BakeError ev;
             ev.code    = code;
             ev.phase   = "install";
             ev.module  = fp.module;
             ev.message = fp.error;
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
             ++count_errors;
         }
     }
@@ -1202,9 +1375,17 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         pp.fault_hook            = cfg.test_fault_hook;
         pp.load_msg_include_hash = true;
         pp.provider_ref          = provider;
-        publish_pipeline(token, std::move(empty_manifest), pp);
-        // publish_pipeline replaces PartStore — re-apply transient scratch dir.
-        if (store) store->set_scratch_dir(provider->transient_dir());
+        {
+            BAKE_SPAN(bake_trace::kSpanPublish);   // same region publish_ms measures
+            publish_pipeline(token, std::move(empty_manifest), pp);
+            // publish_pipeline replaces PartStore — re-apply transient scratch dir
+            // and the W3 bake observer (both are per-construction state on the
+            // fresh PartStore instance).
+            if (store) {
+                store->set_scratch_dir(provider->transient_dir());
+                store->set_bake_observer(cfg.bake_observer);
+            }
+        }
         double publish_ms = std::chrono::duration<double, std::milli>(
             clk_t::now() - t_publish_start).count();
         double total_ms = std::chrono::duration<double, std::milli>(
@@ -1221,12 +1402,15 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         nullptr,
         streaming::SectorStreamingErrorCode::UnsupportedWorld);
 
-    // 3) compose_world on the worker (scatter/place; tileset GL marshaled) ----
-    // NOTE: tileset phase runs inside compose_world and is not separable without
-    // surgery into LocalProvider — compose_ms includes scatter + flatten + tileset.
+    // 3) compose_world on the worker (scatter/place) --------------------------
+    // NOTE: the tileset phase no longer runs inside compose_world (Task 15
+    // deferred it to run_tileset_deferred in publish_pipeline's tail), so
+    // compose_ms is scatter + placement only. BakeTrace task 1.3: tileset time
+    // is spanned separately (kSpanTileset inside run_tileset_deferred).
     auto t_compose_start = clk_t::now();
     viewer::WorldManifest new_manifest;
     {
+        BAKE_SPAN(bake_trace::kSpanCompose);   // same region compose_ms measures
         std::string err;
         if (!provider->compose_world(new_manifest, err)) {
             printf("compose: %s\n", err.c_str());
@@ -1271,7 +1455,10 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     pp.fault_hook            = cfg.test_fault_hook;
     pp.load_msg_include_hash = true;
     pp.provider_ref          = provider;  // shared_ptr extends lifetime through publish
-    publish_pipeline(token, std::move(new_manifest), pp);
+    {
+        BAKE_SPAN(bake_trace::kSpanPublish);   // same region publish_ms measures
+        publish_pipeline(token, std::move(new_manifest), pp);
+    }
     double publish_ms = std::chrono::duration<double, std::milli>(
         clk_t::now() - t_publish_start).count();
     double total_ms = std::chrono::duration<double, std::milli>(
@@ -1307,12 +1494,11 @@ void WorldSession::Impl::publish_pipeline(
             ecs_runtime.enqueue_world_state(
                 {ecs_runtime::WorldStateCommandKind::Failed});
         }
-        Event ev;
-        ev.type    = EventType::BakeError;
+        events::BakeError ev;
         ev.code    = code;
         ev.phase   = phase;
         ev.message = msg;
-        emit_event(std::move(ev));
+        hub_.emit(std::move(ev));
     };
 
     const std::string& pfx = p.job_prefix;
@@ -1393,6 +1579,10 @@ void WorldSession::Impl::publish_pipeline(
 #endif
 
         reset_out->new_store = std::make_unique<viewer::PartStore>(cfg.cache_root);
+        // W3: thread the optional per-rung bake observer (null in production;
+        // re-applied at the publish_pipeline call sites too, since PartStore
+        // is replaced wholesale on every GL reset job).
+        reset_out->new_store->set_bake_observer(cfg.bake_observer);
 #ifndef MATTER_VULKAN_ONLY
         reset_out->new_composer = std::make_unique<viewer::WorldComposer>(
             *reset_out->new_store, /*tlas_capacity=*/16);
@@ -1592,13 +1782,12 @@ void WorldSession::Impl::publish_pipeline(
                 if (berr.find("not in bake plan") == std::string::npos) {
                     std::string part_module_b;
                     { auto it = mod_by_hash.find(h); if (it != mod_by_hash.end()) part_module_b = it->second; }
-                    Event bev;
-                    bev.type    = EventType::BakeError;
+                    events::BakeError bev;
                     bev.code    = classify_error(berr);
                     bev.phase   = "parts";
                     bev.module  = part_module_b;
                     bev.message = berr;
-                    emit_event(std::move(bev));
+                    hub_.emit(std::move(bev));
                     ++bake_fail_count;
                 }
                 // Skip GPU job for this part (artifact missing)
@@ -1691,8 +1880,7 @@ void WorldSession::Impl::publish_pipeline(
         // total = publish_order.size() at emit time — may grow between events
         // as FlatInstanceRefs are discovered (see events.h).
         {
-            Event ev;
-            ev.type   = EventType::BakePartDone;
+            events::BakePartDone ev;
             // mod_by_hash is seeded from graph-known roots only; ref-streamed
             // children publish with module="" (no provider API to look them up).
             auto it   = mod_by_hash.find(h);
@@ -1700,7 +1888,7 @@ void WorldSession::Impl::publish_pipeline(
             ev.done   = (int)(i + 1);
             ev.total  = (int)publish_order.size();
             ev.phase  = "parts";
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
         }
 
         if (part_bake_failed) continue;  // skip GPU job for this part
@@ -1732,7 +1920,7 @@ void WorldSession::Impl::publish_pipeline(
             // inject deterministic faults. On any failure: emit a BakeError,
             // increment load_fail_count, and return true-with-skip (do NOT
             // publish the delta; do not abort the job pipeline).
-            // emit_event is mutex-guarded so calling from the GL thread is safe.
+            // hub_.emit is thread-safe so calling from the GL thread is safe.
             BakeErrorCode fail_code = BakeErrorCode::IoError;
             std::string   fail_msg;
             bool          part_failed = false;
@@ -1757,13 +1945,12 @@ void WorldSession::Impl::publish_pipeline(
             }
 
             if (part_failed) {
-                Event bev;
-                bev.type    = EventType::BakeError;
+                events::BakeError bev;
                 bev.code    = fail_code;
                 bev.phase   = "parts";
                 bev.module  = part_module;
                 bev.message = fail_msg;
-                emit_event(std::move(bev));
+                hub_.emit(std::move(bev));
                 ++cap_state->load_fail_count;
                 return true;   // skip-and-continue: pipeline keeps running
             }
@@ -1872,10 +2059,9 @@ void WorldSession::Impl::publish_pipeline(
 
     // 8) BakeFinished.
     {
-        Event ev;
-        ev.type   = EventType::BakeFinished;
+        events::BakeFinished ev;
         ev.errors = count_errors;
-        emit_event(std::move(ev));
+        hub_.emit(std::move(ev));
     }
 
     // 9) Deferred tileset phase (Task 15): runs after BakeFinished so silhouette
@@ -1887,24 +2073,22 @@ void WorldSession::Impl::publish_pipeline(
     //    connect() sync path — LocalProvider::connect — where callers need the full world.)
     if (p.provider_ref) {
         auto tileset_on_part = [this, &pfx](int done, int total, const char* module) {
-            Event ev;
-            ev.type   = EventType::BakePartDone;
+            events::BakePartDone ev;
             ev.phase  = "tileset";
             ev.module = module ? module : "";
             ev.done   = done;
             ev.total  = total;
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
         };
         std::string terr;
         if (!p.provider_ref->run_tileset_deferred(tileset_on_part, is_cancelled, terr)) {
             if (!is_cancelled()) {
                 // Non-fatal: emit BakeError but the world is already rendering.
-                Event ev;
-                ev.type    = EventType::BakeError;
+                events::BakeError ev;
                 ev.code    = classify_error(terr);
                 ev.phase   = "tileset";
                 ev.message = terr;
-                emit_event(std::move(ev));
+                hub_.emit(std::move(ev));
             }
         }
     }
@@ -2035,15 +2219,13 @@ void WorldSession::Impl::execute_refine_step() {
             if (r == 1) {
                 // Swap succeeded — promote tile to Full and report progress.
                 refine_ctrl->mark(ti, matter_refine::TileRecord::State::Full);
-                Event ev;
-                ev.type    = EventType::RefineTileDone;
+                events::RefineTileDone ev;
                 ev.module  = "Terrain";
                 ev.done    = (int)refine_ctrl->full_count();
                 ev.total   = (int)tile_count;
-                ev.phase   = "refine";
                 ev.tile_tx = ev_tx;
                 ev.tile_tz = ev_tz;
-                emit_event(std::move(ev));
+                hub_.emit(std::move(ev));
             } else {
                 // Swap failed (get_or_load returned null) — leave Coarse for retry.
                 fprintf(stderr, "[refine] upgrade GL job failed for tile (%d,%d) — "
@@ -2120,15 +2302,13 @@ void WorldSession::Impl::execute_refine_step() {
             gpu_jobs.post(std::move(ej));
 
             // Emit RefineTileDone with the new (decremented) done count.
-            Event ev;
-            ev.type    = EventType::RefineTileDone;
+            events::RefineTileDone ev;
             ev.module  = "Terrain";
             ev.done    = (int)done_after;
             ev.total   = (int)tile_count;
-            ev.phase   = "refine";
             ev.tile_tx = ev_tx_e;
             ev.tile_tz = ev_tz_e;
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
         }
     }
 
@@ -2293,10 +2473,14 @@ bool WorldSession::Impl::install_world(
     wb.field       = world_field.get();
     runtime_profile.apply(wb);
     provider->host_baker().set_world(wb);
+    provider->host_baker().set_bake_observer(cfg.bake_observer);  // W3
 
     // 6. Mark WorldSector as transient so its artifacts go to scratch.
     provider->set_transient_modules({"WorldSector"});
-    if (store) store->set_scratch_dir(provider->transient_dir());
+    if (store) {
+        store->set_scratch_dir(provider->transient_dir());
+        store->set_bake_observer(cfg.bake_observer);  // W3
+    }
 
     // 7. Read sector source: <schemas_dir>/WorldSector.js
     {
@@ -2350,12 +2534,11 @@ bool WorldSession::Impl::install_world(
             std::ifstream in(child_js, std::ios::binary);
             if (!in) {
                 fprintf(stderr, "install_world: cannot read child %s (skipping)\n", child_js.c_str());
-                Event ev;
-                ev.type = EventType::BakeError;
+                events::BakeError ev;
                 ev.code = BakeErrorCode::ScriptError;
                 ev.phase = "install";
                 ev.message = "cannot read child " + child_js;
-                emit_event(std::move(ev));
+                hub_.emit(std::move(ev));
                 return false;
             }
             std::ostringstream ss; ss << in.rdbuf();
@@ -2393,14 +2576,21 @@ bool WorldSession::Impl::install_world(
                     kid_hashes, kid_modules, kid_params, hash)) {
                 fprintf(stderr, "install_world: bake failed for %s (skipping)\n",
                         module.c_str());
-                Event ev;
-                ev.type = EventType::BakeError;
+                events::BakeError ev;
                 ev.code = BakeErrorCode::ScriptError;
                 ev.phase = "install";
                 ev.message = "bake failed for " + module + " params=" + params_json;
-                emit_event(std::move(ev));
+                hub_.emit(std::move(ev));
                 return false;
             }
+            // W5 (Part Workbench, static lods): must run BEFORE bake_lod_variants
+            // (its fast path prefers the child-table/merged-params state bake()
+            // just left on the host, and bake_lod_variants's own optional
+            // budget-variant bakes would otherwise overwrite it — its slow-path
+            // recovery bake stays correct either way).
+            provider->host_baker().bake_static_lods(
+                source, part_graph::params_from_json(params_json),
+                kid_hashes, kid_modules, kid_params, hash);
             provider->host_baker().bake_lod_variants(
                 source, part_graph::params_from_json(params_json),
                 kid_hashes, hash);
@@ -2916,14 +3106,13 @@ void WorldSession::Impl::execute_sector_stream_step() {
     coordinator.worker_step();
     std::string eviction_error;
     if (!drain_sector_evictions(/*require_empty=*/false, eviction_error)) {
-        Event event;
-        event.type = EventType::BakeError;
+        events::BakeError event;
         event.code = BakeErrorCode::GpuError;
         event.phase = "stream";
         event.message = eviction_error.empty()
             ? "sector eviction failed"
             : eviction_error;
-        emit_event(std::move(event));
+        hub_.emit(std::move(event));
         return;
     }
     if (!provider || !world_field) return;
@@ -2998,24 +3187,22 @@ void WorldSession::Impl::execute_sector_stream_step() {
                 completion_index, /*rollback_complete=*/true,
                 /*published=*/false);
             tracked_guard.disarm();
-            Event ev;
-            ev.type = EventType::BakeError;
+            events::BakeError ev;
             ev.code = BakeErrorCode::ScriptError;
             ev.phase = "stream";
             ev.message = exception.what();
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
             continue;
         } catch (...) {
             mark_publication_for_retry(
                 completion_index, /*rollback_complete=*/true,
                 /*published=*/false);
             tracked_guard.disarm();
-            Event ev;
-            ev.type = EventType::BakeError;
+            events::BakeError ev;
             ev.code = BakeErrorCode::ScriptError;
             ev.phase = "stream";
             ev.message = "unknown sector bake failure";
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
             continue;
         }
 
@@ -3028,12 +3215,11 @@ void WorldSession::Impl::execute_sector_stream_step() {
                 /*published=*/false);
             tracked_guard.disarm();
 
-            Event ev;
-            ev.type    = EventType::BakeError;
+            events::BakeError ev;
             ev.code    = BakeErrorCode::ScriptError;
             ev.phase   = "stream";
             ev.message = br.error.message;
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
             continue;
         }
 
@@ -3043,12 +3229,11 @@ void WorldSession::Impl::execute_sector_stream_step() {
                 completion_index, /*rollback_complete=*/false,
                 /*published=*/false);
             tracked_guard.disarm();
-            Event ev;
-            ev.type = EventType::BakeError;
+            events::BakeError ev;
             ev.code = BakeErrorCode::GpuError;
             ev.phase = "stream";
             ev.message = "sector publication artifact retention failed";
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
             continue;
         }
         tracked_guard.disarm();
@@ -3077,8 +3262,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     [this](const char* message,
                            const std::string& detail) noexcept {
                     try {
-                        Event event;
-                        event.type = EventType::BakeError;
+                        events::BakeError event;
                         event.code = BakeErrorCode::GpuError;
                         event.phase = "stream";
                         event.message = message;
@@ -3086,7 +3270,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
                             event.message += ": cleanup pending: ";
                             event.message += detail;
                         }
-                        emit_event(std::move(event));
+                        hub_.emit(std::move(event));
                     } catch (...) {
                     }
                 };
@@ -3192,7 +3376,11 @@ void WorldSession::Impl::execute_sector_stream_step() {
                                     : vulkan_error);
                         }
                     }
-                    vk_instance_cache.invalidate();
+                    // A publish only ADDS a sector; nothing is released or
+                    // unregistered here, so every existing source's expansion
+                    // stays valid. Drop only the flat set so the next frame
+                    // rebuilds it -- from memos, plus the one new sector.
+                    vk_instance_cache.invalidate_expansion();
                     vk_temporal.invalidate();
 #endif
 #ifndef MATTER_VULKAN_ONLY
@@ -3224,22 +3412,20 @@ void WorldSession::Impl::execute_sector_stream_step() {
             mark_publication_for_retry(
                 completion_index, /*rollback_complete=*/false,
                 /*published=*/false);
-            Event event;
-            event.type = EventType::BakeError;
+            events::BakeError event;
             event.code = BakeErrorCode::GpuError;
             event.phase = "stream";
             event.message = exception.what();
-            emit_event(std::move(event));
+            hub_.emit(std::move(event));
         } catch (...) {
             mark_publication_for_retry(
                 completion_index, /*rollback_complete=*/false,
                 /*published=*/false);
-            Event event;
-            event.type = EventType::BakeError;
+            events::BakeError event;
             event.code = BakeErrorCode::GpuError;
             event.phase = "stream";
             event.message = "unknown sector publication post failure";
-            emit_event(std::move(event));
+            hub_.emit(std::move(event));
         }
     }
 
@@ -3248,14 +3434,13 @@ void WorldSession::Impl::execute_sector_stream_step() {
     coordinator.worker_step();
     eviction_error.clear();
     if (!drain_sector_evictions(/*require_empty=*/false, eviction_error)) {
-        Event event;
-        event.type = EventType::BakeError;
+        events::BakeError event;
         event.code = BakeErrorCode::GpuError;
         event.phase = "stream";
         event.message = eviction_error.empty()
             ? "sector replacement eviction failed"
             : eviction_error;
-        emit_event(std::move(event));
+        hub_.emit(std::move(event));
         return;
     }
 
@@ -3266,10 +3451,9 @@ void WorldSession::Impl::execute_sector_stream_step() {
         snapshot.status.resident_sectors > 0 &&
         snapshot.status.inflight_sectors == 0) {
         world_initial_load_done = true;
-        Event ev;
-        ev.type   = EventType::BakeFinished;
+        events::BakeFinished ev;
         ev.errors = 0;
-        emit_event(std::move(ev));
+        hub_.emit(std::move(ev));
     }
 }
 
@@ -3300,19 +3484,16 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
             ecs_runtime.enqueue_world_state(
                 {ecs_runtime::WorldStateCommandKind::Failed});
         }
-        Event ev;
-        ev.type    = EventType::BakeError;
+        events::BakeError ev;
         ev.code    = code;
         ev.phase   = phase;
         ev.message = msg;
-        emit_event(std::move(ev));
+        hub_.emit(std::move(ev));
     };
 
     // 0) Announce start.
     {
-        Event ev;
-        ev.type = EventType::BakeStarted;
-        emit_event(std::move(ev));
+        hub_.emit(events::BakeStarted{});
     }
 
     if (is_cancelled()) {
@@ -3335,13 +3516,15 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
     live_edit_prod::ProdBaker         pb(snap, host, cfg.cache_root);
     live_edit_prod::ProdFlattener     pf(snap, host, cfg.cache_root);
 
-    // NullSink: we convert errors to BakeError events below.
-    struct NullSink : live_edit::ErrorSink {
-        void report(const live_edit::LiveEditError&) override {}
-    } null_sink;
+    // I.11: hub-backed adapter — each structured live-edit error is republished
+    // as an immediate error.live_edit on the session hub (in addition to the
+    // BakeError events we synthesize from rep.errors below, which the legacy
+    // poll shim still consumes). LiveEditSession is unchanged: it takes an
+    // ErrorSink& and calls sink_.report() exactly as before.
+    live_edit::HubErrorSink live_edit_sink(hub_);
 
     NullWatcher nw;
-    live_edit::LiveEditSession sess(nw, *gr, pb, pf, null_sink,
+    live_edit::LiveEditSession sess(nw, *gr, pb, pf, live_edit_sink,
                                    live_edit::LiveEditConfig{/*debounce_ms=*/0,
                                                              /*bake_budget_ms=*/0});
 
@@ -3360,13 +3543,12 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
                 code = BakeErrorCode::Internal;
             else
                 code = BakeErrorCode::ScriptError;
-            Event ev;
-            ev.type    = EventType::BakeError;
+            events::BakeError ev;
             ev.code    = code;
             ev.phase   = "cone";
             ev.module  = e.part;
             ev.message = e.message;
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
         }
         return;  // old world keeps rendering
     }
@@ -3381,13 +3563,12 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
     //    cache; re-install is cheap because all parts are now cache hits.
     //    Refresh cfg_ callbacks with the cone command's token before re-installing.
     cfg.on_part = [this](const char* module, int done, int total) {
-        Event ev;
-        ev.type   = EventType::BakePartDone;
+        events::BakePartDone ev;
         ev.module = module ? module : "";
         ev.done   = done;
         ev.total  = total;
         ev.phase  = (total == 0) ? "install" : "parts";
-        emit_event(std::move(ev));
+        hub_.emit(std::move(ev));
     };
     cfg.gpu_run = [this, token](const char* name,
                                 std::function<bool(std::string&)> fn,
@@ -3410,11 +3591,25 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
         }
         return vk_scene->load_tileset_slot(slot, gtex_path, err);
     };
-#endif
-#ifdef MATTER_VULKAN_ONLY
-    cfg.gl_available = false;
-#else
-    cfg.gl_available = viewer::gl_loaded();  // same semantics as execute_bake: loaded ≠ 4.6-confirmed
+    // V4: same vk_tileset_bake wiring as execute_bake above — including the
+    // device-capability gate, so a non-RT GPU takes the load-only arm here too
+    // rather than failing the cone rebuild. See the comment at the execute_bake
+    // site for why the gate is at bind time.
+    if (engine->render_device && engine->render_device->ray_tracing_available()) {
+        cfg.vk_tileset_bake = [this](const tileset::SettledTorus& settled,
+                                     uint64_t script_source_hash,
+                                     const std::string& gtex_path,
+                                     const tileset::BakeInputs& inputs,
+                                     bool dump_png, std::string& err) -> bool {
+            if (!vk_scene) {
+                err = "vk_tileset_bake: Vulkan renderer not active";
+                return false;
+            }
+            return vk_scene->bake_tileset(settled, script_source_hash, gtex_path,
+                                          inputs, /*force_rebake=*/false,
+                                          dump_png, err);
+        };
+    }
 #endif
     // Phase C Task 7: cfg.root_params_json is intentionally NOT reset here.
     // The cone path operates within the current world's seed context: whatever
@@ -3437,13 +3632,12 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
         // Emit per-part errors for any partial install failures.
         for (const auto& fp : provider->install_result().failed) {
             BakeErrorCode code = classify_error(fp.error);
-            Event ev;
-            ev.type    = EventType::BakeError;
+            events::BakeError ev;
             ev.code    = code;
             ev.phase   = "cone";
             ev.module  = fp.module;
             ev.message = fp.error;
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
         }
     }
 
@@ -3550,7 +3744,30 @@ std::unique_ptr<EngineContext> EngineContext::create(const EngineDesc& desc,
     matter::set_shader_override_dir(desc.shader_dir);
 
     auto impl = std::make_unique<Impl>();
-    impl->cache_root = desc.cache_root ? desc.cache_root : "cache";
+    // Phase 1 cache-leak fix: cache_root has no relative default anymore (see
+    // EngineDesc::cache_root in engine_context.h). A caller-supplied value is
+    // always canonicalized to absolute here via std::filesystem::absolute, so
+    // impl->cache_root is never a bare relative string that later I/O could
+    // resolve against whatever the process's cwd happens to be at write time.
+    if (!desc.cache_root || desc.cache_root[0] == '\0') {
+        err = "EngineContext::create: cache_root is required (no relative "
+              "default; a bare relative \"cache\" default previously let "
+              "bake artifacts scatter into whatever directory the process "
+              "happened to launch from)";
+        return nullptr;
+    }
+    {
+        std::error_code ec;
+        std::filesystem::path abs_cache_root =
+            std::filesystem::absolute(std::filesystem::path(desc.cache_root), ec);
+        if (ec) {
+            err = "EngineContext::create: cannot resolve cache_root '" +
+                  std::string(desc.cache_root) + "' to an absolute path: " +
+                  ec.message();
+            return nullptr;
+        }
+        impl->cache_root = abs_cache_root.string();
+    }
     impl->render_device = desc.render_device;
 
 #ifndef MATTER_VULKAN_ONLY
@@ -3726,6 +3943,14 @@ WorldSession::~WorldSession() {
     impl_->terminal_streaming_teardown_noexcept();
     if (!gpu_queue_shutdown) impl_->gpu_jobs.shut_down();
 
+    // E3 close ordering (event-system.md S I.13): every emitter has now been
+    // stopped/joined — the worker is joined above and gpu_jobs is shut down, so
+    // no publish-job lambda can still emit on this (app/GL) thread. Close the
+    // hub here: it cancels any queued legacy-lane envelopes and waits for any
+    // in-flight callbacks, BEFORE the remaining session state is destroyed and
+    // before ~Impl runs hub_'s own defensive close.
+    impl_->hub_.close();
+
 #ifdef MATTER_VULKAN_VIEWER
     impl_->vk_instance_cache.invalidate();
     impl_->vk_scene.reset();
@@ -3739,6 +3964,18 @@ WorldSession::~WorldSession() {
 #ifndef MATTER_VULKAN_ONLY
     impl_->renderer.shutdown();
 #endif
+}
+
+void WorldSession::set_bake_observer(BakeObserver* observer) {
+    // W3 (Bake Lab): stored on cfg_ so it's picked up whenever the next bake
+    // (re)constructs the LocalProvider/HostBaker (see local_provider.cpp) and
+    // whenever publish_pipeline (re)constructs the PartStore. Also applied to
+    // the CURRENT PartStore immediately (if one already exists) so a caller
+    // that sets the observer between bakes — e.g. right after open_part(),
+    // before the first request_bake() — doesn't need to know the store's
+    // construction order to get callbacks on the very next bake.
+    impl_->cfg.bake_observer = observer;
+    if (impl_->store) impl_->store->set_bake_observer(observer);
 }
 
 void WorldSession::set_test_fault_hook(std::function<void(int)> hook) {
@@ -3820,6 +4057,10 @@ bool WorldSession::graph_snapshot(part_graph_snapshot::Snapshot& out) const {
 
 uint64_t WorldSession::graph_generation() const {
     return impl_->graph_generation_.load(std::memory_order_relaxed);
+}
+
+void WorldSession::last_bake_trace(bake_trace::Span& out) const {
+    out = impl_->bake_collector.snapshot();
 }
 
 void WorldSession::Impl::poll_runtime_sources() {
@@ -4201,6 +4442,10 @@ void WorldSession::tick(const TickDesc& desc) {
     if (result.invalid) {
         ++impl_->stats.ecs_invalid_ticks;
         impl_->publish_streaming_snapshot();
+        // E5b (S I.14): end-of-tick scene-delta flush, app thread. Runs even on
+        // an invalid tick so edits made via SceneService before the tick still
+        // publish their canonical delta.
+        impl_->scene_tracker_.flush();
         return;
     }
     impl_->stats.ecs_fixed_steps += result.fixed_steps;
@@ -4209,6 +4454,11 @@ void WorldSession::tick(const TickDesc& desc) {
     impl_->reconcile_runtime_animation_skinning();
     impl_->poll_runtime_sources();
     impl_->publish_streaming_snapshot();
+    // E5b (S I.14): flush the SceneChangeTracker at END of the app-thread ECS
+    // tick — snapshots each dirty live entity once and publishes the sequenced
+    // upsert/remove batches. Pinned to precede PropertyScheduler::flush_dirty
+    // in the frame loop so tick-N deltas reach the UI in frame N.
+    impl_->scene_tracker_.flush();
 }
 
 #ifdef MATTER_VULKAN_VIEWER
@@ -4314,9 +4564,33 @@ struct VulkanDiagnosticMaterialOverride {
 
 bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         uint64_t part_hash, const viewer::LoadedPart& loaded,
-                        bool& drawable, std::string& error) {
+                        bool& drawable, std::string& error, int force_lod) {
     drawable = false;
     if (loaded.lod_mesh_data.empty()) return true;
+    // Perf: everything below builds a complete VkScenePart (per-vertex material
+    // lookups, cluster packing) purely so the LAST line can hand it to
+    // ensure_part() — which early-outs on slot_of_.find(part_hash) and throws
+    // the whole conversion away. This loop runs once per *expanded instance*
+    // (tens of thousands per frame) over a few dozen distinct part hashes, so
+    // ask the renderer first.
+    //
+    // Behaviour is identical to falling through to ensure_part():
+    //   * hit  -> ensure_part() would clear `error`, return the existing slot
+    //             (always >= 0), so drawable = true and the tail returns true.
+    //   * miss -> we build and register exactly as before.
+    //   * poisoned renderer -> registered_part_slot() reports -1, so we take
+    //             the old path and ensure_part() still fails closed.
+    // force_lod needs no special case: the only caller that passes a non-default
+    // force_lod (WorldSession::render) calls release_part() on the very same
+    // hash immediately before this when the override *changed*, which erases it
+    // from slot_of_ and forces the rebuild. When the override is unchanged the
+    // registered part already carries the forced thresholds — which is exactly
+    // what ensure_part()'s early-out returned before.
+    if (renderer.registered_part_slot(part_hash) >= 0) {
+        error.clear();
+        drawable = true;
+        return true;
+    }
     viewer::VkScenePart part;
     part.part_hash = part_hash;
     const int material_count = MaterialRegistryCount();
@@ -4420,6 +4694,20 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
     }
     if (part.vertices.empty()) return true;
 
+    // Bake Lab W4 (part-workbench.md SS-I.5): squash a cluster's thresholds
+    // so the unmodified Vulkan cull.comp selection loop ("first i with
+    // psize >= thresholds[i]") always lands on `level`, regardless of camera
+    // distance — mirrors gpu_cull_types.h::apply_force_lod for the GL path.
+    // No-op when force_lod < 0 (the default), so production packing stays
+    // byte-identical to pre-W4 output.
+    const auto apply_force_lod = [](std::vector<viewer::VkSceneLod>& lods, int fl) {
+        if (fl < 0 || lods.empty()) return;
+        const size_t level = std::min<size_t>((size_t)fl, lods.size() - 1);
+        for (size_t i = 0; i < level; ++i)
+            lods[i].threshold = std::numeric_limits<float>::max();
+        lods[level].threshold = -std::numeric_limits<float>::max();
+    };
+
     if (!loaded.clusters.empty()) {
         for (const auto& source : loaded.clusters) {
             viewer::VkSceneCluster cluster;
@@ -4441,6 +4729,7 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                                         static_cast<uint32_t>(mesh.indices.size()),
                                         source.thresholds[li]});
             }
+            apply_force_lod(cluster.lods, force_lod);
             if (!cluster.lods.empty()) part.clusters.push_back(std::move(cluster));
         }
     } else {
@@ -4459,6 +4748,7 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                                     static_cast<uint32_t>(mesh.indices.size()),
                                     threshold});
         }
+        apply_force_lod(cluster.lods, force_lod);
         if (!cluster.lods.empty()) part.clusters.push_back(std::move(cluster));
     }
     if (part.clusters.empty()) return true;
@@ -4636,28 +4926,80 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     const auto resolved = resolver.resolve(impl_->state, impl_->lods, camera_pos);
     const auto resolve_end = std::chrono::steady_clock::now();
 
-    const bool instances_dirty = !impl_->vk_instance_cache.matches(resolved);
+    // Bake Lab W4 (part-workbench.md SS-I.5): LOD Inspector debug overrides.
+    // Neither is part of the vk_instance_cache fingerprint (they don't change
+    // the resolved instance set), so a change is tracked explicitly and both
+    // forces a rebuild AND (for force_lod) releases already-registered parts
+    // so ensure_vulkan_part rebakes their cluster thresholds. Defaults (-1 /
+    // false) leave production render output byte-identical to pre-W4.
+    const bool force_lod_changed = (opts.force_lod != impl_->vk_force_lod_applied_);
+    const bool hide_children_changed =
+        (opts.hide_child_instances != impl_->vk_hide_children_applied_);
+    impl_->vk_force_lod_applied_ = opts.force_lod;
+    impl_->vk_hide_children_applied_ = opts.hide_child_instances;
+
+    const bool instances_dirty = force_lod_changed || hide_children_changed ||
+                                 !impl_->vk_instance_cache.matches(resolved);
     if (instances_dirty) {
+        // Perf: a streaming world publishes sectors continuously, and each
+        // publish changes the resolved set, so this rebuild runs almost every
+        // frame. Re-expanding every source each time is what made it expensive
+        // (tens of thousands of part-store and renderer lookups for a set that
+        // gained one sector). A source's expansion depends only on its own
+        // identity and on the content-addressed part it names, so it is
+        // memoised per source and only genuinely new sources are expanded.
+        //
+        // Both debug overrides retire every memo: hide_child_instances changes
+        // which nodes an expansion emits, and force_lod makes the loop below
+        // release and re-register parts as it walks them. Clearing here (rather
+        // than merely skipping lookups) is what makes that safe -- a memo that
+        // survived a hide_child_instances flip would keep serving the previous
+        // filter's node set on the next rebuild. The expansions produced during
+        // this rebuild are correct for the new configuration and are memoised
+        // normally.
+        if (force_lod_changed || hide_children_changed)
+            impl_->vk_instance_cache.invalidate_sources();
         std::vector<viewer::VkSceneInstance> rebuilt;
-        rebuilt.reserve(resolved.size() * 2);
+        rebuilt.reserve(impl_->vk_instance_cache.instances().size() +
+                        resolved.size());
+        std::vector<viewer::VkSceneInstance> expanded;
         for (const auto& source : resolved) {
             if (source.stable_id == 0) {
                 err = "resolved Vulkan instance is missing stable identity";
                 return false;
             }
+            const std::vector<viewer::VkSceneInstance>* memo =
+                impl_->vk_instance_cache.find_source(source);
+            if (memo) {
+                rebuilt.insert(rebuilt.end(), memo->begin(), memo->end());
+                continue;
+            }
             const viewer::LoadedPart* root =
                 impl_->store->get_or_load(source.part_hash);
             if (!root) continue;
+            if (force_lod_changed) impl_->vk_scene->release_part(source.part_hash);
+            // A load returning null is a transient condition -- the part may
+            // become available on a later frame. Such an expansion is left
+            // un-memoised so it is retried, exactly as before this cache
+            // existed. A part that loads but is not drawable is a stable
+            // property of its content and does not block memoisation.
+            bool complete = true;
+            expanded.clear();
             if (!root->expansion.empty()) {
                 for (size_t node_index = 0;
                      node_index < root->expansion.size(); ++node_index) {
                     const auto& node = root->expansion[node_index];
+                    // W4: "show root only" debug filter — skip descendant
+                    // child-instance subtrees (depth > 0).
+                    if (opts.hide_child_instances && node.depth > 0) continue;
                     const viewer::LoadedPart* loaded =
                         impl_->store->get_or_load(node.part_hash);
-                    if (!loaded) continue;
+                    if (!loaded) { complete = false; continue; }
+                    if (force_lod_changed) impl_->vk_scene->release_part(node.part_hash);
                     bool drawable = false;
                     if (!ensure_vulkan_part(*impl_->vk_scene, node.part_hash,
-                                            *loaded, drawable, err)) return false;
+                                            *loaded, drawable, err,
+                                            opts.force_lod)) return false;
                     if (!drawable) continue;
                     Mat4f root_transform{};
                     Mat4f relative{};
@@ -4665,7 +5007,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                                 sizeof(root_transform.m));
                     std::memcpy(relative.m, node.rel_transform,
                                 sizeof(relative.m));
-                    rebuilt.push_back(
+                    expanded.push_back(
                         {node.part_hash,
                          viewer::mat4_mul(root_transform, relative),
                          viewer::temporal_instance_id(
@@ -4675,18 +5017,24 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             } else {
                 bool drawable = false;
                 if (!ensure_vulkan_part(*impl_->vk_scene, source.part_hash,
-                                        *root, drawable, err)) return false;
-                if (!drawable) continue;
-                viewer::VkSceneInstance instance;
-                instance.part_hash = source.part_hash;
-                instance.instance_id = viewer::temporal_instance_id(
-                    source.stable_id, source.part_hash, 0);
-                std::memcpy(instance.object_to_world.m, source.transform,
-                            sizeof(instance.object_to_world.m));
-                rebuilt.push_back(instance);
+                                        *root, drawable, err,
+                                        opts.force_lod)) return false;
+                if (drawable) {
+                    viewer::VkSceneInstance instance;
+                    instance.part_hash = source.part_hash;
+                    instance.instance_id = viewer::temporal_instance_id(
+                        source.stable_id, source.part_hash, 0);
+                    std::memcpy(instance.object_to_world.m, source.transform,
+                                sizeof(instance.object_to_world.m));
+                    expanded.push_back(instance);
+                }
             }
+            rebuilt.insert(rebuilt.end(), expanded.begin(), expanded.end());
+            if (complete)
+                impl_->vk_instance_cache.store_source(source, expanded);
         }
         impl_->vk_instance_cache.store(resolved, std::move(rebuilt));
+        impl_->vk_instance_cache.prune_sources(resolved);
     }
     const auto& instances = impl_->vk_instance_cache.instances();
     if (instances.empty()) {
@@ -4707,12 +5055,29 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     }
 
     const auto build_start = std::chrono::steady_clock::now();
-    std::vector<viewer::TemporalInstance> temporal_instances;
-    temporal_instances.reserve(instances.size());
-    for (size_t index = 0; index < instances.size(); ++index) {
-        temporal_instances.push_back(
-            {instances[index].instance_id, instances[index].object_to_world});
+    // Perf: this is a pure projection of `instances`, so it only has to be
+    // rebuilt when `instances` itself is replaced. VulkanInstanceCache::store()
+    // is the only writer of the vector `instances` refers to and bumps
+    // expansion_count() every time it runs; invalidate()/invalidate_expansion()
+    // clear the cache but also clear valid_, so the very next render misses
+    // matches(), rebuilds, and stores — bumping the counter before anyone reads
+    // the vector again. An unchanged counter therefore means an unchanged span.
+    // (The reverse is not true — a rebuild that reproduces the same set still
+    // bumps — which only costs a redundant rebuild here.)
+    const uint64_t expansion = impl_->vk_instance_cache.expansion_count();
+    if (impl_->vk_temporal_instances_expansion != expansion ||
+        impl_->vk_temporal_instances.size() != instances.size()) {
+        impl_->vk_temporal_instances.clear();
+        impl_->vk_temporal_instances.reserve(instances.size());
+        for (size_t index = 0; index < instances.size(); ++index) {
+            impl_->vk_temporal_instances.push_back(
+                {instances[index].instance_id,
+                 instances[index].object_to_world});
+        }
+        impl_->vk_temporal_instances_expansion = expansion;
     }
+    const std::vector<viewer::TemporalInstance>& temporal_instances =
+        impl_->vk_temporal_instances;
     const viewer::TemporalFrame temporal = begin_temporal(temporal_instances);
     const viewer::FrameMatrices& matrices = temporal.current_jittered;
     bool animation_skin_queue_pending_seal = false;
@@ -4724,7 +5089,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // Dynamic entity bridge: reconcile ECS entities with renderer slots.
     // Drop Bind changes whose part can't be loaded yet (next frame retries).
     {
-        scene::BridgeErrorSink sink{};
+        // I.11: hub-backed adapter — bridge per-entity errors are republished
+        // as immediate error.part_instance{,_clear} on the session hub.
+        scene::BridgeErrorSink sink = scene::make_hub_error_sink(impl_->hub_);
         std::string bridge_err;
         // The Vulkan submission serial is distinct from the fixed/frame ECS
         // counter.  Make an explicit renderer-facing snapshot publication so
@@ -5074,6 +5441,11 @@ void WorldSession::render(const CameraDesc& cam, int fb_width, int fb_height,
         // Enable stats readback (same as main.cpp line 418 — viewer always shows counters).
         impl_->gpu_culler.set_stats_readback(true);
         impl_->gpu_culler.set_min_projected_size(opts.min_projected_size);
+        // Bake Lab W4 (part-workbench.md SS-I.5): LOD Inspector debug
+        // overrides. Defaults (-1 / false) are byte-identical to pre-W4
+        // packing — see gpu_cull_types.h::apply_force_lod.
+        impl_->gpu_culler.set_force_lod(opts.force_lod);
+        impl_->gpu_culler.set_hide_child_instances(opts.hide_child_instances);
         impl_->gpu_culler.cull(resolved, *impl_->store, eye,
                                frame.frustum_planes, frame.world_to_clip, budget);
         auto t2 = std::chrono::steady_clock::now();
@@ -5109,14 +5481,26 @@ void WorldSession::render(const CameraDesc&, int, int, const RenderOptions&) {
 #endif
 
 bool WorldSession::poll_event(Event& out) {
-    // Phase B: worker thread pushes into `events` under events_mutex; the
-    // consumer (app thread) drains here under the same lock.
-    std::lock_guard<std::mutex> lk(impl_->events_mutex);
-    if (impl_->events.empty()) return false;
-    out = std::move(impl_->events.front());
-    impl_->events.pop_front();
-    return true;
+    // E3 compat shim (event-system.md S I.11 / S II.4 item 6): the worker/GL
+    // threads emit typed bake/stream events onto the session hub; a private
+    // subscription set on the dedicated lane::legacy_poll converts each back
+    // into a legacy matter::Event. This call owns that lane, pump_one()s it,
+    // and returns exactly one converted Event per call (or false when empty) —
+    // preserving the pre-E3 one-event-per-call FIFO drain WITHOUT depending on
+    // any frame-loop app-lane pump (E4 adds that; this must work standalone).
+    return impl_->poll_legacy_event(out);
 }
+
+evt::Hub& WorldSession::events() { return impl_->hub_; }
+const evt::Hub& WorldSession::events() const { return impl_->hub_; }
+
+// E5b (event-system.md S I.14): the session-owned scene model layer, exposed
+// for the E5c SessionBinding adapter / command handlers. Same lifetime as the
+// session; app-thread affinity. SceneService is the ONE supported mutation
+// path; SceneChangeTracker publishes the sequenced deltas and serves the
+// (rows, sequence) recovery snapshot.
+scene::SceneService& WorldSession::scene_service() { return impl_->scene_service_; }
+scene::SceneChangeTracker& WorldSession::scene_change_tracker() { return impl_->scene_tracker_; }
 
 const FrameStats& WorldSession::frame_stats() const {
     return impl_->stats;
@@ -5237,12 +5621,11 @@ void WorldSession::pump_gpu_jobs(float ms_budget) {
     if (!impl_->retry_publication_completions(completion_error) &&
         !completion_error.empty()) {
         try {
-            Event event;
-            event.type = EventType::BakeError;
+            events::BakeError event;
             event.code = BakeErrorCode::GpuError;
             event.phase = "stream";
             event.message = completion_error;
-            impl_->emit_event(std::move(event));
+            impl_->hub_.emit(std::move(event));
         } catch (...) {
         }
     }
@@ -5319,6 +5702,83 @@ bool WorldSession::part_bounds(uint64_t part_hash, PartBounds& out) const {
             if (c.aabb_max[a] > out.aabb_max[a]) out.aabb_max[a] = c.aabb_max[a];
         }
     }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Bake Lab W4 (part-workbench.md SS-I.5): LOD Inspector grid data source.
+// Pure PartStore reads (impl_->store->find — never triggers a load), no
+// bake/render side effects. Mirrors part_bounds above.
+// ---------------------------------------------------------------------------
+
+uint32_t WorldSession::part_lod_level_count(uint64_t part_hash) const {
+    if (!impl_->store) return 0;
+    const auto* lp = impl_->store->find(part_hash);
+    return lp ? static_cast<uint32_t>(lp->lod_mesh_data.size()) : 0;
+}
+
+bool WorldSession::part_lod_level_info(uint64_t part_hash, uint32_t level,
+                                       PartLodLevelInfo& out) const {
+    if (!impl_->store) return false;
+    const auto* lp = impl_->store->find(part_hash);
+    if (!lp || level >= lp->lod_mesh_data.size()) return false;
+    out.threshold = level < lp->thresholds.size() ? lp->thresholds[level] : 0.0f;
+    out.triangle_count =
+        static_cast<uint32_t>(lp->lod_mesh_data[level].indices.size() / 3);
+    return true;
+}
+
+uint32_t WorldSession::part_child_summary_count(uint64_t part_hash) const {
+    if (!impl_->store) return 0;
+    const auto* lp = impl_->store->find(part_hash);
+    if (!lp) return 0;
+    std::vector<uint64_t> distinct;
+    distinct.reserve(lp->children.size());
+    for (const auto& c : lp->children) {
+        if (std::find(distinct.begin(), distinct.end(), c.child_resolved_hash) ==
+            distinct.end())
+            distinct.push_back(c.child_resolved_hash);
+    }
+    return static_cast<uint32_t>(distinct.size());
+}
+
+bool WorldSession::part_child_summary(uint64_t part_hash, uint32_t idx,
+                                      PartChildSummary& out) const {
+    if (!impl_->store) return false;
+    const auto* lp = impl_->store->find(part_hash);
+    if (!lp) return false;
+
+    // Aggregate the (possibly-repeated) children table by hash, preserving
+    // first-seen order so `idx` is stable across calls for the same bake.
+    std::vector<std::pair<uint64_t, uint32_t>> agg;  // hash -> count
+    for (const auto& c : lp->children) {
+        bool found = false;
+        for (auto& p : agg) {
+            if (p.first == c.child_resolved_hash) { ++p.second; found = true; break; }
+        }
+        if (!found) agg.emplace_back(c.child_resolved_hash, 1u);
+    }
+    if (idx >= agg.size()) return false;
+    out.child_hash = agg[idx].first;
+    out.instance_count = agg[idx].second;
+    out.module_name = nullptr;
+
+    // Resolve module name via the part graph (covers compositional children,
+    // unlike module_by_hash which only covers world roots). Best-effort: a
+    // part loaded via a flat/scratch path with no live graph snapshot simply
+    // reports no module name.
+    part_graph_snapshot::Snapshot snap;
+    if (graph_snapshot(snap)) {
+        for (const auto& kv : snap.nodes) {
+            if (kv.second.resolved_hash == out.child_hash) {
+                impl_->lab_child_module_cache_[out.child_hash] = kv.first;
+                break;
+            }
+        }
+    }
+    auto it = impl_->lab_child_module_cache_.find(out.child_hash);
+    if (it != impl_->lab_child_module_cache_.end() && !it->second.empty())
+        out.module_name = it->second.c_str();
     return true;
 }
 

@@ -83,6 +83,44 @@ void test_project_layout_derives_runtime_paths() {
           "project shared roots preserve project-first engine-fallback order");
 }
 
+// Phase 1 (repo-layout-and-cache-consolidation plan) cache-leak fix:
+// LocalProviderConfig::for_project() must never hand back a relative
+// cache_root. Before the fix, cache_root was built by appending
+// ".cache"/<world_name> directly onto whatever project_dir string the caller
+// passed in (project / ".cache" / world_name), so a relative project_dir
+// (exactly what api_tests.cpp's "../projects/primitive_demo"
+// and world_stream_tests.cpp's "../MatterEngine3/tests/fixtures/world_stream"
+// pass) produced a relative cache_root. Every downstream writer that
+// composes an output path directly from cache_root (PartStore, resolve_cache,
+// live_edit_prod::ProdBaker/ProdFlattener, WorldTracer -- all in
+// matter_engine.cpp) then wrote wherever the *process's* cwd happened to be
+// at the moment of each write, not next to the project -- the exact bug
+// behind the stray parts/, imposters/, and libs/MatterSurfaceLib/parts/
+// directories this phase cleans up.
+void test_relative_project_dir_yields_absolute_cache_root() {
+    const std::string relative_project = "world_definition_relcache_fixture";
+    const fs::path expected_project_abs = fs::absolute(fs::path(relative_project));
+
+    auto cfg = viewer::LocalProviderConfig::for_project(
+        relative_project, "Demo", "");
+
+    CHECK(fs::path(cfg.project_dir).is_absolute(),
+          "for_project() absolutizes a relative project_dir");
+    CHECK(fs::path(cfg.cache_root).is_absolute(),
+          "cache_root is never a bare relative path, even when project_dir is relative "
+          "(this is the assertion that fails without the Phase 1 fix)");
+    CHECK(cfg.cache_root == (expected_project_abs / ".cache" / "Demo").string(),
+          "relative project_dir resolves through std::filesystem::absolute() before "
+          "'.cache/<world_name>' is appended, matching the co-located convention");
+
+    // An already-absolute project_dir must resolve to the identical cache_root
+    // (absolutizing is idempotent, not a second, divergent transform).
+    auto cfg_from_absolute = viewer::LocalProviderConfig::for_project(
+        expected_project_abs.string(), "Demo", "");
+    CHECK(cfg_from_absolute.cache_root == cfg.cache_root,
+          "an already-absolute project_dir produces the identical cache_root");
+}
+
 void test_rejects_non_world_base_with_location_and_property() {
     Fixture fixture;
     const fs::path path = fixture.write(
@@ -238,7 +276,7 @@ bool nearly_equal(float a, float b) {
 }
 
 void test_example_worlds_preserve_manifest_authoring() {
-    const fs::path project = fs::path("../examples/world_demo");
+    const fs::path project = fs::path("../../projects/world_demo");
     const ExpectedExampleWorld worlds[] = {
         {"Demo", {{"TreeGallery", false, false},
                   {"ChimneySmoke", false, false, {5.0f, 6.0f, 0.0f}},
@@ -514,6 +552,7 @@ void test_vulkan_volumetrics_settings_defaults() {
 
 int main() {
     test_project_layout_derives_runtime_paths();
+    test_relative_project_dir_yields_absolute_cache_root();
     test_example_worlds_preserve_manifest_authoring();
     test_rejects_non_world_base_with_location_and_property();
     test_extracts_statics_without_calling_field_and_uses_project_override();

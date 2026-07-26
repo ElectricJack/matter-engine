@@ -616,8 +616,36 @@ struct VulkanDevice::Impl {
         const auto extensions = device_extensions(candidate);
         std::vector<const char*> required_extensions = {
             VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+#ifdef _WIN32
+            // Phase 5b (Linux Vulkan port) finding: VK_KHR_EXTERNAL_MEMORY_WIN32_
+            // EXTENSION_NAME / _SEMAPHORE_ are declared in <vulkan/vulkan_win32.h>,
+            // which vulkan.h only #includes when VK_USE_PLATFORM_WIN32_KHR is
+            // defined (see the #if defined(_WIN32) guard at the top of this file).
+            // Referencing them unconditionally is a hard COMPILE ERROR on Linux,
+            // not just a runtime gap -- confirmed by reading
+            // /ucrt64/include/vulkan/vulkan.h and vulkan_win32.h on this machine;
+            // there is no Linux toolchain here to compile-check the #else branch,
+            // so that half is UNVERIFIED.
+            //
+            // Why this requirement exists at all: it is CUDA/OptiX external-
+            // memory/semaphore interop capability-checking, per
+            // docs/superpowers/specs/2026-07-13-vulkan-temporal-foundation-design.md
+            // ("CUDA and OptiX interoperability"). `grep -rn "cuda\|CUDA\|optix"
+            // MatterEngine3/src` finds NO consumer anywhere in this repo -- no
+            // vkGetMemoryWin32HandleKHR, no vkImportSemaphoreWin32HandleKHR call
+            // exists. That interop path was designed but never implemented, yet
+            // every device on Windows has silently been required to support it
+            // since this code landed.
+            //
+            // Fix: gate to _WIN32 only, byte-for-byte identical to before on
+            // Windows. On Linux this simply does not require a capability nothing
+            // consumes, rather than guessing at VK_KHR_external_memory_fd /
+            // VK_KHR_external_semaphore_fd for code that isn't there to use them.
+            // If CUDA/OptiX interop is ever implemented for Linux, wire the _fd
+            // variants in here -- do not resurrect this comment as "done".
             VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
             VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME,
+#endif
             VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
         };
         std::vector<const char*> streamline_instance_extensions;
@@ -713,6 +741,31 @@ struct VulkanDevice::Impl {
         // External memory/semaphore are Vulkan 1.1 core capabilities.  Their
         // Win32 extension names above expose handles; these queries verify that
         // opaque Win32 handles are actually importable and exportable.
+        //
+        // Phase 5b (Linux Vulkan port): gated to _WIN32 for the same reason as
+        // the VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME /
+        // _SEMAPHORE_ requirement above -- see that comment for the full
+        // explanation (dead CUDA/OptiX interop capability-checking with no
+        // consumer anywhere in this repo). The VK_EXTERNAL_..._OPAQUE_WIN32_BIT
+        // enum constants themselves are declared in the platform-neutral
+        // vulkan_core.h (confirmed by reading /ucrt64/include/vulkan/vulkan_core.h
+        // -- they are just VkExternalMemoryHandleTypeFlagBits / VkExternal
+        // SemaphoreHandleTypeFlagBits enumerators, not gated behind
+        // VK_USE_PLATFORM_WIN32_KHR), so this block would actually COMPILE on
+        // Linux unlike the extension-name macros above. But every Linux Vulkan
+        // driver reports VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT /
+        // _IMPORTABLE_BIT as unsupported for a *_WIN32_BIT handle type (that
+        // handle type is meaningless off Windows), so leaving this ungated
+        // would make missing_device_capabilities() reject every physical
+        // device on Linux unconditionally -- a correctness bug, not just an
+        // unnecessary check. UNVERIFIED: no Linux driver available here to
+        // confirm that reasoning against a real ICD, but it follows directly
+        // from what VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT means.
+        //
+        // On Linux this entire block is skipped rather than replaced with the
+        // VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT equivalent, again
+        // because nothing consumes it -- see the longer note above.
+#ifdef _WIN32
         VkPhysicalDeviceExternalBufferInfo buffer_info{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO};
         buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -758,6 +811,7 @@ struct VulkanDevice::Impl {
                 "VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT+"
                 "VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT");
         }
+#endif  // _WIN32
 
         if (extensions.count(VK_KHR_SWAPCHAIN_EXTENSION_NAME) != 0) {
             SwapchainSupport support;
@@ -860,8 +914,14 @@ struct VulkanDevice::Impl {
     bool create_logical_device(std::string& error) {
         std::vector<const char*> extensions = {
             VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+            // Phase 5b (Linux Vulkan port): see the matching comment in
+            // missing_device_capabilities() above (~line 617) -- these two
+            // macros do not exist outside VK_USE_PLATFORM_WIN32_KHR and are
+            // required by nothing that is actually implemented in this repo.
+#ifdef _WIN32
             VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
             VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME,
+#endif
             VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
         };
         VkPhysicalDeviceVulkan12Features features12{

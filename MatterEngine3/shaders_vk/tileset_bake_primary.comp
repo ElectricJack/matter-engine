@@ -1,0 +1,129 @@
+#version 460
+#extension GL_EXT_ray_query : require
+
+// -----------------------------------------------------------------------------
+// Vulkan hardware-RT port of shaders_gpu/tileset_bake_primary.comp (V1).
+//
+// One ortho ray per texel, straight down, traced against a bake-only TLAS via
+// rayQueryEXT. The four output encodings are byte-identical to the GL shader
+// (see MatterEngine3/docs/vulkan-rt-gtex-bake.md §I.4):
+//   albedo RGBA8 : material rgb, a=1;                miss -> (0,0,0,1)
+//   normal RG8   : 0.5*N.xz+0.5 after N.y<0 flip;    miss -> (0.5,0.5)
+//   ORM    RGBA8 : (1.0 AO placeholder, rough, metal, 1); miss -> (1,1,0,1)
+//   height R16   : clamp((hit.y-hMin)/(hMax-hMin),0,1);   miss -> 0
+//
+// Ray queries return only (instance, primitive, barycentrics), so the hit
+// normal and material id are reconstructed from uploaded SSBOs, matching
+// bvh_tlas_common.glsl's smooth-normal-where-present-else-face-normal decode.
+// -----------------------------------------------------------------------------
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(rgba8, set = 0, binding = 0) uniform writeonly image2D albedoImg;
+layout(rg8,   set = 0, binding = 1) uniform writeonly image2D normalImg;
+layout(rgba8, set = 0, binding = 2) uniform writeonly image2D ormImg;
+layout(r16,   set = 0, binding = 3) uniform writeonly image2D heightImg;
+
+layout(set = 0, binding = 4) uniform accelerationStructureEXT tlas;
+
+// Per-triangle geometry, global (concatenated across all BLAS entries). Layout
+// is 18 floats per triangle: v0.xyz, v1.xyz, v2.xyz, n0.xyz, n1.xyz, n2.xyz.
+layout(std430, set = 0, binding = 5) readonly buffer TriDataBuf { float triData[]; };
+// Per-triangle material id (global). -1 = "fall back to instance material".
+layout(std430, set = 0, binding = 6) readonly buffer TriMatBuf  { int   triMat[];  };
+// Per-BLAS first-triangle offset into the global arrays, indexed by the
+// instance custom index (= BLAS entry index).
+layout(std430, set = 0, binding = 7) readonly buffer TriFirstBuf { uint triFirst[]; };
+// Per-instance fallback material id, indexed by gl_InstanceID (TLAS build order).
+layout(std430, set = 0, binding = 8) readonly buffer InstMatBuf  { int  instMat[];  };
+// Material table (canonical 12-float MaterialRegistryPackForGPU layout):
+//   [0..2] albedo.rgb, [3] roughness, [4] metallic, [5] emission, [6] pad,
+//   [7] translucency, [8] ior, [9] flatShading, [10] mergeGroup, [11] slot
+layout(std430, set = 0, binding = 9) readonly buffer MaterialBuf { float mats[]; };
+
+layout(push_constant) uniform Push {
+    int   atlasW;
+    int   atlasH;
+    int   texelsPerMeter;
+    float rayY;
+    float heightMin;
+    float heightMax;
+} pc;
+
+vec3  mat_albedo(int id) { int b = id * 12; return vec3(mats[b + 0], mats[b + 1], mats[b + 2]); }
+float mat_rough(int id)  { return mats[id * 12 + 3]; }
+float mat_metal(int id)  { return mats[id * 12 + 4]; }
+bool  mat_flat(int id)   { return mats[id * 12 + 9] > 0.5; }
+
+vec3 tri_vec3(uint tri, int slot) {
+    uint b = tri * 18u + uint(slot) * 3u;
+    return vec3(triData[b + 0u], triData[b + 1u], triData[b + 2u]);
+}
+
+void main() {
+    ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+    if (xy.x >= pc.atlasW || xy.y >= pc.atlasH) return;
+
+    // Texel centre -> world XZ. Ortho ray straight down.
+    float wx = (float(xy.x) + 0.5) / float(pc.texelsPerMeter);
+    float wz = (float(xy.y) + 0.5) / float(pc.texelsPerMeter);
+    vec3 O = vec3(wx, pc.rayY, wz);
+    vec3 D = vec3(0.0, -1.0, 0.0);
+    float maxT = pc.rayY - (pc.heightMin - 1.0);  // reaches the deepest sample
+
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, 0xFFu, O, 0.0, D, maxT);
+    while (rayQueryProceedEXT(rq)) {}
+
+    if (rayQueryGetIntersectionTypeEXT(rq, true) !=
+        gl_RayQueryCommittedIntersectionTriangleEXT) {
+        imageStore(albedoImg, xy, vec4(0.0, 0.0, 0.0, 1.0));
+        imageStore(normalImg, xy, vec4(0.5, 0.5, 0.0, 0.0));
+        imageStore(ormImg,    xy, vec4(1.0, 1.0, 0.0, 1.0));  // AO=255, rough=255, metal=0
+        imageStore(heightImg, xy, vec4(0.0));
+        return;
+    }
+
+    int  blasIndex = rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true);
+    int  instId    = rayQueryGetIntersectionInstanceIdEXT(rq, true);
+    uint prim      = uint(rayQueryGetIntersectionPrimitiveIndexEXT(rq, true));
+    vec2 bary      = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+    float tHit     = rayQueryGetIntersectionTEXT(rq, true);
+    mat4x3 o2w     = rayQueryGetIntersectionObjectToWorldEXT(rq, true);
+
+    uint gtri = triFirst[blasIndex] + prim;
+
+    // Per-triangle material overrides the instance fallback (>=0 wins).
+    int triM = triMat[gtri];
+    int mid  = (triM >= 0) ? triM : instMat[instId];
+
+    // Barycentrics: hit = (1-b1-b2)*v0 + b1*v1 + b2*v2.
+    float bu = 1.0 - bary.x - bary.y;
+    float bv = bary.x;
+    float bw = bary.y;
+
+    vec3 v0 = tri_vec3(gtri, 0), v1 = tri_vec3(gtri, 1), v2 = tri_vec3(gtri, 2);
+    vec3 faceN = cross(v1 - v0, v2 - v0);
+
+    vec3 localN;
+    if (mat_flat(mid)) {
+        localN = faceN;
+    } else {
+        vec3 n0 = tri_vec3(gtri, 3), n1 = tri_vec3(gtri, 4), n2 = tri_vec3(gtri, 5);
+        localN = bu * n0 + bv * n1 + bw * n2;
+        if (dot(localN, localN) < 1e-20) localN = faceN;
+    }
+    // Object -> world (rotation * uniform scale; normalize cancels scale).
+    vec3 N = normalize(mat3(o2w) * localN);
+    if (N.y < 0.0) N = -N;
+    vec2 nrm_rg = 0.5 * N.xz + 0.5;
+
+    float hitY  = O.y + tHit * D.y;   // = rayY - tHit
+    float hnorm = clamp((hitY - pc.heightMin) / max(pc.heightMax - pc.heightMin, 1e-6),
+                        0.0, 1.0);
+
+    imageStore(albedoImg, xy, vec4(mat_albedo(mid), 1.0));
+    imageStore(normalImg, xy, vec4(nrm_rg, 0.0, 0.0));
+    imageStore(ormImg,    xy, vec4(1.0, mat_rough(mid), mat_metal(mid), 1.0));
+    imageStore(heightImg, xy, vec4(hnorm, 0.0, 0.0, 0.0));
+}

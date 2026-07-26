@@ -17,6 +17,12 @@
 #include "matter/events.h"
 #include "matter/query.h"
 
+#include "bake_trace.h"   // bake_trace::Span — see last_bake_trace()
+#include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
+
+namespace matter::evt { class Hub; }
+namespace matter::scene { class SceneService; class SceneChangeTracker; }
+
 namespace matter {
 
 struct VulkanFrame;
@@ -71,6 +77,25 @@ struct RenderOptions {
     VulkanLightingOverrides vulkan_lighting{};
     VulkanVolumetricsSettings vulkan_volumetrics{};
     TilesetPomSettings vulkan_tileset_pom{};
+
+    // Bake Lab W4 (part-workbench.md SS-I.5): LOD Inspector debug overrides.
+    // Lab-only — production render paths are byte-identical to pre-W4
+    // behavior when left at these defaults.
+    //
+    // -1 (default): normal camera-based LOD selection. >=0: force every
+    // cluster/part touched by this render to LOD level k, clamped to that
+    // part's own level count, regardless of camera distance. Implemented by
+    // squashing the selected cluster's screen-size thresholds so the existing
+    // cull-shader selection math (unmodified) always resolves to level k —
+    // see ensure_vulkan_part in matter_engine.cpp and pack_cluster/
+    // pack_whole_part in render/gpu_cull_types.h.
+    int  force_lod = -1;
+    // False (default): normal rendering. True: only a part's own root-level
+    // mesh renders; its baked child-instance subtrees (LoadedPart::expansion
+    // nodes at depth > 0) are skipped. Coarser than the spec's per-module
+    // visibility mask (hiding e.g. only "Leaf") — this is the "show root
+    // only" granularity called out as an acceptable W4 fallback.
+    bool hide_child_instances = false;
 };
 
 struct TickDesc {
@@ -178,7 +203,34 @@ public:
     // from the app thread at any time before or between bakes.
     void set_bake_focus(const float pos[3]);
 
-    bool poll_event(Event& out);       // drain one; loop until false
+    // Single-consumer: drain only from the app (main/UI) thread — the same
+    // thread that owns the app command lane and pumps the session per frame
+    // (event-system.md S I.11 / S II.4 item 6; E4b SessionBinding runs the
+    // world-switch teardown on this thread). Drain one; loop until false.
+    bool poll_event(Event& out);
+
+    // The per-session event hub (event-system.md S I.13: one hub per
+    // WorldSession, lifetime = session lifetime — the returned reference is
+    // valid only until this session is closed/replaced). Bake/stream
+    // progress is emitted here as typed events (matter/events/*.h); the
+    // legacy poll_event() above is a compat shim over a private
+    // lane::legacy_poll subscription set (S I.11 / S II.4 item 6).
+    // New subscribers register directly against this hub.
+    evt::Hub& events();
+    const evt::Hub& events() const;
+
+    // E5b (event-system.md S I.14): the session-owned scene-graph model layer.
+    // scene_service() is the ONE supported path for create/duplicate/delete/
+    // reparent/rename/component edits (validation + the Flecs mutation, returns
+    // a typed SceneEditResult). scene_change_tracker() publishes the canonical
+    // sequenced scene-row deltas (scene.rows_upserted / scene.rows_removed on
+    // events()) at end-of-tick flush and serves the (rows, sequence) recovery
+    // snapshot. Both are app-thread-affine; the returned references are valid
+    // only until this session is closed/replaced (same as events()). Wired for
+    // the E5c SessionBinding adapter.
+    scene::SceneService& scene_service();
+    scene::SceneChangeTracker& scene_change_tracker();
+
     const FrameStats& frame_stats() const;
     // Copies committed animation metadata and the latest immutable runtime
     // presentation state for every live ECS animation binding. An empty result
@@ -219,6 +271,13 @@ public:
     // and re-query only when generation changes.
     uint64_t graph_generation() const;
 
+    // Bake Lab: snapshot of the hierarchical span trace recorded by the most
+    // recent (or in-flight) bake. Valid after BakeFinished; calling during a
+    // bake is safe and yields a consistent partial tree (open spans keep
+    // end_ms == bake_trace::kOpenEndMs). Root children are the execute_bake
+    // stages (install/compose/publish; a resolve-cache hit skips the first two).
+    void last_bake_trace(bake_trace::Span& out) const;
+
     // Phase C Task 7: enqueue a seed-driven world reroll. Stores
     // root_params_override = {"worldSeed": <world_seed>} and enqueues a Reload
     // with full supersession semantics (a newer regenerate/reload supersedes any
@@ -241,6 +300,27 @@ public:
     uint32_t instance_count() const;
     bool instance_info(uint32_t idx, InstanceInfo& out);
     bool part_bounds(uint64_t part_hash, PartBounds& out) const;
+
+    // Bake Lab W4: LOD Inspector grid data source (part-workbench.md SS-I.5).
+    // Pure PartStore reads, no bake/render side effects — mirrors
+    // instance_info/part_bounds above. Return 0/false when part_hash has no
+    // loaded LoadedPart (not yet baked, or released from CPU memory) so
+    // callers can tell "no data yet" apart from "zero levels/children".
+    uint32_t part_lod_level_count(uint64_t part_hash) const;
+    bool part_lod_level_info(uint64_t part_hash, uint32_t level, PartLodLevelInfo& out) const;
+    // Children aggregated by hash: repeated placements of the same module
+    // collapse into one PartChildSummary entry (see query.h).
+    uint32_t part_child_summary_count(uint64_t part_hash) const;
+    bool part_child_summary(uint64_t part_hash, uint32_t idx, PartChildSummary& out) const;
+
+    // Bake Lab W3: install an optional per-rung bake observer (Lab-only; not
+    // part of the stable public API). Null clears it. Applied to the next
+    // request_bake()/reload() — see matter/bake_observer.h for the full
+    // seam contract (thread discipline, null = zero cost). Callers that
+    // register a non-null observer are expected to be Lab/tooling code
+    // (e.g. PartWorkbench's private isolation session), never a production
+    // world session.
+    void set_bake_observer(BakeObserver* observer);
 
     // Task 7 test seam: install a per-part fault hook on the underlying provider
     // config. The hook fires once per part processed during install_graph() and the

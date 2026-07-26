@@ -1,7 +1,8 @@
 #pragma once
-#include "bvh.h"            // Tri, make_float3
+#include "tri.h"            // Tri, make_float3
 #include "blas_manager.hpp" // BLASManager
 #include "part_asset_v2.h"  // SP-1 LodLevel/LodLevels (authoritative shape)
+#include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 #include <cstdint>
 #include <vector>
 
@@ -62,7 +63,13 @@ struct BakeTargets {
 // tint, shading normals, AO). It is attached only to the undecimated level (keep ==
 // 1.0), where the triangle list is unchanged; decimated levels reorder/merge
 // triangles so their per-triangle material falls back to the instance material.
+//
+// `observer` (optional, default null, W3 Lab seam): when non-null, on_rung_ready
+// fires once per level after that level's geometry is decimated and registered in
+// `blas`, in ladder order (finest first, index 0..N-1). Null observer costs one
+// pointer check per level — see matter/bake_observer.h for the thread contract.
 LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
-                    BLASManager& blas, const std::vector<TriEx>* triex = nullptr);
+                    BLASManager& blas, const std::vector<TriEx>* triex = nullptr,
+                    BakeObserver* observer = nullptr);
 
 } // namespace lod_bake

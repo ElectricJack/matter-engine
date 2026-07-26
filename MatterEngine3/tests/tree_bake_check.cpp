@@ -21,13 +21,9 @@
 #include <limits.h>
 #include <unistd.h>
 
-using namespace part_graph;
+#include "portable_realpath.h"
 
-static std::string abspath(const std::string& rel) {
-    char buf[PATH_MAX];
-    if (realpath(rel.c_str(), buf)) return std::string(buf);
-    return rel;
-}
+using namespace part_graph;
 
 static size_t load_tri_count(uint64_t h, size_t& child_count) {
     std::string path = part_asset::cache_path_resolved(h);
@@ -42,7 +38,7 @@ static size_t load_tri_count(uint64_t h, size_t& child_count) {
 }
 
 int main() {
-    const std::string schemas    = abspath("../examples/world_demo/schemas");
+    const std::string schemas    = abspath("../../projects/world_demo/objects");
     const std::string shared_lib = abspath("../shared-lib");
 
     const std::string sandbox = "/tmp/me3_tree_bake";

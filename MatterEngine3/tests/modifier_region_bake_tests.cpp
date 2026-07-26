@@ -3,8 +3,8 @@
 // smooth/simplify instead (retopo's skip path is covered by modifier_apply_tests).
 #include "script_host.h"
 #include "part_asset_v2.h"
-#include "../../MatterSurfaceLib/include/blas_manager.hpp"
-#include "../../MatterSurfaceLib/include/tlas_manager.hpp"
+#include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
+#include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
 #include "check.h"
 
 #include <cstdio>

@@ -1,4 +1,4 @@
-// Headless smoke test for the primitive test world (examples/primitive_demo).
+// Headless smoke test for the primitive test world (projects/primitive_demo).
 //
 // The gallery schemas exercise the whole DSL surface (voxel + mesh primitives,
 // postfix CSG, extrude, placeChild, lookAt, tint). This test proves the world
@@ -28,12 +28,7 @@
 using namespace part_graph;
 
 #include "check.h"
-
-static std::string abspath(const std::string& rel) {
-    char buf[PATH_MAX];
-    if (realpath(rel.c_str(), buf)) return std::string(buf);
-    return rel;
-}
+#include "portable_realpath.h"
 
 // Count the full-resolution triangles a baked artifact loaded back with.
 static size_t load_tri_count(uint64_t h, size_t& child_count) {
@@ -49,8 +44,8 @@ static size_t load_tri_count(uint64_t h, size_t& child_count) {
 }
 
 int main() {
-    const std::string project    = abspath("../examples/primitive_demo");
-    const std::string objects    = abspath("../examples/primitive_demo/objects");
+    const std::string project    = abspath("../../projects/primitive_demo");
+    const std::string objects    = abspath("../../projects/primitive_demo/objects");
     const std::string shared_lib  = abspath("../shared-lib");
 
     const std::string sandbox = "/tmp/me3_gallery_bake";

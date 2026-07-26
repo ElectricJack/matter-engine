@@ -1,6 +1,6 @@
 #pragma once
 
-#include "bvh.h"
+#include "tri.h"   // Tri, TriEx (SpatialQueryLib)
 
 #include <cstdint>
 #include <vector>

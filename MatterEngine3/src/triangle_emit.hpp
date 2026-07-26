@@ -15,7 +15,7 @@
 // BLASManager::register_triangles(tris, count, triex). There is NO separate
 // triangle BLAS and NO triangle render path. The VariationRecorder's children()
 // feed save_v2's child-instance table (SP-1). Triangles never enter the SDF.
-#include "bvh.h"      // Tri, TriEx, mat4, float3, make_float3
+#include "tri.h"      // Tri, TriEx, mat4, float3, make_float3
 #include "part_asset_v2.h"  // SP-1: part_asset::ChildInstance, part_asset::compute_resolved_hash
 #include <vector>
 #include <cstdint>

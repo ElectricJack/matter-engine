@@ -1,4 +1,5 @@
 #include "part_graph.h"
+#include "matter/lod_contract.h"  // W5: kMaxSerializedLodLevels (exclude-mask bit width guard)
 #include "part_asset_v2.h"   // SP-1 (MatterEngine3, via -I../include): compute_resolved_hash,
                             //   cache_path_resolved; pulls in v1 part_asset.h for fnv1a64
 #include <cstdio>
@@ -463,6 +464,19 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
             }
             result.baked.push_back(n.resolved_hash);
         }
+        // W5 (Part Workbench, static lods): safe on both the fresh-bake and
+        // cache-hit paths above (see bake_static_lods's own doc comment for
+        // the fast/slow recovery split); run before bake_lod_variants so its
+        // fast path can see the state a fresh bake() just left on the host.
+        // Soft-fail (log via HostBaker, do not abort the graph install) unlike
+        // bake_lod_variants below: an authoring nicety failing should not take
+        // down an otherwise-successful part bake.
+        if (!baker_.bake_static_lods(n.source, n.params, n.child_hashes,
+                                     n.child_modules, n.child_params, n.resolved_hash)) {
+            std::fprintf(stderr,
+                "  PartGraph::install: static-lods bake failed for part %s (non-fatal, "
+                "authored ladder unavailable this run)\n", n.module.c_str());
+        }
         if (!baker_.bake_lod_variants(n.source, n.params, n.child_hashes,
                                       n.resolved_hash)) {
             // lod-variant failure remains a hard error (sidecar is non-optional for
@@ -610,10 +624,15 @@ bool HostBaker::bake(const std::string& source, const Params& params,
     script_host::BakeOptions bopts;
     bopts.parts_dir = is_transient(current_module_) ? transient_dir_ : parts_dir_;
     bopts.world = world_;  // Task 5: thread world binding for terrainVolume
+    bopts.observer = observer_;  // W3: thread the optional per-rung observer
     script_host::BakeResult r = host_.bake_source(
         source, params_to_json(params), bopts,
         child_hashes.data(), child_hashes.size(),
         child_modules.data(), child_params.data());
+    // W5: invalidate the fast-path cache up-front so a failed bake below never
+    // leaves a stale prior part's data readable as if it were current.
+    last_baked_hash_ = 0;
+    last_child_modules_placed_.clear();
     // The hash SP-3 memoized must equal where the .part landed (master C-2 guarantee).
     if (!r.error.ok) {
         std::fprintf(stderr, "  HostBaker::bake: %s\n", r.error.message.c_str());
@@ -625,6 +644,8 @@ bool HostBaker::bake(const std::string& source, const Params& params,
             (unsigned long long)resolved_hash, (unsigned long long)r.resolved_hash);
         return false;
     }
+    last_child_modules_placed_ = r.child_modules_placed;
+    last_baked_hash_ = resolved_hash;
     return true;
 }
 
@@ -684,6 +705,164 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
         if (!o.good()) return false;
     }
     return std::rename(tmp.c_str(), sidecar.c_str()) == 0;
+}
+
+bool HostBaker::bake_static_lods(const std::string& source, const Params& params,
+                                 const std::vector<uint64_t>& child_hashes,
+                                 const std::vector<std::string>& child_modules,
+                                 const std::vector<std::string>& child_params,
+                                 uint64_t resolved_hash) {
+    script_host::ScriptHost::LodAuthoring lods = host_.eval_lods(source);
+    if (lods.empty()) return true;  // not opted in
+    if (lods.size() > matter::kMaxSerializedLodLevels) {
+        std::fprintf(stderr,
+            "HostBaker: static lods (%zu levels) exceeds the %zu-level serialized "
+            "cap; skipping per-LOD authoring for this part\n",
+            lods.size(), matter::kMaxSerializedLodLevels);
+        return true;  // fail-closed: treat as not opted in, do not fail the whole bake
+    }
+
+    const std::string base_dir = is_transient(current_module_) ? transient_dir_ : parts_dir_;
+    const std::string base_params_json = params_to_json(params);
+
+    // Content-addressed fast path (mirrors bake_lod_variants): a fresh sidecar
+    // with every referenced .part still present means the plan is current.
+    const std::string sidecar =
+        base_dir + "/" + part_asset::cache_path_static_lods(resolved_hash);
+    {
+        part_asset::StaticLodPlan existing;
+        if (part_asset::load_static_lod_plan(sidecar, existing) &&
+            existing.level_hashes.size() == lods.size()) {
+            bool all_present = true;
+            for (uint64_t h : existing.level_hashes) {
+                const std::string vpath = base_dir + "/" + part_asset::cache_path_resolved(h);
+                std::ifstream probe(vpath);
+                if (!probe.good()) { all_present = false; break; }
+            }
+            if (all_present) return true;
+        }
+    }
+
+    // Recover the base bake's child-table module order + merged params.
+    // FAST path (zero extra cost, the common case): reuse what the
+    // immediately-preceding bake() call for this SAME resolved_hash already
+    // left cached on this HostBaker. SLOW/robust path (a cache hit whose
+    // sidecar is missing/stale — bake() was never called this process for
+    // this part, e.g. `static lods` was just added to an already-cached
+    // part): one content-addressed, idempotent bake_source call reproduces
+    // the exact bytes already on disk (same hash), safe but not free.
+    std::vector<std::string> child_modules_placed;
+    std::string base_merged;
+    if (last_baked_hash_ == resolved_hash) {
+        child_modules_placed = last_child_modules_placed_;
+        base_merged = host_.last_merged_params();
+    } else {
+        script_host::BakeOptions base_opts;
+        base_opts.parts_dir = base_dir;
+        base_opts.world = world_;
+        script_host::BakeResult base_r = host_.bake_source(
+            source, base_params_json, base_opts,
+            child_hashes.data(), child_hashes.size(),
+            child_modules.data(), child_params.data());
+        if (!base_r.error.ok || base_r.resolved_hash != resolved_hash) return false;
+        child_modules_placed = base_r.child_modules_placed;
+        base_merged = host_.last_merged_params();
+    }
+
+    const bool has_children = !child_hashes.empty();
+    if (has_children) {
+        bool any_params = false;
+        for (const auto& L : lods) if (L.has_params) { any_params = true; break; }
+        if (any_params)
+            std::printf(
+                "HostBaker: static lods `params` levels on a part with children are "
+                "unsupported (mirrors bake_lod_variants's own children restriction); "
+                "those levels fall back to decimation from LOD0 -- `exclude` still applies\n");
+    }
+
+    part_asset::StaticLodPlan plan;
+    plan.level_hashes.resize(lods.size());
+    plan.level_exclude_masks.assign(lods.size(), 0u);
+
+    for (size_t i = 0; i < lods.size(); ++i) {
+        const auto& L = lods[i];
+
+        // exclude mask: bit k = child at child-table position k is dropped at
+        // this level, matched by module name against the base bake's placement
+        // order. Silently ignores exclude names that name no placed child
+        // (authoring typo) rather than failing the bake -- the source is the
+        // authority the user can inspect/fix, not a hard gate here.
+        uint32_t mask = 0;
+        if (!L.exclude.empty()) {
+            for (size_t k = 0; k < child_modules_placed.size() && k < 32; ++k)
+                for (const auto& ex : L.exclude)
+                    if (child_modules_placed[k] == ex) { mask |= (1u << k); break; }
+        }
+        plan.level_exclude_masks[i] = mask;
+
+        if (!L.has_params || has_children) {
+            plan.level_hashes[i] = resolved_hash;  // decimate from LOD0 (today's ladder)
+            continue;
+        }
+
+        // Fresh build for this level: base-then-level params merge (shallow;
+        // associative with bake_source's own internal Object.assign, see
+        // merge_json_shallow's doc comment), seeded from the BASE merged
+        // params -- THE SEEDING RULE -- so this level draws the same rng
+        // stream as LOD0 and stays structurally the same tree.
+        const std::string level_params =
+            host_.merge_json_shallow(base_params_json, L.params_json);
+        script_host::BakeOptions lvl_opts;
+        lvl_opts.parts_dir = base_dir;
+        lvl_opts.world = world_;
+        lvl_opts.seed_params_json = base_merged;
+        script_host::BakeResult lvl_r = host_.bake_source(source, level_params, lvl_opts);
+        if (!lvl_r.error.ok) {
+            std::fprintf(stderr, "  HostBaker::bake_static_lods: level %zu build failed: %s\n",
+                        i, lvl_r.error.message.c_str());
+            return false;
+        }
+        plan.level_hashes[i] = lvl_r.resolved_hash;
+    }
+
+    // Fold non-trivial exclude masks into the base .part's ChildInstance table
+    // as an LMSK trailer (transpose level-major plan.level_exclude_masks into
+    // child-major child_level_mask). Skipped entirely (byte-identical .part)
+    // when no level excludes anything -- e.g. a `static lods` block that only
+    // uses `params`, or an empty/no-exclude authoring.
+    bool any_exclusion = false;
+    for (uint32_t m : plan.level_exclude_masks) if (m != 0) { any_exclusion = true; break; }
+    if (any_exclusion) {
+        BLASManager blas; TLASManager tlas(65536);
+        std::vector<part_asset::ChildInstance> kids;
+        part_asset::LodLevels existing_lods;
+        std::vector<part_asset::VolumeEmitter> emitters;
+        const std::string part_path = base_dir + "/" + part_asset::cache_path_resolved(resolved_hash);
+        if (part_asset::load_v2(part_path, resolved_hash, blas, tlas, kids, existing_lods, emitters) &&
+            !kids.empty()) {
+            std::vector<uint32_t> child_level_mask(kids.size(), 0xFFFFFFFFu);
+            for (size_t i = 0; i < lods.size() && i < 32; ++i) {
+                const uint32_t excl = plan.level_exclude_masks[i];
+                // level_exclude_masks are uint32 (see the computation cap at
+                // k < 32 above), so only the first 32 child placements can be
+                // excluded; guard the shift to avoid UB (1u << k, k >= 32) and
+                // match that cap. Children past 31 are always-present (a known
+                // limitation to lift with a wider mask when the render path
+                // consumes LMSK).
+                for (size_t k = 0; k < kids.size() && k < 32; ++k)
+                    if (excl & (1u << k)) child_level_mask[k] &= ~(1u << (uint32_t)i);
+            }
+            if (!part_asset::save_v2(part_path, blas, tlas, kids.data(), kids.size(),
+                                     existing_lods, emitters, child_level_mask, resolved_hash)) {
+                std::fprintf(stderr,
+                    "  HostBaker::bake_static_lods: failed to write LMSK trailer for %016llx\n",
+                    (unsigned long long)resolved_hash);
+                return false;
+            }
+        }
+    }
+
+    return part_asset::save_static_lod_plan(sidecar, plan);
 }
 
 } // namespace part_graph

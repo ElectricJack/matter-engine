@@ -6,6 +6,10 @@
 
 #include "matter/physics.h"
 
+namespace matter::evt {
+class Hub;
+}  // namespace matter::evt
+
 namespace matter::physics::detail {
 
 enum class PhysicsSystemStage : uint8_t { Reconcile, Push, Step, Pull };
@@ -46,6 +50,12 @@ public:
 
     const PhysicsEvents& events() const noexcept;
     PhysicsStats stats() const noexcept;
+
+    // E6 trace mirror (docs/event-system.md S I.8 / S I.11): optional session
+    // hub onto which pull() emits one aggregate events::PhysStep per active
+    // fixed step. Null by default (headless physics tests need no hub); wired
+    // by the owning WorldSession via ecs_runtime::Runtime::set_physics_event_hub.
+    void set_event_hub(matter::evt::Hub* hub) noexcept;
     bool world_is_valid() const noexcept;
     void mark_for_reconcile(flecs::entity_t entity) noexcept;
     void mark_transform_for_reconcile(flecs::entity entity) noexcept;
@@ -125,6 +135,7 @@ private:
     std::unique_ptr<Impl> impl_;
     PhysicsEvents events_;
     PhysicsStats stats_;
+    matter::evt::Hub* event_hub_ = nullptr;  // E6 trace mirror; optional
 };
 
 struct PhysicsContextRef {

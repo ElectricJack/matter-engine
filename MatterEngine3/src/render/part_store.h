@@ -6,10 +6,12 @@
 #include "part_asset_v2.h"      // part_asset::ChildInstance
 #include "raster_mesh.h"        // RasterMeshData
 #include "animation/animation_asset_store.h"
+#include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -22,6 +24,12 @@ namespace viewer {
 struct ExpandedNode {
     uint64_t part_hash;          // hash of the part that owns the drawable lod_mesh_data
     float    rel_transform[16];  // engine row-major, relative to instance root
+    // W4 (Bake Lab LOD Inspector, part-workbench.md SS-I.5): depth in the
+    // part tree from walk_part_tree (0 = the root part's own mesh node; >0 =
+    // a descendant child-instance subtree). Drives the debug
+    // hide_child_instances render option ("show root only"). Not used by any
+    // pre-W4 code path.
+    int      depth = 0;
 };
 
 // Per-cluster data loaded from a v3 flat artifact.
@@ -156,6 +164,16 @@ public:
     }
 #endif
 
+    // W3 (Part Workbench, Lab-only): optional per-rung bake observer, passed
+    // straight through to lod_bake::bake_lods() inside get_or_load(). Null
+    // (default) means the observer hooks are skipped there — production
+    // sessions never call this setter. See matter/bake_observer.h for the
+    // thread contract; note get_or_load() runs inside a GL-thread publish
+    // job in the production pipeline, so on_rung_ready may fire on the GL
+    // thread here (unlike on_mesh_ready from bake_source, which fires on the
+    // bake worker thread) — callers must not assume either.
+    void set_bake_observer(BakeObserver* observer) { observer_ = observer; }
+
     // TEST-ONLY: register a pre-built LoadedPart under a hash without any disk I/O.
     // Used by gpu_cull_tests to build synthetic fixtures. Not for production use.
     void inject_for_test(uint64_t part_hash, LoadedPart lp) {
@@ -185,6 +203,8 @@ private:
 #ifdef MATTER_TEST_CACHE_VALIDATION_HOOK
     std::function<void()>              flat_admission_hook_for_tests_;
 #endif
+    std::set<uint64_t>                load_failed_;      // suppress repeat logging
+    BakeObserver*                     observer_ = nullptr;  // W3: optional per-rung observer
 };
 
 } // namespace viewer

@@ -33,12 +33,7 @@
 // ---------------------------------------------------------------------------
 
 #include "check.h"
-
-static std::string abspath(const std::string& rel) {
-    char buf[PATH_MAX];
-    if (realpath(rel.c_str(), buf)) return std::string(buf);
-    return rel;
-}
+#include "portable_realpath.h"
 
 static std::vector<uint8_t> file_bytes(const std::string& path) {
     std::vector<uint8_t> b;
@@ -101,11 +96,9 @@ static BakeRec bake_grass_in(double budget, const std::string& cache_dir) {
     // bake_source returns a CWD-relative path ("parts/<hex>.part").
     std::string abs_written;
     if (!r.written_path.empty()) {
-        char abs_buf[PATH_MAX];
-        if (realpath(r.written_path.c_str(), abs_buf))
-            abs_written = abs_buf;
-        else
-            abs_written = cache_dir + "/" + r.written_path;
+        std::string resolved = abspath(r.written_path);
+        abs_written = (resolved != r.written_path) ? resolved
+                                                     : cache_dir + "/" + r.written_path;
     }
 
     chdir(prev);
@@ -310,7 +303,7 @@ static void test_full_budget_unchanged_geometry() {
 
 int main() {
     // Resolve asset paths before any chdir.
-    const std::string schemas = abspath("../examples/world_demo/schemas");
+    const std::string schemas = abspath("../../projects/world_demo/objects");
     g_shared_lib = abspath("../shared-lib");
     const std::string grass_path = schemas + "/Grass.js";
     g_grass_source = read_text(grass_path);

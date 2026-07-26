@@ -39,6 +39,11 @@ struct FogSettings;
 struct TilesetPomSettings;
 }
 
+namespace tileset {
+struct SettledTorus;
+struct BakeInputs;
+}
+
 namespace viewer {
 
 class VkVolumetrics;
@@ -381,6 +386,19 @@ public:
                            uint32_t& vertex_count,
                            uint32_t& index_start,
                            uint32_t& index_count) const noexcept;
+
+    // Mirrors ensure_part()'s early-out so callers can skip the (expensive)
+    // CPU-side VkScenePart construction for parts the renderer already holds.
+    // Returns the registered slot, or -1 when the hash is unknown *or* the
+    // renderer is poisoned — a poisoned renderer must keep failing closed
+    // through ensure_part(), so -1 sends the caller down the normal path.
+    // slot_of_ is the authoritative registration map (release_part erases from
+    // it), so this query can never go stale.
+    int registered_part_slot(uint64_t part_hash) const {
+        if (poisoned()) return -1;
+        const auto found = slot_of_.find(part_hash);
+        return found != slot_of_.end() ? found->second : -1;
+    }
     bool update_materials(const std::vector<MaterialGpuRecord>& records,
                           uint64_t shading_revision,
                           uint64_t geometry_revision, std::string& error);
@@ -401,6 +419,19 @@ public:
     // frame slots to point back at the shared dummy images. No-op if the slot
     // was never loaded or slot is out of range.
     void unload_tileset_slot(int slot);
+    // Vulkan hardware-RT .gtex bake (spec vulkan-rt-gtex-bake.md, milestone V1).
+    // Thin passthrough to tileset::bake_tileset_vk (Q1): hands the bake the
+    // renderer's Vulkan device so it can build a bake-only acceleration
+    // structure and dispatch the primary compute pass. V1 produces the four
+    // core channels (albedo/normal/ORM.gb/height) with AO=1.0 placeholder and
+    // no horizon; it is NOT wired into the deferred phase and does NOT bump
+    // kEngineBakeVersion (both are V4). Fails closed: false + err on any error
+    // or when the device lacks ray-tracing support.
+    bool bake_tileset(const tileset::SettledTorus& settled,
+                      uint64_t script_source_hash,
+                      const std::string& gtex_path,
+                      const tileset::BakeInputs& inputs, bool force_rebake,
+                      bool dump_png, std::string& error);
     bool consume_gi_history_reset();
     bool rt_geometry_classification_dirty(uint64_t part_hash) const;
     void release_part(uint64_t part_hash);
@@ -452,7 +483,9 @@ public:
     const VkAnimationBounds& animation_bounds() const noexcept {
         return animation_bounds_;
     }
-    void set_temporal_frame(const TemporalFrame& frame) { temporal_frame_ = frame; }
+    // Also folds the incoming history into the unchanged-input fast path of
+    // update_instances(): see temporal_history_changed_.
+    void set_temporal_frame(const TemporalFrame& frame);
     void set_dlss_mode(matter::DlssMode mode);
     VkExtent2D dlss_internal_extent(VkExtent2D output_extent) const;
     matter::DlssMode selected_dlss_mode() const { return selected_dlss_mode_; }
@@ -469,6 +502,10 @@ public:
     const std::string& rt_fallback_reason_observed() const {
         return last_rt_fallback_reason_;
     }
+    // Lifetime totals of full TLAS rebuilds vs. frames that reused a slot's
+    // already-built TLAS. Observation only — nothing branches on these.
+    uint64_t rt_tlas_build_count() const { return rt_tlas_builds_; }
+    uint64_t rt_tlas_reuse_count() const { return rt_tlas_reuses_; }
     bool consume_dlss_history_reset();
     bool prepare_frame(const matter::VulkanFrame& frame,
                        const FrameMatrices& matrices,
@@ -989,6 +1026,19 @@ private:
         // barriers have been recorded.  A malformed source/mapping therefore
         // leaves the regular static/last-good draw path intact.
         bool skin_raster_ready = false;
+        // TLAS reuse (perf): an acceleration structure is device-resident and
+        // stays valid across frames, so a slot whose TLAS already encodes the
+        // exact instance records we would build again can skip the rebuild.
+        // `rt_tlas_instances` is the record set this slot's TLAS was last built
+        // from and `rt_tlas_geometry_epoch` the geometry epoch at that build;
+        // `rt_tlas_valid` only becomes true once the frame that recorded the
+        // build reported success, so an abandoned frame can never leave the
+        // cache claiming content the GPU never wrote.
+        std::vector<VkAccelerationStructureInstanceKHR> rt_tlas_instances;
+        uint64_t rt_tlas_geometry_epoch = 0;
+        uint64_t rt_tlas_pending_serial = 0;
+        uint64_t rt_tlas_pending_epoch = 0;
+        bool rt_tlas_valid = false;
         // GPU timestamp query pool: 18 slots (9 zones × begin/end).
         VkQueryPool ts_pool = VK_NULL_HANDLE;
         // Per zone: bit 0 set when begin was written, bit 1 when end was.
@@ -1267,6 +1317,16 @@ private:
     std::vector<uint8_t> uploaded_raster_command_enabled_;
     std::vector<RtInstance> rt_instances_;
     size_t static_rt_instance_count_ = 0;
+    // Bumped by every event that can change or free the memory an already-built
+    // TLAS points at: a recorded BLAS build (which also covers the later
+    // promotion of that build's candidate), a part release, and reset(). A
+    // cached TLAS is only reusable while this is unchanged, so no cached
+    // structure can ever outlive a bottom-level structure it references. Starts
+    // at 1 so a zero-initialised FrameResources never compares equal by
+    // accident.
+    uint64_t rt_geometry_epoch_ = 1;
+    uint64_t rt_tlas_builds_ = 0;
+    uint64_t rt_tlas_reuses_ = 0;
     std::vector<VkRasterVertex> vertex_staging_;
     std::vector<uint32_t> index_staging_;   // CPU-side mirror; Task 4 uploads to GPU
     std::vector<MaterialGpuRecord> material_staging_;
@@ -1304,6 +1364,33 @@ private:
     uint32_t last_rt_trace_dispatches_ = 0;
     std::string last_rt_fallback_reason_;
     TemporalFrame temporal_frame_{};
+
+    // ---- update_instances() unchanged-input fast path --------------------
+    // The candidate instance set update_instances() builds is a pure function
+    // of five inputs; these snapshot all five as of the last call that
+    // returned true, so an unchanged frame can take the same early-out
+    // without materialising ~24 MB of candidate records first.
+    //   (1) the `instances` span, verbatim
+    std::vector<VkSceneInstance> instance_input_snapshot_;
+    //   (2) slot_of_, flattened in key order (covers both "which hash
+    //       resolves" and "to which slot")
+    std::vector<std::pair<uint64_t, int>> slot_of_snapshot_;
+    //   (3) parts_[slot].cluster_start / .cluster_count -- the only
+    //       PartRecord fields the build loop reads
+    std::vector<std::pair<uint32_t, uint32_t>> part_cluster_snapshot_;
+    //   (4) temporal_frame_: sticky, set by set_temporal_frame() whenever the
+    //       history data the build loop reads differs from what the renderer
+    //       already held. Starts true so the first call always builds.
+    bool temporal_history_changed_ = true;
+    //   (5) instance_staging_ / instance_part_slots_, the buffers the result
+    //       is compared against. Every mutation outside update_instances()
+    //       either bumps instance_generation_ or changes slot_of_/parts_.
+    uint64_t instance_snapshot_generation_ = 0;
+    bool instance_snapshot_valid_ = false;
+    bool instance_inputs_match_snapshot(
+        const std::vector<VkSceneInstance>& instances) const noexcept;
+    void snapshot_instance_inputs(const std::vector<VkSceneInstance>& instances);
+
     uint64_t instance_generation_ = 1;
     uint64_t static_generation_ = 1;
     uint64_t command_generation_ = 1;

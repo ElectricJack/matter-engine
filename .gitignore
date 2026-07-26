@@ -1,26 +1,32 @@
 # Build artifacts
-*.o
 *.obj
-*.d
-*.a
 *.so
 *.dylib
 *.dll
-*.exe
-obj/
-build/
+
+# Every project's build output (objects, .d files, executables, archives)
+# lives under a project-anchored build/ dir. Anchored (not a bare `build/`)
+# so this can never shadow the vendored, committed .a files under
+# third_party/ (see the raylib/box3d exceptions below) — git does not
+# descend into an excluded directory, so a bare `build/` rule would make
+# those unrecoverable by negation.
+/MatterEngine3/build/
+/MatterEngine3/tests/build/
+/MatterEditor/build/
+/libs/*/build/
+# The single-segment `*` above stops at libs/<name>/build/ and does not reach
+# into libs/<name>/tests/build/ (a separate, independently-Makefiled build
+# dir that MatterSurfaceLib and MeshChartingLib each have) — one more level
+# needed here.
+/libs/*/tests/build/
 
 # Per-project compiled binaries (named after the project)
 BasicWindowApp/cube_app
 SurfaceLib/surface_app
-MemoryLib/memorylib
 OpenParticleSurfaceLib/open_particle_surface
-SpatialQueryLib/spatialquerylib
 GPURayTraceExample/gpu_raytrace
 GPURayTraceExample/shader_preprocessor
 ParticleDynamicsExample/particle_dynamics
-MatterSurfaceLib/matter_surface_lib
-MatterSurfaceLib/shader_preprocessor
 
 # Misc
 SurfaceLib/test_config
@@ -36,76 +42,110 @@ SurfaceLib/test_config
 .claude/
 
 # Allow raylib's vendored static lib through the *.a exclusion (committed builds)
-!Libraries/raylib/build/**/libraylib.a
-!Libraries/raylib/src/libraylib.a
+!third_party/raylib/build/**/libraylib.a
+!third_party/raylib/src/libraylib.a
 
-# Vendored TBB (Libraries/autoremesher_core/thirdparty/tbb) ships its own
+# Vendored TBB (third_party/autoremesher_core/thirdparty/tbb) ships its own
 # build system under `build/` -- the .inc / Makefile source files there are
 # NOT artifacts and must be tracked. Un-ignore the whole tree, then re-ignore
 # the versioned per-config build output subdirs it emits at build time.
-!Libraries/autoremesher_core/thirdparty/tbb/build/
-!Libraries/autoremesher_core/thirdparty/tbb/build/**
-Libraries/autoremesher_core/thirdparty/tbb/build/linux_*_debug/
-Libraries/autoremesher_core/thirdparty/tbb/build/linux_*_release/
-Libraries/autoremesher_core/thirdparty/tbb/build/*_debug/
-Libraries/autoremesher_core/thirdparty/tbb/build/*_release/
+!third_party/autoremesher_core/thirdparty/tbb/build/
+!third_party/autoremesher_core/thirdparty/tbb/build/**
+third_party/autoremesher_core/thirdparty/tbb/build/linux_*_debug/
+third_party/autoremesher_core/thirdparty/tbb/build/linux_*_release/
+third_party/autoremesher_core/thirdparty/tbb/build/*_debug/
+third_party/autoremesher_core/thirdparty/tbb/build/*_release/
 # Allow box3d's prebuilt Linux and MinGW static libs
-!Libraries/box3d/libbox3d.a
-!Libraries/box3d/build-mingw/libbox3d.a
-MatterEngine3/viewer/cache
-MatterSurfaceLib/parts
+!third_party/box3d/libbox3d.a
+!third_party/box3d/build-mingw/libbox3d.a
 
 # MatterEngine3 compiled binaries and bake caches
-MatterEngine3/viewer/viewer
-MatterEngine3/tests/*_tests
-MatterEngine3/tests/*_tests_*
 MatterEngine3/tests/*_check
 MatterEngine3/tests/*_profile
 MatterEngine3/tests/example_world
-MatterEngine3/tests/parts/
 MatterEngine3/tests/*.log
 MatterEngine3/tests/sandbox/
 
 # viewer-integration tests (share viewer's object graph; live in viewer/ for
 # now — see followup on moving to tests/)
-MatterEngine3/viewer/*_tests
 
-# Other project test binaries (compiled from same-named *.cpp drivers)
-MatterSurfaceLib/tests/*_tests
-MeshChartingLib/tests/*_tests
-Libraries/autoremesher_core/tests/smoke_cube
-Libraries/autoremesher_core/tests/quad_to_tri_test
+# autoremesher_core smoke-test binaries (compiled from same-named drivers)
+third_party/autoremesher_core/tests/smoke_cube
+third_party/autoremesher_core/tests/quad_to_tri_test
 
-# MemoryLib and SpatialQueryLib test binaries + object dirs
-SpatialQueryLib/spatial_hash_tests
-SpatialQueryLib/bvh_tests
-MemoryLib/memory_tests
-MemoryLib/memory_hpp_tests
 # `make TARGET=linux` (build-all.sh convention) emits a binary named `linux`
-MemoryLib/linux
-SpatialQueryLib/linux
+libs/MemoryLib/linux
+libs/SpatialQueryLib/linux
 
 # Transient screenshots + sentinel files (FIFO shot capture)
 *.png.done
-MatterEngine3/viewer/*.png
-MatterEngine3/viewer/shots_forestfloor/
 MatterEngine3/tools/shots_task6/
 shots/
 # (no trailing slash: shaders is a symlink in fresh checkouts, a dir otherwise)
-MatterEngine3/viewer/shaders
 
 # Local backups / imposter test outputs / world bake data
 *.bak
 imposters/
+
+# Bake artifacts (Phase 1, repo-layout-and-cache-consolidation): every
+# "parts" and "cache" directory the engine or its tooling produces is
+# confined to <project_dir>/.cache/<world_name>/parts (see
+# LocalProviderConfig::for_project in MatterEngine3/src/provider/
+# local_provider.h and EngineContext::create in
+# MatterEngine3/src/matter_engine.cpp, both fixed to require/derive an
+# absolute cache_root instead of defaulting to a bare relative "cache").
+# These two bare patterns match at any depth and replace what used to be
+# location-specific rules for MatterEngine3/viewer/cache,
+# libs/MatterSurfaceLib/parts, MatterEngine3/tests/parts/, MatterEditor/cache,
+# MatterEngine3/parts, and a bare `parts` — several of which existed only
+# because of the relative-path bug that fix closes. `cache/` (no dot) is
+# still needed: Bake Lab's scratch directory (MatterEditor/src/part_workbench.cpp
+# scratch_root_ = "cache/lab-scratch") is intentionally relative/ephemeral
+# and out of this fix's scope.
+parts
+cache/
 .cache/
 
 # Screenshots/ is a checked-in folder — override the broad `shots/` rule above
 # for the specific subdir that happens to be named `shots`.
 !Screenshots/shots/
-MatterViewer/cache
-MatterViewer/viewer
-MatterEngine3/parts
-parts
 .outrider
 .worktrees/
 .superpowers/sdd/review-*.diff
+
+# Blanket safety net. The per-project /build/ rules below express the LAYOUT we
+# want; these express what must never be committed anywhere, including legacy
+# directories (MatterEngine3/viewer), vendored trees that build in place
+# (third_party/box3d, third_party/autoremesher_core) and scratch dirs (.tmp).
+# Removing these in favour of the anchored rules alone let `git add -A` sweep
+# 60 MB of stale artifacts into a commit. `*.a` is deliberately NOT blanket:
+# two vendored archives are legitimately tracked (see the negations below).
+*.o
+*.d
+*.exe
+.tmp/
+
+# NOTE -- stray extensionless files with random 8-character names (e.g.
+# `stcjVZme`) appearing beside sources are GCC/assembler temporaries, not
+# source. MSYS2's make clobbers the Windows TEMP variable, so a build run
+# WITHOUT `TMP=... TEMP=...` passed as make VARIABLES (see CLAUDE.md) drops the
+# compiler's scratch into the working directory. They are always safe to
+# delete. Deliberately NOT ignored by pattern: any glob broad enough to catch a
+# random 8-char name also silently swallows legitimate files, and a stray file
+# visible in `git status` is a better failure than a real file silently ignored.
+
+# Junction guard (Windows). MatterEngine3/shaders, MatterEditor/shaders and
+# MatterEditor/shaders_gpu are tracked SYMLINKS (mode 120000). With
+# core.symlinks=false they exist in the working tree as NTFS junctions, so a
+# `git add <parent-dir>` descends INTO them and stages the target's files as new
+# blobs -- silently replacing each symlink with a directory of duplicates. The
+# skip-worktree bit does not prevent this (the new paths differ from the flagged
+# one). These trailing-slash rules match the DIRECTORY only, so git stops
+# descending; the already-tracked symlink entries are unaffected because ignore
+# rules never apply to tracked paths.
+/MatterEngine3/shaders/
+/MatterEditor/shaders/
+/MatterEditor/shaders_gpu/
+
+# Built in place by build-all.sh; not vendored (unlike box3d, negated above).
+/third_party/autoremesher_core/libautoremesher_core.a

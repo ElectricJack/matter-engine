@@ -10,45 +10,21 @@ This repository is a **monorepo of independently-buildable sub-projects**, each 
 
 Ordered roughly from foundational → integration.
 
-### `BasicWindowApp/` — raylib + ImGui starter
-
-![BasicWindowApp screenshot](docs/screenshots/basic_window_app.png)
-
-C++ raylib starter with ImGui integration — a rotating cube with live controls and the canonical Dear ImGui demo window. Every later project was forked from this template.
-
-### `MemoryLib/` — memory managers: pool, arena, growable array (C)
+### `libs/MemoryLib/` — memory managers: pool, arena, growable array (C)
 
 Test-driven C allocator that grows in pages of fixed-size objects. No graphics. **6/6 tests pass.**
 
-### `SurfaceLib/` — marching-cubes isosurfaces
+### `libs/SpatialQueryLib/` — geometry types + spatial acceleration (C/C++)
 
-![SurfaceLib screenshot](docs/screenshots/surface_lib.png)
+Source of truth for everything below the meshing layer: `precomp.h` (float3/float4/SIMD), `tri.h` (`Tri`/`TriEx`/`mat4` — the engine's universal triangle interchange types), the BVH/TLAS structures and analyzer, and a generic spatial hash for radius/box queries. GL-free. Compiled directly into `libmatter_engine3.a`. **14/14 tests pass.**
 
-C library that builds meshes from scalar fields via marching cubes — spheres, tori, metaballs, custom user functions. The screenshot shows a metaball field with hundreds of overlapping wireframe surfaces and particle sites.
+*The name predates the contents — it now owns the core geometry types, not just queries.*
 
-### `SpatialQueryLib/` — spatial hash + CPU BVH (C)
+### `libs/ParticleFlowLib/` — particle flow simulation (C++)
 
-Generic spatial hash for radius/box queries and a CPU-side BVH that can flatten into node/index buffers ready for GPU SSBO upload. No graphics. **9/9 tests pass.**
+Deterministic particle simulation with force fields and append-only path recording, used by the tree/foliage generators. Compiled into the engine and editor.
 
-### `OpenParticleSurfaceLib/` — dynamic particle → mesh pipeline
-
-![OpenParticleSurfaceLib screenshot](docs/screenshots/open_particle_surface_lib.png)
-
-C library that hot-rebuilds isosurface meshes as particles move. Pulls in `SurfaceLib` and `MemoryLib`. Tested up to 1M particles with active-cell tracking and dirty-bounds rebuilds.
-
-### `GPURayTraceExample/` — pixel-shader BVH ray tracer
-
-![GPURayTraceExample screenshot](docs/screenshots/gpu_ray_trace_example.png)
-
-C++ ray tracer with modular BLAS (bottom-level acceleration structures) per-mesh and a TLAS (top-level) that animates per frame. BVH is built CPU-side, flattened, uploaded as data textures, then traversed in a fragment shader. Includes a BVH analyzer/visualizer.
-
-### `ParticleDynamicsExample/` — material-physics sandbox
-
-![ParticleDynamicsExample screenshot](docs/screenshots/particle_dynamics_example.png)
-
-C++ N-body sim with spatial-hash optimization (O(n²) → O(n·m)). The `MaterialManager` loads 20 material types, 3 chemical reactions, and a 50-entry adhesion matrix. Multiple demo scenes (material sandbox, solar system) selectable at runtime.
-
-### `MatterSurfaceLib/` — the convergence project
+### `libs/MatterSurfaceLib/` — the convergence project
 
 ![MatterSurfaceLib screenshot](docs/screenshots/matter_surface_lib.png)
 
@@ -60,7 +36,7 @@ See [`ROADMAP.md`](./ROADMAP.md) for the design intent behind each project and w
 
 - **One repo, many independent projects.** Each sub-project has its own `Makefile` and produces its own binary. There's no umbrella build target — `build-all.sh` just walks the list.
 - **Code sharing** between sub-projects is via `-I../OtherProject/include` in Makefiles (and occasionally filesystem symlinks). No package manager, no submodules.
-- **Vendored third-party deps** live under `Libraries/` (raylib, ImGui, ODE). Building from a fresh clone needs no system packages other than a C/C++ toolchain and OpenGL/X11 dev headers.
+- **Vendored third-party deps** live under `third_party/` (raylib, ImGui, ODE). Building from a fresh clone needs no system packages other than a C/C++ toolchain and OpenGL/X11 dev headers.
 - **Cross-platform** Makefiles target Linux, macOS, and Windows (native + MinGW cross-compile from WSL). `build-all.sh` defaults to the host platform.
 
 ## Building & running
@@ -79,9 +55,10 @@ See [`ROADMAP.md`](./ROADMAP.md) for the design intent behind each project and w
 Per-project builds:
 
 ```bash
-cd MatterSurfaceLib
-make WSL_LINUX=1    # or just `make` on native Linux/macOS
-./matter_surface_lib
+cd libs/MatterSurfaceLib
+make   # regenerates shaders/raytrace_tlas_blas_processed.fs via shader_preprocessor;
+       # the standalone GL viewer app this Makefile used to build (matter_surface_lib)
+       # was retired outright in Phase 5a (raylib removal) -- see tech-debt.md §6
 ```
 
 ### Prerequisites (Linux/WSL)
@@ -94,21 +71,22 @@ make WSL_LINUX=1    # or just `make` on native Linux/macOS
 
 | Project | Build command | Binary |
 |---|---|---|
-| `BasicWindowApp` | `make` | `./cube_app` |
-| `SurfaceLib` | `make` | `./surface_app` |
-| `MemoryLib` | `make` | `./memorylib` (test runner) |
-| `SpatialQueryLib` | `make` | `./spatialquerylib` (test runner) |
-| `OpenParticleSurfaceLib` | `make` | `./open_particle_surface` |
-| `GPURayTraceExample` | `make WSL_LINUX=1` | `./gpu_raytrace` |
-| `ParticleDynamicsExample` | `make TARGET=linux` | `./build/linux/particle_dynamics` |
-| `MatterSurfaceLib` | `make WSL_LINUX=1` | `./matter_surface_lib` |
+| `libs/MemoryLib` | `make` | `build/memorylib` (test runner) |
+| `libs/SpatialQueryLib` | `make` | `build/spatialquerylib` (test runner) |
+| `libs/ParticleFlowLib` | `make` | `build/libparticleflow.a` |
+| `MatterEngine3` | `make` | `build/libmatter_engine3.a` |
+| `libs/MatterSurfaceLib` | `make` | `shaders/raytrace_tlas_blas_processed.fs` (regenerated; the `matter_surface_lib` app binary was retired in Phase 5a) |
+| `MatterEditor` | `make` | `build/linux/editor` (or `make windows` → `build/windows/editor.exe`) |
+
+Retired experiments live under `Prototypes/` and are excluded from `build-all.sh`.
 
 ## Status
 
 Working as of the latest commit, verified by `./build-all.sh test` on Linux/WSL with an RTX 4090 via WSLg:
 
-- All 8 projects build cleanly
-- All 15 headless tests pass (6 in `MemoryLib`, 9 in `SpatialQueryLib`)
+- All projects build cleanly
+- Headless tests pass: 6 in `MemoryLib`, 14 in `SpatialQueryLib`, plus the
+  `MatterEngine3` suites (`run-script`, `run-evalworld`, `run-world-definition`, `run-iso`)
 - All raylib apps initialize a window and reach the render loop
 - `MatterSurfaceLib` runs the full pipeline: 1 cluster → 80 cells → marching-cubes mesh generation → BLAS registration → TLAS-based GPU ray tracing
 
@@ -120,4 +98,4 @@ This repo was consolidated from seven previously-independent local-only sub-repo
 
 ## License
 
-Not yet specified. The vendored libraries under `Libraries/` retain their original upstream licenses (raylib: zlib, ImGui: MIT, ODE: BSD/LGPL dual).
+Not yet specified. The vendored libraries under `third_party/` retain their original upstream licenses (raylib: zlib, ImGui: MIT, ODE: BSD/LGPL dual).

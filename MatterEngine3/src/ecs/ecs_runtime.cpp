@@ -373,6 +373,12 @@ Runtime::~Runtime() {
     physics_.reset();
 }
 
+void Runtime::set_physics_event_hub(matter::evt::Hub* hub) noexcept {
+    if (physics_ != nullptr) {
+        physics_->set_event_hub(hub);
+    }
+}
+
 flecs::world& Runtime::world() noexcept {
     return world_;
 }

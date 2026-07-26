@@ -1,5 +1,5 @@
 #pragma once
-#include "bvh.h"          // float3, mat4
+#include "tri.h"          // float3, mat4
 #include "world_flatten.h"
 #include <cstdint>
 #include <map>

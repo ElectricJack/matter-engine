@@ -10,7 +10,7 @@ set -euo pipefail
 OUT="${1:?usage: meadow_forestfloor_shots.sh <out-dir>}"
 mkdir -p "$OUT"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-cd "$HERE/../../MatterViewer"
+cd "$HERE/../../MatterEditor"
 
 FIFO="/tmp/matter_ff_shots_$$.fifo"
 LOG="$OUT/forestfloor_viewer.log"
@@ -18,7 +18,7 @@ mkfifo "$FIFO"
 MATTER_WORLD="${MATTER_WORLD:-floordemo}" \
 GALLIUM_DRIVER="${GALLIUM_DRIVER:-d3d12}" \
 MATTER_CMD_FIFO="$FIFO" \
-stdbuf -oL ./viewer > "$LOG" 2>&1 &
+stdbuf -oL ./build/windows/editor.exe > "$LOG" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true; rm -f "$FIFO"' EXIT
 

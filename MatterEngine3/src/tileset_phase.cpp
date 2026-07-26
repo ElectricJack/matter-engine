@@ -5,15 +5,15 @@
 //   ScriptHost::eval_requires + eval_tileset            (SP-2 DSL)
 //   tileset::settle_tileset                             (Task 7)
 //
-// This file provides ONLY the settle-only overload (no opts). The GPU bake
-// overload (with TilesetPhaseOpts) lives in tileset_phase_gpu.cpp so the
-// headless engine lib has no GL dependency.
+// This file provides ONLY the settle-only overload. The .gtex bake that used to
+// hang off a GPU overload here is Vulkan-side now (render/tileset_bake_vk.cpp,
+// driven from LocalProvider::run_tileset_deferred), so the settle phase carries
+// no graphics dependency at all.
 //
 // Compiled only when MATTER_HAVE_SCRIPT_HOST is defined (same guard as
 // FileModuleResolver + HostBaker in part_graph.h/.cpp).
 
 #include "tileset_phase.h"
-#include "tileset_bake_gpu.h"  // TilesetPhaseOpts (struct only)
 
 #ifdef MATTER_HAVE_SCRIPT_HOST
 

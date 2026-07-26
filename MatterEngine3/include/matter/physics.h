@@ -113,6 +113,45 @@ struct PhysicsEvents {
     std::vector<PhysicsPairEvent> sensor_end;
 };
 
+// --- E6: per-entity gameplay events (docs/event-system.md S I.4 / S I.11) ---
+//
+// The orphaned PhysicsEvents snapshot (above) is the per-step *capture buffer*.
+// E6 adds *delivery*: entity-shaped gameplay events are dispatched as flecs
+// entity events on the ECS tick thread during the physics pull stage — NOT
+// through the in-house evt::Hub (that carries non-entity / cross-thread
+// notifications). These are the payload structs; each is emitted for the
+// RigidBody component of a participating entity, so a gameplay observer keys on
+//
+//   world.observer<const physics::RigidBody>("...")
+//        .event<physics::PhysContactBegin>()
+//        .each([](flecs::iter& it, size_t i, const physics::RigidBody&) {
+//            auto* e = static_cast<const physics::PhysContactBegin*>(it.param());
+//            // it.entity(i) touched e->other
+//        });
+//
+// Per-entity emit decision: BOTH endpoints of a contact/sensor pair receive an
+// event carrying the counterpart, i.e. each entity independently hears "I
+// touched `other`". The capture buffer normalizes pairs to (first < second) by
+// entity id (physics_context.cpp), which discards the sensor-vs-visitor role;
+// sensor enter/exit therefore reach both endpoints symmetrically. Begin/end
+// carry only the counterpart entity because the snapshot pair rows hold no
+// contact geometry (that lives on the separate contact_hit channel).
+struct PhysContactBegin {
+    flecs::entity_t other = 0;
+};
+
+struct PhysContactEnd {
+    flecs::entity_t other = 0;
+};
+
+struct PhysSensorEnter {
+    flecs::entity_t other = 0;
+};
+
+struct PhysSensorExit {
+    flecs::entity_t other = 0;
+};
+
 struct PhysicsStats {
     uint64_t steps = 0;
     uint64_t bodies_created = 0;

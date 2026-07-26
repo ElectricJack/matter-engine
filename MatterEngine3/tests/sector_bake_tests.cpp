@@ -25,7 +25,7 @@ int main() {
         prog, err), err.c_str());
     terrain_field::FieldRuntime field(std::move(prog));
 
-    std::string src = slurp("../examples/world_demo/schemas/WorldSector.js");
+    std::string src = slurp("../../projects/world_demo/objects/WorldSector.js");
     CHECK(!src.empty(), "WorldSector.js readable");
 
     ScriptHost host;
