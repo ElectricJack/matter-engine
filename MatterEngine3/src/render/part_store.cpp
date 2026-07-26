@@ -1,5 +1,6 @@
 #include "part_store.h"
 #include "animation/anim_bundle.h"
+#include "animation/animation_binding_bake.h"
 #include "matrix_math.h"
 
 #include "part_asset_v2.h"     // load_v2, cache_path_resolved, ChildInstance, LodLevels
@@ -14,6 +15,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <limits>
 #include <sys/stat.h>
 
 namespace viewer {
@@ -37,6 +39,141 @@ static void release_loaded_part_blas(BLASManager& blas, const LoadedPart& lp) {
         for (BLASHandle h : cluster.lod_blas) {
             if (h != INVALID_BLAS_HANDLE) blas.release_blas(h);
         }
+    }
+}
+
+static bool valid_indexed_mesh(const RasterMeshData& mesh) {
+    if (mesh.vertex_count <= 0 || mesh.indices.empty() || mesh.indices.size() % 3 != 0)
+        return false;
+    const size_t vertices = static_cast<size_t>(mesh.vertex_count);
+    if (mesh.vertices.size() != vertices * 3 || mesh.normals.size() != vertices * 3 ||
+        mesh.colors.size() != vertices * 4 || mesh.texcoords.size() != vertices * 2 ||
+        mesh.surface_uvs.size() != vertices * 2 || mesh.material_ids.size() != vertices ||
+        mesh.baked_ao.size() != vertices)
+        return false;
+    return std::all_of(mesh.indices.begin(), mesh.indices.end(),
+                       [vertices](uint32_t index) { return index < vertices; });
+}
+
+static void append_indexed_vertex(const RasterMeshData& source, uint32_t old_index,
+                                  RasterMeshData& out) {
+    const size_t vertex = static_cast<size_t>(old_index);
+    out.vertices.insert(out.vertices.end(), source.vertices.begin() + vertex * 3,
+                        source.vertices.begin() + vertex * 3 + 3);
+    out.normals.insert(out.normals.end(), source.normals.begin() + vertex * 3,
+                       source.normals.begin() + vertex * 3 + 3);
+    out.colors.insert(out.colors.end(), source.colors.begin() + vertex * 4,
+                      source.colors.begin() + vertex * 4 + 4);
+    out.texcoords.insert(out.texcoords.end(), source.texcoords.begin() + vertex * 2,
+                         source.texcoords.begin() + vertex * 2 + 2);
+    out.surface_uvs.insert(out.surface_uvs.end(), source.surface_uvs.begin() + vertex * 2,
+                           source.surface_uvs.begin() + vertex * 2 + 2);
+    out.material_ids.push_back(source.material_ids[vertex]);
+    out.baked_ao.push_back(source.baked_ao[vertex]);
+}
+
+static bool slice_rigid_segment_mesh(
+        const RasterMeshData& source,
+        const std::vector<matter::animation::BindingGeometryRange>& ranges,
+        RasterMeshData& out) {
+    if (!valid_indexed_mesh(source) || ranges.empty()) return false;
+    const uint32_t triangle_count = static_cast<uint32_t>(source.indices.size() / 3);
+    std::vector<bool> claimed(triangle_count, false);
+    std::vector<uint32_t> remap(static_cast<size_t>(source.vertex_count), UINT32_MAX);
+    for (const auto& range : ranges) {
+        // A loaded Part retains indexed triangles, not the authoring field-op
+        // stream.  A range with no direct-triangle ownership therefore cannot
+        // be converted faithfully and must fail closed.
+        if (range.triangle_begin >= range.triangle_end || range.triangle_end > triangle_count)
+            return false;
+        for (uint32_t triangle = range.triangle_begin; triangle != range.triangle_end; ++triangle) {
+            if (claimed[triangle]) return false;
+            claimed[triangle] = true;
+            for (uint32_t corner = 0; corner != 3; ++corner) {
+                const uint32_t old_index = source.indices[static_cast<size_t>(triangle) * 3 + corner];
+                uint32_t& new_index = remap[old_index];
+                if (new_index == UINT32_MAX) {
+                    new_index = static_cast<uint32_t>(out.material_ids.size());
+                    append_indexed_vertex(source, old_index, out);
+                }
+                out.indices.push_back(new_index);
+            }
+        }
+    }
+    out.vertex_count = static_cast<int>(out.material_ids.size());
+    return out.vertex_count > 0 && !out.indices.empty();
+}
+
+static uint64_t rigid_subpart_hash(uint64_t source_hash, uint32_t segment_ordinal,
+                                   const RasterMeshData& mesh) {
+    uint64_t hash = 1469598103934665603ull;
+    const uint32_t tag = 0x52475331u; // RGS1
+    const uint64_t mesh_hash = indexed_part_geometry_signature(mesh, segment_ordinal);
+    const auto append = [&hash](const auto& value) {
+        const auto* bytes = reinterpret_cast<const unsigned char*>(&value);
+        for (size_t index = 0; index != sizeof(value); ++index) {
+            hash ^= bytes[index];
+            hash *= 1099511628211ull;
+        }
+    };
+    append(tag);
+    append(source_hash);
+    append(segment_ordinal);
+    append(mesh_hash);
+    return hash ? hash : 1ull;
+}
+
+static float subpart_bound_radius(const RasterMeshData& mesh) {
+    float minimum[3] = {std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity()};
+    float maximum[3] = {-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()};
+    for (int index = 0; index != mesh.vertex_count; ++index) {
+        for (int axis = 0; axis != 3; ++axis) {
+            const float value = mesh.vertices[static_cast<size_t>(index) * 3 + axis];
+            minimum[axis] = std::fmin(minimum[axis], value);
+            maximum[axis] = std::fmax(maximum[axis], value);
+        }
+    }
+    const float dx = maximum[0] - minimum[0];
+    const float dy = maximum[1] - minimum[1];
+    const float dz = maximum[2] - minimum[2];
+    return 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+static void mesh_to_triangles(const RasterMeshData& mesh, std::vector<Tri>& triangles,
+                              std::vector<TriEx>& extras) {
+    triangles.reserve(mesh.indices.size() / 3);
+    extras.reserve(mesh.indices.size() / 3);
+    const auto position = [&mesh](uint32_t index) {
+        const size_t at = static_cast<size_t>(index) * 3;
+        return make_float3(mesh.vertices[at], mesh.vertices[at + 1], mesh.vertices[at + 2]);
+    };
+    const auto normal = [&mesh](uint32_t index) {
+        const size_t at = static_cast<size_t>(index) * 3;
+        return make_float3(mesh.normals[at], mesh.normals[at + 1], mesh.normals[at + 2]);
+    };
+    const auto uv = [&mesh](uint32_t index) {
+        const size_t at = static_cast<size_t>(index) * 2;
+        return make_float2(mesh.surface_uvs[at], mesh.surface_uvs[at + 1]);
+    };
+    for (size_t triangle = 0; triangle != mesh.indices.size() / 3; ++triangle) {
+        const uint32_t a = mesh.indices[triangle * 3];
+        const uint32_t b = mesh.indices[triangle * 3 + 1];
+        const uint32_t c = mesh.indices[triangle * 3 + 2];
+        Tri value{};
+        value.vertex0 = position(a); value.vertex1 = position(b); value.vertex2 = position(c);
+        value.centroid = make_float3((value.vertex0.x + value.vertex1.x + value.vertex2.x) / 3.0f,
+                                     (value.vertex0.y + value.vertex1.y + value.vertex2.y) / 3.0f,
+                                     (value.vertex0.z + value.vertex1.z + value.vertex2.z) / 3.0f);
+        triangles.push_back(value);
+        TriEx extra{};
+        extra.N0 = normal(a); extra.N1 = normal(b); extra.N2 = normal(c);
+        extra.uv0 = uv(a); extra.uv1 = uv(b); extra.uv2 = uv(c);
+        extra.materialId = static_cast<int>(mesh.material_ids[a]);
+        const size_t color = static_cast<size_t>(a) * 4;
+        extra.tint = make_float4(mesh.colors[color] / 255.0f, mesh.colors[color + 1] / 255.0f,
+                                 mesh.colors[color + 2] / 255.0f, mesh.colors[color + 3] / 255.0f);
+        extra.ao0 = mesh.baked_ao[a]; extra.ao1 = mesh.baked_ao[b]; extra.ao2 = mesh.baked_ao[c];
+        extras.push_back(extra);
     }
 }
 
@@ -91,6 +228,107 @@ void build_expansion(uint64_t root_hash,
 // ---------------------------------------------------------------------------
 
 PartStore::PartStore(std::string cache_root) : cache_root_(std::move(cache_root)) {}
+
+bool PartStore::build_rigid_segment_subparts(
+        uint64_t source_part_hash, const matter::animation::BindingBake& binding,
+        std::vector<uint64_t>& out_hashes) {
+    out_hashes.clear();
+    const auto source_it = loaded_.find(source_part_hash);
+    if (source_part_hash == 0 || source_it == loaded_.end() ||
+        source_it->second.lod_mesh_data.empty() || binding.rigid_segments.empty())
+        return false;
+
+    // LOD0 is the complete indexed source stream.  The authored direct-triangle
+    // ranges refer to that stream before the independent subpart LOD ladders are
+    // rebuilt, so later decimation cannot change binding ownership.
+    const RasterMeshData& source_mesh = source_it->second.lod_mesh_data.front();
+    std::vector<RasterMeshData> slices;
+    slices.reserve(binding.rigid_segments.size());
+    std::vector<uint64_t> hashes;
+    hashes.reserve(binding.rigid_segments.size());
+    for (size_t index = 0; index != binding.rigid_segments.size(); ++index) {
+        RasterMeshData slice;
+        if (!slice_rigid_segment_mesh(source_mesh, binding.rigid_segments[index].geometry, slice))
+            return false;
+        const uint64_t hash = rigid_subpart_hash(source_part_hash,
+                                                  static_cast<uint32_t>(index), slice);
+        if (hash == source_part_hash ||
+            std::find(hashes.begin(), hashes.end(), hash) != hashes.end())
+            return false;
+        slices.push_back(std::move(slice));
+        hashes.push_back(hash);
+    }
+
+    for (const RigidSubpartSet& cached : rigid_subparts_[source_part_hash]) {
+        if (cached.hashes != hashes) continue;
+        const bool complete = std::all_of(hashes.begin(), hashes.end(), [this](uint64_t hash) {
+            return loaded_.find(hash) != loaded_.end() && rigid_subpart_owner_.find(hash) != rigid_subpart_owner_.end();
+        });
+        if (!complete) return false;
+        out_hashes = hashes;
+        return true;
+    }
+    for (uint64_t hash : hashes) {
+        if (loaded_.find(hash) != loaded_.end() || rigid_subpart_owner_.find(hash) != rigid_subpart_owner_.end())
+            return false;
+    }
+
+    std::vector<uint64_t> admitted;
+    const auto rollback = [this, &admitted] {
+        for (uint64_t hash : admitted) {
+            const auto part = loaded_.find(hash);
+            if (part != loaded_.end()) {
+                release_loaded_part_blas(blas_, part->second);
+                loaded_.erase(part);
+            }
+            rigid_subpart_owner_.erase(hash);
+        }
+    };
+    for (size_t index = 0; index != slices.size(); ++index) {
+        std::vector<Tri> triangles;
+        std::vector<TriEx> extras;
+        mesh_to_triangles(slices[index], triangles, extras);
+        LoadedPart subpart;
+        subpart.bound_radius = subpart_bound_radius(slices[index]);
+        const lod_bake::LodLevels lods = lod_bake::bake_lods(
+            triangles, lod_bake::BakeTargets{}, blas_, &extras);
+        for (const auto& lod : lods) {
+            if (lod.blas_indices.size() != 1 || lod.blas_indices[0] >= blas_.get_entries().size()) {
+                rollback();
+                return false;
+            }
+            const BLASHandle handle = blas_.get_entries()[lod.blas_indices[0]]->handle;
+            const auto* entry = blas_.get_entry(handle);
+            if (!entry) {
+                rollback();
+                return false;
+            }
+            subpart.thresholds.push_back(lod.screen_size_threshold);
+            subpart.lod_blas.push_back(handle);
+            subpart.owned_blas.push_back(handle);
+            if (subpart.lod_mesh_data.empty()) {
+                // Preserve every source channel in the authoritative full LOD.
+                subpart.lod_mesh_data.push_back(slices[index]);
+            } else {
+                const TriEx* extra = entry->tri_extra.size() == entry->triangles.size() &&
+                                     !entry->tri_extra.empty() ? entry->tri_extra.data() : nullptr;
+                subpart.lod_mesh_data.push_back(build_raster_mesh_data(
+                    entry->triangles.data(), extra, static_cast<int>(entry->triangles.size())));
+            }
+        }
+        if (subpart.lod_blas.empty()) {
+            rollback();
+            return false;
+        }
+        const uint64_t hash = hashes[index];
+        loaded_.emplace(hash, std::move(subpart));
+        rigid_subpart_owner_.emplace(hash, source_part_hash);
+        admitted.push_back(hash);
+    }
+    rigid_subparts_[source_part_hash].push_back({hashes});
+    out_hashes = std::move(hashes);
+    return true;
+}
 
 std::string PartStore::disk_path(uint64_t part_hash) const {
     // cache_path_resolved returns the RELATIVE "parts/<hash>.part"; prefix cache_root_.
@@ -661,6 +899,25 @@ lod_select::PartLodTable PartStore::part_lod_table() const {
 //     disk artifact exists).
 // ---------------------------------------------------------------------------
 void PartStore::release(uint64_t part_hash) {
+    // Rigid segment parts are lifetime-owned by their animated root.  A direct
+    // eviction would leave the immutable bridge asset with a valid hash that no
+    // longer resolves, so only the root release tears down the whole set.
+    if (rigid_subpart_owner_.find(part_hash) != rigid_subpart_owner_.end()) return;
+
+    const auto subparts = rigid_subparts_.find(part_hash);
+    if (subparts != rigid_subparts_.end()) {
+        for (const RigidSubpartSet& set : subparts->second) {
+            for (uint64_t subpart_hash : set.hashes) {
+                const auto child = loaded_.find(subpart_hash);
+                if (child != loaded_.end()) {
+                    release_loaded_part_blas(blas_, child->second);
+                    loaded_.erase(child);
+                }
+                rigid_subpart_owner_.erase(subpart_hash);
+            }
+        }
+        rigid_subparts_.erase(subparts);
+    }
     auto it = loaded_.find(part_hash);
     if (it == loaded_.end()) return;  // safe no-op for unknown hashes
 

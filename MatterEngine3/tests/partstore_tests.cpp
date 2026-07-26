@@ -305,6 +305,87 @@ static void test_partstore_rejected_flat_candidate_releases_shared_blas() {
           "A8 rejected flat candidate leaves no BLAS after linked part release");
 }
 
+static viewer::RasterMeshData two_triangle_rigid_mesh() {
+    viewer::RasterMeshData mesh;
+    mesh.vertices = {
+        0, 0, 0,
+        1, 0, 0,
+        0, 1, 0,
+        1, 1, 0,
+    };
+    mesh.normals.assign(12, 0.0f);
+    for (size_t vertex = 0; vertex != 4; ++vertex) mesh.normals[vertex * 3 + 2] = 1.0f;
+    mesh.colors.assign(16, 255);
+    mesh.texcoords.assign(8, 0.0f);
+    mesh.surface_uvs.assign(8, 0.0f);
+    mesh.material_ids = {3, 3, 7, 7};
+    mesh.baked_ao.assign(4, 1.0f);
+    mesh.vertex_count = 4;
+    mesh.indices = {0, 1, 2, 2, 1, 3};
+    return mesh;
+}
+
+static void test_partstore_builds_cached_rigid_segment_subparts() {
+    constexpr uint64_t root_hash = 0xa816b816b816b816ull;
+    viewer::PartStore store({});
+    viewer::LoadedPart root;
+    root.lod_mesh_data.push_back(two_triangle_rigid_mesh());
+    store.inject_for_test(root_hash, std::move(root));
+
+    matter::animation::BindingBake binding;
+    binding.rigid_segments = {
+        {"left", 0, {}, false, {{0, 0, 0, 1}}},
+        {"right", 0, {}, false, {{0, 0, 1, 2}}},
+    };
+    std::vector<uint64_t> hashes;
+    CHECK(store.build_rigid_segment_subparts(root_hash, binding, hashes),
+          "rigid ranges build complete immutable subparts");
+    CHECK(hashes.size() == 2 && hashes[0] != 0 && hashes[1] != 0 && hashes[0] != hashes[1],
+          "each rigid segment receives a distinct stable hash");
+    const viewer::LoadedPart* left = hashes.size() > 0 ? store.find(hashes[0]) : nullptr;
+    const viewer::LoadedPart* right = hashes.size() > 1 ? store.find(hashes[1]) : nullptr;
+    CHECK(left && right && left->lod_mesh_data.size() > 1 && right->lod_mesh_data.size() > 1 &&
+              left->lod_mesh_data.size() == left->lod_blas.size() &&
+              right->lod_mesh_data.size() == right->lod_blas.size(),
+          "rigid hashes resolve to complete independently baked LOD ladders");
+    if (left && right) {
+        const auto& left_mesh = left->lod_mesh_data.front();
+        const auto& right_mesh = right->lod_mesh_data.front();
+        const auto local_indices = [](const viewer::RasterMeshData& mesh) {
+            for (uint32_t index : mesh.indices)
+                if (index >= static_cast<uint32_t>(mesh.vertex_count)) return false;
+            return true;
+        };
+        CHECK(left_mesh.indices.size() == 3 && left_mesh.vertex_count == 3 && local_indices(left_mesh),
+              "first rigid subpart keeps only its triangle with remapped vertices");
+        CHECK(right_mesh.indices.size() == 3 && right_mesh.vertex_count == 3 && local_indices(right_mesh),
+              "second rigid subpart keeps only its triangle with remapped vertices");
+        CHECK(left_mesh.material_ids[0] == 3 && right_mesh.material_ids[0] == 7,
+              "subparts preserve their independently authored raster attributes");
+    }
+
+    const size_t first_live_blas = store.blas().live_count();
+    std::vector<uint64_t> repeated;
+    CHECK(store.build_rigid_segment_subparts(root_hash, binding, repeated) && repeated == hashes &&
+              store.blas().live_count() == first_live_blas,
+          "rigid subparts are built once and reused without per-frame registrations");
+    const size_t live_before_rejection = store.blas().live_count();
+    matter::animation::BindingBake overlapping = binding;
+    overlapping.rigid_segments[0].geometry.push_back({0, 0, 0, 1});
+    CHECK(!store.build_rigid_segment_subparts(root_hash, overlapping, repeated) &&
+              store.blas().live_count() == live_before_rejection,
+          "overlapping authored triangles fail closed instead of double-owning geometry");
+    matter::animation::BindingBake out_of_range = binding;
+    out_of_range.rigid_segments[1].geometry = {{0, 0, 2, 3}};
+    CHECK(!store.build_rigid_segment_subparts(root_hash, out_of_range, repeated) &&
+              store.blas().live_count() == live_before_rejection,
+          "out-of-range authored triangles fail closed before registration");
+    store.release(root_hash);
+    CHECK((hashes.empty() || store.find(hashes[0]) == nullptr) &&
+              (hashes.size() < 2 || store.find(hashes[1]) == nullptr) && store.blas().live_count() == 0,
+          "releasing the root safely releases its owned rigid subparts");
+}
+
 // Task 7: segmented v6 flat loading.
 static void test_partstore_segmented_loading() {
     printf("=== test_partstore_segmented_loading ===\n");
@@ -470,6 +551,7 @@ static void test_partstore_segmented_loading() {
 
 int main() {
     test_partstore_segmented_loading();
+    test_partstore_builds_cached_rigid_segment_subparts();
     test_partstore_owns_committed_animation_and_keeps_live_last_good();
     test_partstore_uses_one_scratch_first_bundle_root();
     test_partstore_retries_after_torn_generation_and_recovers_same_store();

@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 
+namespace matter::animation { struct BindingBake; }
+
 namespace viewer {
 
 // A single drawable node in a part's precomputed expansion table.
@@ -121,6 +123,14 @@ public:
     size_t loaded_count() const { return loaded_.size(); }
     const matter::animation::AnimationAssetStore& animation_assets() const { return animation_assets_; }
 
+    // Materialize each serialized rigid segment as an immutable complete Part.
+    // The source part must already be loaded.  The result is memoized by its
+    // deterministic geometry identity, and the produced parts are released
+    // with source_part_hash rather than by the per-frame rigid bridge.
+    bool build_rigid_segment_subparts(uint64_t source_part_hash,
+                                      const matter::animation::BindingBake& binding,
+                                      std::vector<uint64_t>& out_hashes);
+
     // LOD table for the SectorResolver: radius + thresholds per loaded part.
     lod_select::PartLodTable part_lod_table() const;
 
@@ -160,6 +170,13 @@ private:
     BLASManager                       blas_;
     std::map<uint64_t, LoadedPart>    loaded_;
     matter::animation::AnimationAssetStore animation_assets_;
+    struct RigidSubpartSet {
+        std::vector<uint64_t> hashes;
+    };
+    // A source can have more than one immutable binding declaration during a
+    // live replacement window.  Retain each set until that source is released.
+    std::map<uint64_t, std::vector<RigidSubpartSet>> rigid_subparts_;
+    std::map<uint64_t, uint64_t> rigid_subpart_owner_;
 #ifdef MATTER_TEST_CACHE_VALIDATION_HOOK
     std::function<void()>              flat_admission_hook_for_tests_;
 #endif
