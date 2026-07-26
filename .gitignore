@@ -125,6 +125,15 @@ cache/
 *.exe
 .tmp/
 
+# NOTE -- stray extensionless files with random 8-character names (e.g.
+# `stcjVZme`) appearing beside sources are GCC/assembler temporaries, not
+# source. MSYS2's make clobbers the Windows TEMP variable, so a build run
+# WITHOUT `TMP=... TEMP=...` passed as make VARIABLES (see CLAUDE.md) drops the
+# compiler's scratch into the working directory. They are always safe to
+# delete. Deliberately NOT ignored by pattern: any glob broad enough to catch a
+# random 8-char name also silently swallows legitimate files, and a stray file
+# visible in `git status` is a better failure than a real file silently ignored.
+
 # Junction guard (Windows). MatterEngine3/shaders, MatterEditor/shaders and
 # MatterEditor/shaders_gpu are tracked SYMLINKS (mode 120000). With
 # core.symlinks=false they exist in the working tree as NTFS junctions, so a
