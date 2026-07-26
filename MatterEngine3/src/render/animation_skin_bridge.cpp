@@ -126,7 +126,7 @@ bool AnimationSkinBridge::expand(
         submission.instance_slot = input.transform_slot;
         submission.instance_generation = input.transform_generation;
         submission.render_priority = binding.presentation_priority;
-        submission.lod = lod_index;
+        submission.lod = lod.lod;
         submission.cluster = lod.cluster;
         submission.first_index = lod.first_index;
         submission.index_count = lod.index_count;

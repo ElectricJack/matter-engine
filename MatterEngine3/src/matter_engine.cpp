@@ -4098,39 +4098,93 @@ void WorldSession::Impl::reconcile_runtime_animation_skinning() {
         if (asset_it == runtime_animation_assets.end()) continue;
         RuntimeAnimationAsset& asset = *asset_it->second;
         if (asset.binding.lods.empty() || asset.skin_influences.empty() ||
-            loaded->lod_mesh_data.empty() ||
-            asset.binding.lods.size() > loaded->lod_mesh_data.size()) continue;
+            loaded->lod_mesh_data.empty()) continue;
 
         AnimationRasterRange range{};
         if (!animation_raster_range_resolver(
                 instance.part_hash, range)) continue;
         std::vector<render::AnimationSkinnedLod> lods;
-        lods.reserve(asset.binding.lods.size());
+        std::vector<uint32_t> mesh_vertex_offsets(loaded->lod_mesh_data.size());
+        std::vector<uint32_t> mesh_index_offsets(loaded->lod_mesh_data.size());
         uint32_t source_offset = 0;
-        uint32_t influence_offset = 0;
         uint32_t index_offset = 0;
         bool ranges_valid = true;
-        for (uint32_t lod_index = 0;
-             lod_index < asset.binding.lods.size(); ++lod_index) {
-            const animation::LodSkinBinding& lod = asset.binding.lods[lod_index];
-            const viewer::RasterMeshData& mesh = loaded->lod_mesh_data[lod_index];
-            if (mesh.vertex_count <= 0 ||
-                lod.vertex_count != static_cast<uint32_t>(mesh.vertex_count) ||
+        for (uint32_t mesh_index = 0;
+             mesh_index < loaded->lod_mesh_data.size(); ++mesh_index) {
+            const viewer::RasterMeshData& mesh = loaded->lod_mesh_data[mesh_index];
+            if (mesh.vertex_count < 0 ||
                 mesh.indices.size() > std::numeric_limits<uint32_t>::max() ||
                 source_offset > range.vertex_count ||
-                lod.vertex_count > range.vertex_count - source_offset ||
+                static_cast<uint32_t>(mesh.vertex_count) >
+                    range.vertex_count - source_offset ||
                 index_offset > range.index_count ||
                 mesh.indices.size() > range.index_count - index_offset) {
                 ranges_valid = false;
                 break;
             }
-            lods.push_back({instance.part_hash, range.vertex_start + source_offset,
-                            influence_offset, lod.vertex_count,
-                            range.index_start + index_offset,
-                            static_cast<uint32_t>(mesh.indices.size())});
-            source_offset += lod.vertex_count;
-            influence_offset += lod.vertex_count;
+            mesh_vertex_offsets[mesh_index] = source_offset;
+            mesh_index_offsets[mesh_index] = index_offset;
+            source_offset += static_cast<uint32_t>(mesh.vertex_count);
             index_offset += static_cast<uint32_t>(mesh.indices.size());
+        }
+        uint32_t influence_offset = 0;
+        for (uint32_t lod_index = 0;
+             ranges_valid && lod_index < asset.binding.lods.size(); ++lod_index) {
+            const animation::LodSkinBinding& lod = asset.binding.lods[lod_index];
+            const auto append_cluster = [&](uint32_t cluster_index,
+                                            uint32_t mesh_index,
+                                            const animation::ClusterJointBounds& baked) {
+                if (mesh_index >= loaded->lod_mesh_data.size() ||
+                    baked.vertex_begin > baked.vertex_end ||
+                    baked.vertex_end > lod.vertex_count) return false;
+                const viewer::RasterMeshData& mesh =
+                    loaded->lod_mesh_data[mesh_index];
+                const uint32_t vertex_count = baked.vertex_end - baked.vertex_begin;
+                if (vertex_count == 0 || mesh.vertex_count < 0 ||
+                    vertex_count != static_cast<uint32_t>(mesh.vertex_count) ||
+                    mesh.indices.empty()) return false;
+                lods.push_back(
+                    {instance.part_hash,
+                     range.vertex_start + mesh_vertex_offsets[mesh_index],
+                     influence_offset + baked.vertex_begin, vertex_count,
+                     range.index_start + mesh_index_offsets[mesh_index],
+                     static_cast<uint32_t>(mesh.indices.size()), cluster_index,
+                     lod_index});
+                return true;
+            };
+            if (!loaded->clusters.empty()) {
+                for (uint32_t cluster_index = 0;
+                     cluster_index < loaded->clusters.size(); ++cluster_index) {
+                    const viewer::LoadedCluster& cluster =
+                        loaded->clusters[cluster_index];
+                    const auto baked = std::find_if(
+                        lod.clusters.begin(), lod.clusters.end(),
+                        [cluster_index](const animation::ClusterJointBounds& value) {
+                            return value.cluster_id == cluster_index;
+                        });
+                    if (baked == lod.clusters.end() ||
+                        lod_index >= cluster.lod_mesh.size() ||
+                        cluster.lod_mesh[lod_index] < 0 ||
+                        !append_cluster(cluster_index,
+                                        static_cast<uint32_t>(
+                                            cluster.lod_mesh[lod_index]),
+                                        *baked)) {
+                        ranges_valid = false;
+                        break;
+                    }
+                }
+            } else {
+                const auto baked = std::find_if(
+                    lod.clusters.begin(), lod.clusters.end(),
+                    [](const animation::ClusterJointBounds& value) {
+                        return value.cluster_id == 0;
+                    });
+                if (lod_index >= loaded->lod_mesh_data.size() ||
+                    baked == lod.clusters.end() ||
+                    !append_cluster(0, lod_index, *baked))
+                    ranges_valid = false;
+            }
+            influence_offset += lod.vertex_count;
         }
         if (!ranges_valid || lods.empty()) continue;
         asset.skin.lods = std::move(lods);
@@ -4660,6 +4714,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             {instances[index].instance_id, instances[index].object_to_world});
     }
     const viewer::TemporalFrame temporal = begin_temporal(temporal_instances);
+    const viewer::FrameMatrices& matrices = temporal.current_jittered;
+    bool animation_skin_queue_pending_seal = false;
     impl_->vk_scene->set_temporal_frame(temporal);
     if (!impl_->vk_scene->update_instances(instances, err)) {
         impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
@@ -4757,8 +4813,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             fprintf(stderr, "animation skin bridge error (non-fatal): %s\n",
                     bridge_err.c_str());
         }
-        const viewer::FrameMatrices& matrices = temporal.current_jittered;
-        // begin/submit/finish form one frame transaction even for rejection:
+        // begin/submit publish an unsealed frame transaction even for
+        // rejection. The queue remains replaceable until the fallible GPU
+        // allocation/upload/record path completes below.
         // an empty accepted queue suppresses stale work while static commands
         // remain the conservative bind-pose fallback until C3 bounds arrive.
         if (!impl_->vk_scene->begin_animation_skinning_frame(
@@ -4769,10 +4826,10 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 matrices, cam.position, budget,
                 skin_assets_ok
                     ? std::vector<viewer::VkAnimationBoundsInstance>{}
-                    : rejected_skin_bounds) ||
-            !impl_->vk_scene->finish_animation_skinning_frame(frame.frame_slot,
-                                                                frame.serial)) {
+                    : rejected_skin_bounds)) {
             fprintf(stderr, "animation skin frame queue rejected (non-fatal)\n");
+        } else {
+            animation_skin_queue_pending_seal = true;
         }
     }
     if (!impl_->vk_scene->prepare_frame(frame, matrices, cam.position, budget,
@@ -4804,8 +4861,18 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     const auto build_end = std::chrono::steady_clock::now();
     const auto draw_start = std::chrono::steady_clock::now();
     if (!impl_->vk_scene->record_cull_and_render(
-            frame, matrices, cam.position, budget, err) ||
-        !impl_->vk_scene->record_composite_to_swapchain(frame, err)) {
+            frame, matrices, cam.position, budget, err)) {
+        impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
+        return false;
+    }
+    if (animation_skin_queue_pending_seal &&
+        !impl_->vk_scene->finish_animation_skinning_frame(frame.frame_slot,
+                                                           frame.serial)) {
+        impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
+        err = "animation skin frame queue failed to seal after GPU record";
+        return false;
+    }
+    if (!impl_->vk_scene->record_composite_to_swapchain(frame, err)) {
         impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
         return false;
     }

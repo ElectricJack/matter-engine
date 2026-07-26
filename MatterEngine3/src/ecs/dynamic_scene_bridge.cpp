@@ -135,7 +135,9 @@ bool DynamicSceneBridge::collect_animation_skinning(
                    flecs::entity, const SceneEntityId& id,
                    const PartInstance& part,
                    const render::AnimationSkinnedBinding& binding) {
-        if (!part.visible) return;
+        // PartInstance::visible is not the current animated frustum result.
+        // Always publish the live semantic binding; the renderer's current
+        // animated-bounds planner alone decides skin work/raster visibility.
         const render::DynamicInstanceKey key = root_key(id);
         const auto tracked = tracked_.find(key);
         if (tracked == tracked_.end() || !tracked->second.slot.valid()) {

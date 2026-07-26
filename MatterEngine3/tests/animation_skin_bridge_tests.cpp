@@ -112,8 +112,8 @@ void test_bridge_emits_all_baked_lod_candidates_for_current_cull() {
           "multi-LOD fixture publishes the exact current snapshot");
     std::vector<viewer::VkSkinInfluence> storage(6);
     for (auto& influence : storage) influence.weight[0] = 65535;
-    render::AnimationSkinnedLod near{0xabc, 10, 0, 3, 30, 6, 0};
-    render::AnimationSkinnedLod far{0xabc, 40, 3, 3, 90, 3, 0};
+    render::AnimationSkinnedLod near{0xabc, 10, 0, 3, 30, 6, 0, 0};
+    render::AnimationSkinnedLod far{0xabc, 40, 3, 3, 90, 3, 0, 1};
     const auto asset_bounds = bounds(0x99);
     render::AnimationSkinnedAsset asset{0x99, 2, &storage, {near, far},
                                         &asset_bounds};

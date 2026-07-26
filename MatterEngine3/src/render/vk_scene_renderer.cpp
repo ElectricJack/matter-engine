@@ -983,6 +983,7 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
     };
     std::vector<VkSkinSubmission> compacted;
     compacted.reserve(visible.size());
+    std::set<uint64_t> current_visible_instances;
     const std::vector<VkAnimationBoundsGpuRecord> current_bounds =
         animation_bounds_.gpu_records();
     for (const VkSkinSubmission& submitted : visible) {
@@ -1024,8 +1025,19 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
         // in the queue and cull's conservative/static lane decides it.
         candidate.current_frustum_visible =
             bounds == current_bounds.end() || !culled(*bounds, instance);
+        if (candidate.current_frustum_visible) {
+            const uint64_t visibility_key =
+                (uint64_t(candidate.instance_slot) << 32u) |
+                candidate.instance_generation;
+            candidate.history_valid = candidate.history_valid &&
+                                      visible_skin_instances_.count(
+                                          visibility_key) != 0;
+            current_visible_instances.insert(visibility_key);
+        }
         compacted.push_back(std::move(candidate));
     }
+    pending_visible_skin_instances_ = std::move(current_visible_instances);
+    pending_skin_visibility_frame_slot_ = frame_slot;
     if (!animation_skinning_.submit_visible(frame_slot, compacted)) {
         // The queue has fallen back before a complete pose can be consumed.
         // Clear each matching dynamic record before publishing its
@@ -1080,7 +1092,13 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
 
 bool VkSceneRenderer::finish_animation_skinning_frame(uint32_t frame_slot,
                                                        uint64_t fence) {
-    return animation_skinning_.mark_submitted(frame_slot, fence);
+    if (!animation_skinning_.mark_submitted(frame_slot, fence)) return false;
+    if (pending_skin_visibility_frame_slot_ == frame_slot) {
+        visible_skin_instances_ = std::move(pending_visible_skin_instances_);
+        pending_visible_skin_instances_.clear();
+        pending_skin_visibility_frame_slot_ = UINT32_MAX;
+    }
+    return true;
 }
 
 bool VkSceneRenderer::skinned_rt_uses_bind_pose_blas() const noexcept {
@@ -2694,8 +2712,11 @@ bool VkSceneRenderer::record_animation_skinning(
             // Removing it routes the same compacted record through the
             // conservative static cull lane; retained raster draws below
             // remain only when their sealed producer buffers are valid.
-            for (const auto& key : affected)
+            for (const auto& key : affected) {
                 animation_bounds_.remove_instance(key.first, key.second);
+                pending_visible_skin_instances_.erase(
+                    (uint64_t(key.first) << 32u) | key.second);
+            }
             consumed_animation_skin_fallbacks_ =
                 animation_skinning_.frame(frame.frame_slot).fallbacks;
             error.clear();
@@ -8372,6 +8393,9 @@ void VkSceneRenderer::reset() {
     uploaded_raster_draw_command_count_ = 0;
     uploaded_rt_instances_.clear();
     cached_stats_ = {};
+    visible_skin_instances_.clear();
+    pending_visible_skin_instances_.clear();
+    pending_skin_visibility_frame_slot_ = UINT32_MAX;
     for (FrameResources& frame : frames_) frame.stats_valid = false;
     raster_attachments_ready_ = false;
     ++static_generation_;

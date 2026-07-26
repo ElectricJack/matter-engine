@@ -10,6 +10,7 @@
 #include <map>
 #include <limits>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -1114,6 +1115,9 @@ private:
     VkAnimationSkinning animation_skinning_;
     std::vector<VkSkinFallback> consumed_animation_skin_fallbacks_;
     VkAnimationBounds animation_bounds_;
+    std::set<uint64_t> visible_skin_instances_;
+    std::set<uint64_t> pending_visible_skin_instances_;
+    uint32_t pending_skin_visibility_frame_slot_ = UINT32_MAX;
     matter::StreamlineBridge* dlss_bridge_ = nullptr;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     std::unique_ptr<matter::StreamlineBridge> test_dlss_bridge_override_;
