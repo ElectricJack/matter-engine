@@ -19,18 +19,29 @@
 #include <cmath>
 #include <cstring>
 
+#include "matter_math.h"
+
 // ---------------------------------------------------------------------------
 // mul16 — row-major 4×4 multiply.
 // Element [r][c] = m[r*4 + c].  Translation lives in m[3], m[7], m[11].
 // Same convention as ChildInstance transforms and WorldComposer.
+//
+// Delegates to mm::multiply (libs/MathLib/include/matter_math.h) — same
+// row-major layout, same a*b operand order (mm::multiply applies b first,
+// same as this function's original triple loop), so this is a straight
+// substitution with no operand swap at any call site. Signature kept as raw
+// float[16] in/out (rather than switching callers to mm::Mat4) because
+// callers here (part_flatten.cpp) still carry raw float[16] arrays end to
+// end; full type migration is Phase 3 of
+// docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md, not this
+// phase.
 // ---------------------------------------------------------------------------
 inline void mul16(const float* a, const float* b, float* out) {
-    for (int i = 0; i < 4; ++i)
-        for (int j = 0; j < 4; ++j) {
-            float s = 0;
-            for (int k = 0; k < 4; ++k) s += a[i*4+k] * b[k*4+j];
-            out[i*4+j] = s;
-        }
+    mm::Mat4 ma, mb;
+    std::memcpy(ma.m, a, sizeof(ma.m));
+    std::memcpy(mb.m, b, sizeof(mb.m));
+    const mm::Mat4 result = mm::multiply(ma, mb);
+    std::memcpy(out, result.m, sizeof(result.m));
 }
 
 // ---------------------------------------------------------------------------

@@ -417,8 +417,14 @@ bool bake_tileset_vk(matter::VulkanDevice& vulkan, const SettledTorus& settled,
             if (it == handle_to_index.end()) continue;  // BLAS was refused
             const uint32_t blas_index = it->second;
             VkAccelerationStructureInstanceKHR inst{};
-            // Matrix4x4 is row-major (m[row*4+col]); VkTransformMatrixKHR is a
-            // 3x4 row-major matrix — copy the first three rows directly.
+            // r.transform is mm::Mat4: row-major (m[row*4+col]), same layout
+            // Matrix4x4 used before the Phase 2 MathLib collapse.
+            // VkTransformMatrixKHR is a 3x4 row-major matrix — copy the
+            // first three rows directly. No transpose/reorder needed here:
+            // this loop never named Matrix4x4 by type, only DrawRecord's
+            // now-mm::Mat4 .m[16] member, which kept the same field name,
+            // same row-major convention, and same translation offsets
+            // (m[3],m[7],m[11]) across the collapse.
             for (uint32_t row = 0; row < 3; ++row)
                 for (uint32_t col = 0; col < 4; ++col)
                     inst.transform.matrix[row][col] = r.transform.m[row * 4 + col];

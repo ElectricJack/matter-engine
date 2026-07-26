@@ -38,6 +38,7 @@ FLECS_DIR   = ../third_party/flecs
 # Shared source-of-truth libraries (compiled from source, not copied).
 SQL_DIR     = ../libs/SpatialQueryLib
 MEMLIB_DIR  = ../libs/MemoryLib
+MATHLIB_DIR = ../libs/MathLib
 
 # Linux app compile: only public engine API + imgui + raylib headers visible.
 # Private ME3 src/ headers are NOT exposed here; they are internal to the library.
@@ -47,6 +48,7 @@ INCLUDE_PATHS = -I$(ME3_DIR)/include \
                 -I$(ME3_DIR)/src \
                 -I$(MSL_DIR)/include \
                 -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include \
+                -I$(MATHLIB_DIR)/include \
                 -I$(RAYLIB_PATH) \
                 -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends \
                 -I$(IMGUIZMO_PATH) \

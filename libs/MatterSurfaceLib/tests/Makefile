@@ -42,7 +42,8 @@ endif
 # Include directories
 SQL = ../../SpatialQueryLib
 MEMLIB = ../../MemoryLib
-INCLUDE_PATHS = -I../include -I$(SQL)/include -I$(MEMLIB)/include -I$(RAYLIB_PATH) -I../../../third_party/raylib/src
+MATHLIB = ../../MathLib
+INCLUDE_PATHS = -I../include -I$(SQL)/include -I$(MEMLIB)/include -I$(MATHLIB)/include -I$(RAYLIB_PATH) -I../../../third_party/raylib/src
 
 # Library paths. The src/ archive is the Windows (MinGW COFF) cross-compile
 # output; Linux/macOS test builds must link the native ELF/Mach-O archive under

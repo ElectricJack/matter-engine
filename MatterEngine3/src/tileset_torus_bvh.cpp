@@ -149,24 +149,24 @@ static bool build_base_blas(const SettledTorus& st, BLASManager& blas,
 }
 
 // -----------------------------------------------------------------------------
-// Quaternion (qx, qy, qz, qw) + translation + uniform scale → Matrix4x4.
+// Quaternion (qx, qy, qz, qw) + translation + uniform scale → mm::Mat4.
 // TLASManager uses ROW-major layout: m[0..3]=row0, m[4..7]=row1, m[8..11]=row2.
 // mat4::TransformPoint reads translation from cell[3], cell[7], cell[11], and
-// TLASManager::matrix_translation sets m[3], m[7], m[11].
+// mm::translation() sets m[3], m[7], m[11] the same way.
 // Layout: [R00*s  R01*s  R02*s  px]
 //         [R10*s  R11*s  R12*s  py]
 //         [R20*s  R21*s  R22*s  pz]
 //         [0      0      0      1 ]
 // where the rotation rows use the standard right-handed quaternion formula.
 // -----------------------------------------------------------------------------
-static Matrix4x4 mat4_from_pose_scale(const Pose& p, float s)
+static mm::Mat4 mat4_from_pose_scale(const Pose& p, float s)
 {
     float qx = p.qx, qy = p.qy, qz = p.qz, qw = p.qw;
     float xx = qx*qx, yy = qy*qy, zz = qz*qz;
     float xy = qx*qy, xz = qx*qz, yz = qy*qz;
     float wx = qw*qx, wy = qw*qy, wz = qw*qz;
 
-    Matrix4x4 M;
+    mm::Mat4 M;
     // Row 0: [R00  R01  R02  tx]
     M.m[0] = s * (1.0f - 2.0f*(yy + zz));
     M.m[1] = s * (2.0f*(xy - wz));
@@ -296,7 +296,7 @@ bool assemble_torus_bvh(const SettledTorus& settled, const BakeInputs& inputs,
             h = it->second;
         }
 
-        Matrix4x4 M = mat4_from_pose_scale(si.pose, si.scale);
+        mm::Mat4 M = mat4_from_pose_scale(si.pose, si.scale);
         tlas.push_matrix();
         tlas.load_matrix(M);
         // material 0 → per-triangle material from TriEx (pack_material_w semantics)

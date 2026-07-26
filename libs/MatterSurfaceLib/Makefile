@@ -4,8 +4,9 @@ RAYLIB_PATH = ../../third_party/raylib
 IMGUI_PATH = ../../third_party/imgui
 SQL_DIR = ../SpatialQueryLib
 MEMLIB_DIR = ../MemoryLib
-CFLAGS = -Wall -Wextra -O2 -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include -I$(RAYLIB_PATH)/src -I$(RAYLIB_PATH)/src/external/glfw/include -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends -I./include
-CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include -I$(RAYLIB_PATH)/src -I$(RAYLIB_PATH)/src/external/glfw/include -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends -I./include
+MATHLIB_DIR = ../MathLib
+CFLAGS = -Wall -Wextra -O2 -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include -I$(MATHLIB_DIR)/include -I$(RAYLIB_PATH)/src -I$(RAYLIB_PATH)/src/external/glfw/include -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends -I./include
+CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include -I$(MATHLIB_DIR)/include -I$(RAYLIB_PATH)/src -I$(RAYLIB_PATH)/src/external/glfw/include -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends -I./include
 
 # Build flags:
 # TARGET=windows-native : Cross-compile for Windows from Linux using MinGW

@@ -6,6 +6,7 @@ extern "C" {
 
 #include "precomp.h"
 #include "bvh.h"
+#include "matter_math.h"
 
 #include "blas_manager.hpp"
 #include "profiler.hpp"
@@ -17,14 +18,9 @@ extern "C" {
 // BVH types are now in global namespace
 // float3 and normalize are from global namespace via precomp.h
 
-// Legacy types for backward compatibility
-struct Matrix4x4 {
-    float m[16];
-    Matrix4x4() {
-        for (int i = 0; i < 16; i++) m[i] = 0.0f;
-        m[0] = m[5] = m[10] = m[15] = 1.0f; // Identity
-    }
-};
+// Matrix4x4 (row-major float[16], identity-default) has been collapsed onto
+// mm::Mat4 (libs/MathLib/include/matter_math.h) -- same layout, same default,
+// see docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md Phase 2.
 
 // TLASNode is now available from bvh.h in global namespace
 
@@ -41,15 +37,15 @@ public:
     // DrawRecord struct for accessing instance data
     struct DrawRecord {
         BLASHandle blas_handle;
-        Matrix4x4 transform;
-        Matrix4x4 inv_transform;
+        mm::Mat4 transform;
+        mm::Mat4 inv_transform;
         uint32_t material_id;
         uint32_t instance_id;
         bool is_imposter = false;
 
-        DrawRecord(BLASHandle handle, const Matrix4x4& trans, uint32_t mat_id, uint32_t inst_id)
+        DrawRecord(BLASHandle handle, const mm::Mat4& trans, uint32_t mat_id, uint32_t inst_id)
             : blas_handle(handle), transform(trans), material_id(mat_id), instance_id(inst_id) {
-            inv_transform = Matrix4x4(); // Will implement matrix_inverse later
+            inv_transform = mm::Mat4(); // Will implement matrix_inverse later
         }
     };
 
@@ -66,8 +62,8 @@ public:
     void push_matrix();
     void pop_matrix();
     void load_identity();
-    void load_matrix(const Matrix4x4& matrix);
-    void multiply_matrix(const Matrix4x4& matrix);
+    void load_matrix(const mm::Mat4& matrix);
+    void multiply_matrix(const mm::Mat4& matrix);
     
     // Transformation convenience functions
     void translate(float x, float y, float z);
@@ -85,7 +81,7 @@ public:
     // Batch drawing operations
     struct DrawInstance {
         BLASHandle blas_handle;
-        Matrix4x4 transform;
+        mm::Mat4 transform;
         uint32_t material_id;
         bool is_imposter = false;
     };
@@ -171,15 +167,11 @@ private:
         cached_shader_id_ = 0;
     }
     
-    // Conversion utilities
-    static mat4      convert_matrix(const Matrix4x4& legacy_matrix);
-    static Matrix4x4 convert_matrix_back(const mat4& new_matrix);
-    
     // Get current matrix from top of stack
-    const Matrix4x4& get_current_matrix() const;
-    Matrix4x4&       get_current_matrix();
-    
-    std::stack<Matrix4x4>    matrix_stack_;
+    const mm::Mat4& get_current_matrix() const;
+    mm::Mat4&       get_current_matrix();
+
+    std::stack<mm::Mat4>    matrix_stack_;
     std::vector<DrawRecord>  draw_records_;
     // B4 fix: compacted list of draw records that made it into the TLAS (i.e., had
     // a valid BLAS). Index i here corresponds exactly to tlas_->blas[i].

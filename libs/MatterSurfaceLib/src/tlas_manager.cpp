@@ -11,143 +11,11 @@
 // shaders that have not adopted tiledTexel) are unaffected.
 static constexpr int kTlasTileWidth = 8192;
 
-// Conversion utilities
-mat4 TLASManager::convert_matrix(const Matrix4x4& legacy_matrix) {
-    mat4 new_matrix;
-    for (int i = 0; i < 16; i++) {
-        new_matrix.cell[i] = legacy_matrix.m[i];
-    }
-    return new_matrix;
-}
-
-Matrix4x4 TLASManager::convert_matrix_back(const mat4& new_matrix) {
-    Matrix4x4 legacy_matrix;
-    for (int i = 0; i < 16; i++) {
-        legacy_matrix.m[i] = new_matrix.cell[i];
-    }
-    return legacy_matrix;
-}
-
-// Helper functions for matrix operations
-Matrix4x4 matrix_identity() {
-    return Matrix4x4(); // Default constructor creates identity
-}
-
-Matrix4x4 matrix_multiply(const Matrix4x4* a, const Matrix4x4* b) {
-    Matrix4x4 result;
-    for (int i = 0; i < 4; i++) {
-        for (int j = 0; j < 4; j++) {
-            result.m[i * 4 + j] = 0.0f;
-            for (int k = 0; k < 4; k++) {
-                result.m[i * 4 + j] += a->m[i * 4 + k] * b->m[k * 4 + j];
-            }
-        }
-    }
-    return result;
-}
-
-Matrix4x4 matrix_inverse(const Matrix4x4* m) {
-    // Full 4x4 matrix inverse via cofactor / adjugate method.
-    const float* s = m->m;
-    float inv[16];
-
-    inv[0]  =  s[5]*s[10]*s[15] - s[5]*s[11]*s[14] - s[9]*s[6]*s[15] + s[9]*s[7]*s[14] + s[13]*s[6]*s[11] - s[13]*s[7]*s[10];
-    inv[4]  = -s[4]*s[10]*s[15] + s[4]*s[11]*s[14] + s[8]*s[6]*s[15] - s[8]*s[7]*s[14] - s[12]*s[6]*s[11] + s[12]*s[7]*s[10];
-    inv[8]  =  s[4]*s[9]*s[15]  - s[4]*s[11]*s[13] - s[8]*s[5]*s[15] + s[8]*s[7]*s[13] + s[12]*s[5]*s[11] - s[12]*s[7]*s[9];
-    inv[12] = -s[4]*s[9]*s[14]  + s[4]*s[10]*s[13] + s[8]*s[5]*s[14] - s[8]*s[6]*s[13] - s[12]*s[5]*s[10] + s[12]*s[6]*s[9];
-
-    inv[1]  = -s[1]*s[10]*s[15] + s[1]*s[11]*s[14] + s[9]*s[2]*s[15] - s[9]*s[3]*s[14] - s[13]*s[2]*s[11] + s[13]*s[3]*s[10];
-    inv[5]  =  s[0]*s[10]*s[15] - s[0]*s[11]*s[14] - s[8]*s[2]*s[15] + s[8]*s[3]*s[14] + s[12]*s[2]*s[11] - s[12]*s[3]*s[10];
-    inv[9]  = -s[0]*s[9]*s[15]  + s[0]*s[11]*s[13] + s[8]*s[1]*s[15] - s[8]*s[3]*s[13] - s[12]*s[1]*s[11] + s[12]*s[3]*s[9];
-    inv[13] =  s[0]*s[9]*s[14]  - s[0]*s[10]*s[13] - s[8]*s[1]*s[14] + s[8]*s[2]*s[13] + s[12]*s[1]*s[10] - s[12]*s[2]*s[9];
-
-    inv[2]  =  s[1]*s[6]*s[15]  - s[1]*s[7]*s[14]  - s[5]*s[2]*s[15] + s[5]*s[3]*s[14] + s[13]*s[2]*s[7]  - s[13]*s[3]*s[6];
-    inv[6]  = -s[0]*s[6]*s[15]  + s[0]*s[7]*s[14]  + s[4]*s[2]*s[15] - s[4]*s[3]*s[14] - s[12]*s[2]*s[7]  + s[12]*s[3]*s[6];
-    inv[10] =  s[0]*s[5]*s[15]  - s[0]*s[7]*s[13]  - s[4]*s[1]*s[15] + s[4]*s[3]*s[13] + s[12]*s[1]*s[7]  - s[12]*s[3]*s[5];
-    inv[14] = -s[0]*s[5]*s[14]  + s[0]*s[6]*s[13]  + s[4]*s[1]*s[14] - s[4]*s[2]*s[13] - s[12]*s[1]*s[6]  + s[12]*s[2]*s[5];
-
-    inv[3]  = -s[1]*s[6]*s[11]  + s[1]*s[7]*s[10]  + s[5]*s[2]*s[11] - s[5]*s[3]*s[10] - s[9]*s[2]*s[7]   + s[9]*s[3]*s[6];
-    inv[7]  =  s[0]*s[6]*s[11]  - s[0]*s[7]*s[10]  - s[4]*s[2]*s[11] + s[4]*s[3]*s[10] + s[8]*s[2]*s[7]   - s[8]*s[3]*s[6];
-    inv[11] = -s[0]*s[5]*s[11]  + s[0]*s[7]*s[9]   + s[4]*s[1]*s[11] - s[4]*s[3]*s[9]  - s[8]*s[1]*s[7]   + s[8]*s[3]*s[5];
-    inv[15] =  s[0]*s[5]*s[10]  - s[0]*s[6]*s[9]   - s[4]*s[1]*s[10] + s[4]*s[2]*s[9]  + s[8]*s[1]*s[6]   - s[8]*s[2]*s[5];
-
-    float det = s[0]*inv[0] + s[1]*inv[4] + s[2]*inv[8] + s[3]*inv[12];
-    if (det == 0.0f) return *m; // singular: return input as safe fallback
-
-    float invDet = 1.0f / det;
-    Matrix4x4 result;
-    for (int i = 0; i < 16; i++) result.m[i] = inv[i] * invDet;
-    return result;
-}
-
-Matrix4x4 matrix_translation(float x, float y, float z) {
-    Matrix4x4 m;
-    // Use column-major layout: translation goes in positions [3], [7], [11]
-    // Matrix layout: [0  4  8  12]
-    //                [1  5  9  13] 
-    //                [2  6  10 14]
-    //                [3  7  11 15]
-    // Translation should be in the last column: [3], [7], [11]
-    m.m[3] = x; m.m[7] = y; m.m[11] = z;
-    return m;
-}
-
-Matrix4x4 matrix_scale(float x, float y, float z) {
-    Matrix4x4 m;
-    m.m[0] = x; m.m[5] = y; m.m[10] = z;
-    return m;
-}
-
-Matrix4x4 matrix_rotation_x(float angle) {
-    Matrix4x4 m;
-    float c = std::cos(angle), s = std::sin(angle);
-    m.m[5] = c; m.m[6] = -s;
-    m.m[9] = s; m.m[10] = c;
-    return m;
-}
-
-Matrix4x4 matrix_rotation_y(float angle) {
-    Matrix4x4 m;
-    float c = std::cos(angle), s = std::sin(angle);
-    m.m[0] = c; m.m[2] = s;
-    m.m[8] = -s; m.m[10] = c;
-    return m;
-}
-
-Matrix4x4 matrix_rotation_z(float angle) {
-    Matrix4x4 m;
-    float c = std::cos(angle), s = std::sin(angle);
-    m.m[0] = c; m.m[1] = -s;
-    m.m[4] = s; m.m[5] = c;
-    return m;
-}
-
-Matrix4x4 matrix_rotation_axis(const float3& axis, float angle) {
-    // Rodrigues' rotation formula implementation
-    Matrix4x4 m;
-    float c = std::cos(angle), s = std::sin(angle);
-    float3 n = normalize(axis);
-    
-    m.m[0] = c + n.x * n.x * (1 - c);
-    m.m[1] = n.x * n.y * (1 - c) - n.z * s;
-    m.m[2] = n.x * n.z * (1 - c) + n.y * s;
-    
-    m.m[4] = n.y * n.x * (1 - c) + n.z * s;
-    m.m[5] = c + n.y * n.y * (1 - c);
-    m.m[6] = n.y * n.z * (1 - c) - n.x * s;
-    
-    m.m[8] = n.z * n.x * (1 - c) - n.y * s;
-    m.m[9] = n.z * n.y * (1 - c) + n.x * s;
-    m.m[10] = c + n.z * n.z * (1 - c);
-    
-    return m;
-}
-
-TLASManager::TLASManager(int max_instances) 
+TLASManager::TLASManager(int max_instances)
     : tlas_(nullptr), next_instance_id_(1), max_instances_(max_instances) {
-    
+
     // Initialize matrix stack with identity
-    matrix_stack_.push(matrix_identity());
+    matrix_stack_.push(mm::identity());
     
     // Reserve space for draw records
     draw_records_.reserve(max_instances);
@@ -168,12 +36,12 @@ TLASManager::~TLASManager() {
     if (instances_texture_.id != 0) UnloadTexture(instances_texture_);
 }
 
-const Matrix4x4& TLASManager::get_current_matrix() const {
+const mm::Mat4& TLASManager::get_current_matrix() const {
     return matrix_stack_.top();
 }
 
-Matrix4x4& TLASManager::get_current_matrix() {
-    return const_cast<Matrix4x4&>(matrix_stack_.top());
+mm::Mat4& TLASManager::get_current_matrix() {
+    return const_cast<mm::Mat4&>(matrix_stack_.top());
 }
 
 void TLASManager::push_matrix() {
@@ -195,20 +63,20 @@ void TLASManager::pop_matrix() {
 }
 
 void TLASManager::load_identity() {
-    get_current_matrix() = matrix_identity();
+    get_current_matrix() = mm::identity();
 }
 
-void TLASManager::load_matrix(const Matrix4x4& matrix) {
+void TLASManager::load_matrix(const mm::Mat4& matrix) {
     get_current_matrix() = matrix;
 }
 
-void TLASManager::multiply_matrix(const Matrix4x4& matrix) {
-    Matrix4x4& current = get_current_matrix();
-    current = matrix_multiply(&current, &matrix);
+void TLASManager::multiply_matrix(const mm::Mat4& matrix) {
+    mm::Mat4& current = get_current_matrix();
+    current = mm::multiply(current, matrix);
 }
 
 void TLASManager::translate(float x, float y, float z) {
-    Matrix4x4 trans = matrix_translation(x, y, z);
+    mm::Mat4 trans = mm::translation(mm::Vec3{x, y, z});
     multiply_matrix(trans);
 }
 
@@ -217,7 +85,7 @@ void TLASManager::translate(const float3& translation) {
 }
 
 void TLASManager::scale(float sx, float sy, float sz) {
-    Matrix4x4 scale_matrix = matrix_scale(sx, sy, sz);
+    mm::Mat4 scale_matrix = mm::scale(mm::Vec3{sx, sy, sz});
     multiply_matrix(scale_matrix);
 }
 
@@ -226,22 +94,28 @@ void TLASManager::scale(float uniform_scale) {
 }
 
 void TLASManager::rotate_x(float angle_radians) {
-    Matrix4x4 rot = matrix_rotation_x(angle_radians);
+    mm::Mat4 rot = mm::rotation_x(angle_radians);
     multiply_matrix(rot);
 }
 
 void TLASManager::rotate_y(float angle_radians) {
-    Matrix4x4 rot = matrix_rotation_y(angle_radians);
+    mm::Mat4 rot = mm::rotation_y(angle_radians);
     multiply_matrix(rot);
 }
 
 void TLASManager::rotate_z(float angle_radians) {
-    Matrix4x4 rot = matrix_rotation_z(angle_radians);
+    mm::Mat4 rot = mm::rotation_z(angle_radians);
     multiply_matrix(rot);
 }
 
 void TLASManager::rotate_axis(const float3& axis, float angle_radians) {
-    Matrix4x4 rot = matrix_rotation_axis(axis, angle_radians);
+    // mm::rotation_axis requires a pre-normalized axis (returns identity()
+    // otherwise); the deleted matrix_rotation_axis() normalized internally,
+    // so normalize explicitly here to preserve that lenient behaviour for
+    // any (currently nonexistent, but public-API) caller passing a
+    // non-unit axis.
+    mm::Vec3 axis_mm{axis.x, axis.y, axis.z};
+    mm::Mat4 rot = mm::rotation_axis(mm::normalize(axis_mm), angle_radians);
     multiply_matrix(rot);
 }
 
@@ -346,8 +220,15 @@ void TLASManager::build(const BLASManager& blas_manager) {
         // Create BVH instance
         auto instance = std::make_unique<BVHInstance>(bvh, record.instance_id);
 
-        // Convert and set transform - this will also calculate world bounds
-        mat4 new_transform = convert_matrix(record.transform);
+        // Convert and set transform - this will also calculate world bounds.
+        // mm::Mat4 and mat4 (SpatialQueryLib/tri.h) are both row-major
+        // float[16] with translation at [3],[7],[11] -- same layout, plain
+        // element copy (the convert_matrix() shim this replaced was doing
+        // exactly this loop).
+        mat4 new_transform;
+        for (int i = 0; i < 16; i++) {
+            new_transform.cell[i] = record.transform.m[i];
+        }
         instance->SetTransform(new_transform);
 
         // Add to our vectors — record and instance are added in lock-step

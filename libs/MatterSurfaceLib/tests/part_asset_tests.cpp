@@ -72,10 +72,10 @@ static void build_scene(BLASManager& blas, TLASManager& tlas,
     hB = blas.register_triangles(triB, 2, exB);
 
     std::vector<TLASManager::DrawInstance> insts(3);
-    insts[0].blas_handle = hA; insts[0].material_id = 8; insts[0].transform = Matrix4x4();
-    insts[1].blas_handle = hB; insts[1].material_id = 9; insts[1].transform = Matrix4x4();
+    insts[0].blas_handle = hA; insts[0].material_id = 8; insts[0].transform = mm::Mat4();
+    insts[1].blas_handle = hB; insts[1].material_id = 9; insts[1].transform = mm::Mat4();
     insts[1].transform.m[3] = 10.0f; // translate x
-    insts[2].blas_handle = hA; insts[2].material_id = 8; insts[2].transform = Matrix4x4();
+    insts[2].blas_handle = hA; insts[2].material_id = 8; insts[2].transform = mm::Mat4();
     insts[2].transform.m[7] = 7.0f;  // translate y
     tlas.draw_batch(insts);
     tlas.build(blas);

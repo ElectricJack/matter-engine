@@ -759,7 +759,7 @@ private:
         di.material_id = 0;
         di.is_imposter = true;
         const voxel_imposter::VoxelImposter& vox = voxel_imposter_;
-        di.transform = Matrix4x4(); // identity (zeros off-diagonal, ones on diagonal)
+        di.transform = mm::Mat4(); // identity (zeros off-diagonal, ones on diagonal)
         di.transform.m[0]  = vox.bounds_max[0] - vox.bounds_min[0];
         di.transform.m[5]  = vox.bounds_max[1] - vox.bounds_min[1];
         di.transform.m[10] = vox.bounds_max[2] - vox.bounds_min[2];
@@ -1554,7 +1554,7 @@ private:
             // Apply transform matrix
             rlPushMatrix();
             
-            // Convert Matrix4x4 to OpenGL matrix format (column-major)
+            // Convert mm::Mat4 (row-major) to OpenGL matrix format (column-major)
             const auto& m = record.transform.m;
             float gl_matrix[16] = {
                 m[0], m[4], m[8],  m[12],

@@ -55,7 +55,7 @@ static void test_flatten_mat_count() {
     tx.materialId = 2; tx.tint = make_float4(1,1,1,0);
     auto h = blas.register_triangles(std::vector<Tri>{t}, std::vector<TriEx>{tx});
     TLASManager::DrawInstance di;
-    di.blas_handle = h; di.material_id = 0; di.transform = Matrix4x4(); // identity
+    di.blas_handle = h; di.material_id = 0; di.transform = mm::Mat4(); // identity
     tlas.draw_batch(std::vector<TLASManager::DrawInstance>{di});
     tlas.build(blas);
     auto fl = voxel_imposter::flatten_part_triangles_mat(blas, tlas);

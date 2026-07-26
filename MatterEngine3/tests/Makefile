@@ -54,7 +54,7 @@ endif
 
 # Include directories: NEW MatterEngine3 headers, then consumed MatterSurfaceLib
 # headers, then raylib.
-INCLUDE_PATHS = -I../include -I../src -I../src/render -I../src/provider -I../../libs/MatterSurfaceLib/include -I../../libs/SpatialQueryLib/include -I../../libs/MemoryLib/include -I$(RAYLIB_PATH) -I../../third_party/raylib/src -I../../libs/ParticleFlowLib/include -I../../third_party/Vulkan-Headers/include -I$(BOX3D_DIR)/include
+INCLUDE_PATHS = -I../include -I../src -I../src/render -I../src/provider -I../../libs/MatterSurfaceLib/include -I../../libs/SpatialQueryLib/include -I../../libs/MemoryLib/include -I../../libs/MathLib/include -I$(RAYLIB_PATH) -I../../third_party/raylib/src -I../../libs/ParticleFlowLib/include -I../../third_party/Vulkan-Headers/include -I$(BOX3D_DIR)/include
 INCLUDE_PATHS += -I$(FLECS_DIR)
 
 # Library paths (match MatterSurfaceLib/tests; same depth).

@@ -61,6 +61,7 @@ FLECS_DIR   = ../third_party/flecs
 # Shared source-of-truth libraries (compiled from source, not copied).
 SQL_DIR     = ../libs/SpatialQueryLib
 MEMLIB_DIR  = ../libs/MemoryLib
+MATHLIB_DIR = ../libs/MathLib
 
 # Include directories: NEW MatterEngine3 headers, consumed MatterSurfaceLib
 # headers, vendored QuickJS-ng, then raylib (for the BLAS/Tri/TriEx types).
@@ -70,6 +71,7 @@ BOX3D_LIB     = $(BOX3D_DIR)/libbox3d.a
 INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(MSL_DIR)/include -I$(MSL_DIR)/src \
                 -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include \
+                -I$(MATHLIB_DIR)/include \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
                 -I$(PFL_DIR)/include \
                 -I$(FLECS_DIR) \

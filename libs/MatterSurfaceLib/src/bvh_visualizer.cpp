@@ -401,7 +401,7 @@ float3 BVHVisualizer::vector3_to_float3(const Vector3& v) {
 Vector3 BVHVisualizer::transform_point(const Vector3& point, const TLASManager::DrawRecord& transform) {
     const auto& m = transform.transform.m;
     
-    // Matrix4x4 is stored in row-major format:
+    // mm::Mat4 is stored in row-major format:
     // m[0]  m[1]  m[2]  m[3]     <- Row 0 (x-component)
     // m[4]  m[5]  m[6]  m[7]     <- Row 1 (y-component) 
     // m[8]  m[9]  m[10] m[11]    <- Row 2 (z-component)
