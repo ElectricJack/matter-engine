@@ -113,11 +113,22 @@ ANIMATION_RUNTIME_ASSET_TARGET = animation_runtime_asset_tests
 ANIMATION_RUNTIME_ASSET_CPP = animation_runtime_asset_tests.cpp ../src/animation/animation_runtime_asset.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_validate.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp
 
 ANIMATION_DSL_RIG_TARGET = animation_dsl_rig_tests
-ANIMATION_DSL_RIG_CPP = animation_dsl_rig_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP)) ../src/render/indexed_part_geometry.cpp
+# SCRIPT_CPP already owns indexed_part_geometry.cpp for ScriptHost's runtime
+# asset conversion. Keep this closure to one copy so its object is linked once.
+ANIMATION_DSL_RIG_CPP = animation_dsl_rig_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP))
 ANIMATION_DSL_MOTION_TARGET = animation_dsl_motion_tests
 ANIMATION_DSL_MOTION_CPP = animation_dsl_motion_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP))
 ANIMATION_DSL_MOTION_OBJS = $(call obj_list,qjs,$(ANIMATION_DSL_MOTION_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
 ANIMATION_DSL_RIG_OBJS = $(call obj_list,qjs,$(ANIMATION_DSL_RIG_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
+
+.PHONY: check-animation-dsl-rig-sources
+check-animation-dsl-rig-sources:
+	@duplicates="$$(printf '%s\n' $(ANIMATION_DSL_RIG_CPP) | sort | uniq -d)"; \
+	if test -n "$$duplicates"; then \
+		echo "ERROR: animation DSL rig source list has duplicate entries:"; \
+		printf '%s\n' "$$duplicates"; \
+		exit 1; \
+	fi
 
 ANIMATION_BINDING_TARGET = animation_binding_tests
 ANIMATION_BINDING_CPP = animation_binding_tests.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp
@@ -1206,7 +1217,7 @@ $(ANIMATION_RUNTIME_ASSET_TARGET): $(ANIMATION_RUNTIME_ASSET_CPP) $(OZZ_OFFLINE_
 run-animation-runtime-asset: $(ANIMATION_RUNTIME_ASSET_TARGET)
 	./$(ANIMATION_RUNTIME_ASSET_TARGET)
 
-$(ANIMATION_DSL_RIG_TARGET): $(ANIMATION_DSL_RIG_OBJS)
+$(ANIMATION_DSL_RIG_TARGET): check-animation-dsl-rig-sources $(ANIMATION_DSL_RIG_OBJS)
 	$(CC) $(ANIMATION_DSL_RIG_OBJS) -o $@ $(FLAVOR_qjs_FLAGS) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-animation-dsl-rig: $(ANIMATION_DSL_RIG_TARGET)
