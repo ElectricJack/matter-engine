@@ -25,13 +25,36 @@ struct StoredValue {
 namespace {
 
 constexpr uint32_t kInvalid = UINT32_MAX;
-constexpr uint32_t kHardInstanceCapacity = 4096;
-constexpr size_t kHardMutableBudgetBytes = 64u * 1024u * 1024u;
 
 AnimationStoreConfig bounded_config(AnimationStoreConfig requested) {
-    requested.instance_capacity = std::min(requested.instance_capacity, kHardInstanceCapacity);
-    requested.mutable_budget_bytes = std::min(requested.mutable_budget_bytes, kHardMutableBudgetBytes);
+    const AnimationBudgetConfig central{};
+    const auto bounded = [](auto requested_value, auto default_value, auto hard_value) {
+        return requested_value == 0 ? default_value : std::min(requested_value, hard_value);
+    };
+    requested.instance_capacity = bounded(requested.instance_capacity, central.max_runtime_instances,
+                                          AnimationBudgetConfig::kHardMaxRuntimeInstances);
+    requested.mutable_budget_bytes = bounded(requested.mutable_budget_bytes, central.max_mutable_bytes,
+                                             AnimationBudgetConfig::kHardMaxMutableBytes);
+    requested.asset_capacity = bounded(requested.asset_capacity, central.max_assets,
+                                       AnimationBudgetConfig::kHardMaxAssets);
+    requested.max_joints_per_asset = bounded(requested.max_joints_per_asset, central.max_joints_per_asset,
+                                             AnimationBudgetConfig::kHardMaxJointsPerAsset);
+    requested.max_graph_nodes = bounded(requested.max_graph_nodes, central.max_graph_nodes,
+                                        AnimationBudgetConfig::kHardMaxGraphNodes);
+    requested.max_controller_nodes = bounded(requested.max_controller_nodes, central.max_controller_nodes,
+                                             AnimationBudgetConfig::kHardMaxControllerNodes);
     return requested;
+}
+
+AnimationBudgetConfig runtime_budget(const AnimationStoreConfig& config) {
+    AnimationBudgetConfig result{};
+    result.max_assets = config.asset_capacity;
+    result.max_runtime_instances = config.instance_capacity;
+    result.max_joints_per_asset = config.max_joints_per_asset;
+    result.max_graph_nodes = config.max_graph_nodes;
+    result.max_controller_nodes = config.max_controller_nodes;
+    result.max_mutable_bytes = config.mutable_budget_bytes;
+    return result;
 }
 
 AnimationCadence public_cadence(EvaluationCadence cadence) {
@@ -141,11 +164,14 @@ bool same_definition(const AnimationRuntimeDefinition& left, const AnimationRunt
     return true;
 }
 
-bool valid_binding(const std::shared_ptr<const AnimationRuntimeBindingDescriptor>& binding) {
+bool valid_binding(const std::shared_ptr<const AnimationRuntimeBindingDescriptor>& binding,
+                   const AnimationBudgetConfig& budget) {
     if (!binding) return true; // Legacy definitions are deliberately unbound.
     const AnimationEvaluationDefinition* evaluation = binding->evaluation.get();
     const AnimationFixedWork& work = binding->fixed_work;
     if (!evaluation || !valid_animation_evaluation_definition(*evaluation) ||
+        evaluation->skeleton->joint_count() > budget.max_joints_per_asset ||
+        evaluation->nodes.size() > budget.max_graph_nodes ||
         !std::isfinite(work.clip.duration) || work.clip.duration <= 0.0f ||
         !std::isfinite(work.clip.time) || !std::isfinite(work.clip.rate)) return false;
     for (const RuntimeClipMarker& marker : work.clip.markers)
@@ -155,6 +181,7 @@ bool valid_binding(const std::shared_ptr<const AnimationRuntimeBindingDescriptor
     if (binding->targets.size()>kMaxTargets || !validate_exclusive_target_chains(binding->targets)) return false;
     std::set<uint16_t> controller_targets;
     NativeControllerRegistry registry=NativeControllerRegistry::with_v1_controllers();
+    if (binding->controllers.size() > budget.max_controller_nodes) return false;
     for(const auto& controller:binding->controllers) {
         if(controller.descriptor.cadence!=EvaluationCadence::Fixed) return false;
         NativeControllerLayout layout{}; if(!registry.create(controller.descriptor,layout) || layout.frame_state_bytes!=0 || layout.fixed_state_bytes>64u*1024u) return false;
@@ -171,11 +198,12 @@ bool valid_binding(const std::shared_ptr<const AnimationRuntimeBindingDescriptor
     return true;
 }
 
-bool valid_definition(const AnimationRuntimeDefinition& definition) {
+bool valid_definition(const AnimationRuntimeDefinition& definition,
+                      const AnimationBudgetConfig& budget) {
     for (const RuntimeInputDefinition& input : definition.inputs) {
         if (input.default_value.type != input.type) return false;
     }
-    if (!valid_binding(definition.binding)) return false;
+    if (!valid_binding(definition.binding, budget)) return false;
     if (definition.binding) {
         const auto& evaluation = *definition.binding->evaluation;
         if (evaluation.inputs.size() != definition.inputs.size()) return false;
@@ -272,13 +300,16 @@ size_t AnimationRuntimeDefinition::mutable_bytes() const {
 
 class AnimationServiceImpl {
 public:
-    explicit AnimationServiceImpl(AnimationStoreConfig config) : config_(bounded_config(config)) {
+    explicit AnimationServiceImpl(AnimationStoreConfig config) : config_(bounded_config(config)), budget_(runtime_budget(config_)) {
         slots_.reserve(config_.instance_capacity);
         free_indices_.reserve(config_.instance_capacity);
     }
     ~AnimationServiceImpl() { attach_runtime_systems(nullptr, nullptr); }
 
-    const AnimAsset* insert_asset(AnimAsset asset) { return assets_.insert(std::move(asset)); }
+    const AnimAsset* insert_asset(AnimAsset asset) {
+        if (assets_.size() >= budget_.max_assets && !assets_.find(asset.resolved_hash, asset.nonce)) return nullptr;
+        return assets_.insert(std::move(asset));
+    }
 
     Animator create(const AnimAsset* asset, const AnimationRuntimeDefinition& definition) {
         if (!owns(asset)) return {{}, AnimationStatus::LoadFailed};
@@ -431,7 +462,11 @@ public:
     }
 
     AnimationStatus status(AnimatorInstanceHandle handle) const { return slot(handle) ? AnimationStatus::Ok : AnimationStatus::InvalidHandle; }
-    AnimationRuntimeStats stats() const { return {active_count_, config_.instance_capacity, mutable_bytes_, config_.mutable_budget_bytes}; }
+    AnimationRuntimeStats stats() const {
+        return {active_count_, config_.instance_capacity, mutable_bytes_, config_.mutable_budget_bytes,
+                config_.asset_capacity, config_.max_joints_per_asset,
+                config_.max_graph_nodes, config_.max_controller_nodes};
+    }
     size_t mutable_bytes() const { return mutable_bytes_; }
     float number_value(AnimationInputHandle handle) const { const StoredValue* v = read_input(handle, AnimationValueType::Number); return v ? v->number : 0.0f; }
     bool bool_value(AnimationInputHandle handle) const { const StoredValue* v = read_input(handle, AnimationValueType::Bool); return v && v->boolean; }
@@ -559,6 +594,7 @@ public:
         }
         systems_ = systems;
         if (!systems_) return;
+        systems_->set_budget_config(budget_);
         systems_->attach_service(owner);
         for (uint32_t index = 0; index < slots_.size(); ++index) if (slots_[index].alive) refresh_runtime_binding(instance_handle(index, slots_[index]), slots_[index]);
     }
@@ -574,13 +610,13 @@ private:
         const auto existing = schemas_.find(asset);
         if (existing != schemas_.end()) {
             if (same_definition(*existing->second, definition)) return existing->second.get();
-            if (!allow_replacement || !valid_definition(definition)) return nullptr;
+            if (!allow_replacement || !valid_definition(definition, budget_)) return nullptr;
             auto owned = std::make_unique<AnimationRuntimeDefinition>(definition);
             const AnimationRuntimeDefinition* result = owned.get();
             replacement_schemas_.push_back(std::move(owned));
             return result;
         }
-        if (!valid_definition(definition)) return nullptr;
+        if (!valid_definition(definition, budget_)) return nullptr;
         auto owned = std::make_unique<AnimationRuntimeDefinition>(definition);
         const AnimationRuntimeDefinition* result = owned.get();
         schemas_.emplace(asset, std::move(owned));
@@ -622,6 +658,7 @@ private:
         return schema.cadence == EvaluationCadence::Fixed ? &owner->fixed_current[handle.schema_index] : &owner->frame_controls[handle.schema_index];
     }
     AnimationStoreConfig config_;
+    AnimationBudgetConfig budget_;
     AnimationAssetStore assets_;
     std::map<const AnimAsset*, std::unique_ptr<const AnimationRuntimeDefinition>> schemas_;
     // Asset-keyed schema interning cannot discard an active sibling's

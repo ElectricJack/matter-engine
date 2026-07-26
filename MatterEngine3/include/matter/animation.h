@@ -63,8 +63,27 @@ struct Animator {
 
 struct DesiredRootMotion { AnimationTransform delta{}; bool valid = false; };
 struct AnimationMarkerEvent { AnimatorInstanceHandle instance{}; uint32_t marker_index = UINT32_MAX; float time = 0.0f; };
-struct AnimationRuntimeStats { uint32_t active_instances = 0; uint32_t instance_capacity = 0; size_t mutable_bytes = 0; size_t mutable_budget_bytes = 0; };
-struct AnimationStoreConfig { uint32_t instance_capacity = 4096; size_t mutable_budget_bytes = 64u * 1024u * 1024u; };
+struct AnimationRuntimeStats {
+    uint32_t active_instances = 0;
+    uint32_t instance_capacity = 0;
+    size_t mutable_bytes = 0;
+    size_t mutable_budget_bytes = 0;
+    uint32_t asset_capacity = 0;
+    uint32_t max_joints_per_asset = 0;
+    uint32_t max_graph_nodes = 0;
+    uint32_t max_controller_nodes = 0;
+};
+// Zero means "use the centrally defined runtime default". This keeps the
+// public API free of internal budget types and prevents defaults/hard caps
+// from being copied into two headers.
+struct AnimationStoreConfig {
+    uint32_t instance_capacity = 0;
+    size_t mutable_budget_bytes = 0;
+    uint32_t asset_capacity = 0;
+    uint32_t max_joints_per_asset = 0;
+    uint32_t max_graph_nodes = 0;
+    uint32_t max_controller_nodes = 0;
+};
 
 namespace animation {
 struct AnimAsset;

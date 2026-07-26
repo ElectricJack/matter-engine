@@ -71,6 +71,15 @@ bool valid(const AnimationEvaluationDefinition& d) {
     }
     return controller_count<=AnimationBudgetConfig::kHardMaxControllerNodes && d.nodes.back().kind==RuntimeGraphNodeKind::Output;
 }
+bool within_budget(const AnimationEvaluationDefinition& d,
+                   const AnimationBudgetConfig& budget) {
+    if (!d.skeleton || d.skeleton->joint_count() > budget.max_joints_per_asset ||
+        d.nodes.size() > budget.max_graph_nodes) return false;
+    uint32_t controllers = 0;
+    for (const RuntimeGraphNode& node : d.nodes)
+        if (node.kind == RuntimeGraphNodeKind::NativeController) ++controllers;
+    return controllers <= budget.max_controller_nodes;
+}
 float clip_ratio(const RuntimeGraphClip& clip,float time) {
     if(clip.duration<=0) return 0;
     if(clip.loop) { time=std::fmod(time,clip.duration); if(time<0) time+=clip.duration; }
@@ -252,6 +261,14 @@ AnimationEvaluator::AnimationEvaluator(AnimationEvaluationBudget budget) : budge
 }
 AnimationEvaluator::~AnimationEvaluator() = default;
 
+bool AnimationEvaluator::set_budget_config(const AnimationBudgetConfig& config) {
+    if (!config.valid() || !states_.empty()) return false;
+    budget_.limits = config;
+    budget_.graph_nodes = config.max_graph_nodes;
+    budget_.controller_nodes = config.max_controller_nodes;
+    return true;
+}
+
 bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> requests) {
     std::stable_sort(requests.begin(),requests.end(),[](const auto&a,const auto&b){ if(a.visibility_class!=b.visibility_class)return a.visibility_class<b.visibility_class; if(a.explicit_priority!=b.explicit_priority)return a.explicit_priority>b.explicit_priority; return a.instance.slot_index<b.instance.slot_index; });
     const auto shape_for=[](const AnimationEvaluationRequest& request) { return State::DefinitionShape{request.definition,request.definition->skeleton,uint32_t(request.definition->skeleton->joint_count())}; };
@@ -260,21 +277,22 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
     std::set<uint64_t> conflicting_instances;
     bool all=true;
     for(const auto& request:requests) {
-        if(!request.instance.valid() || !request.enabled || !request.definition || !valid(*request.definition)) { all=false; stats_.record_fallback(AnimationFallbackReason::AssetLimit); continue; }
+        if(!request.instance.valid() || !request.enabled || !request.definition || !valid(*request.definition) || !within_budget(*request.definition,budget_.limits)) { all=false; continue; }
         const uint64_t instance_key=key(request.instance); const State::DefinitionShape shape=shape_for(request);
         const auto [it,inserted]=batch_shapes.emplace(instance_key,shape);
         if(!inserted && !same_shape(it->second,shape)) conflicting_instances.insert(instance_key);
     }
     uint32_t graph_used=0, controller_used=0;
     for(const auto& request:requests) {
-        if(!request.instance.valid() || !request.enabled || !request.definition || !valid(*request.definition)) { all=false; stats_.record_fallback(AnimationFallbackReason::AssetLimit); continue; }
+        if(!request.instance.valid() || !request.enabled || !request.definition) { all=false; stats_.record_fallback(AnimationFallbackReason::InvalidEvaluationRequest); continue; }
+        if(!valid(*request.definition) || !within_budget(*request.definition,budget_.limits)) { all=false; stats_.record_fallback(AnimationFallbackReason::AssetLimit); continue; }
         const uint64_t instance_key=key(request.instance);
-        if(conflicting_instances.count(instance_key)!=0) { all=false; stats_.record_fallback(AnimationFallbackReason::AssetLimit); continue; }
+        if(conflicting_instances.count(instance_key)!=0) { all=false; stats_.record_fallback(AnimationFallbackReason::InvalidEvaluationRequest); continue; }
         uint32_t graph_count=0, controller_count=0; for(const auto& n:request.definition->nodes) { ++graph_count; if(n.kind==RuntimeGraphNodeKind::NativeController) ++controller_count; }
         if(graph_count>budget_.graph_nodes-graph_used || controller_count>budget_.controller_nodes-controller_used) { all=false; stats_.record_fallback(AnimationFallbackReason::EvaluationBudget); continue; }
         graph_used+=graph_count; controller_used+=controller_count;
         const auto state_it=states_.find(instance_key); State::DefinitionShape shape=shape_for(request);
-        if(state_it!=states_.end() && !same_shape(state_it->second->shape,shape)) { all=false; stats_.record_fallback(AnimationFallbackReason::AssetLimit); continue; }
+        if(state_it!=states_.end() && !same_shape(state_it->second->shape,shape)) { all=false; stats_.record_fallback(AnimationFallbackReason::InvalidEvaluationRequest); continue; }
         if(state_it==states_.end() && states_.size()>=budget_.limits.max_runtime_instances) { all=false; stats_.record_fallback(AnimationFallbackReason::RuntimeInstanceLimit); continue; }
         std::unique_ptr<State> candidate_state;
         State* state_ptr=nullptr;
@@ -328,7 +346,7 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
             else if(node.kind==RuntimeGraphNodeKind::NativeController) { if(node.dependencies.size()!=1) complete=false; else { out=results[node.dependencies[0]]; root_deltas[i]=root_deltas[node.dependencies[0]]; } }
             else complete=false;
         }
-        if(!complete || results.back().size()!=def.skeleton->joint_count()) { all=false; stats_.record_fallback(AnimationFallbackReason::EvaluationBudget); continue; }
+        if(!complete || results.back().size()!=def.skeleton->joint_count()) { all=false; stats_.record_fallback(AnimationFallbackReason::EvaluationFailure); continue; }
         const uint8_t back_slot=state.has_snapshot?uint8_t(1u-state.front_slot):state.front_slot;
         State::PoseBuffer& back=state.pose[back_slot];
         back.local=std::move(results.back());
@@ -342,11 +360,11 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
         // the evaluated track; root motion never consumes scale.
         if(request.root_lock) {
             AnimationTransform root_reference{};
-            if(!def.skeleton->rest_local(0,root_reference)) { all=false; stats_.record_fallback(AnimationFallbackReason::EvaluationBudget); continue; }
+            if(!def.skeleton->rest_local(0,root_reference)) { all=false; stats_.record_fallback(AnimationFallbackReason::EvaluationFailure); continue; }
             back.local[0].translation=root_reference.translation;
             back.local[0].rotation=root_reference.rotation;
         }
-        std::vector<Mat4f> model; if(!local_to_model(*def.skeleton,back.local,model)) { all=false; stats_.record_fallback(AnimationFallbackReason::EvaluationBudget); continue; }
+        std::vector<Mat4f> model; if(!local_to_model(*def.skeleton,back.local,model)) { all=false; stats_.record_fallback(AnimationFallbackReason::EvaluationFailure); continue; }
         back.previous_model=state.has_snapshot?state.pose[state.front_slot].model:model;
         back.model=std::move(model); back.palette.resize(back.model.size()); back.previous_palette.resize(back.previous_model.size());
         for(size_t i=0;i<back.model.size();++i) { back.palette[i]=multiply(back.model[i],def.inverse_bind_model[i]); back.previous_palette[i]=multiply(back.previous_model[i],def.inverse_bind_model[i]); }

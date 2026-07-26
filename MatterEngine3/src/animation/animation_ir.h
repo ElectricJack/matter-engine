@@ -1,4 +1,5 @@
 #pragma once
+#include "animation/animation_budget.h"
 
 #include "matter/animation_types.h"
 
@@ -10,10 +11,10 @@ namespace matter::animation {
 
 using JointIndex = uint16_t;
 constexpr JointIndex kInvalidJoint = UINT16_MAX;
-constexpr uint32_t kMaxJoints = 256;
+constexpr uint32_t kMaxJoints = AnimationBudgetConfig::kHardMaxJointsPerAsset;
 constexpr uint32_t kMaxTargets = 64;
-constexpr uint32_t kMaxGraphNodes = 128;
-constexpr uint32_t kMaxControllers = 128;
+constexpr uint32_t kMaxGraphNodes = AnimationBudgetConfig::kHardMaxGraphNodes;
+constexpr uint32_t kMaxControllers = AnimationBudgetConfig::kHardMaxControllerNodes;
 constexpr uint32_t kMaxSkinInfluences = 4;
 
 struct JointRange {

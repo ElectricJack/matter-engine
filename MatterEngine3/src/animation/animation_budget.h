@@ -18,6 +18,8 @@ enum class AnimationFallbackReason : uint8_t {
     SkinWorkBudget,
     SkinVertexBudget,
     InvalidSkinSubmission,
+    InvalidEvaluationRequest,
+    EvaluationFailure,
     Count
 };
 
@@ -49,7 +51,7 @@ struct AnimationBudgetConfig {
     static constexpr size_t kHardMaxMutableBytes = 64u * 1024u * 1024u;
 
     uint32_t max_assets = 1024;
-    uint32_t max_runtime_instances = 1024;
+    uint32_t max_runtime_instances = 4096;
     uint32_t max_joints_per_asset = 128;
     uint32_t max_graph_nodes = 128;
     uint32_t max_controller_nodes = 128;
@@ -75,10 +77,16 @@ struct AnimationBudgetRuntimeStats {
     uint64_t evaluated_joint_count = 0;
     uint64_t submitted_skin_work_items = 0;
     uint64_t submitted_skinned_vertices = 0;
+    uint64_t evaluated_presentation_pose_count = 0;
+    uint64_t frozen_pose_count = 0;
+    uint64_t resampled_pose_count = 0;
+    uint64_t last_complete_fallback_count = 0;
+    uint64_t bind_pose_fallback_count = 0;
     uint64_t fallback_count = 0;
     std::array<uint64_t, static_cast<size_t>(AnimationFallbackReason::Count)> fallbacks{};
 
     void record_fallback(AnimationFallbackReason reason) noexcept;
+    void merge(const AnimationBudgetRuntimeStats& other) noexcept;
 };
 
 struct PoseLodRequest {
@@ -108,9 +116,13 @@ public:
 private:
     struct State {
         AnimationPoseLodTier tier = AnimationPoseLodTier::Frozen;
+        AnimationPoseLodTier post_grace_tier = AnimationPoseLodTier::Frozen;
         bool visible = false;
+        bool has_post_grace_tier = false;
         uint8_t visible_grace_frames = 0;
         double next_due_seconds = 0.0;
+        uint64_t last_frame_serial = UINT64_MAX;
+        PoseLodDecision last_decision{};
     };
 
     AnimationPoseLodTier select_tier(AnimationPoseLodTier previous,

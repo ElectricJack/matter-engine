@@ -190,6 +190,7 @@ public:
     // are internal; direct register_fixed_work remains a narrow test/tool seam.
     bool refresh_service_binding(const AnimationRuntimeBindingLease& lease);
     void detach_service_binding(AnimatorInstanceHandle instance);
+    bool set_budget_config(const AnimationBudgetConfig& config);
     void attach_service(AnimationService* service) noexcept { service_ = service; }
     bool has_service(const AnimationService* service) const noexcept { return service_ == service; }
     bool capture_service_checkpoint(AnimatorCheckpoint& checkpoint) const;

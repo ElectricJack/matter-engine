@@ -28,6 +28,21 @@ void AnimationBudgetRuntimeStats::record_fallback(AnimationFallbackReason reason
     ++fallbacks[static_cast<size_t>(reason)];
 }
 
+void AnimationBudgetRuntimeStats::merge(
+    const AnimationBudgetRuntimeStats& other) noexcept {
+    evaluated_pose_count += other.evaluated_pose_count;
+    evaluated_joint_count += other.evaluated_joint_count;
+    submitted_skin_work_items += other.submitted_skin_work_items;
+    submitted_skinned_vertices += other.submitted_skinned_vertices;
+    evaluated_presentation_pose_count += other.evaluated_presentation_pose_count;
+    frozen_pose_count += other.frozen_pose_count;
+    resampled_pose_count += other.resampled_pose_count;
+    last_complete_fallback_count += other.last_complete_fallback_count;
+    bind_pose_fallback_count += other.bind_pose_fallback_count;
+    fallback_count += other.fallback_count;
+    for (size_t i = 0; i < fallbacks.size(); ++i) fallbacks[i] += other.fallbacks[i];
+}
+
 PoseLodScheduler::PoseLodScheduler(AnimationBudgetConfig config)
     : config_(config.valid() ? config : AnimationBudgetConfig{}) {}
 
@@ -72,11 +87,14 @@ PoseLodDecision PoseLodScheduler::schedule(const PoseLodRequest& request) {
     if (request.instance_key == 0 || !std::isfinite(request.presentation_seconds) ||
         request.presentation_seconds < 0.0) return result;
     State& state = states_[request.instance_key];
+    if (state.last_frame_serial == request.frame_serial) return state.last_decision;
+    state.last_frame_serial = request.frame_serial;
     if (!request.visible) {
         state.visible = false;
         state.visible_grace_frames = 0;
         state.tier = AnimationPoseLodTier::Frozen;
         state.next_due_seconds = request.presentation_seconds;
+        state.last_decision = result;
         return result;
     }
     const bool became_visible = !state.visible;
@@ -86,8 +104,12 @@ PoseLodDecision PoseLodScheduler::schedule(const PoseLodRequest& request) {
         state.tier = AnimationPoseLodTier::Hz60;
         state.next_due_seconds = request.presentation_seconds;
     }
-    const AnimationPoseLodTier selected = state.visible_grace_frames > 0
-        ? AnimationPoseLodTier::Hz60 : select_tier(state.tier, request.distance);
+    AnimationPoseLodTier selected = AnimationPoseLodTier::Hz60;
+    if (state.visible_grace_frames == 0) {
+        selected = state.has_post_grace_tier
+            ? state.post_grace_tier : select_tier(state.tier, request.distance);
+        state.has_post_grace_tier = false;
+    }
     result.resample_current_graph_time = static_cast<uint8_t>(selected) < static_cast<uint8_t>(state.tier);
     state.tier = selected;
     result.tier = selected;
@@ -101,8 +123,10 @@ PoseLodDecision PoseLodScheduler::schedule(const PoseLodRequest& request) {
         // The forced 60 Hz grace is not an actual distance-band decision.
         // Seed the next frame from the raw bands so a newly visible far item
         // does not inherit 60 Hz hysteresis indefinitely.
-        state.tier = select_tier(AnimationPoseLodTier::Frozen, request.distance);
+        state.post_grace_tier = select_tier(AnimationPoseLodTier::Frozen, request.distance);
+        state.has_post_grace_tier = true;
     }
+    state.last_decision = result;
     return result;
 }
 

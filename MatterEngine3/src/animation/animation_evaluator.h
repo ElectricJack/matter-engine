@@ -223,6 +223,9 @@ class AnimationEvaluator {
 public:
     explicit AnimationEvaluator(AnimationEvaluationBudget budget = {});
     ~AnimationEvaluator();
+    // Budget configuration is immutable once evaluator state exists. This
+    // keeps a service from silently invalidating already-published poses.
+    bool set_budget_config(const AnimationBudgetConfig& config);
 
     // Publishes only complete poses.  It returns false for invalid or
     // over-budget work; an already completed snapshot remains visible.

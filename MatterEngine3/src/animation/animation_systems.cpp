@@ -281,6 +281,12 @@ void AnimationSystems::remove_fixed_work(AnimatorInstanceHandle instance) { if (
 std::vector<AnimationMarkerEvent> AnimationSystems::take_marker_events() { std::vector<AnimationMarkerEvent> result; result.swap(marker_events_); return result; }
 std::vector<DesiredRootMotion> AnimationSystems::take_consumed_root_motion() { std::vector<DesiredRootMotion> result; result.swap(consumed_root_motion_); return result; }
 
+bool AnimationSystems::set_budget_config(const AnimationBudgetConfig& config) {
+    if (!config.valid() || !service_bindings_.empty()) return false;
+    if (!evaluator_.set_budget_config(config)) return false;
+    return presentation_evaluator_.set_budget_config(config);
+}
+
 bool AnimationSystems::refresh_service_binding(const AnimationRuntimeBindingLease& lease) {
     if (!lease.valid() || !lease.descriptor || !lease.descriptor->evaluation) return false;
     const AnimationRuntimeBindingDescriptor& descriptor = *lease.descriptor;
