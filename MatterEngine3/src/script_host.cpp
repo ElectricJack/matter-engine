@@ -11,6 +11,7 @@ extern "C" {
 #include "animation/anim_bundle.h"
 #include "animation/animation_binding_bake.h"
 #include "animation/animation_runtime_asset.h"
+#include "animation/ozz_adapter.h"
 #include "render/indexed_part_geometry.h"
 #include "triangle_emit.hpp" // direct-triangle (mesh) session buffer
 #include "dsl_state.h"
@@ -57,16 +58,72 @@ uint64_t part_body_checksum(const std::filesystem::path& path) {
 }
 bool make_animation_asset(const dsl::DslState& state, uint64_t hash, matter::animation::BuildNonce nonce,
                           const BLASManager& blas, matter::animation::AnimAsset& asset,
-                          matter::animation::BindingBake& binding) {
+                          matter::animation::BindingBake& binding,
+                          matter::animation::Diagnostics& diagnostics) {
     const auto* authored = state.authored_animation(); const auto& canonical = state.canonical_animation();
-    if (!authored || !canonical || authored->ozz_skeleton_blob.empty()) return false;
+    if (!authored || !canonical) {
+        diagnostics.add("runtime-asset-rig", {}, "animation runtime asset requires a canonical rig");
+        return false;
+    }
+    // A rig-only binding may have no authored clips or motion graph. Materialize
+    // the runtime-only rest pose in a local copy so the persisted asset remains
+    // decoder-compatible without mutating the DSL-authored state.
+    matter::animation::AnimationBuild runtime_authored = *authored;
+    if (runtime_authored.ozz_skeleton_blob.empty()) {
+        matter::animation::OzzSkeleton skeleton;
+        if (!matter::animation::build_skeleton(runtime_authored.rig, skeleton, diagnostics)) return false;
+        if (!matter::animation::serialize_skeleton(skeleton, runtime_authored.ozz_skeleton_blob)) {
+            diagnostics.add("runtime-asset-skeleton", runtime_authored.rig.source,
+                            "animation skeleton could not be serialized");
+            return false;
+        }
+    }
+    if (runtime_authored.clips.empty()) {
+        matter::animation::ClipDefinition rest;
+        rest.name = "__bind_rest";
+        rest.duration = 1.0f;
+        rest.rate = 1.0f;
+        rest.loop = true;
+        rest.source = runtime_authored.rig.source;
+        matter::animation::OzzAnimation rest_animation;
+        if (!matter::animation::build_clip(runtime_authored.rig, rest, rest_animation,
+                                            diagnostics) ||
+            !matter::animation::serialize_animation(rest_animation, rest.ozz_blob)) {
+            if (diagnostics.items.empty())
+                diagnostics.add("runtime-asset-rest-clip", rest.source,
+                                "bind-rest animation clip could not be serialized");
+            return false;
+        }
+        runtime_authored.clips.push_back(std::move(rest));
+    }
+    if (runtime_authored.graph.nodes.empty()) {
+        matter::animation::GraphNode clip;
+        clip.name = "__bind_rest_clip";
+        clip.kind = matter::animation::GraphNodeKind::Clip;
+        clip.clip = runtime_authored.clips.front().name;
+        clip.source = runtime_authored.rig.source;
+        matter::animation::GraphNode output;
+        output.name = "__bind_rest_output";
+        output.dependencies = {clip.name};
+        output.is_output = true;
+        output.kind = matter::animation::GraphNodeKind::Output;
+        output.source = runtime_authored.rig.source;
+        runtime_authored.graph.nodes.push_back(std::move(clip));
+        runtime_authored.graph.nodes.push_back(std::move(output));
+    }
+    matter::animation::CanonicalAnimationBuild runtime_canonical;
+    if (!matter::animation::validate_and_canonicalize_animation_build(
+            runtime_authored, runtime_canonical, diagnostics)) return false;
     asset = {}; asset.resolved_hash=hash; asset.nonce=nonce;
     asset.target_abi_tag=matter::animation::kAnimationTargetAbiTag; asset.ozz_tag_hash=matter::animation::kAnimationOzzTagHash;
-    matter::animation::Diagnostics runtime_diagnostics;
     if (!matter::animation::encode_animation_runtime_sections(
-            *authored, *canonical, asset, runtime_diagnostics)) return false;
+            runtime_authored, runtime_canonical, asset, diagnostics)) return false;
     std::vector<Tri> tris; std::vector<TriEx> ex; for(const auto& e:blas.get_entries()){tris.insert(tris.end(),e->triangles.begin(),e->triangles.end()); ex.insert(ex.end(),e->tri_extra.begin(),e->tri_extra.end());}
-    if(tris.empty()) return false; std::vector<viewer::IndexedPartGeometry> lods{viewer::build_indexed_part_geometry(tris.data(),ex.size()==tris.size()?ex.data():nullptr,(int)tris.size())};
+    if(tris.empty()) {
+        diagnostics.add("runtime-asset-geometry", {}, "animation runtime asset requires baked geometry");
+        return false;
+    }
+    std::vector<viewer::IndexedPartGeometry> lods{viewer::build_indexed_part_geometry(tris.data(),ex.size()==tris.size()?ex.data():nullptr,(int)tris.size())};
     std::vector<matter::animation::JointIndex> selected; float falloff=1.0f;
     for(const auto& skin:authored->skin_bindings) { falloff=skin.falloff; for(const auto& name:skin.joints) for(size_t i=0;i<canonical->rig.joints.size();++i) if(canonical->rig.joints[i].name==name) selected.push_back((matter::animation::JointIndex)i); }
     if(selected.empty() && canonical->rig.joints.size()>1) selected.push_back(1);
@@ -1526,7 +1583,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             const auto anim_candidate = std::filesystem::path(matter::animation::cache_path_anim(root,r.resolved_hash).string() + "." + std::to_string(nonce.low) + ".candidate");
             matter::animation::AnimAsset asset; matter::animation::BindingBake binding;
             const part_asset::PartAnimationLink link{1,1,r.resolved_hash,nonce.high,nonce.low};
-            ok = make_animation_asset(state,r.resolved_hash,nonce,blas,asset,binding) &&
+            ok = make_animation_asset(state,r.resolved_hash,nonce,blas,asset,binding,diagnostics) &&
                  part_asset::save_v2(part_candidate.string(),blas,tlas,kids.empty()?nullptr:kids.data(),kids.size(),lods,emitters,link,r.resolved_hash) &&
                  matter::animation::save_anim_candidate(asset,anim_candidate,diagnostics);
             matter::animation::BundleIdentity identity; identity.resolved_hash=r.resolved_hash; identity.nonce=nonce;

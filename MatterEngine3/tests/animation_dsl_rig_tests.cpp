@@ -1,4 +1,6 @@
 #include "check.h"
+#include "animation/anim_asset.h"
+#include "animation/animation_runtime_asset.h"
 #include "dsl_state.h"
 #include "indexed_part_geometry.h"
 #include "part_asset_v2.h"
@@ -373,6 +375,77 @@ void test_binding_authoring_requires_owned_geometry_before_publish() {
           "generated skin retains its implicit geometry range without a bind callback");
 }
 
+void test_rig_only_binding_persists_a_runtime_bundle() {
+    const std::filesystem::path root = "animation_dsl_rig_only_bundle";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root / "parts", ec);
+
+    script_host::ScriptHost host;
+    script_host::BakeOptions opts;
+    opts.parts_dir = root.string();
+    const auto result = host.bake_source(
+        "class RigOnlyPart extends Part { build(p) { "
+        "this.beginRig('r');this.root('root');this.bone('arm',[1,0,0]);this.endRig();"
+        "this.skin('body',{joints:['arm'],generate:true,voxelSize:.25});"
+        "} }",
+        "{}", opts);
+    const std::string bake_message =
+        "rig-only generated skin persists a runtime animation bundle without a clip: " + result.error.message;
+    CHECK(result.error.ok, bake_message.c_str());
+    CHECK(!result.written_path.empty() && !result.written_anim_path.empty() &&
+          !result.written_commit_path.empty() &&
+          std::filesystem::exists(result.written_path) &&
+          std::filesystem::exists(result.written_anim_path) &&
+          std::filesystem::exists(result.written_commit_path),
+          "rig-only bundle publishes coherent Part, animation, and commit siblings");
+    matter::animation::AnimAsset asset;
+    matter::animation::Diagnostics diagnostics;
+    matter::animation::DecodedAnimationRuntimeAsset decoded;
+    CHECK(matter::animation::load_anim(result.written_anim_path, asset, diagnostics) &&
+              matter::animation::decode_animation_runtime_asset(asset, decoded, diagnostics),
+          "rig-only bundle decodes into a runtime-ready rest-pose definition");
+    CHECK(decoded.definition.binding &&
+              decoded.definition.binding->evaluation->clips.size() == 1 &&
+              decoded.definition.binding->evaluation->nodes.size() == 2,
+          "rig-only bundle materializes exactly one bind-rest clip and a Clip-to-Output graph");
+    std::filesystem::remove_all(root, ec);
+}
+
+void test_clip_without_motion_persists_a_runtime_bundle() {
+    const std::filesystem::path root = "animation_dsl_clip_only_bundle";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root / "parts", ec);
+
+    script_host::ScriptHost host;
+    script_host::BakeOptions opts;
+    opts.parts_dir = root.string();
+    const auto result = host.bake_source(
+        "class ClipOnlyPart extends Part { build(p) { "
+        "this.beginRig('r');this.root('root');this.bone('arm',[1,0,0]);this.endRig();"
+        "this.beginClip('idle',{duration:1,sampleRate:1});this.key('root',0,{});this.endClip();"
+        "this.skin('body',{joints:['arm'],generate:true,voxelSize:.25});"
+        "} }",
+        "{}", opts);
+    const std::string bake_message =
+        "clip-only generated skin persists a runtime animation bundle without motion: " +
+        result.error.message;
+    CHECK(result.error.ok, bake_message.c_str());
+    matter::animation::AnimAsset asset;
+    matter::animation::Diagnostics diagnostics;
+    matter::animation::DecodedAnimationRuntimeAsset decoded;
+    CHECK(!result.written_anim_path.empty() &&
+              matter::animation::load_anim(result.written_anim_path, asset, diagnostics) &&
+              matter::animation::decode_animation_runtime_asset(asset, decoded, diagnostics),
+          "clip-only bundle decodes into a runtime-ready definition");
+    CHECK(decoded.definition.binding &&
+              decoded.definition.binding->evaluation->clips.size() == 1 &&
+              decoded.definition.binding->evaluation->nodes.size() == 2,
+          "clip-only bundle retains its authored clip and synthesizes a Clip-to-Output graph");
+    std::filesystem::remove_all(root, ec);
+}
+
 void test_attachment_rejects_child_with_committed_animation_link() {
     const std::filesystem::path root = "animation_dsl_rig_attachment_cache";
     std::error_code ec;
@@ -459,6 +532,8 @@ int main() {
     test_scoped_skin_binding_captures_only_its_authored_ranges();
     test_scoped_skin_binding_rejects_structural_animation_authoring();
     test_binding_authoring_requires_owned_geometry_before_publish();
+    test_rig_only_binding_persists_a_runtime_bundle();
+    test_clip_without_motion_persists_a_runtime_bundle();
     test_attachment_rejects_child_with_committed_animation_link();
     test_mirrored_bound_geometry_reverses_winding_and_preserves_static_winding();
     if (g_failures) { std::printf("animation_dsl_rig_tests: %d failure(s)\n", g_failures); return 1; }
