@@ -164,6 +164,17 @@ Vulkan uploader holds its own `seen_content_revision_` and skips when equal.
 O(1), and per-consumer — a shared dirty *flag* is cleared by whoever services it
 first, silently starving a second uploader.
 
+**Status update: landed but still unused.** The real Vulkan uploader,
+`MatterEngine3/src/render/tileset_bake_vk.cpp` (`:325` `get_entries()`, `:409`
+`get_draw_records()`), does not call `content_revision()` at all — it rebuilds
+BLAS/TLAS geometry unconditionally on every bake. `content_revision()` is a
+sound mechanism and its accessors/doc comments are correct, but nothing reads
+them yet, so `tileset_torus_bvh.cpp`/`.h`'s "a Vulkan uploader consumes
+content_revision() instead" framing (pre-2026-07-26) overstated it as wired
+up; both comments were corrected to say plainly that it is not consulted
+today. Treat `content_revision()` as available-but-dormant, not as evidence
+an incremental upload path already exists.
+
 **Two GL-specific facts to carry forward**, currently recorded only as comments
 in code slated for deletion:
 1. `bind_to_shader` stages textures **every frame regardless of dirty state** —

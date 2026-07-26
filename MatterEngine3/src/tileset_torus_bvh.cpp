@@ -2,9 +2,13 @@
 //
 // CPU-only: builds BLAS/TLAS data structures ready for GPU upload. No upload
 // call is made here — the GL upload path (ensure_gpu_textures_ready/
-// bind_to_shader) was deleted outright in Phase 5a (tech-debt.md §6); a
-// Vulkan uploader consumes BLASManager::content_revision()/
-// TLASManager::content_revision() instead (see those headers' doc comments).
+// bind_to_shader) was deleted outright in Phase 5a (tech-debt.md §6). The
+// real Vulkan uploader (render/tileset_bake_vk.cpp) walks
+// BLASManager::get_entries()/TLASManager::get_draw_records() and rebuilds
+// unconditionally on every bake -- it does NOT consult content_revision().
+// content_revision() (see those headers' doc comments) is a sound,
+// landed incremental-rebuild signal, it is simply not wired up to any
+// consumer yet (tech-debt.md §6).
 
 #include "tileset_torus_bvh.h"
 
