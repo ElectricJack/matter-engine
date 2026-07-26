@@ -29,7 +29,7 @@
 #include "render/vk_scene_renderer.h"
 #include "provider/sector_resolver.h"
 #include "tileset_gtex.h"
-#include "../../MatterEditor/ui.h"
+#include "../../MatterEditor/src/ui.h"
 
 namespace {
 

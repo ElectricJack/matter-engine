@@ -1786,7 +1786,7 @@ int main() {
                 ui.draw_camera_panel(camera);
                 // draw_sector_streaming_panel retired in Phase 4 Task 12 — sector
                 // streaming editing now lives in the Properties panel via
-                // SpecializedEditors (MatterEditor/specialized_editors.h).
+                // SpecializedEditors (MatterEditor/src/specialized_editors.h).
                 {
                     const auto& vp = ui.viewport_rect();
                     ui.draw_gizmo(selection_set, field_commands, camera,

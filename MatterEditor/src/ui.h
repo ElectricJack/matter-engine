@@ -240,7 +240,7 @@ public:
                                  const matter::CameraDesc& camera);
     // draw_sector_streaming_panel retired in Phase 4 Task 12: sector streaming
     // editing now lives in the Properties panel via SpecializedEditors
-    // (see MatterEditor/specialized_editors.h). update_sector_streaming above
+    // (see MatterEditor/src/specialized_editors.h). update_sector_streaming above
     // (the per-frame anchor/follow logic) is unaffected and stays here.
     bool camera_input_allowed() const;
     void reset_scene_tree_cache();

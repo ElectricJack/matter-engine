@@ -309,5 +309,5 @@ make -C MatterEditor windows TMP=... TEMP=...
 | `MatterEngine3/tests/settle_bench.cpp` | new — headless benchmark CLI |
 | `MatterEngine3/tests/tileset_physics_tests.cpp` | step-vs-batch golden |
 | `MatterEngine3/tests/Makefile` | `settle_bench`, `run-settlebench` |
-| `MatterEditor/settle_lab.h/.cpp` | new — inspector controller + wireframe draw |
-| `MatterEditor/ui.cpp/.h`, `main.cpp` | Settle Lab panel + per-frame `tick_frame()` hook |
+| `MatterEditor/src/settle_lab.h/.cpp` | new — inspector controller + wireframe draw |
+| `MatterEditor/src/ui.cpp/.h`, `main.cpp` | Settle Lab panel + per-frame `tick_frame()` hook |

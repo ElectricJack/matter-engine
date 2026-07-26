@@ -2,7 +2,7 @@
 // component kinds that need more than generic property fields (part
 // instances, physics bodies, sector streaming). Logic-only layer: no ImGui
 // code, no rendering. The sector streaming editor here supersedes the
-// standalone sector streaming panel retired from MatterEditor/ui.cpp.
+// standalone sector streaming panel retired from MatterEditor/src/ui.cpp.
 #include "specialized_editors.h"
 
 namespace viewer {

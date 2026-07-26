@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$main = Get-Content -Raw (Join-Path $root 'MatterEditor\main.cpp')
-$ui = Get-Content -Raw (Join-Path $root 'MatterEditor\ui.cpp')
+$main = Get-Content -Raw (Join-Path $root 'MatterEditor\src\main.cpp')
+$ui = Get-Content -Raw (Join-Path $root 'MatterEditor\src\ui.cpp')
 $makefile = Get-Content -Raw (Join-Path $root 'MatterEditor\Makefile')
 $engine = Get-Content -Raw (Join-Path $root 'MatterEngine3\include\matter\engine_context.h')
 $world = Get-Content -Raw (Join-Path $root 'MatterEngine3\include\matter\world_session.h')

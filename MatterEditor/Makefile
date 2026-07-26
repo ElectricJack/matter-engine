@@ -132,7 +132,7 @@ endif
 # (mirroring glfw_vulkan_only_context.c), and link -lvulkan + X11/Wayland
 # instead of -lGL. Until then this Makefile has no Linux target at all --
 # `windows` is the only supported/verified build here (.DEFAULT_GOAL below).
-APP_SRC = main.cpp ui.cpp session_binding.cpp scene_model_adapter.cpp bake_lab.cpp bake_lab_timeline.cpp event_inspector.cpp asset_browser.cpp part_workbench.cpp lod_inspector.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp selection_bounds.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
+APP_SRC = src/main.cpp src/ui.cpp src/session_binding.cpp src/scene_model_adapter.cpp src/bake_lab.cpp src/bake_lab_timeline.cpp src/event_inspector.cpp src/asset_browser.cpp src/part_workbench.cpp src/lod_inspector.cpp src/camera_controller.cpp src/camera_focus.cpp src/streaming_anchor_controller.cpp src/selection_set.cpp src/editor_model.cpp src/scene_tree_panel.cpp src/selection_bounds.cpp src/viewport_pick.cpp src/selection_outline.cpp src/toolbar_panel.cpp src/console_panel.cpp src/console_log.cpp src/properties_registry.cpp src/properties_panel.cpp src/specialized_editors.cpp src/gizmo.cpp src/os_open.cpp
 
 # Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
 # These are ONLY used by the Windows target; the Linux target links libmatter_engine3.a.
@@ -262,7 +262,7 @@ QJS_NAMES = $(notdir $(QJS_C))
 PIPC_NAMES_WIN = $(notdir $(WIN_PIPELINE_C))
 FLECS_NAME = $(notdir $(FLECS_C))
 
-vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs \
+vpath %.cpp src $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs \
              $(ME3_DIR)/src/streaming $(ME3_DIR)/src/script $(ME3_DIR)/src/event \
              $(ME3_DIR)/src/scene \
              $(MSL_DIR)/src $(SQL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
@@ -415,7 +415,7 @@ $(W_OBJ_DIR)/glfw/%.o: $(GLFW_SRC_DIR)/%.c
 	$(WIN_CC) -c $< -o $@ -D_GLFW_WIN32 \
 	    -I../third_party/raylib/src/external/glfw/include
 
-$(W_OBJ_DIR)/glfw/glfw_vulkan_only_context.o: glfw_vulkan_only_context.c
+$(W_OBJ_DIR)/glfw/glfw_vulkan_only_context.o: src/glfw_vulkan_only_context.c
 	@mkdir -p $(dir $@)
 	$(WIN_CC) -c $< -o $@ -D_GLFW_WIN32 \
 	    -I$(GLFW_SRC_DIR) -I../third_party/raylib/src/external/glfw/include
@@ -476,8 +476,8 @@ $(VK_EMBEDDED_HEADER): $(VK_SPV) $(ME3_DIR)/tools/embed_spirv.py
 
 build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
-        ui.cpp ui.h streaming_anchor_controller.cpp \
-        streaming_anchor_controller.h $(IMGUI_SRC_WIN) \
+        src/ui.cpp src/ui.h src/streaming_anchor_controller.cpp \
+        src/streaming_anchor_controller.h $(IMGUI_SRC_WIN) \
         $(ME3_DIR)/include/matter/vulkan_device.h \
         $(ME3_DIR)/src/render/gpu_matrix_pack.h \
         $(ME3_DIR)/src/render/vk_draw_command.h \
@@ -509,8 +509,8 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/matrix_math.cpp \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ)
 	@mkdir -p $(dir $@)
-	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp ui.cpp \
-	    streaming_anchor_controller.cpp \
+	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp src/ui.cpp \
+	    src/streaming_anchor_controller.cpp \
 	    $(IMGUI_SRC_WIN) \
 	    $(ME3_DIR)/src/render/streamline_bridge.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
@@ -705,10 +705,10 @@ dist:
 	@echo "Launch $(DIST_BIN) from inside $(DIST_ROOT)/ (asset lookup is cwd-relative)."
 
 # SelectionSet headless test (no GL/raylib/imgui deps)
-build/test_selection_set.exe: tests/test_selection_set.cpp selection_set.cpp selection_set.h
+build/test_selection_set.exe: tests/test_selection_set.cpp src/selection_set.cpp src/selection_set.h
 	@mkdir -p $(dir $@)
-	$(WIN_CXX) tests/test_selection_set.cpp selection_set.cpp -o $@ \
-	    -std=c++17 -Wall -Wextra -I.
+	$(WIN_CXX) tests/test_selection_set.cpp src/selection_set.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Isrc
 
 .PHONY: run-test-selection-set
 run-test-selection-set: build/test_selection_set.exe
@@ -717,10 +717,10 @@ run-test-selection-set: build/test_selection_set.exe
 # ConsoleLog headless test: console_log.cpp holds the ImGui-free ring-buffer
 # logic (draw_console_contents, which needs ImGui, lives in console_panel.cpp
 # instead), so this links without any ImGui dependency.
-build/test_console_log.exe: tests/test_console_log.cpp console_log.cpp console_panel.h
+build/test_console_log.exe: tests/test_console_log.cpp src/console_log.cpp src/console_panel.h
 	@mkdir -p $(dir $@)
-	$(WIN_CXX) tests/test_console_log.cpp console_log.cpp -o $@ \
-	    -std=c++17 -Wall -Wextra -I. -lpthread
+	$(WIN_CXX) tests/test_console_log.cpp src/console_log.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Isrc -lpthread
 
 .PHONY: run-test-console-log
 run-test-console-log: build/test_console_log.exe

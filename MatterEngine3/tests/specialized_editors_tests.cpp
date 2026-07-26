@@ -1,7 +1,7 @@
 // Headless tests for viewer::SpecializedEditors (Phase 4 Task 12 —
 // specialized component editors + sector-panel retirement). Pure CPU logic:
 // no ImGui, no rendering. Run via `make run-specialized-editors`.
-#include "../../MatterEditor/specialized_editors.h"
+#include "../../MatterEditor/src/specialized_editors.h"
 
 #include "ecs/scene_registry.h"
 

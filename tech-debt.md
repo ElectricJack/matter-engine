@@ -144,7 +144,7 @@ Revisit only if conversions start appearing at layer boundaries.
 | `MatterEngine3/src/mat_math.h:46` `NormalMat` | 3×3 inverse-transpose for normals |
 | `terrain_mesher.cpp:12`, `mesh_charting.cpp:10`, `selection_outline.cpp:11` | POD structs, **zero** operations defined |
 
-Minor and real: `MatterEditor/viewport_pick.cpp:17` defines `Vec3` plus
+Minor and real: `MatterEditor/src/viewport_pick.cpp:17` defines `Vec3` plus
 `add`/`cross`/`normalize`/`scale`/`sub` with no precision or determinism reason.
 
 ---

@@ -110,7 +110,7 @@ Windows needs the special path only because Streamline must intercept surface cr
 So the choice is not "which platform do we sacrifice". It is **one renderer, two platforms, DLSS only where the SDK exists.**
 
 - [ ] Add a Linux Vulkan target that compiles `APP_SRC` (the Vulkan `main.cpp`, already free of raylib behaviour calls) with `-DMATTER_VULKAN_ONLY -DMATTER_VULKAN_VIEWER`, rather than `LINUX_APP_SRC`.
-- [ ] Build GLFW for Linux with Vulkan support — the Windows target already does a Vulkan-only GLFW via `MatterEditor/glfw_vulkan_only_context.c`; reuse that shape.
+- [ ] Build GLFW for Linux with Vulkan support — the Windows target already does a Vulkan-only GLFW via `MatterEditor/src/glfw_vulkan_only_context.c`; reuse that shape.
 - [ ] Link `-lvulkan` plus X11/Wayland instead of `-lGL`. `HAVE_STREAMLINE=0` on Linux: Streamline is a Windows-only SDK, so **no DLSS on Linux** — the one genuine capability loss, and it is contained behind an existing flag.
 - [ ] Expect real gaps in `vk_context`'s 20 gated lines: instance-extension selection (`VK_KHR_win32_surface` vs `VK_KHR_xlib_surface`/`wayland`), and validation-layer availability. The SPIR-V embedding step (`glslc` + `embed_spirv.py`) is already platform-neutral.
 - [ ] Once Linux runs on Vulkan, retire the GL path outright — `main_linux.cpp`, `ui_linux.cpp`, the GL BLAS/TLAS uploaders, `bvh_visualizer` — and remove raylib from `third_party/` entirely. raylib then leaves the repository rather than surviving as a one-target dependency.

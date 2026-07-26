@@ -65,7 +65,7 @@ Goal: every existing timing site emits structured spans; the worker's trace is r
 | # | Task | Size | Files | Gate |
 |---|---|---|---|---|
 | 2.1 | Bake Lab window shell: tabs Timeline · Part Lab · Settle · Variants (last three placeholder), registration beside `draw_debug_panel` (`ui.cpp:555`), per-frame `bake_lab.tick_frame()` hook in the main loop | S | `MatterEditor/bake_lab.{h,cpp}`, `ui.cpp/.h`, `main.cpp` | viewer builds/runs; empty panel opens |
-| 2.2 | Flamegraph widget: ImGui draw-list rects, zoom/pan, hover tooltip (span path + counters), click-to-pin; source selector (production `last_bake_trace` for now) | L | `MatterEditor/bake_lab_timeline.cpp` | manual: bake demo world → full pipeline flamegraph incl. separated tileset span |
+| 2.2 | Flamegraph widget: ImGui draw-list rects, zoom/pan, hover tooltip (span path + counters), click-to-pin; source selector (production `last_bake_trace` for now) | L | `MatterEditor/src/bake_lab_timeline.cpp` | manual: bake demo world → full pipeline flamegraph incl. separated tileset span |
 | 2.3 | Diff mode: pick runs A/B, match span paths, Δms/Δcounter columns with color scale, unmatched-span flags | M | same | manual: two bakes (warm vs cold) show sensible deltas |
 
 **Exit:** bake-lab.md §II.8 item 2 fully.

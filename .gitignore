@@ -99,7 +99,7 @@ imposters/
 # libs/MatterSurfaceLib/parts, MatterEngine3/tests/parts/, MatterEditor/cache,
 # MatterEngine3/parts, and a bare `parts` — several of which existed only
 # because of the relative-path bug that fix closes. `cache/` (no dot) is
-# still needed: Bake Lab's scratch directory (MatterEditor/part_workbench.cpp
+# still needed: Bake Lab's scratch directory (MatterEditor/src/part_workbench.cpp
 # scratch_root_ = "cache/lab-scratch") is intentionally relative/ephemeral
 # and out of this fix's scope.
 parts

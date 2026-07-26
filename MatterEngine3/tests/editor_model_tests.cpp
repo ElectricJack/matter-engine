@@ -2,7 +2,7 @@
 // selection, and hierarchy commands). Pure CPU logic, no Flecs/GL runtime
 // required: the model talks to a mock SceneCommands implementation. Run via
 // `make run-editor-model`.
-#include "../../MatterEditor/editor_model.h"
+#include "../../MatterEditor/src/editor_model.h"
 
 #include <cstdio>
 #include <string>

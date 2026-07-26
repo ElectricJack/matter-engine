@@ -451,11 +451,11 @@ DYNAMIC_BRIDGE_C      = $(FLECS_C)
 
 # Phase 4 Task 9 — Editor model (pure CPU, no GL/Vulkan/Flecs needed).
 EDITOR_MODEL_TARGET = build/editor_model_tests
-EDITOR_MODEL_CPP    = editor_model_tests.cpp ../../MatterEditor/editor_model.cpp
+EDITOR_MODEL_CPP    = editor_model_tests.cpp ../../MatterEditor/src/editor_model.cpp
 
 # Phase 4 Task 10 — Properties registry (needs scene_registry for ComponentDescriptor).
 PROPERTIES_REGISTRY_TARGET = build/properties_registry_tests
-PROPERTIES_REGISTRY_CPP    = properties_registry_tests.cpp ../../MatterEditor/properties_registry.cpp \
+PROPERTIES_REGISTRY_CPP    = properties_registry_tests.cpp ../../MatterEditor/src/properties_registry.cpp \
                              ../src/ecs/scene_registry.cpp \
                              ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                              ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
@@ -478,8 +478,8 @@ SIMULATION_CONTROL_C      = $(FLECS_C)
 # Phase 4 Task 12 — Specialized editors (pure CPU, no Flecs/GL).
 SPECIALIZED_EDITORS_TARGET = build/specialized_editors_tests
 SPECIALIZED_EDITORS_CPP    = specialized_editors_tests.cpp \
-                             ../../MatterEditor/specialized_editors.cpp \
-                             ../../MatterEditor/properties_registry.cpp \
+                             ../../MatterEditor/src/specialized_editors.cpp \
+                             ../../MatterEditor/src/properties_registry.cpp \
                              ../src/ecs/scene_registry.cpp
 SPECIALIZED_EDITORS_C      = $(FLECS_C)
 
@@ -770,8 +770,8 @@ VIEWER_PIPELINE_CPP = $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 # (:261) does not dedupe, so listing it in both places causes ld to see the
 # same object twice -> "multiple definition of matter::load_world_definition".
 VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
-              ../../MatterEditor/camera_controller.cpp \
-              ../../MatterEditor/streaming_anchor_controller.cpp \
+              ../../MatterEditor/src/camera_controller.cpp \
+              ../../MatterEditor/src/streaming_anchor_controller.cpp \
               ../src/async_bake.cpp \
               ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
               ../src/render/world_state.cpp \

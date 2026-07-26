@@ -204,7 +204,7 @@ Collector* current();
 
 **Worker-trace retrieval:** `WorldSession::Impl` owns a `Collector`; `execute_bake` resets it and sets it current. New facade accessor `WorldSession::last_bake_trace(bake_trace::Span& out) const` (snapshot; valid after `BakeFinished`). `Event` is unchanged — `BakeFinished` is the "trace ready" signal.
 
-### II.2 Timeline panel — `MatterEditor/bake_lab_timeline.cpp`
+### II.2 Timeline panel — `MatterEditor/src/bake_lab_timeline.cpp`
 
 - Flamegraph rendered with ImGui draw-list rects (same technique as any ImGui profiler widget): x = time, rows = depth, zoom/pan, hover tooltip = full span path + counters, click = pin details.
 - Source selector: production session's last trace (`last_bake_trace`) or any Lab job's collector.
@@ -289,5 +289,5 @@ public:
 | `MatterEngine3/src/lod_bake.cpp`, `part_flatten.cpp`, `tileset_bake.cpp` | phase spans + counters; `lod_bake`/`part_flatten` additionally grow optional-targets parameters (default = today's values) for Lab ladder-config overrides |
 | `MatterEngine3/include/matter/world_session.h` | `last_bake_trace` accessor |
 | `MatterEngine3/tests/bake_trace_tests.cpp`, `tests/Makefile` | new tests + `run-baketrace` |
-| `MatterEditor/bake_lab.{h,cpp}`, `bake_lab_timeline.cpp`, `bake_lab_variants.cpp` | new — shell, job runner, timeline, variants |
-| `MatterEditor/ui.cpp/.h`, `main.cpp` | Bake Lab window + per-frame hook |
+| `MatterEditor/src/bake_lab.{h,cpp}`, `bake_lab_timeline.cpp`, `bake_lab_variants.cpp` | new — shell, job runner, timeline, variants |
+| `MatterEditor/src/ui.cpp/.h`, `main.cpp` | Bake Lab window + per-frame hook |

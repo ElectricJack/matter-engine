@@ -15,8 +15,8 @@
 #include "part_asset_v2.h"
 #include "part_flatten.h"  // Task 11: flatten_part for regen sniff test
 #include "world_lights.h"
-#include "../../MatterEditor/camera_controller.h"
-#include "../../MatterEditor/streaming_anchor_controller.h"
+#include "../../MatterEditor/src/camera_controller.h"
+#include "../../MatterEditor/src/streaming_anchor_controller.h"
 #include "matter/ecs.h"
 
 #include <cmath>

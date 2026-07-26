@@ -18,7 +18,7 @@ The engine has at least six unrelated signaling mechanisms, and producers are di
 1. **The bake `Event` queue** — `include/matter/events.h:11-42`, a mutex-guarded `std::deque<Event>` capped at 4096 with *silent* drop-oldest (`matter_engine.cpp:338-343`, `676-678`), fed by ~40 `emit_event` call sites on the bake worker and GL thread, drained by the app thread via `WorldSession::poll_event` (`matter_engine.cpp:4638`). The `EventType` enum is becoming a dumping ground: `RefineTileDone` was bolted on for streaming progress (`events.h:17`), and the `Event` struct grows append-only fields (`phase`, `tile_tx/tz`) that most events ignore.
 2. **`BakeObserver`** — `include/matter/bake_observer.h`, a virtual-callback seam added for the Part Workbench's live bake watch (W3). Fires on the bake worker *or* GL thread, null-checked at every site, Lab-only. A second, incompatible idiom for the same job the event queue does.
 3. **Hand-rolled queues** — the mutex+deque+poll shape appears four times: the `Event` queue above, `GpuJobQueue` and `CommandQueue` (`src/async_bake.h:28-73`), and `FileWatcher::poll` (`src/file_watcher.h:24-33`). `GpuJobQueue` is the most mature cross-thread transport (worker→GL posting, time-budgeted `pump`, `run_blocking` latch, cancel tokens, shutdown draining) — and none of that maturity is shared with the other three.
-4. **Polled flags** — the crudest idiom, used for viewer-internal requests: `ViewerStats::reload_requested` / `world_switch_requested` (`MatterEditor/ui.h:73,102`), the `WorkbenchHandoff` struct (`ui.h:51`), `focus_workbench_tab_` (`bake_lab.h:68`). "Set a bool, someone polls it next frame" — no fan-out, no trace, ownership by comment convention (`// panel sets; main clears after handling`).
+4. **Polled flags** — the crudest idiom, used for viewer-internal requests: `ViewerStats::reload_requested` / `world_switch_requested` (`MatterEditor/src/ui.h:73,102`), the `WorkbenchHandoff` struct (`ui.h:51`), `focus_workbench_tab_` (`bake_lab.h:68`). "Set a bool, someone polls it next frame" — no fan-out, no trace, ownership by comment convention (`// panel sets; main clears after handling`).
 5. **flecs observers** — the ECS already uses a real event system for structural changes: `world.observer<T>().event(flecs::OnAdd/OnSet/OnRemove)` in `physics_systems.cpp:20-57`, `transform_system.cpp:400-422`, `streaming_systems.cpp:159-168`. Synchronous, ECS-tick-thread, entity-scoped — good at what it does, unusable for cross-thread engine plumbing or non-entity state.
 6. **Notification sink interfaces** — `BridgeErrorSink` (`src/ecs/dynamic_scene_bridge.h:31-33`, two `std::function`s) and live-edit `ErrorSink` (`src/live_edit_interfaces.h:58-62`, a virtual). Each is a bespoke one-consumer contract for what is semantically a fan-out notification ("an error happened; whoever cares should hear about it").
 
@@ -422,7 +422,7 @@ Every existing mechanism, its bucket, and its destination. "Compat shim" means t
 
 The app creates and owns its hub explicitly. `WorldSession` owns the session hub and exposes `evt::Hub& events()` / `const evt::Hub& events() const` from the public event interface; `SessionBinding` and the inspector never reach into `WorldSession::Impl`. The accessor's reference is valid only until session close/replacement, and app-side owners must quiesce their bridge subscription set before releasing that reference.
 
-**Grounded in the session lifecycle:** a world **switch** *recreates* the session — `auto next = open_world(...); session = std::move(next)` (`MatterEditor/main.cpp:2004,2009`), destroying the old one — while a **reload** reuses it in place (`session->reload()`, `main.cpp:1998`). So switch kills a session, and a per-session hub is the right lifetime unit: the close protocol stops/joins session emitters, closes the hub (cancelling queued envelopes and waiting for in-flight callbacks), and only then destroys session state. A single global hub would instead require manually scrubbing every subscription/queued-event/trace-record tagged to the dead session on every switch *and* every workbench open/close — the exact cleanup this design exists to centralize.
+**Grounded in the session lifecycle:** a world **switch** *recreates* the session — `auto next = open_world(...); session = std::move(next)` (`MatterEditor/src/main.cpp:2004,2009`), destroying the old one — while a **reload** reuses it in place (`session->reload()`, `main.cpp:1998`). So switch kills a session, and a per-session hub is the right lifetime unit: the close protocol stops/joins session emitters, closes the hub (cancelling queued envelopes and waiting for in-flight callbacks), and only then destroys session state. A single global hub would instead require manually scrubbing every subscription/queued-event/trace-record tagged to the dead session on every switch *and* every workbench open/close — the exact cleanup this design exists to centralize.
 
 **The rebind cost is real but bounded to one place.** Because switch recreates the session, anything app-side holding the old session pointer dangles *regardless of topology* — command handlers that mutate the world, view-model adapters, selection referencing a now-gone entity. A rebind step is therefore unavoidable in any design; per-session hubs don't add it, they just also cleanly kill the session-side half. That step is **`SessionBinding`**, living at the `complete_world_switch`/`open_world` seam. On session replace it:
 
@@ -443,7 +443,7 @@ The **isolation session** (Part Workbench) gets its own hub too, and there the r
 
 The scene tree is the canonical case the topology is shaped around: a permanent editor panel whose entire content belongs to a session that is destroyed on every world switch. The editor already builds two-thirds of the target shape.
 
-**Today** (`MatterEditor/editor_model.h`, `editor_model.cpp:26`, `main.cpp:989,1488`):
+**Today** (`MatterEditor/src/editor_model.h`, `editor_model.cpp:26`, `main.cpp:989,1488`):
 
 - `EditorModel` holds the flattened `HierarchyRow` list — an app-scoped view-model that survives world switches; the panel reads `editor.rows()`.
 - `SceneCommands` is a struct of injected `std::function`s (`query_records`, `generation`, `create_empty`/`duplicate`/`delete_entity`/`reparent`) — a bridge decoupling the model from the session's ECS.
@@ -525,12 +525,12 @@ Events tab in the Bake Lab shell (registry/trace/timeline views with a hub selec
 | `MatterEngine3/src/async_bake.{h,cpp}` | E2 | `GpuJobQueue`/`CommandQueue` on `Channel`; APIs source-compatible |
 | `MatterEngine3/include/matter/world_session.h`, `src/matter_engine.cpp` | E3 | session hub + public accessor; typed emits; dedicated legacy-poll lane/shim; close ordering |
 | `MatterEngine3/src/live_edit*`, `src/ecs/dynamic_scene_bridge.*` | E3 | error sinks → `error.*` events via adapters |
-| `MatterEditor/event_inspector.{h,cpp}`, `bake_lab.*` | E4 | new — Events tab (registry/trace/timeline) |
+| `MatterEditor/src/event_inspector.{h,cpp}`, `bake_lab.*` | E4 | new — Events tab (registry/trace/timeline) |
 | `MatterEngine3/include/matter/event/command.h`, `src/event/command.cpp` | E4 | registry; typed execute/ticketed dispatch; scope epochs; result finalization |
-| `MatterEditor/session_binding.{h,cpp}`, `main.cpp`, `ui.{h,cpp}`, `asset_browser.*` | E4 | app hub ownership; epoch-safe session replacement; flags/handoff → commands; frame-loop pump |
+| `MatterEditor/src/session_binding.{h,cpp}`, `main.cpp`, `ui.{h,cpp}`, `asset_browser.*` | E4 | app hub ownership; epoch-safe session replacement; flags/handoff → commands; frame-loop pump |
 | `MatterEngine3/include/matter/event/property.h`, `src/event/property.cpp` | E5 | new — scheduler-backed observable properties |
 | `MatterEngine3/src/scene/{scene_service,scene_change_tracker}.{h,cpp}` | E5 | supported scene mutations; canonical sequenced row deltas and snapshot recovery |
-| `MatterEditor/editor_model.*`, `scene_tree_panel.*` | E5 | observable row collection; incremental adapter; full snapshot only on bind/gap |
+| `MatterEditor/src/editor_model.*`, `scene_tree_panel.*` | E5 | observable row collection; incremental adapter; full snapshot only on bind/gap |
 | `MatterEngine3/src/ecs/physics_context.cpp`, `ecs_runtime.cpp` | E6 | `PhysicsEvents` → flecs entity events in pull stage |
 
 ### II.3 Resolved decisions

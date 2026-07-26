@@ -135,7 +135,7 @@ class Tree extends Part {
 
 ### W1 — Asset Browser (read-only tier)
 
-- New `MatterEditor/asset_browser.{h,cpp}`, drawn in the Assets tab. Data model: `AssetProject { path, worlds[], objects[], shared[] }` built by scanning the known project roots (reuse the Worlds panel's project enumeration); refresh button + lazy rescan on tab focus.
+- New `MatterEditor/src/asset_browser.{h,cpp}`, drawn in the Assets tab. Data model: `AssetProject { path, worlds[], objects[], shared[] }` built by scanning the known project roots (reuse the Worlds panel's project enumeration); refresh button + lazy rescan on tab focus.
 - Kind classification: read the class declaration line (`extends Part|World|...`); tileset detection per the existing loader's rules.
 - Baked annotation: per object, `resolve_hash(source, "{}")` via a workbench-owned `ScriptHost` (shared-lib roots configured like the viewer session), then stat the cache artifact; read LOD count/sizes from the artifact header (`part_asset` load of header only — add a lightweight header-peek if full load is the only option today).
 - Requires tree via `eval_requires` on expand (cached per source hash).
@@ -144,7 +144,7 @@ class Tree extends Part {
 
 ### W2 — Isolation scene + Bake button
 
-- `MatterEditor/part_workbench.{h,cpp}`: owns the private `matter::WorldSession` (scratch `cache_root` under the Lab scratch dir), generates the synthetic world source in memory, loads on part selection, frames the camera from `part_bounds`.
+- `MatterEditor/src/part_workbench.{h,cpp}`: owns the private `matter::WorldSession` (scratch `cache_root` under the Lab scratch dir), generates the synthetic world source in memory, loads on part selection, frames the camera from `part_bounds`.
 - Renders into the Workbench tab via an offscreen target or a second viewport region — follow whatever the viewer's render path makes cheapest; if the session/render architecture resists two live sessions, fall back to *switching* the main viewport to the isolation world (modal isolation) and record the limitation. Decide in a short spike before committing to either.
 - Bake button: clear the part's subtree from the scratch cache, `request_bake()` on the private session, pump/poll like main.cpp does. Timeline tab gains the private session as a second trace source (the source-vector design from task 2.2 anticipated this).
 - Params & Variations panel (§I.4): typed editor grid from canonical merged defaults (`last_merged_params` after `resolve_hash`), diff-from-default marking, seed dice; pinned-variations list backed by the workbench manifest (JSON under the Lab scratch dir: per part, pinned param sets + all baked param-set hashes); variation switch = re-resolve hash → cache-hit load or stale badge.
@@ -159,7 +159,7 @@ class Tree extends Part {
 
 ### W4 — LOD Inspector (inspection tier)
 
-- `MatterEditor/lod_inspector.{h,cpp}` in the Workbench tab: the levels × contents grid from artifact data (`LodLevels`, clusters, children — via the private session's queries; add a facade query if PartStore data isn't reachable cleanly, mirroring `instance_info`).
+- `MatterEditor/src/lod_inspector.{h,cpp}` in the Workbench tab: the levels × contents grid from artifact data (`LodLevels`, clusters, children — via the private session's queries; add a facade query if PartStore data isn't reachable cleanly, mirroring `instance_info`).
 - Debug **LOD-override render option**: a per-session render option forcing LOD k (plumb through the session's existing render options struct; renderer-side selection override). Per-module instance visibility filter similarly as a debug render mask.
 - 👁 toggles wired to those options; no authoring yet.
 - **Gate:** force each LOD up close for the tree; hide Leaf instances; production render paths untouched when options unset.

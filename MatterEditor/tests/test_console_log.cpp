@@ -1,7 +1,7 @@
 // Headless unit test for ConsoleLog (ring buffer wrap, severity/text
 // filtering, clear, thread safety). Does not exercise draw_console_contents
 // (which needs a live ImGui frame) — only the ImGui-free ConsoleLog logic.
-#include "../console_panel.h"
+#include "../src/console_panel.h"
 
 #include <cassert>
 #include <cstdio>

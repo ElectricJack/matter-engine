@@ -3,7 +3,7 @@
 #include <cmath>
 
 #define GLFW_INCLUDE_NONE
-#include "../third_party/raylib/src/external/glfw/include/GLFW/glfw3.h"
+#include "../../third_party/raylib/src/external/glfw/include/GLFW/glfw3.h"
 
 namespace viewer {
 namespace {
