@@ -52,6 +52,11 @@ struct LoadedPart {
     std::vector<float>      thresholds;      // per-LOD screen-size thresholds
     std::vector<part_asset::ChildInstance> children;   // baked child-instance table (may be empty)
     std::vector<RasterMeshData> lod_mesh_data;  // parallel to lod_blas (CPU-only; GL upload is lazy)
+    // Immutable owner streams from a partitioned animation artifact.  The
+    // root keeps only skin data above; rigid streams are materialized as
+    // independent dynamic subparts without ever rejoining the root mesh.
+    std::vector<std::vector<RasterMeshData>> rigid_lod_mesh_data;
+    std::vector<float> rigid_lod_thresholds;
     std::vector<LoadedCluster>  clusters;        // non-empty iff a v3 flat was loaded
     std::vector<ExpandedNode>   expansion;       // precomputed flattened drawable nodes (Task 4)
     // Task 7: LOD-instanced-children

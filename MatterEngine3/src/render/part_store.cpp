@@ -235,21 +235,31 @@ bool PartStore::build_rigid_segment_subparts(
     out_hashes.clear();
     const auto source_it = loaded_.find(source_part_hash);
     if (source_part_hash == 0 || source_it == loaded_.end() ||
-        source_it->second.lod_mesh_data.empty() || binding.rigid_segments.empty())
+        binding.rigid_segments.empty())
         return false;
+    const bool exact_partition =
+        source_it->second.rigid_lod_mesh_data.size() == binding.rigid_segments.size() &&
+        !source_it->second.rigid_lod_thresholds.empty();
+    if (!exact_partition && source_it->second.lod_mesh_data.empty()) return false;
 
     // LOD0 is the complete indexed source stream.  The authored direct-triangle
     // ranges refer to that stream before the independent subpart LOD ladders are
     // rebuilt, so later decimation cannot change binding ownership.
-    const RasterMeshData& source_mesh = source_it->second.lod_mesh_data.front();
+    const RasterMeshData* source_mesh = exact_partition ? nullptr :
+        &source_it->second.lod_mesh_data.front();
     std::vector<RasterMeshData> slices;
     slices.reserve(binding.rigid_segments.size());
     std::vector<uint64_t> hashes;
     hashes.reserve(binding.rigid_segments.size());
     for (size_t index = 0; index != binding.rigid_segments.size(); ++index) {
         RasterMeshData slice;
-        if (!slice_rigid_segment_mesh(source_mesh, binding.rigid_segments[index].geometry, slice))
+        if (exact_partition) {
+            if (source_it->second.rigid_lod_mesh_data[index].empty() ||
+                !valid_indexed_mesh(source_it->second.rigid_lod_mesh_data[index].front())) return false;
+            slice = source_it->second.rigid_lod_mesh_data[index].front();
+        } else if (!slice_rigid_segment_mesh(*source_mesh, binding.rigid_segments[index].geometry, slice)) {
             return false;
+        }
         const uint64_t hash = rigid_subpart_hash(source_part_hash,
                                                   static_cast<uint32_t>(index), slice);
         if (hash == source_part_hash ||
@@ -290,30 +300,45 @@ bool PartStore::build_rigid_segment_subparts(
         mesh_to_triangles(slices[index], triangles, extras);
         LoadedPart subpart;
         subpart.bound_radius = subpart_bound_radius(slices[index]);
-        const lod_bake::LodLevels lods = lod_bake::bake_lods(
-            triangles, lod_bake::BakeTargets{}, blas_, &extras);
-        for (const auto& lod : lods) {
-            if (lod.blas_indices.size() != 1 || lod.blas_indices[0] >= blas_.get_entries().size()) {
-                rollback();
-                return false;
+        if (exact_partition) {
+            const auto& meshes = source_it->second.rigid_lod_mesh_data[index];
+            if (meshes.size() != source_it->second.rigid_lod_thresholds.size()) {
+                rollback(); return false;
             }
-            const BLASHandle handle = blas_.get_entries()[lod.blas_indices[0]]->handle;
-            const auto* entry = blas_.get_entry(handle);
-            if (!entry) {
-                rollback();
-                return false;
+            for (size_t level = 0; level != meshes.size(); ++level) {
+                if (!valid_indexed_mesh(meshes[level])) { rollback(); return false; }
+                std::vector<Tri> exact_triangles;
+                std::vector<TriEx> exact_extras;
+                mesh_to_triangles(meshes[level], exact_triangles, exact_extras);
+                const BLASHandle handle = blas_.register_triangles(
+                    exact_triangles.data(), static_cast<int>(exact_triangles.size()),
+                    exact_extras.empty() ? nullptr : exact_extras.data());
+                subpart.thresholds.push_back(source_it->second.rigid_lod_thresholds[level]);
+                subpart.lod_blas.push_back(handle);
+                subpart.owned_blas.push_back(handle);
+                subpart.lod_mesh_data.push_back(meshes[level]);
             }
-            subpart.thresholds.push_back(lod.screen_size_threshold);
-            subpart.lod_blas.push_back(handle);
-            subpart.owned_blas.push_back(handle);
-            if (subpart.lod_mesh_data.empty()) {
-                // Preserve every source channel in the authoritative full LOD.
-                subpart.lod_mesh_data.push_back(slices[index]);
-            } else {
-                const TriEx* extra = entry->tri_extra.size() == entry->triangles.size() &&
-                                     !entry->tri_extra.empty() ? entry->tri_extra.data() : nullptr;
-                subpart.lod_mesh_data.push_back(build_raster_mesh_data(
-                    entry->triangles.data(), extra, static_cast<int>(entry->triangles.size())));
+        } else {
+            const lod_bake::LodLevels lods = lod_bake::bake_lods(
+                triangles, lod_bake::BakeTargets{}, blas_, &extras);
+            for (const auto& lod : lods) {
+                if (lod.blas_indices.size() != 1 || lod.blas_indices[0] >= blas_.get_entries().size()) {
+                    rollback(); return false;
+                }
+                const BLASHandle handle = blas_.get_entries()[lod.blas_indices[0]]->handle;
+                const auto* entry = blas_.get_entry(handle);
+                if (!entry) { rollback(); return false; }
+                subpart.thresholds.push_back(lod.screen_size_threshold);
+                subpart.lod_blas.push_back(handle);
+                subpart.owned_blas.push_back(handle);
+                if (subpart.lod_mesh_data.empty()) {
+                    subpart.lod_mesh_data.push_back(slices[index]);
+                } else {
+                    const TriEx* extra = entry->tri_extra.size() == entry->triangles.size() &&
+                                         !entry->tri_extra.empty() ? entry->tri_extra.data() : nullptr;
+                    subpart.lod_mesh_data.push_back(build_raster_mesh_data(
+                        entry->triangles.data(), extra, static_cast<int>(entry->triangles.size())));
+                }
             }
         }
         if (subpart.lod_blas.empty()) {
@@ -774,6 +799,99 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     // same resolved hash after a transient corrupt/torn cache observation.
     const matter::animation::AnimAsset* animation_asset = animation_link
         ? animation_assets_.insert(std::move(loaded_animation)) : nullptr;
+
+    // Animated artifacts carry finalized, owner-separated LOD streams.  Do
+    // not concatenate and re-bake them here: that would reintroduce rigid
+    // triangles into the skinned root and destroy the bake-time ownership
+    // contract.  Instead materialize the skin stream as the root and retain
+    // every rigid stream for `build_rigid_segment_subparts` below.
+    matter::animation::BindingBake partition;
+    const bool has_partition = animation_asset &&
+        matter::animation::get_anim_binding_bake(*animation_asset, partition) &&
+        (!partition.lods.empty() || !partition.rigid_segments.empty()) && !lods_in.empty();
+    if (has_partition) {
+        const size_t level_count = !partition.lods.empty()
+            ? partition.lods.size()
+            : partition.rigid_segments.front().lod_geometry.size();
+        auto reject_partition = [&]() -> const LoadedPart* {
+            std::printf("PartStore: invalid partitioned animation geometry for %016llx\n",
+                        static_cast<unsigned long long>(part_hash));
+            return nullptr;
+        };
+        if (level_count == 0 || lods_in.size() != level_count ||
+            (!partition.lods.empty() && partition.lods.size() != level_count))
+            return reject_partition();
+        for (const auto& segment : partition.rigid_segments)
+            if (segment.lod_geometry.size() != level_count) return reject_partition();
+
+        LoadedPart partitioned;
+        partitioned.children = std::move(children);
+        partitioned.animation_asset = animation_asset;
+        partitioned.rigid_lod_mesh_data.resize(partition.rigid_segments.size());
+        partitioned.rigid_lod_thresholds.reserve(level_count);
+        float mn[3] = {std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity()};
+        float mx[3] = {-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()};
+        const auto include_mesh = [&](const RasterMeshData& mesh) {
+            for (int vertex = 0; vertex != mesh.vertex_count; ++vertex) {
+                for (int axis = 0; axis != 3; ++axis) {
+                    const float value = mesh.vertices[static_cast<size_t>(vertex) * 3 + axis];
+                    mn[axis] = std::fmin(mn[axis], value); mx[axis] = std::fmax(mx[axis], value);
+                }
+            }
+        };
+        const auto source_mesh = [&](size_t level, uint32_t slot, RasterMeshData& out) {
+            if (level >= lods_in.size() || slot >= lods_in[level].blas_indices.size()) return false;
+            const uint32_t index = lods_in[level].blas_indices[slot];
+            const auto& entries = scratch->get_entries();
+            if (index >= entries.size() || !entries[index] || entries[index]->triangles.empty()) return false;
+            const auto& entry = entries[index];
+            const TriEx* extra = entry->tri_extra.size() == entry->triangles.size() && !entry->tri_extra.empty()
+                ? entry->tri_extra.data() : nullptr;
+            out = build_raster_mesh_data(entry->triangles.data(), extra,
+                                         static_cast<int>(entry->triangles.size()));
+            return valid_indexed_mesh(out);
+        };
+        for (size_t level = 0; level != level_count; ++level) {
+            partitioned.rigid_lod_thresholds.push_back(lods_in[level].screen_size_threshold);
+            if (!partition.lods.empty()) {
+                const auto& skin = partition.lods[level];
+                RasterMeshData mesh;
+                if (!source_mesh(level, skin.blas_slot, mesh) ||
+                    skin.vertex_count != static_cast<uint32_t>(mesh.vertex_count) ||
+                    skin.indexed_vertex_signature != indexed_part_geometry_signature(mesh, static_cast<uint32_t>(level)))
+                    return reject_partition();
+                std::vector<Tri> triangles;
+                std::vector<TriEx> extras;
+                mesh_to_triangles(mesh, triangles, extras);
+                const BLASHandle handle = blas_.register_triangles(
+                    triangles.data(), static_cast<int>(triangles.size()),
+                    extras.empty() ? nullptr : extras.data());
+                partitioned.thresholds.push_back(lods_in[level].screen_size_threshold);
+                partitioned.lod_blas.push_back(handle);
+                partitioned.owned_blas.push_back(handle);
+                partitioned.lod_mesh_data.push_back(std::move(mesh));
+                include_mesh(partitioned.lod_mesh_data.back());
+            }
+            for (size_t segment = 0; segment != partition.rigid_segments.size(); ++segment) {
+                const auto& ownership = partition.rigid_segments[segment].lod_geometry[level];
+                RasterMeshData mesh;
+                if (!source_mesh(level, ownership.blas_slot, mesh) ||
+                    mesh.indices.size() / 3 != ownership.triangle_count)
+                    return reject_partition();
+                include_mesh(mesh);
+                partitioned.rigid_lod_mesh_data[segment].push_back(std::move(mesh));
+            }
+        }
+        if (std::isfinite(mn[0])) {
+            const float dx = mx[0] - mn[0], dy = mx[1] - mn[1], dz = mx[2] - mn[2];
+            partitioned.bound_radius = 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
+        }
+        auto inserted = loaded_.emplace(part_hash, std::move(partitioned));
+        std::vector<ExpandedNode> exp;
+        build_expansion(part_hash, [this](uint64_t h){ return get_or_load(h); }, exp);
+        inserted.first->second.expansion = std::move(exp);
+        return &inserted.first->second;
+    }
 
     // Gather full-res triangles (and their parallel per-triangle TriEx, which
     // carries the baked materialId/tint/normals) for lod_bake. Without the TriEx
