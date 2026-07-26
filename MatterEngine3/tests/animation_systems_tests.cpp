@@ -167,12 +167,36 @@ void test_pose_snapshot_store_owns_double_buffered_frame_serials() {
           "latest snapshot is keyed by animator handle and carries its frame serial");
 }
 
+void test_detach_releases_generation_qualified_root_motion() {
+    animation::AnimationSystems systems;
+    const AnimatorInstanceHandle removed = handle(19, 3);
+    DesiredRootMotion old_motion{};
+    old_motion.valid = true;
+    old_motion.delta.translation.x = 4.0f;
+    CHECK(systems.publish_desired_root_motion(removed, old_motion, 9),
+          "service-bound root motion is stored before removal");
+    systems.detach_service_binding(removed);
+    DesiredRootMotion consumed{};
+    CHECK(!systems.consume_desired_root_motion(removed, 9, consumed),
+          "detach releases the removed generation's root-motion reservation");
+
+    const AnimatorInstanceHandle replacement = handle(19, 4);
+    DesiredRootMotion replacement_motion{};
+    replacement_motion.valid = true;
+    replacement_motion.delta.translation.x = 7.0f;
+    CHECK(systems.publish_desired_root_motion(replacement, replacement_motion, 9) &&
+              systems.consume_desired_root_motion(replacement, 9, consumed) &&
+              consumed.delta.translation.x == 7.0f,
+          "recreated slots receive only their own root motion after removal");
+}
+
 } // namespace
 
 int main() {
     test_tick_result_reports_presentation_interpolation_alpha();
     test_explicit_animation_schedule_and_presentation_alpha();
     test_pose_snapshot_store_owns_double_buffered_frame_serials();
+    test_detach_releases_generation_qualified_root_motion();
     if (g_failures) {
         std::printf("animation_systems_tests: %d failure(s)\n", g_failures);
         return 1;

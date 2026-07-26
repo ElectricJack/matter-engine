@@ -548,6 +548,7 @@ bool AnimationSystems::copy_animation_debug_pose(AnimatorInstanceHandle instance
 
 void AnimationSystems::detach_service_binding(AnimatorInstanceHandle instance) {
     if (!instance.valid()) return;
+    desired_root_motion_.erase(animator_key(instance));
     remove_fixed_work(instance);
     pose_snapshots_.forget(instance);
     last_complete_presentation_pose_snapshots_.forget(instance);
