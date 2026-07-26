@@ -13,6 +13,7 @@
 #include "ecs/ecs_runtime.h"
 #include "script_host.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -125,6 +126,187 @@ void print_checkpoint_difference(const char* label, const AnimatorCheckpoint& ex
 std::string read_text(const fs::path& path) {
     std::ifstream input(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+std::vector<uint8_t> read_bytes(const fs::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+void put_u64(std::vector<uint8_t>& bytes, size_t offset, uint64_t value) {
+    for (size_t i = 0; i != 8; ++i) bytes[offset + i] = static_cast<uint8_t>(value >> (8u * i));
+}
+
+uint64_t fnv_range(const std::vector<uint8_t>& bytes, size_t begin, size_t end) {
+    return bytes_hash(bytes.data() + begin, end - begin);
+}
+
+struct GalleryBundleSnapshot {
+    uint64_t resolved_hash = 0;
+    AnimAsset asset;
+    BindingBake binding;
+    fs::path part_path;
+    fs::path anim_path;
+    fs::path commit_path;
+    std::vector<uint8_t> raw_part;
+    std::vector<uint8_t> raw_anim;
+    std::vector<uint8_t> raw_commit;
+    std::vector<uint8_t> semantic_part;
+    std::vector<uint8_t> semantic_anim;
+    std::vector<uint8_t> semantic_commit;
+    uint64_t part_body_checksum = 0;
+};
+
+GalleryBundleSnapshot bake_gallery_snapshot(const fs::path& sandbox) {
+    const fs::path objects = fs::absolute("../examples/world_demo/objects");
+    const fs::path shared_lib = fs::absolute("../shared-lib");
+    std::error_code error;
+    fs::remove_all(sandbox, error);
+    error.clear();
+    fs::create_directories(sandbox / "parts", error);
+    CHECK(!error, "Phase B creates an independent gallery bake sandbox");
+    const fs::path previous = fs::current_path(error);
+    fs::current_path(sandbox, error);
+    CHECK(!error, "Phase B enters an independent gallery bake sandbox");
+
+    script_host::ScriptHost host;
+    host.set_shared_lib_root(shared_lib.string());
+    script_host::BakeOptions options;
+    options.parts_dir = ".";
+    const auto crate = host.bake_source(read_text(objects / "Crate.js"), "{}", options);
+    CHECK(crate.error.ok, "Phase B independently bakes the real gallery dependency");
+    const uint64_t hashes[] = {crate.resolved_hash};
+    const std::string modules[] = {"Crate"};
+    const auto gallery = host.bake_source(read_text(objects / "AnimatedRigGallery.js"), "{}", options,
+                                          hashes, 1, modules);
+    CHECK(gallery.error.ok && !gallery.written_path.empty() && !gallery.written_anim_path.empty() &&
+              !gallery.written_commit_path.empty(),
+          "Phase B independently bakes a complete real gallery transaction");
+
+    GalleryBundleSnapshot snapshot;
+    snapshot.resolved_hash = gallery.resolved_hash;
+    snapshot.part_path = fs::absolute(gallery.written_path);
+    snapshot.anim_path = fs::absolute(gallery.written_anim_path);
+    snapshot.commit_path = fs::absolute(gallery.written_commit_path);
+    BLASManager blas;
+    Diagnostics diagnostics;
+    CHECK(load_committed_animation_bundle(".", snapshot.resolved_hash, blas, snapshot.asset, diagnostics),
+          "Phase B independently reloads the real committed gallery");
+    CHECK(get_anim_binding_bake(snapshot.asset, snapshot.binding),
+          "Phase B independently decodes the real gallery binding signatures");
+    snapshot.raw_part = read_bytes(snapshot.part_path);
+    snapshot.raw_anim = read_bytes(snapshot.anim_path);
+    snapshot.raw_commit = read_bytes(snapshot.commit_path);
+    CHECK(snapshot.raw_part.size() >= 76 && snapshot.raw_anim.size() >= 68 &&
+              snapshot.raw_commit.size() >= 84,
+          "Phase B real gallery transaction files have complete versioned envelopes");
+    snapshot.part_body_checksum = fnv_range(snapshot.raw_part, 40, snapshot.raw_part.size());
+
+    snapshot.semantic_part = snapshot.raw_part;
+    std::fill(snapshot.semantic_part.end() - 16, snapshot.semantic_part.end(), uint8_t{0});
+    const uint64_t semantic_part_checksum =
+        fnv_range(snapshot.semantic_part, 40, snapshot.semantic_part.size());
+    put_u64(snapshot.semantic_part, 32, semantic_part_checksum);
+
+    snapshot.semantic_anim = snapshot.raw_anim;
+    std::fill(snapshot.semantic_anim.begin() + 24, snapshot.semantic_anim.begin() + 40, uint8_t{0});
+    std::fill(snapshot.semantic_anim.begin() + 60, snapshot.semantic_anim.begin() + 68, uint8_t{0});
+    put_u64(snapshot.semantic_anim, 60,
+            fnv_range(snapshot.semantic_anim, 0, snapshot.semantic_anim.size()));
+
+    snapshot.semantic_commit = snapshot.raw_commit;
+    std::fill(snapshot.semantic_commit.begin() + 16, snapshot.semantic_commit.begin() + 32,
+              uint8_t{0});
+    put_u64(snapshot.semantic_commit, 32, semantic_part_checksum);
+    put_u64(snapshot.semantic_commit, snapshot.semantic_commit.size() - 8,
+            fnv_range(snapshot.semantic_commit, 0, snapshot.semantic_commit.size() - 8));
+
+    fs::current_path(previous, error);
+    CHECK(!error, "Phase B restores the caller directory after an independent bake");
+    return snapshot;
+}
+
+void test_real_gallery_transaction_is_reproducible_and_recovers_last_good() {
+    const fs::path root = fs::temp_directory_path() / "me3_phase_b_gallery_transaction";
+    const GalleryBundleSnapshot first = bake_gallery_snapshot(root / "first");
+    const GalleryBundleSnapshot second = bake_gallery_snapshot(root / "second");
+
+    CHECK(first.resolved_hash == second.resolved_hash,
+          "Phase B independent real gallery bakes preserve the resolved identifier");
+    CHECK(first.semantic_part == second.semantic_part,
+          "Phase B independent real gallery PART payload, checksum, and link signature are exact modulo nonce");
+    CHECK(first.semantic_anim == second.semantic_anim,
+          "Phase B independent real gallery MANM payload, checksum, ABI, and identifiers are exact modulo nonce");
+    CHECK(first.semantic_commit == second.semantic_commit,
+          "Phase B independent real gallery commit identities and signatures are exact modulo nonce");
+    CHECK(anim_body_checksum(first.asset) == anim_body_checksum(second.asset) &&
+              manifest_lod_signatures(first.binding) == manifest_lod_signatures(second.binding),
+          "Phase B independent real gallery semantic payload and LOD binding signatures are exact");
+    AnimAsset normalized_first = first.asset;
+    AnimAsset normalized_second = second.asset;
+    normalized_first.nonce = {};
+    normalized_second.nonce = {};
+    CHECK(normalized_first == normalized_second,
+          "Phase B independent real gallery decoded assets differ by no semantic field");
+
+    const fs::path recovery = root / "recovery";
+    std::error_code error;
+    fs::create_directories(recovery / "parts", error);
+    CHECK(!error, "Phase B creates the real-gallery recovery cache");
+    const fs::path committed_part =
+        recovery / part_asset::cache_path_resolved(first.resolved_hash);
+    const fs::path committed_anim = cache_path_anim(recovery, first.resolved_hash);
+    const fs::path committed_commit = cache_path_anim_commit(recovery, first.resolved_hash);
+    fs::copy_file(first.part_path, committed_part, fs::copy_options::overwrite_existing, error);
+    CHECK(!error, "Phase B seeds the last-good real gallery PART");
+    error.clear();
+    fs::copy_file(first.anim_path, committed_anim, fs::copy_options::overwrite_existing, error);
+    CHECK(!error, "Phase B seeds the last-good real gallery MANM");
+    error.clear();
+    fs::copy_file(first.commit_path, committed_commit, fs::copy_options::overwrite_existing, error);
+    CHECK(!error, "Phase B seeds the last-good real gallery commit");
+
+    BLASManager live_blas;
+    AnimAsset live_asset;
+    Diagnostics diagnostics;
+    CHECK(load_committed_animation_bundle(recovery, first.resolved_hash, live_blas,
+                                          live_asset, diagnostics),
+          "Phase B loads the real gallery as the last-good live transaction");
+    const size_t last_good_blas_count = live_blas.live_count();
+    const AnimAsset last_good_asset = live_asset;
+    BundleIdentity identity;
+    identity.resolved_hash = second.resolved_hash;
+    identity.nonce = second.asset.nonce;
+    identity.part_body_checksum = second.part_body_checksum;
+    identity.anim_body_checksum = anim_body_checksum(second.asset);
+    identity.target_abi_tag = second.asset.target_abi_tag;
+    identity.ozz_tag_hash = second.asset.ozz_tag_hash;
+    identity.lods = manifest_lod_signatures(second.binding);
+    for (uint32_t stage = 1; stage <= 3; ++stage) {
+        const fs::path candidate_part = recovery / ("gallery-" + std::to_string(stage) + ".part");
+        const fs::path candidate_anim = recovery / ("gallery-" + std::to_string(stage) + ".anim");
+        error.clear();
+        fs::copy_file(second.part_path, candidate_part, fs::copy_options::overwrite_existing, error);
+        CHECK(!error, "Phase B prepares a real gallery PART publication candidate");
+        error.clear();
+        fs::copy_file(second.anim_path, candidate_anim, fs::copy_options::overwrite_existing, error);
+        CHECK(!error, "Phase B prepares a real gallery MANM publication candidate");
+        diagnostics.items.clear();
+        CHECK(!publish_animation_bundle({candidate_part, candidate_anim, recovery, stage},
+                                        identity, diagnostics),
+              "Phase B injected interruption rejects the real gallery publication");
+        diagnostics.items.clear();
+        CHECK(load_committed_animation_bundle(recovery, first.resolved_hash, live_blas,
+                                              live_asset, diagnostics),
+              "Phase B reloads the last-good real gallery after interruption");
+        CHECK(live_blas.live_count() == last_good_blas_count && live_asset == last_good_asset,
+              "Phase B interrupted real gallery publication preserves live geometry and animation state");
+        CHECK(read_bytes(committed_part) == first.raw_part &&
+                  read_bytes(committed_anim) == first.raw_anim &&
+                  read_bytes(committed_commit) == first.raw_commit,
+              "Phase B interrupted real gallery publication preserves the exact last-good transaction");
+    }
+    fs::remove_all(root, error);
 }
 
 struct GalleryFixture {
@@ -398,6 +580,7 @@ void test_10000_tick_authored_replay_is_exact_under_two_render_patterns() {
 } // namespace
 
 int main() {
+    test_real_gallery_transaction_is_reproducible_and_recovers_last_good();
     test_10000_tick_authored_replay_is_exact_under_two_render_patterns();
     if (g_failures) return 1;
     std::puts("animation_phase_b_acceptance_tests: all tests passed");
