@@ -127,10 +127,22 @@ ANIMATION_BUDGET_TARGET = animation_budget_tests
 ANIMATION_BUDGET_CPP = animation_budget_tests.cpp ../src/animation/animation_budget.cpp
 
 ANIMATION_SYSTEMS_TARGET = animation_systems_tests
-ANIMATION_SYSTEMS_CPP = animation_systems_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+ANIMATION_SYSTEMS_CPP = animation_systems_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_bounds.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 
 ANIMATION_SIMULATION_TARGET = animation_simulation_tests
 ANIMATION_SIMULATION_CPP = animation_simulation_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/simulation_control.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/dynamic_scene_bridge.cpp ../src/render/animation_rigid_bridge.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_skinning.cpp ../src/render/vk_animation_bounds.cpp ../src/render/dynamic_instance_slots.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+
+# C4 headless acceptance owns both ends of the actual production contract:
+# ScriptHost bakes/reloads AnimatedRigGallery, then Runtime and the rigid/skin
+# bridges consume that immutable data.  Keep this closure explicit so a missing
+# handoff TU fails the target rather than being hidden by an unrelated suite.
+ANIMATION_C4_ACCEPTANCE_TARGET = animation_phase_c_acceptance_tests
+ANIMATION_C4_ACCEPTANCE_CPP = $(sort animation_phase_c_acceptance_tests.cpp \
+                              $(filter-out script_host_tests.cpp,$(SCRIPT_CPP)) \
+                              ../src/animation/anim_bundle.cpp \
+                              $(filter-out animation_simulation_tests.cpp,$(ANIMATION_SIMULATION_CPP)))
+ANIMATION_C4_ACCEPTANCE_C = $(COMMON_MSL_C)
+ANIMATION_C4_ACCEPTANCE_FLECS_C = $(FLECS_C)
 
 ANIMATION_CONTROLLER_TARGET = animation_controller_tests
 ANIMATION_CONTROLLER_CPP = animation_controller_tests.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
@@ -966,6 +978,7 @@ sh_CPP_SRCS := $(sort \
     $(SECTORBAKE_CPP) \
     $(FOLDCACHE_CPP) \
     $(GRAPH_INT_CPP) \
+    $(ANIMATION_C4_ACCEPTANCE_CPP) \
     $(EXAMPLE_CPP) \
     $(GALLERY_CPP) \
     $(TREEBAKE_CPP) \
@@ -1051,6 +1064,7 @@ ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C))
 PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C))
 ANIMATION_SYSTEMS_OBJS = $(call obj_list,def,$(ANIMATION_SYSTEMS_CPP)) $(call obj_list,flecsc,$(FLECS_C))
 ANIMATION_SIMULATION_OBJS = $(call obj_list,def,$(ANIMATION_SIMULATION_CPP)) $(call obj_list,flecsc,$(FLECS_C))
+ANIMATION_C4_ACCEPTANCE_OBJS = $(call obj_list,sh,$(ANIMATION_C4_ACCEPTANCE_CPP)) $(call obj_list,mslc,$(ANIMATION_C4_ACCEPTANCE_C)) $(call obj_list,flecsc,$(ANIMATION_C4_ACCEPTANCE_FLECS_C)) $(qjsc_C_OBJS)
 ANIMATION_STORE_OBJS = $(call obj_list,def,$(ANIMATION_STORE_CPP)) $(call obj_list,flecsc,$(FLECS_C))
 ANIMATION_BUDGET_OBJS = $(call obj_list,def,$(ANIMATION_BUDGET_CPP))
 SCENE_REGISTRY_OBJS = $(call obj_list,def,$(SCENE_REGISTRY_CPP)) $(call obj_list,flecsc,$(SCENE_REGISTRY_C))
@@ -1122,7 +1136,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
+.PHONY: clean run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1211,6 +1225,12 @@ $(ANIMATION_SIMULATION_TARGET): $(ANIMATION_SIMULATION_OBJS) $(BOX3D_LIB) $(OZZ_
 
 run-animation-simulation: $(ANIMATION_SIMULATION_TARGET)
 	./$(ANIMATION_SIMULATION_TARGET)
+
+$(ANIMATION_C4_ACCEPTANCE_TARGET): $(ANIMATION_C4_ACCEPTANCE_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(ANIMATION_C4_ACCEPTANCE_OBJS) -o $@ $(FLAVOR_sh_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(LDLIBS) $(FLECS_PLATFORM_LIBS)
+
+run-animation-phase-c-acceptance: $(ANIMATION_C4_ACCEPTANCE_TARGET)
+	./$(ANIMATION_C4_ACCEPTANCE_TARGET)
 
 $(ANIMATION_CONTROLLER_TARGET): $(ANIMATION_CONTROLLER_CPP) $(OZZ_OFFLINE_LIBS)
 	$(CC) $(ANIMATION_CONTROLLER_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(OZZ_OFFLINE_LIBS)
