@@ -10,6 +10,19 @@
 //   4. row-major layout, explicitly: translation must land at m[3]/m[7]/m[11]
 //      (a transposed implementation that put it at m[12]/m[13]/m[14] would
 //      still pass a naive "does it translate a point" test)
+//   5. rotation_axis(cardinal axis) matches rotation_x/y/z, AND (separately)
+//      rotation_x/y/z match the independent quaternion path
+//      (from_trs(quat_from_axis_angle(axis, theta))) -- pins handedness
+//      against a second implementation, since #5 alone can't detect all
+//      four builders being transposed together
+//   6. multiply(a, b) composition order, using NON-commuting operands
+//      (translation composed with a rotation) so a reversed argument order
+//      inside multiply() actually changes the result
+//   7. inverse() rejects non-finite input up front (policy point 3) and
+//      leaves `out` untouched
+//   8. rotation_axis() degrades to identity() on a non-unit (including
+//      zero-length-collapsed-by-normalize()) axis instead of silently
+//      producing a uniform-scale matrix
 //
 // No engine dependencies: this only includes matter_math.h itself, plus (for
 // test 3 only) MatterEngine3/include/matter/math_types.h, which is a
@@ -155,20 +168,56 @@ void test_singular_matrix_policy() {
     // become all-zero, so the determinant is zero.
     const mm::Mat4 singular = mm::scale({1.0f, 0.0f, 1.0f});
 
-    mm::Mat4 out = mm::translation({9.0f, 9.0f, 9.0f}); // sentinel, must survive untouched
+    // Sentinel: every one of the 16 elements is distinguishable (translation
+    // slots 9/9/9, everything else the identity's 0s and 1s) so a mutation
+    // that clobbers some element other than m[3]/m[7]/m[11] is still caught.
+    const mm::Mat4 sentinel = mm::translation({9.0f, 9.0f, 9.0f});
+    mm::Mat4 out = sentinel;
     const bool ok = mm::inverse(singular, out);
     if (ok) {
         FAIL("inverse() reported success on a matrix with zero determinant");
     }
-    // Policy: false means "did not modify out". Verify the sentinel is intact.
-    if (!nearly_equal(out.m[3], 9.0f, 1e-6f) || !nearly_equal(out.m[7], 9.0f, 1e-6f) ||
-        !nearly_equal(out.m[11], 9.0f, 1e-6f)) {
+    // Policy: false means "did not modify out". Verify all 16 elements are
+    // intact, not just the translation slots.
+    if (!mat4_nearly_equal(out, sentinel, 1e-6f)) {
         FAIL("inverse() modified `out` despite returning false");
     }
 
     const mm::Mat4 lenient = mm::inverse_or_identity(singular);
     if (!mat4_nearly_equal(lenient, mm::identity(), 1e-6f)) {
         FAIL("inverse_or_identity() did not return identity on singular input");
+    }
+
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
+// Test: inverse() rejects non-finite input up front (singular-matrix policy
+// point 3) and leaves `out` untouched. Previously untested -- the guard
+// works today, but a regression (e.g. moving the isfinite check after the
+// elimination loop) would have been invisible.
+// ---------------------------------------------------------------------------
+void test_inverse_rejects_non_finite_input() {
+    const mm::Mat4 sentinel = mm::translation({7.0f, 8.0f, 9.0f});
+
+    mm::Mat4 has_nan = mm::identity();
+    has_nan.m[5] = NAN;
+    mm::Mat4 out_nan = sentinel;
+    if (mm::inverse(has_nan, out_nan)) {
+        FAIL("inverse() reported success on input containing NaN");
+    }
+    if (!mat4_nearly_equal(out_nan, sentinel, 1e-6f)) {
+        FAIL("inverse() modified `out` on NaN input despite returning false");
+    }
+
+    mm::Mat4 has_inf = mm::identity();
+    has_inf.m[10] = INFINITY;
+    mm::Mat4 out_inf = sentinel;
+    if (mm::inverse(has_inf, out_inf)) {
+        FAIL("inverse() reported success on input containing +inf");
+    }
+    if (!mat4_nearly_equal(out_inf, sentinel, 1e-6f)) {
+        FAIL("inverse() modified `out` on +inf input despite returning false");
     }
 
     PASS();
@@ -284,14 +333,86 @@ void test_rotation_axis_matches_cardinal_builders() {
 }
 
 // ---------------------------------------------------------------------------
+// Extra: rotation_x/y/z handedness pinned against the INDEPENDENT
+// quaternion path (quat_from_axis_angle + from_trs), which never calls
+// rotation_x/y/z/axis. test_rotation_axis_matches_cardinal_builders above
+// only cross-checks rotation_axis against rotation_x/y/z -- if all four
+// were transposed (equivalently: every angle negated) in the same
+// direction, that test would still pass. This test would not: from_trs's
+// quaternion-to-matrix formula is a separate derivation with its own
+// independently-fixed sign convention, so it only agrees with
+// rotation_x/y/z if their handedness is actually correct, not merely
+// self-consistent.
+// ---------------------------------------------------------------------------
+void test_rotation_cardinal_matches_quaternion_path() {
+    const float angle = 0.6f;
+    const mm::Vec3 origin{0.0f, 0.0f, 0.0f};
+    const mm::Vec3 unit_scale{1.0f, 1.0f, 1.0f};
+
+    const mm::Mat4 rx_via_quat =
+        mm::from_trs(origin, mm::quat_from_axis_angle({1.0f, 0.0f, 0.0f}, angle), unit_scale);
+    if (!mat4_nearly_equal(mm::rotation_x(angle), rx_via_quat, 1e-5f)) {
+        FAIL("rotation_x(a) != from_trs(quat_from_axis_angle(X, a)) -- handedness mismatch");
+    }
+
+    const mm::Mat4 ry_via_quat =
+        mm::from_trs(origin, mm::quat_from_axis_angle({0.0f, 1.0f, 0.0f}, angle), unit_scale);
+    if (!mat4_nearly_equal(mm::rotation_y(angle), ry_via_quat, 1e-5f)) {
+        FAIL("rotation_y(a) != from_trs(quat_from_axis_angle(Y, a)) -- handedness mismatch");
+    }
+
+    const mm::Mat4 rz_via_quat =
+        mm::from_trs(origin, mm::quat_from_axis_angle({0.0f, 0.0f, 1.0f}, angle), unit_scale);
+    if (!mat4_nearly_equal(mm::rotation_z(angle), rz_via_quat, 1e-5f)) {
+        FAIL("rotation_z(a) != from_trs(quat_from_axis_angle(Z, a)) -- handedness mismatch");
+    }
+
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
+// Extra: rotation_axis() on a degenerate (non-unit, or normalize()-collapsed
+// zero-length) axis must degrade to identity(), not silently produce a
+// uniform-scale matrix (see the comment above rotation_axis()'s definition).
+// ---------------------------------------------------------------------------
+void test_rotation_axis_degenerate_axis_returns_identity() {
+    // normalize() collapses anything with |v| <= 1e-6 to {0,0,0}.
+    const mm::Vec3 tiny{1e-8f, 0.0f, 0.0f};
+    const mm::Mat4 via_normalize = mm::rotation_axis(mm::normalize(tiny), 1.2f);
+    if (!mat4_nearly_equal(via_normalize, mm::identity(), 1e-6f)) {
+        FAIL("rotation_axis(normalize(tiny), a) did not degrade to identity()");
+    }
+
+    // Directly non-unit (not just the normalize()-fallback path).
+    const mm::Mat4 non_unit = mm::rotation_axis({2.0f, 0.0f, 0.0f}, 1.2f);
+    if (!mat4_nearly_equal(non_unit, mm::identity(), 1e-6f)) {
+        FAIL("rotation_axis() with a non-unit axis did not degrade to identity()");
+    }
+
+    PASS();
+}
+
+// ---------------------------------------------------------------------------
 // Extra: multiply() composition order. combined = multiply(parent, child)
 // must transform a point the same as applying child first, then parent --
 // matching MatterEngine3/src/world_tracer.cpp's mul16(world_xf, ci.transform,
 // combined) usage.
+//
+// parent/child MUST NOT COMMUTE, or this test cannot fail: two translations
+// (the previous parent/child here) commute under composition, so
+// multiply(parent, child) and multiply(child, parent) produce the same
+// result and transform every point identically -- a multiply() with its
+// operand order reversed internally (result = b*a instead of a*b) would
+// still pass. A translation composed with a rotation does not commute, so
+// swapping the order changes the transformed point. Verified by mutation:
+// changing multiply()'s inner loop to
+// `sum += b.m[row*4+k] * a.m[k*4+col]` (computing b*a for a call written
+// multiply(a, b)) turns this test RED; the previous translation-only
+// version stayed 6/6 PASS under that same mutation.
 // ---------------------------------------------------------------------------
 void test_multiply_composition_order() {
     const mm::Mat4 parent = mm::translation({100.0f, 0.0f, 0.0f});
-    const mm::Mat4 child = mm::translation({0.0f, 10.0f, 0.0f});
+    const mm::Mat4 child = mm::rotation_z(1.4f); // arbitrary non-cardinal angle
     const mm::Mat4 combined = mm::multiply(parent, child);
 
     const mm::Vec3 p{1.0f, 1.0f, 1.0f};
@@ -313,9 +434,12 @@ int main() {
 
     RUN_TEST(test_inverse_round_trip);
     RUN_TEST(test_singular_matrix_policy);
+    RUN_TEST(test_inverse_rejects_non_finite_input);
     RUN_TEST(test_trs_matches_transform_math_reference);
     RUN_TEST(test_row_major_translation_indices);
     RUN_TEST(test_rotation_axis_matches_cardinal_builders);
+    RUN_TEST(test_rotation_cardinal_matches_quaternion_path);
+    RUN_TEST(test_rotation_axis_degenerate_axis_returns_identity);
     RUN_TEST(test_multiply_composition_order);
 
     std::printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);

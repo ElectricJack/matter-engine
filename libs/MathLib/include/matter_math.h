@@ -57,21 +57,65 @@ struct Quat {
 //     MatterEngine3/src/mat_math.h's `mul16`, whose comment states exactly
 //     this convention ("Translation lives in m[3], m[7], m[11]")
 //
-// This is NOT raylib's `Matrix` layout: raylib names its 16 floats m0..m15
-// in COLUMN-major order (see MatterEngine3/src/csg_lowering.cpp's comment:
-// "m0..m3 col0, m4..m7 col1, etc", translation at m12/m13/m14). Phase 3,
-// which retires raylib's POD types, must transpose when crossing that
-// boundary — relabeling m12/13/14 as m3/7/11 without transposing would
-// silently rotate the matrix instead of translating it.
+// This IS byte-compatible with raylib's `Matrix`: raylib's struct declares
+// its members as `m0,m4,m8,m12` / `m1,m5,m9,m13` / `m2,m6,m10,m14` /
+// `m3,m7,m11,m15` (four groups of four, in that order), so its in-memory
+// layout is row-major, identical to this header's `m[16]`. Verified by a
+// compiled probe: `MatrixTranslate(10,20,30)` memcpy'd to `float[16]` gives
+// raw[3]=10, raw[7]=20, raw[11]=30 — exactly where this header's
+// translation() puts them. Phase 3, which retires raylib's POD types, must
+// NOT transpose when crossing that boundary: a plain memcpy is valid, or
+// relabel field `m12` -> `m[3]`, `m13` -> `m[7]`, `m14` -> `m[11]`.
+//
+// The trap is raylib's field *naming*, not its layout: raylib names its 16
+// floats as if the struct were a flat OpenGL column-major array, i.e. field
+// `mN` denotes row `N%4`, col `N/4` (so `m12` reads as "row 0, col 3" even
+// though it physically sits at memory offset 3). A comment that takes those
+// names at face value — e.g. MatterEngine3/src/csg_lowering.cpp's "raylib
+// Matrix is column-major: m0..m3 col0, m4..m7 col1, etc" — describes the
+// naming, not the memory, and transposing on that basis would silently
+// rotate the matrix instead of translating it. Two in-repo call sites
+// already rely on the memory being row-major:
+//   - MatterEngine3/src/render/raster_mesh.cpp:158 `row_major_to_matrix` is
+//     a bare `memcpy(&m, t, sizeof(Matrix))` — no transpose.
+//   - MatterEngine3/tests/gpu_cull_tests.cpp:41-46's comment states it
+//     outright: "raylib Matrix memory is ROW-major (declaration order
+//     m0,m4,m8,m12 = first row) ... row_major_to_matrix is a straight copy."
+//
+// One real function DOES need care: `MatrixToFloatV` (raymath.h:2010) walks
+// the struct in *field-name* order (`v[12]=m.m12` etc.), so its output array
+// is genuinely column-major by this header's convention — that one is not a
+// memcpy and not byte-compatible with `mm::Mat4`.
 //
 // multiply() and transform() below use column-vector algebra: a point is
 // transformed as v' = M * v, i.e. result[row] = sum_col M(row,col)*v[col].
 //
 // Mat4{} default-constructs to IDENTITY (unlike matter::Mat4f, whose
-// `float m[16] = {}` defaults to all-zero) — a math library's default value
-// should be inert under multiply()/transform_point(), and the builders below
-// (translation(), scale(), rotation_*()) rely on starting from identity and
-// overwriting only the entries they change.
+// `float m[16] = {}` defaults to all-zero, AND unlike raylib's `Matrix{}`,
+// which is a plain C struct with no member initializers and so is also
+// all-zero) — a math library's default value should be inert under
+// multiply()/transform_point(), and the builders below (translation(),
+// scale(), rotation_*()) rely on starting from identity and overwriting
+// only the entries they change.
+//
+// MIGRATION HAZARD: this silently breaks the "zero-fill, then assign a few
+// elements" idiom used by code written against a zero-default matrix type.
+// Two concrete call sites in MatterEngine3/src/render/matrix_math.cpp rely
+// on `matter::Mat4f{}` being zero:
+//   - `perspective_rh_zo` (:88-98) and `perspective_rh_zo_reversed`
+//     (:108-118) each do `matter::Mat4f projection{};` and then assign only
+//     5 of the 16 elements (m[0], m[5], m[10], m[11], m[14]), relying on
+//     every other element — critically m[15] — staying 0. Ported naively to
+//     `Mat4 projection{};`, m[15] starts at 1 instead of 0, so
+//     `clip.w = -z + 1` instead of `-z`: every projected vertex and every
+//     extracted frustum plane comes out subtly wrong, with no compile-time
+//     or obvious runtime signal.
+//   - `mat4_mul` (:64-75) does `matter::Mat4f result{};` then accumulates
+//     into it with `result.m[...] += ...`. Ported to `Mat4 result{};`, the
+//     accumulation starts from identity instead of zero, so the product
+//     comes out as `a·b + I` (extra +1 on each diagonal term) instead of
+//     `a·b`.
+// Use zero() (below), not Mat4{}, when porting either pattern.
 struct Mat4 {
     float m[16] = {1, 0, 0, 0,
                     0, 1, 0, 0,
@@ -83,6 +127,19 @@ struct Mat4 {
 };
 
 inline Mat4 identity() { return Mat4{}; }
+
+// All-zero matrix. Mat4{} is deliberately identity (see the struct comment
+// above), so code migrating a zero-fill-then-assign-a-few-elements idiom
+// (perspective_rh_zo, perspective_rh_zo_reversed, mat4_mul in
+// MatterEngine3/src/render/matrix_math.cpp — see the migration-hazard note
+// above) must call zero() explicitly instead of relying on Mat4{}.
+inline Mat4 zero() {
+    Mat4 out{};
+    for (float& value : out.m) {
+        value = 0.0f;
+    }
+    return out;
+}
 
 // ---------------------------------------------------------------------------
 // Singular-matrix policy — READ THIS BEFORE ADDING A SEVENTH INVERSE.
@@ -116,11 +173,14 @@ inline Mat4 identity() { return Mat4{}; }
 //      migrate to. Check the return value, not the output.
 //   2. inverse_or_identity(const Mat4&) is the ONLY sanctioned convenience
 //      wrapper for call sites that genuinely want today's lenient
-//      identity-on-singular behaviour (matching mat4::Inverted). Do not add
-//      a second convenience wrapper that returns zero, or one that echoes
-//      the input back — if a call site needs different singular-input
-//      behaviour than these two options, that is a sign it should be
-//      handling inverse()'s bool itself, not asking for a third wrapper.
+//      identity-on-singular-input behaviour, in the spirit of
+//      mat4::Inverted. It is NOT an exact behavioural match, though — see
+//      the divergence note above inverse_or_identity()'s definition below
+//      before treating this as a drop-in replacement. Do not add a second
+//      convenience wrapper that returns zero, or one that echoes the input
+//      back — if a call site needs different singular-input behaviour than
+//      these two options, that is a sign it should be handling inverse()'s
+//      bool itself, not asking for a third wrapper.
 //   3. Neither entry point ever hands back NaN/inf silently: both reject
 //      non-finite input up front and re-check every output element before
 //      returning success.
@@ -132,9 +192,10 @@ inline Mat4 identity() { return Mat4{}; }
 // Gauss-Jordan elimination with partial pivoting, accumulated in double
 // precision (same approach as matrix_math.cpp:120's mat4_inverse). Returns
 // false — and leaves `out` unmodified — if `in` contains a non-finite
-// value, if elimination hits a pivot that is exactly zero or non-finite
-// (singular, or too close to it for this method to trust), or if any
-// resulting element would be non-finite.
+// value, if elimination hits a pivot that is exactly zero (i.e. singular —
+// `pivot == 0.0`, no epsilon: this is a stricter test than an
+// "approximately singular" check, not a looser one), or if any resulting
+// element would be non-finite.
 inline bool inverse(const Mat4& in, Mat4& out) {
     double augmented[4][8] = {};
     for (int row = 0; row < 4; ++row) {
@@ -202,6 +263,27 @@ inline bool inverse(const Mat4& in, Mat4& out) {
 
 // The one sanctioned lenient wrapper — see the policy block above. Returns
 // identity() when `m` is singular or contains non-finite values.
+//
+// NOT an exact match for libs/SpatialQueryLib/include/tri.h's
+// `mat4::Inverted`, despite matching its spirit (lenient, identity-on-
+// failure). The two disagree near, but not at, exact singularity:
+// `mat4::Inverted` (tri.h:94) rejects when `fabs(pivot) < 1e-8f`; this
+// header's `inverse()` (above) rejects only `pivot == 0.0` exactly. Feed
+// both a matrix scaled by 1e-9 and `mat4::Inverted` returns identity while
+// `inverse_or_identity` succeeds, producing an inverse with ~1e9-magnitude
+// entries — stricter-by-zero (rejects less near zero) but more
+// permissive-near-zero (accepts input `mat4::Inverted` would treat as
+// singular) than `mat4::Inverted`. The effective conditioning guard here is
+// not an epsilon on the pivot; it's policy point 3 above — the finite-
+// output re-check after elimination, which catches the cases where a
+// near-zero pivot actually blew up the result, but not the cases where it
+// merely produced a large-but-finite one.
+//
+// Consequence: migrating a `mat4::Inverted` call site to
+// `inverse_or_identity` is a real behaviour change on near-singular input,
+// not a like-for-like swap. libs/SpatialQueryLib/src/bvh.cpp:433
+// `BVHInstance::SetTransform` (`invTransform = transform.Inverted();`) is
+// the call site that will need to account for this when it migrates.
 inline Mat4 inverse_or_identity(const Mat4& m) {
     Mat4 out{};
     if (inverse(m, out)) {
@@ -219,6 +301,25 @@ inline Mat4 inverse_or_identity(const Mat4& m) {
 // is equivalent to applying `b` first and then `a`: (a*b)*v == a*(b*v).
 // Same convention as MatterEngine3/src/render/matrix_math.cpp:64 `mat4_mul`
 // and MatterEngine3/src/mat_math.h:27 `mul16`.
+//
+// raymath's `MatrixMultiply(a, b)` is REVERSED from this: it applies `a`
+// first, then `b` (verified by compiled probe: composing
+// MatrixMultiply(Translate, Scale) then transforming a point matches
+// "translate then scale", not "scale then translate"). In this header's
+// terms:
+//
+//     MatrixMultiply(a, b) == mm::multiply(b, a)
+//
+// The operands swap sides when a call site migrates. The concrete example:
+// MatterEngine3/src/dsl_state.cpp:30-36 and :76 build a transform stack as
+// `stack_.back() = MatrixMultiply(<new op>, stack_.back())` (apply the new
+// op first, composed onto the existing stack). Ported mechanically that is
+// `mm::multiply(stack_.back(), <new op>)` — note `<new op>` and
+// `stack_.back()` trade places, they do not stay in the same argument
+// position. Every one of dsl_state.cpp's MatrixMultiply(new_op, stack_top)
+// call sites needs this same operand swap; a symbol-for-symbol
+// find/replace of `MatrixMultiply` -> `mm::multiply` without swapping
+// arguments silently reverses the entire DSL transform stack.
 inline Mat4 multiply(const Mat4& a, const Mat4& b) {
     Mat4 result{};
     for (int row = 0; row < 4; ++row) {
@@ -311,11 +412,25 @@ inline Mat4 rotation_z(float radians) {
     return result;
 }
 
-// Rodrigues' rotation formula about an arbitrary axis. `axis` must already
-// be normalized by the caller. An axis of (1,0,0)/(0,1,0)/(0,0,1) reduces
-// exactly to rotation_x/y/z(radians) respectively (verified in
+// Rodrigues' rotation formula about an arbitrary axis. `axis` must be a
+// unit vector; returns identity() when it is not (checked via
+// `axis.x*axis.x + axis.y*axis.y + axis.z*axis.z` staying within 1e-6 of
+// 1, rather than calling dot()/normalize() below, both of which are
+// declared later in this header). Without this guard, a degenerate axis --
+// e.g. rotation_axis(normalize(tiny), theta) where normalize() (below)
+// already collapsed `tiny` to {0,0,0} because |tiny| <= 1e-6 -- makes every
+// off-diagonal term of the Rodrigues formula vanish while every diagonal
+// term becomes cos(theta), silently producing a uniform-SCALE matrix
+// instead of a rotation. An axis of (1,0,0)/(0,1,0)/(0,0,1) reduces exactly
+// to rotation_x/y/z(radians) respectively (verified in
 // tests/mathlib_tests.cpp).
 inline Mat4 rotation_axis(const Vec3& axis, float radians) {
+    const float axis_length_squared = axis.x * axis.x + axis.y * axis.y + axis.z * axis.z;
+    if (!std::isfinite(axis_length_squared) ||
+        std::fabs(axis_length_squared - 1.0f) > 1e-6f) {
+        return Mat4{};
+    }
+
     const float c = std::cos(radians);
     const float s = std::sin(radians);
     const float t = 1.0f - c;

@@ -191,6 +191,13 @@ if [ "$MODE" = "test" ]; then
         RESULT[libs/MeshChartingLib]="FAIL (test build)"
     fi
 
+    if make -C libs/MathLib/tests build/mathlib_tests >/dev/null 2>&1; then
+        echo; echo "--- MathLib (mathlib_tests) ---"
+        ./libs/MathLib/tests/build/mathlib_tests || RESULT[libs/MathLib]="FAIL (tests)"
+    else
+        RESULT[libs/MathLib]="FAIL (test build)"
+    fi
+
     # MatterEngine3 headless suites (script host + voxel-CSG bake; GL-free host,
     # raylib-linked BLAS path). Each run-* target builds then runs its binary, so
     # a non-zero status covers both build and test failures. run-graph-integration
