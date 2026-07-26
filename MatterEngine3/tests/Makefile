@@ -510,6 +510,7 @@ DYNAMIC_BRIDGE_RENDER_REQUIRED = ../src/render/animation_skin_bridge.cpp \
 ANIMATION_RIGID_TARGET = animation_rigid_bridge_tests
 ANIMATION_RIGID_CPP    = animation_rigid_bridge_tests.cpp ../src/render/animation_rigid_bridge.cpp \
                         ../src/render/dynamic_instance_slots.cpp \
+                        ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp \
                         ../src/animation/animation_systems.cpp ../src/animation/animation_evaluator.cpp \
                         ../src/animation/animation_targets.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_budget.cpp \
                         ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
