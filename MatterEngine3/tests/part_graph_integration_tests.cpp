@@ -85,6 +85,7 @@ static matter::animation::AnimAsset rigid_asset(uint64_t hash,
     rigid.name = "segment";
     rigid.joint = 0;
     rigid.geometry.push_back({0, 1, 0, 1});
+    rigid.lod_geometry.push_back({0, 1});
     binding.rigid_segments.push_back(rigid);
     if (!set_anim_binding_bake(asset, binding)) std::abort();
     return asset;
@@ -112,8 +113,9 @@ static bool publish_rigid_bundle(const std::filesystem::path& root, uint64_t has
     const auto candidate_part = root / "static-race-candidate.part";
     const auto candidate_anim = root / "static-race-candidate.anim";
     const part_asset::PartAnimationLink link{1, 1, hash, nonce.high, nonce.low};
+    const part_asset::LodLevels rigid_lods{{0.2f, {0}}};
     if (!part_asset::save_v2(candidate_part.string(), source, tlas, nullptr, 0,
-                             {}, {}, link, hash)) return false;
+                             rigid_lods, {}, link, hash)) return false;
     const anim::AnimAsset asset = rigid_asset(hash, nonce);
     anim::Diagnostics diagnostics;
     if (!anim::save_anim_candidate(asset, candidate_anim, diagnostics)) return false;
