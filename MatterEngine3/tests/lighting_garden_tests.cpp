@@ -269,7 +269,7 @@ int main() {
     }
     std::printf("[root] triangles=%zu children=%zu\n", triangle_count, children.size());
 
-    std::ifstream schema_file(schemas / "LightingGarden.js");
+    std::ifstream schema_file(objects / "LightingGarden.js");
     std::ostringstream schema_text;
     schema_text << schema_file.rdbuf();
     const std::string source = schema_text.str();

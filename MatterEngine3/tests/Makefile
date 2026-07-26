@@ -333,8 +333,14 @@ TILESETTORUSBVH_CPP    = tileset_torus_bvh_tests.cpp ../src/tileset_torus_bvh.cp
 TILESETTORUSBVH_C      = $(MSL)/material_registry.c
 
 TILESETMEADOWMANIFEST_TARGET = build/tileset_meadow_manifest_tests
+# Needs load_world_definition (script/world_definition_loader.cpp), which in
+# turn calls module_resolver::parse_import_specifiers (module_resolver.cpp)
+# and links against QuickJS-ng to actually execute the World .js file --
+# hence the qjs flavor + qjsc_C_OBJS on TILESETMEADOWMANIFEST_OBJS below.
 TILESETMEADOWMANIFEST_CPP = tileset_meadow_manifest_tests.cpp ../src/part_graph.cpp \
                             ../src/part_asset_v2.cpp \
+                            ../src/script/world_definition_loader.cpp \
+                            ../src/module_resolver.cpp \
                             $(COMMON_MSL_BLAS_SRC)
 TILESETMEADOWMANIFEST_C   = $(MSL)/material_registry.c
 
@@ -594,9 +600,15 @@ GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp ../src/ba
 GRAPH_INT_C   = $(COMMON_MSL_C)
 
 EXAMPLE_TARGET = build/example_world
+# example_world.cpp, gallery_bake_tests.cpp and lighting_garden_tests.cpp (all
+# built from this list -- see the *_CPP = ... $(EXAMPLE_CPP) targets below)
+# call matter::load_world_definition directly, and script_host.h's inline
+# ScriptHost::eval_world_definition() calls it too; script/world_definition_loader.cpp
+# supplies it (same missing-source pattern as TILESETMEADOWMANIFEST_CPP above).
 EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
               ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
+              ../src/script/world_definition_loader.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp \
               ../src/retopo_blacklist.cpp \
               ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
@@ -898,7 +910,8 @@ qjs_CPP_SRCS := $(sort \
     $(TILESETDSL_CPP) \
     $(TERRAINNOISE_CPP) \
     $(WORLD_DEFINITION_CPP) \
-    $(PHYSICS_PLAYGROUND_CPP))
+    $(PHYSICS_PLAYGROUND_CPP) \
+    $(TILESETMEADOWMANIFEST_CPP))
 
 sh_CPP_SRCS := $(sort \
     $(EVALWORLD_CPP) \
@@ -1009,7 +1022,7 @@ TRIVAR_OBJS = $(call obj_list,def,$(TRIVAR_CPP)) $(call obj_list,mslc,$(TRIVAR_C
 COMP_OBJS   = $(call obj_list,def,$(COMP_CPP)) $(call obj_list,mslc,$(COMP_C))
 FLATTEN_OBJS = $(call obj_list,def,$(FLATTEN_CPP)) $(call obj_list,mslc,$(FLATTEN_C))
 TILESETTORUSBVH_OBJS = $(call obj_list,def,$(TILESETTORUSBVH_CPP)) $(call obj_list,mslc,$(TILESETTORUSBVH_C))
-TILESETMEADOWMANIFEST_OBJS = $(call obj_list,def,$(TILESETMEADOWMANIFEST_CPP)) $(call obj_list,mslc,$(TILESETMEADOWMANIFEST_C))
+TILESETMEADOWMANIFEST_OBJS = $(call obj_list,qjs,$(TILESETMEADOWMANIFEST_CPP)) $(call obj_list,mslc,$(TILESETMEADOWMANIFEST_C)) $(qjsc_C_OBJS)
 ISO_OBJS = $(call obj_list,def,$(ISO_CPP)) $(call obj_list,mslc,$(ISO_C))
 DEV_OBJS = $(call obj_list,def,$(DEV_SOURCES))
 POLYTRI_OBJS = $(call obj_list,def,$(POLYTRI_CPP))

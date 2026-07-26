@@ -75,7 +75,12 @@ HAVE_STREAMLINE ?= 0
 # Point this at a locally installed, licensed Streamline SDK.  Nothing from the
 # SDK is checked into this repository; HAVE_STREAMLINE=0 is the default.
 STREAMLINE_PATH ?=
-STREAMLINE_DLL_DIR ?= $(STREAMLINE_PATH)/bin/x64
+# The SDK ships two DLL sets: <path>/bin/x64 (16 release-only DLLs) and
+# <path>/bin/x64/development (18 -- adds sl.imgui + sl.nvperf). development is
+# what tools/check_vulkan_toolchain.sh, build-dlss.sh, and every historical
+# build here actually use, so it is the default; override STREAMLINE_DLL_DIR
+# to ship the smaller release set instead.
+STREAMLINE_DLL_DIR ?= $(STREAMLINE_PATH)/bin/x64/development
 # ---- Phase 5 autoremesher_core (Task 15 wiring) ----
 # The vendored autoremesher_core static lib + its TBB dependency. Linux-only:
 # the library was built for Linux in Task 4 (third_party/autoremesher_core/) and
@@ -387,8 +392,10 @@ VULKAN_INCLUDE ?= /ucrt64/include
 VULKAN_LIB_DIR ?= /ucrt64/lib
 VULKAN_RUNTIME_DIR ?= $(shell cygpath -m /ucrt64/bin)
 WIN_FEATURES = build/windows/build_features.txt
-# Win32 import libs raylib depends on; MUST come AFTER libraylib.a on the link
-# line so the static linker can resolve raylib's __imp_* references.
+# Win32 import libs the Windows/Vulkan build depends on (box3d + pthread).
+# There is no libraylib.a on this link line -- the Vulkan build does not link
+# raylib at all (see the module header comment); this list only needs to
+# precede $(WIN_SYSTEM_LIBS) below on the link line.
 WIN_LIBS    = $(WIN_BOX3D_LIB) -lwinpthread
 WIN_SYSTEM_LIBS = -lgdi32 -lwinmm -luser32 -lshell32 -lws2_32 -ldbghelp
 
@@ -401,7 +408,7 @@ vulkan-preflight:
 
 $(WIN_FEATURES): vulkan-preflight
 	@mkdir -p $(dir $@)
-	@printf 'VULKAN=1\nOPENGL=0\n' > $@
+	@printf 'VULKAN=1\nOPENGL=0\nSTREAMLINE=$(HAVE_STREAMLINE)\n' > $@
 
 # Standalone GLFW archive for Vulkan smoke tests.  Keep this separate from
 # raylib's GLFW objects so the existing OpenGL viewer path is unchanged.
@@ -683,7 +690,7 @@ dist:
 	    echo "ERROR: dist requires the Streamline SDK."; \
 	    echo "  Set STREAMLINE_PATH to a local, licensed SDK install, e.g."; \
 	    echo "    make dist STREAMLINE_PATH=/c/sdk/streamline"; \
-	    echo "  (override the DLL dir with STREAMLINE_DLL_DIR if it is not <path>/bin/x64)"; \
+	    echo "  (override the DLL dir with STREAMLINE_DLL_DIR if it is not <path>/bin/x64/development)"; \
 	    exit 1)
 	@[ -d "$(STREAMLINE_DLL_DIR)" ] || ( \
 	    echo "ERROR: STREAMLINE_DLL_DIR not found: $(STREAMLINE_DLL_DIR)"; \

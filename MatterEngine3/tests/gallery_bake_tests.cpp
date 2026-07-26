@@ -28,12 +28,7 @@
 using namespace part_graph;
 
 #include "check.h"
-
-static std::string abspath(const std::string& rel) {
-    char buf[PATH_MAX];
-    if (realpath(rel.c_str(), buf)) return std::string(buf);
-    return rel;
-}
+#include "portable_realpath.h"
 
 // Count the full-resolution triangles a baked artifact loaded back with.
 static size_t load_tri_count(uint64_t h, size_t& child_count) {

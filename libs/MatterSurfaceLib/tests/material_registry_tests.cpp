@@ -1,6 +1,6 @@
 #include "material_registry.h"
-#include "../../MatterEngine3/src/render/vk_gi_contract.h"
-#include "../../MatterEngine3/src/part_base.js.h"
+#include "../../../MatterEngine3/src/render/vk_gi_contract.h"
+#include "../../../MatterEngine3/src/part_base.js.h"
 #include <cassert>
 #include <cstddef>
 #include <cstdint>

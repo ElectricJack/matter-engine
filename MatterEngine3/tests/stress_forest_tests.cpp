@@ -47,14 +47,9 @@
 using namespace part_graph;
 
 #include "check.h"
+#include "portable_realpath.h"
 
 static const size_t kExpectedCount = 50000;
-
-static std::string abspath(const std::string& rel) {
-    char buf[PATH_MAX];
-    if (realpath(rel.c_str(), buf)) return std::string(buf);
-    return rel;
-}
 
 static std::vector<uint8_t> file_bytes(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
@@ -143,7 +138,7 @@ static BakeRec run_bake(const std::string& sandbox_abs,
 }
 
 int main() {
-    const std::string schemas_abs    = abspath("../../projects/world_demo/schemas");
+    const std::string schemas_abs    = abspath("../../projects/world_demo/objects");
     const std::string shared_lib_abs = abspath("../shared-lib");
 
     // Fresh sandbox with two independent cache dirs.

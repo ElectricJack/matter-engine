@@ -101,9 +101,14 @@ else
             PLATFORM = windows
             LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -lopengl32 -lgdi32 -lwinmm
         else
-            # Default: Use MinGW toolchain for native Windows builds
+            # Default: Use MinGW toolchain for native Windows builds.
+            # MSYS2 UCRT64 (the toolchain actually installed here) ships plain
+            # x86_64-w64-mingw32-g++, not the "-posix" threading variant that
+            # Debian/Ubuntu's mingw-w64 packages provide (and that the
+            # Linux/WSL cross-compile branches above still use, since that is
+            # what is actually installed there) -- verified with `which`.
             CC = x86_64-w64-mingw32-gcc
-            CXX = x86_64-w64-mingw32-g++-posix
+            CXX = x86_64-w64-mingw32-g++
             PLATFORM = windows-mingw
             LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -static -lopengl32 -lgdi32 -lwinmm
         endif

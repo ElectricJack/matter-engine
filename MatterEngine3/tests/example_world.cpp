@@ -42,6 +42,8 @@
 #include <limits.h>
 #include <unistd.h>
 
+#include "portable_realpath.h"
+
 using namespace part_graph;
 
 // Deterministic splitmix64 so the scatter is reproducible across runs/platforms.
@@ -71,13 +73,6 @@ static void set_translate(float m[16], float x, float y, float z) {
     for (int i = 0; i < 16; ++i) m[i] = 0.0f;
     m[0] = m[5] = m[10] = m[15] = 1.0f;
     m[3] = x; m[7] = y; m[11] = z;
-}
-
-// Absolute path of `rel` resolved against the current working directory.
-static std::string abspath(const std::string& rel) {
-    char buf[PATH_MAX];
-    if (realpath(rel.c_str(), buf)) return std::string(buf);
-    return rel;   // best-effort; caller will fail loudly if it doesn't exist
 }
 
 int main() {
