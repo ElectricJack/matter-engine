@@ -52,7 +52,11 @@ struct GaitRuntimeWorldQueries final : AnimationWorldQueries {
             std::fabs(direction.z) >= 1e-4f || std::fabs(max_distance - 2.0f) >= 1e-4f || mask != 0)
             return false;
         out.entity = 0x47524944u; // "GRID" -- stable fixture ground identity.
-        out.position = {origin.x + 0.5f, 0.25f, origin.z + 0.125f};
+        // The authored gait step cap is 0.25. Keep the deliberately offset
+        // hit at the predicted foot height (origin is predicted + step cap)
+        // so this fixture exercises an accepted world-space contact rather
+        // than the controller's correctly rejected-ground fallback.
+        out.position = {origin.x + 0.5f, origin.y - 0.25f, origin.z + 0.125f};
         out.normal = {0.0f, 1.0f, 0.0f};
         out.distance = 0.75f;
         return true;
@@ -265,7 +269,7 @@ void test_runtime_fixed_controller_ik_persists_through_frame_and_checkpoint_repl
               same_float(queries.origins[1].y, 22.75f) && same_float(queries.origins[1].z, 30.0f),
           "fixed gait controller composes translated, rotated, nonuniform-scaled entity world for both feet");
     std::vector<AnimatorCheckpoint> checkpoints;
-    AnimationTransform left_hit_world{};left_hit_world.translation={8.25f,.25f,30.125f};
+    AnimationTransform left_hit_world{};left_hit_world.translation={8.25f,22.5f,30.125f};
     AnimationTransform expected_left{};
     const ecs::WorldTransform scaled_world=scaled_root.get<ecs::WorldTransform>();
     CHECK(resolve_world_target(scaled_world.matrix,left_hit_world,expected_left),

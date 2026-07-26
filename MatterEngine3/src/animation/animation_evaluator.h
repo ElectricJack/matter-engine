@@ -61,6 +61,10 @@ struct AnimatorCheckpoint {
     float target_weight = 0.0f;
     bool target_enabled = false;
     bool target_snap_requested = false;
+    // AnimationService owns authored/public target writes in world space.
+    // AnimationSystems owns target_desired below in root-relative solver
+    // space. They must remain distinct across a play/stop transaction.
+    std::vector<AnimationTransform> service_target_desired;
     std::vector<AnimationTransform> target_desired;
     std::vector<AnimationTransform> target_evaluated_states;
     std::vector<float> target_weights;
@@ -85,7 +89,8 @@ struct AnimatorCheckpoint {
     size_t serialized_size() const {
         size_t total = sizeof(*this) + graph_state.size() + controller_state.size() + sample_context_state.size() +
                        pose_scratch_state.size() + marker_cursors.size() * sizeof(uint32_t) +
-                       fixed_local_pose.size() * sizeof(AnimationTransform) + target_desired.size() * sizeof(AnimationTransform) + target_evaluated_states.size() * sizeof(AnimationTransform) +
+                       fixed_local_pose.size() * sizeof(AnimationTransform) + service_target_desired.size() * sizeof(AnimationTransform) +
+                       target_desired.size() * sizeof(AnimationTransform) + target_evaluated_states.size() * sizeof(AnimationTransform) +
                        target_weights.size() * sizeof(float) + target_evaluated_weights.size() * sizeof(float) + target_enabled_states.size() + target_snap_requested_states.size() +
                        fixed_model_pose.size() * sizeof(Mat4f) + fixed_previous_model_pose.size() * sizeof(Mat4f) +
                        fixed_skin_palette.size() * sizeof(Mat4f) + fixed_previous_skin_palette.size() * sizeof(Mat4f);

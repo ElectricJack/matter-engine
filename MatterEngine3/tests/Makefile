@@ -517,6 +517,7 @@ ANIMATION_RIGID_C      = $(FLECS_C)
 
 ANIMATION_SKIN_TARGET = animation_skin_bridge_tests
 ANIMATION_SKIN_CPP    = animation_skin_bridge_tests.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_bounds.cpp \
+                        ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp \
                         ../src/animation/animation_systems.cpp ../src/animation/animation_evaluator.cpp \
                         ../src/animation/animation_targets.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_budget.cpp \
                         ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp

@@ -93,7 +93,8 @@ uint64_t root_motion_hash(const std::vector<DesiredRootMotion>& motions) {
 }
 
 uint64_t checkpoint_hash(const AnimatorCheckpoint& checkpoint) {
-    uint64_t value = transform_vector_hash(checkpoint.target_desired);
+    uint64_t value = transform_vector_hash(checkpoint.service_target_desired);
+    value = transform_vector_hash(checkpoint.target_desired, value);
     value = transform_vector_hash(checkpoint.target_evaluated_states, value);
     value = vector_hash(checkpoint.target_weights, value);
     value = vector_hash(checkpoint.target_evaluated_weights, value);
@@ -351,8 +352,9 @@ void test_10000_tick_authored_replay_is_exact_under_two_render_patterns() {
     CHECK(baseline.size() == kTickCount && patterned_run == baseline,
           "Phase B two render-frame patterns preserve every one of 10,000 fixed tick results");
     CHECK(checkpoint.size() == 1 && !checkpoint[0].native_controller_checkpoints.empty() &&
+              !checkpoint[0].service_target_desired.empty() &&
               !checkpoint[0].target_desired.empty() && !checkpoint[0].target_evaluated_states.empty(),
-          "Phase B checkpoint contains nonempty native-controller bytes and desired/evaluated target state");
+          "Phase B checkpoint separates service-world targets from native-controller and evaluated target state");
     check_nonempty_and_meaningful(baseline);
 
     CHECK(baseline_runtime.service.restore_runtime_checkpoints(checkpoint),

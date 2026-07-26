@@ -2816,6 +2816,11 @@ bool VkSceneRenderer::record_animation_skinning(
         !ensure(resources.skin_current_output, bytes(staged.current_output_vertices, sizeof(VkSkinVertex)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) ||
         !ensure(resources.skin_previous_output, bytes(staged.previous_output_vertices, sizeof(VkSkinVertex)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT))
         return downgrade_gpu_skin(VkSkinGpuFailureReason::Allocation);
+    // Every successful replacement is live even if a following upload
+    // downgrades this skin queue. Publish all seven bindings before the first
+    // fallible upload so a same-slot, same-size retry cannot reuse descriptors
+    // that still reference the retired allocations.
+    if (descriptors_changed) update_frame_descriptors(resources);
     uint32_t skin_upload = 0;
     const auto upload = [&](matter::VkBufferResource& buffer, const void* data,
                             VkDeviceSize size) {
@@ -2834,7 +2839,6 @@ bool VkSceneRenderer::record_animation_skinning(
         !upload(resources.skin_palette_previous, staged.palette_previous.data(), bytes(staged.palette_previous.size(), sizeof(VkSkinJoint))) ||
         !upload(resources.skin_work, staged.work_items.data(), bytes(staged.work_items.size(), sizeof(VkSkinWorkItem))))
         return downgrade_gpu_skin(VkSkinGpuFailureReason::Upload);
-    if (descriptors_changed) update_frame_descriptors(resources);
     uint32_t max_vertices = 0;
     for (const VkSkinWorkItem& work : staged.work_items)
         max_vertices = std::max(max_vertices, work.vertex_count);
@@ -5136,6 +5140,26 @@ bool VkSceneRenderer::test_dispatch_animation_skin_fixture(
     destroy_pool();
     if (!submitted) result = {};
     return submitted;
+}
+
+bool VkSceneRenderer::test_readback_animation_skin_output(
+    uint32_t frame_slot, uint32_t vertex_count,
+    std::vector<VkSkinVertex>& output, std::string& error) {
+    output.clear();
+    if (frame_slot >= frames_.size() || vertex_count == 0) {
+        error = "animation skin output readback has an invalid frame slot or count";
+        return false;
+    }
+    const VkDeviceSize bytes =
+        static_cast<VkDeviceSize>(vertex_count) * sizeof(VkSkinVertex);
+    if (frames_[frame_slot].skin_current_output.size < bytes) {
+        error = "animation skin output readback exceeds the frame buffer";
+        return false;
+    }
+    output.resize(vertex_count);
+    return matter::readback_buffer(
+        *vulkan_, frames_[frame_slot].skin_current_output, output.data(),
+        bytes, 0, error);
 }
 #endif
 

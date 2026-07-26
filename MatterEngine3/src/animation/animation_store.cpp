@@ -646,9 +646,10 @@ public:
             for(const StoredValue& input:value.fixed_current) checkpoint.fixed_inputs.push_back(checkpoint_value(input));
             for(const StoredValue& input:value.fixed_previous) checkpoint.fixed_previous_inputs.push_back(checkpoint_value(input));
             for(const StoredValue& input:value.frame_controls) checkpoint.frame_inputs.push_back(checkpoint_value(input));
+            checkpoint.service_target_desired.reserve(value.targets.size());
             checkpoint.target_desired.reserve(value.targets.size()); checkpoint.target_weights.reserve(value.targets.size());
             checkpoint.target_enabled_states.reserve(value.targets.size()); checkpoint.target_snap_requested_states.reserve(value.targets.size());
-            for(const TargetState& target:value.targets) { checkpoint.target_desired.push_back(target.transform); checkpoint.target_weights.push_back(target.weight); checkpoint.target_enabled_states.push_back(target.enabled?1u:0u); checkpoint.target_snap_requested_states.push_back(target.snap_requested?1u:0u); }
+            for(const TargetState& target:value.targets) { checkpoint.service_target_desired.push_back(target.transform); checkpoint.target_desired.push_back(target.transform); checkpoint.target_weights.push_back(target.weight); checkpoint.target_enabled_states.push_back(target.enabled?1u:0u); checkpoint.target_snap_requested_states.push_back(target.snap_requested?1u:0u); }
             checkpoint.graph_state=value.graph_state; checkpoint.controller_state=value.controller_state;
             checkpoint.sample_context_state=value.sample_context; checkpoint.pose_scratch_state=value.pose_scratch;
             if(systems_ && !systems_->capture_service_checkpoint(checkpoint)) return false;
@@ -674,7 +675,8 @@ public:
                static_cast<uint64_t>(reinterpret_cast<uintptr_t>(value->definition->binding.get()))!=checkpoint.descriptor_identity) return false;
             const size_t inputs=value->definition->inputs.size(), targets=value->definition->targets.size();
             if(checkpoint.fixed_inputs.size()!=inputs || checkpoint.fixed_previous_inputs.size()!=inputs || checkpoint.frame_inputs.size()!=inputs ||
-               checkpoint.target_desired.size()!=targets || checkpoint.target_weights.size()!=targets ||
+               checkpoint.service_target_desired.size()!=targets || checkpoint.target_desired.size()!=targets ||
+               checkpoint.target_weights.size()!=targets ||
                checkpoint.target_enabled_states.size()!=targets || checkpoint.target_snap_requested_states.size()!=targets ||
                checkpoint.graph_state.size()!=value->graph_state.size() || checkpoint.controller_state.size()!=value->controller_state.size() ||
                checkpoint.sample_context_state.size()!=value->sample_context.size() || checkpoint.pose_scratch_state.size()!=value->pose_scratch.size()) return false;
@@ -683,7 +685,9 @@ public:
                 !checkpoint_stored_value(checkpoint.fixed_previous_inputs[i],value->definition->inputs[i].type,decoded) ||
                 !checkpoint_stored_value(checkpoint.frame_inputs[i],value->definition->inputs[i].type,decoded)) return false;
             for(size_t target=0;target<targets;++target)
-                if(!std::isfinite(checkpoint.target_weights[target]) || !finite_transform(checkpoint.target_desired[target])) return false;
+                if(!std::isfinite(checkpoint.target_weights[target]) ||
+                   !finite_transform(checkpoint.service_target_desired[target]) ||
+                   !finite_transform(checkpoint.target_desired[target])) return false;
             if(systems_ && !systems_->validate_service_checkpoint(checkpoint)) return false;
         }
         return true;
@@ -707,7 +711,7 @@ public:
         for(size_t index=0; index<checkpoints.size(); ++index) {
             Slot& value=*restored[index].slot; const AnimatorCheckpoint& checkpoint=checkpoints[index];
             value.fixed_current=std::move(restored[index].fixed_current); value.fixed_previous=std::move(restored[index].fixed_previous); value.frame_controls=std::move(restored[index].frame);
-            for(size_t target=0;target<value.targets.size();++target) { value.targets[target].transform=checkpoint.target_desired[target]; value.targets[target].weight=checkpoint.target_weights[target]; value.targets[target].enabled=checkpoint.target_enabled_states[target]!=0; value.targets[target].snap_requested=checkpoint.target_snap_requested_states[target]!=0; }
+            for(size_t target=0;target<value.targets.size();++target) { value.targets[target].transform=checkpoint.service_target_desired[target]; value.targets[target].weight=checkpoint.target_weights[target]; value.targets[target].enabled=checkpoint.target_enabled_states[target]!=0; value.targets[target].snap_requested=checkpoint.target_snap_requested_states[target]!=0; }
             value.graph_state=checkpoint.graph_state; value.controller_state=checkpoint.controller_state; value.sample_context=checkpoint.sample_context_state; value.pose_scratch=checkpoint.pose_scratch_state;
         }
         if(systems_) {

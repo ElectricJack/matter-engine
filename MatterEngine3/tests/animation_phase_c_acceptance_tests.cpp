@@ -95,11 +95,37 @@ void check_reloaded_gallery_limits(const GalleryBundle& gallery) {
     CHECK(gallery.runtime.definition.binding &&
               gallery.runtime.definition.binding->evaluation->nodes.size() <= 32,
           "C4 reloaded gallery stays within the explicit 32-node graph acceptance limit");
+    const auto& evaluation = *gallery.runtime.definition.binding->evaluation;
+    const auto blend = std::find_if(evaluation.nodes.begin(), evaluation.nodes.end(),
+                                    [](const RuntimeGraphNode& node) {
+        return node.kind == RuntimeGraphNodeKind::Blend1D;
+    });
+    const auto additive = std::find_if(evaluation.nodes.begin(), evaluation.nodes.end(),
+                                       [](const RuntimeGraphNode& node) {
+        return node.kind == RuntimeGraphNodeKind::Additive;
+    });
+    const auto gait = std::find_if(evaluation.nodes.begin(), evaluation.nodes.end(),
+                                   [](const RuntimeGraphNode& node) {
+        return node.kind == RuntimeGraphNodeKind::NativeController;
+    });
+    const bool speed_blends_idle_walk =
+        blend != evaluation.nodes.end() && blend->input_index == 0 &&
+        blend->dependencies.size() == 2 && blend->thresholds.size() == 2 &&
+        blend->thresholds[0] == 0.0f && blend->thresholds[1] == 1.0f &&
+        blend->dependencies[0] < evaluation.nodes.size() &&
+        blend->dependencies[1] < evaluation.nodes.size() &&
+        evaluation.nodes[blend->dependencies[0]].kind == RuntimeGraphNodeKind::Clip &&
+        evaluation.nodes[blend->dependencies[0]].clip_index == 0 &&
+        evaluation.nodes[blend->dependencies[1]].kind == RuntimeGraphNodeKind::Clip &&
+        evaluation.nodes[blend->dependencies[1]].clip_index == 1;
     CHECK(gallery.runtime.definition.inputs.size() == 1 &&
               gallery.runtime.definition.inputs[0].name == "speed" &&
-              gallery.runtime.definition.binding->evaluation->clips.size() == 2 &&
+              evaluation.clips.size() == 3 && !evaluation.clips[0].additive &&
+              !evaluation.clips[1].additive && evaluation.clips[2].additive &&
+              speed_blends_idle_walk && additive != evaluation.nodes.end() &&
+              gait != evaluation.nodes.end() && gait->controller_index == 0 &&
               gallery.runtime.definition.binding->controllers.size() == 1,
-          "C4 decoder retains the authored speed blend, idle/walk clips, and native gait controller");
+          "C4 decoder retains nested authored speed blend, idle/walk clips, additive overlay, and native gait controller");
 }
 
 GalleryBundle bake_and_reload_gallery() {

@@ -597,6 +597,9 @@ public:
     bool test_dispatch_animation_skin_fixture(
         const VkAnimationSkinGpuFixture& fixture,
         VkAnimationSkinGpuResult& result, std::string& error);
+    bool test_readback_animation_skin_output(
+        uint32_t frame_slot, uint32_t vertex_count,
+        std::vector<VkSkinVertex>& output, std::string& error);
     bool test_record_hdr_constant(const matter::VulkanFrame& frame,
                                   matter::Float3 color,
                                   std::string& error);

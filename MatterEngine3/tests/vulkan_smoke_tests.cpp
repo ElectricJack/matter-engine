@@ -5165,6 +5165,59 @@ void run_animation_skin_record_fault_matrix(matter::VulkanDevice& vulkan) {
         CHECK(renderer.begin_animation_skinning_frame(seed.frame_slot,
                                                       failed.serial),
               "retained dependency releases after degraded consumer fence completes");
+        if (!allocation_failure && fail_point == 0) {
+            renderer.set_test_animation_skin_failure(
+                std::numeric_limits<uint32_t>::max(),
+                std::numeric_limits<uint32_t>::max());
+            matter::VulkanFrame retry{};
+            bool retried_same_slot = false;
+            for (uint32_t attempt = 0; attempt != 4 && !retried_same_slot;
+                 ++attempt) {
+                CHECK(vulkan.begin_frame(retry, error),
+                      error.empty() ? "begin grown skin descriptor retry"
+                                    : error.c_str());
+                if (retry.command_buffer == VK_NULL_HANDLE) break;
+                if (retry.frame_slot != failed.frame_slot) {
+                    CHECK(vulkan.end_frame(retry, error),
+                          error.empty() ? "advance to failed skin frame slot"
+                                        : error.c_str());
+                    continue;
+                }
+                retried_same_slot =
+                    renderer.begin_animation_skinning_frame(
+                        retry.frame_slot, failed.serial) &&
+                    renderer.submit_visible_animation_skinning(
+                        retry.frame_slot,
+                        {submission(0, 11), submission(1, 22)}, scene.frame,
+                        scene.eye, 1.0f) &&
+                    renderer.prepare_frame(
+                        retry, scene.frame, scene.eye, 1.0f, error) &&
+                    renderer.record_cull_and_render(
+                        retry, scene.frame, scene.eye, 1.0f, error) &&
+                    renderer.finish_animation_skinning_frame(
+                        retry.frame_slot, retry.serial) &&
+                    renderer.record_composite_to_swapchain(retry, error) &&
+                    vulkan.end_frame(retry, error);
+                CHECK(retried_same_slot,
+                      error.empty()
+                          ? "same-slot retry records grown skin descriptors"
+                          : error.c_str());
+            }
+            vulkan.wait_idle();
+            std::vector<viewer::VkSkinVertex> recovered_skin;
+            CHECK(retried_same_slot &&
+                      renderer.test_readback_animation_skin_output(
+                          failed.frame_slot, vertex_count * 2,
+                          recovered_skin, error) &&
+                      recovered_skin.size() == vertex_count * 2 &&
+                      std::isfinite(recovered_skin[0].position[0]) &&
+                      recovered_skin[0].material_index ==
+                          part.vertices[0].material_index &&
+                      vulkan.validation_error_count() == 0,
+                  error.empty()
+                      ? "grown skin upload fault retries with valid readback and no device errors"
+                      : error.c_str());
+        }
     };
 
     for (uint32_t point = 0; point != 7; ++point) run_case(true, point);
