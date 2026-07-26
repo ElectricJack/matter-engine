@@ -25,7 +25,21 @@ struct ClusterJointBounds {
     uint32_t vertex_end = 0;
     std::vector<JointLocalBounds> joints;
 };
-struct LodSkinBinding { uint64_t indexed_vertex_signature = 0; uint32_t vertex_count = 0; std::vector<VertexInfluences> influences; std::vector<ClusterJointBounds> clusters; };
+// Every final LOD is serialized as a deterministic list of independent BLAS
+// streams.  Skin owns one stream and each rigid segment owns another; this
+// record identifies an owner stream without relying on post-load triangle
+// reconstruction.
+struct LodGeometryOwnership {
+    uint32_t blas_slot = 0;
+    uint32_t triangle_count = 0;
+};
+struct LodSkinBinding {
+    uint64_t indexed_vertex_signature = 0;
+    uint32_t vertex_count = 0;
+    uint32_t blas_slot = 0;
+    std::vector<VertexInfluences> influences;
+    std::vector<ClusterJointBounds> clusters;
+};
 // Runtime-friendly form of a declared rigid segment. The authoring joint is
 // canonicalized to an index; geometry remains half-open authored ranges until
 // A8 resolves it to final BLAS ownership.
@@ -35,6 +49,9 @@ struct RigidSegmentBake {
     AnimationTransform bind_offset{};
     bool decorative = false;
     std::vector<BindingGeometryRange> geometry;
+    // One ownership record per finalized LOD.  Empty is accepted only for
+    // programmatic legacy test fixtures; persisted phase-B bakes populate it.
+    std::vector<LodGeometryOwnership> lod_geometry;
 };
 enum class AttachmentTargetKind : uint8_t { Joint = 0, Socket = 1 };
 struct AttachmentBake {

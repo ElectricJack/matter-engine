@@ -143,7 +143,7 @@ void test_binding_payload_retains_lods_matrices_and_cluster_ranges() {
           decoded.lods[0].clusters.size() == 1 && decoded.lods[0].clusters[0].cluster_id == 0 &&
           decoded.lods[0].clusters[0].vertex_end == source.lods[0].vertex_count,
           "binding payload preserves geometry, inverse binds, and per-LOD cluster bounds");
-    for (auto& section : asset.sections) if (section.kind == matter::animation::AnimSectionKind::GeometryBindings) section.bytes[8] = 2;
+    for (auto& section : asset.sections) if (section.kind == matter::animation::AnimSectionKind::GeometryBindings) section.bytes[8] = 3;
     CHECK(!matter::animation::get_anim_binding_bake(asset, decoded),
           "truncated binding topology fails closed before allocation");
 }
@@ -172,6 +172,7 @@ void test_binding_payload_retains_rigid_segments_and_attachments() {
     rigid.joint = 1;
     rigid.bind_offset.translation = {2.0f, 3.0f, 4.0f};
     rigid.geometry.push_back({3, 7, 11, 13});
+    rigid.lod_geometry.push_back({1, 2});
     source.rigid_segments.push_back(rigid);
     matter::animation::AttachmentBake attachment;
     attachment.name = "tool";
@@ -200,6 +201,10 @@ void test_binding_payload_retains_rigid_segments_and_attachments() {
           decoded.rigid_segments[0].geometry[0].triangle_end == 13 &&
           decoded.rigid_segments[0].bind_offset.translation.x == 2.0f,
           "rigid declaration retains joint, bind offset, and owned geometry range");
+    CHECK(decoded.rigid_segments[0].lod_geometry.size() == 1 &&
+              decoded.rigid_segments[0].lod_geometry[0].blas_slot == 1 &&
+              decoded.rigid_segments[0].lod_geometry[0].triangle_count == 2,
+          "rigid declaration persists its exact finalized LOD owner stream");
     CHECK(decoded.attachments.size() == 1 && decoded.attachments[0].name == "tool" &&
           decoded.attachments[0].target == "arm" &&
           decoded.attachments[0].target_kind == matter::animation::AttachmentTargetKind::Joint &&

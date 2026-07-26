@@ -57,11 +57,65 @@ uint64_t part_body_checksum(const std::filesystem::path& path) {
     std::fclose(f); if (!ok) return 0;
     uint64_t h=1469598103934665603ull; for (size_t i=40;i<bytes.size();++i) { h^=bytes[i]; h*=1099511628211ull; } return h;
 }
+
+// Resolve the authored direct-triangle claims while the original build stream
+// is still available.  The result is deliberately a partition, not a set of
+// overlapping draw hints: a triangle is owned by skin or exactly one rigid
+// segment before either side receives its independent LOD ladder.
+bool resolve_rigid_geometry(const dsl::DslState& state,
+                            const matter::animation::CanonicalRig& rig,
+                            size_t source_triangle_count,
+                            std::vector<matter::animation::RigidSegmentBake>& out) {
+    out.clear();
+    const auto* authored = state.authored_animation();
+    if (!authored || authored->rigid_bindings.empty()) return true;
+    if (!state.modifier_regions().empty()) return false;
+    const tri_emit::TriangleBuildBuffer* direct = state.triangle_buffer();
+    const size_t direct_triangles = direct ? direct->triangles().size() : 0;
+    if (direct_triangles > source_triangle_count) return false;
+    const size_t direct_base = source_triangle_count - direct_triangles;
+    if (direct_base > UINT32_MAX) return false;
+    std::vector<bool> claimed(source_triangle_count, false);
+    out.reserve(authored->rigid_bindings.size());
+    for (const auto& authored_segment : authored->rigid_bindings) {
+        matter::animation::RigidSegmentBake segment;
+        segment.name = authored_segment.name;
+        segment.bind_offset = authored_segment.local;
+        segment.decorative = authored_segment.decorative;
+        const auto joint = std::find_if(rig.joints.begin(), rig.joints.end(),
+            [&authored_segment](const matter::animation::CanonicalJoint& value) {
+                return value.name == authored_segment.joint;
+            });
+        if (joint == rig.joints.end()) return false;
+        segment.joint = static_cast<matter::animation::JointIndex>(joint - rig.joints.begin());
+        for (const auto& authored_range : authored_segment.geometry) {
+            if (authored_range.triangle_begin >= authored_range.triangle_end ||
+                authored_range.triangle_end > direct_triangles ||
+                authored_range.triangle_end > UINT32_MAX - direct_base)
+                return false;
+            matter::animation::BindingGeometryRange range = authored_range;
+            range.triangle_begin += static_cast<uint32_t>(direct_base);
+            range.triangle_end += static_cast<uint32_t>(direct_base);
+            for (uint32_t triangle = range.triangle_begin;
+                 triangle != range.triangle_end; ++triangle) {
+                if (triangle >= claimed.size() || claimed[triangle]) return false;
+                claimed[triangle] = true;
+            }
+            segment.geometry.push_back(range);
+        }
+        if (segment.geometry.empty()) return false;
+        out.push_back(std::move(segment));
+    }
+    return true;
+}
+
 bool make_animation_asset(const dsl::DslState& state, uint64_t hash, matter::animation::BuildNonce nonce,
                           const BLASManager& blas, matter::animation::AnimAsset& asset,
                           matter::animation::BindingBake& binding,
                           matter::animation::Diagnostics& diagnostics,
-                          const part_asset::LodLevels* finalized_lods = nullptr) {
+                          const std::vector<viewer::IndexedPartGeometry>* finalized_skin_lods = nullptr,
+                          const std::vector<viewer::IndexedPartGeometry>* finalized_reference_lods = nullptr,
+                          const std::vector<matter::animation::RigidSegmentBake>* finalized_rigid_segments = nullptr) {
     const auto* authored = state.authored_animation(); const auto& canonical = state.canonical_animation();
     if (!authored || !canonical) {
         diagnostics.add("runtime-asset-rig", {}, "animation runtime asset requires a canonical rig");
@@ -120,43 +174,42 @@ bool make_animation_asset(const dsl::DslState& state, uint64_t hash, matter::ani
     asset.target_abi_tag=matter::animation::kAnimationTargetAbiTag; asset.ozz_tag_hash=matter::animation::kAnimationOzzTagHash;
     if (!matter::animation::encode_animation_runtime_sections(
             runtime_authored, runtime_canonical, asset, diagnostics)) return false;
-    std::vector<Tri> tris; std::vector<TriEx> ex; for(const auto& e:blas.get_entries()){tris.insert(tris.end(),e->triangles.begin(),e->triangles.end()); ex.insert(ex.end(),e->tri_extra.begin(),e->tri_extra.end());}
-    if(tris.empty()) {
-        diagnostics.add("runtime-asset-geometry", {}, "animation runtime asset requires baked geometry");
-        return false;
-    }
-    std::vector<viewer::IndexedPartGeometry> lods;
-    if (finalized_lods && !finalized_lods->empty()) {
-        lods.reserve(finalized_lods->size());
-        for (const part_asset::LodLevel& level : *finalized_lods) {
-            if (level.blas_indices.size() != 1 ||
-                level.blas_indices.front() >= blas.get_entries().size()) {
-                diagnostics.add("runtime-asset-lod", {},
-                                "finalized LOD references an invalid BLAS range");
-                return false;
-            }
-            const auto& entry = blas.get_entries()[level.blas_indices.front()];
-            if (entry->triangles.empty()) {
-                diagnostics.add("runtime-asset-lod", {},
-                                "finalized LOD has no triangles");
-                return false;
-            }
-            lods.push_back(viewer::build_indexed_part_geometry(
-                entry->triangles.data(),
-                entry->tri_extra.size() == entry->triangles.size()
-                    ? entry->tri_extra.data() : nullptr,
-                static_cast<int>(entry->triangles.size())));
-        }
+    std::vector<Tri> source_tris;
+    std::vector<TriEx> source_extra;
+    std::vector<viewer::IndexedPartGeometry> reference_lods;
+    if (finalized_reference_lods && !finalized_reference_lods->empty()) {
+        reference_lods = *finalized_reference_lods;
     } else {
-        lods.push_back(viewer::build_indexed_part_geometry(
-            tris.data(), ex.size() == tris.size() ? ex.data() : nullptr,
-            static_cast<int>(tris.size())));
+        for (const auto& entry : blas.get_entries()) {
+            source_tris.insert(source_tris.end(), entry->triangles.begin(), entry->triangles.end());
+            source_extra.insert(source_extra.end(), entry->tri_extra.begin(), entry->tri_extra.end());
+        }
+        if (source_tris.empty()) {
+            diagnostics.add("runtime-asset-geometry", {}, "animation runtime asset requires baked geometry");
+            return false;
+        }
+        reference_lods.push_back(viewer::build_indexed_part_geometry(
+            source_tris.data(), source_extra.size() == source_tris.size() ? source_extra.data() : nullptr,
+            static_cast<int>(source_tris.size())));
     }
+    if (reference_lods.empty()) return false;
+    const std::vector<viewer::IndexedPartGeometry>& skin_lods =
+        finalized_skin_lods ? *finalized_skin_lods : reference_lods;
     std::vector<matter::animation::JointIndex> selected; float falloff=1.0f;
     for(const auto& skin:authored->skin_bindings) { falloff=skin.falloff; for(const auto& name:skin.joints) for(size_t i=0;i<canonical->rig.joints.size();++i) if(canonical->rig.joints[i].name==name) selected.push_back((matter::animation::JointIndex)i); }
     if(selected.empty() && canonical->rig.joints.size()>1) selected.push_back(1);
-    if(selected.empty() || !matter::animation::build_skin_binding(canonical->rig,selected,lods,falloff,binding)) return false;
-    if(authored->skin_bindings.empty()) binding.lods.clear();
+    if(selected.empty() || !matter::animation::build_skin_binding(
+            canonical->rig, selected, skin_lods.empty() ? reference_lods : skin_lods,
+            falloff, binding)) return false;
+    if (authored->skin_bindings.empty()) {
+        binding.lods.clear();
+    } else if (skin_lods.empty()) {
+        diagnostics.add("runtime-asset-geometry", {}, "skinned binding owns no finalized geometry");
+        return false;
+    }
+    if (finalized_rigid_segments) {
+        binding.rigid_segments = *finalized_rigid_segments;
+    } else {
     // Authored rigid ranges index the direct-triangle DSL stream, while the
     // committed Part's indexed LOD0 contains voxel/SDF triangles first. With
     // no modifier regions the direct stream is one preserved tail in exactly
@@ -168,8 +221,8 @@ bool make_animation_asset(const dsl::DslState& state, uint64_t hash, matter::ani
         direct ? direct->triangles().size() : 0;
     if (!authored->rigid_bindings.empty() &&
         !state.modifier_regions().empty()) return false;
-    if (direct_triangles > tris.size()) return false;
-    const size_t direct_base = tris.size() - direct_triangles;
+    if (direct_triangles > source_tris.size()) return false;
+    const size_t direct_base = source_tris.size() - direct_triangles;
     if (direct_base > UINT32_MAX) return false;
     for(const auto& r:authored->rigid_bindings) {
         std::vector<matter::animation::BindingGeometryRange> final_geometry =
@@ -187,6 +240,7 @@ bool make_animation_asset(const dsl::DslState& state, uint64_t hash, matter::ani
                 binding.rigid_segments.push_back({
                     r.name,(matter::animation::JointIndex)i,r.local,
                     r.decorative,std::move(final_geometry)});
+    }
     }
     for(const auto& x:authored->attachments) binding.attachments.push_back({x.name,x.socket.empty()?x.joint:x.socket,x.socket.empty()?matter::animation::AttachmentTargetKind::Joint:matter::animation::AttachmentTargetKind::Socket,x.child_hash,x.local});
     return matter::animation::set_anim_binding_bake(asset,binding);
@@ -1600,6 +1654,9 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         const bool has_persisted_binding = authored_animation &&
             (!authored_animation->skin_bindings.empty() || !authored_animation->rigid_bindings.empty() || !authored_animation->attachments.empty());
         bool finalized_lods_ready = true;
+        std::vector<viewer::IndexedPartGeometry> finalized_skin_lods;
+        std::vector<viewer::IndexedPartGeometry> finalized_reference_lods;
+        std::vector<matter::animation::RigidSegmentBake> finalized_rigid_segments;
         if (has_persisted_binding) {
             std::vector<Tri> source_tris;
             std::vector<TriEx> source_extra;
@@ -1613,16 +1670,95 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                 diagnostics.add("runtime-asset-lod", {},
                                 "animation runtime asset requires source triangles for LOD bake");
                 finalized_lods_ready = false;
+            } else if (!resolve_rigid_geometry(state, state.canonical_animation()->rig,
+                                                source_tris.size(), finalized_rigid_segments)) {
+                diagnostics.add("runtime-asset-geometry", {},
+                                "rigid geometry must claim disjoint authored triangles");
+                finalized_lods_ready = false;
             } else {
-                lods = lod_bake::bake_lods(
-                    source_tris, lod_bake::BakeTargets{}, blas,
-                    source_extra.size() == source_tris.size() ? &source_extra : nullptr);
-                if (lods.size() < 2) {
-                    diagnostics.add("runtime-asset-lod", {},
-                                    "animation runtime asset requires at least two finalized LODs");
+                std::vector<int32_t> owners(source_tris.size(), -1);
+                for (size_t segment = 0; segment != finalized_rigid_segments.size(); ++segment) {
+                    for (const auto& range : finalized_rigid_segments[segment].geometry)
+                        for (uint32_t triangle = range.triangle_begin; triangle != range.triangle_end; ++triangle)
+                            owners[triangle] = static_cast<int32_t>(segment);
+                }
+                std::vector<std::vector<Tri>> group_tris;
+                std::vector<std::vector<TriEx>> group_extra;
+                std::vector<int32_t> group_owner;
+                std::vector<Tri> skin_tris;
+                std::vector<TriEx> skin_extra;
+                for (size_t triangle = 0; triangle != source_tris.size(); ++triangle) {
+                    if (owners[triangle] < 0) {
+                        skin_tris.push_back(source_tris[triangle]);
+                        if (source_extra.size() == source_tris.size()) skin_extra.push_back(source_extra[triangle]);
+                    }
+                }
+                const bool has_skin_geometry = !skin_tris.empty();
+                if (!authored_animation->skin_bindings.empty() && !has_skin_geometry) {
+                    diagnostics.add("runtime-asset-geometry", {},
+                                    "skinned binding owns no source triangles");
+                    finalized_lods_ready = false;
+                } else if (authored_animation->skin_bindings.empty() && has_skin_geometry &&
+                           !finalized_rigid_segments.empty()) {
+                    diagnostics.add("runtime-asset-geometry", {},
+                                    "animated rigid-only geometry must be completely claimed");
                     finalized_lods_ready = false;
                 } else {
-                    tlas.build(blas);
+                    if (has_skin_geometry) {
+                        group_tris.push_back(std::move(skin_tris));
+                        group_extra.push_back(std::move(skin_extra));
+                        group_owner.push_back(-1);
+                    }
+                    for (size_t segment = 0; segment != finalized_rigid_segments.size(); ++segment) {
+                        group_tris.emplace_back(); group_extra.emplace_back(); group_owner.push_back(static_cast<int32_t>(segment));
+                        for (size_t triangle = 0; triangle != source_tris.size(); ++triangle) {
+                            if (owners[triangle] != static_cast<int32_t>(segment)) continue;
+                            group_tris.back().push_back(source_tris[triangle]);
+                            if (source_extra.size() == source_tris.size()) group_extra.back().push_back(source_extra[triangle]);
+                        }
+                        if (group_tris.back().empty()) finalized_lods_ready = false;
+                    }
+                    const lod_bake::BakeTargets targets{};
+                    lods.resize(targets.keep_ratio.size());
+                    for (size_t group = 0; finalized_lods_ready && group != group_tris.size(); ++group) {
+                        const std::vector<TriEx>* extra = group_extra[group].size() == group_tris[group].size()
+                            ? &group_extra[group] : nullptr;
+                        const auto group_lods = lod_bake::bake_lods(group_tris[group], targets, blas, extra);
+                        if (group_lods.size() != lods.size()) { finalized_lods_ready = false; break; }
+                        for (size_t level = 0; level != group_lods.size(); ++level) {
+                            if (group_lods[level].blas_indices.size() != 1) { finalized_lods_ready = false; break; }
+                            const uint32_t index = group_lods[level].blas_indices[0];
+                            if (index >= blas.get_entries().size()) { finalized_lods_ready = false; break; }
+                            lods[level].screen_size_threshold = group_lods[level].screen_size_threshold;
+                            lods[level].blas_indices.push_back(index);
+                            const auto& entry = blas.get_entries()[index];
+                            const TriEx* entry_extra = entry->tri_extra.size() == entry->triangles.size()
+                                ? entry->tri_extra.data() : nullptr;
+                            const auto indexed = viewer::build_indexed_part_geometry(
+                                entry->triangles.data(), entry_extra, static_cast<int>(entry->triangles.size()));
+                            if (group_owner[group] < 0) finalized_skin_lods.push_back(indexed);
+                            if (finalized_reference_lods.size() <= level) finalized_reference_lods.push_back(indexed);
+                            if (group_owner[group] >= 0) {
+                                finalized_rigid_segments[static_cast<size_t>(group_owner[group])].lod_geometry.push_back({
+                                    static_cast<uint32_t>(group), static_cast<uint32_t>(entry->triangles.size())});
+                            }
+                        }
+                    }
+                    if (lods.size() < 2 || finalized_reference_lods.size() != lods.size()) {
+                        diagnostics.add("runtime-asset-lod", {},
+                                        "animation runtime asset requires at least two finalized LODs");
+                        finalized_lods_ready = false;
+                    } else if (finalized_lods_ready) {
+                        tlas.clear();
+                        if (!finalized_skin_lods.empty() && !lods.front().blas_indices.empty()) {
+                            const uint32_t skin_index = lods.front().blas_indices.front();
+                            if (skin_index < blas.get_entries().size()) {
+                                tlas.load_identity();
+                                tlas.draw(blas.get_entries()[skin_index]->handle, 0);
+                            }
+                        }
+                        tlas.build(blas);
+                    }
                 }
             }
         }
@@ -1640,7 +1776,9 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             const part_asset::PartAnimationLink link{1,1,r.resolved_hash,nonce.high,nonce.low};
             ok = finalized_lods_ready &&
                  make_animation_asset(state,r.resolved_hash,nonce,blas,asset,binding,
-                                      diagnostics, &lods) &&
+                                      diagnostics, &finalized_skin_lods,
+                                      &finalized_reference_lods,
+                                      &finalized_rigid_segments) &&
                  part_asset::save_v2(part_candidate.string(),blas,tlas,kids.empty()?nullptr:kids.data(),kids.size(),lods,emitters,link,r.resolved_hash) &&
                  matter::animation::save_anim_candidate(asset,anim_candidate,diagnostics);
             matter::animation::BundleIdentity identity; identity.resolved_hash=r.resolved_hash; identity.nonce=nonce;

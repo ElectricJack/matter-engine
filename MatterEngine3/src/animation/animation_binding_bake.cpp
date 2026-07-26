@@ -93,6 +93,8 @@ bool valid_rigid_segment(const RigidSegmentBake& segment, size_t joints) {
         !valid_transform(segment.bind_offset) || segment.geometry.empty() || segment.geometry.size() > 4096)
         return false;
     for (const auto& range : segment.geometry) if (!valid_range(range)) return false;
+    for (const auto& lod : segment.lod_geometry)
+        if (lod.triangle_count == 0) return false;
     return true;
 }
 bool valid_attachment_binding(const AttachmentBake& attachment) {
@@ -208,9 +210,9 @@ bool manifest_matches_binding(const std::vector<LodBindingSignature>&manifest,co
 bool set_anim_binding_bake(AnimAsset& asset, const BindingBake& bake) {
     if (!valid_binding(bake)) return false;
     std::vector<uint8_t> geometry, inverse_binds, bounds, rigid_segments, attachments;
-    tag(geometry,"GBND"); put32(geometry,1); put32(geometry,static_cast<uint32_t>(bake.lods.size()));
+    tag(geometry,"GBND"); put32(geometry,2); put32(geometry,static_cast<uint32_t>(bake.lods.size()));
     for (const auto& lod : bake.lods) {
-        put64(geometry,lod.indexed_vertex_signature); put32(geometry,lod.vertex_count); put32(geometry,static_cast<uint32_t>(lod.influences.size()));
+        put64(geometry,lod.indexed_vertex_signature); put32(geometry,lod.vertex_count); put32(geometry,lod.blas_slot); put32(geometry,static_cast<uint32_t>(lod.influences.size()));
         for (const auto& influence : lod.influences) for (size_t i=0;i<kMaxSkinInfluences;++i) { put16(geometry,influence.joints[i]); put16(geometry,influence.weights[i]); }
     }
     tag(inverse_binds,"IBND"); put32(inverse_binds,1); put32(inverse_binds,static_cast<uint32_t>(bake.inverse_bind_matrices.size()));
@@ -223,12 +225,14 @@ bool set_anim_binding_bake(AnimAsset& asset, const BindingBake& bake) {
             for (const auto& joint : cluster.joints) { put16(bounds,joint.joint); put_float(bounds,joint.minimum.x); put_float(bounds,joint.minimum.y); put_float(bounds,joint.minimum.z); put_float(bounds,joint.maximum.x); put_float(bounds,joint.maximum.y); put_float(bounds,joint.maximum.z); }
         }
     }
-    tag(rigid_segments,"RBND"); put32(rigid_segments,1); put32(rigid_segments,static_cast<uint32_t>(bake.rigid_segments.size()));
+    tag(rigid_segments,"RBND"); put32(rigid_segments,2); put32(rigid_segments,static_cast<uint32_t>(bake.rigid_segments.size()));
     for (const auto& segment : bake.rigid_segments) {
         put_string(rigid_segments,segment.name); put16(rigid_segments,segment.joint);
         rigid_segments.push_back(segment.decorative ? 1 : 0); put_transform(rigid_segments,segment.bind_offset);
         put32(rigid_segments,static_cast<uint32_t>(segment.geometry.size()));
         for (const auto& range : segment.geometry) { put32(rigid_segments,range.op_begin); put32(rigid_segments,range.op_end); put32(rigid_segments,range.triangle_begin); put32(rigid_segments,range.triangle_end); }
+        put32(rigid_segments,static_cast<uint32_t>(segment.lod_geometry.size()));
+        for (const auto& lod : segment.lod_geometry) { put32(rigid_segments,lod.blas_slot); put32(rigid_segments,lod.triangle_count); }
     }
     tag(attachments,"ABND"); put32(attachments,1); put32(attachments,static_cast<uint32_t>(bake.attachments.size()));
     for (const auto& attachment : bake.attachments) {
@@ -247,16 +251,16 @@ bool get_anim_binding_bake(const AnimAsset& asset, BindingBake& bake) {
     bake={}; const auto* geometry=section(asset,AnimSectionKind::GeometryBindings); const auto* inverse_binds=section(asset,AnimSectionKind::InverseBindMatrices); const auto* bounds=section(asset,AnimSectionKind::ClusterBounds); const auto* rigid_segments=section(asset,AnimSectionKind::RigidSegments); const auto* attachments=section(asset,AnimSectionKind::Attachments);
     if(!geometry||!inverse_binds||!bounds||!rigid_segments||!attachments)return false;
     size_t at=0; uint32_t version=0,lod_count=0;
-    if(!take_tag(geometry->bytes,at,"GBND")||!get32(geometry->bytes,at,version)||version!=1||!get32(geometry->bytes,at,lod_count)||lod_count>64)return false;
+    if(!take_tag(geometry->bytes,at,"GBND")||!get32(geometry->bytes,at,version)||version!=2||!get32(geometry->bytes,at,lod_count)||lod_count>64)return false;
     bake.lods.resize(lod_count);
-    for(auto& lod:bake.lods){uint32_t influence_count=0;if(!get64(geometry->bytes,at,lod.indexed_vertex_signature)||!get32(geometry->bytes,at,lod.vertex_count)||!get32(geometry->bytes,at,influence_count)||influence_count!=lod.vertex_count||influence_count>(geometry->bytes.size()-at)/(kMaxSkinInfluences*4))return false;lod.influences.resize(influence_count);for(auto& influence:lod.influences)for(size_t i=0;i<kMaxSkinInfluences;++i)if(!get16(geometry->bytes,at,influence.joints[i])||!get16(geometry->bytes,at,influence.weights[i]))return false;}
+    for(auto& lod:bake.lods){uint32_t influence_count=0;if(!get64(geometry->bytes,at,lod.indexed_vertex_signature)||!get32(geometry->bytes,at,lod.vertex_count)||!get32(geometry->bytes,at,lod.blas_slot)||!get32(geometry->bytes,at,influence_count)||influence_count!=lod.vertex_count||influence_count>(geometry->bytes.size()-at)/(kMaxSkinInfluences*4))return false;lod.influences.resize(influence_count);for(auto& influence:lod.influences)for(size_t i=0;i<kMaxSkinInfluences;++i)if(!get16(geometry->bytes,at,influence.joints[i])||!get16(geometry->bytes,at,influence.weights[i]))return false;}
     if(at!=geometry->bytes.size())return false;
     at=0; uint32_t matrix_count=0;if(!take_tag(inverse_binds->bytes,at,"IBND")||!get32(inverse_binds->bytes,at,version)||version!=1||!get32(inverse_binds->bytes,at,matrix_count)||matrix_count==0||matrix_count>kMaxJoints)return false;bake.inverse_bind_matrices.resize(matrix_count);for(auto& matrix:bake.inverse_bind_matrices)for(float& value:matrix.m)if(!get_float(inverse_binds->bytes,at,value))return false;if(at!=inverse_binds->bytes.size())return false;
     at=0; uint32_t bound_lods=0;if(!take_tag(bounds->bytes,at,"CBND")||!get32(bounds->bytes,at,version)||version!=1||!get32(bounds->bytes,at,bound_lods)||bound_lods!=lod_count)return false;
     for(auto& lod:bake.lods){uint32_t cluster_count=0;if(!get32(bounds->bytes,at,cluster_count)||cluster_count>lod.vertex_count||cluster_count>(bounds->bytes.size()-at)/16)return false;lod.clusters.resize(cluster_count);for(auto& cluster:lod.clusters){uint32_t joint_count=0;if(!get32(bounds->bytes,at,cluster.cluster_id)||!get32(bounds->bytes,at,cluster.vertex_begin)||!get32(bounds->bytes,at,cluster.vertex_end)||!get32(bounds->bytes,at,joint_count)||joint_count>matrix_count||joint_count>(bounds->bytes.size()-at)/26)return false;cluster.joints.resize(joint_count);for(auto& joint:cluster.joints){if(!get16(bounds->bytes,at,joint.joint)||!get_float(bounds->bytes,at,joint.minimum.x)||!get_float(bounds->bytes,at,joint.minimum.y)||!get_float(bounds->bytes,at,joint.minimum.z)||!get_float(bounds->bytes,at,joint.maximum.x)||!get_float(bounds->bytes,at,joint.maximum.y)||!get_float(bounds->bytes,at,joint.maximum.z))return false;}}}
     if (at != bounds->bytes.size()) return false;
     at=0; uint32_t rigid_count=0;
-    if(!take_tag(rigid_segments->bytes,at,"RBND")||!get32(rigid_segments->bytes,at,version)||version!=1||!get32(rigid_segments->bytes,at,rigid_count)||rigid_count>kMaxJoints)return false;
+    if(!take_tag(rigid_segments->bytes,at,"RBND")||!get32(rigid_segments->bytes,at,version)||version!=2||!get32(rigid_segments->bytes,at,rigid_count)||rigid_count>kMaxJoints)return false;
     bake.rigid_segments.resize(rigid_count);
     for (auto& segment : bake.rigid_segments) {
         uint8_t decorative=0; uint32_t range_count=0;
@@ -264,6 +268,10 @@ bool get_anim_binding_bake(const AnimAsset& asset, BindingBake& bake) {
         decorative=rigid_segments->bytes[at++]; if(decorative>1||!get_transform(rigid_segments->bytes,at,segment.bind_offset)||!get32(rigid_segments->bytes,at,range_count)||range_count==0||range_count>4096||range_count>(rigid_segments->bytes.size()-at)/16)return false;
         segment.decorative=decorative!=0; segment.geometry.resize(range_count);
         for (auto& range : segment.geometry) if(!get32(rigid_segments->bytes,at,range.op_begin)||!get32(rigid_segments->bytes,at,range.op_end)||!get32(rigid_segments->bytes,at,range.triangle_begin)||!get32(rigid_segments->bytes,at,range.triangle_end))return false;
+        uint32_t lod_count_for_segment=0;
+        if(!get32(rigid_segments->bytes,at,lod_count_for_segment)||lod_count_for_segment>64||lod_count_for_segment>(rigid_segments->bytes.size()-at)/8)return false;
+        segment.lod_geometry.resize(lod_count_for_segment);
+        for (auto& lod : segment.lod_geometry) if(!get32(rigid_segments->bytes,at,lod.blas_slot)||!get32(rigid_segments->bytes,at,lod.triangle_count))return false;
     }
     if(at!=rigid_segments->bytes.size())return false;
     at=0; uint32_t attachment_count=0;
