@@ -48,6 +48,8 @@ void AnimationBudgetRuntimeStats::merge(
 PoseLodScheduler::PoseLodScheduler(AnimationBudgetConfig config)
     : config_(config.valid() ? config : AnimationBudgetConfig{}) {}
 
+size_t PoseLodScheduler::state_mutable_bytes() noexcept { return sizeof(State); }
+
 double PoseLodScheduler::interval(AnimationPoseLodTier tier) noexcept {
     switch (tier) {
         case AnimationPoseLodTier::Hz60: return 1.0 / 60.0;

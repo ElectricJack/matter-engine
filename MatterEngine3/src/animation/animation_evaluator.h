@@ -226,6 +226,7 @@ class AnimationEvaluator {
 public:
     explicit AnimationEvaluator(AnimationEvaluationBudget budget = {});
     ~AnimationEvaluator();
+    static size_t state_mutable_bytes() noexcept;
     // Budget configuration is immutable once evaluator state exists. This
     // keeps a service from silently invalidating already-published poses.
     bool set_budget_config(const AnimationBudgetConfig& config);

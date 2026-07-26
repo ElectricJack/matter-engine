@@ -114,6 +114,7 @@ struct PoseLodDecision {
 class PoseLodScheduler {
 public:
     explicit PoseLodScheduler(AnimationBudgetConfig config = {});
+    static size_t state_mutable_bytes() noexcept;
     PoseLodDecision schedule(const PoseLodRequest& request);
     void forget(uint64_t instance_key) noexcept;
 

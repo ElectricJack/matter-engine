@@ -137,6 +137,7 @@ struct AnimationScheduleTraceEntry {
 // it intends to render, preventing a stale pose from being mistaken as current.
 class AnimationPoseSnapshotStore {
 public:
+    static size_t slot_mutable_bytes() noexcept;
     bool publish(const AnimationPoseSnapshot& snapshot);
     AnimationPoseSnapshot snapshot(AnimatorInstanceHandle instance,
                                    uint64_t frame_serial) const;
@@ -167,6 +168,7 @@ private:
 
 class AnimationSystems {
 public:
+    static size_t binding_container_mutable_bytes() noexcept;
     AnimationPoseSnapshotStore& pose_snapshots() noexcept { return pose_snapshots_; }
     const AnimationPoseSnapshotStore& pose_snapshots() const noexcept { return pose_snapshots_; }
     // Explicit presentation-to-render handoff.  Runtime evaluation owns pose

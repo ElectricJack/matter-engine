@@ -366,16 +366,32 @@ size_t AnimationRuntimeDefinition::mutable_bytes() const {
     // and four AnimationPoseSnapshotStores in AnimationSystems.
     const size_t pose_stream_bytes = sizeof(AnimationTransform) + 4u * sizeof(Mat4f);
     const size_t pose_bytes = multiply(joints, pose_stream_bytes);
-    if (pose_bytes == kMax || !add(multiply(pose_bytes, 12u))) return kMax;
+    if (pose_bytes == kMax || !add(multiply(pose_bytes, 12u)) ||
+        !add(multiply(AnimationEvaluator::state_mutable_bytes(), 2u)) ||
+        !add(multiply(AnimationPoseSnapshotStore::slot_mutable_bytes(), 4u)) ||
+        !add(AnimationSystems::binding_container_mutable_bytes()) ||
+        !add(PoseLodScheduler::state_mutable_bytes())) return kMax;
     // Graph evaluation owns a bounded temporary result for every graph node,
     // an Ozz context per clip, root deltas, and fixed-clip traversal records.
     if (!add(multiply(nodes, sizeof(std::vector<AnimationTransform>))) ||
         !add(multiply(multiply(nodes, joints), sizeof(AnimationTransform))) ||
         !add(multiply(nodes, sizeof(AnimationTransform) + sizeof(RuntimeGraphClipAdvance)))) return kMax;
+    size_t root_delta_scratch = 0;
     for (const RuntimeGraphClip& clip : binding->evaluation->clips) {
         if (!clip.animation || !add(OzzSampleContext::mutable_bytes_for_tracks(clip.animation->track_count())))
             return kMax;
+        // clip_root_delta/sample_root creates this context and its AoS locals
+        // while the evaluator's graph contexts remain alive. Calls are
+        // sequential, so reserve the largest one rather than every clip.
+        const size_t tracks = clip.animation->track_count();
+        const size_t temporary = OzzSampleContext::mutable_bytes_for_tracks(tracks);
+        if (temporary == kMax || tracks > kMax / sizeof(AnimationTransform)) return kMax;
+        const size_t local_bytes = tracks * sizeof(AnimationTransform);
+        if (local_bytes > kMax - temporary) return kMax;
+        root_delta_scratch = std::max(root_delta_scratch,
+                                      temporary + local_bytes);
     }
+    if (!add(root_delta_scratch)) return kMax;
     // AnimationSystems retains a value-owned lease for every bound animator.
     // Account its three converted input streams and all four target arrays;
     // these are separate allocations from Slot's pending control state.

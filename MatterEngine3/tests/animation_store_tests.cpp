@@ -376,8 +376,9 @@ void test_shared_mutable_reservation_releases_and_rolls_back() {
     CHECK(original.valid() && service.stats().mutable_bytes == baseline.mutable_bytes(),
           "the full shared runtime reservation admits exactly once");
     runtime.tick({0.1f, 0.1f, 2});
-    CHECK(service.stats().mutable_bytes == baseline.mutable_bytes(),
-          "the exact reservation remains sufficient after attach, fixed evaluation, and presentation allocation");
+    CHECK(runtime.animation_systems().pose_snapshots().latest(original.instance).instance.valid() &&
+              service.stats().mutable_bytes == baseline.mutable_bytes(),
+          "the exact reservation remains sufficient after attached fixed/root and presentation state publish");
 
     AnimationRuntimeDefinition larger = baseline;
     ++larger.pose_scratch_bytes;

@@ -300,6 +300,8 @@ AnimationEvaluator::AnimationEvaluator(AnimationEvaluationBudget budget) : budge
 }
 AnimationEvaluator::~AnimationEvaluator() = default;
 
+size_t AnimationEvaluator::state_mutable_bytes() noexcept { return sizeof(State); }
+
 bool AnimationEvaluator::set_budget_config(const AnimationBudgetConfig& config) {
     if (!config.valid() || !states_.empty()) return false;
     budget_.limits = config;

@@ -242,6 +242,13 @@ uint64_t AnimationPoseSnapshotStore::key(AnimatorInstanceHandle instance) {
     return (uint64_t(instance.slot_index) << 32u) | instance.generation;
 }
 
+size_t AnimationPoseSnapshotStore::slot_mutable_bytes() noexcept { return sizeof(Slot); }
+
+size_t AnimationSystems::binding_container_mutable_bytes() noexcept {
+    return sizeof(TargetRuntime) + sizeof(AnimationFixedWork) +
+           sizeof(RootMotionSlot);
+}
+
 AnimationPoseSnapshot AnimationPoseSnapshotStore::view(
     AnimatorInstanceHandle instance, const PoseBuffer& buffer) {
     return {instance, buffer.fixed_tick, buffer.frame_serial,
