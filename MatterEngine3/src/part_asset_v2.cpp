@@ -704,6 +704,23 @@ static bool parse_v2_suffix(const PartV2Preflight& input, uint64_t expected_reso
             }
         }
     }
+    // W5's LMSK trailer (per-level child presence) is written after EMIT by the
+    // static-lods save path. It is inert here -- the mask is read by the load_v2
+    // overload that asks for it -- but it MUST be skipped rather than treated as
+    // the start of an ANLK block, or every LMSK part fails to load through this
+    // parser as an "unknown part trailer".
+    if (r.p != r.end && static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
+        uint32_t tag = 0;
+        std::memcpy(&tag, r.p, sizeof(tag));
+        if (tag == 0x4C4D534Bu) { // LMSK
+            r.p += sizeof(tag);
+            const uint32_t count = r.get<uint32_t>();
+            if (!r.ok || count > static_cast<uint64_t>(r.end - r.p) / sizeof(uint32_t))
+                return fail("corrupt LMSK trailer");
+            r.take(static_cast<size_t>(count) * sizeof(uint32_t));
+            if (!r.ok) return fail("corrupt LMSK trailer");
+        }
+    }
     if (r.p == r.end) return true;
     if (!accept_animation_link) return fail("unknown part trailer");
     if (static_cast<size_t>(r.end - r.p) != 36) return fail("corrupt ANLK trailer");

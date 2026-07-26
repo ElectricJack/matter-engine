@@ -486,8 +486,13 @@ ISO_C   = $(MSL)/surface.c $(MSL)/fat_primitive.c \
 # (mesh_field_is_solid) and the same DSL/CSG-lowering sources as ISO_CPP/ISO_C
 # above -- deliberately, so it exercises the exact code being migrated.
 DSLDET_TARGET = build/dsl_determinism_tests
+# dsl_state.cpp routes translate/rotate to clip_translate/clip_rotate while an
+# animation clip is open, so the determinism harness now links dsl_animation.cpp.
 DSLDET_CPP = dsl_determinism_tests.cpp field_probe.cpp \
              ../src/csg_lowering.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+             ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp \
+             ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp \
+             ../src/animation/animation_validate.cpp \
              ../src/part_asset_v2.cpp \
              $(COMMON_MSL_BLAS_SRC)
 DSLDET_C   = $(MSL)/surface.c $(MSL)/fat_primitive.c \
@@ -535,7 +540,7 @@ EMITTERGATHER_CPP    = emitter_gather_tests.cpp ../src/render/vk_emitter_gather.
 
 # Phase 4 Task 4 — SceneRegistry reflected ECS validation + instantiation (def flavor).
 SCENE_REGISTRY_TARGET = build/scene_registry_tests
-SCENE_REGISTRY_CPP    = scene_registry_tests.cpp ../src/animation/animation_systems.cpp ../src/ecs/scene_registry.cpp \
+SCENE_REGISTRY_CPP    = scene_registry_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp \
                         ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                         ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
                         ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
@@ -607,7 +612,7 @@ EDITOR_MODEL_CPP    = editor_model_tests.cpp ../../MatterEditor/src/editor_model
 
 # Phase 4 Task 10 — Properties registry (needs scene_registry for ComponentDescriptor).
 PROPERTIES_REGISTRY_TARGET = build/properties_registry_tests
-PROPERTIES_REGISTRY_CPP    = properties_registry_tests.cpp ../src/animation/animation_systems.cpp ../../MatterEditor/src/properties_registry.cpp \
+PROPERTIES_REGISTRY_CPP    = properties_registry_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../../MatterEditor/src/properties_registry.cpp \
                              ../src/ecs/scene_registry.cpp \
                              ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                              ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
@@ -639,7 +644,7 @@ SPECIALIZED_EDITORS_C      = $(FLECS_C)
 # entities via scene::bootstrap_transactional). Needs the full Runtime, same
 # link set as SIMULATION_CONTROL.
 ECS_ENTITY_BRIDGE_TARGET = build/ecs_entity_bridge_tests
-ECS_ENTITY_BRIDGE_CPP    = ecs_entity_bridge_tests.cpp ../src/animation/animation_systems.cpp \
+ECS_ENTITY_BRIDGE_CPP    = ecs_entity_bridge_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) \
                            ../src/ecs/scene_registry.cpp \
                            ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                            ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
@@ -926,11 +931,22 @@ VIEWER_LOGIC_ANIMATION_BAKE_CPP = \
               ../src/animation/animation_ir.cpp \
               ../src/animation/animation_validate.cpp \
               ../src/animation/animation_binding_bake.cpp \
+              ../src/animation/animation_runtime_asset.cpp \
+              ../src/animation/anim_asset.cpp \
+              ../src/animation/anim_bundle.cpp \
+              ../src/animation/animation_asset_store.cpp \
+              ../src/animation/animation_controllers.cpp \
+              ../src/animation/animation_targets.cpp \
+              ../src/animation/animation_evaluator.cpp \
+              ../src/animation/animation_budget.cpp \
               ../src/animation/ozz_adapter.cpp \
               ../src/animation/ozz_bake.cpp \
               ../src/render/indexed_part_geometry.cpp
 VIEWER_LOGIC_ANIMATION_REQUIRED = dsl_animation.cpp animation_ir.cpp \
               animation_validate.cpp animation_binding_bake.cpp \
+              animation_runtime_asset.cpp anim_asset.cpp anim_bundle.cpp \
+              animation_asset_store.cpp animation_controllers.cpp animation_targets.cpp \
+              animation_evaluator.cpp animation_budget.cpp \
               ozz_adapter.cpp ozz_bake.cpp indexed_part_geometry.cpp
 VIEWER_PIPELINE_CPP = $(filter-out example_world.cpp, $(EXAMPLE_CPP)) \
               $(VIEWER_LOGIC_ANIMATION_BAKE_CPP)
@@ -1013,6 +1029,8 @@ GPU_RENDER_CPP = \
     ../src/event/event_hub.cpp \
     ../src/event/subscription.cpp \
     ../src/event/dispatch_context.cpp \
+    ../src/scene/scene_service.cpp \
+    ../src/scene/scene_change_tracker.cpp \
     ../src/live_edit.cpp \
     ../src/live_edit_prod.cpp \
     ../src/inotify_watcher.cpp \
@@ -1487,7 +1505,7 @@ run-physics: $(PHYSICS_TARGET)
 # Phase 4 Task 4 — Scene registry (reflected components, validation, instantiation).
 # Pure CPU test: no GL, no raylib — only box3d + flecs system deps.
 $(SCENE_REGISTRY_TARGET): $(SCENE_REGISTRY_OBJS) $(BOX3D_LIB)
-	$(CC) $(SCENE_REGISTRY_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+	$(CC) $(SCENE_REGISTRY_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) -lws2_32 -ldbghelp -lwinmm
 
 run-scene-registry: $(SCENE_REGISTRY_TARGET)
 	./$(SCENE_REGISTRY_TARGET)
@@ -1546,7 +1564,7 @@ run-editor-model: $(EDITOR_MODEL_TARGET)
 
 # Phase 4 Task 10 — Properties registry (pure CPU, needs scene_registry).
 $(PROPERTIES_REGISTRY_TARGET): $(PROPERTIES_REGISTRY_OBJS) $(BOX3D_LIB)
-	$(CC) $(PROPERTIES_REGISTRY_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+	$(CC) $(PROPERTIES_REGISTRY_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) -lws2_32 -ldbghelp -lwinmm
 
 run-properties-registry: $(PROPERTIES_REGISTRY_TARGET)
 	./$(PROPERTIES_REGISTRY_TARGET)
@@ -1568,7 +1586,7 @@ run-specialized-editors: $(SPECIALIZED_EDITORS_TARGET)
 # Phase 5 — entity -> ECS bridge (Ready world-state commands bootstrap
 # Flecs entities via scene::bootstrap_transactional).
 $(ECS_ENTITY_BRIDGE_TARGET): $(ECS_ENTITY_BRIDGE_OBJS) $(BOX3D_LIB)
-	$(CC) $(ECS_ENTITY_BRIDGE_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+	$(CC) $(ECS_ENTITY_BRIDGE_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) -lws2_32 -ldbghelp -lwinmm
 
 run-ecs-entity-bridge: $(ECS_ENTITY_BRIDGE_TARGET)
 	./$(ECS_ENTITY_BRIDGE_TARGET)
@@ -1655,7 +1673,7 @@ run-iso: $(ISO_TARGET)
 
 # Phase 3 (mathlib-and-raylib-removal) determinism harness.
 $(DSLDET_TARGET): $(DSLDET_OBJS)
-	$(CC) $(DSLDET_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+	$(CC) $(DSLDET_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-dsldet: $(DSLDET_TARGET)
 	./$(DSLDET_TARGET)
