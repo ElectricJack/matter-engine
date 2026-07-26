@@ -19,7 +19,8 @@ void draw_placeholder_tab(const char* name, const char* coming, ImGuiTabItemFlag
 } // namespace
 
 void BakeLab::draw_contents(matter::evt::Hub* app_hub, matter::WorldSession* session,
-                            const std::vector<WorldEntry>& worlds) {
+                            const std::vector<WorldEntry>& worlds,
+                            AnimationDebugOverlayOptions& overlay) {
     // main.cpp calls workbench().begin_frame() unconditionally each frame
     // (even while this window is hidden) so wants_viewport() never sticks on
     // a stale true if the Bake Lab window is closed mid-isolation.
@@ -44,6 +45,17 @@ void BakeLab::draw_contents(matter::evt::Hub* app_hub, matter::WorldSession* ses
         // frame (session->events()), never cached across a world switch.
         if (ImGui::BeginTabItem("Events")) {
             event_inspector_.draw(app_hub, session);
+            ImGui::EndTabItem();
+        }
+        // D2 (procedural-animation): observational animation tabs over the
+        // production session's debug snapshots. Refreshed here, inside the tab,
+        // so a closed tab costs nothing.
+        if (ImGui::BeginTabItem("Animation")) {
+            std::vector<matter::AnimationDebugInstanceSnapshot> snapshots;
+            const bool query_ok =
+                session ? session->animation_debug_snapshots(snapshots) : true;
+            animation_model_.update(snapshots, query_ok);
+            draw_animation_panel(animation_model_, overlay);
             ImGui::EndTabItem();
         }
         draw_placeholder_tab("Settle", "Parked (part-workbench.md I.6 / task 5.5)");

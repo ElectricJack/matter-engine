@@ -1779,7 +1779,7 @@ int main() {
                 ui.draw_viewport_window();
                 ui.draw_console_panel(console_log);
                 ui.draw_debug_panel(stats, viewer_commands);
-                ui.draw_bake_lab_panel(bake_lab, &app_hub, session.get(), worlds);
+                ui.draw_bake_lab_panel(bake_lab, &app_hub, session.get(), worlds, stats);
                 ui.draw_asset_browser_panel(asset_browser, worlds, stats, shared_lib,
                                            viewer_commands);
                 ui.draw_worlds_panel(worlds, stats, viewer_commands);

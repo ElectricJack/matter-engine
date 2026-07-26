@@ -7,6 +7,7 @@
 #include "bake_lab_timeline.h"
 #include "event_inspector.h"
 #include "part_workbench.h"
+#include "animation_panel.h"
 
 namespace matter {
 class WorldSession;
@@ -50,8 +51,12 @@ public:
     // `app_hub` is the editor-lifetime app hub (event-system.md S I.13); it and
     // `session` are handed to the read-only Events inspector tab (E4c), which
     // introspects the app hub + the production session hub (session->events()).
+    // `overlay` is the viewer's animation overlay option set (ViewerStats), so
+    // the Animation tab's Render section toggles exactly what the viewport
+    // draws rather than keeping a second copy that can drift.
     void draw_contents(matter::evt::Hub* app_hub, matter::WorldSession* session,
-                       const std::vector<WorldEntry>& worlds);
+                       const std::vector<WorldEntry>& worlds,
+                       AnimationDebugOverlayOptions& overlay);
 
     // --- command handlers (event-system.md S I.11, E4b) --------------------
     // The lab shell's poll-site logic, invoked by the workbench.open_part /
@@ -79,6 +84,10 @@ private:
     BakeLabTimeline timeline_;
     EventInspector event_inspector_;
     PartWorkbench workbench_;
+    // Refreshed only while the Animation tab is drawn: animation_debug_snapshots
+    // is an observational copy, and there is no reason to pay for it every frame
+    // on a tab nobody is looking at.
+    AnimationPanelModel animation_model_;
     // Set by the command handlers above; consumed in draw_contents (tab focus)
     // and take_window_raise (window raise). Replaces the old focus_workbench_tab_
     // polled flag + the WorkbenchHandoff channel.

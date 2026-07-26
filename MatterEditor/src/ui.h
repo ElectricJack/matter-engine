@@ -167,7 +167,8 @@ public:
     // here, raises/focuses the Bake Lab window itself.
     void draw_bake_lab_panel(BakeLab& lab, matter::evt::Hub* app_hub,
                              matter::WorldSession* session,
-                             const std::vector<WorldEntry>& worlds);
+                             const std::vector<WorldEntry>& worlds,
+                             ViewerStats& stats);
     // Standalone Assets pane (promoted out of Bake Lab's former "Assets" tab
     // so it's usable during any workflow, not just baking). Owns no state
     // itself — `browser` is a loop-scope AssetBrowser instance main.cpp owns

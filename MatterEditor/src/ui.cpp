@@ -681,7 +681,8 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
 
 void Ui::draw_bake_lab_panel(BakeLab& lab, matter::evt::Hub* app_hub,
                              matter::WorldSession* session,
-                             const std::vector<WorldEntry>& worlds) {
+                             const std::vector<WorldEntry>& worlds,
+                             ViewerStats& stats) {
     // A pending window-raise means the lab.focus_tab command just fired (via
     // the Asset Browser's "Open in Workbench"): make sure the window is visible
     // and raise it to the front. draw_contents (below) separately selects the
@@ -692,7 +693,7 @@ void Ui::draw_bake_lab_panel(BakeLab& lab, matter::evt::Hub* app_hub,
     }
     if (!lab.visible) return;
     ImGui::Begin("Bake Lab", &lab.visible);
-    lab.draw_contents(app_hub, session, worlds);
+    lab.draw_contents(app_hub, session, worlds, stats.animation_overlay);
     ImGui::End();
 }
 
