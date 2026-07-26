@@ -92,10 +92,11 @@ bool AnimationSkinBridge::expand(
     const AnimationSkinExpansion& input,
     std::vector<viewer::VkSkinSubmission>& out) const {
     const AnimationSkinnedBinding& binding = input.binding;
+    if (!binding.visible) return true;
     const AnimationSkinnedAsset* asset = binding.asset;
     if (!snapshots_ || !input.entity.entity_id || input.entity.binding_index != 0 ||
         input.part_hash == 0 || input.transform_slot == UINT32_MAX || input.frame_serial == 0 ||
-        !binding.visible || !binding.animator.valid() || !asset ||
+        !binding.animator.valid() || !asset ||
         binding.asset_generation != asset->generation || !valid_animation_skinned_asset(*asset) ||
         binding.lod >= asset->lods.size()) return false;
     const animation::AnimationPoseSnapshot pose =

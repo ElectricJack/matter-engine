@@ -149,6 +149,44 @@ static void test_bridge_hide_entity() {
     CHECK(bridge.active_count() == 0, "active_count should drop to 0 after hide");
 }
 
+static void test_hidden_animation_is_successful_zero_submission() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<SceneModule>();
+
+    auto rigid_entity = make_entity(world, 0x401, 0x9001, false);
+    render::AnimationRigidAsset rigid_asset{};
+    rigid_asset.identity = 0x7001;
+    rigid_asset.generation = 1;
+    rigid_entity.set<render::AnimationRigidBinding>(
+        {{1, 1}, &rigid_asset, rigid_asset.generation, true});
+
+    auto skin_entity = make_entity(world, 0x402, 0x9002, false);
+    render::AnimationSkinnedAsset skin_asset{};
+    skin_asset.identity = 0x7002;
+    skin_asset.generation = 1;
+    skin_asset.lods.push_back({0x9002, 0, 0, 3, 0, 3, 0, 0});
+    skin_entity.set<render::AnimationSkinnedBinding>(
+        {{2, 1}, &skin_asset, skin_asset.generation, 0, true, 0});
+    make_entity(world, 0x403, 0x9003, true);
+
+    DynamicSceneBridge bridge(8);
+    RecordingSink recorder;
+    std::string error;
+    CHECK(bridge.reconcile(world, recorder.make(), error, 1),
+          "hidden animation reconcile succeeds");
+    const auto changes = bridge.drain();
+    CHECK(changes.size() == 1 && changes[0].kind == render::DynamicSlotChangeKind::Bind &&
+              changes[0].part_hash == 0x9003 && bridge.active_count() == 1 &&
+              recorder.errors.empty(),
+          "hidden animation skips cleanly without poisoning a visible peer");
+    std::vector<viewer::VkSkinSubmission> skin;
+    std::vector<viewer::VkAnimationBoundsInstance> bounds;
+    CHECK(bridge.collect_animation_skinning(world, skin, bounds, error, 1) &&
+              skin.empty() && bounds.empty(),
+          "hidden skin collection is a successful zero submission");
+}
+
 static void test_bridge_remove_entity() {
     flecs::world world;
     world.import<ecs::CoreModule>();
@@ -313,6 +351,7 @@ int main() {
     test_bridge_transform_only();
     test_bridge_part_change();
     test_bridge_hide_entity();
+    test_hidden_animation_is_successful_zero_submission();
     test_bridge_remove_entity();
     test_bridge_missing_part_error();
     test_bridge_no_op_frame();

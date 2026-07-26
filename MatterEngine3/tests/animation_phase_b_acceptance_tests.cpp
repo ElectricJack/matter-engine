@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <unordered_set>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -157,6 +158,48 @@ GalleryFixture bake_gallery() {
         std::printf("Phase B gallery bake diagnostic: %s\n", gallery.error.message.c_str());
     CHECK(gallery.error.ok && !gallery.written_anim_path.empty() && !gallery.written_commit_path.empty(),
           "Phase B bakes a committed, authored AnimatedRigGallery bundle");
+
+    const auto check_exact_gallery_ownership = [&](const char* phase) {
+        AnimAsset inspected_asset;
+        BLASManager inspected_blas;
+        Diagnostics inspected_diagnostics;
+        CHECK(load_committed_animation_bundle(".", gallery.resolved_hash, inspected_blas,
+                                               inspected_asset, inspected_diagnostics),
+              phase);
+        BindingBake inspected_binding;
+        CHECK(get_anim_binding_bake(inspected_asset, inspected_binding),
+              "Phase B decodes gallery geometry ownership");
+        const size_t owner_count = (inspected_binding.lods.empty() ? 0u : 1u) +
+                                   inspected_binding.rigid_segments.size();
+        CHECK(owner_count == 4,
+              "Phase B shipped gallery has exactly one skin and three rigid owners");
+        BLASManager part_blas;
+        TLASManager part_tlas(65536);
+        std::vector<part_asset::ChildInstance> part_children;
+        part_asset::LodLevels part_lods;
+        std::vector<part_asset::VolumeEmitter> part_emitters;
+        std::optional<part_asset::PartAnimationLink> part_link;
+        CHECK(part_asset::load_v2(gallery.written_path, gallery.resolved_hash,
+                                  part_blas, part_tlas, part_children, part_lods,
+                                  part_emitters, part_link) && part_link,
+              "Phase B reads the shipped gallery PART ownership streams");
+        CHECK(part_lods.size() == inspected_binding.lods.size() && !part_lods.empty(),
+              "Phase B PART and MANM expose the same complete LOD ladder");
+        for (const auto& level : part_lods) {
+            const std::unordered_set<uint32_t> streams(level.blas_indices.begin(),
+                                                        level.blas_indices.end());
+            CHECK(level.blas_indices.size() == owner_count && streams.size() == owner_count,
+                  "Phase B every gallery LOD has exactly four unique owned streams");
+        }
+    };
+    check_exact_gallery_ownership(
+        "Phase B cold gallery bake admits exact geometry ownership");
+    const auto warm_gallery = host.bake_source(
+        read_text(objects / "AnimatedRigGallery.js"), "{}", options, hashes, 1, modules);
+    CHECK(warm_gallery.error.ok && warm_gallery.resolved_hash == gallery.resolved_hash,
+          "Phase B warm gallery bake resolves the same committed artifact");
+    check_exact_gallery_ownership(
+        "Phase B warm gallery bake admits exact geometry ownership");
 
     GalleryFixture fixture;
     BLASManager blas;

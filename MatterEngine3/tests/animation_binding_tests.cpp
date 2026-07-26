@@ -224,6 +224,7 @@ void test_rigid_only_binding_needs_no_skin_payload() {
     source.inverse_bind_matrices = {identity, identity};
     matter::animation::RigidSegmentBake rigid;
     rigid.name="separate"; rigid.joint=1; rigid.geometry.push_back({0, 2, 0, 0});
+    rigid.lod_geometry.push_back({0, 1});
     source.rigid_segments.push_back(rigid);
     matter::animation::AnimAsset asset;
     asset.sections = {
@@ -240,6 +241,32 @@ void test_rigid_only_binding_needs_no_skin_payload() {
           decoded.rigid_segments.size()==1 && decoded.rigid_segments[0].joint==1,
           "rigid-only MANM payload retains its segment owner without a skin LOD");
 }
+
+void test_lod_owner_slots_are_complete_unique_and_contiguous() {
+    BindingBake source;
+    CHECK(matter::animation::build_skin_binding(two_joint_rig(), {1}, {geometry()}, 1.0f, source),
+          "build ownership validation fixture");
+    matter::animation::RigidSegmentBake rigid;
+    rigid.name = "rigid"; rigid.joint = 1; rigid.geometry.push_back({0, 1, 0, 1});
+    rigid.lod_geometry.push_back({1, 1});
+    source.rigid_segments.push_back(rigid);
+    matter::animation::AnimAsset asset;
+    CHECK(matter::animation::set_anim_binding_bake(asset, source),
+          "one skin plus one rigid owner exactly covers slots zero and one");
+
+    auto duplicate = source;
+    duplicate.rigid_segments[0].lod_geometry[0].blas_slot = 0;
+    CHECK(!matter::animation::set_anim_binding_bake(asset, duplicate),
+          "a LOD rejects duplicate skin and rigid owner slots");
+    auto missing = source;
+    missing.rigid_segments[0].lod_geometry.clear();
+    CHECK(!matter::animation::set_anim_binding_bake(asset, missing),
+          "a rigid owner must be present at every binding LOD");
+    auto gap = source;
+    gap.rigid_segments[0].lod_geometry[0].blas_slot = 2;
+    CHECK(!matter::animation::set_anim_binding_bake(asset, gap),
+          "owner slots must be contiguous so no serialized stream is unowned");
+}
 }
 
 int main() {
@@ -253,5 +280,6 @@ int main() {
     test_binding_payload_requires_complete_cluster_bounds();
     test_binding_payload_retains_rigid_segments_and_attachments();
     test_rigid_only_binding_needs_no_skin_payload();
+    test_lod_owner_slots_are_complete_unique_and_contiguous();
     return check_summary();
 }

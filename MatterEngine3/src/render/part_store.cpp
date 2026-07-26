@@ -16,6 +16,7 @@
 #include <functional>
 #include <memory>
 #include <limits>
+#include <unordered_set>
 #include <sys/stat.h>
 
 namespace viewer {
@@ -823,6 +824,18 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
             return reject_partition();
         for (const auto& segment : partition.rigid_segments)
             if (segment.lod_geometry.size() != level_count) return reject_partition();
+        const size_t owner_count = (partition.lods.empty() ? 0u : 1u) +
+                                   partition.rigid_segments.size();
+        const auto& source_entries = scratch->get_entries();
+        for (const auto& level : lods_in) {
+            if (level.blas_indices.size() != owner_count) return reject_partition();
+            std::unordered_set<uint32_t> streams;
+            for (uint32_t index : level.blas_indices)
+                if (index >= source_entries.size() || !source_entries[index] ||
+                    source_entries[index]->triangles.empty() ||
+                    !streams.insert(index).second)
+                    return reject_partition();
+        }
 
         LoadedPart partitioned;
         partitioned.children = std::move(children);

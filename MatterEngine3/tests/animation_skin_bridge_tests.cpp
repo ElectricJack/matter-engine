@@ -83,6 +83,13 @@ void test_exact_snapshot_becomes_indexed_skin_submission() {
               out[0].pose.current[0].position.elements[12] == 5.0f &&
               out[0].pose.previous[0].position.elements[12] == 2.0f,
           "bridge converts current and previous palettes at the renderer boundary");
+
+    out.clear();
+    binding.visible = false;
+    const render::AnimationSkinExpansion hidden{{0x55, 4, 0}, 0xabc, 17, 41,
+                                                 binding, 6};
+    CHECK(bridge.expand(hidden, out) && out.empty(),
+          "semantically hidden skin binding is a successful zero submission");
 }
 
 void test_stale_and_mismatched_bindings_fail_without_torn_work() {

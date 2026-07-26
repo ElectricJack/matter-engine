@@ -45,6 +45,7 @@ static matter::animation::AnimAsset rigid_asset(uint64_t hash, matter::animation
     matter::Mat4f identity{}; identity.m[0]=identity.m[5]=identity.m[10]=identity.m[15]=1.0f;
     binding.inverse_bind_matrices.push_back(identity);
     RigidSegmentBake rigid; rigid.name="segment"; rigid.joint=0; rigid.geometry.push_back({0,1,0,1});
+    rigid.lod_geometry.push_back({0,1});
     binding.rigid_segments.push_back(rigid);
     if (!set_anim_binding_bake(asset, binding)) std::abort();
     return asset;
@@ -70,7 +71,8 @@ static bool publish_rigid_bundle(const std::filesystem::path& root, uint64_t has
     const auto candidate_part=root/("candidate-"+std::to_string(nonce.low)+".part");
     const auto candidate_anim=root/("candidate-"+std::to_string(nonce.low)+".anim");
     const part_asset::PartAnimationLink link{1,1,hash,nonce.high,nonce.low};
-    if (!part_asset::save_v2(candidate_part.string(),source,tlas,nullptr,0,{}, {},link,hash)) return false;
+    const part_asset::LodLevels lods{{0.5f,{0}}};
+    if (!part_asset::save_v2(candidate_part.string(),source,tlas,nullptr,0,lods,{},link,hash)) return false;
     const anim::AnimAsset asset=rigid_asset(hash,nonce);
     anim::Diagnostics diagnostics;
     if (!anim::save_anim_candidate(asset,candidate_anim,diagnostics)) return false;
@@ -140,7 +142,8 @@ static void test_partstore_owns_committed_animation_and_keeps_live_last_good() {
     const auto candidate_part=root/"candidate.part";
     const auto candidate_anim=root/"candidate.anim";
     const part_asset::PartAnimationLink link{1,1,hash,nonce.high,nonce.low};
-    CHECK(part_asset::save_v2(candidate_part.string(),source,tlas,nullptr,0,{}, {},link,hash), "A8 PartStore fixture writes linked Part candidate");
+    const part_asset::LodLevels lods{{0.5f,{0}}};
+    CHECK(part_asset::save_v2(candidate_part.string(),source,tlas,nullptr,0,lods,{},link,hash), "A8 PartStore fixture writes linked Part candidate");
     const anim::AnimAsset asset=rigid_asset(hash,nonce); anim::Diagnostics diagnostics;
     CHECK(anim::save_anim_candidate(asset,candidate_anim,diagnostics), "A8 PartStore fixture writes MANM candidate");
     anim::BundleIdentity identity; identity.resolved_hash=hash; identity.nonce=nonce;
@@ -204,7 +207,8 @@ static void test_partstore_retries_after_torn_generation_and_recovers_same_store
     TriEx extra{}; const BLASHandle handle=source.register_triangles(&triangle,1,&extra);
     TLASManager::DrawInstance instance{}; instance.blas_handle=handle; tlas.draw_batch({instance}); tlas.build(source);
     const part_asset::PartAnimationLink torn_link{1,1,hash,second.high,second.low};
-    CHECK(part_asset::save_v2(torn_part.string(),source,tlas,nullptr,0,{}, {},torn_link,hash),
+    const part_asset::LodLevels lods{{0.5f,{0}}};
+    CHECK(part_asset::save_v2(torn_part.string(),source,tlas,nullptr,0,lods,{},torn_link,hash),
           "A8 writes uncommitted second-generation PART");
     CHECK(part_asset::replace_file_atomic(torn_part.string(),
           (root/part_asset::cache_path_resolved(hash)).string()),
@@ -277,6 +281,12 @@ static void test_partstore_rejected_flat_candidate_releases_shared_blas() {
     CHECK(baseline_part && baseline_part->animation_asset &&
               baseline_part->animation_asset->nonce == nonce,
           "A8 flat rollback baseline loads linked generation");
+    matter::animation::BindingBake baseline_binding;
+    std::vector<uint64_t> baseline_subparts;
+    CHECK(baseline_part && matter::animation::get_anim_binding_bake(
+              *baseline_part->animation_asset, baseline_binding) &&
+              baseline.build_rigid_segment_subparts(hash, baseline_binding, baseline_subparts),
+          "A8 baseline materializes its exact rigid owner stream");
     const size_t baseline_live = baseline.blas().live_count();
     uint64_t baseline_refs = 0;
     for (const auto& entry : baseline.blas().get_entries()) baseline_refs += entry->ref_count;
@@ -294,6 +304,12 @@ static void test_partstore_rejected_flat_candidate_releases_shared_blas() {
     CHECK(replaced, "A8 flat rollback admission hook publishes linked replacement");
     CHECK(loaded && loaded->animation_asset && loaded->animation_asset->nonce == nonce,
           "A8 flat rollback rejects stale candidate and loads linked replacement");
+    matter::animation::BindingBake raced_binding;
+    std::vector<uint64_t> raced_subparts;
+    CHECK(loaded && matter::animation::get_anim_binding_bake(
+              *loaded->animation_asset, raced_binding) &&
+              raced.build_rigid_segment_subparts(hash, raced_binding, raced_subparts),
+          "A8 replacement materializes its exact rigid owner stream");
     uint64_t raced_refs = 0;
     for (const auto& entry : raced.blas().get_entries()) raced_refs += entry->ref_count;
     CHECK(raced.blas().live_count() == baseline_live,

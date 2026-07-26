@@ -50,27 +50,26 @@ bool DynamicSceneBridge::reconcile(flecs::world& world, const BridgeErrorSink& s
         return previous;
     };
 
-    // Binding zero is the skinned/static root.  A partitioned rigid-only
-    // asset has no such root stream, so only its articulated bindings 1..N
-    // may become dynamic records.  A skin candidate always keeps its root
-    // slot, even while ordinary PartInstance visibility is temporarily off:
-    // pre-skin visibility and LOD selection require that stable transform.
+    // PartInstance visibility is semantic visibility for every dynamic lane.
+    // Frustum/LOD decisions happen later, only for semantically visible roots.
     world.each([&](flecs::entity entity, const SceneEntityId& id, const ecs::WorldTransform& wt,
                    const PartInstance& part) {
         const auto* skin = entity.try_get<render::AnimationSkinnedBinding>();
-        const bool has_skin_candidate = skin && skin->asset && !skin->asset->lods.empty();
+        const bool has_skin = skin && skin->asset && !skin->asset->lods.empty();
         const auto* rigid = entity.try_get<render::AnimationRigidBinding>();
-        const bool rigid_only = rigid && rigid->asset && !has_skin_candidate;
+        const bool rigid_only = rigid && rigid->asset && !has_skin;
         const Mat4f previous = previous_for(id, wt.matrix);
-        if (((part.visible && !rigid_only) || has_skin_candidate) && part.part_hash != 0) {
+        if (part.visible && !rigid_only && part.part_hash != 0) {
             desired.push_back({root_key(id), part.part_hash, wt.matrix, previous, part.casts_shadow});
         }
     });
 
     // This query deliberately only transfers value components into the pure
     // adapter.  AnimationRigidBridge never queries Flecs or the evaluator.
-    world.each([&](flecs::entity, const SceneEntityId& id, const ecs::WorldTransform& wt,
+    world.each([&](flecs::entity entity, const SceneEntityId& id, const ecs::WorldTransform& wt,
                    const render::AnimationRigidBinding& binding) {
+        const auto* part = entity.try_get<PartInstance>();
+        if (part && !part->visible) return;
         const Mat4f previous = previous_for(id, wt.matrix);
         render::AnimationRigidExpansion expansion{root_key(id), wt.matrix, previous,
                                                    render_frame_serial, binding};
@@ -141,9 +140,7 @@ bool DynamicSceneBridge::collect_animation_skinning(
                    flecs::entity, const SceneEntityId& id,
                    const PartInstance& part,
                    const render::AnimationSkinnedBinding& binding) {
-        // PartInstance::visible is not the current animated frustum result.
-        // Always publish the live semantic binding; the renderer's current
-        // animated-bounds planner alone decides skin work/raster visibility.
+        if (!part.visible) return;
         const render::DynamicInstanceKey key = root_key(id);
         const auto tracked = tracked_.find(key);
         if (tracked == tracked_.end() || !tracked->second.slot.valid()) {

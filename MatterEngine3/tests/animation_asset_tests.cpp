@@ -212,13 +212,14 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     triangle.centroid = make_float3(0.333f, 0.333f, 0);
     TriEx extra{};
     const BLASHandle handle = blas.register_triangles(&triangle, 1, &extra);
+    const part_asset::LodLevels exact_lods{{0.2f, {0}}};
     TLASManager::DrawInstance instance{};
     instance.blas_handle = handle;
     tlas.draw_batch({instance});
     tlas.build(blas);
     part_asset::PartAnimationLink link{1, 1, hash, 0x1111222233334444ull, 0x5555666677778888ull};
     CHECK(part_asset::save_v2(candidate_part.string(), blas, tlas, nullptr, 0,
-                              {}, {}, link, hash), "write ANLK part candidate");
+                              exact_lods, {}, link, hash), "write ANLK part candidate");
     const auto geometry = viewer::build_indexed_part_geometry(&triangle, &extra, 1);
     const LodBindingSignature geometry_signature{
         viewer::indexed_part_geometry_signature(geometry, 0),
@@ -263,6 +264,27 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     CHECK(!publish_animation_bundle({candidate_part, candidate_anim, root}, stale_identity, diagnostics),
           "reject candidate whose Ozz tag is self-consistent but stale");
     CHECK(save_anim_candidate(anim, candidate_anim, diagnostics), "restore current compatibility candidate");
+    BLASManager extraneous_blas;
+    TLASManager extraneous_tlas(4);
+    const BLASHandle extraneous_first = extraneous_blas.register_triangles(&triangle, 1, &extra);
+    Tri extra_triangle = triangle;
+    extra_triangle.vertex0.z = extra_triangle.vertex1.z = extra_triangle.vertex2.z = 1.0f;
+    extra_triangle.centroid.z = 1.0f;
+    const BLASHandle extraneous_second = extraneous_blas.register_triangles(&extra_triangle, 1, &extra);
+    TLASManager::DrawInstance extraneous_instances[2]{};
+    extraneous_instances[0].blas_handle = extraneous_first;
+    extraneous_instances[1].blas_handle = extraneous_second;
+    extraneous_tlas.draw_batch({extraneous_instances[0], extraneous_instances[1]});
+    extraneous_tlas.build(extraneous_blas);
+    const auto extraneous_part = root / "extraneous.part";
+    const part_asset::LodLevels extraneous_lods{{0.2f, {0, 1}}};
+    CHECK(part_asset::save_v2(extraneous_part.string(), extraneous_blas, extraneous_tlas, nullptr, 0,
+                              extraneous_lods, {}, link, hash),
+          "write PART candidate with an unowned LOD stream");
+    BundleIdentity extraneous_identity = identity;
+    extraneous_identity.part_body_checksum = file_part_body_checksum(extraneous_part.string().c_str());
+    CHECK(!publish_animation_bundle({extraneous_part, candidate_anim, root}, extraneous_identity, diagnostics),
+          "reject PART LOD stream not owned by the MANM binding");
     BLASManager mismatched_blas;
     TLASManager mismatched_tlas(4);
     Tri mismatched_triangle = triangle;
@@ -277,12 +299,12 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     mismatched_tlas.build(mismatched_blas);
     const auto mismatched_part = root / "mismatched.part";
     CHECK(part_asset::save_v2(mismatched_part.string(), mismatched_blas, mismatched_tlas, nullptr, 0,
-                              {}, {}, link, hash), "write mismatched geometry candidate");
+                              exact_lods, {}, link, hash), "write mismatched geometry candidate");
     BundleIdentity mismatched_identity = identity;
     mismatched_identity.part_body_checksum = file_part_body_checksum(mismatched_part.string().c_str());
     CHECK(!publish_animation_bundle({mismatched_part, candidate_anim, root}, mismatched_identity, diagnostics),
           "reject candidate whose PART geometry differs from its MANM binding");
-    CHECK(part_asset::save_v2(candidate_part.string(), blas, tlas, nullptr, 0, {}, {}, link, hash),
+    CHECK(part_asset::save_v2(candidate_part.string(), blas, tlas, nullptr, 0, exact_lods, {}, link, hash),
           "rewrite coherent part after rejected geometry candidate");
     CHECK(save_anim_candidate(anim, candidate_anim, diagnostics),
           "rewrite coherent MANM after rejected geometry candidate");
@@ -304,7 +326,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     const auto manifest_path = cache_path_anim_commit(root, hash);
     const std::vector<uint8_t> manifest = read_bytes(manifest_path.string().c_str());
     CHECK(part_asset::save_v2(mismatched_part.string(), mismatched_blas, mismatched_tlas, nullptr, 0,
-                              {}, {}, link, hash), "rewrite mismatched geometry for committed-load test");
+                              exact_lods, {}, link, hash), "rewrite mismatched geometry for committed-load test");
     std::filesystem::copy_file(mismatched_part, committed_part_path,
                                std::filesystem::copy_options::overwrite_existing);
     auto mismatched_manifest = manifest;
@@ -317,7 +339,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
           "reject committed PART geometry that differs from its MANM binding");
     CHECK(unused.live_count() == last_good_blas_count && loaded == last_good_asset,
           "geometry mismatch preserves the last-good committed bundle");
-    CHECK(part_asset::save_v2(candidate_part.string(), blas, tlas, nullptr, 0, {}, {}, link, hash),
+    CHECK(part_asset::save_v2(candidate_part.string(), blas, tlas, nullptr, 0, exact_lods, {}, link, hash),
           "restore coherent part candidate after geometry mismatch test");
     std::filesystem::copy_file(candidate_part, committed_part_path,
                                std::filesystem::copy_options::overwrite_existing);
@@ -349,7 +371,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     for (uint32_t stage = 1; stage <= 3; ++stage) {
         const auto failed_part = root / "failed.part";
         const auto failed_anim = root / "failed.anim";
-        CHECK(part_asset::save_v2(failed_part.string(), blas, tlas, nullptr, 0, {}, {}, link, hash),
+        CHECK(part_asset::save_v2(failed_part.string(), blas, tlas, nullptr, 0, exact_lods, {}, link, hash),
               "rewrite candidate before injected publish failure");
         CHECK(save_anim_candidate(anim, failed_anim, diagnostics), "rewrite anim before injected publish failure");
         BundleIdentity failed_identity = identity;
@@ -362,7 +384,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     for (uint32_t replacement = 1; replacement <= 3; ++replacement) {
         const auto failed_part = root / "durability.part";
         const auto failed_anim = root / "durability.anim";
-        CHECK(part_asset::save_v2(failed_part.string(), blas, tlas, nullptr, 0, {}, {}, link, hash),
+        CHECK(part_asset::save_v2(failed_part.string(), blas, tlas, nullptr, 0, exact_lods, {}, link, hash),
               "rewrite candidate before post-rename durability failure");
         CHECK(save_anim_candidate(anim, failed_anim, diagnostics),
               "rewrite anim before post-rename durability failure");
@@ -377,7 +399,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     write_bytes(stale_lock.c_str(), {'s', 't', 'a', 'l', 'e'});
     const auto locked_part = root / "stale-lock.part";
     const auto locked_anim = root / "stale-lock.anim";
-    CHECK(part_asset::save_v2(locked_part.string(), blas, tlas, nullptr, 0, {}, {}, link, hash),
+    CHECK(part_asset::save_v2(locked_part.string(), blas, tlas, nullptr, 0, exact_lods, {}, link, hash),
           "write candidate behind stale lock file");
     CHECK(save_anim_candidate(anim, locked_anim, diagnostics), "write anim behind stale lock file");
     BundleIdentity locked_identity = identity;
@@ -388,7 +410,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
           "recovered stale lock is retained as a stable regular lock file");
     const auto contention_part = root / "contention.part";
     const auto contention_anim = root / "contention.anim";
-    CHECK(part_asset::save_v2(contention_part.string(), blas, tlas, nullptr, 0, {}, {}, link, hash),
+    CHECK(part_asset::save_v2(contention_part.string(), blas, tlas, nullptr, 0, exact_lods, {}, link, hash),
           "write candidate for same-process lock contention");
     CHECK(save_anim_candidate(anim, contention_anim, diagnostics), "write anim for same-process lock contention");
     BundleIdentity contention_identity = identity;
@@ -441,8 +463,9 @@ static void test_rigid_only_bundle_accepts_geometry_bearing_part() {
     source_tlas.draw_batch({instance});
     source_tlas.build(source_blas);
     const part_asset::PartAnimationLink link{1, 1, hash, 0x1111222233334444ull, 0x5555666677778888ull};
+    const part_asset::LodLevels rigid_lods{{0.2f, {0}}};
     CHECK(part_asset::save_v2(candidate_part.string(), source_blas, source_tlas, nullptr, 0,
-                              {}, {}, link, hash),
+                              rigid_lods, {}, link, hash),
           "write geometry-bearing rigid-only PART candidate");
 
     BindingBake binding;
@@ -453,6 +476,7 @@ static void test_rigid_only_bundle_accepts_geometry_bearing_part() {
     rigid.name = "segment";
     rigid.joint = 0;
     rigid.geometry.push_back({0, 1, 0, 1});
+    rigid.lod_geometry.push_back({0, 1});
     binding.rigid_segments.push_back(rigid);
     AnimAsset anim = sample_asset_with_binding(binding);
     anim.resolved_hash = hash;

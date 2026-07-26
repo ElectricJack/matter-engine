@@ -147,6 +147,26 @@ bool valid_binding(const BindingBake& bake) {
             return false;
         rigid_names.push_back(segment.name + "\x1f" + std::to_string(segment.joint));
     }
+    if (!bake.lods.empty() || !bake.rigid_segments.empty()) {
+        const size_t lod_count = !bake.lods.empty()
+            ? bake.lods.size() : bake.rigid_segments.front().lod_geometry.size();
+        if (lod_count == 0) return false;
+        for (const auto& segment : bake.rigid_segments)
+            if (segment.lod_geometry.size() != lod_count) return false;
+        const size_t owner_count = (bake.lods.empty() ? 0u : 1u) + bake.rigid_segments.size();
+        for (size_t lod_index = 0; lod_index != lod_count; ++lod_index) {
+            std::vector<bool> owned(owner_count, false);
+            const auto claim = [&owned](uint32_t slot) {
+                if (slot >= owned.size() || owned[slot]) return false;
+                owned[slot] = true;
+                return true;
+            };
+            if (!bake.lods.empty() && !claim(bake.lods[lod_index].blas_slot)) return false;
+            for (const auto& segment : bake.rigid_segments)
+                if (!claim(segment.lod_geometry[lod_index].blas_slot)) return false;
+            for (bool value : owned) if (!value) return false;
+        }
+    }
     std::vector<std::string> attachment_names;
     for (const auto& attachment : bake.attachments) {
         if (!valid_attachment_binding(attachment) ||

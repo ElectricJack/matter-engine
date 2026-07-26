@@ -30,33 +30,43 @@ void fail(Diagnostics&d,const char*c){d.add(c,{},c);}
 bool valid_lods(const std::vector<LodBindingSignature>& lods) { if(lods.size()>64)return false; std::unordered_set<uint64_t> identities; for(const auto& lod:lods){const uint64_t max_influences=uint64_t(lod.vertex_count)*4u; if(lod.indexed_vertex_signature==0||lod.vertex_count==0||lod.influence_count==0||uint64_t(lod.influence_count)>max_influences||!identities.insert(lod.indexed_vertex_signature).second)return false;}return true; }
 bool part_matches_binding(const BLASManager& blas, const part_asset::LodLevels& lods,
                           const BindingBake& binding) {
-    // Rigid segments and attachments are typed animation declarations; they
-    // do not carry skinned vertex data to compare against the Part's indexed
-    // geometry.  The caller has already fully validated the Part and MANM
-    // payloads, so semantic geometry matching applies only when a skin LOD
-    // is present.
-    if (binding.lods.empty()) return true;
+    const size_t owner_count = (binding.lods.empty() ? 0u : 1u) +
+                               binding.rigid_segments.size();
+    if (owner_count == 0) return true;
     const auto& entries = blas.get_entries();
-    if (lods.size() != binding.lods.size() || lods.size() > 64) return false;
-    for (size_t level = 0; level < binding.lods.size(); ++level) {
-        const auto& baked = binding.lods[level];
-        if (baked.blas_slot >= lods[level].blas_indices.size()) return false;
-        const uint32_t index = lods[level].blas_indices[baked.blas_slot];
-        if (index >= entries.size() || !entries[index]) return false;
-        std::vector<Tri> triangles;
-        std::vector<TriEx> triex;
-        const auto& entry = entries[index];
-        const TriEx* extra = entry->tri_extra.size() == entry->triangles.size()
-            ? entry->tri_extra.data() : entry->mesh->triEx;
-        triangles = entry->triangles;
-        if (extra) triex.insert(triex.end(), extra, extra + entry->triangles.size());
-        if (triangles.empty()) return false;
-        const auto geometry = viewer::build_indexed_part_geometry(
-            triangles.data(), extra ? triex.data() : nullptr,
-            static_cast<int>(triangles.size()));
-        if (geometry.vertex_count <= 0 || baked.vertex_count != static_cast<uint32_t>(geometry.vertex_count) ||
-            baked.indexed_vertex_signature != viewer::indexed_part_geometry_signature(geometry, static_cast<uint32_t>(level)))
-            return false;
+    const size_t level_count = binding.lods.empty()
+        ? binding.rigid_segments.front().lod_geometry.size()
+        : binding.lods.size();
+    if (level_count == 0 || lods.size() != level_count || lods.size() > 64) return false;
+    for (size_t level = 0; level < level_count; ++level) {
+        if (lods[level].blas_indices.size() != owner_count) return false;
+        std::unordered_set<uint32_t> streams;
+        for (uint32_t index : lods[level].blas_indices)
+            if (index >= entries.size() || !entries[index] ||
+                entries[index]->triangles.empty() || !streams.insert(index).second)
+                return false;
+        if (!binding.lods.empty()) {
+            const auto& baked = binding.lods[level];
+            if (baked.blas_slot >= lods[level].blas_indices.size()) return false;
+            const auto& entry = entries[lods[level].blas_indices[baked.blas_slot]];
+            const TriEx* extra = entry->tri_extra.size() == entry->triangles.size()
+                ? entry->tri_extra.data() : entry->mesh->triEx;
+            const auto geometry = viewer::build_indexed_part_geometry(
+                entry->triangles.data(), extra,
+                static_cast<int>(entry->triangles.size()));
+            if (geometry.vertex_count <= 0 ||
+                baked.vertex_count != static_cast<uint32_t>(geometry.vertex_count) ||
+                baked.indexed_vertex_signature != viewer::indexed_part_geometry_signature(
+                    geometry, static_cast<uint32_t>(level)))
+                return false;
+        }
+        for (const auto& rigid : binding.rigid_segments) {
+            if (rigid.lod_geometry.size() != level_count) return false;
+            const auto& ownership = rigid.lod_geometry[level];
+            if (ownership.blas_slot >= lods[level].blas_indices.size()) return false;
+            const auto& entry = entries[lods[level].blas_indices[ownership.blas_slot]];
+            if (entry->triangles.size() != ownership.triangle_count) return false;
+        }
     }
     return true;
 }
