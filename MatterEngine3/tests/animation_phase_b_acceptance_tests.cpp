@@ -153,15 +153,24 @@ GalleryFixture bake_gallery() {
     const std::string modules[] = {"Crate"};
     const auto gallery = host.bake_source(read_text(objects / "AnimatedRigGallery.js"), "{}", options,
                                           hashes, 1, modules);
+    if (!gallery.error.ok)
+        std::printf("Phase B gallery bake diagnostic: %s\n", gallery.error.message.c_str());
     CHECK(gallery.error.ok && !gallery.written_anim_path.empty() && !gallery.written_commit_path.empty(),
           "Phase B bakes a committed, authored AnimatedRigGallery bundle");
 
     GalleryFixture fixture;
     BLASManager blas;
     Diagnostics diagnostics;
-    CHECK(load_committed_animation_bundle(".", gallery.resolved_hash, blas, fixture.asset, diagnostics),
+    const bool loaded = load_committed_animation_bundle(".", gallery.resolved_hash, blas, fixture.asset, diagnostics);
+    if (!loaded) for (const Diagnostic& item : diagnostics.items)
+        std::printf("Phase B bundle diagnostic: %s %s:%u:%u %s\n", item.code.c_str(), item.source.module.c_str(), item.source.line, item.source.column, item.message.c_str());
+    CHECK(loaded,
           "Phase B reloads the committed ANIM pair before runtime evaluation");
-    CHECK(decode_animation_runtime_asset(fixture.asset, fixture.runtime, diagnostics),
+    diagnostics.items.clear();
+    const bool decoded = decode_animation_runtime_asset(fixture.asset, fixture.runtime, diagnostics);
+    if (!decoded) for (const Diagnostic& item : diagnostics.items)
+        std::printf("Phase B runtime diagnostic: %s %s:%u:%u %s\n", item.code.c_str(), item.source.module.c_str(), item.source.line, item.source.column, item.message.c_str());
+    CHECK(decoded,
           "Phase B decodes the authored controller, targets, clips, and rig for the real service");
     CHECK(!fixture.runtime.definition.targets.empty() && fixture.runtime.definition.binding &&
               !fixture.runtime.definition.binding->controllers.empty(),
