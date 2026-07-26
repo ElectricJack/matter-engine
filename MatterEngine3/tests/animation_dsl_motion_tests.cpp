@@ -118,13 +118,13 @@ void test_animated_rig_gallery_source_bakes() {
     CHECK(result.error.ok, "animated gallery remains a deterministic bake-time DSL source");
     const auto& build = host.last_animation_build();
     CHECK(build && build->rig.joints.size() == 21 && build->targets.size() == 4 &&
-          build->graph.nodes.size() == 5,
+          build->graph.nodes.size() == 7,
           "gallery declaration census stays intentional as the example evolves");
     CHECK(build && build->rig.joints.size() <= 128 && build->targets.size() <= 8 &&
           build->graph.nodes.size() <= 32 &&
           build->rigid_bindings.size() + build->attachments.size() <= 32,
           "gallery stays inside the C4 joints, targets, graph, and instance budgets");
-    CHECK(build && build->clips.size() == 2 && build->skin_bindings.size() == 1 &&
+    CHECK(build && build->clips.size() == 3 && build->skin_bindings.size() == 1 &&
           build->rigid_bindings.size() == 3 && build->attachments.size() == 1,
           "gallery contains generated clips, deformable skin, rigid segments, and socket attachment");
     matter::animation::AnimAsset asset;
@@ -136,10 +136,10 @@ void test_animated_rig_gallery_source_bakes() {
           "gallery's committed ANIM bytes decode into a production runtime definition");
     CHECK(decoded.rig.joints.size() == 21 && decoded.definition.inputs.size() == 1 &&
               decoded.definition.targets.size() == 4 && decoded.definition.binding &&
-              decoded.definition.binding->evaluation->clips.size() == 2 &&
-              decoded.definition.binding->evaluation->nodes.size() == 5 &&
+              decoded.definition.binding->evaluation->clips.size() == 3 &&
+              decoded.definition.binding->evaluation->nodes.size() == 7 &&
               decoded.definition.binding->controllers.size() == 1,
-          "decoded gallery retains its real idle/walk graph, gait declaration, targets, and Ozz clips");
+          "decoded gallery retains its normal locomotion plus additive overlay graph, gait declaration, targets, and Ozz clips");
 }
 }
 int main(){test_generated_loop_and_controls();test_validation_rejects_bad_motion_graph();test_collinear_target_requires_pole();test_generate_cannot_author_geometry();test_generate_cannot_mutate_terrain_or_join_cursor();test_motion_options_fail_closed();test_motion_source_spans_are_preserved();test_imported_motion_source_span_preserves_module();test_animated_rig_gallery_source_bakes();if(g_failures){std::printf("animation_dsl_motion_tests: %d failure(s)\n",g_failures);return 1;}std::printf("animation_dsl_motion_tests: all tests passed\n");return 0;}

@@ -388,6 +388,13 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
         };
         for (uint16_t index : order) {
             const GraphNode& node = build.graph.nodes[index];
+            // A completed rig without a motion graph temporarily carries this
+            // synthetic output so the rig itself can be canonicalized.  It
+            // does not sample a pose and is removed when beginMotion starts.
+            if (node.name.rfind("__", 0) == 0) {
+                kinds[index] = GraphPoseKind::Normal;
+                continue;
+            }
             switch (node.kind) {
                 case GraphNodeKind::Clip: {
                     bool additive = false;

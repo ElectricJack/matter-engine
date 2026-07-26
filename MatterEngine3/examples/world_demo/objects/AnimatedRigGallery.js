@@ -1,7 +1,7 @@
 // AnimatedRigGallery is deliberately a single deterministic bake source: it
 // exercises the procedural-animation pipeline without loading meshes or clips
 // from disk.  Its acceptance census is 21 joints, 3 rigid segments, 1
-// attachment, 4 declared targets, and 5 graph nodes.
+// attachment, 4 declared targets, and 7 graph nodes.
 //
 // The ground query is intentionally owned by the native proceduralGait
 // controller. Runtime JavaScript is not used to drive the targets.
@@ -108,14 +108,11 @@ class AnimatedRigGallery extends Part {
       position: [-0.35, 0, 0], scale: [0.34, 0.34, 0.34]
     });
 
-    // Generated clips: idle is a stationary breathing pose; walk supplies
-    // root translation for the fixed root-motion authority path.
+    // Generated clips: idle/walk are normal absolute poses; breathe is an
+    // explicitly additive bind-relative overlay.  Keeping that distinction
+    // in the shipped graph exercises the runtime archive contract.
     this.beginClip('idle', { duration: 1.5, sampleRate: 12, loop: true });
-    this.generate(phase => {
-      this.at('spine'); this.rotateX(Math.sin(phase * Math.PI * 2) * 0.08);
-      this.at('leftElbow'); this.rotateZ(Math.sin(phase * Math.PI * 2) * 0.10);
-      this.at('rightElbow'); this.rotateZ(-Math.sin(phase * Math.PI * 2) * 0.10);
-    });
+    this.generate(() => {});
     this.marker(0.0, 'idleStart');
     this.endClip();
 
@@ -131,6 +128,14 @@ class AnimatedRigGallery extends Part {
     });
     this.marker(0.0, 'leftStep');
     this.marker(0.4, 'rightStep');
+    this.endClip();
+
+    this.beginClip('breathe', { duration: 1.5, sampleRate: 12, loop: true, mode: 'additive' });
+    this.generate(phase => {
+      this.at('spine'); this.rotateX(Math.sin(phase * Math.PI * 2) * 0.08);
+      this.at('leftElbow'); this.rotateZ(Math.sin(phase * Math.PI * 2) * 0.10);
+      this.at('rightElbow'); this.rotateZ(-Math.sin(phase * Math.PI * 2) * 0.10);
+    });
     this.endClip();
 
     this.beginMotion('galleryMotion');
@@ -149,7 +154,9 @@ class AnimatedRigGallery extends Part {
     this.clipNode('idleNode', 'idle');
     this.clipNode('walkNode', 'walk');
     this.blend1D('speedBlend', 'speed', [[0, 'idleNode'], [1, 'walkNode']]);
-    this.nativeController('gaitNode', 'gait', 'speedBlend');
+    this.clipNode('breatheNode', 'breathe');
+    this.additive('locomotionWithBreath', 'speedBlend', 'breatheNode');
+    this.nativeController('gaitNode', 'gait', 'locomotionWithBreath');
     this.output('out', 'gaitNode');
     this.endMotion();
   }
