@@ -12,7 +12,7 @@ static int failures = 0;
 
 static void test_grid_lattice() {
     GridLattice lat(2.0f);
-    Vector3 p = lat.slot_position(SlotCoord{3, 0, -1});
+    mm::Vec3 p = lat.slot_position(SlotCoord{3, 0, -1});
     CHECK(fabsf(p.x - 6.0f) < 1e-6f, "grid slot_position x scales by spacing");
     CHECK(fabsf(p.y - 0.0f) < 1e-6f, "grid slot_position y scales by spacing");
     CHECK(fabsf(p.z + 2.0f) < 1e-6f, "grid slot_position z scales by spacing");
@@ -65,7 +65,7 @@ static CullParams default_params(int margin) {
     CullParams p;
     p.margin = margin; p.base_radius = 0.4f;
     p.jitter_amount = 0.1f; p.tint_alpha = 0.2f; p.seed = 1337;
-    p.cell_size = 1.6f; p.cell_origin_offset = Vector3{0,0,0};
+    p.cell_size = 1.6f; p.cell_origin_offset = mm::Vec3{0,0,0};
     p.spacing = 0.8f;   // matches the GridLattice(0.8f) used throughout
     p.max_tier = 0;     // refinement off unless a test opts in
     return p;
@@ -134,7 +134,7 @@ static long long cell_coord_key(int cx, int cy, int cz) {
 }
 
 // A cell-key helper mirroring cull_interior's bucketing (offset 0 in tests).
-static long long test_cell_key(const Vector3& pos, float cs) {
+static long long test_cell_key(const mm::Vec3& pos, float cs) {
     long long cx = (long long)floorf(pos.x / cs);
     long long cy = (long long)floorf(pos.y / cs);
     long long cz = (long long)floorf(pos.z / cs);
@@ -150,7 +150,7 @@ static void test_no_meshed_cell_borders_dropped() {
     std::vector<SlotCoord> no_mesh;
     auto kept = cull_interior(lat, occ, p, nullptr, &no_mesh);
 
-    auto cell_of = [&](const Vector3& pos) {
+    auto cell_of = [&](const mm::Vec3& pos) {
         return std::make_tuple((int)floorf(pos.x / p.cell_size),
                                (int)floorf(pos.y / p.cell_size),
                                (int)floorf(pos.z / p.cell_size));
@@ -322,7 +322,7 @@ static int test_generate_carve_particles() {
     printf("--- generate_carve_particles: determinism + threshold ---\n");
     std::vector<Particle> seeds;
     for (int i = 0; i < 1000; ++i) {
-        Particle p; p.position = (Vector3){ i*0.31f, (i%7)*0.4f, (i%13)*0.5f };
+        Particle p; p.position = MtVec3{ i*0.31f, (i%7)*0.4f, (i%13)*0.5f }; // Particle.position is MtVec3 (Phase 4 Step 3)
         p.radius = 0.31f; p.materialId = 8; seeds.push_back(p);
     }
     CarveParams off{}; off.amt = 0.0f;
@@ -349,7 +349,7 @@ static int test_lumpiness_modulates_radius() {
         occ.set(SlotCoord{x,y,z}, SlotData{8});
     CullParams p{}; p.margin=1; p.base_radius=0.62f; p.jitter_amount=0.0f;
     p.tint_alpha=0.0f; p.seed=1337; p.cell_size=2.4f; p.max_tier=0; p.spacing=0.8f;
-    p.cell_origin_offset=(Vector3){0,0,0};
+    p.cell_origin_offset=mm::Vec3{0,0,0};
     auto base = emit_all(lat, occ, p);
     p.lump_amt = 0.5f; p.lump_freq = 0.3f;
     auto lumped = emit_all(lat, occ, p);

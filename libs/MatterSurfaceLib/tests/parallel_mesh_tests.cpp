@@ -16,10 +16,10 @@ static void make_scene(Cell& cell, std::vector<StaticParticle>& particles) {
     // A small cluster of same-material particles inside the cell, plus a couple
     // offset ones, so meshing produces a non-trivial multi-triangle surface.
     const float r = 0.6f;
-    Vector3 c = cell.center;
+    mm::Vec3 c = cell.center;
     auto add = [&](float dx, float dy, float dz, uint32_t mat) {
         uint32_t idx = (uint32_t)particles.size();
-        particles.push_back(StaticParticle(Vector3{c.x+dx, c.y+dy, c.z+dz}, r, mat));
+        particles.push_back(StaticParticle(mm::Vec3{c.x+dx, c.y+dy, c.z+dz}, r, mat));
         cell.add_particle_index(idx, mat);
     };
     add(-0.4f, 0.0f, 0.0f, 0);
@@ -78,11 +78,11 @@ static void compare(const CellMeshResult& a, const CellMeshResult& b) {
 static size_t check_ratio(float ratio) {
     const float cell_size = 4.0f;
 
-    Cell cell_a(Vector3{0,0,0}, 0, cell_size);
+    Cell cell_a(mm::Vec3{0,0,0}, 0, cell_size);
     std::vector<StaticParticle> particles_a;
     make_scene(cell_a, particles_a);
 
-    Cell cell_b(Vector3{0,0,0}, 0, cell_size);
+    Cell cell_b(mm::Vec3{0,0,0}, 0, cell_size);
     std::vector<StaticParticle> particles_b;
     make_scene(cell_b, particles_b);
 
@@ -99,13 +99,13 @@ static size_t check_ratio(float ratio) {
 // each tagged with the source material. Exercises material-driven dispatch
 // through the real cell pipeline.
 static void test_oriented_cube_material_path() {
-    Cell cell(Vector3{0,0,0}, 0, 1.0f);
+    Cell cell(mm::Vec3{0,0,0}, 0, 1.0f);
     std::vector<StaticParticle> particles;
     StaticParticle sp{};
-    sp.position = Vector3{0.5f, 0.5f, 0.5f};
+    sp.position = mm::Vec3{0.5f, 0.5f, 0.5f};
     sp.radius = 0.3f;
     sp.materialId = 13;
-    sp.tint = Vector4{1,1,1,0};
+    sp.tint = mm::Vec4{1,1,1,0};
     sp.detail_size = 0.0f;
     particles.push_back(sp);
     cell.add_particle_index(0, 13);
