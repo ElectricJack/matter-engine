@@ -88,7 +88,7 @@ Covers "optimize tree generation" profiling and "bake different versions of part
 
 | # | Task | Size | Files | Gate |
 |---|---|---|---|---|
-| 4.1 | `VariantRow` + table UI: phase columns, key counters, baseline-row toggle, delta coloring | M | `MatterEditor/bake_lab_variants.cpp` | manual: two `Rock` size variants compare sensibly |
+| 4.1 | `VariantRow` + table UI: phase columns, key counters, baseline-row toggle, delta coloring | M | `MatterEditor/src/bake_lab_variants.cpp` | manual: two `Rock` size variants compare sensibly |
 | 4.2 | Part compare: ghost overlay (baseline gray + candidate colored wireframes via the M3.3 helper), tri/size deltas | S | same | manual |
 | 4.3 | Export/import JSON under `<lab-scratch>/variants/` (descriptor + summaries + hashes, no payloads); imported rows read-only | S | same | bake-lab.md §II.8 item 5 |
 | 4.4 | LOD compare: per-rung sub-table (tris / rung time / deviation vs. baseline LOD0, normalized by bound radius) + **rung substitution** (variant B's LOD0 as candidate rung k of variant A — the per-LOD generation-params experiment) | M | `bake_lab_variants.cpp`, deviation estimator in `bake_lab.cpp` or a small engine helper | bake-lab.md §II.8 item 6: default-vs-overridden `BakeTargets` sub-table sane; substitution row populates cost/tris/deviation + ghost |

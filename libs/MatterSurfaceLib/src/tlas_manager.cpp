@@ -139,7 +139,6 @@ void TLASManager::draw_batch(const std::vector<DrawInstance>& instances) {
 
 void TLASManager::clear() {
     draw_records_.clear();
-    active_draw_records_.clear(); // B4 fix: reset compacted record list
     next_instance_id_ = 1;
     
     // Reset matrix stack to just identity
@@ -189,10 +188,6 @@ void TLASManager::build(const BLASManager& blas_manager) {
         instance_array_size_ = 0;
     }
     
-    // B4 fix: build a compacted list of draw records that have a valid BLAS so that
-    // active_draw_records_[i] corresponds exactly to tlas_->blas[i].
-    active_draw_records_.clear();
-
     // Create BVH instances from draw records (using unique_ptr approach for now)
     instances_.reserve(draw_records_.size());
     std::vector<BVHInstance*> instance_ptrs;
@@ -203,7 +198,7 @@ void TLASManager::build(const BLASManager& blas_manager) {
         BVH* bvh = blas_manager.get_bvh(record.blas_handle);
         if (!bvh) {
             printf("Warning: BLAS handle %u not found in BLAS manager\n", record.blas_handle);
-            continue; // skip: do NOT add to active_draw_records_
+            continue; // skip: no instance/BVH for this record
         }
 
         // Create BVH instance
@@ -223,7 +218,6 @@ void TLASManager::build(const BLASManager& blas_manager) {
         // Add to our vectors — record and instance are added in lock-step
         instance_ptrs.push_back(instance.get());
         instances_.push_back(std::move(instance));
-        active_draw_records_.push_back(record); // B4: keep parallel with blas[]
     }
     
     // Create and build TLAS

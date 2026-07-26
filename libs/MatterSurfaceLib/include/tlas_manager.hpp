@@ -132,9 +132,6 @@ private:
 
     std::stack<mm::Mat4>    matrix_stack_;
     std::vector<DrawRecord>  draw_records_;
-    // B4 fix: compacted list of draw records that made it into the TLAS (i.e., had
-    // a valid BLAS). Index i here corresponds exactly to tlas_->blas[i].
-    std::vector<DrawRecord>  active_draw_records_;
     std::unique_ptr<TLAS>    tlas_;
     std::vector<BVHInstance> instance_storage_; // backing array owned by the manager; TLAS holds a raw pointer into it
     std::vector<std::unique_ptr<BVHInstance>> instances_; // Deprecated - kept for compatibility

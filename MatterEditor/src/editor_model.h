@@ -35,8 +35,10 @@ struct HierarchyRow {
 // SessionBinding scene adapter (scene_model_adapter.*) over SceneChangeTracker
 // deltas, and the mutation closures issue SceneService commands via the command
 // registry (execute()). query_records/generation + EditorModel::refresh() are
-// retained ONLY for the reduced Linux entry point (main_linux.cpp), which has no
-// event/command wiring; the Windows main.cpp leaves them null.
+// dead in production: main_linux.cpp, the reduced Linux entry point they were
+// retained for, is deleted, and the Windows main.cpp leaves them null. The only
+// remaining caller is MatterEngine3/tests/editor_model_tests.cpp, which drives
+// EditorModel directly (no session) and still needs the poll path.
 struct SceneCommands {
     // Query all SceneEntityId-bearing entities as records (legacy poll path;
     // Linux-only). Left null on Windows (delta-driven).

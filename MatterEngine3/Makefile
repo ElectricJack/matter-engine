@@ -228,11 +228,16 @@ LIB_FLAGS_STAMP = build/.lib_flags
 
 # Shader embedding codegen (Stage 1a).
 # Base shader list from the brief table + glsl includes found in .fs/.comp sources.
+# shaders_gpu/cull.comp, hiz_downsample.comp, raster_gpu_driven.vs used to be
+# embedded here for the GL GpuCuller/raster-composer path; that path (and its
+# only readers of these three sources) was deleted outright in Phase 5a
+# (tech-debt.md §6), so they are no longer listed. NOTE: this is unrelated to
+# build/shaders_vk/cull.comp.spv below (VK_SPV) -- that is a compiled Vulkan
+# SPIR-V binary built from the separate, live shaders_vk/cull.comp source and
+# must not be confused with the retired shaders_gpu/cull.comp GL source.
 SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.glsl \
     shaders/raytrace_tlas_blas_processed.fs \
-    shaders/materials.glsl shaders/bvh_tlas_common.glsl shaders/lighting.glsl \
-    shaders_gpu/cull.comp shaders_gpu/hiz_downsample.comp \
-    shaders_gpu/raster_gpu_driven.vs
+    shaders/materials.glsl shaders/bvh_tlas_common.glsl shaders/lighting.glsl
 # SHADER_FILES resolves logical paths into real filesystem paths under MatterEngine3/:
 # shaders/ is a symlink -> ../libs/MatterSurfaceLib/shaders; shaders_gpu/ is a real dir.
 SHADER_FILES := $(SHADER_LOGICAL)

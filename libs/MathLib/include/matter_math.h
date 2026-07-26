@@ -83,13 +83,17 @@ struct Quat {
 // names at face value — e.g. MatterEngine3/src/csg_lowering.cpp's "raylib
 // Matrix is column-major: m0..m3 col0, m4..m7 col1, etc" — describes the
 // naming, not the memory, and transposing on that basis would silently
-// rotate the matrix instead of translating it. Two in-repo call sites
-// already rely on the memory being row-major:
-//   - MatterEngine3/src/render/raster_mesh.cpp:158 `row_major_to_matrix` is
-//     a bare `memcpy(&m, t, sizeof(Matrix))` — no transpose.
-//   - MatterEngine3/tests/gpu_cull_tests.cpp:41-46's comment states it
-//     outright: "raylib Matrix memory is ROW-major (declaration order
-//     m0,m4,m8,m12 = first row) ... row_major_to_matrix is a straight copy."
+// rotate the matrix instead of translating it. Two in-repo call sites relied
+// on the memory being row-major at the time this was written; both are gone
+// now (raster_mesh.cpp was trimmed and gpu_cull_tests.cpp was retired
+// outright in the raylib-removal work, tech-debt.md §6), so this is kept as
+// the historical verification record for the memcpy-safety claim above, not
+// a live pointer:
+//   - MatterEngine3/src/render/raster_mesh.cpp's `row_major_to_matrix` was a
+//     bare `memcpy(&m, t, sizeof(Matrix))` — no transpose.
+//   - MatterEngine3/tests/gpu_cull_tests.cpp's comment stated it outright:
+//     "raylib Matrix memory is ROW-major (declaration order m0,m4,m8,m12 =
+//     first row) ... row_major_to_matrix is a straight copy."
 //
 // One real function DOES need care: `MatrixToFloatV` (raymath.h:2010) walks
 // the struct in *field-name* order (`v[12]=m.m12` etc.), so its output array

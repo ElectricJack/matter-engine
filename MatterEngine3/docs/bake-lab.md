@@ -241,7 +241,7 @@ public:
 - **LOD-target overrides (ladder-config experiments, §I.5):** when `lod_targets`/`flatten_targets` are set, the runner threads them to the bake as optional arguments (`HostBaker`/`lod_bake::bake_lods` and `part_flatten::flatten_part` grow optional-targets parameters defaulting to today's values; production call sites pass nothing and are byte-for-byte unchanged). Override-built artifacts live only in the job sandbox — never the production cache.
 - **World/tileset scopes (stage 3+):** a private `WorldSession` with `cache_root` pointed at the Lab scratch dir; details land with the settle instrument integration.
 
-### II.4 Variant table — `MatterEditor/bake_lab_variants.cpp`
+### II.4 Variant table — `MatterEditor/src/bake_lab_variants.cpp`
 
 - `VariantRow { BakeJobDesc desc; SpanSummary phases; std::map<std::string,double> counters; JobArtifacts artifacts; }`.
 - Table UI (`ImGui::Table`): one column per phase family + key counters; a "baseline" row toggle; delta coloring vs. baseline.
