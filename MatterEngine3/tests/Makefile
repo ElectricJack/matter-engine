@@ -743,6 +743,12 @@ SHLIB_C   = $(COMMON_MSL_C)
 # ===== flavor vl (viewer_logic) =========================================
 VIEWER_LOGIC_TARGET = build/viewer_logic_tests
 VIEWER_PIPELINE_CPP = $(filter-out example_world.cpp, $(EXAMPLE_CPP))
+# NOTE: do not add ../src/script/world_definition_loader.cpp to the explicit
+# list below -- it now arrives transitively via $(VIEWER_PIPELINE_CPP), which
+# pulls in EXAMPLE_CPP (world_definition_loader.cpp landed there so
+# example_world/gallery_bake_tests/lighting_garden_tests could link). obj_list
+# (:261) does not dedupe, so listing it in both places causes ld to see the
+# same object twice -> "multiple definition of matter::load_world_definition".
 VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../../MatterEditor/camera_controller.cpp \
               ../../MatterEditor/streaming_anchor_controller.cpp \
@@ -752,7 +758,6 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/provider/resolvers.cpp \
               ../src/render/part_store.cpp \
               ../src/provider/local_provider.cpp \
-              ../src/script/world_definition_loader.cpp \
               ../src/render/world_composer.cpp \
               ../src/render/raster_mesh.cpp \
               ../src/render/tileset_provider.cpp \
@@ -883,7 +888,6 @@ def_CPP_SRCS := $(sort \
     $(COMP_CPP) \
     $(FLATTEN_CPP) \
     $(TILESETTORUSBVH_CPP) \
-    $(TILESETMEADOWMANIFEST_CPP) \
     $(ISO_CPP) \
     $(DEV_SOURCES) \
     $(POLYTRI_CPP) \

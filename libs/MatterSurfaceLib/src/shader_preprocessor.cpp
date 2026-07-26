@@ -29,8 +29,10 @@ public:
             return false;
         }
         
-        // Write output
-        std::ofstream out(output_file);
+        // Write output in binary mode: on Windows, text mode silently rewrites
+        // every '\n' in `content` to '\r\n', turning a plain rebuild into a
+        // whole-file CRLF diff against the committed (LF) processed shader.
+        std::ofstream out(output_file, std::ios::binary);
         if (!out.is_open()) {
             std::cerr << "Error: Cannot open output file: " << output_file << std::endl;
             return false;

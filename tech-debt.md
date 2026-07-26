@@ -165,10 +165,11 @@ in code slated for deletion:
   out of `build-all.sh`; the whole class disappears if that prototype is ever
   deleted. It is the last duplicate cluster left in the tree.
 
-- **`libs/MatterSurfaceLib/Makefile` hardcodes `x86_64-w64-mingw32-g++-posix`**, which
-  is not installed under MSYS2 UCRT64 (plain `x86_64-w64-mingw32-g++` is;
-  MatterEditor uses `/ucrt64/bin/g++`). `make -C libs/MatterSurfaceLib` fails at the
-  compiler, not at any source. Pre-existing.
+- ~~**`libs/MatterSurfaceLib/Makefile` hardcodes `x86_64-w64-mingw32-g++-posix`**~~
+  — **fixed** in the Phase 6 sweep (`f674f773`): native-Windows branch now uses
+  the plain `x86_64-w64-mingw32-g++` that MSYS2 UCRT64 actually installs. The
+  Linux/WSL cross-compile branches, which use a real `-posix` package, were
+  left untouched.
 
 - **ASan is unavailable** in MSYS2 UCRT64 (`cannot find -lasan`).
   `SpatialQueryLib` and `MemoryLib` `test` targets are sanitizer-based, so on
@@ -186,25 +187,58 @@ in code slated for deletion:
 ## 8. Broken tests — all pre-existing, all found while moving paths
 
 None of these were introduced by the layout work; each was verified present
-before it. They are grouped here because they surfaced together.
+before it. They are grouped here because they surfaced together. The first
+five items below were **fixed by the Phase 6 sweep (`f674f773`)**; kept for
+the paper trail. The last item is new and still open.
 
-- **Six test files reference `projects/world_demo/schemas/`**, a directory that
-  has not existed since `83f171c9` — `WorldSector.js` lives in `objects/`.
-  Affected: `sector_bake_tests.cpp:28`, `rock_bake_profile.cpp:38`,
-  `tree_bake_check.cpp`, `grass_lod_tests.cpp:313`, `stress_forest_tests.cpp:146`,
-  `part_graph_integration_tests.cpp:747`. Verified present at `aff90146`.
-  `sector_bake_tests` runs and reports 11 failures starting `FAIL: WorldSector.js
-  readable`.
-- **`realpath` is not declared under UCRT64** in the `abspath()` helper that
-  `gallery_bake_tests`, `example_world`, `grass_lod_tests` and
-  `stress_forest_tests` each carry. They fail to COMPILE on Windows.
-- **`lighting_garden_tests.cpp:272` uses an undeclared `schemas`** — the
-  identifier is never defined in the file.
-- **`TILESETMEADOWMANIFEST_CPP` omits `../src/script/world_definition_loader.cpp`**,
-  so `tileset_meadow_manifest_tests` fails to link on `load_world_definition`.
-- **`material_registry_tests.cpp` has a wrong-depth include** —
-  `../../MatterEngine3/...` needs one more `../` now that tests sit three levels
-  below the repo root.
+- ~~**Six test files reference `projects/world_demo/schemas/`**~~ — **fixed**.
+  `WorldSector.js` moved to `objects/` in `83f171c9`; `sector_bake_tests.cpp`,
+  `rock_bake_profile.cpp`, `tree_bake_check.cpp`, `grass_lod_tests.cpp`,
+  `stress_forest_tests.cpp` and `part_graph_integration_tests.cpp` were
+  repointed. `sector_bake_tests` no longer fails on `WorldSector.js readable`.
+- ~~**`realpath` is not declared under UCRT64**~~ — **fixed**. The six
+  duplicated `abspath()`/`realpath()` helpers (`gallery_bake_tests`,
+  `example_world`, `grass_lod_tests`, `stress_forest_tests`, and two more —
+  the original count of four undercounted this) were replaced by one shared
+  `MatterEngine3/tests/portable_realpath.h` that branches to `_fullpath` on
+  `_WIN32`.
+- ~~**`lighting_garden_tests.cpp:272` uses an undeclared `schemas`**~~ — **fixed**,
+  same repoint as the six-file item above.
+- ~~**`TILESETMEADOWMANIFEST_CPP` omits `world_definition_loader.cpp`**~~ —
+  **fixed**; `tileset_meadow_manifest_tests` links and passes (5 run, 0 failed).
+  Doing this exposed two further build-graph bugs, both since fixed: the same
+  source got wired into `EXAMPLE_CPP` for the identical reason and ended up
+  double-listed in `VIEWER_LOGIC_CPP` (duplicate-object link failure on
+  `run-viewer-logic` — §10), and it lingered in `def_CPP_SRCS` without
+  `QJS_INC` (dormant `quickjs.h: No such file or directory` the moment any
+  `def`-flavor target reuses those sources — also §10).
+- ~~**`material_registry_tests.cpp` has a wrong-depth include**~~ — **fixed**;
+  `../../MatterEngine3/...` corrected to account for tests sitting three
+  levels below the repo root.
+
+- **The schema-path repoint above is correct, but the affected suites still
+  don't pass on Windows** — for an unrelated, older reason: they build their
+  sandbox directories with `system("rm -rf ... && mkdir -p ...")`, a POSIX-shell
+  assumption. Under `cmd.exe` this prints `The syntax of the command is
+  incorrect.` and the sandbox never gets created, so every test that depends on
+  it fails at `chdir`. Verified by actually running each target
+  (UCRT64/Windows, this audit — do not trust smaller numbers quoted elsewhere
+  without re-running):
+  - `run-sectorbake`: **7 failures**, exit 2 (`FAIL: save_v2 failed`, `FAIL:
+    deterministic hash`, ... — down from an earlier 11, but still red)
+  - `run-example`, `run-gallery`, `run-treebake`, `run-rock-profile`: **1
+    failure each** — `FAIL: chdir sandbox`, exit 2
+  - `run-grasslod`: **11 failures**, exit 2
+  - `run-stressforest`: **3 failures** (`FAIL: chdir(...)` x2 +
+    `FAIL: both sandboxes completed bake + flatten`), exit 2
+  - `run-graph-integration`: **20 failures**, exit 2 — a previously-quoted
+    figure of 11 for this target is wrong; the binary prints 20 distinct
+    `FAIL:` lines (no `N FAILURE(S)` summary line is printed for this suite)
+  None of this is new and none of it was introduced by the schema repoint —
+  the `system()` calls predate it. Fix is mechanical: replace each
+  `system("rm -rf X && mkdir -p X")` with `std::filesystem::remove_all` +
+  `create_directories`, the same pattern `viewer_logic_tests.cpp`'s
+  `reset_test_dir()`/`ensure_parts_dir()` already use.
 
 ## 9. Build and packaging
 
@@ -219,11 +253,21 @@ before it. They are grouped here because they surfaced together.
   editor.exe | grep active_dlss_mode` is the current workaround.
 - **`raytrace_tlas_blas_processed.fs` is generated but committed.** Produced by
   MatterSurfaceLib's `shader_preprocessor`, consumed by MatterEngine3's
-  embedded-shaders step through the `MatterEngine3/shaders` junction — and
-  regenerating it requires a toolchain that stock MSYS2 UCRT64 does not have
-  (§7). `clean` used to delete it, which broke every downstream build until a
-  `git checkout`; that was fixed and a deliberate `make regen-shaders` added,
-  but the underlying generated-yet-committed status remains.
+  embedded-shaders step through the `MatterEngine3/shaders` junction. `clean`
+  used to delete it, which broke every downstream build until a `git
+  checkout`; that was fixed and a deliberate `make regen-shaders` added, but
+  the underlying generated-yet-committed status remains, so `all: shaders
+  ...` still regenerates it on every build. Two prior blockers to regenerating
+  it under stock MSYS2 UCRT64 are now both fixed: the `g++-posix` compiler gap
+  (§7, fixed in `f674f773`), and `shader_preprocessor.cpp` opening its output
+  `ofstream` in text mode, which on Windows silently rewrote every `\n` to
+  `\r\n` — a 69,161-byte LF file regenerated as 70,859 bytes of CRLF, a
+  whole-file diff on every touch. Fixed by opening the output stream with
+  `std::ios::binary` (`libs/MatterSurfaceLib/src/shader_preprocessor.cpp`,
+  `process_file()`). Verified: `make -C libs/MatterSurfaceLib shaders`
+  reproduces the committed file byte-for-byte (`git status` clean afterward).
+  The generated-yet-committed status itself is unchanged; regenerating is
+  just no longer a trap.
 - **Tracked symlinks vs NTFS junctions.** `MatterEngine3/shaders`,
   `MatterEditor/shaders` and `MatterEditor/shaders_gpu` are tracked as mode
   120000 but exist here as junctions (`core.symlinks=false`). `git add <parent>`
@@ -231,3 +275,47 @@ before it. They are grouped here because they surfaced together.
   blobs; `skip-worktree` does NOT prevent it, because the damage creates new
   paths rather than modifying the flagged one. Now guarded by trailing-slash
   `.gitignore` rules — do not remove them.
+
+## 10. This audit's fixes (build-graph bugs, both resolved)
+
+- **`run-viewer-logic` failed to link: duplicate object in `VIEWER_LOGIC_OBJS`.**
+  `MatterEngine3/tests/Makefile`'s `EXAMPLE_CPP` gained
+  `../src/script/world_definition_loader.cpp` (needed — `example_world` and
+  `lighting_garden_tests` require it). `VIEWER_LOGIC_CPP` (:746) already
+  listed that same file explicitly *and* appends `VIEWER_PIPELINE_CPP` (:745,
+  `$(filter-out example_world.cpp,$(EXAMPLE_CPP))`), so the file landed in the
+  link line twice. `obj_list` (:261) does not `$(sort)`, so `ld` saw
+  `up__src__script__world_definition_loader.cpp.o` twice and failed with
+  `multiple definition of matter::load_world_definition`. Fixed by deleting
+  the now-redundant explicit line — the file already arrives transitively via
+  `VIEWER_PIPELINE_CPP` — rather than touching the shared `obj_list` macro
+  (used by ~65 other `*_OBJS` variables) or `EXAMPLE_CPP` itself (shared by
+  `GALLERY_CPP`/`TREEBAKE_CPP`/`ROCKPROF_CPP`/`GRASSLOD_CPP`/
+  `STRESSFOREST_CPP`/`LIGHTING_GARDEN_CPP`). Audited every other `*_OBJS`
+  variable in the file for the same hazard (mechanically, by expanding each
+  one and diffing total vs. unique object-file count) — this was the only one
+  affected. `run-viewer-logic` now links and runs. On a byte-fresh
+  `%TEMP%/me3_viewer_cache_test` it gets to exactly one remaining failure —
+  `FAIL: passthrough composes every instance plus its children` — traced to
+  `WorldComposer::compose()`'s instance count diverging from the test's own
+  count for the 2 of 3 demo-manifest parts whose `flatten()` legitimately
+  produces no mesh (`flatten: merged mesh is empty`, by design, not a bug in
+  anything this pass touched). That failure, `viewer_logic_tests.cpp`,
+  `world_composer.cpp`, `local_provider.cpp`, `part_store.cpp` and the
+  `world_demo` project content are all byte-identical between `f674f773` and
+  current `HEAD`, so it predates and is independent of this fix — left open,
+  not fixed here. (A *stale* local cache — leftover `.flat.part` files from
+  an older on-disk format — makes it look far worse: 4 failures including
+  `load_flat_v3 failed`, reproduced once during this audit. Wipe
+  `%TEMP%/me3_viewer_cache_test` before trusting a run's failure count.)
+- **Dormant `def`-flavor breakage in `TILESETMEADOWMANIFEST_CPP`.** The same
+  commit moved `TILESETMEADOWMANIFEST_OBJS` to the `qjs` flavor (needs
+  `QJS_INC` to find `quickjs.h`) but left `$(TILESETMEADOWMANIFEST_CPP)` — now
+  including `world_definition_loader.cpp` + `module_resolver.cpp` — in
+  `def_CPP_SRCS` too. `FLAVOR_def_FLAGS` (:223) has no `$(QJS_INC)`, so any
+  future `def`-flavor target reusing those sources would fail with `quickjs.h:
+  No such file or directory`. Nothing requests the `def`-flavor object today,
+  so it was silent. Fixed by removing `$(TILESETMEADOWMANIFEST_CPP)` from
+  `def_CPP_SRCS` (:886) — it only needs to be listed once, under `qjs_CPP_SRCS`
+  (:918), which is where the real target (`TILESETMEADOWMANIFEST_OBJS`) draws
+  from. `tileset_meadow_manifest_tests`: 5 run, 0 failed.
