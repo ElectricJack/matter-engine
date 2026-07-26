@@ -16,8 +16,17 @@
 // includable from any layer, including ones that never touch a renderer.
 // Everything is inline/header-only to avoid ODR hazards once multiple TUs
 // pull it in during later phases.
+//
+// Phase 4 (Step 2) adds matter_math_c.h: plain C structs (MtVec2/MtVec3/
+// MtVec4/MtMat4) that are layout-compatible with Vec2/Vec3/Vec4/Mat4 below,
+// for headers shared between C and C++ (see that file's comment). It has
+// the same "no raylib/GL/Vulkan" constraint, so including it here does not
+// weaken this header's own promise.
 
 #include <cmath>
+#include <cstddef>
+
+#include "matter_math_c.h"
 
 namespace mm {
 
@@ -137,6 +146,64 @@ inline Mat4 zero() {
     Mat4 out{};
     for (float& value : out.m) {
         value = 0.0f;
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// C-POD bridge — layout equivalence + conversions to/from matter_math_c.h.
+//
+// These static_asserts are the actual mechanism, not the comment: if a field
+// is ever added to one side and not the other, or the two struct definitions
+// drift out of member order, this fails to compile. sizeof alone would not
+// catch a reordering that happens to keep the same size (e.g. swapping x/y),
+// so each member's offsetof is checked individually too.
+//
+// to_c()/from_c() are the ONLY sanctioned way to cross between mm:: and Mt*
+// — do not memcpy/reinterpret_cast at call sites; a future divergence should
+// break here, at one place, not silently at every call site that rolled its
+// own copy.
+// ---------------------------------------------------------------------------
+
+static_assert(sizeof(Vec2) == sizeof(MtVec2), "mm::Vec2 / MtVec2 size mismatch");
+static_assert(offsetof(Vec2, x) == offsetof(MtVec2, x), "mm::Vec2 / MtVec2 member offset mismatch (x)");
+static_assert(offsetof(Vec2, y) == offsetof(MtVec2, y), "mm::Vec2 / MtVec2 member offset mismatch (y)");
+
+static_assert(sizeof(Vec3) == sizeof(MtVec3), "mm::Vec3 / MtVec3 size mismatch");
+static_assert(offsetof(Vec3, x) == offsetof(MtVec3, x), "mm::Vec3 / MtVec3 member offset mismatch (x)");
+static_assert(offsetof(Vec3, y) == offsetof(MtVec3, y), "mm::Vec3 / MtVec3 member offset mismatch (y)");
+static_assert(offsetof(Vec3, z) == offsetof(MtVec3, z), "mm::Vec3 / MtVec3 member offset mismatch (z)");
+
+static_assert(sizeof(Vec4) == sizeof(MtVec4), "mm::Vec4 / MtVec4 size mismatch");
+static_assert(offsetof(Vec4, x) == offsetof(MtVec4, x), "mm::Vec4 / MtVec4 member offset mismatch (x)");
+static_assert(offsetof(Vec4, y) == offsetof(MtVec4, y), "mm::Vec4 / MtVec4 member offset mismatch (y)");
+static_assert(offsetof(Vec4, z) == offsetof(MtVec4, z), "mm::Vec4 / MtVec4 member offset mismatch (z)");
+static_assert(offsetof(Vec4, w) == offsetof(MtVec4, w), "mm::Vec4 / MtVec4 member offset mismatch (w)");
+
+static_assert(sizeof(Mat4) == sizeof(MtMat4), "mm::Mat4 / MtMat4 size mismatch");
+static_assert(offsetof(Mat4, m) == offsetof(MtMat4, m), "mm::Mat4 / MtMat4 member offset mismatch (m)");
+
+inline Vec2 from_c(const MtVec2& v) { return {v.x, v.y}; }
+inline MtVec2 to_c(const Vec2& v) { return {v.x, v.y}; }
+
+inline Vec3 from_c(const MtVec3& v) { return {v.x, v.y, v.z}; }
+inline MtVec3 to_c(const Vec3& v) { return {v.x, v.y, v.z}; }
+
+inline Vec4 from_c(const MtVec4& v) { return {v.x, v.y, v.z, v.w}; }
+inline MtVec4 to_c(const Vec4& v) { return {v.x, v.y, v.z, v.w}; }
+
+inline Mat4 from_c(const MtMat4& in) {
+    Mat4 out{};
+    for (int i = 0; i < 16; ++i) {
+        out.m[i] = in.m[i];
+    }
+    return out;
+}
+
+inline MtMat4 to_c(const Mat4& in) {
+    MtMat4 out{};
+    for (int i = 0; i < 16; ++i) {
+        out.m[i] = in.m[i];
     }
     return out;
 }

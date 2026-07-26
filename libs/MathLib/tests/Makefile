@@ -18,18 +18,33 @@ OBJ_DIR = build
 
 TARGET = $(OBJ_DIR)/mathlib_tests
 
-all: test
+# C smoke-compile target (Phase 4 Step 2): proves matter_math_c.h is valid C,
+# compiled with the C compiler rather than g++ -- see matter_math_c_smoke.c's
+# header comment for why this needs to be a separate gcc invocation instead
+# of just relying on mathlib_tests.cpp (which is built with g++ and would
+# silently accept C++-only syntax leaking into the header).
+CC = gcc
+CSMOKE_TARGET = $(OBJ_DIR)/matter_math_c_smoke
+
+all: test c-smoke
 
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
 
-$(TARGET): mathlib_tests.cpp ../include/matter_math.h $(ENGINE_INCLUDE)/matter/math_types.h | $(OBJ_DIR)
+$(TARGET): mathlib_tests.cpp ../include/matter_math.h ../include/matter_math_c.h $(ENGINE_INCLUDE)/matter/math_types.h | $(OBJ_DIR)
 	$(CXX) $(CXXFLAGS) -o $(TARGET) mathlib_tests.cpp
+
+$(CSMOKE_TARGET): matter_math_c_smoke.c ../include/matter_math_c.h | $(OBJ_DIR)
+	$(CC) -std=c99 -Wall -Wextra -g -I../include -o $(CSMOKE_TARGET) matter_math_c_smoke.c
 
 test: $(TARGET)
 	./$(TARGET)
 
+c-smoke: $(CSMOKE_TARGET)
+	./$(CSMOKE_TARGET)
+	@echo "matter_math_c.h compiles and runs as plain C99"
+
 clean:
 	rm -rf $(OBJ_DIR)
 
-.PHONY: all test clean
+.PHONY: all test c-smoke clean

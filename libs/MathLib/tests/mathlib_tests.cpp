@@ -41,6 +41,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 namespace {
 
@@ -427,6 +428,93 @@ void test_multiply_composition_order() {
     PASS();
 }
 
+// ---------------------------------------------------------------------------
+// Extra (Phase 4 Step 2): matter_math_c.h layout compatibility.
+//
+// The static_asserts in matter_math.h already make a *compile-time*
+// divergence between mm:: and Mt* impossible; these tests instead pin the
+// *runtime* behaviour of to_c()/from_c() (values round-trip unchanged) and,
+// for Mat4, prove the two types are genuinely interchangeable in memory --
+// not just equal in size -- by memcpy'ing between them and checking the
+// result still transforms points identically. A conversion helper that
+// silently permuted fields (e.g. from_c swapping y/z) would pass the
+// static_asserts (same size, same individual offsets exist on both sides)
+// but fail this.
+// ---------------------------------------------------------------------------
+void test_c_pod_conversions_round_trip() {
+    const MtVec2 c_v2{1.5f, -2.5f};
+    const mm::Vec2 v2 = mm::from_c(c_v2);
+    if (!nearly_equal(v2.x, 1.5f, 1e-6f) || !nearly_equal(v2.y, -2.5f, 1e-6f)) {
+        FAIL("mm::from_c(MtVec2) did not preserve x/y");
+    }
+    const MtVec2 c_v2_back = mm::to_c(v2);
+    if (!nearly_equal(c_v2_back.x, c_v2.x, 1e-6f) || !nearly_equal(c_v2_back.y, c_v2.y, 1e-6f)) {
+        FAIL("mm::to_c(Vec2) did not round-trip");
+    }
+
+    const MtVec3 c_v3{1.0f, 2.0f, 3.0f};
+    const mm::Vec3 v3 = mm::from_c(c_v3);
+    if (!nearly_equal(v3.x, 1.0f, 1e-6f) || !nearly_equal(v3.y, 2.0f, 1e-6f) ||
+        !nearly_equal(v3.z, 3.0f, 1e-6f)) {
+        FAIL("mm::from_c(MtVec3) did not preserve x/y/z in order");
+    }
+    const MtVec3 c_v3_back = mm::to_c(v3);
+    if (!nearly_equal(c_v3_back.x, c_v3.x, 1e-6f) || !nearly_equal(c_v3_back.y, c_v3.y, 1e-6f) ||
+        !nearly_equal(c_v3_back.z, c_v3.z, 1e-6f)) {
+        FAIL("mm::to_c(Vec3) did not round-trip");
+    }
+
+    const MtVec4 c_v4{1.0f, 2.0f, 3.0f, 4.0f};
+    const mm::Vec4 v4 = mm::from_c(c_v4);
+    if (!nearly_equal(v4.x, 1.0f, 1e-6f) || !nearly_equal(v4.y, 2.0f, 1e-6f) ||
+        !nearly_equal(v4.z, 3.0f, 1e-6f) || !nearly_equal(v4.w, 4.0f, 1e-6f)) {
+        FAIL("mm::from_c(MtVec4) did not preserve x/y/z/w in order");
+    }
+    const MtVec4 c_v4_back = mm::to_c(v4);
+    if (!nearly_equal(c_v4_back.x, c_v4.x, 1e-6f) || !nearly_equal(c_v4_back.y, c_v4.y, 1e-6f) ||
+        !nearly_equal(c_v4_back.z, c_v4.z, 1e-6f) || !nearly_equal(c_v4_back.w, c_v4.w, 1e-6f)) {
+        FAIL("mm::to_c(Vec4) did not round-trip");
+    }
+
+    PASS();
+}
+
+void test_c_pod_mat4_memory_layout_interchangeable() {
+    // A non-trivial TRS matrix, built entirely through mm:: builders.
+    const mm::Mat4 built = mm::multiply(
+        mm::multiply(mm::translation({3.0f, -2.0f, 5.0f}),
+                     mm::rotation_axis(mm::normalize({1.0f, 2.0f, 3.0f}), 0.8f)),
+        mm::scale({2.0f, 0.5f, 1.5f}));
+
+    // Round-trip through the C POD via the sanctioned conversions.
+    const MtMat4 c_mat = mm::to_c(built);
+    const mm::Mat4 back = mm::from_c(c_mat);
+    if (!mat4_nearly_equal(built, back, 1e-6f)) {
+        FAIL("mm::to_c/from_c(Mat4) did not round-trip exactly");
+    }
+
+    // Prove the layouts are genuinely byte-identical, not just size-equal:
+    // memcpy mm::Mat4 -> MtMat4 (bypassing to_c()) and confirm the raw bytes
+    // still transform a point exactly like the original. If MtMat4 had a
+    // different field order or padding, this would produce a garbled
+    // transform even though sizeof matched.
+    MtMat4 raw_copy{};
+    static_assert(sizeof(raw_copy) == sizeof(built), "size checked again at the call site");
+    std::memcpy(&raw_copy, &built, sizeof(built));
+    const mm::Mat4 reinterpreted = mm::from_c(raw_copy);
+
+    const mm::Vec3 p{7.0f, -3.0f, 11.0f};
+    const mm::Vec3 expected = mm::transform_point(built, p);
+    const mm::Vec3 actual = mm::transform_point(reinterpreted, p);
+    if (!nearly_equal(actual.x, expected.x, 1e-4f) || !nearly_equal(actual.y, expected.y, 1e-4f) ||
+        !nearly_equal(actual.z, expected.z, 1e-4f)) {
+        FAIL("MtMat4 memcpy'd from mm::Mat4 did not transform points identically -- "
+             "layouts are not actually byte-compatible");
+    }
+
+    PASS();
+}
+
 } // namespace
 
 int main() {
@@ -441,6 +529,8 @@ int main() {
     RUN_TEST(test_rotation_cardinal_matches_quaternion_path);
     RUN_TEST(test_rotation_axis_degenerate_axis_returns_identity);
     RUN_TEST(test_multiply_composition_order);
+    RUN_TEST(test_c_pod_conversions_round_trip);
+    RUN_TEST(test_c_pod_mat4_memory_layout_interchangeable);
 
     std::printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
