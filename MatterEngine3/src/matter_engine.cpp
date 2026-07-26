@@ -355,11 +355,9 @@ struct WorldSession::Impl {
         animation::BindingBake binding;
         const animation::AnimAsset* service_asset = nullptr;
         render::AnimationRigidAsset rigid;
-#ifdef MATTER_VULKAN_VIEWER
         std::vector<viewer::VkSkinInfluence> skin_influences;
         viewer::VkAnimationBoundsAsset skin_bounds;
         render::AnimationSkinnedAsset skin;
-#endif
     };
     struct RuntimeAnimationInstance {
         flecs::entity_t entity = 0;
@@ -373,6 +371,7 @@ struct WorldSession::Impl {
     std::set<uint64_t> rejected_runtime_animation_assets;
     std::map<flecs::entity_t, RuntimeAnimationInstance>
         runtime_animation_instances;
+    AnimationRasterRangeResolver animation_raster_range_resolver;
 
     // Provider config and live provider instance.
     // Phase C Task 14: shared_ptr so publish job lambdas can capture a strong
@@ -548,9 +547,7 @@ struct WorldSession::Impl {
     void poll_runtime_sources();
     void reset_runtime_animation();
     void reconcile_runtime_animation();
-#ifdef MATTER_VULKAN_VIEWER
     void reconcile_runtime_animation_skinning();
-#endif
     // Execute one BakeAll/Reload command. Called only on the worker thread.
     void execute_bake(matter_async::Command& cmd, bool is_reload);
     // Execute a RebakeCone command. Called only on the worker thread.
@@ -3751,6 +3748,11 @@ void WorldSession::set_test_fault_hook(std::function<void(int)> hook) {
     impl_->cfg.test_fault_hook = std::move(hook);
 }
 
+void WorldSession::set_test_animation_raster_range_resolver(
+    AnimationRasterRangeResolver resolver) {
+    impl_->animation_raster_range_resolver = std::move(resolver);
+}
+
 void WorldSession::set_bake_focus(const float pos[3]) {
     // Phase C Task 3: thread-safe write of the focus point.
     // Copied under focus_mutex; the worker reads a snapshot at the top of
@@ -3981,7 +3983,6 @@ void WorldSession::Impl::reconcile_runtime_animation() {
                 rejected_runtime_animation_assets.insert(asset_identity);
                 continue;
             }
-#ifdef MATTER_VULKAN_VIEWER
             if (!created->binding.lods.empty()) {
                 for (const animation::VertexInfluences& source :
                      created->binding.lods.front().influences) {
@@ -4023,7 +4024,6 @@ void WorldSession::Impl::reconcile_runtime_animation() {
             created->skin.generation = 1;
             created->skin.influences = &created->skin_influences;
             created->skin.bounds = &created->skin_bounds;
-#endif
             runtime_asset = created.get();
             runtime_animation_assets.emplace(asset_identity,
                                              std::move(created));
@@ -4079,9 +4079,8 @@ void WorldSession::Impl::reconcile_runtime_animation() {
     }
 }
 
-#ifdef MATTER_VULKAN_VIEWER
 void WorldSession::Impl::reconcile_runtime_animation_skinning() {
-    if (!vk_scene || !store) return;
+    if (!animation_raster_range_resolver || !store) return;
     for (auto& entry : runtime_animation_instances) {
         RuntimeAnimationInstance& instance = entry.second;
         if (!ecs_runtime.world().is_alive(instance.entity)) continue;
@@ -4096,21 +4095,19 @@ void WorldSession::Impl::reconcile_runtime_animation_skinning() {
             loaded->lod_mesh_data.empty() ||
             loaded->lod_mesh_data.front().vertex_count <= 0) continue;
 
-        uint32_t vertex_start = 0, vertex_count = 0;
-        uint32_t index_start = 0, index_count = 0;
-        if (!vk_scene->part_raster_range(
-                instance.part_hash, vertex_start, vertex_count,
-                index_start, index_count)) continue;
+        AnimationRasterRange range{};
+        if (!animation_raster_range_resolver(
+                instance.part_hash, range)) continue;
         const animation::LodSkinBinding& lod = asset.binding.lods.front();
         const viewer::RasterMeshData& mesh = loaded->lod_mesh_data.front();
         if (lod.vertex_count != static_cast<uint32_t>(mesh.vertex_count) ||
-            lod.vertex_count > vertex_count ||
-            mesh.indices.size() > index_count ||
+            lod.vertex_count > range.vertex_count ||
+            mesh.indices.size() > range.index_count ||
             mesh.indices.size() > std::numeric_limits<uint32_t>::max())
             continue;
         asset.skin.lods = {{
-            instance.part_hash, vertex_start, 0, lod.vertex_count,
-            index_start, static_cast<uint32_t>(mesh.indices.size())}};
+            instance.part_hash, range.vertex_start, 0, lod.vertex_count,
+            range.index_start, static_cast<uint32_t>(mesh.indices.size())}};
         const scene::PartInstance* part =
             entity.try_get<scene::PartInstance>();
         (void)ecs_runtime.attach_animation_skinned_binding(
@@ -4118,7 +4115,6 @@ void WorldSession::Impl::reconcile_runtime_animation_skinning() {
             part && part->visible);
     }
 }
-#endif
 
 void WorldSession::tick(const TickDesc& desc) {
     const ecs_runtime::TickResult result = impl_->ecs_runtime.tick(desc);
@@ -4130,6 +4126,7 @@ void WorldSession::tick(const TickDesc& desc) {
     impl_->stats.ecs_fixed_steps += result.fixed_steps;
     impl_->stats.ecs_dropped_steps += result.dropped_steps;
     impl_->reconcile_runtime_animation();
+    impl_->reconcile_runtime_animation_skinning();
     impl_->poll_runtime_sources();
     impl_->publish_streaming_snapshot();
 }
@@ -4681,6 +4678,15 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         }
         // ensure_vulkan_part above establishes immutable renderer-global
         // source/index ranges. Publish skinned ECS bindings only afterwards.
+        impl_->animation_raster_range_resolver =
+            [owner = impl_.get()](
+                uint64_t part_hash, AnimationRasterRange& range) {
+                return owner->vk_scene &&
+                       owner->vk_scene->part_raster_range(
+                           part_hash, range.vertex_start,
+                           range.vertex_count, range.index_start,
+                           range.index_count);
+            };
         impl_->reconcile_runtime_animation_skinning();
 
         // C2 uses the same conservative scene visibility/transform lane as

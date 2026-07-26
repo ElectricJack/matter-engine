@@ -21,6 +21,15 @@ namespace matter {
 
 struct VulkanFrame;
 
+struct AnimationRasterRange {
+    uint32_t vertex_start = 0;
+    uint32_t vertex_count = 0;
+    uint32_t index_start = 0;
+    uint32_t index_count = 0;
+};
+using AnimationRasterRangeResolver =
+    std::function<bool(uint64_t part_hash, AnimationRasterRange& out)>;
+
 struct WorldDesc {
     // Preferred project layout. open_world derives objects/, worlds/,
     // optional shared-lib/, and .cache/<world>/ from this root.
@@ -181,6 +190,11 @@ public:
     // tooling. In particular, active_assets must remain bounded across entity
     // removal and animated-part replacement.
     AnimationRuntimeStats animation_runtime_stats() const;
+    // Test-only production seam: substitutes only the immutable renderer range
+    // lookup. Skin validation and ECS binding still execute through the exact
+    // runtime reconciliation used by Vulkan.
+    void set_test_animation_raster_range_resolver(
+        AnimationRasterRangeResolver resolver);
     // Copied coordinator state; no streamer or render-resource state crosses
     // the worker/app boundary.
     streaming::SectorStreamingStatus streaming_status() const;

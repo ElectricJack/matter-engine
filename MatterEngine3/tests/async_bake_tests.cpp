@@ -18,7 +18,9 @@
 // reset job's raster block is skipped in non-gl46 mode; no window is created.
 
 #include "matter/engine_context.h"
+#include "matter/scene.h"
 #include "matter/world_session.h"
+#include "render/animation_skin_bridge.h"
 
 #include <chrono>
 #include <cstdio>
@@ -171,6 +173,44 @@ struct EvRec {
     int done = 0, total = 0;
     std::string phase;
 };
+
+struct SkinBindingObservation {
+    uint32_t count = 0;
+    uint64_t part_hash = 0;
+    uint64_t asset_identity = 0;
+    uint32_t source_vertex = 0;
+    uint32_t influence_vertex = 0;
+    uint32_t vertex_count = 0;
+    uint32_t first_index = 0;
+    uint32_t index_count = 0;
+    size_t influence_count = 0;
+    bool visible = false;
+};
+
+static SkinBindingObservation observe_skin_binding(
+    matter::WorldSession& session) {
+    SkinBindingObservation observed{};
+    session.ecs().each(
+        [&observed](flecs::entity,
+                    const matter::scene::PartInstance& part,
+                    const matter::render::AnimationSkinnedBinding& binding) {
+            ++observed.count;
+            observed.part_hash = part.part_hash;
+            observed.visible = binding.visible;
+            if (!binding.asset ||
+                binding.lod >= binding.asset->lods.size()) return;
+            const auto& lod = binding.asset->lods[binding.lod];
+            observed.asset_identity = binding.asset->identity;
+            observed.source_vertex = lod.source_vertex;
+            observed.influence_vertex = lod.influence_vertex;
+            observed.vertex_count = lod.vertex_count;
+            observed.first_index = lod.first_index;
+            observed.index_count = lod.index_count;
+            observed.influence_count = binding.asset->influences
+                ? binding.asset->influences->size() : 0;
+        });
+    return observed;
+}
 
 static std::string ev_type_name(matter::EventType t) {
     switch (t) {
@@ -1410,6 +1450,16 @@ static bool test_production_animated_gallery_binding() {
         return false;
     }
 
+    uint64_t cold_range_part = 0;
+    uint32_t cold_range_calls = 0;
+    cold->set_test_animation_raster_range_resolver(
+        [&cold_range_part, &cold_range_calls](
+            uint64_t part_hash, matter::AnimationRasterRange& range) {
+            cold_range_part = part_hash;
+            ++cold_range_calls;
+            range = {1200, 1000000, 3400, 1000000};
+            return true;
+        });
     cold->request_bake();
     std::vector<EvRec> cold_events;
     const bool cold_baked = drive_bake(*cold, cold_events, 180);
@@ -1420,6 +1470,18 @@ static bool test_production_animated_gallery_binding() {
           "shipped 21-joint gallery creates real rigid and skinned runtime bindings");
     const uint64_t cold_asset_hash =
         cold_snapshots.empty() ? 0 : cold_snapshots.front().asset.resolved_hash;
+    const SkinBindingObservation cold_skin =
+        observe_skin_binding(*cold);
+    CHECK(cold_range_calls > 0 && cold_skin.count == 1 &&
+              cold_range_part == cold_skin.part_hash &&
+              cold_skin.asset_identity == cold_asset_hash &&
+              cold_skin.source_vertex == 1200 &&
+              cold_skin.influence_vertex == 0 &&
+              cold_skin.vertex_count > 0 &&
+              cold_skin.influence_count == cold_skin.vertex_count &&
+              cold_skin.first_index == 3400 &&
+              cold_skin.index_count > 0,
+          "cold gallery uses production skin reconciliation with injected global raster ranges");
     CHECK(cold->animation_runtime_stats().active_instances == 1 &&
               cold->animation_runtime_stats().active_assets == 1,
           "cold gallery owns exactly one animator and immutable animation asset");
@@ -1433,6 +1495,16 @@ static bool test_production_animated_gallery_binding() {
         remove_tree(project_root);
         return false;
     }
+    uint64_t warm_range_part = 0;
+    uint32_t warm_range_calls = 0;
+    warm->set_test_animation_raster_range_resolver(
+        [&warm_range_part, &warm_range_calls](
+            uint64_t part_hash, matter::AnimationRasterRange& range) {
+            warm_range_part = part_hash;
+            ++warm_range_calls;
+            range = {5600, 1000000, 7800, 1000000};
+            return true;
+        });
     warm->request_bake();
     std::vector<EvRec> warm_events;
     const bool warm_baked = drive_bake(*warm, warm_events, 120);
@@ -1444,6 +1516,18 @@ static bool test_production_animated_gallery_binding() {
     CHECK(warm_enumerated && exact_gallery(warm_snapshots) &&
               warm_snapshots.front().asset.resolved_hash == cold_asset_hash,
           "warm restore republishes the entity-only shipped animation asset");
+    const SkinBindingObservation warm_skin =
+        observe_skin_binding(*warm);
+    CHECK(warm_range_calls > 0 && warm_skin.count == 1 &&
+              warm_range_part == warm_skin.part_hash &&
+              warm_skin.asset_identity == cold_asset_hash &&
+              warm_skin.source_vertex == 5600 &&
+              warm_skin.influence_vertex == 0 &&
+              warm_skin.vertex_count > 0 &&
+              warm_skin.influence_count == warm_skin.vertex_count &&
+              warm_skin.first_index == 7800 &&
+              warm_skin.index_count > 0,
+          "warm gallery executes the same production skin reconciliation contract");
 
     const fs::path world_path =
         project_root / "worlds" / "AnimatedRigGallery.js";
@@ -1458,7 +1542,9 @@ static bool test_production_animated_gallery_binding() {
     CHECK(hidden_baked &&
               tick_and_snapshot(*warm, hidden_snapshots) &&
               exact_gallery(hidden_snapshots) &&
-              !hidden_snapshots.front().visible,
+              !hidden_snapshots.front().visible &&
+              observe_skin_binding(*warm).count == 1 &&
+              !observe_skin_binding(*warm).visible,
           "authored visibility changes refresh the live animation binding");
 
     CHECK(write_file(
@@ -1472,6 +1558,7 @@ static bool test_production_animated_gallery_binding() {
     CHECK(removed_baked &&
               tick_and_snapshot(*warm, removed_snapshots) &&
               removed_snapshots.empty() &&
+              observe_skin_binding(*warm).count == 0 &&
               warm->animation_runtime_stats().active_instances == 0 &&
               warm->animation_runtime_stats().active_assets == 0,
           "entity removal releases animator and immutable animation asset ownership");
@@ -1507,6 +1594,11 @@ static bool test_production_animated_gallery_binding() {
               exact_gallery(replacement_snapshots) &&
               replacement_snapshots.front().asset.resolved_hash !=
                   cold_asset_hash &&
+              observe_skin_binding(*warm).count == 1 &&
+              observe_skin_binding(*warm).asset_identity ==
+                  replacement_snapshots.front().asset.resolved_hash &&
+              observe_skin_binding(*warm).source_vertex == 5600 &&
+              observe_skin_binding(*warm).first_index == 7800 &&
               warm->animation_runtime_stats().active_assets == 1,
           "full gallery replacement publishes a new bounded animation asset");
 
@@ -1524,6 +1616,9 @@ static bool test_production_animated_gallery_binding() {
         swaps_bounded &=
             tick_and_snapshot(*warm, swap_snapshots) &&
             exact_gallery(swap_snapshots) &&
+            observe_skin_binding(*warm).count == 1 &&
+            observe_skin_binding(*warm).asset_identity ==
+                swap_snapshots.front().asset.resolved_hash &&
             warm->animation_runtime_stats().active_instances == 1 &&
             warm->animation_runtime_stats().active_assets == 1;
     }
