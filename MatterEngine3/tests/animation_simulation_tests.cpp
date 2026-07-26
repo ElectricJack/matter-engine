@@ -773,10 +773,22 @@ void test_runtime_scene_binding_publishes_c2_indexed_skin_work() {
               skinning.begin_frame(0, 0) && skinning.submit_visible(0, submissions),
           "registered immutable influences and fresh pose select the C2 compute queue");
     const auto& queued = skinning.frame(0);
+    std::vector<viewer::VkAnimationBoundsGpuRecord> raster_records(2);
+    raster_records[0].instance_slot = submissions[0].instance_slot;
+    raster_records[0].instance_generation = submissions[0].instance_generation;
+    raster_records[0].lod = submissions[0].lod;
+    raster_records[1] = raster_records[0];
+    ++raster_records[1].instance_generation;
+    viewer::mark_animation_skin_raster_records(raster_records,
+                                                queued.raster_draws);
     CHECK(queued.work_items.size() == 1 && queued.raster_draws.size() == 1 &&
-              vk_skin_replaces_static_command(queued.raster_draws, 12u, 3u) &&
-              !vk_skin_replaces_static_command(queued.raster_draws, 15u, 3u),
-          "only the exact animated indexed command is replaced; unrelated static work remains visible");
+              queued.raster_draws[0].first_index == 12u &&
+              queued.raster_draws[0].index_count == 3u &&
+              (raster_records[0].flags &
+                   viewer::kVkAnimationBoundsSkinRaster) != 0 &&
+              (raster_records[1].flags &
+                   viewer::kVkAnimationBoundsSkinRaster) == 0,
+          "only the exact generational animated instance leaves static culling; peers remain visible");
 
     const viewer::VkAnimationBoundsInstance expected_bound = active_bounds.front();
     submissions.clear();

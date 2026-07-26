@@ -246,29 +246,42 @@ static void test_overflow_reuses_only_fence_owned_last_complete_raster_output() 
         [](const VkSkinRasterDraw& draw) { return draw.instance_slot == 3; });
     CHECK(retained_draw != reused.raster_draws.end() &&
               retained_draw->output_frame_slot == 0 &&
-              retained_draw->instance_generation == 7 &&
-              vk_skin_replaces_static_command(reused.raster_draws, 12, 6),
-          "last-complete fallback selects the sealed prior buffer slice and suppresses bind pose");
+              retained_draw->instance_generation == 7,
+          "last-complete fallback selects the sealed prior buffer slice");
+    CHECK(!skinning.begin_frame(0, 20),
+          "producer slot cannot recycle while an unsealed consumer references it");
+    CHECK(skinning.mark_submitted(1, 21),
+          "consumer frame seals its retained-source dependency");
+    CHECK(!skinning.begin_frame(0, 20),
+          "producer slot cannot recycle when only its own fence is complete");
+    CHECK(skinning.begin_frame(0, 21),
+          "producer slot recycles after every dependent consumer fence completes");
 
     VkSkinSubmission first_overflow = candidate(92, 4, 2, 0, 0, 0);
     first_overflow.instance_generation = 1;
     first_overflow.first_index = 24;
     first_overflow.index_count = 6;
-    CHECK(skinning.begin_frame(1, 0) &&
+    CHECK(skinning.begin_frame(1, 21) &&
               skinning.submit_visible(1, {first_overflow, preferred}),
           "first-frame overflow still publishes a complete fallback transaction");
     CHECK(skinning.frame(1).fallbacks.size() == 1 &&
               skinning.frame(1).fallbacks[0].mode == VkSkinFallbackMode::BindPose &&
-              !vk_skin_replaces_static_command(skinning.frame(1).raster_draws, 24, 6),
-          "without retained output the static bind-pose command remains enabled");
+              std::none_of(skinning.frame(1).raster_draws.begin(),
+                           skinning.frame(1).raster_draws.end(),
+                           [](const VkSkinRasterDraw& draw) {
+                               return draw.instance_slot == 4;
+                           }),
+          "without retained output no skin draw can exclude the bind fallback from static culling");
 
-    CHECK(skinning.begin_frame(0, 20),
-          "completed source frame slot can be reused");
-    CHECK(skinning.begin_frame(1, 0) &&
+    CHECK(skinning.begin_frame(1, 21) &&
               skinning.submit_visible(1, {retained, preferred}),
           "overflow after source-slot reuse remains valid");
     CHECK(skinning.frame(1).fallbacks[0].mode == VkSkinFallbackMode::BindPose &&
-              !vk_skin_replaces_static_command(skinning.frame(1).raster_draws, 12, 6),
+              std::none_of(skinning.frame(1).raster_draws.begin(),
+                           skinning.frame(1).raster_draws.end(),
+                           [](const VkSkinRasterDraw& draw) {
+                               return draw.instance_slot == 3;
+                           }),
           "reusing the source arena retires old metadata before it can alias overwritten vertices");
 }
 
@@ -300,19 +313,6 @@ static void test_submission_rejects_invalid_influences_and_palettes_transactiona
           "non-finite palette rejects before queue allocation");
     CHECK(skinning.frame(0).work_items.empty() && skinning.frame(0).raster_draws.empty(),
           "non-finite palette rejection leaves no partial queue");
-}
-
-static void test_skin_mapping_replaces_only_its_matching_static_command() {
-    VkSkinRasterDraw draw{};
-    draw.first_index = 12;
-    draw.index_count = 6;
-    const std::vector<VkSkinRasterDraw> draws{draw};
-    CHECK(vk_skin_replaces_static_command(draws, 12, 6),
-          "accepted skinned mapping suppresses its matching bind-pose indirect command");
-    CHECK(!vk_skin_replaces_static_command(draws, 18, 6),
-          "unrelated static command remains in the indirect path");
-    CHECK(!vk_skin_replaces_static_command(draws, 12, 3),
-          "partial indexed range is never suppressed by a skin mapping");
 }
 
 static void test_cpu_skinning_matches_compute_contract() {
@@ -357,7 +357,6 @@ int main() {
     test_central_budget_controls_skinning_fallback_reason();
     test_overflow_reuses_only_fence_owned_last_complete_raster_output();
     test_submission_rejects_invalid_influences_and_palettes_transactionally();
-    test_skin_mapping_replaces_only_its_matching_static_command();
     test_cpu_skinning_matches_compute_contract();
     return check_summary();
 }

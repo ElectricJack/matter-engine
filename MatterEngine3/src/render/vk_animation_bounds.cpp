@@ -303,6 +303,21 @@ std::vector<VkAnimationBoundsGpuRecord> VkAnimationBounds::gpu_records() const {
     return records;
 }
 
+void mark_animation_skin_raster_records(
+    std::vector<VkAnimationBoundsGpuRecord>& records,
+    const std::vector<VkSkinRasterDraw>& draws) noexcept {
+    for (VkAnimationBoundsGpuRecord& record : records) {
+        const bool skinned = std::any_of(
+            draws.begin(), draws.end(), [&record](const VkSkinRasterDraw& draw) {
+                return draw.instance_slot == record.instance_slot &&
+                       draw.instance_generation ==
+                           record.instance_generation &&
+                       draw.lod == record.lod;
+            });
+        if (skinned) record.flags |= kVkAnimationBoundsSkinRaster;
+    }
+}
+
 bool VkAnimationBounds::has_dynamic_bound(const VkAnimationBoundsKey& key) const noexcept {
     return std::any_of(dynamic_bounds_.begin(), dynamic_bounds_.end(),
                        [&key](const VkAnimationDynamicClusterBound& value) {

@@ -88,6 +88,14 @@ static_assert(sizeof(VkAnimationBoundsGpuRecord) == 64,
               "dynamic animation bounds must remain std430-compatible");
 
 constexpr uint32_t kVkAnimationBoundsOcclusionEnabled = 1u;
+constexpr uint32_t kVkAnimationBoundsSkinRaster = 1u << 1u;
+
+// Marks only the generational instance/LOD records which have a concrete
+// skinned raster draw. The culler then omits those instances from the static
+// indirect bucket without suppressing bind fallbacks or shared-mesh peers.
+void mark_animation_skin_raster_records(
+    std::vector<VkAnimationBoundsGpuRecord>& records,
+    const std::vector<VkSkinRasterDraw>& draws) noexcept;
 
 // Validates immutable serialized joint-local bounds without creating a
 // renderer-side registration.  The skin bridge uses it to reject a malformed

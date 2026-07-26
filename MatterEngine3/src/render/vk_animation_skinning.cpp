@@ -72,16 +72,10 @@ bool valid_influence(const VkSkinInfluence& influence,
 VkAnimationSkinning::VkAnimationSkinning(
     uint32_t frame_slots, matter::animation::AnimationBudgetConfig budget)
     : frames_(frame_slots == 0 ? 1 : frame_slots),
+      source_dependency_fence_(frames_.size(), 0),
+      pending_source_users_(frames_.size(), 0),
+      pending_source_dependencies_(frames_.size()),
       budget_(budget.valid() ? budget : matter::animation::AnimationBudgetConfig{}) {}
-
-bool vk_skin_replaces_static_command(
-    const std::vector<VkSkinRasterDraw>& draws, uint32_t first_index,
-    uint32_t index_count) noexcept {
-    return std::any_of(draws.begin(), draws.end(),
-                       [first_index, index_count](const VkSkinRasterDraw& draw) {
-        return draw.first_index == first_index && draw.index_count == index_count;
-    });
-}
 
 bool VkAnimationSkinning::identical(const std::vector<VkSkinInfluence>& a,
                                     const std::vector<VkSkinInfluence>& b) noexcept {
@@ -110,7 +104,9 @@ bool VkAnimationSkinning::begin_frame(uint32_t frame_slot,
                                       uint64_t completed_fence) {
     if (frame_slot >= frames_.size()) return false;
     VkSkinFrameArenas& target = frames_[frame_slot];
-    if (target.in_flight && target.submitted_fence > completed_fence) return false;
+    if ((target.in_flight && target.submitted_fence > completed_fence) ||
+        source_dependency_fence_[frame_slot] > completed_fence ||
+        pending_source_users_[frame_slot] != 0) return false;
     // A retained slice is valid only while its fence-owned frame resource is
     // sealed. Reusing that slot first retires every reference to its buffers.
     for (auto retained = retained_outputs_.begin();
@@ -120,6 +116,8 @@ bool VkAnimationSkinning::begin_frame(uint32_t frame_slot,
         else
             ++retained;
     }
+    source_dependency_fence_[frame_slot] = 0;
+    release_pending_dependencies(frame_slot);
     target = {};
     return true;
 }
@@ -187,6 +185,20 @@ bool VkAnimationSkinning::submit_visible(
         }
         target = std::move(fallback);
     };
+    const auto capture_dependencies = [this, frame_slot, &target]() {
+        release_pending_dependencies(frame_slot);
+        std::vector<uint32_t>& dependencies =
+            pending_source_dependencies_[frame_slot];
+        for (const VkSkinRasterDraw& draw : target.raster_draws) {
+            if (draw.output_frame_slot == frame_slot ||
+                draw.output_frame_slot >= frames_.size()) continue;
+            if (std::find(dependencies.begin(), dependencies.end(),
+                          draw.output_frame_slot) == dependencies.end()) {
+                dependencies.push_back(draw.output_frame_slot);
+                ++pending_source_users_[draw.output_frame_slot];
+            }
+        }
+    };
 
     std::vector<VkSkinSubmission> accepted;
     std::vector<VkSkinFallback> overflow;
@@ -209,6 +221,7 @@ bool VkAnimationSkinning::submit_visible(
             source_end > asset->second.values.size() ||
             !checked_add(output_count, value.vertex_count, output_end)) {
             publish_invalid(matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
+            capture_dependencies();
             fallback_count_ += static_cast<uint32_t>(sorted.size());
             return false;
         }
@@ -216,6 +229,7 @@ bool VkAnimationSkinning::submit_visible(
         for (const VkSkinJoint& joint : value.pose.current) {
             if (!finite_joint(joint)) {
                 publish_invalid(matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
+                capture_dependencies();
                 fallback_count_ += static_cast<uint32_t>(sorted.size());
                 return false;
             }
@@ -224,6 +238,7 @@ bool VkAnimationSkinning::submit_visible(
             for (const VkSkinJoint& joint : value.pose.previous) {
                 if (!finite_joint(joint)) {
                     publish_invalid(matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
+                    capture_dependencies();
                     fallback_count_ += static_cast<uint32_t>(sorted.size());
                     return false;
                 }
@@ -233,6 +248,7 @@ bool VkAnimationSkinning::submit_visible(
              vertex != value.influence_vertex + value.vertex_count; ++vertex) {
             if (!valid_influence(asset->second.values[vertex], joint_count)) {
                 publish_invalid(matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
+                capture_dependencies();
                 fallback_count_ += static_cast<uint32_t>(sorted.size());
                 return false;
             }
@@ -259,6 +275,7 @@ bool VkAnimationSkinning::submit_visible(
         output_count = output_end;
         if (!checked_add(palette_count, static_cast<uint32_t>(value.pose.current.size()), palette_count)) {
             publish_invalid(matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
+            capture_dependencies();
             fallback_count_ += static_cast<uint32_t>(sorted.size());
             return false;
         }
@@ -327,6 +344,7 @@ bool VkAnimationSkinning::submit_visible(
     staged.current_output_vertices = output_count;
     staged.previous_output_vertices = output_count;
     target = std::move(staged);
+    capture_dependencies();
     fallback_count_ += static_cast<uint32_t>(target.fallbacks.size());
     stats_.submitted_skin_work_items += accepted.size();
     stats_.submitted_skinned_vertices += output_count;
@@ -345,6 +363,12 @@ bool VkAnimationSkinning::mark_submitted(uint32_t frame_slot, uint64_t fence) {
     }
     target.submitted_fence = fence;
     target.in_flight = true;
+    for (uint32_t source : pending_source_dependencies_[frame_slot]) {
+        source_dependency_fence_[source] =
+            std::max(source_dependency_fence_[source], fence);
+        --pending_source_users_[source];
+    }
+    pending_source_dependencies_[frame_slot].clear();
     for (const VkSkinRasterDraw& draw : target.raster_draws) {
         if (draw.output_frame_slot != frame_slot) continue;
         retained_outputs_[instance_key(draw.instance_slot,
@@ -361,6 +385,15 @@ bool VkAnimationSkinning::mark_submitted(uint32_t frame_slot, uint64_t fence) {
 uint64_t VkAnimationSkinning::instance_key(uint32_t slot,
                                            uint32_t generation) noexcept {
     return (uint64_t(slot) << 32u) | generation;
+}
+
+void VkAnimationSkinning::release_pending_dependencies(
+    uint32_t frame_slot) noexcept {
+    for (uint32_t source : pending_source_dependencies_[frame_slot]) {
+        if (pending_source_users_[source] != 0)
+            --pending_source_users_[source];
+    }
+    pending_source_dependencies_[frame_slot].clear();
 }
 
 const VkSkinFrameArenas& VkAnimationSkinning::frame(uint32_t frame_slot) const {

@@ -460,20 +460,10 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         for (uint32_t command = range.first_command;
              command != range.first_command + range.command_count; ++command) {
             const DrawCommand& candidate = record.static_commands[command];
-            // A compute-skinned output replaces its exact immutable indexed
-            // draw range.  Do this at static indirect recording time rather
-            // than drawing bind pose first and overdrawing it later; unrelated
-            // commands remain grouped by the existing part ranges.
-            const bool replaced = record.skin_draw_count != 0 && std::any_of(
-                record.skin_draws, record.skin_draws + record.skin_draw_count,
-                [&candidate, &valid_skin_draw](const VkSkinRasterDraw& skin) {
-                    return valid_skin_draw(skin) &&
-                           skin.first_index == candidate.first_index &&
-                           skin.index_count == candidate.index_count;
-                });
-            if (replaced) {
-                continue;
-            }
+            // Skin-raster instances are removed individually by cull.comp
+            // before this command's instance_count is finalized. Recording
+            // the command unconditionally preserves bind fallbacks and
+            // ordinary instances which share the same immutable mesh range.
             vkCmdDrawIndexedIndirect(command_buffer, record.indirect_buffer,
                                      static_cast<VkDeviceSize>(command) *
                                          sizeof(DrawCommand),
@@ -6169,6 +6159,9 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     // zero-sized buffers.
     std::vector<VkAnimationBoundsGpuRecord> animation_bound_records =
         animation_bounds_.gpu_records();
+    mark_animation_skin_raster_records(
+        animation_bound_records,
+        animation_skinning_.frame(frame.frame_slot).raster_draws);
     if (animation_bound_records.empty())
         animation_bound_records.push_back({});
     bool animation_bounds_replaced = false;

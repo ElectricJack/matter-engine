@@ -3,6 +3,7 @@
 layout(local_size_x = 64) in;
 
 const uint MAX_LOD = 9u;
+const uint ANIMATION_BOUND_SKIN_RASTER = 2u;
 
 struct ClusterMeta {
     vec4 aabb_min_radius;
@@ -138,6 +139,20 @@ bool dynamic_cluster_lod(const GpuInstance instance, const ClusterMeta cluster,
     return false;
 }
 
+bool uses_skin_raster(const GpuInstance instance, uint lod) {
+    if (instance.animation_instance_slot == 0xffffffffu) return false;
+    for (uint i = 0u; i < frame.counts.w; ++i) {
+        const DynamicAnimationBound value = dynamic_animation_bounds[i];
+        if (value.instance_slot == instance.animation_instance_slot &&
+            value.instance_generation == instance.animation_instance_generation &&
+            value.lod == lod &&
+            (value.flags & ANIMATION_BOUND_SKIN_RASTER) != 0u) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool reserve_transform_slot(uint bucket, out uint slot) {
     const uint first = commands[bucket].first_instance;
     if (first > frame.capacities.w) return false;
@@ -235,6 +250,11 @@ void main() {
             return;
         }
     }
+
+    // The explicit skin raster draw owns only this generational instance.
+    // Bind fallbacks and ordinary instances sharing the command's mesh range
+    // remain in the static indirect bucket.
+    if (uses_skin_raster(instance, lod)) return;
 
     if (cluster_index > (0xffffffffu - lod) / MAX_LOD) return;
     const uint bucket = cluster_index * MAX_LOD + lod;

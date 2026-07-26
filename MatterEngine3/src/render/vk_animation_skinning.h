@@ -60,13 +60,6 @@ struct VkSkinRasterDraw {
     uint32_t flags = 0;
 };
 
-// Static indirect commands are identified by their immutable global indexed
-// range.  A skinned draw may replace only an exact range match: overlap or a
-// stale partial range leaves static rendering intact.
-bool vk_skin_replaces_static_command(const std::vector<VkSkinRasterDraw>& draws,
-                                     uint32_t first_index,
-                                     uint32_t index_count) noexcept;
-
 struct VkSkinArenaSlice {
     uint32_t offset = 0;
     uint32_t count = 0;
@@ -150,6 +143,12 @@ private:
     std::map<uint64_t, RetainedOutput> retained_outputs_;
     std::vector<VkSkinInfluence> influence_arena_;
     std::vector<VkSkinFrameArenas> frames_;
+    // Bounded by frames-in-flight. A producer slot cannot be recycled while
+    // an unsealed consumer references it or until every sealed consumer of
+    // one of its retained slices has completed.
+    std::vector<uint64_t> source_dependency_fence_;
+    std::vector<uint32_t> pending_source_users_;
+    std::vector<std::vector<uint32_t>> pending_source_dependencies_;
     uint32_t fallback_count_ = 0;
     matter::animation::AnimationBudgetConfig budget_;
     matter::animation::AnimationBudgetRuntimeStats stats_;
@@ -159,6 +158,7 @@ private:
     static bool identical(const std::vector<VkSkinInfluence>& a,
                           const std::vector<VkSkinInfluence>& b) noexcept;
     static uint64_t instance_key(uint32_t slot, uint32_t generation) noexcept;
+    void release_pending_dependencies(uint32_t frame_slot) noexcept;
 };
 
 }  // namespace viewer

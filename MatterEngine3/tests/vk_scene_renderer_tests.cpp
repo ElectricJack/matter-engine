@@ -367,6 +367,24 @@ static void test_c3_dynamic_bounds_cull_contract() {
     CHECK(bounds.update_instance(3, 9, key, test_pose(2.0f), false),
           "serialize an in-frustum animated pose to the C3 GPU record");
     const auto dynamic_inside = bounds.gpu_records();
+    auto shared_mesh_records = dynamic_inside;
+    auto bind_peer = dynamic_inside.front();
+    bind_peer.instance_slot = 4;
+    bind_peer.instance_generation = 1;
+    shared_mesh_records.push_back(bind_peer);
+    viewer::VkSkinRasterDraw accepted_draw{};
+    accepted_draw.instance_slot = 3;
+    accepted_draw.instance_generation = 9;
+    accepted_draw.lod = 0;
+    accepted_draw.first_index = 12;
+    accepted_draw.index_count = 6;
+    viewer::mark_animation_skin_raster_records(shared_mesh_records,
+                                                {accepted_draw});
+    CHECK((shared_mesh_records[0].flags &
+               viewer::kVkAnimationBoundsSkinRaster) != 0 &&
+              (shared_mesh_records[1].flags &
+               viewer::kVkAnimationBoundsSkinRaster) == 0,
+          "shared mesh marks only the accepted generational instance; bind and static peers stay indirect");
     const auto overridden = execute_c3_cull_contract(
         input, dynamic_inside, static_cast<uint32_t>(dynamic_inside.size()));
     CHECK(overridden.used_dynamic && overridden.frustum_visible,
@@ -429,8 +447,12 @@ static void test_c3_dynamic_bounds_cull_contract() {
     CHECK(source.good() || !shader_text.empty(), "read compiled C3 cull shader source contract");
     CHECK(shader_text.find("layout(set = 1, binding = 8, std430)") != std::string::npos &&
               shader_text.find("frame.counts.w") != std::string::npos &&
-              shader_text.find("instance_generation") != std::string::npos,
-          "embedded C3 cull shader retains binding-8 active-count and generation matching contract");
+              shader_text.find("instance_generation") != std::string::npos &&
+              shader_text.find("uses_skin_raster(instance, lod)") !=
+                  std::string::npos &&
+              shader_text.find("ANIMATION_BOUND_SKIN_RASTER") !=
+                  std::string::npos,
+          "cull shader excludes skin raster per instance without suppressing its shared command");
 }
 
 // ---------------------------------------------------------------------------
