@@ -268,6 +268,10 @@ void check_nonempty_and_meaningful(const std::vector<TickRecord>& records) {
 
 void test_10000_tick_authored_replay_is_exact_under_two_render_patterns() {
     const GalleryFixture fixture = bake_gallery();
+    if (!fixture.runtime.definition.binding) {
+        CHECK(false, "Phase B cannot begin replay until the committed gallery decodes a runtime binding");
+        return;
+    }
     const std::vector<float> steady{0.125f};
     // Both values advance one 1/8-second fixed tick; their ordering exercises
     // the frame accumulator without changing fixed-state results.
