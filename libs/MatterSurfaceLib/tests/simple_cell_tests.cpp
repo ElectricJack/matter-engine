@@ -14,7 +14,7 @@ extern "C" {
 #include "../include/cell.h"
 
 // Test utilities
-bool vectors_equal(const Vector3& a, const Vector3& b, float epsilon = 1e-6f) {
+bool vectors_equal(const mm::Vec3& a, const mm::Vec3& b, float epsilon = 1e-6f) {
     return (fabs(a.x - b.x) < epsilon && 
             fabs(a.y - b.y) < epsilon && 
             fabs(a.z - b.z) < epsilon);
@@ -58,8 +58,8 @@ bool test_cell_coordinate_uniqueness() {
     
     // These particles should create distinct, non-overlapping cells
     struct TestCase {
-        Vector3 particle_pos;
-        Vector3 expected_cell_coords;
+        mm::Vec3 particle_pos;
+        mm::Vec3 expected_cell_coords;
     };
     
     std::vector<TestCase> test_cases = {
@@ -82,8 +82,8 @@ bool test_cell_coordinate_uniqueness() {
     printf("Dirty cells: %u\n", cluster.get_dirty_cell_count());
     
     // Get all cells
-    Vector3 min_bound = {-3.0f, -3.0f, -3.0f};
-    Vector3 max_bound = {5.0f, 5.0f, 5.0f};
+    mm::Vec3 min_bound = {-3.0f, -3.0f, -3.0f};
+    mm::Vec3 max_bound = {5.0f, 5.0f, 5.0f};
     auto cells = cluster.get_cells_in_region(min_bound, max_bound);
     
     printf("Found %zu cells in region\n", cells.size());
@@ -184,15 +184,15 @@ bool test_multiple_lod_overlap() {
     Cluster cluster(1, blas_manager, tlas_manager, 1.0f);
     
     // Add a single particle that will trigger multiple LOD levels
-    Vector3 particle_pos = {1.5f, 1.5f, 1.5f};
+    mm::Vec3 particle_pos = {1.5f, 1.5f, 1.5f};
     cluster.add_particle(particle_pos, 1.0f, 0); // Large radius to trigger multiple LOD levels
     
     printf("Added particle at (%.1f,%.1f,%.1f) with radius 1.0\n", 
            particle_pos.x, particle_pos.y, particle_pos.z);
     
     // Get all cells created
-    Vector3 min_bound = {-1.0f, -1.0f, -1.0f};
-    Vector3 max_bound = {4.0f, 4.0f, 4.0f};
+    mm::Vec3 min_bound = {-1.0f, -1.0f, -1.0f};
+    mm::Vec3 max_bound = {4.0f, 4.0f, 4.0f};
     auto cells = cluster.get_cells_in_region(min_bound, max_bound);
     
     printf("Created %zu cells for single particle\n", cells.size());
@@ -244,7 +244,7 @@ bool test_multiple_lod_overlap() {
 int main() {
     printf("=== Simple Cell System Tests ===\n\n");
     
-    // Initialize Raylib (required for Vector3 operations)
+    // Initialize Raylib (required for mm::Vec3 operations)
     InitWindow(1, 1, "Test Window");
     SetWindowState(FLAG_WINDOW_HIDDEN);
     

@@ -16,7 +16,7 @@ extern "C" {
 #include "../include/tlas_manager.hpp"
 
 // Test utilities
-bool vectors_equal(const Vector3& a, const Vector3& b, float epsilon = 1e-6f) {
+bool vectors_equal(const mm::Vec3& a, const mm::Vec3& b, float epsilon = 1e-6f) {
     return (fabs(a.x - b.x) < epsilon && 
             fabs(a.y - b.y) < epsilon && 
             fabs(a.z - b.z) < epsilon);
@@ -40,7 +40,7 @@ bool test_cell_coordinate_uniqueness() {
     for (int x = 0; x < grid_size; x++) {
         for (int y = 0; y < grid_size; y++) {
             for (int z = 0; z < grid_size; z++) {
-                Vector3 pos = {x * spacing, y * spacing, z * spacing};
+                mm::Vec3 pos = {x * spacing, y * spacing, z * spacing};
                 cluster.add_particle(pos, 0.2f, 0);
             }
         }
@@ -50,8 +50,8 @@ bool test_cell_coordinate_uniqueness() {
     cluster.rebuild_dirty_cells();
     
     // Get all cells
-    Vector3 min_bound = {-1.0f, -1.0f, -1.0f};
-    Vector3 max_bound = {grid_size * spacing + 1.0f, grid_size * spacing + 1.0f, grid_size * spacing + 1.0f};
+    mm::Vec3 min_bound = {-1.0f, -1.0f, -1.0f};
+    mm::Vec3 max_bound = {grid_size * spacing + 1.0f, grid_size * spacing + 1.0f, grid_size * spacing + 1.0f};
     auto cells = cluster.get_cells_in_region(min_bound, max_bound);
     
     printf("Found %zu cells\n", cells.size());
@@ -134,8 +134,8 @@ bool test_one_mesh_per_cell_per_material() {
     cluster.rebuild_dirty_cells();
     
     // Get all cells
-    Vector3 min_bound = {-1.0f, -1.0f, -1.0f};
-    Vector3 max_bound = {3.0f, 3.0f, 3.0f};
+    mm::Vec3 min_bound = {-1.0f, -1.0f, -1.0f};
+    mm::Vec3 max_bound = {3.0f, 3.0f, 3.0f};
     auto cells = cluster.get_cells_in_region(min_bound, max_bound);
     
     printf("Found %zu cells after adding particles with materials 0, 1, 2\n", cells.size());
@@ -220,8 +220,8 @@ bool test_particle_cell_assignment() {
     
     // Add particles at known positions
     struct TestParticle {
-        Vector3 position;
-        Vector3 expected_cell_coords;
+        mm::Vec3 position;
+        mm::Vec3 expected_cell_coords;
         float radius;
         uint32_t material;
     };
@@ -246,8 +246,8 @@ bool test_particle_cell_assignment() {
     cluster.rebuild_dirty_cells();
     
     // Get all cells
-    Vector3 min_bound = {-3.0f, -3.0f, -3.0f};
-    Vector3 max_bound = {5.0f, 5.0f, 5.0f};
+    mm::Vec3 min_bound = {-3.0f, -3.0f, -3.0f};
+    mm::Vec3 max_bound = {5.0f, 5.0f, 5.0f};
     auto cells = cluster.get_cells_in_region(min_bound, max_bound);
     
     printf("Generated %zu cells\n", cells.size());
@@ -304,7 +304,7 @@ bool test_particle_cell_assignment() {
 int main() {
     printf("=== Cell System Tests ===\n\n");
     
-    // Initialize Raylib (required for Vector3 operations)
+    // Initialize Raylib (required for mm::Vec3 operations)
     InitWindow(1, 1, "Test Window");
     SetWindowState(FLAG_WINDOW_HIDDEN);
     

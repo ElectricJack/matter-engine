@@ -18,7 +18,7 @@ static MeshContext make_ctx(const std::vector<Particle>& ps, const std::vector<f
 int main() {
     OrientedCubeAlgorithm algo;
 
-    Particle p; p.position = Vector3{2.0f, -1.0f, 0.5f}; p.radius = 0.5f; p.materialId = 13;
+    Particle p; p.position = MtVec3{2.0f, -1.0f, 0.5f}; p.radius = 0.5f; p.materialId = 13;
     std::vector<Particle> ps{p};
     std::vector<float4> tints{make_float4(1.0f, 1.0f, 1.0f, 0.0f)};
 

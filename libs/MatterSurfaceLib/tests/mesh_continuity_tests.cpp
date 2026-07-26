@@ -571,7 +571,10 @@ static Soup build_scene(const std::vector<PIn>& particles, float s, float ratio)
             }
             Mesh m = GenerateMesh(sp.data(), pr, (int)sp.size(), bounds, 0.0f, NULL, 0, NULL, 0, 0.0f);
             if (ratio < 1.0f && m.vertexCount > 0 && m.triangleCount > 0) {
-                CellBounds cb; cb.min_bound = minB; cb.max_bound = maxB;
+                // CellBounds.min_bound/max_bound are mm::Vec3 (Phase 4 Step 4); minB/maxB
+                // stay this file's local raylib Vector3 (used elsewhere as-is below).
+                CellBounds cb; cb.min_bound = mm::Vec3{minB.x, minB.y, minB.z};
+                cb.max_bound = mm::Vec3{maxB.x, maxB.y, maxB.z};
                 SimplifyOptions so; so.target_ratio = ratio; so.lock_boundary = true;
                 Mesh simp = simplify_mesh(m, so, &cb);
                 if (simp.vertexCount > 0 && simp.triangleCount > 0) {

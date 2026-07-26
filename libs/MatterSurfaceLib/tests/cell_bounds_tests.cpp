@@ -33,8 +33,8 @@ static void check(bool cond, const char* msg) {
 }
 
 // Mirror of Cluster::get_cell_coordinates (src/cluster.cpp:163-169).
-static Vector3 owning_coords(Vector3 p, float cell_size) {
-    return Vector3{ floorf(p.x / cell_size), floorf(p.y / cell_size), floorf(p.z / cell_size) };
+static mm::Vec3 owning_coords(mm::Vec3 p, float cell_size) {
+    return mm::Vec3{ floorf(p.x / cell_size), floorf(p.y / cell_size), floorf(p.z / cell_size) };
 }
 
 // Materials that share a mergeGroup must bucket into ONE entry of the cell's
@@ -53,12 +53,12 @@ static void test_shades_merge_one_mesh() {
     const float s = smallest;
 
     // Cell (0,0,0) spans [0,4]^3, centered at (2,2,2).
-    Cell cell(Vector3{0, 0, 0}, size_pow, smallest);
+    Cell cell(mm::Vec3{0, 0, 0}, size_pow, smallest);
 
     // Two stone shades, close together near the cell center.
     std::vector<StaticParticle> particles;
-    particles.push_back(StaticParticle(Vector3{0.45f * s, 0.5f * s, 0.5f * s}, 0.8f, 8)); // stone_light
-    particles.push_back(StaticParticle(Vector3{0.55f * s, 0.5f * s, 0.5f * s}, 0.8f, 9)); // stone_dark
+    particles.push_back(StaticParticle(mm::Vec3{0.45f * s, 0.5f * s, 0.5f * s}, 0.8f, 8)); // stone_light
+    particles.push_back(StaticParticle(mm::Vec3{0.55f * s, 0.5f * s, 0.5f * s}, 0.8f, 9)); // stone_dark
 
     cell.add_particle_index(0, particles[0].materialId);
     cell.add_particle_index(1, particles[1].materialId);
@@ -67,7 +67,7 @@ static void test_shades_merge_one_mesh() {
           "stone_light(8) + stone_dark(9) share a single merge-group bucket");
 
     // Add a glass particle (materialId 4, GROUP_GLASS) -> distinct group.
-    particles.push_back(StaticParticle(Vector3{0.5f * s, 0.5f * s, 0.5f * s}, 0.8f, 4)); // glass
+    particles.push_back(StaticParticle(mm::Vec3{0.5f * s, 0.5f * s, 0.5f * s}, 0.8f, 4)); // glass
     cell.add_particle_index(2, particles[2].materialId);
 
     check(cell.material_particle_indices.size() == 2,
@@ -98,8 +98,8 @@ static void test_clip_set_transparency_gating() {
     // --- Case A: glass group adjacent to metal group (glass is transparent). ---
     {
         std::vector<StaticParticle> cluster;
-        cluster.push_back(StaticParticle(Vector3{0, 0, 0}, 0.8f, 4)); // glass
-        cluster.push_back(StaticParticle(Vector3{1, 0, 0}, 0.8f, 3)); // metal
+        cluster.push_back(StaticParticle(mm::Vec3{0, 0, 0}, 0.8f, 4)); // glass
+        cluster.push_back(StaticParticle(mm::Vec3{1, 0, 0}, 0.8f, 3)); // metal
         std::map<uint32_t, std::vector<uint32_t>> buckets;
         buckets[bucket_of(4)].push_back(0);
         buckets[bucket_of(3)].push_back(1);
@@ -122,8 +122,8 @@ static void test_clip_set_transparency_gating() {
     // --- Case B: two OPAQUE groups (stone 8 vs metal 3): no carve either way. ---
     {
         std::vector<StaticParticle> cluster;
-        cluster.push_back(StaticParticle(Vector3{0, 0, 0}, 0.8f, 8)); // stone (opaque)
-        cluster.push_back(StaticParticle(Vector3{1, 0, 0}, 0.8f, 3)); // metal (opaque)
+        cluster.push_back(StaticParticle(mm::Vec3{0, 0, 0}, 0.8f, 8)); // stone (opaque)
+        cluster.push_back(StaticParticle(mm::Vec3{1, 0, 0}, 0.8f, 3)); // metal (opaque)
         std::map<uint32_t, std::vector<uint32_t>> buckets;
         buckets[bucket_of(8)].push_back(0);
         buckets[bucket_of(3)].push_back(1);
@@ -155,8 +155,8 @@ static void test_built_clip_carves_surface() {
 
     // Glass at origin, metal foreign neighbor on +x.
     std::vector<StaticParticle> cluster;
-    cluster.push_back(StaticParticle(Vector3{0.0f, 0, 0}, 1.0f, 4)); // glass
-    cluster.push_back(StaticParticle(Vector3{1.2f, 0, 0}, 1.0f, 3)); // metal
+    cluster.push_back(StaticParticle(mm::Vec3{0.0f, 0, 0}, 1.0f, 4)); // glass
+    cluster.push_back(StaticParticle(mm::Vec3{1.2f, 0, 0}, 1.0f, 3)); // metal
 
     auto bucket_of = [](int matId) { return (uint32_t)MaterialMergeGroup(matId); };
     std::map<uint32_t, std::vector<uint32_t>> buckets;
@@ -165,7 +165,7 @@ static void test_built_clip_carves_surface() {
 
     // The glass group's own surface particle.
     Particle g[1];
-    g[0].position = Vector3{0.0f, 0, 0};
+    g[0].position = MtVec3{0.0f, 0, 0}; // Particle.position is MtVec3 (Phase 4 Step 3)
     g[0].radius   = 1.0f;
     g[0].materialId = 4;
 
@@ -176,8 +176,8 @@ static void test_built_clip_carves_surface() {
     check(!clip.empty(), "helper produced a non-empty clip for the glass group");
 
     Bounds b;
-    b.center = Vector3{0, 0, 0};
-    b.size   = Vector3{5, 5, 5};
+    b.center = MtVec3{0, 0, 0}; // Bounds.center/size are MtVec3 (Phase 4 Step 3)
+    b.size   = MtVec3{5, 5, 5};
     b.divisionPow = 4;
 
     Mesh open   = GenerateMesh(g, 1.0f, 1, b, blendWidth, NULL, 0, NULL, 0, 0.0f);
@@ -217,8 +217,8 @@ int main() {
     // Sweep positions across several cells, including the upper half of each
     // cell where the center-vs-corner mismatch bites.
     for (float p = -10.0f; p <= 10.0f; p += 0.5f) {
-        Vector3 pos{p, p, p};
-        Vector3 c = owning_coords(pos, s);
+        mm::Vec3 pos{p, p, p};
+        mm::Vec3 c = owning_coords(pos, s);
         Cell cell(c, size_pow, smallest);
         char buf[128];
         snprintf(buf, sizeof(buf), "pos=%.1f -> coord=%.0f bounds=[%.1f,%.1f] contains pos",
@@ -232,9 +232,9 @@ int main() {
     // cell needs meshing. With the bug the cell box is [-2,2]^3 and the sphere
     // pokes out to 3.5, so part of it has no covering cell.
     {
-        Vector3 center{0.5f * s, 0.5f * s, 0.5f * s}; // (2,2,2)
+        mm::Vec3 center{0.5f * s, 0.5f * s, 0.5f * s}; // (2,2,2)
         float r = 1.5f;
-        Vector3 coord = owning_coords(center, s);
+        mm::Vec3 coord = owning_coords(center, s);
         Cell cell(coord, size_pow, smallest);
         bool fully_inside =
             cell.min_bound.x <= center.x - r && center.x + r <= cell.max_bound.x &&
