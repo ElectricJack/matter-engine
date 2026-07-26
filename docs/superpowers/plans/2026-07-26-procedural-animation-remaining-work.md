@@ -31,24 +31,44 @@ renegotiated casually: **a declared target has exactly one driver**, and
 
 ---
 
-## Sequencing
+## Sequencing (decided 2026-07-26)
+
+The spec now names these Phases D–J; the W-numbers below map as: W1→E, W2→D, W3→J,
+W4→G, W5→I, W6→H, W7→F.
+
+Priorities were set against **what you want to be able to do that you can't today**,
+and three were chosen: author rigs without C++, get believable limbs, and get correct
+reflections/shadows on animated geometry. Durable save and ragdoll were *not* chosen,
+so H and I sit below G.
 
 ```text
-W1 gameplay-JS input writes ──┐
-                              ├──> W2 Phase D editor integration
-W6 durable save-game ─────────┘
+      ┌─ Phase D  editor integration ─┐
+      │  Phase E  gameplay-JS writes  ├─> authoring is usable without C++
+      └───────────────────────────────┘
+         Phase F  long-chain IK + joint limits   -> believable limbs
+         Phase J  deforming ray tracing          -> correct RT
+            └─ J0 spike runs CONCURRENTLY with D/E
 
-W4 nested attachments ──> W5 animation-driven physics/ragdolls
-W7 long-chain IK ────────┘
-
-W3 deforming ray tracing (independent; renderer-only)
+   later, unprioritized: G (nested attachments) -> H (durable save) -> I (ragdoll)
 ```
 
-Recommended order: **W1 → W2 → W7 → W4 → W6 → W5 → W3**.
+**Order: D+E and J0 in parallel → F → J1..n → G → H → I.**
 
-The rationale is that W1 and W2 are the two that make the system usable by anyone
-other than a C++ engineer, W7 removes the v1 constraint most likely to be hit while
-authoring, and W3 is the largest renderer investment for the narrowest payoff.
+Rationale for the one non-obvious choice: J is the largest and riskiest item, and its
+central problem (buffer lifetime, below) is a *measurement*, not a build. Running the
+J0 spike beside the cheap authoring work answers the question that gates the whole
+investment before anyone commits schedule to it. If J0 says refit is impractical, the
+tier decision changes and no build work was wasted.
+
+Decisions taken:
+
+- **RT tier is deliberately undecided.** J0 prototypes BLAS refit against reduced-rate
+  rebuild using the existing skinned arena, measures both, then commits. Do not pick
+  from the armchair.
+- **Nesting is depth-bounded at 3**, rejected at bake past that. Keeps budget
+  accounting and subtree-atomic checkpointing tractable.
+- **Each phase lands as its own branch off `main`.** This branch merges first. The
+  107-commit divergence resolved this session is the argument.
 
 ---
 
