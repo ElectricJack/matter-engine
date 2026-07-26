@@ -13,9 +13,40 @@ Quaternion normalize(Quaternion q) { const float n=std::sqrt(q.x*q.x+q.y*q.y+q.z
 Quaternion slerp(Quaternion a, Quaternion b, float t) { a=normalize(a);b=normalize(b);float d=a.x*b.x+a.y*b.y+a.z*b.z+a.w*b.w;if(d<0){d=-d;b={-b.x,-b.y,-b.z,-b.w};}if(d>.9995f)return normalize({a.x+t*(b.x-a.x),a.y+t*(b.y-a.y),a.z+t*(b.z-a.z),a.w+t*(b.w-a.w)});const float theta=std::acos(std::max(-1.f,std::min(1.f,d))),s=std::sin(theta);const float x=std::sin((1-t)*theta)/s,y=std::sin(t*theta)/s;return {a.x*x+b.x*y,a.y*x+b.y*y,a.z*x+b.z*y,a.w*x+b.w*y}; }
 float alpha(double dt,float half_life) { if (!finite(half_life)||half_life<0||dt<0||!std::isfinite(dt)) return -1; return half_life==0?1.0f:clamp01(1.0f-std::exp2(static_cast<float>(-dt)/half_life)); }
 Quaternion inverse(Quaternion q) { q=normalize(q); return {-q.x,-q.y,-q.z,q.w}; }
-Quaternion multiply(Quaternion a,Quaternion b) { return normalize({a.w*b.x+a.x*b.w+a.y*b.z-a.z*b.y,a.w*b.y-a.x*b.w+a.y*b.w+a.z*b.x,a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w,a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z}); }
-Quaternion model_rotation(const Mat4f&m) { const float trace=m.m[0]+m.m[5]+m.m[10];if(trace>0){const float s=std::sqrt(trace+1)*2;return normalize({(m.m[9]-m.m[6])/s,(m.m[2]-m.m[8])/s,(m.m[4]-m.m[1])/s,.25f*s});}return Quaternion{}; }
-Float3 inverse_rotate(Quaternion q,Float3 v) { q=inverse(q); const Float3 u{q.x,q.y,q.z}; const Float3 uv{u.y*v.z-u.z*v.y,u.z*v.x-u.x*v.z,u.x*v.y-u.y*v.x}; const Float3 uuv{u.y*uv.z-u.z*uv.y,u.z*uv.x-u.x*uv.z,u.x*uv.y-u.y*uv.x}; return {v.x+2*(q.w*uv.x+uuv.x),v.y+2*(q.w*uv.y+uuv.y),v.z+2*(q.w*uv.z+uuv.z)}; }
+// Hamilton product. The y term is -a.x*b.z (NOT -a.x*b.w); it must agree with
+// the other three copies in the animation tree (animation_evaluator.cpp,
+// animation_systems.cpp, animation_binding_bake.cpp) or IK end-effector
+// orientation matching silently diverges from the rest of the pose pipeline.
+Quaternion multiply(Quaternion a,Quaternion b) { return normalize({a.w*b.x+a.x*b.w+a.y*b.z-a.z*b.y,a.w*b.y-a.x*b.z+a.y*b.w+a.z*b.x,a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w,a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z}); }
+// Matrix-to-quaternion over all four Shepperd branches.
+//
+// trace == 1 + 2*cos(theta), so the trace>0 branch alone covers only rotations
+// under 120 degrees. Falling back to identity past that -- which this used to
+// do -- silently discards the rotation of any joint turned further than that,
+// and both callers below (pole conversion and end-effector orientation match)
+// would then compose against an identity frame instead of the real one.
+//
+// NOTE: this assumes models[] carries no scale on the rotation basis. Scaled
+// rigs need the basis normalized first; see the joint-scale caveat in
+// docs/superpowers/plans/2026-07-22-procedural-animation-phase-abc.md.
+Quaternion model_rotation(const Mat4f& m) {
+    const float trace = m.m[0] + m.m[5] + m.m[10];
+    if (trace > 0) {
+        const float s = std::sqrt(trace + 1.0f) * 2.0f;
+        return normalize({(m.m[9]-m.m[6])/s, (m.m[2]-m.m[8])/s, (m.m[4]-m.m[1])/s, 0.25f*s});
+    }
+    if (m.m[0] > m.m[5] && m.m[0] > m.m[10]) {
+        const float s = std::sqrt(1.0f + m.m[0] - m.m[5] - m.m[10]) * 2.0f;
+        return normalize({0.25f*s, (m.m[1]+m.m[4])/s, (m.m[2]+m.m[8])/s, (m.m[9]-m.m[6])/s});
+    }
+    if (m.m[5] > m.m[10]) {
+        const float s = std::sqrt(1.0f + m.m[5] - m.m[0] - m.m[10]) * 2.0f;
+        return normalize({(m.m[1]+m.m[4])/s, 0.25f*s, (m.m[6]+m.m[9])/s, (m.m[2]-m.m[8])/s});
+    }
+    const float s = std::sqrt(1.0f + m.m[10] - m.m[0] - m.m[5]) * 2.0f;
+    return normalize({(m.m[2]+m.m[8])/s, (m.m[6]+m.m[9])/s, 0.25f*s, (m.m[4]-m.m[1])/s});
+}
+Float3 rotate(Quaternion q,Float3 v) { q=normalize(q); const Float3 u{q.x,q.y,q.z}; const Float3 uv{u.y*v.z-u.z*v.y,u.z*v.x-u.x*v.z,u.x*v.y-u.y*v.x}; const Float3 uuv{u.y*uv.z-u.z*uv.y,u.z*uv.x-u.x*uv.z,u.x*uv.y-u.y*uv.x}; return {v.x+2*(q.w*uv.x+uuv.x),v.y+2*(q.w*uv.y+uuv.y),v.z+2*(q.w*uv.z+uuv.z)}; }
 }
 
 bool smooth_animation_target(const CanonicalTarget& target, AnimationTargetState& state, double dt, EvaluationCadence cadence) {
@@ -44,8 +75,13 @@ bool solve_animation_target(const CanonicalTarget& t,const OzzSkeleton&s,const A
     if(t.chain.size()!=3||locals.size()!=s.joint_count()||models.size()!=s.joint_count()||!finite_transform(state.evaluated)||!finite(state.evaluated_weight)||state.evaluated_weight<0||state.evaluated_weight>1||!finite(t.soften)||!finite(t.twist)||!finite(t.bend_axis.x)||!finite(t.bend_axis.y)||!finite(t.bend_axis.z)||!finite(t.pole.x)||!finite(t.pole.y)||!finite(t.pole.z))return false;
     if(state.evaluated_weight<=0)return true;
     JointIndex mid;JointRange affected;if(!resolve_two_bone_chain(s,t.chain[0],t.chain[2],mid,affected)||mid!=t.chain[1])return false;
+    // CanonicalTarget::pole is stored animator-root-relative (see the phase
+    // plan, Task B5), while ozz's IKTwoBoneJob consumes pole_vector in MODEL
+    // space. That conversion is the FORWARD root rotation. Applying the inverse
+    // -- as this did -- is a no-op only while the chain root is unrotated, and
+    // silently flips the bend plane for any rotated animator.
     const Quaternion root_rotation=model_rotation(models[t.chain[0]]);
-    const Float3 pole=t.has_pole?inverse_rotate(root_rotation,t.pole):Float3{0,1,0};
+    const Float3 pole=t.has_pole?rotate(root_rotation,t.pole):Float3{0,1,0};
     TwoBoneSolve solve{&s,t.chain[0],t.chain[1],t.chain[2],state.evaluated.translation,pole,t.bend_axis,t.twist,t.soften,state.evaluated_weight,affected};
     if(!solve_two_bone(solve,models,locals,models))return false;
     // Ozz corrects position. Match target orientation after it has produced a

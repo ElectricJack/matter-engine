@@ -104,8 +104,11 @@ void test_imported_motion_source_span_preserves_module() {
     std::filesystem::remove_all(root, ec);
 }
 void test_animated_rig_gallery_source_bakes() {
+    // world_demo moved from MatterEngine3/examples/ to the top-level projects/
+    // tree; this test runs from MatterEngine3/tests, hence the extra "..".
     const std::filesystem::path source_path =
-        std::filesystem::path("..") / "examples" / "world_demo" / "objects" / "AnimatedRigGallery.js";
+        std::filesystem::path("..") / ".." / "projects" / "world_demo" / "objects" /
+        "AnimatedRigGallery.js";
     std::ifstream input(source_path, std::ios::binary);
     CHECK(input.good(), "animated gallery source is present beside the world-demo objects");
     if (!input.good()) return;

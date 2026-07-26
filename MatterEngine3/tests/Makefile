@@ -157,9 +157,19 @@ ANIMATION_SIMULATION_CPP = animation_simulation_tests.cpp ../src/animation/anima
 # bridges consume that immutable data.  Keep this closure explicit so a missing
 # handoff TU fails the target rather than being hidden by an unrelated suite.
 ANIMATION_C4_ACCEPTANCE_TARGET = build/animation_phase_c_acceptance_tests
+# E6 fallout (docs/event-system.md S I.11): these suites reach
+# physics_context.cpp through the ECS runtime closure, and it now emits
+# events::PhysStep on the session hub -- so they need the event impl trio the
+# def-flavor targets get via EVENT_IMPL_DEF_OBJS. Added to the source list
+# rather than as link-only objects because these are the only sh-flavor
+# targets that need them, so no sh obj rules exist yet; $(sort) dedupes.
+ANIMATION_ACCEPTANCE_EVENT_CPP = ../src/event/event_hub.cpp \
+                                 ../src/event/subscription.cpp \
+                                 ../src/event/dispatch_context.cpp
 ANIMATION_C4_ACCEPTANCE_CPP = $(sort animation_phase_c_acceptance_tests.cpp \
                               $(filter-out script_host_tests.cpp,$(SCRIPT_CPP)) \
                               ../src/animation/anim_bundle.cpp \
+                              $(ANIMATION_ACCEPTANCE_EVENT_CPP) \
                               $(filter-out animation_simulation_tests.cpp,$(ANIMATION_SIMULATION_CPP)))
 ANIMATION_C4_ACCEPTANCE_C = $(COMMON_MSL_C)
 ANIMATION_C4_ACCEPTANCE_FLECS_C = $(FLECS_C)

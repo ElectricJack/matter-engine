@@ -1395,7 +1395,7 @@ static bool test_production_animated_gallery_binding() {
         ("me3_animated_gallery_" + std::to_string(stamp));
     if (!reset_project(project_root, "AnimatedRigGallery"))
         return false;
-    const fs::path example_root = fs::absolute("../examples/world_demo");
+    const fs::path example_root = fs::absolute("../../projects/world_demo");
     std::error_code ec;
     fs::copy_file(
         example_root / "objects" / "AnimatedRigGallery.js",

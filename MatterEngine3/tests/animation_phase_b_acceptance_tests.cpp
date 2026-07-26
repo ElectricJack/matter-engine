@@ -158,7 +158,7 @@ struct GalleryBundleSnapshot {
 };
 
 GalleryBundleSnapshot bake_gallery_snapshot(const fs::path& sandbox) {
-    const fs::path objects = fs::absolute("../examples/world_demo/objects");
+    const fs::path objects = fs::absolute("../../projects/world_demo/objects");
     const fs::path shared_lib = fs::absolute("../shared-lib");
     std::error_code error;
     fs::remove_all(sandbox, error);
@@ -315,7 +315,7 @@ struct GalleryFixture {
 };
 
 GalleryFixture bake_gallery() {
-    const fs::path objects = fs::absolute("../examples/world_demo/objects");
+    const fs::path objects = fs::absolute("../../projects/world_demo/objects");
     const fs::path shared_lib = fs::absolute("../shared-lib");
     const fs::path sandbox = fs::temp_directory_path() / "me3_phase_b_replay";
     std::error_code error;

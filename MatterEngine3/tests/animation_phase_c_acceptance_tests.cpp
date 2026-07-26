@@ -129,7 +129,7 @@ void check_reloaded_gallery_limits(const GalleryBundle& gallery) {
 }
 
 GalleryBundle bake_and_reload_gallery() {
-    const fs::path objects = fs::absolute("../examples/world_demo/objects");
+    const fs::path objects = fs::absolute("../../projects/world_demo/objects");
     const fs::path shared_lib = fs::absolute("../shared-lib");
     const fs::path sandbox = fs::temp_directory_path() / "me3_c4_animation_acceptance";
     std::error_code error;
