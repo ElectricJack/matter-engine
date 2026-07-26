@@ -225,8 +225,17 @@ FLAVOR_sh_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) -I
 FLAVOR_sp2_FLAGS      := $(CFLAGS) -DSP2_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC)
 FLAVOR_vl_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -pthread $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC)
 FLAVOR_retopo_FLAGS   := $(CFLAGS) -DMATTER_HAVE_AUTOREMESHER $(INCLUDE_PATHS) -I$(AR_CORE_PATH)/include $(QJS_INC)
+# MATTER_VULKAN_ONLY (Phase 5a): the GL renderer/raster-composer/GpuCuller
+# classes matter_engine.cpp used to reference under #ifndef MATTER_VULKAN_ONLY
+# are deleted outright; this flavor must define the macro so the facade
+# compiles (mirrors MatterEngine3/Makefile). Test binaries in this flavor that
+# call the legacy WorldSession::render(CameraDesc, int, int, RenderOptions)
+# overload (api_tests.cpp, world_stream_tests.cpp) now exercise the no-op
+# MATTER_VULKAN_ONLY stub rather than real GL drawing -- same behavior the
+# Windows/Vulkan editor.exe has always had for that entry point.
 FLAVOR_gpu_FLAGS      := $(filter-out -D$(GRAPHICS),$(CFLAGS)) -D$(GPU_GRAPHICS) \
                          -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB \
+                         -DMATTER_VULKAN_ONLY \
                          $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) $(GPU_AR_CORE_CFLAGS)
 
 # C-source flavors are compiled with gcc (not g++). Split compiler var too.
@@ -812,14 +821,19 @@ RETOPO_INT_LDFLAGS = $(LDFLAGS) \
                      -Wl,--allow-multiple-definition
 
 # ===== flavor gpu (GPU tests) ==========================================
+# Phase 5a (tech-debt.md §6) deleted the GL renderer/raster-composer/GpuCuller
+# path outright (src/render/renderer.*, raster_composer.*, gpu_culler.*).
+# FLAVOR_gpu_FLAGS now defines MATTER_VULKAN_ONLY so matter_engine.cpp's
+# facade compiles without those types (mirrors MatterEngine3/Makefile's fix
+# and the already-tested Windows/Vulkan editor.exe build). gpu_cull_tests.cpp
+# and release_part_tests.cpp tested those deleted classes directly and were
+# retired with them (see MatterEngine3/tests/Makefile git history).
 GPU_RENDER_CPP = \
     ../src/async_bake.cpp \
     ../src/bake_trace.cpp \
     ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
-    ../src/render/renderer.cpp ../src/render/raster_composer.cpp \
     ../src/render/raster_mesh.cpp ../src/render/part_store.cpp \
     ../src/render/world_composer.cpp ../src/render/world_state.cpp \
-    ../src/render/gpu_culler.cpp \
     ../src/render/tileset_provider.cpp \
     ../src/provider/local_provider.cpp ../src/provider/resolvers.cpp \
     ../src/matter_engine.cpp \
@@ -951,13 +965,11 @@ sp2_CPP_SRCS := $(sort $(SHLIB_CPP))
 vl_CPP_SRCS  := $(sort $(VIEWER_LOGIC_CPP))
 retopo_CPP_SRCS := $(sort $(RETOPO_INT_CPP))
 gpu_CPP_SRCS := $(sort \
-    gpu_cull_tests.cpp \
     tileset_provider_tests.cpp \
     api_tests.cpp \
     async_bake_tests.cpp \
     demand_bake_tests.cpp \
     transient_tests.cpp \
-    release_part_tests.cpp \
     vk_scene_renderer_tests.cpp \
     refine_loop_tests.cpp \
     world_stream_tests.cpp \
@@ -1096,7 +1108,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-tilesetslicer run-baketrace run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-dsldet run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-provider-tests api-tests run-tilesetprovider run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-settlebench
+.PHONY: clean run-matrix run-tilesetslicer run-baketrace run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-dsldet run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq tileset-provider-tests api-tests run-tilesetprovider run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise vk-scene-renderer-tests run-vk-scene-renderer demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1616,10 +1628,11 @@ run-modbake: $(MODBAKE_TARGET)
 # TUs, `mslc` for MSL C sources, `qjsc` for QuickJS C sources.
 # ---------------------------------------------------------------------------
 
-gpu-tests: $(call obj_of,gpu,gpu_cull_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
-	$(CC) $(call obj_of,gpu,gpu_cull_tests.cpp) $(GPU_SHARED_OBJS) \
-	      -o build/gpu_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+# gpu-tests (gpu_cull_tests.cpp, GL 4.6 parity tests for the GpuCuller compute
+# path) retired in Phase 5a (tech-debt.md §6): its own source directly tested
+# viewer::GpuCuller/viewer::RasterComposer, both deleted outright along with
+# src/render/renderer.*, raster_composer.*, gpu_culler.*. See run-gpucull's
+# former location below for the target-name history.
 
 # Retired in V5 (docs/vulkan-rt-gtex-bake.md §I.8 "GPU test targets"), together
 # with the GL ray-tracing .gtex bake they exercised:
@@ -1684,17 +1697,10 @@ transient-tests: $(call obj_of,gpu,transient_tests.cpp) $(GPU_SHARED_OBJS) | ../
 run-transient: transient-tests
 	./build/transient_tests
 
-# Phase C Task 5 — part-level release: PartStore::release + GpuCuller::release_part.
-release-part-tests: $(call obj_of,gpu,release_part_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
-	$(CC) $(call obj_of,gpu,release_part_tests.cpp) $(GPU_SHARED_OBJS) \
-	      -o build/release_part_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
-
-run-releasepart: release-part-tests
-	GALLIUM_DRIVER=d3d12 ./build/release_part_tests
-
-# Alias matching the brief's exact target name.
-run-release-part: run-releasepart
+# release-part-tests (release_part_tests.cpp, PartStore::release +
+# GpuCuller::release_part) retired in Phase 5a (tech-debt.md §6): its own
+# source directly tested viewer::GpuCuller, deleted outright along with
+# src/render/renderer.*, raster_composer.*, gpu_culler.*.
 
 # Task 3 — indexed VkScenePart assembly (CPU-only; no GL/Vulkan runtime needed).
 # Compiles under the gpu flavor (needs Vulkan headers) but links only std libs.
@@ -1705,9 +1711,8 @@ vk-scene-renderer-tests: $(call obj_of,gpu,vk_scene_renderer_tests.cpp) | ../sha
 run-vk-scene-renderer: vk-scene-renderer-tests
 	./build/vk_scene_renderer_tests
 
-# GPU cull parity suite (gpu_cull_tests.cpp) — run target for task-gate use.
-run-gpucull: gpu-tests
-	GALLIUM_DRIVER=d3d12 ./build/gpu_tests
+# run-gpucull (gpu_cull_tests.cpp GL cull-parity suite) retired alongside
+# gpu-tests in Phase 5a — see the note near the old gpu-tests location above.
 
 # Phase C Task 6 — camera-driven refine loop (headless, allow_gl_lt_46=true).
 refine-loop-tests: $(call obj_of,gpu,refine_loop_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build

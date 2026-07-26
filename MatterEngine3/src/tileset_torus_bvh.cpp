@@ -1,9 +1,10 @@
 // tileset_torus_bvh.cpp — see header for interface.
 //
-// CPU-only: builds BLAS/TLAS data structures ready for GPU upload.
-// ensure_gpu_textures_ready is intentionally NOT called here — the GL context
-// is not available during headless bake; callers with a live GL context invoke
-// it themselves (Tasks 3+).
+// CPU-only: builds BLAS/TLAS data structures ready for GPU upload. No upload
+// call is made here — the GL upload path (ensure_gpu_textures_ready/
+// bind_to_shader) was deleted outright in Phase 5a (tech-debt.md §6); a
+// Vulkan uploader consumes BLASManager::content_revision()/
+// TLASManager::content_revision() instead (see those headers' doc comments).
 
 #include "tileset_torus_bvh.h"
 

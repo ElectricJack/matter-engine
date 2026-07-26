@@ -933,10 +933,6 @@ static void test_raster_mesh_data() {
     CHECK(plainsoup.normals[2] == 1.0f, "geometric normal +z");
     CHECK(plainsoup.texcoords[0] == -1.0f && plainsoup.texcoords[1] == 1.0f, "sentinel mat, AO=1");
     CHECK(plainsoup.colors[3] == 0, "neutral tint alpha 0");
-
-    float rm[16] = {1,0,0, 5,  0,1,0, 6,  0,0,1, 7,  0,0,0,1};    // row-major translate(5,6,7)
-    Matrix m = viewer::row_major_to_matrix(rm);
-    CHECK(m.m12 == 5.0f && m.m13 == 6.0f && m.m14 == 7.0f, "translation lands in m12..m14");
 }
 
 static void test_indexed_weld() {

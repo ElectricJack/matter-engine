@@ -14,14 +14,21 @@
 #   `make clean && make` to avoid stale objects.
 #
 # GRAPHICS_API rationale (I1): the old MatterEngine3/viewer/Makefile always used
-# GRAPHICS_API_OPENGL_43 for the render sources (renderer.cpp, raster_composer.cpp,
-# etc.) — confirmed by `git show 75d8e7f:MatterViewer/Makefile | grep GRAPHICS_API`.
-# GL 4.3 is required for compute shaders (cull.comp, hiz_downsample.comp, etc.)
-# used by GpuCuller and the tileset bake pipeline. OPENGL_33 would silently omit
-# gl*Compute* API surface from rlgl.h, breaking any compute-shader dispatch.
-# Keeping OPENGL_43 here matches the viewer and GPU tests; MatterEngine3/tests/Makefile
-# now also uses OPENGL_43 in its GPU-test CFLAGS so the same render sources see
-# the same GL define everywhere they are compiled.
+# GRAPHICS_API_OPENGL_43 for the render sources — confirmed by
+# `git show 75d8e7f:MatterViewer/Makefile | grep GRAPHICS_API`. GL 4.3 is
+# required for compute shaders (cull.comp, hiz_downsample.comp, etc.) used by
+# the tileset bake pipeline. OPENGL_33 would silently omit gl*Compute* API
+# surface from rlgl.h, breaking any compute-shader dispatch. Keeping OPENGL_43
+# here matches the GPU tests; MatterEngine3/tests/Makefile now also uses
+# OPENGL_43 in its GPU-test CFLAGS so the same render sources see the same GL
+# define everywhere they are compiled.
+#
+# Phase 5a (tech-debt.md §6) deleted the GL renderer/raster-composer/GpuCuller
+# path (src/render/renderer.*, raster_composer.*, gpu_culler.*) outright, and
+# this build now always defines MATTER_VULKAN_ONLY (see CFLAGS below) so
+# matter_engine.cpp's facade no longer references those types. GRAPHICS_API_
+# OPENGL_43 remains for the pieces that still are GL (tileset_provider.cpp's
+# atlas compute path, raylib POD types Phase 4 has not yet migrated).
 #
 # Caller can inject extra flags via EXTRA_CFLAGS / EXTRA_INCLUDE:
 #   make -C MatterEngine3 EXTRA_CFLAGS="-DMATTER_HAVE_AUTOREMESHER ..." \
@@ -48,8 +55,20 @@ ifeq ($(UNAME_S),Darwin)
 endif
 
 CC      = g++
+# MATTER_VULKAN_ONLY (Phase 5a, GL-path deletion): matter_engine.cpp's facade has
+# carried #ifndef MATTER_VULKAN_ONLY / #ifdef MATTER_VULKAN_VIEWER branches since
+# before this phase -- the Windows/Vulkan editor.exe build has always defined
+# MATTER_VULKAN_ONLY (MatterEditor/Makefile's CXX_FLAGS_BUILD_WIN_COMMON) and
+# compiled out the #ifndef blocks that reference viewer::Renderer/GpuCuller/
+# RasterComposer. Those classes are now deleted outright (src/render/renderer.*,
+# raster_composer.*, gpu_culler.* -- tech-debt.md §6), so this plain archive
+# build must define the same macro or matter_engine.cpp fails to compile.
+# MATTER_VULKAN_VIEWER is deliberately NOT defined here: this build doesn't
+# compile the vk_*.cpp sources (those live only in MatterEditor/Makefile's
+# WIN_ME3_CPP), so matter_engine.cpp falls through to its existing
+# "#ifndef MATTER_VULKAN_VIEWER" stubs (already-tested headless/no-viewer path).
 CFLAGS  = -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable -O2 -D$(PLATFORM) -D$(GRAPHICS) \
-          -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(EXTRA_CFLAGS)
+          -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -DMATTER_VULKAN_ONLY $(EXTRA_CFLAGS)
 ifeq ($(UNAME_S),Darwin)
     CFLAGS += -mmacosx-version-min=$(MACOS_VERSION)
 endif
@@ -107,10 +126,9 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/tileset_metrics.cpp \
           src/tileset_gtex.cpp src/tileset_torus_bvh.cpp \
           src/shader_source.cpp \
-          src/render/renderer.cpp src/render/raster_composer.cpp src/render/raster_mesh.cpp \
+          src/render/raster_mesh.cpp \
           src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp \
           src/render/part_store.cpp src/render/world_composer.cpp src/render/world_state.cpp \
-          src/render/gpu_culler.cpp \
           src/render/tileset_provider.cpp \
           src/render/tileset_slicer.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
@@ -174,9 +192,9 @@ ME3_OBJ = $(addprefix $(OBJDIR)/,script_host.o dsl_state.o dsl_bindings.o \
           tileset_phase.o \
           tileset_metrics.o \
           tileset_gtex.o tileset_torus_bvh.o shader_source.o \
-          renderer.o raster_composer.o raster_mesh.o matrix_math.o frame_matrices.o vk_temporal.o vk_gi_math.o vk_lighting_controls.o \
+          raster_mesh.o matrix_math.o frame_matrices.o vk_temporal.o vk_gi_math.o vk_lighting_controls.o \
           part_store.o world_composer.o world_state.o \
-          gpu_culler.o tileset_provider.o \
+          tileset_provider.o \
           tileset_slicer.o \
           local_provider.o resolvers.o \
           ecs_runtime.o physics_context.o physics_shapes.o physics_systems.o streaming_systems.o transform_system.o \

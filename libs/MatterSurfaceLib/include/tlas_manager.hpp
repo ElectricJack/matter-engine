@@ -1,9 +1,5 @@
 #pragma once
 
-extern "C" {
-    #include "raylib.h"
-}
-
 #include "precomp.h"
 #include "bvh.h"
 #include "matter_math.h"
@@ -96,7 +92,6 @@ public:
     // Build TLAS from recorded instances (call after all draw() calls)
     void build(const BLASManager& blas_manager);
     
-    // GPU texture generation  
     int get_instance_count() const;
     int get_node_count() const;
 
@@ -117,38 +112,7 @@ public:
     
     // Access to draw records for rasterization
     const std::vector<DrawRecord>& get_draw_records() const { return draw_records_; }
-    
-    // GPU texture management (fully encapsulated)
-    void ensure_gpu_textures_ready(const BLASManager& blas_manager); // Creates/updates textures if needed
-    void bind_to_shader(Shader shader, const BLASManager& blas_manager) const; // Manager owns textures completely
 
-    // GPU texture ids (valid after bind_to_shader uploads them). See the BLAS
-    // equivalents: the imposter bake binds these explicitly for DrawMesh.
-    unsigned int tlas_nodes_texture_id() const { return nodes_texture_.id; }
-    unsigned int instances_texture_id() const { return instances_texture_.id; }
-
-    // Generate texture data for GPU upload
-    void generate_instance_texture_data(const BLASManager& blas_manager,
-                                       std::vector<float>& output_data, 
-                                       int texture_width,
-                                       int texture_height) const;
-    
-    void generate_node_texture_data(std::vector<float>& output_data,
-                                   int texture_width, 
-                                   int texture_height) const;
-    
-    // Legacy C-style interface for compatibility
-    void generate_instance_texture_data(const BLASManager& blas_manager,
-                                       float* output_data, 
-                                       int texture_width,
-                                       int texture_height) const;
-    
-    void generate_node_texture_data(float* output_data,
-                                   int texture_width, 
-                                   int texture_height) const;
-    
-    // Get underlying TLAS for compatibility with existing code
-    
     // Statistics and debugging
     void print_stats() const;
     int  get_draw_record_count() const { return static_cast<int>(draw_records_.size()); }
@@ -160,14 +124,6 @@ private:
     // changes the flattened instance/node content.
     void mark_dirty() const {
         ++content_revision_;
-        textures_dirty_ = true;
-        shader_values_dirty_ = true;
-        // Force uniform locations to be re-cached on the next bind. GL reuses
-        // program ids after a shader is deleted (e.g. the imposter bake shader),
-        // so a cached location can silently belong to a stale program; without
-        // this reset the count uniforms get written to the wrong program and the
-        // shader reads 0. Mirrors BLASManager::mark_dirty.
-        cached_shader_id_ = 0;
     }
     
     // Get current matrix from top of stack
@@ -186,22 +142,10 @@ private:
     size_t        instance_array_size_ = 0;
     uint32_t      next_instance_id_;
     int           max_instances_;
-    
-    // GPU texture management
-    mutable Texture2D nodes_texture_{};
-    mutable Texture2D instances_texture_{};
-    mutable bool textures_dirty_ = true;
+
     // Starts at 1 so a consumer default-initialising its last-seen value to 0
     // always performs its first upload.
     mutable uint64_t content_revision_ = 1;
-    
-    // Shader binding optimization
-    mutable uint32_t cached_shader_id_ = 0;
-    mutable int tlas_node_count_loc_ = -1;
-    mutable int instance_count_loc_ = -1;
-    mutable int tlas_nodes_texture_loc_ = -1;
-    mutable int instances_texture_loc_ = -1;
-    mutable bool shader_values_dirty_ = true;
 };
 
 // Utility class for automatic matrix push/pop using RAII

@@ -1,9 +1,5 @@
 #pragma once
 
-extern "C" {
-    #include "raylib.h"
-}
-
 #include "precomp.h"
 #include "bvh.h"
 
@@ -59,20 +55,12 @@ public:
         std::vector<TriEx> tri_extra;   // parallel to triangles; empty if none supplied
         uint32_t hash;
         uint32_t ref_count; // number of live owners (cells) referencing this BLAS
-        // Per-entry GPU dirty flag: set when this entry's data has not yet been
-        // uploaded to the GPU texture. Cleared after ensure_gpu_textures_ready
-        // processes it. Allows the fast-path skip when no entry has changed.
-        mutable bool gpu_dirty = true;
 
         BLASEntry(BLASHandle h, std::unique_ptr<BvhMesh> m, std::unique_ptr<BVH> b,
                   std::vector<Tri>&& tris, std::vector<TriEx>&& tex, uint32_t hash_val)
             : handle(h), mesh(std::move(m)), bvh(std::move(b)), triangles(std::move(tris)),
-              tri_extra(std::move(tex)), hash(hash_val), ref_count(1), gpu_dirty(true) {}
+              tri_extra(std::move(tex)), hash(hash_val), ref_count(1) {}
     };
-
-    // Texel columns are capped to this so the texture width never exceeds
-    // GL_MAX_TEXTURE_SIZE; data beyond the cap wraps into additional tile rows.
-    static constexpr int TEXTURE_TILE_WIDTH = 8192;
 
     // Pure CPU computation of the per-triangle material value packed into row-0 .w
     // of the GPU triangle texture. A null triEx (no per-triangle material) packs
@@ -164,13 +152,12 @@ public:
     // and release_blas' non-final release both leave the flattened content
     // byte-identical.
     //
-    // A consumer that uploads this content somewhere (GL textures today, a
-    // Vulkan buffer later) can remember the value it last uploaded and re-upload
-    // only when it differs. That check is O(1), where the textures_dirty_ +
-    // per-entry gpu_dirty scan below is O(entries). It is also per-consumer: a
-    // shared dirty FLAG is cleared by whoever services it first, silently
-    // starving any second uploader, whereas each consumer holds its own
-    // last-seen revision.
+    // A consumer that uploads this content somewhere (a Vulkan buffer) can
+    // remember the value it last uploaded and re-upload only when it differs.
+    // That check is O(1), versus an O(entries) per-entry dirty scan. It is
+    // also per-consumer: a shared dirty FLAG is cleared by whoever services it
+    // first, silently starving any second uploader, whereas each consumer
+    // holds its own last-seen revision.
     uint64_t content_revision() const { return content_revision_; }
 
     // Get the count of live BLAS entries (useful for testing release paths).
@@ -188,24 +175,10 @@ public:
     
     // Legacy interface for old Triangle format
     //void generate_triangle_data_legacy(std::vector<LegacyTriangle>& output_triangles) const;
-    
-    // GPU texture management (fully encapsulated)
-    void ensure_gpu_textures_ready(); // Creates/updates textures if needed
-    void bind_to_shader(Shader shader) const; // Manager owns textures completely
 
-    // GPU texture ids (valid after bind_to_shader uploads them). Needed by the
-    // imposter bake, which draws via DrawMesh and must bind these BVH textures
-    // explicitly (DrawMesh ignores deferred SetShaderValueTexture bindings).
-    unsigned int triangles_texture_id() const { return triangles_texture_.id; }
-    unsigned int blas_nodes_texture_id() const { return nodes_texture_.id; }
-
-    // Legacy C-style interface for compatibility
-    void generate_triangle_texture_data(Tri* output_triangles) const;
-    void generate_node_texture_data(LegacyBVHNode* output_nodes) const;
-    
     // Legacy interface for old Triangle format
     //void generate_triangle_texture_data_legacy(LegacyTriangle* output_triangles) const;
-    
+
     // Statistics and debugging
     void print_stats() const;
     void reset_stats();
@@ -224,8 +197,6 @@ private:
     void mark_dirty() const {
         ++content_revision_;
         totals_dirty_ = true;
-        textures_dirty_ = true;
-        shader_values_dirty_ = true;
     }
     
     // Conversion utilities
@@ -262,26 +233,6 @@ private:
     // Starts at 1 so a consumer default-initialising its last-seen value to 0
     // always performs its first upload.
     mutable uint64_t content_revision_ = 1;
-    
-    // GPU texture management
-    mutable Texture2D triangles_texture_{};
-    mutable Texture2D nodes_texture_{};
-    mutable bool textures_dirty_ = true;
-    // Cached total counts from the last successful GPU upload; used to detect
-    // whether the entry set has changed (add/release) vs. only data has changed
-    // within an unchanged set (enabling the partial-update fast path).
-    mutable int gpu_total_triangles_ = 0;
-    mutable int gpu_total_nodes_ = 0;
-    
-    // Shader binding optimization
-    mutable uint32_t cached_shader_id_ = 0;
-    mutable int triangle_count_loc_ = -1;
-    mutable int blas_node_count_loc_ = -1;
-    mutable int triangles_texture_loc_ = -1;
-    mutable int blas_nodes_texture_loc_ = -1;
-    mutable int intersection_mode_loc_ = -1;
-    mutable bool shader_values_dirty_ = true;
-    
 };
 
 // Factory functions for common geometry types

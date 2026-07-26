@@ -1,4 +1,3 @@
-#include "raylib.h"
 #include "raster_mesh.h"
 #include <cstring>
 #include <unordered_map>
@@ -153,12 +152,6 @@ RasterMeshData expand_indexed(const RasterMeshData& in) {
             out.baked_ao.push_back(in.baked_ao[idx]);
     }
     return out;
-}
-
-Matrix row_major_to_matrix(const float t[16]) {
-    Matrix m;
-    std::memcpy(&m, t, sizeof(Matrix));
-    return m;
 }
 
 } // namespace viewer
