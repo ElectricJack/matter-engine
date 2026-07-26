@@ -2,9 +2,10 @@
 // bundle, and drive the real fixed/runtime/render handoffs without a device.
 #include "animation/anim_bundle.h"
 #include "animation/animation_binding_bake.h"
+#include "animation/animation_runtime_asset.h"
 #include "animation/animation_store.h"
 #include "animation/animation_systems.h"
-#include "animation/ozz_adapter.h"
+#include "animation/animation_world_queries.h"
 #include "check.h"
 #include "ecs/ecs_runtime.h"
 #include "render/animation_rigid_bridge.h"
@@ -13,12 +14,12 @@
 #include "script_host.h"
 
 #include "blas_manager.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <string_view>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -61,17 +62,12 @@ uint64_t checksum_sequence(const std::vector<uint64_t>& values) {
 struct GalleryBundle {
     AnimAsset asset;
     BindingBake binding;
+    DecodedAnimationRuntimeAsset runtime;
     uint64_t hash = 0;
 };
 
-const AnimSection* section(const AnimAsset& asset, AnimSectionKind kind) {
-    for (const AnimSection& candidate : asset.sections)
-        if (candidate.kind == kind) return &candidate;
-    return nullptr;
-}
-
 void check_reloaded_gallery_limits(const GalleryBundle& gallery) {
-    const uint32_t rig_joint_count = static_cast<uint32_t>(gallery.binding.inverse_bind_matrices.size());
+    const uint32_t rig_joint_count = static_cast<uint32_t>(gallery.runtime.rig.joints.size());
     CHECK(rig_joint_count != 0 && rig_joint_count <= 128,
           "C4 reloaded gallery stays within the explicit 128-joint acceptance limit");
     CHECK(!gallery.binding.lods.empty() && gallery.binding.lods.front().vertex_count < 50000,
@@ -93,32 +89,16 @@ void check_reloaded_gallery_limits(const GalleryBundle& gallery) {
         }
     }
 
-    // CanonicalAnimationBuild::encode() is the committed RigSchema payload.
-    // It preserves joint/socket/target lines followed by one graph-order line,
-    // allowing these acceptance limits to be checked without re-authoring DSL.
-    const AnimSection* schema = section(gallery.asset, AnimSectionKind::RigSchema);
-    CHECK(schema != nullptr, "C4 reloaded bundle retains its canonical rig schema section");
-    if (!schema) return;
-    const std::string encoded(schema->bytes.begin(), schema->bytes.end());
-    size_t cursor = 0;
-    uint32_t line_index = 0;
-    uint32_t target_count = 0;
-    uint32_t graph_nodes = 0;
-    while (cursor < encoded.size()) {
-        const size_t end = encoded.find('\n', cursor);
-        const std::string_view line(encoded.data() + cursor,
-                                    (end == std::string::npos ? encoded.size() : end) - cursor);
-        if (line.rfind("graph", 0) == 0) {
-            for (char character : line) if (character == '|') ++graph_nodes;
-            break;
-        }
-        if (line_index >= rig_joint_count && line.rfind("socket|", 0) != 0) ++target_count;
-        ++line_index;
-        if (end == std::string::npos) break;
-        cursor = end + 1;
-    }
-    CHECK(target_count <= 8, "C4 reloaded gallery stays within the explicit eight-target acceptance limit");
-    CHECK(graph_nodes <= 32, "C4 reloaded gallery stays within the explicit 32-node graph acceptance limit");
+    CHECK(gallery.runtime.definition.targets.size() <= 8,
+          "C4 reloaded gallery stays within the explicit eight-target acceptance limit");
+    CHECK(gallery.runtime.definition.binding &&
+              gallery.runtime.definition.binding->evaluation->nodes.size() <= 32,
+          "C4 reloaded gallery stays within the explicit 32-node graph acceptance limit");
+    CHECK(gallery.runtime.definition.inputs.size() == 1 &&
+              gallery.runtime.definition.inputs[0].name == "speed" &&
+              gallery.runtime.definition.binding->evaluation->clips.size() == 2 &&
+              gallery.runtime.definition.binding->controllers.size() == 1,
+          "C4 decoder retains the authored speed blend, idle/walk clips, and native gait controller");
 }
 
 GalleryBundle bake_and_reload_gallery() {
@@ -160,6 +140,8 @@ GalleryBundle bake_and_reload_gallery() {
           "C4 reloads the committed AnimatedRigGallery part/ANIM/MACM generation");
     CHECK(get_anim_binding_bake(result.asset, result.binding),
           "C4 reload exposes real skin, rigid, and attachment binding payloads");
+    CHECK(decode_animation_runtime_asset(result.asset, result.runtime, diagnostics),
+          "C4 decodes the committed gallery into its production runtime definition");
     CHECK(!result.binding.lods.empty() && !result.binding.rigid_segments.empty() &&
               !result.binding.attachments.empty(),
           "AnimatedRigGallery retains both skinned and rigid authored outputs after reload");
@@ -169,47 +151,16 @@ GalleryBundle bake_and_reload_gallery() {
     return result;
 }
 
-struct RuntimeFixture {
-    OzzSkeleton skeleton;
-    OzzAnimation clip;
-    std::shared_ptr<AnimationEvaluationDefinition> evaluation = std::make_shared<AnimationEvaluationDefinition>();
-    CanonicalRig rigid_rig;
-
-    explicit RuntimeFixture(uint32_t joint_count, const BindingBake& binding) {
-        Diagnostics diagnostics;
-        RigDefinition rig;
-        for (uint32_t joint = 0; joint != joint_count; ++joint) {
-            JointDef definition;
-            definition.name = "joint" + std::to_string(joint);
-            definition.parent = joint == 0 ? "" : "joint" + std::to_string(joint - 1);
-            rig.joints.push_back(definition);
-            rigid_rig.joints.push_back({definition.name});
-        }
-        for (const AttachmentBake& attachment : binding.attachments) {
-            if (attachment.target_kind == AttachmentTargetKind::Socket)
-                rigid_rig.sockets.push_back({attachment.target, 0, attachment.local});
-        }
-        ClipDefinition source;
-        source.name = "C4Walk";
-        source.duration = 0.8f;
-        source.rate = 60.0f;
-        source.loop = true;
-        AnimationTransform end{};
-        end.translation.x = 0.8f;
-        source.tracks.push_back({"joint0", {{0.0f, {}, {}}, {0.8f, end, {}}}, {}});
-        AnimationTransform limb_end{};
-        limb_end.rotation.z = 0.2f;
-        limb_end.rotation.w = 0.9797959f;
-        source.tracks.push_back({"joint1", {{0.0f, {}, {}}, {0.8f, limb_end, {}}}, {}});
-        source.markers = {{"left", 0.0f, {}}, {"right", 0.4f, {}}};
-        CHECK(build_skeleton(rig, skeleton, diagnostics) && build_clip(rig, source, clip, diagnostics),
-              "C4 builds the real Ozz evaluator fixture");
-        Mat4f identity{};
-        identity.m[0] = identity.m[5] = identity.m[10] = identity.m[15] = 1.0f;
-        evaluation->skeleton = &skeleton;
-        evaluation->clips = {{&clip, source.duration, true, false, 1.0f, {{0.0f, 0}, {0.4f, 1}}}};
-        evaluation->nodes = {{RuntimeGraphNodeKind::Clip, {}, 0}, {RuntimeGraphNodeKind::Output, {0}}};
-        evaluation->inverse_bind_model.assign(joint_count, identity);
+struct CountingGroundQueries final : AnimationWorldQueries {
+    mutable uint64_t calls = 0;
+    bool ray_cast(const Float3& origin, const Float3&, float, uint64_t,
+                  WorldRayHit& out) const override {
+        ++calls;
+        out.entity = 0xc4u;
+        out.position = {origin.x, 0.0f, origin.z};
+        out.normal = {0.0f, 1.0f, 0.0f};
+        out.distance = 0.5f;
+        return true;
     }
 };
 
@@ -240,22 +191,23 @@ AnimationPoseSnapshot final_pose_view(const RunResult& result) {
 }
 
 RunResult run_fixed_pattern(const GalleryBundle& gallery, const std::vector<float>& frames) {
-    RuntimeFixture fixture(static_cast<uint32_t>(gallery.binding.inverse_bind_matrices.size()), gallery.binding);
     ecs_runtime::Runtime runtime;
+    CountingGroundQueries queries;
+    runtime.animation_systems().set_world_queries(&queries);
     AnimationService service;
     runtime.attach_animation_service(service);
     const AnimAsset* asset = service.insert_asset(gallery.asset);
-    auto descriptor = std::make_shared<AnimationRuntimeBindingDescriptor>();
-    descriptor->evaluation = fixture.evaluation;
-    descriptor->fixed_work.clip.duration = 0.8f;
-    descriptor->fixed_work.clip.loop = true;
     flecs::entity root = runtime.world().entity("C4Root");
     root.set<ecs::LocalTransform>({});
+    auto descriptor = std::make_shared<AnimationRuntimeBindingDescriptor>(
+        *gallery.runtime.definition.binding);
     descriptor->fixed_work.root_entity = root.id();
-    AnimationRuntimeDefinition definition;
+    AnimationRuntimeDefinition definition = gallery.runtime.definition;
     definition.binding = descriptor;
     const Animator animator = service.create(asset, definition);
     CHECK(animator.valid(), "C4 creates a live animator from the reloaded AnimatedRigGallery asset");
+    CHECK(service.set(service.input(animator.instance, "speed"), 1.0f),
+          "C4 drives the real gallery idle/walk blend with its authored speed input");
 
     RunResult result;
     size_t frame = 0;
@@ -269,7 +221,7 @@ RunResult run_fixed_pattern(const GalleryBundle& gallery, const std::vector<floa
         CHECK(!tick.invalid && tick.dropped_steps == 0, "C4 fixed schedule remains within its catch-up budget");
         if (tick.fixed_steps != 0) {
             const AnimationPoseSnapshot pose = runtime.animation_systems().pose_snapshots().latest(animator.instance);
-            CHECK(pose.local_pose.count == fixture.evaluation->inverse_bind_model.size(),
+            CHECK(pose.local_pose.count == gallery.runtime.rig.joints.size(),
                   "C4 fixed evaluation publishes the expected joint count");
             result.fixed_pose_checksums.push_back(checksum_pose(pose));
             result.evaluated_joints += pose.local_pose.count;
@@ -294,6 +246,7 @@ RunResult run_fixed_pattern(const GalleryBundle& gallery, const std::vector<floa
         ++frame;
     }
     CHECK(result.fixed_pose_checksums.size() == 1000, "C4 evaluates exactly 1,000 fixed ticks");
+    result.query_count = queries.calls;
     return result;
 }
 
@@ -350,8 +303,7 @@ void exercise_render_handoffs(const GalleryBundle& gallery, const RunResult& run
               queue.fallback_count() == 0,
           "C4 stays within default skin budgets with zero fallback");
 
-    RuntimeFixture fixture(static_cast<uint32_t>(gallery.binding.inverse_bind_matrices.size()), gallery.binding);
-    render::AnimationRigidAsset rigid_asset{gallery.asset.resolved_hash, 1, &gallery.binding, &fixture.rigid_rig,
+    render::AnimationRigidAsset rigid_asset{gallery.asset.resolved_hash, 1, &gallery.binding, &gallery.runtime.rig,
                                               std::vector<uint64_t>(gallery.binding.rigid_segments.size(), gallery.hash)};
     render::AnimationRigidBridge rigid_bridge(&snapshots);
     std::vector<render::DynamicInstanceInput> rigid;
@@ -364,36 +316,113 @@ void exercise_render_handoffs(const GalleryBundle& gallery, const RunResult& run
     const SkinnedRtBuildContract& rt = skinned_rt_build_contract();
     CHECK(rt.build_once && !rt.allow_update && !rt.allow_refit,
           "C4 renderer/RT diagnostics retain zero deforming BLAS update/refit permission");
-    std::printf("C4 diagnostics: cpu_animation_ms=%.3f gpu_skin_ms=headless-not-measured(0) work_items=%llu skinned_vertices=%llu evaluated_joints=%llu query_count=%llu fallback_count=%u deforming_blas_updates=0\n",
+
+    AnimationBudgetConfig constrained;
+    constrained.max_skin_work_items = 1;
+    viewer::VkAnimationSkinning retained_queue(2, constrained);
+    CHECK(retained_queue.register_asset(skin_asset.identity, influences) &&
+              retained_queue.submit_visible(0, skinned) &&
+              retained_queue.mark_submitted(0, 1),
+          "C4 seals a real completed skin output for fallback retention");
+    viewer::VkSkinSubmission retained = skinned.front();
+    retained.history_valid = true;
+    viewer::VkSkinSubmission preferred = retained;
+    preferred.instance_slot += 1;
+    preferred.instance_generation += 1;
+    preferred.render_priority += 1;
+    CHECK(retained_queue.submit_visible(1, {retained, preferred}) &&
+              retained_queue.frame(1).fallbacks.size() == 1 &&
+              retained_queue.frame(1).fallbacks[0].mode ==
+                  viewer::VkSkinFallbackMode::LastCompletePose,
+          "C4 production skin queue selects its sealed last-complete fallback");
+    viewer::VkAnimationSkinning bind_queue(1, constrained);
+    viewer::VkSkinSubmission never_completed = retained;
+    never_completed.instance_slot += 2;
+    never_completed.instance_generation += 2;
+    never_completed.history_valid = false;
+    CHECK(bind_queue.register_asset(skin_asset.identity, influences) &&
+              bind_queue.submit_visible(0, {never_completed, preferred}) &&
+              bind_queue.frame(0).fallbacks.size() == 1 &&
+              bind_queue.frame(0).fallbacks[0].mode ==
+                  viewer::VkSkinFallbackMode::BindPose,
+          "C4 production skin queue selects bind pose without retained output");
+
+    std::printf("C4 diagnostics: cpu_animation_ms=%.3f gpu_skin_ms=headless-not-measured(0) work_items=%llu skinned_vertices=%llu evaluated_joints=%llu query_count=%llu fallback_count=%u rt_contract_allow_update=%u rt_contract_allow_refit=%u\n",
                 run.cpu_animation_ms,
                 static_cast<unsigned long long>(queue.stats().submitted_skin_work_items),
                 static_cast<unsigned long long>(queue.stats().submitted_skinned_vertices),
                 static_cast<unsigned long long>(run.evaluated_joints),
-                static_cast<unsigned long long>(run.query_count), queue.fallback_count());
+                static_cast<unsigned long long>(run.query_count), queue.fallback_count(),
+                rt.allow_update ? 1u : 0u, rt.allow_refit ? 1u : 0u);
 }
 
-void exercise_pose_lods() {
-    PoseLodScheduler scheduler;
-    const struct { float distance; bool visible; AnimationPoseLodTier expected; } cases[] = {
-        {0.0f, true, AnimationPoseLodTier::Hz60}, {20.0f, true, AnimationPoseLodTier::Hz30},
-        {60.0f, true, AnimationPoseLodTier::Hz15}, {200.0f, false, AnimationPoseLodTier::Frozen}};
-    double time = 0.0;
-    uint64_t serial = 0;
-    for (const auto& test : cases) {
-        scheduler.forget(9);
-        PoseLodDecision decision{};
-        if (test.visible) {
-            // Visibility intentionally starts at 60 Hz for two frames; the
-            // third request proves the distance tier, not the grace policy.
-            scheduler.schedule({9, true, test.distance, 0, time, ++serial});
-            scheduler.schedule({9, true, test.distance, 0, time + 1.0 / 60.0, ++serial});
-            decision = scheduler.schedule({9, true, test.distance, 0, time + 1.0, ++serial});
-        } else {
-            decision = scheduler.schedule({9, false, test.distance, 0, time, ++serial});
-        }
-        CHECK(decision.tier == test.expected, "C4 exercises the requested pose LOD tier");
-        time += 2.0;
-    }
+void exercise_pose_lods(const GalleryBundle& gallery) {
+    ecs_runtime::Runtime runtime;
+    CountingGroundQueries queries;
+    runtime.animation_systems().set_world_queries(&queries);
+    AnimationService service;
+    runtime.attach_animation_service(service);
+    const AnimAsset* asset = service.insert_asset(gallery.asset);
+    const Animator animator = service.create(asset, gallery.runtime.definition);
+    CHECK(animator.valid() &&
+              service.set(service.input(animator.instance, "speed"), 1.0f),
+          "C4 production pose-LOD fixture uses the decoded gallery animator");
+
+    uint64_t observation_serial = 100;
+    const auto observe = [&](bool visible, float distance) {
+        runtime.animation_systems().stage_completed_visibility(
+            observation_serial, {{animator.instance, visible, distance, 0}});
+        CHECK(runtime.animation_systems().commit_completed_visibility(observation_serial),
+              "C4 commits completed renderer visibility to the production LOD queue");
+        ++observation_serial;
+    };
+    const auto frames = [&](uint32_t count) {
+        const uint64_t before = runtime.animation_systems()
+                                    .presentation_budget_stats()
+                                    .evaluated_presentation_pose_count;
+        for (uint32_t frame = 0; frame < count; ++frame)
+            runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 2});
+        return runtime.animation_systems()
+                   .presentation_budget_stats()
+                   .evaluated_presentation_pose_count - before;
+    };
+
+    observe(true, 0.0f);
+    const uint64_t hz60 = frames(6);
+    CHECK(hz60 == 6, "C4 production presentation evaluates every frame in the 60 Hz tier");
+
+    observe(true, 20.0f);
+    const uint64_t hz30 = frames(8);
+    CHECK(hz30 > 0 && hz30 < 8,
+          "C4 production presentation skips frames in the 30 Hz tier");
+
+    observe(true, 60.0f);
+    const uint64_t hz15 = frames(12);
+    CHECK(hz15 > 0 && hz15 < 6,
+          "C4 production presentation throttles further in the 15 Hz tier");
+
+    const AnimationPoseSnapshot last_complete =
+        runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    const auto before_frozen = runtime.animation_systems().presentation_budget_stats();
+    observe(true, 200.0f);
+    const uint64_t frozen = frames(3);
+    const AnimationPoseSnapshot frozen_pose =
+        runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    const auto after_frozen = runtime.animation_systems().presentation_budget_stats();
+    CHECK(frozen == 0 && after_frozen.frozen_pose_count > before_frozen.frozen_pose_count &&
+              after_frozen.last_complete_fallback_count >
+                  before_frozen.last_complete_fallback_count &&
+              frozen_pose.fixed_tick == last_complete.fixed_tick,
+          "C4 Frozen tier republishes the actual last completed presentation while fixed time advances");
+
+    observe(true, 60.0f);
+    const uint64_t resumed = frames(1);
+    const auto after_resume = runtime.animation_systems().presentation_budget_stats();
+    CHECK(resumed == 1 &&
+              after_resume.resampled_pose_count > after_frozen.resampled_pose_count &&
+              runtime.animation_systems().pose_snapshots().latest(animator.instance).fixed_tick >
+                  frozen_pose.fixed_tick,
+          "C4 tier improvement resamples the current fixed pose without replaying skipped poses");
 }
 
 }  // namespace
@@ -408,11 +437,21 @@ int main() {
           "C4 fixed pose checksums are identical across distinct render-frame patterns");
     CHECK(sixty.marker_sequence == mixed.marker_sequence,
           "C4 marker sequence is identical across distinct render-frame patterns");
+    CHECK(!sixty.marker_sequence.empty() &&
+              std::any_of(sixty.marker_sequence.begin(), sixty.marker_sequence.end(),
+                          [](uint64_t marker) { return uint32_t(marker >> 32u) == 1u; }),
+          "C4 real gallery emits declaration-order walk markers including rightStep");
     CHECK(sixty.root_motion_sequence == mixed.root_motion_sequence,
           "C4 root-motion sequence/checksum is identical across distinct render-frame patterns");
+    CHECK(!sixty.root_motion_sequence.empty() &&
+              std::any_of(sixty.root_motion_sequence.begin(), sixty.root_motion_sequence.end(),
+                          [](uint64_t bits) { return uint32_t(bits) != 0u; }),
+          "C4 real gallery walk blend emits nonempty, nonzero root motion");
+    CHECK(sixty.query_count >= 2000 && mixed.query_count >= 2000,
+          "C4 real procedural gait executes both fixed ground queries on every evaluated tick");
     CHECK(checksum_sequence(sixty.root_motion_sequence) == checksum_sequence(mixed.root_motion_sequence),
           "C4 root-motion checksum is identical across distinct render-frame patterns");
     exercise_render_handoffs(gallery, sixty);
-    exercise_pose_lods();
+    exercise_pose_lods(gallery);
     return check_summary();
 }
