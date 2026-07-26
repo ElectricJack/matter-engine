@@ -3808,7 +3808,8 @@ bool VkSceneRenderer::init(std::string& error) {
     // The direct C2 skin fixture deliberately avoids optional ray-query
     // modules as well as RT pipelines; it exercises only the skin compute
     // ABI and must be valid on a non-ray-query logical device.
-    initialize_volumetrics = !test_force_rt_unavailable_;
+    initialize_volumetrics =
+        !test_force_rt_unavailable_ && !test_skip_volumetrics_;
 #endif
     if (initialize_volumetrics && !volumetrics_) {
         auto vol = std::make_unique<VkVolumetrics>();

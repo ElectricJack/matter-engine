@@ -111,10 +111,13 @@ void test_normal_and_additive_blending() {
 void test_additive_clip_is_baked_relative_to_the_bind_reference() {
     RigDefinition rig = chain_rig();
     rig.joints[0].local = transform(5.0f, 0.0f, 0.0f);
+    rig.joints[0].local.scale.x = -2.0f;
     ClipDefinition clip = moving_clip();
     clip.additive = true;
-    clip.tracks[0].keys = {{0.0f, transform(7.0f, 0.0f, 0.0f), source("additive-root-0")},
-                           {1.0f, transform(8.0f, 0.0f, 0.0f), source("additive-root-1")}};
+    auto first = transform(7.0f, 0.0f, 0.0f); first.scale.x = -4.0f;
+    auto second = transform(8.0f, 0.0f, 0.0f); second.scale.x = -4.0f;
+    clip.tracks[0].keys = {{0.0f, first, source("additive-root-0")},
+                           {1.0f, second, source("additive-root-1")}};
     Diagnostics diagnostics;
     OzzSkeleton skeleton;
     OzzAnimation animation;
@@ -122,14 +125,27 @@ void test_additive_clip_is_baked_relative_to_the_bind_reference() {
     CHECK(build_clip(rig, clip, animation, diagnostics), "bakes an additive clip against its bind reference");
     OzzSampleContext context;
     std::vector<AnimationTransform> delta;
-    CHECK(sample(animation, 0.0f, context, delta) && near(delta[0].translation.x, 2.0f),
+    CHECK(sample(animation, 0.0f, context, delta) && near(delta[0].translation.x, 2.0f) &&
+              near(delta[0].scale.x, 2.0f),
           "additive archive stores a bind-relative root delta rather than its raw absolute pose");
     std::vector<AnimationTransform> bind;
     for (const JointDef& joint : rig.joints) bind.push_back(joint.local);
     std::vector<AnimationTransform> result;
     CHECK(blend(skeleton, {{&bind, 1.0f}}, {{&delta, 1.0f}}, result) &&
-              near(result[0].translation.x, 7.0f),
+              near(result[0].translation.x, 7.0f) && near(result[0].scale.x, -4.0f),
           "additive blend reconstructs the authored absolute pose from bind plus delta");
+}
+
+void test_additive_clip_rejects_a_zero_reference_scale() {
+    RigDefinition rig = chain_rig();
+    rig.joints[0].local.scale.x = 0.0f;
+    ClipDefinition clip = moving_clip();
+    clip.additive = true;
+    Diagnostics diagnostics;
+    OzzAnimation animation;
+    CHECK(!build_clip(rig, clip, animation, diagnostics) && !diagnostics.items.empty() &&
+              diagnostics.items.front().code == "additive-reference-scale",
+          "additive bake rejects a zero bind-scale component instead of substituting an identity delta");
 }
 
 void test_local_to_model_and_two_bone_subtree_refresh() {
@@ -258,6 +274,7 @@ int main() {
     test_build_archive_and_sample_endpoints();
     test_normal_and_additive_blending();
     test_additive_clip_is_baked_relative_to_the_bind_reference();
+    test_additive_clip_rejects_a_zero_reference_scale();
     test_local_to_model_and_two_bone_subtree_refresh();
     test_archive_boundaries_and_skeleton_limits();
     test_invalid_data_reports_matter_diagnostic();

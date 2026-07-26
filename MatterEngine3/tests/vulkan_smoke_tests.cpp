@@ -4907,6 +4907,151 @@ void run_animation_skin_gpu_readback_tests(matter::VulkanDevice& vulkan) {
           "animation skin fixture emits no Vulkan validation errors");
 }
 
+void run_animation_skin_record_fault_matrix(matter::VulkanDevice& vulkan) {
+    const FixedCullScene scene = make_fixed_cull_scene();
+    const auto run_case = [&](bool allocation_failure, uint32_t fail_point) {
+        constexpr uint64_t part_hash = 0x534b4641u;
+        constexpr uint64_t asset_key = 0x534b4642u;
+        viewer::VkSceneRenderer renderer(vulkan);
+        renderer.test_skip_volumetrics(true);
+        std::string error;
+        viewer::VkScenePart part = known_raster_triangle(part_hash);
+        part.indices = {0, 1, 2};
+        const bool initialized = renderer.init(error);
+        CHECK(initialized,
+              error.empty() ? "initialize animation skin fault renderer"
+                            : error.c_str());
+        if (!initialized) return;
+        const bool scene_ready = renderer.ensure_part(part, error) >= 0 &&
+            renderer.update_instances({{part_hash, identity_matrix()}}, error);
+        CHECK(scene_ready,
+              error.empty() ? "prepare animation skin fault scene" : error.c_str());
+        if (!scene_ready) return;
+
+        uint32_t source_vertex = 0, vertex_count = 0;
+        uint32_t first_index = 0, index_count = 0;
+        CHECK(renderer.part_raster_range(part_hash, source_vertex, vertex_count,
+                                         first_index, index_count) &&
+                  vertex_count == 3 && index_count == 3,
+              "fault fixture resolves exact renderer-global skin ranges");
+        std::vector<viewer::VkSkinInfluence> influences(vertex_count);
+        for (auto& influence : influences) influence.weight[0] = 65535;
+        viewer::VkAnimationBoundsAsset bounds{};
+        bounds.asset_key = asset_key;
+        bounds.conservative_asset_bound =
+            {{-0.75f, -0.75f, -2.0f}, {0.75f, 1.5f, -2.0f}};
+        bounds.clusters.push_back(
+            {0, 0, {{0, bounds.conservative_asset_bound}}});
+        CHECK(renderer.register_animation_skin_asset(asset_key, influences) &&
+                  renderer.register_animation_bounds_asset(bounds),
+              "fault fixture registers skin influences and animated bounds");
+
+        const auto submission = [&](uint32_t slot, uint32_t generation) {
+            viewer::VkSkinSubmission value{};
+            value.asset_key = asset_key;
+            value.source_vertex = source_vertex;
+            value.vertex_count = vertex_count;
+            value.first_index = first_index;
+            value.index_count = index_count;
+            value.instance_slot = slot;
+            value.instance_generation = generation;
+            value.cluster = 0;
+            value.lod = 0;
+            viewer::VkSkinJoint joint{};
+            joint.position = skin_identity_matrix();
+            joint.normal = skin_identity_matrix();
+            value.pose.current = {joint};
+            value.pose.previous = {joint};
+            value.history_valid = true;
+            return value;
+        };
+        const auto bind_dynamic = [&](uint32_t slot, uint32_t generation,
+                                      uint64_t serial) {
+            matter::render::DynamicSlotChange change{};
+            change.kind = matter::render::DynamicSlotChangeKind::Bind;
+            change.slot_index = slot;
+            change.slot_generation = generation;
+            change.part_hash = part_hash;
+            change.object_to_world = identity_matrix();
+            change.previous_object_to_world = identity_matrix();
+            return renderer.update_dynamic_instances(&change, 1, serial, error);
+        };
+
+        matter::VulkanFrame seed{};
+        CHECK(vulkan.begin_frame(seed, error) && bind_dynamic(0, 11, seed.serial) &&
+                  renderer.begin_animation_skinning_frame(seed.frame_slot, 0) &&
+                  renderer.submit_visible_animation_skinning(
+                      seed.frame_slot, {submission(0, 11)}, scene.frame,
+                      scene.eye, 1.0f) &&
+                  renderer.prepare_frame(seed, scene.frame, scene.eye, 1.0f, error) &&
+                  renderer.record_cull_and_render(seed, scene.frame, scene.eye,
+                                                  1.0f, error) &&
+                  renderer.finish_animation_skinning_frame(seed.frame_slot,
+                                                           seed.serial) &&
+                  renderer.record_composite_to_swapchain(seed, error) &&
+                  vulkan.end_frame(seed, error),
+              error.empty() ? "seed sealed animation skin retained pose"
+                            : error.c_str());
+        vulkan.wait_idle();
+
+        matter::VulkanFrame failed{};
+        CHECK(vulkan.begin_frame(failed, error) &&
+                  bind_dynamic(1, 22, failed.serial) &&
+                  renderer.begin_animation_skinning_frame(failed.frame_slot,
+                                                          seed.serial) &&
+                  renderer.submit_visible_animation_skinning(
+                      failed.frame_slot,
+                      {submission(0, 11), submission(1, 22)}, scene.frame,
+                      scene.eye, 1.0f),
+              error.empty() ? "publish unsealed skin fault queue" : error.c_str());
+        renderer.set_test_animation_skin_failure(
+            allocation_failure ? fail_point : std::numeric_limits<uint32_t>::max(),
+            allocation_failure ? std::numeric_limits<uint32_t>::max() : fail_point);
+        CHECK(renderer.prepare_frame(failed, scene.frame, scene.eye, 1.0f, error) &&
+                  renderer.record_cull_and_render(
+                      failed, scene.frame, scene.eye, 1.0f, error),
+              error.empty() ? "skin allocation/upload fault continues frame record"
+                            : error.c_str());
+        const auto& degraded = renderer.animation_skinning().frame(failed.frame_slot);
+        const auto& fallbacks = degraded.fallbacks;
+        const bool retained = std::any_of(
+            fallbacks.begin(), fallbacks.end(), [](const viewer::VkSkinFallback& value) {
+                return value.instance_slot == 0 &&
+                       value.mode == viewer::VkSkinFallbackMode::LastCompletePose;
+            });
+        const bool bound = std::any_of(
+            fallbacks.begin(), fallbacks.end(), [](const viewer::VkSkinFallback& value) {
+                return value.instance_slot == 1 &&
+                       value.mode == viewer::VkSkinFallbackMode::BindPose;
+            });
+        CHECK(degraded.work_items.empty() && retained && bound &&
+                  degraded.raster_draws.size() == 1 &&
+                  degraded.raster_draws[0].output_frame_slot == seed.frame_slot,
+              "real record fault atomically keeps retained pose and bind/static peer");
+        CHECK(renderer.animation_bounds().gpu_records().empty(),
+              "real record fault removes current dynamic bounds before fail-open static cull");
+        CHECK(degraded.gpu_failure ==
+                  (allocation_failure ? viewer::VkSkinGpuFailureReason::Allocation
+                                      : viewer::VkSkinGpuFailureReason::Upload),
+              "real record fault preserves its precise transaction reason");
+        CHECK(renderer.finish_animation_skinning_frame(failed.frame_slot,
+                                                       failed.serial) &&
+                  renderer.record_composite_to_swapchain(failed, error) &&
+                  vulkan.end_frame(failed, error),
+              error.empty() ? "degraded skin frame seals and presents"
+                            : error.c_str());
+        vulkan.wait_idle();
+        CHECK(renderer.begin_animation_skinning_frame(seed.frame_slot,
+                                                      failed.serial),
+              "retained dependency releases after degraded consumer fence completes");
+    };
+
+    for (uint32_t point = 0; point != 7; ++point) run_case(true, point);
+    for (uint32_t point = 0; point != 5; ++point) run_case(false, point);
+    CHECK(vulkan.validation_error_count() == 0,
+          "animation skin allocation/upload fault matrix emits no validation errors");
+}
+
 bool run_retention_fault(matter::VulkanDevice& vulkan,
                          const std::string& phase, std::string& error) {
     _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS", phase.c_str());
@@ -5040,7 +5185,8 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 int main() {
     const char* startup_smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
     const bool animation_skin_only = startup_smoke_mode &&
-        std::string(startup_smoke_mode) == "animation-skin";
+        (std::string(startup_smoke_mode) == "animation-skin" ||
+         std::string(startup_smoke_mode) == "animation-skin-faults");
     if (!animation_skin_only) {
         test_vulkan_lighting_override_contract();
         test_viewer_lighting_controls();
@@ -5205,8 +5351,19 @@ int main() {
             glfwTerminate();
             return check_summary();
         }
+        if (smoke_mode && std::string(smoke_mode) == "animation-skin-faults") {
+            run_animation_skin_record_fault_matrix(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
         if (smoke_mode && std::string(smoke_mode) == "animation-skin") {
             run_animation_skin_gpu_readback_tests(*vulkan);
+            run_animation_skin_record_fault_matrix(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();

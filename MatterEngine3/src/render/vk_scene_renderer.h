@@ -551,6 +551,7 @@ public:
     void test_force_rt_unavailable(bool unavailable) {
         test_force_rt_unavailable_ = unavailable;
     }
+    void test_skip_volumetrics(bool skip) { test_skip_volumetrics_ = skip; }
     bool readback_raster_pixel(uint32_t x, uint32_t y,
                                VkRasterPixel& pixel, std::string& error);
     bool readback_materials(std::vector<MaterialGpuRecord>& records,
@@ -1122,6 +1123,7 @@ private:
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     std::unique_ptr<matter::StreamlineBridge> test_dlss_bridge_override_;
     bool test_force_rt_unavailable_ = false;
+    bool test_skip_volumetrics_ = false;
     std::vector<RtGeometryDebugRecord> test_last_rt_geometry_records_;
     uint32_t test_last_rt_blas_build_count_ = 0;
 #endif

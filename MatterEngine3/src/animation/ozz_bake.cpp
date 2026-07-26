@@ -41,9 +41,9 @@ AnimationTransform bind_relative_delta(const AnimationTransform& reference,
     const Quaternion inverse_reference{-reference.rotation.x, -reference.rotation.y,
                                        -reference.rotation.z, reference.rotation.w};
     delta.rotation = normalize_rotation(multiply_rotation(inverse_reference, absolute.rotation));
-    delta.scale = {reference.scale.x != 0.0f ? absolute.scale.x / reference.scale.x : 1.0f,
-                   reference.scale.y != 0.0f ? absolute.scale.y / reference.scale.y : 1.0f,
-                   reference.scale.z != 0.0f ? absolute.scale.z / reference.scale.z : 1.0f};
+    delta.scale = {absolute.scale.x / reference.scale.x,
+                   absolute.scale.y / reference.scale.y,
+                   absolute.scale.z / reference.scale.z};
     return delta;
 }
 
@@ -116,6 +116,16 @@ bool build_skeleton(const RigDefinition& rig, OzzSkeleton& skeleton, Diagnostics
 }
 
 bool build_clip(const RigDefinition& rig, const ClipDefinition& clip, OzzAnimation& animation, Diagnostics& diagnostics) {
+    if (clip.additive) {
+        for (const JointDef& joint : rig.joints) {
+            if (joint.local.scale.x == 0.0f || joint.local.scale.y == 0.0f ||
+                joint.local.scale.z == 0.0f) {
+                diagnostics.add("additive-reference-scale", joint.source,
+                                "additive clip requires a non-zero bind scale on every joint");
+                return false;
+            }
+        }
+    }
     ozz::unique_ptr<ozz::animation::Skeleton> skeleton;
     if (!make_runtime_skeleton(rig, skeleton, nullptr, nullptr, diagnostics)) return false;
     const std::vector<std::size_t> order=canonical_order(rig, diagnostics); if (order.empty()) return false;
