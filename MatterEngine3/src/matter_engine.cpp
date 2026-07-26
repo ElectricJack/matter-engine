@@ -4207,6 +4207,59 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         err = "WorldSession received an invalid VulkanFrame";
         return false;
     }
+    // Stage value-owned presentation observations now, but expose them to
+    // animation only after this submission is reported presented. This makes
+    // LOD consume prior completed scene state and prevents a failed render
+    // attempt from throttling the following frame.
+    {
+        std::map<uint64_t, animation::AnimationPresentationObservation> observed;
+        const auto remember =
+            [&observed, &cam](flecs::entity entity, AnimatorInstanceHandle animator,
+                              bool binding_visible, int32_t priority) {
+                if (!animator.valid()) return;
+                const ecs::WorldTransform* transform =
+                    entity.try_get<ecs::WorldTransform>();
+                if (!transform) return;
+                bool visible = binding_visible;
+                if (const scene::PartInstance* part =
+                        entity.try_get<scene::PartInstance>())
+                    visible = visible && part->visible;
+                const float dx = transform->matrix.m[3] - cam.position.x;
+                const float dy = transform->matrix.m[7] - cam.position.y;
+                const float dz = transform->matrix.m[11] - cam.position.z;
+                const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+                const uint64_t key =
+                    (uint64_t(animator.slot_index) << 32u) | animator.generation;
+                const animation::AnimationPresentationObservation candidate{
+                    animator, visible, distance, priority};
+                const auto inserted = observed.emplace(key, candidate);
+                if (!inserted.second) {
+                    inserted.first->second.visible =
+                        inserted.first->second.visible || candidate.visible;
+                    inserted.first->second.distance =
+                        std::min(inserted.first->second.distance, candidate.distance);
+                    inserted.first->second.explicit_priority =
+                        std::max(inserted.first->second.explicit_priority,
+                                 candidate.explicit_priority);
+                }
+            };
+        impl_->ecs_runtime.world().each(
+            [&remember](flecs::entity entity,
+                        const render::AnimationSkinnedBinding& binding) {
+                remember(entity, binding.animator, binding.visible,
+                         binding.presentation_priority);
+            });
+        impl_->ecs_runtime.world().each(
+            [&remember](flecs::entity entity,
+                        const render::AnimationRigidBinding& binding) {
+                remember(entity, binding.animator, true, 0);
+            });
+        std::vector<animation::AnimationPresentationObservation> observations;
+        observations.reserve(observed.size());
+        for (const auto& entry : observed) observations.push_back(entry.second);
+        (void)impl_->ecs_runtime.animation_systems().stage_completed_visibility(
+            frame.serial, std::move(observations));
+    }
     impl_->vk_scene->set_dlss_mode(opts.dlss_mode);
     impl_->vk_scene->set_ray_tracing_settings(opts.vulkan_ray_tracing);
     impl_->vk_scene->set_gi_settings(opts.vulkan_gi);
@@ -4595,11 +4648,16 @@ void WorldSession::finish_vulkan_frame(uint64_t frame_serial, bool presented) {
             std::max(impl_->vk_skin_completed_serial, frame_serial);
     }
     impl_->dynamic_bridge.finish_frame(frame_serial);
-    if (presented)
+    if (presented) {
+        (void)impl_->ecs_runtime.animation_systems().commit_completed_visibility(
+            frame_serial);
         (void)impl_->vk_temporal.commit_presented(impl_->vk_temporal_token);
-    else
+    } else {
+        impl_->ecs_runtime.animation_systems().discard_completed_visibility(
+            frame_serial);
         (void)impl_->vk_temporal.discard_failed_attempt(
             impl_->vk_temporal_token);
+    }
     impl_->vk_temporal_serial = 0;
     impl_->vk_temporal_token = 0;
 }
