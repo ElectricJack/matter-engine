@@ -15,7 +15,10 @@ public: explicit GaitController(GaitControllerParameters p):p_(p){}
  bool checkpoint(std::vector<uint8_t>&out)const override{out.resize(sizeof(state_));std::memcpy(out.data(),&state_,sizeof(state_));return true;} bool restore(const std::vector<uint8_t>&in)override{if(in.size()!=sizeof(state_))return false;State s{};std::memcpy(&s,in.data(),sizeof(s));if(!std::isfinite(s.time))return false;state_=s;return true;}
 private: struct State{double time=0;Foot feet[2]{};};
  bool foot(NativeControllerContext&c,State& next,std::vector<ControllerTargetWrite>& writes,int index,uint16_t target,Float3 predicted){ const float phase=std::fmod(static_cast<float>(next.time/p_.stride_seconds)+(index?0.5f:0.f),1.f); const bool stance=phase<0.5f; Foot&f=next.feet[index];WorldRayHit hit{};const Float3 predicted_world=transform_point(c,predicted); const Float3 from{predicted_world.x,predicted_world.y+p_.step_height,predicted_world.z};const bool got=c.world_queries->ray_cast(from,{0,-1,0},p_.ray_distance,0,hit);const bool walkable=got&&finite3(hit.position)&&finite3(hit.normal)&&hit.normal.y>=p_.min_ground_normal_y;
-  if(stance&&walkable){if(!f.planted||f.ground!=hit.entity||std::fabs(f.position.y-hit.position.y)>p_.step_height){f.planted=true;f.position=hit.position;f.ground=hit.entity;}} else if(!walkable)f.planted=false;
+  // A foot contact belongs only to its stance half-cycle.  Keeping the old
+  // contact through a successful swing ray made an airborne foot snap back to
+  // its previous plant instead of following its predicted swing trajectory.
+  if(stance&&walkable){if(!f.planted||f.ground!=hit.entity||std::fabs(f.position.y-hit.position.y)>p_.step_height){f.planted=true;f.position=hit.position;f.ground=hit.entity;}} else f.planted=false;
   AnimationTransform result{}; result.translation=f.planted?f.position:predicted_world; if(!stance){const float x=(phase-.5f)*2.f;result.translation.y+=p_.swing_height*(3*x*x-2*x*x*x);} if(!finite3(result.translation)) return false; writes.push_back({target,result,1});return true; }
  GaitControllerParameters p_{};State state_{};
 };

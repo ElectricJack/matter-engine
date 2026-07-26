@@ -7,10 +7,45 @@
 #include "ozz/animation/offline/skeleton_builder.h"
 
 #include <functional>
+#include <cmath>
 #include <unordered_map>
 
 namespace matter::animation {
 namespace {
+
+Quaternion normalize_rotation(Quaternion value) {
+    const float length = std::sqrt(value.x * value.x + value.y * value.y +
+                                   value.z * value.z + value.w * value.w);
+    return length > 1e-8f ? Quaternion{value.x / length, value.y / length,
+                                        value.z / length, value.w / length}
+                           : Quaternion{};
+}
+
+Quaternion multiply_rotation(Quaternion left, Quaternion right) {
+    return {left.w * right.x + left.x * right.w + left.y * right.z - left.z * right.y,
+            left.w * right.y - left.x * right.z + left.y * right.w + left.z * right.x,
+            left.w * right.z + left.x * right.y - left.y * right.x + left.z * right.w,
+            left.w * right.w - left.x * right.x - left.y * right.y - left.z * right.z};
+}
+
+// Ozz's additive layer consumes a transform delta, not an authored absolute
+// local pose.  Keep the ANIM schema ergonomic (clips still author normal
+// local transforms) and make the conversion once at bake time against the
+// rig's exact bind/reference pose.
+AnimationTransform bind_relative_delta(const AnimationTransform& reference,
+                                       const AnimationTransform& absolute) {
+    AnimationTransform delta{};
+    delta.translation = {absolute.translation.x - reference.translation.x,
+                         absolute.translation.y - reference.translation.y,
+                         absolute.translation.z - reference.translation.z};
+    const Quaternion inverse_reference{-reference.rotation.x, -reference.rotation.y,
+                                       -reference.rotation.z, reference.rotation.w};
+    delta.rotation = normalize_rotation(multiply_rotation(inverse_reference, absolute.rotation));
+    delta.scale = {reference.scale.x != 0.0f ? absolute.scale.x / reference.scale.x : 1.0f,
+                   reference.scale.y != 0.0f ? absolute.scale.y / reference.scale.y : 1.0f,
+                   reference.scale.z != 0.0f ? absolute.scale.z / reference.scale.z : 1.0f};
+    return delta;
+}
 
 std::vector<std::size_t> canonical_order(const RigDefinition& rig, Diagnostics& diagnostics) {
     std::unordered_map<std::string, std::size_t> index;
@@ -90,9 +125,10 @@ bool build_clip(const RigDefinition& rig, const ClipDefinition& clip, OzzAnimati
         const JointDef& bind=rig.joints[order[i]]; const auto found=tracks.find(bind.name); const std::vector<ClipKey>* keys=found==tracks.end()?nullptr:&found->second->keys;
         const std::size_t key_count=keys && !keys->empty()?keys->size():1;
         for (std::size_t k=0;k<key_count;++k) { const ClipKey key=keys&& !keys->empty()?(*keys)[k]:ClipKey{0.0f,bind.local,bind.source};
-            raw.tracks[i].translations.push_back({key.time,{key.value.translation.x,key.value.translation.y,key.value.translation.z}});
-            raw.tracks[i].rotations.push_back({key.time,{key.value.rotation.x,key.value.rotation.y,key.value.rotation.z,key.value.rotation.w}});
-            raw.tracks[i].scales.push_back({key.time,{key.value.scale.x,key.value.scale.y,key.value.scale.z}}); }
+            const AnimationTransform value = clip.additive ? bind_relative_delta(bind.local, key.value) : key.value;
+            raw.tracks[i].translations.push_back({key.time,{value.translation.x,value.translation.y,value.translation.z}});
+            raw.tracks[i].rotations.push_back({key.time,{value.rotation.x,value.rotation.y,value.rotation.z,value.rotation.w}});
+            raw.tracks[i].scales.push_back({key.time,{value.scale.x,value.scale.y,value.scale.z}}); }
     }
     if (!raw.Validate()) { diagnostics.add("ozz-animation", clip.source, "ozz rejected raw animation"); return false; }
     ozz::animation::offline::RawAnimation optimized;
