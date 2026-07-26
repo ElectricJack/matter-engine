@@ -9,7 +9,9 @@
 //   NormalMat   — inverse-transpose upper-3×3 for normal transformation
 //
 // NOT covered here (operate on different types / layouts — kept local):
-//   csg_lowering.cpp  mat_invert / mat_mul  — raylib column-major Matrix
+//   csg_lowering.cpp  mat_invert — mm::Mat4, cofactor formula kept bit-exact
+//                       with its pre-Phase-3 raylib-Matrix form rather than
+//                       swapped for mm::inverse (see that file's comment)
 //   world_flatten.cpp mat4_mul              — mat4 struct (row-major but separate type)
 //   tileset_bake.cpp  mat_to_pose (Shepperd) — full TRS extract + orthonorm validation
 //   tileset_settle.cpp axes_to_quat (Shepperd) — column-axes convention, different input
