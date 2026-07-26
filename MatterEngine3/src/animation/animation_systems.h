@@ -251,6 +251,7 @@ private:
     std::map<uint64_t, RootMotionSlot> desired_root_motion_;
     const AnimationWorldQueries* world_queries_ = nullptr;
     uint64_t world_query_overflow_count_ = 0;
+    uint32_t fixed_tick_query_admitted_ = 0;
     std::map<uint64_t, AnimationFixedWork> fixed_work_;
     std::vector<AnimationMarkerEvent> marker_events_;
     std::vector<DesiredRootMotion> consumed_root_motion_;
