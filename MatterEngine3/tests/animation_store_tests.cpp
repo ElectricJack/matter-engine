@@ -40,6 +40,62 @@ AnimationRuntimeDefinition definition() {
     return result;
 }
 
+struct RuntimeBindingFixture {
+    OzzSkeleton skeleton;
+    OzzAnimation clip;
+    std::shared_ptr<AnimationEvaluationDefinition> evaluation =
+        std::make_shared<AnimationEvaluationDefinition>();
+    std::shared_ptr<AnimationRuntimeBindingDescriptor> descriptor =
+        std::make_shared<AnimationRuntimeBindingDescriptor>();
+
+    RuntimeBindingFixture() {
+        RigDefinition rig;
+        rig.joints.push_back({"root", "", AnimationTransform{}, 1.0f,
+                              {"test", 1, 1, "root"}});
+        ClipDefinition source;
+        source.name = "idle";
+        source.duration = 1.0f;
+        source.rate = 30.0f;
+        source.loop = true;
+        source.source = {"test", 1, 1, "clip"};
+        source.tracks.push_back(
+            {"root",
+             {{0.0f, AnimationTransform{}, {"test", 1, 1, "a"}},
+              {1.0f, AnimationTransform{}, {"test", 1, 1, "b"}}},
+             {"test", 1, 1, "track"}});
+        Diagnostics diagnostics;
+        CHECK(build_skeleton(rig, skeleton, diagnostics) &&
+                  build_clip(rig, source, clip, diagnostics),
+              "build store runtime-binding fixture");
+
+        Mat4f identity{};
+        identity.m[0] = identity.m[5] = identity.m[10] = identity.m[15] = 1.0f;
+        evaluation->skeleton = &skeleton;
+        evaluation->clips = {{&clip, 1.0f, true, false}};
+        evaluation->inputs = {
+            {AnimationValueType::Number, EvaluationCadence::Fixed},
+            {AnimationValueType::Float3, EvaluationCadence::Frame},
+            {AnimationValueType::Symbol, EvaluationCadence::Fixed},
+        };
+        evaluation->nodes = {
+            {RuntimeGraphNodeKind::Clip, {}, 0},
+            {RuntimeGraphNodeKind::Output, {0}},
+        };
+        evaluation->inverse_bind_model = {identity};
+        descriptor->evaluation = evaluation;
+        descriptor->fixed_work.clip.duration = 1.0f;
+        descriptor->fixed_work.clip.loop = true;
+        descriptor->fixed_work.clip.rate = 1.0f;
+    }
+};
+
+AnimationRuntimeDefinition bound_definition() {
+    static RuntimeBindingFixture fixture;
+    AnimationRuntimeDefinition result = definition();
+    result.binding = fixture.descriptor;
+    return result;
+}
+
 void test_asset_dedup_and_handle_reuse() {
     AnimationService service;
     const AnimAsset* first = service.insert_asset(asset(7, 9));
@@ -80,7 +136,7 @@ void test_asset_identity_conflict_fails_without_mutating_store_or_runtime() {
 
 void test_typed_cadence_and_target_contracts() {
     AnimationService service;
-    const Animator animator = service.create(service.insert_asset(asset(1, 1)), definition());
+    const Animator animator = service.create(service.insert_asset(asset(1, 1)), bound_definition());
     const AnimationInputHandle speed = service.input(animator.instance, "speed");
     const AnimationInputHandle aim = service.input(animator.instance, "aim");
     const AnimationInputHandle missing = service.input(animator.instance, "missing");
