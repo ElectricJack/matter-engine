@@ -3,6 +3,7 @@
 #include "check.h"
 #include "render/vk_animation_skinning.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
@@ -206,10 +207,69 @@ static void test_central_budget_controls_skinning_fallback_reason() {
     CHECK(skinning.frame(0).work_items.size() == 2 && skinning.frame(0).fallbacks.size() == 1 &&
               skinning.frame(0).fallbacks[0].reason ==
                   matter::animation::AnimationFallbackReason::SkinWorkBudget &&
-              skinning.frame(0).fallbacks[0].mode == VkSkinFallbackMode::LastCompletePose,
-          "overflow tail reports its stable reason and concrete last-complete fallback");
+              skinning.frame(0).fallbacks[0].mode == VkSkinFallbackMode::BindPose,
+          "history flags alone cannot claim a retained renderer output");
     CHECK(skinning.stats().fallback_count == 1 && skinning.fallback_count() == 1,
           "renderer staging exposes one shared fallback counter");
+}
+
+static void test_overflow_reuses_only_fence_owned_last_complete_raster_output() {
+    matter::animation::AnimationBudgetConfig budget;
+    budget.max_skin_work_items = 1;
+    budget.max_skinned_vertices = 4;
+    VkAnimationSkinning skinning(2, budget);
+    CHECK(skinning.register_asset(92, valid_influences(8)),
+          "retained-output fixture registers immutable influences");
+
+    VkSkinSubmission retained = candidate(92, 3, 2, 0, 0, 0);
+    retained.instance_generation = 7;
+    retained.first_index = 12;
+    retained.index_count = 6;
+    CHECK(skinning.submit_visible(0, {retained}) &&
+              skinning.mark_submitted(0, 20),
+          "accepted frame seals a fence-owned skinned raster slice");
+
+    VkSkinSubmission preferred = candidate(92, 9, 1, 10, 0, 0);
+    preferred.instance_generation = 1;
+    preferred.first_index = 0;
+    preferred.index_count = 3;
+    retained.history_valid = true;
+    CHECK(skinning.submit_visible(1, {retained, preferred}),
+          "next frame admits the priority prefix and falls back its tail");
+    const auto& reused = skinning.frame(1);
+    CHECK(reused.fallbacks.size() == 1 &&
+              reused.fallbacks[0].mode == VkSkinFallbackMode::LastCompletePose &&
+              reused.raster_draws.size() == 2,
+          "overflow emits an actual retained raster draw alongside current work");
+    const auto retained_draw = std::find_if(
+        reused.raster_draws.begin(), reused.raster_draws.end(),
+        [](const VkSkinRasterDraw& draw) { return draw.instance_slot == 3; });
+    CHECK(retained_draw != reused.raster_draws.end() &&
+              retained_draw->output_frame_slot == 0 &&
+              retained_draw->instance_generation == 7 &&
+              vk_skin_replaces_static_command(reused.raster_draws, 12, 6),
+          "last-complete fallback selects the sealed prior buffer slice and suppresses bind pose");
+
+    VkSkinSubmission first_overflow = candidate(92, 4, 2, 0, 0, 0);
+    first_overflow.instance_generation = 1;
+    first_overflow.first_index = 24;
+    first_overflow.index_count = 6;
+    CHECK(skinning.begin_frame(1, 0) &&
+              skinning.submit_visible(1, {first_overflow, preferred}),
+          "first-frame overflow still publishes a complete fallback transaction");
+    CHECK(skinning.frame(1).fallbacks.size() == 1 &&
+              skinning.frame(1).fallbacks[0].mode == VkSkinFallbackMode::BindPose &&
+              !vk_skin_replaces_static_command(skinning.frame(1).raster_draws, 24, 6),
+          "without retained output the static bind-pose command remains enabled");
+
+    CHECK(skinning.begin_frame(0, 20),
+          "completed source frame slot can be reused");
+    CHECK(skinning.begin_frame(1, 0) &&
+              skinning.submit_visible(1, {retained, preferred}),
+          "overflow after source-slot reuse remains valid");
+    CHECK(skinning.frame(1).fallbacks[0].mode == VkSkinFallbackMode::BindPose &&
+              !vk_skin_replaces_static_command(skinning.frame(1).raster_draws, 12, 6),
+          "reusing the source arena retires old metadata before it can alias overwritten vertices");
 }
 
 static void test_submission_rejects_invalid_influences_and_palettes_transactionally() {
@@ -295,6 +355,7 @@ int main() {
     test_indexed_raster_mapping_tracks_sorted_output_offsets();
     test_fence_lifetime_wrap_and_transactional_caps();
     test_central_budget_controls_skinning_fallback_reason();
+    test_overflow_reuses_only_fence_owned_last_complete_raster_output();
     test_submission_rejects_invalid_influences_and_palettes_transactionally();
     test_skin_mapping_replaces_only_its_matching_static_command();
     test_cpu_skinning_matches_compute_contract();

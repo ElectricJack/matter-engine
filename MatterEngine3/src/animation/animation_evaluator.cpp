@@ -388,19 +388,38 @@ bool AnimationEvaluator::begin_presentation(AnimatorInstanceHandle instance,
                                              const AnimationPoseSnapshot& current_fixed_pose,
                                              float interpolation_alpha,
                                              uint64_t frame_serial) {
-    if (!instance.valid() || !valid(definition) || !previous_fixed_pose.instance.valid() ||
+    if (!instance.valid() || !previous_fixed_pose.instance.valid() ||
         !current_fixed_pose.instance.valid() || key(previous_fixed_pose.instance) != key(instance) ||
-        key(current_fixed_pose.instance) != key(instance) || !std::isfinite(interpolation_alpha)) return false;
+        key(current_fixed_pose.instance) != key(instance) ||
+        !std::isfinite(interpolation_alpha)) {
+        stats_.record_fallback(AnimationFallbackReason::InvalidEvaluationRequest);
+        return false;
+    }
+    if (!valid(definition) || !within_budget(definition, budget_.limits)) {
+        stats_.record_fallback(AnimationFallbackReason::AssetLimit);
+        return false;
+    }
     const uint32_t joints = static_cast<uint32_t>(definition.skeleton->joint_count());
     const auto complete_pose=[joints](const AnimationPoseSnapshot& pose) { return pose.local_pose.count==joints && pose.model_pose.count==joints &&
         pose.previous_model_pose.count==joints && pose.skin_palette.count==joints && pose.previous_skin_palette.count==joints &&
         (joints==0 || (pose.local_pose.data && pose.model_pose.data && pose.previous_model_pose.data && pose.skin_palette.data && pose.previous_skin_palette.data)); };
-    if (!complete_pose(previous_fixed_pose) || !complete_pose(current_fixed_pose)) return false;
+    if (!complete_pose(previous_fixed_pose) || !complete_pose(current_fixed_pose)) {
+        stats_.record_fallback(AnimationFallbackReason::InvalidEvaluationRequest);
+        return false;
+    }
     const uint64_t instance_key = key(instance);
     const State::DefinitionShape shape{&definition, definition.skeleton, joints};
     const auto existing = states_.find(instance_key);
     if (existing != states_.end() && (existing->second->shape.definition != shape.definition ||
-        existing->second->shape.skeleton != shape.skeleton || existing->second->shape.joint_count != shape.joint_count)) return false;
+        existing->second->shape.skeleton != shape.skeleton || existing->second->shape.joint_count != shape.joint_count)) {
+        stats_.record_fallback(AnimationFallbackReason::InvalidEvaluationRequest);
+        return false;
+    }
+    if (existing == states_.end() &&
+        states_.size() >= budget_.limits.max_runtime_instances) {
+        stats_.record_fallback(AnimationFallbackReason::RuntimeInstanceLimit);
+        return false;
+    }
     std::unique_ptr<State> replacement;
     State* state = nullptr;
     if (existing == states_.end()) {
@@ -412,7 +431,10 @@ bool AnimationEvaluator::begin_presentation(AnimatorInstanceHandle instance,
     const float alpha=clamp01(interpolation_alpha);
     back.local.resize(joints);
     for(uint32_t joint=0;joint<joints;++joint) back.local[joint]=lerp(previous_fixed_pose.local_pose[joint],current_fixed_pose.local_pose[joint],alpha);
-    if(!local_to_model(*definition.skeleton,back.local,back.model)) return false;
+    if(!local_to_model(*definition.skeleton,back.local,back.model)) {
+        stats_.record_fallback(AnimationFallbackReason::EvaluationFailure);
+        return false;
+    }
     // Presentation is a copy of a solved fixed sample, not another temporal
     // sample.  Preserve its velocity/model history exactly before layering a
     // frame target.
@@ -427,6 +449,8 @@ bool AnimationEvaluator::begin_presentation(AnimatorInstanceHandle instance,
         {back.local.data(), joints}, {back.model.data(), joints}, {back.previous_model.data(), joints},
         {back.palette.data(), joints}, {back.previous_palette.data(), joints}};
     if (existing == states_.end()) states_.emplace(instance_key, std::move(replacement));
+    ++stats_.evaluated_pose_count;
+    stats_.evaluated_joint_count += joints;
     return true;
 }
 bool AnimationEvaluator::fixed_graph_clips(AnimatorInstanceHandle instance,

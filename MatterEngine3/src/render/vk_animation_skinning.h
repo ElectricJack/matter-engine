@@ -44,12 +44,19 @@ struct VkSkinSubmission {
 // to VkSkinVertex binding offsets.  Keeping this beside the work queue makes
 // sorting and fallback selection transactional.
 struct VkSkinRasterDraw {
+    uint64_t asset_key = 0;
     uint32_t first_index = 0;
     uint32_t index_count = 0;
     uint32_t source_vertex = 0;
     uint32_t output_vertex = 0;
     uint32_t vertex_count = 0;
     uint32_t instance_slot = 0;
+    uint32_t instance_generation = 0;
+    // Selects the fence-owned frame output buffer. Current work points at the
+    // frame being built; retained fallbacks may point at an older, still
+    // sealed frame slot.
+    uint32_t output_frame_slot = 0;
+    uint32_t lod = 0;
     uint32_t flags = 0;
 };
 
@@ -71,6 +78,7 @@ struct VkSkinArenaSlice {
 enum class VkSkinFallbackMode : uint8_t { LastCompletePose, BindPose };
 struct VkSkinFallback {
     uint32_t instance_slot = 0;
+    uint32_t instance_generation = 0;
     VkSkinFallbackMode mode = VkSkinFallbackMode::BindPose;
     matter::animation::AnimationFallbackReason reason =
         matter::animation::AnimationFallbackReason::None;
@@ -129,6 +137,17 @@ private:
         uint32_t offset = 0;
     };
     std::map<uint64_t, AssetInfluences> assets_;
+    struct RetainedOutput {
+        uint64_t asset_key = 0;
+        uint32_t lod = 0;
+        uint32_t source_vertex = 0;
+        uint32_t vertex_count = 0;
+        uint32_t first_index = 0;
+        uint32_t index_count = 0;
+        uint32_t output_vertex = 0;
+        uint32_t output_frame_slot = 0;
+    };
+    std::map<uint64_t, RetainedOutput> retained_outputs_;
     std::vector<VkSkinInfluence> influence_arena_;
     std::vector<VkSkinFrameArenas> frames_;
     uint32_t fallback_count_ = 0;
@@ -139,6 +158,7 @@ private:
 
     static bool identical(const std::vector<VkSkinInfluence>& a,
                           const std::vector<VkSkinInfluence>& b) noexcept;
+    static uint64_t instance_key(uint32_t slot, uint32_t generation) noexcept;
 };
 
 }  // namespace viewer

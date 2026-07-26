@@ -322,11 +322,12 @@ struct RasterRecord {
     const DrawCommand* static_commands;
     uint32_t static_command_count;
     uint32_t index_count;
-    VkBuffer skin_vertex_buffer;
-    VkBuffer skin_previous_vertex_buffer;
+    const VkBuffer* skin_vertex_buffers;
+    const VkBuffer* skin_previous_vertex_buffers;
+    const uint32_t* skin_vertex_counts;
+    uint32_t skin_buffer_count;
     const VkSkinRasterDraw* skin_draws;
     uint32_t skin_draw_count;
-    uint32_t skin_vertex_count;
     uint32_t draw_transform_slots;
     const PartCommandRange* draw_ranges;
     uint32_t draw_range_count;
@@ -355,6 +356,25 @@ struct RasterRecord {
 
 void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     const auto& record = *static_cast<RasterRecord*>(user_data);
+    const auto valid_skin_draw = [&record](const VkSkinRasterDraw& draw) {
+        if (draw.output_frame_slot >= record.skin_buffer_count ||
+            record.skin_vertex_buffers == nullptr ||
+            record.skin_previous_vertex_buffers == nullptr ||
+            record.skin_vertex_counts == nullptr ||
+            record.skin_vertex_buffers[draw.output_frame_slot] == VK_NULL_HANDLE ||
+            record.skin_previous_vertex_buffers[draw.output_frame_slot] == VK_NULL_HANDLE)
+            return false;
+        const uint32_t vertex_count =
+            record.skin_vertex_counts[draw.output_frame_slot];
+        return draw.index_count != 0 && draw.index_count % 3u == 0u &&
+               draw.first_index <= record.index_count &&
+               draw.index_count <= record.index_count - draw.first_index &&
+               draw.output_vertex < vertex_count && draw.vertex_count != 0 &&
+               draw.vertex_count <= vertex_count - draw.output_vertex &&
+               draw.instance_slot < record.draw_transform_slots &&
+               draw.output_vertex <= static_cast<uint32_t>(INT32_MAX) &&
+               draw.source_vertex <= static_cast<uint32_t>(INT32_MAX);
+    };
     matter::VkImageResource* colors[] = {record.albedo, record.normal,
                                          record.orm, record.velocity,
                                          record.material_instance};
@@ -446,8 +466,9 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
             // commands remain grouped by the existing part ranges.
             const bool replaced = record.skin_draw_count != 0 && std::any_of(
                 record.skin_draws, record.skin_draws + record.skin_draw_count,
-                [&candidate](const VkSkinRasterDraw& skin) {
-                    return skin.first_index == candidate.first_index &&
+                [&candidate, &valid_skin_draw](const VkSkinRasterDraw& skin) {
+                    return valid_skin_draw(skin) &&
+                           skin.first_index == candidate.first_index &&
                            skin.index_count == candidate.index_count;
                 });
             if (replaced) {
@@ -468,32 +489,30 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     // visibility-selected index span plus the source/output rebase.  Every
     // field is range-checked below, so a stale mapping cannot turn into an
     // out-of-bounds vertex fetch.
-    if (record.skinned_raster_pipeline != VK_NULL_HANDLE &&
-        record.skin_vertex_buffer != VK_NULL_HANDLE &&
-        record.skin_previous_vertex_buffer != VK_NULL_HANDLE) {
+    if (record.skinned_raster_pipeline != VK_NULL_HANDLE) {
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           record.skinned_raster_pipeline);
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 record.raster_layout, 0, 2,
                                 record.raster_sets, 0, nullptr);
         for (uint32_t draw_index = 0; draw_index < record.skin_draw_count;
-             ++draw_index) {
+            ++draw_index) {
             const VkSkinRasterDraw& draw = record.skin_draws[draw_index];
-            if (draw.index_count == 0 || draw.index_count % 3u != 0u ||
-                draw.first_index > record.index_count ||
-                draw.index_count > record.index_count - draw.first_index ||
-                draw.output_vertex >= record.skin_vertex_count ||
-                draw.vertex_count == 0 ||
-                draw.vertex_count > record.skin_vertex_count - draw.output_vertex ||
-                draw.instance_slot >= record.draw_transform_slots ||
-                draw.output_vertex > static_cast<uint32_t>(INT32_MAX) ||
-                draw.source_vertex > static_cast<uint32_t>(INT32_MAX)) {
+            if (!valid_skin_draw(draw)) {
                 continue;  // fail closed to the already-recorded static path
             }
             const VkDeviceSize offset = static_cast<VkDeviceSize>(
                 draw.output_vertex) * sizeof(VkSkinVertex);
-            const VkBuffer skin_buffers[] = {record.skin_vertex_buffer,
-                                             record.skin_previous_vertex_buffer};
+            // A retained pose is spatially stable for this presentation
+            // frame. Bind its current slice as both streams so repeatedly
+            // reusing it cannot replay the source frame's old velocity.
+            const bool retained =
+                draw.output_frame_slot != record.frame_slot;
+            const VkBuffer skin_buffers[] = {
+                record.skin_vertex_buffers[draw.output_frame_slot],
+                retained
+                    ? record.skin_vertex_buffers[draw.output_frame_slot]
+                    : record.skin_previous_vertex_buffers[draw.output_frame_slot]};
             const VkDeviceSize skin_offsets[] = {offset, offset};
             vkCmdBindVertexBuffers(command_buffer, 0, 2, skin_buffers,
                                    skin_offsets);
@@ -945,7 +964,9 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
         const auto fallback = std::find_if(
             staged.fallbacks.begin(), staged.fallbacks.end(),
             [&submission](const VkSkinFallback& value) {
-                return value.instance_slot == submission.instance_slot;
+                return value.instance_slot == submission.instance_slot &&
+                       value.instance_generation ==
+                           submission.instance_generation;
             });
         // LastCompletePose deliberately retains its matching last-complete
         // dynamic bound. BindPose retires dynamic deformation and routes
@@ -2534,7 +2555,12 @@ bool VkSceneRenderer::record_animation_skinning(
     std::string& error) {
     resources.skin_raster_ready = false;
     const VkSkinFrameArenas& staged = animation_skinning_.frame(frame.frame_slot);
-    if (staged.work_items.empty()) return true;
+    if (staged.work_items.empty()) {
+        // Retained fallback draws reference an older sealed frame resource and
+        // need no current compute dispatch.
+        resources.skin_raster_ready = !staged.raster_draws.empty();
+        return true;
+    }
     const auto bytes = [](size_t count, size_t stride) -> VkDeviceSize {
         return static_cast<VkDeviceSize>(count) * static_cast<VkDeviceSize>(stride);
     };
@@ -7129,6 +7155,15 @@ bool VkSceneRenderer::record_cull_and_render(
                                 matrices.view_to_clip.m[10];
     frame_lighting.camera_near = matrices.view_to_clip.m[11] /
                                  (matrices.view_to_clip.m[10] + 1.0f);
+    std::vector<VkBuffer> skin_current_buffers(frames_.size(), VK_NULL_HANDLE);
+    std::vector<VkBuffer> skin_previous_buffers(frames_.size(), VK_NULL_HANDLE);
+    std::vector<uint32_t> skin_vertex_counts(frames_.size(), 0);
+    for (uint32_t slot = 0; slot < frames_.size(); ++slot) {
+        skin_current_buffers[slot] = frames_[slot].skin_current_output.buffer;
+        skin_previous_buffers[slot] = frames_[slot].skin_previous_output.buffer;
+        skin_vertex_counts[slot] =
+            animation_skinning_.frame(slot).current_output_vertices;
+    }
     RasterRecord record{&albedo_,
                         &normal_,
                         &orm_,
@@ -7154,11 +7189,12 @@ bool VkSceneRenderer::record_cull_and_render(
                         command_template_.data(),
                         static_cast<uint32_t>(command_template_.size()),
                         static_cast<uint32_t>(index_staging_.size()),
-                        selected.skin_current_output.buffer,
-                        selected.skin_previous_output.buffer,
+                        skin_current_buffers.data(),
+                        skin_previous_buffers.data(),
+                        skin_vertex_counts.data(),
+                        static_cast<uint32_t>(skin_current_buffers.size()),
                         animation_skinning_.frame(frame.frame_slot).raster_draws.data(),
                         static_cast<uint32_t>(animation_skinning_.frame(frame.frame_slot).raster_draws.size()),
-                        animation_skinning_.frame(frame.frame_slot).current_output_vertices,
                         draw_transform_slots_,
                         part_command_ranges_.data(),
                         static_cast<uint32_t>(part_command_ranges_.size()),

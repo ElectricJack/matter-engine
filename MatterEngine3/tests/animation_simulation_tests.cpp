@@ -819,6 +819,13 @@ void test_production_pose_lod_freezes_only_presentation_and_resamples_latest_fix
     std::vector<AnimatorCheckpoint> before;
     CHECK(initial.instance.valid() && service.capture_runtime_checkpoints(before) && before.size() == 1,
           "pose LOD fixture publishes its initial presentation and fixed checkpoint");
+    const AnimationBudgetRuntimeStats initial_stats =
+        runtime.animation_systems().runtime_stats();
+    CHECK(initial_stats.evaluated_pose_count == 2 &&
+              initial_stats.evaluated_joint_count ==
+                  2 * fixture.skeleton.joint_count() &&
+              initial_stats.evaluated_presentation_pose_count == 1,
+          "aggregate diagnostics include fixed plus presentation evaluator work while counting presentation once");
 
     runtime.animation_systems().stage_completed_visibility(
         50, {{animator.instance, false, 200.0f, 0}});

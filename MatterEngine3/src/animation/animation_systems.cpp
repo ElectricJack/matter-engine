@@ -327,6 +327,7 @@ void AnimationSystems::discard_completed_visibility(uint64_t frame_serial) noexc
 
 AnimationBudgetRuntimeStats AnimationSystems::runtime_stats() const noexcept {
     AnimationBudgetRuntimeStats result = evaluator_.stats();
+    result.merge(presentation_evaluator_.stats());
     result.merge(presentation_budget_stats_);
     return result;
 }

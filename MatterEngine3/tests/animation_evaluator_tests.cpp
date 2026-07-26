@@ -160,5 +160,24 @@ void test_custom_joint_budget_rejects_runtime_definition(){
  AnimationEvaluationBudget budget{}; budget.limits.max_joints_per_asset=1; AnimationEvaluator evaluator(budget);
  CHECK(!evaluator.evaluate({request(handle(62),definition,1,0)})&&evaluator.snapshot(handle(62)).local_pose.empty(),"custom central joint limit rejects before evaluator state allocation");
 }
+void test_presentation_evaluator_stats_are_complete_and_fail_closed(){
+ Fixture f; f.def.nodes={{RuntimeGraphNodeKind::Clip,{},0},{RuntimeGraphNodeKind::Output,{0}}};
+ const auto h=handle(63); AnimationEvaluator fixed;
+ CHECK(fixed.evaluate({request(h,f.def,1,0)}),"presentation stats fixture publishes previous fixed pose");
+ const AnimationPoseSnapshot previous=fixed.snapshot(h);
+ CHECK(fixed.evaluate({request(h,f.def,2,.5f)}),"presentation stats fixture publishes current fixed pose");
+ const AnimationPoseSnapshot current=fixed.snapshot(h);
+ AnimationEvaluator presentation;
+ CHECK(presentation.begin_presentation(h,f.def,previous,current,.5f,9),
+       "presentation evaluator publishes an interpolated pose");
+ CHECK(presentation.stats().evaluated_pose_count==1 &&
+       presentation.stats().evaluated_joint_count==1,
+       "presentation evaluator counts its own completed pose and joints exactly once");
+ CHECK(!presentation.begin_presentation(h,f.def,{},current,.5f,10) &&
+       presentation.stats().fallback_count==1 &&
+       presentation.stats().fallbacks[static_cast<size_t>(
+           AnimationFallbackReason::InvalidEvaluationRequest)]==1,
+       "invalid presentation input records one precise fallback without publishing");
 }
-int main(){test_controls();test_cadence_aware_control_sampling();test_time_interpolation_and_previous();test_wrap_clamp_pause_and_disable();test_non_looping_clip_clamps();test_blend_and_additive();test_budget_order_and_reuse();test_snapshot_backing_and_priority_controller_budget();test_definition_shape_and_graph_contract_rejection();test_graph_root_motion_crosses_loops_and_locks_pose();test_root_lock_preserves_authored_root_reference_and_scale();test_central_runtime_instance_budget();test_custom_joint_budget_rejects_runtime_definition();if(g_failures){std::printf("animation_evaluator_tests: %d failure(s)\n",g_failures);return 1;}std::puts("animation_evaluator_tests: all tests passed");}
+}
+int main(){test_controls();test_cadence_aware_control_sampling();test_time_interpolation_and_previous();test_wrap_clamp_pause_and_disable();test_non_looping_clip_clamps();test_blend_and_additive();test_budget_order_and_reuse();test_snapshot_backing_and_priority_controller_budget();test_definition_shape_and_graph_contract_rejection();test_graph_root_motion_crosses_loops_and_locks_pose();test_root_lock_preserves_authored_root_reference_and_scale();test_central_runtime_instance_budget();test_custom_joint_budget_rejects_runtime_definition();test_presentation_evaluator_stats_are_complete_and_fail_closed();if(g_failures){std::printf("animation_evaluator_tests: %d failure(s)\n",g_failures);return 1;}std::puts("animation_evaluator_tests: all tests passed");}
