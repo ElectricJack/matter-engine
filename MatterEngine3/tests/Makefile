@@ -230,9 +230,15 @@ FLAVOR_retopo_FLAGS   := $(CFLAGS) -DMATTER_HAVE_AUTOREMESHER $(INCLUDE_PATHS) -
 # are deleted outright; this flavor must define the macro so the facade
 # compiles (mirrors MatterEngine3/Makefile). Test binaries in this flavor that
 # call the legacy WorldSession::render(CameraDesc, int, int, RenderOptions)
-# overload (api_tests.cpp, world_stream_tests.cpp) now exercise the no-op
-# MATTER_VULKAN_ONLY stub rather than real GL drawing -- same behavior the
-# Windows/Vulkan editor.exe has always had for that entry point.
+# overload (api_tests.cpp, world_stream_tests.cpp) now hit the no-op
+# MATTER_VULKAN_ONLY stub instead of real GL drawing -- same behavior the
+# Windows/Vulkan editor.exe has always had for that entry point. That stub
+# writes nothing to frame_stats()/the framebuffer, so it is NOT merely lower
+# fidelity than real drawing: the render-output assertions in those two files
+# (triangles > 0, non-black framebuffer) would deterministically fail, not
+# just lose coverage. Both are now guarded out under MATTER_VULKAN_ONLY
+# (with a comment at each site) so the suites keep their non-render coverage
+# instead of asserting on output nothing produces.
 FLAVOR_gpu_FLAGS      := $(filter-out -D$(GRAPHICS),$(CFLAGS)) -D$(GPU_GRAPHICS) \
                          -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB \
                          -DMATTER_VULKAN_ONLY \

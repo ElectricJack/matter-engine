@@ -118,7 +118,15 @@ int main() {
     for (long i = 0; i < n; ++i)
         if (px[i].r > 8 || px[i].g > 8 || px[i].b > 8) ++nonblack;
     printf("nonblack: %ld/%ld\n", nonblack, n);
+#ifndef MATTER_VULKAN_ONLY
     assert(nonblack > n / 20);
+#else
+    // Phase 5a (tech-debt.md S6) deleted the GL renderer/raster-composer/
+    // GpuCuller path this assertion exercised. WorldSession::render() is the
+    // no-op MATTER_VULKAN_ONLY stub, so nothing draws and the hidden
+    // window's framebuffer stays black (nonblack == 0) -- not a bug, just no
+    // render path to assert on until a Vulkan uploader exists.
+#endif
     UnloadImageColors(px);
     UnloadImage(img);
 
