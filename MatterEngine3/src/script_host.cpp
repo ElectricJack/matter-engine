@@ -127,32 +127,46 @@ bool make_animation_asset(const dsl::DslState& state, uint64_t hash, matter::ani
     // the runtime-only rest pose in a local copy so the persisted asset remains
     // decoder-compatible without mutating the DSL-authored state.
     matter::animation::AnimationBuild runtime_authored = *authored;
-    if (runtime_authored.ozz_skeleton_blob.empty()) {
-        matter::animation::OzzSkeleton skeleton;
-        if (!matter::animation::build_skeleton(runtime_authored.rig, skeleton, diagnostics)) return false;
-        if (!matter::animation::serialize_skeleton(skeleton, runtime_authored.ozz_skeleton_blob)) {
-            diagnostics.add("runtime-asset-skeleton", runtime_authored.rig.source,
-                            "animation skeleton could not be serialized");
-            return false;
+    // Materializing a missing skeleton blob or bind-rest clip runs Ozz's OFFLINE
+    // builders (ozz_bake.cpp). Those belong to the bake host: the editor and any
+    // other runtime consumer compile with MATTER_RUNTIME_ANIMATION_ONLY and must
+    // not link the offline archive at all -- see check-animation-production-sources
+    // in MatterEditor/Makefile, which asserts ozz_bake.cpp stays out of the build.
+    // Fail closed there, exactly as DslState::end_clip does for clip compilation.
+    if (runtime_authored.ozz_skeleton_blob.empty() || runtime_authored.clips.empty()) {
+#if defined(MATTER_RUNTIME_ANIMATION_ONLY)
+        diagnostics.add("runtime-asset-bake-host", runtime_authored.rig.source,
+                        "materializing a skeleton or bind-rest clip requires the animation bake host");
+        return false;
+#else
+        if (runtime_authored.ozz_skeleton_blob.empty()) {
+            matter::animation::OzzSkeleton skeleton;
+            if (!matter::animation::build_skeleton(runtime_authored.rig, skeleton, diagnostics)) return false;
+            if (!matter::animation::serialize_skeleton(skeleton, runtime_authored.ozz_skeleton_blob)) {
+                diagnostics.add("runtime-asset-skeleton", runtime_authored.rig.source,
+                                "animation skeleton could not be serialized");
+                return false;
+            }
         }
-    }
-    if (runtime_authored.clips.empty()) {
-        matter::animation::ClipDefinition rest;
-        rest.name = "__bind_rest";
-        rest.duration = 1.0f;
-        rest.rate = 1.0f;
-        rest.loop = true;
-        rest.source = runtime_authored.rig.source;
-        matter::animation::OzzAnimation rest_animation;
-        if (!matter::animation::build_clip(runtime_authored.rig, rest, rest_animation,
-                                            diagnostics) ||
-            !matter::animation::serialize_animation(rest_animation, rest.ozz_blob)) {
-            if (diagnostics.items.empty())
-                diagnostics.add("runtime-asset-rest-clip", rest.source,
-                                "bind-rest animation clip could not be serialized");
-            return false;
+        if (runtime_authored.clips.empty()) {
+            matter::animation::ClipDefinition rest;
+            rest.name = "__bind_rest";
+            rest.duration = 1.0f;
+            rest.rate = 1.0f;
+            rest.loop = true;
+            rest.source = runtime_authored.rig.source;
+            matter::animation::OzzAnimation rest_animation;
+            if (!matter::animation::build_clip(runtime_authored.rig, rest, rest_animation,
+                                                diagnostics) ||
+                !matter::animation::serialize_animation(rest_animation, rest.ozz_blob)) {
+                if (diagnostics.items.empty())
+                    diagnostics.add("runtime-asset-rest-clip", rest.source,
+                                    "bind-rest animation clip could not be serialized");
+                return false;
+            }
+            runtime_authored.clips.push_back(std::move(rest));
         }
-        runtime_authored.clips.push_back(std::move(rest));
+#endif
     }
     if (runtime_authored.graph.nodes.empty()) {
         matter::animation::GraphNode clip;
