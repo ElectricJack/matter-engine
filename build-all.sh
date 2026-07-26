@@ -44,6 +44,18 @@ WSL_LINUX_PROJECTS=(
 )
 
 # Projects that use TARGET=linux instead.
+#
+# MatterEditor is deliberately NOT listed here even though
+# MatterEditor/Makefile grew a `linux` target in Phase 5b
+# (docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md). That
+# target is unverified -- written with no Linux toolchain available to
+# compile or run it (see MatterEditor/README.md) -- and MatterEditor's
+# Makefile does not accept a TARGET=linux flag anyway; this loop would need
+# `build_one MatterEditor "linux"` (a literal make target name, not
+# TARGET=linux) once someone has confirmed the `linux` target actually
+# builds on a real machine. MatterEditor is a SIMPLE_PROJECTS entry above,
+# so a bare `make` there still resolves to `.DEFAULT_GOAL := windows`
+# regardless of $PLATFORM -- unaffected by this script running on Linux/WSL.
 TARGET_LINUX_PROJECTS=(
 )
 

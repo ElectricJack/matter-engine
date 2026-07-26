@@ -1,17 +1,29 @@
-# MatterEditor — world editor application (GL build).
+# MatterEditor — world editor application (Vulkan build).
 #
-# Linux: compiles ONLY main.cpp + ui.cpp + imgui; links libmatter_engine3.a
-#   (which contains the full engine: render/provider/facade, bake pipeline,
-#   MSL backend, QuickJS-ng). Add raylib, box3d, and (optionally) autoremesher.
-#   Engine include path is -I../MatterEngine3/include ONLY — private ME3 src/
-#   headers are not visible to app code. When libautoremesher_core.a is present,
-#   the library is rebuilt with MATTER_HAVE_AUTOREMESHER so part_flatten.cpp
-#   compiles the retopo hook path.
+# STALE HEADER NOTE (kept for history): this comment used to describe a Linux
+# GL target that compiled main.cpp + ui.cpp + imgui and linked
+# libmatter_engine3.a. That target and its sources (main_linux.cpp,
+# ui_linux.cpp) were deleted outright in Phase 5a (tech-debt.md §6 / GL-path
+# deletion) -- see docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md.
 #
-# Windows: MinGW cross-compile that does direct-source compilation of all
-#   engine+MSL+QJS units with updated ../MatterEngine3/src/... paths.
-#   (Pragmatic: no mingw .a packaging this phase. Private ME3 src/ includes are
-#   scoped to the Windows variable set below.)
+# Windows: MinGW-hosted native compile (WIN_CXX runs ON Windows via MSYS2
+#   UCRT64, it is not a Linux->Windows cross-compiler) that does direct-source
+#   compilation of all engine+MSL+QJS units with updated ../MatterEngine3/src/...
+#   paths. (Pragmatic: no mingw .a packaging this phase. Private ME3 src/
+#   includes are scoped to the Windows variable set below.) This is the only
+#   target verified in this repository's normal Windows dev environment.
+#
+# Linux (Phase 5b, ADDED, UNVERIFIED): the `linux` target below mirrors the
+# Windows target's shape almost exactly -- same APP_SRC/WIN_ME3_CPP/WIN_MSL_CPP/
+# WIN_PIPELINE_C/IMGUI_SRC_WIN direct-source-compile lists (they were never
+# actually Windows-specific, just never built anywhere else), a Vulkan-only
+# GLFW build against the X11 backend instead of Win32, and
+# -DMATTER_HAVE_STREAMLINE=0 hardcoded (Streamline/DLSS is Windows-only).
+# There is no Linux machine, toolchain, or Vulkan loader anywhere in the
+# environment this was written in, so this target has never been compiled or
+# run. See MatterEditor/README.md for the full list of what is and is not
+# verified, and the "Linux Vulkan target" comment block near APP_SRC/GLFW_LINUX_SRC
+# below for per-line justification.
 #
 # Per-object parallel build: each TU compiles to its own .o under build/<platform>/
 # so `make -j` fans them across cores; header changes are tracked via -MMD -MP
@@ -123,15 +135,19 @@ else
   AR_CORE_LDFLAGS :=
 endif
 
-# ---- Linux viewer: RETIRED in Phase 5a (tech-debt.md §6 / GL-path deletion) ----
+# ---- Linux viewer: GL path RETIRED in Phase 5a, Vulkan target ADDED in 5b ----
 # main_linux.cpp, ui_linux.cpp and ui_linux.h (the GL/raylib entry point + imgui
-# OpenGL3 backend glue) are deleted outright -- not migrated. Phase 5b
-# (docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md) will add a
-# Linux Vulkan target here: compile APP_SRC (below; already raylib/GL-free)
-# with -DMATTER_VULKAN_ONLY -DMATTER_VULKAN_VIEWER, a Vulkan-only GLFW build
-# (mirroring glfw_vulkan_only_context.c), and link -lvulkan + X11/Wayland
-# instead of -lGL. Until then this Makefile has no Linux target at all --
-# `windows` is the only supported/verified build here (.DEFAULT_GOAL below).
+# OpenGL3 backend glue) were deleted outright in Phase 5a -- not migrated.
+# Phase 5b (docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md)
+# added the `linux` target (see the "Linux Vulkan target (Phase 5b)" section
+# below, after win-shaders-gpu): it compiles this same APP_SRC (already
+# raylib/GL-free) with -DMATTER_VULKAN_ONLY -DMATTER_VULKAN_VIEWER, a
+# Vulkan-only GLFW build against X11 (mirroring glfw_vulkan_only_context.c,
+# see src/glfw_vulkan_only_context_x11.c), and links -lvulkan + -lX11 instead
+# of -lGL. `windows` remains the only target actually built/run/verified in
+# this repository's normal dev environment -- see MatterEditor/README.md for
+# what `linux` has and has not been checked against (no Linux machine
+# available where it was written).
 APP_SRC = src/main.cpp src/ui.cpp src/session_binding.cpp src/scene_model_adapter.cpp src/bake_lab.cpp src/bake_lab_timeline.cpp src/event_inspector.cpp src/asset_browser.cpp src/part_workbench.cpp src/lod_inspector.cpp src/camera_controller.cpp src/camera_focus.cpp src/streaming_anchor_controller.cpp src/selection_set.cpp src/editor_model.cpp src/scene_tree_panel.cpp src/selection_bounds.cpp src/viewport_pick.cpp src/selection_outline.cpp src/toolbar_panel.cpp src/console_panel.cpp src/console_log.cpp src/properties_registry.cpp src/properties_panel.cpp src/specialized_editors.cpp src/gizmo.cpp src/os_open.cpp
 
 # Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
@@ -237,8 +253,9 @@ IMGUI_CORE_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
             $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
 IMGUIZMO_SRC = $(IMGUIZMO_PATH)/ImGuizmo.cpp
 # IMGUI_SRC_LINUX (imgui_impl_opengl3.cpp backend) retired with the Linux GL
-# viewer above. Phase 5b's Linux Vulkan target should reuse IMGUI_SRC_WIN
-# (the Vulkan imgui backend) rather than reintroducing an OpenGL3 one.
+# viewer above. Phase 5b's `linux` target below reuses IMGUI_SRC_WIN as-is
+# (the Vulkan+GLFW imgui backend, not actually Windows-specific despite the
+# name) rather than reintroducing an OpenGL3 one -- see LINUX_ALL_CPP_SRC.
 IMGUI_SRC_WIN = $(IMGUI_CORE_SRC) $(IMGUIZMO_SRC) \
             $(IMGUI_PATH)/backends/imgui_impl_vulkan.cpp
 
@@ -627,6 +644,204 @@ win-shaders-gpu:
 	@[ -d shaders_gpu ] || ln -s $(ME3_DIR)/shaders_gpu shaders_gpu
 	@[ -d $(ME3_DIR)/shaders_gpu ] || (echo "ERROR: MatterEngine3/shaders_gpu/ missing" && exit 1)
 
+# =============================================================================
+# ---- Linux Vulkan target (Phase 5b) ----------------------------------------
+# =============================================================================
+# EVERYTHING IN THIS SECTION IS UNVERIFIED. It was written on Windows with no
+# Linux machine, toolchain, Vulkan loader, or X11/GLFW dev headers available
+# to compile or link against -- see MatterEditor/README.md for the full list
+# of what is/isn't checked. It is deliberately isolated from the `windows`
+# target: separate variables (LINUX_*, L_*), a separate object directory
+# (build/linux/obj/, vs build/windows/obj/), and a separate link line. Nothing
+# in this section is referenced by any `windows`-target rule above, and
+# nothing above this point was changed to make room for it.
+#
+# Shape: identical TU list to the Windows target (APP_SRC + WIN_ME3_CPP +
+# WIN_MSL_CPP + WIN_PIPELINE_C + QJS_C + FLECS_C + IMGUI_SRC_WIN), direct-
+# source compiled exactly like Windows does -- NOT linked against
+# libmatter_engine3.a the way the old (Phase-5a-deleted) GL Linux target was.
+# That old shape doesn't fit any more: MatterEngine3/Makefile's own ME3_CPP
+# list does not compile the vk_*.cpp render sources at all (see the comment
+# above CFLAGS in that Makefile) -- they only exist as direct-compile lists
+# here, in WIN_ME3_CPP. The "WIN_" prefix on those shared variables is
+# historical, not a statement that the sources are Windows-specific; per the
+# plan (docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md
+# Phase 5 table) only vk_context.cpp has meaningful platform gating, and this
+# landing fixed the one spot in it that would not even compile on Linux (see
+# the Phase 5b comments in MatterEngine3/src/render/vk_context.cpp).
+#
+# Deliberately X11-only, not Wayland: matches the dependency set the old
+# (Phase-5a-deleted) GL Linux target already had (LDFLAGS there was
+# -lGL -lm -lpthread -ldl -lrt -lX11, no Wayland libs), keeps this port
+# bounded, and avoids a wayland-scanner/wayland-protocols build-tool
+# dependency that would add more unverifiable surface. GLFW 3.4 supports
+# building both backends with runtime auto-selection (platform.c), so adding
+# _GLFW_WAYLAND later is additive, not a rewrite -- flagged as a known gap in
+# the README rather than attempted here.
+LINUX_CXX ?= g++
+LINUX_CC  ?= gcc
+LINUX_AR  ?= ar
+
+# HAVE_STREAMLINE is deliberately NOT threaded through to this target the way
+# it is for `windows` (that one reads the shared HAVE_STREAMLINE/STREAMLINE_PATH/
+# STREAMLINE_DLL_DIR variables). Streamline is a Windows-only SDK -- DLSS-G
+# needs to hook a swapchain that only exists via Win32/DXGI -- so MATTER_HAVE_
+# STREAMLINE=0 is hardcoded below and this target never reads STREAMLINE_PATH
+# or STREAMLINE_DLL_DIR at all. That makes "accidentally build Linux with
+# Streamline on" structurally unreachable through this target's own flags,
+# rather than relying on a caller remembering to pass HAVE_STREAMLINE=0.
+# (streamline_bridge.cpp's own #if MATTER_HAVE_STREAMLINE guard around
+# `#include <windows.h>` is the belt to this suspenders -- see that file.)
+#
+# VULKAN_INCLUDE / VULKAN_LIB_DIR / GLSLC are the SAME shared variables the
+# `windows` target uses (default /ucrt64/... paths, defined near WIN_CXX
+# above) -- deliberately NOT given fresh Linux-flavored defaults here, because
+# any guessed default (/usr/include vs /usr/include/vulkan, distro-dependent
+# multiarch lib dirs, glslc vs glslc-14, ...) would be silently wrong on some
+# distros and there is no way to verify a guess on this machine. A real Linux
+# build MUST override them explicitly, e.g.:
+#   make -C MatterEditor linux \
+#        VULKAN_INCLUDE=/usr/include VULKAN_LIB_DIR=/usr/lib/x86_64-linux-gnu \
+#        GLSLC=/usr/bin/glslc
+# Leaving the ucrt64 defaults in place when this reuses $(WIN_INCLUDE_PATHS)
+# below is harmless either way: gcc/g++ silently ignore a -I directory that
+# does not exist, so an un-overridden /ucrt64/include on a real Linux box just
+# means the vendored ../third_party/Vulkan-Headers/include copy (also already
+# in $(WIN_INCLUDE_PATHS), further down the search order) wins instead.
+CXX_FLAGS_BUILD_LINUX_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST \
+    -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY -DMATTER_HAVE_STREAMLINE=0 \
+    $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) \
+    -ffunction-sections -fdata-sections -MMD -MP
+
+# Reusing $(WIN_ALL_CPP_SRC) verbatim rather than re-listing APP_SRC/WIN_ME3_CPP/
+# WIN_MSL_CPP/IMGUI_SRC_WIN a second time: it is already exactly the TU set
+# this target needs (see the module-header comment above), and referencing it
+# here cannot change what the `windows` target does with it.
+LINUX_ALL_CPP_SRC = $(WIN_ALL_CPP_SRC)
+CPP_NAMES_LINUX_ALL = $(notdir $(LINUX_ALL_CPP_SRC))
+
+L_OBJ_DIR = $(L_DIR)/obj
+L_CPP_OBJ   = $(addprefix $(L_OBJ_DIR)/,$(CPP_NAMES_LINUX_ALL:.cpp=.o))
+L_QJS_OBJ   = $(addprefix $(L_OBJ_DIR)/,$(QJS_NAMES:.c=.o))
+L_PIPC_OBJ  = $(addprefix $(L_OBJ_DIR)/,$(PIPC_NAMES_WIN:.c=.o))
+L_FLECS_OBJ = $(L_OBJ_DIR)/$(FLECS_NAME:.c=.o)
+L_ALL_OBJ   = $(L_CPP_OBJ) $(L_QJS_OBJ) $(L_PIPC_OBJ) $(L_FLECS_OBJ)
+
+$(L_DIR) $(L_OBJ_DIR):
+	mkdir -p $@
+
+# ---- Vulkan-only GLFW for X11 --------------------------------------------
+# Mirrors GLFW_WIN_SRC's shape: the common/null/egl/osmesa files plus the X11
+# backend instead of win32, minus glx_context.c (the real GLX/libGL
+# implementation -- excluded on purpose, same reasoning as wgl_context.c being
+# excluded from GLFW_WIN_SRC) plus the fail-closed stub replacement for it
+# (src/glfw_vulkan_only_context_x11.c, mirroring src/glfw_vulkan_only_context.c).
+#
+# posix_module.c / posix_poll.c / posix_thread.c / posix_time.c and
+# linux_joystick.c are the non-Windows counterparts to win32_module.c/
+# win32_thread.c/win32_time.c that GLFW_WIN_SRC lists -- confirmed by reading
+# third_party/raylib/src/external/glfw/src/platform.h's GLFW_BUILD_POSIX_MODULE
+# / GLFW_BUILD_POSIX_POLL / linux_joystick.h #include guards (_GLFW_X11 or
+# _GLFW_WAYLAND, combined with __linux__, pulls in linux_joystick.h).
+#
+# UNVERIFIED: which X11/Vulkan dev packages a given distro needs
+# (libx11-dev/libxrandr-dev/libxinerama-dev/libxcursor-dev/libxi-dev/
+# libxext-dev cover the headers GLFW's own CMakeLists.txt checks for when
+# building the X11 backend; GLFW dlopen()s libXrandr/libXinerama/libXcursor/
+# libXi/libX11 itself at runtime rather than link-time per x11_init.c, but
+# -lX11 below is still required because x11_window.c calls Xlib functions
+# like XCreateWindow directly, not through a dlopen'd pointer) -- there is no
+# Linux package manager here to confirm any of this against a real install.
+GLFW_LINUX_SRC = context.c egl_context.c init.c input.c monitor.c null_init.c \
+                 null_joystick.c null_monitor.c null_window.c osmesa_context.c \
+                 platform.c vulkan.c window.c \
+                 x11_init.c x11_monitor.c x11_window.c xkb_unicode.c \
+                 linux_joystick.c \
+                 posix_module.c posix_poll.c posix_thread.c posix_time.c
+GLFW_LINUX_OBJ = $(addprefix $(L_OBJ_DIR)/glfw/,$(GLFW_LINUX_SRC:.c=.o))
+GLFW_LINUX_OBJ += $(L_OBJ_DIR)/glfw/glfw_vulkan_only_context_x11.o
+GLFW_LINUX_LIB = $(L_DIR)/libglfw3.a
+
+$(L_OBJ_DIR)/glfw/%.o: $(GLFW_SRC_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) -c $< -o $@ -D_GLFW_X11 \
+	    -I../third_party/raylib/src/external/glfw/include
+
+$(L_OBJ_DIR)/glfw/glfw_vulkan_only_context_x11.o: src/glfw_vulkan_only_context_x11.c
+	@mkdir -p $(dir $@)
+	$(LINUX_CC) -c $< -o $@ -D_GLFW_X11 \
+	    -I$(GLFW_SRC_DIR) -I../third_party/raylib/src/external/glfw/include
+
+$(GLFW_LINUX_LIB): $(GLFW_LINUX_OBJ)
+	$(LINUX_AR) rcs $@ $^
+
+# ---- Linux compile rules (mirrors the Windows "compile rules" section) ---
+$(L_CPP_OBJ): $(L_OBJ_DIR)/%.o: %.cpp | $(L_OBJ_DIR)
+	$(LINUX_CXX) -c $< -o $@ $(CXX_FLAGS_BUILD_LINUX_COMMON)
+$(L_QJS_OBJ): $(L_OBJ_DIR)/%.o: $(QJS_DIR)/%.c | $(L_OBJ_DIR)
+	$(LINUX_CC) -c $< -o $@ -O2 -DNDEBUG -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
+LINUX_PIPC_COMPILE = $(LINUX_CC) -c $< -o $@ -O2 -DNDEBUG -DPLATFORM_DESKTOP $(WIN_INCLUDE_PATHS) -ffunction-sections -fdata-sections -MMD -MP
+L_PIPC_MSL_OBJ = $(filter-out $(L_OBJ_DIR)/spatial_hash.o $(L_OBJ_DIR)/mem_pool.o,$(L_PIPC_OBJ))
+$(L_PIPC_MSL_OBJ): $(L_OBJ_DIR)/%.o: $(MSL_DIR)/src/%.c | $(L_OBJ_DIR)
+	$(LINUX_PIPC_COMPILE)
+$(L_OBJ_DIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(L_OBJ_DIR)
+	$(LINUX_PIPC_COMPILE)
+$(L_OBJ_DIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(L_OBJ_DIR)
+	$(LINUX_PIPC_COMPILE)
+$(L_FLECS_OBJ): $(L_OBJ_DIR)/%.o: $(FLECS_DIR)/%.c | $(L_OBJ_DIR)
+	$(LINUX_CC) -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR) -DNDEBUG -ffunction-sections -fdata-sections -MMD -MP
+
+# Order-only, same reasoning as the Windows equivalent: the embedded-shaders
+# header must exist before shader_source.cpp compiles, but its regeneration
+# (a phony target) must not force object rebuilds every invocation.
+$(L_CPP_OBJ): | embedded-shaders
+
+# Same symlink shape as win-shaders-gpu, kept as its own target (rather than
+# depending on the Windows-named phony target directly) so the Linux path's
+# dependency graph does not read as depending on "windows" -- the two recipe
+# bodies are intentionally byte-identical POSIX shell.
+linux-shaders-gpu:
+	@[ -d shaders_gpu ] || ln -s $(ME3_DIR)/shaders_gpu shaders_gpu
+	@[ -d $(ME3_DIR)/shaders_gpu ] || (echo "ERROR: MatterEngine3/shaders_gpu/ missing" && exit 1)
+
+# box3d: unlike WIN_BOX3D_LIB (a committed mingw cross-build with no build
+# rule of its own -- see mingw-box3d above), $(BOX3D_LIB) already has a real
+# rule ($(MAKE) -C $(BOX3D_DIR), defined above near WIN_LIBS) and a committed
+# third_party/box3d/libbox3d.a exists in the repo. UNVERIFIED whether that
+# committed archive is ABI-compatible with whatever toolchain a real Linux
+# build uses; if not, `make -C ../third_party/box3d` (the existing rule this
+# target depends on) rebuilds it natively.
+#
+# Link libs: -lX11 for the GLFW X11 backend (see GLFW_LINUX_SRC comment
+# above); -ldl for GLFW's runtime dlopen() of libXrandr/libXinerama/libXcursor/
+# libXi/libX11 itself; -lpthread for box3d/QuickJS threads (mirrors WIN_LIBS'
+# -lwinpthread); -lm and -lrt match the old (Phase-5a-deleted) GL Linux
+# target's LDFLAGS verbatim (GLFW's own CMakeLists.txt links both on
+# UNIX-and-not-APPLE, see third_party/raylib/src/external/glfw/src/CMakeLists.txt).
+# No raylib anywhere on this line, same as `windows` -- confirmed by grepping
+# this target's full source list the same way the module header's
+# raylib-dependency analysis did for Windows.
+LINUX_SYSTEM_LIBS = -lX11 -ldl -lpthread -lm -lrt
+
+# Not a hard requirement of `linux` (VK_EMBEDDED_HEADER/VK_SPV are listed as a
+# prerequisite below anyway), but documented since it trips up a first build:
+# $(VK_EMBEDDED_HEADER)'s recipe (defined above, shared with `windows`) invokes
+# $(GLSLC) -- override that too (see the VULKAN_INCLUDE/VULKAN_LIB_DIR/GLSLC
+# note earlier in this section) if it is not already an X11/Linux glslc.
+linux: $(VK_EMBEDDED_HEADER) $(GLFW_LINUX_LIB) linux-shaders-gpu $(BOX3D_LIB) $(L_ALL_OBJ)
+	$(LINUX_CXX) $(L_ALL_OBJ) -o $(L_DIR)/editor $(CFLAGS) -Wl,--gc-sections \
+	    $(BOX3D_LIB) $(GLFW_LINUX_LIB) $(LINUX_SYSTEM_LIBS) \
+	    -L$(VULKAN_LIB_DIR) -lvulkan
+
+# Linux .d files use plain Unix paths, not the D:/-style paths that make the
+# Windows .d include conditional on MSYSTEM above -- safe to include
+# unconditionally. $(L_ALL_OBJ) is only defined by this point in the file (the
+# Linux section above), which is why this line lives here and not next to the
+# Windows one. -include silently skips files that do not exist yet (e.g. on
+# Windows, where nothing ever builds build/linux/obj/*.d), so this is a no-op
+# there, not an error.
+-include $(L_ALL_OBJ:.o=.d)
+
 # clean: remove build artifacts and generated binaries.
 # shaders and shaders_gpu are committed git symlinks — do NOT remove them here,
 # or `git status` will show them as deleted. The build recreates them via the
@@ -649,12 +864,19 @@ DIST_BUILD_TARGET = windows
 DIST_BIN_DIR = $(W_DIR)
 DIST_BIN = editor.exe
 else
-# KNOWN GAP (Phase 5a): the Linux `editor` target this branch names was
-# retired with the GL viewer -- see the Linux-viewer comment near APP_SRC.
-# `dist` on a real (non-MSYS2) Linux shell will fail with "No rule to make
-# target 'editor'" until Phase 5b lands a Linux Vulkan target of that name.
-# Unverified on this machine either way (no non-MSYS2 shell here).
-DIST_BUILD_TARGET = editor
+# Phase 5b: DIST_BUILD_TARGET now names the real `linux` target added below
+# (see "Linux Vulkan target (Phase 5b)" near win-shaders-gpu), which places
+# its binary at $(L_DIR)/editor -- so the specific "No rule to make target
+# 'editor'" failure this comment used to document is gone. UNVERIFIED/STILL
+# BROKEN for an unrelated, pre-existing reason this phase does not fix: the
+# `dist` recipe below unconditionally requires STREAMLINE_PATH and copies
+# *.dll files (see the "dist REQUIRES the Streamline SDK" comment below).
+# Streamline is Windows-only and there is no DLSS on Linux (see the `linux`
+# target's own HAVE_STREAMLINE note), so `dist` on a real Linux shell will
+# still hard-fail at the STREAMLINE_PATH check before it ever reaches
+# DIST_BUILD_TARGET. Making `dist` produce a sensible Linux package (no
+# Streamline requirement, no .dll copy step) is out of scope here.
+DIST_BUILD_TARGET = linux
 DIST_BIN_DIR = $(L_DIR)
 DIST_BIN = editor
 endif
@@ -726,4 +948,4 @@ build/test_console_log.exe: tests/test_console_log.cpp src/console_log.cpp src/c
 run-test-console-log: build/test_console_log.exe
 	./build/test_console_log.exe
 
-.PHONY: editor windows clean dist shaders shaders_gpu_link win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf
+.PHONY: editor windows clean dist shaders shaders_gpu_link win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf linux linux-shaders-gpu
