@@ -10,6 +10,7 @@
 #include "module_resolver.h"
 #include "script/world_definition_loader.h"
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
+#include "matter/animation_diagnostic.h"  // full animation diagnostic list (D1)
 
 namespace script_host {
 
@@ -64,6 +65,16 @@ struct BakeResult {
     // presence mask, without re-deriving placement order itself. Empty when
     // error.ok is false or the part places no children.
     std::vector<std::string> child_modules_placed;
+    // D1: EVERY animation diagnostic this bake produced, in the validator's
+    // stable sorted order. `error` still carries only the first one, because a
+    // pile of existing callers read exactly that; this is additive. An author
+    // with four problems in a rig now sees four, instead of fixing one and
+    // rebaking to discover the next.
+    //
+    // Empty on a successful bake, and on any failure that is not an animation
+    // failure.  When non-empty, animation_diagnostics.front() is the diagnostic
+    // `error.message` was collapsed from.
+    std::vector<matter::AnimationDiagnostic> animation_diagnostics;
 };
 
 struct TilesetEvalResult {

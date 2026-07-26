@@ -50,6 +50,29 @@ extern "C" {
 namespace script_host {
 
 namespace {
+// D1: copy the FULL diagnostic list onto the bake result, flattened to the public
+// matter::AnimationDiagnostic shape. Call this beside every site that collapses
+// the list into BakeError, so the single-message error and the list can never
+// disagree about what failed first.
+void report_animation_diagnostics(BakeResult& out,
+                                  const std::vector<matter::animation::Diagnostic>& items) {
+    out.animation_diagnostics.reserve(out.animation_diagnostics.size() + items.size());
+    for (const auto& item : items) {
+        matter::AnimationDiagnostic reported;
+        reported.code = item.code;
+        reported.message = item.message;
+        reported.module = item.source.module;
+        reported.line = item.source.line;
+        reported.column = item.source.column;
+        reported.object = item.source.object;
+        out.animation_diagnostics.push_back(std::move(reported));
+    }
+}
+void report_animation_diagnostics(BakeResult& out,
+                                  const matter::animation::Diagnostics& diagnostics) {
+    report_animation_diagnostics(out, diagnostics.items);
+}
+
 uint64_t part_body_checksum(const std::filesystem::path& path) {
     FILE* f = std::fopen(path.string().c_str(), "rb");
     if (!f) return 0;
@@ -1676,6 +1699,10 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         const auto& source = state.rig_error_source();
         if (source.line != 0)
             r.error.source_location = source.module + ":" + std::to_string(source.line) + ":" + std::to_string(source.column) + " (" + source.object + ")";
+        // D1: an authoring-time animation failure narrowed a whole validator list
+        // into the message above; carry the rest through so the author sees every
+        // problem in one bake instead of one per rebuild.
+        report_animation_diagnostics(r, state.animation_diagnostics());
     }
     if (r.error.ok && state.rig_open()) {
         r.error.ok = false;
@@ -1696,6 +1723,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                 r.error.source_location = source.module + ":" + std::to_string(source.line) + ":" +
                     std::to_string(source.column) + " (" + source.object + ")";
             }
+            report_animation_diagnostics(r, diagnostics);
         }
     }
     if (r.error.ok && state.canonical_rig()) last_animation_rig_ = state.canonical_rig();
@@ -2064,6 +2092,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         if (!ok) {
             r.error.ok = false;
             r.error.message = diagnostics.items.empty() ? "save_v2 failed" : diagnostics.items.front().message;
+            report_animation_diagnostics(r, diagnostics);
         }
         else {
             r.written_path = path;

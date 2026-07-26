@@ -180,6 +180,17 @@ public:
     void set_rig_error(const std::string& message, const char* code = "rig-dsl") { if (!has_error_) { rig_error_source_ = rig_source_; rig_error_code_ = code; set_error(message); } }
     const matter::animation::SourceSpan& rig_error_source() const { return rig_error_source_; }
     const std::string& rig_error_code() const { return rig_error_code_; }
+    // D1: retain the FULL validator output alongside the collapsed rig error.
+    // Every authoring-time animation failure narrows a Diagnostics list down to
+    // one message for `set_rig_error`; this keeps the rest so the bake can report
+    // all of them. Recorded only for the first failure, matching set_rig_error's
+    // own first-error-wins behaviour, so the retained list always corresponds to
+    // the error the caller is looking at.
+    void record_animation_diagnostics(const matter::animation::Diagnostics& diagnostics) {
+        if (!has_error_ && animation_diagnostics_.empty())
+            animation_diagnostics_ = diagnostics.items;
+    }
+    const std::vector<matter::animation::Diagnostic>& animation_diagnostics() const { return animation_diagnostics_; }
     void rig_root(const std::string& name, const matter::AnimationTransform& local);
     void rig_bone(const std::string& name, const matter::AnimationTransform& local);
     void rig_push();
@@ -532,6 +543,7 @@ private:
     matter::animation::SourceSpan rig_source_;
     matter::animation::SourceSpan rig_error_source_;
     std::string rig_error_code_;
+    std::vector<matter::animation::Diagnostic> animation_diagnostics_;
 };
 
 } // namespace dsl

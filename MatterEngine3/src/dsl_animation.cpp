@@ -209,7 +209,7 @@ void DslState::end_rig() {
     if (!rig_open()) { set_rig_error("endRig outside an open rig session"); return; }
     if (!animation_->stack.empty()) { set_rig_error("rig stack left unbalanced at endRig"); return; }
     matter::animation::Diagnostics diagnostics;
-    if (!refresh_canonical_animation(*animation_, rig_source_, diagnostics)) { set_rig_error(diagnostics.items.empty()?"rig validation failed":diagnostics.items.front().message, "rig-validation"); return; }
+    if (!refresh_canonical_animation(*animation_, rig_source_, diagnostics)) { record_animation_diagnostics(diagnostics); set_rig_error(diagnostics.items.empty()?"rig validation failed":diagnostics.items.front().message, "rig-validation"); return; }
     animation_->open=false; animation_->ended=true;
 }
 
@@ -281,7 +281,7 @@ void DslState::end_clip() {
     for(auto& track:clip.tracks) std::stable_sort(track.keys.begin(),track.keys.end(),[](const auto& left,const auto& right){return left.time<right.time;});
     std::stable_sort(clip.markers.begin(),clip.markers.end(),[](const auto& left,const auto& right){return left.time<right.time;});
     if(clip.loop){for(auto& t:clip.tracks)if(!t.keys.empty())t.keys.push_back({clip.duration,t.keys.front().value,rig_source_});}
-    AnimationBuild validation = animation_->authored; validation.graph.nodes.push_back({"__clip_validation_output",{},true,matter::animation::EvaluationCadence::Fixed,rig_source_}); matter::animation::Diagnostics vd; if(!matter::animation::validate_animation_build(validation,vd)){if(!vd.items.empty())rig_source_=vd.items.front().source;set_rig_error(vd.items.empty()?"clip validation failed":vd.items.front().message,"clip-validation");return;}
+    AnimationBuild validation = animation_->authored; validation.graph.nodes.push_back({"__clip_validation_output",{},true,matter::animation::EvaluationCadence::Fixed,rig_source_}); matter::animation::Diagnostics vd; if(!matter::animation::validate_animation_build(validation,vd)){if(!vd.items.empty())rig_source_=vd.items.front().source;record_animation_diagnostics(vd); set_rig_error(vd.items.empty()?"clip validation failed":vd.items.front().message,"clip-validation");return;}
 #if defined(MATTER_RUNTIME_ANIMATION_ONLY)
     // The Viewer runtime may inspect/cache animation schema, but compiling raw
     // clips belongs to the bake host and must not pull Ozz offline builders
@@ -290,7 +290,7 @@ void DslState::end_clip() {
     return;
 #else
     matter::animation::Diagnostics d; matter::animation::OzzSkeleton sk; matter::animation::OzzAnimation oa;
-    if(!matter::animation::build_skeleton(animation_->authored.rig,sk,d)||!matter::animation::build_clip(animation_->authored.rig,clip,oa,d)){set_rig_error(d.items.empty()?"clip compilation failed":d.items.front().message,"clip-compile");return;}
+    if(!matter::animation::build_skeleton(animation_->authored.rig,sk,d)||!matter::animation::build_clip(animation_->authored.rig,clip,oa,d)){record_animation_diagnostics(d); set_rig_error(d.items.empty()?"clip compilation failed":d.items.front().message,"clip-compile");return;}
     if(animation_->authored.ozz_skeleton_blob.empty()&&!matter::animation::serialize_skeleton(sk,animation_->authored.ozz_skeleton_blob)){set_rig_error("skeleton serialization failed","clip-compile");return;}
     if(!matter::animation::serialize_animation(oa,clip.ozz_blob)||clip.ozz_blob.empty()){set_rig_error("clip serialization failed","clip-compile");return;}
     animation_->clip_open=false; animation_->current_clip.clear(); animation_->name.clear();
@@ -301,7 +301,7 @@ void DslState::motion_input(const InputSchema& input){if(!animation_||!animation
 void DslState::motion_target(const TargetSchema& target){if(!animation_||!animation_->motion_open){set_rig_error("target outside an open motion");return;} TargetSchema copy=target; copy.require_explicit_pole = copy.require_explicit_pole || copy.source.module=="<part>"; animation_->authored.targets.push_back(std::move(copy));}
 void DslState::motion_controller(const ControllerDef& controller){if(!animation_||!animation_->motion_open){set_rig_error("controller outside an open motion");return;} animation_->authored.controllers.push_back(controller);}
 void DslState::motion_node(const GraphNode& node){if(!animation_||!animation_->motion_open){set_rig_error("graph node outside an open motion");return;} animation_->authored.graph.nodes.push_back(node);}
-void DslState::end_motion(){if(animation_&&animation_->generating){set_rig_error("endMotion is forbidden during generate");return;} if(!animation_||!animation_->motion_open){set_rig_error("endMotion outside an open motion");return;} matter::animation::Diagnostics d; matter::animation::CanonicalAnimationBuild c; if(!matter::animation::validate_and_canonicalize_animation_build(animation_->authored,c,d)){if(!d.items.empty())rig_source_=d.items.front().source;set_rig_error(d.items.empty()?"motion validation failed":d.items.front().message,"motion-validation");return;} animation_->canonical=std::move(c); animation_->motion_open=false; animation_->current_motion.clear();}
+void DslState::end_motion(){if(animation_&&animation_->generating){set_rig_error("endMotion is forbidden during generate");return;} if(!animation_||!animation_->motion_open){set_rig_error("endMotion outside an open motion");return;} matter::animation::Diagnostics d; matter::animation::CanonicalAnimationBuild c; if(!matter::animation::validate_and_canonicalize_animation_build(animation_->authored,c,d)){if(!d.items.empty())rig_source_=d.items.front().source;record_animation_diagnostics(d); set_rig_error(d.items.empty()?"motion validation failed":d.items.front().message,"motion-validation");return;} animation_->canonical=std::move(c); animation_->motion_open=false; animation_->current_motion.clear();}
 
 namespace {
 bool binding_segments(const AnimationBuildBuffer& animation, const std::vector<std::string>& requested,
@@ -381,7 +381,7 @@ void DslState::rig_skin(const std::string& name, const std::vector<std::string>&
     matter::animation::Diagnostics diagnostics;
     if (!refresh_canonical_animation(*animation_, rig_source_, diagnostics)) {
         if (!diagnostics.items.empty()) rig_source_=diagnostics.items.front().source;
-        set_rig_error(diagnostics.items.empty()?"skin binding validation failed":diagnostics.items.front().message, "binding-validation");
+        record_animation_diagnostics(diagnostics); set_rig_error(diagnostics.items.empty()?"skin binding validation failed":diagnostics.items.front().message, "binding-validation");
     }
 }
 
@@ -438,7 +438,7 @@ bool DslState::end_binding_scope() {
             if (scope.kind == BindingScope::Kind::Skin) animation_->authored.skin_bindings[index].geometry.pop_back();
             else animation_->authored.rigid_bindings[index].geometry.pop_back();
         }
-        set_rig_error(diagnostics.items.empty()?"binding geometry validation failed":diagnostics.items.front().message,
+        record_animation_diagnostics(diagnostics); set_rig_error(diagnostics.items.empty()?"binding geometry validation failed":diagnostics.items.front().message,
                       "binding-validation");
         return false;
     }
@@ -473,7 +473,7 @@ void DslState::rig_segments(const std::string& name, const std::vector<std::stri
     matter::animation::Diagnostics diagnostics;
     if (!refresh_canonical_animation(*animation_, rig_source_, diagnostics)) {
         if (!diagnostics.items.empty()) rig_source_=diagnostics.items.front().source;
-        set_rig_error(diagnostics.items.empty()?"rigid binding validation failed":diagnostics.items.front().message, "binding-validation");
+        record_animation_diagnostics(diagnostics); set_rig_error(diagnostics.items.empty()?"rigid binding validation failed":diagnostics.items.front().message, "binding-validation");
     }
 }
 
@@ -501,7 +501,7 @@ void DslState::rig_attach(const std::string& name, const std::string& socket,
     matter::animation::Diagnostics diagnostics;
     if (!refresh_canonical_animation(*animation_, rig_source_, diagnostics)) {
         if (!diagnostics.items.empty()) rig_source_=diagnostics.items.front().source;
-        set_rig_error(diagnostics.items.empty()?"attachment validation failed":diagnostics.items.front().message, "binding-validation");
+        record_animation_diagnostics(diagnostics); set_rig_error(diagnostics.items.empty()?"attachment validation failed":diagnostics.items.front().message, "binding-validation");
     }
 }
 
