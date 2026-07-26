@@ -27,6 +27,27 @@
 // -- covering both the CSG-lowering path and the runtime raycast/mesh path.
 // A byte-identical stdout across a migration chunk is the pass criterion;
 // this program does not itself judge pass/fail, it only prints.
+//
+// Review sweep (2026-07): an adversarial mutation pass found this harness
+// blind to two things, both now closed --
+//   - scene_apply_matrix_lookat called applyMatrix as the FIRST op on a
+//     fresh (identity) stack, so reversing applyMatrix's operand order in
+//     dsl_state.cpp was undetectable (multiply(I,A) == multiply(A,I)). Fixed
+//     by composing a non-identity, non-commuting transform (translate +
+//     rotateY) onto the stack before applyMatrix runs.
+//   - no scene anywhere in the suite produced a singular (det==0) brush
+//     transform, so csg_lowering.cpp's mat_invert zero-determinant guard
+//     (`if (det==0.0f) return mm::zero();`) had zero coverage; swapping it
+//     for the default-constructed `mm::Mat4{}` (IDENTITY, not zero --
+//     matter_math.h's documented hazard) passed this file AND run-iso AND
+//     run-script unchanged. Fixed by scene_degenerate_flatten, a single
+//     brush under scale(1,0,1) (a legitimate flatten).
+// Baseline stdout md5 after these two fixes: 42f0d97e72dd6cc4efba83db843f113e
+// (previous baseline, before this sweep, was d4061d8156d5976f466b50fd1879cb22
+// -- expected to change: this sweep adds/alters scenes). Verified: reversing
+// applyMatrix's operands (dsl_state.cpp:62) changes apply_matrix_lookat's
+// hashes; swapping mm::zero()->mm::Mat4{} (csg_lowering.cpp:63) changes
+// degenerate_flatten's hashes; both revert to the md5 above.
 
 #include <cstdio>
 #include <cstdint>
@@ -198,6 +219,17 @@ void scene_nested_rotated_translated(dsl::DslState& s) {
 }
 
 void scene_apply_matrix_lookat(dsl::DslState& s) {
+    // Non-identity, non-commuting transform on the stack BEFORE applyMatrix
+    // (gap fix, review sweep 2026-07): a fresh DslState's stack top is
+    // identity, and multiply(I,A) == multiply(A,I), so calling applyMatrix
+    // as the very first op made this scene blind to an operand-order bug in
+    // DslState::applyMatrix (dsl_state.cpp) -- reversing
+    // `mm::multiply(stack_.back(), applied)` to `mm::multiply(applied,
+    // stack_.back())` produced byte-identical output. translate+rotateY
+    // first means applyMatrix now composes against a non-identity stack top,
+    // so operand order is observable.
+    s.translate(1, 2, 3);
+    s.rotateY(0.4f);
     float m[16] = {
         0.8f, -0.2f, 0.1f,  2.0f,
         0.1f,  0.9f, 0.05f,-1.0f,
@@ -242,6 +274,34 @@ void scene_deep_stack(dsl::DslState& s) {
     s.endVoxels();
 }
 
+// Gap fix (review sweep 2026-07): a legitimate flatten -- scale(1,0,1) --
+// collapses one axis of the brush transform to a singular (det==0) matrix.
+// No other scene in this file ever produces a singular transform, so
+// csg_lowering.cpp's mat_invert() zero-determinant guard (`if (det==0.0f)
+// return mm::zero();`) had NO coverage anywhere in the suite: replacing that
+// `mm::zero()` with the default-constructed `mm::Mat4{}` -- which is
+// IDENTITY, not zero, per matter_math.h's documented hazard -- left this
+// file byte-identical AND run-iso/run-script fully green. Under that
+// mutation the flattened brush's invTransform silently becomes identity
+// instead of zero, so the fat primitive would evaluate as if untransformed
+// (full-size, at the world origin) instead of where the flatten put it --
+// wrong geometry with nothing going red. This scene is a single brush with
+// no other brush's field to mask the difference: mat_invert() runs on this
+// op's transform both when csg_lowering builds the FatPrim's invTransform
+// AND on every grid sample point in the analytic oracle, so both
+// lowered_hash and grid_hash are sourced entirely from the guarded path.
+void scene_degenerate_flatten(dsl::DslState& s) {
+    s.pushMatrix();
+    s.translate(2, 1, 0.5f);
+    s.rotateY(0.3f);
+    s.scale(1.0f, 0.0f, 1.0f);   // legitimate flatten -> singular transform (det==0)
+    s.beginVoxels(0.1f);
+    s.fill(8);
+    s.sphere({0, 0, 0}, 0.5f, dsl::CsgOp::Union);
+    s.endVoxels();
+    s.popMatrix();
+}
+
 } // namespace
 
 int main() {
@@ -264,6 +324,11 @@ int main() {
         dsl::DslState s;
         scene_deep_stack(s);
         run_scene("deep_stack", s, -1.5f, 3.0f, 0.5f);
+    }
+    {
+        dsl::DslState s;
+        scene_degenerate_flatten(s);
+        run_scene("degenerate_flatten", s, 0.0f, 3.0f, 0.5f);
     }
     std::printf("DETERMINISM HARNESS DONE\n");
     return 0;
