@@ -381,6 +381,45 @@ bool AnimationSystems::apply_targets(AnimatorInstanceHandle instance, Evaluation
     return true;
 }
 
+bool AnimationSystems::copy_animation_debug_pose(AnimatorInstanceHandle instance,
+                                                 AnimationDebugPoseSnapshot& out) const {
+    out = {};
+    if (!instance.valid()) return false;
+    const auto binding = service_bindings_.find(animator_key(instance));
+    const auto runtime = target_runtime_.find(animator_key(instance));
+    if (binding == service_bindings_.end() || runtime == target_runtime_.end() ||
+        !binding->second.descriptor ||
+        binding->second.instance.slot_index != instance.slot_index ||
+        binding->second.instance.generation != instance.generation ||
+        runtime->second.targets.size() != binding->second.descriptor->targets.size()) {
+        return false;
+    }
+    const AnimationPoseSnapshot pose = pose_snapshots_.latest(instance);
+    if (!pose.instance.valid() || pose.instance.generation != instance.generation ||
+        !pose.model_pose.data || !pose.skin_palette.data) {
+        return false;
+    }
+    AnimationDebugPoseSnapshot candidate{};
+    candidate.instance = instance;
+    candidate.fixed_tick = pose.fixed_tick;
+    candidate.frame_serial = pose.frame_serial;
+    if (pose.local_pose.data) {
+        candidate.local_pose.assign(pose.local_pose.data,
+                                    pose.local_pose.data + pose.local_pose.count);
+    }
+    candidate.model_pose.assign(pose.model_pose.data,
+                                pose.model_pose.data + pose.model_pose.count);
+    candidate.skin_palette.assign(pose.skin_palette.data,
+                                  pose.skin_palette.data + pose.skin_palette.count);
+    candidate.targets.reserve(runtime->second.targets.size());
+    for (const AnimationTargetState& target : runtime->second.targets) {
+        candidate.targets.push_back(
+            {target.evaluated, target.evaluated_weight, target.enabled, true});
+    }
+    out = std::move(candidate);
+    return true;
+}
+
 void AnimationSystems::detach_service_binding(AnimatorInstanceHandle instance) {
     if (!instance.valid()) return;
     remove_fixed_work(instance);

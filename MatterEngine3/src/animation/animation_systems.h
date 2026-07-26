@@ -3,6 +3,7 @@
 #include "animation/animation_evaluator.h"
 #include "animation/animation_controllers.h"
 #include "animation/animation_world_queries.h"
+#include "matter/animation_debug.h"
 
 #include <array>
 #include <cstdint>
@@ -194,6 +195,10 @@ public:
     bool capture_service_checkpoint(AnimatorCheckpoint& checkpoint) const;
     bool validate_service_checkpoint(const AnimatorCheckpoint& checkpoint) const;
     bool restore_service_checkpoint(const AnimatorCheckpoint& checkpoint);
+    // Copies the latest presentation pose and actual evaluated target state.
+    // The result owns its storage across runtime advances and destruction.
+    bool copy_animation_debug_pose(AnimatorInstanceHandle instance,
+                                   AnimationDebugPoseSnapshot& out) const;
 
 private:
     friend void register_animation_systems(flecs::world&, AnimationSystems&);
