@@ -284,7 +284,45 @@ std::vector<DesiredRootMotion> AnimationSystems::take_consumed_root_motion() { s
 bool AnimationSystems::set_budget_config(const AnimationBudgetConfig& config) {
     if (!config.valid() || !service_bindings_.empty()) return false;
     if (!evaluator_.set_budget_config(config)) return false;
-    return presentation_evaluator_.set_budget_config(config);
+    if (!presentation_evaluator_.set_budget_config(config)) return false;
+    budget_config_ = config;
+    pose_lod_scheduler_ = PoseLodScheduler(config);
+    return true;
+}
+
+bool AnimationSystems::stage_completed_visibility(
+    uint64_t frame_serial,
+    std::vector<AnimationPresentationObservation> observations) {
+    std::map<uint64_t, AnimationPresentationObservation> candidate;
+    for (const AnimationPresentationObservation& observation : observations) {
+        if (!observation.instance.valid() || !std::isfinite(observation.distance) ||
+            observation.distance < 0.0f ||
+            !candidate.emplace(animator_key(observation.instance), observation).second) {
+            return false;
+        }
+    }
+    staged_visibility_serial_ = frame_serial;
+    has_staged_visibility_ = true;
+    staged_visibility_ = std::move(candidate);
+    return true;
+}
+
+bool AnimationSystems::commit_completed_visibility(uint64_t frame_serial) {
+    if (!has_staged_visibility_ || staged_visibility_serial_ != frame_serial ||
+        frame_serial < completed_visibility_serial_) {
+        return false;
+    }
+    completed_visibility_serial_ = frame_serial;
+    completed_visibility_ = std::move(staged_visibility_);
+    staged_visibility_.clear();
+    has_staged_visibility_ = false;
+    return true;
+}
+
+void AnimationSystems::discard_completed_visibility(uint64_t frame_serial) noexcept {
+    if (!has_staged_visibility_ || staged_visibility_serial_ != frame_serial) return;
+    staged_visibility_.clear();
+    has_staged_visibility_ = false;
 }
 
 bool AnimationSystems::refresh_service_binding(const AnimationRuntimeBindingLease& lease) {
@@ -430,10 +468,14 @@ void AnimationSystems::detach_service_binding(AnimatorInstanceHandle instance) {
     if (!instance.valid()) return;
     remove_fixed_work(instance);
     pose_snapshots_.forget(instance);
+    last_complete_presentation_pose_snapshots_.forget(instance);
     fixed_pose_snapshots_.forget(instance);
     previous_fixed_pose_snapshots_.forget(instance);
     evaluator_.forget(instance);
     presentation_evaluator_.forget(instance);
+    pose_lod_scheduler_.forget(animator_key(instance));
+    completed_visibility_.erase(animator_key(instance));
+    staged_visibility_.erase(animator_key(instance));
     service_bindings_.erase(animator_key(instance));
     target_runtime_.erase(animator_key(instance));
 }
@@ -838,14 +880,42 @@ void AnimationSystems::run_frame(flecs::world& world, double frame_delta) {
     ++state.frame_serial;
     state.interpolation_alpha = interpolation_alpha_;
     world.set<ecs::AnimationFrameState>(state);
+    if (std::isfinite(frame_delta) && frame_delta > 0.0)
+        presentation_time_seconds_ += frame_delta;
     trace(AnimationScheduleEvent::FrameSampleApiWrites, frame_delta);
     trace(AnimationScheduleEvent::FrameInterpolateFixedState, frame_delta);
     trace(AnimationScheduleEvent::FrameEvaluatePresentationGraph, frame_delta);
     // Presentation is an owned copy of the already solved fixed state.  It
     // never samples the graph again on wall-frame time: doing so would both
     // overwrite fixed controller/IK output and advance evaluator history.
+    std::map<uint64_t, PoseLodDecision> pose_lod_decisions;
     for (const auto& pair : service_bindings_) {
         if (!pair.second.descriptor || !pair.second.descriptor->evaluation) continue;
+        AnimationPresentationObservation observation{pair.second.instance, true, 0.0f, 0};
+        const auto observed = completed_visibility_.find(pair.first);
+        if (observed != completed_visibility_.end()) observation = observed->second;
+        const PoseLodDecision decision = pose_lod_scheduler_.schedule(
+            {pair.first, observation.visible, observation.distance,
+             observation.explicit_priority, presentation_time_seconds_,
+             state.frame_serial});
+        pose_lod_decisions.emplace(pair.first, decision);
+        if (!decision.evaluate_now) {
+            AnimationPoseSnapshot fallback =
+                last_complete_presentation_pose_snapshots_.latest(pair.second.instance);
+            if (!fallback.instance.valid())
+                fallback = fixed_pose_snapshots_.latest(pair.second.instance);
+            if (fallback.instance.valid()) {
+                fallback.frame_serial = state.frame_serial;
+                (void)pose_snapshots_.publish(fallback);
+                ++presentation_budget_stats_.last_complete_fallback_count;
+            } else {
+                ++presentation_budget_stats_.bind_pose_fallback_count;
+            }
+            ++presentation_budget_stats_.frozen_pose_count;
+            continue;
+        }
+        if (decision.resample_current_graph_time)
+            ++presentation_budget_stats_.resampled_pose_count;
         const AnimationPoseSnapshot fixed = fixed_pose_snapshots_.latest(pair.second.instance);
         const AnimationPoseSnapshot previous = previous_fixed_pose_snapshots_.latest(pair.second.instance);
         if (!fixed.instance.valid() || !previous.instance.valid() ||
@@ -853,21 +923,31 @@ void AnimationSystems::run_frame(flecs::world& world, double frame_delta) {
                                                          *pair.second.descriptor->evaluation,
                                                          previous, fixed,
                                                          static_cast<float>(interpolation_alpha_), state.frame_serial)) continue;
+        ++presentation_budget_stats_.evaluated_presentation_pose_count;
     }
     trace(AnimationScheduleEvent::FrameSolveTargetsAndIk, frame_delta);
     for(const auto& pair:service_bindings_) {
         if (!pair.second.descriptor || !pair.second.descriptor->evaluation) continue;
+        const auto decision = pose_lod_decisions.find(pair.first);
+        if (decision == pose_lod_decisions.end() || !decision->second.evaluate_now) continue;
         const bool has_frame_targets=has_targets_for_cadence(pair.second.descriptor->targets, EvaluationCadence::Frame);
         if (!has_frame_targets) {
             const AnimationPoseSnapshot pose=presentation_evaluator_.snapshot(pair.second.instance);
-            if(pose.instance.valid()) (void)pose_snapshots_.publish(pose);
+            if(pose.instance.valid()) {
+                (void)last_complete_presentation_pose_snapshots_.publish(pose);
+                (void)pose_snapshots_.publish(pose);
+            }
             continue;
         }
         if (has_frame_targets && !apply_targets(pair.second.instance,EvaluationCadence::Frame,frame_delta)) continue;
         const auto runtime=target_runtime_.find(pair.first); if(runtime==target_runtime_.end() || runtime->second.targets.empty()) continue;
         const auto phase_targets=targets_for_cadence(pair.second.descriptor->targets,runtime->second.targets,EvaluationCadence::Frame);
         if(presentation_evaluator_.solve_targets(pair.second.instance,*pair.second.descriptor->evaluation,pair.second.descriptor->targets,phase_targets,state.frame_serial)) {
-            const AnimationPoseSnapshot pose=presentation_evaluator_.snapshot(pair.second.instance); if(pose.instance.valid()) (void)pose_snapshots_.publish(pose);
+            const AnimationPoseSnapshot pose=presentation_evaluator_.snapshot(pair.second.instance);
+            if(pose.instance.valid()) {
+                (void)last_complete_presentation_pose_snapshots_.publish(pose);
+                (void)pose_snapshots_.publish(pose);
+            }
         }
     }
     trace(AnimationScheduleEvent::FramePublishPoseSnapshot, frame_delta);

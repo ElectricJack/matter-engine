@@ -110,7 +110,9 @@ PoseLodDecision PoseLodScheduler::schedule(const PoseLodRequest& request) {
             ? state.post_grace_tier : select_tier(state.tier, request.distance);
         state.has_post_grace_tier = false;
     }
-    result.resample_current_graph_time = static_cast<uint8_t>(selected) < static_cast<uint8_t>(state.tier);
+    result.resample_current_graph_time =
+        became_visible ||
+        static_cast<uint8_t>(selected) < static_cast<uint8_t>(state.tier);
     state.tier = selected;
     result.tier = selected;
     result.newly_visible = state.visible_grace_frames > 0;

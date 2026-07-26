@@ -34,6 +34,16 @@ struct AnimationWorldQueryResult {
     WorldRayHit value{};
 };
 
+// Visibility is produced by a completed render submission and consumed by the
+// following FrameUpdate. It is deliberately value-owned so animation never
+// reads renderer/Flecs state through an unsafe cross-phase pointer.
+struct AnimationPresentationObservation {
+    AnimatorInstanceHandle instance{};
+    bool visible = true;
+    float distance = 0.0f;
+    int32_t explicit_priority = 0;
+};
+
 // This is the explicit B4 bridge from graph evaluation to fixed simulation.
 // It is value-owned by AnimationSystems, so API writes cannot race phase
 // execution. B5 replaces the simple root values with controller output.
@@ -191,6 +201,14 @@ public:
     bool refresh_service_binding(const AnimationRuntimeBindingLease& lease);
     void detach_service_binding(AnimatorInstanceHandle instance);
     bool set_budget_config(const AnimationBudgetConfig& config);
+    bool stage_completed_visibility(
+        uint64_t frame_serial,
+        std::vector<AnimationPresentationObservation> observations);
+    bool commit_completed_visibility(uint64_t frame_serial);
+    void discard_completed_visibility(uint64_t frame_serial) noexcept;
+    const AnimationBudgetRuntimeStats& presentation_budget_stats() const noexcept {
+        return presentation_budget_stats_;
+    }
     void attach_service(AnimationService* service) noexcept { service_ = service; }
     bool has_service(const AnimationService* service) const noexcept { return service_ == service; }
     bool capture_service_checkpoint(AnimatorCheckpoint& checkpoint) const;
@@ -219,6 +237,10 @@ private:
     double interpolation_alpha_ = 0.0;
     std::vector<AnimationScheduleTraceEntry> trace_;
     AnimationPoseSnapshotStore pose_snapshots_;
+    // Fixed evaluation publishes into pose_snapshots_ before FrameUpdate. A
+    // throttled frame must use the last completed presentation instead of
+    // accidentally exposing that newly advanced fixed sample.
+    AnimationPoseSnapshotStore last_complete_presentation_pose_snapshots_;
     // Owned solved fixed samples.  These are deliberately distinct from the
     // renderer-facing presentation store: frame layers may never overwrite a
     // simulation checkpoint or its previous-model history.
@@ -238,6 +260,15 @@ private:
     // mutate simulation state or erase a fixed IK result.
     AnimationEvaluator evaluator_;
     AnimationEvaluator presentation_evaluator_;
+    AnimationBudgetConfig budget_config_{};
+    PoseLodScheduler pose_lod_scheduler_{budget_config_};
+    AnimationBudgetRuntimeStats presentation_budget_stats_{};
+    uint64_t staged_visibility_serial_ = 0;
+    bool has_staged_visibility_ = false;
+    uint64_t completed_visibility_serial_ = 0;
+    std::map<uint64_t, AnimationPresentationObservation> staged_visibility_;
+    std::map<uint64_t, AnimationPresentationObservation> completed_visibility_;
+    double presentation_time_seconds_ = 0.0;
     std::map<uint64_t, AnimationRuntimeBindingLease> service_bindings_;
     struct TargetRuntime {
         std::vector<AnimationTargetState> targets;
