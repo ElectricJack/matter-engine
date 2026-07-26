@@ -196,8 +196,8 @@ void draw_animation_debug_overlay(
     const AnimationDebugOverlayOptions& options) {
     const auto& asset = snapshot.asset;
     const auto& pose = snapshot.pose;
-    if (!options.enabled || !pose.instance.valid() ||
-        pose.model_pose.size() != asset.joints.size() ||
+    if (!options.enabled ||
+        !matter::valid_animation_debug_snapshot(snapshot) ||
         framebuffer_width <= 0 || framebuffer_height <= 0) return;
     const float eye[3] =
         {camera.position.x, camera.position.y, camera.position.z};
@@ -263,23 +263,15 @@ void draw_animation_debug_overlay(
             const matter::Float3 start =
                 origin(world_models[definition.chain.front()]);
             if (definition.has_pole) {
-                const matter::Float3 world_origin =
-                    origin(snapshot.world_transform);
-                const matter::Float3 pole_point =
-                    point(snapshot.world_transform, definition.pole);
-                const matter::Float3 pole_direction = {
-                    pole_point.x - world_origin.x,
-                    pole_point.y - world_origin.y,
-                    pole_point.z - world_origin.z};
-                const float length = std::sqrt(
-                    pole_direction.x * pole_direction.x +
-                    pole_direction.y * pole_direction.y +
-                    pole_direction.z * pole_direction.z);
-                if (length > 1e-5f) {
+                matter::Float3 pole_direction{};
+                if (matter::animation_debug_world_pole_direction(
+                        snapshot.world_transform,
+                        pose.model_pose[definition.chain.front()],
+                        definition.pole, pole_direction)) {
                     const matter::Float3 pole_end = {
-                        start.x + pole_direction.x / length * 0.6f,
-                        start.y + pole_direction.y / length * 0.6f,
-                        start.z + pole_direction.z / length * 0.6f};
+                        start.x + pole_direction.x * 0.6f,
+                        start.y + pole_direction.y * 0.6f,
+                        start.z + pole_direction.z * 0.6f};
                     draw_line(draw_list, vp, framebuffer_width,
                               framebuffer_height, viewport_x, viewport_y,
                               start, pole_end,

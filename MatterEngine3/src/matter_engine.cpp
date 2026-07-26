@@ -16,6 +16,7 @@
 #include "local_provider.h"
 #include "part_store.h"   // LoadedPart, walk_part_tree
 #include "animation/animation_binding_bake.h"
+#include "animation/animation_runtime_asset.h"
 #include "render/animation_rigid_bridge.h"
 #include "render/animation_skin_bridge.h"
 #ifndef MATTER_VULKAN_ONLY
@@ -95,117 +96,33 @@ namespace matter {
 // Used as the FileWatcher argument for LiveEditSession constructed on the
 // worker thread (which uses rebuild(paths) directly, never tick()).
 namespace {
-bool debug_parse_u16(const std::string& text, uint16_t& value) {
-    char* end = nullptr;
-    const unsigned long parsed = std::strtoul(text.c_str(), &end, 10);
-    if (!end || *end || parsed > UINT16_MAX) return false;
-    value = static_cast<uint16_t>(parsed);
-    return true;
-}
-
-bool debug_parse_float(const std::string& text, float& value) {
-    char* end = nullptr;
-    value = std::strtof(text.c_str(), &end);
-    return end && !*end && std::isfinite(value);
-}
-
-std::vector<std::string> debug_split(const std::string& text, char separator) {
-    std::vector<std::string> fields;
-    std::stringstream stream(text);
-    std::string field;
-    while (std::getline(stream, field, separator)) fields.push_back(field);
-    return fields;
-}
-
-bool debug_parse_float3(const std::string& text, Float3& result) {
-    const auto fields = debug_split(text, ',');
-    return fields.size() == 3 &&
-           debug_parse_float(fields[0], result.x) &&
-           debug_parse_float(fields[1], result.y) &&
-           debug_parse_float(fields[2], result.z);
-}
-
-bool debug_parse_transform(const std::vector<std::string>& fields, size_t at,
-                           AnimationTransform& out) {
-    if (at + 2 >= fields.size() ||
-        !debug_parse_float3(fields[at], out.translation) ||
-        !debug_parse_float3(fields[at + 2], out.scale)) return false;
-    const auto rotation = debug_split(fields[at + 1], ',');
-    return rotation.size() == 4 &&
-           debug_parse_float(rotation[0], out.rotation.x) &&
-           debug_parse_float(rotation[1], out.rotation.y) &&
-           debug_parse_float(rotation[2], out.rotation.z) &&
-           debug_parse_float(rotation[3], out.rotation.w);
-}
-
-const animation::AnimSection* debug_find_section(
-    const animation::AnimAsset& asset, animation::AnimSectionKind kind) {
-    const animation::AnimSection* found = nullptr;
-    for (const auto& section : asset.sections) {
-        if (section.kind != kind) continue;
-        if (found) return nullptr;
-        found = &section;
-    }
-    return found;
-}
-
-bool copy_animation_debug_asset(const viewer::LoadedPart& loaded,
-                                AnimationDebugAssetSnapshot& out) {
+bool copy_animation_debug_asset(
+    const viewer::LoadedPart& loaded,
+    const animation::DecodedAnimationRuntimeAsset& decoded,
+    AnimationDebugAssetSnapshot& out) {
     out = {};
     const animation::AnimAsset* committed = loaded.animation_asset;
     if (!committed ||
         committed->target_abi_tag != animation::kAnimationTargetAbiTag ||
         committed->ozz_tag_hash != animation::kAnimationOzzTagHash) return false;
-    const auto* rig =
-        debug_find_section(*committed, animation::AnimSectionKind::RigSchema);
-    if (!rig || rig->bytes.empty()) return false;
-
     AnimationDebugAssetSnapshot candidate{};
     candidate.resolved_hash = committed->resolved_hash;
     candidate.nonce_high = committed->nonce.high;
     candidate.nonce_low = committed->nonce.low;
-    std::istringstream lines(std::string(rig->bytes.begin(), rig->bytes.end()));
-    std::string line;
-    while (std::getline(lines, line)) {
-        if (line.empty()) continue;
-        const auto fields = debug_split(line, '|');
-        if (fields.empty()) return false;
-        if (fields[0] == "graph") break;
-        if (fields[0] == "socket") {
-            if (fields.size() != 6) return false;
-            AnimationDebugSocket socket{};
-            if (!debug_parse_u16(fields[2], socket.joint) ||
-                !debug_parse_transform(fields, 3, socket.local)) return false;
-            candidate.sockets.push_back(socket);
-            continue;
-        }
-        if (fields.size() == 7 &&
-            fields[2].find(':') != std::string::npos) {
-            const auto range = debug_split(fields[2], ':');
-            AnimationDebugJoint joint{};
-            uint16_t subtree_begin = UINT16_MAX, subtree_end = UINT16_MAX;
-            AnimationTransform ignored{};
-            if (range.size() != 2 ||
-                !debug_parse_u16(fields[1], joint.parent) ||
-                !debug_parse_u16(range[0], subtree_begin) ||
-                !debug_parse_u16(range[1], subtree_end) ||
-                subtree_begin > subtree_end ||
-                !debug_parse_transform(fields, 3, ignored) ||
-                !debug_parse_float(fields[6], joint.radius) ||
-                joint.radius <= 0.0f) return false;
-            candidate.joints.push_back(joint);
-            continue;
-        }
-        if (fields.size() < 16) return false;
+    candidate.joints.reserve(decoded.rig.joints.size());
+    for (const animation::CanonicalJoint& source : decoded.rig.joints)
+        candidate.joints.push_back({source.parent, source.radius});
+    candidate.sockets.reserve(decoded.rig.sockets.size());
+    for (const animation::CanonicalSocket& source : decoded.rig.sockets)
+        candidate.sockets.push_back({source.joint, source.local});
+    if (!decoded.definition.binding) return false;
+    candidate.targets.reserve(decoded.definition.binding->targets.size());
+    for (const animation::CanonicalTarget& source :
+         decoded.definition.binding->targets) {
         AnimationDebugTargetDefinition target{};
-        target.has_pole = fields[4] == "1";
-        if (!debug_parse_float3(fields[5], target.pole)) return false;
-        for (size_t i = 13; i < fields.size(); ++i) {
-            uint16_t joint = UINT16_MAX;
-            if (!debug_parse_u16(fields[i], joint)) return false;
-            target.chain.push_back(joint);
-        }
-        if (target.chain.size() != 3) return false;
+        target.chain = source.chain;
+        target.pole = source.pole;
+        target.has_pole = source.has_pole;
         candidate.targets.push_back(std::move(target));
     }
     if (candidate.joints.empty() ||
@@ -430,7 +347,31 @@ struct EngineContext::Impl {
 // ---------------------------------------------------------------------------
 struct WorldSession::Impl {
     EngineContext::Impl* engine = nullptr;   // non-owning
+    AnimationService animation_service;
     ecs_runtime::Runtime ecs_runtime;
+
+    struct RuntimeAnimationAsset {
+        animation::DecodedAnimationRuntimeAsset decoded;
+        animation::BindingBake binding;
+        const animation::AnimAsset* service_asset = nullptr;
+        render::AnimationRigidAsset rigid;
+#ifdef MATTER_VULKAN_VIEWER
+        std::vector<viewer::VkSkinInfluence> skin_influences;
+        viewer::VkAnimationBoundsAsset skin_bounds;
+        render::AnimationSkinnedAsset skin;
+#endif
+    };
+    struct RuntimeAnimationInstance {
+        flecs::entity_t entity = 0;
+        scene::SceneEntityId scene_id{};
+        uint64_t part_hash = 0;
+        Animator animator{};
+    };
+    std::map<uint64_t, std::unique_ptr<RuntimeAnimationAsset>>
+        runtime_animation_assets;
+    std::set<uint64_t> rejected_runtime_animation_assets;
+    std::map<flecs::entity_t, RuntimeAnimationInstance>
+        runtime_animation_instances;
 
     // Provider config and live provider instance.
     // Phase C Task 14: shared_ptr so publish job lambdas can capture a strong
@@ -604,6 +545,11 @@ struct WorldSession::Impl {
     void worker_loop();
     // Existing provider/live-edit polling, called after each valid ECS tick.
     void poll_runtime_sources();
+    void reset_runtime_animation();
+    void reconcile_runtime_animation();
+#ifdef MATTER_VULKAN_VIEWER
+    void reconcile_runtime_animation_skinning();
+#endif
     // Execute one BakeAll/Reload command. Called only on the worker thread.
     void execute_bake(matter_async::Command& cmd, bool is_reload);
     // Execute a RebakeCone command. Called only on the worker thread.
@@ -1455,6 +1401,7 @@ void WorldSession::Impl::publish_pipeline(
 #endif
 
         state.reset(viewer::WorldManifest{});
+        reset_runtime_animation();
 #ifndef MATTER_VULKAN_ONLY
         raster.swap(reset_out->new_raster);
         composer.swap(reset_out->new_composer);
@@ -3698,6 +3645,7 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
 
     // Construct provider. No bake here — caller must call request_bake().
     simpl->provider = std::make_shared<viewer::LocalProvider>(simpl->cfg);
+    simpl->ecs_runtime.attach_animation_service(simpl->animation_service);
 
 #ifdef MATTER_VULKAN_VIEWER
     if (impl_->render_device) {
@@ -3741,6 +3689,7 @@ WorldSession::~WorldSession() {
     //      -> store, then renderer.shutdown()) mirrors main.cpp lines
     //      ~549–557.
     // Invalidate attachment before worker clear.
+    impl_->ecs_runtime.attach_animation_service(nullptr);
     auto& coordinator = impl_->ecs_runtime.streaming_coordinator();
     const flecs::entity_t owner = coordinator.intended_owner();
     if (owner != 0) coordinator.detach(owner);
@@ -3925,6 +3874,217 @@ void WorldSession::Impl::poll_runtime_sources() {
 #endif // __linux__
 }
 
+void WorldSession::Impl::reset_runtime_animation() {
+    // Render components contain pointers into runtime_animation_assets.
+    // Detaching the service removes those components before ownership is
+    // released, and a fresh service prevents handle reuse across reloads.
+    ecs_runtime.attach_animation_service(nullptr);
+    runtime_animation_instances.clear();
+    runtime_animation_assets.clear();
+    rejected_runtime_animation_assets.clear();
+    animation_service = AnimationService{};
+    ecs_runtime.attach_animation_service(animation_service);
+}
+
+void WorldSession::Impl::reconcile_runtime_animation() {
+    if (!store) return;
+
+    struct Candidate {
+        flecs::entity entity;
+        scene::SceneEntityId scene_id{};
+        scene::PartInstance part{};
+    };
+    std::vector<Candidate> candidates;
+    ecs_runtime.world().each(
+        [&candidates](flecs::entity entity,
+                      const scene::SceneEntityId& scene_id,
+                      const scene::PartInstance& part) {
+            if (scene_id.value != 0 && part.part_hash != 0)
+                candidates.push_back({entity, scene_id, part});
+        });
+    for (auto it = runtime_animation_instances.begin();
+         it != runtime_animation_instances.end();) {
+        const auto candidate = std::find_if(
+            candidates.begin(), candidates.end(),
+            [id = it->first](const Candidate& value) {
+                return value.entity.id() == id;
+            });
+        const bool same =
+            candidate != candidates.end() &&
+            candidate->scene_id.value == it->second.scene_id.value &&
+            candidate->scene_id.generation == it->second.scene_id.generation &&
+            candidate->part.part_hash == it->second.part_hash;
+        if (same) {
+            ++it;
+            continue;
+        }
+        if (ecs_runtime.world().is_alive(it->first)) {
+            const flecs::entity entity = ecs_runtime.world().entity(it->first);
+            ecs_runtime.detach_animation_rigid_binding(entity);
+            ecs_runtime.detach_animation_skinned_binding(entity);
+        }
+        animation_service.remove(it->second.animator.instance);
+        it = runtime_animation_instances.erase(it);
+    }
+
+    for (const Candidate& candidate : candidates) {
+        if (runtime_animation_instances.count(candidate.entity.id()) != 0)
+            continue;
+        const viewer::LoadedPart* loaded =
+            store->find(candidate.part.part_hash);
+        if (!loaded || !loaded->animation_asset) continue;
+        const uint64_t asset_identity = loaded->animation_asset->resolved_hash;
+        if (asset_identity == 0 ||
+            rejected_runtime_animation_assets.count(asset_identity) != 0)
+            continue;
+
+        RuntimeAnimationAsset* runtime_asset = nullptr;
+        const auto existing = runtime_animation_assets.find(asset_identity);
+        if (existing != runtime_animation_assets.end()) {
+            runtime_asset = existing->second.get();
+        } else {
+            auto created = std::make_unique<RuntimeAnimationAsset>();
+            animation::Diagnostics diagnostics;
+            if (!animation::decode_animation_runtime_asset(
+                    *loaded->animation_asset, created->decoded, diagnostics) ||
+                !animation::get_anim_binding_bake(
+                    *loaded->animation_asset, created->binding)) {
+                rejected_runtime_animation_assets.insert(asset_identity);
+                continue;
+            }
+            created->service_asset =
+                animation_service.insert_asset(*loaded->animation_asset);
+            if (!created->service_asset) {
+                rejected_runtime_animation_assets.insert(asset_identity);
+                continue;
+            }
+            created->rigid.identity = asset_identity;
+            created->rigid.generation = 1;
+            created->rigid.bindings = &created->binding;
+            created->rigid.rig = &created->decoded.rig;
+            created->rigid.rigid_part_hashes.assign(
+                created->binding.rigid_segments.size(),
+                candidate.part.part_hash);
+#ifdef MATTER_VULKAN_VIEWER
+            if (!created->binding.lods.empty()) {
+                for (const animation::VertexInfluences& source :
+                     created->binding.lods.front().influences) {
+                    viewer::VkSkinInfluence influence{};
+                    for (uint32_t lane = 0; lane != 4; ++lane) {
+                        influence.joint[lane] = source.joints[lane];
+                        influence.weight[lane] = source.weights[lane];
+                    }
+                    created->skin_influences.push_back(influence);
+                }
+                const float radius =
+                    std::max(loaded->bound_radius, 0.001f);
+                created->skin_bounds.asset_key = asset_identity;
+                created->skin_bounds.conservative_asset_bound = {
+                    {-radius, -radius, -radius},
+                    {radius, radius, radius}};
+                for (uint32_t lod_index = 0;
+                     lod_index < created->binding.lods.size(); ++lod_index) {
+                    for (const animation::ClusterJointBounds& source :
+                         created->binding.lods[lod_index].clusters) {
+                        viewer::VkAnimationBoundsCluster cluster{};
+                        cluster.cluster_index = source.cluster_id;
+                        cluster.lod = lod_index;
+                        for (const animation::JointLocalBounds& joint :
+                             source.joints) {
+                            cluster.joints.push_back(
+                                {joint.joint,
+                                 {{joint.minimum.x, joint.minimum.y,
+                                   joint.minimum.z},
+                                  {joint.maximum.x, joint.maximum.y,
+                                   joint.maximum.z}}});
+                        }
+                        created->skin_bounds.clusters.push_back(
+                            std::move(cluster));
+                    }
+                }
+            }
+            created->skin.identity = asset_identity;
+            created->skin.generation = 1;
+            created->skin.influences = &created->skin_influences;
+            created->skin.bounds = &created->skin_bounds;
+#endif
+            runtime_asset = created.get();
+            runtime_animation_assets.emplace(asset_identity,
+                                             std::move(created));
+        }
+
+        animation::AnimationRuntimeDefinition definition =
+            runtime_asset->decoded.definition;
+        if (!definition.binding) continue;
+        auto descriptor =
+            std::make_shared<animation::AnimationRuntimeBindingDescriptor>(
+                *definition.binding);
+        descriptor->fixed_work.root_entity = candidate.entity.id();
+        definition.binding = std::move(descriptor);
+        const Animator animator =
+            animation_service.create(runtime_asset->service_asset, definition);
+        if (!animator.valid()) continue;
+
+        const bool has_rigid =
+            !runtime_asset->binding.rigid_segments.empty() ||
+            !runtime_asset->binding.attachments.empty();
+        if (has_rigid &&
+            !ecs_runtime.attach_animation_rigid_binding(
+                candidate.entity, animator.instance, runtime_asset->rigid,
+                candidate.part.casts_shadow)) {
+            animation_service.remove(animator.instance);
+            continue;
+        }
+        runtime_animation_instances.emplace(
+            candidate.entity.id(),
+            RuntimeAnimationInstance{
+                candidate.entity.id(), candidate.scene_id,
+                candidate.part.part_hash, animator});
+    }
+}
+
+#ifdef MATTER_VULKAN_VIEWER
+void WorldSession::Impl::reconcile_runtime_animation_skinning() {
+    if (!vk_scene || !store) return;
+    for (auto& entry : runtime_animation_instances) {
+        RuntimeAnimationInstance& instance = entry.second;
+        if (!ecs_runtime.world().is_alive(instance.entity)) continue;
+        flecs::entity entity = ecs_runtime.world().entity(instance.entity);
+        if (entity.has<render::AnimationSkinnedBinding>()) continue;
+        const viewer::LoadedPart* loaded = store->find(instance.part_hash);
+        if (!loaded || !loaded->animation_asset) continue;
+        const auto asset_it = runtime_animation_assets.find(
+            loaded->animation_asset->resolved_hash);
+        if (asset_it == runtime_animation_assets.end()) continue;
+        RuntimeAnimationAsset& asset = *asset_it->second;
+        if (asset.binding.lods.empty() || asset.skin_influences.empty() ||
+            loaded->lod_mesh_data.empty() ||
+            loaded->lod_mesh_data.front().vertex_count <= 0) continue;
+
+        uint32_t vertex_start = 0, vertex_count = 0;
+        uint32_t index_start = 0, index_count = 0;
+        if (!vk_scene->part_raster_range(
+                instance.part_hash, vertex_start, vertex_count,
+                index_start, index_count)) continue;
+        const animation::LodSkinBinding& lod = asset.binding.lods.front();
+        const viewer::RasterMeshData& mesh = loaded->lod_mesh_data.front();
+        if (lod.vertex_count != static_cast<uint32_t>(mesh.vertex_count) ||
+            lod.vertex_count > vertex_count ||
+            mesh.indices.size() > index_count ||
+            mesh.indices.size() > std::numeric_limits<uint32_t>::max())
+            continue;
+        asset.skin.lods = {{
+            instance.part_hash, vertex_start, 0, lod.vertex_count,
+            index_start, static_cast<uint32_t>(mesh.indices.size())}};
+        const scene::PartInstance* part =
+            entity.try_get<scene::PartInstance>();
+        (void)ecs_runtime.attach_animation_skinned_binding(
+            entity, instance.animator.instance, asset.skin, 0,
+            part && part->visible);
+    }
+}
+#endif
+
 void WorldSession::tick(const TickDesc& desc) {
     const ecs_runtime::TickResult result = impl_->ecs_runtime.tick(desc);
     if (result.invalid) {
@@ -3934,6 +4094,7 @@ void WorldSession::tick(const TickDesc& desc) {
     }
     impl_->stats.ecs_fixed_steps += result.fixed_steps;
     impl_->stats.ecs_dropped_steps += result.dropped_steps;
+    impl_->reconcile_runtime_animation();
     impl_->poll_runtime_sources();
     impl_->publish_streaming_snapshot();
 }
@@ -4483,6 +4644,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                         dyn_err.c_str());
             }
         }
+        // ensure_vulkan_part above establishes immutable renderer-global
+        // source/index ranges. Publish skinned ECS bindings only afterwards.
+        impl_->reconcile_runtime_animation_skinning();
 
         // C2 uses the same conservative scene visibility/transform lane as
         // the root dynamic instance.  Animation has already published an
@@ -4875,9 +5039,13 @@ bool WorldSession::animation_debug_snapshots(
         if (!bound.valid) return false;
         const viewer::LoadedPart* loaded =
             impl_->store->find_animation(bound.asset_identity);
-        if (!loaded) return false;
+        const auto runtime_asset =
+            impl_->runtime_animation_assets.find(bound.asset_identity);
+        if (!loaded ||
+            runtime_asset == impl_->runtime_animation_assets.end()) return false;
         AnimationDebugInstanceSnapshot snapshot{};
-        if (!copy_animation_debug_asset(*loaded, snapshot.asset) ||
+        if (!copy_animation_debug_asset(
+                *loaded, runtime_asset->second->decoded, snapshot.asset) ||
             snapshot.asset.resolved_hash != bound.asset_identity ||
             !impl_->ecs_runtime.animation_systems().copy_animation_debug_pose(
                 bound.animator, snapshot.pose) ||

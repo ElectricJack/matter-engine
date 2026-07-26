@@ -3882,6 +3882,21 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     return slot;
 }
 
+bool VkSceneRenderer::part_raster_range(
+    uint64_t part_hash, uint32_t& vertex_start, uint32_t& vertex_count,
+    uint32_t& index_start, uint32_t& index_count) const noexcept {
+    const auto found = slot_of_.find(part_hash);
+    if (found == slot_of_.end() || found->second < 0 ||
+        static_cast<size_t>(found->second) >= parts_.size()) return false;
+    const PartRecord& part = parts_[static_cast<size_t>(found->second)];
+    if (!part.live || part.hash != part_hash) return false;
+    vertex_start = part.vertex_start;
+    vertex_count = part.vertex_count;
+    index_start = part.index_start;
+    index_count = part.index_count;
+    return true;
+}
+
 bool VkSceneRenderer::update_materials(
     const std::vector<MaterialGpuRecord>& records, uint64_t shading_revision,
     uint64_t geometry_revision, std::string& error) {

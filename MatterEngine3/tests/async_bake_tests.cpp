@@ -1297,6 +1297,108 @@ static bool test_regenerate_seed_reroll(const std::string& sandbox) {
     return ok1 && ok2 && ok3 && pb1 >= 1 && pb2 >= 1 && pb3 == 0 && ch3 >= 1;
 }
 
+static bool test_production_animated_gallery_binding() {
+    printf("-- production AnimatedRigGallery runtime binding\n");
+    const auto stamp = std::chrono::high_resolution_clock::now()
+                           .time_since_epoch().count();
+    const fs::path project_root =
+        fs::temp_directory_path() /
+        ("me3_animated_gallery_" + std::to_string(stamp));
+    if (!reset_project(project_root, "AnimatedRigGallery"))
+        return false;
+    const fs::path example_root =
+        fs::absolute("../examples/world_demo");
+    std::error_code ec;
+    const bool wrote_runtime_part = write_file(
+        project_root / "objects" / "AnimatedRigGallery.js",
+        "class AnimatedRigGallery extends Part {\n"
+        "  build(p) {\n"
+        "    this.beginRig('preview');\n"
+        "    this.root('root'); this.bone('arm',[1,0,0]);\n"
+        "    this.bone('tip',[1,0,0]); this.endRig();\n"
+        "    this.segments('rigid',{joints:['arm','tip']});\n"
+        "    this.bind('rigid',()=>{\n"
+        "      this.fill(MAT.stone); this.beginShape(SHAPE.triangles);\n"
+        "      this.vertex(0,0,0); this.vertex(1,0,0); this.vertex(0,1,0);\n"
+        "      this.endShape();\n"
+        "    });\n"
+        "    this.beginClip('idle',{duration:1,sampleRate:2,loop:true});\n"
+        "    this.generate(phase=>{this.at('arm');this.rotateZ(phase*.1);});\n"
+        "    this.endClip();\n"
+        "    this.beginMotion('previewMotion');\n"
+        "    this.clipNode('idleNode','idle'); this.output('out','idleNode');\n"
+        "    this.endMotion();\n"
+        "  }\n"
+        "}\n");
+    if (wrote_runtime_part)
+        fs::copy_file(
+            example_root / "objects" / "Crate.js",
+            project_root / "objects" / "Crate.js",
+            fs::copy_options::overwrite_existing, ec);
+    if (!ec)
+        fs::copy_file(
+            example_root / "worlds" / "AnimatedRigGallery.js",
+            project_root / "worlds" / "AnimatedRigGallery.js",
+            fs::copy_options::overwrite_existing, ec);
+    CHECK(wrote_runtime_part && !ec, "gallery integration project copied");
+    if (!wrote_runtime_part || ec) {
+        remove_tree(project_root);
+        return false;
+    }
+
+    std::string err;
+    const std::string cache_text = (project_root / ".cache").string();
+    matter::EngineDesc engine_desc;
+    engine_desc.cache_root = cache_text.c_str();
+    engine_desc.allow_gl_lt_46 = true;
+    auto engine = matter::EngineContext::create(engine_desc, err);
+    CHECK(engine != nullptr, "gallery integration engine created");
+    if (!engine) {
+        remove_tree(project_root);
+        return false;
+    }
+
+    const std::string project = project_root.string();
+    const std::string shared =
+        fs::absolute("../shared-lib").string();
+    matter::WorldDesc world_desc{
+        project.c_str(), "AnimatedRigGallery", shared.c_str()};
+    auto session = engine->open_world(world_desc, err);
+    CHECK(session != nullptr, "gallery production world opened");
+    if (!session) {
+        printf("  open_world failed: %s\n", err.c_str());
+        remove_tree(project_root);
+        return false;
+    }
+
+    session->request_bake();
+    std::vector<EvRec> events;
+    const bool baked = drive_bake(*session, events, 120);
+    CHECK(baked, "gallery production bake completed");
+    if (baked) {
+        // Tick until the authored entity has crossed bootstrap, binding
+        // reconciliation, fixed evaluation, and presentation publication.
+        for (int frame = 0; frame != 4; ++frame)
+            session->tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+    }
+    std::vector<matter::AnimationDebugInstanceSnapshot> snapshots;
+    const bool enumerated =
+        baked && session->animation_debug_snapshots(snapshots);
+    CHECK(enumerated, "gallery production binding enumeration succeeds");
+    CHECK(!snapshots.empty(),
+          "gallery production binding enumeration is nonempty");
+    if (!snapshots.empty()) {
+        CHECK(snapshots.front().asset.resolved_hash != 0 &&
+                  !snapshots.front().asset.joints.empty() &&
+                  !snapshots.front().pose.model_pose.empty(),
+              "gallery enumeration exposes a decoded asset and evaluated pose");
+    }
+    session.reset();
+    engine.reset();
+    remove_tree(project_root);
+    return enumerated && !snapshots.empty();
+}
+
 int main() {
     // Unique writable sandbox so parallel test runs do not collide.
     const auto stamp = std::chrono::high_resolution_clock::now()
@@ -1336,6 +1438,7 @@ int main() {
 
     // Task 7 (Phase C): regenerate(seed) — root param override reload.
     test_regenerate_seed_reroll(sandbox);
+    test_production_animated_gallery_binding();
 
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", g_failures);
     // Best-effort cleanup of the writable temporary project.

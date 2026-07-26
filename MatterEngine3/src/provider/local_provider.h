@@ -341,10 +341,15 @@ public:
     // failed install would be resurrected (async_bake_tests cases g and k).
     std::map<std::string, uint64_t> entity_part_hashes() const {
         std::map<std::string, uint64_t> out;
-        for (const auto& mod : collect_entity_part_modules(authored_entities_)) {
-            auto it = graph_snapshot_.nodes.find(mod);
-            if (it != graph_snapshot_.nodes.end() && it->second.resolved_hash != 0)
-                out[mod] = it->second.resolved_hash;
+        const std::set<std::string> requested =
+            collect_entity_part_modules(authored_entities_);
+        const size_t end =
+            std::min(roots_for_install_.size(), ir_.root_hashes.size());
+        for (size_t index = 0; index < end; ++index) {
+            if (requested.count(roots_for_install_[index].module) != 0 &&
+                ir_.root_hashes[index] != 0)
+                out[roots_for_install_[index].module] =
+                    ir_.root_hashes[index];
         }
         return out;
     }

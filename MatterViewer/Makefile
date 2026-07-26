@@ -139,10 +139,12 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/animation/animation_ir.cpp \
               $(ME3_DIR)/src/animation/animation_validate.cpp \
               $(ME3_DIR)/src/animation/animation_binding_bake.cpp \
+              $(ME3_DIR)/src/animation/animation_runtime_asset.cpp \
               $(ME3_DIR)/src/animation/anim_asset.cpp \
               $(ME3_DIR)/src/animation/anim_bundle.cpp \
               $(ME3_DIR)/src/animation/animation_asset_store.cpp \
               $(ME3_DIR)/src/animation/animation_store.cpp \
+              $(ME3_DIR)/src/animation/animation_budget.cpp \
               $(ME3_DIR)/src/animation/animation_evaluator.cpp \
               $(ME3_DIR)/src/animation/animation_systems.cpp \
                $(ME3_DIR)/src/animation/animation_world_queries.cpp \
@@ -273,7 +275,7 @@ QJS_NAMES = $(notdir $(QJS_C))
 PIPC_NAMES_WIN = $(notdir $(WIN_PIPELINE_C))
 FLECS_NAME = $(notdir $(FLECS_C))
 
-vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs \
+vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/animation $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs \
              $(ME3_DIR)/src/streaming $(ME3_DIR)/src/script \
              $(MSL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
              $(IMGUIZMO_PATH) \

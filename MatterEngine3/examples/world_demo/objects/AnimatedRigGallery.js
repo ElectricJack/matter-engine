@@ -7,8 +7,6 @@
 // controller. Runtime JavaScript is not used to drive the targets.
 class AnimatedRigGallery extends Part {
   static requires = [{ module: 'Crate' }];
-  static lodBudgets = [1.0, 0.35];
-  static lodAnchorSize = 2.0;
 
   build(p) {
     // Soft creature, mirrored limbs, a separate rigid segmented boom, and a
@@ -62,7 +60,19 @@ class AnimatedRigGallery extends Part {
                'leftHip', 'leftKnee', 'leftFoot',
                'rightHip', 'rightKnee', 'rightFoot',
                'lookMid', 'lookEnd'],
-      radiusScale: 1.15, falloffScale: 1.45, voxelSize: 0.18, generate: true
+      radiusScale: 1.15, falloffScale: 1.45, generate: false
+    });
+    this.bind('creatureSkin', () => {
+      // Explicit procedural volumes keep the production preview inside the
+      // ordinary Part bake path while the skeleton remains the weight source.
+      this.beginVoxels(0.18);
+      this.sphere([0, 1.65, 0], 0.72);
+      this.sphere([0, 2.65, 0], 0.48);
+      this.sphere([-0.72, 1.72, 0], 0.30);
+      this.sphere([0.72, 1.72, 0], 0.30);
+      this.sphere([-0.30, 0.55, 0.08], 0.34);
+      this.sphere([0.30, 0.55, 0.08], 0.34);
+      this.endVoxels();
     });
     // These segments stay rigid and travel through the dynamic raster/TLAS
     // transform lane; no deforming BLAS update is requested.

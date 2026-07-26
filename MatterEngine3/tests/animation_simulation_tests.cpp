@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <vector>
 #include <memory>
 
@@ -359,6 +360,51 @@ void test_animation_debug_snapshot_copies_evaluated_pose_and_live_targets() {
     CHECK(!runtime.animation_systems().copy_animation_debug_pose(stale_handle, stale) &&
               stale.model_pose.empty() && stale.targets.empty(),
           "debug snapshot fails closed and clears output for a stale animator generation");
+}
+
+void test_animation_debug_draw_contract_rejects_invalid_data_and_rotates_poles() {
+    AnimationDebugInstanceSnapshot snapshot{};
+    snapshot.asset.resolved_hash = 0xD38u;
+    snapshot.pose.instance = handle(42);
+    snapshot.asset.joints = {
+        {UINT16_MAX, 0.2f}, {0, 0.15f}, {1, 0.1f}};
+    Mat4f identity{};
+    identity.m[0] = identity.m[5] = identity.m[10] = identity.m[15] = 1.0f;
+    snapshot.pose.model_pose = {identity, identity, identity};
+    snapshot.asset.targets.push_back({{0, 1, 2}, {1.0f, 0.0f, 0.0f}, true});
+    snapshot.pose.targets.push_back({{}, 0.75f, true, true});
+    CHECK(valid_animation_debug_snapshot(snapshot),
+          "well-formed value-owned debug data passes the strict draw boundary");
+
+    AnimationDebugInstanceSnapshot bad_index = snapshot;
+    bad_index.asset.targets[0].chain[2] = 3;
+    CHECK(!valid_animation_debug_snapshot(bad_index),
+          "draw boundary rejects an out-of-range IK chain index");
+    AnimationDebugInstanceSnapshot bad_weight = snapshot;
+    bad_weight.pose.targets[0].weight = 1.5f;
+    CHECK(!valid_animation_debug_snapshot(bad_weight),
+          "draw boundary rejects a non-normalized live target weight");
+    AnimationDebugInstanceSnapshot bad_matrix = snapshot;
+    bad_matrix.pose.model_pose[1].m[4] =
+        std::numeric_limits<float>::quiet_NaN();
+    CHECK(!valid_animation_debug_snapshot(bad_matrix),
+          "draw boundary rejects non-finite pose data before projection");
+
+    Mat4f chain_root = identity;
+    chain_root.m[0] = 0.0f;
+    chain_root.m[1] = -1.0f;
+    chain_root.m[4] = 1.0f;
+    chain_root.m[5] = 0.0f;
+    chain_root.m[3] = 100.0f;
+    Mat4f owner = chain_root;
+    owner.m[3] = -300.0f;
+    Float3 world_pole{};
+    CHECK(animation_debug_world_pole_direction(
+              owner, chain_root, {1.0f, 0.0f, 0.0f}, world_pole) &&
+              same_float(world_pole.x, -1.0f) &&
+              same_float(world_pole.y, 0.0f) &&
+              same_float(world_pole.z, 0.0f),
+          "pole visualization applies chain-root then owner rotation while ignoring translations");
 }
 
 void test_service_bound_runtime_work_is_automatic_and_generation_safe() {
@@ -884,6 +930,7 @@ int main() {
     test_runtime_fixed_controller_ik_persists_through_frame_and_checkpoint_replay();
     test_runtime_fixed_and_frame_external_targets_compose_without_fixed_history_mutation();
     test_animation_debug_snapshot_copies_evaluated_pose_and_live_targets();
+    test_animation_debug_draw_contract_rejects_invalid_data_and_rotates_poles();
     if (g_failures) return 1;
     std::puts("animation_simulation_tests: all tests passed");
 }

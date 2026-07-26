@@ -372,6 +372,14 @@ public:
 
     bool init(std::string& error);
     int ensure_part(const VkScenePart& part, std::string& error);
+    // Immutable renderer-global raster range for an already registered part.
+    // Animation uses this after ensure_part() so skin work references the same
+    // source vertex/index arenas as the conservative bind-pose draw.
+    bool part_raster_range(uint64_t part_hash,
+                           uint32_t& vertex_start,
+                           uint32_t& vertex_count,
+                           uint32_t& index_start,
+                           uint32_t& index_count) const noexcept;
     bool update_materials(const std::vector<MaterialGpuRecord>& records,
                           uint64_t shading_revision,
                           uint64_t geometry_revision, std::string& error);

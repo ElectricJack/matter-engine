@@ -278,6 +278,11 @@ else
   GPU_AR_CORE_CPP     :=
 endif
 
+# Full GPU/shared-engine tests bake and then decode animation peers through the
+# production ScriptHost + matter_engine.cpp path. Keep Ozz after the objects
+# and other archives so static archive resolution remains left-to-right.
+GPU_AR_CORE_LDFLAGS += $(OZZ_OFFLINE_LIBS)
+
 # GPU uses OPENGL_43 in place of the default GRAPHICS setting.
 GPU_GRAPHICS := GRAPHICS_API_OPENGL_43
 
@@ -911,7 +916,17 @@ GPU_MSL_CPP = \
     $(GPU_AR_CORE_CPP)
 
 GPU_MSL_C   = $(COMMON_MSL_C)
+GPU_ANIMATION_RUNTIME_CPP = \
+    $(filter-out animation_simulation_tests.cpp ../src/ecs/simulation_control.cpp,$(ANIMATION_SIMULATION_CPP)) \
+    ../src/dsl_animation.cpp \
+    ../src/animation/animation_runtime_asset.cpp \
+    ../src/animation/animation_binding_bake.cpp \
+    ../src/animation/animation_validate.cpp \
+    ../src/animation/anim_asset.cpp \
+    ../src/animation/anim_bundle.cpp \
+    ../src/render/indexed_part_geometry.cpp
 GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
+              $(GPU_ANIMATION_RUNTIME_CPP) \
               ../src/render/vk_animation_bounds.cpp \
               ../src/ecs/scene_registry.cpp \
               ../src/animation/animation_systems.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
@@ -1134,7 +1149,7 @@ RETOPO_INT_OBJS = $(call obj_list,retopo,$(RETOPO_INT_CPP)) $(call obj_list,mslc
 
 # GPU binaries reuse the same gpu-flavor object set. Each binary is:
 # <driver>.o + $(GPU_ALL_CPP) objects + mslc + qjsc.
-GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GPU_MSL_C)) $(qjsc_C_OBJS) $(flecsc_C_OBJS)
+GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,mslc,$(GPU_MSL_C)) $(qjsc_C_OBJS) $(flecsc_C_OBJS)
 
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
