@@ -1298,6 +1298,8 @@ private:
 
     // Dynamic lane state (Task 7)
     std::vector<GpuInstance> dynamic_instance_staging_;
+    // Scratch for the skin transform tail; see skin_transform_base_.
+    std::vector<GpuDrawTransform> skin_transform_staging_;
     std::vector<uint32_t> dynamic_instance_part_slots_;
     uint32_t dynamic_instance_count_ = 0;
     uint64_t dynamic_submit_serial_ = 0;
@@ -1340,6 +1342,18 @@ private:
     uint32_t uploaded_raster_draw_command_count_ = 0;
     uint32_t max_clusters_per_instance_ = 0;
     uint32_t draw_transform_slots_ = 0;
+    // First slot of the SKIN transform tail. cull.comp reserves draw transforms
+    // inside per-bucket regions [0, skin_transform_base_); explicit skinned
+    // draws are not part of any bucket (cull.comp deliberately skips the
+    // skin-owned cluster/LOD), so nothing there ever writes their transform.
+    // They index this tail by dynamic-instance slot instead, and the CPU fills
+    // it every frame from dynamic_instance_staging_.
+    //
+    // Before this existed the skinned draw passed its dynamic slot straight to
+    // firstInstance, landing in BUCKET space -- slot 0, which in the gallery
+    // world is the Crate floor slab. The creature rendered squashed to 10%
+    // height and spread 4x, because that is literally the slab's matrix.
+    uint32_t skin_transform_base_ = 0;
     uint32_t uploaded_command_count_ = 0;
     uint32_t uploaded_transform_slots_ = 0;
     uint32_t uploaded_cluster_count_ = 0;
