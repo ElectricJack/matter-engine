@@ -253,10 +253,8 @@ AnimationTransform forward_clip_root_delta(const RuntimeGraphClip& clip, float p
         accumulated.translation.x += delta.translation.x;
         accumulated.translation.y += delta.translation.y;
         accumulated.translation.z += delta.translation.z;
-        accumulated.rotation = normalize({delta.rotation.w*accumulated.rotation.x + delta.rotation.x*accumulated.rotation.w + delta.rotation.y*accumulated.rotation.z - delta.rotation.z*accumulated.rotation.y,
-                                           delta.rotation.w*accumulated.rotation.y - delta.rotation.x*accumulated.rotation.z + delta.rotation.y*accumulated.rotation.w + delta.rotation.z*accumulated.rotation.x,
-                                           delta.rotation.w*accumulated.rotation.z + delta.rotation.x*accumulated.rotation.y - delta.rotation.y*accumulated.rotation.x + delta.rotation.z*accumulated.rotation.w,
-                                           delta.rotation.w*accumulated.rotation.w - delta.rotation.x*accumulated.rotation.x - delta.rotation.y*accumulated.rotation.y - delta.rotation.z*accumulated.rotation.z});
+        accumulated.rotation =
+            normalize(quaternion_multiply(delta.rotation, accumulated.rotation));
         cursor = next;
         cursor_on_boundary = next == boundary;
     }
@@ -321,10 +319,7 @@ AnimationTransform root_motion_delta(const AnimationTransform& previous,
     delta.translation = {current.translation.x - previous.translation.x,
                          current.translation.y - previous.translation.y,
                          current.translation.z - previous.translation.z};
-    delta.rotation = normalize({rotation.w * inverse_previous.x + rotation.x * inverse_previous.w + rotation.y * inverse_previous.z - rotation.z * inverse_previous.y,
-                                rotation.w * inverse_previous.y - rotation.x * inverse_previous.z + rotation.y * inverse_previous.w + rotation.z * inverse_previous.x,
-                                rotation.w * inverse_previous.z + rotation.x * inverse_previous.y - rotation.y * inverse_previous.x + rotation.z * inverse_previous.w,
-                                rotation.w * inverse_previous.w - rotation.x * inverse_previous.x - rotation.y * inverse_previous.y - rotation.z * inverse_previous.z});
+    delta.rotation = normalize(quaternion_multiply(rotation, inverse_previous));
     return delta;
 }
 

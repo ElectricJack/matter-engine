@@ -4,14 +4,20 @@
 
 // Shared scalar math for the animation tree.
 //
-// This header exists because the Hamilton product below was copy-pasted into
-// seven translation units (animation_targets, animation_binding_bake,
-// animation_evaluator, animation_systems, animation_validate, ozz_adapter and
-// dsl_animation), plus once more inline inside the evaluator's additive-root
-// path. One of those copies drifted: its y term read `-a.x*b.w` where the other
-// six read `-a.x*b.z`, which corrupted IK end-effector orientation and survived
-// review because the whole product sat on a single 200-character line. A typo
-// like that is only possible while the expression has more than one home.
+// This header exists because the Hamilton product below had eleven homes in the
+// animation tree: named helpers in animation_targets, animation_binding_bake,
+// animation_evaluator, animation_systems, animation_validate, ozz_adapter,
+// ozz_bake and dsl_animation, plus three more written out longhand inside
+// expressions (the evaluator's additive-root path, its root-motion delta, and
+// its loop-boundary accumulator). One of them drifted: its y term read
+// `-a.x*b.w` where the other ten read `-a.x*b.z`, which corrupted IK
+// end-effector orientation and survived review because the whole product sat on
+// a single 200-character line. A typo like that is only possible while the
+// expression has more than one home.
+//
+// To find any that come back: the w term is a distinctive signature --
+//   grep -nE '(\w+)\.w\s*\*\s*(\w+)\.w\s*-\s*\1\.x\s*\*\s*\2\.x'
+// matches Hamilton products and essentially nothing else.
 //
 // Deliberately NOT delegated to MathLib's mm::quat_multiply. That one is the
 // same product mathematically, but sums its terms in a different order --

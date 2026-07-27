@@ -1,4 +1,5 @@
 #include "animation/ozz_adapter_internal.h"
+#include "animation/animation_math.h"
 
 #include "ozz/animation/offline/animation_builder.h"
 #include "ozz/animation/offline/animation_optimizer.h"
@@ -22,10 +23,7 @@ Quaternion normalize_rotation(Quaternion value) {
 }
 
 Quaternion multiply_rotation(Quaternion left, Quaternion right) {
-    return {left.w * right.x + left.x * right.w + left.y * right.z - left.z * right.y,
-            left.w * right.y - left.x * right.z + left.y * right.w + left.z * right.x,
-            left.w * right.z + left.x * right.y - left.y * right.x + left.z * right.w,
-            left.w * right.w - left.x * right.x - left.y * right.y - left.z * right.z};
+    return quaternion_multiply(left, right);
 }
 
 // Ozz's additive layer consumes a transform delta, not an authored absolute
