@@ -165,7 +165,7 @@ static void test_hidden_animation_is_successful_zero_submission() {
     render::AnimationSkinnedAsset skin_asset{};
     skin_asset.identity = 0x7002;
     skin_asset.generation = 1;
-    skin_asset.lods.push_back({0x9002, 0, 0, 3, 0, 3, 0, 0});
+    skin_asset.lods.push_back({0x9002, 0, /*local_vertex_base*/ 0, 0, 3, 0, 3, 0, 0});
     skin_entity.set<render::AnimationSkinnedBinding>(
         {{2, 1}, &skin_asset, skin_asset.generation, 0, true, 0});
     make_entity(world, 0x403, 0x9003, true);

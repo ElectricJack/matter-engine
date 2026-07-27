@@ -97,7 +97,7 @@ void test_stale_and_mismatched_bindings_fail_without_torn_work() {
     const Mat4f matrix = identity();
     CHECK(snapshots.publish(pose(animator(), 5, &matrix, &matrix)), "fixture snapshot publishes");
     std::vector<viewer::VkSkinInfluence> storage = influences();
-    render::AnimationSkinnedLod lod{0xabc, 0, 0, 3, 0, 3};
+    render::AnimationSkinnedLod lod{0xabc, 0, /*local_vertex_base*/ 0, 0, 3, 0, 3};
     const auto asset_bounds = bounds(0x99);
     render::AnimationSkinnedAsset asset{0x99, 2, &storage, {lod}, &asset_bounds};
     render::AnimationSkinnedBinding binding{animator(), &asset, 2, 0, true};
@@ -119,8 +119,8 @@ void test_bridge_emits_all_baked_lod_candidates_for_current_cull() {
           "multi-LOD fixture publishes the exact current snapshot");
     std::vector<viewer::VkSkinInfluence> storage(6);
     for (auto& influence : storage) influence.weight[0] = 65535;
-    render::AnimationSkinnedLod near{0xabc, 10, 0, 3, 30, 6, 0, 0};
-    render::AnimationSkinnedLod far{0xabc, 40, 3, 3, 90, 3, 0, 1};
+    render::AnimationSkinnedLod near{0xabc, 10, /*local_vertex_base*/ 10, 0, 3, 30, 6, 0, 0};
+    render::AnimationSkinnedLod far{0xabc, 40, /*local_vertex_base*/ 40, 3, 3, 90, 3, 0, 1};
     const auto asset_bounds = bounds(0x99);
     render::AnimationSkinnedAsset asset{0x99, 2, &storage, {near, far},
                                         &asset_bounds};

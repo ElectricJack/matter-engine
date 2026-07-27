@@ -149,6 +149,7 @@ bool VkAnimationSkinning::submit_visible(
             retained->second.asset_key == value.asset_key &&
             retained->second.lod == value.lod &&
             retained->second.source_vertex == value.source_vertex &&
+            retained->second.local_vertex_base == value.local_vertex_base &&
             retained->second.vertex_count == value.vertex_count &&
             retained->second.first_index == value.first_index &&
             retained->second.index_count == value.index_count &&
@@ -160,6 +161,7 @@ bool VkAnimationSkinning::submit_visible(
                 retained->second.first_index,
                 retained->second.index_count,
                 retained->second.source_vertex,
+                retained->second.local_vertex_base,
                 retained->second.output_vertex,
                 retained->second.vertex_count,
                 value.instance_slot,
@@ -347,7 +349,8 @@ bool VkAnimationSkinning::submit_visible(
         if (value.index_count != 0 && value.index_count % 3u == 0u) {
             staged.raster_draws.push_back(
                 {value.asset_key, value.first_index, value.index_count,
-                 value.source_vertex, output_offset, value.vertex_count,
+                 value.source_vertex, value.local_vertex_base, output_offset,
+                 value.vertex_count,
                  value.instance_slot, value.instance_generation, frame_slot,
                  value.lod, value.cluster, item.flags});
         }
@@ -386,7 +389,8 @@ bool VkAnimationSkinning::mark_submitted(uint32_t frame_slot, uint64_t fence) {
         if (draw.output_frame_slot != frame_slot) continue;
         retained_outputs_[instance_key(draw.instance_slot,
                                        draw.instance_generation)] =
-            {draw.asset_key, draw.lod, draw.source_vertex, draw.vertex_count,
+            {draw.asset_key, draw.lod, draw.source_vertex,
+             draw.local_vertex_base, draw.vertex_count,
              draw.first_index, draw.index_count, draw.cluster, draw.output_vertex,
              draw.output_frame_slot};
     }
@@ -439,6 +443,8 @@ bool VkAnimationSkinning::reject_gpu_frame(
                 retained->second.lod == active_draw->lod &&
                 retained->second.cluster == active_draw->cluster &&
                 retained->second.source_vertex == active_draw->source_vertex &&
+                retained->second.local_vertex_base ==
+                    active_draw->local_vertex_base &&
                 retained->second.vertex_count == active_draw->vertex_count &&
                 retained->second.first_index == active_draw->first_index &&
                 retained->second.index_count == active_draw->index_count) {
@@ -446,6 +452,7 @@ bool VkAnimationSkinning::reject_gpu_frame(
                 fallback.raster_draws.push_back(
                     {retained->second.asset_key, retained->second.first_index,
                      retained->second.index_count, retained->second.source_vertex,
+                     retained->second.local_vertex_base,
                      retained->second.output_vertex, retained->second.vertex_count,
                      active_draw->instance_slot, active_draw->instance_generation,
                      retained->second.output_frame_slot, retained->second.lod,

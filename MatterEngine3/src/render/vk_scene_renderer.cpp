@@ -508,8 +508,19 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
             const VkDeviceSize skin_offsets[] = {offset, offset};
             vkCmdBindVertexBuffers(command_buffer, 0, 2, skin_buffers,
                                    skin_offsets);
-            const int64_t rebase = static_cast<int64_t>(draw.output_vertex) -
-                                   static_cast<int64_t>(draw.source_vertex);
+            // Index VALUES in the shared buffer are PART-LOCAL (see
+            // matter_engine.cpp, which rebases each mesh by its offset within
+            // the part; vk_scene_renderer never rewrites them). The skin
+            // buffer is already bound at output_vertex, so the draw must
+            // subtract exactly this range's part-local base -- no more.
+            //
+            // The previous form, output_vertex - source_vertex, was wrong
+            // twice over: it treated the values as renderer-global (so it
+            // over-rebased by the part's arena base) and it re-applied
+            // output_vertex on top of the bind offset. Both errors vanish
+            // when the part sits at arena base 0 as the only submission,
+            // which is exactly what every fixture arranged.
+            const int64_t rebase = -static_cast<int64_t>(draw.local_vertex_base);
             if (rebase < INT32_MIN || rebase > INT32_MAX) continue;
             vkCmdDrawIndexed(command_buffer, draw.index_count, 1,
                              draw.first_index, static_cast<int32_t>(rebase),

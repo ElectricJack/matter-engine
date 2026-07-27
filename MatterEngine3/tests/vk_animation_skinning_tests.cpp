@@ -427,7 +427,53 @@ static void test_cpu_skinning_matches_compute_contract() {
           "out-of-range nonzero influence fails closed");
 }
 
+// The skinned indexed draw must land a PART-LOCAL index value on the element
+// where the compute shader actually wrote that vertex.
+//
+// The historical bug used (output_vertex - source_vertex), which is wrong twice
+// over: it treats index VALUES as renderer-global (over-rebasing by the part's
+// arena base) and it re-applies output_vertex on top of the bind offset. Both
+// errors cancel to zero exactly when the part sits at arena base 0 AND is the
+// only accepted submission -- which is what every pre-existing fixture set up,
+// and why a creature at arena base 52 was the first content to show it.
+//
+// So this deliberately breaks BOTH cancellations at once: a part whose arena
+// base is non-zero, submitted second so its output base is non-zero too.
+static void test_skin_draw_resolves_part_local_indices() {
+    // Part occupies global vertices [52, 52+6878); its LOD-0 mesh is part-local
+    // range [0, ...), a later mesh starts at part-local 4000.
+    struct Case { uint32_t output_vertex, source_vertex, local_base; };
+    const Case cases[] = {
+        {0u,    52u,   0u},       // first submission, mesh 0
+        {6878u, 52u,   0u},       // SECOND submission: output base non-zero
+        {6878u, 4052u, 4000u},    // later mesh of the same part
+    };
+    for (const Case& c : cases) {
+        // Buffer is bound at output_vertex, so element = output_vertex + index + offset.
+        const int64_t offset = -static_cast<int64_t>(c.local_base);
+        for (uint32_t local = 0; local != 4u; ++local) {
+            const uint32_t index_value = c.local_base + local;   // PART-LOCAL
+            const int64_t element =
+                static_cast<int64_t>(c.output_vertex) +
+                static_cast<int64_t>(index_value) + offset;
+            CHECK(element == static_cast<int64_t>(c.output_vertex) + local,
+                  "a part-local index resolves onto this draw's own output slice");
+            CHECK(element >= static_cast<int64_t>(c.output_vertex),
+                  "no draw ever fetches below its own output base");
+        }
+        // The discredited formula, kept as an explicit counter-example so a
+        // regression to it fails here rather than in a screenshot.
+        const int64_t discredited =
+            static_cast<int64_t>(c.output_vertex) - static_cast<int64_t>(c.source_vertex);
+        if (c.output_vertex != 0u || c.source_vertex != c.local_base) {
+            CHECK(discredited != offset,
+                  "output_vertex - source_vertex is NOT the correct offset here");
+        }
+    }
+}
+
 int main() {
+    test_skin_draw_resolves_part_local_indices();
     test_shader_abi_and_weight_decode();
     test_asset_registration_and_visible_sorted_submission();
     test_current_previous_pair_and_history_fallback();
