@@ -116,14 +116,13 @@ class AnimatedRigGallery extends Part {
     this.marker(0.0, 'idleStart');
     this.endClip();
 
-    // Travels 0.8 m per cycle. The generated ramp stops one segment short of
-    // the cycle end (a looping generate() emits phases 0 .. (segments-1)/
-    // segments), and loop closure would otherwise fold the root back to sample
-    // zero -- which walked the entity forward and snapped it back every cycle.
-    // The explicit key at t == duration spells the wrap discontinuity, and
-    // end_clip now honours an authored end key instead of closing over it.
-    // Root-motion extraction samples the boundary as `duration`, so the
-    // 0 -> 0.8 ramp reads as continuous forward travel.
+    // Walks in place, deliberately. The engine can author travel now -- give
+    // the root an absolute ramp plus an explicit key at t == duration and
+    // root-motion extraction converts it into real entity movement (covered by
+    // test_looping_root_motion_crosses_cycle_boundaries_forward). But this
+    // world is a fixed-camera showcase: it pins the rig at the origin with
+    // nothing following it, so a travelling gallery rig just walks out of frame
+    // seconds after load. Keep the legs cycling and the entity put.
     this.beginClip('walk', { duration: 0.8, sampleRate: 16, loop: true });
     this.generate(phase => {
       const swing = Math.sin(phase * Math.PI * 2);
@@ -132,11 +131,7 @@ class AnimatedRigGallery extends Part {
       this.at('leftKnee'); this.rotateZ(Math.max(0, -swing) * 0.48);
       this.at('rightKnee'); this.rotateZ(Math.max(0, swing) * 0.48);
       this.at('machineBoom'); this.rotateY(swing * 0.18);
-      this.at('root'); this.translate(phase * 0.8, 0, 0);
     });
-    // Root binds at [0, 1.2, 0]; this is that bind pose displaced by the full
-    // cycle's travel, so the ramp reaches 0.8 instead of stopping at 0.75.
-    this.key('root', 0.8, { translation: [0.8, 1.2, 0] });
     this.marker(0.0, 'leftStep');
     this.marker(0.4, 'rightStep');
     this.endClip();

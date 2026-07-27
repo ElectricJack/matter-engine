@@ -159,6 +159,48 @@ void test_root_motion_uses_the_bind_root_orientation(){
  CHECK(evaluator.evaluate({first})&&evaluator.evaluate({second})&&evaluator.fixed_root_motion(h,motion),"oriented root-motion samples evaluate");
  CHECK(near(motion.delta.translation.x,0)&&near(motion.delta.translation.y,1),"root motion is expressed in ECS/root-bind axes rather than raw track axes");
 }
+void test_looping_root_motion_crosses_cycle_boundaries_forward(){
+ // A looping clip whose root ramps 0 -> 0.8 over a 0.8 s cycle travels one unit
+ // per second. The 0.8 duration matters: this bug is a float-representation
+ // bug, so a dyadic duration like 1.0 with 0.25 steps cannot reproduce it --
+ // every boundary is exact and fmod lands on 0 every time. 0.8 is not
+ // representable, so k*duration drifts and the wrapped value falls just BELOW
+ // the duration as readily as just above 0. A 0.125 s step lands a window
+ // exactly on a loop boundary every 32 ticks (0.8 / 0.125 = 6.4), which is
+ // where the old near-zero-only test resolved the wrap to the far end of the
+ // cycle and reported 0.8 of travel backwards.
+ ClipDefinition travel_clip; travel_clip.name="travel"; travel_clip.duration=.8f; travel_clip.rate=30; travel_clip.loop=true; travel_clip.source={"t",1,1,"travel"};
+ travel_clip.tracks.push_back({"root",{{0,tx(0),{"t",1,1,"a"}},{.8f,tx(.8f),{"t",1,1,"b"}}},{"t",1,1,"track"}});
+ OzzSkeleton skeleton; OzzAnimation animation; Diagnostics diagnostics;
+ CHECK(build_skeleton(rig(),skeleton,diagnostics)&&build_clip(rig(),travel_clip,animation,diagnostics),"build looping travelling-root fixture");
+ // The runtime duration must be the clip's real 0.8, not the 1.0 the other
+ // fixtures use: it is what places the loop boundaries, and a boundary at a
+ // multiple of 1.0 is exactly representable, so the bug cannot fire there.
+ AnimationEvaluationDefinition definition; definition.skeleton=&skeleton; definition.clips={{&animation,.8f,true,false}}; definition.inverse_bind_model={identity()};
+ definition.nodes={{RuntimeGraphNodeKind::Clip,{},0},{RuntimeGraphNodeKind::Output,{0}}};
+ AnimationEvaluator evaluator; const auto h=handle(70);
+ auto first=request(h,definition,1,0); first.root_lock=true;
+ CHECK(evaluator.evaluate({first}),"travelling-root fixture evaluates");
+ float total=0; uint32_t backward=0;
+ // 80 steps of 0.125 s is 10 s, so the window opens exactly on a loop boundary
+ // twice (t = 4 and t = 8) and crosses 12.5 cycles in all.
+ for(uint64_t tick=2;tick<=81;++tick){
+  auto step=request(h,definition,tick,.125f); step.root_lock=true;
+  DesiredRootMotion motion{};
+  CHECK(evaluator.evaluate({step})&&evaluator.fixed_root_motion(h,motion),"travelling-root tick evaluates");
+  if(motion.delta.translation.x<-1e-4f) ++backward;
+  total+=motion.delta.translation.x;
+ }
+ CHECK(backward==0,"a looping travelling root never reports backward motion across a cycle boundary");
+ // 10 s at one unit per second, less the opening tick that has no elapsed clip
+ // time. A single mis-resolved boundary loses a whole 0.8 cycle and misses this
+ // band by an order of magnitude more than ozz key compression ever does.
+ // 10 s at one unit per second. Measured 9.9951 with the fix and 8.3959 with
+ // the boundary defect re-injected -- two lost cycles, one per boundary-aligned
+ // window -- so this band separates them by thirty times its own width. The
+ // 0.05% shortfall is ozz key compression.
+ CHECK(std::fabs(total-10.0f)<.05f,"eighty steps accumulate ten seconds of forward travel");
+}
 void test_additive_runtime_graph_paths_are_strict(){
  Fixture f; AnimationEvaluator evaluator;
  f.def.nodes={{RuntimeGraphNodeKind::Clip,{},2},{RuntimeGraphNodeKind::Output,{0}}};
@@ -205,4 +247,4 @@ void test_presentation_evaluator_stats_are_complete_and_fail_closed(){
        "invalid presentation input records one precise fallback without publishing");
 }
 }
-int main(){test_controls();test_cadence_aware_control_sampling();test_time_interpolation_and_previous();test_wrap_clamp_pause_and_disable();test_non_looping_clip_clamps();test_blend_and_additive();test_budget_order_and_reuse();test_snapshot_backing_and_priority_controller_budget();test_definition_shape_and_graph_contract_rejection();test_graph_root_motion_crosses_loops_and_locks_pose();test_root_lock_preserves_authored_root_reference_and_scale();test_root_motion_uses_the_bind_root_orientation();test_additive_runtime_graph_paths_are_strict();test_central_runtime_instance_budget();test_custom_joint_budget_rejects_runtime_definition();test_presentation_evaluator_stats_are_complete_and_fail_closed();if(g_failures){std::printf("animation_evaluator_tests: %d failure(s)\n",g_failures);return 1;}std::puts("animation_evaluator_tests: all tests passed");}
+int main(){test_controls();test_cadence_aware_control_sampling();test_time_interpolation_and_previous();test_wrap_clamp_pause_and_disable();test_non_looping_clip_clamps();test_blend_and_additive();test_budget_order_and_reuse();test_snapshot_backing_and_priority_controller_budget();test_definition_shape_and_graph_contract_rejection();test_graph_root_motion_crosses_loops_and_locks_pose();test_root_lock_preserves_authored_root_reference_and_scale();test_root_motion_uses_the_bind_root_orientation();test_looping_root_motion_crosses_cycle_boundaries_forward();test_additive_runtime_graph_paths_are_strict();test_central_runtime_instance_budget();test_custom_joint_budget_rejects_runtime_definition();test_presentation_evaluator_stats_are_complete_and_fail_closed();if(g_failures){std::printf("animation_evaluator_tests: %d failure(s)\n",g_failures);return 1;}std::puts("animation_evaluator_tests: all tests passed");}
