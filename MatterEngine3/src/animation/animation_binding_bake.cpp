@@ -310,10 +310,70 @@ bool build_skin_binding(const CanonicalRig&rig,const std::vector<JointIndex>&chi
     out.inverse_bind_matrices.resize(joints.size());for(size_t i=0;i<joints.size();++i)if(!inverse(joints[i].world,out.inverse_bind_matrices[i]))return false;
     for(size_t lod=0;lod<lods.size();++lod){const auto&geometry=lods[lod];if(geometry.vertex_count<0||geometry.vertices.size()!=static_cast<size_t>(geometry.vertex_count)*3)return false;LodSkinBinding baked;baked.indexed_vertex_signature=viewer::indexed_part_geometry_signature(geometry,static_cast<uint32_t>(lod));baked.vertex_count=static_cast<uint32_t>(geometry.vertex_count);baked.influences.reserve(baked.vertex_count);std::vector<bool> used(joints.size(),false);
         for(uint32_t vertex=0;vertex<baked.vertex_count;++vertex){const Float3 p{geometry.vertices[vertex*3],geometry.vertices[vertex*3+1],geometry.vertices[vertex*3+2]};std::vector<float> values(joints.size(),0.0f);
-            for(JointIndex child=0;child<joints.size();++child){if(!selected[child])continue;const JointIndex parent=rig.joints[child].parent;const Float3 d=sub(joints[child].position,joints[parent].position);const float d2=length2(d);if(d2<=1e-12f)continue;const float t=std::max(0.0f,std::min(1.0f,dot(sub(p,joints[parent].position),d)/d2));const Float3 closest=add(joints[parent].position,mul(d,t));const float radius=joints[parent].radius+(joints[child].radius-joints[parent].radius)*t;const float q=1.0f-length(sub(p,closest))/(falloff_scale*std::max(radius,1e-6f));const float field=smooth(q);add_weight(values,parent,field*(1.0f-t));add_weight(values,child,field*t);}
-            for(JointIndex j=0;j<joints.size();++j)if(allowed[j])add_weight(values,j,smooth(1.0f-length(sub(p,joints[j].position))/(falloff_scale*std::max(joints[j].radius,1e-6f))));
+            // Capsule falloff along each parent->child bone: project the vertex
+            // onto the segment, lerp the endpoint radii at the projection, and
+            // split the resulting field between the two joints by that same t.
+            for(JointIndex child=0;child<joints.size();++child){
+                if(!selected[child])continue;
+                const JointIndex parent=rig.joints[child].parent;
+                const Float3 d=sub(joints[child].position,joints[parent].position);
+                const float d2=length2(d);
+                if(d2<=1e-12f)continue;
+                const float t=std::max(0.0f,std::min(1.0f,dot(sub(p,joints[parent].position),d)/d2));
+                const Float3 closest=add(joints[parent].position,mul(d,t));
+                const float radius=joints[parent].radius+(joints[child].radius-joints[parent].radius)*t;
+                const float q=1.0f-length(sub(p,closest))/(falloff_scale*std::max(radius,1e-6f));
+                const float field=smooth(q);
+                add_weight(values,parent,field*(1.0f-t));
+                add_weight(values,child,field*t);
+            }
+            // Rootless/leaf joints get a plain spherical falloff.
+            for(JointIndex j=0;j<joints.size();++j)
+                if(allowed[j])
+                    add_weight(values,
+                               j,
+                               smooth(1.0f-length(sub(p,joints[j].position))
+                                          /(falloff_scale*std::max(joints[j].radius,1e-6f))));
             const auto influence=quantize(std::move(values),joints,p,allowed);for(size_t k=0;k<kMaxSkinInfluences;++k)if(influence.weights[k])used[influence.joints[k]]=true;baked.influences.push_back(influence);}
-        ClusterJointBounds cluster;cluster.cluster_id=0;cluster.vertex_begin=0;cluster.vertex_end=baked.vertex_count;for(JointIndex j=0;j<joints.size();++j)if(used[j]){JointLocalBounds bounds;bounds.joint=j;bounds.minimum={std::numeric_limits<float>::infinity(),std::numeric_limits<float>::infinity(),std::numeric_limits<float>::infinity()};bounds.maximum={-std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity()};bool any=false;for(uint32_t vertex=0;vertex<baked.vertex_count;++vertex){bool influences=false;for(size_t k=0;k<kMaxSkinInfluences;++k)if(baked.influences[vertex].joints[k]==j&&baked.influences[vertex].weights[k])influences=true;if(!influences)continue;const Float3 point=transform_point(out.inverse_bind_matrices[j],{geometry.vertices[vertex*3],geometry.vertices[vertex*3+1],geometry.vertices[vertex*3+2]});bounds.minimum.x=std::min(bounds.minimum.x,point.x);bounds.minimum.y=std::min(bounds.minimum.y,point.y);bounds.minimum.z=std::min(bounds.minimum.z,point.z);bounds.maximum.x=std::max(bounds.maximum.x,point.x);bounds.maximum.y=std::max(bounds.maximum.y,point.y);bounds.maximum.z=std::max(bounds.maximum.z,point.z);any=true;}if(any)cluster.joints.push_back(bounds);}if(!cluster.joints.empty())baked.clusters.push_back(std::move(cluster));out.lods.push_back(std::move(baked));}
+        // Per-joint AABB over the vertices that joint actually influences,
+        // measured in ITS bind-local frame (hence the inverse-bind transform).
+        ClusterJointBounds cluster;
+        cluster.cluster_id=0;
+        cluster.vertex_begin=0;
+        cluster.vertex_end=baked.vertex_count;
+        for(JointIndex j=0;j<joints.size();++j)if(used[j]){
+            JointLocalBounds bounds;
+            bounds.joint=j;
+            bounds.minimum={std::numeric_limits<float>::infinity(),
+                            std::numeric_limits<float>::infinity(),
+                            std::numeric_limits<float>::infinity()};
+            bounds.maximum={-std::numeric_limits<float>::infinity(),
+                            -std::numeric_limits<float>::infinity(),
+                            -std::numeric_limits<float>::infinity()};
+            bool any=false;
+            for(uint32_t vertex=0;vertex<baked.vertex_count;++vertex){
+                bool influences=false;
+                for(size_t k=0;k<kMaxSkinInfluences;++k)
+                    if(baked.influences[vertex].joints[k]==j&&baked.influences[vertex].weights[k])
+                        influences=true;
+                if(!influences)continue;
+                const Float3 point=transform_point(out.inverse_bind_matrices[j],
+                                                   {geometry.vertices[vertex*3],
+                                                    geometry.vertices[vertex*3+1],
+                                                    geometry.vertices[vertex*3+2]});
+                bounds.minimum.x=std::min(bounds.minimum.x,point.x);
+                bounds.minimum.y=std::min(bounds.minimum.y,point.y);
+                bounds.minimum.z=std::min(bounds.minimum.z,point.z);
+                bounds.maximum.x=std::max(bounds.maximum.x,point.x);
+                bounds.maximum.y=std::max(bounds.maximum.y,point.y);
+                bounds.maximum.z=std::max(bounds.maximum.z,point.z);
+                any=true;
+            }
+            if(any)cluster.joints.push_back(bounds);
+        }
+        if(!cluster.joints.empty())baked.clusters.push_back(std::move(cluster));
+        out.lods.push_back(std::move(baked));
+    }
     return true;
 }
 std::vector<LodBindingSignature> manifest_lod_signatures(const BindingBake&bake){std::vector<LodBindingSignature> out;out.reserve(bake.lods.size());for(const auto&lod:bake.lods)out.push_back({lod.indexed_vertex_signature,lod.vertex_count,static_cast<uint32_t>(lod.influences.size()*kMaxSkinInfluences)});return out;}
