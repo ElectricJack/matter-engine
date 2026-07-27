@@ -4,6 +4,7 @@
 #include "animation/animation_validate.h"
 #include "animation/animation_binding_bake.h"
 #include "animation/ozz_adapter.h"
+#include "animation/animation_math.h"
 
 #include <algorithm>
 #include <cmath>
@@ -90,10 +91,7 @@ Quaternion reflect_rotation(Quaternion q, int axis) {
     return out;
 }
 Quaternion qmul(const Quaternion& a, const Quaternion& b) {
-    return {a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
-            a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
-            a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
-            a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z};
+    return matter::animation::quaternion_multiply(a, b);
 }
 // Rodrigues form: v + 2*(w*(u x v) + u x (u x v)), with u the vector part.
 Float3 qrotate(const Quaternion& q, const Float3& value) {

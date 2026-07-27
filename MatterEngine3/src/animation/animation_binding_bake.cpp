@@ -1,5 +1,7 @@
 #include "animation/animation_binding_bake.h"
 
+#include "animation/animation_math.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -14,12 +16,7 @@ float dot(const Float3& a, const Float3& b) { return a.x*b.x + a.y*b.y + a.z*b.z
 float length2(const Float3& v) { return dot(v, v); }
 float length(const Float3& v) { return std::sqrt(length2(v)); }
 
-Quaternion qmul(const Quaternion& a, const Quaternion& b) {
-    return {a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
-            a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
-            a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
-            a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z};
-}
+Quaternion qmul(const Quaternion& a, const Quaternion& b) { return quaternion_multiply(a, b); }
 
 Mat4f identity() {
     Mat4f m{};

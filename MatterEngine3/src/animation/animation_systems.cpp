@@ -1,4 +1,5 @@
 #include "animation/animation_systems.h"
+#include "animation/animation_math.h"
 
 #include "matter/ecs.h"
 
@@ -84,10 +85,7 @@ Quaternion normalize_quaternion(Quaternion q) {
     return length > 1e-6f ? Quaternion{q.x/length, q.y/length, q.z/length, q.w/length} : Quaternion{};
 }
 Quaternion multiply_quaternion(Quaternion a, Quaternion b) {
-    return normalize_quaternion({a.w*b.x+a.x*b.w+a.y*b.z-a.z*b.y,
-                                 a.w*b.y-a.x*b.z+a.y*b.w+a.z*b.x,
-                                 a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w,
-                                 a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z});
+    return normalize_quaternion(quaternion_multiply(a, b));
 }
 bool matrix_rotation(const Mat4f& m, Quaternion& out) {
     const auto finite3 = [](Float3 v) {

@@ -1,4 +1,5 @@
 #include "animation/animation_validate.h"
+#include "animation/animation_math.h"
 #include "animation/animation_binding_bake.h"
 
 #include <algorithm>
@@ -25,12 +26,7 @@ Float3 rotate_inverse(const Quaternion& q, const Float3& v) {
             t.z*p.w + t.w*p.z + t.x*p.y - t.y*p.x};
 }
 
-Quaternion qmul_local(const Quaternion& a, const Quaternion& b) {
-    return {a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
-            a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
-            a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
-            a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z};
-}
+Quaternion qmul_local(const Quaternion& a, const Quaternion& b) { return quaternion_multiply(a, b); }
 
 Float3 qrotate_local(const Quaternion& q, const Float3& v) {
     Quaternion p{v.x, v.y, v.z, 0};

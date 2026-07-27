@@ -1,4 +1,5 @@
 #include "animation/ozz_adapter.h"
+#include "animation/animation_math.h"
 #include "animation/ozz_adapter_internal.h"
 
 #include "ozz/animation/runtime/animation.h"
@@ -69,12 +70,7 @@ bool read_u16(const uint8_t* data, std::size_t size, std::size_t& offset, uint16
     return true;
 }
 
-Quaternion multiply(Quaternion a, Quaternion b) {
-    return {a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
-            a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
-            a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
-            a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z};
-}
+Quaternion multiply(Quaternion a, Quaternion b) { return quaternion_multiply(a, b); }
 Quaternion normalize(Quaternion q) {
     const float length = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
     return length > 0.0f ? Quaternion{q.x/length, q.y/length, q.z/length, q.w/length} : Quaternion{};

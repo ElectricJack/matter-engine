@@ -1,5 +1,7 @@
 #include "animation/animation_targets.h"
 
+#include "animation/animation_math.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -64,15 +66,11 @@ Quaternion inverse(Quaternion q) {
     q = normalize(q);
     return {-q.x, -q.y, -q.z, q.w};
 }
-// Hamilton product. The y term is -a.x*b.z (NOT -a.x*b.w); it must agree with
-// the other three copies in the animation tree (animation_evaluator.cpp,
-// animation_systems.cpp, animation_binding_bake.cpp) or IK end-effector
-// orientation matching silently diverges from the rest of the pose pipeline.
+// Unit-normalized Hamilton product. The product itself is shared (see
+// animation_math.h) precisely because this copy is the one whose y term once
+// read -a.x*b.w, silently corrupting IK end-effector orientation.
 Quaternion multiply(Quaternion a, Quaternion b) {
-    return normalize({a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
-                      a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
-                      a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
-                      a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z});
+    return normalize(quaternion_multiply(a, b));
 }
 // Matrix-to-quaternion over all four Shepperd branches.
 //

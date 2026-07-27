@@ -1,4 +1,5 @@
 #include "animation/animation_evaluator.h"
+#include "animation/animation_math.h"
 
 #include <algorithm>
 #include <cmath>
@@ -47,12 +48,7 @@ Quaternion slerp(Quaternion a, Quaternion b, float t) {
             a.w*x + b.w*y};
 }
 
-Quaternion multiply(Quaternion a, Quaternion b) {
-    return {a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
-            a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
-            a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
-            a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z};
-}
+Quaternion multiply(Quaternion a, Quaternion b) { return quaternion_multiply(a, b); }
 
 // Conjugation q * (v,0) * q^-1.
 Float3 rotate(Quaternion rotation, Float3 value) {
@@ -440,12 +436,8 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
                 const AnimationTransform additive=weighted_delta(AnimationTransform{},root_deltas[node.dependencies[1]],node.weight);
                 root_deltas[i]=root_deltas[node.dependencies[0]];
                 root_deltas[i].translation.x+=additive.translation.x; root_deltas[i].translation.y+=additive.translation.y; root_deltas[i].translation.z+=additive.translation.z;
-                // Hamilton product additive.rotation * root_deltas[i].rotation,
-                // spelled out here rather than routed through multiply() above.
-                root_deltas[i].rotation=normalize({additive.rotation.w*root_deltas[i].rotation.x + additive.rotation.x*root_deltas[i].rotation.w + additive.rotation.y*root_deltas[i].rotation.z - additive.rotation.z*root_deltas[i].rotation.y,
-                                                    additive.rotation.w*root_deltas[i].rotation.y - additive.rotation.x*root_deltas[i].rotation.z + additive.rotation.y*root_deltas[i].rotation.w + additive.rotation.z*root_deltas[i].rotation.x,
-                                                    additive.rotation.w*root_deltas[i].rotation.z + additive.rotation.x*root_deltas[i].rotation.y - additive.rotation.y*root_deltas[i].rotation.x + additive.rotation.z*root_deltas[i].rotation.w,
-                                                    additive.rotation.w*root_deltas[i].rotation.w - additive.rotation.x*root_deltas[i].rotation.x - additive.rotation.y*root_deltas[i].rotation.y - additive.rotation.z*root_deltas[i].rotation.z});
+                root_deltas[i].rotation =
+                    normalize(quaternion_multiply(additive.rotation, root_deltas[i].rotation));
             } else if(node.kind==RuntimeGraphNodeKind::Output) { if(node.dependencies.size()!=1) complete=false; else { out=results[node.dependencies[0]]; root_deltas[i]=root_deltas[node.dependencies[0]]; } }
             else if(node.kind==RuntimeGraphNodeKind::NativeController) { if(node.dependencies.size()!=1) complete=false; else { out=results[node.dependencies[0]]; root_deltas[i]=root_deltas[node.dependencies[0]]; } }
             else complete=false;
