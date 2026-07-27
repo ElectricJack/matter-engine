@@ -576,7 +576,12 @@ TickResult Runtime::tick(const TickDesc& desc) {
     ecs::drain_hierarchy_commands(world_);
 
     TickResult result{};
-    if (desc.max_fixed_steps > 0) {
+    // advance_fixed == false leaves accumulator_seconds_ untouched: no delta is
+    // banked and no banked delta is spent, so a paused editor resumes from the
+    // exact sub-step position it froze at. Everything above this block (the
+    // Flecs frame, command drains, binding lifecycle) has already run, which is
+    // the entire point of freezing rather than invalidating the tick.
+    if (desc.advance_fixed) {
         accumulator_seconds_ += contributed_delta;
         while (result.fixed_steps < desc.max_fixed_steps) {
             snap_half_ulp_shortfall_to_fixed_boundary(

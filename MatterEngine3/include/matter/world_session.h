@@ -102,6 +102,20 @@ struct TickDesc {
     float frame_delta_seconds = 0.0f;
     float fixed_delta_seconds = 1.0f / 60.0f;
     uint32_t max_fixed_steps = 4;
+    // Editor Edit/Pause: run the ordinary frame tick -- command drains, binding
+    // lifecycle reconciliation, frame-cadence systems -- but advance no fixed
+    // simulation. The accumulator is left EXACTLY as it was, so resuming
+    // completes the step that was banked before the freeze rather than losing a
+    // fraction or spending a catch-up burst.
+    //
+    // This is deliberately NOT expressible as max_fixed_steps == 0, which is a
+    // malformed request that invalidates the whole tick and therefore discards
+    // the frame pipeline and every reconcile that rides on it. Nor is it
+    // frame_delta_seconds == 0: zeroing the delta stops new time accruing but
+    // still lets an already-banked catch-up residual be spent, so a stopped
+    // editor could keep stepping. Freezing is a normal tick that runs no fixed
+    // step, not an error and not an arithmetic accident.
+    bool advance_fixed = true;
 };
 
 struct FrameStats {

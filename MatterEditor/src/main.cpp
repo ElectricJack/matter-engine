@@ -1879,7 +1879,23 @@ int main() {
         } else if (sim_control.consume_pending_step()) {
             tick.max_fixed_steps = 1;
         } else {
-            tick.max_fixed_steps = 0;
+            // Edit/Pause. This used to pass max_fixed_steps = 0, which
+            // Runtime::tick defines as MALFORMED -- so WorldSession::tick
+            // returned at its invalid guard and skipped everything below it,
+            // including animation reconciliation. The visible symptom was that
+            // an animated entity never produced a binding until you pressed
+            // Play, so the Part Workbench animation tabs were empty in exactly
+            // the mode an author inspects a rig in.
+            //
+            // advance_fixed = false is the sanctioned form: an ordinary,
+            // VALID frame tick that advances no fixed simulation and leaves the
+            // accumulator untouched, so Stop means stopped and resuming
+            // continues from the exact sub-step position it froze at.
+            tick.advance_fixed = false;
+            // Frame-cadence work must not creep forward either while stopped;
+            // the frame pipeline still RUNS (lifecycle reconciliation needs it),
+            // it simply advances nothing.
+            tick.frame_delta_seconds = 0.0f;
         }
         phase.ui = phase_split();   // ImGui panel building
         session->tick(tick);

@@ -1028,6 +1028,95 @@ static void test_runtime_accumulates_fractional_fixed_time() {
           "preserved fractional time runs fixed phases before frame");
 }
 
+// TickDesc::advance_fixed — the sanctioned way to say "do not advance the fixed
+// simulation this frame", as an editor in Edit/Pause needs.
+//
+// The distinction that matters: max_fixed_steps == 0 is a MALFORMED request and
+// invalidates the whole tick, which throws away the frame pipeline, the command
+// drains, and the binding-lifecycle reconciliation with it. Freezing is not an
+// error; it is an ordinary frame-only tick that happens to run no fixed step.
+static void test_frozen_fixed_runs_a_valid_frame_only_tick() {
+    ecs_runtime::Runtime runtime;
+    ScheduleRecording recording;
+    install_schedule_recorders(runtime, recording);
+
+    matter::TickDesc desc{};
+    desc.frame_delta_seconds = 0.2f;   // two whole fixed intervals of pressure
+    desc.fixed_delta_seconds = 0.1f;
+    desc.max_fixed_steps = 4;
+    desc.advance_fixed = false;
+
+    const ecs_runtime::TickResult result = runtime.tick(desc);
+    CHECK(!result.invalid, "a frozen tick is valid, not malformed");
+    CHECK(result.fixed_steps == 0, "a frozen tick runs no fixed step");
+    CHECK(result.dropped_steps == 0,
+          "a frozen tick drops nothing -- it never accumulated in the first place");
+    CHECK(phases_equal(recording.phases, {RecordedPhase::FrameUpdate}),
+          "a frozen tick still runs the frame phase, so lifecycle work proceeds");
+}
+
+// The reason this needs its own field rather than frame_delta_seconds == 0:
+// zeroing the delta stops NEW time accruing but does not stop an already
+// accumulated catch-up residual from being spent. Stop must mean stopped.
+static void test_frozen_fixed_preserves_the_accumulator_exactly() {
+    ecs_runtime::Runtime runtime;
+    ScheduleRecording recording;
+    install_schedule_recorders(runtime, recording);
+
+    // Bank half a fixed interval while running normally.
+    const ecs_runtime::TickResult primed = runtime.tick({0.05f, 0.1f, 4});
+    CHECK(primed.fixed_steps == 0 && !primed.invalid, "half an interval banks without stepping");
+
+    // Freeze across several ticks whose deltas would otherwise complete the
+    // step many times over.
+    matter::TickDesc frozen{};
+    frozen.frame_delta_seconds = 0.2f;
+    frozen.fixed_delta_seconds = 0.1f;
+    frozen.max_fixed_steps = 4;
+    frozen.advance_fixed = false;
+    for (int i = 0; i < 5; ++i) {
+        const ecs_runtime::TickResult result = runtime.tick(frozen);
+        CHECK(!result.invalid && result.fixed_steps == 0,
+              "a frozen tick never steps no matter how much delta it is handed");
+    }
+
+    // Resuming must complete exactly the banked step -- not a burst of catch-up
+    // for the frozen interval, and not a lost fraction.
+    recording.phases.clear();
+    const ecs_runtime::TickResult resumed = runtime.tick({0.05f, 0.1f, 4});
+    CHECK(resumed.fixed_steps == 1 && resumed.dropped_steps == 0,
+          "resuming completes exactly the step banked before the freeze");
+    CHECK(phases_equal(recording.phases, {
+              RecordedPhase::FixedPreUpdate,
+              RecordedPhase::FixedUpdate,
+              RecordedPhase::PrePhysics,
+              RecordedPhase::Physics,
+              RecordedPhase::PostPhysics,
+              RecordedPhase::FixedPostUpdate,
+              RecordedPhase::FrameUpdate}),
+          "the resumed step runs the full fixed phase chain");
+}
+
+// A frozen tick must not be mistaken for a licence to skip validation.
+static void test_frozen_fixed_still_validates_its_deltas() {
+    ecs_runtime::Runtime runtime;
+    matter::TickDesc desc{};
+    desc.frame_delta_seconds = 0.1f;
+    desc.fixed_delta_seconds = 0.0f;   // still malformed
+    desc.max_fixed_steps = 4;
+    desc.advance_fixed = false;
+    CHECK(runtime.tick(desc).invalid,
+          "freezing does not excuse a non-positive fixed delta");
+
+    matter::TickDesc zero_steps{};
+    zero_steps.frame_delta_seconds = 0.1f;
+    zero_steps.fixed_delta_seconds = 0.1f;
+    zero_steps.max_fixed_steps = 0;
+    zero_steps.advance_fixed = false;
+    CHECK(runtime.tick(zero_steps).invalid,
+          "max_fixed_steps == 0 stays malformed even when frozen");
+}
+
 static void test_runtime_runs_multiple_accumulated_steps_before_frame() {
     ecs_runtime::Runtime runtime;
     ScheduleRecording recording;
@@ -1782,6 +1871,9 @@ int main() {
     test_runtime_wraps_pipeline_work_in_one_flecs_frame();
     test_runtime_zero_delta_frame_is_explicit_not_measured();
     test_runtime_accumulates_fractional_fixed_time();
+    test_frozen_fixed_runs_a_valid_frame_only_tick();
+    test_frozen_fixed_preserves_the_accumulator_exactly();
+    test_frozen_fixed_still_validates_its_deltas();
     test_runtime_runs_multiple_accumulated_steps_before_frame();
     test_runtime_clamps_contribution_and_preserves_remainder();
     test_runtime_drops_complete_excess_steps_only();
