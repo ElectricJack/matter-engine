@@ -1009,24 +1009,39 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
     std::set<uint64_t> current_visible_instances;
     const std::vector<VkAnimationBoundsGpuRecord> current_bounds =
         animation_bounds_.gpu_records();
+    // MATTER_SKIN_PROBE census: which (cluster, lod) submissions survive
+    // compaction. A cluster dropped here keeps drawing its static bind pose
+    // while its peers animate, so a partly-animating mesh shows up as a
+    // cluster present in `visible` and absent from `compacted`.
+    static const bool probe = [] {
+        const char* value = std::getenv("MATTER_SKIN_PROBE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    std::string census;
     for (const VkSkinSubmission& submitted : visible) {
         VkSkinSubmission candidate = submitted;
         candidate.current_frustum_visible = false;
         if (candidate.instance_slot >= dynamic_instance_staging_.size() ||
             candidate.instance_slot >= dynamic_instance_part_slots_.size() ||
-            dynamic_instance_part_slots_[candidate.instance_slot] == UINT32_MAX)
+            dynamic_instance_part_slots_[candidate.instance_slot] == UINT32_MAX) {
+            if (probe) census += " c" + std::to_string(candidate.cluster) + "/l" + std::to_string(candidate.lod) + "=slot";
             continue;
+        }
         const GpuInstance& instance =
             dynamic_instance_staging_[candidate.instance_slot];
         if (instance.animation_instance_generation !=
                 candidate.instance_generation ||
-            instance.part_slot >= parts_.size())
+            instance.part_slot >= parts_.size()) {
+            if (probe) census += " c" + std::to_string(candidate.cluster) + "/l" + std::to_string(candidate.lod) + "=gen";
             continue;
+        }
         const PartRecord& part = parts_[instance.part_slot];
         if (!part.live || candidate.cluster >= part.cluster_count ||
             part.cluster_start > cluster_staging_.size() ||
-            candidate.cluster >= cluster_staging_.size() - part.cluster_start)
+            candidate.cluster >= cluster_staging_.size() - part.cluster_start) {
+            if (probe) census += " c" + std::to_string(candidate.cluster) + "/l" + std::to_string(candidate.lod) + "=part";
             continue;
+        }
         const GpuCluster& cluster =
             cluster_staging_[part.cluster_start + candidate.cluster];
         VkAnimationBoundsAabb planning_bounds{
@@ -1054,7 +1069,13 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
              planning_bounds.max[2]},
             planning_radius, cluster.thresholds, cluster.lod_count,
             unpack_matrix(instance.object_to_world), camera_eye, pixel_budget);
-        if (candidate.lod != selected_lod) continue;
+        if (candidate.lod != selected_lod) {
+            if (probe)
+                census += " c" + std::to_string(candidate.cluster) + "/l" +
+                          std::to_string(candidate.lod) + "=lod" +
+                          std::to_string(selected_lod);
+            continue;
+        }
         const auto bounds = std::find_if(
             current_bounds.begin(), current_bounds.end(), [&candidate](
                 const VkAnimationBoundsGpuRecord& value) {
@@ -1077,7 +1098,19 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
                                           visibility_key) != 0;
             current_visible_instances.insert(visibility_key);
         }
+        if (probe)
+            census += " c" + std::to_string(candidate.cluster) + "/l" +
+                      std::to_string(candidate.lod) +
+                      (candidate.current_frustum_visible ? "=ok" : "=offscreen");
         compacted.push_back(std::move(candidate));
+    }
+    if (probe) {
+        static std::string last_census;
+        if (census != last_census) {
+            last_census = census;
+            fprintf(stderr, "[skin-census] in=%zu out=%zu%s\n",
+                    visible.size(), compacted.size(), census.c_str());
+        }
     }
     pending_visible_skin_instances_ = std::move(current_visible_instances);
     pending_skin_visibility_frame_slot_ = frame_slot;
