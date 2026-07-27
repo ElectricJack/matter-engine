@@ -395,7 +395,14 @@ bool encode_clips(const AnimationBuild& authored, std::vector<uint8_t>& bytes) {
             clip.markers.size() > kMaxGraphNodes) return false;
         put_string(bytes, clip.name);
         put_float(bytes, clip.duration);
-        put_float(bytes, clip.rate);
+        // This slot is the runtime PLAYBACK rate (RuntimeGraphClip::rate, a
+        // graph-time multiplier). ClipDefinition::rate is the authored bake
+        // sampleRate -- a sampling density consumed entirely at compile time
+        // (spec: "Sampling is exact. Let segments = ceil(duration *
+        // sampleRate)...") -- and must never leak into the playback clock:
+        // doing so made a `sampleRate: 16` clip play 16x too fast. There is
+        // no authored playback-rate verb yet, so the value is always 1.
+        put_float(bytes, 1.0f);
         put_u8(bytes, clip.loop ? 1 : 0);
         put_u8(bytes, clip.additive ? 1 : 0);
         put_u32(bytes, static_cast<uint32_t>(clip.markers.size()));

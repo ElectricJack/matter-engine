@@ -116,10 +116,15 @@ class AnimatedRigGallery extends Part {
     this.marker(0.0, 'idleStart');
     this.endClip();
 
+    // Walks in place: a looping generate() clip appends a final sample copied
+    // exactly from sample zero (spec loop-closure), so an absolute root ramp
+    // like translate(phase * 0.8, 0, 0) folds back to zero inside the last
+    // segment -- root-motion extraction then faithfully walks the entity
+    // forward and lurches it back every cycle. Travel needs explicit keys
+    // authoring the wrap discontinuity, not a generated ramp.
     this.beginClip('walk', { duration: 0.8, sampleRate: 16, loop: true });
     this.generate(phase => {
       const swing = Math.sin(phase * Math.PI * 2);
-      this.at('root'); this.translate(phase * 0.8, 0, 0);
       this.at('leftHip'); this.rotateZ(swing * 0.42);
       this.at('rightHip'); this.rotateZ(-swing * 0.42);
       this.at('leftKnee'); this.rotateZ(Math.max(0, -swing) * 0.48);

@@ -116,6 +116,13 @@ struct TickDesc {
     // editor could keep stepping. Freezing is a normal tick that runs no fixed
     // step, not an error and not an arithmetic accident.
     bool advance_fixed = true;
+    // Unscaled wall-clock delta for this rendered frame. Cosmetic presentation
+    // cadence (the animation pose-LOD refresh clock) runs on THIS delta, so a
+    // slow-motion frame_delta_seconds slows what the simulation shows, not how
+    // often presentation refreshes it. 0 (default) falls back to
+    // frame_delta_seconds, which is exact whenever the app applies no time
+    // scaling. Never consumed by simulation state.
+    float presentation_delta_seconds = 0.0f;
 };
 
 struct FrameStats {

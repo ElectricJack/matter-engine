@@ -180,6 +180,13 @@ public:
     // Runtime calls this exactly once, after its fixed-step accumulator loop
     // and before FrameUpdate.  It is consumed only by presentation state.
     void set_interpolation_alpha(double alpha) noexcept;
+    // Wall-clock delta for the coming FrameUpdate.  The pose-LOD refresh clock
+    // (presentation_time_seconds_) advances by this instead of the pipeline's
+    // possibly time-scaled frame delta, so slow motion does not throttle how
+    // often presentation refreshes.  Runtime sets it every tick; when it was
+    // never set (direct run_frame callers in tests/tools), run_frame falls
+    // back to its frame delta, which is the historical behaviour.
+    void set_presentation_delta_seconds(double delta) noexcept;
     std::vector<AnimationScheduleTraceEntry> take_trace();
 
     // Fixed root motion has exactly one consumer (the authority phase).  A
@@ -252,6 +259,9 @@ private:
     bool apply_targets(flecs::world&, AnimatorInstanceHandle, EvaluationCadence, double);
 
     double interpolation_alpha_ = 0.0;
+    // < 0 means "never set": run_frame advances the presentation clock by its
+    // own frame delta exactly as before the wall-clock split existed.
+    double presentation_delta_seconds_ = -1.0;
     std::vector<AnimationScheduleTraceEntry> trace_;
     AnimationPoseSnapshotStore pose_snapshots_;
     // Fixed evaluation publishes into pose_snapshots_ before FrameUpdate. A

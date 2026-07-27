@@ -1930,6 +1930,10 @@ int main() {
         // runs. A single-frame Step is exempt -- it must advance one whole
         // fixed step regardless of the inspection rate.
         tick.frame_delta_seconds = dt * ui.sim_time_scale();
+        // Presentation cadence (animation pose-LOD refresh) always runs on the
+        // unscaled wall delta: slow motion changes what is simulated per frame,
+        // never how often the shown pose refreshes.
+        tick.presentation_delta_seconds = dt;
         if (sim_control.should_advance_fixed()) {
             // Play mode: run physics normally.
         } else if (sim_control.consume_pending_step()) {

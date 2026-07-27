@@ -608,6 +608,14 @@ TickResult Runtime::tick(const TickDesc& desc) {
     result.interpolation_alpha = std::max(
         0.0, std::min(1.0, accumulator_seconds_ / fixed_delta));
     animation_systems_->set_interpolation_alpha(result.interpolation_alpha);
+    // Presentation cadence runs on wall time when the caller distinguishes it
+    // from the (possibly time-scaled) simulation delta; otherwise the
+    // simulation delta is the wall delta and remains exact.
+    const double presentation_delta = desc.presentation_delta_seconds;
+    animation_systems_->set_presentation_delta_seconds(
+        std::isfinite(presentation_delta) && presentation_delta > 0.0
+            ? std::min(presentation_delta, kMaxFrameContributionSeconds)
+            : contributed_delta);
 
     world_.run_pipeline(
         frame_pipeline_, static_cast<float>(contributed_delta));

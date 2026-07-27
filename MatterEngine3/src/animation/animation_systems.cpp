@@ -352,6 +352,11 @@ void AnimationSystems::set_interpolation_alpha(double alpha) noexcept {
         ? std::max(0.0, std::min(1.0, alpha)) : 0.0;
 }
 
+void AnimationSystems::set_presentation_delta_seconds(double delta) noexcept {
+    presentation_delta_seconds_ = std::isfinite(delta) && delta >= 0.0
+        ? delta : -1.0;
+}
+
 bool AnimationSystems::publish_desired_root_motion(AnimatorInstanceHandle instance,
                                                     const DesiredRootMotion& motion,
                                                     uint64_t fixed_tick) {
@@ -1073,8 +1078,15 @@ void AnimationSystems::run_frame(flecs::world& world, double frame_delta) {
     ++state.frame_serial;
     state.interpolation_alpha = interpolation_alpha_;
     world.set<ecs::AnimationFrameState>(state);
-    if (std::isfinite(frame_delta) && frame_delta > 0.0)
-        presentation_time_seconds_ += frame_delta;
+    // The pose-LOD refresh clock advances in wall seconds when the runtime
+    // supplied them; a time-scaled simulation delta would throttle refreshes
+    // (a 0.25x slow-motion would evaluate presentation once per FOUR rendered
+    // frames, freezing the very interpolation slow motion exists to inspect).
+    const double presentation_delta =
+        presentation_delta_seconds_ >= 0.0 ? presentation_delta_seconds_
+                                           : frame_delta;
+    if (std::isfinite(presentation_delta) && presentation_delta > 0.0)
+        presentation_time_seconds_ += presentation_delta;
     if (service_ != nullptr) (void)service_->sample_frame_controls();
     trace(AnimationScheduleEvent::FrameSampleApiWrites, frame_delta);
     trace(AnimationScheduleEvent::FrameInterpolateFixedState, frame_delta);
