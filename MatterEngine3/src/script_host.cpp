@@ -151,17 +151,11 @@ bool make_animation_asset(const dsl::DslState& state, uint64_t hash, matter::ani
     // decoder-compatible without mutating the DSL-authored state.
     matter::animation::AnimationBuild runtime_authored = *authored;
     // Materializing a missing skeleton blob or bind-rest clip runs Ozz's OFFLINE
-    // builders (ozz_bake.cpp). Those belong to the bake host: the editor and any
-    // other runtime consumer compile with MATTER_RUNTIME_ANIMATION_ONLY and must
-    // not link the offline archive at all -- see check-animation-production-sources
-    // in MatterEditor/Makefile, which asserts ozz_bake.cpp stays out of the build.
-    // Fail closed there, exactly as DslState::end_clip does for clip compilation.
+    // builders (ozz_bake.cpp), which every binary that bakes a part links. This
+    // used to fail closed under MATTER_RUNTIME_ANIMATION_ONLY on the theory that
+    // a shipped runtime must not carry them; there is no such separate binary
+    // here, so the guard only made animated parts unbakeable where it mattered.
     if (runtime_authored.ozz_skeleton_blob.empty() || runtime_authored.clips.empty()) {
-#if defined(MATTER_RUNTIME_ANIMATION_ONLY)
-        diagnostics.add("runtime-asset-bake-host", runtime_authored.rig.source,
-                        "materializing a skeleton or bind-rest clip requires the animation bake host");
-        return false;
-#else
         if (runtime_authored.ozz_skeleton_blob.empty()) {
             matter::animation::OzzSkeleton skeleton;
             if (!matter::animation::build_skeleton(runtime_authored.rig, skeleton, diagnostics)) return false;
@@ -189,7 +183,6 @@ bool make_animation_asset(const dsl::DslState& state, uint64_t hash, matter::ani
             }
             runtime_authored.clips.push_back(std::move(rest));
         }
-#endif
     }
     if (runtime_authored.graph.nodes.empty()) {
         matter::animation::GraphNode clip;

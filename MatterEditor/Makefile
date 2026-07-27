@@ -51,9 +51,10 @@ FLECS_DIR   = ../third_party/flecs
 SQL_DIR     = ../libs/SpatialQueryLib
 MEMLIB_DIR  = ../libs/MemoryLib
 MATHLIB_DIR = ../libs/MathLib
-# Ozz-animation: the editor is a RUNTIME consumer only. Raw clip compilation
-# (the offline archive) belongs to the bake host, so only OZZ_RUNTIME_LIBS may
-# ever appear on an editor link line -- see check-animation-production-sources.
+# Ozz-animation. The editor bakes as well as runs -- a game ships the whole
+# engine and editor, so there is no separate runtime binary to keep the offline
+# builders out of. It therefore links OZZ_OFFLINE_LIBS (offline + runtime); see
+# check-animation-production-sources, which asserts the bake unit stays in.
 OZZ_DIR     = ../third_party/ozz-animation
 OZZ_BUILD_DIR = $(OZZ_DIR)/build/matter
 OZZ_INCLUDE = $(OZZ_DIR)/include
@@ -95,7 +96,7 @@ WIN_INCLUDE_PATHS = -I$(VULKAN_INCLUDE) \
                      -I../libs/ParticleFlowLib/include
 
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
-LDLIBS  = ../third_party/raylib/build/linux/libraylib.a $(BOX3D_LIB) $(OZZ_RUNTIME_LIBS)
+LDLIBS  = ../third_party/raylib/build/linux/libraylib.a $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
 
 HAVE_STREAMLINE ?= 0
 # Point this at a locally installed, licensed Streamline SDK.  Nothing from the
@@ -166,6 +167,7 @@ APP_SRC = src/main.cpp src/ui.cpp src/ui_lighting_controls.cpp src/animation_deb
 # These are ONLY used by the Windows target; the Linux target links libmatter_engine3.a.
 WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/animation/ozz_adapter.cpp \
+              $(ME3_DIR)/src/animation/ozz_bake.cpp \
               $(ME3_DIR)/src/animation/animation_ir.cpp \
               $(ME3_DIR)/src/animation/animation_validate.cpp \
               $(ME3_DIR)/src/animation/animation_binding_bake.cpp \
@@ -297,7 +299,7 @@ IMGUI_SRC_WIN = $(IMGUI_CORE_SRC) $(IMGUIZMO_SRC) \
 #
 # Windows: full direct-source compile (APP_SRC + WIN_ME3_CPP + WIN_MSL_CPP + IMGUI_SRC).
 # Windows is the release build path for now: -DNDEBUG disables assert().
-CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_RUNTIME_ANIMATION_ONLY -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
+CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
 CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_HAVE_STREAMLINE=$(HAVE_STREAMLINE)
 ifeq ($(HAVE_STREAMLINE),1)
   CXX_FLAGS_BUILD_WIN_COMMON += -I"$(STREAMLINE_PATH)/include"
@@ -352,34 +354,30 @@ $(W_DIR) $(W_OBJ_DIR):
 # EXTRA_RETOPO_CPP tells the library Makefile to also compile mesh_retopo.cpp.
 # The library Makefile stamps its EXTRA_CFLAGS (.lib_flags) and self-forces a
 # full recompile only when the flag set changes, so this stays incremental.
-# The editor is a runtime consumer: raw Ozz clip compilation stays in the bake
-# host, so its archive must compile dsl_animation.cpp behind the same
-# runtime-only boundary the direct-source builds use.
-RUNTIME_ANIMATION_CFLAGS = -DMATTER_RUNTIME_ANIMATION_ONLY
 .PHONY: build-engine-lib
 build-engine-lib:
 ifneq ($(HAVE_AUTOREMESHER),)
 	$(MAKE) -C $(ME3_DIR) \
-	    EXTRA_CFLAGS="$(AR_CORE_CFLAGS) $(RUNTIME_ANIMATION_CFLAGS)" \
+	    EXTRA_CFLAGS="$(AR_CORE_CFLAGS)" \
 	    EXTRA_INCLUDE="-I$(AR_CORE_PATH)/include" \
 	    EXTRA_RETOPO_CPP="$(MSL_DIR)/src/mesh_retopo.cpp"
 else
-	$(MAKE) -C $(ME3_DIR) EXTRA_CFLAGS="$(RUNTIME_ANIMATION_CFLAGS)"
+	$(MAKE) -C $(ME3_DIR)
 endif
 
 # The editor links the engine archive, so test the actual archive boundary
-# rather than only direct-compiled adapter sources. The probe retains both
-# dsl_bindings.o and dsl_animation.o, then links against the Ozz RUNTIME
-# archives only -- it must never pull the bake-only offline archive in.
-ANIMATION_RUNTIME_ARCHIVE_LINK_TARGET = build/test_animation_runtime_archive_link
-$(ANIMATION_RUNTIME_ARCHIVE_LINK_TARGET): tests/test_animation_runtime_archive_link.cpp build-engine-lib
+# rather than only direct-compiled adapter sources: a real clip must compile
+# to serialized Ozz bytes through the archive, which proves the offline
+# builders are present and reachable.
+ANIMATION_ARCHIVE_LINK_TARGET = build/test_animation_bake_archive_link
+$(ANIMATION_ARCHIVE_LINK_TARGET): tests/test_animation_bake_archive_link.cpp build-engine-lib
 	@mkdir -p $(dir $@)
 	$(CC) $< $(ME3_DIR)/build/libmatter_engine3.a -o $@ \
 	    $(CXX_FLAGS_BUILD_COMMON) $(LDFLAGS) $(LDLIBS) $(AR_CORE_LDFLAGS)
 
-.PHONY: check-animation-runtime-link
-check-animation-runtime-link: $(ANIMATION_RUNTIME_ARCHIVE_LINK_TARGET)
-	./$(ANIMATION_RUNTIME_ARCHIVE_LINK_TARGET)
+.PHONY: check-animation-archive-link
+check-animation-archive-link: $(ANIMATION_ARCHIVE_LINK_TARGET)
+	./$(ANIMATION_ARCHIVE_LINK_TARGET)
 
 # Generate embedded shader header before compiling any TU that includes it.
 # Needed by the Windows direct-source build (shader_source.cpp).
@@ -448,7 +446,7 @@ WIN_FEATURES = build/windows/build_features.txt
 # There is no libraylib.a on this link line -- the Vulkan build does not link
 # raylib at all (see the module header comment); this list only needs to
 # precede $(WIN_SYSTEM_LIBS) below on the link line.
-WIN_LIBS    = $(WIN_BOX3D_LIB) $(OZZ_RUNTIME_LIBS) -lwinpthread
+WIN_LIBS    = $(WIN_BOX3D_LIB) $(OZZ_OFFLINE_LIBS) -lwinpthread
 WIN_SYSTEM_LIBS = -lgdi32 -lwinmm -luser32 -lshell32 -lws2_32 -ldbghelp
 
 .PHONY: vulkan-preflight
@@ -1034,7 +1032,7 @@ check-animation-production-sources:
 		case " $(WIN_ME3_CPP) " in *"/$$source "*) ;; *) \
 			echo "ERROR: production build omits $$source"; exit 1 ;; esac; \
 	done
-	@case " $(WIN_ME3_CPP) " in *"/ozz_bake.cpp "*) \
-		echo "ERROR: editor must not compile Ozz offline bake sources"; exit 1 ;; esac
-	@case " $(WIN_LIBS) " in *"$(OZZ_OFFLINE_LIB) "*) \
-		echo "ERROR: editor must not link the Ozz offline archive"; exit 1 ;; esac
+	@case " $(WIN_ME3_CPP) " in *"/ozz_bake.cpp "*) ;; *) \
+		echo "ERROR: editor must compile ozz_bake.cpp -- it bakes as well as runs"; exit 1 ;; esac
+	@case " $(WIN_LIBS) " in *"$(OZZ_OFFLINE_LIB) "*) ;; *) \
+		echo "ERROR: editor must link the Ozz offline archive"; exit 1 ;; esac
