@@ -11,30 +11,79 @@ constexpr uint16_t kNoIndex = UINT16_MAX;
 
 uint64_t key(AnimatorInstanceHandle h) { return (uint64_t(h.slot_index) << 32u) | h.generation; }
 float clamp01(float v) { return std::max(0.0f, std::min(1.0f, v)); }
-Float3 lerp(Float3 a, Float3 b, float t) { return {a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t,a.z+(b.z-a.z)*t}; }
-Quaternion normalize(Quaternion q) { const float n=std::sqrt(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w); return n>1e-8f?Quaternion{q.x/n,q.y/n,q.z/n,q.w/n}:Quaternion{}; }
+Float3 lerp(Float3 a, Float3 b, float t) {
+    return {a.x + (b.x - a.x) * t,
+            a.y + (b.y - a.y) * t,
+            a.z + (b.z - a.z) * t};
+}
+
+Quaternion normalize(Quaternion q) {
+    const float n = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
+    return n > 1e-8f ? Quaternion{q.x/n, q.y/n, q.z/n, q.w/n} : Quaternion{};
+}
+
 Quaternion slerp(Quaternion a, Quaternion b, float t) {
-    a=normalize(a); b=normalize(b); float d=a.x*b.x+a.y*b.y+a.z*b.z+a.w*b.w;
-    if(d<0){d=-d;b={-b.x,-b.y,-b.z,-b.w};}
-    if(d>.9995f) return normalize({a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t,a.z+(b.z-a.z)*t,a.w+(b.w-a.w)*t});
-    const float theta=std::acos(std::max(-1.0f,std::min(1.0f,d))), s=std::sin(theta);
-    const float x=std::sin((1-t)*theta)/s,y=std::sin(t*theta)/s;
-    return {a.x*x+b.x*y,a.y*x+b.y*y,a.z*x+b.z*y,a.w*x+b.w*y};
+    a = normalize(a);
+    b = normalize(b);
+    float d = a.x*b.x + a.y*b.y + a.z*b.z + a.w*b.w;
+    if (d < 0) {
+        d = -d;
+        b = {-b.x, -b.y, -b.z, -b.w};
+    }
+    // Nearly parallel: nlerp, because sin(theta) underflows the divisor below.
+    if (d > .9995f) {
+        return normalize({a.x + (b.x - a.x) * t,
+                          a.y + (b.y - a.y) * t,
+                          a.z + (b.z - a.z) * t,
+                          a.w + (b.w - a.w) * t});
+    }
+    const float theta = std::acos(std::max(-1.0f, std::min(1.0f, d)));
+    const float s = std::sin(theta);
+    const float x = std::sin((1 - t) * theta) / s;
+    const float y = std::sin(t * theta) / s;
+    return {a.x*x + b.x*y,
+            a.y*x + b.y*y,
+            a.z*x + b.z*y,
+            a.w*x + b.w*y};
 }
+
 Quaternion multiply(Quaternion a, Quaternion b) {
-    return {a.w*b.x+a.x*b.w+a.y*b.z-a.z*b.y,
-            a.w*b.y-a.x*b.z+a.y*b.w+a.z*b.x,
-            a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w,
-            a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z};
+    return {a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
+            a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
+            a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
+            a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z};
 }
+
+// Conjugation q * (v,0) * q^-1.
 Float3 rotate(Quaternion rotation, Float3 value) {
-    const Quaternion q=normalize(rotation);
-    const Quaternion rotated=multiply(multiply(q,{value.x,value.y,value.z,0}),{-q.x,-q.y,-q.z,q.w});
-    return {rotated.x,rotated.y,rotated.z};
+    const Quaternion q = normalize(rotation);
+    const Quaternion rotated =
+        multiply(multiply(q, {value.x, value.y, value.z, 0}), {-q.x, -q.y, -q.z, q.w});
+    return {rotated.x, rotated.y, rotated.z};
 }
-AnimationTransform lerp(AnimationTransform a, AnimationTransform b, float t) { return {lerp(a.translation,b.translation,t),slerp(a.rotation,b.rotation,t),lerp(a.scale,b.scale,t)}; }
-Mat4f multiply(const Mat4f& a,const Mat4f& b) { Mat4f r{}; for(int y=0;y<4;++y)for(int x=0;x<4;++x)for(int k=0;k<4;++k)r.m[y*4+x]+=a.m[y*4+k]*b.m[k*4+x]; return r; }
-bool valid_cadence(EvaluationCadence cadence) { return cadence==EvaluationCadence::Fixed || cadence==EvaluationCadence::Frame; }
+
+AnimationTransform lerp(AnimationTransform a, AnimationTransform b, float t) {
+    return {lerp(a.translation, b.translation, t),
+            slerp(a.rotation, b.rotation, t),
+            lerp(a.scale, b.scale, t)};
+}
+
+// Row-major: r[y][x] = sum_k a[y][k] * b[k][x].
+Mat4f multiply(const Mat4f& a, const Mat4f& b) {
+    Mat4f r{};
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            for (int k = 0; k < 4; ++k) {
+                r.m[y*4 + x] += a.m[y*4 + k] * b.m[k*4 + x];
+            }
+        }
+    }
+    return r;
+}
+
+bool valid_cadence(EvaluationCadence cadence) {
+    return cadence == EvaluationCadence::Fixed || cadence == EvaluationCadence::Frame;
+}
 bool valid_value_type(AnimationValueType type) {
     switch(type) {
         case AnimationValueType::Number: case AnimationValueType::Float3: case AnimationValueType::Quaternion:
@@ -372,13 +421,27 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
                 const float x=static_cast<float>(control.number); size_t hi=0; while(hi+1<node.thresholds.size() && x>node.thresholds[hi+1]) ++hi;
                 size_t lo=hi; if(x<=node.thresholds.front()) lo=hi=0; else if(x>=node.thresholds.back()) lo=hi=node.thresholds.size()-1; else ++hi;
                 if(lo==hi) { out=results[node.dependencies[lo]]; root_deltas[i]=root_deltas[node.dependencies[lo]]; }
-                else { const float den=node.thresholds[hi]-node.thresholds[lo]; const float t=den>0?(x-node.thresholds[lo])/den:0; const float weight=clamp01(t); complete=blend(*def.skeleton,{{&results[node.dependencies[lo]],1-weight},{&results[node.dependencies[hi]],weight}},{},out); root_deltas[i]=weighted_delta(root_deltas[node.dependencies[lo]],root_deltas[node.dependencies[hi]],weight); }
+                else {
+                    const float den=node.thresholds[hi]-node.thresholds[lo];
+                    const float t=den>0?(x-node.thresholds[lo])/den:0;
+                    const float weight=clamp01(t);
+                    complete=blend(*def.skeleton,
+                                   {{&results[node.dependencies[lo]],1-weight},
+                                    {&results[node.dependencies[hi]],weight}},
+                                   {},
+                                   out);
+                    root_deltas[i]=weighted_delta(root_deltas[node.dependencies[lo]],
+                                                  root_deltas[node.dependencies[hi]],
+                                                  weight);
+                }
             } else if(node.kind==RuntimeGraphNodeKind::Additive) {
                 if(node.dependencies.size()!=2) { complete=false; break; }
                 complete=blend(*def.skeleton,{{&results[node.dependencies[0]],1}},{{&results[node.dependencies[1]],node.weight}},out);
                 const AnimationTransform additive=weighted_delta(AnimationTransform{},root_deltas[node.dependencies[1]],node.weight);
                 root_deltas[i]=root_deltas[node.dependencies[0]];
                 root_deltas[i].translation.x+=additive.translation.x; root_deltas[i].translation.y+=additive.translation.y; root_deltas[i].translation.z+=additive.translation.z;
+                // Hamilton product additive.rotation * root_deltas[i].rotation,
+                // spelled out here rather than routed through multiply() above.
                 root_deltas[i].rotation=normalize({additive.rotation.w*root_deltas[i].rotation.x + additive.rotation.x*root_deltas[i].rotation.w + additive.rotation.y*root_deltas[i].rotation.z - additive.rotation.z*root_deltas[i].rotation.y,
                                                     additive.rotation.w*root_deltas[i].rotation.y - additive.rotation.x*root_deltas[i].rotation.z + additive.rotation.y*root_deltas[i].rotation.w + additive.rotation.z*root_deltas[i].rotation.x,
                                                     additive.rotation.w*root_deltas[i].rotation.z + additive.rotation.x*root_deltas[i].rotation.y - additive.rotation.y*root_deltas[i].rotation.x + additive.rotation.z*root_deltas[i].rotation.w,

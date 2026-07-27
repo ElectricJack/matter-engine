@@ -13,15 +13,57 @@ namespace {
 
 bool finite(float value) { return std::isfinite(value); }
 bool finite3(const Float3& value) { return finite(value.x) && finite(value.y) && finite(value.z); }
+// (v,0) conjugated by q^-1, with the product expanded inline.
 Float3 rotate_inverse(const Quaternion& q, const Float3& v) {
-    const Quaternion p{-q.x,-q.y,-q.z,q.w};
-    const Quaternion t{q.w*v.x + q.y*v.z - q.z*v.y, q.w*v.y + q.z*v.x - q.x*v.z, q.w*v.z + q.x*v.y - q.y*v.x, -q.x*v.x-q.y*v.y-q.z*v.z};
-    return {t.x*p.w + t.w*p.x + t.y*p.z - t.z*p.y, t.y*p.w + t.w*p.y + t.z*p.x - t.x*p.z, t.z*p.w + t.w*p.z + t.x*p.y - t.y*p.x};
+    const Quaternion p{-q.x, -q.y, -q.z, q.w};
+    const Quaternion t{ q.w*v.x + q.y*v.z - q.z*v.y,
+                        q.w*v.y + q.z*v.x - q.x*v.z,
+                        q.w*v.z + q.x*v.y - q.y*v.x,
+                       -q.x*v.x - q.y*v.y - q.z*v.z};
+    return {t.x*p.w + t.w*p.x + t.y*p.z - t.z*p.y,
+            t.y*p.w + t.w*p.y + t.z*p.x - t.x*p.z,
+            t.z*p.w + t.w*p.z + t.x*p.y - t.y*p.x};
 }
-Quaternion qmul_local(const Quaternion&a,const Quaternion&b){return {a.w*b.x+a.x*b.w+a.y*b.z-a.z*b.y,a.w*b.y-a.x*b.z+a.y*b.w+a.z*b.x,a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w,a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z};}
-Float3 qrotate_local(const Quaternion&q,const Float3&v){Quaternion p{v.x,v.y,v.z,0}; Quaternion qi{-q.x,-q.y,-q.z,q.w}; Quaternion t=qmul_local(q,p); Quaternion r=qmul_local(t,qi); return {r.x,r.y,r.z};}
-Quaternion bind_model_rotation(const AnimationBuild& build,const std::vector<int>& parents,int index){if(index<0)return {0,0,0,1};const auto&q=build.rig.joints[(size_t)index].local.rotation;return parents[index]<0?q:qmul_local(bind_model_rotation(build,parents,parents[index]),q);}
-Float3 bind_model_position(const AnimationBuild& build,const std::vector<int>& parents,int index){if(index<0)return {};const auto& j=build.rig.joints[(size_t)index];if(parents[index]<0)return j.local.translation;const int p=parents[index];const Float3 pt=bind_model_position(build,parents,p);const Float3 d=qrotate_local(bind_model_rotation(build,parents,p),j.local.translation);return {pt.x+d.x,pt.y+d.y,pt.z+d.z};}
+
+Quaternion qmul_local(const Quaternion& a, const Quaternion& b) {
+    return {a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
+            a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
+            a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
+            a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z};
+}
+
+Float3 qrotate_local(const Quaternion& q, const Float3& v) {
+    Quaternion p{v.x, v.y, v.z, 0};
+    Quaternion qi{-q.x, -q.y, -q.z, q.w};
+    Quaternion t = qmul_local(q, p);
+    Quaternion r = qmul_local(t, qi);
+    return {r.x, r.y, r.z};
+}
+
+// Walks to the root each call; the rig depths here are small and this runs
+// offline, so the repeated ancestor work is deliberate rather than memoized.
+Quaternion bind_model_rotation(const AnimationBuild& build,
+                               const std::vector<int>& parents,
+                               int index) {
+    if (index < 0) return {0, 0, 0, 1};
+    const auto& q = build.rig.joints[(size_t)index].local.rotation;
+    return parents[index] < 0
+               ? q
+               : qmul_local(bind_model_rotation(build, parents, parents[index]), q);
+}
+
+Float3 bind_model_position(const AnimationBuild& build,
+                           const std::vector<int>& parents,
+                           int index) {
+    if (index < 0) return {};
+    const auto& j = build.rig.joints[(size_t)index];
+    if (parents[index] < 0) return j.local.translation;
+
+    const int p = parents[index];
+    const Float3 pt = bind_model_position(build, parents, p);
+    const Float3 d = qrotate_local(bind_model_rotation(build, parents, p), j.local.translation);
+    return {pt.x + d.x, pt.y + d.y, pt.z + d.z};
+}
 bool finiteq(const Quaternion& value) { return finite(value.x) && finite(value.y) && finite(value.z) && finite(value.w); }
 bool valid_cadence(EvaluationCadence cadence) { return cadence == EvaluationCadence::Fixed || cadence == EvaluationCadence::Frame; }
 bool valid_input_type(AnimationValueType type) {

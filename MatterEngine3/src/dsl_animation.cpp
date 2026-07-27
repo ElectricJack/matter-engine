@@ -51,15 +51,43 @@ void canonicalize(Quaternion& q) {
 Quaternion reflect_rotation(Quaternion q, int axis) {
     canonicalize(q);
     const float x=q.x, y=q.y, z=q.z, w=q.w;
-    float r[3][3] = {{1-2*(y*y+z*z),2*(x*y-z*w),2*(x*z+y*w)}, {2*(x*y+z*w),1-2*(x*x+z*z),2*(y*z-x*w)}, {2*(x*z-y*w),2*(y*z+x*w),1-2*(x*x+y*y)}};
+    float r[3][3] = {{1-2*(y*y+z*z), 2*(x*y-z*w),   2*(x*z+y*w)},
+                     {2*(x*y+z*w),   1-2*(x*x+z*z), 2*(y*z-x*w)},
+                     {2*(x*z-y*w),   2*(y*z+x*w),   1-2*(x*x+y*y)}};
     const float s[3] = {axis == 0 ? -1.0f : 1.0f, axis == 1 ? -1.0f : 1.0f, axis == 2 ? -1.0f : 1.0f};
     for (int row=0; row<3; ++row) for (int col=0; col<3; ++col) r[row][col] *= s[row]*s[col];
-    Quaternion out{}; const float trace=r[0][0]+r[1][1]+r[2][2];
-    if (trace > 0) { float t=std::sqrt(trace+1)*2; out.w=.25f*t; out.x=(r[2][1]-r[1][2])/t; out.y=(r[0][2]-r[2][0])/t; out.z=(r[1][0]-r[0][1])/t; }
-    else if (r[0][0] > r[1][1] && r[0][0] > r[2][2]) { float t=std::sqrt(1+r[0][0]-r[1][1]-r[2][2])*2; out.w=(r[2][1]-r[1][2])/t; out.x=.25f*t; out.y=(r[0][1]+r[1][0])/t; out.z=(r[0][2]+r[2][0])/t; }
-    else if (r[1][1] > r[2][2]) { float t=std::sqrt(1+r[1][1]-r[0][0]-r[2][2])*2; out.w=(r[0][2]-r[2][0])/t; out.x=(r[0][1]+r[1][0])/t; out.y=.25f*t; out.z=(r[1][2]+r[2][1])/t; }
-    else { float t=std::sqrt(1+r[2][2]-r[0][0]-r[1][1])*2; out.w=(r[1][0]-r[0][1])/t; out.x=(r[0][2]+r[2][0])/t; out.y=(r[1][2]+r[2][1])/t; out.z=.25f*t; }
-    canonicalize(out); return out;
+
+    Quaternion out{};
+    const float trace = r[0][0] + r[1][1] + r[2][2];
+    // All four Shepperd branches: trace == 1 + 2*cos(theta), so the trace>0 case
+    // alone covers only rotations under 120 degrees.
+    if (trace > 0) {
+        float t = std::sqrt(trace + 1) * 2;
+        out.w = .25f * t;
+        out.x = (r[2][1] - r[1][2]) / t;
+        out.y = (r[0][2] - r[2][0]) / t;
+        out.z = (r[1][0] - r[0][1]) / t;
+    } else if (r[0][0] > r[1][1] && r[0][0] > r[2][2]) {
+        float t = std::sqrt(1 + r[0][0] - r[1][1] - r[2][2]) * 2;
+        out.w = (r[2][1] - r[1][2]) / t;
+        out.x = .25f * t;
+        out.y = (r[0][1] + r[1][0]) / t;
+        out.z = (r[0][2] + r[2][0]) / t;
+    } else if (r[1][1] > r[2][2]) {
+        float t = std::sqrt(1 + r[1][1] - r[0][0] - r[2][2]) * 2;
+        out.w = (r[0][2] - r[2][0]) / t;
+        out.x = (r[0][1] + r[1][0]) / t;
+        out.y = .25f * t;
+        out.z = (r[1][2] + r[2][1]) / t;
+    } else {
+        float t = std::sqrt(1 + r[2][2] - r[0][0] - r[1][1]) * 2;
+        out.w = (r[1][0] - r[0][1]) / t;
+        out.x = (r[0][2] + r[2][0]) / t;
+        out.y = (r[1][2] + r[2][1]) / t;
+        out.z = .25f * t;
+    }
+    canonicalize(out);
+    return out;
 }
 Quaternion qmul(const Quaternion& a, const Quaternion& b) {
     return {a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
@@ -67,17 +95,35 @@ Quaternion qmul(const Quaternion& a, const Quaternion& b) {
             a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
             a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z};
 }
+// Rodrigues form: v + 2*(w*(u x v) + u x (u x v)), with u the vector part.
 Float3 qrotate(const Quaternion& q, const Float3& value) {
     const Float3 u{q.x, q.y, q.z};
-    const Float3 uv{u.y*value.z-u.z*value.y, u.z*value.x-u.x*value.z, u.x*value.y-u.y*value.x};
-    const Float3 uuv{u.y*uv.z-u.z*uv.y, u.z*uv.x-u.x*uv.z, u.x*uv.y-u.y*uv.x};
-    return {value.x + 2.0f*(q.w*uv.x+uuv.x), value.y + 2.0f*(q.w*uv.y+uuv.y), value.z + 2.0f*(q.w*uv.z+uuv.z)};
+    const Float3 uv{u.y*value.z - u.z*value.y,
+                    u.z*value.x - u.x*value.z,
+                    u.x*value.y - u.y*value.x};
+    const Float3 uuv{u.y*uv.z - u.z*uv.y,
+                     u.z*uv.x - u.x*uv.z,
+                     u.x*uv.y - u.y*uv.x};
+    return {value.x + 2.0f * (q.w*uv.x + uuv.x),
+            value.y + 2.0f * (q.w*uv.y + uuv.y),
+            value.z + 2.0f * (q.w*uv.z + uuv.z)};
 }
+
 Quaternion qaxis(float x, float y, float z, float radians) {
-    const float h = radians * 0.5f; const float s = std::sin(h);
+    const float h = radians * 0.5f;
+    const float s = std::sin(h);
     return {x*s, y*s, z*s, std::cos(h)};
 }
-void normalize_q(Quaternion& q) { const float n=std::sqrt(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w); if(n>1e-12f){q.x/=n;q.y/=n;q.z/=n;q.w/=n;} }
+
+void normalize_q(Quaternion& q) {
+    const float n = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
+    if (n > 1e-12f) {
+        q.x /= n;
+        q.y /= n;
+        q.z /= n;
+        q.w /= n;
+    }
+}
 AnimationTransform reflected(AnimationTransform value, int axis) {
     if (axis == 0) value.translation.x = -value.translation.x;
     if (axis == 1) value.translation.y = -value.translation.y;

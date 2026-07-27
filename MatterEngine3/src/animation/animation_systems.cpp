@@ -90,23 +90,80 @@ Quaternion multiply_quaternion(Quaternion a, Quaternion b) {
                                  a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z});
 }
 bool matrix_rotation(const Mat4f& m, Quaternion& out) {
-    const auto finite3=[](Float3 v){return std::isfinite(v.x)&&std::isfinite(v.y)&&std::isfinite(v.z);};
-    const auto dot=[](Float3 a,Float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;};
-    const auto cross=[](Float3 a,Float3 b){return Float3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};};
-    const auto unit=[&](Float3 v,Float3& result){const float n=std::sqrt(dot(v,v));if(!finite3(v)||!std::isfinite(n)||n<1e-7f)return false;result={v.x/n,v.y/n,v.z/n};return true;};
-    Float3 x{},y{},z{},cx{m.m[0],m.m[4],m.m[8]},cy{m.m[1],m.m[5],m.m[9]},cz{m.m[2],m.m[6],m.m[10]};
-    if(!unit(cx,x))return false;
-    const float projection=dot(cy,x);
-    if(!unit({cy.x-projection*x.x,cy.y-projection*x.y,cy.z-projection*x.z},y))return false;
-    if(!unit(cross(x,y),z))return false;
-    Float3 cz_unit{}; if(!unit(cz,cz_unit)||std::fabs(dot(z,cz_unit))<1e-5f)return false;
-    if(dot(z,cz_unit)<0.0f) { z={-z.x,-z.y,-z.z}; y={-y.x,-y.y,-y.z}; }
-    Mat4f pure{}; pure.m[0]=x.x;pure.m[4]=x.y;pure.m[8]=x.z;pure.m[1]=y.x;pure.m[5]=y.y;pure.m[9]=y.z;pure.m[2]=z.x;pure.m[6]=z.y;pure.m[10]=z.z;
+    const auto finite3 = [](Float3 v) {
+        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+    };
+    const auto dot = [](Float3 a, Float3 b) { return a.x*b.x + a.y*b.y + a.z*b.z; };
+    const auto cross = [](Float3 a, Float3 b) {
+        return Float3{a.y*b.z - a.z*b.y,
+                      a.z*b.x - a.x*b.z,
+                      a.x*b.y - a.y*b.x};
+    };
+    const auto unit = [&](Float3 v, Float3& result) {
+        const float n = std::sqrt(dot(v, v));
+        if (!finite3(v) || !std::isfinite(n) || n < 1e-7f) return false;
+        result = {v.x/n, v.y/n, v.z/n};
+        return true;
+    };
+
+    // Gram-Schmidt the basis columns so a scaled/sheared matrix still yields a
+    // pure rotation before the Shepperd branches below.
+    Float3 x{}, y{}, z{};
+    Float3 cx{m.m[0], m.m[4], m.m[8]};
+    Float3 cy{m.m[1], m.m[5], m.m[9]};
+    Float3 cz{m.m[2], m.m[6], m.m[10]};
+    if (!unit(cx, x)) return false;
+
+    const float projection = dot(cy, x);
+    if (!unit({cy.x - projection*x.x, cy.y - projection*x.y, cy.z - projection*x.z}, y)) return false;
+    if (!unit(cross(x, y), z)) return false;
+
+    Float3 cz_unit{};
+    if (!unit(cz, cz_unit) || std::fabs(dot(z, cz_unit)) < 1e-5f) return false;
+    // Mirrored basis: flip z and y back so the frame stays right-handed.
+    if (dot(z, cz_unit) < 0.0f) {
+        z = {-z.x, -z.y, -z.z};
+        y = {-y.x, -y.y, -y.z};
+    }
+
+    Mat4f pure{};
+    pure.m[0] = x.x; pure.m[4] = x.y; pure.m[8]  = x.z;
+    pure.m[1] = y.x; pure.m[5] = y.y; pure.m[9]  = y.z;
+    pure.m[2] = z.x; pure.m[6] = z.y; pure.m[10] = z.z;
+
+    // trace == 1 + 2*cos(theta): the trace>0 branch alone covers only rotations
+    // under 120 degrees, so all four largest-diagonal branches are required.
     const float trace = pure.m[0] + pure.m[5] + pure.m[10];
-    if (trace > 0.0f) { const float s = std::sqrt(trace + 1.0f) * 2.0f; out=normalize_quaternion({(pure.m[9]-pure.m[6])/s,(pure.m[2]-pure.m[8])/s,(pure.m[4]-pure.m[1])/s,0.25f*s}); return true; }
-    if (pure.m[0] > pure.m[5] && pure.m[0] > pure.m[10]) { const float s=std::sqrt(1.0f+pure.m[0]-pure.m[5]-pure.m[10])*2.0f; out=normalize_quaternion({0.25f*s,(pure.m[1]+pure.m[4])/s,(pure.m[2]+pure.m[8])/s,(pure.m[9]-pure.m[6])/s}); return true; }
-    if (pure.m[5] > pure.m[10]) { const float s=std::sqrt(1.0f+pure.m[5]-pure.m[0]-pure.m[10])*2.0f; out=normalize_quaternion({(pure.m[1]+pure.m[4])/s,0.25f*s,(pure.m[6]+pure.m[9])/s,(pure.m[2]-pure.m[8])/s}); return true; }
-    const float s=std::sqrt(1.0f+pure.m[10]-pure.m[0]-pure.m[5])*2.0f; out=normalize_quaternion({(pure.m[2]+pure.m[8])/s,(pure.m[6]+pure.m[9])/s,0.25f*s,(pure.m[4]-pure.m[1])/s}); return true;
+    if (trace > 0.0f) {
+        const float s = std::sqrt(trace + 1.0f) * 2.0f;
+        out = normalize_quaternion({(pure.m[9] - pure.m[6]) / s,
+                                    (pure.m[2] - pure.m[8]) / s,
+                                    (pure.m[4] - pure.m[1]) / s,
+                                    0.25f * s});
+        return true;
+    }
+    if (pure.m[0] > pure.m[5] && pure.m[0] > pure.m[10]) {
+        const float s = std::sqrt(1.0f + pure.m[0] - pure.m[5] - pure.m[10]) * 2.0f;
+        out = normalize_quaternion({0.25f * s,
+                                    (pure.m[1] + pure.m[4]) / s,
+                                    (pure.m[2] + pure.m[8]) / s,
+                                    (pure.m[9] - pure.m[6]) / s});
+        return true;
+    }
+    if (pure.m[5] > pure.m[10]) {
+        const float s = std::sqrt(1.0f + pure.m[5] - pure.m[0] - pure.m[10]) * 2.0f;
+        out = normalize_quaternion({(pure.m[1] + pure.m[4]) / s,
+                                    0.25f * s,
+                                    (pure.m[6] + pure.m[9]) / s,
+                                    (pure.m[2] - pure.m[8]) / s});
+        return true;
+    }
+    const float s = std::sqrt(1.0f + pure.m[10] - pure.m[0] - pure.m[5]) * 2.0f;
+    out = normalize_quaternion({(pure.m[2] + pure.m[8]) / s,
+                                (pure.m[6] + pure.m[9]) / s,
+                                0.25f * s,
+                                (pure.m[4] - pure.m[1]) / s});
+    return true;
 }
 
 bool current_entity_world(flecs::world& world, uint64_t entity_id, Mat4f& out) {
@@ -121,11 +178,23 @@ bool current_entity_world(flecs::world& world, uint64_t entity_id, Mat4f& out) {
         const ecs::LocalTransform* local=entity.try_get<ecs::LocalTransform>();
         if(local==nullptr) return false;
         const Quaternion q=normalize_quaternion(local->rotation);
-        const float xx=q.x*q.x,yy=q.y*q.y,zz=q.z*q.z,xy=q.x*q.y,xz=q.x*q.z,yz=q.y*q.z,wx=q.w*q.x,wy=q.w*q.y,wz=q.w*q.z;
+        const float xx = q.x*q.x, yy = q.y*q.y, zz = q.z*q.z;
+        const float xy = q.x*q.y, xz = q.x*q.z, yz = q.y*q.z;
+        const float wx = q.w*q.x, wy = q.w*q.y, wz = q.w*q.z;
         out={};
-        out.m[0]=(1-2*(yy+zz))*local->scale.x; out.m[1]=(2*(xy-wz))*local->scale.y; out.m[2]=(2*(xz+wy))*local->scale.z; out.m[3]=local->translation.x;
-        out.m[4]=(2*(xy+wz))*local->scale.x; out.m[5]=(1-2*(xx+zz))*local->scale.y; out.m[6]=(2*(yz-wx))*local->scale.z; out.m[7]=local->translation.y;
-        out.m[8]=(2*(xz-wy))*local->scale.x; out.m[9]=(2*(yz+wx))*local->scale.y; out.m[10]=(1-2*(xx+yy))*local->scale.z; out.m[11]=local->translation.z; out.m[15]=1;
+        out.m[0]  = (1 - 2*(yy + zz)) * local->scale.x;
+        out.m[1]  = (2 * (xy - wz))   * local->scale.y;
+        out.m[2]  = (2 * (xz + wy))   * local->scale.z;
+        out.m[3]  = local->translation.x;
+        out.m[4]  = (2 * (xy + wz))   * local->scale.x;
+        out.m[5]  = (1 - 2*(xx + zz)) * local->scale.y;
+        out.m[6]  = (2 * (yz - wx))   * local->scale.z;
+        out.m[7]  = local->translation.y;
+        out.m[8]  = (2 * (xz - wy))   * local->scale.x;
+        out.m[9]  = (2 * (yz + wx))   * local->scale.y;
+        out.m[10] = (1 - 2*(xx + yy)) * local->scale.z;
+        out.m[11] = local->translation.z;
+        out.m[15] = 1;
     }
     Quaternion rotation{};
     return matrix_rotation(out,rotation);

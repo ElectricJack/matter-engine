@@ -32,10 +32,18 @@ Mat4f local_matrix(const AnimationTransform& transform) {
     const float xx=q.x*q.x, yy=q.y*q.y, zz=q.z*q.z, xy=q.x*q.y, xz=q.x*q.z,
                 yz=q.y*q.z, wx=q.w*q.x, wy=q.w*q.y, wz=q.w*q.z;
     Mat4f out = identity();
-    out.m[0]=(1-2*(yy+zz))*transform.scale.x; out.m[1]=(2*(xy-wz))*transform.scale.y; out.m[2]=(2*(xz+wy))*transform.scale.z;
-    out.m[4]=(2*(xy+wz))*transform.scale.x; out.m[5]=(1-2*(xx+zz))*transform.scale.y; out.m[6]=(2*(yz-wx))*transform.scale.z;
-    out.m[8]=(2*(xz-wy))*transform.scale.x; out.m[9]=(2*(yz+wx))*transform.scale.y; out.m[10]=(1-2*(xx+yy))*transform.scale.z;
-    out.m[3]=transform.translation.x; out.m[7]=transform.translation.y; out.m[11]=transform.translation.z;
+    out.m[0]  = (1 - 2*(yy + zz)) * transform.scale.x;
+    out.m[1]  = (2 * (xy - wz))   * transform.scale.y;
+    out.m[2]  = (2 * (xz + wy))   * transform.scale.z;
+    out.m[4]  = (2 * (xy + wz))   * transform.scale.x;
+    out.m[5]  = (1 - 2*(xx + zz)) * transform.scale.y;
+    out.m[6]  = (2 * (yz - wx))   * transform.scale.z;
+    out.m[8]  = (2 * (xz - wy))   * transform.scale.x;
+    out.m[9]  = (2 * (yz + wx))   * transform.scale.y;
+    out.m[10] = (1 - 2*(xx + yy)) * transform.scale.z;
+    out.m[3]  = transform.translation.x;
+    out.m[7]  = transform.translation.y;
+    out.m[11] = transform.translation.z;
     return out;
 }
 

@@ -7,18 +7,113 @@
 
 namespace matter::animation {
 namespace {
-Float3 add(const Float3&a,const Float3&b){return {a.x+b.x,a.y+b.y,a.z+b.z};}
-Float3 sub(const Float3&a,const Float3&b){return {a.x-b.x,a.y-b.y,a.z-b.z};}
-Float3 mul(const Float3&a,float b){return {a.x*b,a.y*b,a.z*b};}
-float dot(const Float3&a,const Float3&b){return a.x*b.x+a.y*b.y+a.z*b.z;}
-float length2(const Float3&v){return dot(v,v);}
-float length(const Float3&v){return std::sqrt(length2(v));}
-Quaternion qmul(const Quaternion&a,const Quaternion&b){return {a.w*b.x+a.x*b.w+a.y*b.z-a.z*b.y,a.w*b.y-a.x*b.z+a.y*b.w+a.z*b.x,a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w,a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z};}
-Mat4f identity(){Mat4f m{};m.m[0]=m.m[5]=m.m[10]=m.m[15]=1;return m;}
-Mat4f multiply(const Mat4f&a,const Mat4f&b){Mat4f r{};for(int row=0;row<4;++row)for(int col=0;col<4;++col)for(int k=0;k<4;++k)r.m[row*4+col]+=a.m[row*4+k]*b.m[k*4+col];return r;}
-Mat4f local_matrix(const AnimationTransform&t){Quaternion q=t.rotation;const float n=std::sqrt(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w);if(n>1e-12f){q.x/=n;q.y/=n;q.z/=n;q.w/=n;}Mat4f m=identity();const float xx=q.x*q.x,yy=q.y*q.y,zz=q.z*q.z,xy=q.x*q.y,xz=q.x*q.z,yz=q.y*q.z,wx=q.w*q.x,wy=q.w*q.y,wz=q.w*q.z;m.m[0]=(1-2*(yy+zz))*t.scale.x;m.m[1]=(2*(xy-wz))*t.scale.y;m.m[2]=(2*(xz+wy))*t.scale.z;m.m[4]=(2*(xy+wz))*t.scale.x;m.m[5]=(1-2*(xx+zz))*t.scale.y;m.m[6]=(2*(yz-wx))*t.scale.z;m.m[8]=(2*(xz-wy))*t.scale.x;m.m[9]=(2*(yz+wx))*t.scale.y;m.m[10]=(1-2*(xx+yy))*t.scale.z;m.m[3]=t.translation.x;m.m[7]=t.translation.y;m.m[11]=t.translation.z;return m;}
-Float3 transform_point(const Mat4f&m,const Float3&p){return {m.m[0]*p.x+m.m[1]*p.y+m.m[2]*p.z+m.m[3],m.m[4]*p.x+m.m[5]*p.y+m.m[6]*p.z+m.m[7],m.m[8]*p.x+m.m[9]*p.y+m.m[10]*p.z+m.m[11]};}
-bool inverse(const Mat4f&source,Mat4f&out){float a[4][8]{};for(int r=0;r<4;++r)for(int c=0;c<4;++c){a[r][c]=source.m[r*4+c];a[r][c+4]=(r==c)?1.0f:0.0f;}for(int c=0;c<4;++c){int pivot=c;for(int r=c+1;r<4;++r)if(std::fabs(a[r][c])>std::fabs(a[pivot][c]))pivot=r;if(std::fabs(a[pivot][c])<1e-12f)return false;for(int k=0;k<8;++k)std::swap(a[c][k],a[pivot][k]);const float d=a[c][c];for(int k=0;k<8;++k)a[c][k]/=d;for(int r=0;r<4;++r)if(r!=c){const float f=a[r][c];for(int k=0;k<8;++k)a[r][k]-=f*a[c][k];}}for(int r=0;r<4;++r)for(int c=0;c<4;++c)out.m[r*4+c]=a[r][c+4];return true;}
+Float3 add(const Float3& a, const Float3& b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+Float3 sub(const Float3& a, const Float3& b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+Float3 mul(const Float3& a, float b) { return {a.x * b, a.y * b, a.z * b}; }
+float dot(const Float3& a, const Float3& b) { return a.x*b.x + a.y*b.y + a.z*b.z; }
+float length2(const Float3& v) { return dot(v, v); }
+float length(const Float3& v) { return std::sqrt(length2(v)); }
+
+Quaternion qmul(const Quaternion& a, const Quaternion& b) {
+    return {a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
+            a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
+            a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
+            a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z};
+}
+
+Mat4f identity() {
+    Mat4f m{};
+    m.m[0] = m.m[5] = m.m[10] = m.m[15] = 1;
+    return m;
+}
+
+// Row-major: r[row][col] = sum_k a[row][k] * b[k][col].
+Mat4f multiply(const Mat4f& a, const Mat4f& b) {
+    Mat4f r{};
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 4; ++col) {
+            for (int k = 0; k < 4; ++k) {
+                r.m[row*4 + col] += a.m[row*4 + k] * b.m[k*4 + col];
+            }
+        }
+    }
+    return r;
+}
+
+// TRS -> row-major matrix. Columns carry the scale, translation sits in the
+// fourth column (indices 3/7/11), matching transform_point below.
+Mat4f local_matrix(const AnimationTransform& t) {
+    Quaternion q = t.rotation;
+    const float n = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
+    if (n > 1e-12f) {
+        q.x /= n;
+        q.y /= n;
+        q.z /= n;
+        q.w /= n;
+    }
+
+    Mat4f m = identity();
+
+    const float xx = q.x*q.x, yy = q.y*q.y, zz = q.z*q.z;
+    const float xy = q.x*q.y, xz = q.x*q.z, yz = q.y*q.z;
+    const float wx = q.w*q.x, wy = q.w*q.y, wz = q.w*q.z;
+
+    m.m[0]  = (1 - 2*(yy + zz)) * t.scale.x;
+    m.m[1]  = (2 * (xy - wz))   * t.scale.y;
+    m.m[2]  = (2 * (xz + wy))   * t.scale.z;
+    m.m[4]  = (2 * (xy + wz))   * t.scale.x;
+    m.m[5]  = (1 - 2*(xx + zz)) * t.scale.y;
+    m.m[6]  = (2 * (yz - wx))   * t.scale.z;
+    m.m[8]  = (2 * (xz - wy))   * t.scale.x;
+    m.m[9]  = (2 * (yz + wx))   * t.scale.y;
+    m.m[10] = (1 - 2*(xx + yy)) * t.scale.z;
+    m.m[3]  = t.translation.x;
+    m.m[7]  = t.translation.y;
+    m.m[11] = t.translation.z;
+    return m;
+}
+
+Float3 transform_point(const Mat4f& m, const Float3& p) {
+    return {m.m[0]*p.x + m.m[1]*p.y + m.m[2]*p.z  + m.m[3],
+            m.m[4]*p.x + m.m[5]*p.y + m.m[6]*p.z  + m.m[7],
+            m.m[8]*p.x + m.m[9]*p.y + m.m[10]*p.z + m.m[11]};
+}
+
+// Gauss-Jordan with partial pivoting on the augmented [source | I] tableau.
+bool inverse(const Mat4f& source, Mat4f& out) {
+    float a[4][8]{};
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            a[r][c] = source.m[r*4 + c];
+            a[r][c+4] = (r == c) ? 1.0f : 0.0f;
+        }
+    }
+
+    for (int c = 0; c < 4; ++c) {
+        int pivot = c;
+        for (int r = c + 1; r < 4; ++r) {
+            if (std::fabs(a[r][c]) > std::fabs(a[pivot][c])) pivot = r;
+        }
+        if (std::fabs(a[pivot][c]) < 1e-12f) return false;
+
+        for (int k = 0; k < 8; ++k) std::swap(a[c][k], a[pivot][k]);
+
+        const float d = a[c][c];
+        for (int k = 0; k < 8; ++k) a[c][k] /= d;
+
+        for (int r = 0; r < 4; ++r) {
+            if (r != c) {
+                const float f = a[r][c];
+                for (int k = 0; k < 8; ++k) a[r][k] -= f * a[c][k];
+            }
+        }
+    }
+
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) out.m[r*4 + c] = a[r][c+4];
+    }
+    return true;
+}
 struct BindJoint { Float3 position{}; Quaternion rotation{}; float radius=1; Mat4f world{}; };
 bool bind_joints(const CanonicalRig&rig, std::vector<BindJoint>&out){
     if (rig.joints.empty() || rig.joints.size() > kMaxJoints) return false;
