@@ -147,6 +147,16 @@ struct FifoQuit {
     using Result = matter::evt::CommandResult<bool>;
 };
 
+// Drives the transport the toolbar drives, so a headless run can capture a
+// moving frame. Animated defects are invisible at rest -- a stopped editor
+// holds the bind pose, where the skinned and static lanes coincide exactly.
+struct FifoSimTransport {
+    MT_COMMAND_NAME("fifo.sim_transport");
+    using Result = matter::evt::CommandResult<bool>;
+    enum class Action { Play, Pause, Step, Stop };
+    Action action = Action::Play;
+};
+
 }  // namespace viewer
 
 #endif  // VIEWER_VIEWER_COMMANDS_H

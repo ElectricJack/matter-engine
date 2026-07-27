@@ -486,7 +486,11 @@ bool AnimationSystems::refresh_service_binding(const AnimationRuntimeBindingLeas
     if(candidate.targets.size()!=descriptor.targets.size()) {
         candidate.targets.resize(descriptor.targets.size());
         candidate.desired_world.resize(descriptor.targets.size());
-        for(size_t i=0;i<candidate.targets.size();++i) candidate.targets[i].enabled=descriptor.targets[i].enabled;
+        // Seed the evaluated weight from the declared enable state rather than
+        // letting it start live and fade. A target created disabled must be a
+        // no-op on its FIRST solve, not one smoothing step later -- the fade
+        // exists for a runtime disable, where the pose is already valid.
+        for(size_t i=0;i<candidate.targets.size();++i) { candidate.targets[i].enabled=descriptor.targets[i].enabled; candidate.targets[i].evaluated_weight=descriptor.targets[i].enabled?1.0f:0.0f; }
     }
     for(size_t i=0;i<candidate.targets.size();++i) {
         // Controller-owned values are preserved; public API owns external values.

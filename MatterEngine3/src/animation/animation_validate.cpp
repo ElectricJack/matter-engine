@@ -472,7 +472,19 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
             const int startIndex=find_joint(build,build.targets[i].start_joint); const Quaternion startRot=startIndex>=0?bind_model_rotation(build,parents,startIndex):Quaternion{0,0,0,1};
             const Float3 a=startIndex>=0?rotate_inverse(startRot,{midPos.x-startPos.x,midPos.y-startPos.y,midPos.z-startPos.z}):Float3{};
             const Float3 b=startIndex>=0?rotate_inverse(startRot,{endPos.x-startPos.x,endPos.y-startPos.y,endPos.z-startPos.z}):Float3{};
-            Float3 axis{a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x};
+            // Ozz's IKTwoBoneJob measures the mid joint's CURRENT angle with a
+            // sign reference of dot(cross(start_mid, mid_axis), mid_end): the
+            // bind bend must read POSITIVE or the solver treats the chain as
+            // bent backward and "corrects" through the straight position --
+            // a 2*angle somersault about the hinge that preserves every joint
+            // POSITION (the start correction re-aims the effector) while
+            // twisting the chain's rotations, i.e. invisible to any position
+            // probe and devastating to skinning.  With axis = start_mid x
+            // mid_end that dot is -|start_mid x mid_end|^2 < 0 for EVERY
+            // non-collinear bind chain, so the axis must be the opposite
+            // cross order.  Note b = start->end, so mid_end x start_mid
+            // equals cross(b, a).
+            Float3 axis{b.y*a.z-b.z*a.y, b.z*a.x-b.x*a.z, b.x*a.y-b.y*a.x};
             const float len=std::sqrt(axis.x*axis.x+axis.y*axis.y+axis.z*axis.z);
             if (len > 1e-6f) { axis.x/=len; axis.y/=len; axis.z/=len; target.bend_axis=axis; }
             if (target.has_pole) { const float pn=std::sqrt(target.pole.x*target.pole.x+target.pole.y*target.pole.y+target.pole.z*target.pole.z); if(pn>1e-6f){target.pole.x/=pn;target.pole.y/=pn;target.pole.z/=pn; int rootAuth=-1; for(size_t ri=0;ri<parents.size();++ri)if(parents[ri]<0){rootAuth=(int)ri;break;} if(rootAuth>=0) target.pole=rotate_inverse(build.rig.joints[rootAuth].local.rotation,target.pole);} }

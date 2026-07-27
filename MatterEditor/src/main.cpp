@@ -1249,6 +1249,16 @@ int main() {
     bool selected_world_reported = false;
     const bool test_resize = std::getenv("MATTER_TEST_RESIZE") != nullptr;
     const bool hide_ui = std::getenv("MATTER_HIDE_UI") != nullptr;
+    if (const char* scale = std::getenv("MATTER_TIME_SCALE")) {
+        const float value = static_cast<float>(std::atof(scale));
+        if (std::isfinite(value) && value >= viewer::kToolbarMinTimeScale &&
+            value <= viewer::kToolbarMaxTimeScale)
+            ui.set_sim_time_scale(value);
+        else
+            std::fprintf(stderr, "MATTER_TIME_SCALE ignored: '%s' outside [%.2f, %.2f]\n",
+                         scale, viewer::kToolbarMinTimeScale,
+                         viewer::kToolbarMaxTimeScale);
+    }
     bool resize_exercised = false;
     if (hide_ui) {
         std::printf("viewer: UI hidden by MATTER_HIDE_UI\n");
@@ -1414,6 +1424,30 @@ int main() {
         matter::evt::CommandScope::App, app_lane, [&](const viewer::FifoQuit&) {
             quit_requested = true;
             return viewer::FifoQuit::Result::succeeded(true);
+        });
+    // Same SimulationControl calls the toolbar buttons make, so a FIFO-driven
+    // capture exercises the identical transport path the UI does.
+    auto reg_fifo_sim = registry.must_register_handler<viewer::FifoSimTransport>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::FifoSimTransport& cmd) {
+            using Action = viewer::FifoSimTransport::Action;
+            std::string sim_err;
+            bool ok = false;
+            switch (cmd.action) {
+                case Action::Play: ok = sim_control.play(session->ecs(), sim_err); break;
+                case Action::Pause: ok = sim_control.pause(sim_err); break;
+                case Action::Step: ok = sim_control.step(sim_err); break;
+                case Action::Stop: ok = sim_control.stop(session->ecs(), sim_err); break;
+            }
+            if (!ok) {
+                std::fprintf(stderr, "sim transport: %s\n", sim_err.c_str());
+                return viewer::FifoSimTransport::Result::failed(sim_err);
+            }
+            if (cmd.action == Action::Stop) {
+                selection_set.clear();
+                editor_model.clear_selection();
+            }
+            return viewer::FifoSimTransport::Result::succeeded(true);
         });
 
     // ---- E5c scene-edit handlers (ActiveSession; SceneService) --------------
@@ -1639,6 +1673,23 @@ int main() {
                     std::printf("wireframe: not available in Vulkan milestone\n");
                 } else if (line == "quit") {
                     registry.dispatch(viewer::FifoQuit{});
+                } else if (std::sscanf(line.c_str(), "timescale %f", &c[0]) == 1) {
+                    if (std::isfinite(c[0]) && c[0] >= viewer::kToolbarMinTimeScale &&
+                        c[0] <= viewer::kToolbarMaxTimeScale)
+                        ui.set_sim_time_scale(c[0]);
+                    else
+                        std::printf("timescale: %.3f outside [%.2f, %.2f]\n", c[0],
+                                    viewer::kToolbarMinTimeScale,
+                                    viewer::kToolbarMaxTimeScale);
+                } else if (line == "play" || line == "pause" ||
+                           line == "step" || line == "sim stop") {
+                    using Action = viewer::FifoSimTransport::Action;
+                    viewer::FifoSimTransport cmd;
+                    cmd.action = line == "play"  ? Action::Play
+                               : line == "pause" ? Action::Pause
+                               : line == "step"  ? Action::Step
+                                                 : Action::Stop;
+                    registry.dispatch(cmd);
                 } else if (!line.empty()) {
                     std::printf("cmd: unrecognized '%s'\n", line.c_str());
                 }
@@ -1873,7 +1924,12 @@ int main() {
         if (bake_ready) ui.ensure_streaming_anchor(*session);
         ui.update_sector_streaming(*session, frame_camera);
         matter::TickDesc tick{};
-        tick.frame_delta_seconds = dt;
+        // Slow motion scales the frame delta only. fixed_delta_seconds is left
+        // alone so the fixed step keeps its size and simply occurs less often;
+        // scaling it would change what the simulation does, not how fast it
+        // runs. A single-frame Step is exempt -- it must advance one whole
+        // fixed step regardless of the inspection rate.
+        tick.frame_delta_seconds = dt * ui.sim_time_scale();
         if (sim_control.should_advance_fixed()) {
             // Play mode: run physics normally.
         } else if (sim_control.consume_pending_step()) {

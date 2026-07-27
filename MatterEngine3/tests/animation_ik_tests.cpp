@@ -164,4 +164,63 @@ void test_orientation_match_survives_large_parent_rotation(){
     }
 }
 }
-int main(){test_chain();test_end_effector_matches_target_orientation();test_pole_conversion_is_equivariant_under_large_root_rotation();test_orientation_match_survives_large_parent_rotation();return check_summary();}
+// Regression for the AnimatedRigGallery leg defect: a chain whose bind bend
+// plane is far from the z axis (the gallery leg's hinge is nearly -x), solved
+// to a target it ALREADY satisfies, must be a near-no-op.  Ozz's IKTwoBoneJob
+// treats mid_axis's sign as the valid bend side: with the axis inverted the
+// current bend reads as "bent backward", the solver picks the mirrored knee
+// configuration, and rotate_plane rolls the chain ~180 degrees about the
+// start-target axis to restore the pole side.  Every joint POSITION lands
+// exactly on the bind pose -- only the chain ROTATIONS carry the half-turn
+// roll -- so asserting positions alone can never catch it.
+void test_rest_satisfied_target_preserves_chain_rotations(){
+    RigDefinition rig;
+    const auto at3=[](float x,float y,float z){AnimationTransform t;t.translation={x,y,z};return t;};
+    // Gallery leg geometry: thigh and shank nearly straight, bend out of the
+    // x-y plane, end below the start.
+    rig.joints={{"root","",at3(0,0,0),1,src()},
+                {"hip","root",at3(0.4f,1.0f,0.0f),1,src()},
+                {"knee","hip",at3(0.05f,-0.95f,0.14f),1,src()},
+                {"foot","knee",at3(0.10f,-0.82f,0.40f),1,src()}};
+    Diagnostics d;OzzSkeleton s;CHECK(build_skeleton(rig,s,d),"leg fixture builds");
+    const Float3 a{0.05f,-0.95f,0.14f}, m{0.10f,-0.82f,0.40f};
+    // Ozz convention: mid_axis = cross(mid_end, start_mid), the axis the
+    // canonicalizer must derive (animation_validate.cpp).
+    Float3 axis{m.y*a.z-m.z*a.y, m.z*a.x-m.x*a.z, m.x*a.y-m.y*a.x};
+    const float axis_len=std::sqrt(axis.x*axis.x+axis.y*axis.y+axis.z*axis.z);
+    axis={axis.x/axis_len,axis.y/axis_len,axis.z/axis_len};
+    CanonicalTarget t{};t.chain={1,2,3};t.bend_axis=axis;t.soften=1.0f;
+    // Pole on the bind-plane side so plane alignment is ~zero too.
+    t.has_pole=true;t.pole={-0.183f,-0.298f,-0.927f};
+    AnimationTargetState st{};st.evaluated.translation={0.55f,-0.77f,0.54f};st.evaluated_weight=1.0f;
+    const auto run=[&](const Float3& bend,std::vector<AnimationTransform>& locals,std::vector<Mat4f>& models){
+        CanonicalTarget target=t;target.bend_axis=bend;
+        locals.clear();for(auto&j:rig.joints)locals.push_back(j.local);
+        models.clear();CHECK(local_to_model(s,locals,models),"leg fixture model conversion");
+        return solve_animation_target(target,s,st,locals,models);
+    };
+    std::vector<AnimationTransform> locals;std::vector<Mat4f> models;
+    CHECK(run(axis,locals,models),"rest-satisfied solve succeeds");
+    bool positions_hold=true;
+    const Float3 bind_positions[3]={{0.4f,1.0f,0.0f},{0.45f,0.05f,0.14f},{0.55f,-0.77f,0.54f}};
+    for(int k=0;k<3;++k){
+        const Mat4f& mm=models[t.chain[k]];
+        const float dx=mm.m[3]-bind_positions[k].x,dy=mm.m[7]-bind_positions[k].y,dz=mm.m[11]-bind_positions[k].z;
+        if(std::sqrt(dx*dx+dy*dy+dz*dz)>0.05f)positions_hold=false;
+    }
+    CHECK(positions_hold,"rest-satisfied solve keeps chain joint positions at bind");
+    // Bind local rotations are identity, so |w| close to 1 means the solve
+    // did not roll the chain.  The mirrored-configuration bug leaves w near
+    // zero (a ~180 degree roll) while every position above still passes.
+    CHECK(std::fabs(locals[1].rotation.w)>0.99f&&std::fabs(locals[2].rotation.w)>0.99f,
+          "rest-satisfied solve leaves hip and knee rotations at bind");
+    // The inverted axis must produce the documented failure: exact positions,
+    // rolled rotations.  This pins the ozz sign convention itself, so a change
+    // in vendored ozz behavior surfaces here instead of as art corruption.
+    std::vector<AnimationTransform> flipped_locals;std::vector<Mat4f> flipped_models;
+    CHECK(run({-axis.x,-axis.y,-axis.z},flipped_locals,flipped_models),"inverted-axis solve still reports success");
+    CHECK(std::fabs(flipped_locals[1].rotation.w)<0.9f||std::fabs(flipped_locals[2].rotation.w)<0.9f,
+          "inverted bend axis rolls the chain (ozz bent-side convention)");
+}
+
+int main(){test_chain();test_end_effector_matches_target_orientation();test_pole_conversion_is_equivariant_under_large_root_rotation();test_orientation_match_survives_large_parent_rotation();test_rest_satisfied_target_preserves_chain_rotations();return check_summary();}
