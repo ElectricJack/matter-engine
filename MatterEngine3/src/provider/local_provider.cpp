@@ -38,6 +38,7 @@
 #include <memory>
 #include <new>         // std::bad_alloc (Task 7 fix: fetch_parts skip-and-continue)
 #include <regex>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>   // std::exception (Task 7 fix: fetch_parts skip-and-continue)
@@ -627,6 +628,33 @@ bool LocalProvider::ensure_part_flattened(uint64_t part_hash) {
     if (part_asset::is_cache_artifact_header_compatible(
             flat_abs_path, part_hash, part_asset::kFormatVersionFlat))
         return true;
+
+    // An ANIMATED Part has no static flat representation and must not be
+    // flattened. It renders through the ECS dynamic lane -- PartStore loads it
+    // together with its committed animation bundle (see the ANLK branch in
+    // PartStore's candidate loader) -- and part_flatten's load_v2 deliberately
+    // refuses an ANLK-bearing Part, because a flat is a static snapshot and a
+    // skinned Part has no single static pose to snapshot.
+    //
+    // So the flatten was never wanted here: reporting "flatten failed" for it
+    // described a job that should not have been attempted. Returning true means
+    // "nothing further is required of this Part", which is what every caller
+    // actually asks. Callers that go on to read the .flat.part already handle
+    // its absence (they re-check is_cache_artifact_header_compatible first).
+    //
+    // Reachable only since the editor gained the animation bake host: while
+    // clip compilation failed closed, no animated Part ever reached a provider.
+    {
+        std::optional<part_asset::PartAnimationLink> animation_link;
+        const std::string part_abs_path =
+            root + "/" + part_asset::cache_path_resolved(part_hash);
+        // A present-but-invalid ANLK returns false and falls through to the
+        // flatten below, which fails and reports -- corruption must stay loud.
+        if (part_asset::load_animation_link(part_abs_path, part_hash, animation_link) &&
+            animation_link)
+            return true;
+    }
+
     part_flatten::FlattenResult fr =
         part_flatten::flatten_part(root, part_hash);
     if (fr.ok) {
