@@ -195,6 +195,8 @@ struct RunResult {
     std::vector<uint64_t> fixed_pose_checksums;
     std::vector<uint64_t> marker_sequence;
     std::vector<uint64_t> root_motion_sequence;
+    size_t root_backward_ticks = 0;
+    double root_total_travel = 0.0;
     uint64_t query_count = 0;
     uint64_t evaluated_joints = 0;
     double cpu_animation_ms = 0.0;
@@ -269,6 +271,12 @@ RunResult run_fixed_pattern(const GalleryBundle& gallery, const std::vector<floa
             uint32_t bits = 0;
             std::memcpy(&bits, &motion.delta.translation.x, sizeof(bits));
             result.root_motion_sequence.push_back(bits);
+            // The authored walk travels +x only. A negative tick means a loop
+            // boundary was resolved to the wrong end of the cycle and the
+            // entity snapped back a whole cycle -- the failure mode that made
+            // the walk unshippable and got its root ramp deleted.
+            if (motion.delta.translation.x < -1e-6f) ++result.root_backward_ticks;
+            result.root_total_travel += motion.delta.translation.x;
         }
         ++frame;
     }
@@ -474,6 +482,14 @@ int main() {
               std::any_of(sixty.root_motion_sequence.begin(), sixty.root_motion_sequence.end(),
                           [](uint64_t bits) { return uint32_t(bits) != 0u; }),
           "C4 real gallery walk blend emits nonempty, nonzero root motion");
+    CHECK(sixty.root_backward_ticks == 0 && mixed.root_backward_ticks == 0,
+          "C4 walk root motion never travels backwards across a loop boundary");
+    // 1,000 fixed ticks of 0.125 s at the authored 0.8 m per 0.8 s cycle is
+    // 125 m. The band absorbs ozz key compression and the opening tick, which
+    // has no elapsed clip time; a single mis-resolved boundary costs a whole
+    // 0.8 m cycle and lands far outside it.
+    CHECK(sixty.root_total_travel > 123.0 && sixty.root_total_travel < 126.0,
+          "C4 walk root motion accumulates the authored travel over 1,000 ticks");
     CHECK(sixty.query_count >= 2000 && mixed.query_count >= 2000,
           "C4 real procedural gait executes both fixed ground queries on every evaluated tick");
     CHECK(checksum_sequence(sixty.root_motion_sequence) == checksum_sequence(mixed.root_motion_sequence),

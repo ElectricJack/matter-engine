@@ -116,12 +116,14 @@ class AnimatedRigGallery extends Part {
     this.marker(0.0, 'idleStart');
     this.endClip();
 
-    // Walks in place: a looping generate() clip appends a final sample copied
-    // exactly from sample zero (spec loop-closure), so an absolute root ramp
-    // like translate(phase * 0.8, 0, 0) folds back to zero inside the last
-    // segment -- root-motion extraction then faithfully walks the entity
-    // forward and lurches it back every cycle. Travel needs explicit keys
-    // authoring the wrap discontinuity, not a generated ramp.
+    // Travels 0.8 m per cycle. The generated ramp stops one segment short of
+    // the cycle end (a looping generate() emits phases 0 .. (segments-1)/
+    // segments), and loop closure would otherwise fold the root back to sample
+    // zero -- which walked the entity forward and snapped it back every cycle.
+    // The explicit key at t == duration spells the wrap discontinuity, and
+    // end_clip now honours an authored end key instead of closing over it.
+    // Root-motion extraction samples the boundary as `duration`, so the
+    // 0 -> 0.8 ramp reads as continuous forward travel.
     this.beginClip('walk', { duration: 0.8, sampleRate: 16, loop: true });
     this.generate(phase => {
       const swing = Math.sin(phase * Math.PI * 2);
@@ -130,7 +132,11 @@ class AnimatedRigGallery extends Part {
       this.at('leftKnee'); this.rotateZ(Math.max(0, -swing) * 0.48);
       this.at('rightKnee'); this.rotateZ(Math.max(0, swing) * 0.48);
       this.at('machineBoom'); this.rotateY(swing * 0.18);
+      this.at('root'); this.translate(phase * 0.8, 0, 0);
     });
+    // Root binds at [0, 1.2, 0]; this is that bind pose displaced by the full
+    // cycle's travel, so the ramp reaches 0.8 instead of stopping at 0.75.
+    this.key('root', 0.8, { translation: [0.8, 1.2, 0] });
     this.marker(0.0, 'leftStep');
     this.marker(0.4, 'rightStep');
     this.endClip();

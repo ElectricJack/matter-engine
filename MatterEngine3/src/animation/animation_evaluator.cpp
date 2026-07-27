@@ -171,14 +171,31 @@ float clip_ratio(const RuntimeGraphClip& clip,float time) {
     return time/clip.duration;
 }
 
-AnimationTransform sample_root(const RuntimeGraphClip& clip, float time, bool boundary_end = false) {
+// Which end of a cycle a sample time sits on, when the caller knows that time
+// is exactly a loop boundary.
+//
+// fmod cannot answer this. k*duration is not representable for most k, so the
+// wrapped value lands just BELOW `duration` about as often as just above 0 --
+// and on a clip whose root actually travels, those two answers are a whole
+// cycle of displacement apart. The old code tested only the near-zero side, so
+// whenever the boundary rounded the other way the following segment sampled the
+// END of the clip where it meant the START, and the tick reported a full cycle
+// of travel backwards. The caller always knows structurally which edge it
+// wants, so it says so rather than leaving it to the rounding.
+enum class LoopEdge { Interior, CycleStart, CycleEnd };
+
+AnimationTransform sample_root(const RuntimeGraphClip& clip, float time,
+                               LoopEdge edge = LoopEdge::Interior) {
     AnimationTransform root{};
     if (clip.duration <= 0.0f) return root;
     float ratio = 0.0f;
     if (clip.loop) {
-        ratio = std::fmod(time, clip.duration);
-        if (ratio < 0.0f) ratio += clip.duration;
-        if (boundary_end && std::fabs(ratio) < 1e-5f && std::fabs(time) > 1e-5f) ratio = clip.duration;
+        if (edge == LoopEdge::CycleEnd) ratio = clip.duration;
+        else if (edge == LoopEdge::CycleStart) ratio = 0.0f;
+        else {
+            ratio = std::fmod(time, clip.duration);
+            if (ratio < 0.0f) ratio += clip.duration;
+        }
     } else ratio = std::max(0.0f, std::min(clip.duration, time));
     std::vector<AnimationTransform> locals;
     OzzSampleContext context;
@@ -193,17 +210,46 @@ AnimationTransform inverse_delta(const AnimationTransform& value) {
     return inverse;
 }
 
+// True when `time` sits on a cycle boundary to within float representation
+// error. The tolerance has to grow with the magnitude of `time`: clip time is a
+// float that keeps accumulating, so by t = 125 s an ulp is already ~8e-6 and a
+// fixed absolute epsilon stops recognising boundaries it recognised at t = 0.
+bool on_loop_boundary(float time, float duration) {
+    if (duration <= 0.0f) return false;
+    float wrapped = std::fmod(time, duration);
+    if (wrapped < 0.0f) wrapped += duration;
+    const float tolerance = std::max(1e-4f * duration, std::fabs(time) * 1e-6f);
+    return wrapped < tolerance || (duration - wrapped) < tolerance;
+}
+
 AnimationTransform forward_clip_root_delta(const RuntimeGraphClip& clip, float previous, float current) {
     AnimationTransform accumulated{};
     if (current <= previous || clip.duration <= 0.0f) return accumulated;
     if (!clip.loop) return root_motion_delta(sample_root(clip, previous), sample_root(clip, current));
     float cursor = previous;
+    // Every segment after the first starts exactly on the boundary the previous
+    // one ended at, so it must sample the cycle START -- and the next boundary
+    // is one whole duration further on. Deriving that boundary with floor()
+    // again would re-round the same value that already sits on a boundary and
+    // could land back on `cursor`, stalling the walk without advancing.
+    //
+    // The FIRST segment needs the same treatment whenever the caller's window
+    // happens to open exactly on a cycle boundary -- which is not rare, it is
+    // every tick whose fixed step divides into the cycle (a 0.125 s step on a
+    // 0.8 s cycle aligns every 32 ticks). Starting a forward walk from a
+    // boundary always means the cycle START, so resolve it that way rather than
+    // letting fmod round it to the far end and report a cycle of travel lost.
+    bool cursor_on_boundary = on_loop_boundary(previous, clip.duration);
     constexpr uint32_t kMaxSegments = 4096;
     for (uint32_t segment = 0; cursor < current && segment < kMaxSegments; ++segment) {
-        const float boundary = (std::floor(cursor / clip.duration) + 1.0f) * clip.duration;
+        const float boundary = cursor_on_boundary
+                                   ? cursor + clip.duration
+                                   : (std::floor(cursor / clip.duration) + 1.0f) * clip.duration;
         const float next = std::min(current, boundary);
-        const AnimationTransform delta = root_motion_delta(sample_root(clip, cursor),
-                                                            sample_root(clip, next, next == boundary));
+        const AnimationTransform delta = root_motion_delta(
+            sample_root(clip, cursor,
+                        cursor_on_boundary ? LoopEdge::CycleStart : LoopEdge::Interior),
+            sample_root(clip, next, next == boundary ? LoopEdge::CycleEnd : LoopEdge::Interior));
         accumulated.translation.x += delta.translation.x;
         accumulated.translation.y += delta.translation.y;
         accumulated.translation.z += delta.translation.z;
@@ -212,6 +258,7 @@ AnimationTransform forward_clip_root_delta(const RuntimeGraphClip& clip, float p
                                            delta.rotation.w*accumulated.rotation.z + delta.rotation.x*accumulated.rotation.y - delta.rotation.y*accumulated.rotation.x + delta.rotation.z*accumulated.rotation.w,
                                            delta.rotation.w*accumulated.rotation.w - delta.rotation.x*accumulated.rotation.x - delta.rotation.y*accumulated.rotation.y - delta.rotation.z*accumulated.rotation.z});
         cursor = next;
+        cursor_on_boundary = next == boundary;
     }
     return accumulated;
 }

@@ -324,7 +324,25 @@ void DslState::end_clip() {
     auto& clip=animation_->authored.clips.back();
     for(auto& track:clip.tracks) std::stable_sort(track.keys.begin(),track.keys.end(),[](const auto& left,const auto& right){return left.time<right.time;});
     std::stable_sort(clip.markers.begin(),clip.markers.end(),[](const auto& left,const auto& right){return left.time<right.time;});
-    if(clip.loop){for(auto& t:clip.tracks)if(!t.keys.empty())t.keys.push_back({clip.duration,t.keys.front().value,rig_source_});}
+    // Loop closure: a cyclic track has to arrive back at its starting value at
+    // the end of the cycle, so the wrap is seamless.  That is right for a
+    // swinging hip and wrong for a travelling root: a track the author keyed
+    // explicitly AT clip.duration is spelling a wrap DISCONTINUITY on purpose.
+    // Root-motion extraction is built to consume exactly that -- it samples the
+    // loop boundary as `duration` rather than wrapping to 0 (see
+    // forward_clip_root_delta) and turns the end-of-cycle displacement into
+    // entity travel.  Appending the folded-back value on top silently deleted
+    // the authored travel and left the entity walking forward then snapping
+    // back each cycle, which is why the gallery walk had to be re-authored in
+    // place.  An explicit end key now wins; everything else closes as before.
+    if (clip.loop) {
+        for (auto& t : clip.tracks) {
+            if (t.keys.empty()) continue;
+            // Keys are sorted above, so back() is the latest authored time.
+            if (std::fabs(t.keys.back().time - clip.duration) <= 1e-6f) continue;
+            t.keys.push_back({clip.duration, t.keys.front().value, rig_source_});
+        }
+    }
     AnimationBuild validation = animation_->authored; validation.graph.nodes.push_back({"__clip_validation_output",{},true,matter::animation::EvaluationCadence::Fixed,rig_source_}); matter::animation::Diagnostics vd; if(!matter::animation::validate_animation_build(validation,vd)){if(!vd.items.empty())rig_source_=vd.items.front().source;record_animation_diagnostics(vd); set_rig_error(vd.items.empty()?"clip validation failed":vd.items.front().message,"clip-validation");return;}
     // Clip compilation runs wherever a part is baked. There is no separate
     // shipped-runtime binary to protect from the Ozz offline builders: a game
