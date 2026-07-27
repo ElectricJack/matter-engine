@@ -8,6 +8,8 @@
 #include <cassert>
 #include <climits>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <set>
@@ -2706,6 +2708,44 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
     write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
 }
 
+void VkSceneRenderer::probe_skin_raster_draws(
+    const std::vector<VkSkinRasterDraw>& draws) const {
+    static const bool enabled = [] {
+        const char* value = std::getenv("MATTER_SKIN_PROBE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    if (!enabled) return;
+    // raster.vert fetches skinned vertex (index - local_vertex_base) from the
+    // draw's own output window. An index outside [local_vertex_base,
+    // +vertex_count) reads memory the compute pass never wrote this frame --
+    // the arenas are never cleared, so it decodes as plausible stale geometry
+    // rather than an obvious crash. Report it loudly instead.
+    for (const VkSkinRasterDraw& draw : draws) {
+        if (draw.first_index > index_staging_.size() ||
+            draw.index_count > index_staging_.size() - draw.first_index)
+            continue;
+        uint32_t outside = 0;
+        uint32_t lowest = UINT32_MAX;
+        uint32_t highest = 0;
+        for (uint32_t offset = 0; offset != draw.index_count; ++offset) {
+            const uint32_t vertex = index_staging_[draw.first_index + offset];
+            lowest = std::min(lowest, vertex);
+            highest = std::max(highest, vertex);
+            if (vertex < draw.local_vertex_base ||
+                vertex - draw.local_vertex_base >= draw.vertex_count)
+                ++outside;
+        }
+        if (outside == 0) continue;
+        fprintf(stderr,
+                "[skin-probe] instance=%u gen=%u cluster=%u lod=%u "
+                "outside=%u/%u indices=[%u,%u] window=[%u,%u)\n",
+                draw.instance_slot, draw.instance_generation, draw.cluster,
+                draw.lod, outside, draw.index_count, lowest, highest,
+                draw.local_vertex_base,
+                draw.local_vertex_base + draw.vertex_count);
+    }
+}
+
 bool VkSceneRenderer::record_animation_skinning(
     const matter::VulkanFrame& frame, FrameResources& resources,
     std::string& error) {
@@ -2734,6 +2774,7 @@ bool VkSceneRenderer::record_animation_skinning(
                     staged.raster_draws, validation);
             resources.skin_raster_ready =
                 !resources.ready_skin_raster_draws.empty();
+            probe_skin_raster_draws(resources.ready_skin_raster_draws);
         };
     const auto downgrade_gpu_skin =
         [this, &resources, &staged, &frame, &error, &publish_ready_draws](

@@ -339,12 +339,20 @@ void mark_animation_skin_raster_records(
     std::vector<VkAnimationBoundsGpuRecord>& records,
     const std::vector<VkSkinRasterDraw>& draws) noexcept {
     for (VkAnimationBoundsGpuRecord& record : records) {
+        // Deliberately LOD-agnostic. An accepted skin draw replaces its
+        // (instance, generation, cluster) entirely, so every LOD record of that
+        // cluster must carry the exclusion. The renderer's CPU LOD pick
+        // (select_cluster_lod_view) and cull.comp's threshold loop are separate
+        // implementations reading an oscillating animated bound; when they
+        // disagree at a threshold crossing, a LOD-matched flag leaves the
+        // GPU-selected static record unflagged and the bind-pose cluster draws
+        // on top of the skinned one. Cluster and generation still gate, so
+        // per-cluster budget ownership and stale generations are unaffected.
         const bool skinned = std::any_of(
             draws.begin(), draws.end(), [&record](const VkSkinRasterDraw& draw) {
                 return draw.instance_slot == record.instance_slot &&
                        draw.instance_generation ==
                            record.instance_generation &&
-                       draw.lod == record.lod &&
                        draw.cluster == record.cluster_index;
             });
         if (skinned) record.flags |= kVkAnimationBoundsSkinRaster;

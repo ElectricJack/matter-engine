@@ -1128,6 +1128,11 @@ private:
     bool record_animation_skinning(const matter::VulkanFrame& frame,
                                    FrameResources& resources,
                                    std::string& error);
+    // MATTER_SKIN_PROBE=1 diagnostic. Asserts, on the CPU, the invariant the
+    // skinned draw depends on: every index it fetches lies inside the output
+    // window the compute pass actually wrote. Silent unless it is violated.
+    void probe_skin_raster_draws(
+        const std::vector<VkSkinRasterDraw>& draws) const;
     void update_composite_descriptor(FrameResources& frame);
     void update_display_descriptor(VkDescriptorSet set, VkImageView view);
     bool upload_scene_buffers(FrameResources& frame,
