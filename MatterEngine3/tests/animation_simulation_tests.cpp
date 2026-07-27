@@ -590,6 +590,85 @@ void test_debug_snapshot_queries_cannot_perturb_the_simulation() {
     CHECK(!quiet.checkpoints.empty(), "the fixture actually produces a checkpoint to inspect");
 }
 
+// A stopped editor never advances a fixed step, so nothing publishes a pose and
+// every pose-shaped query fails -- which is what left the animation panel blank
+// for a rig that had loaded perfectly well. seed_bind_pose gives a freshly bound
+// animator the rig's bind pose so it can be inspected before anything runs.
+void test_bind_pose_seeds_an_unevaluated_animator() {
+    ecs_runtime::Runtime runtime;
+    AnimationService service;
+    runtime.attach_animation_service(service);
+    const AnimAsset* asset = service.insert_asset({0xB1DEu, {5u, 6u}});
+    TargetChainFixture fixture(1);
+    auto descriptor = std::make_shared<AnimationRuntimeBindingDescriptor>();
+    descriptor->evaluation = fixture.evaluation;
+    descriptor->fixed_work.clip.duration = 1.0f;
+    descriptor->fixed_work.clip.loop = true;
+    descriptor->targets = {
+        fixture.target(0, "hand", TargetDriverKind::External, EvaluationCadence::Frame),
+    };
+    const Animator animator = service.create(asset, target_definition(descriptor, {
+        {"hand", TargetDriverKind::External, EvaluationCadence::Frame, {1, 2, 3}, true},
+    }));
+    CHECK(animator.valid(), "bind-pose fixture creates an animator");
+    if (!animator.valid()) return;
+
+    // Deliberately NO tick: this is the stopped-editor state.
+    AnimationDebugPoseSnapshot before{};
+    CHECK(!runtime.animation_systems().copy_animation_debug_pose(animator.instance, before),
+          "an unevaluated animator has no pose to copy -- the state this fixes");
+
+    // A rig mirroring the fixture's chain: root -> mid -> tip, each offset on X.
+    CanonicalRig rig;
+    AnimationTransform root{};
+    AnimationTransform segment{};
+    segment.translation.x = 1.0f;
+    rig.joints.push_back({"root", kInvalidJoint, root, 1.0f, {}, {}});
+    rig.joints.push_back({"mid", 0, segment, 1.0f, {}, {}});
+    rig.joints.push_back({"tip", 1, segment, 1.0f, {}, {}});
+
+    CHECK(runtime.animation_systems().seed_bind_pose(animator.instance, rig),
+          "seeding publishes a bind pose for a live animator");
+
+    AnimationDebugPoseSnapshot seeded{};
+    CHECK(runtime.animation_systems().copy_animation_debug_pose(animator.instance, seeded),
+          "the seeded animator now answers a debug pose query without ever ticking");
+    CHECK(seeded.model_pose.size() == rig.joints.size() &&
+              seeded.skin_palette.size() == rig.joints.size(),
+          "the seeded pose is parallel to the rig, which is what the draw boundary checks");
+
+    // The chain must actually compose: each joint sits one unit further along X
+    // than its parent. A pose of all-identity would pass a size check and still
+    // draw every bone on top of the root.
+    if (seeded.model_pose.size() == 3) {
+        CHECK(same_float(seeded.model_pose[0].m[3], 0.0f) &&
+                  same_float(seeded.model_pose[1].m[3], 1.0f) &&
+                  same_float(seeded.model_pose[2].m[3], 2.0f),
+              "bind model transforms compose down the parent chain");
+    }
+    // At the bind pose the skinning palette is exactly identity by construction.
+    if (!seeded.skin_palette.empty()) {
+        const Mat4f& palette = seeded.skin_palette[0];
+        CHECK(same_float(palette.m[0], 1.0f) && same_float(palette.m[5], 1.0f) &&
+                  same_float(palette.m[10], 1.0f) && same_float(palette.m[15], 1.0f) &&
+                  same_float(palette.m[3], 0.0f),
+              "the bind-pose skin palette is identity");
+    }
+
+    // Seeding must never overwrite real evaluated state.
+    CHECK(runtime.tick({0.1f, 0.1f, 1}).fixed_steps == 1, "one fixed step evaluates the animator");
+    AnimationDebugPoseSnapshot evaluated{};
+    CHECK(runtime.animation_systems().copy_animation_debug_pose(animator.instance, evaluated),
+          "the evaluated animator still answers a debug pose query");
+    const uint64_t evaluated_tick = evaluated.fixed_tick;
+    CHECK(runtime.animation_systems().seed_bind_pose(animator.instance, rig),
+          "seeding an already-posed animator succeeds as a no-op");
+    AnimationDebugPoseSnapshot after{};
+    CHECK(runtime.animation_systems().copy_animation_debug_pose(animator.instance, after) &&
+              after.fixed_tick == evaluated_tick,
+          "a real evaluated pose is never clobbered by a later seed");
+}
+
 void test_animation_debug_snapshot_copies_evaluated_pose_and_live_targets() {
     ecs_runtime::Runtime runtime;
     AnimationService service;
@@ -1280,6 +1359,7 @@ int main() {
     test_runtime_fixed_and_frame_external_targets_compose_without_fixed_history_mutation();
     test_zero_fixed_step_evaluates_nonlinear_frame_graph_without_advancing_fixed_state();
     test_debug_snapshot_queries_cannot_perturb_the_simulation();
+    test_bind_pose_seeds_an_unevaluated_animator();
     test_animation_debug_snapshot_copies_evaluated_pose_and_live_targets();
     test_animation_debug_draw_contract_rejects_invalid_data_and_rotates_poles();
     if (g_failures) return 1;

@@ -4304,6 +4304,13 @@ void WorldSession::Impl::reconcile_runtime_animation() {
             animation_service.remove(animator.instance);
             continue;
         }
+        // Give the animator a pose before anything evaluates. A stopped editor
+        // never advances a fixed step, so without this every pose-shaped query
+        // fails and the animation panel/overlay show nothing at all for a rig
+        // that loaded perfectly well. The bind pose is the right thing to show
+        // there, and seed_bind_pose is a no-op once a real pose exists.
+        (void)ecs_runtime.animation_systems().seed_bind_pose(
+            animator.instance, runtime_asset->decoded.rig);
         runtime_animation_instances.emplace(
             candidate.entity.id(),
             RuntimeAnimationInstance{

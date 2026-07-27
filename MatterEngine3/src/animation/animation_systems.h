@@ -223,6 +223,19 @@ public:
     bool copy_animation_debug_pose(AnimatorInstanceHandle instance,
                                    AnimationDebugPoseSnapshot& out) const;
 
+    // Publish the rig's BIND pose as this animator's presentation pose, so an
+    // animator that has never been evaluated still has something to show.
+    //
+    // A stopped editor never advances a fixed step, so nothing ever published a
+    // pose and every pose-shaped query failed -- which is what left the Part
+    // Workbench animation tabs blank in exactly the mode an author inspects a
+    // rig in. The bind pose is the correct thing to show there: it is what the
+    // rig looks like before any clip touches it.
+    //
+    // Idempotent and non-destructive: returns true immediately when a pose is
+    // already published, so a real evaluated pose is NEVER clobbered by this.
+    bool seed_bind_pose(AnimatorInstanceHandle instance, const CanonicalRig& rig);
+
 private:
     friend void register_animation_systems(flecs::world&, AnimationSystems&);
     void run_fixed_pre(flecs::world& world, double fixed_delta);

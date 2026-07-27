@@ -20,6 +20,41 @@ uint64_t animator_key(AnimatorInstanceHandle instance) {
     return (uint64_t(instance.slot_index) << 32u) | instance.generation;
 }
 
+// Row-major TRS -> Mat4f, matching the convention every other composition in
+// this file uses (translation in column 3).
+Mat4f transform_to_matrix(const AnimationTransform& value) {
+    Quaternion q = value.rotation;
+    const float length = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    if (length > 1e-12f) { q.x /= length; q.y /= length; q.z /= length; q.w /= length; }
+    const float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+    const float xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
+    const float wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+    Mat4f out{};
+    out.m[0] = (1 - 2 * (yy + zz)) * value.scale.x;
+    out.m[1] = (2 * (xy - wz)) * value.scale.y;
+    out.m[2] = (2 * (xz + wy)) * value.scale.z;
+    out.m[3] = value.translation.x;
+    out.m[4] = (2 * (xy + wz)) * value.scale.x;
+    out.m[5] = (1 - 2 * (xx + zz)) * value.scale.y;
+    out.m[6] = (2 * (yz - wx)) * value.scale.z;
+    out.m[7] = value.translation.y;
+    out.m[8] = (2 * (xz - wy)) * value.scale.x;
+    out.m[9] = (2 * (yz + wx)) * value.scale.y;
+    out.m[10] = (1 - 2 * (xx + yy)) * value.scale.z;
+    out.m[11] = value.translation.z;
+    out.m[15] = 1.0f;
+    return out;
+}
+
+Mat4f multiply_matrix(const Mat4f& a, const Mat4f& b) {
+    Mat4f out{};
+    for (int row = 0; row < 4; ++row)
+        for (int column = 0; column < 4; ++column)
+            for (int k = 0; k < 4; ++k)
+                out.m[row * 4 + column] += a.m[row * 4 + k] * b.m[k * 4 + column];
+    return out;
+}
+
 bool inverse(const Mat4f& source, Mat4f& out) {
     float a[4][8]{};
     for (int row = 0; row < 4; ++row) for (int column = 0; column < 4; ++column) {
@@ -505,6 +540,53 @@ bool AnimationSystems::apply_targets(flecs::world& world, AnimatorInstanceHandle
     (void)frame;
     runtime->second.targets=std::move(candidate);
     return true;
+}
+
+bool AnimationSystems::seed_bind_pose(AnimatorInstanceHandle instance,
+                                      const CanonicalRig& rig) {
+    if (!instance.valid() || rig.joints.empty()) return false;
+    // Never clobber a real pose. Once anything has evaluated, that result is
+    // authoritative and this becomes a no-op for the rest of the animator's
+    // life -- which is what makes it safe to call from a per-frame reconcile.
+    if (pose_snapshots_.latest(instance).instance.valid()) return true;
+
+    const uint32_t count = static_cast<uint32_t>(rig.joints.size());
+    std::vector<AnimationTransform> local_pose(count);
+    std::vector<Mat4f> model_pose(count);
+    std::vector<Mat4f> palette(count);
+
+    for (uint32_t i = 0; i < count; ++i) {
+        const CanonicalJoint& joint = rig.joints[i];
+        local_pose[i] = joint.local;
+
+        // Joints are stored parent-before-child, so one forward pass composes
+        // the whole hierarchy. A parent index that is not strictly earlier
+        // would read an unwritten entry, so treat it as a root instead.
+        const Mat4f local = transform_to_matrix(joint.local);
+        model_pose[i] = (joint.parent != kInvalidJoint && joint.parent < i)
+            ? multiply_matrix(model_pose[joint.parent], local)
+            : local;
+
+        // At the bind pose the skinning palette is exactly identity: the
+        // palette is model * inverse_bind_model, and here model IS the bind
+        // model. Deriving it rather than inverting anything keeps this exact.
+        palette[i] = {};
+        palette[i].m[0] = palette[i].m[5] = palette[i].m[10] = palette[i].m[15] = 1.0f;
+    }
+
+    AnimationPoseSnapshot snapshot{};
+    snapshot.instance = instance;
+    snapshot.fixed_tick = 0;
+    snapshot.frame_serial = 0;
+    snapshot.local_pose = {local_pose.data(), count};
+    snapshot.model_pose = {model_pose.data(), count};
+    // Nothing has moved, so the previous pose is this pose. A zero-velocity
+    // history is what a motion-vector consumer must see for a static rig;
+    // leaving it empty would fail the store's completeness check outright.
+    snapshot.previous_model_pose = {model_pose.data(), count};
+    snapshot.skin_palette = {palette.data(), count};
+    snapshot.previous_skin_palette = {palette.data(), count};
+    return pose_snapshots_.publish(snapshot);
 }
 
 bool AnimationSystems::copy_animation_debug_pose(AnimatorInstanceHandle instance,
