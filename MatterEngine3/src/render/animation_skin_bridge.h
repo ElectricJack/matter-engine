@@ -20,6 +20,14 @@ namespace matter::render {
 struct AnimationSkinnedLod {
     uint64_t part_hash = 0;
     uint32_t source_vertex = 0;
+    // Part-LOCAL first vertex of this range. The shared index buffer stores
+    // PART-LOCAL index values (matter_engine.cpp rebases each mesh by its
+    // offset within the part and no further; vk_scene_renderer never rewrites
+    // them), so a skinned draw must subtract exactly this to land on the
+    // compute output. Subtracting the renderer-global source_vertex instead
+    // over-rebases by the part's arena base -- invisible whenever that base is
+    // 0, which is every fixture but not real content.
+    uint32_t local_vertex_base = 0;
     uint32_t influence_vertex = 0;
     uint32_t vertex_count = 0;
     uint32_t first_index = 0;

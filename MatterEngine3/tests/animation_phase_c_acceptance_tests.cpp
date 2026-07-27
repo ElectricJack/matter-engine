@@ -311,7 +311,7 @@ void exercise_render_handoffs(const GalleryBundle& gallery, const RunResult& run
     const auto influences = skin_influences(gallery.binding);
     const auto bounds = skin_bounds(gallery.asset.resolved_hash, gallery.binding);
     const LodSkinBinding& loaded_lod = gallery.binding.lods.front();
-    render::AnimationSkinnedLod lod{gallery.hash, 0, 0, loaded_lod.vertex_count, 0, 3};
+    render::AnimationSkinnedLod lod{gallery.hash, 0, /*local_vertex_base*/ 0, 0, loaded_lod.vertex_count, 0, 3};
     render::AnimationSkinnedAsset skin_asset{gallery.asset.resolved_hash, 1, &influences, {lod}, &bounds};
     AnimationPoseSnapshotStore snapshots;
     const AnimationPoseSnapshot final_pose = final_pose_view(run);

@@ -8,6 +8,8 @@
 #include <cassert>
 #include <climits>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <set>
@@ -332,6 +334,8 @@ struct RasterRecord {
     const VkSkinRasterDraw* skin_draws;
     uint32_t skin_draw_count;
     uint32_t draw_transform_slots;
+    // First slot of the skin transform tail (see skin_transform_base_).
+    uint32_t skin_transform_base;
     const PartCommandRange* draw_ranges;
     uint32_t draw_range_count;
     uint32_t max_draw_indirect_count;
@@ -374,7 +378,9 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                draw.index_count <= record.index_count - draw.first_index &&
                draw.output_vertex < vertex_count && draw.vertex_count != 0 &&
                draw.vertex_count <= vertex_count - draw.output_vertex &&
-               draw.instance_slot < record.draw_transform_slots &&
+               record.skin_transform_base <= record.draw_transform_slots &&
+               draw.instance_slot < record.draw_transform_slots -
+                                        record.skin_transform_base &&
                draw.output_vertex <= static_cast<uint32_t>(INT32_MAX) &&
                draw.source_vertex <= static_cast<uint32_t>(INT32_MAX);
     };
@@ -508,12 +514,27 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
             const VkDeviceSize skin_offsets[] = {offset, offset};
             vkCmdBindVertexBuffers(command_buffer, 0, 2, skin_buffers,
                                    skin_offsets);
-            const int64_t rebase = static_cast<int64_t>(draw.output_vertex) -
-                                   static_cast<int64_t>(draw.source_vertex);
+            // Index VALUES in the shared buffer are PART-LOCAL (see
+            // matter_engine.cpp, which rebases each mesh by its offset within
+            // the part; vk_scene_renderer never rewrites them). The skin
+            // buffer is already bound at output_vertex, so the draw must
+            // subtract exactly this range's part-local base -- no more.
+            //
+            // The previous form, output_vertex - source_vertex, was wrong
+            // twice over: it treated the values as renderer-global (so it
+            // over-rebased by the part's arena base) and it re-applied
+            // output_vertex on top of the bind offset. Both errors vanish
+            // when the part sits at arena base 0 as the only submission,
+            // which is exactly what every fixture arranged.
+            const int64_t rebase = -static_cast<int64_t>(draw.local_vertex_base);
             if (rebase < INT32_MIN || rebase > INT32_MAX) continue;
+            // The dynamic slot indexes the SKIN TAIL. Passing it raw put the
+            // draw in cull.comp's bucket space -- slot 0 there is the gallery
+            // world's Crate floor slab, whose scale(4, 0.1, 4) squashed the
+            // creature flat.
             vkCmdDrawIndexed(command_buffer, draw.index_count, 1,
                              draw.first_index, static_cast<int32_t>(rebase),
-                             draw.instance_slot);
+                             record.skin_transform_base + draw.instance_slot);
         }
     }
     vkCmdEndRendering(command_buffer);
@@ -988,24 +1009,39 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
     std::set<uint64_t> current_visible_instances;
     const std::vector<VkAnimationBoundsGpuRecord> current_bounds =
         animation_bounds_.gpu_records();
+    // MATTER_SKIN_PROBE census: which (cluster, lod) submissions survive
+    // compaction. A cluster dropped here keeps drawing its static bind pose
+    // while its peers animate, so a partly-animating mesh shows up as a
+    // cluster present in `visible` and absent from `compacted`.
+    static const bool probe = [] {
+        const char* value = std::getenv("MATTER_SKIN_PROBE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    std::string census;
     for (const VkSkinSubmission& submitted : visible) {
         VkSkinSubmission candidate = submitted;
         candidate.current_frustum_visible = false;
         if (candidate.instance_slot >= dynamic_instance_staging_.size() ||
             candidate.instance_slot >= dynamic_instance_part_slots_.size() ||
-            dynamic_instance_part_slots_[candidate.instance_slot] == UINT32_MAX)
+            dynamic_instance_part_slots_[candidate.instance_slot] == UINT32_MAX) {
+            if (probe) census += " c" + std::to_string(candidate.cluster) + "/l" + std::to_string(candidate.lod) + "=slot";
             continue;
+        }
         const GpuInstance& instance =
             dynamic_instance_staging_[candidate.instance_slot];
         if (instance.animation_instance_generation !=
                 candidate.instance_generation ||
-            instance.part_slot >= parts_.size())
+            instance.part_slot >= parts_.size()) {
+            if (probe) census += " c" + std::to_string(candidate.cluster) + "/l" + std::to_string(candidate.lod) + "=gen";
             continue;
+        }
         const PartRecord& part = parts_[instance.part_slot];
         if (!part.live || candidate.cluster >= part.cluster_count ||
             part.cluster_start > cluster_staging_.size() ||
-            candidate.cluster >= cluster_staging_.size() - part.cluster_start)
+            candidate.cluster >= cluster_staging_.size() - part.cluster_start) {
+            if (probe) census += " c" + std::to_string(candidate.cluster) + "/l" + std::to_string(candidate.lod) + "=part";
             continue;
+        }
         const GpuCluster& cluster =
             cluster_staging_[part.cluster_start + candidate.cluster];
         VkAnimationBoundsAabb planning_bounds{
@@ -1033,7 +1069,13 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
              planning_bounds.max[2]},
             planning_radius, cluster.thresholds, cluster.lod_count,
             unpack_matrix(instance.object_to_world), camera_eye, pixel_budget);
-        if (candidate.lod != selected_lod) continue;
+        if (candidate.lod != selected_lod) {
+            if (probe)
+                census += " c" + std::to_string(candidate.cluster) + "/l" +
+                          std::to_string(candidate.lod) + "=lod" +
+                          std::to_string(selected_lod);
+            continue;
+        }
         const auto bounds = std::find_if(
             current_bounds.begin(), current_bounds.end(), [&candidate](
                 const VkAnimationBoundsGpuRecord& value) {
@@ -1056,7 +1098,19 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
                                           visibility_key) != 0;
             current_visible_instances.insert(visibility_key);
         }
+        if (probe)
+            census += " c" + std::to_string(candidate.cluster) + "/l" +
+                      std::to_string(candidate.lod) +
+                      (candidate.current_frustum_visible ? "=ok" : "=offscreen");
         compacted.push_back(std::move(candidate));
+    }
+    if (probe) {
+        static std::string last_census;
+        if (census != last_census) {
+            last_census = census;
+            fprintf(stderr, "[skin-census] in=%zu out=%zu%s\n",
+                    visible.size(), compacted.size(), census.c_str());
+        }
     }
     pending_visible_skin_instances_ = std::move(current_visible_instances);
     pending_skin_visibility_frame_slot_ = frame_slot;
@@ -2687,6 +2741,44 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
     write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
 }
 
+void VkSceneRenderer::probe_skin_raster_draws(
+    const std::vector<VkSkinRasterDraw>& draws) const {
+    static const bool enabled = [] {
+        const char* value = std::getenv("MATTER_SKIN_PROBE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    if (!enabled) return;
+    // raster.vert fetches skinned vertex (index - local_vertex_base) from the
+    // draw's own output window. An index outside [local_vertex_base,
+    // +vertex_count) reads memory the compute pass never wrote this frame --
+    // the arenas are never cleared, so it decodes as plausible stale geometry
+    // rather than an obvious crash. Report it loudly instead.
+    for (const VkSkinRasterDraw& draw : draws) {
+        if (draw.first_index > index_staging_.size() ||
+            draw.index_count > index_staging_.size() - draw.first_index)
+            continue;
+        uint32_t outside = 0;
+        uint32_t lowest = UINT32_MAX;
+        uint32_t highest = 0;
+        for (uint32_t offset = 0; offset != draw.index_count; ++offset) {
+            const uint32_t vertex = index_staging_[draw.first_index + offset];
+            lowest = std::min(lowest, vertex);
+            highest = std::max(highest, vertex);
+            if (vertex < draw.local_vertex_base ||
+                vertex - draw.local_vertex_base >= draw.vertex_count)
+                ++outside;
+        }
+        if (outside == 0) continue;
+        fprintf(stderr,
+                "[skin-probe] instance=%u gen=%u cluster=%u lod=%u "
+                "outside=%u/%u indices=[%u,%u] window=[%u,%u)\n",
+                draw.instance_slot, draw.instance_generation, draw.cluster,
+                draw.lod, outside, draw.index_count, lowest, highest,
+                draw.local_vertex_base,
+                draw.local_vertex_base + draw.vertex_count);
+    }
+}
+
 bool VkSceneRenderer::record_animation_skinning(
     const matter::VulkanFrame& frame, FrameResources& resources,
     std::string& error) {
@@ -2715,6 +2807,7 @@ bool VkSceneRenderer::record_animation_skinning(
                     staged.raster_draws, validation);
             resources.skin_raster_ready =
                 !resources.ready_skin_raster_draws.empty();
+            probe_skin_raster_draws(resources.ready_skin_raster_draws);
         };
     const auto downgrade_gpu_skin =
         [this, &resources, &staged, &frame, &error, &publish_ready_draws](
@@ -6089,7 +6182,13 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
             }
         }
     }
-    draw_transform_slots_ = first_instance;
+    // Buckets own [0, first_instance); the skin tail follows, one slot per
+    // dynamic-instance slot. capacities.w must stay at the BUCKET total
+    // (see upload_frame_constants) or cull.comp's last bucket would
+    // reserve into the tail.
+    skin_transform_base_ = first_instance;
+    draw_transform_slots_ = first_instance +
+        static_cast<uint32_t>(dynamic_instance_staging_.size());
     part_instance_counts_ = std::move(per_part);
     part_command_ranges_ = std::move(next_part_ranges);
     return true;
@@ -6165,7 +6264,13 @@ bool VkSceneRenderer::apply_dynamic_command_layout(std::string& error) {
         error = "draw-transform buffer exceeds Vulkan storage descriptor limit";
         return false;
     }
-    draw_transform_slots_ = first_instance;
+    // Buckets own [0, first_instance); the skin tail follows, one slot per
+    // dynamic-instance slot. capacities.w must stay at the BUCKET total
+    // (see upload_frame_constants) or cull.comp's last bucket would
+    // reserve into the tail.
+    skin_transform_base_ = first_instance;
+    draw_transform_slots_ = first_instance +
+        static_cast<uint32_t>(dynamic_instance_staging_.size());
     std::vector<PartCommandRange> next_part_ranges;
     next_part_ranges.reserve(parts_.size());
     for (uint32_t slot = 0; slot < parts_.size(); ++slot) {
@@ -6442,6 +6547,36 @@ bool VkSceneRenderer::upload_scene_buffers(
         if (instance_bytes != 0) ++upload_counters_.instance_uploads;
         frame.instance_generation = instance_generation_;
     }
+    // Fill the skin transform tail from the same dynamic-instance records the
+    // static lane uses. cull.comp never writes here (explicit skinned draws are
+    // not in any bucket), so without this the draw reads a bucket slot that
+    // belongs to some unrelated static instance.
+    if (skin_transform_base_ < draw_transform_slots_ &&
+        !dynamic_instance_staging_.empty()) {
+        skin_transform_staging_.assign(
+            draw_transform_slots_ - skin_transform_base_, GpuDrawTransform{});
+        for (size_t slot = 0;
+             slot < dynamic_instance_staging_.size() &&
+             slot < skin_transform_staging_.size(); ++slot) {
+            const GpuInstance& source = dynamic_instance_staging_[slot];
+            GpuDrawTransform& target = skin_transform_staging_[slot];
+            target.current = source.object_to_world;
+            target.previous = source.previous_object_to_world;
+            target.history_valid = source.history_valid;
+            target.instance_token = source.instance_token;
+        }
+        const VkDeviceSize tail_bytes =
+            static_cast<VkDeviceSize>(skin_transform_staging_.size()) *
+            sizeof(GpuDrawTransform);
+        const VkDeviceSize tail_offset =
+            static_cast<VkDeviceSize>(skin_transform_base_) *
+            sizeof(GpuDrawTransform);
+        if (tail_bytes != 0 &&
+            !matter::upload_buffer(*vulkan_, frame.draw_transforms,
+                                   skin_transform_staging_.data(), tail_bytes,
+                                   tail_offset, error))
+            return false;
+    }
     if (frame.command_generation != command_generation_)
         frame.command_generation = command_generation_;
     if (!upload(frame.commands, command_template_.data(), command_bytes))
@@ -6494,7 +6629,9 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
     constants.capacities[0] = static_cast<uint32_t>(cluster_staging_.size());
     constants.capacities[1] = static_cast<uint32_t>(instance_staging_.size());
     constants.capacities[2] = static_cast<uint32_t>(command_template_.size());
-    constants.capacities[3] = draw_transform_slots_;
+    // BUCKET total, not the buffer total: cull.comp's reserve_transform_slot
+    // treats this as the end of the last bucket's region.
+    constants.capacities[3] = skin_transform_base_;
     constants.temporal[0] = matrices.jitter_pixels[0] != 0.0f ||
                                     matrices.jitter_pixels[1] != 0.0f
                                 ? 1u
@@ -7746,6 +7883,7 @@ bool VkSceneRenderer::record_cull_and_render(
                         static_cast<uint32_t>(
                             selected.ready_skin_raster_draws.size()),
                         draw_transform_slots_,
+                        skin_transform_base_,
                         part_command_ranges_.data(),
                         static_cast<uint32_t>(part_command_ranges_.size()),
                         limits_.max_draw_indirect_count,

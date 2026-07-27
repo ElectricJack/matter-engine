@@ -123,7 +123,18 @@ PoseLodDecision PoseLodScheduler::schedule(const PoseLodRequest& request) {
     result.evaluate_now = selected != AnimationPoseLodTier::Frozen &&
                           request.presentation_seconds + 1e-9 >= state.next_due_seconds;
     if (result.evaluate_now) {
-        state.next_due_seconds = request.presentation_seconds + interval(selected);
+        // Carry the deadline forward from the PREVIOUS deadline, not from
+        // "now": rebasing on now rounds every deadline up to the next frame,
+        // so a render loop running at almost exactly the tier rate (60 Hz
+        // frames against the Hz60 tier) arrives a hair early every other
+        // frame and the effective refresh rate is halved -- the pose holds
+        // for two frames, then jumps two fixed steps. Snap back to now only
+        // when more than one interval behind (stall, tier change, long
+        // invisibility) so no burst of catch-up evaluations is banked.
+        const double step = interval(selected);
+        const double carried = state.next_due_seconds + step;
+        state.next_due_seconds = carried < request.presentation_seconds
+            ? request.presentation_seconds + step : carried;
     }
     if (state.visible_grace_frames > 0 && --state.visible_grace_frames == 0) {
         // The forced 60 Hz grace is not an actual distance-band decision.

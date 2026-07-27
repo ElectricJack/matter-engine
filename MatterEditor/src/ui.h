@@ -188,6 +188,10 @@ public:
     void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats,
                            const ViewerCommands& commands);
     ToolbarActions draw_toolbar(matter::scene::SimulationMode mode);
+    // Simulation rate, owned by the toolbar slider. Readable (and seedable)
+    // even when the UI is hidden, so a headless capture can run in slow motion.
+    float sim_time_scale() const { return toolbar_state_.time_scale; }
+    void set_sim_time_scale(float value) { toolbar_state_.time_scale = value; }
     void prepare_viewport_rect();
     void draw_viewport_window();
     const ViewportRect& viewport_rect() const { return viewport_rect_; }

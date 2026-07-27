@@ -173,7 +173,18 @@ void test_target_chains_and_canonical_orders_are_deterministic() {
     CanonicalAnimationBuild tied_canonical; Diagnostics tied_diagnostics;
     CHECK(validate_and_canonicalize_animation_build(tied, tied_canonical, tied_diagnostics), "tied graph fixture validates"); CHECK(tied_canonical.graph_order == std::vector<uint16_t>({0, 1, 2, 3}), "graph topological sort keeps declaration ties"); CHECK(tied_canonical.encode().find("graph|0|1|2|3\n") != std::string::npos, "serialized animation state preserves canonical graph order");
     AnimationBuild bend = valid_build(); bend.rig.joints[2].local.translation = {1.0f, 1.0f, 0.0f}; bend.targets[0].has_pole = false; CanonicalAnimationBuild bend_canonical; Diagnostics bend_diagnostics;
-    CHECK(validate_and_canonicalize_animation_build(bend, bend_canonical, bend_diagnostics), "non-collinear omitted pole fixture validates"); CHECK(std::fabs(bend_canonical.targets[0].bend_axis.z) > 0.99f, "bend axis is computed in start-joint-local bind space");
+    CHECK(validate_and_canonicalize_animation_build(bend, bend_canonical, bend_diagnostics), "non-collinear omitted pole fixture validates");
+    // The SIGN is part of the contract, not just the direction: ozz's
+    // IKTwoBoneJob flags the chain as bent backward when
+    // dot(cross(start_mid, mid_axis), mid_end) < 0, and with the inverted
+    // axis (start_mid x start_end) that dot is -|start_mid x mid_end|^2 for
+    // EVERY non-collinear bind chain.  The solver then picks the mirrored
+    // knee configuration and rolls the chain ~180 degrees about the
+    // start-target axis to honor the pole -- joint POSITIONS land exactly
+    // right while the chain rotations carry a half-turn twist that shreds
+    // skinning.  For this fixture (start_mid = +y, mid_end = (1,0,0) bend)
+    // the ozz-convention axis cross(start_end, start_mid) is +z.
+    CHECK(bend_canonical.targets[0].bend_axis.z > 0.99f, "bend axis is computed in start-joint-local bind space with ozz's bent-side sign");
     AnimationBuild collinear = valid_build(); collinear.targets[0].has_pole = false; check_invalid(collinear, "collinear-target-pole-required", "collinear omitted pole is rejected");
     AnimationBuild half_life = valid_build(); half_life.targets[0].position_half_life = -1.0f; check_invalid(half_life, "invalid-target-half-life", "negative target half-life is rejected");
 }

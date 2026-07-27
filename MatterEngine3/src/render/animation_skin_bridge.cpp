@@ -123,6 +123,7 @@ bool AnimationSkinBridge::expand(
         submission.asset_key = asset->identity;
         submission.influence_vertex = lod.influence_vertex;
         submission.source_vertex = lod.source_vertex;
+        submission.local_vertex_base = lod.local_vertex_base;
         submission.vertex_count = lod.vertex_count;
         submission.instance_slot = input.transform_slot;
         submission.instance_generation = input.transform_generation;

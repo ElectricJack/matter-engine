@@ -419,6 +419,11 @@ void AnimationSystems::set_interpolation_alpha(double alpha) noexcept {
         ? std::max(0.0, std::min(1.0, alpha)) : 0.0;
 }
 
+void AnimationSystems::set_presentation_delta_seconds(double delta) noexcept {
+    presentation_delta_seconds_ = std::isfinite(delta) && delta >= 0.0
+        ? delta : -1.0;
+}
+
 bool AnimationSystems::publish_desired_root_motion(AnimatorInstanceHandle instance,
                                                     const DesiredRootMotion& motion,
                                                     uint64_t fixed_tick) {
@@ -553,7 +558,11 @@ bool AnimationSystems::refresh_service_binding(const AnimationRuntimeBindingLeas
     if(candidate.targets.size()!=descriptor.targets.size()) {
         candidate.targets.resize(descriptor.targets.size());
         candidate.desired_world.resize(descriptor.targets.size());
-        for(size_t i=0;i<candidate.targets.size();++i) candidate.targets[i].enabled=descriptor.targets[i].enabled;
+        // Seed the evaluated weight from the declared enable state rather than
+        // letting it start live and fade. A target created disabled must be a
+        // no-op on its FIRST solve, not one smoothing step later -- the fade
+        // exists for a runtime disable, where the pose is already valid.
+        for(size_t i=0;i<candidate.targets.size();++i) { candidate.targets[i].enabled=descriptor.targets[i].enabled; candidate.targets[i].evaluated_weight=descriptor.targets[i].enabled?1.0f:0.0f; }
     }
     for(size_t i=0;i<candidate.targets.size();++i) {
         // Controller-owned values are preserved; public API owns external values.
@@ -653,6 +662,15 @@ bool AnimationSystems::seed_bind_pose(AnimatorInstanceHandle instance,
     snapshot.previous_model_pose = {model_pose.data(), count};
     snapshot.skin_palette = {palette.data(), count};
     snapshot.previous_skin_palette = {palette.data(), count};
+
+    // Seed BOTH interpolation endpoints and drop any presentation state, the
+    // same way restore_service_checkpoint installs a pose that did not come out
+    // of evaluation. Presentation interpolates between the two fixed endpoints,
+    // so publishing only the presentation store would leave the endpoints a
+    // frame-cadence evaluation reads uninitialised.
+    (void)fixed_pose_snapshots_.publish(snapshot);
+    (void)previous_fixed_pose_snapshots_.publish(snapshot);
+    presentation_evaluator_.forget(instance);
     return pose_snapshots_.publish(snapshot);
 }
 
@@ -1127,8 +1145,15 @@ void AnimationSystems::run_frame(flecs::world& world, double frame_delta) {
     ++state.frame_serial;
     state.interpolation_alpha = interpolation_alpha_;
     world.set<ecs::AnimationFrameState>(state);
-    if (std::isfinite(frame_delta) && frame_delta > 0.0)
-        presentation_time_seconds_ += frame_delta;
+    // The pose-LOD refresh clock advances in wall seconds when the runtime
+    // supplied them; a time-scaled simulation delta would throttle refreshes
+    // (a 0.25x slow-motion would evaluate presentation once per FOUR rendered
+    // frames, freezing the very interpolation slow motion exists to inspect).
+    const double presentation_delta =
+        presentation_delta_seconds_ >= 0.0 ? presentation_delta_seconds_
+                                           : frame_delta;
+    if (std::isfinite(presentation_delta) && presentation_delta > 0.0)
+        presentation_time_seconds_ += presentation_delta;
     if (service_ != nullptr) (void)service_->sample_frame_controls();
     trace(AnimationScheduleEvent::FrameSampleApiWrites, frame_delta);
     trace(AnimationScheduleEvent::FrameInterpolateFixedState, frame_delta);

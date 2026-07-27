@@ -116,10 +116,15 @@ class AnimatedRigGallery extends Part {
     this.marker(0.0, 'idleStart');
     this.endClip();
 
+    // Walks in place: a looping generate() clip appends a final sample copied
+    // exactly from sample zero (spec loop-closure), so an absolute root ramp
+    // like translate(phase * 0.8, 0, 0) folds back to zero inside the last
+    // segment -- root-motion extraction then faithfully walks the entity
+    // forward and lurches it back every cycle. Travel needs explicit keys
+    // authoring the wrap discontinuity, not a generated ramp.
     this.beginClip('walk', { duration: 0.8, sampleRate: 16, loop: true });
     this.generate(phase => {
       const swing = Math.sin(phase * Math.PI * 2);
-      this.at('root'); this.translate(phase * 0.8, 0, 0);
       this.at('leftHip'); this.rotateZ(swing * 0.42);
       this.at('rightHip'); this.rotateZ(-swing * 0.42);
       this.at('leftKnee'); this.rotateZ(Math.max(0, -swing) * 0.48);
@@ -139,14 +144,27 @@ class AnimatedRigGallery extends Part {
     this.endClip();
 
     this.beginMotion('galleryMotion');
-    this.input('speed', { type: 'float', cadence: 'fixed', default: 0 });
+    // Default 1 so the shipped preview actually walks. `speed` is both the
+    // blend1D parameter (0 = idle, 1 = walk) and the gait controller's phase
+    // rate, so at the old default of 0 the legs were authored to hold still
+    // and only the additive breathe layer moved -- which reads as "the legs
+    // are broken" when inspecting the rig. Nothing writes this input yet;
+    // gameplay-driven inputs are a later workstream.
+    this.input('speed', { type: 'float', cadence: 'fixed', default: 1 });
     this.controller('gait', 'proceduralGait', { cadence: 'fixed' });
     // The native controller owns the grounded feet. Hand and look targets are
     // declared graph inputs for the embedding application, not JS callbacks.
+    // Pole and soften must respect the bind pose. The knee's bind offset from
+    // the hip->foot line points to -z, so the pole must too or the solver
+    // flips the knee to the far side of the chain even for a target it is
+    // already exactly satisfying. And the bind chain stands at 98.8% of full
+    // extension: an aggressive soften (this shipped at 0.65) placed the rest
+    // pose deep inside the softened zone, pulling the planted foot 0.19 up
+    // the chain and bending the knee ~100 degrees while standing still.
     this.target('leftFootTarget', { start: 'leftHip', end: 'leftFoot',
-      driver: { controller: 'gait' }, cadence: 'fixed', pole: [0, 0, 1], soften: 0.65 });
+      driver: { controller: 'gait' }, cadence: 'fixed', pole: [0, 0, -1], soften: 0.98 });
     this.target('rightFootTarget', { start: 'rightHip', end: 'rightFoot',
-      driver: { controller: 'gait' }, cadence: 'fixed', pole: [0, 0, 1], soften: 0.65 });
+      driver: { controller: 'gait' }, cadence: 'fixed', pole: [0, 0, -1], soften: 0.98 });
     this.target('leftHandTarget', { start: 'leftShoulder', end: 'leftHand',
       driver: 'external', cadence: 'frame', pole: [0, 0, 1], soften: 0.75 });
     this.target('lookTarget', { start: 'head', end: 'lookEnd',

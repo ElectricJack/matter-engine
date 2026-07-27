@@ -292,6 +292,69 @@ static void test_skin_raster_validation_controls_cull_exclusion() {
           "same-instance same-LOD clusters preserve independent skin budget ownership");
 }
 
+// Mirrors cull.comp::uses_skin_raster() exactly: identity match on
+// (instance_slot, instance_generation, cluster_index, lod) plus the flag, where
+// `lod` is the LOD the *shader* selected for this cluster this frame.
+static bool c3_uses_skin_raster(
+    const std::vector<viewer::VkAnimationBoundsGpuRecord>& records,
+    uint32_t dynamic_count, uint32_t animation_slot,
+    uint32_t animation_generation, uint32_t cluster_index,
+    uint32_t selected_lod) {
+    if (animation_slot == UINT32_MAX) return false;
+    const uint32_t inspected = std::min<uint32_t>(
+        dynamic_count, static_cast<uint32_t>(records.size()));
+    for (uint32_t index = 0; index != inspected; ++index) {
+        const auto& value = records[index];
+        if (value.instance_slot == animation_slot &&
+            value.instance_generation == animation_generation &&
+            value.cluster_index == cluster_index && value.lod == selected_lod &&
+            (value.flags & viewer::kVkAnimationBoundsSkinRaster) != 0)
+            return true;
+    }
+    return false;
+}
+
+// The system-level exclusivity invariant the per-lane tests never covered:
+// while a skin-raster draw owns (instance, generation, cluster), no static
+// indirect command for that cluster may render, for ANY LOD the GPU might
+// select.  The renderer's CPU pick (select_cluster_lod_view) and cull.comp's
+// threshold loop are independent implementations reading a *moving* animated
+// bound, so they disagree at threshold crossings during playback.  When the
+// exclusion was LOD-matched, that disagreement drew the static bind-pose
+// cluster on top of the animated one -- invisible at bind (the two coincide),
+// torn during play.
+static void test_skin_raster_exclusion_survives_lod_disagreement() {
+    printf("\n[test_skin_raster_exclusion_survives_lod_disagreement]\n");
+    std::vector<viewer::VkAnimationBoundsGpuRecord> records(3);
+    for (uint32_t index = 0; index != records.size(); ++index) {
+        records[index].instance_slot = 3;
+        records[index].instance_generation = 9;
+        records[index].cluster_index = 7;
+        records[index].lod = index;
+    }
+    // A fourth record for a cluster this instance does not skin this frame.
+    records.push_back(records[0]);
+    records.back().cluster_index = 8;
+
+    viewer::VkSkinRasterDraw draw{};
+    draw.instance_slot = 3;
+    draw.instance_generation = 9;
+    draw.cluster = 7;
+    draw.lod = 0;  // the CPU's pick
+    viewer::mark_animation_skin_raster_records(records, {draw});
+
+    const uint32_t count = static_cast<uint32_t>(records.size());
+    CHECK(c3_uses_skin_raster(records, count, 3, 9, 7, 0) &&
+              c3_uses_skin_raster(records, count, 3, 9, 7, 1) &&
+              c3_uses_skin_raster(records, count, 3, 9, 7, 2),
+          "an accepted skin draw excludes its cluster's static lane at every LOD the shader may select");
+    CHECK(!c3_uses_skin_raster(records, count, 3, 9, 8, 0),
+          "the exclusion does not leak to a cluster with no accepted skin draw");
+    CHECK(!c3_uses_skin_raster(records, count, 4, 9, 7, 0) &&
+              !c3_uses_skin_raster(records, count, 3, 10, 7, 0),
+          "the exclusion does not leak across instance slots or stale generations");
+}
+
 // This is deliberately the cull.comp lookup contract, rather than a second
 // VkAnimationBounds resolver.  It consumes the std430 records that C3 uploads
 // and applies the shader's exact identity/count rules before doing the one
@@ -618,6 +681,7 @@ int main() {
     test_dynamic_slot_change_kind_distinct();
     test_animation_bounds_cull_shader_contract();
     test_skin_raster_validation_controls_cull_exclusion();
+    test_skin_raster_exclusion_survives_lod_disagreement();
     test_c3_dynamic_bounds_cull_contract();
 
     printf("\n--- Results: %d/%d passed", g_tests - g_failures, g_tests);

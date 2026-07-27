@@ -302,6 +302,63 @@ void draw_animation_debug_overlay(
                           viewport_x, viewport_y,
                           world_models[bound.joint], bound);
 
+    // CPU reference cloud: the position the CPU derives from the SAME immutable
+    // pose the GPU received. If these points trace a clean surface while the
+    // rendered mesh is torn, the fault is downstream in the GPU skinning path.
+    if (options.cpu_reference && !asset.lod0_influences.empty() &&
+        pose.skin_palette.size() == asset.joints.size()) {
+        const size_t stride =
+            std::max<size_t>(1, (asset.lod0_influences.size() + 4095) / 4096);
+        for (size_t i = 0; i < asset.lod0_influences.size(); i += stride) {
+            ImVec2 screen;
+            if (!project(vp, framebuffer_width, framebuffer_height,
+                         viewport_x, viewport_y,
+                         skinned_position(asset.lod0_influences[i],
+                                          pose.skin_palette,
+                                          snapshot.world_transform),
+                         screen))
+                continue;
+            draw_list->AddCircleFilled(screen, 1.0f, IM_COL32(80, 255, 120, 190));
+        }
+    }
+
+    // Dominant-joint colouring: one hue per joint, so the weight partition is
+    // legible as regions. A vertex bound to the wrong limb reads as a speck of
+    // foreign colour instead of needing a per-joint sweep to find.
+    if (options.dominant_joint && !asset.lod0_influences.empty() &&
+        pose.skin_palette.size() == asset.joints.size()) {
+        const size_t stride =
+            std::max<size_t>(1, (asset.lod0_influences.size() + 4095) / 4096);
+        for (size_t i = 0; i < asset.lod0_influences.size(); i += stride) {
+            const auto& vertex = asset.lod0_influences[i];
+            uint16_t best_joint = 0;
+            uint16_t best_weight = 0;
+            for (size_t lane = 0; lane != 4; ++lane) {
+                if (vertex.weights[lane] > best_weight) {
+                    best_weight = vertex.weights[lane];
+                    best_joint = vertex.joints[lane];
+                }
+            }
+            if (best_weight == 0) continue;
+            ImVec2 screen;
+            if (!project(vp, framebuffer_width, framebuffer_height,
+                         viewport_x, viewport_y,
+                         skinned_position(vertex, pose.skin_palette,
+                                          snapshot.world_transform),
+                         screen))
+                continue;
+            // Golden-ratio hue spread keeps adjacent joint indices visually
+            // distinct rather than a near-identical gradient.
+            const float hue = std::fmod(static_cast<float>(best_joint) * 0.61803f, 1.0f);
+            float r = 0.0f, g = 0.0f, b = 0.0f;
+            ImGui::ColorConvertHSVtoRGB(hue, 0.85f, 1.0f, r, g, b);
+            draw_list->AddCircleFilled(
+                screen, 2.0f,
+                IM_COL32(static_cast<int>(r * 255), static_cast<int>(g * 255),
+                         static_cast<int>(b * 255), 210));
+        }
+    }
+
     if (options.skin_weights && !asset.lod0_influences.empty() &&
         pose.skin_palette.size() == asset.joints.size()) {
         const uint16_t selected = static_cast<uint16_t>(std::clamp(
@@ -330,7 +387,8 @@ void draw_animation_debug_overlay(
 }
 
 void draw_animation_debug_overlay_controls(
-    AnimationDebugOverlayOptions& options) {
+    AnimationDebugOverlayOptions& options,
+    const std::vector<std::string>* joint_names) {
     if (!ImGui::CollapsingHeader("Animation Overlay")) return;
     ImGui::Checkbox("Enabled##animation-overlay", &options.enabled);
     ImGui::BeginDisabled(!options.enabled);
@@ -340,10 +398,31 @@ void draw_animation_debug_overlay_controls(
     ImGui::Checkbox("Sockets", &options.sockets);
     ImGui::Checkbox("Targets / IK", &options.targets_and_ik);
     ImGui::Checkbox("Conservative bounds", &options.conservative_bounds);
+    ImGui::Checkbox("Dominant joint", &options.dominant_joint);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Colour each vertex by its highest-weight joint.");
+    ImGui::Checkbox("CPU reference points", &options.cpu_reference);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Where the CPU says each vertex should be, from the same pose the GPU got. Divergence from the drawn surface means the GPU skinning path is at fault.");
     ImGui::Checkbox("Skin weights", &options.skin_weights);
     ImGui::BeginDisabled(!options.skin_weights);
-    ImGui::InputInt("Weight joint", &options.weight_joint);
-    options.weight_joint = std::max(options.weight_joint, 0);
+    if (joint_names != nullptr && !joint_names->empty()) {
+        options.weight_joint = std::clamp(
+            options.weight_joint, 0, static_cast<int>(joint_names->size()) - 1);
+        if (ImGui::BeginCombo("Weight joint",
+                              (*joint_names)[options.weight_joint].c_str())) {
+            for (int i = 0; i < static_cast<int>(joint_names->size()); ++i) {
+                const bool selected = i == options.weight_joint;
+                if (ImGui::Selectable((*joint_names)[i].c_str(), selected))
+                    options.weight_joint = i;
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+    } else {
+        ImGui::InputInt("Weight joint", &options.weight_joint);
+        options.weight_joint = std::max(options.weight_joint, 0);
+    }
     ImGui::EndDisabled();
     ImGui::EndDisabled();
 }

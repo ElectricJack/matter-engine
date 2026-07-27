@@ -4400,6 +4400,10 @@ void WorldSession::Impl::reconcile_runtime_animation_skinning() {
                 lods.push_back(
                     {instance.part_hash,
                      range.vertex_start + mesh_vertex_offsets[mesh_index],
+                     // Part-local base of this same range. The index buffer
+                     // stores part-local values, so the draw rebases by this
+                     // rather than by the global source vertex above.
+                     mesh_vertex_offsets[mesh_index],
                      influence_offset + baked.vertex_begin, vertex_count,
                      range.index_start + mesh_index_offsets[mesh_index],
                      static_cast<uint32_t>(mesh.indices.size()), cluster_index,

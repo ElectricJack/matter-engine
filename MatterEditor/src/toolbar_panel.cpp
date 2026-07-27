@@ -55,6 +55,18 @@ ToolbarActions draw_toolbar_contents(ToolbarState& state,
         if (!stop_enabled) ImGui::EndDisabled();
     }
 
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(140.0f);
+    ImGui::SliderFloat("##timescale", &state.time_scale, kToolbarMinTimeScale,
+                       kToolbarMaxTimeScale, "%.2fx",
+                       ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Simulation rate. Scales the frame delta only; the fixed timestep "
+            "is unchanged, so slowing down does not alter physics behaviour.");
+    ImGui::SameLine();
+    if (ImGui::Button("1x")) state.time_scale = 1.0f;
+
     // Center: mode label.
     ImGui::SameLine();
     const char* label = mode_label(mode);

@@ -4,6 +4,8 @@
 
 #include <cinttypes>
 #include <cstdio>
+#include <string>
+#include <vector>
 
 namespace viewer {
 namespace {
@@ -219,8 +221,13 @@ void draw_render_tab(const AnimationPanelModel& model,
     ImGui::Text("Visible: %s", model.selected_visible() ? "yes" : "no");
     ImGui::SeparatorText("Viewport overlay");
     // Same options struct the viewport draws with, so this cannot drift from
-    // what is actually rendered.
-    draw_animation_debug_overlay_controls(overlay);
+    // what is actually rendered. The model already carries authored joint
+    // names, so the weight picker names its joints instead of numbering them.
+    std::vector<std::string> joint_names;
+    joint_names.reserve(model.joint_rows().size());
+    for (const AnimationJointRow& row : model.joint_rows())
+        joint_names.push_back(row.label);
+    draw_animation_debug_overlay_controls(overlay, &joint_names);
 }
 
 void draw_diagnostics(const AnimationPanelModel& model) {
