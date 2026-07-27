@@ -187,6 +187,69 @@ static void test_hidden_animation_is_successful_zero_submission() {
           "hidden skin collection is a successful zero submission");
 }
 
+// A skinned animator must bind its ROOT part into the dynamic lane even before
+// its AnimationSkinnedBinding exists, or the two never come into being:
+//
+//   the skinned binding needs renderer-global raster ranges
+//     -> ranges need the part registered via ensure_part
+//       -> registration only happens for a part bound into the dynamic lane
+//         -> which the bridge skipped, because "rigid but not yet skinned"
+//            looked exactly like "rigid only"
+//
+// That cycle never resolves on its own, so a creature with rigid segments plus
+// a skinned body rendered only its rigid segments -- forever. The acceptance
+// suites missed it because they install a test raster-range resolver, which
+// fabricates ranges without ever registering the part.
+//
+// Rigid-ONLY (an asset with no skin at all) must still skip the root bind: the
+// rigid expansion already covers that entity's geometry.
+static void test_skinned_asset_binds_root_before_its_skin_attaches() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<SceneModule>();
+
+    // An asset that HAS skin, on an entity that has only its rigid binding so
+    // far -- exactly the state reconcile produces on the first frame.
+    animation::BindingBake skinned_bake;
+    skinned_bake.lods.push_back({});
+    render::AnimationRigidAsset skinned_asset{};
+    skinned_asset.identity = 0x7101;
+    skinned_asset.generation = 1;
+    skinned_asset.bindings = &skinned_bake;
+    auto pending = make_entity(world, 0x501, 0x9101);
+    pending.set<render::AnimationRigidBinding>(
+        {{1, 1}, &skinned_asset, skinned_asset.generation, true});
+
+    // An asset with genuinely no skin: its root must stay unbound.
+    animation::BindingBake rigid_bake;   // no lods
+    render::AnimationRigidAsset rigid_asset{};
+    rigid_asset.identity = 0x7102;
+    rigid_asset.generation = 1;
+    rigid_asset.bindings = &rigid_bake;
+    auto rigid_only = make_entity(world, 0x502, 0x9102);
+    rigid_only.set<render::AnimationRigidBinding>(
+        {{2, 1}, &rigid_asset, rigid_asset.generation, true});
+
+    DynamicSceneBridge bridge(8);
+    RecordingSink recorder;
+    std::string error;
+    CHECK(bridge.reconcile(world, recorder.make(), error, 1),
+          "reconcile succeeds for both animators");
+    const auto changes = bridge.drain();
+
+    bool bound_pending_skin = false;
+    bool bound_rigid_only = false;
+    for (const auto& change : changes) {
+        if (change.kind != render::DynamicSlotChangeKind::Bind) continue;
+        if (change.part_hash == 0x9101) bound_pending_skin = true;
+        if (change.part_hash == 0x9102) bound_rigid_only = true;
+    }
+    CHECK(bound_pending_skin,
+          "a skinned asset binds its root part before the skinned binding exists");
+    CHECK(!bound_rigid_only,
+          "an asset with no skin still skips the root bind -- rigid expansion covers it");
+}
+
 static void test_bridge_remove_entity() {
     flecs::world world;
     world.import<ecs::CoreModule>();
@@ -352,6 +415,7 @@ int main() {
     test_bridge_part_change();
     test_bridge_hide_entity();
     test_hidden_animation_is_successful_zero_submission();
+    test_skinned_asset_binds_root_before_its_skin_attaches();
     test_bridge_remove_entity();
     test_bridge_missing_part_error();
     test_bridge_no_op_frame();

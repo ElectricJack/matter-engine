@@ -57,7 +57,24 @@ bool DynamicSceneBridge::reconcile(flecs::world& world, const BridgeErrorSink& s
         const auto* skin = entity.try_get<render::AnimationSkinnedBinding>();
         const bool has_skin = skin && skin->asset && !skin->asset->lods.empty();
         const auto* rigid = entity.try_get<render::AnimationRigidBinding>();
-        const bool rigid_only = rigid && rigid->asset && !has_skin;
+        // "Rigid only" must be a property of the ASSET, not of which components
+        // happen to exist yet. Deciding it from the absence of a skinned binding
+        // deadlocks a skinned animator on its very first frame:
+        //
+        //   the skinned binding needs renderer-global raster ranges
+        //     -> ranges need the part registered via ensure_part
+        //       -> registration only happens for a part bound into this lane
+        //         -> which this predicate skipped, because "rigid but not yet
+        //            skinned" was indistinguishable from "rigid only"
+        //
+        // Nothing breaks that cycle later, so a creature with rigid segments and
+        // a skinned body rendered its segments and never its body. Binding the
+        // root here is also what the renderer already expects: part_raster_range
+        // is documented as the range behind "the conservative bind-pose draw".
+        const bool asset_has_skin =
+            rigid && rigid->asset && rigid->asset->bindings &&
+            !rigid->asset->bindings->lods.empty();
+        const bool rigid_only = rigid && rigid->asset && !has_skin && !asset_has_skin;
         const Mat4f previous = previous_for(id, wt.matrix);
         if (part.visible && !rigid_only && part.part_hash != 0) {
             desired.push_back({root_key(id), part.part_hash, wt.matrix, previous, part.casts_shadow});

@@ -586,6 +586,15 @@ bool AnimationSystems::seed_bind_pose(AnimatorInstanceHandle instance,
     snapshot.previous_model_pose = {model_pose.data(), count};
     snapshot.skin_palette = {palette.data(), count};
     snapshot.previous_skin_palette = {palette.data(), count};
+
+    // Seed BOTH interpolation endpoints and drop any presentation state, the
+    // same way restore_service_checkpoint installs a pose that did not come out
+    // of evaluation. Presentation interpolates between the two fixed endpoints,
+    // so publishing only the presentation store would leave the endpoints a
+    // frame-cadence evaluation reads uninitialised.
+    (void)fixed_pose_snapshots_.publish(snapshot);
+    (void)previous_fixed_pose_snapshots_.publish(snapshot);
+    presentation_evaluator_.forget(instance);
     return pose_snapshots_.publish(snapshot);
 }
 
