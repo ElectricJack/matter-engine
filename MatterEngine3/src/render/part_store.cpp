@@ -986,12 +986,27 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     lp.bound_radius = radius;
     lp.children = std::move(children);   // keep the baked child-instance table for the WorldComposer
     lp.animation_asset = animation_asset;
-    // Handles, not blas_indices. blas_ is the shared store manager: sectors
-    // stream in and out continuously, release_blas() erases from entries_, and
-    // every absolute index above a released entry shifts under us. See
-    // lod_bake.h for why the two differ by call site.
+    // Bake the ladder into a PRIVATE manager, then adopt it into the shared one
+    // in a single bounded step.
+    //
+    // This is the seam for getting the load off the app/GL thread. Everything
+    // above already works on a local `scratch`, so `staging` makes the whole
+    // expensive stretch -- decimation, TriEx reprojection, BVH construction --
+    // touch no shared state at all. What is left against blas_ is adopt_from:
+    // O(entries) hash lookups plus an array copy, with no BVH rebuilt, because
+    // a content match takes a reference and a newcomer installs the BVH the
+    // bake already produced. Splitting this into stage_load()/commit_staged()
+    // is then code motion rather than a redesign.
+    //
+    // Dedup still applies across the boundary: a part whose geometry is already
+    // resident collapses onto that entry instead of duplicating it.
+    //
+    // Handles, not blas_indices -- see lod_bake.h. The staged handles are
+    // meaningless in blas_, so lod_blas/owned_blas are patched through the
+    // remap adopt_from reports.
+    BLASManager staging;
     std::vector<BLASHandle> lod_handles;
-    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, blas_,
+    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, staging,
                                                    triex_ptr, observer_, &lod_handles);
     assert(lod_handles.size() == lods.size());
     for (size_t li = 0; li < lods.size() && li < lod_handles.size(); ++li) {
@@ -1004,7 +1019,9 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         lp.lod_blas.push_back(lod_handles[li]);
         lp.owned_blas.push_back(lp.lod_blas.back());
 
-        if (const auto* e = blas_.get_entry(lp.lod_blas.back())) {
+        // Raster mesh data is a copy, so build it from the staged entry before
+        // adoption; it does not reference the manager afterwards.
+        if (const auto* e = staging.get_entry(lp.lod_blas.back())) {
             const TriEx* mesh_ex = (e->tri_extra.size() == e->triangles.size() && !e->tri_extra.empty())
                                       ? e->tri_extra.data() : nullptr;
             lp.lod_mesh_data.push_back(
@@ -1012,6 +1029,19 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         } else {
             lp.lod_mesh_data.push_back({});
         }
+    }
+
+    {
+        std::unordered_map<BLASHandle, BLASHandle> remap;
+        blas_.adopt_from(staging, remap);
+        auto patch = [&remap](std::vector<BLASHandle>& handles) {
+            for (BLASHandle& h : handles) {
+                auto it = remap.find(h);
+                h = (it != remap.end()) ? it->second : INVALID_BLAS_HANDLE;
+            }
+        };
+        patch(lp.lod_blas);
+        patch(lp.owned_blas);
     }
     if (lp.lod_blas.empty()) {
         // No geometry (empty part) -> log; lookups will see an empty LOD list.
