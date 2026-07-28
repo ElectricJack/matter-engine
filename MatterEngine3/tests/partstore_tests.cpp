@@ -614,25 +614,54 @@ static void test_compositional_sector_bounds_survive_to_frustum_culling() {
     const viewer::LoadedPart* loaded = store.get_or_load(hash);
     CHECK(loaded != nullptr,
           "sector bounds: serialized sector loads through PartStore");
-    if (!loaded || loaded->lod_mesh_data.empty()) return;
-
-    viewer::LoadedCluster fallback{};
-    const viewer::LoadedCluster* cluster = nullptr;
-    if (!loaded->clusters.empty()) {
-        cluster = &loaded->clusters.front();
-    } else {
-        for (int axis = 0; axis < 3; ++axis) {
-            fallback.aabb_min[axis] = -loaded->bound_radius;
-            fallback.aabb_max[axis] = loaded->bound_radius;
-        }
-        fallback.radius = loaded->bound_radius;
-        fallback.thresholds = loaded->thresholds;
-        for (size_t lod = 0; lod < loaded->lod_mesh_data.size(); ++lod)
-            fallback.lod_mesh.push_back(static_cast<int>(lod));
-        cluster = &fallback;
-    }
-    CHECK(!loaded->clusters.empty(),
+    if (!loaded) return;
+    CHECK(!loaded->lod_mesh_data.empty(),
+          "sector bounds: compositional load retains generated LOD meshes");
+    CHECK(loaded->clusters.size() == 1,
           "sector bounds: compositional load publishes an exact cluster AABB");
+    if (loaded->lod_mesh_data.empty() || loaded->clusters.size() != 1) return;
+
+    const viewer::LoadedCluster* cluster = &loaded->clusters.front();
+    const bool parallel_lods =
+        !cluster->thresholds.empty() &&
+        cluster->thresholds.size() == cluster->lod_blas.size() &&
+        cluster->thresholds.size() == cluster->lod_mesh.size();
+    CHECK(parallel_lods,
+          "sector bounds: synthetic cluster LOD arrays are non-empty and parallel");
+    if (!parallel_lods) return;
+
+    for (size_t lod = 0; lod < cluster->lod_mesh.size(); ++lod) {
+        const int mesh_index = cluster->lod_mesh[lod];
+        const bool mapping_valid =
+            mesh_index >= 0 &&
+            static_cast<size_t>(mesh_index) < loaded->lod_mesh_data.size();
+        char mapping_message[160];
+        std::snprintf(
+            mapping_message, sizeof mapping_message,
+            "sector bounds: cluster LOD %zu maps to loaded mesh data", lod);
+        CHECK(mapping_valid, mapping_message);
+        if (!mapping_valid) continue;
+
+        const viewer::RasterMeshData& mesh =
+            loaded->lod_mesh_data[static_cast<size_t>(mesh_index)];
+        bool lod_enclosed = mesh.vertex_count > 0;
+        for (int vertex = 0; vertex < mesh.vertex_count; ++vertex) {
+            for (int axis = 0; axis < 3; ++axis) {
+                const float value =
+                    mesh.vertices[static_cast<size_t>(vertex) * 3 + axis];
+                lod_enclosed &=
+                    std::isfinite(cluster->aabb_min[axis]) &&
+                    std::isfinite(cluster->aabb_max[axis]) &&
+                    cluster->aabb_min[axis] <= value &&
+                    cluster->aabb_max[axis] >= value;
+            }
+        }
+        char bounds_message[160];
+        std::snprintf(
+            bounds_message, sizeof bounds_message,
+            "sector bounds: cluster AABB encloses every vertex of LOD %zu", lod);
+        CHECK(lod_enclosed, bounds_message);
+    }
 
     float transform[16]{};
     transform[0] = transform[5] = transform[10] = transform[15] = 1.0f;
@@ -648,9 +677,12 @@ static void test_compositional_sector_bounds_survive_to_frustum_culling() {
         static_cast<size_t>(selected_lod) >= cluster->lod_mesh.size())
         return;
     const int mesh_index = cluster->lod_mesh[static_cast<size_t>(selected_lod)];
-    if (mesh_index < 0 ||
-        static_cast<size_t>(mesh_index) >= loaded->lod_mesh_data.size())
-        return;
+    const bool selected_mapping_valid =
+        mesh_index >= 0 &&
+        static_cast<size_t>(mesh_index) < loaded->lod_mesh_data.size();
+    CHECK(selected_mapping_valid,
+          "sector bounds: camera-selected LOD maps to loaded mesh data");
+    if (!selected_mapping_valid) return;
     const viewer::RasterMeshData& selected =
         loaded->lod_mesh_data[static_cast<size_t>(mesh_index)];
 
@@ -670,17 +702,6 @@ static void test_compositional_sector_bounds_survive_to_frustum_culling() {
             actual_max[axis] = std::max(actual_max[axis], value);
         }
     }
-    bool encloses_selected_lod = selected.vertex_count > 0;
-    for (int axis = 0; axis < 3; ++axis) {
-        encloses_selected_lod &=
-            std::isfinite(cluster->aabb_min[axis]) &&
-            std::isfinite(cluster->aabb_max[axis]) &&
-            cluster->aabb_min[axis] <= actual_min[axis] &&
-            cluster->aabb_max[axis] >= actual_max[axis];
-    }
-    CHECK(encloses_selected_lod,
-          "sector bounds: loaded cluster AABB encloses every selected-LOD vertex");
-
     const matter::Mat4f view = viewer::look_at_rh(
         {camera_eye[0], camera_eye[1], camera_eye[2]},
         {-81.4177f, 13.3841f, 484.7023f}, {0.0f, 1.0f, 0.0f});
