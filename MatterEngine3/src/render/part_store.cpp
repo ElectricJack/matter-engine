@@ -323,13 +323,17 @@ bool PartStore::build_rigid_segment_subparts(
                 subpart.lod_mesh_data.push_back(meshes[level]);
             }
         } else {
+            // Handles, not blas_indices: blas_ is the shared store manager and
+            // release_blas() erases from entries_, shifting every absolute index
+            // above the removed one. See lod_bake.h.
+            std::vector<BLASHandle> lod_handles;
             const lod_bake::LodLevels lods = lod_bake::bake_lods(
-                triangles, lod_bake::BakeTargets{}, blas_, &extras);
-            for (const auto& lod : lods) {
-                if (lod.blas_indices.size() != 1 || lod.blas_indices[0] >= blas_.get_entries().size()) {
-                    rollback(); return false;
-                }
-                const BLASHandle handle = blas_.get_entries()[lod.blas_indices[0]]->handle;
+                triangles, lod_bake::BakeTargets{}, blas_, &extras, nullptr,
+                &lod_handles);
+            if (lod_handles.size() != lods.size()) { rollback(); return false; }
+            for (size_t li = 0; li < lods.size(); ++li) {
+                const auto& lod = lods[li];
+                const BLASHandle handle = lod_handles[li];
                 const auto* entry = blas_.get_entry(handle);
                 if (!entry) { rollback(); return false; }
                 subpart.thresholds.push_back(lod.screen_size_threshold);
@@ -982,18 +986,22 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     lp.bound_radius = radius;
     lp.children = std::move(children);   // keep the baked child-instance table for the WorldComposer
     lp.animation_asset = animation_asset;
-    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, blas_, triex_ptr, observer_);
-    for (const auto& L : lods) {
+    // Handles, not blas_indices. blas_ is the shared store manager: sectors
+    // stream in and out continuously, release_blas() erases from entries_, and
+    // every absolute index above a released entry shifts under us. See
+    // lod_bake.h for why the two differ by call site.
+    std::vector<BLASHandle> lod_handles;
+    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, blas_,
+                                                   triex_ptr, observer_, &lod_handles);
+    assert(lod_handles.size() == lods.size());
+    for (size_t li = 0; li < lods.size() && li < lod_handles.size(); ++li) {
+        const auto& L = lods[li];
         // A geometry-less part (one that only places children) bakes to empty
         // triangles and yields LOD levels with no BLAS -> skip them, leaving
         // lod_blas empty so the part is treated as a pure assembler.
         if (L.blas_indices.empty()) continue;
-        // bake_lods registers exactly one BLAS per non-empty level; guard the
-        // assumption since the LodLevel type can carry multiple indices.
-        assert(L.blas_indices.size() == 1);
         lp.thresholds.push_back(L.screen_size_threshold);
-        size_t abs_idx = L.blas_indices[0];   // absolute index into blas_.get_entries()
-        lp.lod_blas.push_back(blas_.get_entries()[abs_idx]->handle);
+        lp.lod_blas.push_back(lod_handles[li]);
         lp.owned_blas.push_back(lp.lod_blas.back());
 
         if (const auto* e = blas_.get_entry(lp.lod_blas.back())) {

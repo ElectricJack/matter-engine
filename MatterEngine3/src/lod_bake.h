@@ -74,8 +74,21 @@ struct BakeTargets {
 // fires once per level after that level's geometry is decimated and registered in
 // `blas`, in ladder order (finest first, index 0..N-1). Null observer costs one
 // pointer check per level — see matter/bake_observer.h for the thread contract.
+// `out_handles` (optional): when non-null, receives the BLASHandle registered
+// for each level, in ladder order and one per level.
+//
+// Prefer it over LodLevel::blas_indices whenever `blas` is a LIVE manager that
+// outlives the call. blas_indices holds an ABSOLUTE index into
+// blas.get_entries(), and release_blas() erases from that vector and then
+// rebuilds handle_to_index_ wholesale -- so every index above a released entry
+// silently shifts. The value is only stable while nothing is released, which is
+// true at bake time (script_host bakes into a per-part manager, where the
+// absolute index is also the part-local one it serializes) and NOT true for the
+// shared PartStore manager, where sectors stream in and out continuously.
+// Handles survive that; indices do not.
 LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
                     BLASManager& blas, const std::vector<TriEx>* triex = nullptr,
-                    BakeObserver* observer = nullptr);
+                    BakeObserver* observer = nullptr,
+                    std::vector<BLASHandle>* out_handles = nullptr);
 
 } // namespace lod_bake

@@ -105,8 +105,10 @@ std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon,
 
 LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
                     BLASManager& blas, const std::vector<TriEx>* triex,
-                    BakeObserver* observer) {
+                    BakeObserver* observer,
+                    std::vector<BLASHandle>* out_handles) {
     LodLevels out;
+    if (out_handles) out_handles->clear();
     // Bake Lab task 1.5 (docs/bake-lab.md §II.1): one kSpanLod around the
     // ladder, one kSpanLodRung child per level with tris_in/tris_out/keep_ratio
     // counters. Observation-only; no-op without a current collector.
@@ -206,6 +208,11 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
         // register_triangles reads but does not modify the Tri array; const_cast safe.
         BLASHandle h = blas.register_triangles(const_cast<Tri*>(geo.data()), (int)geo.size(), ex);
         t_register = lb_split();
+        if (out_handles) out_handles->push_back(h);
+        // blas_indices is still filled because script_host serializes it, and
+        // there `blas` is a per-part manager whose absolute index IS the
+        // part-local one written to disk. Callers holding a live shared manager
+        // should read out_handles instead -- see the header.
         uint32_t idx = UINT32_MAX;
         const auto& entries = blas.get_entries();
         for (size_t i = 0; i < entries.size(); ++i) {
