@@ -32,6 +32,7 @@
 #include "autoremesher/quad_to_tri.h"      // ar_internal::triangulate
 #include "autoremesher/vector3.h"          // AutoRemesher::Vector3
 
+#include <geogram/basic/assert.h>          // GEO::set_assert_mode
 #include <geogram/basic/common.h>          // GEO::initialize
 #include <geogram/basic/command_line.h>    // GEO::CmdLine::* (arg groups)
 #include <geogram/basic/command_line_args.h>
@@ -106,6 +107,50 @@ void ensure_singletons_initialized(int threads)
         GEO::CmdLine::import_arg_group("standard");
         GEO::CmdLine::import_arg_group("algo");
         GEO::CmdLine::import_arg_group("remesh");
+
+        // Make geogram assertion failures recoverable instead of fatal.
+        //
+        // This Makefile compiles the vendored tree at -O2 but never defines
+        // NDEBUG, so geogram/basic/common.h leaves GEO_DEBUG (and
+        // GEO_PARANOID) defined. Two consequences follow, and the second one
+        // used to kill the host process:
+        //
+        //   1. geo_debug_assert() -- documented upstream as the "expensive
+        //      asserts" tier -- stays live inside the solvers.
+        //   2. geogram picks its assertion *policy* from GEO_DEBUG twice over:
+        //      assert.cpp's assert_mode_ initializes to ASSERT_ABORT, and
+        //      import_arg_group("standard") above declares "sys:assert" with
+        //      default "abort" -- and declare_arg() pushes that default
+        //      straight into ProcessEnvironment::set_local_value, which calls
+        //      set_assert_mode(ASSERT_ABORT). A release build gets "throw" for
+        //      both. That second path is why this call has to come AFTER the
+        //      import_arg_group() lines: from before them it is silently
+        //      overwritten.
+        //
+        // So a solver precondition that upstream treats as a debug-only check
+        // called abort() on whatever thread ran the pipeline. Observed on a
+        // cold StreamMeadow bake: a Rock chunk reached
+        // GlobalParam2d::quad_cover_solve -> MeshFacets::next_corner_around_facet,
+        // tripped a geo_debug_assert, and the editor died mid-bake with
+        // FAST_FAIL_FATAL_APP_EXIT and no diagnostic (the assert text goes to
+        // Logger::err, which set_quiet(true) below discards).
+        //
+        // remesh() is documented to never throw and is already written to
+        // absorb this: the try/catch in remesh() converts any std::exception
+        // into Result{ok=false, err}, MSL::retopo forwards that, and
+        // modifier_apply logs "retopo failed (...), skipped" and keeps the
+        // pre-retopo mesh. ASSERT_THROW is what makes that path reachable --
+        // geo_assertion_failed then prints the assert text to std::cerr (it
+        // does that whenever the Logger is quiet) and throws
+        // std::runtime_error instead of aborting.
+        //
+        // Set explicitly rather than by adding -DNDEBUG to the Makefile: this
+        // keeps the debug checks doing their job as checks, and confines the
+        // change to the failure policy that actually caused process death.
+        // "sys:assert" stays consistent for free -- ProcessEnvironment reports
+        // it back from assert_mode().
+        GEO::set_assert_mode(GEO::ASSERT_THROW);
+
         // Muffle geogram's chatty logger for smoke-test hygiene. Consumers
         // that want progress info can adjust this via GEO::Logger::instance()
         // after remesh() has returned once.
