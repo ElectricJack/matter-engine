@@ -1113,7 +1113,7 @@ static void test_provider_regen_stale_v2_flat() {
 //  (c) legacy lod0 tri total == sum of cluster lod0 tri counts,
 //  (d) bound_radius > 0,
 //  (e) loading a v2 flat still works (produces 1 synthetic cluster + non-empty legacy view),
-//  (f) the compositional path (no flat artifact) still works (clusters stays empty).
+//  (f) the compositional path publishes one exact-bounds synthetic cluster.
 static void test_partstore_cluster_loading() {
     printf("=== test_partstore_cluster_loading ===\n");
 
@@ -1251,7 +1251,7 @@ static void test_partstore_cluster_loading() {
         }
     }
 
-    // (f): compositional path (no flat artifact) -> clusters stays empty.
+    // (f): compositional path (no flat artifact) -> one exact-bounds cluster.
     const uint64_t kCompHash = 0x1234567890ABCDEFull;
     {
         BLASManager scratch3; TLASManager scratch_tlas3(64);
@@ -1269,12 +1269,62 @@ static void test_partstore_cluster_loading() {
         const viewer::LoadedPart* lp3 = store3.get_or_load(kCompHash);
         CHECK(lp3 != nullptr, "comp path: part loads via compositional path");
         if (lp3) {
-            CHECK(lp3->clusters.empty(), "comp path: clusters stays empty (no flat artifact)");
             CHECK(!lp3->lod_blas.empty(), "comp path: legacy lod_blas populated");
-            // Task 7 guards: compositional path has fine_cluster_count == 0 (== clusters.size())
-            // and empty flat_refs.
+            CHECK(lp3->clusters.size() == 1,
+                  "comp path: produces exactly one synthetic cluster");
+            if (lp3->clusters.size() == 1) {
+                const viewer::LoadedCluster& cluster = lp3->clusters.front();
+                const bool parallel_lods =
+                    !cluster.thresholds.empty() &&
+                    cluster.thresholds.size() == cluster.lod_blas.size() &&
+                    cluster.thresholds.size() == cluster.lod_mesh.size();
+                CHECK(parallel_lods,
+                      "comp path: synthetic cluster LOD arrays are non-empty and parallel");
+
+                float mesh_min[3] = {1e30f, 1e30f, 1e30f};
+                float mesh_max[3] = {-1e30f, -1e30f, -1e30f};
+                bool have_vertex = false;
+                bool mappings_valid = parallel_lods;
+                for (int mesh_index : cluster.lod_mesh) {
+                    const bool valid =
+                        mesh_index >= 0 &&
+                        static_cast<size_t>(mesh_index) <
+                            lp3->lod_mesh_data.size();
+                    mappings_valid &= valid;
+                    if (!valid) continue;
+                    const viewer::RasterMeshData& mesh =
+                        lp3->lod_mesh_data[static_cast<size_t>(mesh_index)];
+                    for (int vertex = 0; vertex < mesh.vertex_count; ++vertex) {
+                        for (int axis = 0; axis < 3; ++axis) {
+                            const float value =
+                                mesh.vertices[static_cast<size_t>(vertex) * 3 +
+                                              axis];
+                            mesh_min[axis] = std::fmin(mesh_min[axis], value);
+                            mesh_max[axis] = std::fmax(mesh_max[axis], value);
+                        }
+                        have_vertex = true;
+                    }
+                }
+                CHECK(mappings_valid,
+                      "comp path: every synthetic-cluster LOD maps to loaded mesh data");
+
+                bool exact_bounds = have_vertex && mappings_valid;
+                for (int axis = 0; axis < 3; ++axis) {
+                    exact_bounds &=
+                        std::isfinite(cluster.aabb_min[axis]) &&
+                        std::isfinite(cluster.aabb_max[axis]) &&
+                        std::fabs(cluster.aabb_min[axis] - mesh_min[axis]) <
+                            1e-5f &&
+                        std::fabs(cluster.aabb_max[axis] - mesh_max[axis]) <
+                            1e-5f;
+                }
+                CHECK(exact_bounds,
+                      "comp path: synthetic cluster exactly encloses every referenced LOD");
+            }
+            // Task 7 guards: the compositional cluster is fine geometry and
+            // the legacy path carries no flat refs.
             CHECK(lp3->fine_cluster_count == (uint32_t)lp3->clusters.size(),
-                  "comp path: fine_cluster_count == clusters.size() (compositional, 0)");
+                  "comp path: fine_cluster_count == clusters.size() (compositional)");
             CHECK(lp3->flat_refs.empty(), "comp path: flat_refs empty (compositional)");
         }
     }

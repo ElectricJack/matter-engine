@@ -843,6 +843,43 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
             staged.lp.lod_mesh_data.push_back({});
         }
     }
+    if (!staged.lp.lod_mesh_data.empty()) {
+        LoadedCluster cluster;
+        float lod_min[3] = {
+            std::numeric_limits<float>::max(),
+            std::numeric_limits<float>::max(),
+            std::numeric_limits<float>::max()};
+        float lod_max[3] = {
+            -std::numeric_limits<float>::max(),
+            -std::numeric_limits<float>::max(),
+            -std::numeric_limits<float>::max()};
+        bool have_vertex = false;
+        for (size_t lod = 0; lod < staged.lp.lod_mesh_data.size(); ++lod) {
+            const RasterMeshData& mesh = staged.lp.lod_mesh_data[lod];
+            for (int vertex = 0; vertex < mesh.vertex_count; ++vertex) {
+                for (int axis = 0; axis < 3; ++axis) {
+                    const float value =
+                        mesh.vertices[static_cast<size_t>(vertex) * 3 + axis];
+                    lod_min[axis] = std::min(lod_min[axis], value);
+                    lod_max[axis] = std::max(lod_max[axis], value);
+                }
+                have_vertex = true;
+            }
+            cluster.thresholds.push_back(staged.lp.thresholds[lod]);
+            cluster.lod_blas.push_back(staged.lp.lod_blas[lod]);
+            cluster.lod_mesh.push_back(static_cast<int>(lod));
+        }
+        if (have_vertex) {
+            std::memcpy(cluster.aabb_min, lod_min, sizeof lod_min);
+            std::memcpy(cluster.aabb_max, lod_max, sizeof lod_max);
+            const float dx = lod_max[0] - lod_min[0];
+            const float dy = lod_max[1] - lod_min[1];
+            const float dz = lod_max[2] - lod_min[2];
+            cluster.radius = 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
+            staged.lp.bound_radius = cluster.radius;
+            staged.lp.clusters.push_back(std::move(cluster));
+        }
+    }
     staged.ok = true;
     return staged;
 }
@@ -877,6 +914,8 @@ const LoadedPart* PartStore::commit_staged(StagedPart staged) {
         };
         patch(staged.lp.lod_blas);
         patch(staged.lp.owned_blas);
+        for (LoadedCluster& cluster : staged.lp.clusters)
+            patch(cluster.lod_blas);
     }
     if (staged.lp.lod_blas.empty()) {
         // No geometry (empty part) -> log; lookups will see an empty LOD list.
@@ -884,8 +923,9 @@ const LoadedPart* PartStore::commit_staged(StagedPart staged) {
                (unsigned long long)part_hash);
     }
 
-    // Compositional path: no flat artifact, so clusters is empty; treat all as fine.
-    staged.lp.fine_cluster_count = (uint32_t)staged.lp.clusters.size();  // 0 for compositional parts
+    // Compositional geometry is represented by one synthetic cluster spanning
+    // every generated LOD. Geometry-less assemblers keep zero clusters.
+    staged.lp.fine_cluster_count = (uint32_t)staged.lp.clusters.size();
 
     auto ins = loaded_.emplace(part_hash, std::move(staged.lp));
     // Build expansion into a local vector first (see flat path comment above).

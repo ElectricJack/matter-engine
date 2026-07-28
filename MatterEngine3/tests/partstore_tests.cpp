@@ -1,15 +1,18 @@
 // Lightweight PartStore tests — split out from viewer_logic_tests.cpp to avoid
 // the 30GB Meadow-flatten test in the same binary.
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
 #include "render/part_store.h"
+#include "render/raster_cull.h"
 #include "part_asset_v2.h"
 #include "lod_select.h"
 #include "blas_manager.hpp"
@@ -565,7 +568,188 @@ static void test_partstore_segmented_loading() {
     printf("  test_partstore_segmented_loading OK\n");
 }
 
+static void test_compositional_sector_bounds_survive_to_frustum_culling() {
+    namespace fs = std::filesystem;
+    const fs::path root =
+        fs::temp_directory_path() / "me3_partstore_sector_cull_bounds";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "parts", ec);
+    struct Cleanup {
+        fs::path root;
+        ~Cleanup() {
+            std::error_code ignored;
+            fs::remove_all(root, ignored);
+        }
+    } cleanup{root};
+
+    constexpr uint64_t hash = 0x5ec70aabbccdd001ull;
+    std::vector<Tri> sector(2);
+    sector[0].vertex0 = make_float3(0.0f, 5.0f, 0.0f);
+    sector[0].vertex1 = make_float3(64.0f, 5.0f, 0.0f);
+    sector[0].vertex2 = make_float3(0.0f, 6.0f, 64.0f);
+    sector[1].vertex0 = make_float3(64.0f, 5.0f, 0.0f);
+    sector[1].vertex1 = make_float3(64.0f, 6.0f, 64.0f);
+    sector[1].vertex2 = make_float3(0.0f, 6.0f, 64.0f);
+    for (Tri& triangle : sector)
+        triangle.centroid =
+            (triangle.vertex0 + triangle.vertex1 + triangle.vertex2) *
+            (1.0f / 3.0f);
+    std::vector<TriEx> extra(sector.size());
+    BLASManager source;
+    TLASManager tlas(4);
+    const BLASHandle handle = source.register_triangles(
+        sector.data(), static_cast<int>(sector.size()), extra.data());
+    TLASManager::DrawInstance instance{};
+    instance.blas_handle = handle;
+    tlas.draw_batch({instance});
+    tlas.build(source);
+    CHECK(
+        part_asset::save_v2(
+            (root / part_asset::cache_path_resolved(hash)).string(),
+            source, tlas, nullptr, 0, {}, hash),
+        "sector bounds: serialized compositional 64 m sector fixture");
+
+    viewer::PartStore store(root.string());
+    const viewer::LoadedPart* loaded = store.get_or_load(hash);
+    CHECK(loaded != nullptr,
+          "sector bounds: serialized sector loads through PartStore");
+    if (!loaded) return;
+    CHECK(!loaded->lod_mesh_data.empty(),
+          "sector bounds: compositional load retains generated LOD meshes");
+    CHECK(loaded->clusters.size() == 1,
+          "sector bounds: compositional load publishes an exact cluster AABB");
+    if (loaded->lod_mesh_data.empty() || loaded->clusters.size() != 1) return;
+
+    const viewer::LoadedCluster* cluster = &loaded->clusters.front();
+    const bool parallel_lods =
+        !cluster->thresholds.empty() &&
+        cluster->thresholds.size() == cluster->lod_blas.size() &&
+        cluster->thresholds.size() == cluster->lod_mesh.size();
+    CHECK(parallel_lods,
+          "sector bounds: synthetic cluster LOD arrays are non-empty and parallel");
+    if (!parallel_lods) return;
+
+    for (size_t lod = 0; lod < cluster->lod_mesh.size(); ++lod) {
+        const int mesh_index = cluster->lod_mesh[lod];
+        const bool mapping_valid =
+            mesh_index >= 0 &&
+            static_cast<size_t>(mesh_index) < loaded->lod_mesh_data.size();
+        char mapping_message[160];
+        std::snprintf(
+            mapping_message, sizeof mapping_message,
+            "sector bounds: cluster LOD %zu maps to loaded mesh data", lod);
+        CHECK(mapping_valid, mapping_message);
+        if (!mapping_valid) continue;
+
+        const viewer::RasterMeshData& mesh =
+            loaded->lod_mesh_data[static_cast<size_t>(mesh_index)];
+        bool lod_enclosed = mesh.vertex_count > 0;
+        for (int vertex = 0; vertex < mesh.vertex_count; ++vertex) {
+            for (int axis = 0; axis < 3; ++axis) {
+                const float value =
+                    mesh.vertices[static_cast<size_t>(vertex) * 3 + axis];
+                lod_enclosed &=
+                    std::isfinite(cluster->aabb_min[axis]) &&
+                    std::isfinite(cluster->aabb_max[axis]) &&
+                    cluster->aabb_min[axis] <= value &&
+                    cluster->aabb_max[axis] >= value;
+            }
+        }
+        char bounds_message[160];
+        std::snprintf(
+            bounds_message, sizeof bounds_message,
+            "sector bounds: cluster AABB encloses every vertex of LOD %zu", lod);
+        CHECK(lod_enclosed, bounds_message);
+    }
+
+    float transform[16]{};
+    transform[0] = transform[5] = transform[10] = transform[15] = 1.0f;
+    transform[3] = -7.0f * 64.0f;
+    transform[11] = -9.0f * 64.0f;
+    const float camera_eye[3] = {-101.4326f, 14.7310f, 519.3806f};
+    const int selected_lod =
+        viewer::cluster_lod_select(*cluster, transform, camera_eye);
+    CHECK(selected_lod >= 0 &&
+              static_cast<size_t>(selected_lod) < cluster->lod_mesh.size(),
+          "sector bounds: recorded camera selects a serialized LOD");
+    if (selected_lod < 0 ||
+        static_cast<size_t>(selected_lod) >= cluster->lod_mesh.size())
+        return;
+    const int mesh_index = cluster->lod_mesh[static_cast<size_t>(selected_lod)];
+    const bool selected_mapping_valid =
+        mesh_index >= 0 &&
+        static_cast<size_t>(mesh_index) < loaded->lod_mesh_data.size();
+    CHECK(selected_mapping_valid,
+          "sector bounds: camera-selected LOD maps to loaded mesh data");
+    if (!selected_mapping_valid) return;
+    const viewer::RasterMeshData& selected =
+        loaded->lod_mesh_data[static_cast<size_t>(mesh_index)];
+
+    float actual_min[3] = {
+        std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max()};
+    float actual_max[3] = {
+        -std::numeric_limits<float>::max(),
+        -std::numeric_limits<float>::max(),
+        -std::numeric_limits<float>::max()};
+    for (int vertex = 0; vertex < selected.vertex_count; ++vertex) {
+        for (int axis = 0; axis < 3; ++axis) {
+            const float value =
+                selected.vertices[static_cast<size_t>(vertex) * 3 + axis];
+            actual_min[axis] = std::min(actual_min[axis], value);
+            actual_max[axis] = std::max(actual_max[axis], value);
+        }
+    }
+    const matter::Mat4f view = viewer::look_at_rh(
+        {camera_eye[0], camera_eye[1], camera_eye[2]},
+        {-81.4177f, 13.3841f, 484.7023f}, {0.0f, 1.0f, 0.0f});
+    const matter::Mat4f projection = viewer::perspective_rh_zo_reversed(
+        0.7854f, 1236.0f / 521.0f, 0.1f, 5000.0f);
+    const matter::Mat4f world_to_clip = viewer::mat4_mul(projection, view);
+    float planes[6][4]{};
+    CHECK(viewer::extract_frustum_planes_zo(world_to_clip, planes),
+          "sector bounds: captured camera yields six finite frustum planes");
+
+    const matter::Mat4f object_to_world = viewer::persisted_mat4(transform);
+    const matter::Float3 world_origin =
+        viewer::transform_point(object_to_world, {0.0f, 0.0f, 0.0f});
+    bool origin_outside_side_plane = false;
+    for (int plane = 0; plane < 2; ++plane) {
+        origin_outside_side_plane |=
+            planes[plane][0] * world_origin.x +
+                planes[plane][1] * world_origin.y +
+                planes[plane][2] * world_origin.z +
+                planes[plane][3] < 0.0f;
+    }
+    CHECK(origin_outside_side_plane,
+          "sector bounds: instance origin is outside a recorded-camera side plane");
+
+    bool any_corner_inside = false;
+    for (int corner = 0; corner < 8; ++corner) {
+        const matter::Float3 world = viewer::transform_point(
+            object_to_world,
+            {(corner & 4) ? actual_max[0] : actual_min[0],
+             (corner & 2) ? actual_max[1] : actual_min[1],
+             (corner & 1) ? actual_max[2] : actual_min[2]});
+        bool inside = true;
+        for (int plane = 0; plane < 6; ++plane)
+            inside &= planes[plane][0] * world.x +
+                          planes[plane][1] * world.y +
+                          planes[plane][2] * world.z +
+                          planes[plane][3] >= 0.0f;
+        any_corner_inside |= inside;
+    }
+    CHECK(any_corner_inside,
+          "sector bounds: a true AABB corner remains inside the recorded frustum");
+    CHECK(!viewer::aabb_culled(
+              cluster->aabb_min, cluster->aabb_max, transform, planes),
+          "sector bounds: all-corners-outside contract keeps the intersecting sector");
+}
+
 int main() {
+    test_compositional_sector_bounds_survive_to_frustum_culling();
     test_partstore_segmented_loading();
     test_partstore_builds_cached_rigid_segment_subparts();
     test_partstore_owns_committed_animation_and_keeps_live_last_good();
