@@ -60,6 +60,111 @@ static void test_bake_three_levels() {
     CHECK(lods[1].screen_size_threshold > lods[2].screen_size_threshold, "thr1 > thr2");
 }
 
+// Issue 424b0f49: every rung of the ladder must carry the authored material and
+// smoothly-varying shading normals, not just the undecimated one. bake_lods used
+// to hand nullptr TriEx to every decimated level, so a coarse rung rendered in
+// the fallback instance material with flat per-face shading. On screen that was
+// a creature that turned from red to grey and went faceted as the camera pulled
+// back, and — wherever the raster and ray-traced lanes sat on different rungs —
+// two differently-shaded copies of it at once.
+//
+// A sphere is the right probe: it is closed (so decimation is unconstrained by
+// the boundary lock) and curved everywhere, so genuinely smooth normals must
+// vary across a triangle's three corners. A flat grid would pass even with
+// per-face normals.
+static std::vector<Tri> sphere_tris(int bands, int sectors, float radius,
+                                    std::vector<TriEx>& ex_out, int material_id) {
+    auto at = [&](int b, int s) {
+        const float pi = 3.14159265358979f;
+        float theta = pi * (float)b / (float)bands;          // 0..pi
+        float phi   = 2.0f * pi * (float)s / (float)sectors;  // 0..2pi
+        return make_float3(radius * sinf(theta) * cosf(phi),
+                           radius * cosf(theta),
+                           radius * sinf(theta) * sinf(phi));
+    };
+    std::vector<Tri> out;
+    ex_out.clear();
+    // On a sphere centered at the origin the exact vertex normal is the
+    // normalized position, so the authored normals here are analytically smooth.
+    auto normal_of = [&](const float3& p) {
+        float len = sqrtf(p.x*p.x + p.y*p.y + p.z*p.z);
+        if (len < 1e-20f) return make_float3(0, 1, 0);
+        return make_float3(p.x/len, p.y/len, p.z/len);
+    };
+    auto emit = [&](const float3& a, const float3& b, const float3& c) {
+        Tri t; t.vertex0 = a; t.vertex1 = b; t.vertex2 = c;
+        t.centroid = make_float3((a.x+b.x+c.x)/3, (a.y+b.y+c.y)/3, (a.z+b.z+c.z)/3);
+        out.push_back(t);
+        TriEx e{};
+        e.N0 = normal_of(a); e.N1 = normal_of(b); e.N2 = normal_of(c);
+        e.materialId = material_id;
+        e.tint = make_float4(1, 1, 1, 0);
+        ex_out.push_back(e);
+    };
+    for (int b = 0; b < bands; ++b)
+        for (int s = 0; s < sectors; ++s) {
+            float3 p00 = at(b, s),     p01 = at(b, s + 1);
+            float3 p10 = at(b + 1, s), p11 = at(b + 1, s + 1);
+            emit(p00, p10, p11);
+            emit(p00, p11, p01);
+        }
+    return out;
+}
+
+static void test_lod_rungs_preserve_material_and_smooth_normals() {
+    std::vector<TriEx> ex;
+    const int kMaterial = 7;
+    std::vector<Tri> tris = sphere_tris(24, 48, 1.0f, ex, kMaterial);
+    CHECK(ex.size() == tris.size(), "sphere triex parallel to tris");
+
+    BLASManager blas;
+    lod_bake::BakeTargets targets;                    // {1.0, 0.1, 0.01}
+    lod_bake::LodLevels lods =
+        lod_bake::bake_lods(tris, targets, blas, &ex);
+    CHECK(lods.size() == targets.keep_ratio.size(), "ladder has every rung");
+
+    for (size_t level = 0; level < lods.size(); ++level) {
+        CHECK(lods[level].blas_indices.size() == 1, "rung registered one blas");
+        if (lods[level].blas_indices.size() != 1) continue;
+        const auto& entry = blas.get_entries()[lods[level].blas_indices[0]];
+
+        // 1. TriEx present at all — the defect was this vector being empty on
+        //    every decimated rung, which drops the draw to the instance material.
+        CHECK(entry->tri_extra.size() == entry->triangles.size(),
+              "rung carries per-triangle TriEx");
+        if (entry->tri_extra.size() != entry->triangles.size()) continue;
+
+        // 2. The authored material survives decimation on every rung.
+        bool material_kept = true;
+        for (const TriEx& e : entry->tri_extra)
+            if (e.materialId != kMaterial) { material_kept = false; break; }
+        CHECK(material_kept, "rung keeps the authored materialId");
+
+        // 3. Normals are unit length and SMOOTH. Flat per-face shading gives a
+        //    triangle three identical corner normals; a smooth normal field over
+        //    a sphere gives three different ones. Requiring most triangles to
+        //    vary catches a regression to face normals without being brittle
+        //    about the few near-degenerate slivers decimation can leave.
+        size_t varying = 0, unit_ok = 0;
+        for (const TriEx& e : entry->tri_extra) {
+            auto len = [](const float3& n) {
+                return sqrtf(n.x*n.x + n.y*n.y + n.z*n.z);
+            };
+            if (fabsf(len(e.N0) - 1.0f) < 1e-3f &&
+                fabsf(len(e.N1) - 1.0f) < 1e-3f &&
+                fabsf(len(e.N2) - 1.0f) < 1e-3f) ++unit_ok;
+            auto differs = [](const float3& a, const float3& b) {
+                return fabsf(a.x-b.x) > 1e-4f || fabsf(a.y-b.y) > 1e-4f ||
+                       fabsf(a.z-b.z) > 1e-4f;
+            };
+            if (differs(e.N0, e.N1) || differs(e.N1, e.N2)) ++varying;
+        }
+        CHECK(unit_ok == entry->tri_extra.size(), "rung normals are unit length");
+        CHECK(varying * 10 >= entry->tri_extra.size() * 9,
+              "rung normals vary within a triangle (smooth, not per-face)");
+    }
+}
+
 static void test_lod_roundtrip_v2() {
     std::vector<Tri> tris = grid_tris(32);
     BLASManager blas; TLASManager tlas(64);
@@ -293,6 +398,7 @@ static void test_floor_cull_lod_select() {
 int main() {
     test_decimate_one_level();
     test_bake_three_levels();
+    test_lod_rungs_preserve_material_and_smooth_normals();
     test_lod_roundtrip_v2();
     test_lod_roundtrip_degenerate();
     test_flatten_n_times_m();

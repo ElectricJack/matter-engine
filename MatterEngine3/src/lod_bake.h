@@ -60,9 +60,14 @@ struct BakeTargets {
 // blas.get_entries() in registration order.
 //
 // `triex` (optional) is the per-triangle TriEx data parallel to `tris` (materialId,
-// tint, shading normals, AO). It is attached only to the undecimated level (keep ==
-// 1.0), where the triangle list is unchanged; decimated levels reorder/merge
-// triangles so their per-triangle material falls back to the instance material.
+// tint, shading normals, AO). The undecimated level (keep == 1.0) takes it directly,
+// since the triangle list is unchanged. Decimated levels reorder and merge triangles,
+// so they get a REPROJECTED copy (MSL `reproject_triex`): each surviving triangle
+// inherits materialId/tint/uv/AO from its nearest source triangle, and shading
+// normals are recomputed smoothly over the decimated mesh. Every rung therefore
+// carries the authored material — a ladder whose rungs disagree about material or
+// shading is visible as a material pop, or as two differently-shaded surfaces at
+// once wherever two rungs are on screen together.
 //
 // `observer` (optional, default null, W3 Lab seam): when non-null, on_rung_ready
 // fires once per level after that level's geometry is decimated and registered in

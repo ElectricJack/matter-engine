@@ -2,21 +2,50 @@
 id: 424b0f49-194e-1803-8fe5-a2fbe275cef6
 world: AnimatedRigGallery
 shots: 7
-status: unprocessed
+status: fixed
 reported: 2026-07-28T04:55:01Z
+kind: bug
+severity: major
+area: render/lod
+title: Coarse LOD rungs drop material and smooth normals, and the raster and traced lanes select different rungs
 ---
 
-# Unprocessed report 424b0f49-194e-1803-8fe5-a2fbe275cef6
+# Coarse LOD rungs drop material and smooth normals; raster and RT lanes disagree
 
-_Captured in-editor. Title, kind, severity and area are for the
-ingestion pass to fill in from the content below._
+## Symptom
 
-## Report
+Two defects, reported together because the first is what made the second visible.
 
-There are multiple issues that I'm seeing wrong with the LODs and rendering.
-- First there appear to be distances where two meshes are visible intersecting with different materials,
-one of these meshes often looks to have inverted normals
-- Second higher LODs with lower resolution do not preserverve smooth normals, or the original material for the object
+1. As the camera pulls back, the creature changes material (red → grey) and its
+   shading goes faceted.
+2. In a band of middle distances two differently-shaded copies of the creature
+   are on screen at once, interpenetrating; the second copy reads as
+   inside-out.
+
+## Expected
+
+A part looks the same at every distance apart from silhouette detail: the
+authored material and smooth shading hold across the whole ladder, and only one
+rung is ever visible.
+
+## Root cause
+
+Two independent bugs, one per symptom.
+
+1. `lod_bake::bake_lods` passed `nullptr` TriEx to every *decimated* rung
+   (`MatterEngine3/src/lod_bake.cpp`, the `const TriEx* ex = (full && ...)`
+   line). TriEx carries materialId/tint/normals/AO, so every coarse rung fell
+   back to the instance material and to flat per-face shading. `part_flatten.cpp`
+   had reprojected TriEx across its own ladder since 2026-07-07; the ladder
+   `script_host.cpp` bakes for animated parts never did.
+2. `VkSceneRenderer::build_ray_geometry` selected the traced rung from the
+   part's **static** cluster AABB/radius, while the raster lanes select from the
+   **dynamic** animation-bounds union (`resolve_animation_cluster_union`). For a
+   partitioned animated part the static bound is an origin-centered box covering
+   skin *and* every rigid segment, so its radius runs well above the animated
+   skin's and the tracer held a finer rung than the gbuffer across a wide band.
+   Both surfaces are on screen at once — gbuffer shades, traced geometry
+   supplies GI and shadow rays — so they interpenetrate.
 
 ## Repro
 
@@ -29,6 +58,15 @@ MATTER_WORLD=AnimatedRigGallery MATTER_CAM="20.000,16.000,34.000,0.529,1.303,2.2
 ```
 
 Simulation was in **Edit** for the first shot — press Play if the defect only appears in motion.
+
+## Report
+
+_As captured, verbatim._
+
+There are multiple issues that I'm seeing wrong with the LODs and rendering.
+- First there appear to be distances where two meshes are visible intersecting with different materials,
+one of these meshes often looks to have inverted normals
+- Second higher LODs with lower resolution do not preserverve smooth normals, or the original material for the object
 
 ## Evidence
 
@@ -117,4 +155,48 @@ MATTER_WORLD=AnimatedRigGallery MATTER_CAM="12.864,11.532,24.754,-5.069,-1.209,-
 
 ## Acceptance
 
-_TODO — the check that closes this. Prefer a headless `make -C MatterEngine3/tests run-*` target; fall back to a scripted capture (`MatterEngine3/tools/viewer_shots.sh`) plus what the pixels must show._
+**Headless (the gate):**
+
+```bash
+make -C MatterEngine3/tests run-comp TMP="C:/Users/webde/AppData/Local/Temp" TEMP="C:/Users/webde/AppData/Local/Temp" GRAPHICS=GRAPHICS_API_OPENGL_43
+```
+
+`test_lod_rungs_preserve_material_and_smooth_normals` (composition_tests.cpp)
+bakes a sphere ladder with an authored materialId and analytic smooth normals,
+then asserts for **every** rung — not just the undecimated one — that TriEx is
+present and parallel to the triangles, that the materialId survived, that
+normals are unit length, and that ≥90% of triangles have corner normals that
+differ from each other (a per-face normal field gives three identical corners,
+so this is what separates smooth from faceted). Confirmed to fail on the
+pre-fix tree with `FAIL: rung carries per-triangle TriEx` on both decimated
+rungs, and to pass after.
+
+A sphere is the probe on purpose: it is closed, so decimation is not pinned by
+the boundary lock, and curved everywhere, so a flat grid would pass even with
+per-face normals.
+
+**Visual (what the pixels must show), via shot replay:**
+
+```bash
+cd MatterEditor && MATTER_REPLAY=../issues/424b0f49-194e-1803-8fe5-a2fbe275cef6/state.json MATTER_REPLAY_SHOT=3 MATTER_REPLAY_OUT=/tmp/after-3.png ./build/windows/editor.exe
+```
+
+- shot-3 (mid distance): one uniformly red, smoothly shaded creature. No grey
+  blotches, no second interpenetrating surface.
+- shot-6 (debug_view=1, coarse rung): smooth normal gradients, not flat facets.
+- shots 2/3/4 together: the creature is the same red at every distance — no
+  material pop across the ladder.
+
+Delete `projects/world_demo/.cache/` before replaying. The baked LOD geometry
+is content-addressed on the *source*, so an engine-side bake change does not
+invalidate it and a stale cache will reproduce the old pixels exactly.
+
+## Not fixed here
+
+The ground plane disappears at close range (shots 4 and 5; `instances_drawn`
+drops 5→4 and `clusters_culled` is 1). That is a wrong frustum cull of the
+ground crate, not an LOD defect: the cull volume reaching `cull.comp` behaves
+like a zero-sized box at the instance origin — visibility across all seven
+shots brackets NDC ±1 at the origin (−0.91 and −0.95 visible, −1.36 culled)
+while the slab's actual corners project well inside the frustum. Present before
+these changes and unchanged by them. Worth its own issue.
