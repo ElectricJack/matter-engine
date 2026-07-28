@@ -335,6 +335,20 @@ std::vector<VkSkinRasterDraw> filter_ready_animation_skin_raster_draws(
     return ready;
 }
 
+bool animation_skin_raster_owns_cluster(
+    const std::vector<VkSkinRasterDraw>& draws,
+    uint32_t instance_slot, uint32_t instance_generation,
+    uint32_t cluster_index) noexcept {
+    return std::any_of(
+        draws.begin(), draws.end(),
+        [instance_slot, instance_generation,
+         cluster_index](const VkSkinRasterDraw& draw) {
+            return draw.instance_slot == instance_slot &&
+                   draw.instance_generation == instance_generation &&
+                   draw.cluster == cluster_index;
+        });
+}
+
 void mark_animation_skin_raster_records(
     std::vector<VkAnimationBoundsGpuRecord>& records,
     const std::vector<VkSkinRasterDraw>& draws) noexcept {
@@ -348,14 +362,10 @@ void mark_animation_skin_raster_records(
         // GPU-selected static record unflagged and the bind-pose cluster draws
         // on top of the skinned one. Cluster and generation still gate, so
         // per-cluster budget ownership and stale generations are unaffected.
-        const bool skinned = std::any_of(
-            draws.begin(), draws.end(), [&record](const VkSkinRasterDraw& draw) {
-                return draw.instance_slot == record.instance_slot &&
-                       draw.instance_generation ==
-                           record.instance_generation &&
-                       draw.cluster == record.cluster_index;
-            });
-        if (skinned) record.flags |= kVkAnimationBoundsSkinRaster;
+        if (animation_skin_raster_owns_cluster(
+                draws, record.instance_slot, record.instance_generation,
+                record.cluster_index))
+            record.flags |= kVkAnimationBoundsSkinRaster;
     }
 }
 

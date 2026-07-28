@@ -108,6 +108,18 @@ std::vector<VkSkinRasterDraw> filter_ready_animation_skin_raster_draws(
     const std::vector<VkSkinRasterDraw>& draws,
     const VkSkinRasterValidationView& validation);
 
+// True when an accepted skin draw owns this generational cluster for the
+// frame. This is the single exclusion predicate for BOTH consumers of the
+// bind-pose geometry: cull.comp drops the static indirect draw (via the
+// flag mark_animation_skin_raster_records sets below), and the ray-traced
+// lane drops the cluster's bind-pose BLAS from the TLAS. Splitting those
+// decisions is what let the tracer keep a bind-pose ghost inside a skinned
+// mesh. Deliberately LOD-agnostic, like the marking below.
+bool animation_skin_raster_owns_cluster(
+    const std::vector<VkSkinRasterDraw>& draws,
+    uint32_t instance_slot, uint32_t instance_generation,
+    uint32_t cluster_index) noexcept;
+
 // Marks only the generational instance/LOD records which have a concrete
 // skinned raster draw. The culler then omits those instances from the static
 // indirect bucket without suppressing bind fallbacks or shared-mesh peers.

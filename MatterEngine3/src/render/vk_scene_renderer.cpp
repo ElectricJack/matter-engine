@@ -6961,6 +6961,26 @@ bool VkSceneRenderer::build_ray_geometry(
                     sizeof(object_to_world.m));
         for (uint32_t cluster_index = 0;
              cluster_index < part.cluster_count; ++cluster_index) {
+            // The raster lanes already treat an accepted skin draw as the sole
+            // owner of its (instance, generation, cluster): cull.comp drops the
+            // static bind-pose draw the moment the bounds record carries the
+            // skin-raster flag. Apply the same exclusion here. This BLAS is
+            // immutable bind-pose geometry (see the build contract below), so
+            // tracing it under a compute-skinned gbuffer buries posed pixels
+            // inside the bind-pose silhouette -- their GI and sun rays self-hit
+            // immediately and carve hard-edged dark patches across the animated
+            // surface. Until a deforming-BLAS phase exists, a skinned cluster
+            // contributes no traced geometry at all: a missing occluder reads
+            // as a soft lighting omission, a wrong-pose occluder reads as
+            // geometry. Skin fallbacks need no special case -- a BindPose
+            // fallback publishes no draw, so the raster mesh IS the bind pose
+            // and the traced copy aligns with it again.
+            if (source.animation_instance_slot != UINT32_MAX &&
+                animation_skin_raster_owns_cluster(
+                    selected.ready_skin_raster_draws,
+                    source.animation_instance_slot,
+                    source.animation_instance_generation, cluster_index))
+                continue;
             const uint32_t global_cluster =
                 part.cluster_start + cluster_index;
             const GpuCluster& gpu_cluster = cluster_staging_[global_cluster];
@@ -7057,6 +7077,9 @@ bool VkSceneRenderer::build_ray_geometry(
         // C4's ray-tracing contract is intentionally conservative: the
         // compute-skinned raster stream never enters an RT BLAS. The immutable
         // part bind pose remains build-once until a later deforming-RT phase.
+        // The selection loop above enforces the complement: while a skin draw
+        // owns a cluster, its bind-pose BLAS stays out of the TLAS entirely,
+        // so build-once geometry only ever traces where it is also rasterized.
         assert(skinned_rt_uses_bind_pose_blas());
         assert((item.build.flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR) == 0);
         assert(item.build.mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR);
