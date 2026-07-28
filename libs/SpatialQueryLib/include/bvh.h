@@ -73,6 +73,15 @@ public:
 	// Install a previously-built BVH (from disk) without rebuilding. nodes/triIdx
 	// are copied; nodes_used is the live node count. mesh must outlive this BVH.
 	BVH( BvhMesh* mesh, const BVHNode* nodes, uint nodes_used, const uint* tri_idx );
+	// Owns bvhNode (MALLOC64) and triIdx (new[]); `mesh` is a back-pointer and is
+	// NOT owned. Without this every BVH ever built was leaked -- BLASManager
+	// erases entries on release and destroys whole scratch/staging managers per
+	// part load, so a streaming world leaked roughly a decoded sector twice per
+	// sector. Copying is deleted rather than implemented: these are held through
+	// unique_ptr and a value copy would double-free.
+	~BVH();
+	BVH( const BVH& ) = delete;
+	BVH& operator=( const BVH& ) = delete;
 	void Build();
 	void Refit();
 	void Intersect( BVHRay& ray, uint instanceIdx );
@@ -98,6 +107,12 @@ public:
 	BvhMesh() = default;
 	BvhMesh( uint primCount );
 	BvhMesh( const char* objFile, const char* texFile, const float scale = 1 );
+	// Owns tri and triEx (both MALLOC64). `bvh` is a back-pointer and is NOT
+	// owned -- BLASEntry holds the BVH through its own unique_ptr, so freeing it
+	// here would double-free. See ~BVH for why these destructors exist.
+	~BvhMesh();
+	BvhMesh( const BvhMesh& ) = delete;
+	BvhMesh& operator=( const BvhMesh& ) = delete;
 	Tri* tri = 0;			// triangle data for intersection
 	TriEx* triEx = 0;		// triangle data for shading
 	int triCount = 0;
@@ -150,6 +165,10 @@ class ALIGN(64) TLAS
 public:
 	TLAS() = default;
 	TLAS( BVHInstance* blas, int N );
+	// Owns tlasNode (MALLOC64) and nodeIdx (new[]); `blas` is caller-owned.
+	~TLAS();
+	TLAS( const TLAS& ) = delete;
+	TLAS& operator=( const TLAS& ) = delete;
 	void Build();
 	void Intersect( BVHRay& ray );
 	

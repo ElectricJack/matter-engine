@@ -745,6 +745,156 @@ bool PartStore::read_coherent_snapshot(uint64_t part_hash,
     return coherent;
 }
 
+PartStore::StagedPart PartStore::stage_from_snapshot(
+        uint64_t part_hash, CoherentSnapshot& snapshot,
+        const matter::animation::AnimAsset* animation_asset) {
+    StagedPart staged;
+    staged.part_hash = part_hash;
+    staged.staging   = std::make_unique<BLASManager>();
+    auto& scratch  = snapshot.scratch;
+    auto& children = snapshot.children;
+    // Gather full-res triangles (and their parallel per-triangle TriEx, which
+    // carries the baked materialId/tint/normals) for lod_bake. Without the TriEx
+    // the re-baked LOD geometry has no per-triangle material, so every triangle
+    // falls back to the instance material in the shader and the whole world renders
+    // as one color. e->triangles and e->tri_extra are parallel in registration order.
+    std::vector<Tri> tris;
+    std::vector<TriEx> triex;
+    for (const auto& e : scratch->get_entries()) {
+        tris.insert(tris.end(), e->triangles.begin(), e->triangles.end());
+        triex.insert(triex.end(), e->tri_extra.begin(), e->tri_extra.end());
+    }
+    // Only pass TriEx through when it is fully parallel to the triangle list;
+    // a partial/absent table would misalign materials.
+    const std::vector<TriEx>* triex_ptr = (triex.size() == tris.size() && !triex.empty())
+                                          ? &triex : nullptr;
+
+    // Bound radius = half AABB diagonal (drives projected-size LOD math).
+    float mn[3] = {1e30f,1e30f,1e30f}, mx[3] = {-1e30f,-1e30f,-1e30f};
+    auto acc = [&](const float3& v){
+        mn[0]=std::fmin(mn[0],v.x); mx[0]=std::fmax(mx[0],v.x);
+        mn[1]=std::fmin(mn[1],v.y); mx[1]=std::fmax(mx[1],v.y);
+        mn[2]=std::fmin(mn[2],v.z); mx[2]=std::fmax(mx[2],v.z);
+    };
+    for (const auto& t : tris) { acc(t.vertex0); acc(t.vertex1); acc(t.vertex2); }
+    float radius = 0.0f;
+    if (!tris.empty()) {
+        float dx=mx[0]-mn[0], dy=mx[1]-mn[1], dz=mx[2]-mn[2];
+        radius = 0.5f * std::sqrt(dx*dx+dy*dy+dz*dz);
+    }
+
+    // Compute dominant material from full-res TriEx for LOD fallback.
+    float dominant_mat = -1.0f;
+    if (triex_ptr && !triex_ptr->empty()) {
+        int counts[256] = {};
+        for (const auto& t : *triex_ptr) {
+            int m = t.materialId;
+            if (m >= 0 && m < 256) counts[m]++;
+        }
+        int max_cnt = 0;
+        for (int i = 0; i < 256; ++i)
+            if (counts[i] > max_cnt) { max_cnt = counts[i]; dominant_mat = (float)i; }
+    }
+
+    staged.lp.bound_radius = radius;
+    staged.lp.children = std::move(children);   // keep the baked child-instance table for the WorldComposer
+    staged.lp.animation_asset = animation_asset;
+    // Bake the ladder into a PRIVATE manager, then adopt it into the shared one
+    // in a single bounded step.
+    //
+    // This is the seam for getting the load off the app/GL thread. Everything
+    // above already works on a local `scratch`, so `staging` makes the whole
+    // expensive stretch -- decimation, TriEx reprojection, BVH construction --
+    // touch no shared state at all. What is left against blas_ is adopt_from:
+    // O(entries) hash lookups plus an array copy, with no BVH rebuilt, because
+    // a content match takes a reference and a newcomer installs the BVH the
+    // bake already produced. Splitting this into stage_load()/commit_staged()
+    // is then code motion rather than a redesign.
+    //
+    // Dedup still applies across the boundary: a part whose geometry is already
+    // resident collapses onto that entry instead of duplicating it.
+    //
+    // Handles, not blas_indices -- see lod_bake.h. The staged handles are
+    // meaningless in blas_, so lod_blas/owned_blas are patched through the
+    // remap adopt_from reports.
+
+    std::vector<BLASHandle> lod_handles;
+    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, *staged.staging,
+                                                   triex_ptr, observer_, &lod_handles);
+    assert(lod_handles.size() == lods.size());
+    for (size_t li = 0; li < lods.size() && li < lod_handles.size(); ++li) {
+        const auto& L = lods[li];
+        // A geometry-less part (one that only places children) bakes to empty
+        // triangles and yields LOD levels with no BLAS -> skip them, leaving
+        // lod_blas empty so the part is treated as a pure assembler.
+        if (L.blas_indices.empty()) continue;
+        staged.lp.thresholds.push_back(L.screen_size_threshold);
+        staged.lp.lod_blas.push_back(lod_handles[li]);
+        staged.lp.owned_blas.push_back(staged.lp.lod_blas.back());
+
+        // Raster mesh data is a copy, so build it from the staged entry before
+        // adoption; it does not reference the manager afterwards.
+        if (const auto* e = staged.staging->get_entry(staged.lp.lod_blas.back())) {
+            const TriEx* mesh_ex = (e->tri_extra.size() == e->triangles.size() && !e->tri_extra.empty())
+                                      ? e->tri_extra.data() : nullptr;
+            staged.lp.lod_mesh_data.push_back(
+                build_raster_mesh_data(e->triangles.data(), mesh_ex, (int)e->triangles.size(), dominant_mat));
+        } else {
+            staged.lp.lod_mesh_data.push_back({});
+        }
+    }
+    staged.ok = true;
+    return staged;
+}
+
+PartStore::StagedPart PartStore::stage_load(uint64_t part_hash) {
+    StagedPart staged;
+    staged.part_hash = part_hash;
+    CoherentSnapshot snapshot;
+    if (!read_coherent_snapshot(part_hash, snapshot)) return staged;
+    // Animated parts take the partitioned path, which registers into the shared
+    // BLAS manager and inserts into the shared animation asset store. Not
+    // stageable; the caller loads them on the owning thread.
+    if (snapshot.animation_link) return staged;
+    return stage_from_snapshot(part_hash, snapshot, nullptr);
+}
+
+const LoadedPart* PartStore::commit_staged(StagedPart staged) {
+    if (!staged.ok || !staged.staging) return nullptr;
+    const uint64_t part_hash = staged.part_hash;
+    // A concurrent load may have published this hash while we staged. Keep the
+    // resident copy and drop ours rather than double-insert.
+    auto existing = loaded_.find(part_hash);
+    if (existing != loaded_.end()) return &existing->second;
+    {
+        std::unordered_map<BLASHandle, BLASHandle> remap;
+        blas_.adopt_from(*staged.staging, remap);
+        auto patch = [&remap](std::vector<BLASHandle>& handles) {
+            for (BLASHandle& h : handles) {
+                auto it = remap.find(h);
+                h = (it != remap.end()) ? it->second : INVALID_BLAS_HANDLE;
+            }
+        };
+        patch(staged.lp.lod_blas);
+        patch(staged.lp.owned_blas);
+    }
+    if (staged.lp.lod_blas.empty()) {
+        // No geometry (empty part) -> log; lookups will see an empty LOD list.
+        printf("PartStore: part %016llx produced no LOD geometry\n",
+               (unsigned long long)part_hash);
+    }
+
+    // Compositional path: no flat artifact, so clusters is empty; treat all as fine.
+    staged.lp.fine_cluster_count = (uint32_t)staged.lp.clusters.size();  // 0 for compositional parts
+
+    auto ins = loaded_.emplace(part_hash, std::move(staged.lp));
+    // Build expansion into a local vector first (see flat path comment above).
+    std::vector<ExpandedNode> exp;
+    build_expansion(part_hash, [this](uint64_t h){ return get_or_load(h); }, exp);
+    loaded_[part_hash].expansion = std::move(exp);
+    return &ins.first->second;
+}
+
 const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     auto cached = loaded_.find(part_hash);
     if (cached != loaded_.end()) return &cached->second;
@@ -946,128 +1096,11 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         return &inserted.first->second;
     }
 
-    // Gather full-res triangles (and their parallel per-triangle TriEx, which
-    // carries the baked materialId/tint/normals) for lod_bake. Without the TriEx
-    // the re-baked LOD geometry has no per-triangle material, so every triangle
-    // falls back to the instance material in the shader and the whole world renders
-    // as one color. e->triangles and e->tri_extra are parallel in registration order.
-    std::vector<Tri> tris;
-    std::vector<TriEx> triex;
-    for (const auto& e : scratch->get_entries()) {
-        tris.insert(tris.end(), e->triangles.begin(), e->triangles.end());
-        triex.insert(triex.end(), e->tri_extra.begin(), e->tri_extra.end());
-    }
-    // Only pass TriEx through when it is fully parallel to the triangle list;
-    // a partial/absent table would misalign materials.
-    const std::vector<TriEx>* triex_ptr = (triex.size() == tris.size() && !triex.empty())
-                                          ? &triex : nullptr;
-
-    // Bound radius = half AABB diagonal (drives projected-size LOD math).
-    float mn[3] = {1e30f,1e30f,1e30f}, mx[3] = {-1e30f,-1e30f,-1e30f};
-    auto acc = [&](const float3& v){
-        mn[0]=std::fmin(mn[0],v.x); mx[0]=std::fmax(mx[0],v.x);
-        mn[1]=std::fmin(mn[1],v.y); mx[1]=std::fmax(mx[1],v.y);
-        mn[2]=std::fmin(mn[2],v.z); mx[2]=std::fmax(mx[2],v.z);
-    };
-    for (const auto& t : tris) { acc(t.vertex0); acc(t.vertex1); acc(t.vertex2); }
-    float radius = 0.0f;
-    if (!tris.empty()) {
-        float dx=mx[0]-mn[0], dy=mx[1]-mn[1], dz=mx[2]-mn[2];
-        radius = 0.5f * std::sqrt(dx*dx+dy*dy+dz*dz);
-    }
-
-    // Compute dominant material from full-res TriEx for LOD fallback.
-    float dominant_mat = -1.0f;
-    if (triex_ptr && !triex_ptr->empty()) {
-        int counts[256] = {};
-        for (const auto& t : *triex_ptr) {
-            int m = t.materialId;
-            if (m >= 0 && m < 256) counts[m]++;
-        }
-        int max_cnt = 0;
-        for (int i = 0; i < 256; ++i)
-            if (counts[i] > max_cnt) { max_cnt = counts[i]; dominant_mat = (float)i; }
-    }
-
-    // Re-bake LODs into the SHARED store BLASManager. lod_bake stores the
-    // ABSOLUTE entries_ index (== get_entries().size() before registration),
-    // so use blas_indices[0] directly as the index — do NOT add 'before'.
-    LoadedPart lp;
-    lp.bound_radius = radius;
-    lp.children = std::move(children);   // keep the baked child-instance table for the WorldComposer
-    lp.animation_asset = animation_asset;
-    // Bake the ladder into a PRIVATE manager, then adopt it into the shared one
-    // in a single bounded step.
-    //
-    // This is the seam for getting the load off the app/GL thread. Everything
-    // above already works on a local `scratch`, so `staging` makes the whole
-    // expensive stretch -- decimation, TriEx reprojection, BVH construction --
-    // touch no shared state at all. What is left against blas_ is adopt_from:
-    // O(entries) hash lookups plus an array copy, with no BVH rebuilt, because
-    // a content match takes a reference and a newcomer installs the BVH the
-    // bake already produced. Splitting this into stage_load()/commit_staged()
-    // is then code motion rather than a redesign.
-    //
-    // Dedup still applies across the boundary: a part whose geometry is already
-    // resident collapses onto that entry instead of duplicating it.
-    //
-    // Handles, not blas_indices -- see lod_bake.h. The staged handles are
-    // meaningless in blas_, so lod_blas/owned_blas are patched through the
-    // remap adopt_from reports.
-    BLASManager staging;
-    std::vector<BLASHandle> lod_handles;
-    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, staging,
-                                                   triex_ptr, observer_, &lod_handles);
-    assert(lod_handles.size() == lods.size());
-    for (size_t li = 0; li < lods.size() && li < lod_handles.size(); ++li) {
-        const auto& L = lods[li];
-        // A geometry-less part (one that only places children) bakes to empty
-        // triangles and yields LOD levels with no BLAS -> skip them, leaving
-        // lod_blas empty so the part is treated as a pure assembler.
-        if (L.blas_indices.empty()) continue;
-        lp.thresholds.push_back(L.screen_size_threshold);
-        lp.lod_blas.push_back(lod_handles[li]);
-        lp.owned_blas.push_back(lp.lod_blas.back());
-
-        // Raster mesh data is a copy, so build it from the staged entry before
-        // adoption; it does not reference the manager afterwards.
-        if (const auto* e = staging.get_entry(lp.lod_blas.back())) {
-            const TriEx* mesh_ex = (e->tri_extra.size() == e->triangles.size() && !e->tri_extra.empty())
-                                      ? e->tri_extra.data() : nullptr;
-            lp.lod_mesh_data.push_back(
-                build_raster_mesh_data(e->triangles.data(), mesh_ex, (int)e->triangles.size(), dominant_mat));
-        } else {
-            lp.lod_mesh_data.push_back({});
-        }
-    }
-
-    {
-        std::unordered_map<BLASHandle, BLASHandle> remap;
-        blas_.adopt_from(staging, remap);
-        auto patch = [&remap](std::vector<BLASHandle>& handles) {
-            for (BLASHandle& h : handles) {
-                auto it = remap.find(h);
-                h = (it != remap.end()) ? it->second : INVALID_BLAS_HANDLE;
-            }
-        };
-        patch(lp.lod_blas);
-        patch(lp.owned_blas);
-    }
-    if (lp.lod_blas.empty()) {
-        // No geometry (empty part) -> log; lookups will see an empty LOD list.
-        printf("PartStore: part %016llx produced no LOD geometry\n",
-               (unsigned long long)part_hash);
-    }
-
-    // Compositional path: no flat artifact, so clusters is empty; treat all as fine.
-    lp.fine_cluster_count = (uint32_t)lp.clusters.size();  // 0 for compositional parts
-
-    auto ins = loaded_.emplace(part_hash, std::move(lp));
-    // Build expansion into a local vector first (see flat path comment above).
-    std::vector<ExpandedNode> exp;
-    build_expansion(part_hash, [this](uint64_t h){ return get_or_load(h); }, exp);
-    loaded_[part_hash].expansion = std::move(exp);
-    return &ins.first->second;
+    // Non-partitioned coherent part: stage it (touches no shared state) then
+    // commit it (bounded). Split so a streaming worker can call stage_load().
+    StagedPart staged = stage_from_snapshot(part_hash, snapshot_, animation_asset);
+    if (!staged.ok) return nullptr;
+    return commit_staged(std::move(staged));
 }
 
 lod_select::PartLodTable PartStore::part_lod_table() const {
