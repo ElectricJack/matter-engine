@@ -125,6 +125,26 @@ public:
     //BLASHandle register_triangles_legacy(const std::vector<LegacyTriangle>& triangles);
     //BLASHandle register_triangles_legacy(LegacyTriangle* triangles, int triangle_count);
     
+    // Adopt every entry of `staged` into this manager, deduping against content
+    // already here. `remap` receives staged-handle -> this-manager-handle for
+    // every adopted entry; callers patch their own handle references through it.
+    //
+    // Purpose: let expensive work happen on a worker thread against a PRIVATE
+    // manager, then hand the result over in one bounded step. No BVH is rebuilt
+    // here -- a content match bumps ref_count, and a newcomer installs the
+    // staged BVH arrays via the register_prebuilt path. Cost is O(entries), not
+    // O(triangles), which is what makes it safe to run inside a frame.
+    //
+    // Dedup is the same hash + exact-compare that register_triangles uses, so an
+    // adopted sector sharing a rock BLAS with one already resident collapses onto
+    // it rather than duplicating the geometry.
+    //
+    // `staged` is left untouched (entries are copied, not moved) so the caller
+    // can still roll its own transaction back by discarding it. Not thread-safe
+    // in itself: call it on the thread that owns this manager.
+    void adopt_from(const BLASManager& staged,
+                    std::unordered_map<BLASHandle, BLASHandle>& remap);
+
     // Release one reference to a BLAS. When the last owner releases it, the
     // entry is removed and its GPU footprint reclaimed. No-op for invalid/0.
     void release_blas(BLASHandle handle);

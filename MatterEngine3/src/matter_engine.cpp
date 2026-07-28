@@ -2514,8 +2514,33 @@ bool WorldSession::Impl::install_world(
     //    -> Twig -> Leaf), baking depth-first so every part bakes with its REAL
     //    child hashes. Memoized by module+params so shared sub-trees (every Tree
     //    seed reuses TreeBranch) resolve and bake exactly once.
+    //
+    //    The params passed here used to be "{}". That made the sector's asset
+    //    set world-independent by construction: WorldSector.js could not vary
+    //    what it required per world, so every streamed world installed and
+    //    baked the union of everything any world might place. StreamMeadow
+    //    comments trees out of its biomes() table and never places one, yet
+    //    still paid ~16 s per cold bake for three Tree variants (each ~5.5 s).
+    //
+    //    Hand it the world's biomes table instead. It is already resolved by
+    //    step 4 above, it is world-level (identical for every sector of a
+    //    world), and WorldSector.js's `static requires` is the method form, so
+    //    it can gate on it. Sectors themselves are unaffected: their bake
+    //    params below carry the same string, so child hashes are unchanged for
+    //    any world that does place trees.
+    std::string sector_requires_params;
+    {
+        std::string biomes_escaped;
+        biomes_escaped.reserve(world_biomes_json.size() + 16);
+        for (char c : world_biomes_json) {
+            if (c == '"') biomes_escaped += "\\\"";
+            else if (c == '\\') biomes_escaped += "\\\\";
+            else biomes_escaped += c;
+        }
+        sector_requires_params = "{\"biomes\":\"" + biomes_escaped + "\"}";
+    }
     std::vector<script_host::RequiredChild> children =
-        host.eval_requires(world_sector_source, "{}");
+        host.eval_requires(world_sector_source, sector_requires_params);
     fprintf(stderr, "[stream] WorldSector requires %zu child variants\n", children.size());
 
     sector_child_hashes.clear();
@@ -3345,9 +3370,33 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     // Mark every external call before attempting it. The release
                     // side is safe for a partial attempt and clears the bit only
                     // after cleanup returns successfully.
+                    // Sub-step attribution for the publish job. stream.publish
+                    // is one indivisible GpuJob on the app/GL thread, and
+                    // GpuJobQueue::pump's progress guarantee runs it to
+                    // completion regardless of the caller's ms_budget -- so
+                    // when it is slow it blows the frame outright and the only
+                    // signal upstream was "pump() returned late". These splits
+                    // say WHICH step. Off unless MATTER_STREAM_PUBLISH_PROFILE
+                    // is set; steady_clock reads are cheap but this runs per
+                    // sector while a world streams.
+                    const bool pub_prof =
+                        std::getenv("MATTER_STREAM_PUBLISH_PROFILE") != nullptr;
+                    auto pub_mark = std::chrono::steady_clock::now();
+                    auto pub_split = [&pub_mark]() -> double {
+                        const auto now = std::chrono::steady_clock::now();
+                        const double ms =
+                            std::chrono::duration<double, std::milli>(
+                                now - pub_mark).count();
+                        pub_mark = now;
+                        return ms;
+                    };
+                    double t_load = 0, t_state = 0, t_tracer = 0;
+                    double t_culler = 0, t_vulkan = 0, t_cache = 0;
+
                     published.resources.store_attempted = true;
                     const viewer::LoadedPart* loaded =
                         store->get_or_load(sector_hash);
+                    t_load = pub_split();
                     if (!loaded) {
                         return fail_publication(
                             "sector PartStore load failed");
@@ -3372,8 +3421,10 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     delta.added.push_back(instance);
                     published.resources.world_state_attempted = true;
                     state.apply(delta);
+                    t_state = pub_split();
                     tracer_dirty = true;
                     tracer.reset();
+                    t_tracer = pub_split();
 
 #ifndef MATTER_VULKAN_ONLY
                     if (culler_ready) {
@@ -3383,6 +3434,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
                                 "sector GPU culler registration failed");
                         }
                     }
+                    t_culler = pub_split();
 #endif
 #ifdef MATTER_VULKAN_VIEWER
                     if (vk_scene) {
@@ -3398,6 +3450,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
                                     : vulkan_error);
                         }
                     }
+                    t_vulkan = pub_split();
                     // A publish only ADDS a sector; nothing is released or
                     // unregistered here, so every existing source's expansion
                     // stays valid. Drop only the flat set so the next frame
@@ -3410,7 +3463,19 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     // frame and presented the raw internal-resolution render
                     // (issues/render-dlss-not-applied).
                     vk_instance_cache.invalidate_expansion();
+                    t_cache = pub_split();
 #endif
+                    if (pub_prof) {
+                        std::fprintf(stderr,
+                            "[stream.publish] sector(%lld,%lld,r%d) "
+                            "load=%.1f state=%.1f tracer=%.1f culler=%.1f "
+                            "vulkan=%.1f cache=%.1f ms\n",
+                            (long long)request.sector.tx,
+                            (long long)request.sector.tz,
+                            (int)request.sector.rung,
+                            t_load, t_state, t_tracer, t_culler,
+                            t_vulkan, t_cache);
+                    }
 #ifndef MATTER_VULKAN_ONLY
                     if (composer) {
                         const size_t capacity = state.entries().size() + 16;

@@ -5,6 +5,7 @@
 // register_triangles / release_blas are CPU-only (BVH build, no GL calls),
 // so these run without a GL context.
 
+#include <unordered_map>
 #include <cstdio>
 #include <cassert>
 #include <cstring>
@@ -219,7 +220,58 @@ static void test_content_revision_tracks_content_not_refcount() {
     printf("PASSED\n");
 }
 
+// adopt_from is the handover seam: a worker builds into a private manager, the
+// owning thread merges the result in one bounded step. What has to hold is that
+// the merge dedups exactly like register_triangles (so a sector sharing geometry
+// with a resident one collapses onto it) and that it reports a remap, because
+// the staged handles are meaningless in the destination.
+static void test_adopt_from_dedups_and_remaps() {
+    printf("=== test_adopt_from_dedups_and_remaps ===\n");
+    BLASManager shared;
+    const BLASHandle resident = shared.register_triangles(makeTriSet(0.0f));
+    assert(shared.get_unique_blas_count() == 1);
+
+    // A worker stages two BLASes: one duplicating resident content, one new.
+    BLASManager staged;
+    const BLASHandle staged_dup = staged.register_triangles(makeTriSet(0.0f));
+    const BLASHandle staged_new = staged.register_triangles(makeTriSet(10.0f));
+    assert(staged.get_unique_blas_count() == 2);
+
+    const uint64_t rev_before = shared.content_revision();
+    std::unordered_map<BLASHandle, BLASHandle> remap;
+    shared.adopt_from(staged, remap);
+
+    // The duplicate collapses onto the resident entry; only the newcomer adds one.
+    assert(shared.get_unique_blas_count() == 2 &&
+           "adopting duplicate content must not add an entry");
+    assert(remap.size() == 2 && "every adopted entry must be remapped");
+    assert(remap[staged_dup] == resident &&
+           "duplicate content must remap onto the entry already resident");
+    assert(remap[staged_new] != INVALID_BLAS_HANDLE);
+    assert(shared.has_blas(remap[staged_new]));
+    assert(shared.content_revision() > rev_before &&
+           "adopting new geometry changes flattened content");
+
+    // The dedup hit took a reference, so the resident entry survives one release.
+    shared.release_blas(resident);
+    assert(shared.has_blas(resident) &&
+           "adopt_from's dedup hit must have bumped ref_count");
+    shared.release_blas(resident);
+    assert(!shared.has_blas(resident));
+
+    // Staging manager is untouched, so a caller can still abandon the
+    // transaction by discarding it.
+    assert(staged.get_unique_blas_count() == 2);
+
+    // The adopted newcomer carries its geometry, not an empty shell.
+    const auto* adopted = shared.get_entry(remap[staged_new]);
+    assert(adopted && adopted->triangles.size() == 1 &&
+           "adopted entry must carry the staged triangles");
+    printf("PASSED\n");
+}
+
 int main() {
+    test_adopt_from_dedups_and_remaps();
     test_dedup_and_release();
     test_content_revision_tracks_content_not_refcount();
     test_remesh_no_leak();

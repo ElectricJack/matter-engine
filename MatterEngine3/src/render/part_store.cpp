@@ -10,8 +10,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -321,13 +323,17 @@ bool PartStore::build_rigid_segment_subparts(
                 subpart.lod_mesh_data.push_back(meshes[level]);
             }
         } else {
+            // Handles, not blas_indices: blas_ is the shared store manager and
+            // release_blas() erases from entries_, shifting every absolute index
+            // above the removed one. See lod_bake.h.
+            std::vector<BLASHandle> lod_handles;
             const lod_bake::LodLevels lods = lod_bake::bake_lods(
-                triangles, lod_bake::BakeTargets{}, blas_, &extras);
-            for (const auto& lod : lods) {
-                if (lod.blas_indices.size() != 1 || lod.blas_indices[0] >= blas_.get_entries().size()) {
-                    rollback(); return false;
-                }
-                const BLASHandle handle = blas_.get_entries()[lod.blas_indices[0]]->handle;
+                triangles, lod_bake::BakeTargets{}, blas_, &extras, nullptr,
+                &lod_handles);
+            if (lod_handles.size() != lods.size()) { rollback(); return false; }
+            for (size_t li = 0; li < lods.size(); ++li) {
+                const auto& lod = lods[li];
+                const BLASHandle handle = lod_handles[li];
                 const auto* entry = blas_.get_entry(handle);
                 if (!entry) { rollback(); return false; }
                 subpart.thresholds.push_back(lod.screen_size_threshold);
@@ -717,14 +723,37 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
                 // (partially constructed) entry rather than recursing infinitely.
                 loaded_.emplace(part_hash, std::move(flat));
 
+                // MATTER_PARTSTORE_PROFILE: split the flat path. This function
+                // runs inside the stream.publish GpuJob on the app/GL thread,
+                // where it measured 3-6 s per sector while the Vulkan
+                // registration next to it took 0.4 ms -- so the whole streaming
+                // stall lives in here and nothing said which part of it.
+                const bool ps_prof =
+                    std::getenv("MATTER_PARTSTORE_PROFILE") != nullptr;
+                const auto ps_t0 = std::chrono::steady_clock::now();
+
                 // Recursively load each flat_ref child. The parent is already in loaded_
                 // so circular references are safe.
                 for (const auto& ref : loaded_[part_hash].flat_refs)
                     get_or_load(ref.child_resolved_hash);
 
+                const auto ps_t1 = std::chrono::steady_clock::now();
+
                 // Build expansion into a local vector first, then assign.
                 std::vector<ExpandedNode> exp;
                 build_expansion(part_hash, [this](uint64_t h){ return get_or_load(h); }, exp);
+                const auto ps_t2 = std::chrono::steady_clock::now();
+                if (ps_prof) {
+                    const auto ms = [](auto a, auto b) {
+                        return std::chrono::duration<double, std::milli>(b - a).count();
+                    };
+                    std::fprintf(stderr,
+                        "[partstore] %016llx refs=%zu children=%.1f "
+                        "expansion=%.1f ms (nodes=%zu)\n",
+                        (unsigned long long)part_hash,
+                        loaded_[part_hash].flat_refs.size(),
+                        ms(ps_t0, ps_t1), ms(ps_t1, ps_t2), exp.size());
+                }
                 loaded_[part_hash].expansion = std::move(exp);
                 return &loaded_[part_hash];
             }
@@ -957,21 +986,42 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     lp.bound_radius = radius;
     lp.children = std::move(children);   // keep the baked child-instance table for the WorldComposer
     lp.animation_asset = animation_asset;
-    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, blas_, triex_ptr, observer_);
-    for (const auto& L : lods) {
+    // Bake the ladder into a PRIVATE manager, then adopt it into the shared one
+    // in a single bounded step.
+    //
+    // This is the seam for getting the load off the app/GL thread. Everything
+    // above already works on a local `scratch`, so `staging` makes the whole
+    // expensive stretch -- decimation, TriEx reprojection, BVH construction --
+    // touch no shared state at all. What is left against blas_ is adopt_from:
+    // O(entries) hash lookups plus an array copy, with no BVH rebuilt, because
+    // a content match takes a reference and a newcomer installs the BVH the
+    // bake already produced. Splitting this into stage_load()/commit_staged()
+    // is then code motion rather than a redesign.
+    //
+    // Dedup still applies across the boundary: a part whose geometry is already
+    // resident collapses onto that entry instead of duplicating it.
+    //
+    // Handles, not blas_indices -- see lod_bake.h. The staged handles are
+    // meaningless in blas_, so lod_blas/owned_blas are patched through the
+    // remap adopt_from reports.
+    BLASManager staging;
+    std::vector<BLASHandle> lod_handles;
+    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, staging,
+                                                   triex_ptr, observer_, &lod_handles);
+    assert(lod_handles.size() == lods.size());
+    for (size_t li = 0; li < lods.size() && li < lod_handles.size(); ++li) {
+        const auto& L = lods[li];
         // A geometry-less part (one that only places children) bakes to empty
         // triangles and yields LOD levels with no BLAS -> skip them, leaving
         // lod_blas empty so the part is treated as a pure assembler.
         if (L.blas_indices.empty()) continue;
-        // bake_lods registers exactly one BLAS per non-empty level; guard the
-        // assumption since the LodLevel type can carry multiple indices.
-        assert(L.blas_indices.size() == 1);
         lp.thresholds.push_back(L.screen_size_threshold);
-        size_t abs_idx = L.blas_indices[0];   // absolute index into blas_.get_entries()
-        lp.lod_blas.push_back(blas_.get_entries()[abs_idx]->handle);
+        lp.lod_blas.push_back(lod_handles[li]);
         lp.owned_blas.push_back(lp.lod_blas.back());
 
-        if (const auto* e = blas_.get_entry(lp.lod_blas.back())) {
+        // Raster mesh data is a copy, so build it from the staged entry before
+        // adoption; it does not reference the manager afterwards.
+        if (const auto* e = staging.get_entry(lp.lod_blas.back())) {
             const TriEx* mesh_ex = (e->tri_extra.size() == e->triangles.size() && !e->tri_extra.empty())
                                       ? e->tri_extra.data() : nullptr;
             lp.lod_mesh_data.push_back(
@@ -979,6 +1029,19 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         } else {
             lp.lod_mesh_data.push_back({});
         }
+    }
+
+    {
+        std::unordered_map<BLASHandle, BLASHandle> remap;
+        blas_.adopt_from(staging, remap);
+        auto patch = [&remap](std::vector<BLASHandle>& handles) {
+            for (BLASHandle& h : handles) {
+                auto it = remap.find(h);
+                h = (it != remap.end()) ? it->second : INVALID_BLAS_HANDLE;
+            }
+        };
+        patch(lp.lod_blas);
+        patch(lp.owned_blas);
     }
     if (lp.lod_blas.empty()) {
         // No geometry (empty part) -> log; lookups will see an empty LOD list.

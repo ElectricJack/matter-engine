@@ -1,3 +1,6 @@
+#include <memory>
+#include <cstdlib>
+#include <cstdio>
 #include "lod_bake.h"
 #include "bake_trace.h"        // Bake Lab task 1.5: LOD ladder spans + counters
 #include "bake_trace_names.h"  // kSpanLod, kSpanLodRung
@@ -102,12 +105,26 @@ std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon,
 
 LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
                     BLASManager& blas, const std::vector<TriEx>* triex,
-                    BakeObserver* observer) {
+                    BakeObserver* observer,
+                    std::vector<BLASHandle>* out_handles) {
     LodLevels out;
+    if (out_handles) out_handles->clear();
     // Bake Lab task 1.5 (docs/bake-lab.md §II.1): one kSpanLod around the
     // ladder, one kSpanLodRung child per level with tris_in/tris_out/keep_ratio
     // counters. Observation-only; no-op without a current collector.
     BAKE_SPAN(bake_trace::kSpanLod);
+
+    // Every decimated rung reprojects against the SAME full-res source, so the
+    // welded source mesh and everything reproject_triex derives from it (source
+    // centroids, the centroid hash, face normals, and the triangle-AABB overlap
+    // grid) are ladder-invariant. Building them per rung is what made a world
+    // sector's ladder cost seconds, and PartStore re-bakes that ladder on every
+    // load — see ReprojectSource in mesh_transform.hpp. Built lazily so a ladder
+    // with no usable TriEx, or one that never decimates, pays nothing.
+    const bool reproject_usable = triex && triex->size() == tris.size();
+    std::unique_ptr<MeshIndexed> src_m;
+    std::unique_ptr<ReprojectSource> src_index;
+
     for (size_t lvl = 0; lvl < targets.keep_ratio.size(); ++lvl) {
         BAKE_SPAN(bake_trace::kSpanLodRung);
         // W3: per-rung wall time for the observer's status line (decimation
@@ -120,11 +137,27 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
         // Perf fix: for the undecimated (full) level, avoid copying `tris` by
         // passing its data directly via const_cast (register_triangles reads only).
         // For decimated levels, the QEM output is already a fresh vector.
+        // MATTER_LOD_BAKE_PROFILE: per-rung split. PartStore re-bakes this
+        // ladder inside the GL-thread publish job, where it measured 3-6 s per
+        // sector; the rung timer below only ever fed the observer's status line,
+        // so nothing attributed that time to a stage.
+        const bool lb_prof = std::getenv("MATTER_LOD_BAKE_PROFILE") != nullptr;
+        auto lb_mark = std::chrono::steady_clock::now();
+        auto lb_split = [&lb_mark]() -> double {
+            const auto now = std::chrono::steady_clock::now();
+            const double ms =
+                std::chrono::duration<double, std::milli>(now - lb_mark).count();
+            lb_mark = now;
+            return ms;
+        };
+        double t_decimate = 0, t_reproject = 0, t_register = 0, t_indexscan = 0;
+
         std::vector<Tri> decimated;
         if (!full) {
             decimated = decimate_tris(tris, keep);
             if (decimated.empty()) decimated = tris;  // never register empty geometry
         }
+        t_decimate = lb_split();
         const std::vector<Tri>& geo = full ? tris : decimated;
         BAKE_COUNT("tris_in",    (double)tris.size());
         BAKE_COUNT("tris_out",   (double)geo.size());
@@ -151,15 +184,20 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
         // gradient the moment it popped below the full level, while the spheres
         // beside it looked fine.
         std::vector<TriEx> reprojected;
-        if (!full && triex && triex->size() == tris.size()) {
-            MeshIndexed src_m = from_tri(tris, triex);
+        if (!full && reproject_usable) {
+            if (!src_index) {
+                src_m = std::make_unique<MeshIndexed>(from_tri(tris, triex));
+                src_index = std::make_unique<ReprojectSource>(
+                    *src_m, ReprojectNormals::SampleSource);
+            }
             MeshIndexed tgt_m = from_tri(geo, nullptr);
-            reproject_triex(src_m, tgt_m, ReprojectNormals::SampleSource);
+            reproject_triex(*src_index, tgt_m);
             // to_tri emits one triangle per 3 indices in order, so `reprojected`
             // lines up with `geo`; the unwelded tris themselves are redundant.
             std::vector<Tri> geo_unwelded_unused;
             to_tri(tgt_m, geo_unwelded_unused, reprojected);
         }
+        t_reproject = lb_split();
         const TriEx* ex = nullptr;
         if (full && triex && triex->size() == geo.size())      ex = triex->data();
         else if (!full && reprojected.size() == geo.size())    ex = reprojected.data();
@@ -169,10 +207,24 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
         // handle's actual position in the entries array after registration instead.
         // register_triangles reads but does not modify the Tri array; const_cast safe.
         BLASHandle h = blas.register_triangles(const_cast<Tri*>(geo.data()), (int)geo.size(), ex);
+        t_register = lb_split();
+        if (out_handles) out_handles->push_back(h);
+        // blas_indices is still filled because script_host serializes it, and
+        // there `blas` is a per-part manager whose absolute index IS the
+        // part-local one written to disk. Callers holding a live shared manager
+        // should read out_handles instead -- see the header.
         uint32_t idx = UINT32_MAX;
         const auto& entries = blas.get_entries();
         for (size_t i = 0; i < entries.size(); ++i) {
             if (entries[i]->handle == h) { idx = (uint32_t)i; break; }
+        }
+        t_indexscan = lb_split();
+        if (lb_prof) {
+            std::fprintf(stderr,
+                "[lod-rung] lvl=%zu keep=%.3f tris=%zu->%zu entries=%zu "
+                "decimate=%.1f reproject=%.1f register=%.1f indexscan=%.1f ms\n",
+                lvl, (double)keep, tris.size(), geo.size(), entries.size(),
+                t_decimate, t_reproject, t_register, t_indexscan);
         }
         LodLevel L;
         L.screen_size_threshold = targets.threshold[lvl];
