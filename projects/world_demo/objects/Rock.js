@@ -91,7 +91,19 @@ class Rock extends Part {
 
     this.endVoxels();
     this.endModifier([
-      { retopo: { target_ratio: 0.35, iterations: 3, seed: 42, timeout_seconds: 60 } },
+      // retopo is off for now. It cost ~65 ms when it worked, but ~1.5 s on the
+      // chunks where geogram's quad_cover tripped a debug assert — and on those
+      // the stack fell back to the raw isosurface, shipping 5k-22k tri rocks
+      // instead of the 120-750 tri quad meshes retopo produced. Measured on a
+      // cold StreamMeadow bake: 8 of 18 rock variants took that path.
+      //
+      // simplify stands in for it so the triangle budget survives the removal:
+      // without a decimator here EVERY rock ships at full isosurface density,
+      // which is the opposite of what turning retopo off is meant to achieve.
+      // 0.08 is calibrated from the retopo'd/raw pairs above (retopo landed at
+      // roughly 3-8% of the isosurface); tune it if rocks read too soft.
+      { simplify: 0.08 },
+      // { retopo: { target_ratio: 0.35, iterations: 3, seed: 42, timeout_seconds: 60 } },
     ]);
   }
 }

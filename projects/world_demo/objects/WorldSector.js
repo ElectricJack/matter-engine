@@ -52,7 +52,17 @@ function patch(x, z, seed, freq) {
   return sum / norm;
 }
 
-function assetVariants() {
+// `biomesJson` is this world's biomes() table (the same string build() gets as
+// p.biomes). Only the TREE entries consult it: a Tree bakes in ~5.5 s, so a
+// world that never places one — StreamMeadow, which has `trees` commented out
+// of its table — should not pay for three of them. Every other asset stays
+// unconditional.
+//
+// This still satisfies the "same list for every sector" requirement below: the
+// biomes table is world-level, so every sector of a given world sees the same
+// string and therefore the same variant list. It varies per WORLD, not per
+// sector, which is what the child-hash stability actually needs.
+function assetVariants(biomesJson) {
   const req = [];
   for (let s = 0; s < ROCK_VARIANTS; ++s) req.push({ module: 'Rock', params: { seed: s } });
   for (const sz of BOULDER_SIZES)
@@ -60,15 +70,35 @@ function assetVariants() {
       req.push({ module: 'Rock', params: { seed: s, size: sz } });
   for (let s = 0; s < PEBBLE_VARIANTS; ++s) req.push({ module: 'Pebble', params: { seed: s } });
   for (let s = 0; s < GRASS_VARIANTS; ++s) req.push({ module: 'Grass', params: { seed: s } });
-  for (let s = 0; s < TREE_VARIANTS; ++s) req.push({ module: 'Tree', params: { seed: s } });
+  if (anyBiomeWantsTrees(biomesJson))
+    for (let s = 0; s < TREE_VARIANTS; ++s) req.push({ module: 'Tree', params: { seed: s } });
   return req;
+}
+
+// True when at least one biome asks for trees. Fail-OPEN: an absent or
+// unparseable table keeps Tree required, so the only way to drop the Tree
+// bakes is a table that demonstrably never places one. (MeadowWorld asks for
+// 6-10 trees and is unaffected; StreamMeadow asks for none and skips them.)
+function anyBiomeWantsTrees(biomesJson) {
+  if (!biomesJson) return true;
+  let table;
+  try { table = JSON.parse(biomesJson); } catch (e) { return true; }
+  if (!table || typeof table !== 'object') return true;
+  for (const k of Object.keys(table)) {
+    if (((table[k] || {}).trees | 0) > 0) return true;
+  }
+  return false;
 }
 
 class WorldSector extends Part {
   static params = { tx: 0, tz: 0, rung: 0, worldSeed: 0, fieldHash: '', biomes: '' };
   // FIXED variant list — independent of tx/tz so the whole asset set installs
   // once at world load and every sector bake hits the same child hashes.
-  static requires = assetVariants();
+  // Method form (script_host eval_requires calls `static requires` with the
+  // merged params when it is a function) so the Tree entries can consult the
+  // world's biome table; p.biomes is world-level, so this is still constant
+  // across every sector of a world.
+  static requires(p) { return assetVariants(p && p.biomes); }
 
   build(p) {
     this.terrainVolume(p.tx, p.tz, 0, [MAT.grass, MAT.dirt, MAT.rock, MAT.snow]);

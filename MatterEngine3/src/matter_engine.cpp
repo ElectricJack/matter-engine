@@ -2514,8 +2514,33 @@ bool WorldSession::Impl::install_world(
     //    -> Twig -> Leaf), baking depth-first so every part bakes with its REAL
     //    child hashes. Memoized by module+params so shared sub-trees (every Tree
     //    seed reuses TreeBranch) resolve and bake exactly once.
+    //
+    //    The params passed here used to be "{}". That made the sector's asset
+    //    set world-independent by construction: WorldSector.js could not vary
+    //    what it required per world, so every streamed world installed and
+    //    baked the union of everything any world might place. StreamMeadow
+    //    comments trees out of its biomes() table and never places one, yet
+    //    still paid ~16 s per cold bake for three Tree variants (each ~5.5 s).
+    //
+    //    Hand it the world's biomes table instead. It is already resolved by
+    //    step 4 above, it is world-level (identical for every sector of a
+    //    world), and WorldSector.js's `static requires` is the method form, so
+    //    it can gate on it. Sectors themselves are unaffected: their bake
+    //    params below carry the same string, so child hashes are unchanged for
+    //    any world that does place trees.
+    std::string sector_requires_params;
+    {
+        std::string biomes_escaped;
+        biomes_escaped.reserve(world_biomes_json.size() + 16);
+        for (char c : world_biomes_json) {
+            if (c == '"') biomes_escaped += "\\\"";
+            else if (c == '\\') biomes_escaped += "\\\\";
+            else biomes_escaped += c;
+        }
+        sector_requires_params = "{\"biomes\":\"" + biomes_escaped + "\"}";
+    }
     std::vector<script_host::RequiredChild> children =
-        host.eval_requires(world_sector_source, "{}");
+        host.eval_requires(world_sector_source, sector_requires_params);
     fprintf(stderr, "[stream] WorldSector requires %zu child variants\n", children.size());
 
     sector_child_hashes.clear();
