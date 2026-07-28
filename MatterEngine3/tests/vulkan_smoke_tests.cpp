@@ -4131,6 +4131,103 @@ void run_frame_upload_tests(matter::VulkanDevice& vulkan) {
           "camera-only frame leaves scene uploads and command layout intact");
 }
 
+// Streaming-append contract (issues/bfb5f13e): registering a part into a live
+// scene must reach the GPU as a tail append into the existing static buffers,
+// not a recreate + O(world) rewrite. Full re-uploads are legal only when a
+// buffer outgrew its capacity — capacity doubles, so over a streaming load
+// they are O(log N) while appends carry the steady state.
+void run_static_append_upload_tests(matter::VulkanDevice& vulkan) {
+    std::string error;
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices frame{};
+    CHECK(viewer::build_frame_matrices(camera, 320, 320, frame, error),
+          error.empty() ? "build streamed-append matrices" : error.c_str());
+
+    // Even parts sit in front of the camera, odd parts behind it. The final
+    // emitted/culled split therefore depends on every appended cluster's AABB
+    // bytes actually reaching the GPU: an append that left zeroes would put
+    // that cluster's degenerate box at the (visible) origin and skew the count.
+    const auto streamed_part = [](uint64_t hash, float z_center) {
+        viewer::VkScenePart part = fixed_part(
+            hash, {-0.25f, -0.25f, z_center - 0.25f},
+            {0.25f, 0.25f, z_center + 0.25f}, 0);
+        const matter::Float3 normal{0.0f, 1.0f, 0.0f};
+        const matter::Float4 tint{0.9f, 0.1f, 0.3f, 0.0f};
+        part.vertices = {
+            {{-0.25f, -0.25f, z_center}, normal, tint,
+             {0.0f, 0.0f, 0.0f, 1.0f}, 7u, {}},
+            {{0.25f, -0.25f, z_center}, normal, tint,
+             {0.0f, 0.0f, 0.0f, 1.0f}, 7u, {}},
+            {{0.0f, 0.25f, z_center}, normal, tint,
+             {0.0f, 0.0f, 0.0f, 1.0f}, 7u, {}},
+        };
+        part.indices = {0, 1, 2};
+        return part;
+    };
+
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "init streamed-append renderer" : error.c_str());
+    const matter::Mat4f identity = identity_matrix();
+    std::vector<viewer::VkSceneInstance> instances;
+    constexpr int kStreamedParts = 16;
+    uint64_t fulls = 0;
+    uint64_t appends = 0;
+    for (int i = 0; i < kStreamedParts; ++i) {
+        const uint64_t hash = 2000 + static_cast<uint64_t>(i);
+        const float z_center = (i % 2 == 0) ? -2.0f : 2.0f;
+        CHECK(renderer.ensure_part(streamed_part(hash, z_center), error) >= 0,
+              error.empty() ? "register streamed part" : error.c_str());
+        instances.push_back({hash, identity});
+        CHECK(renderer.update_instances(instances, error),
+              error.empty() ? "upload streamed instances" : error.c_str());
+        const VkDeviceSize cluster_capacity = renderer.cluster_buffer_size();
+        const VkDeviceSize vertex_capacity =
+            renderer.raster_vertex_buffer_size();
+        const VkDeviceSize index_capacity = renderer.raster_index_buffer_size();
+        const viewer::VkSceneUploadCounters before = renderer.upload_counters();
+        CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+              error.empty() ? "dispatch streamed cull" : error.c_str());
+        const viewer::VkSceneUploadCounters after = renderer.upload_counters();
+        const uint64_t full_delta =
+            after.static_full_uploads - before.static_full_uploads;
+        const uint64_t append_delta =
+            after.static_append_uploads - before.static_append_uploads;
+        CHECK(full_delta + append_delta == 1,
+              "each streamed registration performs exactly one static upload");
+        const bool capacity_grew =
+            renderer.cluster_buffer_size() > cluster_capacity ||
+            renderer.raster_vertex_buffer_size() > vertex_capacity ||
+            renderer.raster_index_buffer_size() > index_capacity;
+        CHECK(full_delta == 0 || capacity_grew,
+              "full static re-uploads happen only when a buffer must grow");
+        CHECK(capacity_grew || append_delta == 1,
+              "a registration that fits existing capacity appends in place");
+        fulls += full_delta;
+        appends += append_delta;
+    }
+    // Capacity doubles per buffer, so across 16 single-part registrations each
+    // of the three buffers can force at most ~4 growth re-uploads; the rest
+    // must take the append path regardless of exact struct sizes.
+    CHECK(appends >= 4, "append path carries the streaming steady state");
+    std::printf("streamed static uploads: %llu appends / %llu fulls\n",
+                static_cast<unsigned long long>(appends),
+                static_cast<unsigned long long>(fulls));
+    viewer::VkCullStats stats{};
+    CHECK(renderer.cull_stats(stats, error),
+          error.empty() ? "read streamed cull stats" : error.c_str());
+    CHECK(stats.emitted == kStreamedParts / 2,
+          "appended front clusters are emitted from GPU cluster data");
+    CHECK(stats.frustum_culled == kStreamedParts / 2,
+          "appended behind clusters are culled from GPU cluster data");
+}
+
 void run_display_transform_tests(matter::VulkanDevice& vulkan) {
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
@@ -4944,6 +5041,10 @@ void run_vk_scene_checked_size_tests(matter::VulkanDevice& vulkan) {
                       {scene.instances[0], scene.instances[1]}, error),
               error.empty() ? "stage replacement-fault growth"
                             : error.c_str());
+        // The appended part may or may not fit the live buffers' capacity;
+        // force the full recreate path so the replacement fault below is
+        // reachable deterministically.
+        renderer.test_force_full_static_upload();
         renderer.set_test_scene_failure(1,
             std::numeric_limits<uint32_t>::max());
         CHECK(!renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error) &&
@@ -5742,6 +5843,7 @@ int main() {
         }
         if (smoke_mode && std::string(smoke_mode) == "cull") {
             run_frame_upload_tests(*vulkan);
+            run_static_append_upload_tests(*vulkan);
             run_frame_record_tests(*vulkan);
             run_frame_resource_recovery_tests(*vulkan);
             run_vk_scene_checked_size_tests(*vulkan);
@@ -5828,6 +5930,7 @@ int main() {
 
         uint32_t retained_probe_destroyed = 0;
         run_frame_upload_tests(*vulkan);
+        run_static_append_upload_tests(*vulkan);
         run_frame_record_tests(*vulkan);
         run_frame_resource_recovery_tests(*vulkan);
         run_tileset_slot_load(*vulkan);

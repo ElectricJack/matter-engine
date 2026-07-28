@@ -5392,6 +5392,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.vk_instance_uploads = upload_counters.instance_uploads;
     impl_->stats.vk_command_layout_rebuilds =
         upload_counters.command_layout_rebuilds;
+    impl_->stats.vk_static_full_uploads = upload_counters.static_full_uploads;
+    impl_->stats.vk_static_append_uploads =
+        upload_counters.static_append_uploads;
     impl_->stats.vk_immediate_submits = matter::immediate_submit_count();
     impl_->stats.dlss_selected_mode = impl_->vk_scene->selected_dlss_mode();
     impl_->stats.dlss_active_mode = impl_->vk_scene->active_dlss_mode();

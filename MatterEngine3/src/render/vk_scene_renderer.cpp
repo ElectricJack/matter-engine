@@ -4229,7 +4229,9 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         return -1;
     }
     ++static_generation_;
-    static_upload_dirty_ = true;
+    // Pure tail-append: every insert above went past the previously uploaded
+    // counts, so the upload can be an in-place tail write.
+    mark_static_append();
     note_command_layout_rebuild();
     return slot;
 }
@@ -5843,7 +5845,9 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     } else {
         ++static_generation_;
         ++instance_generation_;
-        static_upload_dirty_ = true;
+        // Compaction rewrote existing bytes; an in-place tail write would
+        // corrupt what in-flight frames are reading.
+        static_upload_dirty_ = StaticUpload::kFull;
         note_command_layout_rebuild();
     }
 }
@@ -6383,8 +6387,9 @@ bool VkSceneRenderer::upload_scene_buffers(
 #endif
         return true;
     };
-    const auto upload = [&](matter::VkBufferResource& buffer, const void* data,
-                            VkDeviceSize size) {
+    const auto upload_at = [&](matter::VkBufferResource& buffer,
+                               const void* data, VkDeviceSize size,
+                               VkDeviceSize offset) {
         if (size == 0) return true;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
         if (uploads == test_fail_after_uploads_) {
@@ -6392,10 +6397,14 @@ bool VkSceneRenderer::upload_scene_buffers(
             return poison(error);
         }
 #endif
-        if (!matter::upload_buffer(*vulkan_, buffer, data, size, 0, error))
+        if (!matter::upload_buffer(*vulkan_, buffer, data, size, offset, error))
             return poison(error);
         ++uploads;
         return true;
+    };
+    const auto upload = [&](matter::VkBufferResource& buffer, const void* data,
+                            VkDeviceSize size) {
+        return upload_at(buffer, data, size, 0);
     };
     frame.pending_material_bytes = 0;
     if (frame.material_generation != material_generation_) {
@@ -6452,7 +6461,70 @@ bool VkSceneRenderer::upload_scene_buffers(
         if (material_command_buffer != VK_NULL_HANDLE)
             record_material_upload(material_command_buffer, frame);
     }
-    if (static_upload_dirty_) {
+    if (static_upload_dirty_ == StaticUpload::kAppend) {
+        // Streaming fast path. Every static mutation since the last upload was
+        // a register_part() tail-append, so bytes below the uploaded counts
+        // are exactly what the live buffers already hold, and in-flight frames
+        // only ever read that prefix (their draw commands predate the new
+        // part). Writing just the tail in place is therefore race-free and
+        // costs O(new part); the full path below recreates the buffers and
+        // rewrites O(world) — during sector streaming that ran nearly every
+        // frame and dominated build_ms (issues/bfb5f13e).
+        VkDeviceSize uploaded_cluster_bytes = 0;
+        VkDeviceSize uploaded_vertex_bytes = 0;
+        VkDeviceSize uploaded_index_bytes = 0;
+        const bool tail_known =
+            vk_scene_detail::checked_mul_to_device_size(
+                uploaded_cluster_count_, sizeof(GpuCluster),
+                uploaded_cluster_bytes, "uploaded cluster bytes", error) &&
+            vk_scene_detail::checked_mul_to_device_size(
+                uploaded_vertex_count_, sizeof(VkRasterVertex),
+                uploaded_vertex_bytes, "uploaded vertex bytes", error) &&
+            vk_scene_detail::checked_mul_to_device_size(
+                uploaded_index_count_, sizeof(uint32_t),
+                uploaded_index_bytes, "uploaded index bytes", error);
+        error.clear();
+        if (tail_known &&
+            cluster_staging_.size() >= uploaded_cluster_count_ &&
+            vertex_staging_.size() >= uploaded_vertex_count_ &&
+            index_staging_.size() >= uploaded_index_count_ &&
+            clusters_.size >= cluster_bytes &&
+            vertices_.size >= vertex_bytes &&
+            indices_.size >= index_bytes) {
+            if (!upload_at(clusters_,
+                           cluster_staging_.data() + uploaded_cluster_count_,
+                           cluster_bytes - uploaded_cluster_bytes,
+                           uploaded_cluster_bytes) ||
+                !upload_at(vertices_,
+                           vertex_staging_.data() + uploaded_vertex_count_,
+                           vertex_bytes - uploaded_vertex_bytes,
+                           uploaded_vertex_bytes) ||
+                !upload_at(indices_,
+                           index_staging_.data() + uploaded_index_count_,
+                           index_bytes - uploaded_index_bytes,
+                           uploaded_index_bytes)) {
+                return false;
+            }
+            if (cluster_bytes != uploaded_cluster_bytes)
+                ++upload_counters_.cluster_uploads;
+            if (vertex_bytes != uploaded_vertex_bytes)
+                ++upload_counters_.vertex_uploads;
+            ++upload_counters_.static_append_uploads;
+            uploaded_cluster_count_ =
+                static_cast<uint32_t>(cluster_staging_.size());
+            uploaded_vertex_count_ =
+                static_cast<uint32_t>(vertex_staging_.size());
+            uploaded_index_count_ =
+                static_cast<uint32_t>(index_staging_.size());
+            static_upload_dirty_ = StaticUpload::kClean;
+        } else {
+            // A buffer outgrew its capacity (or the counts fell out of sync):
+            // take the recreate + full-rewrite path. Capacity doubles there,
+            // so this happens O(log N) times over a streaming load.
+            static_upload_dirty_ = StaticUpload::kFull;
+        }
+    }
+    if (static_upload_dirty_ == StaticUpload::kFull) {
         const auto replacement_capacity = [&](VkDeviceSize current,
                                               VkDeviceSize required,
                                               const char* label,
@@ -6528,7 +6600,8 @@ bool VkSceneRenderer::upload_scene_buffers(
         clusters_ = std::move(next_clusters);
         vertices_ = std::move(next_vertices);
         indices_ = std::move(next_indices);
-        static_upload_dirty_ = false;
+        static_upload_dirty_ = StaticUpload::kClean;
+        ++upload_counters_.static_full_uploads;
         if (cluster_bytes != 0) ++upload_counters_.cluster_uploads;
         if (vertex_bytes != 0) ++upload_counters_.vertex_uploads;
         uploaded_cluster_count_ =
@@ -8970,7 +9043,7 @@ void VkSceneRenderer::reset() {
     raster_attachments_ready_ = false;
     ++static_generation_;
     ++instance_generation_;
-    static_upload_dirty_ = true;
+    static_upload_dirty_ = StaticUpload::kFull;
     std::string ignored_error;
     if (rebuild_command_template(ignored_error)) note_command_layout_rebuild();
     poison_reason_.clear();

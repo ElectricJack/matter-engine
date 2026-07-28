@@ -356,6 +356,13 @@ struct VkSceneUploadCounters {
     uint64_t instance_uploads = 0;
     uint64_t command_uploads = 0;
     uint64_t command_layout_rebuilds = 0;
+    // How the cluster/vertex/index staging reached the GPU: a full pass
+    // recreates the buffers and rewrites every byte (O(world)); an append
+    // writes only the staging tail past the already-uploaded counts
+    // (O(new part)). Streaming publishes must take the append path — a full
+    // count that climbs with resident parts is the O(N^2) load regression.
+    uint64_t static_full_uploads = 0;
+    uint64_t static_append_uploads = 0;
 };
 
 struct PartCommandRange {
@@ -737,6 +744,14 @@ public:
                                          std::string& error);
     void set_test_scene_failure(uint32_t fail_after_replacements,
                                 uint32_t fail_after_uploads);
+    // Escalate a pending append-mode static upload to the full recreate path,
+    // so fault tests that target buffer *replacements* stay deterministic
+    // instead of depending on whether the appended part happened to fit the
+    // live buffers' capacity.
+    void test_force_full_static_upload() {
+        if (static_upload_dirty_ != StaticUpload::kClean)
+            static_upload_dirty_ = StaticUpload::kFull;
+    }
     void set_test_frame_resource_failure(uint32_t fail_after_allocations);
     // Fails one named animation-skin resource operation without poisoning the
     // renderer; the queue must degrade to retained/bind pose transactionally.
@@ -782,6 +797,9 @@ public:
     }
     VkDeviceSize raster_vertex_buffer_size() const {
         return poisoned() ? 0 : vertices_.size;
+    }
+    VkDeviceSize raster_index_buffer_size() const {
+        return poisoned() ? 0 : indices_.size;
     }
     uint32_t raster_draw_command_count() const {
         return poisoned() ? 0 : raster_draw_command_count_;
@@ -1421,7 +1439,19 @@ private:
     uint64_t instance_generation_ = 1;
     uint64_t static_generation_ = 1;
     uint64_t command_generation_ = 1;
-    bool static_upload_dirty_ = true;
+    // What the next upload_scene_buffers() owes the static cluster/vertex/
+    // index buffers. kAppend is only valid while every mutation since the
+    // last upload was a pure tail-append (register_part); anything that
+    // rewrites existing bytes (release_part compaction, reset) must escalate
+    // to kFull, because in-flight frames read the live buffers and only a
+    // disjoint tail write is safe in place.
+    enum class StaticUpload : uint8_t { kClean, kAppend, kFull };
+    StaticUpload static_upload_dirty_ = StaticUpload::kFull;
+    // Escalate-only: never lets an append downgrade an owed full rewrite.
+    void mark_static_append() {
+        if (static_upload_dirty_ == StaticUpload::kClean)
+            static_upload_dirty_ = StaticUpload::kAppend;
+    }
     VkSceneUploadCounters upload_counters_{};
     VkCullStats cached_stats_{};
     // GPU timestamp support. Cached at init time from device properties.
