@@ -135,7 +135,7 @@ ifeq ($(RETOPO),1)
   # sources are byte-equivalent vendor copies, so either definition is safe.
   AR_CORE_LDFLAGS := -L$(AR_CORE_PATH) -lautoremesher_core \
                      -Wl,--allow-multiple-definition
-  AR_CORE_DEP     := $(AR_CORE_LIB)
+  AR_CORE_DEP     := ar-core
   AR_CORE_MSL_CPP := $(MSL_DIR)/src/mesh_retopo.cpp
 else
   HAVE_AUTOREMESHER :=
@@ -145,8 +145,25 @@ else
   AR_CORE_MSL_CPP :=
 endif
 
-$(AR_CORE_LIB):
-	$(MAKE) -C $(AR_CORE_PATH)
+# Delegate to autoremesher_core's own Makefile on EVERY build rather than
+# treating the archive as an up-to-date file target.
+#
+# This used to be `$(AR_CORE_LIB):` with no prerequisites, which meant make ran
+# the recipe only when the archive was MISSING. Edit a vendored source and the
+# stale archive still satisfied the dependency, so `make -C MatterEditor
+# windows` reported success while linking the old code. That is exactly what
+# happened merging the retopo ASSERT_THROW fix: remesh.cpp updated, remesh.o
+# stayed a day old, the editor linked clean, and the crash it fixed would have
+# reproduced -- with a fresh editor.exe timestamp and a zero exit code arguing
+# nothing was wrong.
+#
+# Listing the archive's sources as prerequisites here would mean globbing the
+# whole vendored geogram tree and duplicating knowledge that already lives one
+# directory down. The sub-make has correct per-object rules; let it decide.
+# Cost when nothing changed is one recursive make that stats its objects.
+.PHONY: ar-core
+ar-core:
+	@$(MAKE) -C $(AR_CORE_PATH)
 
 # ---- Linux viewer: GL path RETIRED in Phase 5a, Vulkan target ADDED in 5b ----
 # main_linux.cpp, ui_linux.cpp and ui_linux.h (the GL/raylib entry point + imgui
