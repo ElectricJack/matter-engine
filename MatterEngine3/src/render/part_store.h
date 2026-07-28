@@ -65,7 +65,9 @@ struct LoadedPart {
     // independent dynamic subparts without ever rejoining the root mesh.
     std::vector<std::vector<RasterMeshData>> rigid_lod_mesh_data;
     std::vector<float> rigid_lod_thresholds;
-    std::vector<LoadedCluster>  clusters;        // non-empty iff a v3 flat was loaded
+    // Exact v3 clusters, or one synthetic exact-bounds cluster for legacy
+    // compositional geometry. Pure assemblers keep this empty.
+    std::vector<LoadedCluster>  clusters;
     std::vector<ExpandedNode>   expansion;       // precomputed flattened drawable nodes (Task 4)
     // Task 7: LOD-instanced-children
     std::vector<part_asset::FlatInstanceRef> flat_refs;  // only refs with inline_cutover > 0
