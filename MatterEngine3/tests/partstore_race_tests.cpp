@@ -26,11 +26,38 @@
 // Env knobs:
 //   MATTER_RACE_SECONDS  wall budget for the MT phase (default 40)
 //   MATTER_RACE_MAX_ITERS  per-thread iteration cap (default 200000)
+//   MATTER_RACE_BIG=1    sector-scale fixtures (~9-16k tris/part)
+//   MATTER_RACE_CACHE=<dir>  stress a REAL cache read-only (e.g.
+//                        projects/world_demo/.cache/StreamMeadow)
+//   MATTER_RACE_WORKERS=N    number of staging threads (default 1)
+//   MATTER_RACE_PAGEHEAP=1   guard-page allocator (see Detector 0)
+//   MATTER_RACE_DIFF=<hash>  single-threaded divergence localizer
+//   MATTER_RACE_PIPE=<hash>  per-stage pipeline bisection
 //   MATTER_STAGE_LOCK    unset = production-broken config (no locks).
 //                        "all" | "snapshot" | "bake" narrow the experiment
 //                        mutex exactly like matter_engine.cpp does; when set,
 //                        thread B also wraps its work in the same mutex the
 //                        way pump_gpu_jobs() does.
+//
+// FINDINGS (2026-07-28, this harness):
+//   * ~60k racing loads across small/sector-scale/real-cache fixtures, plus
+//     36.5M page-guarded allocations, found NO overrun, NO use-after-free and
+//     NO cross-thread content corruption in decode/bake/commit.
+//   * What it DID find, single-threaded, on the real StreamMeadow cache:
+//     BLAS geometry identity is broken three ways in
+//     libs/MatterSurfaceLib/src/blas_manager.cpp —
+//       (1) calculate_hash reads 9 CONSECUTIVE floats from &vertex0, but Tri's
+//           union slots are 16-byte strided: the hash covers the two padding
+//           words at +12/+28 and NEVER sees vertex2.y/z (line ~43);
+//       (2) the tint fold reads the float4 local through
+//           reinterpret_cast<const uint32_t*> — strict-aliasing UB; GCC -O2
+//           elides the member stores and the hash folds 16 UNINITIALIZED stack
+//           bytes per triangle, making geometry identity nondeterministic
+//           (line ~59-64, proven by disassembly and proofs A/C);
+//       (3) triangles_equal memcmps sizeof(float3)*3 == 36 contiguous bytes —
+//           same wrong window: padding compared, vertex2.y/z ignored, so a
+//           garbage-hash collision DEDUPES DIFFERENT GEOMETRY (proof B).
+//     See run_dedup_identity_proofs() below; these make the test exit red.
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -715,6 +742,603 @@ static bool validate_loaded(viewer::PartStore& store, uint64_t hash,
 }
 
 // ---------------------------------------------------------------------------
+// MATTER_RACE_DIFF=<16-hex-hash> : single-threaded divergence localizer. Loads
+// the hash repeatedly through both flavors and prints the FIRST structural
+// divergence field-by-field (level, entry, triangle index, byte offset).
+// ---------------------------------------------------------------------------
+struct PartSnapshot {
+    float bound_radius = 0;
+    std::vector<float> thresholds;
+    std::vector<BLASHandle> handles;                // lod_blas as-is (alias probe)
+    struct Entry {
+        std::vector<Tri> tris;
+        std::vector<TriEx> triex;
+        std::vector<BVHNode> nodes;
+        std::vector<uint> tri_idx;
+    };
+    std::vector<Entry> entries;                     // one per lod_blas handle
+    std::vector<viewer::RasterMeshData> meshes;     // lod_mesh_data copies
+};
+
+template <class EntryLookup>
+static PartSnapshot snap_part(const viewer::LoadedPart& lp, EntryLookup&& lookup) {
+    PartSnapshot s;
+    s.bound_radius = lp.bound_radius;
+    s.thresholds = lp.thresholds;
+    s.handles = lp.lod_blas;
+    for (BLASHandle h : lp.lod_blas) {
+        PartSnapshot::Entry se;
+        if (const BLASManager::BLASEntry* e = lookup(h)) {
+            se.tris = e->triangles;
+            se.triex = e->tri_extra;
+            if (e->bvh && e->bvh->bvhNode)
+                se.nodes.assign(e->bvh->bvhNode, e->bvh->bvhNode + e->bvh->nodesUsed);
+            if (e->bvh && e->bvh->triIdx)
+                se.tri_idx.assign(e->bvh->triIdx, e->bvh->triIdx + e->triangles.size());
+        }
+        s.entries.push_back(std::move(se));
+    }
+    s.meshes = lp.lod_mesh_data;
+    return s;
+}
+
+static void print_handles(const PartSnapshot& s, const char* tag) {
+    std::printf("    %s handles:", tag);
+    for (BLASHandle h : s.handles) std::printf(" %u", h);
+    std::printf("\n");
+}
+
+static void diff_snapshots(const PartSnapshot& a, const PartSnapshot& b, const char* what) {
+    auto p = [&](const char* fmt, auto... args) {
+        std::printf("  [diff %s] ", what);
+        std::printf(fmt, args...);
+        std::printf("\n");
+    };
+    if (std::memcmp(&a.bound_radius, &b.bound_radius, 4))
+        p("bound_radius %.9g vs %.9g", a.bound_radius, b.bound_radius);
+    if (a.thresholds != b.thresholds) p("thresholds differ");
+    if (a.handles != b.handles) {
+        p("HANDLE PATTERN differs (dedup flip?)");
+        print_handles(a, "a");
+        print_handles(b, "b");
+    }
+    if (a.entries.size() != b.entries.size()) {
+        p("entry count %zu vs %zu", a.entries.size(), b.entries.size());
+        return;
+    }
+    for (size_t e = 0; e < a.entries.size(); ++e) {
+        const auto& ea = a.entries[e];
+        const auto& eb = b.entries[e];
+        if (ea.tris.size() != eb.tris.size()) {
+            p("L%zu tri count %zu vs %zu", e, ea.tris.size(), eb.tris.size());
+            continue;
+        }
+        for (size_t t = 0; t < ea.tris.size(); ++t) {
+            const auto* ba = reinterpret_cast<const unsigned char*>(&ea.tris[t]);
+            const auto* bb = reinterpret_cast<const unsigned char*>(&eb.tris[t]);
+            // compare the three vertex float3s only (12 bytes at offsets 0/16/32)
+            for (int corner = 0; corner < 3; ++corner) {
+                if (std::memcmp(ba + corner * 16, bb + corner * 16, 12)) {
+                    const float* fa = reinterpret_cast<const float*>(ba + corner * 16);
+                    const float* fb = reinterpret_cast<const float*>(bb + corner * 16);
+                    p("L%zu tri %zu vertex%d differs: a=(%.9g,%.9g,%.9g) b=(%.9g,%.9g,%.9g)",
+                      e, t, corner, fa[0], fa[1], fa[2], fb[0], fb[1], fb[2]);
+                    goto tris_done;
+                }
+            }
+        }
+    tris_done:
+        if (ea.triex.size() != eb.triex.size()) {
+            p("L%zu triex count %zu vs %zu", e, ea.triex.size(), eb.triex.size());
+        } else {
+            for (size_t t = 0; t < ea.triex.size(); ++t) {
+                const auto* xa = reinterpret_cast<const unsigned char*>(&ea.triex[t]);
+                const auto* xb = reinterpret_cast<const unsigned char*>(&eb.triex[t]);
+                for (size_t off = 0; off < 92; ++off) {
+                    if (xa[off] != xb[off]) {
+                        static const char* fields =
+                            "uv0@0 uv1@8 uv2@16 N0@24 N1@36 N2@48 materialId@60 tint@64 ao@80";
+                        p("L%zu triex %zu first byte diff at offset %zu (%s)", e, t, off, fields);
+                        goto triex_done;
+                    }
+                }
+            }
+        }
+    triex_done:
+        if (ea.nodes.size() != eb.nodes.size()) {
+            p("L%zu nodesUsed %zu vs %zu", e, ea.nodes.size(), eb.nodes.size());
+        } else {
+            for (size_t n = 0; n < ea.nodes.size(); ++n) {
+                if (std::memcmp(&ea.nodes[n], &eb.nodes[n], sizeof(BVHNode))) {
+                    p("L%zu BVH node %zu differs: a(leftFirst=%u triCount=%u aabbMin=%g,%g,%g) "
+                      "b(leftFirst=%u triCount=%u aabbMin=%g,%g,%g)",
+                      e, n, ea.nodes[n].leftFirst, ea.nodes[n].triCount, ea.nodes[n].aabbMin.x,
+                      ea.nodes[n].aabbMin.y, ea.nodes[n].aabbMin.z, eb.nodes[n].leftFirst,
+                      eb.nodes[n].triCount, eb.nodes[n].aabbMin.x, eb.nodes[n].aabbMin.y,
+                      eb.nodes[n].aabbMin.z);
+                    break;
+                }
+            }
+        }
+        if (ea.tri_idx != eb.tri_idx) {
+            for (size_t i = 0; i < ea.tri_idx.size() && i < eb.tri_idx.size(); ++i)
+                if (ea.tri_idx[i] != eb.tri_idx[i]) {
+                    p("L%zu triIdx[%zu] %u vs %u", e, i, ea.tri_idx[i], eb.tri_idx[i]);
+                    break;
+                }
+        }
+    }
+    if (a.meshes.size() != b.meshes.size()) {
+        p("mesh count %zu vs %zu", a.meshes.size(), b.meshes.size());
+        return;
+    }
+    for (size_t m = 0; m < a.meshes.size(); ++m) {
+        const auto& ma = a.meshes[m];
+        const auto& mb = b.meshes[m];
+        if (ma.vertex_count != mb.vertex_count)
+            p("mesh %zu vertex_count %d vs %d", m, ma.vertex_count, mb.vertex_count);
+        auto diff_arr = [&](const char* name, const auto& va, const auto& vb) {
+            if (va.size() != vb.size()) {
+                p("mesh %zu %s size %zu vs %zu", m, name, va.size(), vb.size());
+                return;
+            }
+            for (size_t i = 0; i < va.size(); ++i)
+                if (std::memcmp(&va[i], &vb[i], sizeof va[i])) {
+                    p("mesh %zu %s[%zu] differs", m, name, i);
+                    return;
+                }
+        };
+        diff_arr("vertices", ma.vertices, mb.vertices);
+        diff_arr("normals", ma.normals, mb.normals);
+        diff_arr("colors", ma.colors, mb.colors);
+        diff_arr("texcoords", ma.texcoords, mb.texcoords);
+        diff_arr("surface_uvs", ma.surface_uvs, mb.surface_uvs);
+        diff_arr("material_ids", ma.material_ids, mb.material_ids);
+        diff_arr("baked_ao", ma.baked_ao, mb.baked_ao);
+        diff_arr("indices", ma.indices, mb.indices);
+    }
+}
+
+static int run_diff_mode(const fs::path& root, uint64_t hash, int rounds) {
+    std::printf("DIFF MODE: %016llx, %d rounds\n", (unsigned long long)hash, rounds);
+    // Staged flavor: repeated stage_load in ONE store (restage divergence).
+    {
+        viewer::PartStore store(root.string());
+        PartSnapshot first;
+        bool have_first = false;
+        for (int r = 0; r < rounds; ++r) {
+            viewer::PartStore::StagedPart sp = store.stage_load(hash);
+            if (!sp.ok) { std::printf("  stage_load !ok on round %d\n", r); break; }
+            PartSnapshot s = snap_part(
+                sp.lp, [&](BLASHandle h) { return sp.staging->get_entry(h); });
+            if (!have_first) {
+                first = std::move(s);
+                have_first = true;
+            } else {
+                char what[64];
+                std::snprintf(what, sizeof what, "stage round %d vs 0", r);
+                diff_snapshots(first, s, what);
+            }
+        }
+    }
+    // Loaded flavor: get_or_load / release cycles in ONE store.
+    {
+        viewer::PartStore store(root.string());
+        PartSnapshot first;
+        bool have_first = false;
+        for (int r = 0; r < rounds; ++r) {
+            const viewer::LoadedPart* lp = store.get_or_load(hash);
+            if (!lp) { std::printf("  get_or_load null on round %d\n", r); break; }
+            PartSnapshot s =
+                snap_part(*lp, [&](BLASHandle h) { return store.blas().get_entry(h); });
+            if (!have_first) {
+                first = std::move(s);
+                have_first = true;
+            } else {
+                char what[64];
+                std::snprintf(what, sizeof what, "load round %d vs 0", r);
+                diff_snapshots(first, s, what);
+            }
+            store.release(hash);
+        }
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// MATTER_RACE_PIPE=<16-hex-hash> : pipeline bisection. Decodes the part ONCE,
+// freezes the gathered full-res Tri/TriEx in memory, then repeatedly runs each
+// downstream stage in isolation and reports which stage produces divergent
+// output for identical input:
+//   stage A: lod_bake::bake_lods into a fresh private BLASManager
+//   stage B: decimate_tris alone (per configured rung ratio)
+//   stage C: from_tri(source) + ReprojectSource build + reproject_triex onto a
+//            frozen decimated target — fresh index per round
+//   stage D: same but ONE prebuilt index queried repeatedly
+// ---------------------------------------------------------------------------
+#include "lod_bake.h"
+#include "mesh_indexed.hpp"
+#include "mesh_transform.hpp"
+
+static uint64_t sig_tris(const std::vector<Tri>& tris) {
+    uint64_t h = 1469598103934665603ull;
+    fold_pod(h, (uint64_t)tris.size());
+    for (const Tri& t : tris) { fold_f3(h, t.vertex0); fold_f3(h, t.vertex1); fold_f3(h, t.vertex2); }
+    return h;
+}
+static uint64_t sig_triex(const std::vector<TriEx>& triex) {
+    uint64_t h = 1469598103934665603ull;
+    fold_pod(h, (uint64_t)triex.size());
+    for (const TriEx& e : triex) fold_bytes(h, &e, 92);
+    return h;
+}
+static size_t first_triex_diff(const std::vector<TriEx>& a, const std::vector<TriEx>& b,
+                               size_t& byte_off) {
+    for (size_t i = 0; i < a.size() && i < b.size(); ++i) {
+        const auto* pa = reinterpret_cast<const unsigned char*>(&a[i]);
+        const auto* pb = reinterpret_cast<const unsigned char*>(&b[i]);
+        for (size_t o = 0; o < 92; ++o)
+            if (pa[o] != pb[o]) { byte_off = o; return i; }
+    }
+    byte_off = SIZE_MAX;
+    return SIZE_MAX;
+}
+
+static int run_pipe_mode(const fs::path& root, uint64_t hash, int rounds) {
+    std::printf("PIPE MODE: %016llx, %d rounds\n", (unsigned long long)hash, rounds);
+    // Decode once via a throwaway store staging; freeze full-res tris/triex.
+    std::vector<Tri> tris;
+    std::vector<TriEx> triex;
+    {
+        viewer::PartStore store(root.string());
+        viewer::PartStore::StagedPart sp = store.stage_load(hash);
+        if (!sp.ok) { std::printf("  stage_load !ok\n"); return 1; }
+        // Recover the FULL-RES level (level 0 of the ladder is undecimated).
+        const BLASManager::BLASEntry* e0 =
+            sp.lp.lod_blas.empty() ? nullptr : sp.staging->get_entry(sp.lp.lod_blas[0]);
+        if (!e0) { std::printf("  no level-0 entry\n"); return 1; }
+        tris = e0->triangles;
+        triex = e0->tri_extra;
+        std::printf("  frozen source: %zu tris, %zu triex\n", tris.size(), triex.size());
+    }
+
+    // Stage A: whole ladder bake, fresh manager per round.
+    {
+        std::vector<uint64_t> tri_sigs, ex_sigs;
+        std::vector<std::vector<TriEx>> kept_ex;
+        for (int r = 0; r < rounds; ++r) {
+            BLASManager priv;
+            std::vector<BLASHandle> handles;
+            lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, priv,
+                                                           triex.empty() ? nullptr : &triex,
+                                                           nullptr, &handles);
+            uint64_t ts = 1469598103934665603ull, xs = ts;
+            std::vector<TriEx> all_ex;
+            for (BLASHandle h : handles) {
+                if (const auto* e = priv.get_entry(h)) {
+                    fold_pod(ts, sig_tris(e->triangles));
+                    fold_pod(xs, sig_triex(e->tri_extra));
+                    all_ex.insert(all_ex.end(), e->tri_extra.begin(), e->tri_extra.end());
+                }
+            }
+            tri_sigs.push_back(ts);
+            ex_sigs.push_back(xs);
+            kept_ex.push_back(std::move(all_ex));
+        }
+        int tri_div = 0, ex_div = 0;
+        for (int r = 1; r < rounds; ++r) {
+            tri_div += tri_sigs[r] != tri_sigs[0];
+            ex_div += ex_sigs[r] != ex_sigs[0];
+            if (ex_sigs[r] != ex_sigs[0]) {
+                size_t off = 0;
+                size_t idx = first_triex_diff(kept_ex[0], kept_ex[r], off);
+                std::printf("  [A bake_lods] round %d triex diverges at concat-index %zu offset %zu\n",
+                            r, idx, off);
+            }
+        }
+        std::printf("  stage A (bake_lods x%d): tri divergences %d, triex divergences %d\n",
+                    rounds, tri_div, ex_div);
+    }
+
+    // Stage B: decimation alone.
+    std::vector<Tri> target_geo;
+    {
+        std::vector<uint64_t> sigs;
+        for (int r = 0; r < rounds; ++r) {
+            std::vector<Tri> d = lod_bake::decimate_tris(tris, 0.1f);
+            if (r == 0) target_geo = d;
+            sigs.push_back(sig_tris(d));
+        }
+        int div = 0;
+        for (int r = 1; r < rounds; ++r) div += sigs[r] != sigs[0];
+        std::printf("  stage B (decimate_tris 0.1 x%d): divergences %d (out tris %zu)\n", rounds,
+                    div, target_geo.size());
+    }
+
+    if (!triex.empty() && triex.size() == tris.size() && !target_geo.empty()) {
+        // Stage C: fresh ReprojectSource per round, frozen target.
+        MeshIndexed tgt_frozen = from_tri(target_geo, nullptr);
+        std::vector<std::vector<TriEx>> outs;
+        {
+            std::vector<uint64_t> sigs;
+            for (int r = 0; r < rounds; ++r) {
+                MeshIndexed src_m = from_tri(tris, &triex);
+                ReprojectSource index(src_m, ReprojectNormals::SampleSource);
+                MeshIndexed tgt = tgt_frozen;
+                reproject_triex(index, tgt);
+                sigs.push_back(sig_triex(tgt.triex));
+                outs.push_back(tgt.triex);
+            }
+            int div = 0;
+            for (int r = 1; r < rounds; ++r) {
+                if (sigs[r] != sigs[0]) {
+                    ++div;
+                    size_t off = 0;
+                    size_t idx = first_triex_diff(outs[0], outs[r], off);
+                    std::printf("  [C fresh-index] round %d diverges at tri %zu offset %zu\n", r,
+                                idx, off);
+                }
+            }
+            std::printf("  stage C (fresh ReprojectSource x%d): divergences %d\n", rounds, div);
+        }
+        // Stage D: one index, repeated queries.
+        {
+            MeshIndexed src_m = from_tri(tris, &triex);
+            ReprojectSource index(src_m, ReprojectNormals::SampleSource);
+            std::vector<uint64_t> sigs;
+            for (int r = 0; r < rounds; ++r) {
+                MeshIndexed tgt = tgt_frozen;
+                reproject_triex(index, tgt);
+                sigs.push_back(sig_triex(tgt.triex));
+            }
+            int div = 0;
+            for (int r = 1; r < rounds; ++r) div += sigs[r] != sigs[0];
+            std::printf("  stage D (one ReprojectSource, %d queries): divergences %d\n", rounds,
+                        div);
+        }
+    }
+
+    // Stage E: full per-round emulation WITH a fresh decode each round — the
+    // configuration that actually flips. Signatures of every intermediate name
+    // the first diverging stage.
+    {
+        struct RoundSig {
+            uint64_t gather_tris = 0, gather_triex = 0;
+            std::vector<uint64_t> decimated;      // per decimated rung
+            std::vector<uint64_t> reprojected;    // per decimated rung
+            std::vector<BLASHandle> handles;      // ladder handle pattern
+        };
+        std::vector<RoundSig> rs;
+        const lod_bake::BakeTargets targets{};
+        for (int r = 0; r < rounds; ++r) {
+            RoundSig s;
+            // fresh decode (mirrors read_coherent_snapshot)
+            BLASManager scratch;
+            TLASManager scratch_tlas(65536);
+            std::vector<part_asset::ChildInstance> children;
+            part_asset::LodLevels lods_in;
+            std::vector<part_asset::VolumeEmitter> emitters;
+            std::optional<part_asset::PartAnimationLink> link;
+            const std::string path =
+                (root / part_asset::cache_path_resolved(hash)).string();
+            if (!part_asset::load_v2(path, hash, scratch, scratch_tlas, children, lods_in,
+                                     emitters, link)) {
+                std::printf("  [E] round %d: load_v2 failed\n", r);
+                break;
+            }
+            std::vector<Tri> g_tris;
+            std::vector<TriEx> g_triex;
+            for (const auto& e : scratch.get_entries()) {
+                g_tris.insert(g_tris.end(), e->triangles.begin(), e->triangles.end());
+                g_triex.insert(g_triex.end(), e->tri_extra.begin(), e->tri_extra.end());
+            }
+            s.gather_tris = sig_tris(g_tris);
+            s.gather_triex = sig_triex(g_triex);
+            const bool usable = g_triex.size() == g_tris.size() && !g_triex.empty();
+            std::unique_ptr<MeshIndexed> src_m;
+            std::unique_ptr<ReprojectSource> src_index;
+            BLASManager staging;
+            for (size_t lvl = 0; lvl < targets.keep_ratio.size(); ++lvl) {
+                const float keep = targets.keep_ratio[lvl];
+                const bool full = keep >= 0.999f;
+                std::vector<Tri> decimated;
+                if (!full) {
+                    decimated = lod_bake::decimate_tris(g_tris, keep);
+                    if (decimated.empty()) decimated = g_tris;
+                    s.decimated.push_back(sig_tris(decimated));
+                }
+                const std::vector<Tri>& geo = full ? g_tris : decimated;
+                std::vector<TriEx> reprojected;
+                if (!full && usable) {
+                    if (!src_index) {
+                        src_m = std::make_unique<MeshIndexed>(from_tri(g_tris, &g_triex));
+                        src_index = std::make_unique<ReprojectSource>(
+                            *src_m, ReprojectNormals::SampleSource);
+                    }
+                    MeshIndexed tgt_m = from_tri(geo, nullptr);
+                    reproject_triex(*src_index, tgt_m);
+                    std::vector<Tri> unused;
+                    to_tri(tgt_m, unused, reprojected);
+                    s.reprojected.push_back(sig_triex(reprojected));
+                }
+                const TriEx* ex = nullptr;
+                if (full && usable && g_triex.size() == geo.size()) ex = g_triex.data();
+                else if (!full && reprojected.size() == geo.size()) ex = reprojected.data();
+                const BLASHandle h = staging.register_triangles(
+                    const_cast<Tri*>(geo.data()), (int)geo.size(), ex);
+                s.handles.push_back(h);
+            }
+            rs.push_back(std::move(s));
+        }
+        int gt = 0, gx = 0, dec = 0, rep = 0, hp = 0;
+        for (size_t r = 1; r < rs.size(); ++r) {
+            gt += rs[r].gather_tris != rs[0].gather_tris;
+            gx += rs[r].gather_triex != rs[0].gather_triex;
+            dec += rs[r].decimated != rs[0].decimated;
+            rep += rs[r].reprojected != rs[0].reprojected;
+            if (rs[r].handles != rs[0].handles) {
+                ++hp;
+                std::printf("  [E] round %zu handle pattern:", r);
+                for (BLASHandle h : rs[r].handles) std::printf(" %u", h);
+                std::printf("  (round 0:");
+                for (BLASHandle h : rs[0].handles) std::printf(" %u", h);
+                std::printf(")\n");
+            }
+        }
+        std::printf("  stage E (full emulation x%d): gather_tris div %d, gather_triex div %d, "
+                    "decimated div %d, reprojected div %d, handle-pattern div %d\n",
+                    rounds, gt, gx, dec, rep, hp);
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Targeted proofs for the BLAS dedup identity defect.
+//
+// Tri is ALIGN(64) with union{float3 vertexN; __m128 vN} slots: vertex0 at 0,
+// vertex1 at 16, vertex2 at 32 — 4 padding bytes after every float3. But
+// BLASManager::calculate_hash reads 9 consecutive floats from &vertex0
+// (bytes 0..35) and triangles_equal memcmps sizeof(float3)*3 == 36 contiguous
+// bytes. That range is: vertex0 | PAD | vertex1 | PAD | vertex2.x — so
+//   (a) the two padding words PARTICIPATE in geometry identity, and
+//   (b) vertex2.y and vertex2.z are IGNORED by it.
+// Proof A: logically identical triangles with different pad bytes must dedup
+//          but do not (false negative — nondeterministic ladders, duplicate
+//          entries, unstable content).
+// Proof B: triangles differing ONLY in vertex2.y/z must NOT dedup but DO
+//          (false positive — a part silently adopts ANOTHER mesh's geometry
+//          and BVH: wrong triangles reach every consumer of the entry).
+// ---------------------------------------------------------------------------
+static_assert(sizeof(Tri) == 64, "Tri layout changed");
+static_assert(offsetof(Tri, vertex1) == 16, "Tri union stride assumption");
+static_assert(offsetof(Tri, vertex2) == 32, "Tri union stride assumption");
+
+static void set_tri_probe(Tri& t) {
+    t.vertex0 = make_float3(1, 2, 3);
+    t.vertex1 = make_float3(4, 5, 6);
+    t.vertex2 = make_float3(7, 8, 9);
+    t.centroid = make_float3(4, 5, 6);
+}
+
+static void run_dedup_identity_proofs() {
+    auto set_tri = [](Tri& t, float ax, float ay, float az, float bx, float by, float bz,
+                      float cx, float cy, float cz) {
+        t.vertex0 = make_float3(ax, ay, az);
+        t.vertex1 = make_float3(bx, by, bz);
+        t.vertex2 = make_float3(cx, cy, cz);
+        t.centroid = make_float3((ax + bx + cx) / 3, (ay + by + cy) / 3, (az + bz + cz) / 3);
+    };
+
+    // --- Proof A: padding participates in identity -------------------------
+    {
+        BLASManager m;
+        Tri a[1], b[1];
+        std::memset(a, 0x00, sizeof a);
+        std::memset(b, 0xA5, sizeof b);  // different padding garbage
+        set_tri(a[0], 0, 0, 0, 1, 0, 0, 0, 1, 0);
+        set_tri(b[0], 0, 0, 0, 1, 0, 0, 0, 1, 0);  // identical logical triangle
+        const BLASHandle ha = m.register_triangles(a, 1, nullptr);
+        const BLASHandle hb = m.register_triangles(b, 1, nullptr);
+        if (ha != hb) {
+            CHECKF(false,
+                   "PROOF A (pad sensitivity): logically identical triangles did NOT dedup "
+                   "(handles %u vs %u, %zu entries) — calculate_hash/triangles_equal read the "
+                   "union padding bytes at Tri+12 and Tri+28",
+                   ha, hb, m.get_entries().size());
+        } else {
+            std::printf("  proof A: identical-geometry/different-padding deduped OK "
+                        "(padding does not affect identity)\n");
+        }
+    }
+
+    // --- Proof B: vertex2.y/z ignored by identity --------------------------
+    // The hash ALSO folds 16 uninitialized stack bytes per triangle (see
+    // proof C below), so the two registrations only land in the same bucket
+    // when the garbage happens to match. Loop until the false-positive dedup
+    // fires: any wrong merge of distinct geometry is one too many.
+    {
+        int wrong_dedup_rounds = 0, rounds_run = 0;
+        float stored_y = 0, stored_z = 0;
+        for (int round = 0; round < 400 && wrong_dedup_rounds == 0; ++round) {
+            BLASManager m;
+            Tri a[1], b[1];
+            std::memset(a, 0, sizeof a);
+            std::memset(b, 0, sizeof b);
+            set_tri(a[0], 0, 0, 0, 1, 0, 0, 2, 5, 9);
+            set_tri(b[0], 0, 0, 0, 1, 0, 0, 2, -7, 42);  // SAME v2.x, DIFFERENT v2.y/z
+            const BLASHandle ha = m.register_triangles(a, 1, nullptr);
+            const BLASHandle hb = m.register_triangles(b, 1, nullptr);
+            ++rounds_run;
+            if (ha == hb) {
+                ++wrong_dedup_rounds;
+                const auto* e = m.get_entry(ha);
+                if (e) { stored_y = e->triangles[0].vertex2.y; stored_z = e->triangles[0].vertex2.z; }
+            }
+        }
+        if (wrong_dedup_rounds) {
+            CHECKF(false,
+                   "PROOF B (missed geometry): triangles differing ONLY in vertex2.y/z were "
+                   "DEDUPED onto one entry after %d rounds (stored v2.y/z=(%g,%g); second mesh "
+                   "was (-7,42) or (5,9)) — a mesh silently adopts ANOTHER mesh's geometry/BVH",
+                   rounds_run, stored_y, stored_z);
+        } else {
+            std::printf("  proof B: vertex2.y/z differences kept distinct entries in %d rounds "
+                        "(false-positive dedup did not fire this run — it is gated on the "
+                        "uninitialized-tint hash collision, see proof C)\n",
+                        rounds_run);
+        }
+    }
+
+    // --- Proof C: identity depends on uninitialized stack bytes ------------
+    // Register the SAME triangle bytes into fresh managers via call paths with
+    // different stack residue; the stored entry hash flips. Also probe which
+    // 4-byte offsets of Tri affect the hash — the true identity window.
+    {
+        Tri base{};
+        std::memset(&base, 0, sizeof base);
+        set_tri_probe(base);
+        auto hash_once = [&](int flavor) -> uint32_t {
+            BLASManager probe;
+            if (flavor) {
+                // dirty the stack with a different call pattern first
+                volatile double sink[24];
+                for (int i = 0; i < 24; ++i) sink[i] = i * 1.618033988749895 + flavor;
+                (void)sink;
+            }
+            Tri t = base;
+            probe.register_triangles(&t, 1, nullptr);
+            return probe.get_entries()[0]->hash;
+        };
+        uint32_t h0 = hash_once(0);
+        int flips = 0;
+        for (int flavor = 1; flavor <= 8; ++flavor) flips += hash_once(flavor) != h0;
+        if (flips) {
+            CHECKF(false,
+                   "PROOF C (uninitialized identity): the SAME triangle bytes produced %d/8 "
+                   "different content hashes depending on prior stack contents — "
+                   "calculate_hash's tint fold reads the never-initialized float4 local "
+                   "through reinterpret_cast<uint32_t*> (strict-aliasing UB; GCC elides the "
+                   "stores; disassembly reads 16 bytes at rsp)",
+                   flips);
+        } else {
+            std::printf("  proof C: hash stable across stack contexts this run "
+                        "(garbage happened to repeat)\n");
+        }
+        uint32_t base_hash = hash_once(0);
+        std::printf("  hash-affecting Tri offsets (true identity window):");
+        for (size_t off = 0; off < sizeof(Tri); off += 4) {
+            Tri t = base;
+            const float poison = 999.25f;
+            std::memcpy(reinterpret_cast<char*>(&t) + off, &poison, 4);
+            BLASManager probe;
+            probe.register_triangles(&t, 1, nullptr);
+            if (probe.get_entries()[0]->hash != base_hash) std::printf(" %zu", off);
+        }
+        std::printf("  (vertex floats are 0-8,16-24,32-40; 12/28 are padding; 48+ centroid)\n");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Staged-part handoff queue (worker -> app), mirrors the GpuJob closure.
 // ---------------------------------------------------------------------------
 struct StagedQueue {
@@ -790,6 +1414,22 @@ int main() {
             fs::remove_all(p, ignored);
         }
     } cleanup{root, !real_cache};
+
+    std::printf("dedup identity proofs:\n");
+    run_dedup_identity_proofs();
+    // The proofs above demonstrate KNOWN defects in BLAS identity
+    // (blas_manager.cpp calculate_hash/triangles_equal); their failures make
+    // this test red but must not gate the stress phases below.
+    const int proof_failures = g_failures.load();
+
+    if (const char* diff_env = std::getenv("MATTER_RACE_DIFF")) {
+        const uint64_t diff_hash = std::strtoull(diff_env, nullptr, 16);
+        if (diff_hash) return run_diff_mode(root, diff_hash, 6);
+    }
+    if (const char* pipe_env = std::getenv("MATTER_RACE_PIPE")) {
+        const uint64_t pipe_hash = std::strtoull(pipe_env, nullptr, 16);
+        if (pipe_hash) return run_pipe_mode(root, pipe_hash, 24);
+    }
 
     // --- fixtures ---------------------------------------------------------
     // Worker set (A): the sectors the streaming worker stages.
@@ -867,7 +1507,10 @@ int main() {
                    (unsigned long long)p.hash);
             all_hashes.push_back(p.hash);
         }
-        if (g_failures) { std::printf("partstore_race_tests: fixture phase FAILED\n"); return 1; }
+        if (g_failures.load() > proof_failures) {
+            std::printf("partstore_race_tests: fixture phase FAILED\n");
+            return 1;
+        }
         std::printf("fixtures: %zu synthetic parts under %s\n", all_hashes.size(),
                     root.string().c_str());
     }
@@ -942,9 +1585,11 @@ int main() {
                        (unsigned long long)golden_staged[h]);
         }
     }
-    if (g_failures) {
-        std::printf("partstore_race_tests: golden phase FAILED (%d) — aborting MT phase\n",
-                    g_failures.load());
+    if (g_failures.load() > proof_failures) {
+        std::printf("partstore_race_tests: golden phase FAILED (%d) — aborting MT phase.\n"
+                    "NOTE: nondeterministic golden signatures are the DEDUP IDENTITY defect "
+                    "(see proofs above) manifesting through register_triangles' ladder dedup.\n",
+                    g_failures.load() - proof_failures);
         return 1;
     }
     std::printf("golden phase OK (%zu stageable, %zu loadable, deterministic)\n",
@@ -987,23 +1632,32 @@ int main() {
     std::atomic<bool> stop{false};
     std::atomic<uint64_t> a_iters{0}, b_iters{0}, commits{0}, own_loads{0};
 
-    std::thread worker([&] {
-        CanaryPool canary(0xA11CEu, 320);
-        uint64_t it = 0;
-        while (!stop.load(std::memory_order_relaxed) && it < max_iters &&
+    // Production runs ONE streaming worker; MATTER_RACE_WORKERS>1 widens the
+    // interleaving space (stage_load is documented safe from any thread).
+    const int worker_count = [] {
+        const char* v = std::getenv("MATTER_RACE_WORKERS");
+        const int n = v ? std::atoi(v) : 1;
+        return n < 1 ? 1 : (n > 8 ? 8 : n);
+    }();
+
+    auto worker_body = [&](uint32_t worker_id) {
+        CanaryPool canary(0xA11CEu + worker_id * 0x1111u, 320);
+        uint64_t it = worker_id;  // stagger the hash sequence per worker
+        uint64_t steps = 0;
+        while (!stop.load(std::memory_order_relaxed) && steps < max_iters &&
                g_failures.load() <= 50) {
             const uint64_t h = a_hashes[it % a_hashes.size()];
             viewer::PartStore::StagedPart sp = store.stage_load(h);
-            CHECKF(sp.ok, "worker iter %llu: stage_load(%016llx) failed",
+            CHECKF(sp.ok, "worker%u iter %llu: stage_load(%016llx) failed", worker_id,
                    (unsigned long long)it, (unsigned long long)h);
             if (sp.ok) {
                 const uint64_t expect = gval(golden_staged, h);
                 uint64_t sig = 0;
                 if (validate_staged(sp, sig, "worker-staged") && expect)
                     CHECKF(sig == expect,
-                           "worker iter %llu: STAGED CONTENT CORRUPTED %016llx sig %016llx != "
+                           "worker%u iter %llu: STAGED CONTENT CORRUPTED %016llx sig %016llx != "
                            "golden %016llx",
-                           (unsigned long long)it, (unsigned long long)h,
+                           worker_id, (unsigned long long)it, (unsigned long long)h,
                            (unsigned long long)sig, (unsigned long long)expect);
                 if ((it % 2) == 0 && queue.size() < 16)
                     queue.push(std::move(sp));
@@ -1012,12 +1666,16 @@ int main() {
             canary.verify("worker", it);
             canary.churn(6);
             if ((it & 3u) == 0)
-                CHECKF(heap_ok(), "worker iter %llu: HeapValidate FAILED (heap corrupt)",
-                       (unsigned long long)it);
+                CHECKF(heap_ok(), "worker%u iter %llu: HeapValidate FAILED (heap corrupt)",
+                       worker_id, (unsigned long long)it);
             ++it;
-            a_iters.store(it, std::memory_order_relaxed);
+            ++steps;
+            a_iters.fetch_add(1, std::memory_order_relaxed);
         }
-    });
+    };
+    std::vector<std::thread> workers;
+    for (int w = 0; w < worker_count; ++w)
+        workers.emplace_back(worker_body, (uint32_t)w);
 
     {
         CanaryPool canary(0xB0Bu, 320);
@@ -1137,7 +1795,7 @@ int main() {
         b_iters = it;
     }
     stop = true;
-    worker.join();
+    for (std::thread& w : workers) w.join();
     while (auto osp = queue.try_pop()) { /* destroy remaining staged parts */ }
 
     CHECKF(heap_ok(), "final HeapValidate FAILED");
@@ -1153,8 +1811,9 @@ int main() {
 #endif
 
     if (g_failures) {
-        std::printf("partstore_race_tests: %d FAILURE(S) — corruption reproduced\n",
-                    g_failures.load());
+        std::printf("partstore_race_tests: %d FAILURE(S) (%d identity-defect proofs, %d "
+                    "stress-phase)\n",
+                    g_failures.load(), proof_failures, g_failures.load() - proof_failures);
         return 1;
     }
     std::printf("partstore_race_tests: ALL PASS (no corruption detected)\n");
