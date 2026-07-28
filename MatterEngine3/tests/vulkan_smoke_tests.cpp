@@ -676,9 +676,12 @@ void run_vulkan_temporal_tests() {
         camera, {100, 80}, {100, 80}, {still}, true, {});
     const matter::Float3 static_velocity =
         viewer::temporal_velocity_pixels(static_frame, 7, {0.0f, 0.0f, 0.0f});
+    // Y expectations here (and in the two deltas below) follow the Y-down
+    // jitter convention d5f97aa7 gave jitter_frame; the old +Y-NDC values
+    // predate that fix and went stale while this suite could not build.
     CHECK(!static_frame.reset && static_frame.instances[0].history_valid &&
               std::fabs(static_velocity.x + 0.25f) < 1e-6f &&
-              std::fabs(static_velocity.y + 1.0f / 3.0f) < 1e-6f,
+              std::fabs(static_velocity.y - 1.0f / 3.0f) < 1e-6f,
           "static camera and rigid instance preserve the known Halton delta");
     CHECK(std::fabs(static_frame.previous_jittered.world_to_clip.m[3] -
                     first.current_jittered.world_to_clip.m[3]) < 1e-6f &&
@@ -701,7 +704,7 @@ void run_vulkan_temporal_tests() {
     const matter::Float3 camera_velocity = viewer::temporal_velocity_pixels(
         camera_motion, 7, {0.0f, 0.0f, 0.0f});
     CHECK(std::fabs(camera_velocity.x + 9.5f) < 1e-5f &&
-              std::fabs(camera_velocity.y - 5.0f / 9.0f) < 1e-5f,
+              std::fabs(camera_velocity.y + 5.0f / 9.0f) < 1e-5f,
           "known camera translation includes the presented Halton delta");
     CHECK(temporal.commit_presented(camera_motion.attempt_token),
           "camera-motion candidate commits");
@@ -713,7 +716,7 @@ void run_vulkan_temporal_tests() {
     const matter::Float3 object_velocity = viewer::temporal_velocity_pixels(
         object_motion, 7, {0.0f, 0.0f, 0.0f});
     CHECK(std::fabs(object_velocity.x - 19.375f) < 1e-5f &&
-              std::fabs(object_velocity.y + 1.0f / 3.0f) < 1e-5f,
+              std::fabs(object_velocity.y - 1.0f / 3.0f) < 1e-5f,
           "known rigid-instance translation includes the presented Halton delta");
     CHECK(temporal.commit_presented(object_motion.attempt_token),
           "object-motion candidate commits");
@@ -739,8 +742,20 @@ void run_vulkan_temporal_tests() {
                      "world reload resets temporal history");
     expect_one_reset({120, 80}, {.renderer_reset = true}, {moved_object},
                      "renderer recovery resets temporal history");
-    expect_one_reset({120, 80}, {}, {{99, identity_matrix()}},
-                     "missing previous rigid instance resets temporal history");
+
+    // A newcomer id is a per-instance event, not a global cut: it enters with
+    // invalid history while survivors keep theirs. Escalating it to a full
+    // reset starved DLSS/GI in streaming worlds, which introduce new ids
+    // nearly every frame (issues/render-dlss-not-applied).
+    viewer::TemporalFrame streamed_in = temporal.begin(
+        moved_camera, {120, 80}, {100, 80},
+        {moved_object, {99, identity_matrix()}}, true, {});
+    CHECK(!streamed_in.reset && streamed_in.instances.size() == 2 &&
+              streamed_in.instances[0].history_valid &&
+              !streamed_in.instances[1].history_valid,
+          "streamed-in instance joins without resetting global history");
+    CHECK(temporal.commit_presented(streamed_in.attempt_token),
+          "streamed-in candidate commits");
 
     viewer::TemporalFrame failed = temporal.begin(
         moved_camera, {120, 80}, {100, 80}, {{99, identity_matrix()}}, true, {});
@@ -782,8 +797,9 @@ void run_vulkan_temporal_tests() {
           "presented clear frame advances empty temporal history");
     viewer::TemporalFrame returning_b = stable_ids.begin(
         camera, {100, 80}, {100, 80}, {{b_id, identity_matrix()}}, true, {});
-    CHECK(returning_b.reset && !returning_b.instances[0].history_valid,
-          "instance returning after presented clear frame resets history");
+    CHECK(!returning_b.reset && !returning_b.instances[0].history_valid,
+          "instance returning after a presented clear frame starts fresh "
+          "without a global reset");
 
     CHECK(viewer::vk_scene_detail::frame_constants_size_for_test() == 288,
           "C++ FrameConstants matches final std140 uvec4 padding and size");

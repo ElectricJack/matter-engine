@@ -576,6 +576,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_animation_bounds.cpp \
         $(ME3_DIR)/src/animation/animation_budget.cpp \
         $(ME3_DIR)/src/render/tileset_slicer.cpp \
+        $(ME3_DIR)/tests/vulkan_smoke_tileset_bake_stub.cpp \
         $(ME3_DIR)/src/tileset_gtex.cpp \
         $(ME3_DIR)/src/render/vk_volumetrics.cpp \
         $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
@@ -597,6 +598,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_animation_bounds.cpp \
 	    $(ME3_DIR)/src/animation/animation_budget.cpp \
 	    $(ME3_DIR)/src/render/tileset_slicer.cpp \
+	    $(ME3_DIR)/tests/vulkan_smoke_tileset_bake_stub.cpp \
 	    $(ME3_DIR)/src/tileset_gtex.cpp \
 	    $(ME3_DIR)/src/render/vk_volumetrics.cpp \
 	    $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
@@ -618,6 +620,9 @@ build/windows/vulkan_smoke_tests.exe: \
 	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
 	    -I../third_party/raylib/src \
 	    -I../libs/MatterSurfaceLib/include \
+	    -I../libs/SpatialQueryLib/include \
+	    -I../libs/MemoryLib/include \
+	    -I../libs/MathLib/include \
 	    -I$(ME3_DIR)/tests \
 	    -I../third_party/raylib/src/external/glfw/include \
 	    -I$(OZZ_INCLUDE) \

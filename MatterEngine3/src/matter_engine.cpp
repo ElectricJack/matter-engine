@@ -2702,8 +2702,13 @@ bool WorldSession::Impl::release_sector_entry(
 #ifdef MATTER_VULKAN_VIEWER
     release_attempt(entry.resources.vulkan_attempted, [&] {
         if (vk_scene) vk_scene->release_part(entry.part_hash);
+        // Drop the instance cache (the released part's slot is gone) but keep
+        // temporal history: an eviction only REMOVES instances, and history
+        // for departed ids is simply never looked up again. Evictions trail
+        // the camera continuously in a streaming world, so a global temporal
+        // reset here starves DLSS/GI accumulation exactly like the
+        // publish-side one did (issues/render-dlss-not-applied).
         vk_instance_cache.invalidate();
-        vk_temporal.invalidate();
     });
 #endif
     release_attempt(entry.resources.store_attempted, [&] {
@@ -3386,8 +3391,14 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     // unregistered here, so every existing source's expansion
                     // stays valid. Drop only the flat set so the next frame
                     // rebuilds it -- from memos, plus the one new sector.
+                    // Temporal history survives for the same reason: the new
+                    // sector's instances enter with history_valid=false while
+                    // everything already on screen keeps accumulating. This
+                    // path runs nearly every frame while streaming, so a
+                    // global invalidate here held DLSS/GI at their first
+                    // frame and presented the raw internal-resolution render
+                    // (issues/render-dlss-not-applied).
                     vk_instance_cache.invalidate_expansion();
-                    vk_temporal.invalidate();
 #endif
 #ifndef MATTER_VULKAN_ONLY
                     if (composer) {
