@@ -5004,8 +5004,11 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                                       internal_extent.height, unjittered, err))
         return false;
     const auto begin_temporal =
-        [&](const std::vector<viewer::TemporalInstance>& temporal_instances) {
-            const viewer::TemporalFrame temporal = impl_->vk_temporal.begin(
+        [&](const std::vector<viewer::TemporalInstance>& temporal_instances)
+            -> const viewer::TemporalFrame& {
+            // By reference: valid until the next begin(), which only happens
+            // next frame. Copying it out cost ~8 MB per streaming frame.
+            const viewer::TemporalFrame& temporal = impl_->vk_temporal.begin(
                 unjittered, internal_extent, frame.extent, temporal_instances,
                 temporal_jitter_enabled && !temporal_instances.empty(),
                 {.camera_cut = frame.swapchain_recreated});
@@ -5202,7 +5205,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     }
     const std::vector<viewer::TemporalInstance>& temporal_instances =
         impl_->vk_temporal_instances;
-    const viewer::TemporalFrame temporal = begin_temporal(temporal_instances);
+    const viewer::TemporalFrame& temporal = begin_temporal(temporal_instances);
     const viewer::FrameMatrices& matrices = temporal.current_jittered;
     bool animation_skin_queue_pending_seal = false;
     impl_->vk_scene->set_temporal_frame(temporal);

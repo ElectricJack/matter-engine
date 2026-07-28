@@ -1435,6 +1435,18 @@ private:
     bool instance_inputs_match_snapshot(
         const std::vector<VkSceneInstance>& instances) const noexcept;
     void snapshot_instance_inputs(const std::vector<VkSceneInstance>& instances);
+    // Candidate-build scratch reused across update_instances() calls. During
+    // sector streaming the candidate set is rebuilt nearly every frame; these
+    // keep that from allocating and releasing ~24 MB per frame. The commit
+    // paths swap them with the staging vectors (or recycle the retired
+    // staging), so capacity survives in both directions.
+    std::vector<GpuInstance> candidate_instances_scratch_;
+    std::vector<uint32_t> candidate_slots_scratch_;
+    std::vector<RtInstance> candidate_rt_scratch_;
+    // Generation the uploaded_rt_instances_ mirror was last copied at; an
+    // unchanged generation means unchanged content, so the ~60k-record deep
+    // copy per frame can be skipped.
+    uint64_t uploaded_rt_instances_generation_ = 0;
 
     uint64_t instance_generation_ = 1;
     uint64_t static_generation_ = 1;

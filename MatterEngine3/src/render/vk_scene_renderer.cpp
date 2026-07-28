@@ -5981,30 +5981,60 @@ bool VkSceneRenderer::update_instances(
         instance_part_slots_.size() == instance_staging_.size() &&
         instance_inputs_match_snapshot(instances))
         return true;
-    std::vector<GpuInstance> candidate_instances;
-    std::vector<uint32_t> candidate_slots;
-    std::vector<RtInstance> candidate_rt;
+    std::vector<GpuInstance>& candidate_instances = candidate_instances_scratch_;
+    std::vector<uint32_t>& candidate_slots = candidate_slots_scratch_;
+    std::vector<RtInstance>& candidate_rt = candidate_rt_scratch_;
+    candidate_instances.clear();
+    candidate_slots.clear();
+    candidate_rt.clear();
     candidate_instances.reserve(instances.size());
     candidate_slots.reserve(instances.size());
     candidate_rt.reserve(instances.size());
     uint32_t candidate_max_clusters = 0;
     // Perf: the per-instance history lookup below used to be a std::find_if
     // linear scan of temporal_frame_.instances — O(instances^2), ~848M
-    // comparisons over a ~6MB array at 41k instances. Index the history once,
-    // then do a single hash lookup per instance.
+    // comparisons over a ~6MB array at 41k instances — and then a hash map
+    // rebuilt per call, ~60k node allocations per streaming frame.
+    //
+    // In the engine's call pattern the TemporalFrame handed to
+    // set_temporal_frame() was built this same frame from this same
+    // `instances` span, so entry i describes instance i. Verify the id per
+    // element and read positionally; the first element where the sequences
+    // disagree (a different caller, a stale frame) builds the keyed index
+    // once and every later lookup goes through it.
     //
     // Behaviour-preserving details:
     //   * find_if returned the FIRST entry with a matching id; emplace() keeps
-    //     the first insertion, so duplicate ids resolve to the same entry.
+    //     the first insertion, so duplicate ids resolve to the same entry —
+    //     and begin() computes identical history fields for every entry of a
+    //     repeated id, so positional resolution cannot diverge from it.
     //   * the result is only ever consulted under `!temporal_frame_.reset`, so
-    //     on reset frames the index stays empty (every lookup misses, exactly
-    //     as the discarded scan result did) and costs nothing to build.
+    //     on reset frames no index is built and every lookup misses, exactly
+    //     as the discarded scan result did.
+    const bool temporal_usable = !temporal_frame_.reset;
+    const bool temporal_positional =
+        temporal_usable &&
+        temporal_frame_.instances.size() == instances.size();
     std::unordered_map<uint64_t, const TemporalInstanceFrame*> temporal_by_id;
-    if (!temporal_frame_.reset) {
-        temporal_by_id.reserve(temporal_frame_.instances.size());
-        for (const TemporalInstanceFrame& item : temporal_frame_.instances)
-            temporal_by_id.emplace(item.instance_id, &item);
-    }
+    bool temporal_by_id_built = false;
+    const auto temporal_lookup =
+        [&](uint64_t stable_id,
+            size_t source_index) -> const TemporalInstanceFrame* {
+        if (!temporal_usable) return nullptr;
+        if (temporal_positional) {
+            const TemporalInstanceFrame& entry =
+                temporal_frame_.instances[source_index];
+            if (entry.instance_id == stable_id) return &entry;
+        }
+        if (!temporal_by_id_built) {
+            temporal_by_id.reserve(temporal_frame_.instances.size());
+            for (const TemporalInstanceFrame& item : temporal_frame_.instances)
+                temporal_by_id.emplace(item.instance_id, &item);
+            temporal_by_id_built = true;
+        }
+        const auto found = temporal_by_id.find(stable_id);
+        return found != temporal_by_id.end() ? found->second : nullptr;
+    };
     for (size_t source_index = 0; source_index < instances.size();
          ++source_index) {
         const VkSceneInstance& source = instances[source_index];
@@ -6022,9 +6052,8 @@ bool VkSceneRenderer::update_instances(
         instance.animation_instance_slot = source.animation_instance_slot;
         // Static scene records have no generational dynamic-slot identity.
         instance.animation_instance_generation = 0;
-        const auto temporal_hit = temporal_by_id.find(stable_id);
         const TemporalInstanceFrame* temporal =
-            temporal_hit != temporal_by_id.end() ? temporal_hit->second : nullptr;
+            temporal_lookup(stable_id, source_index);
         if (!temporal_frame_.reset && temporal != nullptr &&
             temporal->history_valid) {
             instance.previous_object_to_world =
@@ -6058,9 +6087,11 @@ bool VkSceneRenderer::update_instances(
 
     const bool layout_changed = candidate_slots != instance_part_slots_;
     if (!layout_changed) {
-        instance_staging_ = std::move(candidate_instances);
-        instance_part_slots_ = std::move(candidate_slots);
-        rt_instances_ = std::move(candidate_rt);
+        // Swap, not move: the retired staging keeps its capacity inside the
+        // scratch vectors for the next rebuild.
+        std::swap(instance_staging_, candidate_instances);
+        std::swap(instance_part_slots_, candidate_slots);
+        std::swap(rt_instances_, candidate_rt);
         max_clusters_per_instance_ = candidate_max_clusters;
         static_instance_count_ = instance_staging_.size();
         static_rt_instance_count_ = rt_instances_.size();
@@ -6101,6 +6132,11 @@ bool VkSceneRenderer::update_instances(
     ++instance_generation_;
     if (layout_changed) note_command_layout_rebuild();
     snapshot_instance_inputs(instances);
+    // Recycle the retired staging as next call's scratch capacity. (The
+    // rollback path above returns before this and keeps the old vectors.)
+    candidate_instances = std::move(old_instances);
+    candidate_slots = std::move(old_slots);
+    candidate_rt = std::move(old_rt);
     return true;
 }
 
@@ -6689,7 +6725,15 @@ bool VkSceneRenderer::upload_scene_buffers(
     uploaded_transform_slots_ = draw_transform_slots_;
     uploaded_raster_command_enabled_ = raster_command_enabled_;
     uploaded_raster_draw_command_count_ = raster_draw_command_count_;
-    uploaded_rt_instances_ = rt_instances_;
+    // Every writer of rt_instances_ content bumps instance_generation_
+    // (update_instances, the dynamic merge under dynamic_dirty_,
+    // release_part, reset), so an unchanged generation means the mirror is
+    // already current and the per-frame deep copy can be skipped.
+    if (uploaded_rt_instances_generation_ != instance_generation_ ||
+        uploaded_rt_instances_.size() != rt_instances_.size()) {
+        uploaded_rt_instances_ = rt_instances_;
+        uploaded_rt_instances_generation_ = instance_generation_;
+    }
     return true;
 }
 
