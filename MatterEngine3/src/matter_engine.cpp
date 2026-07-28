@@ -1631,6 +1631,39 @@ void WorldSession::Impl::publish_pipeline(
 #endif
         store.swap(reset_out->new_store);
 
+        // DIAGNOSTIC (MATTER_PREWARM_CHILDREN=1): make every sector child
+        // resident before any sector publishes.
+        //
+        // commit_staged builds its expansion with get_or_load as the getter, so
+        // on the first sector ring -- when no child is resident -- the app
+        // thread runs full flat decode and BVH::Build INSIDE the publish job.
+        // That is the same code the worker runs in stage_load, which would make
+        // the publish job the app-side partner of the staging race and explains
+        // why locking either half alone stayed broken, and why the mutex left
+        // peak pump at ~35 ms (the commit was never actually bounded).
+        //
+        // Here rather than at install_world's tail: the store is created and
+        // swapped by THIS job, so a prewarm posted from install_world finds
+        // store == nullptr and silently does nothing.
+        //
+        // Confirmation only, not a fix: a heap tool still has to explain the
+        // corruption, and this covers just the fixed child set rather than a
+        // general "a commit must not load" invariant.
+        if (std::getenv("MATTER_PREWARM_CHILDREN") && store) {
+            const auto warm_t0 = std::chrono::steady_clock::now();
+            std::set<uint64_t> warmed;
+            size_t ok = 0, total = 0;
+            for (uint64_t h : sector_child_hashes) {
+                if (!warmed.insert(h).second) continue;
+                ++total;
+                if (store->get_or_load(h)) ++ok;
+            }
+            fprintf(stderr, "[prewarm] %zu/%zu sector children resident in %.1f ms\n",
+                    ok, total,
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - warm_t0).count());
+        }
+
         auto tonemap_sky = [](float c) -> float {
             float mapped = c / (c + 1.0f);
             float gamma = std::pow(mapped, 1.0f / 2.2f);
