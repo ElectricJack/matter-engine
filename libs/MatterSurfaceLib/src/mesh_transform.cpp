@@ -307,7 +307,25 @@ int ReprojectSource::nearest_donor(const float3& p, const float3& align) const {
         int cy = qc(p.y - vmn[1]);
         int cz = qc(p.z - vmn[2]);
         int hit_ring = -1;
-        for (int ring = 0; ring < 64; ++ring) {
+        // Ring cap = ov_span, not a fixed 64. qc() clamps the query cell into
+        // [0, ov_span] and every occupied cell was clamped into the same range
+        // at build time, so the largest Chebyshev distance between the query
+        // and any populated cell is exactly ov_span -- a larger ring can only
+        // probe cells that cannot exist.
+        //
+        // The fixed 64 was pathological rather than merely wasteful. hit_ring
+        // is set only when a candidate survives the kAlignDot crease gate, and
+        // at a coarse LOD rung the decimated faces deviate far enough from the
+        // source that EVERY candidate can be rejected. hit_ring then stays -1,
+        // the early-out never fires, and the walk runs all 64 rings -- ring 63
+        // alone is 127^3 ~ 2.05M probes. Measured on a streamed sector: a
+        // 2224-triangle source reprojecting onto a 130-triangle rung took
+        // 5483 ms, against 4 ms for the decimation that produced it.
+        // Returning -1 early is exactly what the no-donor path already handles
+        // (the caller falls back to the centroid match), so this changes cost,
+        // not results.
+        const int ring_cap = ov_span;
+        for (int ring = 0; ring <= ring_cap; ++ring) {
             if (hit_ring >= 0 && ring > hit_ring + 1) break;
             bool any = false;
             for (int dz = -ring; dz <= ring; ++dz)
