@@ -1,4 +1,5 @@
 #include "asset_browser.h"
+#include "asset_browser_ids.h"
 
 #include "ui.h"          // WorldEntry, ViewerStats (kept out of the header to
                          // avoid a bake_lab.h <-> ui.h include cycle: ui.h
@@ -440,7 +441,12 @@ void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
     }
 
     if (open) {
-        for (const RequiredChildUi& child : obj.requires_children) {
+        for (std::size_t occurrence = 0; occurrence < obj.requires_children.size();
+             ++occurrence) {
+            const RequiredChildUi& child = obj.requires_children[occurrence];
+            const std::string row_identity = required_child_row_identity(
+                child.module, child.params_json, occurrence);
+            ImGui::PushID(row_identity.c_str());
             ImGui::Bullet();
             ImGui::TextUnformatted(child.module.c_str());
             if (!child.params_json.empty() && child.params_json != "{}") {
@@ -461,6 +467,7 @@ void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
             } else {
                 ImGui::TextDisabled("(not in project)");
             }
+            ImGui::PopID();
         }
         if (!(flags & ImGuiTreeNodeFlags_NoTreePushOnOpen)) ImGui::TreePop();
     }

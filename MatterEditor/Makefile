@@ -1042,6 +1042,19 @@ build/test_workbench_actions.exe: tests/test_workbench_actions.cpp \
 run-test-workbench-actions: build/test_workbench_actions.exe
 	./build/test_workbench_actions.exe
 
+# Asset-browser required-child ImGui identity regression. Pure CPU: the row
+# identity helper is ImGui-free, while draw_object_row uses the same helper to
+# scope each repeated "Go" control.
+build/test_asset_browser_ids.exe: tests/test_asset_browser_ids.cpp \
+        src/asset_browser_ids.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_asset_browser_ids.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Isrc
+
+.PHONY: run-test-asset-browser-ids
+run-test-asset-browser-ids: build/test_asset_browser_ids.exe
+	./build/test_asset_browser_ids.exe
+
 # Animation panel model headless test: animation_panel_model.cpp holds the
 # ImGui-free presentation logic (animation_panel.cpp does the drawing), so this
 # links with no ImGui and no engine archive -- only the public debug headers.
