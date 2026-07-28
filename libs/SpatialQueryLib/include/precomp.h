@@ -25,12 +25,27 @@
 using namespace std;
 
 // aligned memory allocations
+//
+// MATTER_MALLOC64_HOOK is a TEST-ONLY seam (defined by the partstore race
+// harness's build flavor, never by production Makefiles): it routes MALLOC64 /
+// FREE64 through a pair of extern hooks so a stress test can put guard pages
+// under the BVH/mesh buffers. With the macro undefined this header is
+// byte-identical in behavior to what it always was.
+#ifdef MATTER_MALLOC64_HOOK
+extern "C" void* matter_malloc64_hook( size_t bytes );
+extern "C" void  matter_free64_hook( void* p );
+#define MALLOC64( x ) ( ( x ) == 0 ? 0 : matter_malloc64_hook( ( x ) ) )
+#define FREE64( x ) matter_free64_hook( x )
+#endif
 #ifdef _MSC_VER
 #define ALIGN( x ) __declspec( align( x ) )
+#ifndef MATTER_MALLOC64_HOOK
 #define MALLOC64( x ) ( ( x ) == 0 ? 0 : _aligned_malloc( ( x ), 64 ) )
 #define FREE64( x ) _aligned_free( x )
+#endif
 #else
 #define ALIGN( x ) __attribute__( ( aligned( x ) ) )
+#ifndef MATTER_MALLOC64_HOOK
 #ifdef _WIN32
     #define MALLOC64( x ) ( ( x ) == 0 ? 0 : _aligned_malloc( ( x ), 64 ) )
 #else
@@ -40,6 +55,7 @@ using namespace std;
     #define FREE64( x ) _aligned_free( x )
 #else
     #define FREE64( x ) free( x )
+#endif
 #endif
 #endif
 

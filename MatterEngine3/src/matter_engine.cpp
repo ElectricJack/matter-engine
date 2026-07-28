@@ -566,6 +566,7 @@ struct WorldSession::Impl {
 
     // Phase B: async bake GPU work queue + command queue + worker thread.
     matter_async::GpuJobQueue gpu_jobs;
+
     matter_async::CommandQueue commands;
     std::thread                worker;
     std::atomic<bool>          worker_exited{true};
@@ -1612,6 +1613,7 @@ void WorldSession::Impl::publish_pipeline(
         composer.swap(reset_out->new_composer);
 #endif
         store.swap(reset_out->new_store);
+
 
         auto tonemap_sky = [](float c) -> float {
             float mapped = c / (c + 1.0f);
@@ -3286,13 +3288,22 @@ void WorldSession::Impl::execute_sector_stream_step() {
         tracked_guard.disarm();
 
         // 4. GL publish job: add this sector to the world.
+        //
+        // Stage the load here, on the worker: decode + ladder bake into a
+        // private BLASManager, ~20-40 ms that used to run inside the publish job
+        // on the render thread. shared_ptr because GpuJob::fn is a std::function
+        // and needs a copyable callable while StagedPart owns a unique_ptr.
+        // ok=false (unreadable generation, or an animated part) falls back to
+        // get_or_load in the job, which is the old behaviour.
         const float sector_size = world_sector_size;
+        auto staged_load = std::make_shared<viewer::PartStore::StagedPart>(
+            store->stage_load(sector_hash));
         try {
             matter_async::GpuJob publish_job;
             publish_job.name = "stream.publish";
             publish_job.fn =
                 [this, request, sector_hash, sector_size, provider_ref,
-                 completion_index](std::string&) noexcept -> bool {
+                 completion_index, staged_load](std::string&) noexcept -> bool {
                 matter_async::assert_gl_thread("stream.publish");
                 PublicationCompletion* completion =
                     start_publication_completion(completion_index);
@@ -3394,8 +3405,12 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     double t_culler = 0, t_vulkan = 0, t_cache = 0;
 
                     published.resources.store_attempted = true;
+                    // Commit the worker's staged result: adopt its BLAS entries,
+                    // remap handles, insert, expand. O(entries), no BVH rebuilt.
                     const viewer::LoadedPart* loaded =
-                        store->get_or_load(sector_hash);
+                        staged_load->ok
+                            ? store->commit_staged(std::move(*staged_load))
+                            : store->get_or_load(sector_hash);
                     t_load = pub_split();
                     if (!loaded) {
                         return fail_publication(
