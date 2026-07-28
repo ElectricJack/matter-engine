@@ -165,6 +165,109 @@ static void test_lod_rungs_preserve_material_and_smooth_normals() {
     }
 }
 
+// Issue ef7053be: the complement of the sphere probe above — the ladder must
+// also preserve HARD edges. reproject_triex used to recompute smooth vertex
+// normals over the whole decimated rung, so a box's 90-degree edges averaged
+// into a gradient the moment it popped below the full level (LightingGarden's
+// cubes shading like blobs in the normals view). A tessellated box is the
+// right probe: every authored corner normal is exactly one of the six face
+// directions, so any smoothing across an edge produces a corner normal that
+// matches no face and the dot-against-axis check below fails.
+static std::vector<Tri> box_tris(int n, float half, std::vector<TriEx>& ex_out,
+                                 int material_id) {
+    std::vector<Tri> out;
+    ex_out.clear();
+    const float3 axes[6] = {
+        make_float3( 1, 0, 0), make_float3(-1, 0, 0),
+        make_float3( 0, 1, 0), make_float3( 0,-1, 0),
+        make_float3( 0, 0, 1), make_float3( 0, 0,-1),
+    };
+    auto emit = [&](const float3& a, const float3& b, const float3& c,
+                    const float3& nrm) {
+        Tri t; t.vertex0 = a; t.vertex1 = b; t.vertex2 = c;
+        t.centroid = make_float3((a.x+b.x+c.x)/3, (a.y+b.y+c.y)/3, (a.z+b.z+c.z)/3);
+        out.push_back(t);
+        TriEx e{};
+        e.N0 = e.N1 = e.N2 = nrm;               // authored HARD: per-face normal
+        e.materialId = material_id;
+        e.tint = make_float4(1, 1, 1, 0);
+        ex_out.push_back(e);
+    };
+    for (const float3& d : axes) {
+        // Tangent frame spanning the face at center d*half.
+        float3 u = (fabsf(d.y) > 0.5f) ? make_float3(1,0,0) : make_float3(0,1,0);
+        float3 v = make_float3(d.y*u.z - d.z*u.y, d.z*u.x - d.x*u.z, d.x*u.y - d.y*u.x);
+        float step = 2.0f * half / n;
+        auto at = [&](int i, int j) {
+            float su = -half + i * step, sv = -half + j * step;
+            return make_float3(d.x*half + u.x*su + v.x*sv,
+                               d.y*half + u.y*su + v.y*sv,
+                               d.z*half + u.z*su + v.z*sv);
+        };
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) {
+                emit(at(i, j), at(i+1, j), at(i+1, j+1), d);
+                emit(at(i, j), at(i+1, j+1), at(i, j+1), d);
+            }
+    }
+    return out;
+}
+
+static void test_lod_rungs_preserve_hard_edges() {
+    std::vector<TriEx> ex;
+    const int kMaterial = 5;
+    std::vector<Tri> tris = box_tris(12, 1.0f, ex, kMaterial);   // 1728 tris
+    CHECK(ex.size() == tris.size(), "box triex parallel to tris");
+
+    BLASManager blas;
+    lod_bake::BakeTargets targets;                    // {1.0, 0.1, 0.01}
+    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, targets, blas, &ex);
+    CHECK(lods.size() == targets.keep_ratio.size(), "box ladder has every rung");
+
+    for (size_t level = 0; level < lods.size(); ++level) {
+        if (lods[level].blas_indices.size() != 1) continue;
+        const auto& entry = blas.get_entries()[lods[level].blas_indices[0]];
+        CHECK(entry->tri_extra.size() == entry->triangles.size(),
+              "box rung carries per-triangle TriEx");
+        if (entry->tri_extra.size() != entry->triangles.size()) continue;
+
+        // QEM keeps a box's collapses in-plane (they cost nothing), so rungs
+        // stay axis-aligned; the coarsest can degenerate below a 12-tri cube,
+        // so only axis-aligned triangles are held to the hard-edge contract.
+        size_t checked = 0, hard = 0;
+        for (size_t t = 0; t < entry->triangles.size(); ++t) {
+            const Tri& tri = entry->triangles[t];
+            float3 e1 = make_float3(tri.vertex1.x-tri.vertex0.x, tri.vertex1.y-tri.vertex0.y, tri.vertex1.z-tri.vertex0.z);
+            float3 e2 = make_float3(tri.vertex2.x-tri.vertex0.x, tri.vertex2.y-tri.vertex0.y, tri.vertex2.z-tri.vertex0.z);
+            float3 g = make_float3(e1.y*e2.z - e1.z*e2.y,
+                                   e1.z*e2.x - e1.x*e2.z,
+                                   e1.x*e2.y - e1.y*e2.x);
+            float gl = sqrtf(g.x*g.x + g.y*g.y + g.z*g.z);
+            if (gl < 1e-12f) continue;
+            g = make_float3(g.x/gl, g.y/gl, g.z/gl);
+            // Axis-aligned? Then the face it decimated from is unambiguous.
+            float ax = fabsf(g.x), ay = fabsf(g.y), az = fabsf(g.z);
+            if (fmaxf(ax, fmaxf(ay, az)) < 0.999f) continue;
+            float3 face = make_float3(ax > 0.999f ? (g.x > 0 ? 1.f : -1.f) : 0.f,
+                                      ay > 0.999f ? (g.y > 0 ? 1.f : -1.f) : 0.f,
+                                      az > 0.999f ? (g.z > 0 ? 1.f : -1.f) : 0.f);
+            ++checked;
+            const TriEx& e = entry->tri_extra[t];
+            const float3 ns[3] = { e.N0, e.N1, e.N2 };
+            bool ok = true;
+            for (const float3& nn : ns) {
+                // A corner that smoothed across a 90° edge blends two or three
+                // face directions and lands well below 0.999 against its own.
+                if (nn.x*face.x + nn.y*face.y + nn.z*face.z < 0.999f) ok = false;
+            }
+            if (ok) ++hard;
+        }
+        CHECK(checked > 0, "box rung has axis-aligned triangles to check");
+        CHECK(hard == checked, "box rung keeps hard per-face normals at every corner");
+        CHECK(entry->tri_extra[0].materialId == kMaterial, "box rung keeps materialId");
+    }
+}
+
 static void test_lod_roundtrip_v2() {
     std::vector<Tri> tris = grid_tris(32);
     BLASManager blas; TLASManager tlas(64);
@@ -399,6 +502,7 @@ int main() {
     test_decimate_one_level();
     test_bake_three_levels();
     test_lod_rungs_preserve_material_and_smooth_normals();
+    test_lod_rungs_preserve_hard_edges();
     test_lod_roundtrip_v2();
     test_lod_roundtrip_degenerate();
     test_flatten_n_times_m();
