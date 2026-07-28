@@ -4,25 +4,14 @@
 #include <unordered_set>
 
 #include "editor_model.h"
-#include "part_graph_snapshot.h"
+#include "scene_tree_model.h"  // SceneTreeState + graph-cache sync/reset
 #include "properties_panel.h"  // FieldCommands
 #include "selection_set.h"
 #include "console_panel.h"     // ConsoleLog
 #include "matter/camera.h"
 #include "matter/scene.h"      // matter::scene::SimulationMode
 
-namespace matter { class WorldSession; }
-
 namespace viewer {
-
-struct SceneTreeState {
-    char filter_text[256] = {};
-    int filter_mode = 0;  // 0=All, 1=Entities, 2=Roots
-    uint64_t cached_graph_gen = 0;
-    part_graph_snapshot::Snapshot cached_snapshot;
-    // Selected baked-root hash (0 = no root selected)
-    uint64_t selected_root_hash = 0;
-};
 
 // Draw the unified scene tree: baked roots from the cached graph snapshot,
 // and ECS entities from `editor`. `authored_entity_ids`, when non-null, is

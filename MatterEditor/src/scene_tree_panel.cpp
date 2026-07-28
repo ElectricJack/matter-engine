@@ -231,14 +231,7 @@ void draw_scene_tree(SceneTreeState& state, EditorModel& editor,
                      const FieldCommands* fields,
                      ConsoleLog* console_log,
                      const std::unordered_set<uint64_t>* authored_entity_ids) {
-    if (session) {
-        const uint64_t generation = session->graph_generation();
-        if (generation != state.cached_graph_gen) {
-            if (session->graph_snapshot(state.cached_snapshot)) {
-                state.cached_graph_gen = generation;
-            }
-        }
-    }
+    sync_scene_tree_graph_cache(state, session);
 
     if (ImGui::InputTextWithHint("##filter", "Filter...", state.filter_text,
                                  sizeof(state.filter_text))) {

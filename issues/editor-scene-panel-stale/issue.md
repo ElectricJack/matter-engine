@@ -2,7 +2,7 @@
 id: 56edd5b3-988d-1e9c-5dab-c0eb4e908c6c
 world: LightingGarden
 shots: 2
-status: triaged
+status: fixed
 reported: 2026-07-28T06:48:52Z
 kind: bug
 severity: minor
@@ -51,4 +51,24 @@ Simulation was in **Edit** for the first shot — press Play if the defect only 
 
 ## Acceptance
 
-_TODO — the check that closes this. Prefer a headless `make -C MatterEngine3/tests run-*` target; fall back to a scripted capture (`MatterEngine3/tools/viewer_shots.sh`) plus what the pixels must show._
+`make -C MatterEngine3/tests run-asyncbake` — the `warm_session_publishes_graph`
+case in `async_bake_tests.cpp` drives real WorldSessions through the failing
+sequence: load a world cold, replace the session with a warm
+(resolve-cache-hit) load of the same project, and assert
+
+1. the warm session publishes its graph snapshot (`graph_generation() > 0`
+   and `graph_snapshot()` returns the world's root) — the warm path never
+   called `publish_graph_snapshot()`, so this failed before the fix;
+2. the shipped panel policy (`MatterEditor/src/scene_tree_model.h`) drops the
+   dead session's tree on a pre-publish draw and shows the new world after
+   its publish, despite the cross-session generation collision (cold and
+   warm generations both end at 1 — pinned by the test);
+3. the seam reset wired into `clear_app_models` unlocks the refresh even when
+   no draw happened during the pre-publish window.
+
+Before the fix the case fails with 6 CHECK failures (warm generation stays 0,
+`graph_snapshot()` stays false, the panel keeps the dead tree); after it
+passes. The suite's two `production AnimatedRigGallery` failures predate this
+issue and are identical with and without the fix (on main the suite could not
+run at all — `EngineContext::create` under `MATTER_VULKAN_ONLY` refused
+headless creation and test (c) crashed on the null engine).

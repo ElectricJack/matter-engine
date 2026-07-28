@@ -637,8 +637,13 @@ ANIMATION_SKIN_CPP    = animation_skin_bridge_tests.cpp ../src/render/animation_
 ANIMATION_SKIN_C      = $(FLECS_C)
 
 # Phase 4 Task 9 — Editor model (pure CPU, no GL/Vulkan/Flecs needed).
+# E5c gave EditorModel a rows-revision evt::Property whose scheduler impl is
+# property.cpp (plus the fail_fast seam it depends on, as in EVENTPROP_SRC
+# below) — without those objects the target stopped linking.
 EDITOR_MODEL_TARGET = build/editor_model_tests
-EDITOR_MODEL_CPP    = editor_model_tests.cpp ../../MatterEditor/src/editor_model.cpp
+EDITOR_MODEL_CPP    = editor_model_tests.cpp ../../MatterEditor/src/editor_model.cpp \
+                      ../src/event/property.cpp ../src/event/subscription.cpp \
+                      ../src/event/dispatch_context.cpp
 
 # Phase 4 Task 10 — Properties registry (needs scene_registry for ComponentDescriptor).
 PROPERTIES_REGISTRY_TARGET = build/properties_registry_tests

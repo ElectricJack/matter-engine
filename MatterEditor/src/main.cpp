@@ -1500,6 +1500,14 @@ int main() {
         selection_set.clear();
         editor_model.clear_selection();
         sim_control = matter::scene::SimulationControl{};
+        // The two graph caches key their refresh on graph_generation(), a
+        // PER-SESSION counter — a value carried across the switch collides
+        // with the new session's count (both typically stop at 1) and locks
+        // the refresh out (issues/editor-scene-panel-stale). These resets were
+        // wired at the pre-E4b switch/reload sites and lost in a merge.
+        ui.reset_scene_tree_cache();
+        cached_snapshot = part_graph_snapshot::Snapshot{};
+        cached_graph_gen = 0;
     };
     // E5c: the SessionBinding-owned scene adapter (scene_model_adapter.*) is the
     // concrete app<->session bridge SessionBinding (re)builds on bind / world
@@ -2004,7 +2012,12 @@ int main() {
                 {
                     const uint64_t gen = session->graph_generation();
                     if (gen != cached_graph_gen) {
-                        session->graph_snapshot(cached_snapshot);
+                        if (!session->graph_snapshot(cached_snapshot)) {
+                            // Only fails while THIS session has published
+                            // nothing — anything cached is a dead world's
+                            // (see sync_scene_tree_graph_cache).
+                            cached_snapshot = part_graph_snapshot::Snapshot{};
+                        }
                         cached_graph_gen = gen;
                     }
                 }
