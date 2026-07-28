@@ -366,6 +366,10 @@ FLAVOR_sh_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) -I
 FLAVOR_sh_test_FLAGS  := $(FLAVOR_sh_FLAGS) -DMATTER_TEST_CACHE_VALIDATION_HOOK
 # PartStore has its own cache-admission seam. Keep it test-only.
 FLAVOR_partstore_test_FLAGS := $(FLAVOR_def_FLAGS) -DMATTER_TEST_CACHE_VALIDATION_HOOK
+# Race harness: production optimization level (-O2, races are optimization
+# sensitive) + winpthreads for std::thread. MATTER_MALLOC64_HOOK routes
+# MALLOC64/FREE64 through the harness's page-guard allocator (see precomp.h).
+FLAVOR_race_FLAGS := $(FLAVOR_def_FLAGS) -O2 -pthread -DMATTER_MALLOC64_HOOK
 FLAVOR_sp2_FLAGS      := $(CFLAGS) -DSP2_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC)
 FLAVOR_vl_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -pthread $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC)
 FLAVOR_retopo_FLAGS   := $(CFLAGS) -DMATTER_HAVE_AUTOREMESHER $(INCLUDE_PATHS) -I$(AR_CORE_PATH)/include $(QJS_INC)
@@ -400,7 +404,7 @@ FLAVOR_physicsc_FLAGS := -std=c17 -O2 -I$(FLECS_DIR)
 
 # C++ flavor list (compiled with $(CC) = g++). Order matters only for pattern-rule
 # generation; the alt-compile-cmd rules are all distinct.
-CPP_FLAVORS := def qjs sh sh_test sp2 vl retopo gpu
+CPP_FLAVORS := def qjs sh sh_test sp2 vl retopo gpu race
 C_FLAVORS   := mslc qjsc flecsc physicsc
 ALL_FLAVORS := $(CPP_FLAVORS) $(C_FLAVORS)
 
@@ -766,6 +770,14 @@ PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp \
                 $(MSL)/mesh_transform.cpp \
                 $(COMMON_MSL_BLAS_SRC)
 PARTSTORE_C   = $(MSL)/material_registry.c
+
+# Two-thread stage_load/commit_staged stress harness (race flavor: -O2 -pthread,
+# production optimization). Same engine TU set as run-partstore, different
+# top-level test file and no cache-validation seam.
+PARTSTORE_RACE_TARGET = build/partstore_race_tests
+PARTSTORE_RACE_CPP = partstore_race_tests.cpp \
+                     $(filter-out partstore_tests.cpp,$(PARTSTORE_CPP))
+PARTSTORE_RACE_C   = $(PARTSTORE_C)
 
 # Simple standalone targets (they use tiny custom flag sets — kept as-is with
 # per-target rules below, no shared objects).
@@ -1231,6 +1243,7 @@ sh_CPP_SRCS := $(sort \
     $(LIVEPROD_CPP))
 sh_test_CPP_SRCS := $(sort $(GRAPH_INT_CPP))
 partstore_test_CPP_SRCS := $(sort $(PARTSTORE_CPP))
+race_CPP_SRCS := $(sort $(PARTSTORE_RACE_CPP))
 
 sp2_CPP_SRCS := $(sort $(SHLIB_CPP))
 vl_CPP_SRCS  := $(sort $(VIEWER_LOGIC_CPP))
@@ -1261,6 +1274,7 @@ qjs_CPP_OBJS    := $(call obj_list,qjs,$(qjs_CPP_SRCS))
 sh_CPP_OBJS     := $(call obj_list,sh,$(sh_CPP_SRCS))
 sh_test_CPP_OBJS := $(call obj_list,sh_test,$(sh_test_CPP_SRCS))
 partstore_test_CPP_OBJS := $(call obj_list,partstore_test,$(partstore_test_CPP_SRCS))
+race_CPP_OBJS := $(call obj_list,race,$(race_CPP_SRCS))
 sp2_CPP_OBJS    := $(call obj_list,sp2,$(sp2_CPP_SRCS))
 vl_CPP_OBJS     := $(call obj_list,vl,$(vl_CPP_SRCS))
 retopo_CPP_OBJS := $(call obj_list,retopo,$(retopo_CPP_SRCS))
@@ -1270,7 +1284,7 @@ qjsc_C_OBJS     := $(call obj_list,qjsc,$(qjsc_C_SRCS))
 flecsc_C_OBJS   := $(call obj_list,flecsc,$(flecsc_C_SRCS))
 physicsc_C_OBJS := $(call obj_list,physicsc,$(physicsc_C_SRCS))
 
-ALL_OBJS := $(def_CPP_OBJS) $(qjs_CPP_OBJS) $(sh_CPP_OBJS) $(sh_test_CPP_OBJS) $(partstore_test_CPP_OBJS) $(sp2_CPP_OBJS) \
+ALL_OBJS := $(def_CPP_OBJS) $(qjs_CPP_OBJS) $(sh_CPP_OBJS) $(sh_test_CPP_OBJS) $(partstore_test_CPP_OBJS) $(race_CPP_OBJS) $(sp2_CPP_OBJS) \
             $(vl_CPP_OBJS) $(retopo_CPP_OBJS) $(gpu_CPP_OBJS) \
             $(mslc_C_OBJS) $(qjsc_C_OBJS) $(flecsc_C_OBJS) $(physicsc_C_OBJS)
 
@@ -1280,6 +1294,7 @@ $(foreach s,$(qjs_CPP_SRCS),$(eval $(call objrule_cpp,qjs,$(s))))
 $(foreach s,$(sh_CPP_SRCS),$(eval $(call objrule_cpp,sh,$(s))))
 $(foreach s,$(sh_test_CPP_SRCS),$(eval $(call objrule_cpp,sh_test,$(s))))
 $(foreach s,$(partstore_test_CPP_SRCS),$(eval $(call objrule_cpp,partstore_test,$(s))))
+$(foreach s,$(race_CPP_SRCS),$(eval $(call objrule_cpp,race,$(s))))
 $(foreach s,$(sp2_CPP_SRCS),$(eval $(call objrule_cpp,sp2,$(s))))
 $(foreach s,$(vl_CPP_SRCS),$(eval $(call objrule_cpp,vl,$(s))))
 $(foreach s,$(retopo_CPP_SRCS),$(eval $(call objrule_cpp,retopo,$(s))))
@@ -1362,6 +1377,7 @@ TERRAINMESH_OBJS  = $(call obj_list,def,$(TERRAINMESH_CPP))
 TERRAINVERB_OBJS  = $(call obj_list,sh,$(TERRAINVERB_CPP)) $(call obj_list,mslc,$(TERRAINVERB_C)) $(qjsc_C_OBJS)
 SECTORBAKE_OBJS   = $(call obj_list,sh,$(SECTORBAKE_CPP)) $(call obj_list,mslc,$(SECTORBAKE_C)) $(qjsc_C_OBJS)
 PARTSTORE_OBJS = $(call obj_list,partstore_test,$(PARTSTORE_CPP)) $(call obj_list,mslc,$(PARTSTORE_C))
+PARTSTORE_RACE_OBJS = $(call obj_list,race,$(PARTSTORE_RACE_CPP)) $(call obj_list,mslc,$(PARTSTORE_RACE_C))
 
 SCRIPT_OBJS = $(call obj_list,qjs,$(SCRIPT_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
 MODBAKE_OBJS = $(call obj_list,qjs,$(MODBAKE_CPP)) $(call obj_list,mslc,$(MODBAKE_C)) $(qjsc_C_OBJS)
@@ -1398,7 +1414,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -2063,6 +2079,13 @@ $(PARTSTORE_TARGET): $(PARTSTORE_OBJS)
 
 run-partstore: $(PARTSTORE_TARGET)
 	./$(PARTSTORE_TARGET)
+
+# Two-thread stage_load/commit_staged stress harness (headless, no GPU).
+$(PARTSTORE_RACE_TARGET): $(PARTSTORE_RACE_OBJS)
+	$(CC) $(PARTSTORE_RACE_OBJS) -o $@ $(CFLAGS) -pthread $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-partstore-race: $(PARTSTORE_RACE_TARGET)
+	./$(PARTSTORE_RACE_TARGET)
 
 # Volumetrics Task 3 — CPU emitter gather (distance filter, 256 cap).
 $(EMITTERGATHER_TARGET): $(EMITTERGATHER_OBJS)
