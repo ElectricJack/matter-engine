@@ -2,7 +2,7 @@
 id: 79555aa2-5a5e-8299-7c7e-bb19ab7481f9
 world: PhysicsPlayground
 shots: 1
-status: triaged
+status: fixed
 reported: 2026-07-28T06:47:37Z
 kind: bug
 severity: minor
@@ -45,4 +45,40 @@ Simulation was in **Pause** for the first shot.
 
 ## Acceptance
 
-_TODO — the check that closes this. Prefer a headless `make -C MatterEngine3/tests run-*` target; fall back to a scripted capture (`MatterEngine3/tools/viewer_shots.sh`) plus what the pixels must show._
+Headless (primary):
+
+```bash
+make -C MatterEditor run-test-workbench-actions \
+  TMP="C:/Users/webde/AppData/Local/Temp" TEMP="C:/Users/webde/AppData/Local/Temp"
+```
+
+must print `ALL PASS`. It pins, per control:
+
+- **Open in Workbench / Go** — the generated isolation world places its root
+  with `expand: false`. The W2 generator hardcoded `expand: true`, which
+  hard-fails on leaf parts (`expand: root has no children`) and published an
+  empty world: the viewport showed nothing, which read as a dead button.
+- **Reveal** — `reveal_part_in_world` maps a module to its baked root and
+  replaces the selection with `SelectedObject{BakedRoot, resolved_hash}`
+  (untouched selection + console report when the module isn't a loaded root).
+- **Focus** — `focus_camera_on_selection` frames a BakedRoot's real
+  world-space bounds through the new bounds-provider parameter.
+
+Scripted capture (secondary, drives the SAME registry commands the buttons
+issue — the FIFO verbs `workbench <module>` / `reveal <module>` were added
+for exactly this):
+
+```bash
+cd MatterEditor
+MATTER_WORLD=PhysicsPlayground MATTER_CMD_FIFO=/tmp/cmd.txt ./build/windows/editor.exe
+# append to /tmp/cmd.txt:  workbench Crate   then:  shot after-workbench.png
+# append:                  reveal PlaygroundFloor   then:  shot after-reveal.png
+```
+
+`after-workbench.png` must show the crate alone, framed in the main viewport
+with the Bake Lab raised on its Workbench tab and a "baked ok" status (pre-fix:
+empty grey viewport + `bake error []: expand: root has no children`).
+`after-reveal.png` must show the camera framing the playground floor with the
+selection outline on it (pre-fix: nothing changed; on warm-cache launches the
+engine additionally never published the restored graph snapshot, so there was
+no baked root to select — fixed in matter_engine.cpp's resolve-cache-hit path).

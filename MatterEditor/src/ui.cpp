@@ -551,6 +551,10 @@ void Ui::reset_scene_tree_cache() {
     reset_scene_tree_graph_cache(scene_tree_state_);
 }
 
+void Ui::select_baked_root(uint64_t resolved_hash) {
+    scene_tree_state_.selected_root_hash = resolved_hash;
+}
+
 void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
     ImGui::Begin("Viewer Debug");
 

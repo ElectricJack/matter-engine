@@ -20,6 +20,8 @@
 #include "shot_replay.h"
 #include "properties_panel.h"
 #include "properties_registry.h"
+#include "reveal_part.h"
+#include "selection_bounds.h"
 #include "selection_outline.h"
 #include "selection_set.h"
 #include "toolbar_panel.h"
@@ -1563,6 +1565,43 @@ int main() {
             if (cmd.tab == "Workbench") bake_lab.focus_workbench_tab();
             return viewer::LabFocusTab::Result::succeeded(true);
         });
+    auto reg_reveal = registry.must_register_handler<viewer::ViewerRevealPart>(
+        matter::evt::CommandScope::App, app_lane, [&](const viewer::ViewerRevealPart& cmd) {
+            // Reveal = the Scene tree's baked-root click + Focus, addressed by
+            // module name (Asset Browser "Reveal"). Reuses the loop's cached
+            // snapshot, refreshed by generation like the draw site below —
+            // plus an empty-cache fetch, because graph_generation() can sit
+            // at 0 for a whole session (resolve-cache-hit worlds) and the
+            // loop's 0-initialized sentinel then never fetches at all.
+            const uint64_t gen = session->graph_generation();
+            if ((gen != cached_graph_gen || cached_snapshot.nodes.empty()) &&
+                session->graph_snapshot(cached_snapshot))
+                cached_graph_gen = gen;
+            const uint64_t hash =
+                viewer::reveal_part_in_world(cached_snapshot, cmd.module, selection_set);
+            if (hash == 0) {
+                // Not an error: the world simply doesn't carry the part. Say
+                // so where the user can see it — a silent no-op here is the
+                // exact defect this command replaced.
+                const bool known = cached_snapshot.nodes.count(cmd.module) != 0;
+                console_log.push(viewer::LogSeverity::Info,
+                                 known ? "Reveal: " + cmd.module +
+                                             " only appears inside other parts here "
+                                             "(no world instance of its own)"
+                                       : "Reveal: " + cmd.module +
+                                             " is not loaded in the current world");
+                return viewer::ViewerRevealPart::Result::succeeded(false);
+            }
+            editor_model.clear_selection();
+            ui.select_baked_root(hash);
+            viewer::focus_camera_on_selection(
+                camera, selection_set, field_commands,
+                [&](uint64_t part_hash, viewer::SelectionBounds& out) {
+                    viewer::SelectedObject obj{viewer::SelectedObject::BakedRoot, part_hash};
+                    return viewer::bounds_for_object(obj, *session, out);
+                });
+            return viewer::ViewerRevealPart::Result::succeeded(true);
+        });
 
     // ---- FIFO dev-convenience command handlers (S II.3.4) -------------------
     auto reg_fifo_cam = registry.must_register_handler<viewer::FifoSetCamera>(
@@ -1732,6 +1771,11 @@ int main() {
         focus_cmd.tab = "Workbench";
         registry.execute(focus_cmd);
     };
+    viewer_commands.reveal_part = [&](const std::string& module) {
+        viewer::ViewerRevealPart cmd;
+        cmd.module = module;
+        registry.execute(cmd);
+    };
 
     while (!glfwWindowShouldClose(window) && !quit_requested && !fatal_error) {
         // This starts before event polling and begin_frame(), whose fence wait and
@@ -1867,6 +1911,40 @@ int main() {
                     std::printf("hiz: not available in Vulkan milestone\n");
                 } else if (std::sscanf(line.c_str(), "dlss %255s", word) == 1) {
                     viewer::FifoDlss cmd; cmd.mode = word;
+                    registry.dispatch(cmd);
+                } else if (std::sscanf(line.c_str(), "workbench %255s", word) == 1) {
+                    // Same two commands the Asset Browser's "Open in Workbench"
+                    // button issues, so a headless/scripted run can exercise the
+                    // exact chain a click does (and screenshot the result). The
+                    // project is found by probing each scanned project for the
+                    // module's source, mirroring how the browser scopes its rows.
+                    std::string project_dir;
+                    for (const viewer::WorldEntry& w : worlds) {
+                        std::error_code probe_ec;
+                        if (std::filesystem::is_regular_file(
+                                std::filesystem::path(w.project_dir) / "objects" /
+                                    (std::string(word) + ".js"),
+                                probe_ec)) {
+                            project_dir = w.project_dir;
+                            break;
+                        }
+                    }
+                    if (project_dir.empty()) {
+                        std::printf("workbench: no project has objects/%s.js\n", word);
+                    } else {
+                        viewer::WorkbenchOpenPart open_cmd;
+                        open_cmd.project = project_dir;
+                        open_cmd.module = word;
+                        registry.dispatch(open_cmd);
+                        viewer::LabFocusTab focus_cmd;
+                        focus_cmd.tab = "Workbench";
+                        registry.dispatch(focus_cmd);
+                    }
+                } else if (std::sscanf(line.c_str(), "reveal %255s", word) == 1) {
+                    // Same command the Asset Browser's "Reveal" button issues,
+                    // for scripted/headless verification of select+focus.
+                    viewer::ViewerRevealPart cmd;
+                    cmd.module = word;
                     registry.dispatch(cmd);
                 } else if (line == "reload") {
                     registry.dispatch(viewer::ViewerReload{});

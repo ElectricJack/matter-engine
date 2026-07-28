@@ -1271,9 +1271,13 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                     // restore_from_cache is the fast path's install_graph: it
                     // repopulated the provider's graph snapshot, so publish it
                     // just as the full path does after install. Skipping this
-                    // left graph_generation() at 0 for the whole warm session,
-                    // so consumers keying their refresh on the generation
-                    // (scene tree, properties info card) never saw the world.
+                    // left graph_generation() at 0 and the app-side snapshot
+                    // EMPTY for the whole warm session, so everything keyed on
+                    // the generation missed the world: the scene tree and the
+                    // properties info card kept showing the dead one, and with
+                    // no [Baked] roots published viewer.reveal_part had nothing
+                    // to select. Warm launches are the common case, which is
+                    // what made both symptoms read as intermittent.
                     publish_graph_snapshot();
                     // Populate new_manifest from cached instances + lights.
                     viewer::WorldManifest cached_manifest;

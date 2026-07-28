@@ -161,7 +161,7 @@ $(AR_CORE_LIB):
 # this repository's normal dev environment -- see MatterEditor/README.md for
 # what `linux` has and has not been checked against (no Linux machine
 # available where it was written).
-APP_SRC = src/main.cpp src/ui.cpp src/ui_lighting_controls.cpp src/animation_debug_overlay.cpp src/animation_panel.cpp src/animation_panel_model.cpp src/session_binding.cpp src/scene_model_adapter.cpp src/bake_lab.cpp src/bake_lab_timeline.cpp src/event_inspector.cpp src/asset_browser.cpp src/part_workbench.cpp src/lod_inspector.cpp src/camera_controller.cpp src/camera_focus.cpp src/streaming_anchor_controller.cpp src/selection_set.cpp src/editor_model.cpp src/scene_tree_panel.cpp src/selection_bounds.cpp src/viewport_pick.cpp src/selection_outline.cpp src/toolbar_panel.cpp src/console_panel.cpp src/console_log.cpp src/image_preview.cpp src/issue_reporter.cpp src/issue_reporter_panel.cpp src/shot_replay.cpp src/properties_registry.cpp src/properties_panel.cpp src/specialized_editors.cpp src/gizmo.cpp src/os_open.cpp
+APP_SRC = src/main.cpp src/ui.cpp src/ui_lighting_controls.cpp src/animation_debug_overlay.cpp src/animation_panel.cpp src/animation_panel_model.cpp src/session_binding.cpp src/scene_model_adapter.cpp src/bake_lab.cpp src/bake_lab_timeline.cpp src/event_inspector.cpp src/asset_browser.cpp src/part_workbench.cpp src/part_workbench_iso.cpp src/reveal_part.cpp src/lod_inspector.cpp src/camera_controller.cpp src/camera_focus.cpp src/streaming_anchor_controller.cpp src/selection_set.cpp src/editor_model.cpp src/scene_tree_panel.cpp src/selection_bounds.cpp src/viewport_pick.cpp src/selection_outline.cpp src/toolbar_panel.cpp src/console_panel.cpp src/console_log.cpp src/image_preview.cpp src/issue_reporter.cpp src/issue_reporter_panel.cpp src/shot_replay.cpp src/properties_registry.cpp src/properties_panel.cpp src/specialized_editors.cpp src/gizmo.cpp src/os_open.cpp
 
 # Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
 # These are ONLY used by the Windows target; the Linux target links libmatter_engine3.a.
@@ -1002,6 +1002,28 @@ build/test_selection_set.exe: tests/test_selection_set.cpp src/selection_set.cpp
 .PHONY: run-test-selection-set
 run-test-selection-set: build/test_selection_set.exe
 	./build/test_selection_set.exe
+
+# Asset-browser action headless test (issue editor-workbench-actions-noop):
+# Reveal's module->baked-root selection, camera focus over baked-root bounds,
+# and the Workbench isolation world text (the unexpanded root). Pure CPU; no
+# GL/ImGui. flecs.o comes in through camera_focus.h's properties_panel.h ->
+# matter/ecs.h chain — header-inline flecs, not a real dependency (same
+# situation and fix as build/test_issue_reporter.exe below).
+build/test_workbench_actions.exe: tests/test_workbench_actions.cpp \
+        src/reveal_part.cpp src/reveal_part.h \
+        src/camera_focus.cpp src/camera_focus.h \
+        src/part_workbench_iso.cpp src/part_workbench_iso.h \
+        src/selection_set.cpp src/selection_set.h build/windows/obj/flecs.o
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_workbench_actions.cpp src/reveal_part.cpp \
+	    src/camera_focus.cpp src/part_workbench_iso.cpp src/selection_set.cpp \
+	    build/windows/obj/flecs.o \
+	    -o $@ -std=c++17 -Wall -Isrc \
+	    -I$(ME3_DIR)/include -I$(ME3_DIR)/src -I$(FLECS_DIR) -lws2_32 -ldbghelp
+
+.PHONY: run-test-workbench-actions
+run-test-workbench-actions: build/test_workbench_actions.exe
+	./build/test_workbench_actions.exe
 
 # Animation panel model headless test: animation_panel_model.cpp holds the
 # ImGui-free presentation logic (animation_panel.cpp does the drawing), so this

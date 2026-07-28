@@ -51,8 +51,10 @@ public:
     // rescan()). Get this wrong and every hash the browser computes diverges
     // from the real cache and every object shows unbaked.
     //
-    // commands: "Open in Workbench" issues ViewerCommands::open_in_workbench
-    // (workbench.open_part + lab.focus_tab); "Load" issues switch_world.
+    // commands: "Open in Workbench" (and a required-child's "Go") issues
+    // ViewerCommands::open_in_workbench (workbench.open_part + lab.focus_tab);
+    // "Load" issues switch_world; "Reveal" issues reveal_part
+    // (viewer.reveal_part — select+focus in the loaded world).
     AssetBrowser();
     ~AssetBrowser();
 
