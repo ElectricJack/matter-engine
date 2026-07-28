@@ -58,6 +58,21 @@
 //           same wrong window: padding compared, vertex2.y/z ignored, so a
 //           garbage-hash collision DEDUPES DIFFERENT GEOMETRY (proof B).
 //     See run_dedup_identity_proofs() below; these make the test exit red.
+//   * With (1)-(3) fixed, the REAL-cache MT phase then caught a fourth defect:
+//     BLASManager::adopt_from installed adopted entries with ref_count=1,
+//     discarding the staged entry's multiplicity (>=2 whenever ladder rungs
+//     deduplicated in-staging, routine for small assets whose QEM run is an
+//     identity) while owned_blas lists the handle once per rung and release()
+//     decrements per occurrence -> under-count -> premature erasure ->
+//     DANGLING lod_blas handles on other resident parts ("null BLAS entry"
+//     on StreamMeadow grass). Pre-fix this fired only when the garbage hash
+//     happened to collide, i.e. nondeterministically and dependent on the
+//     STAGING THREAD's stack contents -- the thread-coupled trigger.
+//   * Remaining real-cache signature deltas (meadow grass/rock families) are
+//     residency-order TriEx adoption: identity deliberately excludes
+//     normals/uv/AO, but consumers take TriEx from the deduped entry, so a
+//     part can render with a sibling's shading. Identical failures under
+//     MATTER_STAGE_LOCK=all prove they are order effects, not a race.
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -1429,6 +1444,38 @@ int main() {
     if (const char* pipe_env = std::getenv("MATTER_RACE_PIPE")) {
         const uint64_t pipe_hash = std::strtoull(pipe_env, nullptr, 16);
         if (pipe_hash) return run_pipe_mode(root, pipe_hash, 24);
+    }
+    // MATTER_RACE_DIFF2=<h1>,<h2>: single-threaded residency-order probe.
+    // Loads h2 alone, then h1-then-h2 in a fresh store, and diffs h2's two
+    // states. A difference proves cross-part dedup adopts the FIRST resident
+    // part's TriEx (normals/uv/AO are outside the identity), no threads
+    // involved.
+    if (const char* d2 = std::getenv("MATTER_RACE_DIFF2")) {
+        uint64_t h1 = 0, h2 = 0;
+        if (std::sscanf(d2, "%llx,%llx", (unsigned long long*)&h1,
+                        (unsigned long long*)&h2) == 2 && h1 && h2) {
+            PartSnapshot alone, after;
+            {
+                viewer::PartStore store(root.string());
+                const viewer::LoadedPart* lp = store.get_or_load(h2);
+                if (!lp) { std::printf("DIFF2: %016llx unloadable\n",
+                                       (unsigned long long)h2); return 1; }
+                alone = snap_part(*lp, [&](BLASHandle h) { return store.blas().get_entry(h); });
+            }
+            {
+                viewer::PartStore store(root.string());
+                store.get_or_load(h1);
+                const viewer::LoadedPart* lp = store.get_or_load(h2);
+                if (!lp) { std::printf("DIFF2: %016llx unloadable after %016llx\n",
+                                       (unsigned long long)h2, (unsigned long long)h1); return 1; }
+                after = snap_part(*lp, [&](BLASHandle h) { return store.blas().get_entry(h); });
+            }
+            std::printf("DIFF2: %016llx alone vs after-%016llx:\n", (unsigned long long)h2,
+                        (unsigned long long)h1);
+            diff_snapshots(alone, after, "residency-order");
+            std::printf("DIFF2 done (no output above the header = identical)\n");
+            return 0;
+        }
     }
 
     // --- fixtures ---------------------------------------------------------
