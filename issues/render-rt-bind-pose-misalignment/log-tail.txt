@@ -1,0 +1,2 @@
+[0.000] INFO  Connected to AnimatedRigGallery
+[0.615] INFO  Bake finished: 0 parts, 0 errors
