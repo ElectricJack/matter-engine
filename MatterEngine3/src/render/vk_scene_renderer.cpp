@@ -466,20 +466,36 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         if (range.first_command > record.static_command_count ||
             range.command_count > record.static_command_count - range.first_command)
             continue;
-        for (uint32_t command = range.first_command;
-             command != range.first_command + range.command_count; ++command) {
-            // Skin-raster instances are removed individually by cull.comp
-            // before this command's instance_count is finalized. Recording
-            // the command unconditionally preserves bind fallbacks and
-            // ordinary instances which share the same immutable mesh range.
+        // Skin-raster instances are removed individually by cull.comp before
+        // this command's instance_count is finalized, so every command in the
+        // range is recorded unconditionally: that preserves bind fallbacks and
+        // ordinary instances which share the same immutable mesh range.
+        //
+        // Because nothing is skipped per command any more, the range is issued
+        // as one multi-draw rather than one call per cluster/LOD slot. It was
+        // temporarily split into drawCount=1 calls when this loop still had to
+        // drop individual commands replaced by compute-skinned output; that
+        // filter moved into cull.comp (uses_skin_raster) and the grouping was
+        // never restored, leaving kVkMaxLod draw calls per part where one does.
+        // drawCount stays clamped to maxDrawIndirectCount; max(1) only keeps a
+        // degenerate limit from spinning here -- the caller already refuses to
+        // record when the device reports less than one.
+        const uint32_t max_per_call =
+            std::max(1u, record.max_draw_indirect_count);
+        uint32_t remaining = range.command_count;
+        uint32_t first = range.first_command;
+        while (remaining != 0) {
+            const uint32_t count = std::min(remaining, max_per_call);
             vkCmdDrawIndexedIndirect(command_buffer, record.indirect_buffer,
-                                     static_cast<VkDeviceSize>(command) *
+                                     static_cast<VkDeviceSize>(first) *
                                          sizeof(DrawCommand),
-                                     1, sizeof(DrawCommand));
+                                     count, sizeof(DrawCommand));
             if (record.recorded_draw_ranges) {
                 record.recorded_draw_ranges->push_back(
-                    {command, 1, range.part_slot});
+                    {first, count, range.part_slot});
             }
+            first += count;
+            remaining -= count;
         }
     }
     // Accepted skin work is drawn from the per-frame compute output, never
@@ -4365,7 +4381,12 @@ bool VkSceneRenderer::record_test_surface_ray(
                               VK_IMAGE_LAYOUT_GENERAL,
                               VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                               VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-    for (auto* image : {&raw_specular_, &raw_specular_aux_})
+    // raw_transmission_ belongs in this list: the descriptor set bound below is
+    // the same one record_ray_trace_dispatch uses, and it declares binding 14
+    // (raw_transmission_image) as a GENERAL storage image. The post-trace
+    // transitions leave that image in SHADER_READ_ONLY_OPTIMAL, so omitting it
+    // here traced with a layout the descriptor contradicted.
+    for (auto* image : {&raw_specular_, &raw_specular_aux_, &raw_transmission_})
         transition_for_use(frame.command_buffer, *image,
                            VK_IMAGE_LAYOUT_GENERAL,
                            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
@@ -6821,6 +6842,16 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     std::vector<std::shared_ptr<void>> resources{
         clusters_.lifetime,
         vertices_.lifetime,
+        // indices_ belongs here with vertices_: record_raster binds it with
+        // vkCmdBindIndexBuffer and every draw is a vkCmdDrawIndexedIndirect, so
+        // the frame references it for its whole lifetime. Without this, adding a
+        // part large enough to grow the index buffer while an earlier frame was
+        // still in flight let ensure_index_buffer's `indices_ = std::move(...)`
+        // destroy a buffer a submitted command buffer was still using. Only the
+        // legacy immediate render_gbuffer_and_composite path retained it, so the
+        // production path failed intermittently, depending on when a part landed
+        // relative to frame completion.
+        indices_.lifetime,
         selected.frame_constants.lifetime,
         selected.instances.lifetime,
         selected.commands.lifetime,

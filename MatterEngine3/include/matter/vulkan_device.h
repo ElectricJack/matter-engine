@@ -19,9 +19,17 @@ struct VulkanRayTracingCapabilities {
     bool deferred_host_operations_extension = false;
     bool spirv_1_4_extension = false;
     bool shader_float_controls_extension = false;
+    // Ray query is not optional alongside the pipeline: vol_scatter.comp and
+    // the tileset bake shaders declare GL_EXT_ray_query unconditionally, and
+    // VkVolumetrics keys its own ray_query_available_ off
+    // VulkanDevice::ray_tracing_available(). Treating the two as one
+    // capability keeps that predicate honest, so a device that reports native
+    // ray tracing can always compile those modules.
+    bool ray_query_extension = false;
     bool buffer_device_address = false;
     bool acceleration_structure = false;
     bool ray_tracing_pipeline = false;
+    bool ray_query = false;
     bool storage_image_r8 = false;
     bool shader_storage_image_extended_formats = false;
 };
