@@ -77,6 +77,34 @@ BvhMesh::BvhMesh( const uint primCount )
 
 // BVH class implementation
 
+// Destructors for the raw buffers these classes allocate. Their absence meant
+// every BvhMesh/BVH/TLAS ever built was leaked: nothing in the tree called
+// FREE64 at all. BLASManager erases entries on release and destroys a whole
+// scratch manager per part decode plus a staging manager per staged load, so a
+// forever-streaming world leaked roughly a decoded sector twice per sector.
+//
+// Only genuinely-owned pointers are freed. BvhMesh::bvh and BVH::mesh are
+// back-pointers whose lifetime belongs to BLASEntry's unique_ptrs; freeing them
+// here would double-free. BvhMesh::P/N are never allocated by any constructor
+// in this file and stay null.
+BvhMesh::~BvhMesh()
+{
+	FREE64( tri );
+	FREE64( triEx );
+}
+
+BVH::~BVH()
+{
+	FREE64( bvhNode );
+	delete[] triIdx;
+}
+
+TLAS::~TLAS()
+{
+	FREE64( tlasNode );
+	delete[] nodeIdx;
+}
+
 BVH::BVH( BvhMesh* triMesh )
 {
 	mesh = triMesh;
