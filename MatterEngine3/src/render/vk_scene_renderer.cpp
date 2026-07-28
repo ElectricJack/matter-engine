@@ -6500,6 +6500,10 @@ bool VkSceneRenderer::upload_scene_buffers(
             !upload(next_indices, index_staging_.data(), index_bytes)) {
             return false;
         }
+        // Replacing these drops the previous buffers' owning references. Any
+        // frame still in flight keeps them alive ONLY through the lifetimes it
+        // retained at record time (retain_for_frame below) — every buffer
+        // recorded into a frame's command buffer must be on that list.
         clusters_ = std::move(next_clusters);
         vertices_ = std::move(next_vertices);
         indices_ = std::move(next_indices);
@@ -6821,6 +6825,23 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     std::vector<std::shared_ptr<void>> resources{
         clusters_.lifetime,
         vertices_.lifetime,
+        // indices_ was MISSING here while record_raster binds it for every
+        // indexed draw (vkCmdBindIndexBuffer at record_raster). The static
+        // upload path above replaces clusters_/vertices_/indices_ on EVERY
+        // sector publish (static_upload_dirty_ is set by each ensure_part),
+        // and the move-assign drops the old buffer's last owning reference
+        // immediately — so the previous in-flight frame kept executing
+        // vkCmdDrawIndexedIndirect against a destroyed index buffer whenever
+        // the GPU had not yet drained it. That is the streaming DEVICE_LOST:
+        // it needed only enough publish pressure for a replacement to land
+        // while the prior frame was still executing, which is why every
+        // timing perturbation (the 22-38 ms in-job load before the staged
+        // split, the experiment mutex stalling the pump, validation layers)
+        // modulated it, and why forcing vkDeviceWaitIdle before the
+        // replacement made 219 publishes run clean. The fault-injection
+        // render_gbuffer_and_composite path always retained indices_ — this
+        // production list simply omitted it.
+        indices_.lifetime,
         selected.frame_constants.lifetime,
         selected.instances.lifetime,
         selected.commands.lifetime,
