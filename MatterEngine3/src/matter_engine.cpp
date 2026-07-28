@@ -1268,6 +1268,13 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                     ecs_runtime.streaming_coordinator().set_profile(
                         nullptr,
                         streaming::SectorStreamingErrorCode::UnsupportedWorld);
+                    // The provider just restored its graph snapshot from the
+                    // cache payload; publish it like the install path does.
+                    // Without this, a cache-hit session keeps generation 0 and
+                    // an EMPTY app-side snapshot all session — no [Baked]
+                    // roots in the Scene tree, and viewer.reveal_part finds
+                    // nothing to select on every warm launch.
+                    publish_graph_snapshot();
                     // Populate new_manifest from cached instances + lights.
                     viewer::WorldManifest cached_manifest;
                     cached_manifest.instances = std::move(rc_payload.instances);
