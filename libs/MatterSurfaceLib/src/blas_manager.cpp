@@ -38,31 +38,14 @@ LegacyTriangle BLASManager::convert_triangle_back(const Tri& new_tri) {
 uint32_t BLASManager::calculate_hash(const Tri* triangles, int count, const TriEx* triex) const {
     uint32_t hash = 2166136261u; // FNV-1a offset basis
 
-    // Fold one float's bit pattern. memcpy, NOT reinterpret_cast<uint32_t*>:
-    // reading float storage through a uint32_t lvalue is a strict-aliasing
-    // violation, and GCC -O2 exploited it — TBAA concluded the float stores
-    // initializing the old `tnt` local were dead relative to the integer
-    // loads, so the compiled hash folded 16 NEVER-WRITTEN stack bytes per
-    // triangle and geometry identity changed with ambient stack garbage
-    // (found by partstore_race_tests proof C, confirmed in the disassembly:
-    // the tint loop read rsp..rsp+16 with no prior store).
-    const auto fold = [&hash](float value) {
-        uint32_t bits;
-        std::memcpy(&bits, &value, sizeof bits);
-        hash ^= bits;
-        hash *= 16777619u; // FNV-1a prime
-    };
-
     for (int i = 0; i < count; i++) {
-        // Hash vertex positions only — member-wise. Tri's union{float3;__m128}
-        // slots are 16-byte strided, so "9 consecutive floats from &vertex0"
-        // (the previous code) hashed the two padding words at +12/+28 and
-        // never saw vertex2.y/z (partstore_race_tests proofs A/B).
-        const Tri& t = triangles[i];
-        fold(t.vertex0.x); fold(t.vertex0.y); fold(t.vertex0.z);
-        fold(t.vertex1.x); fold(t.vertex1.y); fold(t.vertex1.z);
-        fold(t.vertex2.x); fold(t.vertex2.y); fold(t.vertex2.z);
-
+        // Hash vertex positions only
+        const float* data = reinterpret_cast<const float*>(&triangles[i].vertex0);
+        for (int j = 0; j < 9; j++) { // 3 vertices * 3 components each
+            uint32_t val = *reinterpret_cast<const uint32_t*>(&data[j]);
+            hash ^= val;
+            hash *= 16777619u; // FNV-1a prime
+        }
         // Fold the per-triangle materialId into identity so meshes with identical
         // geometry but different materials hash apart. No triEx -> constant sentinel
         // (matches the -1 "no per-triangle material" convention), applied consistently
@@ -73,11 +56,11 @@ uint32_t BLASManager::calculate_hash(const Tri* triangles, int count, const TriE
 
         // Fold the per-triangle tint into identity so geometry that differs only
         // by tint is not deduplicated. No triEx -> neutral (0,0,0,0).
-        if (triex) {
-            const float4& tnt = triex[i].tint;
-            fold(tnt.x); fold(tnt.y); fold(tnt.z); fold(tnt.w);
-        } else {
-            for (int k = 0; k < 4; k++) fold(0.0f);
+        const float4 tnt = triex ? triex[i].tint : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        const float* tf = reinterpret_cast<const float*>(&tnt);
+        for (int k = 0; k < 4; k++) {
+            hash ^= *reinterpret_cast<const uint32_t*>(&tf[k]);
+            hash *= 16777619u;
         }
     }
 
@@ -90,14 +73,7 @@ bool BLASManager::triangles_equal(const BLASEntry& entry, const Tri* b, int coun
 
     const TriEx* a_ex = entry.mesh ? entry.mesh->triEx : nullptr;
     for (int i = 0; i < count; i++) {
-        // Member-wise: Tri's union slots are 16-byte strided, so a 36-byte
-        // contiguous memcmp from &vertex0 (the previous code) compared the
-        // padding words at +12/+28 and IGNORED vertex2.y/z — meshes differing
-        // only there deduplicated onto one entry, silently adopting another
-        // mesh's geometry and BVH (partstore_race_tests proof B).
-        if (std::memcmp(&a[i].vertex0, &b[i].vertex0, sizeof(float3)) != 0 ||
-            std::memcmp(&a[i].vertex1, &b[i].vertex1, sizeof(float3)) != 0 ||
-            std::memcmp(&a[i].vertex2, &b[i].vertex2, sizeof(float3)) != 0) {
+        if (std::memcmp(&a[i].vertex0, &b[i].vertex0, sizeof(float3) * 3) != 0) {
             return false;
         }
         // Per-triangle material must match too; a null triEx is "no material"
@@ -299,32 +275,20 @@ void BLASManager::adopt_from(const BLASManager& staged,
         // Same dedup register_triangles performs, minus the build: an identical
         // BLAS already resident (a rock shared with a neighbouring sector) just
         // gains a reference.
-        //
-        // Reference MULTIPLICITY must carry over, not collapse to one. When
-        // the staged ladder deduplicated internally (a decimated rung bit-
-        // identical to its neighbour — routine for small assets whose QEM run
-        // is an identity), the staged entry's ref_count counts one ownership
-        // PER RUNG, and the committed LoadedPart's owned_blas lists the handle
-        // once per rung too — release() will decrement once per occurrence.
-        // Adopting with a hardcoded 1 under-counts by (ref_count-1), so a
-        // later release of the sector erased entries other RESIDENT parts
-        // still referenced, leaving their lod_blas handles dangling (caught by
-        // partstore_race_tests on the StreamMeadow cache: "null BLAS entry" on
-        // resident grass parts).
         const BLASHandle existing =
             find_existing_blas(src->triangles.data(), tri_count, src->hash, src_triex);
         if (existing != INVALID_BLAS_HANDLE) {
             auto idx_it = handle_to_index_.find(existing);
             if (idx_it != handle_to_index_.end() && idx_it->second < entries_.size()) {
-                entries_[idx_it->second]->ref_count += src->ref_count;
+                entries_[idx_it->second]->ref_count++;
             }
             remap[src->handle] = existing;
             continue;
         }
 
-        // Newcomer: install the BVH the worker already built, taking over the
-        // staged entry's FULL reference count (see multiplicity note above);
-        // the staged manager is discarded by the caller, not released entry by
+        // Newcomer: install the BVH the worker already built. ref_count 1 --
+        // this manager takes the single ownership the staged entry held; the
+        // staged manager is discarded by the caller, not released entry by
         // entry, so there is no double count to reconcile.
         if (!src->bvh || !src->bvh->bvhNode || src->bvh->nodesUsed == 0 ||
             !src->bvh->triIdx) {
@@ -333,7 +297,7 @@ void BLASManager::adopt_from(const BLASManager& staged,
         const BLASHandle adopted = register_prebuilt(
             src->triangles.data(), src_triex, tri_count,
             src->bvh->bvhNode, src->bvh->nodesUsed, src->bvh->triIdx,
-            src->hash, /*ref_count=*/src->ref_count);
+            src->hash, /*ref_count=*/1);
         if (adopted != INVALID_BLAS_HANDLE) remap[src->handle] = adopted;
     }
 }
