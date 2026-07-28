@@ -10,8 +10,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -717,14 +719,37 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
                 // (partially constructed) entry rather than recursing infinitely.
                 loaded_.emplace(part_hash, std::move(flat));
 
+                // MATTER_PARTSTORE_PROFILE: split the flat path. This function
+                // runs inside the stream.publish GpuJob on the app/GL thread,
+                // where it measured 3-6 s per sector while the Vulkan
+                // registration next to it took 0.4 ms -- so the whole streaming
+                // stall lives in here and nothing said which part of it.
+                const bool ps_prof =
+                    std::getenv("MATTER_PARTSTORE_PROFILE") != nullptr;
+                const auto ps_t0 = std::chrono::steady_clock::now();
+
                 // Recursively load each flat_ref child. The parent is already in loaded_
                 // so circular references are safe.
                 for (const auto& ref : loaded_[part_hash].flat_refs)
                     get_or_load(ref.child_resolved_hash);
 
+                const auto ps_t1 = std::chrono::steady_clock::now();
+
                 // Build expansion into a local vector first, then assign.
                 std::vector<ExpandedNode> exp;
                 build_expansion(part_hash, [this](uint64_t h){ return get_or_load(h); }, exp);
+                const auto ps_t2 = std::chrono::steady_clock::now();
+                if (ps_prof) {
+                    const auto ms = [](auto a, auto b) {
+                        return std::chrono::duration<double, std::milli>(b - a).count();
+                    };
+                    std::fprintf(stderr,
+                        "[partstore] %016llx refs=%zu children=%.1f "
+                        "expansion=%.1f ms (nodes=%zu)\n",
+                        (unsigned long long)part_hash,
+                        loaded_[part_hash].flat_refs.size(),
+                        ms(ps_t0, ps_t1), ms(ps_t1, ps_t2), exp.size());
+                }
                 loaded_[part_hash].expansion = std::move(exp);
                 return &loaded_[part_hash];
             }

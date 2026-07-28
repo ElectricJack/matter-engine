@@ -771,6 +771,7 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
                        std::vector<double> frame_times, const PerfCounters& start,
                        const PerfCounters& finish,
                        const matter::FrameStats& frame_stats,
+                       const viewer::ViewerStats& loop_stats,
                        uint64_t dlss_reset_start,
                        uint32_t validation_errors,
                        std::string& error) {
@@ -832,6 +833,25 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << json_string(frame_stats.vk_rt_fallback_reason) << "\""
            << ",\"fallback_reason\":\""
            << json_string(frame_stats.dlss_reason) << "\""
+           // Main-loop phase attribution. These already existed as
+           // ViewerStats::loop_*_ms and drove the HUD, but never reached this
+           // file — so a perf run could tell you a frame took 4 s and not one
+           // thing about where the 4 s went. The phases partition
+           // perf_frame_start..end_frame exactly, so they sum to ~frame_ms.
+           //
+           // peak_pump/peak_acquire are peak-hold rather than EMA on purpose:
+           // for a streaming world the interesting stalls are spiky (a sector
+           // publish landing inside a frame) and an average hides them.
+           << ",\"loop_poll_ms\":" << loop_stats.loop_poll_ms
+           << ",\"loop_acquire_ms\":" << loop_stats.loop_acquire_ms
+           << ",\"loop_ui_ms\":" << loop_stats.loop_ui_ms
+           << ",\"loop_tick_ms\":" << loop_stats.loop_tick_ms
+           << ",\"loop_pump_ms\":" << loop_stats.loop_pump_ms
+           << ",\"loop_lab_ms\":" << loop_stats.loop_lab_ms
+           << ",\"loop_render_ms\":" << loop_stats.loop_render_ms
+           << ",\"loop_present_ms\":" << loop_stats.loop_present_ms
+           << ",\"loop_peak_pump_ms\":" << loop_stats.loop_peak_pump_ms
+           << ",\"loop_peak_acquire_ms\":" << loop_stats.loop_peak_acquire_ms
            << ",\"validation_errors\":" << validation_errors << "}\n";
     if (!output) {
         error = "failed while writing MATTER_PERF_OUTPUT '" + config.output_path + "'";
@@ -2888,7 +2908,7 @@ int main() {
                     if (!write_perf_result(
                             perf, worlds[stats.world_current].world_name,
                             perf_frame_times, perf_start_counters,
-                            perf_finish_counters, frame_stats,
+                            perf_finish_counters, frame_stats, stats,
                             perf_start_dlss_resets,
                             validation_errors, perf_error)) {
                         std::fprintf(stderr, "FATAL: perf: %s\n",

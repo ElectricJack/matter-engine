@@ -3370,9 +3370,33 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     // Mark every external call before attempting it. The release
                     // side is safe for a partial attempt and clears the bit only
                     // after cleanup returns successfully.
+                    // Sub-step attribution for the publish job. stream.publish
+                    // is one indivisible GpuJob on the app/GL thread, and
+                    // GpuJobQueue::pump's progress guarantee runs it to
+                    // completion regardless of the caller's ms_budget -- so
+                    // when it is slow it blows the frame outright and the only
+                    // signal upstream was "pump() returned late". These splits
+                    // say WHICH step. Off unless MATTER_STREAM_PUBLISH_PROFILE
+                    // is set; steady_clock reads are cheap but this runs per
+                    // sector while a world streams.
+                    const bool pub_prof =
+                        std::getenv("MATTER_STREAM_PUBLISH_PROFILE") != nullptr;
+                    auto pub_mark = std::chrono::steady_clock::now();
+                    auto pub_split = [&pub_mark]() -> double {
+                        const auto now = std::chrono::steady_clock::now();
+                        const double ms =
+                            std::chrono::duration<double, std::milli>(
+                                now - pub_mark).count();
+                        pub_mark = now;
+                        return ms;
+                    };
+                    double t_load = 0, t_state = 0, t_tracer = 0;
+                    double t_culler = 0, t_vulkan = 0, t_cache = 0;
+
                     published.resources.store_attempted = true;
                     const viewer::LoadedPart* loaded =
                         store->get_or_load(sector_hash);
+                    t_load = pub_split();
                     if (!loaded) {
                         return fail_publication(
                             "sector PartStore load failed");
@@ -3397,8 +3421,10 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     delta.added.push_back(instance);
                     published.resources.world_state_attempted = true;
                     state.apply(delta);
+                    t_state = pub_split();
                     tracer_dirty = true;
                     tracer.reset();
+                    t_tracer = pub_split();
 
 #ifndef MATTER_VULKAN_ONLY
                     if (culler_ready) {
@@ -3408,6 +3434,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
                                 "sector GPU culler registration failed");
                         }
                     }
+                    t_culler = pub_split();
 #endif
 #ifdef MATTER_VULKAN_VIEWER
                     if (vk_scene) {
@@ -3423,6 +3450,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
                                     : vulkan_error);
                         }
                     }
+                    t_vulkan = pub_split();
                     // A publish only ADDS a sector; nothing is released or
                     // unregistered here, so every existing source's expansion
                     // stays valid. Drop only the flat set so the next frame
@@ -3435,7 +3463,19 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     // frame and presented the raw internal-resolution render
                     // (issues/render-dlss-not-applied).
                     vk_instance_cache.invalidate_expansion();
+                    t_cache = pub_split();
 #endif
+                    if (pub_prof) {
+                        std::fprintf(stderr,
+                            "[stream.publish] sector(%lld,%lld,r%d) "
+                            "load=%.1f state=%.1f tracer=%.1f culler=%.1f "
+                            "vulkan=%.1f cache=%.1f ms\n",
+                            (long long)request.sector.tx,
+                            (long long)request.sector.tz,
+                            (int)request.sector.rung,
+                            t_load, t_state, t_tracer, t_culler,
+                            t_vulkan, t_cache);
+                    }
 #ifndef MATTER_VULKAN_ONLY
                     if (composer) {
                         const size_t capacity = state.entries().size() + 16;

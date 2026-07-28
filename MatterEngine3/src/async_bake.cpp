@@ -9,7 +9,9 @@
 // shutdown draining; this file only layers each queue's specific policy on top.
 #include "async_bake.h"
 
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <thread>
 
@@ -87,9 +89,25 @@ int GpuJobQueue::pump(double ms_budget) {
     // skipped as "cancelled", exceptions are contained, and the (ok, err) result
     // is stashed for any run_blocking waiter. Returns the count delivered
     // (skipped-cancelled jobs included).
+    // MATTER_GPU_JOB_SLOW_MS: report any single job that overruns the caller's
+    // whole frame budget. ms_budget bounds how many jobs we START, not how long
+    // one takes -- the progress guarantee above means a single job always runs
+    // to completion once begun. So one oversized job silently blows the frame,
+    // and until now nothing said which one: the caller only saw pump() return
+    // late. Default 50 ms (main.cpp pumps with a 4 ms budget, so 50 ms is
+    // already a gross overrun); set the env var to tune or "0" to log every job.
+    static const double slow_ms = [] {
+        if (const char* v = std::getenv("MATTER_GPU_JOB_SLOW_MS")) {
+            const double parsed = std::atof(v);
+            if (parsed >= 0.0) return parsed;
+        }
+        return 50.0;
+    }();
+
     return ch_.pump(ms_budget, [](JobEnvelope& env) {
         bool ok = false;
         std::string job_err;
+        const auto job_start = std::chrono::steady_clock::now();
         if (env.job.token && env.job.token->is_cancelled()) {
             job_err = "cancelled";
             ok = false;
@@ -103,6 +121,13 @@ int GpuJobQueue::pump(double ms_budget) {
                 job_err = "unknown GPU job failure";
                 ok = false;
             }
+        }
+        const double job_ms = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - job_start).count();
+        if (job_ms >= slow_ms) {
+            std::fprintf(stderr, "[gpu-job] %s took %.1f ms\n",
+                         env.job.name.empty() ? "(unnamed)" : env.job.name.c_str(),
+                         job_ms);
         }
         if (env.result) {
             env.result->ok = ok;
