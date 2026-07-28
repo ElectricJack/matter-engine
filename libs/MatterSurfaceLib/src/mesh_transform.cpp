@@ -130,19 +130,21 @@ inline float point_tri_dist2(const MeshIndexed& src, size_t tri_i, const float3&
 
 } // namespace
 
-void reproject_triex(const MeshIndexed& source, MeshIndexed& target,
-                     ReprojectNormals normals) {
+ReprojectSource::ReprojectSource(const MeshIndexed& source_in,
+                                 ReprojectNormals normals_in)
+    : source(source_in), normals(normals_in) {
     const size_t src_tri_count = source.indices.size() / 3;
-    const size_t tgt_tri_count = target.indices.size() / 3;
 
+    // Same precondition as the free function: an unusable source yields an
+    // invalid index, and reprojecting through it clears the target's triex.
     if (src_tri_count == 0 || source.triex.size() != src_tri_count) {
-        target.triex.clear();
+        valid_ = false;
         return;
     }
+    valid_ = true;
 
     // Precompute source centroids so the spatial-hash build and every
     // nearest-source query can share them (avoids recomputing per query).
-    std::vector<float3> src_centroids;
     src_centroids.reserve(src_tri_count);
     for (size_t i = 0; i < src_tri_count; ++i) {
         src_centroids.push_back(centroid_of(source, i));
@@ -150,7 +152,7 @@ void reproject_triex(const MeshIndexed& source, MeshIndexed& target,
 
     // Uniform spatial hash over source centroids. Cell size from the source
     // AABB so an average cell holds a handful of centroids.
-    float mn[3] = { 1e30f,  1e30f,  1e30f};
+    mn[0] = mn[1] = mn[2] = 1e30f;
     float mx[3] = {-1e30f, -1e30f, -1e30f};
     for (const float3& c : src_centroids) {
         mn[0] = fminf(mn[0], c.x); mx[0] = fmaxf(mx[0], c.x);
@@ -159,7 +161,7 @@ void reproject_triex(const MeshIndexed& source, MeshIndexed& target,
     }
     float ext = fmaxf(fmaxf(mx[0] - mn[0], mx[1] - mn[1]),
                       fmaxf(mx[2] - mn[2], 1e-6f));
-    float cell = ext / fmaxf(1.0f, cbrtf((float)src_tri_count));
+    cell = ext / fmaxf(1.0f, cbrtf((float)src_tri_count));
 
     auto key = [&](float x, float y, float z) {
         int ix = (int)floorf((x - mn[0]) / cell);
@@ -170,14 +172,18 @@ void reproject_triex(const MeshIndexed& source, MeshIndexed& target,
                ((uint64_t)(uint32_t)iz * 83492791ull);
     };
 
-    std::unordered_map<uint64_t, std::vector<uint32_t>> grid;
     grid.reserve(src_tri_count);
     for (size_t i = 0; i < src_tri_count; ++i) {
         const float3& c = src_centroids[i];
         grid[key(c.x, c.y, c.z)].push_back((uint32_t)i);
     }
 
-    auto nearest_src = [&](const float3& c) -> uint32_t {
+    cell_ov = cell;
+    build_donor_machinery();
+}
+
+uint32_t ReprojectSource::nearest_src(const float3& c) const {
+    {
         float best_d2 = 1e30f;
         uint32_t best = 0;
         int cx = (int)floorf((c.x - mn[0]) / cell);
@@ -212,8 +218,11 @@ void reproject_triex(const MeshIndexed& source, MeshIndexed& target,
             if (any && hit_ring < 0) hit_ring = ring;
         }
         return best;
-    };
+    }
+}
 
+void ReprojectSource::build_donor_machinery() {
+    const size_t src_tri_count = source.indices.size() / 3;
     // SampleSource donor machinery. Corner donor lookups need the true
     // point-to-SURFACE distance, so triangles are registered in every cell
     // their AABB overlaps (a slab-sized triangle is then found from any of its
@@ -227,11 +236,8 @@ void reproject_triex(const MeshIndexed& source, MeshIndexed& target,
     // single-triangle source has a point-sized centroid AABB, whose 1e-6 cell
     // would spread that one triangle's insertion across ~1e12 cells (observed
     // as a 50 GB runaway in partstore_tests before the clamp).
-    std::vector<float3> src_face_n;
-    std::unordered_map<uint64_t, std::vector<uint32_t>> overlap_grid;
-    float vmn[3] = { 0, 0, 0 };
-    float cell_ov = cell;
-    int   ov_span = 1;                 // grid cells per axis; [0, ov_span] valid
+    // (members: src_face_n, overlap_grid, vmn, cell_ov, ov_span — ov_span is
+    // grid cells per axis; [0, ov_span] valid)
     if (normals == ReprojectNormals::SampleSource) {
         float vmx[3] = { -1e30f, -1e30f, -1e30f };
         vmn[0] = vmn[1] = vmn[2] = 1e30f;
@@ -277,15 +283,17 @@ void reproject_triex(const MeshIndexed& source, MeshIndexed& target,
             }
         }
     }
+}
 
-    // Nearest crease-compatible donor triangle to corner p: candidates whose
-    // face plane disagrees with the target triangle's (`align`, the crease
-    // gate above) are rejected outright; the rest rank by point-to-triangle
-    // distance, with near-ties broken toward the better-aligned face — a
-    // corner ON a box edge touches both faces at distance zero, and the
-    // tie-break is what keeps it sampling its own. Returns -1 when no
-    // compatible donor exists within the ring cap.
-    auto nearest_donor = [&](const float3& p, const float3& align) -> int {
+// Nearest crease-compatible donor triangle to corner p: candidates whose
+// face plane disagrees with the target triangle's (`align`, the crease
+// gate above) are rejected outright; the rest rank by point-to-triangle
+// distance, with near-ties broken toward the better-aligned face — a
+// corner ON a box edge touches both faces at distance zero, and the
+// tie-break is what keeps it sampling its own. Returns -1 when no
+// compatible donor exists within the ring cap.
+int ReprojectSource::nearest_donor(const float3& p, const float3& align) const {
+    {
         float best_d2 = 1e30f, best_dot = -2.0f;
         int best = -1;
         const float tie = 1e-6f * cell_ov * cell_ov;
@@ -327,6 +335,21 @@ void reproject_triex(const MeshIndexed& source, MeshIndexed& target,
             if (any && hit_ring < 0) hit_ring = ring;
         }
         return best;
+    }
+}
+
+void reproject_triex(const ReprojectSource& index, MeshIndexed& target) {
+    const MeshIndexed& source = index.source;
+    const ReprojectNormals normals = index.normals;
+    const size_t tgt_tri_count = target.indices.size() / 3;
+
+    if (!index.valid()) {
+        target.triex.clear();
+        return;
+    }
+    auto nearest_src = [&index](const float3& c) { return index.nearest_src(c); };
+    auto nearest_donor = [&index](const float3& p, const float3& a) {
+        return index.nearest_donor(p, a);
     };
 
     // SmoothTarget pre-pass: smooth per-vertex normals on TARGET. Accumulate
@@ -400,4 +423,13 @@ void reproject_triex(const MeshIndexed& source, MeshIndexed& target,
         }
         target.triex.push_back(ex);
     }
+}
+
+void reproject_triex(const MeshIndexed& source, MeshIndexed& target,
+                     ReprojectNormals normals) {
+    // Single-target convenience: build the index and throw it away. Callers
+    // that reproject the same source onto several targets (an LOD ladder)
+    // should hoist a ReprojectSource instead — that is the whole point of it.
+    const ReprojectSource index(source, normals);
+    reproject_triex(index, target);
 }

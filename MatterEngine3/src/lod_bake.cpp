@@ -1,3 +1,4 @@
+#include <memory>
 #include "lod_bake.h"
 #include "bake_trace.h"        // Bake Lab task 1.5: LOD ladder spans + counters
 #include "bake_trace_names.h"  // kSpanLod, kSpanLodRung
@@ -108,6 +109,18 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
     // ladder, one kSpanLodRung child per level with tris_in/tris_out/keep_ratio
     // counters. Observation-only; no-op without a current collector.
     BAKE_SPAN(bake_trace::kSpanLod);
+
+    // Every decimated rung reprojects against the SAME full-res source, so the
+    // welded source mesh and everything reproject_triex derives from it (source
+    // centroids, the centroid hash, face normals, and the triangle-AABB overlap
+    // grid) are ladder-invariant. Building them per rung is what made a world
+    // sector's ladder cost seconds, and PartStore re-bakes that ladder on every
+    // load — see ReprojectSource in mesh_transform.hpp. Built lazily so a ladder
+    // with no usable TriEx, or one that never decimates, pays nothing.
+    const bool reproject_usable = triex && triex->size() == tris.size();
+    std::unique_ptr<MeshIndexed> src_m;
+    std::unique_ptr<ReprojectSource> src_index;
+
     for (size_t lvl = 0; lvl < targets.keep_ratio.size(); ++lvl) {
         BAKE_SPAN(bake_trace::kSpanLodRung);
         // W3: per-rung wall time for the observer's status line (decimation
@@ -151,10 +164,14 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
         // gradient the moment it popped below the full level, while the spheres
         // beside it looked fine.
         std::vector<TriEx> reprojected;
-        if (!full && triex && triex->size() == tris.size()) {
-            MeshIndexed src_m = from_tri(tris, triex);
+        if (!full && reproject_usable) {
+            if (!src_index) {
+                src_m = std::make_unique<MeshIndexed>(from_tri(tris, triex));
+                src_index = std::make_unique<ReprojectSource>(
+                    *src_m, ReprojectNormals::SampleSource);
+            }
             MeshIndexed tgt_m = from_tri(geo, nullptr);
-            reproject_triex(src_m, tgt_m, ReprojectNormals::SampleSource);
+            reproject_triex(*src_index, tgt_m);
             // to_tri emits one triangle per 3 indices in order, so `reprojected`
             // lines up with `geo`; the unwelded tris themselves are redundant.
             std::vector<Tri> geo_unwelded_unused;
