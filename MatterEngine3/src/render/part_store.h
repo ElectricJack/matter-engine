@@ -188,6 +188,29 @@ private:
     // false when absent/unusable so get_or_load falls back to the compositional path.
     bool load_flat(uint64_t part_hash, const std::string& artifact_root, LoadedPart& lp);
 
+    // One coherent generation of a linked artifact, decoded into local storage.
+    // Exactly the locals the coherent path of get_or_load used to declare inline.
+    struct CoherentSnapshot {
+        std::unique_ptr<BLASManager>                     scratch;
+        std::vector<part_asset::ChildInstance>           children;
+        part_asset::LodLevels                            lods_in;  // .part stores LOD0 only
+        std::vector<part_asset::VolumeEmitter>           emitters;
+        std::optional<part_asset::PartAnimationLink>     animation_link;
+        matter::animation::AnimAsset                     loaded_animation;
+    };
+
+    // Read one coherent generation from disk into `out`. Returns false when no
+    // untorn generation could be observed in a few attempts.
+    //
+    // Deliberately touches NO shared state: it reads cache_root_/scratch_dir_
+    // (immutable after configure) and decodes into `out`'s own storage. That is
+    // what makes it callable from a streaming worker -- the whole expensive
+    // stretch of a sector load (decode, and the ladder bake that follows it into
+    // a private BLASManager) can then happen off the app/GL thread, leaving only
+    // the bounded adopt+insert behind. The first shared mutation in the coherent
+    // path is animation_assets_.insert, which sits deliberately AFTER this call.
+    bool read_coherent_snapshot(uint64_t part_hash, CoherentSnapshot& out) const;
+
     std::string                       cache_root_;
     std::string                       scratch_dir_;     // Task 2: transient scratch dir
     BLASManager                       blas_;

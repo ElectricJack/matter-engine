@@ -688,6 +688,63 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
     return false;
 }
 
+bool PartStore::read_coherent_snapshot(uint64_t part_hash,
+                                       CoherentSnapshot& out) const {
+    // The manifest is published last, so a reader can legitimately observe a
+    // new PART before its matching MANM/MACM manifest. Such a window is a cache
+    // miss, never a static fallback; retrying a few fresh snapshots lets an
+    // in-flight atomic publisher finish without ever accepting a mixed
+    // generation.
+    bool coherent = false;
+    for (int attempt = 0; attempt != 3 && !coherent; ++attempt) {
+        const std::string selected_root = select_artifact_root(part_hash, scratch_dir_, cache_root_);
+        const std::string path = selected_root + "/" + part_asset::cache_path_resolved(part_hash);
+        auto candidate_scratch = std::make_unique<BLASManager>();
+        // Sized to match the part bake's group cap: a detailed trunk bakes to >256
+        // mesh groups. The scratch TLAS is unused for geometry (we re-bake LODs from
+        // the BLAS triangles below), but an undersized cap spams capacity warnings.
+        TLASManager candidate_tlas(65536);
+        std::vector<part_asset::ChildInstance> candidate_children;
+        part_asset::LodLevels candidate_lods;
+        std::vector<part_asset::VolumeEmitter> candidate_emitters;
+        std::optional<part_asset::PartAnimationLink> candidate_link;
+        if (!part_asset::load_v2(path, part_hash, *candidate_scratch, candidate_tlas,
+                                 candidate_children, candidate_lods, candidate_emitters,
+                                 candidate_link)) {
+            continue;
+        }
+
+        matter::animation::AnimAsset candidate_animation;
+        if (candidate_link) {
+            // A linked Part is never a valid static fallback.  Validate the
+            // whole committed sibling generation from this same selected root.
+            BLASManager checked; matter::animation::Diagnostics diagnostics;
+            if (!matter::animation::load_committed_animation_bundle(selected_root, part_hash,
+                                                                      checked, candidate_animation,
+                                                                      diagnostics)) {
+                continue;
+            }
+            std::optional<part_asset::PartAnimationLink> final_link;
+            if (!part_asset::load_animation_link(path, part_hash, final_link) || !final_link ||
+                final_link->nonce_high != candidate_link->nonce_high ||
+                final_link->nonce_low != candidate_link->nonce_low ||
+                candidate_animation.nonce.high != candidate_link->nonce_high ||
+                candidate_animation.nonce.low != candidate_link->nonce_low) {
+                continue;
+            }
+        }
+
+        out.scratch = std::move(candidate_scratch);
+        out.children = std::move(candidate_children);
+        out.lods_in = std::move(candidate_lods);
+        out.emitters = std::move(candidate_emitters);
+        out.animation_link = candidate_link;
+        if (candidate_link) out.loaded_animation = std::move(candidate_animation);
+        coherent = true;
+    }
+    return coherent;
+}
+
 const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     auto cached = loaded_.find(part_hash);
     if (cached != loaded_.end()) return &cached->second;
@@ -763,65 +820,18 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         }
     }
 
-    // Read a linked artifact as a bounded coherent snapshot.  The manifest is
-    // published last, so a reader can legitimately observe a new PART before
-    // its matching MANM/MACM manifest.  Such a window is a cache miss, never a
-    // static fallback; retrying a few fresh snapshots lets an in-flight atomic
-    // publisher finish without ever accepting a mixed generation.
-    std::unique_ptr<BLASManager> scratch;
-    std::vector<part_asset::ChildInstance> children;
-    part_asset::LodLevels lods_in;   // .part stores LOD0 only (empty levels)
-    std::vector<part_asset::VolumeEmitter> emitters;
-    std::optional<part_asset::PartAnimationLink> animation_link;
-    matter::animation::AnimAsset loaded_animation;
-    bool coherent = false;
-    for (int attempt = 0; attempt != 3 && !coherent; ++attempt) {
-        const std::string selected_root = select_artifact_root(part_hash, scratch_dir_, cache_root_);
-        const std::string path = selected_root + "/" + part_asset::cache_path_resolved(part_hash);
-        auto candidate_scratch = std::make_unique<BLASManager>();
-        // Sized to match the part bake's group cap: a detailed trunk bakes to >256
-        // mesh groups. The scratch TLAS is unused for geometry (we re-bake LODs from
-        // the BLAS triangles below), but an undersized cap spams capacity warnings.
-        TLASManager candidate_tlas(65536);
-        std::vector<part_asset::ChildInstance> candidate_children;
-        part_asset::LodLevels candidate_lods;
-        std::vector<part_asset::VolumeEmitter> candidate_emitters;
-        std::optional<part_asset::PartAnimationLink> candidate_link;
-        if (!part_asset::load_v2(path, part_hash, *candidate_scratch, candidate_tlas,
-                                 candidate_children, candidate_lods, candidate_emitters,
-                                 candidate_link)) {
-            continue;
-        }
-
-        matter::animation::AnimAsset candidate_animation;
-        if (candidate_link) {
-            // A linked Part is never a valid static fallback.  Validate the
-            // whole committed sibling generation from this same selected root.
-            BLASManager checked; matter::animation::Diagnostics diagnostics;
-            if (!matter::animation::load_committed_animation_bundle(selected_root, part_hash,
-                                                                      checked, candidate_animation,
-                                                                      diagnostics)) {
-                continue;
-            }
-            std::optional<part_asset::PartAnimationLink> final_link;
-            if (!part_asset::load_animation_link(path, part_hash, final_link) || !final_link ||
-                final_link->nonce_high != candidate_link->nonce_high ||
-                final_link->nonce_low != candidate_link->nonce_low ||
-                candidate_animation.nonce.high != candidate_link->nonce_high ||
-                candidate_animation.nonce.low != candidate_link->nonce_low) {
-                continue;
-            }
-        }
-
-        scratch = std::move(candidate_scratch);
-        children = std::move(candidate_children);
-        lods_in = std::move(candidate_lods);
-        emitters = std::move(candidate_emitters);
-        animation_link = candidate_link;
-        if (candidate_link) loaded_animation = std::move(candidate_animation);
-        coherent = true;
-    }
-    if (!coherent) {
+    // Read a linked artifact as a bounded coherent snapshot (see
+    // read_coherent_snapshot). Bound to references so the rest of this function
+    // reads exactly as it did when these were inline locals.
+    CoherentSnapshot snapshot_;
+    const bool coherent_ok = read_coherent_snapshot(part_hash, snapshot_);
+    std::unique_ptr<BLASManager>&                 scratch         = snapshot_.scratch;
+    std::vector<part_asset::ChildInstance>&       children        = snapshot_.children;
+    part_asset::LodLevels&                        lods_in         = snapshot_.lods_in;
+    std::vector<part_asset::VolumeEmitter>&       emitters        = snapshot_.emitters;
+    std::optional<part_asset::PartAnimationLink>& animation_link  = snapshot_.animation_link;
+    matter::animation::AnimAsset&                 loaded_animation = snapshot_.loaded_animation;
+    if (!coherent_ok) {
         printf("PartStore: coherent load failed for %016llx\n", (unsigned long long)part_hash);
         return nullptr;
     }
