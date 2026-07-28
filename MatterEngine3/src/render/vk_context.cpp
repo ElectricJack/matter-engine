@@ -288,12 +288,15 @@ bool supports_native_ray_tracing(
         {capabilities.spirv_1_4_extension, VK_KHR_SPIRV_1_4_EXTENSION_NAME},
         {capabilities.shader_float_controls_extension,
          VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME},
+        {capabilities.ray_query_extension, VK_KHR_RAY_QUERY_EXTENSION_NAME},
         {capabilities.buffer_device_address,
          "VkPhysicalDeviceVulkan12Features::bufferDeviceAddress"},
         {capabilities.acceleration_structure,
          "VkPhysicalDeviceAccelerationStructureFeaturesKHR::accelerationStructure"},
         {capabilities.ray_tracing_pipeline,
          "VkPhysicalDeviceRayTracingPipelineFeaturesKHR::rayTracingPipeline"},
+        {capabilities.ray_query,
+         "VkPhysicalDeviceRayQueryFeaturesKHR::rayQuery"},
         {capabilities.storage_image_r8,
          "VK_FORMAT_R8_UNORM storage image support"},
         {capabilities.shader_storage_image_extended_formats,
@@ -949,10 +952,14 @@ struct VulkanDevice::Impl {
         rt_capabilities.shader_float_controls_extension =
             available_extensions.count(
                 VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME) != 0;
+        rt_capabilities.ray_query_extension =
+            available_extensions.count(VK_KHR_RAY_QUERY_EXTENSION_NAME) != 0;
         VkPhysicalDeviceAccelerationStructureFeaturesKHR rt_as_features{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
         VkPhysicalDeviceRayTracingPipelineFeaturesKHR rt_pipeline_features{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
+        VkPhysicalDeviceRayQueryFeaturesKHR rt_query_features{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
         VkPhysicalDeviceVulkan12Features rt_features12{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
         VkPhysicalDeviceFeatures2 rt_features2{
@@ -960,10 +967,12 @@ struct VulkanDevice::Impl {
         rt_features2.pNext = &rt_features12;
         rt_features12.pNext = &rt_as_features;
         rt_as_features.pNext = &rt_pipeline_features;
+        rt_pipeline_features.pNext = &rt_query_features;
         vkGetPhysicalDeviceFeatures2(physical_device, &rt_features2);
         rt_capabilities.buffer_device_address = rt_features12.bufferDeviceAddress;
         rt_capabilities.acceleration_structure = rt_as_features.accelerationStructure;
         rt_capabilities.ray_tracing_pipeline = rt_pipeline_features.rayTracingPipeline;
+        rt_capabilities.ray_query = rt_query_features.rayQuery;
         rt_capabilities.shader_storage_image_extended_formats =
             rt_features2.features.shaderStorageImageExtendedFormats;
         VkFormatProperties2 r8_properties{
@@ -991,6 +1000,7 @@ struct VulkanDevice::Impl {
             extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
             extensions.push_back(VK_KHR_SPIRV_1_4_EXTENSION_NAME);
             extensions.push_back(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
+            extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
         }
         uint32_t queue_family_count = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physical_device,
@@ -1025,11 +1035,19 @@ struct VulkanDevice::Impl {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
         VkPhysicalDeviceRayTracingPipelineFeaturesKHR enabled_pipeline{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
+        // rayQuery must be enabled here, not merely supported: vol_scatter.comp
+        // and the tileset bake shaders declare the RayQueryKHR capability, and
+        // vkCreateShaderModule rejects a declared capability whose feature is
+        // off (VUID-VkShaderModuleCreateInfo-pCode-08740/08742).
+        VkPhysicalDeviceRayQueryFeaturesKHR enabled_query{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
         if (ray_tracing_enabled) {
             maintenance1.pNext = &enabled_as;
             enabled_as.pNext = &enabled_pipeline;
+            enabled_pipeline.pNext = &enabled_query;
             enabled_as.accelerationStructure = VK_TRUE;
             enabled_pipeline.rayTracingPipeline = VK_TRUE;
+            enabled_query.rayQuery = VK_TRUE;
         }
         features12.timelineSemaphore = VK_TRUE;
         features12.descriptorIndexing = VK_TRUE;

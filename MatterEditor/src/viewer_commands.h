@@ -106,6 +106,18 @@ struct LabFocusTab {
     std::string tab;  // "Workbench"
 };
 
+// viewer.reveal_part{module} — select `module`'s baked root in the ACTIVE
+// production world and aim the camera at it (Asset Browser "Reveal"). App
+// scope, not ActiveSession: it resolves the module against whatever world is
+// live when it runs, so there is no entity id that could go stale across a
+// switch. Succeeds with `false` when the module isn't loaded in the current
+// world — that outcome is reported to the console, not an error.
+struct ViewerRevealPart {
+    MT_COMMAND_NAME("viewer.reveal_part");
+    using Result = matter::evt::CommandResult<bool>;
+    std::string module;
+};
+
 // --- MATTER_CMD_FIFO dev-convenience commands (S II.3.4) ---------------------
 // Non-undoable App commands; the FIFO reader parses each line into one of these
 // and dispatch()es it so external commands are named / traced / journaled and

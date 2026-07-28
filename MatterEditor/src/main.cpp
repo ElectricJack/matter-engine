@@ -15,8 +15,13 @@
 #include "camera_controller.h"
 #include "camera_focus.h"
 #include "editor_model.h"
+#include "image_preview.h"
+#include "issue_reporter.h"
+#include "shot_replay.h"
 #include "properties_panel.h"
 #include "properties_registry.h"
+#include "reveal_part.h"
+#include "selection_bounds.h"
 #include "selection_outline.h"
 #include "selection_set.h"
 #include "toolbar_panel.h"
@@ -663,6 +668,18 @@ static std::string resolve_asset_root(const char* name) {
 
 std::string examples_root() { return resolve_asset_root("projects"); }
 
+// Repo-root issues/ directory, resolved the same way as the asset roots above.
+// issues/ is committed (it carries README.md), so the direct lookup normally
+// wins; the MatterEditor/ fallback covers a tree where it has been deleted.
+std::string issues_root() {
+    if (std::string hit = resolve_asset_root("issues"); hit != "issues")
+        return hit;
+    if (std::string editor = resolve_asset_root("MatterEditor");
+        editor != "MatterEditor")
+        return (std::filesystem::path(editor).parent_path() / "issues").string();
+    return "issues";
+}
+
 std::string shared_lib_root() { return resolve_asset_root("MatterEngine3/shared-lib"); }
 
 struct PerfRunConfig {
@@ -836,10 +853,24 @@ int main() {
         std::fprintf(stderr, "FATAL: glfwInit failed\n");
         return 1;
     }
+    // Replay run (shot_replay.h): reproduce a recorded issue shot and exit.
+    // Loaded before the window exists because the recorded framebuffer size is
+    // what makes the same geometry land on the same pixels — resizing after the
+    // fact would reflow the docked panels and move the viewport.
+    const viewer::ShotReplay replay = viewer::load_replay_from_env();
+    if (!replay.valid && !replay.error.empty()) {
+        std::fprintf(stderr, "FATAL: MATTER_REPLAY: %s\n", replay.error.c_str());
+        glfwTerminate();
+        return 1;
+    }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
     GLFWwindow* window = glfwCreateWindow(
-        1280, 720, "MatterEngine3 World Viewer", nullptr, nullptr);
+        replay.valid && replay.frame_width > 0
+            ? static_cast<int>(replay.frame_width) : 1280,
+        replay.valid && replay.frame_height > 0
+            ? static_cast<int>(replay.frame_height) : 720,
+        "MatterEngine3 World Viewer", nullptr, nullptr);
     if (!window) {
         std::fprintf(stderr, "FATAL: glfwCreateWindow failed\n");
         glfwTerminate();
@@ -912,6 +943,28 @@ int main() {
         return 1;
     }
 
+    // Replay reproduces the panel LAYOUT, not just the window size. The
+    // viewport rect is entirely a function of the docked layout (ui.cpp's
+    // prepare_viewport_rect reads the Viewport window's content region), so
+    // without this a replay inherits whatever arrangement the last interactive
+    // session left in imgui.ini — measured: the same crop moved by 24.7% of its
+    // pixels between two window sizes, and the viewport grew 400x340 -> 720x520.
+    //
+    // Clearing IniFilename also stops the replay SAVING over the user's layout
+    // on exit, which every headless capture run was quietly doing.
+    if (replay.valid) {
+        ImGui::GetIO().IniFilename = nullptr;
+        if (!replay.layout_ini.empty()) {
+            ImGui::LoadIniSettingsFromMemory(replay.layout_ini.c_str(),
+                                             replay.layout_ini.size());
+            std::printf("replay: restored recorded panel layout (%zu bytes)\n",
+                        replay.layout_ini.size());
+        } else {
+            std::printf("replay: shot recorded no layout; using ImGui defaults "
+                        "(viewport may differ from the capture)\n");
+        }
+    }
+
     auto worlds = viewer::scan_worlds(examples_root());
     std::printf("worlds available (%d):\n", static_cast<int>(worlds.size()));
     for (size_t i = 0; i < worlds.size(); ++i)
@@ -930,6 +983,17 @@ int main() {
 
     matter::CameraDesc camera{};
     init_camera(camera);
+    if (replay.valid) {
+        // Full projection, not just eye/target: a different fov or near/far
+        // reprojects everything and the diff would be all noise.
+        camera.position = {replay.eye[0], replay.eye[1], replay.eye[2]};
+        camera.target = {replay.target[0], replay.target[1], replay.target[2]};
+        camera.up = {replay.up[0], replay.up[1], replay.up[2]};
+        if (replay.fov_radians > 0.0f)
+            camera.vertical_fov_radians = replay.fov_radians;
+        if (replay.near_plane > 0.0f) camera.near_plane = replay.near_plane;
+        if (replay.far_plane > 0.0f) camera.far_plane = replay.far_plane;
+    }
     if (const char* value = std::getenv("MATTER_CAM")) {
         float c[6];
         if (std::sscanf(value, "%f,%f,%f,%f,%f,%f", &c[0], &c[1], &c[2],
@@ -942,7 +1006,12 @@ int main() {
     }
 
     int initial_world = 0;
-    if (const char* value = std::getenv("MATTER_WORLD")) {
+    // MATTER_WORLD still wins, so a replay can be re-aimed at another world
+    // deliberately; absent that, the shot's own world is authoritative.
+    const char* world_env = std::getenv("MATTER_WORLD");
+    const std::string replay_world = replay.valid ? replay.world : std::string();
+    if (!world_env && !replay_world.empty()) world_env = replay_world.c_str();
+    if (const char* value = world_env) {
         std::string wanted(value);
         std::transform(wanted.begin(), wanted.end(), wanted.begin(),
                        [](unsigned char c) { return std::tolower(c); });
@@ -1200,6 +1269,7 @@ int main() {
     bool camera_capture = false;
     bool tab_down = false;
     bool f9_down = false;
+    bool f10_down = false;
     bool f8_down = false;
     bool dlss_modes_supported = false;
     matter::DlssMode selected_dlss_mode = matter::DlssMode::Native;
@@ -1237,18 +1307,121 @@ int main() {
     // / lab.focus_tab / viewer.switch_world commands through the app registry
     // (event-system.md S I.11, E4b) instead of a shared handoff struct.
     viewer::AssetBrowser asset_browser;
+    // In-editor issue reporter (issue_reporter.h): F9 freezes the screen for a
+    // drag-selected crop, F10 grabs the viewport, both accumulating into one
+    // report. Declared AFTER `vulkan` so the preview textures are torn down
+    // before the device that owns them.
+    viewer::IssueReporterState issue_state;
+    viewer::ImagePreviewCache issue_previews;
+    issue_previews.configure(vulkan.get());
+    // Resolve now, once, and say where: a report written somewhere unexpected
+    // is a report nobody finds.
+    viewer::set_issues_dir(issues_root());
+    std::printf("issues: reports go to %s\n", viewer::issues_dir().c_str());
+    // Declared here rather than beside the other capture env vars below because
+    // stamp_replay_state records it per shot.
+    const bool hide_ui = std::getenv("MATTER_HIDE_UI") != nullptr ||
+                         (replay.valid && !replay.ui_visible);
+    // Drops every preview texture and the draft. Used on file, on Discard, and
+    // whenever the panel asks by dropping back to Idle.
+    auto reset_issue_state = [&]() {
+        issue_previews.destroy_all();
+        issue_state = viewer::IssueReporterState{};
+    };
+    // Stamps the state a replay needs (shot_replay.h). Kept in one place so the
+    // F9 and F10 paths cannot drift into recording different things — a shot
+    // missing one of these is a shot that cannot be taken again.
+    auto stamp_replay_state = [&](viewer::IssueShot& shot, uint32_t fb_w,
+                                  uint32_t fb_h) {
+        shot.world = worlds[stats.world_current].world_name;
+        shot.camera = camera;
+        shot.sim_mode = sim_control.mode();
+        shot.time_scale = ui.sim_time_scale();
+        shot.frame_width = fb_w;
+        shot.frame_height = fb_h;
+        shot.dlss_mode = matter::dlss_mode_name(selected_dlss_mode);
+        shot.pixel_budget = stats.pixel_budget;
+        shot.resolver_choice = stats.resolver_choice;
+        shot.debug_view_mode = stats.debug_view_mode;
+        shot.ui_visible = !hide_ui;
+        // The layout IS the viewport geometry; without it a replay reproduces
+        // the window size and still puts the 3D view somewhere else.
+        if (const char* ini = ImGui::SaveIniSettingsToMemory(nullptr))
+            shot.layout_ini = ini;
+        const viewer::ViewportRect& vp = ui.viewport_rect();
+        const ImVec2 display = ImGui::GetIO().DisplaySize;
+        const float sx = display.x > 0 ? fb_w / display.x : 1.0f;
+        const float sy = display.y > 0 ? fb_h / display.y : 1.0f;
+        shot.viewport = viewer::ShotRect{static_cast<int32_t>(vp.x * sx),
+                                         static_cast<int32_t>(vp.y * sy),
+                                         static_cast<int32_t>(vp.w * sx),
+                                         static_cast<int32_t>(vp.h * sy)};
+    };
+    // Uploads a thumbnail for a shot. A failed upload costs the preview only —
+    // the PNG on disk is the artifact that matters.
+    auto attach_preview = [&](viewer::IssueShot& shot,
+                              const std::vector<uint8_t>& rgba, uint32_t w,
+                              uint32_t h) {
+        uint32_t tw = 0, th = 0;
+        const std::vector<uint8_t> small =
+            viewer::downscale_rgba(rgba, w, h, 512, tw, th);
+        std::string preview_error;
+        shot.preview = issue_previews.create(small, tw, th, preview_error);
+        shot.preview_width = tw;
+        shot.preview_height = th;
+        if (!shot.preview && !preview_error.empty())
+            std::fprintf(stderr, "issue preview: %s\n", preview_error.c_str());
+    };
     // Part Workbench (part-workbench.md W2): private isolation session, see
     // part_workbench.h's architecture note. cache/lab-scratch is entirely
     // separate from production worlds' <project>/.cache/<world> roots.
     bake_lab.workbench().configure(vulkan.get(), examples_root(), shared_lib);
+    // Frames to hold after the world is ready before reading back. Three is
+    // enough for a raster frame, but RT worlds accumulate through a temporal
+    // denoiser, so an early capture catches whatever the accumulation happened
+    // to be at — two replays of one descriptor then differ by more than any
+    // real fix would. Replays default high so they can be compared to each
+    // other; MATTER_REPLAY_SETTLE tunes it.
+    int settle_frames = 3;
+    if (replay.valid) {
+        settle_frames = 90;
+        if (const char* value = std::getenv("MATTER_REPLAY_SETTLE")) {
+            const int parsed = std::atoi(value);
+            if (parsed > 0) settle_frames = parsed;
+        }
+    }
     const char* screenshot_env = std::getenv("MATTER_SCREENSHOT");
-    const std::string screenshot_path = screenshot_env ? screenshot_env : "";
+    // A replay run IS a screenshot run: it reuses the settle/readback/quit path
+    // wholesale, and only differs in cropping the result to the recorded rect.
+    const char* replay_out_env = std::getenv("MATTER_REPLAY_OUT");
+    const std::string screenshot_path =
+        screenshot_env  ? screenshot_env
+        : replay.valid  ? (replay_out_env ? replay_out_env : "replay.png")
+                        : "";
     int screenshot_settle = 0;
     int screenshot_failures = 0;
     bool bake_ready = false;
     bool selected_world_reported = false;
     const bool test_resize = std::getenv("MATTER_TEST_RESIZE") != nullptr;
-    const bool hide_ui = std::getenv("MATTER_HIDE_UI") != nullptr;
+    if (replay.valid) {
+        // The toggles that change pixels. DLSS is deliberately NOT restored: it
+        // is temporal, so a shot taken after seconds of accumulation cannot be
+        // matched by a freshly-settled replay, and forcing Native at least makes
+        // the comparison honest and repeatable. Ask for the recorded mode with
+        // MATTER_DLSS_MODE if you want it back.
+        stats.pixel_budget = replay.pixel_budget;
+        stats.resolver_choice = replay.resolver_choice;
+        stats.debug_view_mode = replay.debug_view_mode;
+        ui.set_sim_time_scale(replay.time_scale);
+        if (replay.dlss_mode != "native")
+            std::printf("replay: shot used DLSS '%s'; forcing native "
+                        "(temporal accumulation is not reproducible)\n",
+                        replay.dlss_mode.c_str());
+        std::printf("replay: world=%s shot rect %dx%d at (%d,%d) of %ux%u\n",
+                    replay.world.c_str(), replay.rect.w, replay.rect.h,
+                    replay.rect.x, replay.rect.y, replay.frame_width,
+                    replay.frame_height);
+    }
     if (const char* scale = std::getenv("MATTER_TIME_SCALE")) {
         const float value = static_cast<float>(std::atof(scale));
         if (std::isfinite(value) && value >= viewer::kToolbarMinTimeScale &&
@@ -1329,6 +1502,14 @@ int main() {
         selection_set.clear();
         editor_model.clear_selection();
         sim_control = matter::scene::SimulationControl{};
+        // The two graph caches key their refresh on graph_generation(), a
+        // PER-SESSION counter — a value carried across the switch collides
+        // with the new session's count (both typically stop at 1) and locks
+        // the refresh out (issues/editor-scene-panel-stale). These resets were
+        // wired at the pre-E4b switch/reload sites and lost in a merge.
+        ui.reset_scene_tree_cache();
+        cached_snapshot = part_graph_snapshot::Snapshot{};
+        cached_graph_gen = 0;
     };
     // E5c: the SessionBinding-owned scene adapter (scene_model_adapter.*) is the
     // concrete app<->session bridge SessionBinding (re)builds on bind / world
@@ -1383,6 +1564,43 @@ int main() {
         matter::evt::CommandScope::App, app_lane, [&](const viewer::LabFocusTab& cmd) {
             if (cmd.tab == "Workbench") bake_lab.focus_workbench_tab();
             return viewer::LabFocusTab::Result::succeeded(true);
+        });
+    auto reg_reveal = registry.must_register_handler<viewer::ViewerRevealPart>(
+        matter::evt::CommandScope::App, app_lane, [&](const viewer::ViewerRevealPart& cmd) {
+            // Reveal = the Scene tree's baked-root click + Focus, addressed by
+            // module name (Asset Browser "Reveal"). Reuses the loop's cached
+            // snapshot, refreshed by generation like the draw site below —
+            // plus an empty-cache fetch, because graph_generation() can sit
+            // at 0 for a whole session (resolve-cache-hit worlds) and the
+            // loop's 0-initialized sentinel then never fetches at all.
+            const uint64_t gen = session->graph_generation();
+            if ((gen != cached_graph_gen || cached_snapshot.nodes.empty()) &&
+                session->graph_snapshot(cached_snapshot))
+                cached_graph_gen = gen;
+            const uint64_t hash =
+                viewer::reveal_part_in_world(cached_snapshot, cmd.module, selection_set);
+            if (hash == 0) {
+                // Not an error: the world simply doesn't carry the part. Say
+                // so where the user can see it — a silent no-op here is the
+                // exact defect this command replaced.
+                const bool known = cached_snapshot.nodes.count(cmd.module) != 0;
+                console_log.push(viewer::LogSeverity::Info,
+                                 known ? "Reveal: " + cmd.module +
+                                             " only appears inside other parts here "
+                                             "(no world instance of its own)"
+                                       : "Reveal: " + cmd.module +
+                                             " is not loaded in the current world");
+                return viewer::ViewerRevealPart::Result::succeeded(false);
+            }
+            editor_model.clear_selection();
+            ui.select_baked_root(hash);
+            viewer::focus_camera_on_selection(
+                camera, selection_set, field_commands,
+                [&](uint64_t part_hash, viewer::SelectionBounds& out) {
+                    viewer::SelectedObject obj{viewer::SelectedObject::BakedRoot, part_hash};
+                    return viewer::bounds_for_object(obj, *session, out);
+                });
+            return viewer::ViewerRevealPart::Result::succeeded(true);
         });
 
     // ---- FIFO dev-convenience command handlers (S II.3.4) -------------------
@@ -1553,6 +1771,11 @@ int main() {
         focus_cmd.tab = "Workbench";
         registry.execute(focus_cmd);
     };
+    viewer_commands.reveal_part = [&](const std::string& module) {
+        viewer::ViewerRevealPart cmd;
+        cmd.module = module;
+        registry.execute(cmd);
+    };
 
     while (!glfwWindowShouldClose(window) && !quit_requested && !fatal_error) {
         // This starts before event polling and begin_frame(), whose fence wait and
@@ -1576,6 +1799,11 @@ int main() {
             return ms;
         };
         glfwPollEvents();
+        // Retire preview textures queued on earlier frames. Must run before any
+        // drawing: they are freed here precisely because freeing them at the
+        // point of retirement would pull a descriptor out from under the draw
+        // list of the frame that retired it.
+        issue_previews.collect();
         const auto now = std::chrono::steady_clock::now();
         const float dt = std::chrono::duration<float>(now - previous_time).count();
         previous_time = now;
@@ -1583,8 +1811,27 @@ int main() {
             camera_capture = !camera_capture;
             camera_controller.set_capture(window, camera_capture);
         }
-        if (key_pressed(window, GLFW_KEY_F9, f9_down))
-            std::printf("wireframe: not available in Vulkan milestone\n");
+        // Issue capture hotkeys. Handled HERE, at the GLFW level, rather than
+        // beside the ImGui hotkeys below: ui.cpp enables
+        // ImGuiConfigFlags_NavEnableKeyboard, which makes io.WantCaptureKeyboard
+        // true whenever a panel holds nav focus, so an ImGui-gated hotkey fires
+        // only sometimes. Neither key is a text character, so claiming them
+        // unconditionally costs nothing.
+        //
+        // F9 was previously a wireframe toggle that only ever printed "not
+        // available in Vulkan milestone"; the Vulkan path hardcodes
+        // options.wireframe = false. The FIFO `wireframe` verbs keep their stub.
+        const bool issue_capture_idle =
+            issue_state.phase != viewer::ReporterPhase::AwaitingCapture &&
+            issue_state.phase != viewer::ReporterPhase::SelectingRegion;
+        if (key_pressed(window, GLFW_KEY_F9, f9_down) && issue_capture_idle) {
+            viewer::begin_region_capture(issue_state);
+            std::printf("issue capture: freezing screen for region select\n");
+        }
+        if (key_pressed(window, GLFW_KEY_F10, f10_down) && issue_capture_idle) {
+            viewer::begin_viewport_capture(issue_state);
+            std::printf("issue capture: viewport\n");
+        }
         if (key_pressed(window, GLFW_KEY_F8, f8_down)) {
             if (!dlss_modes_supported) {
                 selected_dlss_mode = matter::DlssMode::Native;
@@ -1664,6 +1911,40 @@ int main() {
                     std::printf("hiz: not available in Vulkan milestone\n");
                 } else if (std::sscanf(line.c_str(), "dlss %255s", word) == 1) {
                     viewer::FifoDlss cmd; cmd.mode = word;
+                    registry.dispatch(cmd);
+                } else if (std::sscanf(line.c_str(), "workbench %255s", word) == 1) {
+                    // Same two commands the Asset Browser's "Open in Workbench"
+                    // button issues, so a headless/scripted run can exercise the
+                    // exact chain a click does (and screenshot the result). The
+                    // project is found by probing each scanned project for the
+                    // module's source, mirroring how the browser scopes its rows.
+                    std::string project_dir;
+                    for (const viewer::WorldEntry& w : worlds) {
+                        std::error_code probe_ec;
+                        if (std::filesystem::is_regular_file(
+                                std::filesystem::path(w.project_dir) / "objects" /
+                                    (std::string(word) + ".js"),
+                                probe_ec)) {
+                            project_dir = w.project_dir;
+                            break;
+                        }
+                    }
+                    if (project_dir.empty()) {
+                        std::printf("workbench: no project has objects/%s.js\n", word);
+                    } else {
+                        viewer::WorkbenchOpenPart open_cmd;
+                        open_cmd.project = project_dir;
+                        open_cmd.module = word;
+                        registry.dispatch(open_cmd);
+                        viewer::LabFocusTab focus_cmd;
+                        focus_cmd.tab = "Workbench";
+                        registry.dispatch(focus_cmd);
+                    }
+                } else if (std::sscanf(line.c_str(), "reveal %255s", word) == 1) {
+                    // Same command the Asset Browser's "Reveal" button issues,
+                    // for scripted/headless verification of select+focus.
+                    viewer::ViewerRevealPart cmd;
+                    cmd.module = word;
                     registry.dispatch(cmd);
                 } else if (line == "reload") {
                     registry.dispatch(viewer::ViewerReload{});
@@ -1809,7 +2090,12 @@ int main() {
                 {
                     const uint64_t gen = session->graph_generation();
                     if (gen != cached_graph_gen) {
-                        session->graph_snapshot(cached_snapshot);
+                        if (!session->graph_snapshot(cached_snapshot)) {
+                            // Only fails while THIS session has published
+                            // nothing — anything cached is a dead world's
+                            // (see sync_scene_tree_graph_cache).
+                            cached_snapshot = part_graph_snapshot::Snapshot{};
+                        }
                         cached_graph_gen = gen;
                     }
                 }
@@ -1835,6 +2121,106 @@ int main() {
                                            viewer_commands);
                 ui.draw_worlds_panel(worlds, stats, viewer_commands);
                 ui.draw_camera_panel(camera);
+                // Issue reporter (F9 region / F10 viewport). Drawn last so the
+                // selection overlay and the window sit above the panels they
+                // might be reporting on.
+                const bool file_issue = viewer::draw_issue_reporter(
+                    issue_state, frame.extent.width, frame.extent.height);
+
+                // A drag just resolved: crop the FROZEN frame (not the live
+                // one — the scene may have moved since F9) and write the shot.
+                if (issue_state.selection_committed) {
+                    issue_state.selection_committed = false;
+                    if (viewer::ensure_report_dir(issue_state)) {
+                        viewer::ShotRect rect = issue_state.pending_rect;
+                        const std::vector<uint8_t> cropped = viewer::crop_rgba(
+                            issue_state.frozen, issue_state.frozen_width,
+                            issue_state.frozen_height, rect);
+                        const std::string path =
+                            issue_state.dir + "/shot-" +
+                            std::to_string(issue_state.next_shot_index++) + ".png";
+                        if (write_png(path, cropped,
+                                      static_cast<uint32_t>(rect.w),
+                                      static_cast<uint32_t>(rect.h))) {
+                            viewer::IssueShot shot;
+                            shot.file = path.substr(path.find_last_of('/') + 1);
+                            shot.region = issue_state.pending_region;
+                            shot.rect = rect;
+                            // Against the FROZEN frame's dimensions: the
+                            // swapchain may have been resized since F9.
+                            stamp_replay_state(shot, issue_state.frozen_width,
+                                               issue_state.frozen_height);
+                            shot.width = static_cast<uint32_t>(rect.w);
+                            shot.height = static_cast<uint32_t>(rect.h);
+                            // session->frame_stats() rather than the loop's
+                            // `frame_stats` reference: that binding is made
+                            // later in the frame, below the UI pass.
+                            const matter::FrameStats& fs = session->frame_stats();
+                            shot.frame_ms = stats.frame_ms;
+                            shot.instances_drawn = fs.instances_drawn;
+                            shot.triangles = fs.triangles;
+                            shot.draw_batches = fs.draw_batches;
+                            attach_preview(shot, cropped, shot.width, shot.height);
+                            viewer::record_shot(issue_state, shot);
+                            std::printf("issue shot written to %s\n", path.c_str());
+                        } else {
+                            issue_state.status = "could not write " + path;
+                            issue_state.status_is_error = true;
+                            console_log.push(viewer::LogSeverity::Error,
+                                             "Issue shot: " + issue_state.status);
+                        }
+                    } else {
+                        console_log.push(viewer::LogSeverity::Error,
+                                         "Issue shot: " + issue_state.status);
+                    }
+                }
+
+                // The frozen frame is only live while a selection is being
+                // made. Releasing on the phase (rather than inside the commit
+                // above) also covers Esc, which would otherwise strand 8 MB and
+                // a descriptor until the report was filed.
+                if (issue_state.phase != viewer::ReporterPhase::SelectingRegion &&
+                    issue_state.phase != viewer::ReporterPhase::AwaitingCapture &&
+                    (issue_state.frozen_preview || !issue_state.frozen.empty())) {
+                    if (issue_state.frozen_preview) {
+                        issue_previews.destroy(issue_state.frozen_preview);
+                        issue_state.frozen_preview = nullptr;
+                    }
+                    issue_state.frozen.clear();
+                    issue_state.frozen.shrink_to_fit();
+                    issue_state.frozen_width = issue_state.frozen_height = 0;
+                }
+
+                // Discard: the panel signals by dropping to Idle with shots
+                // still attached, since it cannot free the textures itself.
+                if (issue_state.phase == viewer::ReporterPhase::Idle &&
+                    (!issue_state.shots.empty() || issue_state.frozen_preview))
+                    reset_issue_state();
+
+                if (file_issue) {
+                    viewer::IssueContext context;
+                    context.world = worlds[stats.world_current].world_name;
+                    context.project_dir = worlds[stats.world_current].project_dir;
+                    context.camera = camera;
+                    context.sim_mode = sim_control.mode();
+                    context.time_scale = ui.sim_time_scale();
+                    context.frame_width = frame.extent.width;
+                    context.frame_height = frame.extent.height;
+                    const std::string filed = viewer::write_issue_report(
+                        issue_state, context, stats, session->frame_stats(),
+                        console_log);
+                    if (filed.empty()) {
+                        console_log.push(viewer::LogSeverity::Error,
+                                         "Issue report: " + issue_state.status);
+                    } else {
+                        std::printf("issue filed: %s\n", filed.c_str());
+                        console_log.push(viewer::LogSeverity::Info,
+                                         "Issue report written to " + filed);
+                        // Reset for the next one; the window stays closed until
+                        // the next capture, so filing does not swallow keys.
+                        reset_issue_state();
+                    }
+                }
                 // draw_sector_streaming_panel retired in Phase 4 Task 12 — sector
                 // streaming editing now lives in the Properties panel via
                 // SpecializedEditors (MatterEditor/src/specialized_editors.h).
@@ -2186,13 +2572,20 @@ int main() {
         }
 
         bool capture = false;
+        bool issue_capture = false;
         std::string capture_path;
         if (!screenshot_path.empty() && bake_ready && frame_stats.instances_drawn > 0 &&
-            ++screenshot_settle >= 3) {
+            ++screenshot_settle >= settle_frames) {
             capture = true; capture_path = screenshot_path;
         } else if (shot_settle > 0 && frame_stats.instances_drawn > 0 &&
                    --shot_settle == 0) {
             capture = true; capture_path = shot_path;
+        } else if (issue_state.phase == viewer::ReporterPhase::AwaitingCapture &&
+                   --issue_state.capture_settle <= 0) {
+            // Deliberately NOT gated on instances_drawn: "the world renders
+            // nothing" is exactly the kind of defect worth a screenshot.
+            capture = true;
+            issue_capture = true;
         }
         std::vector<uint8_t> rgba;
         if (capture && !session->readback_swapchain_rgba8(frame, rgba, error)) {
@@ -2200,7 +2593,8 @@ int main() {
             std::fprintf(stderr, "screenshot readback retry %d/5: %s\n",
                          screenshot_failures, error.c_str());
             capture = false;
-            if (capture_path == screenshot_path) screenshot_settle = 1;
+            if (issue_capture) { issue_capture = false; issue_state.capture_settle = 2; }
+            else if (capture_path == screenshot_path) screenshot_settle = 1;
             else shot_settle = 2;
             if (screenshot_failures >= 5) {
                 std::fprintf(stderr, "FATAL: screenshot readback exhausted retries\n");
@@ -2248,14 +2642,203 @@ int main() {
         } else {
             if (ui_frame_completed && !fatal_error) {
                 camera_input_order.end_frame();
-                if (camera_input_order.camera_update_allowed() ||
-                    camera_capture) {
+                // A region drag must not also fly the camera — the rubber band
+                // reads the mouse straight off the IO, outside any ImGui window.
+                if ((camera_input_order.camera_update_allowed() ||
+                     camera_capture) &&
+                    !viewer::issue_reporter_wants_mouse(issue_state)) {
                     camera_controller.update(window, dt, camera);
                 }
             }
-            if (capture) {
-                if (!write_png(capture_path, rgba, frame.extent.width,
-                               frame.extent.height)) {
+            if (capture && issue_capture) {
+                screenshot_failures = 0;
+                if (issue_state.capture_is_region_pick) {
+                    // F9: hold the whole frame so the selection is made against
+                    // a still, and put it on the GPU as the drag backdrop.
+                    issue_state.frozen = rgba;
+                    issue_state.frozen_width = frame.extent.width;
+                    issue_state.frozen_height = frame.extent.height;
+                    std::string preview_error;
+                    issue_state.frozen_preview = issue_previews.create(
+                        rgba, frame.extent.width, frame.extent.height,
+                        preview_error);
+                    if (!issue_state.frozen_preview)
+                        std::fprintf(stderr, "issue freeze preview: %s\n",
+                                     preview_error.c_str());
+                    issue_state.phase = viewer::ReporterPhase::SelectingRegion;
+                    issue_state.drag_active = false;
+                } else if (viewer::ensure_report_dir(issue_state)) {
+                    // F10: the active viewport, straight to a shot. The rect is
+                    // resolved here, not at keypress, so it reflects the layout
+                    // of the frame actually read back.
+                    const viewer::ViewportRect& vp = ui.viewport_rect();
+                    // Viewport rect is in window coords; the swapchain may be a
+                    // different size (HiDPI, scaled present).
+                    const ImVec2 display = ImGui::GetIO().DisplaySize;
+                    const float sx =
+                        display.x > 0 ? frame.extent.width / display.x : 1.0f;
+                    const float sy =
+                        display.y > 0 ? frame.extent.height / display.y : 1.0f;
+                    viewer::ShotRect rect{
+                        static_cast<int32_t>(vp.x * sx),
+                        static_cast<int32_t>(vp.y * sy),
+                        static_cast<int32_t>(vp.w * sx),
+                        static_cast<int32_t>(vp.h * sy)};
+                    if (rect.w < 8 || rect.h < 8) rect = viewer::ShotRect{};
+                    const std::vector<uint8_t> cropped = viewer::crop_rgba(
+                        rgba, frame.extent.width, frame.extent.height, rect);
+                    const std::string path =
+                        issue_state.dir + "/shot-" +
+                        std::to_string(issue_state.next_shot_index++) + ".png";
+                    if (!write_png(path, cropped,
+                                   static_cast<uint32_t>(rect.w),
+                                   static_cast<uint32_t>(rect.h))) {
+                        // Never fatal: losing a shot must not end the session
+                        // you were in the middle of reporting on.
+                        issue_state.status = "could not write " + path;
+                        issue_state.status_is_error = true;
+                        console_log.push(viewer::LogSeverity::Error,
+                                         "Issue shot: " + issue_state.status);
+                    } else {
+                        viewer::IssueShot shot;
+                        shot.file = path.substr(path.find_last_of('/') + 1);
+                        shot.region = viewer::ShotRegion::Viewport;
+                        shot.rect = rect;
+                        stamp_replay_state(shot, frame.extent.width,
+                                           frame.extent.height);
+                        shot.width = static_cast<uint32_t>(rect.w);
+                        shot.height = static_cast<uint32_t>(rect.h);
+                        shot.frame_ms = stats.frame_ms;
+                        shot.instances_drawn = frame_stats.instances_drawn;
+                        shot.triangles = frame_stats.triangles;
+                        shot.draw_batches = frame_stats.draw_batches;
+                        attach_preview(shot, cropped, shot.width, shot.height);
+                        viewer::record_shot(issue_state, shot);
+                        std::printf("issue shot written to %s\n", path.c_str());
+                    }
+                    issue_state.phase = viewer::ReporterPhase::Editing;
+                    issue_state.window_open = true;
+                } else {
+                    console_log.push(viewer::LogSeverity::Error,
+                                     "Issue shot: " + issue_state.status);
+                    issue_state.phase = viewer::ReporterPhase::Editing;
+                    issue_state.window_open = true;
+                }
+            } else if (capture) {
+                // A replay crops to the recorded rect so its PNG is directly
+                // diffable against the shot it came from (img_diff.py rejects a
+                // size mismatch outright).
+                std::vector<uint8_t> out_rgba = rgba;
+                uint32_t out_w = frame.extent.width;
+                uint32_t out_h = frame.extent.height;
+                if (replay.valid && capture_path == screenshot_path &&
+                    !replay.rect.empty()) {
+                    // Validate the two things that silently invalidate a diff:
+                    // a framebuffer the window manager would not grant, and a
+                    // viewport the panel layout put somewhere else. Both leave
+                    // the render CORRECT but not comparable, so saying nothing
+                    // would hand back a plausible, wrong answer.
+                    bool comparable = true;
+                    if (replay.frame_width != frame.extent.width ||
+                        replay.frame_height != frame.extent.height) {
+                        std::fprintf(stderr,
+                                     "replay WARNING: framebuffer is %ux%u but the "
+                                     "shot recorded %ux%u; pixels are NOT comparable\n",
+                                     frame.extent.width, frame.extent.height,
+                                     replay.frame_width, replay.frame_height);
+                        comparable = false;
+                    }
+                    const ImVec2 display = ImGui::GetIO().DisplaySize;
+                    const float sx =
+                        display.x > 0 ? frame.extent.width / display.x : 1.0f;
+                    const float sy =
+                        display.y > 0 ? frame.extent.height / display.y : 1.0f;
+                    const viewer::ViewportRect& vp = ui.viewport_rect();
+                    const viewer::ShotRect actual_vp{
+                        static_cast<int32_t>(vp.x * sx),
+                        static_cast<int32_t>(vp.y * sy),
+                        static_cast<int32_t>(vp.w * sx),
+                        static_cast<int32_t>(vp.h * sy)};
+                    viewer::ShotRect rect = replay.rect;
+                    const bool viewport_moved =
+                        !replay.viewport.empty() && !actual_vp.empty() &&
+                        (actual_vp.x != replay.viewport.x ||
+                         actual_vp.y != replay.viewport.y ||
+                         actual_vp.w != replay.viewport.w ||
+                         actual_vp.h != replay.viewport.h);
+                    if (viewport_moved) {
+                        std::fprintf(stderr,
+                                     "replay WARNING: viewport is %dx%d at (%d,%d) but the "
+                                     "shot recorded %dx%d at (%d,%d) — the panel layout "
+                                     "differs (imgui.ini). The projection differs, so "
+                                     "pixels are NOT comparable\n",
+                                     actual_vp.w, actual_vp.h, actual_vp.x, actual_vp.y,
+                                     replay.viewport.w, replay.viewport.h,
+                                     replay.viewport.x, replay.viewport.y);
+                        comparable = false;
+                        // Remap ONLY a crop that actually covered part of the
+                        // 3D view. A UI-only crop has no meaningful position
+                        // relative to the viewport — its uv lies outside 0..1,
+                        // and scaling by the new viewport sends it somewhere
+                        // arbitrary (measured: a left-column crop remapped to
+                        // x = -331 and came out the wrong size). Panels keep
+                        // their absolute geometry when the window grows, so
+                        // leaving such a crop alone is strictly better.
+                        const bool crop_covered_view =
+                            replay.has_viewport_uv && replay.viewport_uv[2] > 0.0f &&
+                            replay.viewport_uv[0] < 1.0f &&
+                            replay.viewport_uv[3] > 0.0f &&
+                            replay.viewport_uv[1] < 1.0f;
+                        if (crop_covered_view) {
+                            // Keep the same CONTENT in frame even though the
+                            // pixels moved: remap through the fraction of the
+                            // viewport the crop originally covered, clamped so
+                            // it can never leave the framebuffer.
+                            const auto clampi = [](int32_t v, int32_t lo, int32_t hi) {
+                                return v < lo ? lo : (v > hi ? hi : v);
+                            };
+                            const int32_t fbw = static_cast<int32_t>(frame.extent.width);
+                            const int32_t fbh = static_cast<int32_t>(frame.extent.height);
+                            const int32_t x0 = clampi(
+                                actual_vp.x + static_cast<int32_t>(
+                                                  replay.viewport_uv[0] * actual_vp.w),
+                                0, fbw);
+                            const int32_t y0 = clampi(
+                                actual_vp.y + static_cast<int32_t>(
+                                                  replay.viewport_uv[1] * actual_vp.h),
+                                0, fbh);
+                            const int32_t x1 = clampi(
+                                actual_vp.x + static_cast<int32_t>(
+                                                  replay.viewport_uv[2] * actual_vp.w),
+                                0, fbw);
+                            const int32_t y1 = clampi(
+                                actual_vp.y + static_cast<int32_t>(
+                                                  replay.viewport_uv[3] * actual_vp.h),
+                                0, fbh);
+                            rect = viewer::ShotRect{x0, y0, x1 - x0, y1 - y0};
+                            std::fprintf(stderr,
+                                         "replay: crop covered the 3D view; remapped "
+                                         "through viewport_uv to %dx%d at (%d,%d)\n",
+                                         rect.w, rect.h, rect.x, rect.y);
+                        } else {
+                            std::fprintf(stderr,
+                                         "replay: crop is outside the 3D view (UI only); "
+                                         "keeping absolute rect. Panel CONTENT at these "
+                                         "pixels depends on the layout\n");
+                        }
+                    }
+                    if (!comparable && std::getenv("MATTER_REPLAY_STRICT")) {
+                        std::fprintf(stderr,
+                                     "FATAL: MATTER_REPLAY_STRICT set and this replay "
+                                     "cannot reproduce the recorded shot\n");
+                        fatal_error = true;
+                    }
+                    out_rgba = viewer::crop_rgba(rgba, frame.extent.width,
+                                                 frame.extent.height, rect);
+                    out_w = static_cast<uint32_t>(rect.w);
+                    out_h = static_cast<uint32_t>(rect.h);
+                }
+                if (!write_png(capture_path, out_rgba, out_w, out_h)) {
                     std::fprintf(stderr, "screenshot FAILED %s\n",
                                  capture_path.c_str());
                     fatal_error = true;
@@ -2385,6 +2968,11 @@ int main() {
     if (cmd_handle != INVALID_HANDLE_VALUE) CloseHandle(cmd_handle);
 #endif
     session.reset();
+    // Before ui.shutdown(): the preview textures are ImGui descriptor sets, and
+    // ImGui_ImplVulkan_RemoveTexture needs the backend alive. Explicit for the
+    // same reason as bake_lab below — a stack local's destructor runs after
+    // vulkan.reset(), which would be a dead device.
+    issue_previews.shutdown();
     ui.shutdown();
     engine.reset();
     // Part Workbench (W2): the isolation session/engine own GPU resources tied

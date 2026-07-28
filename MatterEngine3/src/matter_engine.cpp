@@ -1268,6 +1268,17 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                     ecs_runtime.streaming_coordinator().set_profile(
                         nullptr,
                         streaming::SectorStreamingErrorCode::UnsupportedWorld);
+                    // restore_from_cache is the fast path's install_graph: it
+                    // repopulated the provider's graph snapshot, so publish it
+                    // just as the full path does after install. Skipping this
+                    // left graph_generation() at 0 and the app-side snapshot
+                    // EMPTY for the whole warm session, so everything keyed on
+                    // the generation missed the world: the scene tree and the
+                    // properties info card kept showing the dead one, and with
+                    // no [Baked] roots published viewer.reveal_part had nothing
+                    // to select. Warm launches are the common case, which is
+                    // what made both symptoms read as intermittent.
+                    publish_graph_snapshot();
                     // Populate new_manifest from cached instances + lights.
                     viewer::WorldManifest cached_manifest;
                     cached_manifest.instances = std::move(rc_payload.instances);
@@ -2702,8 +2713,13 @@ bool WorldSession::Impl::release_sector_entry(
 #ifdef MATTER_VULKAN_VIEWER
     release_attempt(entry.resources.vulkan_attempted, [&] {
         if (vk_scene) vk_scene->release_part(entry.part_hash);
+        // Drop the instance cache (the released part's slot is gone) but keep
+        // temporal history: an eviction only REMOVES instances, and history
+        // for departed ids is simply never looked up again. Evictions trail
+        // the camera continuously in a streaming world, so a global temporal
+        // reset here starves DLSS/GI accumulation exactly like the
+        // publish-side one did (issues/render-dlss-not-applied).
         vk_instance_cache.invalidate();
-        vk_temporal.invalidate();
     });
 #endif
     release_attempt(entry.resources.store_attempted, [&] {
@@ -3386,8 +3402,14 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     // unregistered here, so every existing source's expansion
                     // stays valid. Drop only the flat set so the next frame
                     // rebuilds it -- from memos, plus the one new sector.
+                    // Temporal history survives for the same reason: the new
+                    // sector's instances enter with history_valid=false while
+                    // everything already on screen keeps accumulating. This
+                    // path runs nearly every frame while streaming, so a
+                    // global invalidate here held DLSS/GI at their first
+                    // frame and presented the raw internal-resolution render
+                    // (issues/render-dlss-not-applied).
                     vk_instance_cache.invalidate_expansion();
-                    vk_temporal.invalidate();
 #endif
 #ifndef MATTER_VULKAN_ONLY
                     if (composer) {
@@ -3790,7 +3812,12 @@ std::unique_ptr<EngineContext> EngineContext::create(const EngineDesc& desc,
         printf("GPU cull path: enabled (GL 4.6 ok)\n");
     }
 #else
-    if (!desc.render_device) {
+    // allow_gl_lt_46 has meant "headless kernel: no interactive renderer
+    // required" since before the GL-path deletion — every headless test suite
+    // passes it, and the bake pipeline null-checks render_device throughout.
+    // Requiring a device unconditionally here silently broke all of those
+    // suites at engine creation; only an interactive session needs a device.
+    if (!desc.render_device && !desc.allow_gl_lt_46) {
         err = "MATTER_VULKAN_ONLY requires a Vulkan render device";
         return nullptr;
     }

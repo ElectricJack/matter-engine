@@ -283,6 +283,7 @@ COMMON_MSL_FULL_SRC = \
     $(MSL)/cell.cpp \
     $(MSL)/mesh_simplifier.cpp \
     $(MSL)/mesh_indexed.cpp \
+    $(MSL)/mesh_transform.cpp \
     $(SQL)/src/bvh_analyzer.cpp \
     $(MSL)/mesh_worker_pool.cpp \
     $(MSL)/mesh_build_utils.cpp \
@@ -468,6 +469,7 @@ COMP_CPP = composition_tests.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
            ../src/sector_grid.cpp ../src/lod_select.cpp ../src/part_asset_v2.cpp \
            $(MSL)/mesh_simplifier.cpp \
            $(MSL)/mesh_indexed.cpp \
+           $(MSL)/mesh_transform.cpp \
            $(COMMON_MSL_BLAS_SRC)
 COMP_C   = $(MSL)/material_registry.c
 
@@ -635,8 +637,13 @@ ANIMATION_SKIN_CPP    = animation_skin_bridge_tests.cpp ../src/render/animation_
 ANIMATION_SKIN_C      = $(FLECS_C)
 
 # Phase 4 Task 9 — Editor model (pure CPU, no GL/Vulkan/Flecs needed).
+# E5c gave EditorModel a rows-revision evt::Property whose scheduler impl is
+# property.cpp (plus the fail_fast seam it depends on, as in EVENTPROP_SRC
+# below) — without those objects the target stopped linking.
 EDITOR_MODEL_TARGET = build/editor_model_tests
-EDITOR_MODEL_CPP    = editor_model_tests.cpp ../../MatterEditor/src/editor_model.cpp
+EDITOR_MODEL_CPP    = editor_model_tests.cpp ../../MatterEditor/src/editor_model.cpp \
+                      ../src/event/property.cpp ../src/event/subscription.cpp \
+                      ../src/event/dispatch_context.cpp
 
 # Phase 4 Task 10 — Properties registry (needs scene_registry for ComponentDescriptor).
 PROPERTIES_REGISTRY_TARGET = build/properties_registry_tests
@@ -756,6 +763,7 @@ PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp \
                 ../src/animation/anim_bundle.cpp ../src/animation/animation_binding_bake.cpp \
                 ../src/animation/animation_ir.cpp ../src/render/indexed_part_geometry.cpp \
                 $(MSL)/mesh_simplifier.cpp $(MSL)/mesh_indexed.cpp \
+                $(MSL)/mesh_transform.cpp \
                 $(COMMON_MSL_BLAS_SRC)
 PARTSTORE_C   = $(MSL)/material_registry.c
 
@@ -823,7 +831,6 @@ EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
               ../src/part_cluster.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
               ../src/modifier_apply.cpp $(MSL)/mesh_smooth.cpp \
-              $(MSL)/mesh_transform.cpp \
               $(TERRAIN_SRC) \
               $(PF_CPP) \
               $(COMMON_MSL_FULL_SRC)
@@ -1025,7 +1032,6 @@ RETOPO_INT_CPP = retopo_integration_tests.cpp ../src/bake_trace.cpp \
                  ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp \
                  $(MSL)/mesh_retopo.cpp \
                  $(MSL)/mesh_smooth.cpp \
-                 $(MSL)/mesh_transform.cpp \
                  $(TERRAIN_SRC) \
                  $(PF_CPP) \
                  $(COMMON_MSL_FULL_SRC)

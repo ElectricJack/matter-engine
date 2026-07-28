@@ -466,20 +466,36 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         if (range.first_command > record.static_command_count ||
             range.command_count > record.static_command_count - range.first_command)
             continue;
-        for (uint32_t command = range.first_command;
-             command != range.first_command + range.command_count; ++command) {
-            // Skin-raster instances are removed individually by cull.comp
-            // before this command's instance_count is finalized. Recording
-            // the command unconditionally preserves bind fallbacks and
-            // ordinary instances which share the same immutable mesh range.
+        // Skin-raster instances are removed individually by cull.comp before
+        // this command's instance_count is finalized, so every command in the
+        // range is recorded unconditionally: that preserves bind fallbacks and
+        // ordinary instances which share the same immutable mesh range.
+        //
+        // Because nothing is skipped per command any more, the range is issued
+        // as one multi-draw rather than one call per cluster/LOD slot. It was
+        // temporarily split into drawCount=1 calls when this loop still had to
+        // drop individual commands replaced by compute-skinned output; that
+        // filter moved into cull.comp (uses_skin_raster) and the grouping was
+        // never restored, leaving kVkMaxLod draw calls per part where one does.
+        // drawCount stays clamped to maxDrawIndirectCount; max(1) only keeps a
+        // degenerate limit from spinning here -- the caller already refuses to
+        // record when the device reports less than one.
+        const uint32_t max_per_call =
+            std::max(1u, record.max_draw_indirect_count);
+        uint32_t remaining = range.command_count;
+        uint32_t first = range.first_command;
+        while (remaining != 0) {
+            const uint32_t count = std::min(remaining, max_per_call);
             vkCmdDrawIndexedIndirect(command_buffer, record.indirect_buffer,
-                                     static_cast<VkDeviceSize>(command) *
+                                     static_cast<VkDeviceSize>(first) *
                                          sizeof(DrawCommand),
-                                     1, sizeof(DrawCommand));
+                                     count, sizeof(DrawCommand));
             if (record.recorded_draw_ranges) {
                 record.recorded_draw_ranges->push_back(
-                    {command, 1, range.part_slot});
+                    {first, count, range.part_slot});
             }
+            first += count;
+            remaining -= count;
         }
     }
     // Accepted skin work is drawn from the per-frame compute output, never
@@ -4365,7 +4381,12 @@ bool VkSceneRenderer::record_test_surface_ray(
                               VK_IMAGE_LAYOUT_GENERAL,
                               VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                               VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-    for (auto* image : {&raw_specular_, &raw_specular_aux_})
+    // raw_transmission_ belongs in this list: the descriptor set bound below is
+    // the same one record_ray_trace_dispatch uses, and it declares binding 14
+    // (raw_transmission_image) as a GENERAL storage image. The post-trace
+    // transitions leave that image in SHADER_READ_ONLY_OPTIMAL, so omitting it
+    // here traced with a layout the descriptor contradicted.
+    for (auto* image : {&raw_specular_, &raw_specular_aux_, &raw_transmission_})
         transition_for_use(frame.command_buffer, *image,
                            VK_IMAGE_LAYOUT_GENERAL,
                            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
@@ -6739,6 +6760,12 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
                     for (int c = 0; c < 4; ++c)
                         rt.transform[r * 4 + c] =
                             inst.object_to_world.elements[c * 4 + r];
+                // `i` is the dynamic instance slot the skin lane keys on
+                // (see the compaction loop's candidate.instance_slot), so the
+                // tracer can resolve the same animation-bounds union it does.
+                rt.animation_instance_slot = static_cast<uint32_t>(i);
+                rt.animation_instance_generation =
+                    inst.animation_instance_generation;
                 rt_instances_.push_back(rt);
             }
         }
@@ -6815,6 +6842,16 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     std::vector<std::shared_ptr<void>> resources{
         clusters_.lifetime,
         vertices_.lifetime,
+        // indices_ belongs here with vertices_: record_raster binds it with
+        // vkCmdBindIndexBuffer and every draw is a vkCmdDrawIndexedIndirect, so
+        // the frame references it for its whole lifetime. Without this, adding a
+        // part large enough to grow the index buffer while an earlier frame was
+        // still in flight let ensure_index_buffer's `indices_ = std::move(...)`
+        // destroy a buffer a submitted command buffer was still using. Only the
+        // legacy immediate render_gbuffer_and_composite path retained it, so the
+        // production path failed intermittently, depending on when a part landed
+        // relative to frame completion.
+        indices_.lifetime,
         selected.frame_constants.lifetime,
         selected.instances.lifetime,
         selected.commands.lifetime,
@@ -6942,6 +6979,10 @@ bool VkSceneRenderer::build_ray_geometry(
     const VkDeviceSize scratch_alignment = std::max<VkDeviceSize>(
         1, vulkan_->ray_tracing_properties()
                .min_acceleration_structure_scratch_offset_alignment);
+    // Same conservative all-LOD union the CPU skin lane and cull.comp plan
+    // against. Fetched once: gpu_records() materializes a vector.
+    const std::vector<VkAnimationBoundsGpuRecord> rt_planning_bounds =
+        animation_bounds_.gpu_records();
     for (const RtInstance& source : rt_instances_) {
         const auto found = slot_of_.find(source.part_hash);
         if (found == slot_of_.end()) continue;
@@ -6951,15 +6992,63 @@ bool VkSceneRenderer::build_ray_geometry(
                     sizeof(object_to_world.m));
         for (uint32_t cluster_index = 0;
              cluster_index < part.cluster_count; ++cluster_index) {
+            // The raster lanes already treat an accepted skin draw as the sole
+            // owner of its (instance, generation, cluster): cull.comp drops the
+            // static bind-pose draw the moment the bounds record carries the
+            // skin-raster flag. Apply the same exclusion here. This BLAS is
+            // immutable bind-pose geometry (see the build contract below), so
+            // tracing it under a compute-skinned gbuffer buries posed pixels
+            // inside the bind-pose silhouette -- their GI and sun rays self-hit
+            // immediately and carve hard-edged dark patches across the animated
+            // surface. Until a deforming-BLAS phase exists, a skinned cluster
+            // contributes no traced geometry at all: a missing occluder reads
+            // as a soft lighting omission, a wrong-pose occluder reads as
+            // geometry. Skin fallbacks need no special case -- a BindPose
+            // fallback publishes no draw, so the raster mesh IS the bind pose
+            // and the traced copy aligns with it again.
+            if (source.animation_instance_slot != UINT32_MAX &&
+                animation_skin_raster_owns_cluster(
+                    selected.ready_skin_raster_draws,
+                    source.animation_instance_slot,
+                    source.animation_instance_generation, cluster_index))
+                continue;
             const uint32_t global_cluster =
                 part.cluster_start + cluster_index;
             const GpuCluster& gpu_cluster = cluster_staging_[global_cluster];
-            const uint32_t lod_index = vk_scene_detail::select_cluster_lod_view(
+            // A deforming instance's static cluster AABB is the part's whole
+            // bind-pose extent (for a partitioned animated part, an
+            // origin-centered box covering skin AND every rigid segment), so
+            // its radius runs well above the animated skin's. Selecting from it
+            // holds the traced rung one level finer than the rasterized one
+            // across a wide band of distances, and both surfaces are on screen
+            // at once: the raster rung shades the gbuffer while the finer
+            // traced rung supplies GI and shadow rays, so the two silhouettes
+            // interpenetrate and the mesh reads as two overlapping copies.
+            // Resolving the same union the raster lanes use keeps the lanes on
+            // the same rung at every distance.
+            VkAnimationBoundsAabb planning_bounds{
                 {gpu_cluster.aabb_min[0], gpu_cluster.aabb_min[1],
                  gpu_cluster.aabb_min[2]},
                 {gpu_cluster.aabb_max[0], gpu_cluster.aabb_max[1],
-                 gpu_cluster.aabb_max[2]},
-                gpu_cluster.radius, gpu_cluster.thresholds,
+                 gpu_cluster.aabb_max[2]}};
+            float planning_radius = gpu_cluster.radius;
+            if (source.animation_instance_slot != UINT32_MAX &&
+                resolve_animation_cluster_union(
+                    rt_planning_bounds, source.animation_instance_slot,
+                    source.animation_instance_generation, cluster_index,
+                    planning_bounds)) {
+                const float dx = planning_bounds.max[0] - planning_bounds.min[0];
+                const float dy = planning_bounds.max[1] - planning_bounds.min[1];
+                const float dz = planning_bounds.max[2] - planning_bounds.min[2];
+                planning_radius =
+                    0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
+            }
+            const uint32_t lod_index = vk_scene_detail::select_cluster_lod_view(
+                {planning_bounds.min[0], planning_bounds.min[1],
+                 planning_bounds.min[2]},
+                {planning_bounds.max[0], planning_bounds.max[1],
+                 planning_bounds.max[2]},
+                planning_radius, gpu_cluster.thresholds,
                 gpu_cluster.lod_count, object_to_world, camera_eye,
                 pixel_budget);
             uint32_t record_index = 0;
@@ -7019,6 +7108,9 @@ bool VkSceneRenderer::build_ray_geometry(
         // C4's ray-tracing contract is intentionally conservative: the
         // compute-skinned raster stream never enters an RT BLAS. The immutable
         // part bind pose remains build-once until a later deforming-RT phase.
+        // The selection loop above enforces the complement: while a skin draw
+        // owns a cluster, its bind-pose BLAS stays out of the TLAS entirely,
+        // so build-once geometry only ever traces where it is also rasterized.
         assert(skinned_rt_uses_bind_pose_blas());
         assert((item.build.flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR) == 0);
         assert(item.build.mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR);

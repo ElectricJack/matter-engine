@@ -12,11 +12,7 @@ struct Aabb {
     bool valid = false;
 };
 
-void expand(Aabb& box, const matter::Float3& center, float half_extent) {
-    const matter::Float3 lo{center.x - half_extent, center.y - half_extent,
-                            center.z - half_extent};
-    const matter::Float3 hi{center.x + half_extent, center.y + half_extent,
-                            center.z + half_extent};
+void expand_span(Aabb& box, const matter::Float3& lo, const matter::Float3& hi) {
     if (!box.valid) {
         box.min = lo;
         box.max = hi;
@@ -31,6 +27,33 @@ void expand(Aabb& box, const matter::Float3& center, float half_extent) {
     box.max.z = std::max(box.max.z, hi.z);
 }
 
+void expand(Aabb& box, const matter::Float3& center, float half_extent) {
+    expand_span(box,
+                {center.x - half_extent, center.y - half_extent, center.z - half_extent},
+                {center.x + half_extent, center.y + half_extent, center.z + half_extent});
+}
+
+// Row-major 4x4 with translation in m[3]/m[7]/m[11] — the same layout
+// selection_bounds.cpp writes into SelectionBounds::world_matrix.
+matter::Float3 transform_point(const float m[16], float x, float y, float z) {
+    return {m[0] * x + m[1] * y + m[2] * z + m[3],
+            m[4] * x + m[5] * y + m[6] * z + m[7],
+            m[8] * x + m[9] * y + m[10] * z + m[11]};
+}
+
+// Merge a BakedRoot's OBB into the box by expanding with each transformed
+// corner — an axis-aligned re-fit of the world-space box, matching what the
+// selection outline draws.
+void expand_baked(Aabb& box, const SelectionBounds& sb) {
+    for (int i = 0; i < 8; ++i) {
+        const float x = (i & 1) ? sb.local_max[0] : sb.local_min[0];
+        const float y = (i & 2) ? sb.local_max[1] : sb.local_min[1];
+        const float z = (i & 4) ? sb.local_max[2] : sb.local_min[2];
+        const matter::Float3 p = transform_point(sb.world_matrix, x, y, z);
+        expand_span(box, p, p);
+    }
+}
+
 // Fixed framing FOV independent of the live camera's own vertical_fov_radians
 // (which may be wide/narrow for other reasons) — ~35 degrees gives a
 // comfortable margin around the selection instead of a tight crop.
@@ -41,19 +64,25 @@ constexpr float kDefaultHalfExtent = 0.5f;  // 1m default cube for part-less ent
 
 void focus_camera_on_selection(matter::CameraDesc& camera,
                                const SelectionSet& selection,
-                               const FieldCommands& fields) {
-    if (selection.empty() || !fields.get_float3) return;
+                               const FieldCommands& fields,
+                               const BakedRootBoundsFn& baked_bounds) {
+    if (selection.empty()) return;
 
     Aabb box{};
     for (const SelectedObject& obj : selection.items()) {
-        if (obj.kind != SelectedObject::Entity) continue;
+        if (obj.kind == SelectedObject::BakedRoot) {
+            SelectionBounds sb{};
+            if (baked_bounds && baked_bounds(obj.id, sb)) expand_baked(box, sb);
+            continue;
+        }
+        if (!fields.get_float3) continue;
         const matter::scene::SceneEntityId id{obj.id};
         matter::Float3 translation{};
         if (!fields.get_float3(id, "LocalTransform", "translation", translation))
             continue;
         expand(box, translation, kDefaultHalfExtent);
     }
-    if (!box.valid) return;  // nothing focusable (empty/baked-root-only selection)
+    if (!box.valid) return;  // nothing focusable resolved to bounds
 
     const matter::Float3 center{
         (box.min.x + box.max.x) * 0.5f,

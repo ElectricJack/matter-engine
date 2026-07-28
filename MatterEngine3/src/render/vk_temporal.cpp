@@ -245,7 +245,6 @@ TemporalFrame TemporalState::begin(
         next.transforms.values[index] = instances[index].object_to_world;
     }
 
-    bool missing_transform = false;
     if (aligned) {
         // Same id sequence as a set that was already proven repeat-free, so the
         // next frame can take this path too without materialising the map.
@@ -256,15 +255,17 @@ TemporalFrame TemporalState::begin(
         // frames, so its map is materialised on demand (identical contents —
         // build_map() replays the same in-order assignments).
         presented_.transforms.build_map();
-        for (const TemporalInstance& instance : instances) {
-            if (presented_.transforms.map.find(instance.instance_id) ==
-                presented_.transforms.map.end()) {
-                missing_transform = true;
-            }
-        }
         next.transforms.build_map();
     }
-    frame.reset = force_reset_ || !has_presented_ || missing_transform ||
+    // An id with no presented transform — a streamed-in sector, a part
+    // republished under a new hash — is deliberately NOT a global cut: the
+    // newcomer enters with history_valid=false below while every surviving
+    // instance keeps its history. A streaming world introduces new ids
+    // nearly every frame, so escalating a newcomer to a full reset pinned
+    // DLSS and GI accumulation at their first frame forever and the
+    // presented image degenerated to the raw internal-resolution render
+    // (issues/render-dlss-not-applied).
+    frame.reset = force_reset_ || !has_presented_ ||
                   invalidation.camera_cut || invalidation.world_reload ||
                   invalidation.renderer_reset ||
                   !same_extent(internal_extent, presented_.internal_extent) ||

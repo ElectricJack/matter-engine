@@ -355,6 +355,57 @@ static void test_skin_raster_exclusion_survives_lod_disagreement() {
           "the exclusion does not leak across instance slots or stale generations");
 }
 
+// The traced lane's half of the skin-ownership invariant. While a skin draw
+// owns (instance, generation, cluster), build_ray_geometry must keep that
+// cluster's bind-pose BLAS out of the TLAS: the BLAS never deforms, so tracing
+// it under a compute-skinned gbuffer buries posed pixels inside the bind-pose
+// silhouette and their GI/sun rays self-hit into hard dark patches. Both lanes
+// must consume the SAME predicate — the raster lane through the flag
+// mark_animation_skin_raster_records() sets, the traced lane through
+// animation_skin_raster_owns_cluster() directly — or they drift apart again.
+static void test_skin_raster_ownership_excludes_traced_bind_pose() {
+    printf("\n[test_skin_raster_ownership_excludes_traced_bind_pose]\n");
+    viewer::VkSkinRasterDraw draw{};
+    draw.instance_slot = 3;
+    draw.instance_generation = 9;
+    draw.cluster = 7;
+    draw.lod = 1;  // ownership must not depend on the draw's LOD
+
+    CHECK(viewer::animation_skin_raster_owns_cluster({draw}, 3, 9, 7),
+          "an accepted skin draw owns its cluster for the traced lane too");
+    CHECK(!viewer::animation_skin_raster_owns_cluster({draw}, 3, 9, 8),
+          "ownership does not leak to a cluster with no accepted skin draw");
+    CHECK(!viewer::animation_skin_raster_owns_cluster({draw}, 4, 9, 7) &&
+              !viewer::animation_skin_raster_owns_cluster({draw}, 3, 10, 7),
+          "ownership does not leak across instance slots or stale generations");
+    CHECK(!viewer::animation_skin_raster_owns_cluster({}, 3, 9, 7),
+          "a frame with no accepted skin draws keeps every bind-pose BLAS traceable");
+
+    // Single-source check: the flag the culler consumes and the predicate the
+    // traced lane consumes must agree record for record.
+    std::vector<viewer::VkAnimationBoundsGpuRecord> records(4);
+    for (uint32_t index = 0; index != records.size(); ++index) {
+        records[index].instance_slot = 3;
+        records[index].instance_generation = 9;
+        records[index].cluster_index = index;  // unowned clusters 0..3
+    }
+    records[2].cluster_index = 7;              // the owned cluster
+    records[3].cluster_index = 7;              // owned cluster, stale generation
+    records[3].instance_generation = 10;
+    viewer::mark_animation_skin_raster_records(records, {draw});
+    bool lanes_agree = true;
+    for (const auto& record : records) {
+        const bool flagged =
+            (record.flags & viewer::kVkAnimationBoundsSkinRaster) != 0;
+        const bool owned = viewer::animation_skin_raster_owns_cluster(
+            {draw}, record.instance_slot, record.instance_generation,
+            record.cluster_index);
+        if (flagged != owned) lanes_agree = false;
+    }
+    CHECK(lanes_agree,
+          "raster-flag marking and traced-lane ownership resolve identically for every record");
+}
+
 // This is deliberately the cull.comp lookup contract, rather than a second
 // VkAnimationBounds resolver.  It consumes the std430 records that C3 uploads
 // and applies the shader's exact identity/count rules before doing the one
@@ -682,6 +733,7 @@ int main() {
     test_animation_bounds_cull_shader_contract();
     test_skin_raster_validation_controls_cull_exclusion();
     test_skin_raster_exclusion_survives_lod_disagreement();
+    test_skin_raster_ownership_excludes_traced_bind_pose();
     test_c3_dynamic_bounds_cull_contract();
 
     printf("\n--- Results: %d/%d passed", g_tests - g_failures, g_tests);

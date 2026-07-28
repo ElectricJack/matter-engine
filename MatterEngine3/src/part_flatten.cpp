@@ -1145,7 +1145,11 @@ static FlattenResult flatten_segmented(const std::string& cache_root,
                 {
                     MeshIndexed src_m = from_tri(ctris, &ctriex);
                     MeshIndexed tgt_m = from_tri(geo, nullptr);
-                    ::reproject_triex(src_m, tgt_m);
+                    // SampleSource: the rung inherits the authored shading
+                    // character (hard box edges stay hard, isosurfaces stay
+                    // smooth) instead of recomputing smooth vertex normals
+                    // over the decimated mesh (issue ef7053be).
+                    ::reproject_triex(src_m, tgt_m, ReprojectNormals::SampleSource);
                     std::vector<Tri> tgt_tris_ignored;
                     to_tri(tgt_m, tgt_tris_ignored, ex);
                 }
@@ -1495,11 +1499,17 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
             // Task 11 kept this shape — the wrap is minimal and there's no
             // way to collapse further without changing decimate_to_error's
             // public Tri-in/Tri-out signature.
+            //
+            // SampleSource: the rung inherits the authored shading character
+            // (hard box edges stay hard, isosurfaces stay smooth) instead of
+            // recomputing smooth vertex normals over the decimated mesh —
+            // that recompute is what melted LightingGarden's cubes into
+            // gradients when they popped down a rung (issue ef7053be).
             std::vector<TriEx> ex;
             {
                 MeshIndexed src_m = from_tri(ctris, &ctriex);
                 MeshIndexed tgt_m = from_tri(geo, nullptr);
-                ::reproject_triex(src_m, tgt_m);
+                ::reproject_triex(src_m, tgt_m, ReprojectNormals::SampleSource);
                 std::vector<Tri> tgt_tris_ignored;
                 to_tri(tgt_m, tgt_tris_ignored, ex);
             }

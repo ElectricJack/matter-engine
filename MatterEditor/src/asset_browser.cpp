@@ -3,7 +3,6 @@
 #include "ui.h"          // WorldEntry, ViewerStats (kept out of the header to
                          // avoid a bake_lab.h <-> ui.h include cycle: ui.h
                          // includes bake_lab.h, which includes asset_browser.h).
-#include "os_open.h"
 #include "part_asset_v2.h"
 #include "script_host.h"
 
@@ -433,8 +432,11 @@ void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
         commands.open_in_workbench(project.path, obj.module);
     }
     ImGui::SameLine();
-    if (ImGui::SmallButton("Reveal")) {
-        os_open_file(std::filesystem::path(obj.source_path).parent_path().string());
+    if (ImGui::SmallButton("Reveal") && commands.reveal_part) {
+        // Select this part in the LOADED world (Scene-tree highlight +
+        // outline + camera focus), not in the OS file browser — the file
+        // itself stays reachable via the Scene tree's "Open Source".
+        commands.reveal_part(obj.module);
     }
 
     if (open) {
@@ -448,7 +450,14 @@ void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
             const bool in_project = project.module_to_index.count(child.module) != 0;
             ImGui::SameLine();
             if (in_project) {
-                if (ImGui::SmallButton("Go")) scroll_to_module_ = child.module;
+                if (ImGui::SmallButton("Go")) {
+                    // Load the child in the viewport, not just scroll to its
+                    // row: a scroll alone is invisible whenever the row is
+                    // already on screen, which read as a dead button.
+                    scroll_to_module_ = child.module;
+                    if (commands.open_in_workbench)
+                        commands.open_in_workbench(project.path, child.module);
+                }
             } else {
                 ImGui::TextDisabled("(not in project)");
             }

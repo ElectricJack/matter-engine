@@ -56,6 +56,10 @@ struct ViewerCommands {
     // part in the isolation session and selects/raises the Workbench tab.
     std::function<void(const std::string& project, const std::string& module)>
         open_in_workbench;
+    // viewer.reveal_part{module}: select the module's baked root in the ACTIVE
+    // world (Scene-tree highlight + selection outline) and aim the camera at
+    // it; reports to the console when the module isn't loaded here.
+    std::function<void(const std::string& module)> reveal_part;
 };
 
 // Read-only stats the HUD displays each frame; the resolver selector is the one
@@ -255,6 +259,9 @@ public:
     // (the per-frame anchor/follow logic) is unaffected and stays here.
     bool camera_input_allowed() const;
     void reset_scene_tree_cache();
+    // viewer.reveal_part: record the hash a Scene-tree baked-root click would
+    // record, so the revealed row highlights on the next draw.
+    void select_baked_root(uint64_t resolved_hash);
 
 private:
     void build_dockspace();

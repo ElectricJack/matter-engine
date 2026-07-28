@@ -102,12 +102,21 @@ layout(set = 1, binding = 8, std430) readonly buffer DynamicAnimationBounds {
 // The initial pass unions all available LOD records, which makes the early
 // frustum decision conservative even when the chosen LOD has not yet been
 // selected. A second exact lookup below tightens it after LOD choice.
+// The AABB parameters are `inout`, not `out`, and are written only when a
+// record is actually found. GLSL `out` parameters are uninitialized on entry
+// and unconditionally copied back to the caller on return, so an `out` here
+// silently destroyed the caller's static cluster AABB on every path that did
+// not write one — including the very first early return, which every
+// non-animated instance takes (animation_instance_slot == UINT32_MAX is the
+// documented static path). The caller then frustum-tested a garbage box built
+// from whatever the uninitialized temporary held, which rejected visible
+// static geometry and did so nondeterministically from run to run.
 bool dynamic_cluster_union(const GpuInstance instance, const ClusterMeta cluster,
-                           out vec3 aabb_min, out vec3 aabb_max) {
+                           inout vec3 aabb_min, inout vec3 aabb_max) {
     if (instance.animation_instance_slot == 0xffffffffu) return false;
     bool found = false;
-    aabb_min = vec3(3.402823e38);
-    aabb_max = vec3(-3.402823e38);
+    vec3 union_min = vec3(3.402823e38);
+    vec3 union_max = vec3(-3.402823e38);
     // The buffer capacity can be larger than this frame's payload after a
     // prior busy frame. Counts.w is authoritative; never inspect stale tail
     // records, including when this frame has zero animated bounds.
@@ -116,15 +125,23 @@ bool dynamic_cluster_union(const GpuInstance instance, const ClusterMeta cluster
         if (value.instance_slot != instance.animation_instance_slot ||
             value.instance_generation != instance.animation_instance_generation ||
             value.cluster_index != cluster.cluster_index) continue;
-        aabb_min = min(aabb_min, value.aabb_min.xyz);
-        aabb_max = max(aabb_max, value.aabb_max.xyz);
+        union_min = min(union_min, value.aabb_min.xyz);
+        union_max = max(union_max, value.aabb_max.xyz);
         found = true;
     }
-    return found;
+    // Leave the caller's immutable cluster bounds intact unless this frame
+    // really carried an override; the inverted seed above is not a usable box.
+    if (!found) return false;
+    aabb_min = union_min;
+    aabb_max = union_max;
+    return true;
 }
 
+// `inout` for the same reason as dynamic_cluster_union: the no-record path must
+// leave the caller's conservative union in place rather than copy back an
+// unwritten temporary.
 bool dynamic_cluster_lod(const GpuInstance instance, const ClusterMeta cluster,
-                         uint lod, out vec3 aabb_min, out vec3 aabb_max) {
+                         uint lod, inout vec3 aabb_min, inout vec3 aabb_max) {
     if (instance.animation_instance_slot == 0xffffffffu) return false;
     for (uint i = 0u; i < frame.counts.w; ++i) {
         const DynamicAnimationBound value = dynamic_animation_bounds[i];

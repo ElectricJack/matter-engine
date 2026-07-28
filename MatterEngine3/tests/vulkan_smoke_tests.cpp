@@ -232,10 +232,13 @@ void run_ray_tracing_capability_contract_tests() {
     CHECK(viewer::vk_scene_detail::scene_binding_stage_flags(5) ==
               (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT),
           "material binding is visible only to raster shader stages");
-    CHECK(viewer::vk_scene_detail::scene_storage_limits_supported(5, 6) &&
-              !viewer::vk_scene_detail::scene_storage_limits_supported(4, 6) &&
-              !viewer::vk_scene_detail::scene_storage_limits_supported(5, 5),
-          "scene capability accounting requires five compute and six set buffers");
+    // Scene set storage buffers: bindings 0-5 plus binding 8 (the C3 dynamic
+    // cluster AABB override) is 7 per set. Compute sees all of those except
+    // binding 5, which is VERTEX|FRAGMENT-only, so 6 per stage.
+    CHECK(viewer::vk_scene_detail::scene_storage_limits_supported(6, 7) &&
+              !viewer::vk_scene_detail::scene_storage_limits_supported(5, 7) &&
+              !viewer::vk_scene_detail::scene_storage_limits_supported(6, 6),
+          "scene capability accounting requires six compute and seven set buffers");
     matter::VulkanRayTracingCapabilities unsupported{};
     unsupported.buffer_device_address = true;
     std::string reason;
@@ -250,14 +253,24 @@ void run_ray_tracing_capability_contract_tests() {
     complete.deferred_host_operations_extension = true;
     complete.spirv_1_4_extension = true;
     complete.shader_float_controls_extension = true;
+    complete.ray_query_extension = true;
     complete.buffer_device_address = true;
     complete.acceleration_structure = true;
     complete.ray_tracing_pipeline = true;
+    complete.ray_query = true;
     complete.storage_image_r8 = true;
     complete.shader_storage_image_extended_formats = true;
     CHECK(matter::supports_native_ray_tracing(complete, reason) &&
               reason.empty(),
           "complete fake RTX capability set enables native ray tracing");
+    // Ray query is a hard requirement, not a bonus: vol_scatter.comp and the
+    // tileset bake shaders declare RayQueryKHR, so a device that reports the
+    // ray-tracing pipeline without ray query must not claim native RT.
+    complete.ray_query = false;
+    CHECK(!matter::supports_native_ray_tracing(complete, reason) &&
+              reason.find("rayQuery") != std::string::npos,
+          "missing rayQuery cleanly disables native ray tracing");
+    complete.ray_query = true;
     complete.storage_image_r8 = false;
     CHECK(!matter::supports_native_ray_tracing(complete, reason) &&
               reason.find("R8_UNORM") != std::string::npos,
@@ -676,9 +689,12 @@ void run_vulkan_temporal_tests() {
         camera, {100, 80}, {100, 80}, {still}, true, {});
     const matter::Float3 static_velocity =
         viewer::temporal_velocity_pixels(static_frame, 7, {0.0f, 0.0f, 0.0f});
+    // Y expectations here (and in the two deltas below) follow the Y-down
+    // jitter convention d5f97aa7 gave jitter_frame; the old +Y-NDC values
+    // predate that fix and went stale while this suite could not build.
     CHECK(!static_frame.reset && static_frame.instances[0].history_valid &&
               std::fabs(static_velocity.x + 0.25f) < 1e-6f &&
-              std::fabs(static_velocity.y + 1.0f / 3.0f) < 1e-6f,
+              std::fabs(static_velocity.y - 1.0f / 3.0f) < 1e-6f,
           "static camera and rigid instance preserve the known Halton delta");
     CHECK(std::fabs(static_frame.previous_jittered.world_to_clip.m[3] -
                     first.current_jittered.world_to_clip.m[3]) < 1e-6f &&
@@ -701,7 +717,7 @@ void run_vulkan_temporal_tests() {
     const matter::Float3 camera_velocity = viewer::temporal_velocity_pixels(
         camera_motion, 7, {0.0f, 0.0f, 0.0f});
     CHECK(std::fabs(camera_velocity.x + 9.5f) < 1e-5f &&
-              std::fabs(camera_velocity.y - 5.0f / 9.0f) < 1e-5f,
+              std::fabs(camera_velocity.y + 5.0f / 9.0f) < 1e-5f,
           "known camera translation includes the presented Halton delta");
     CHECK(temporal.commit_presented(camera_motion.attempt_token),
           "camera-motion candidate commits");
@@ -713,7 +729,7 @@ void run_vulkan_temporal_tests() {
     const matter::Float3 object_velocity = viewer::temporal_velocity_pixels(
         object_motion, 7, {0.0f, 0.0f, 0.0f});
     CHECK(std::fabs(object_velocity.x - 19.375f) < 1e-5f &&
-              std::fabs(object_velocity.y + 1.0f / 3.0f) < 1e-5f,
+              std::fabs(object_velocity.y - 1.0f / 3.0f) < 1e-5f,
           "known rigid-instance translation includes the presented Halton delta");
     CHECK(temporal.commit_presented(object_motion.attempt_token),
           "object-motion candidate commits");
@@ -739,8 +755,20 @@ void run_vulkan_temporal_tests() {
                      "world reload resets temporal history");
     expect_one_reset({120, 80}, {.renderer_reset = true}, {moved_object},
                      "renderer recovery resets temporal history");
-    expect_one_reset({120, 80}, {}, {{99, identity_matrix()}},
-                     "missing previous rigid instance resets temporal history");
+
+    // A newcomer id is a per-instance event, not a global cut: it enters with
+    // invalid history while survivors keep theirs. Escalating it to a full
+    // reset starved DLSS/GI in streaming worlds, which introduce new ids
+    // nearly every frame (issues/render-dlss-not-applied).
+    viewer::TemporalFrame streamed_in = temporal.begin(
+        moved_camera, {120, 80}, {100, 80},
+        {moved_object, {99, identity_matrix()}}, true, {});
+    CHECK(!streamed_in.reset && streamed_in.instances.size() == 2 &&
+              streamed_in.instances[0].history_valid &&
+              !streamed_in.instances[1].history_valid,
+          "streamed-in instance joins without resetting global history");
+    CHECK(temporal.commit_presented(streamed_in.attempt_token),
+          "streamed-in candidate commits");
 
     viewer::TemporalFrame failed = temporal.begin(
         moved_camera, {120, 80}, {100, 80}, {{99, identity_matrix()}}, true, {});
@@ -782,8 +810,9 @@ void run_vulkan_temporal_tests() {
           "presented clear frame advances empty temporal history");
     viewer::TemporalFrame returning_b = stable_ids.begin(
         camera, {100, 80}, {100, 80}, {{b_id, identity_matrix()}}, true, {});
-    CHECK(returning_b.reset && !returning_b.instances[0].history_valid,
-          "instance returning after presented clear frame resets history");
+    CHECK(!returning_b.reset && !returning_b.instances[0].history_valid,
+          "instance returning after a presented clear frame starts fresh "
+          "without a global reset");
 
     CHECK(viewer::vk_scene_detail::frame_constants_size_for_test() == 288,
           "C++ FrameConstants matches final std140 uvec4 padding and size");
@@ -1002,6 +1031,12 @@ viewer::VkScenePart known_raster_triangle(uint64_t hash,
         {{0.0f, 1.5f, -2.0f}, normal, tint,
          {0.5f, 0.6f, 0.8f, 1.0f}, material_index, {}},
     };
+    // The raster path is indexed (vkCmdDrawIndexedIndirect), so a part without
+    // indices uploads zero of them and render_gbuffer_and_composite fails
+    // closed with "raster render requires uploaded draw commands, vertices,
+    // and indices". Callers used to patch this in locally one fixture at a
+    // time; supply the triangle's own list here so every fixture is renderable.
+    part.indices = {0, 1, 2};
     return part;
 }
 
@@ -1062,8 +1097,20 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     materials[7].metal_opacity_spec_coat[1] = 1.0f;
     materials[7].scattering_shape[3] = 1.0f;
     materials[7].emission_strength[3] = 5.0f;
+    // emission_strength.rgb is the emission *color*, and both composite.frag
+    // and rt_lighting.rgen read it unconditionally. material_registry.c
+    // guarantees that by normalizing a legacy "emission > 0 with a black
+    // emission color" material to its albedo; a fixture that builds
+    // MaterialGpuRecord by hand has to honor the same contract or the emissive
+    // term multiplies by zero. This fixture set only .w for as long as the
+    // suite was dark -- it predates f68e0f03, which moved the composite from
+    // `albedo.rgb * strength` to the authored emission color.
+    materials[7].emission_strength[0] = materials[7].base_roughness[0];
+    materials[7].emission_strength[1] = materials[7].base_roughness[1];
+    materials[7].emission_strength[2] = materials[7].base_roughness[2];
     materials[8] = materials[7];
     materials[8].base_roughness[0] = 0.8f;
+    materials[8].emission_strength[0] = materials[8].base_roughness[0];
     CHECK(renderer.update_materials(materials, 1, 1, error),
           error.empty() ? "stage shared raster materials" : error.c_str());
     const auto half_roundtrip = [](float value) {
@@ -1225,14 +1272,26 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
               std::isfinite(background.hdr.z) &&
               std::isfinite(background.hdr.w),
           "cleared background produces finite HDR");
-    CHECK(close4(background.hdr, {0.0f, 0.0f, 0.0f, 1.0f}, 2e-3f),
-          "cleared background produces deterministic black HDR");
+    // Not black any more: composite.frag's depth-miss branch writes
+    // sky_with_sun() for pixels the G-buffer never covered (added by 97796e69),
+    // so the old all-zero expectation asserted the absence of the sky. Opaque,
+    // finite and strictly positive is what the sky path now guarantees; the
+    // authored-sky *response* is covered by the bright/dark pair below.
+    CHECK(background.hdr.w == 1.0f && background.hdr.x > 1e-3f &&
+              background.hdr.y > 1e-3f && background.hdr.z > 1e-3f,
+          "cleared background composites the authored sky, opaque and positive");
     CHECK(close3(center.visibility, {1.0f, 1.0f, 1.0f}, 1e-6f) &&
               close3(background.visibility, {1.0f, 1.0f, 1.0f}, 1e-6f),
           "disabled RT GPU clear writes full visibility");
-    CHECK(center.hdr.x > background.hdr.x &&
-              center.hdr.y > background.hdr.y &&
-              center.hdr.z > background.hdr.z,
+    // The geometry pixel must come from the shaded G-buffer, not from the sky
+    // branch: if the composite ever stopped sampling the G-buffer, the covered
+    // pixel would fall through and match the background exactly. Ordering is no
+    // longer the discriminator (the sky is brighter than this lit surface), so
+    // require a real difference plus a plausible lit value.
+    CHECK(std::isfinite(center.hdr.x) && center.hdr.x > 1e-3f &&
+              (std::fabs(center.hdr.x - background.hdr.x) > 1e-2f ||
+               std::fabs(center.hdr.y - background.hdr.y) > 1e-2f ||
+               std::fabs(center.hdr.z - background.hdr.z) > 1e-2f),
           "composite samples G-buffer into HDR output");
 
     const viewer::VkSceneUploadCounters before_material_update =
@@ -1662,6 +1721,10 @@ void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
         vertex(0.2f, -0.8f, -4.0f, 1), vertex(1.8f, -0.8f, -4.0f, 1),
         vertex(1.0f, 0.8f, -4.0f, 1),
     };
+    // The cluster LODs above address indices, not vertices ({0,3} {3,3} {6,3}
+    // {9,3}); identity indices give each LOD its own triangle so the per-LOD
+    // BLAS records below are distinct and the LOD1 range really starts at 9.
+    part.indices = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
     CHECK(renderer.update_materials(materials, 1, 1, error) &&
               renderer.ensure_part(part, error) >= 0 &&
               renderer.update_instances({{part.part_hash, identity_matrix()}},
@@ -1834,6 +1897,10 @@ static viewer::VkScenePart rt_horizontal_part(uint64_t hash, float y,
                       material_index, {}},
                      {{0.0f, y, back_z}, normal, albedo, orm,
                       material_index, {}}};
+    // fixed_part() describes the LOD as an index range, so the part needs the
+    // indices to back it: the BLAS is built from them and the raster lane draws
+    // indexed. Without these the geometry is empty and every ray misses.
+    part.indices = {0, 1, 2};
     return part;
 }
 
@@ -1884,6 +1951,9 @@ static void rt_scenario_surface_query(
              {1.0f, 0.0f, 0.5f, 1.0f}, 7},
             {{0.0f, 1.0f, 0.0f}, local_normal, {0.6f, 0.8f, 1.0f, 1.0f},
              {0.5f, 1.0f, 0.8f, 1.0f}, 7}};
+        // Indexed BLAS: the pinned second part needs its own index list, or the
+        // secondary ray has no geometry to hit.
+        second.indices = {0, 1, 2};
         matter::Mat4f first_transform =
             viewer::mat4_translation({-2.0f, 0.0f, -3.0f});
         matter::Mat4f second_transform = identity_matrix();
@@ -2295,7 +2365,18 @@ static void rt_scenario_shadow_contract(RtPathContext& ctx) {
     matter::VulkanGiSettings& gi                     = ctx.gi;
     std::vector<MaterialGpuRecord>& gi_materials     = ctx.gi_materials;
     std::string& error                               = ctx.error;
-    gi_materials.assign(2, MaterialGpuRecord{});
+    gi_materials.assign(3, MaterialGpuRecord{});
+    // Material 2 is a pure occluder for the secondary-sun blocker: opaque (so
+    // it lands in the 0x01 TLAS layer the visibility rays cull against) but
+    // black, so it reflects nothing. It has to be black because
+    // rt_surface_common.glsl shades two-sided -- `if (!front_face)
+    // surface.normal = -surface.normal` -- so a down-facing plane still
+    // presents an up-facing, sun-lit surface to a bounce ray arriving from
+    // below. Reusing the red floor material here made the blocker contribute
+    // almost exactly the sun-lit bounce the floor had lost, which hid the
+    // occlusion the check is about.
+    gi_materials[2].metal_opacity_spec_coat[1] = 1.0f;
+    gi_materials[2].scattering_shape[3] = 1.0f;
     gi_materials[0].base_roughness[0] = 1.0f;
     gi_materials[0].base_roughness[1] = 0.02f;
     gi_materials[0].base_roughness[2] = 0.02f;
@@ -2878,23 +2959,30 @@ static void rt_scenario_gi_history_resets(RtPathContext& ctx) {
         const float emission_strength =
             std::exp2(std::min(composite_pixel.normal.w,
                                viewer::kVkMaxEncodedEmission)) - 1.0f;
+        // Mirror sky_common.glsl's sky_irradiance(): the ambient term is not
+        // the flat sky color, it is scaled by a hemispherical factor keyed on
+        // the shading normal, mix(0.2, 1.0, normal.y * 0.5 + 0.5). This model
+        // used the flat color, which only agreed while the sky was uniform.
+        const float sky_irradiance_scale =
+            0.2f + 0.8f * std::clamp(composite_pixel.normal.y * 0.5f + 0.5f,
+                                     0.0f, 1.0f);
         const matter::Float3 expected_composite{
             composite_pixel.albedo.x * diffuse_scale * lighting.sky_color.x *
-                    composite_pixel.orm.z +
+                    sky_irradiance_scale * composite_pixel.orm.z +
                 composite_pixel.albedo.x * diffuse_scale * lighting.sun_color.x *
                     sun_base * composite_pixel.visibility.x +
                 composite_pixel.albedo.x * emission_strength +
                 composite_pixel.accumulated_diffuse.x +
                 composite_pixel.accumulated_specular.x,
             composite_pixel.albedo.y * diffuse_scale * lighting.sky_color.y *
-                    composite_pixel.orm.z +
+                    sky_irradiance_scale * composite_pixel.orm.z +
                 composite_pixel.albedo.y * diffuse_scale * lighting.sun_color.y *
                     sun_base * composite_pixel.visibility.y +
                 composite_pixel.albedo.y * emission_strength +
                 composite_pixel.accumulated_diffuse.y +
                 composite_pixel.accumulated_specular.y,
             composite_pixel.albedo.z * diffuse_scale * lighting.sky_color.z *
-                    composite_pixel.orm.z +
+                    sky_irradiance_scale * composite_pixel.orm.z +
                 composite_pixel.albedo.z * diffuse_scale * lighting.sun_color.z *
                     sun_base * composite_pixel.visibility.z +
                 composite_pixel.albedo.z * emission_strength +
@@ -2907,6 +2995,15 @@ static void rt_scenario_gi_history_resets(RtPathContext& ctx) {
               "GPU composite equation samples accumulated temporal radiance");
         auto emissive_materials = gi_materials;
         emissive_materials[0].emission_strength[3] = 4.0f;
+        // rt_lighting.rgen multiplies by the authored emission *color*; supply
+        // it the way material_registry.c would for a legacy emissive material
+        // (normalized to albedo), or both bounces multiply by zero.
+        emissive_materials[0].emission_strength[0] =
+            emissive_materials[0].base_roughness[0];
+        emissive_materials[0].emission_strength[1] =
+            emissive_materials[0].base_roughness[1];
+        emissive_materials[0].emission_strength[2] =
+            emissive_materials[0].base_roughness[2];
         CHECK(renderer.update_materials(emissive_materials, 2, 1, error),
               error.empty() ? "install isolated emissive source"
                             : error.c_str());
@@ -3032,7 +3129,7 @@ static void rt_scenario_secondary_sun_visibility(RtPathContext& ctx) {
         CHECK(unblocked_probes_ok && unblocked_sun_delta > 0.05f,
               "unblocked secondary hit responds to increased sun intensity");
         viewer::VkScenePart sun_blocker = rt_horizontal_part(
-            924, 2.0f, 20.0f, {0.0f, -1.0f, 0.0f}, 0, 1.0f);
+            924, 2.0f, 20.0f, {0.0f, -1.0f, 0.0f}, 2, 1.0f);
         CHECK(renderer.ensure_part(sun_blocker, error) >= 0 &&
                   renderer.update_instances({{920, identity_matrix()},
                                              {921, identity_matrix()},
@@ -3047,6 +3144,15 @@ static void rt_scenario_secondary_sun_visibility(RtPathContext& ctx) {
             render_sun_probe(100.0f, 302, blocked_sun_high);
         const float blocked_sun_delta =
             rgb_delta(blocked_sun_zero, blocked_sun_high);
+        std::printf("secondary sun: blocked_delta=%.6f unblocked_delta=%.6f "
+                    "| bz=%.5f %.5f %.5f bh=%.5f %.5f %.5f "
+                    "uz=%.5f %.5f %.5f uh=%.5f %.5f %.5f\n",
+                    blocked_sun_delta, unblocked_sun_delta,
+                    blocked_sun_zero.x, blocked_sun_zero.y, blocked_sun_zero.z,
+                    blocked_sun_high.x, blocked_sun_high.y, blocked_sun_high.z,
+                    unblocked_sun_zero.x, unblocked_sun_zero.y,
+                    unblocked_sun_zero.z, unblocked_sun_high.x,
+                    unblocked_sun_high.y, unblocked_sun_high.z);
         CHECK(blocked_probes_ok && blocked_sun_delta < 2e-3f &&
                   blocked_sun_delta < unblocked_sun_delta * 0.05f,
               "secondary-hit sun is visibility tested without unshadowed leakage");
@@ -3088,11 +3194,17 @@ static void rt_scenario_secondary_sun_visibility(RtPathContext& ctx) {
                     std::min(minimum_visibility, pixel.visibility.x);
                 maximum_visibility =
                     std::max(maximum_visibility, pixel.visibility.x);
-                debug_output_matches =
-                    debug_output_matches &&
-                    std::fabs(pixel.hdr.x - pixel.visibility.x) < 0.01f &&
-                    std::fabs(pixel.hdr.y - pixel.visibility.y) < 0.01f &&
-                    std::fabs(pixel.hdr.z - pixel.visibility.z) < 0.01f;
+                // Covered pixels only. composite.frag's normal-length miss test
+                // returns the sky before every debug branch (the vol_debug_view
+                // views sit behind the same early-out), so the debug view is a
+                // surface visualization by construction; an uncovered pixel
+                // shows sky, not the cleared visibility texture.
+                if (pixel.material_index != UINT32_MAX)
+                    debug_output_matches =
+                        debug_output_matches &&
+                        std::fabs(pixel.hdr.x - pixel.visibility.x) < 0.01f &&
+                        std::fabs(pixel.hdr.y - pixel.visibility.y) < 0.01f &&
+                        std::fabs(pixel.hdr.z - pixel.visibility.z) < 0.01f;
                 if (pixel.material_index == 1u) {
                     receiver_seen = true;
                     receiver_min_visibility =
@@ -3192,8 +3304,17 @@ static void rt_scenario_mirror_specular(RtPathContext& ctx) {
                   mirror_specular.x > 0.001f &&
                   mirror_specular.x > mirror_specular.y * 1.2f,
               "GGX mirror receiver reflects the colored target with finite energy");
+        // Published alongside the pair below (the pair's shape is relied on by
+        // the tint/clearcoat checks further down): how many receiver pixels the
+        // scan sampled, and their mean max-channel specular energy. The lit
+        // count alone cannot describe a lobe on this fixture -- see the
+        // roughness check below.
+        uint32_t receiver_total = 0;
+        double receiver_mean_energy = 0.0;
         const auto specular_coverage = [&]() {
             uint32_t count = 0;
+            uint32_t total = 0;
+            double energy_sum = 0.0;
             matter::Float4 peak{};
             for (uint32_t sy = 20; sy < 200; sy += 10)
                 for (uint32_t sx = 20; sx < 320; sx += 10) {
@@ -3201,27 +3322,65 @@ static void rt_scenario_mirror_specular(RtPathContext& ctx) {
                     if (!renderer.readback_raster_pixel(sx, sy, pixel, error) ||
                         pixel.material_index != 1u)
                         continue;
+                    ++total;
                     const float energy = std::max(pixel.raw_specular.x,
                         std::max(pixel.raw_specular.y, pixel.raw_specular.z));
+                    energy_sum += energy;
                     if (energy > 0.001f) ++count;
                     if (energy > std::max(peak.x, std::max(peak.y, peak.z)))
                         peak = pixel.raw_specular;
                 }
+            receiver_total = total;
+            receiver_mean_energy = total ? energy_sum / total : 0.0;
             return std::pair<uint32_t, matter::Float4>{count, peak};
         };
+        const auto peak_energy = [](const matter::Float4& value) {
+            return std::max(value.x, std::max(value.y, value.z));
+        };
         const auto mirror_stats = specular_coverage();
+        const uint32_t mirror_receiver_total = receiver_total;
+        const double mirror_mean = receiver_mean_energy;
+        const float mirror_peak = peak_energy(mirror_stats.second);
         gi_materials[1].base_roughness[3] = 0.65f;
         CHECK(renderer.update_materials(gi_materials, 11, 1, error) &&
                   render_temporal_control(305),
               error.empty() ? "render rough-metal broadening fixture"
                             : error.c_str());
         const auto rough_metal_stats = specular_coverage();
-        CHECK(rough_metal_stats.first >= mirror_stats.first &&
-                  rough_metal_stats.second.x < mirror_stats.second.x * 0.95f &&
-                  std::isfinite(rough_metal_stats.second.x) &&
+        const double rough_mean = receiver_mean_energy;
+        const float rough_peak = peak_energy(rough_metal_stats.second);
+        std::printf("specular lobe: mirror lit=%u/%u peak=%.6f mean=%.6f "
+                    "p/m=%.4f | rough lit=%u/%u peak=%.6f mean=%.6f p/m=%.4f\n",
+                    mirror_stats.first, mirror_receiver_total, mirror_peak,
+                    mirror_mean,
+                    mirror_mean > 0.0 ? mirror_peak / mirror_mean : -1.0,
+                    rough_metal_stats.first, receiver_total, rough_peak,
+                    rough_mean,
+                    rough_mean > 0.0 ? rough_peak / rough_mean : -1.0);
+        // Broadening cannot be read off the lit-pixel count here: the mirror
+        // already lights the receiver's whole sampled footprint (8/8), so the
+        // count is saturated and can only fall. It asserted
+        // rough_lit >= mirror_lit, which no widening could ever satisfy.
+        //
+        // What this fixture can show, and what a broken GGX normalization would
+        // break, is the pair of invariants below: reflected energy over the
+        // receiver is conserved as roughness goes 0.02 -> 0.65, while the
+        // radiance stops being uniform across it. The sharp lobe reflects the
+        // same patch of the target from every receiver pixel (peak == mean,
+        // p/m == 1.0); the wide lobe integrates a different slice per pixel, so
+        // per-pixel radiance scatters (p/m ~ 2.6) even though the mean holds.
+        CHECK(std::isfinite(rough_metal_stats.second.x) &&
                   std::isfinite(rough_metal_stats.second.y) &&
-                  std::isfinite(rough_metal_stats.second.z),
-              "rough metal broadens the finite reflected signal");
+                  std::isfinite(rough_metal_stats.second.z) &&
+                  // the wide lobe must not go dark over the receiver
+                  rough_metal_stats.first * 2u >= mirror_receiver_total &&
+                  // energy conserved, not amplified or swallowed
+                  rough_mean > mirror_mean * 0.5 &&
+                  rough_mean < mirror_mean * 1.5 &&
+                  // sharp lobe uniform across the receiver, wide lobe not
+                  mirror_peak <= mirror_mean * 1.05 &&
+                  rough_peak > rough_mean * 1.5,
+              "rough metal spreads the reflected lobe and conserves finite energy");
         gi_materials[1].metal_opacity_spec_coat[0] = 0.0f;
         gi_materials[1].base_roughness[3] = 0.35f;
         CHECK(renderer.update_materials(gi_materials, 12, 1, error) &&
@@ -3511,6 +3670,14 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
 
     // Shared state for all renderer-based scenarios.
     viewer::VkSceneRenderer renderer(vulkan);
+    // Initialize before any scenario samples immediate_submit_count(): one-time
+    // renderer init submits immediately (tileset dummy array layers and the
+    // volumetric placeholder must be transitioned before the first frame), and
+    // prepare_frame() inits lazily, so a baseline taken just before the first
+    // prepare_frame charges those to the frame and reads as a regression.
+    CHECK(renderer.init(error),
+          error.empty() ? "initialize RT renderer before immediate baselines"
+                        : error.c_str());
     viewer::VkSceneLighting lighting{};
     matter::VulkanRayTracingSettings enabled{};
     matter::VulkanGiSettings gi{};
@@ -3846,6 +4013,16 @@ CullResult run_vk_cull(matter::VulkanDevice& vulkan,
 void run_frame_upload_tests(matter::VulkanDevice& vulkan) {
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
+    // Initialize explicitly so the immediate-submit baseline below measures the
+    // per-frame path only. One-time renderer init legitimately submits
+    // immediately -- the tileset dummy array layers and the volumetric
+    // placeholder texture must reach SHADER_READ_ONLY_OPTIMAL before the first
+    // frame -- and prepare_frame() lazily inits, which would otherwise charge
+    // those three submits to the first frame and read as a frame-path
+    // regression.
+    CHECK(renderer.init(error),
+          error.empty() ? "initialize renderer before immediate-submit baseline"
+                        : error.c_str());
     const matter::Mat4f identity = identity_matrix();
     const viewer::VkScenePart first = known_raster_triangle(970);
     const viewer::VkScenePart second = known_raster_triangle(971);
@@ -5189,9 +5366,19 @@ void run_animation_skin_record_fault_matrix(matter::VulkanDevice& vulkan) {
                             : error.c_str());
         vulkan.wait_idle();
         std::vector<viewer::DrawCommand> degraded_commands;
+        // Three instances share this cluster's command: the static scene
+        // instance from update_instances() above, the slot-1 bind-pose
+        // fallback, and the slot-0 retained pose. Only the retained one owns an
+        // explicit skin raster draw, so cull.comp's uses_skin_raster removes
+        // exactly it and the static command carries the other two.
+        //
+        // This asserted 1 for as long as the suite was dark, which was the
+        // clobbered-AABB bug in cull.comp's dynamic_cluster_union reading as a
+        // pass: the static instance was silently frustum-culled, so the one
+        // surviving draw looked like correct exclusion of the retained pose.
         CHECK(renderer.readback_commands(degraded_commands, error) &&
                   !degraded_commands.empty() &&
-                  degraded_commands[0].instance_count == 1,
+                  degraded_commands[0].instance_count == 2,
               "retained explicit raster does not double-draw through the static indirect command");
         const auto sealed_runtime = renderer.animation_runtime_stats();
         CHECK(diagnostics.gpu_failure_count() == 1 &&

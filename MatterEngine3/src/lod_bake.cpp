@@ -3,6 +3,7 @@
 #include "bake_trace_names.h"  // kSpanLod, kSpanLodRung
 #include "../../libs/MatterSurfaceLib/include/mesh_simplifier.hpp"
 #include "../../libs/MatterSurfaceLib/include/mesh_indexed.hpp"
+#include "../../libs/MatterSurfaceLib/include/mesh_transform.hpp"  // reproject_triex
 #include <chrono>
 #include <cmath>
 
@@ -128,12 +129,40 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
         BAKE_COUNT("tris_in",    (double)tris.size());
         BAKE_COUNT("tris_out",   (double)geo.size());
         BAKE_COUNT("keep_ratio", (double)keep);
-        // Per-triangle TriEx (materialId/tint/normals/AO) is only valid for the
-        // undecimated level: `geo` is then the input triangle set in original order,
-        // so triex[i] still describes geo[i]. Decimation reorders/merges triangles,
-        // so those levels pass nullptr and fall back to the instance material.
-        const TriEx* ex = (full && triex && triex->size() == geo.size())
-                          ? triex->data() : nullptr;
+        // Per-triangle TriEx (materialId/tint/normals/AO) is parallel to `tris`, so
+        // it describes `geo` directly only at the undecimated level. Decimation
+        // reorders and merges triangles, so a decimated level must have its TriEx
+        // REPROJECTED from the source rather than dropped: reproject_triex matches
+        // each surviving triangle to its nearest source triangle (carrying
+        // materialId/tint/uv/AO) and samples the source's authored shading
+        // normals at the rung's corners (SampleSource).
+        //
+        // Passing nullptr here instead — which is what this did until 2026-07-28 —
+        // is what made a coarse rung render in the fallback instance material with
+        // flat, per-face shading while the fine rung beside it kept the authored
+        // one. On AnimatedRigGallery that showed up as the creature turning from red
+        // to grey and going faceted as the camera pulled back. part_flatten.cpp has
+        // reprojected across its own ladder since 2026-07-07; this is the same
+        // idiom, applied to the ladder script_host uses for animated parts.
+        //
+        // SampleSource because a rung must inherit the authored shading
+        // character, not recompute it blind: recomputing smooth vertex normals
+        // over the rung (issue ef7053be) melted every box's 90° edges into a
+        // gradient the moment it popped below the full level, while the spheres
+        // beside it looked fine.
+        std::vector<TriEx> reprojected;
+        if (!full && triex && triex->size() == tris.size()) {
+            MeshIndexed src_m = from_tri(tris, triex);
+            MeshIndexed tgt_m = from_tri(geo, nullptr);
+            reproject_triex(src_m, tgt_m, ReprojectNormals::SampleSource);
+            // to_tri emits one triangle per 3 indices in order, so `reprojected`
+            // lines up with `geo`; the unwelded tris themselves are redundant.
+            std::vector<Tri> geo_unwelded_unused;
+            to_tri(tgt_m, geo_unwelded_unused, reprojected);
+        }
+        const TriEx* ex = nullptr;
+        if (full && triex && triex->size() == geo.size())      ex = triex->data();
+        else if (!full && reprojected.size() == geo.size())    ex = reprojected.data();
         // register_triangles may deduplicate (returning an existing handle), so we
         // must NOT pre-record entries().size() as the index — it would be off-by-N
         // if prior identical geometry already occupies that slot. Look up the returned
