@@ -39,7 +39,9 @@ struct BakeObserver {
     // Fired once per part bake, right after the full-resolution (LOD0) mesh
     // has been produced by build()/meshing in script_host::bake_source,
     // before the part is saved. `tris` is the triangle count of that mesh.
-    virtual void on_mesh_ready(int tris) {}
+    // (The (void) casts keep the documented parameter names legal under
+    // -Wextra -Werror translation units, e.g. the Vulkan smoke suite.)
+    virtual void on_mesh_ready(int tris) { (void)tris; }
 
     // Fired once per LOD ladder level as lod_bake::bake_lods() finishes
     // decimating (or, for LOD0, registering unchanged) that level.
@@ -47,5 +49,7 @@ struct BakeObserver {
     // `tris` is the triangle count of the produced level's geometry.
     // `ms` is the wall-clock time spent producing this level (decimation
     // cost only, not including BLAS registration).
-    virtual void on_rung_ready(int level, int tris, double ms) {}
+    virtual void on_rung_ready(int level, int tris, double ms) {
+        (void)level; (void)tris; (void)ms;
+    }
 };

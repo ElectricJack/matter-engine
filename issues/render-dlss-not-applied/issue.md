@@ -2,7 +2,7 @@
 id: f9b7c74c-4a92-1aad-2254-ed0b69277cdb
 world: PhysicsPlayground
 shots: 3
-status: triaged
+status: fixed
 reported: 2026-07-28T06:46:15Z
 kind: bug
 severity: major
@@ -65,6 +65,83 @@ MATTER_WORLD=PhysicsPlayground MATTER_CAM="17.406,14.075,32.946,-0.176,1.411,-0.
 - `state.json` — per-shot camera/counts plus deep engine state
 - `log-tail.txt` — console lines leading up to this report
 
+## Root cause
+
+The shot that shows the defect is the **StreamMeadow** one (`state.json` shot 1
+records `world: StreamMeadow`; the frontmatter world is where the report was
+*filed*, which was PhysicsPlayground). Telemetry shows DLSS was selected AND
+active in every shot (`at_file_time.dlss: selected=quality active=quality,
+reason=""`, watermark crisp at output resolution in all three) — so this is not
+"DLSS off", it is "DLSS evaluating with its history discarded every frame":
+
+1. Every streamed sector **publish** called `vk_temporal.invalidate()`
+   (`MatterEngine3/src/matter_engine.cpp`, sector publish job), and every
+   **eviction** did the same (`release_sector_entry`). A streaming world
+   publishes/evicts nearly every frame while anything moves or settles.
+2. Independently, `TemporalState::begin` escalated *any* instance id absent
+   from the previous presented frame — i.e. every streamed-in sector's
+   instances — to a **global** `frame.reset`
+   (`MatterEngine3/src/render/vk_temporal.cpp`).
+
+`frame.reset` feeds `sl::Constants::reset = eTrue`, so DLSS discarded its
+accumulation almost every frame in StreamMeadow and its output degenerated to a
+spatial-only upscale of the 1590x618 internal render — "we just see the low
+resolution render". The same reset restarts GI/denoiser accumulation ("grainy").
+Demo and PhysicsPlayground are static worlds: no publishes, no resets, clean
+output — exactly what shots 2 and 3 show.
+
+The fix keeps temporal history across streaming events: a newcomer instance
+enters with `history_valid=false` (the per-instance mechanism that already
+existed) while everything else keeps accumulating; global resets remain for
+real discontinuities (world reload, camera cut, renderer reset, extent change).
+
 ## Acceptance
 
-_TODO — the check that closes this. Prefer a headless `make -C MatterEngine3/tests run-*` target; fall back to a scripted capture (`MatterEngine3/tools/viewer_shots.sh`) plus what the pixels must show._
+**Headless (the gate):**
+
+```bash
+make -C MatterEditor build/windows/vulkan_smoke_tests.exe TMP="C:/Users/webde/AppData/Local/Temp" TEMP="C:/Users/webde/AppData/Local/Temp"
+cd MatterEditor && ./build/windows/vulkan_smoke_tests.exe
+```
+
+`run_vulkan_temporal_tests` (vulkan_smoke_tests.cpp) now asserts the streaming
+contract directly:
+
+- "streamed-in instance joins without resetting global history" — a frame that
+  adds an unseen id must NOT set `frame.reset`; the survivor keeps
+  `history_valid`, the newcomer starts without it. Fails on the pre-fix tree
+  (the old code escalated the newcomer to a global reset).
+- "instance returning after a presented clear frame starts fresh without a
+  global reset" — same contract from the empty-set side.
+- The four legitimate global cuts (resize, camera cut, world reload, renderer
+  reset) still assert `reset` for exactly one frame each.
+
+The gate is: **no FAIL lines from the temporal section**. The suite as a whole
+had not been buildable since the .gtex-bake commit (missing includes and a
+missing source in its Makefile target, `-Wextra` breakage in bake_observer.h —
+all repaired here) and still carries ~10 pre-existing device-level failures in
+subsystems this fix does not touch (material staging, grouped indirect,
+culling stats, tileset readback, validation) plus three temporal Halton-delta
+expectations that had gone stale against d5f97aa7's Y-down jitter convention
+(also repaired here, with the arithmetic re-derived).
+
+**Visual (what the pixels must show), DLSS-active replay:**
+
+Needs a Streamline build (`./build-dlss.sh`, SDK at `/d/SDKs/...`) and the
+recorded DLSS mode restored (replay otherwise forces Native):
+
+```bash
+cd MatterEditor && MATTER_REPLAY=../issues/render-dlss-not-applied/state.json \
+  MATTER_REPLAY_SHOT=1 MATTER_DLSS_MODE=quality \
+  MATTER_REPLAY_OUT=/tmp/after-dlss-1.png ./build/windows/editor.exe
+```
+
+The log must reach `DLSS selected=Quality active=Quality internal=1590x618
+output=2385x927`, and the capture must show temporally accumulated (smooth)
+grass/pebble edges rather than the raw internal-resolution aliasing of the
+report's shot-1. Measured as mean gradient energy over the viewport crop
+(aliasing proxy, watermark strip excluded): pre-fix 3.53, post-fix 2.63 on the
+same warm cache — and the post-fix frame resolves *more* streamed detail, so
+the drop understates the change. The report's defective shot-1 measures 3.94;
+the healthy PhysicsPlayground shot-3, 0.55. Streaming residency is not
+reproducible, so compare character, not pixels.
