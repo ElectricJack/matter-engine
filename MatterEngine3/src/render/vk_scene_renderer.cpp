@@ -6739,6 +6739,12 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
                     for (int c = 0; c < 4; ++c)
                         rt.transform[r * 4 + c] =
                             inst.object_to_world.elements[c * 4 + r];
+                // `i` is the dynamic instance slot the skin lane keys on
+                // (see the compaction loop's candidate.instance_slot), so the
+                // tracer can resolve the same animation-bounds union it does.
+                rt.animation_instance_slot = static_cast<uint32_t>(i);
+                rt.animation_instance_generation =
+                    inst.animation_instance_generation;
                 rt_instances_.push_back(rt);
             }
         }
@@ -6942,6 +6948,10 @@ bool VkSceneRenderer::build_ray_geometry(
     const VkDeviceSize scratch_alignment = std::max<VkDeviceSize>(
         1, vulkan_->ray_tracing_properties()
                .min_acceleration_structure_scratch_offset_alignment);
+    // Same conservative all-LOD union the CPU skin lane and cull.comp plan
+    // against. Fetched once: gpu_records() materializes a vector.
+    const std::vector<VkAnimationBoundsGpuRecord> rt_planning_bounds =
+        animation_bounds_.gpu_records();
     for (const RtInstance& source : rt_instances_) {
         const auto found = slot_of_.find(source.part_hash);
         if (found == slot_of_.end()) continue;
@@ -6954,12 +6964,40 @@ bool VkSceneRenderer::build_ray_geometry(
             const uint32_t global_cluster =
                 part.cluster_start + cluster_index;
             const GpuCluster& gpu_cluster = cluster_staging_[global_cluster];
-            const uint32_t lod_index = vk_scene_detail::select_cluster_lod_view(
+            // A deforming instance's static cluster AABB is the part's whole
+            // bind-pose extent (for a partitioned animated part, an
+            // origin-centered box covering skin AND every rigid segment), so
+            // its radius runs well above the animated skin's. Selecting from it
+            // holds the traced rung one level finer than the rasterized one
+            // across a wide band of distances, and both surfaces are on screen
+            // at once: the raster rung shades the gbuffer while the finer
+            // traced rung supplies GI and shadow rays, so the two silhouettes
+            // interpenetrate and the mesh reads as two overlapping copies.
+            // Resolving the same union the raster lanes use keeps the lanes on
+            // the same rung at every distance.
+            VkAnimationBoundsAabb planning_bounds{
                 {gpu_cluster.aabb_min[0], gpu_cluster.aabb_min[1],
                  gpu_cluster.aabb_min[2]},
                 {gpu_cluster.aabb_max[0], gpu_cluster.aabb_max[1],
-                 gpu_cluster.aabb_max[2]},
-                gpu_cluster.radius, gpu_cluster.thresholds,
+                 gpu_cluster.aabb_max[2]}};
+            float planning_radius = gpu_cluster.radius;
+            if (source.animation_instance_slot != UINT32_MAX &&
+                resolve_animation_cluster_union(
+                    rt_planning_bounds, source.animation_instance_slot,
+                    source.animation_instance_generation, cluster_index,
+                    planning_bounds)) {
+                const float dx = planning_bounds.max[0] - planning_bounds.min[0];
+                const float dy = planning_bounds.max[1] - planning_bounds.min[1];
+                const float dz = planning_bounds.max[2] - planning_bounds.min[2];
+                planning_radius =
+                    0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
+            }
+            const uint32_t lod_index = vk_scene_detail::select_cluster_lod_view(
+                {planning_bounds.min[0], planning_bounds.min[1],
+                 planning_bounds.min[2]},
+                {planning_bounds.max[0], planning_bounds.max[1],
+                 planning_bounds.max[2]},
+                planning_radius, gpu_cluster.thresholds,
                 gpu_cluster.lod_count, object_to_world, camera_eye,
                 pixel_budget);
             uint32_t record_index = 0;

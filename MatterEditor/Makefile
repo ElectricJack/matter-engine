@@ -161,7 +161,7 @@ $(AR_CORE_LIB):
 # this repository's normal dev environment -- see MatterEditor/README.md for
 # what `linux` has and has not been checked against (no Linux machine
 # available where it was written).
-APP_SRC = src/main.cpp src/ui.cpp src/ui_lighting_controls.cpp src/animation_debug_overlay.cpp src/animation_panel.cpp src/animation_panel_model.cpp src/session_binding.cpp src/scene_model_adapter.cpp src/bake_lab.cpp src/bake_lab_timeline.cpp src/event_inspector.cpp src/asset_browser.cpp src/part_workbench.cpp src/lod_inspector.cpp src/camera_controller.cpp src/camera_focus.cpp src/streaming_anchor_controller.cpp src/selection_set.cpp src/editor_model.cpp src/scene_tree_panel.cpp src/selection_bounds.cpp src/viewport_pick.cpp src/selection_outline.cpp src/toolbar_panel.cpp src/console_panel.cpp src/console_log.cpp src/properties_registry.cpp src/properties_panel.cpp src/specialized_editors.cpp src/gizmo.cpp src/os_open.cpp
+APP_SRC = src/main.cpp src/ui.cpp src/ui_lighting_controls.cpp src/animation_debug_overlay.cpp src/animation_panel.cpp src/animation_panel_model.cpp src/session_binding.cpp src/scene_model_adapter.cpp src/bake_lab.cpp src/bake_lab_timeline.cpp src/event_inspector.cpp src/asset_browser.cpp src/part_workbench.cpp src/lod_inspector.cpp src/camera_controller.cpp src/camera_focus.cpp src/streaming_anchor_controller.cpp src/selection_set.cpp src/editor_model.cpp src/scene_tree_panel.cpp src/selection_bounds.cpp src/viewport_pick.cpp src/selection_outline.cpp src/toolbar_panel.cpp src/console_panel.cpp src/console_log.cpp src/image_preview.cpp src/issue_reporter.cpp src/issue_reporter_panel.cpp src/shot_replay.cpp src/properties_registry.cpp src/properties_panel.cpp src/specialized_editors.cpp src/gizmo.cpp src/os_open.cpp
 
 # Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
 # These are ONLY used by the Windows target; the Linux target links libmatter_engine3.a.
@@ -1022,6 +1022,29 @@ build/test_console_log.exe: tests/test_console_log.cpp src/console_log.cpp src/c
 .PHONY: run-test-console-log
 run-test-console-log: build/test_console_log.exe
 	./build/test_console_log.exe
+
+# Issue reporter headless test: covers issue_reporter.cpp (crop math + the
+# on-disk report schema). The dialog half needs ImGui and is not covered.
+# flecs.o comes in through ui.h's editor_model.h/scene_tree_panel.h chain --
+# header-inline flecs, not a real dependency of the writer. issue_reporter.cpp
+# deliberately avoids matter::dlss_mode_name so this does not have to link
+# streamline_bridge.o and, through it, the whole Vulkan loader.
+build/test_issue_reporter.exe: tests/test_issue_reporter.cpp src/issue_reporter.cpp \
+                               src/console_log.cpp src/issue_reporter.h build/windows/obj/flecs.o
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_issue_reporter.cpp src/issue_reporter.cpp \
+	    src/console_log.cpp build/windows/obj/flecs.o -o $@ \
+	    -std=c++17 -Wall -Isrc -I../MatterEngine3/include -I../MatterEngine3/src \
+	    -I../libs/MatterSurfaceLib/include -I../libs/SpatialQueryLib/include \
+	    -I../libs/MemoryLib/include -I../libs/MathLib/include \
+	    -I../third_party/imgui -I../third_party/ImGuizmo \
+	    -I../third_party/Vulkan-Headers/include -I../third_party/flecs \
+	    -I../libs/ParticleFlowLib/include -I../third_party/box3d/include \
+	    -lpthread -lws2_32 -ldbghelp
+
+.PHONY: run-test-issue-reporter
+run-test-issue-reporter: build/test_issue_reporter.exe
+	./build/test_issue_reporter.exe
 
 .PHONY: editor windows clean dist shaders shaders_gpu_link win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf linux linux-shaders-gpu check-animation-production-sources
 

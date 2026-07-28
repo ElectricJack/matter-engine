@@ -369,6 +369,14 @@ public:
     struct RtInstance {
         uint64_t part_hash = 0;
         float transform[16]{};
+        // Animated instances must pick their LOD from the same dynamic joint
+        // bounds the raster lanes use, not from the part's static cluster
+        // AABB — those two metrics disagree for a deforming mesh, and the
+        // disagreement is directly visible: the gbuffer draws one rung while
+        // the tracer traces another, and the two surfaces interpenetrate.
+        // UINT32_MAX means "static instance, use the cluster AABB".
+        uint32_t animation_instance_slot = UINT32_MAX;
+        uint32_t animation_instance_generation = 0;
     };
 
     explicit VkSceneRenderer(matter::VulkanDevice& vulkan);

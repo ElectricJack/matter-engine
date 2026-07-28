@@ -31,6 +31,10 @@ ParticleDynamicsExample/particle_dynamics
 # Misc
 SurfaceLib/test_config
 *.ini
+# ...except issue-report layout sidecars, which are evidence rather than local
+# config: a shot's ImGui layout determines the viewport rect, so a replay
+# without it reproduces the window size and still frames the shot differently.
+!/issues/**/*.layout.ini
 
 # Editor / OS
 .DS_Store
