@@ -15,8 +15,8 @@
 // (retopo actually changed the mesh content, not just the hash).
 //
 // Runtime requirements: libautoremesher_core.a must be built (build-all.sh
-// does this) and libtbb.so must be present at the rpath baked into this
-// binary (../../third_party/autoremesher_core/thirdparty/tbb/build/linux_*).
+// does this, as does `make -C third_party/autoremesher_core`). The archive is
+// self-contained, so there is no runtime library to locate.
 
 #include "script_host.h"
 #include "part_asset_v2.h"
@@ -29,10 +29,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <dirent.h>
+#include <filesystem>
 #include <string>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <system_error>
 #include <vector>
 
 static int failures = 0;
@@ -42,42 +41,43 @@ static int failures = 0;
 // Temp cache dir
 // ─────────────────────────────────────────────────────────────────────────────
 
+// These use <filesystem> rather than dirent/mkdtemp/lstat so the suite builds
+// on Windows as well as Linux — retopo itself is available on both.
+
 static void rmrf(const std::string& path) {
-    DIR* d = opendir(path.c_str());
-    if (d) {
-        struct dirent* e;
-        while ((e = readdir(d)) != nullptr) {
-            std::string n = e->d_name;
-            if (n == "." || n == "..") continue;
-            std::string sub = path + "/" + n;
-            struct stat st;
-            if (::lstat(sub.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-                rmrf(sub);
-            } else {
-                ::unlink(sub.c_str());
-            }
-        }
-        closedir(d);
-    }
-    ::rmdir(path.c_str());
+    std::error_code ec;
+    std::filesystem::remove_all(path, ec);
 }
 
 static std::string make_temp_cache_dir() {
-    char tmpl[] = "/tmp/retopo_region_integration_XXXXXX";
-    char* p = ::mkdtemp(tmpl);
-    if (!p) {
-        std::fprintf(stderr, "mkdtemp failed\n");
+    std::error_code ec;
+    const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+    if (ec) {
+        std::fprintf(stderr, "temp_directory_path failed: %s\n", ec.message().c_str());
         std::exit(2);
     }
-    std::string root = p;
-    ::mkdir((root + "/parts").c_str(), 0755);
-    return root;
+    // create_directory returns false (without setting ec) when the directory
+    // already exists, so scanning for the first free index gives us a unique
+    // root without needing mkdtemp.
+    for (int i = 0; i < 1000; ++i) {
+        const std::filesystem::path root =
+            base / ("retopo_region_integration_" + std::to_string(i));
+        if (std::filesystem::create_directory(root, ec)) {
+            std::filesystem::create_directories(root / "parts", ec);
+            // generic_string(): forward slashes on every platform, since the
+            // engine builds cache paths by string concatenation.
+            return root.generic_string();
+        }
+    }
+    std::fprintf(stderr, "could not create a temp cache dir under %s\n",
+                 base.generic_string().c_str());
+    std::exit(2);
 }
 
 static bool journal_file_exists(const std::string& cache_root, const char* name) {
-    struct stat st;
-    std::string path = cache_root + "/parts/" + name;
-    return ::stat(path.c_str(), &st) == 0;
+    std::error_code ec;
+    return std::filesystem::exists(
+        std::filesystem::path(cache_root) / "parts" / name, ec);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -223,12 +223,14 @@ static void test_retopo_region_bake() {
     // assert the count differs.  This proves retopo ran and mutated the mesh —
     // not just that the hashes differ from the stack encoding.
     {
-        struct stat st;
+        std::error_code ec;
         CHECK(!r_no_retopo.written_path.empty(), "Bake A: written_path non-empty");
-        CHECK(r_no_retopo.written_path.empty() || ::stat(r_no_retopo.written_path.c_str(), &st) == 0,
+        CHECK(r_no_retopo.written_path.empty() ||
+                  std::filesystem::exists(r_no_retopo.written_path, ec),
               "Bake A: .part file exists on disk");
         CHECK(!r_retopo.written_path.empty(), "Bake B: written_path non-empty");
-        CHECK(r_retopo.written_path.empty() || ::stat(r_retopo.written_path.c_str(), &st) == 0,
+        CHECK(r_retopo.written_path.empty() ||
+                  std::filesystem::exists(r_retopo.written_path, ec),
               "Bake B: .part file exists on disk");
 
         if (r_no_retopo.error.ok && r_retopo.error.ok &&

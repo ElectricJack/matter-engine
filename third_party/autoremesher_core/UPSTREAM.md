@@ -80,11 +80,43 @@ matches what a future `git subtree pull --squash` would key off.
   — MPL-2 core only. The pipeline uses only `<Eigen/Dense>` (MPL-2), so
   this is enforced by the fact that no source pulls in the GPL/LGPL paths.
   Pinned SHA: `be6a3ae1fd14d8f6861ab1314ec549c5d1f199be`
-- `thirdparty/tbb/` — Apache-2. Pinned SHA: `012d9f2a909fc6245a1f6e35f34dcbf0daea3c0a`
-
 Not vendored from upstream `thirdparty/`:
 - `thirdparty/QtAwesome/` — Qt-only.
 - `thirdparty/QtWaitingSpinner/` — Qt-only.
+
+### Removed after vendoring
+
+- `thirdparty/tbb/` — Apache-2, wjakob/tbb (TBB 2017-era).
+  Pinned SHA: `012d9f2a909fc6245a1f6e35f34dcbf0daea3c0a`.
+  **Deleted** (1460 files, 18 MB) once `thirdparty/tbb_shim/` replaced it — see
+  "Locally authored replacements" below. Recover from history if a future
+  extraction sync ever needs the original snapshot back.
+
+## Locally authored replacements
+
+- `thirdparty/tbb_shim/` — header-only stand-in for TBB, MatterEngine2 MIT
+  copyright. The pipeline plus the two geogram files that use TBB
+  (`parameterization/mesh_global_param.cpp`, `exploragram/hexdom/quad_cover.cpp`)
+  touch exactly four constructs: `blocked_range`, `parallel_for`, `combinable`,
+  and `task_scheduler_init`. The shim implements them on `<thread>`.
+
+  Motivation: the vendored 2017 TBB has to be built as a shared library and only
+  ever built on Linux, so `libautoremesher_core.a` shipped with unresolved
+  `tbb::*` symbols and every consumer Makefile carried a
+  `thirdparty/tbb/build/linux_*_release` wildcard, a `-ltbb`, and an `$ORIGIN`
+  rpath. Retopo was therefore compiled out on Windows entirely. With the shim
+  the archive is self-contained and retopo builds on every platform.
+
+  **If an extraction sync introduces new TBB API, the build fails with a missing
+  declaration — extend the shim then.** It deliberately does not mirror TBB's
+  wider surface. See `thirdparty/tbb_shim/include/tbb/tbb_shim.h`.
+
+- `thirdparty/compat_include/geogram/version.h` — forwarding header. Upstream
+  geogram ships `src/lib/geogram/version.h` as a symlink to `basic/version.h`,
+  and checkouts without symlink support (Windows worktrees and plain clones)
+  materialise it as a text file containing the literal target path, which fails
+  to compile. This directory precedes `geogram/src/lib` on the include path so
+  the include resolves to a real header without modifying anything tracked.
 
 ## Extraction rules
 
@@ -162,6 +194,10 @@ Not vendored from upstream `thirdparty/`:
   directory. The `__has_include(<tbb/parallel_for.h>)` branch fires; the
   `<oneapi/tbb/...>` branch does not apply. Task 3/4 should add
   `-I../thirdparty/tbb/include` and use the legacy `<tbb/...>` headers.
+
+  **Still true against `thirdparty/tbb_shim/`**, which deliberately exposes the
+  same legacy `tbb/` layout and no `oneapi/` directory, so the same
+  `__has_include` branch fires and the guarded sources need no edit.
 - **`QuadRemesher` alias is stale (confirmed Task 3).** Upstream
   `include/AutoRemesher/QuadRemesher` re-includes
   `../src/AutoRemesher/quadremesher.h`, but no such file exists in upstream
@@ -218,16 +254,18 @@ Not vendored from upstream `thirdparty/`:
   Licenses: MIT (libMeshb, rply) and zlib (permissive) — no LGPL/GPL taint.
   `lua/`, `HLBFGS/`, `PoissonRecon/`, `triangle/`, `xatlas/`, `stb_image/`
   remain excluded from compile.
-- **Vendored TBB built (release only).** `thirdparty/tbb/build/linux_*_release/
-  libtbb.so.2`. Two build-config edits made under `thirdparty/tbb/build/
-  linux.gcc.inc`:
-  - `WARNING_SUPPRESS` extended with `-Wno-changes-meaning -Wno-class-memaccess
-    -Wno-deprecated-declarations -Wno-cast-function-type
-    -Wno-stringop-overflow` to survive gcc-13.
-  - `ITT_NOTIFY = -DDO_ITT_NOTIFY` cleared for the `intel64` arch — VTune
-    profiling hooks; we don't use VTune and the observer path had ancillary
-    fragility (see task_scheduler_init note above). Comment inline.
-- **`tests/Makefile` links against vendored TBB by rpath.** Uses `$ORIGIN`
-  relative rpath to avoid embedding the absolute build path (which contains
-  spaces and breaks `ld -rpath`). The `-rpath` includes the versioned TBB
-  build subdir name.
+- **Vendored TBB retired in favour of `thirdparty/tbb_shim/`.** The 2017 TBB is
+  no longer built, linked, or on the include path; `libautoremesher_core.a` has
+  no unresolved symbols and consumers link it with a bare
+  `-lautoremesher_core`. This removed the `linux_*_release` wildcard, `-ltbb`,
+  and `$ORIGIN` rpath from `tests/Makefile`, `MatterEditor/Makefile`,
+  `MatterEngine3/tests/Makefile`, `libs/MatterSurfaceLib/tests/Makefile`, and
+  `build-all.sh`, and it retired these former workarounds:
+  - the two `thirdparty/tbb/build/linux.gcc.inc` edits (gcc-13 warning
+    suppressions, and clearing `ITT_NOTIFY` for `intel64`);
+  - the constraint that `task_scheduler_init` be constructed exactly once for
+    process lifetime — the shim's version is inert, so repeat `remesh()` calls
+    no longer risk the destroy-then-reinit segfault.
+- **Windows build flags.** `-D_USE_MATH_DEFINES` (the UCRT hides `M_PI` behind
+  it, unlike glibc) and `-Wno-unknown-pragmas` (geogram's `basic/atomics.h`
+  carries MSVC `#pragma intrinsic` lines gcc reports on every TU).

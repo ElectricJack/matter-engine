@@ -4,7 +4,7 @@
 # so `make` builds a static archive (libmatter_engine3.a) that bundles the full
 # engine — script host, DSL/CSG bake pipeline, part-graph, LOD flatten/select,
 # render/provider/facade, MatterSurfaceLib backend, and vendored QuickJS-ng.
-# MatterEditor links this single archive plus raylib and (optionally) autoremesher.
+# MatterEditor links this single archive plus raylib and autoremesher.
 #
 # MatterEngine3 consumes the MatterSurfaceLib prototype READ-ONLY:
 #   new headers via -Iinclude, consumed prototype headers via
@@ -33,8 +33,10 @@
 # Caller can inject extra flags via EXTRA_CFLAGS / EXTRA_INCLUDE:
 #   make -C MatterEngine3 EXTRA_CFLAGS="-DMATTER_HAVE_AUTOREMESHER ..." \
 #        EXTRA_INCLUDE="-I../third_party/autoremesher_core/include"
-# MatterEditor/Makefile does this when libautoremesher_core.a is present so that
-# part_flatten.cpp compiles with the retopo hook enabled.
+# MatterEditor/Makefile does this whenever retopo is enabled, so that
+# modifier_apply.cpp compiles with its retopo branch live. (The retopo hook
+# used to sit in part_flatten.cpp; ea579ba6 moved it to the modifier-region
+# path in modifier_apply.cpp.)
 #
 # When MATTER_HAVE_AUTOREMESHER is passed via EXTRA_CFLAGS, the caller must also
 # set EXTRA_RETOPO_CPP to point at MatterSurfaceLib/src/mesh_retopo.cpp so the

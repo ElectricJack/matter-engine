@@ -4,9 +4,13 @@
 # See UPSTREAM.md for what's vendored. This library links together the
 # vendored autoremesher pipeline sources with a subset of geogram
 # (BSD-3 core + exploragram hexdom), the isotropicremesher helper tree,
-# Eigen (MPL-2 core only), and legacy TBB headers. No Qt is pulled in.
+# Eigen (MPL-2 core only), and a header-only TBB shim. No Qt is pulled in.
 # No GPL modules from geogram (tetgen, triangle, lua) are compiled or
 # included on the -I path.
+#
+# The result is self-contained: `libautoremesher_core.a` has no unresolved
+# external symbols and needs no companion runtime library, so consumers link
+# it with a bare -lautoremesher_core on every platform.
 #
 # Design notes:
 # - We compile geogram's core (basic, api, mesh, delaunay, voronoi,
@@ -20,10 +24,12 @@
 #   which we stub in src/nl_ext_stubs.c to return NL_FALSE so the solver
 #   degrades to its iterative fallback. Same story for CHOLMOD, MKL, CUDA.
 # - We do NOT compile geogram's lua/ subdir (unused by the pipeline).
-# - TBB: header-only usage from the pipeline sources; the runtime symbols
-#   (task, task_group_context, arena) remain unresolved in the .a --
-#   consumers of this static library must link against a TBB runtime or
-#   provide their own stubs (Task 6 will address this at driver link).
+# - TBB: replaced by the header-only shim in thirdparty/tbb_shim/. The
+#   pipeline and the two geogram files that use TBB touch only four
+#   constructs (blocked_range, parallel_for, combinable,
+#   task_scheduler_init); the shim implements them on <thread>. That drops
+#   the vendored 2017 TBB runtime, which only ever built on Linux and was
+#   what kept retopo off Windows. See thirdparty/tbb_shim/include/tbb/tbb_shim.h.
 # - Eigen: header-only, MPL-2 core only. We MUST NOT #include from
 #   Eigen/src/SuperLUSupport/, Eigen/src/UmfPackSupport/ etc (GPL/LGPL).
 #   The pipeline only pulls in <Eigen/Dense>, which is MPL-2.
@@ -37,16 +43,20 @@ AR       ?= ar
 # Common warnings-off: geogram core has many -Wunused etc.; upstream also
 # suppresses them in vor_reset_warning_level(). Deprecated-declarations for
 # std::iterator warnings in geogram templates on modern libstdc++.
+# _USE_MATH_DEFINES: the UCRT (MSYS2 / mingw-w64) hides M_PI behind this
+# macro, unlike glibc. vector3.h and the parameterizer use M_PI freely.
+# -Wno-unknown-pragmas: geogram/basic/atomics.h carries MSVC
+# `#pragma intrinsic(...)` lines that gcc reports on every translation unit.
 COMMON_FLAGS := -O2 -fPIC \
+                -D_USE_MATH_DEFINES \
                 -Wall -Wno-unused -Wno-unused-parameter \
                 -Wno-sign-compare -Wno-strict-aliasing \
                 -Wno-missing-field-initializers \
                 -Wno-deprecated -Wno-deprecated-declarations \
                 -Wno-attributes -Wno-parentheses \
-                -Wno-narrowing
+                -Wno-narrowing -Wno-unknown-pragmas
 
-# -Wno-changes-meaning is C++-only (fires on TBB legacy task.h).
-CXX_ONLY_FLAGS := -Wno-changes-meaning
+CXX_ONLY_FLAGS :=
 
 # Geogram compile-time switches (match its own CMakeLists.txt for the
 # lib target so headers see the same macro world):
@@ -57,15 +67,19 @@ CXX_ONLY_FLAGS := -Wno-changes-meaning
 # parameterizer uses anyway.
 GEOGRAM_DEFINES := -DGEOGRAM_WITH_PDEL
 
+# compat_include MUST precede geogram/src/lib -- it shadows the
+# <geogram/version.h> symlink, which does not survive checkouts without
+# symlink support. See thirdparty/compat_include/geogram/version.h.
 INCLUDES := -Iinclude \
             -Ithirdparty/eigen \
             -Ithirdparty/geogram \
+            -Ithirdparty/compat_include \
             -Ithirdparty/geogram/src/lib \
             -Ithirdparty/geogram/src/lib/geogram/third_party/libMeshb/sources \
             -Ithirdparty/geogram/src/lib/geogram/third_party/rply \
             -Ithirdparty/geogram/src/lib/geogram/third_party/zlib \
             -Ithirdparty/isotropicremesher \
-            -Ithirdparty/tbb/include
+            -Ithirdparty/tbb_shim/include
 
 # gcc-13 tightened up header transitivity: several vendored files rely on
 # older gcc's implicit fixed-width-int / thread hoisting via <QDebug>, TBB
@@ -150,17 +164,10 @@ GEO_TP_C := \
 # our snapshot. rply is a single translation unit. zlib compiles standalone.
 
 # ---------------------------------------------------------------------
-# TBB: header-only from this library's perspective. The runtime .cpp
-# files under thirdparty/tbb/src/tbb/ are NOT compiled here -- consumers
-# link a TBB runtime at final link time. Left as a variable in case it
-# needs to be flipped on later.
-# ---------------------------------------------------------------------
-TBB_CPP :=
-
-# ---------------------------------------------------------------------
 # Object aggregation
 # ---------------------------------------------------------------------
-ALL_CPP := $(PIPELINE_CPP) $(GEOGRAM_CPP) $(EXPLORAGRAM_CPP) $(ISOTROPIC_CPP) $(TBB_CPP)
+# No TBB entry: thirdparty/tbb_shim/ is header-only (see design notes above).
+ALL_CPP := $(PIPELINE_CPP) $(GEOGRAM_CPP) $(EXPLORAGRAM_CPP) $(ISOTROPIC_CPP)
 ALL_C   := $(PIPELINE_C) $(GEOGRAM_C) $(GEO_TP_C)
 
 CPP_OBJ := $(ALL_CPP:.cpp=.o)

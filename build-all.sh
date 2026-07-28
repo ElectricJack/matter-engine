@@ -101,8 +101,9 @@ prep_raylib() {
 }
 
 # autoremesher_core: static library (geogram core + hexdom + isotropicremesher
-# + autoremesher pipeline). Built once here so MSL / MatterEngine3 can link
-# it. Not cross-platform-sensitive like raylib -- just a Linux/WSL .a.
+# + autoremesher pipeline). Built once here so MSL / MatterEngine3 can link it.
+# Builds on every platform and needs no companion runtime library -- its TBB
+# replacement is header-only (see third_party/autoremesher_core/thirdparty/tbb_shim/).
 prep_autoremesher_core() {
     echo "Building autoremesher_core static lib..."
     ( cd third_party/autoremesher_core && make >/dev/null 2>&1 )
@@ -110,15 +111,6 @@ prep_autoremesher_core() {
         echo "  autoremesher_core: OK"
     else
         echo "  autoremesher_core: FAIL"
-    fi
-    # TBB runtime: header-only inside the static lib, but consumers
-    # (retopo_integration_tests, viewer) link libtbb.so at final link time.
-    # TBB's own Makefile emits build/linux_*_release/.
-    ( cd third_party/autoremesher_core/thirdparty/tbb && make tbb >/dev/null 2>&1 )
-    if ls third_party/autoremesher_core/thirdparty/tbb/build/linux_*_release/libtbb.so.2 >/dev/null 2>&1; then
-        echo "  tbb runtime: OK"
-    else
-        echo "  tbb runtime: FAIL"
     fi
 }
 
@@ -180,7 +172,7 @@ if [ "$MODE" = "test" ]; then
         fi
     done
 
-    # MSL mesh_retopo_tests (Phase 5 Task 6) — links libautoremesher_core.a + TBB.
+    # MSL mesh_retopo_tests (Phase 5 Task 6) — links libautoremesher_core.a.
     # Only runs if the vendored lib built; otherwise skip cleanly (autoremesher_core
     # is optional, prep_autoremesher_core above just warns "FAIL" and moves on).
     if [ -f third_party/autoremesher_core/libautoremesher_core.a ]; then

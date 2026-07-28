@@ -108,45 +108,45 @@ STREAMLINE_PATH ?=
 # build here actually use, so it is the default; override STREAMLINE_DLL_DIR
 # to ship the smaller release set instead.
 STREAMLINE_DLL_DIR ?= $(STREAMLINE_PATH)/bin/x64/development
-# ---- Phase 5 autoremesher_core (Task 15 wiring) ----
-# The vendored autoremesher_core static lib + its TBB dependency. Linux-only:
-# the library was built for Linux in Task 4 (third_party/autoremesher_core/) and
-# the geogram/TBB build under mingw isn't part of this landing. Windows viewer
-# builds WITHOUT -DMATTER_HAVE_AUTOREMESHER, so schemas that opt into retopo
-# transparently fall through to the streaming unretopo'd flatten path (same
-# behavior guarantee as tests/Makefile RETOPO_INT_TARGET's design).
+# ---- autoremesher_core: the retopo modifier backend ----
+# libautoremesher_core.a is self-contained on every platform — its TBB
+# replacement (third_party/autoremesher_core/thirdparty/tbb_shim/) is
+# header-only — so linking it is just the archive: no companion runtime
+# library, no rpath, and nothing platform-conditional.
 #
-# Only fold retopo into the build if the static lib and TBB build dir are
-# actually present — build-all.sh produces both. Otherwise skip retopo entirely
-# and the viewer builds as before (schemas without retopo unaffected; schemas
-# WITH retopo hit the #else warn-and-continue path in part_flatten.cpp).
+# The archive is a prerequisite of the viewer targets, so a fresh checkout
+# builds it automatically. It is vendored code that does not change between
+# builds, so the rule has no prerequisites of its own and fires only when the
+# archive is missing; after that it costs nothing. Pass RETOPO=0 to build the
+# editor without retopo — schemas whose modifier stacks opt into it then hit
+# the warn-and-continue path in MatterEngine3/src/modifier_apply.cpp.
+RETOPO ?= 1
 AR_CORE_PATH := ../third_party/autoremesher_core
 AR_CORE_LIB  := $(AR_CORE_PATH)/libautoremesher_core.a
-TBB_BUILD_DIR := $(firstword $(wildcard $(AR_CORE_PATH)/thirdparty/tbb/build/linux_*_release))
-TBB_BUILD_SUBDIR := $(patsubst $(AR_CORE_PATH)/thirdparty/tbb/build/%,%,$(TBB_BUILD_DIR))
-HAVE_AUTOREMESHER := $(and $(wildcard $(AR_CORE_LIB)),$(TBB_BUILD_DIR))
 
-ifneq ($(HAVE_AUTOREMESHER),)
-  # -DMATTER_HAVE_AUTOREMESHER enables the retopo hook in part_flatten.cpp (inside
-  # the library) and the retopo() glue in mesh_retopo.cpp (compiled into the library
-  # via EXTRA_RETOPO_CPP). The library is rebuilt with these flags as a prerequisite
-  # of the viewer target, so part_flatten.o in the archive sees the flag.
+ifeq ($(RETOPO),1)
+  HAVE_AUTOREMESHER := 1
+  # -DMATTER_HAVE_AUTOREMESHER enables the retopo branch in modifier_apply.cpp
+  # and the retopo() glue in MatterSurfaceLib's mesh_retopo.cpp.
   AR_CORE_CFLAGS := -DMATTER_HAVE_AUTOREMESHER -I$(AR_CORE_PATH)/include
-  # --allow-multiple-definition: raylib bundles stb_image_write.h in rtextures.c
-  # and autoremesher_core's geogram bundles its own copy in
-  # image_serializer_stb.o. Both archives get pulled in here — raylib because
-  # the viewer draws GL, autoremesher_core because part_flatten's hook
-  # references autoremesher::retopo. The stb sources are byte-equivalent vendor
-  # copies, so picking either definition is safe. This mirrors tests/Makefile
-  # RETOPO_INT_TARGET's link workaround verbatim.
+  # --allow-multiple-definition: raylib bundles stb_image_write.h in
+  # rtextures.c and autoremesher_core's geogram bundles its own copy in
+  # image_serializer_stb.o. Where both archives land in one link, the stb
+  # sources are byte-equivalent vendor copies, so either definition is safe.
   AR_CORE_LDFLAGS := -L$(AR_CORE_PATH) -lautoremesher_core \
-                     -L$(TBB_BUILD_DIR) -ltbb \
-                     -Wl,-rpath,'$$ORIGIN/../third_party/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
                      -Wl,--allow-multiple-definition
+  AR_CORE_DEP     := $(AR_CORE_LIB)
+  AR_CORE_MSL_CPP := $(MSL_DIR)/src/mesh_retopo.cpp
 else
+  HAVE_AUTOREMESHER :=
   AR_CORE_CFLAGS :=
   AR_CORE_LDFLAGS :=
+  AR_CORE_DEP :=
+  AR_CORE_MSL_CPP :=
 endif
+
+$(AR_CORE_LIB):
+	$(MAKE) -C $(AR_CORE_PATH)
 
 # ---- Linux viewer: GL path RETIRED in Phase 5a, Vulkan target ADDED in 5b ----
 # main_linux.cpp, ui_linux.cpp and ui_linux.h (the GL/raylib entry point + imgui
@@ -270,7 +270,8 @@ WIN_MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
               $(MSL_DIR)/src/vertex_ao.cpp \
               $(MSL_DIR)/src/occupancy.cpp $(MSL_DIR)/src/tlas_manager.cpp \
               $(MSL_DIR)/src/part_asset.cpp \
-              $(MSL_DIR)/src/lattice.cpp $(MSL_DIR)/src/particle_culling.cpp
+              $(MSL_DIR)/src/lattice.cpp $(MSL_DIR)/src/particle_culling.cpp \
+              $(AR_CORE_MSL_CPP)
 
 WIN_PIPELINE_C = $(MSL_DIR)/src/surface.c \
                  $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c \
@@ -299,7 +300,7 @@ IMGUI_SRC_WIN = $(IMGUI_CORE_SRC) $(IMGUIZMO_SRC) \
 #
 # Windows: full direct-source compile (APP_SRC + WIN_ME3_CPP + WIN_MSL_CPP + IMGUI_SRC).
 # Windows is the release build path for now: -DNDEBUG disables assert().
-CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
+CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) $(AR_CORE_CFLAGS) -ffunction-sections -fdata-sections -MMD -MP
 CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_HAVE_STREAMLINE=$(HAVE_STREAMLINE)
 ifeq ($(HAVE_STREAMLINE),1)
   CXX_FLAGS_BUILD_WIN_COMMON += -I"$(STREAMLINE_PATH)/include"
@@ -349,9 +350,10 @@ $(W_DIR) $(W_OBJ_DIR):
 # build-engine-lib is kept as the one place that knows how to invoke the
 # library sub-make with the right autoremesher flags, for whatever Phase 5b's
 # Linux Vulkan target ends up needing.
-# When autoremesher is present, pass the flag + AR include path so that
-# part_flatten.cpp and mesh_retopo.cpp inside the library see the right defines.
-# EXTRA_RETOPO_CPP tells the library Makefile to also compile mesh_retopo.cpp.
+# When retopo is enabled, pass the flag + AR include path so that
+# modifier_apply.cpp and mesh_retopo.cpp inside the library see the right
+# defines. EXTRA_RETOPO_CPP tells the library Makefile to also compile
+# mesh_retopo.cpp.
 # The library Makefile stamps its EXTRA_CFLAGS (.lib_flags) and self-forces a
 # full recompile only when the flag set changes, so this stays incremental.
 .PHONY: build-engine-lib
@@ -667,8 +669,8 @@ $(W_FLECS_OBJ): $(W_OBJ_DIR)/%.o: $(FLECS_DIR)/%.c | $(W_OBJ_DIR)
 # regeneration must not force object rebuilds (embedded-shaders is phony).
 $(W_CPP_OBJ): | embedded-shaders
 
-windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) win-shaders-gpu $(W_ALL_OBJ)
-	$(WIN_CXX) $(W_ALL_OBJ) -o $(W_DIR)/editor.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
+windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) win-shaders-gpu $(AR_CORE_DEP) $(W_ALL_OBJ)
+	$(WIN_CXX) $(W_ALL_OBJ) -o $(W_DIR)/editor.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(AR_CORE_LDFLAGS) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
 	@if [ "$(HAVE_STREAMLINE)" = "1" ]; then cp -f "$(STREAMLINE_DLL_DIR)"/*.dll $(W_DIR)/; fi
 	@imports="$$($(WIN_CXX) -print-prog-name=objdump -p $(W_DIR)/editor.exe)"; \
 	 for forbidden in opengl32 ChoosePixelFormat SetPixelFormat SwapBuffers cuGraphicsGL nvcuda cuDevice; do \
@@ -770,7 +772,7 @@ LINUX_AR  ?= ar
 # in $(WIN_INCLUDE_PATHS), further down the search order) wins instead.
 CXX_FLAGS_BUILD_LINUX_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST \
     -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY -DMATTER_HAVE_STREAMLINE=0 \
-    $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) \
+    $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) $(AR_CORE_CFLAGS) \
     -ffunction-sections -fdata-sections -MMD -MP
 
 # Reusing $(WIN_ALL_CPP_SRC) verbatim rather than re-listing APP_SRC/WIN_ME3_CPP/
@@ -888,9 +890,9 @@ LINUX_SYSTEM_LIBS = -lX11 -ldl -lpthread -lm -lrt
 # $(VK_EMBEDDED_HEADER)'s recipe (defined above, shared with `windows`) invokes
 # $(GLSLC) -- override that too (see the VULKAN_INCLUDE/VULKAN_LIB_DIR/GLSLC
 # note earlier in this section) if it is not already an X11/Linux glslc.
-linux: $(VK_EMBEDDED_HEADER) $(GLFW_LINUX_LIB) linux-shaders-gpu $(BOX3D_LIB) $(L_ALL_OBJ)
+linux: $(VK_EMBEDDED_HEADER) $(GLFW_LINUX_LIB) linux-shaders-gpu $(BOX3D_LIB) $(AR_CORE_DEP) $(L_ALL_OBJ)
 	$(LINUX_CXX) $(L_ALL_OBJ) -o $(L_DIR)/editor $(CFLAGS) -Wl,--gc-sections \
-	    $(BOX3D_LIB) $(GLFW_LINUX_LIB) $(LINUX_SYSTEM_LIBS) \
+	    $(BOX3D_LIB) $(GLFW_LINUX_LIB) $(AR_CORE_LDFLAGS) $(LINUX_SYSTEM_LIBS) \
 	    -L$(VULKAN_LIB_DIR) -lvulkan
 
 # Linux .d files use plain Unix paths, not the D:/-style paths that make the

@@ -356,12 +356,15 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     if (!prepare_paths(err)) return false;
 
 #if defined(MATTER_HAVE_AUTOREMESHER)
-    // Warm the TBB scheduler BEFORE any heap-heavy work (install() calls
-    // save_v2 for every fresh bake). Per the retopo_integration_tests docstring:
-    // on WSL2 the first retopo() call segfaults during TBB init if it happens
-    // AFTER save_v2 activity. This warms it once per process into a clean
-    // state. Runs unconditionally: cost is <50 ms on a tiny cube, and it
-    // avoids a conditional-execution hazard for worlds that DO have opt-ins.
+    // Originally this existed because the vendored 2017 TBB segfaulted on WSL2
+    // if the first retopo() call happened after heap-heavy work (install()
+    // calls save_v2 for every fresh bake). That TBB is gone — replaced by a
+    // header-only shim — so the crash hazard is gone with it.
+    //
+    // The call is kept because it still does useful work: the first retopo()
+    // is what runs ensure_singletons_initialized(), which brings up geogram's
+    // Logger / ProcessManager / attribute registry. Doing that here moves it
+    // off the first real bake. Cost is ~10 ms on the tiny warm-up cube.
     tbb_warmup_retopo();
 
     // Load the retopo blacklist journal. Any hash present in the .retopo_pending

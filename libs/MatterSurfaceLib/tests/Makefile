@@ -283,24 +283,27 @@ run-mtx: $(MTX_TARGET)
 	./$(MTX_TARGET)
 
 # mesh_retopo wrapper unit tests (headless, GL-free).
-# Links against autoremesher_core (static) + TBB (shared). The rpath uses
-# $ORIGIN so the binary finds libtbb.so.2 at runtime without LD_LIBRARY_PATH.
+# Links libautoremesher_core.a, which is self-contained on every platform (its
+# TBB replacement is header-only), so there is no companion shared library to
+# locate and no rpath to stamp.
 AR_CORE_PATH = ../../../third_party/autoremesher_core
-TBB_BUILD_DIR := $(firstword $(wildcard $(AR_CORE_PATH)/thirdparty/tbb/build/linux_*_release))
-TBB_BUILD_SUBDIR := $(patsubst $(AR_CORE_PATH)/thirdparty/tbb/build/%,%,$(TBB_BUILD_DIR))
 
 RETOPO_TARGET = build/mesh_retopo_tests
 RETOPO_SOURCES = mesh_retopo_tests.cpp ../src/mesh_retopo.cpp \
                  ../src/mesh_indexed.cpp ../src/mesh_transform.cpp
 RETOPO_CFLAGS = $(CFLAGS) -I$(AR_CORE_PATH)/include
-RETOPO_LDFLAGS = $(LDFLAGS) \
-                 -L$(AR_CORE_PATH) -lautoremesher_core \
-                 -L$(TBB_BUILD_DIR) -ltbb \
-                 -Wl,-rpath,'$$ORIGIN/../../../third_party/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
-                 -lpthread -ldl -lrt
+# This suite is headless and GL-free, so it deliberately does NOT inherit the
+# shared $(LDFLAGS)/$(LDLIBS) (GL/X11/raylib). That keeps the link minimal and
+# lets it build on Windows, where those libraries do not exist. Ask the
+# compiler what it targets rather than reading $(OS)/$(MSYSTEM), which depend
+# on which shell invoked make.
+RETOPO_LDFLAGS = -L$(AR_CORE_PATH) -lautoremesher_core
+ifeq ($(findstring mingw,$(shell $(CC) -dumpmachine)),)
+  RETOPO_LDFLAGS += -lm -lpthread -ldl -lrt
+endif
 
 $(RETOPO_TARGET): $(RETOPO_SOURCES) | build
-	$(CC) $(RETOPO_SOURCES) -o $(RETOPO_TARGET) $(RETOPO_CFLAGS) $(INCLUDE_PATHS) $(RETOPO_LDFLAGS) $(LDLIBS)
+	$(CC) $(RETOPO_SOURCES) -o $(RETOPO_TARGET) $(RETOPO_CFLAGS) $(INCLUDE_PATHS) $(RETOPO_LDFLAGS)
 
 run-retopo: $(RETOPO_TARGET)
 	./$(RETOPO_TARGET)

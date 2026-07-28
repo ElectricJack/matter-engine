@@ -308,10 +308,10 @@ QJS_C    = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c \
 BOX3D_DIR = ../../third_party/box3d
 BOX3D_LIB = $(BOX3D_DIR)/libbox3d.a
 
-# Autoremesher_core detection (shared by the retopo integration test AND the GPU tests)
+# Autoremesher_core detection (shared by the retopo integration test AND the GPU tests).
+# The archive is self-contained on every platform -- its TBB replacement is
+# header-only -- so presence of the .a is the whole test.
 AR_CORE_PATH = ../../third_party/autoremesher_core
-TBB_BUILD_DIR := $(firstword $(wildcard $(AR_CORE_PATH)/thirdparty/tbb/build/linux_*_release))
-TBB_BUILD_SUBDIR := $(patsubst $(AR_CORE_PATH)/thirdparty/tbb/build/%,%,$(TBB_BUILD_DIR))
 
 # ---------------------------------------------------------------------------
 # Flavors. Each flavor defines its own compile flags. A TU compiled under one
@@ -337,12 +337,10 @@ TBB_BUILD_SUBDIR := $(patsubst $(AR_CORE_PATH)/thirdparty/tbb/build/%,%,$(TBB_BU
 # GPU autoremesher CFLAGS need to be resolved at parse time so the flavor's
 # compile line sees them. Detection replicates the original block.
 # ---------------------------------------------------------------------------
-HAVE_AUTOREMESHER := $(and $(wildcard $(AR_CORE_PATH)/libautoremesher_core.a),$(TBB_BUILD_DIR))
+HAVE_AUTOREMESHER := $(wildcard $(AR_CORE_PATH)/libautoremesher_core.a)
 ifneq ($(HAVE_AUTOREMESHER),)
   GPU_AR_CORE_CFLAGS  := -DMATTER_HAVE_AUTOREMESHER -I$(AR_CORE_PATH)/include
   GPU_AR_CORE_LDFLAGS := -L$(AR_CORE_PATH) -lautoremesher_core \
-                         -L$(TBB_BUILD_DIR) -ltbb \
-                         -Wl,-rpath,'$$ORIGIN/../../third_party/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
                          -Wl,--allow-multiple-definition
   GPU_AR_CORE_CPP     := $(MSL)/mesh_retopo.cpp
 else
@@ -1017,6 +1015,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
 # mesh_retopo.cpp is the only autoremesher-specific addition over MODBAKE_CPP.
 RETOPO_INT_TARGET = build/retopo_integration_tests
 RETOPO_INT_CPP = retopo_integration_tests.cpp ../src/bake_trace.cpp \
+                 ../src/part_graph.cpp \
                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
                  ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \
@@ -1036,8 +1035,6 @@ RETOPO_INT_C   = $(COMMON_MSL_C)
 # image_serializer_stb.o. Both archives get pulled in here.
 RETOPO_INT_LDFLAGS = $(LDFLAGS) \
                      -L$(AR_CORE_PATH) -lautoremesher_core \
-                     -L$(TBB_BUILD_DIR) -ltbb \
-                     -Wl,-rpath,'$$ORIGIN/../../third_party/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
                      -Wl,--allow-multiple-definition
 
 # ===== flavor gpu (GPU tests) ==========================================

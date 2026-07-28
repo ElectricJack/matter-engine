@@ -1,25 +1,23 @@
 CXX ?= g++
 CXXFLAGS := -std=c++17 -O2 -Wall -I../include
 
-# Locate the vendored TBB runtime built alongside the static lib. TBB's own
-# Makefile emits a versioned dir under thirdparty/tbb/build/. We glob the
-# release variant; if you clean it, rebuild with:
-#   (cd ../thirdparty/tbb && make tbb)
-TBB_LIB_DIR := $(firstword $(wildcard ../thirdparty/tbb/build/linux_*_release))
-TBB_LIB_SUBDIR := $(patsubst ../thirdparty/tbb/build/%,%,$(TBB_LIB_DIR))
-
-# Build a full driver command that also stamps an rpath so the smoke_cube
-# binary finds libtbb.so.2 at runtime without LD_LIBRARY_PATH gymnastics.
-# We use $$ORIGIN (literal, escaped for make) so the rpath is relocatable and
-# doesn't embed absolute paths containing spaces (which ld chokes on).
-LDFLAGS := -L.. -lautoremesher_core \
-           -L$(TBB_LIB_DIR) -ltbb \
-           -Wl,-rpath,'$$ORIGIN/../thirdparty/tbb/build/$(TBB_LIB_SUBDIR)' \
-           -lpthread -ldl -lrt
+# libautoremesher_core.a is self-contained -- its TBB replacement
+# (../thirdparty/tbb_shim/) is header-only -- so the link is just the archive
+# plus the platform's thread runtime. No companion shared library to locate,
+# and no rpath to stamp.
+#
+# Ask the compiler what it targets rather than reading $(OS)/$(MSYSTEM): those
+# depend on which shell invoked make (Git Bash does not export either), while
+# -dumpmachine is always right.
+TARGET_TRIPLE := $(shell $(CXX) -dumpmachine)
+LDFLAGS := -L.. -lautoremesher_core
+ifeq ($(findstring mingw,$(TARGET_TRIPLE)),)
+  LDFLAGS += -lpthread -ldl
+endif
 
 smoke_cube: smoke_cube.cpp ../libautoremesher_core.a
 	$(CXX) $(CXXFLAGS) $< -o $@ $(LDFLAGS)
 
 .PHONY: clean
 clean:
-	rm -f smoke_cube
+	rm -f smoke_cube smoke_cube.exe
