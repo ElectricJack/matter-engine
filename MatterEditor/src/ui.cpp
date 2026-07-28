@@ -548,9 +548,7 @@ void Ui::draw_console_panel(ConsoleLog& log) {
 }
 
 void Ui::reset_scene_tree_cache() {
-    scene_tree_state_.cached_graph_gen = UINT64_MAX;
-    scene_tree_state_.cached_snapshot = part_graph_snapshot::Snapshot{};
-    scene_tree_state_.selected_root_hash = 0;
+    reset_scene_tree_graph_cache(scene_tree_state_);
 }
 
 void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {

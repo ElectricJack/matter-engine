@@ -22,6 +22,10 @@
 #include "matter/world_session.h"
 #include "render/animation_skin_bridge.h"
 
+// Editor-side scene tree cache policy (ImGui-free by design so this suite can
+// drive it across a real world switch — see test_warm_session_publishes_graph).
+#include "../../MatterEditor/src/scene_tree_model.h"
+
 #include "bake_trace.h"
 #include "bake_trace_names.h"
 
@@ -414,9 +418,12 @@ static std::vector<EvRec> run_once_fresh(const std::string& sandbox) {
     ed.cache_root     = cache_root_s.c_str();
     ed.allow_gl_lt_46 = true;
     auto engine = matter::EngineContext::create(ed, err);
+    std::vector<EvRec> log;
+    // A failed create must not crash the whole suite: (c)'s caller reports the
+    // empty logs as its own CHECK failures with the run intact.
+    if (!engine) return log;
     matter::WorldDesc wd = project_world_desc(sandbox, "Box");
     auto s = engine->open_world(wd, err);
-    std::vector<EvRec> log;
     if (!s) return log;
     s->request_bake();
     drive_bake(*s, log);
@@ -477,6 +484,119 @@ static bool test_reload_reenters(const std::string& sandbox) {
           second.back().type == (int)matter::EventType::BakeFinished,
           "reload ends with BakeFinished");
     CHECK(s->instance_count() > 0, "world queryable after reload");
+    return true;
+}
+
+// --- warm_session_publishes_graph (issues/editor-scene-panel-stale) ---------
+// A resolve-cache-hit ("warm") launch restored the provider's graph but never
+// called publish_graph_snapshot(), so graph_generation() stayed 0 and
+// WorldSession::graph_snapshot() returned false for the entire session — the
+// editor's scene tree kept whatever it was already showing. The editor half
+// of the same defect: the panel's cached generation survives a session
+// replacement, and since the counter is per-session (every load stops at 1),
+// old and new collide and lock the refresh out even on a cold load. This
+// drives the shipped panel policy (scene_tree_model.h) across a real
+// cold->warm switch to cover both halves.
+static bool test_warm_session_publishes_graph(const std::string& sandbox) {
+    printf("-- warm_session_publishes_graph\n");
+    reset_cache(sandbox, "Box");
+
+    std::string err;
+    std::string cache_root_s = (fs::path(sandbox) / ".cache").string();
+    matter::EngineDesc ed;
+    ed.cache_root     = cache_root_s.c_str();
+    ed.allow_gl_lt_46 = true;
+    auto engine = matter::EngineContext::create(ed, err);
+    CHECK(engine != nullptr, "warm: engine created");
+    if (!engine) { printf("  err: %s\n", err.c_str()); return false; }
+    matter::WorldDesc wd = project_world_desc(sandbox, "Box");
+
+    viewer::SceneTreeState panel;
+
+    // Cold load: the full install path publishes and the panel sees the root.
+    uint64_t cold_gen = 0;
+    {
+        auto a = engine->open_world(wd, err);
+        CHECK(a != nullptr, "warm: cold session opened");
+        if (!a) return false;
+        a->request_bake();
+        std::vector<EvRec> log;
+        CHECK(drive_bake(*a, log), "warm: cold bake finished");
+        cold_gen = a->graph_generation();
+        CHECK(cold_gen > 0, "cold bake published the graph snapshot");
+        part_graph_snapshot::Snapshot snap;
+        CHECK(a->graph_snapshot(snap) && snap.nodes.count("Box") == 1 &&
+                  snap.nodes.at("Box").is_root,
+              "cold snapshot names the Box root");
+        viewer::sync_scene_tree_graph_cache(panel, a.get());
+        CHECK(panel.cached_snapshot.nodes.count("Box") == 1,
+              "panel shows the cold world");
+        // Session A dies here — the world switch begins.
+    }
+
+    auto b = engine->open_world(wd, err);
+    CHECK(b != nullptr, "warm: warm session opened");
+    if (!b) return false;
+
+    // A frame drawn before the new session's first publish: anything still
+    // cached is the dead session's, and its generation may collide with the
+    // publish about to happen. The shipped policy must drop it here.
+    CHECK(b->graph_generation() == 0, "no publish before the warm bake");
+    viewer::sync_scene_tree_graph_cache(panel, b.get());
+    CHECK(panel.cached_snapshot.nodes.empty(),
+          "pre-publish sync drops the dead session's tree");
+
+    b->request_bake();
+    std::vector<EvRec> log;
+    CHECK(drive_bake(*b, log), "warm: warm bake finished");
+
+    // Hit guard: a resolve-cache hit skips install+compose, so the trace has
+    // a lone publish stage (the full path has all three, see (b) above). If
+    // this fires the second load was accidentally cold and proves nothing.
+    {
+        bake_trace::Span trace;
+        b->last_bake_trace(trace);
+        bool saw_install = false;
+        for (const auto& c : trace.children)
+            if (c.name && std::strcmp(c.name, bake_trace::kSpanInstall) == 0)
+                saw_install = true;
+        CHECK(!saw_install, "second load actually took the resolve-cache hit");
+    }
+
+    const uint64_t warm_gen = b->graph_generation();
+    CHECK(warm_gen > 0, "warm (cache-hit) bake published the graph snapshot");
+    part_graph_snapshot::Snapshot snap;
+    CHECK(b->graph_snapshot(snap) && snap.nodes.count("Box") == 1,
+          "warm snapshot names the Box root");
+
+    // The collision that made the editor symptom intermittent: one publish
+    // per load means the dead session's generation compares equal to the new
+    // one. Pinned so a change to the generation scheme re-evaluates the panel
+    // policy above.
+    CHECK(warm_gen == cold_gen,
+          "per-session generations collide across a switch");
+
+    // The panel catches up on the first draw after the publish...
+    viewer::sync_scene_tree_graph_cache(panel, b.get());
+    CHECK(panel.cached_snapshot.nodes.count("Box") == 1,
+          "panel shows the warm world after publish");
+
+    // ...but only because the pre-publish sync above adopted generation 0. A
+    // panel that never drew during that window keeps the dead generation and
+    // the collision locks it out — which is why clear_app_models resets at
+    // the switch seam.
+    viewer::SceneTreeState locked;
+    locked.cached_graph_gen = cold_gen;
+    locked.cached_snapshot.nodes["DeadWorldRoot"] = {};
+    viewer::sync_scene_tree_graph_cache(locked, b.get());
+    CHECK(locked.cached_snapshot.nodes.count("DeadWorldRoot") == 1 &&
+              locked.cached_snapshot.nodes.count("Box") == 0,
+          "carried-over generation keeps the dead tree (the seam reset exists for this)");
+    viewer::reset_scene_tree_graph_cache(locked);
+    viewer::sync_scene_tree_graph_cache(locked, b.get());
+    CHECK(locked.cached_snapshot.nodes.count("Box") == 1,
+          "seam reset unlocks the refresh despite the collision");
+
     return true;
 }
 
@@ -1832,6 +1952,11 @@ int main() {
     test_completes_finished(sandbox);
     test_determinism(sandbox);
     test_reload_reenters(sandbox);
+
+    // issues/editor-scene-panel-stale: warm loads must publish the graph
+    // snapshot, and the editor's cache policy must survive the cross-session
+    // generation collision.
+    test_warm_session_publishes_graph(sandbox);
 
     // Task 7 tests.
     test_supersede_cancels_inflight(sandbox);

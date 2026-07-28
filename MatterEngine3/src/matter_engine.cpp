@@ -1268,6 +1268,13 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                     ecs_runtime.streaming_coordinator().set_profile(
                         nullptr,
                         streaming::SectorStreamingErrorCode::UnsupportedWorld);
+                    // restore_from_cache is the fast path's install_graph: it
+                    // repopulated the provider's graph snapshot, so publish it
+                    // just as the full path does after install. Skipping this
+                    // left graph_generation() at 0 for the whole warm session,
+                    // so consumers keying their refresh on the generation
+                    // (scene tree, properties info card) never saw the world.
+                    publish_graph_snapshot();
                     // Populate new_manifest from cached instances + lights.
                     viewer::WorldManifest cached_manifest;
                     cached_manifest.instances = std::move(rc_payload.instances);
@@ -3801,7 +3808,12 @@ std::unique_ptr<EngineContext> EngineContext::create(const EngineDesc& desc,
         printf("GPU cull path: enabled (GL 4.6 ok)\n");
     }
 #else
-    if (!desc.render_device) {
+    // allow_gl_lt_46 has meant "headless kernel: no interactive renderer
+    // required" since before the GL-path deletion — every headless test suite
+    // passes it, and the bake pipeline null-checks render_device throughout.
+    // Requiring a device unconditionally here silently broke all of those
+    // suites at engine creation; only an interactive session needs a device.
+    if (!desc.render_device && !desc.allow_gl_lt_46) {
         err = "MATTER_VULKAN_ONLY requires a Vulkan render device";
         return nullptr;
     }
