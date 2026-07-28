@@ -259,6 +259,49 @@ BLASHandle BLASManager::register_prebuilt(const Tri* tris, const TriEx* triex, i
 }
 
 
+void BLASManager::adopt_from(const BLASManager& staged,
+                             std::unordered_map<BLASHandle, BLASHandle>& remap) {
+    remap.clear();
+    remap.reserve(staged.entries_.size());
+
+    for (const auto& src : staged.entries_) {
+        if (!src || src->triangles.empty()) continue;
+
+        const TriEx* src_triex =
+            (src->tri_extra.size() == src->triangles.size() && !src->tri_extra.empty())
+                ? src->tri_extra.data() : nullptr;
+        const int tri_count = static_cast<int>(src->triangles.size());
+
+        // Same dedup register_triangles performs, minus the build: an identical
+        // BLAS already resident (a rock shared with a neighbouring sector) just
+        // gains a reference.
+        const BLASHandle existing =
+            find_existing_blas(src->triangles.data(), tri_count, src->hash, src_triex);
+        if (existing != INVALID_BLAS_HANDLE) {
+            auto idx_it = handle_to_index_.find(existing);
+            if (idx_it != handle_to_index_.end() && idx_it->second < entries_.size()) {
+                entries_[idx_it->second]->ref_count++;
+            }
+            remap[src->handle] = existing;
+            continue;
+        }
+
+        // Newcomer: install the BVH the worker already built. ref_count 1 --
+        // this manager takes the single ownership the staged entry held; the
+        // staged manager is discarded by the caller, not released entry by
+        // entry, so there is no double count to reconcile.
+        if (!src->bvh || !src->bvh->bvhNode || src->bvh->nodesUsed == 0 ||
+            !src->bvh->triIdx) {
+            continue;   // nothing usable to adopt; caller sees no remap entry
+        }
+        const BLASHandle adopted = register_prebuilt(
+            src->triangles.data(), src_triex, tri_count,
+            src->bvh->bvhNode, src->bvh->nodesUsed, src->bvh->triIdx,
+            src->hash, /*ref_count=*/1);
+        if (adopted != INVALID_BLAS_HANDLE) remap[src->handle] = adopted;
+    }
+}
+
 void BLASManager::release_blas(BLASHandle handle) {
     if (handle == INVALID_BLAS_HANDLE) return;
 
