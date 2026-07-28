@@ -1,6 +1,7 @@
 #ifndef VIEWER_PART_STORE_H
 #define VIEWER_PART_STORE_H
 
+#include <mutex>
 #include "blas_manager.hpp"     // MSL BLASManager / BLASHandle
 #include "lod_select.h"         // lod_select::PartLodTable
 #include "part_asset_v2.h"      // part_asset::ChildInstance
@@ -137,6 +138,7 @@ public:
     // registers into the shared manager and inserts into the shared animation
     // asset store). Sectors are coherent and non-animated, so they stage.
     StagedPart stage_load(uint64_t part_hash);
+
 
     // Publish a staged part: adopt its BLAS entries into the shared manager,
     // remap its handles, insert it, and build its expansion. Bounded --
