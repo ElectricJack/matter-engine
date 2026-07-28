@@ -113,6 +113,40 @@ public:
     // BLASManager. Returns nullptr on failure (logged once per hash). idempotent.
     const LoadedPart* get_or_load(uint64_t part_hash);
 
+    // A part decoded and its LOD ladder baked, owning its own BLASManager and
+    // not yet visible to anyone. `lp`'s handles index `staging`, not the store's
+    // shared manager; commit_staged() remaps them.
+    struct StagedPart {
+        bool                         ok = false;
+        uint64_t                     part_hash = 0;
+        LoadedPart                   lp;
+        std::unique_ptr<BLASManager> staging;
+    };
+
+    // Decode `part_hash` and bake its ladder WITHOUT touching any shared state.
+    // Safe to call from a streaming worker while the app thread renders.
+    //
+    // This is where a sector load's cost actually is -- artifact decode, QEM
+    // decimation, TriEx reprojection and BVH construction, measured at 20-40 ms
+    // per sector. Running it here instead of inside the stream.publish GpuJob is
+    // the point: pump()'s ms_budget bounds how many jobs START, never how long
+    // one TAKES, so any unbounded work inside a job blows the frame outright.
+    //
+    // ok=false means "not stageable, load it on the owning thread": no coherent
+    // generation was readable, or the part is animated (the partitioned path
+    // registers into the shared manager and inserts into the shared animation
+    // asset store). Sectors are coherent and non-animated, so they stage.
+    StagedPart stage_load(uint64_t part_hash);
+
+    // Publish a staged part: adopt its BLAS entries into the shared manager,
+    // remap its handles, insert it, and build its expansion. Bounded --
+    // O(entries) plus an array copy, no BVH rebuilt. Call on the thread that
+    // owns this store. Returns null if `staged` is not ok.
+    //
+    // Committing a part whose hash is already resident returns the resident one
+    // and drops the staged copy, so a racing load cannot double-insert.
+    const LoadedPart* commit_staged(StagedPart staged);
+
     // Return a pointer to an already-loaded part (nullptr if not loaded). Does NOT
     // trigger loading. Useful for tests and post-load inspection.
     const LoadedPart* find(uint64_t part_hash) const {
@@ -210,6 +244,13 @@ private:
     // the bounded adopt+insert behind. The first shared mutation in the coherent
     // path is animation_assets_.insert, which sits deliberately AFTER this call.
     bool read_coherent_snapshot(uint64_t part_hash, CoherentSnapshot& out) const;
+
+    // Shared body of stage_load() and get_or_load()'s non-partitioned tail:
+    // gather the decoded triangles, bake the ladder into a private manager, and
+    // build the LoadedPart. `animation_asset` is null for anything stage_load
+    // accepts; get_or_load passes the asset it already resolved.
+    StagedPart stage_from_snapshot(uint64_t part_hash, CoherentSnapshot& snapshot,
+                                   const matter::animation::AnimAsset* animation_asset);
 
     std::string                       cache_root_;
     std::string                       scratch_dir_;     // Task 2: transient scratch dir
