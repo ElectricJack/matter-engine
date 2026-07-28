@@ -1376,6 +1376,13 @@ struct StagedQueue {
     }
 };
 
+// Harness-owned lock used by the MATTER_STAGE_LOCK matrix. See the use site
+// for why this is not a PartStore member.
+static std::mutex& harness_stage_lock_mutex() {
+    static std::mutex m;
+    return m;
+}
+
 // ---------------------------------------------------------------------------
 int main() {
 #ifdef _WIN32
@@ -1742,8 +1749,17 @@ int main() {
         while (std::chrono::steady_clock::now() < deadline && it < max_iters &&
                g_failures.load() <= 50) {
             // Emulate pump_gpu_jobs: in lock-experiment configs the app thread
-            // serializes its publish work on the same mutex.
-            std::unique_lock<std::mutex> pump_lock(viewer::PartStore::stage_experiment_mutex(),
+            // serializes its publish work on the same mutex the stage side takes.
+            //
+            // Harness-owned, not a PartStore member. Production briefly exposed a
+            // stage_experiment_mutex() while the DEVICE_LOST race was being
+            // narrowed; that seam is gone now the root causes are fixed
+            // (garbage-dependent BLAS identity, and adopt_from dropping ref
+            // multiplicity), and a test must not depend on a diagnostic hook
+            // surviving in shipping code. MATTER_STAGE_LOCK still works here --
+            // it now demonstrates that residual signature differences are
+            // ordering effects rather than gating a live bug.
+            std::unique_lock<std::mutex> pump_lock(harness_stage_lock_mutex(),
                                                    std::defer_lock);
             if (app_takes_lock) pump_lock.lock();
 

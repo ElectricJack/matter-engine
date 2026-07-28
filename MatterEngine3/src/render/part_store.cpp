@@ -847,39 +847,16 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
     return staged;
 }
 
-std::mutex& PartStore::stage_experiment_mutex() {
-    static std::mutex m;
-    return m;
-}
-
 PartStore::StagedPart PartStore::stage_load(uint64_t part_hash) {
-    // EXPERIMENT: see stage_experiment_mutex() in the header.
-    static const int lock_mode = [] {
-        const char* v = std::getenv("MATTER_STAGE_LOCK");
-        if (!v) return 0;
-        if (std::strcmp(v, "snapshot") == 0) return 1;
-        if (std::strcmp(v, "bake") == 0)     return 2;
-        if (std::strcmp(v, "all") == 0)      return 3;
-        return 0;
-    }();
-
     StagedPart staged;
     staged.part_hash = part_hash;
     CoherentSnapshot snapshot;
-    {
-        std::unique_lock<std::mutex> lk(stage_experiment_mutex(), std::defer_lock);
-        if (lock_mode & 1) lk.lock();
-        if (!read_coherent_snapshot(part_hash, snapshot)) return staged;
-    }
+    if (!read_coherent_snapshot(part_hash, snapshot)) return staged;
     // Animated parts take the partitioned path, which registers into the shared
     // BLAS manager and inserts into the shared animation asset store. Not
     // stageable; the caller loads them on the owning thread.
     if (snapshot.animation_link) return staged;
-    {
-        std::unique_lock<std::mutex> lk(stage_experiment_mutex(), std::defer_lock);
-        if (lock_mode & 2) lk.lock();
-        return stage_from_snapshot(part_hash, snapshot, nullptr);
-    }
+    return stage_from_snapshot(part_hash, snapshot, nullptr);
 }
 
 const LoadedPart* PartStore::commit_staged(StagedPart staged) {

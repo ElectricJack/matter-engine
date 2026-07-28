@@ -139,19 +139,6 @@ public:
     // asset store). Sectors are coherent and non-animated, so they stage.
     StagedPart stage_load(uint64_t part_hash);
 
-    // EXPERIMENT (not a shipping design). Staging on a worker reproducibly lost
-    // the Vulkan device; holding this across both stage_load and the app
-    // thread's gpu_jobs.pump made it healthy, which proved a data race against
-    // publish-side work rather than anything bound to thread identity.
-    //
-    // MATTER_STAGE_LOCK narrows which half of stage_load takes it, to find the
-    // racing component instead of locking around it:
-    //   "snapshot" -> only read_coherent_snapshot (artifact decode)
-    //   "bake"     -> only stage_from_snapshot   (ladder bake)
-    //   "all"      -> both  (the known-healthy configuration)
-    //   unset      -> neither (the known-broken configuration)
-    // Exactly one of snapshot/bake should stay healthy; that names the culprit.
-    static std::mutex& stage_experiment_mutex();
 
     // Publish a staged part: adopt its BLAS entries into the shared manager,
     // remap its handles, insert it, and build its expansion. Bounded --
