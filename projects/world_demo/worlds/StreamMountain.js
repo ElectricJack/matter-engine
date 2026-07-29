@@ -23,12 +23,16 @@ class StreamMountain extends World {
   };
 
   static streaming = {
-    // Keep expensive scatter close, but retain coarse mountain silhouettes
-    // almost to the editor camera's 5 km far plane.
+    // Keep expensive scatter close. The outer ring stops where the height fog
+    // fully swallows the silhouettes (~2.5 km in editor captures): the earlier
+    // 4800 m ring streamed ~17,600 full-detail sectors, none of them visible
+    // past ~3 km, and ran the editor past 45 GB resident (std::bad_alloc).
+    // True 5 km vistas need the heightfield terrain-LOD ladder from the
+    // 2026-07-28 alpine design doc, not more full-detail sectors.
     rings: [
       { radius: 128.0, rung: 2 },
       { radius: 320.0, rung: 1 },
-      { radius: 4800.0, rung: 0 },
+      { radius: 2560.0, rung: 0 },
     ],
   };
 
