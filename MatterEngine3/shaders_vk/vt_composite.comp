@@ -7,16 +7,10 @@
 // texel:
 //   1. Map the physical texel to its virtual-atlas texel at the request's
 //      mip, then to finest-mip coordinates (texel centers).
-//   2. Resolve the owning surface point: iterate the CPU-provided candidate
-//      chart list (fixed ascending order — determinism), invert each chart's
-//      plane projection (chart_atlas.h convention) to get the query point in
-//      that chart's plane space, and find the closest point over the chart's
-//      chart-grouped triangle range. Distance 0 => texel is inside a
-//      triangle (the unique owner, since chart rects are disjoint and UVs
-//      map into rect content by construction). Distance > 0 => gutter /
-//      out-of-chart texel: the globally nearest triangle point wins, which
-//      IS the dilation fill (borders, gutters, and coarse-mip inter-chart
-//      space all take the nearest real surface content).
+//   2. Resolve the owning surface point via vt_chart_resolve.glsl — the
+//      SHARED resolve, also used by WP-H's vt_enrich_ao.comp so a page and
+//      the occlusion later multiplied into it can never disagree about which
+//      triangle a texel belongs to.
 //   3. Evaluate material weights behind the vt_material_weights seam
 //      (mode 0: the triangle's TriEx materialId at weight 1; mode 1: the
 //      2-material debug ramp for tests; mode 2: WP-F's surfaces() tape —
@@ -28,9 +22,12 @@
 //      sample properly filtered tileset mips, not aliased ones).
 //   5. Height-blend the top-2 materials by the tilesets' height channels
 //      (exact passthrough at w = 0 / w = 1 — tested identities).
-//   6. Write albedo / chart-tangent-space normal / ORM / aux (dominant
-//      material id, secondary id, blend) to the intermediate storage
-//      images; vt_bc_encode.comp compresses them afterwards.
+//   6. Write albedo / tangent-space normal / ORM / aux (dominant material
+//      id, secondary id, blend) to the intermediate storage images;
+//      vt_bc_encode.comp compresses them afterwards. The normal is encoded
+//      relative to the interpolated geometric normal in the exact frame
+//      tileset_rotate_normal() rebuilds at decode time (NOT the chart
+//      plane's frame — see the encode step below).
 //
 // DETERMINISM: no time, no random, fixed iteration orders, ties broken by
 // strict '<' (first candidate wins). Identical inputs => identical texels.
@@ -38,15 +35,9 @@
 #extension GL_EXT_nonuniform_qualifier : require
 
 #include "wang_common.glsl"
+#include "vt_chart_types.glsl"
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
-
-// Page geometry — MUST match chart_atlas.h (kVtPagePayload/kVtPageBorder/
-// kChartGutterTexels).
-#define VT_PAGE_PAYLOAD 128
-#define VT_PAGE_BORDER  4
-#define VT_PAGE_STORE   136
-#define VT_CHART_GUTTER 4
 
 // MUST equal vt::VtCompositor::kMaxDetailSlots (vt_compositor.h).
 #define VT_MAX_SLOTS 8
@@ -59,27 +50,8 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 #define VT_CHANNELS  4
 
 // ---- set 0: per-(variant, rung) mesh/chart cache (built CPU-side from the
-// part context, cached across fills) ---------------------------------------
-
-struct GpuChart {
-    vec4 origin_tpm;     // xyz part-local plane origin, w texels_per_meter
-    vec4 tangent_ou;     // xyz T (unit), w = dot(origin, T)
-    vec4 bitangent_ov;   // xyz B (unit), w = dot(origin, B)
-    uvec4 rect;          // finest-mip atlas texels: x, y, w, h
-    uvec4 tri_range;     // x = first tri (into tris[], chart-grouped), y = count
-};
-// Triangles already reordered by tri_order (chart-grouped) CPU-side, with
-// per-vertex plane coordinates precomputed: plane U in p*.w, plane V in n*.w.
-struct GpuTri {
-    vec4 p0, p1, p2;     // xyz part-local position, w = plane U
-    vec4 n0, n1, n2;     // xyz part-local normal,   w = plane V
-    uvec4 mat;           // x = TriEx materialId
-    // WP-F surfaces()-tape weights: 8 u8 columns per vertex, 2 u32 each.
-    // wA = {v0 cols 0-3, v0 cols 4-7, v1 cols 0-3, v1 cols 4-7};
-    // wB = {v2 cols 0-3, v2 cols 4-7, 0, 0}. Zero when the part has no tape.
-    uvec4 wA;
-    uvec4 wB;
-};
+// part context, cached across fills). Struct layouts live in
+// vt_chart_types.glsl / vt_chart_gpu.h. ------------------------------------
 
 layout(std430, set = 0, binding = 0) readonly buffer ChartsBuf { GpuChart charts[]; };
 layout(std430, set = 0, binding = 1) readonly buffer TrisBuf   { GpuTri tris[]; };
@@ -122,51 +94,8 @@ layout(set = 1, binding = 8, rgba8) uniform writeonly image2DArray outAux;
 
 layout(push_constant) uniform Push { uint req_index; } pc;
 
-// ---------------------------------------------------------------------------
-// Closest point on a 2D triangle. Returns squared distance (0 when q is
-// inside) and the barycentrics of the closest point. Fixed evaluation order
-// (inside test, then edges AB, BC, CA with strict '<') for determinism.
-// ---------------------------------------------------------------------------
-float closest_tri_2d(vec2 q, vec2 a, vec2 b, vec2 c, out vec3 bary) {
-    vec2 ab = b - a, ac = c - a, aq = q - a;
-    float d00 = dot(ab, ab), d01 = dot(ab, ac), d11 = dot(ac, ac);
-    float d20 = dot(aq, ab), d21 = dot(aq, ac);
-    float denom = d00 * d11 - d01 * d01;
-    if (abs(denom) > 1e-12) {
-        float v = (d11 * d20 - d01 * d21) / denom;
-        float w = (d00 * d21 - d01 * d20) / denom;
-        if (v >= 0.0 && w >= 0.0 && v + w <= 1.0) {
-            bary = vec3(1.0 - v - w, v, w);
-            return 0.0;
-        }
-    }
-    // Outside (or degenerate): closest point over the three edge segments.
-    float best_d2 = 1e30;
-    bary = vec3(1.0, 0.0, 0.0);
-    // edge AB
-    {
-        float t = clamp(dot(q - a, ab) / max(d00, 1e-12), 0.0, 1.0);
-        vec2 p = a + ab * t;
-        float d2 = dot(q - p, q - p);
-        if (d2 < best_d2) { best_d2 = d2; bary = vec3(1.0 - t, t, 0.0); }
-    }
-    // edge BC
-    {
-        vec2 bc = c - b;
-        float t = clamp(dot(q - b, bc) / max(dot(bc, bc), 1e-12), 0.0, 1.0);
-        vec2 p = b + bc * t;
-        float d2 = dot(q - p, q - p);
-        if (d2 < best_d2) { best_d2 = d2; bary = vec3(0.0, 1.0 - t, t); }
-    }
-    // edge CA
-    {
-        float t = clamp(dot(q - c, -ac) / max(d11, 1e-12), 0.0, 1.0);
-        vec2 p = c - ac * t;
-        float d2 = dot(q - p, q - p);
-        if (d2 < best_d2) { best_d2 = d2; bary = vec3(t, 0.0, 1.0 - t); }
-    }
-    return best_d2;
-}
+// Shared chart resolve (needs charts[]/tris[]/cand_charts[] declared above).
+#include "vt_chart_resolve.glsl"
 
 // ---------------------------------------------------------------------------
 // Triplanar Wang sampling of one material's detail tileset.
@@ -315,50 +244,12 @@ void main() {
     ivec3 store_at = ivec3(ivec2(t), out_layer);
 
     uint mip = req.a.z;
-    // Virtual texel at this mip (border texels go negative / past the atlas
-    // edge — the nearest-triangle search below handles them as dilation).
-    ivec2 vt_texel = ivec2(req.a.xy) * VT_PAGE_PAYLOAD - VT_PAGE_BORDER
-                   + ivec2(t);
-    float scale = float(1u << mip);
-    vec2 fin = (vec2(vt_texel) + 0.5) * scale;  // finest-mip texel center
 
     // ---- resolve owning surface point over the candidate charts ----
-    float best_d2 = 1e30;
-    uint  best_chart = 0xFFFFFFFFu;
-    vec3  best_bary = vec3(1.0, 0.0, 0.0);
-    uint  best_tri = 0u;
-    bool  inside = false;
-    for (uint ci = 0u; ci < req.b.y && !inside; ++ci) {
-        uint chart_idx = cand_charts[req.b.x + ci];
-        GpuChart c = charts[chart_idx];
-        float tpm = c.origin_tpm.w;
-        // Invert the chart_atlas.h texel<->position convention:
-        //   texel = rect + gutter + (dot(p, T/B) - dot(origin, T/B)) * tpm
-        vec2 q = (fin - vec2(c.rect.xy) - float(VT_CHART_GUTTER)) / tpm
-               + vec2(c.tangent_ou.w, c.bitangent_ov.w);
-        uint first = c.tri_range.x, count = c.tri_range.y;
-        for (uint ti = 0u; ti < count; ++ti) {
-            GpuTri tr = tris[first + ti];
-            vec2 a = vec2(tr.p0.w, tr.n0.w);
-            vec2 b = vec2(tr.p1.w, tr.n1.w);
-            vec2 cc = vec2(tr.p2.w, tr.n2.w);
-            // Cheap reject: plane-space bbox distance vs current best.
-            vec2 lo = min(a, min(b, cc)), hi = max(a, max(b, cc));
-            vec2 dv = max(max(lo - q, q - hi), vec2(0.0));
-            if (dot(dv, dv) >= best_d2) continue;
-            vec3 bary;
-            float d2 = closest_tri_2d(q, a, b, cc, bary);
-            if (d2 < best_d2) {
-                best_d2 = d2;
-                best_chart = chart_idx;
-                best_tri = first + ti;
-                best_bary = bary;
-                if (d2 <= 0.0) { inside = true; break; }
-            }
-        }
-    }
+    VtSurfacePoint sp =
+        vt_resolve_page_texel(t, req.a.xy, mip, req.b.x, req.b.y);
 
-    if (best_chart == 0xFFFFFFFFu) {
+    if (!sp.found) {
         // No candidates (page over empty atlas space) — neutral fill.
         imageStore(outAlbedo, store_at, vec4(0.5, 0.5, 0.5, 1.0));
         imageStore(outNormal, store_at, vec4(0.5, 0.5, 0.0, 0.0));
@@ -367,24 +258,16 @@ void main() {
         return;
     }
 
-    GpuChart chart = charts[best_chart];
-    GpuTri tri = tris[best_tri];
-    vec3 pos = best_bary.x * tri.p0.xyz + best_bary.y * tri.p1.xyz
-             + best_bary.z * tri.p2.xyz;
-    vec3 nrm = best_bary.x * tri.n0.xyz + best_bary.y * tri.n1.xyz
-             + best_bary.z * tri.n2.xyz;
-    float nlen = length(nrm);
-    nrm = (nlen > 1e-6) ? nrm / nlen : vec3(0.0, 1.0, 0.0);
-    vec2 plane_uv = vec2(best_bary.x * tri.p0.w + best_bary.y * tri.p1.w
-                             + best_bary.z * tri.p2.w,
-                         best_bary.x * tri.n0.w + best_bary.y * tri.n1.w
-                             + best_bary.z * tri.n2.w);
-    float footprint_m = scale / chart.origin_tpm.w;
+    GpuTri tri = tris[sp.tri];
+    vec3 pos = sp.pos;
+    vec3 nrm = sp.nrm;
+    vec2 plane_uv = sp.plane_uv;
+    float footprint_m = sp.footprint_m;
 
     // ---- material weights (seam) + top-2 height blend ----
     uint m0, m1; float w0, w1;
     vt_material_weights(req.b.z, req.b.w, req.debug_params, req.tape,
-                        tri, best_bary, pos, nrm, plane_uv, m0, w0, m1, w1);
+                        tri, sp.bary, pos, nrm, plane_uv, m0, w0, m1, w1);
 
     vec3 albedo, orm, dn;
     float blend;
@@ -415,15 +298,36 @@ void main() {
         dn     = mix(s0.delta_n, s1.delta_n, blend);
     }
 
-    // ---- final normal, re-projected into the chart T/B/N frame ----
+    // ---- final normal, encoded relative to the interpolated GEOMETRIC
+    // normal — in EXACTLY the frame tileset_rotate_normal() reconstructs
+    // (t = +X projected off n, b = n x t; tileset_common.glsl). Both
+    // consumers (gbuffer.frag's VT branch and rt_surface_common.glsl) decode
+    // by rotating around the per-pixel / per-hit geometric normal, which
+    // interpolates the same vertex normals this pass interpolates, so the
+    // round trip is lossless. Encoding against any other frame (the chart
+    // plane's T/B/N, as this pass originally did) skews the decoded shading
+    // normal by however far the chart plane tilts from the local surface —
+    // up to the segmentation cone, or ~180 degrees for inverted chart
+    // normals — which blacked out whole charts on real terrain.
     vec3 n_local = normalize(nrm + dn);
-    vec3 T = chart.tangent_ou.xyz;
-    vec3 B = chart.bitangent_ov.xyz;
-    vec3 N = normalize(cross(T, B));
-    vec3 ts = vec3(dot(n_local, T), dot(n_local, B), dot(n_local, N));
+    vec3 ts;
+    vec3 t_axis = vec3(1.0, 0.0, 0.0) - nrm * nrm.x;
+    float t_len2 = dot(t_axis, t_axis);
+    if (t_len2 < 1e-6) {
+        // Geometric normal ~ +-X: the decoder falls back to the raw
+        // geometric normal here, so encode the matching identity (the
+        // detail perturbation is dropped for this orientation on both
+        // sides — consistent, and vanishingly rare on charts).
+        ts = vec3(0.0, 0.0, 1.0);
+    } else {
+        t_axis *= inversesqrt(t_len2);
+        vec3 b_axis = normalize(cross(nrm, t_axis));
+        ts = vec3(dot(n_local, t_axis), dot(n_local, b_axis),
+                  dot(n_local, nrm));
+    }
     // The runtime reconstructs z = sqrt(1 - x^2 - y^2); keep z positive so
-    // the BC5 pair stays decodable (cone-limited charts make z >= 0 the
-    // overwhelmingly common case anyway).
+    // the BC5 pair stays decodable (n_local = nrm + a bounded detail delta,
+    // so z >= 0 is the overwhelming case anyway).
     if (ts.z < 0.05) { ts.z = 0.05; ts = normalize(ts); }
 
     imageStore(outAlbedo, store_at, vec4(albedo, 1.0));

@@ -5,10 +5,16 @@
 #include "vt_compositor.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdio>
 #include <cstring>
+#include <deque>
 #include <iterator>
 
 #include "shaders_gen/embedded_spirv.h"
+// GpuChart / GpuTri and the stream builder: shared with WP-H's enricher so the
+// two page passes can never disagree about a texel's owning triangle.
+#include "vt_chart_gpu.h"
 
 namespace vt {
 
@@ -17,31 +23,8 @@ namespace {
 // ---------------------------------------------------------------------------
 // GPU struct mirrors — layouts must match vt_composite.comp / vt_bc_encode.comp
 // (std430 for the SSBOs, std140 for the params UBO; every field is 16-byte
-// packed so the C++ mirrors are exact).
+// packed so the C++ mirrors are exact). GpuChart/GpuTri live in vt_chart_gpu.h.
 // ---------------------------------------------------------------------------
-struct GpuChart {
-    float origin_tpm[4];
-    float tangent_ou[4];
-    float bitangent_ov[4];
-    uint32_t rect[4];
-    uint32_t tri_range[4];
-};
-static_assert(sizeof(GpuChart) == 80, "GpuChart must match std430 layout");
-
-struct GpuTri {
-    float p0[4], p1[4], p2[4];
-    float n0[4], n1[4], n2[4];
-    uint32_t mat[4];
-    // WP-F: per-vertex surfaces()-tape weights, 8 u8 columns per vertex
-    // (kMaxSurfaceMaterials), 2 u32 per vertex:
-    //   wA = {v0 cols 0-3, v0 cols 4-7, v1 cols 0-3, v1 cols 4-7}
-    //   wB = {v2 cols 0-3, v2 cols 4-7, 0, 0}
-    // All zero when the part carries no tape (weight mode never reads them).
-    uint32_t wA[4];
-    uint32_t wB[4];
-};
-static_assert(sizeof(GpuTri) == 144, "GpuTri must match std430 layout");
-
 struct GpuFillRequest {
     uint32_t a[4];   // page_x, page_y, mip, out_layer
     uint32_t b[4];   // cand_offset, cand_count, weight_mode, debug materials
@@ -298,8 +281,58 @@ struct VtCompositor::Impl {
         RawBuffer tris;
         VkDescriptorSet set = VK_NULL_HANDLE;
         uint32_t chart_count = 0;
+        uint64_t last_used_batch = 0;
     };
     std::map<std::pair<uint64_t, uint32_t>, MeshEntry> mesh_cache;
+    // Monotonic fill()-batch counter, and per-ring lists of evicted or
+    // one-shot entries whose GPU resources must outlive any batch that
+    // referenced them. An entry retired during batch N is destroyed when N's
+    // ring is reused (batch N + kMaxBatchesInFlight) — the same retirement
+    // window the ring's own host-visible request buffers already rely on.
+    // Entries used within the in-flight window are never evicted. deque:
+    // one-shot entries hand out pointers to their elements mid-batch, so
+    // growth must not relocate existing elements.
+    uint64_t batch_counter = 0;
+    std::deque<MeshEntry> mesh_retire[kMaxBatchesInFlight];
+
+    void flush_mesh_retire(uint32_t ring_index) {
+        for (MeshEntry& entry : mesh_retire[ring_index]) {
+            if (entry.set)
+                vkFreeDescriptorSets(device, descriptor_pool, 1, &entry.set);
+            destroy_raw_buffer(device, entry.charts);
+            destroy_raw_buffer(device, entry.tris);
+        }
+        mesh_retire[ring_index].clear();
+    }
+
+    // Evict the least-recently-used cache entry that is provably outside the
+    // in-flight window. Returns false when every entry is too recent (the
+    // caller then builds a one-shot entry instead). Destruction is immediate:
+    // an entry whose last use is at least kMaxBatchesInFlight batches old is
+    // not referenced by any unretired batch (the ring reuse the request
+    // buffers rely on proves that window has retired), so its memory can be
+    // reclaimed right now — which is what the allocation-pressure retry in
+    // get_or_build_mesh_entry depends on.
+    bool evict_lru_mesh_entry(uint32_t ring_index) {
+        (void)ring_index;
+        auto victim = mesh_cache.end();
+        for (auto it = mesh_cache.begin(); it != mesh_cache.end(); ++it) {
+            if (it->second.last_used_batch + kMaxBatchesInFlight >
+                batch_counter)
+                continue;   // may still be referenced by an unretired batch
+            if (victim == mesh_cache.end() ||
+                it->second.last_used_batch < victim->second.last_used_batch)
+                victim = it;
+        }
+        if (victim == mesh_cache.end()) return false;
+        if (victim->second.set)
+            vkFreeDescriptorSets(device, descriptor_pool, 1,
+                                 &victim->second.set);
+        destroy_raw_buffer(device, victim->second.charts);
+        destroy_raw_buffer(device, victim->second.tris);
+        mesh_cache.erase(victim);
+        return true;
+    }
 
     VtTilesetSlotViews tileset_slots[kMaxDetailSlots]{};
     uint32_t tileset_slot_count = 0;
@@ -307,6 +340,8 @@ struct VtCompositor::Impl {
     WeightMode weight_mode = WeightMode::kTriangleMaterial;
     uint32_t debug_mat_a = 0, debug_mat_b = 0;
     float debug_blend_start = 0.0f, debug_blend_width = 1.0f;
+    // Reused across fill() calls so the candidate scan allocates nothing.
+    std::vector<uint32_t> scratch_cands;
 
     bool init_recorded = false;
 
@@ -319,6 +354,8 @@ struct VtCompositor::Impl {
             destroy_raw_buffer(device, kv.second.tris);
         }
         mesh_cache.clear();
+        for (uint32_t i = 0; i < kMaxBatchesInFlight; ++i)
+            flush_mesh_retire(i);
         for (Ring& r : rings) {
             destroy_raw_buffer(device, r.requests);
             destroy_raw_buffer(device, r.cands);
@@ -387,8 +424,8 @@ struct VtCompositor::Impl {
     void write_tileset_descriptors();
     MeshEntry* get_or_build_mesh_entry(uint64_t variant_hash, uint32_t rung,
                                        const chart_atlas::ChartAtlasRung* atlas,
-                                       const VtPartContext* ctx,
-                                       Stats& stats);
+                                       const VtPartContext* ctx, Stats& stats,
+                                       uint32_t ring_index, const char*& why);
     void record_init(VkCommandBuffer cmd);
 };
 
@@ -531,9 +568,14 @@ bool VtCompositor::Impl::init(std::string& err) {
     // ---- descriptor pool ----
     {
         const uint32_t ring_sets = kMaxBatchesInFlight * 2;
+        // One-shot mesh entries (cache full of in-flight entries) allocate
+        // sets beyond the cache budget: at most kMaxRequestsPerFill per batch
+        // across kMaxBatchesInFlight unretired batches.
+        const uint32_t oneshot_sets =
+            kMaxBatchesInFlight * kMaxRequestsPerFill;
         VkDescriptorPoolSize sizes[] = {
             {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-             kMaxMeshEntries * 2 + kMaxBatchesInFlight * 6},
+             (kMaxMeshEntries + oneshot_sets) * 2 + kMaxBatchesInFlight * 6},
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxBatchesInFlight},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
              kMaxBatchesInFlight * kTilesetArraySize},
@@ -542,7 +584,7 @@ bool VtCompositor::Impl::init(std::string& err) {
         VkDescriptorPoolCreateInfo info{
             VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-        info.maxSets = kMaxMeshEntries + ring_sets;
+        info.maxSets = kMaxMeshEntries + oneshot_sets + ring_sets;
         info.poolSizeCount = static_cast<uint32_t>(std::size(sizes));
         info.pPoolSizes = sizes;
         if (vkCreateDescriptorPool(device, &info, nullptr, &descriptor_pool) !=
@@ -688,161 +730,72 @@ void VtCompositor::Impl::write_tileset_descriptors() {
 VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
     uint64_t variant_hash, uint32_t rung,
     const chart_atlas::ChartAtlasRung* atlas, const VtPartContext* ctx,
-    Stats& stats) {
+    Stats& stats, uint32_t ring_index, const char*& why) {
     const auto key = std::make_pair(variant_hash, rung);
     auto it = mesh_cache.find(key);
-    if (it != mesh_cache.end()) return &it->second;
-    if (mesh_cache.size() >= kMaxMeshEntries) return nullptr;
-    if (atlas->charts.empty()) return nullptr;
-
-    // WP-F: whether this part carries a surfaces()-tape classification whose
-    // per-vertex weight columns get packed into the triangle stream below.
-    const bool has_tape =
-        ctx->surface_material_count > 0 &&
-        ctx->surface_material_count <= VtCompositor::kMaxSurfaceMaterials &&
-        ctx->surface_weights != nullptr;
-    const uint32_t tape_cols = has_tape ? ctx->surface_material_count : 0;
-
-    // Reorder triangles chart-grouped (tri_order) with per-vertex plane
-    // coordinates precomputed against each chart's basis.
-    std::vector<GpuChart> gcharts(atlas->charts.size());
-    std::vector<GpuTri> gtris;
-    gtris.reserve(atlas->tri_order.size());
-    for (size_t ci = 0; ci < atlas->charts.size(); ++ci) {
-        const chart_atlas::ChartEntry& c = atlas->charts[ci];
-        GpuChart& g = gcharts[ci];
-        const float ou = c.origin[0] * c.tangent[0] +
-                         c.origin[1] * c.tangent[1] +
-                         c.origin[2] * c.tangent[2];
-        const float ov = c.origin[0] * c.bitangent[0] +
-                         c.origin[1] * c.bitangent[1] +
-                         c.origin[2] * c.bitangent[2];
-        g.origin_tpm[0] = c.origin[0];
-        g.origin_tpm[1] = c.origin[1];
-        g.origin_tpm[2] = c.origin[2];
-        g.origin_tpm[3] = c.texels_per_meter;
-        g.tangent_ou[0] = c.tangent[0];
-        g.tangent_ou[1] = c.tangent[1];
-        g.tangent_ou[2] = c.tangent[2];
-        g.tangent_ou[3] = ou;
-        g.bitangent_ov[0] = c.bitangent[0];
-        g.bitangent_ov[1] = c.bitangent[1];
-        g.bitangent_ov[2] = c.bitangent[2];
-        g.bitangent_ov[3] = ov;
-        g.rect[0] = c.rect_x;
-        g.rect[1] = c.rect_y;
-        g.rect[2] = c.rect_w;
-        g.rect[3] = c.rect_h;
-        g.tri_range[0] = static_cast<uint32_t>(gtris.size());
-        uint32_t emitted = 0;
-        for (uint32_t i = 0; i < c.tri_count; ++i) {
-            const uint32_t oi = c.first_tri + i;
-            if (oi >= atlas->tri_order.size()) break;
-            const uint32_t ti = atlas->tri_order[oi];
-            if (ti >= ctx->triangle_count) continue;
-            GpuTri g_tri{};
-            float* pdst[3] = {g_tri.p0, g_tri.p1, g_tri.p2};
-            float* ndst[3] = {g_tri.n0, g_tri.n1, g_tri.n2};
-            float pos[3][3];
-            bool corners_ok = true;
-            uint32_t corner0 = 0;
-            uint32_t corners[3] = {0, 0, 0};
-            for (int v = 0; v < 3; ++v) {
-                const uint32_t corner = ctx->indices[3 * ti + v];
-                if (corner >= ctx->vertex_count) { corners_ok = false; break; }
-                corners[v] = corner;
-                if (v == 0) corner0 = corner;
-                for (int k = 0; k < 3; ++k)
-                    pos[v][k] = ctx->positions[3 * corner + k];
-                pdst[v][0] = pos[v][0];
-                pdst[v][1] = pos[v][1];
-                pdst[v][2] = pos[v][2];
-                pdst[v][3] = pos[v][0] * c.tangent[0] +
-                             pos[v][1] * c.tangent[1] +
-                             pos[v][2] * c.tangent[2];   // plane U
-                if (ctx->normals) {
-                    ndst[v][0] = ctx->normals[3 * corner + 0];
-                    ndst[v][1] = ctx->normals[3 * corner + 1];
-                    ndst[v][2] = ctx->normals[3 * corner + 2];
-                }
-                ndst[v][3] = pos[v][0] * c.bitangent[0] +
-                             pos[v][1] * c.bitangent[1] +
-                             pos[v][2] * c.bitangent[2];  // plane V
-            }
-            if (!corners_ok) continue;
-            if (!ctx->normals) {
-                // Geometric face normal fallback (no vertex normals).
-                const float e1[3] = {pos[1][0] - pos[0][0],
-                                     pos[1][1] - pos[0][1],
-                                     pos[1][2] - pos[0][2]};
-                const float e2[3] = {pos[2][0] - pos[0][0],
-                                     pos[2][1] - pos[0][1],
-                                     pos[2][2] - pos[0][2]};
-                const float fn[3] = {e1[1] * e2[2] - e1[2] * e2[1],
-                                     e1[2] * e2[0] - e1[0] * e2[2],
-                                     e1[0] * e2[1] - e1[1] * e2[0]};
-                for (int v = 0; v < 3; ++v) {
-                    ndst[v][0] = fn[0];
-                    ndst[v][1] = fn[1];
-                    ndst[v][2] = fn[2];
-                }
-            }
-            uint32_t mat = ctx->material_ids ? ctx->material_ids[corner0]
-                                             : ctx->dominant_material;
-            if (mat == 0xFFFFFFFFu) {
-                mat = (ctx->dominant_material != 0xFFFFFFFFu)
-                          ? ctx->dominant_material
-                          : 0u;
-            }
-            g_tri.mat[0] = mat & 0xFFu;
-            if (has_tape) {
-                // Pack each corner's u8 weight columns: 2 u32 per vertex,
-                // little-endian within the u32 (column k at bit 8*(k&3)).
-                const auto pack_pair = [&](uint32_t corner, uint32_t out[2]) {
-                    out[0] = 0;
-                    out[1] = 0;
-                    const uint8_t* w =
-                        ctx->surface_weights + size_t(corner) * tape_cols;
-                    for (uint32_t k = 0; k < tape_cols; ++k)
-                        out[k >> 2] |= uint32_t(w[k]) << ((k & 3u) * 8u);
-                };
-                uint32_t pair[2];
-                pack_pair(corners[0], pair);
-                g_tri.wA[0] = pair[0];
-                g_tri.wA[1] = pair[1];
-                pack_pair(corners[1], pair);
-                g_tri.wA[2] = pair[0];
-                g_tri.wA[3] = pair[1];
-                pack_pair(corners[2], pair);
-                g_tri.wB[0] = pair[0];
-                g_tri.wB[1] = pair[1];
-            }
-            gtris.push_back(g_tri);
-            ++emitted;
-        }
-        g.tri_range[1] = emitted;
-        g.tri_range[2] = 0;
-        g.tri_range[3] = 0;
+    if (it != mesh_cache.end()) {
+        it->second.last_used_batch = batch_counter;
+        return &it->second;
     }
-    if (gtris.empty()) return nullptr;
+    if (atlas->charts.empty()) {
+        why = "empty chart table";
+        return nullptr;
+    }
+    // Full cache: evict the LRU entry (streamed worlds register far more
+    // variant-rungs than kMaxMeshEntries; a hard stop here used to leave
+    // every later variant's pages — its pinned TAIL included — silently
+    // unfilled, i.e. whole sectors rendering black). When every entry is
+    // still inside the in-flight window (a burst of distinct variants), the
+    // entry is built as a ONE-SHOT: it serves this batch from the retire
+    // list and is destroyed when the ring cycles, so a fill request is never
+    // dropped for cache pressure.
+    bool cache_it = true;
+    if (mesh_cache.size() >= kMaxMeshEntries) {
+        if (evict_lru_mesh_entry(ring_index))
+            ++stats.mesh_cache_evictions;
+        else
+            cache_it = false;
+    }
+
+    // Chart-grouped triangle reorder + per-vertex plane coordinates + WP-F tape
+    // weight packing: vt_chart_gpu.h owns that packing (WP-H's enricher builds
+    // the identical streams from the same function).
+    std::vector<GpuChart> gcharts;
+    std::vector<GpuTri> gtris;
+    if (!vt_build_chart_gpu_streams(*atlas, *ctx, gcharts, gtris)) {
+        why = "chart GPU stream build failed";
+        return nullptr;
+    }
 
     MeshEntry entry;
     std::string err;
     const VkDeviceSize charts_bytes = sizeof(GpuChart) * gcharts.size();
     const VkDeviceSize tris_bytes = sizeof(GpuTri) * gtris.size();
-    if (!create_raw_buffer(device, phys, charts_bytes,
-                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
-                           entry.charts, err) ||
-        !create_raw_buffer(device, phys, tris_bytes,
-                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
-                           entry.tris, err)) {
+    auto try_create_buffers = [&]() {
+        return create_raw_buffer(device, phys, charts_bytes,
+                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
+                                 entry.charts, err) &&
+               create_raw_buffer(device, phys, tris_bytes,
+                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
+                                 entry.tris, err);
+    };
+    if (!try_create_buffers()) {
+        // Host-visible memory pressure: shed every evictable cache entry and
+        // retry once before giving up on this fill.
         destroy_raw_buffer(device, entry.charts);
         destroy_raw_buffer(device, entry.tris);
-        return nullptr;
+        while (evict_lru_mesh_entry(ring_index)) ++stats.mesh_cache_evictions;
+        if (!try_create_buffers()) {
+            destroy_raw_buffer(device, entry.charts);
+            destroy_raw_buffer(device, entry.tris);
+            why = "mesh buffer allocation failed";
+            return nullptr;
+        }
     }
     std::memcpy(entry.charts.mapped, gcharts.data(), charts_bytes);
     std::memcpy(entry.tris.mapped, gtris.data(), tris_bytes);
     entry.chart_count = static_cast<uint32_t>(gcharts.size());
+    entry.last_used_batch = batch_counter;
 
     VkDescriptorSetAllocateInfo alloc{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -852,6 +805,7 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
     if (vkAllocateDescriptorSets(device, &alloc, &entry.set) != VK_SUCCESS) {
         destroy_raw_buffer(device, entry.charts);
         destroy_raw_buffer(device, entry.tris);
+        why = "mesh descriptor set allocation failed";
         return nullptr;
     }
     VkDescriptorBufferInfo charts_info{entry.charts.buffer, 0, VK_WHOLE_SIZE};
@@ -869,6 +823,10 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
     vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 
     ++stats.mesh_cache_builds;
+    if (!cache_it) {
+        mesh_retire[ring_index].push_back(std::move(entry));
+        return &mesh_retire[ring_index].back();
+    }
     auto inserted = mesh_cache.emplace(key, std::move(entry));
     return &inserted.first->second;
 }
@@ -1012,12 +970,19 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
     if (!im.init_recorded) im.record_init(cmd);
     if (!batch || count == 0) return;
 
-    Impl::Ring& ring = im.rings[im.ring_cursor];
+    const uint32_t ring_index = im.ring_cursor;
+    Impl::Ring& ring = im.rings[ring_index];
     im.ring_cursor = (im.ring_cursor + 1) % kMaxBatchesInFlight;
+    // This ring's previous batch has retired (the host-visible request/cand
+    // rewrites below already depend on that), so mesh entries evicted while
+    // that batch was recorded are now unreferenced and safe to destroy.
+    im.flush_mesh_retire(ring_index);
+    ++im.batch_counter;
 
     struct Rec {
         const Impl::MeshEntry* entry;
         const VtPoolBinding* pool;
+        const VtFillRequest* request;   // for mark_filled() after the copies
         uint32_t req_index;      // slot in the ring's request buffer
         uint32_t physical_slot;
     };
@@ -1028,6 +993,27 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
     auto* gpu_cands = static_cast<uint32_t*>(ring.cands.mapped);
     uint32_t cand_cursor = 0;
 
+    // A skipped request is NOT harmless: the residency layer maps the
+    // indirection entry before fill() runs (vt_residency.cpp record_frame),
+    // so a skip leaves that page pointing at never-written pool memory,
+    // which BC7-decodes to black. Log the first few with a reason so the
+    // failure is visible instead of rendering as silent black terrain.
+    static std::atomic<uint32_t> skip_log_budget{32};
+    auto log_skip = [&](const VtFillRequest& r, const char* reason) {
+        if (skip_log_budget.load(std::memory_order_relaxed) == 0) return;
+        if (skip_log_budget.fetch_sub(1, std::memory_order_relaxed) == 0)
+            return;
+        std::fprintf(stderr,
+                     "[vt] compositor SKIPPED fill (%s): variant=%016llx "
+                     "rung=%u mip=%u page=(%u,%u) slot=%u — page will render "
+                     "black\n",
+                     reason,
+                     static_cast<unsigned long long>(r.variant_hash),
+                     unsigned(r.rung), unsigned(r.mip), unsigned(r.page_x),
+                     unsigned(r.page_y), unsigned(r.physical_slot));
+        std::fflush(stderr);
+    };
+
     for (size_t i = 0; i < count; ++i) {
         const VtFillRequest& req = batch[i];
         const VtPoolBinding* pool = req.pool;
@@ -1036,6 +1022,7 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
             !pool->image[kVtChannelOrm] || !pool->image[kVtChannelAux] ||
             recs.size() >= kMaxRequestsPerFill) {
             ++stats_.requests_skipped;
+            log_skip(req, "missing inputs or batch overflow");
             continue;
         }
         {
@@ -1043,75 +1030,47 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
             vt_slot_origin(req.physical_slot, layer, sx, sy);
             if (pool->layer_count != 0 && layer >= pool->layer_count) {
                 ++stats_.requests_skipped;
+                log_skip(req, "physical slot outside pool");
                 continue;
             }
         }
         const auto* ctx = static_cast<const VtPartContext*>(req.part_context);
         if (!ctx->positions || !ctx->indices || ctx->triangle_count == 0) {
             ++stats_.requests_skipped;
+            log_skip(req, "part context has no CPU mesh");
             continue;
         }
+        const char* why = "unknown";
         Impl::MeshEntry* entry = im.get_or_build_mesh_entry(
-            req.variant_hash, req.rung, req.atlas, ctx, stats_);
+            req.variant_hash, req.rung, req.atlas, ctx, stats_, ring_index,
+            why);
         if (!entry) {
             ++stats_.requests_skipped;
+            log_skip(req, why);
             continue;
         }
 
-        // Candidate charts: rects intersecting the page's finest-mip
-        // footprint expanded by a dilation margin; ascending chart index
-        // (fixed order — determinism). Empty -> the nearest chart by rect
-        // distance so dilation always has content.
-        const int64_t mip_scale = int64_t(1) << req.mip;
-        const int64_t page_lo_x =
-            (int64_t(req.page_x) * chart_atlas::kVtPagePayload -
-             chart_atlas::kVtPageBorder) * mip_scale;
-        const int64_t page_lo_y =
-            (int64_t(req.page_y) * chart_atlas::kVtPagePayload -
-             chart_atlas::kVtPageBorder) * mip_scale;
-        const int64_t page_hi_x =
-            page_lo_x + int64_t(kPageStore) * mip_scale;
-        const int64_t page_hi_y =
-            page_lo_y + int64_t(kPageStore) * mip_scale;
-        const int64_t margin = int64_t(32) * mip_scale;
-
+        // Candidate charts (vt_chart_gpu.h): rects intersecting the page's
+        // finest-mip footprint expanded by a dilation margin, ascending chart
+        // index (fixed order — determinism); none -> the nearest chart by rect
+        // distance so dilation always has content. Shared with WP-H's enricher
+        // so both passes resolve a texel against the same candidate set.
         const uint32_t cand_offset = cand_cursor;
-        uint32_t cand_count = 0;
-        int64_t nearest_d2 = INT64_MAX;
-        uint32_t nearest_chart = 0;
-        const auto& charts = req.atlas->charts;
-        for (size_t ci = 0; ci < charts.size(); ++ci) {
-            const chart_atlas::ChartEntry& c = charts[ci];
-            const int64_t clo_x = c.rect_x, clo_y = c.rect_y;
-            const int64_t chi_x = clo_x + c.rect_w, chi_y = clo_y + c.rect_h;
-            const int64_t dx = std::max<int64_t>(
-                0, std::max(page_lo_x - margin - chi_x,
-                            clo_x - (page_hi_x + margin)));
-            const int64_t dy = std::max<int64_t>(
-                0, std::max(page_lo_y - margin - chi_y,
-                            clo_y - (page_hi_y + margin)));
-            if (dx == 0 && dy == 0) {
-                if (cand_cursor < kMaxCandEntriesPerFill) {
-                    gpu_cands[cand_cursor++] = static_cast<uint32_t>(ci);
-                    ++cand_count;
-                }
-            } else {
-                const int64_t d2 = dx * dx + dy * dy;
-                if (d2 < nearest_d2) {
-                    nearest_d2 = d2;
-                    nearest_chart = static_cast<uint32_t>(ci);
-                }
-            }
-        }
-        if (cand_count == 0 && !charts.empty() &&
-            cand_cursor < kMaxCandEntriesPerFill) {
-            gpu_cands[cand_cursor++] = nearest_chart;
-            cand_count = 1;
-        }
-        if (cand_count == 0) {
+        im.scratch_cands.clear();
+        vt_page_candidate_charts(*req.atlas, req.page_x, req.page_y, req.mip,
+                                 im.scratch_cands);
+        const uint32_t cand_count =
+            static_cast<uint32_t>(im.scratch_cands.size());
+        if (cand_count == 0 ||
+            cand_cursor + cand_count > kMaxCandEntriesPerFill) {
             ++stats_.requests_skipped;
+            log_skip(req, cand_count == 0 ? "no candidate charts"
+                                          : "candidate buffer overflow");
             continue;
         }
+        std::memcpy(gpu_cands + cand_cursor, im.scratch_cands.data(),
+                    cand_count * sizeof(uint32_t));
+        cand_cursor += cand_count;
 
         const uint32_t rec_index = static_cast<uint32_t>(recs.size());
         GpuFillRequest& g = gpu_reqs[rec_index];
@@ -1149,7 +1108,7 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
                                   << ((k & 3u) * 8u);
             g.tape[2] = ctx->surface_material_count;
         }
-        recs.push_back(Rec{entry, pool, rec_index, req.physical_slot});
+        recs.push_back(Rec{entry, pool, &req, rec_index, req.physical_slot});
     }
     if (recs.empty()) return;
 
@@ -1254,6 +1213,11 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
             vkCmdCopyImage(cmd, ring.inter_aux.image, VK_IMAGE_LAYOUT_GENERAL,
                            rec.pool->image[kVtChannelAux], dst_layout, 1,
                            &aux);
+            // The page is written: tell the residency layer it may map the
+            // indirection entry (vt_types.h VtFillRequest::out_filled). Every
+            // `continue` in the request loop above therefore leaves the flag
+            // false and the entry unmapped, instead of black.
+            rec.request->mark_filled();
             ++stats_.pages_filled;
         }
     }

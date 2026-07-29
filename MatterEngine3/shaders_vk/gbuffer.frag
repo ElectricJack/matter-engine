@@ -290,8 +290,10 @@ void main() {
             }
             base_color = mix(vt_albedo, near_albedo, near_band) *
                          mix(vec3(1.0), in_tint.rgb, in_tint.a);
-            // The page normal is chart-tangent-space; the stub writes the
-            // neutral (0,0,1), i.e. the geometric normal.
+            // The page normal is tangent-space relative to the geometric
+            // normal, encoded by the compositor in tileset_rotate_normal's
+            // own frame; the stub writes the neutral (0,0,1), i.e. the
+            // geometric normal.
             vec3 vt_normal =
                 tileset_rotate_normal(vt_normal_ts, normalize(in_normal));
             shading_normal =

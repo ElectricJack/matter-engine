@@ -22,7 +22,13 @@ try {
         @{ Label = 'chart VT surfaces() tape'; Mode = 'vt-surfaces' },
         # WP-G: RT sampling of VT pages + ray cones (G-buffer/traced-hit
         # consistency, cone-mip monotonicity).
-        @{ Label = 'chart VT in the RT path'; Mode = 'vt-rt' }
+        @{ Label = 'chart VT in the RT path'; Mode = 'vt-rt' },
+        # WP-H: tier-2 hemisphere AO page enrichment (occluder fixture,
+        # determinism, no double-application, invalidation re-enrich) and the
+        # same fixture on a device forced to report no ray tracing, where the
+        # tier must be absent and pages must read exactly as they did before.
+        @{ Label = 'chart VT tier-2 hemisphere AO'; Mode = 'vt-enrich' },
+        @{ Label = 'chart VT tier-2 without ray tracing'; Mode = 'vt-enrich-nort' }
     )
     foreach ($case in $modes) {
         [Environment]::SetEnvironmentVariable('MATTER_VK_SMOKE_MODE',

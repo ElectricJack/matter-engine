@@ -146,6 +146,7 @@ class VtCompositor final : public VtPageFiller {
         uint64_t pages_filled = 0;
         uint64_t requests_skipped = 0;
         uint64_t mesh_cache_builds = 0;
+        uint64_t mesh_cache_evictions = 0;
     };
     const Stats& stats() const { return stats_; }
 

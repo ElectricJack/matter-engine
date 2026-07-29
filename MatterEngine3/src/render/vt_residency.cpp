@@ -260,7 +260,14 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     }
     max_variants_ = env_u32("MATTER_VT_MAX_VARIANTS", 1024u, 4u,
                             max_layers < 4096u ? max_layers : 4096u);
-    max_fills_per_frame_ = env_u32("MATTER_VT_FILLS_PER_FRAME", 8u, 1u, 64u);
+    max_fills_per_frame_ =
+        env_u32("MATTER_VT_FILLS_PER_FRAME", 8u, 1u, kMaxFillFlags);
+    // WP-H: tier-2 budget is deliberately SEPARATE from the fill budget --
+    // enrichment is background refinement of already-correct pages, so it must
+    // never compete with getting a page resident in the first place. 0 disables
+    // the tier without unloading the enricher. The upper bound is the
+    // enricher's own per-batch capacity (VtEnricher::kMaxRequestsPerBatch).
+    max_enrich_per_frame_ = env_u32("MATTER_VT_ENRICH_PER_FRAME", 2u, 0u, 16u);
     mesh_budget_bytes_ =
         static_cast<size_t>(env_u32("MATTER_VT_MESH_BUDGET_MB", 256u, 1u,
                                     8192u)) *
@@ -339,6 +346,9 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     }
 
     slots_.reset(pool_pages_);
+    slot_tier_.assign(pool_pages_, 0u);
+    enrich_queue_.clear();
+    enrich_queued_slot_.clear();
     variants_.assign(max_variants_, VariantRung{});
     free_layers_.clear();
     free_layers_.reserve(max_variants_);
@@ -347,6 +357,10 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     for (uint32_t c = 0; c < kVtChannelCount; ++c) {
         pool_binding_.image[c] = pool_[c].image;
         pool_binding_.format[c] = pool_[c].format;
+        // WP-H: the enricher must READ resident page content back out of the
+        // pool. The images are BC-compressed and carry no STORAGE usage, so the
+        // only way in is a sampled fetch through these views.
+        pool_binding_.sampled_view[c] = pool_[c].view;
     }
     pool_binding_.layer_count = pool_layers;
     pool_binding_.transfer_dst_layout = true;
@@ -367,6 +381,7 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     stats_ = Stats{};
     stats_.pool_capacity = pool_pages_;
     stats_.pool_bytes = layer_texels * pool_layers * (1 + 1 + 1 + 4);
+    stats_.enrich_samples = enricher_ ? enricher_->sample_count() : 0u;
     ready_ = true;
     return true;
 }
@@ -377,6 +392,7 @@ void VtResidency::shutdown() {
         return;
     }
     filler_.reset();
+    enricher_.reset();
     for (uint32_t c = 0; c < kVtChannelCount; ++c) destroy_pool_image(pool_[c]);
     destroy_pool_image(indirection_);
     destroy_pool_image(feedback_);
@@ -396,6 +412,10 @@ void VtResidency::shutdown() {
     layer_of_.clear();
     queue_.clear();
     queued_keys_.clear();
+    enrich_queue_.clear();
+    enrich_queued_slot_.clear();
+    enrich_batch_.clear();
+    slot_tier_.clear();
     variant_records_.clear();
     mesh_bytes_used_ = 0;
     feedback_w_ = feedback_h_ = 0;
@@ -409,6 +429,20 @@ VkImageView VtResidency::pool_view(uint32_t channel) const {
 
 void VtResidency::set_filler(std::unique_ptr<VtPageFiller> filler) {
     filler_ = std::move(filler);
+}
+
+void VtResidency::set_enricher(std::unique_ptr<VtPageEnricher> enricher) {
+    enricher_ = std::move(enricher);
+    stats_.enrich_samples = enricher_ ? enricher_->sample_count() : 0u;
+    if (!enricher_) {
+        // Tier 2 just went away: forget every candidate and every tier bit so
+        // the stats never claim pages are enriched when nothing enriches them.
+        enrich_queue_.clear();
+        enrich_queued_slot_.clear();
+        std::fill(slot_tier_.begin(), slot_tier_.end(), uint8_t{0});
+        stats_.enrich_queue_depth = 0;
+        stats_.enriched_pages = 0;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -480,6 +514,8 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
             variants_[owner_layer->second].indirection.unmap(
                 evicted.page.mip, evicted.page.px, evicted.page.py);
     }
+    // The slot's previous content (and any tier-2 candidacy for it) is gone.
+    slot_reset_tier(tail_slot);
 
     const uint32_t layer = free_layers_.back();
     free_layers_.pop_back();
@@ -549,6 +585,13 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
         v.context.surface_material_count = 0;
         v.context.surface_tape_hash = 0;
     }
+    // WP-H: the rung's finest chart density, for the coarse-page enrichment
+    // skip in queue_enrich.
+    v.finest_texels_per_meter = 0.0f;
+    for (const chart_atlas::ChartEntry& chart : v.atlas.charts) {
+        if (chart.texels_per_meter > v.finest_texels_per_meter)
+            v.finest_texels_per_meter = chart.texels_per_meter;
+    }
     v.mesh_bytes = mesh_bytes;
     mesh_bytes_used_ += mesh_bytes;
     v.tail_slot = tail_slot;
@@ -584,7 +627,10 @@ void VtResidency::release_variant(uint64_t variant_hash) {
         // Release every slot this variant owns.
         for (uint32_t slot = 0; slot < slots_.capacity(); ++slot) {
             const VtSlotPool::Owner& o = slots_.owner(slot);
-            if (o.live && o.variant_key == key) slots_.release(slot);
+            if (o.live && o.variant_key == key) {
+                slot_reset_tier(slot);
+                slots_.release(slot);
+            }
         }
         // Drop queued fills for it.
         for (size_t i = queue_.size(); i-- > 0;) {
@@ -643,6 +689,18 @@ uint32_t VtResidency::invalidate_all_content() {
         if (queued != queued_keys_.end())
             queue_[queued->second].priority = kVtMaxMips;
     }
+
+    // WP-H: enrichment state is page CONTENT, so it dies with the content.
+    // Every tier bit is cleared (the pinned tails included -- they are about to
+    // be re-filled in place) and every pending candidate is dropped; the
+    // re-fills below queue fresh candidates, so the whole pool re-enriches from
+    // the new inputs rather than keeping occlusion baked against the old ones.
+    stats_.enrich_dropped_total += enrich_queue_.size();
+    enrich_queue_.clear();
+    enrich_queued_slot_.clear();
+    std::fill(slot_tier_.begin(), slot_tier_.end(), uint8_t{0});
+    stats_.enriched_pages = 0;
+    stats_.enrich_queue_depth = 0;
 
     ++stats_.invalidations_total;
     stats_.pages_dropped_total += dropped;
@@ -746,6 +804,137 @@ void VtResidency::queue_page(VariantRung& v, VtPageKey page, bool force,
     queued_keys_[k] = queue_.size();
     queue_.push_back(
         PendingFill{v.layer, page, priority, frame_index_, preassigned_slot});
+}
+
+// ---------------------------------------------------------------------------
+// WP-H tier-2 enrichment queue
+// ---------------------------------------------------------------------------
+
+void VtResidency::slot_reset_tier(uint32_t slot) {
+    if (slot < slot_tier_.size()) {
+        if (slot_tier_[slot] != 0 && stats_.enriched_pages != 0)
+            --stats_.enriched_pages;
+        slot_tier_[slot] = 0;
+    }
+    const auto found = enrich_queued_slot_.find(slot);
+    if (found == enrich_queued_slot_.end()) return;
+    const size_t index = found->second;
+    enrich_queued_slot_.erase(found);
+    if (index < enrich_queue_.size()) {
+        enrich_queue_.erase(enrich_queue_.begin() + static_cast<long>(index));
+        for (auto& entry : enrich_queued_slot_)
+            if (entry.second > index) --entry.second;
+    }
+    ++stats_.enrich_dropped_total;
+    stats_.enrich_queue_depth = static_cast<uint32_t>(enrich_queue_.size());
+}
+
+void VtResidency::queue_enrich(uint32_t layer, VtPageKey page, uint32_t slot) {
+    if (!enricher_ || max_enrich_per_frame_ == 0) return;
+    if (slot >= slot_tier_.size()) return;
+    // COARSE-PAGE SKIP. Tier 2 bakes a contact-scale term (sub-metre); once a
+    // page texel is wider than the enricher's fade end, the enrichment would be
+    // multiplied by zero, so tracing it is pure cost. This is also the guard
+    // that stops coarse mips of a streamed terrain sector from being enriched
+    // at all — the case where the old texel-relative-only cap grew to tens of
+    // metres and blackened open slopes.
+    if (layer < variants_.size()) {
+        const float tpm = variants_[layer].finest_texels_per_meter;
+        if (tpm > 0.0f) {
+            const float footprint_m =
+                static_cast<float>(1u << page.mip) / tpm;
+            if (footprint_m >= enricher_->max_footprint_meters()) {
+                ++stats_.enrich_skipped_coarse_total;
+                return;
+            }
+        }
+    }
+    const auto found = enrich_queued_slot_.find(slot);
+    if (found != enrich_queued_slot_.end()) {
+        enrich_queue_[found->second] =
+            PendingEnrich{layer, page, slot, frame_index_};
+        return;
+    }
+    // Bounded: a thrashing pool must not grow this without limit. The oldest
+    // candidate is the least likely to still be on screen, so it loses.
+    constexpr size_t kMaxEnrichQueue = 1024;
+    if (enrich_queue_.size() >= kMaxEnrichQueue)
+        slot_reset_tier(enrich_queue_.front().slot);
+    enrich_queued_slot_[slot] = enrich_queue_.size();
+    enrich_queue_.push_back(PendingEnrich{layer, page, slot, frame_index_});
+    stats_.enrich_queue_depth = static_cast<uint32_t>(enrich_queue_.size());
+}
+
+void VtResidency::drain_enrich(VkCommandBuffer cmd) {
+    stats_.enrich_last_frame = 0;
+    if (!enricher_ || max_enrich_per_frame_ == 0 || enrich_queue_.empty())
+        return;
+    enrich_batch_.clear();
+    size_t consumed = 0;
+    for (size_t i = 0; i < enrich_queue_.size() &&
+                       enrich_batch_.size() < max_enrich_per_frame_;
+         ++i) {
+        const PendingEnrich p = enrich_queue_[i];
+        consumed = i + 1;
+        if (p.layer >= variants_.size()) continue;
+        VariantRung& v = variants_[p.layer];
+        if (!v.live || p.slot >= slots_.capacity()) continue;
+        const VtSlotPool::Owner& owner = slots_.owner(p.slot);
+        // The slot must still hold exactly the page we queued. An eviction or a
+        // re-fill in between makes the candidate stale: the re-fill queued its
+        // own candidate, so dropping this one loses nothing.
+        if (!owner.live ||
+            owner.variant_key != variant_key(v.variant_hash, v.rung) ||
+            !(owner.page == p.page)) {
+            ++stats_.enrich_dropped_total;
+            continue;
+        }
+        if (slot_tier_[p.slot] != 0) continue;   // already tier-2
+        VtEnrichRequest request;
+        request.variant_hash = v.variant_hash;
+        request.rung = static_cast<uint16_t>(v.rung);
+        request.mip = static_cast<uint16_t>(p.page.mip);
+        request.page_x = static_cast<uint16_t>(p.page.px);
+        request.page_y = static_cast<uint16_t>(p.page.py);
+        request.physical_slot = p.slot;
+        request.atlas = &v.atlas;
+        request.part_context = &v.context;
+        request.pool = &pool_binding_;
+        request.frame_index = frame_index_;
+        enrich_batch_.push_back(request);
+        // Marked tier-2 at RECORD time, not on completion: the enrichment
+        // multiplies into the page in place, so a second pass over the same
+        // fill would darken it twice. A request the enricher then fails closed
+        // on (no acceleration structure, no sampled pool view) simply stays
+        // tier-1 content flagged as done -- which is the "skipped silently"
+        // contract, since tier-1 pages are already correct.
+        slot_tier_[p.slot] = 1;
+        ++stats_.enriched_pages;
+    }
+    enrich_queue_.erase(enrich_queue_.begin(),
+                        enrich_queue_.begin() + static_cast<long>(consumed));
+    enrich_queued_slot_.clear();
+    for (size_t i = 0; i < enrich_queue_.size(); ++i)
+        enrich_queued_slot_[enrich_queue_[i].slot] = i;
+    stats_.enrich_queue_depth = static_cast<uint32_t>(enrich_queue_.size());
+    if (enrich_batch_.empty()) return;
+
+    // The enricher SAMPLES the ORM pool image (vt_enrich.h contract) and
+    // restores this layout itself after its write-back, so the tracked layout
+    // is unchanged on the far side.
+    PoolImage& orm = pool_[kVtChannelOrm];
+    if (orm.layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        barrier(cmd, orm.image, orm.layers, orm.layout,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        orm.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    enricher_->enrich(cmd, enrich_batch_.data(), enrich_batch_.size());
+    stats_.enrich_last_frame = static_cast<uint32_t>(enrich_batch_.size());
+    stats_.enrich_total += enrich_batch_.size();
 }
 
 void VtResidency::inject_feedback_for_test(const VtFeedbackRequest* requests,
@@ -873,6 +1062,16 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
     stats_.evictions_total = slots_.evictions();
     stats_.queue_depth = static_cast<uint32_t>(queue_.size());
 
+    // --- WP-H: tier-2 enrichment, BEFORE this frame's fills ---------------
+    // Ordering matters twice over. (1) It runs while the pool is still in its
+    // shader-read layout, which is what the enricher samples the page's current
+    // ORM texels from. (2) Draining before the fills guarantees a page queued
+    // by THIS frame's fills is never enriched in the same command buffer that
+    // wrote it -- the earliest it can run is the next frame, by which point the
+    // fill's transfer has been submitted and the layout transition below is the
+    // dependency that orders them.
+    drain_enrich(cmd);
+
     // --- pool transitions -------------------------------------------------
     for (uint32_t c = 0; c < kVtChannelCount; ++c) {
         if (pool_[c].layout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
@@ -895,7 +1094,14 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
     }
 
     // --- drain the fill queue --------------------------------------------
+    // The indirection is NOT mapped here any more. Mapping a page before the
+    // filler has written it is what turned every skipped request into a page
+    // pointing at never-written pool memory (BC7 -> black); the mapping now
+    // happens after fill() returns, gated on the per-request success flag
+    // (vt_types.h VtFillRequest::out_filled). `pending_map_` remembers what to
+    // map or roll back.
     batch_.clear();
+    pending_map_.clear();
     if (!queue_.empty() && filler_) {
         // Highest priority first; ties by insertion order (stable).
         std::stable_sort(queue_.begin(), queue_.end(),
@@ -941,8 +1147,8 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
             request.part_context = &v.context;
             request.pool = &pool_binding_;
             batch_.push_back(request);
-            v.indirection.map(p.page.mip, p.page.px, p.page.py, slot);
-            if (p.page.mip + 1u == v.layout.mip_count) v.tail_filled = true;
+            pending_map_.push_back(PendingMap{
+                p.layer, p.page, slot, p.preassigned_slot != 0xFFFFFFFFu});
         }
         // Only the entries we actually dispatched (or dropped as dead) leave
         // the queue; a pool-exhaustion break keeps the rest for next frame.
@@ -964,9 +1170,53 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
         // filler that needs GENERAL cannot exist without changing
         // create_pool_image() -- and would then have to change this pair too.
         pool_binding_.transfer_dst_layout = true;
+        // One flag per request, false until the filler says otherwise. The
+        // vector is sized before any pointer into it is handed out, so the
+        // addresses stay valid for the whole fill() call.
+        for (size_t i = 0; i < batch_.size(); ++i) {
+            fill_flags_[i] = false;
+            batch_[i].out_filled = &fill_flags_[i];
+        }
         filler_->fill(cmd, batch_.data(), batch_.size());
-        stats_.fills_last_frame = static_cast<uint32_t>(batch_.size());
-        stats_.fills_total += batch_.size();
+
+        // --- map or roll back, per request --------------------------------
+        uint32_t mapped = 0;
+        for (size_t i = 0; i < pending_map_.size(); ++i) {
+            const PendingMap& m = pending_map_[i];
+            VariantRung& v = variants_[m.layer];
+            if (fill_flags_[i]) {
+                if (!v.live) continue;
+                v.indirection.map(m.page.mip, m.page.px, m.page.py, m.slot);
+                if (m.page.mip + 1u == v.layout.mip_count) v.tail_filled = true;
+                // WP-H: the slot now holds FRESH tier-1 content, so any tier-2
+                // state it carried is void and the new content becomes an
+                // enrichment candidate. Tails go through here too (they are
+                // small, permanent, and what most of a variant reads).
+                slot_reset_tier(m.slot);
+                queue_enrich(m.layer, m.page, m.slot);
+                ++mapped;
+                continue;
+            }
+            // The filler skipped this request. Nothing wrote the slot, so the
+            // page must NOT become resident.
+            ++stats_.fills_failed_total;
+            if (!m.preassigned) {
+                // Freshly acquired: hand it straight back. The entry was never
+                // mapped, so every sample of this page keeps resolving to the
+                // variant's tail, exactly as before the request.
+                slot_reset_tier(m.slot);
+                slots_.release(m.slot);
+            } else if (v.live) {
+                // A pinned tail keeps its slot (every unmapped entry resolves
+                // to it, so releasing it would break that invariant) but its
+                // content is still undefined: leave tail_filled false and
+                // re-queue the in-place re-fill so the next frame retries.
+                v.tail_filled = false;
+                queue_page(v, m.page, /*force=*/true, /*preassigned_slot=*/m.slot);
+            }
+        }
+        stats_.fills_last_frame = mapped;
+        stats_.fills_total += mapped;
     }
 
     // --- indirection uploads ---------------------------------------------

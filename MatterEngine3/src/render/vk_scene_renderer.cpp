@@ -1409,6 +1409,7 @@ void VkSceneRenderer::destroy_pipeline() {
         vt_.reset();
     }
     vt_compositor_ = nullptr;   // borrowed; the residency layer owned it
+    vt_enricher_ = nullptr;     // ditto (WP-H)
     vt_pending_invalidate_.clear();
     vt_inputs_dirty_ = true;
     vt_inputs_pushed_ = false;
@@ -3635,8 +3636,37 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
             std::fflush(stderr);
         }
     }
+    // WP-H: tier-2 hemisphere AO enrichment. Requires hardware ray tracing and
+    // is purely additive -- with no enricher the residency layer never queues a
+    // page and everything stays tier-1, which is correct (just flatter in the
+    // crevices). Installed BEFORE init() so the startup stats line reports the
+    // real tier-2 configuration. MATTER_VT_ENRICH_PER_FRAME=0 keeps the
+    // enricher loaded but drains nothing.
+    if (!vulkan_->ray_tracing_available()) {
+        std::fprintf(stderr,
+                     "[vk] VT tier-2 enrichment off (no hardware ray "
+                     "tracing): %s\n",
+                     vulkan_->ray_tracing_unavailable_reason().c_str());
+        std::fflush(stderr);
+    } else {
+        std::string enrich_error;
+        std::unique_ptr<vt::VtEnricher> enricher =
+            vt::VtEnricher::create(*vulkan_, VK_NULL_HANDLE, enrich_error);
+        if (enricher) {
+            vt_enricher_ = enricher.get();
+            runtime->set_enricher(std::move(enricher));
+        } else {
+            vt_enricher_ = nullptr;
+            std::fprintf(stderr,
+                         "[vk] VT tier-2 enrichment unavailable (tier-1 pages "
+                         "retained): %s\n",
+                         enrich_error.c_str());
+            std::fflush(stderr);
+        }
+    }
     if (!runtime->init(*vulkan_, error)) {
         vt_compositor_ = nullptr;
+        vt_enricher_ = nullptr;
         // Fail closed for the whole session: every part stays chartless and
         // the legacy path keeps rendering exactly as before.
         vt_unavailable_ = true;
@@ -3652,11 +3682,14 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
     const vt::VtResidency::Stats& started = vt_->stats();
     std::fprintf(stderr,
                  "[vk] chart-space VT online: %u page pool (%.0f MiB), "
-                 "%u fills/frame, filler=%s\n",
+                 "%u fills/frame, filler=%s, tier2=%s (%u rays/texel, "
+                 "%u pages/frame)\n",
                  started.pool_capacity,
                  static_cast<double>(started.pool_bytes) / (1024.0 * 1024.0),
                  vt_->max_fills_per_frame(),
-                 vt_compositor_ ? "tier-1 compositor" : "flat stub");
+                 vt_compositor_ ? "tier-1 compositor" : "flat stub",
+                 vt_enricher_ ? "hemisphere AO" : "off",
+                 started.enrich_samples, vt_->max_enrich_per_frame());
     std::fflush(stderr);
     push_vt_compositor_inputs();
     return true;
@@ -3740,11 +3773,18 @@ void VkSceneRenderer::push_vt_compositor_inputs() {
 }
 
 void VkSceneRenderer::drain_vt_invalidations(uint64_t serial) {
-    if (!vt_compositor_ || vt_pending_invalidate_.empty()) return;
+    if ((!vt_compositor_ && !vt_enricher_) || vt_pending_invalidate_.empty())
+        return;
     size_t keep = 0;
     for (size_t i = 0; i < vt_pending_invalidate_.size(); ++i) {
         if (serial >= vt_pending_invalidate_[i].second) {
-            vt_compositor_->invalidate_part(vt_pending_invalidate_[i].first);
+            if (vt_compositor_)
+                vt_compositor_->invalidate_part(vt_pending_invalidate_[i].first);
+            // WP-H: the enricher caches the same geometry PLUS the variant's
+            // acceleration structure; both are keyed on the variant hash and
+            // both go stale for exactly the same reasons.
+            if (vt_enricher_)
+                vt_enricher_->invalidate_part(vt_pending_invalidate_[i].first);
             continue;
         }
         vt_pending_invalidate_[keep++] = vt_pending_invalidate_[i];
@@ -3871,6 +3911,11 @@ bool VkSceneRenderer::update_vt_part_surface(
         // the per-vertex weights; rebuild them from the swapped context on the
         // next fill. Safe immediately: begin_vt_surface_update wait_idled.
         if (vt_compositor_) vt_compositor_->invalidate_part(part_hash);
+        // WP-H: the enricher caches the same streams (its chart resolve reads
+        // them), so it must rebuild too. Its acceleration structure is over
+        // positions/indices only and a tape edit does not move geometry -- but
+        // dropping the whole entry keeps one invalidation rule instead of two.
+        if (vt_enricher_) vt_enricher_->invalidate_part(part_hash);
         ++vt_surface_updates_applied_;
     }
     return updated;
@@ -6785,7 +6830,10 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     // the same variant is dropped later (see vt_pending_invalidate_): a fill
     // recorded this frame may still be reading those buffers.
     if (vt_) vt_->release_variant(part_hash);
-    if (vt_compositor_)
+    // WP-H: the enricher caches the same streams plus the variant's own
+    // acceleration structure and has the same kMaxBatchesInFlight retirement
+    // horizon, so it rides the same deferred invalidation.
+    if (vt_compositor_ || vt_enricher_)
         vt_pending_invalidate_.emplace_back(part_hash,
                                             vt_invalidate_retire_serial());
     vt_draw_slots_dirty_ = true;

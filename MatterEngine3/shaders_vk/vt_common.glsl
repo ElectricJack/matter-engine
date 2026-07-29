@@ -166,7 +166,10 @@ vec4 vt_sample_channel(VtAddress address, int channel) {
                       vec3(address.physical_uv, address.physical_layer), 0.0);
 }
 
-// Chart-tangent-space normal (BC5 stores XY; Z is reconstructed).
+// Tangent-space normal relative to the interpolated geometric normal (BC5
+// stores XY; Z is reconstructed). Rotate into world space with
+// tileset_rotate_normal(decoded, geometric_normal) — the compositor encodes
+// in exactly that function's frame.
 vec3 vt_decode_normal(vec4 encoded) {
     vec2 xy = encoded.xy * 2.0 - 1.0;
     float z = sqrt(max(0.0, 1.0 - dot(xy, xy)));

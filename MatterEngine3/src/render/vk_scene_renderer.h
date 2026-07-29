@@ -31,6 +31,7 @@
 #include "vk_resources.h"
 #include "vk_temporal.h"
 #include "vt_compositor.h"  // WP-D: tier-1 page compositor (the filler)
+#include "vt_enrich.h"      // WP-H: tier-2 hemisphere AO page enrichment
 #include "vt_residency.h"  // WP-E: chart-space virtual texturing runtime
 
 namespace matter {
@@ -1360,6 +1361,11 @@ private:
     // be read by an unretired fill. VtCompositor::kMaxBatchesInFlight is 4 and
     // one batch is recorded per frame, so twice that is a comfortable margin.
     uint64_t vt_invalidate_retire_serial() const {
+        // Covers BOTH page passes' in-flight windows (WP-D's fills and WP-H's
+        // enrichments), which is why the max of the two ring depths is used.
+        static_assert(vt::VtEnricher::kMaxBatchesInFlight <=
+                          vt::VtCompositor::kMaxBatchesInFlight,
+                      "the retirement horizon must cover the deeper ring");
         return vt_frame_serial_ + 2u * vt::VtCompositor::kMaxBatchesInFlight;
     }
 
@@ -1493,6 +1499,10 @@ private:
     // Borrowed: the residency layer owns the filler. Null when the compositor
     // could not be created and the WP-E stub filler is standing in.
     vt::VtCompositor* vt_compositor_ = nullptr;
+    // WP-H: borrowed likewise (the residency layer owns the enricher). Null
+    // when hardware ray tracing is unavailable or the enricher failed to
+    // create -- tier-2 is additive, so that is a quality loss, not a fault.
+    vt::VtEnricher* vt_enricher_ = nullptr;
     bool vt_inputs_dirty_ = true;
     // Set by the first push_vt_compositor_inputs() that actually pushed. A
     // later push means the inputs CHANGED, which makes every resident page

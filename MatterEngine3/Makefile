@@ -337,7 +337,8 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/tileset_bake_primary.comp.spv \
          build/shaders_vk/tileset_bake_ao.comp.spv \
          build/shaders_vk/vt_composite.comp.spv \
-         build/shaders_vk/vt_bc_encode.comp.spv
+         build/shaders_vk/vt_bc_encode.comp.spv \
+         build/shaders_vk/vt_enrich_ao.comp.spv
 
 build/shaders_vk/%.spv: shaders_vk/%
 	@mkdir -p $(dir $@)
@@ -386,6 +387,16 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_shadow.rgen.spv \
     build/shaders_vk/rt_lighting.rgen.spv \
     build/shaders_vk/rt_surface_test.rgen.spv \
     build/shaders_vk/vt_composite.comp.spv: shaders_vk/wang_common.glsl
+
+# WP-H (chart VT): vt_chart_types.glsl (the struct mirrors) and
+# vt_chart_resolve.glsl (the page-texel -> owning-triangle resolve) are
+# includes, not stages. BOTH page passes consume them, which is the point: the
+# tier-2 enrichment multiplies occlusion into pages the tier-1 compositor baked,
+# so the two must resolve every texel identically or the occlusion lands on the
+# wrong surface.
+build/shaders_vk/vt_composite.comp.spv \
+    build/shaders_vk/vt_enrich_ao.comp.spv: \
+    shaders_vk/vt_chart_types.glsl shaders_vk/vt_chart_resolve.glsl
 
 # WP-E (chart VT): vt_common.glsl is the shared VT sampling helper. It is an
 # include, not a stage, so it has no .spv of its own -- but every consumer must

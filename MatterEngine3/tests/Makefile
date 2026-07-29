@@ -2622,3 +2622,17 @@ run-vt-surfaces:
 	$(MAKE) -C ../../MatterEditor build/windows/vulkan_smoke_tests.exe
 	cd ../../MatterEditor/build/windows && \
 	    MATTER_VK_SMOKE_MODE=vt-surfaces ./vulkan_smoke_tests.exe
+
+# ---------------------------------------------------------------------------
+# WP-H — tier-2 hemisphere AO page enrichment GPU test: the vt-enrich and
+# vt-enrich-nort smoke modes (occluder fixture with, and without, hardware ray
+# tracing). Both are also part of the full vulkan-smoke suite via
+# tools/smoke_vulkan_faults.ps1.
+# ---------------------------------------------------------------------------
+.PHONY: run-vt-enrich
+run-vt-enrich:
+	$(MAKE) -C ../../MatterEditor build/windows/vulkan_smoke_tests.exe
+	cd ../../MatterEditor/build/windows && \
+	    MATTER_VK_SMOKE_MODE=vt-enrich ./vulkan_smoke_tests.exe
+	cd ../../MatterEditor/build/windows && \
+	    MATTER_VK_SMOKE_MODE=vt-enrich-nort ./vulkan_smoke_tests.exe

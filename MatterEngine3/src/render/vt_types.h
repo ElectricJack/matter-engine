@@ -61,6 +61,13 @@ struct VtPoolBinding {
     VkImage     image[kVtChannelCount]{};
     VkImageView storage_view[kVtChannelCount]{};   // may be VK_NULL_HANDLE for BC images
     VkFormat    format[kVtChannelCount]{};
+    // WP-H append: SAMPLED views of the same images. The pool is BC-compressed
+    // and carries no STORAGE usage, so a pass that must READ resident page
+    // content (tier-2 enrichment's read-modify-write of the ORM channel) goes
+    // through a sampler and lets the hardware decode the block. Always
+    // populated by the residency layer; VK_NULL_HANDLE means "not available"
+    // and such a pass must fail closed.
+    VkImageView sampled_view[kVtChannelCount]{};
     uint32_t    layer_edge_texels = kVtPoolLayerEdgeTexels;
     uint32_t    layer_count = 0;
     // Images are in VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL for the whole batch
@@ -170,10 +177,35 @@ struct VtFillRequest {
     // in one fill() call). Appended after the original C2 sketch.
     const VtPoolBinding* pool = nullptr;
 
+    // --- WP-H append: PER-REQUEST SUCCESS SIGNAL -------------------------
+    // fill() returns void and a page slot is USELESS until something writes it,
+    // so without this the seam had no way to report a skipped request. The
+    // residency layer used to map the indirection entry BEFORE calling the
+    // filler, which turned every skip into a page permanently pointing at
+    // never-written pool memory — BC7-decodes to black, and the pinned tail
+    // variant of that bug blackens an entire variant at every distance.
+    //
+    // CONTRACT. The residency layer points this at one bool per request,
+    // pre-set to false, and after fill() returns maps ONLY the requests whose
+    // flag is true; a false flag rolls the slot back (freshly acquired slots go
+    // straight back to the free list, a pinned tail keeps its slot but stays
+    // unfilled and is re-queued). A filler MUST therefore set *out_filled =
+    // true for every request whose page it actually wrote, and leave it alone
+    // otherwise. Deterministic: it is a pure function of what the filler did.
+    //
+    // Null means "legacy filler with no signal", and the residency layer then
+    // assumes success exactly as it did before — so an older filler keeps
+    // working, at the cost of the old hazard.
+    bool* out_filled = nullptr;
+
     // Convenience accessor; never null for a request the residency layer
     // produced.
     const VtPartContext* part() const {
         return static_cast<const VtPartContext*>(part_context);
+    }
+    // Fillers call this on the path that actually wrote the page.
+    void mark_filled() const {
+        if (out_filled != nullptr) *out_filled = true;
     }
 };
 
@@ -181,8 +213,71 @@ class VtPageFiller {
   public:
     virtual ~VtPageFiller() = default;
     // Record fills for `count` requests into `cmd`. Deterministic given
-    // identical inputs (no time/random); must not submit or wait.
+    // identical inputs (no time/random); must not submit or wait. Every
+    // request whose page is actually written must be reported through
+    // VtFillRequest::mark_filled() (see the contract above).
     virtual void fill(VkCommandBuffer cmd, const VtFillRequest* batch, size_t count) = 0;
+};
+
+// ---------------------------------------------------------------------------
+// WP-H — tier-2 page enrichment seam (spec Phase 6).
+// ---------------------------------------------------------------------------
+// A page becomes an enrichment candidate the moment tier-1 has filled it. The
+// enricher REFINES resident page content in place: it reads the page's current
+// ORM texels back out of the pool, multiplies baked hemisphere occlusion into
+// the occlusion channel, and writes the same slot again. The indirection is
+// never touched, so a page is always samplable and always correct — tier 2 only
+// ever darkens crevices that tier 1 left flat.
+//
+// The whole tier is OPTIONAL and additive: with no enricher installed (no
+// hardware ray tracing, or a device/build without it) the residency layer never
+// queues anything and pages stay tier-1, which is the shipping behaviour of
+// every wave before this one.
+struct VtEnrichRequest {
+    uint64_t variant_hash = 0;    // resolved_hash of the part variant
+    uint16_t rung = 0;            // LOD rung whose chart table applies
+    uint16_t mip = 0;             // virtual mip the page belongs to
+    uint16_t page_x = 0;          // page coords at `mip`
+    uint16_t page_y = 0;
+    uint32_t physical_slot = 0;   // the page slot to refine, in place
+    const chart_atlas::ChartAtlasRung* atlas = nullptr;  // borrowed, non-null
+    // `const VtPartContext*`, exactly as VtFillRequest::part_context (same
+    // lifetime guarantee: the residency layer's owned copies outlive every
+    // queued enrichment for that variant).
+    const void* part_context = nullptr;
+    // Destination/source pool images (borrowed, same for every request in one
+    // enrich() call). `sampled_view[kVtChannelOrm]` must be non-null.
+    const VtPoolBinding* pool = nullptr;
+    // Monotonic frame counter, used only for the enricher's own cache ageing
+    // and deferred destruction. Never feeds the bake itself — enrichment must
+    // stay a pure function of geometry.
+    uint64_t frame_index = 0;
+
+    const VtPartContext* part() const {
+        return static_cast<const VtPartContext*>(part_context);
+    }
+};
+
+class VtPageEnricher {
+  public:
+    virtual ~VtPageEnricher() = default;
+    // Record enrichment for `count` requests into `cmd`. Deterministic given
+    // identical inputs (no time, no random, no frame index in the bake); must
+    // not submit or wait. See vt_enrich.h for the pool-layout contract.
+    virtual void enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
+                        size_t count) = 0;
+    // Drop cached per-variant state (geometry streams, acceleration
+    // structures). Device must be idle with respect to prior enrichments.
+    virtual void invalidate_part(uint64_t variant_hash) = 0;
+    // Rays per texel this enricher traces; reported in the residency stats.
+    virtual uint32_t sample_count() const = 0;
+    // Largest page-texel size (metres) at which enrichment still contributes
+    // anything. Past it the enricher's strength has faded to zero — see the MIP
+    // FADE note in vt_enrich_ao.comp — so the residency layer must not queue
+    // those pages at all, or every coarse page in a streamed world pays for a
+    // full hemisphere trace that is then multiplied by 0. Return a huge value
+    // to opt out of the skip.
+    virtual float max_footprint_meters() const = 0;
 };
 
 }  // namespace vt

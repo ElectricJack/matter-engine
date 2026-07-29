@@ -378,6 +378,20 @@ class VtResidency {
         uint32_t rejected_variants = 0; // fell back to legacy (budget/layers)
         uint64_t invalidations_total = 0;  // invalidate_all_content() calls
         uint64_t pages_dropped_total = 0;  // pages those calls dropped
+        // Requests the filler dispatched but did not write (see the map-or-
+        // rollback path in record_frame). Nonzero means pages are NOT going
+        // black, but something upstream is refusing work -- watch it.
+        uint64_t fills_failed_total = 0;
+        // --- WP-H: tier-2 hemisphere enrichment ---
+        uint32_t enrich_samples = 0;        // rays/texel; 0 = no enricher
+        uint32_t enrich_last_frame = 0;     // pages enriched in the last frame
+        uint32_t enrich_queue_depth = 0;    // pages waiting for tier 2
+        uint32_t enriched_pages = 0;        // resident slots currently at tier 2
+        uint64_t enrich_total = 0;          // pages enriched since startup
+        uint64_t enrich_dropped_total = 0;  // candidates dropped before running
+        // Pages never queued because their texel is coarser than the contact
+        // scale tier 2 bakes (the coarse-page skip in queue_enrich).
+        uint64_t enrich_skipped_coarse_total = 0;
     };
 
     VtResidency();
@@ -482,6 +496,16 @@ class VtResidency {
     void set_filler(std::unique_ptr<VtPageFiller> filler);
     VtPageFiller* filler() const { return filler_.get(); }
 
+    // WP-H: install the tier-2 enricher. OPTIONAL — with none installed no page
+    // is ever queued for enrichment and every page stays tier-1 (which is
+    // correct, just flatter). The renderer installs one only when
+    // vulkan.ray_tracing_available(). Takes ownership; safe to call before or
+    // after variants are registered, but only while no enrichment can be
+    // unretired (the renderer does it at runtime startup).
+    void set_enricher(std::unique_ptr<VtPageEnricher> enricher);
+    VtPageEnricher* enricher() const { return enricher_.get(); }
+    uint32_t max_enrich_per_frame() const { return max_enrich_per_frame_; }
+
     const Stats& stats() const { return stats_; }
     uint32_t max_fills_per_frame() const { return max_fills_per_frame_; }
 
@@ -521,6 +545,13 @@ class VtResidency {
         uint32_t tail_slot = 0;
         bool tail_filled = false;
         bool live = false;
+        // WP-H: the highest texels_per_meter over this rung's charts, i.e. the
+        // SMALLEST page-texel size the rung has. Used to decide whether a page
+        // is fine enough for tier-2 enrichment to contribute anything at all
+        // (see queue_enrich); taking the max makes the skip conservative — a
+        // page is only skipped when no chart on it could benefit, and the
+        // shader's per-texel fade handles the coarser charts on a mixed page.
+        float finest_texels_per_meter = 0.0f;
     };
 
     bool create_pool_image(uint32_t channel, VkFormat format, uint32_t layers,
@@ -533,6 +564,17 @@ class VtResidency {
     void queue_page(VariantRung& v, VtPageKey page, bool force = false,
                     uint32_t preassigned_slot = 0xFFFFFFFFu);
     void drain_feedback(uint32_t frame_slot);
+
+    // ---- WP-H tier-2 bookkeeping ----------------------------------------
+    // Tier state rides the PHYSICAL SLOT, not the virtual page: eviction and
+    // re-fill both hand a slot new content, and both must forget that the old
+    // content was enriched. slot_reset_tier() is therefore called from every
+    // place a slot changes hands, and it is also what makes double-application
+    // impossible (enrichment multiplies into the page in place, so running it
+    // twice on one fill would darken the page twice).
+    void slot_reset_tier(uint32_t slot);
+    void queue_enrich(uint32_t layer, VtPageKey page, uint32_t slot);
+    void drain_enrich(VkCommandBuffer cmd);
 
     matter::VulkanDevice* vulkan_ = nullptr;
     bool ready_ = false;
@@ -604,8 +646,44 @@ class VtResidency {
     std::vector<PendingFill> queue_;
     std::map<uint64_t, size_t> queued_keys_;   // dedup
 
+    // WP-H: pages that tier-1 has filled and tier-2 has not run on yet.
+    // Deduped by physical slot (a slot holds exactly one page), FIFO within a
+    // frame, drained at low priority ahead of the frame's fills so a page
+    // queued this frame is never enriched in the same command buffer that
+    // wrote it.
+    struct PendingEnrich {
+        uint32_t layer = 0;
+        VtPageKey page{};
+        uint32_t slot = 0;
+        uint64_t requested_frame = 0;
+    };
+    std::vector<PendingEnrich> enrich_queue_;
+    std::map<uint32_t, size_t> enrich_queued_slot_;   // slot -> queue index
+    // 0 = tier-1 (or unknown), 1 = tier-2 applied. Indexed by physical slot.
+    std::vector<uint8_t> slot_tier_;
+    uint32_t max_enrich_per_frame_ = 2;
+    std::unique_ptr<VtPageEnricher> enricher_;
+    std::vector<VtEnrichRequest> enrich_batch_;
+
     std::unique_ptr<VtPageFiller> filler_;
     std::vector<VtFillRequest> batch_;
+    // What record_frame will map (or roll back) once the filler has reported
+    // per-request success. `preassigned` distinguishes a pinned tail — which
+    // keeps its slot on failure because every unmapped entry resolves to it —
+    // from a freshly acquired slot, which goes back to the free list.
+    struct PendingMap {
+        uint32_t layer = 0;
+        VtPageKey page{};
+        uint32_t slot = 0;
+        bool preassigned = false;
+    };
+    std::vector<PendingMap> pending_map_;
+    // Per-request success flags handed to the filler. A real bool array (not
+    // vector<bool>, which is bit-packed and has no addressable elements, and
+    // not a uint8_t buffer reinterpreted as bool*, which would alias). Sized by
+    // the hard env ceiling on MATTER_VT_FILLS_PER_FRAME so it never allocates.
+    static constexpr uint32_t kMaxFillFlags = 64;
+    bool fill_flags_[kMaxFillFlags]{};
     std::vector<VtFeedbackRequest> injected_;
     VtPoolBinding pool_binding_{};
     Stats stats_{};

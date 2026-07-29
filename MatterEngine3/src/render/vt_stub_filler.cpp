@@ -223,6 +223,11 @@ class VtStubFiller final : public VtPageFiller {
                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                                        &copy);
             }
+            // WP-H: the page is written, so the residency layer may map its
+            // indirection entry. The `continue` above (BC encode failed) and
+            // every request past `usable` leave the flag false and stay
+            // unmapped rather than pointing at never-written pool memory.
+            request.mark_filled();
         }
         std::string flush_error;
         matter::flush_buffer(staging, 0,

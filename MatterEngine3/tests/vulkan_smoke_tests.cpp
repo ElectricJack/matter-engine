@@ -2295,6 +2295,429 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
           "vt-surfaces: release returns the variant");
 }
 
+// WP-H (tier-2 hemisphere AO page enrichment): MATTER_VK_SMOKE_MODE=vt-enrich
+// and MATTER_VK_SMOKE_MODE=vt-enrich-nort.
+//
+// FIXTURE — a known occluder, in ONE variant so it lands in that variant's own
+// acceleration structure (part-local self-occlusion is all tier 2 bakes):
+//   chart 0  a 3 x 3 m wall in the plane z = -2, normal +Z;
+//   chart 1  a 1 m deep "fin" standing on it in the plane x = 0, so the wall
+//            texels next to x = 0 are occluded and the ones far from it are not.
+// Texel density is a deliberate 4 texels/m, so one page texel is 0.25 m ≈ 10
+// screen pixels and a probe cannot straddle the contact band. The effective cap
+// is min(cap_texels x texel, cap_meters) = min(4 x 0.25, 0.5) = 0.5 m — the
+// ABSOLUTE ceiling binds here, which is the point: the near probe sits on the
+// texel whose centre is 0.125 m from the fin (a quarter of the cap, strongly
+// occluded) and the far probe on one 1.125 m away (outside the cap entirely, so
+// exactly unoccluded). The mip fade is 1.0 at this footprint (0.25 m < the
+// 0.5 m fade start), so this fixture exercises the un-faded contact regime.
+//
+// The G-buffer's ORM.z is the shaded occlusion, and for a detail-less material
+// gbuffer.frag reduces to `ao = vertex_ao * vt_orm.r` with vertex_ao = 1 (the
+// fixture's surface.zw is (1,1)), so ORM.z reads back the page's occlusion
+// channel directly.
+//
+// Asserts:
+//   (a) post-enrichment occlusion is darker next to the fin than far from it,
+//       and the far probe is still essentially unoccluded;
+//   (b) determinism — further frames reproduce the pixels bit-exactly, and the
+//       enrichment does not run again over an already-enriched page (which is
+//       what stops the in-place multiply from compounding);
+//   (c) albedo / roughness / metallic are bit-identical to the un-enriched arm,
+//       i.e. tier 2 touches ONLY the occlusion channel;
+//   (d) a material-table edit invalidates page content, and the re-filled pages
+//       are re-enriched (contrast comes back).
+// The `vt-enrich-nort` mode forces the device to report no ray tracing
+// (MATTER_VK_TEST_FORCE_RT_UNAVAILABLE, the existing rt-unavailable pattern) and
+// runs the same fixture: no enricher loads, nothing is ever queued, and every
+// probe reads unoccluded tier-1 content — today's behaviour, unchanged.
+void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
+    const bool rt = vulkan.ray_tracing_available();
+    constexpr uint32_t width = 160;
+    constexpr uint32_t height = 160;
+#ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+    _putenv_s("MATTER_VT_ENRICH_PER_FRAME", "2");
+#else
+    setenv("MATTER_VT_POOL_PAGES", "256", 1);
+    setenv("MATTER_VT_ENRICH_PER_FRAME", "2", 1);
+#endif
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "vt-enrich: renderer init" : error.c_str());
+
+    constexpr uint32_t kMaterial = 5u;
+    constexpr float kRoughness = 0.40f;
+    constexpr float kMetallic = 0.0f;
+    const matter::Float3 page_albedo{0.85f, 0.80f, 0.72f};
+    std::vector<MaterialGpuRecord> materials(kMaterial + 1);
+    materials[kMaterial].base_roughness[0] = page_albedo.x;
+    materials[kMaterial].base_roughness[1] = page_albedo.y;
+    materials[kMaterial].base_roughness[2] = page_albedo.z;
+    materials[kMaterial].base_roughness[3] = kRoughness;
+    materials[kMaterial].metal_opacity_spec_coat[0] = kMetallic;
+    materials[kMaterial].metal_opacity_spec_coat[1] = 1.0f;   // opacity
+    CHECK(renderer.update_materials(materials, 1, 1, error),
+          error.empty() ? "vt-enrich: stage materials" : error.c_str());
+
+    constexpr float kWallZ = -2.0f;
+    constexpr float kHalf = 1.5f;      // wall half-extent, metres
+    constexpr float kFinDepth = 1.0f;  // how far the fin stands off the wall
+    constexpr float kTpm = 4.0f;       // texels/m => 0.25 m texels, 1.0 m cap
+    viewer::VkScenePart charted =
+        fixed_part(0x7801, {-kHalf, -kHalf, kWallZ}, {kHalf, kHalf, kWallZ + kFinDepth},
+                   0);
+    {
+        const matter::Float3 wall_n{0.0f, 0.0f, 1.0f};
+        const matter::Float3 fin_n{-1.0f, 0.0f, 0.0f};
+        const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};   // a = 0: no tint
+        // Chart 0 (wall): texel = 4 + (p.x + 1.5) * tpm, same in v with p.y.
+        const auto wu = [&](float x) { return (4.0f + (x + kHalf) * kTpm) / 256.0f; };
+        const auto wv = [&](float y) { return (4.0f + (y + kHalf) * kTpm) / 128.0f; };
+        // Chart 1 (fin): rect starts at atlas x 128; plane U = p.z, V = p.y.
+        const auto fu = [&](float z) {
+            return (128.0f + 4.0f + (z - kWallZ) * kTpm) / 256.0f;
+        };
+        charted.vertices = {
+            {{-kHalf, -kHalf, kWallZ}, wall_n, tint, {wu(-kHalf), wv(-kHalf), 1.0f, 1.0f}, kMaterial, {}},
+            {{ kHalf, -kHalf, kWallZ}, wall_n, tint, {wu( kHalf), wv(-kHalf), 1.0f, 1.0f}, kMaterial, {}},
+            {{ kHalf,  kHalf, kWallZ}, wall_n, tint, {wu( kHalf), wv( kHalf), 1.0f, 1.0f}, kMaterial, {}},
+            {{-kHalf,  kHalf, kWallZ}, wall_n, tint, {wu(-kHalf), wv( kHalf), 1.0f, 1.0f}, kMaterial, {}},
+            {{0.0f, -kHalf, kWallZ}, fin_n, tint, {fu(kWallZ), wv(-kHalf), 1.0f, 1.0f}, kMaterial, {}},
+            {{0.0f, -kHalf, kWallZ + kFinDepth}, fin_n, tint, {fu(kWallZ + kFinDepth), wv(-kHalf), 1.0f, 1.0f}, kMaterial, {}},
+            {{0.0f,  kHalf, kWallZ + kFinDepth}, fin_n, tint, {fu(kWallZ + kFinDepth), wv( kHalf), 1.0f, 1.0f}, kMaterial, {}},
+            {{0.0f,  kHalf, kWallZ}, fin_n, tint, {fu(kWallZ), wv( kHalf), 1.0f, 1.0f}, kMaterial, {}},
+        };
+        charted.indices = {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7};
+        charted.clusters[0].lods[0] = {0, 12, 0.0f, /*chart_rung=*/0u};
+
+        chart_atlas::ChartAtlasRung rung;
+        rung.atlas_w = 256;
+        rung.atlas_h = 128;
+        rung.charts.resize(2);
+        chart_atlas::ChartEntry& wall = rung.charts[0];
+        wall.origin[0] = -kHalf; wall.origin[1] = -kHalf; wall.origin[2] = kWallZ;
+        wall.tangent[0] = 1.0f; wall.tangent[1] = 0.0f; wall.tangent[2] = 0.0f;
+        wall.bitangent[0] = 0.0f; wall.bitangent[1] = 1.0f; wall.bitangent[2] = 0.0f;
+        wall.rect_x = 0; wall.rect_y = 0; wall.rect_w = 128; wall.rect_h = 128;
+        wall.texels_per_meter = kTpm;
+        wall.first_tri = 0; wall.tri_count = 2;
+        chart_atlas::ChartEntry& fin = rung.charts[1];
+        fin.origin[0] = 0.0f; fin.origin[1] = -kHalf; fin.origin[2] = kWallZ;
+        fin.tangent[0] = 0.0f; fin.tangent[1] = 0.0f; fin.tangent[2] = 1.0f;
+        fin.bitangent[0] = 0.0f; fin.bitangent[1] = 1.0f; fin.bitangent[2] = 0.0f;
+        fin.rect_x = 128; fin.rect_y = 0; fin.rect_w = 128; fin.rect_h = 128;
+        fin.texels_per_meter = kTpm;
+        fin.first_tri = 2; fin.tri_count = 2;
+        rung.tri_order = {0, 1, 2, 3};
+        charted.lod_charts = {rung};
+
+        viewer::VkScenePartChartMesh mesh;
+        mesh.vertex_count = 8;
+        for (const viewer::VkRasterVertex& vertex : charted.vertices) {
+            mesh.positions.push_back(vertex.position.x);
+            mesh.positions.push_back(vertex.position.y);
+            mesh.positions.push_back(vertex.position.z);
+            mesh.normals.push_back(vertex.normal.x);
+            mesh.normals.push_back(vertex.normal.y);
+            mesh.normals.push_back(vertex.normal.z);
+            mesh.surface_uvs.push_back(vertex.surface.x);
+            mesh.surface_uvs.push_back(vertex.surface.y);
+            mesh.material_ids.push_back(kMaterial);
+        }
+        mesh.indices = charted.indices;
+        mesh.dominant_material = kMaterial;
+        charted.lod_chart_meshes = {std::move(mesh)};
+    }
+    CHECK(renderer.ensure_part(charted, error) >= 0,
+          error.empty() ? "vt-enrich: ensure occluder part" : error.c_str());
+    CHECK(renderer.vt_active(), "vt-enrich: the residency runtime started");
+    {
+        const vt::VtResidency::Stats started = renderer.vt_stats();
+        if (rt) {
+            CHECK(started.enrich_samples >= 8u && started.enrich_samples <= 64u,
+                  "vt-enrich: the enricher reports its ray budget");
+        } else {
+            CHECK(started.enrich_samples == 0u,
+                  "vt-enrich-nort: no enricher loads without ray tracing");
+        }
+    }
+
+    // A second, deliberately COARSE variant: 0.5 texels/m, so even its finest
+    // page has 2 m texels — past the enricher's fade end. Tier 2 must never
+    // queue it (the guard that stops a streamed terrain sector's coarse mips
+    // from being enriched at a scale where the cap used to grow to tens of
+    // metres and blacken open slopes). It needs no instance: registration
+    // queues its pinned tail, and record_frame fills that regardless of
+    // visibility, which is exactly the path queue_enrich sits on.
+    {
+        viewer::VkScenePart coarse =
+            fixed_part(0x7802, {-32.0f, -32.0f, -80.0f}, {32.0f, 32.0f, -80.0f}, 0);
+        const matter::Float3 n{0.0f, 0.0f, 1.0f};
+        const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};
+        const auto cu = [](float x) { return (4.0f + (x + 32.0f) * 0.5f) / 256.0f; };
+        const auto cv = [](float y) { return (4.0f + (y + 32.0f) * 0.5f) / 128.0f; };
+        coarse.vertices = {
+            {{-32.0f, -32.0f, -80.0f}, n, tint, {cu(-32.0f), cv(-32.0f), 1.0f, 1.0f}, kMaterial, {}},
+            {{ 32.0f, -32.0f, -80.0f}, n, tint, {cu( 32.0f), cv(-32.0f), 1.0f, 1.0f}, kMaterial, {}},
+            {{ 32.0f,  32.0f, -80.0f}, n, tint, {cu( 32.0f), cv( 32.0f), 1.0f, 1.0f}, kMaterial, {}},
+            {{-32.0f,  32.0f, -80.0f}, n, tint, {cu(-32.0f), cv( 32.0f), 1.0f, 1.0f}, kMaterial, {}},
+        };
+        coarse.indices = {0, 1, 2, 0, 2, 3};
+        coarse.clusters[0].lods[0] = {0, 6, 0.0f, /*chart_rung=*/0u};
+        chart_atlas::ChartAtlasRung rung;
+        rung.atlas_w = 256;
+        rung.atlas_h = 128;
+        rung.charts.resize(1);
+        chart_atlas::ChartEntry& c = rung.charts[0];
+        c.origin[0] = -32.0f; c.origin[1] = -32.0f; c.origin[2] = -80.0f;
+        c.tangent[0] = 1.0f; c.bitangent[1] = 1.0f;
+        c.rect_x = 0; c.rect_y = 0; c.rect_w = 128; c.rect_h = 128;
+        c.texels_per_meter = 0.5f;
+        c.first_tri = 0; c.tri_count = 2;
+        rung.tri_order = {0, 1};
+        coarse.lod_charts = {rung};
+        viewer::VkScenePartChartMesh mesh;
+        mesh.vertex_count = 4;
+        for (const viewer::VkRasterVertex& vertex : coarse.vertices) {
+            mesh.positions.push_back(vertex.position.x);
+            mesh.positions.push_back(vertex.position.y);
+            mesh.positions.push_back(vertex.position.z);
+            mesh.normals.push_back(vertex.normal.x);
+            mesh.normals.push_back(vertex.normal.y);
+            mesh.normals.push_back(vertex.normal.z);
+            mesh.surface_uvs.push_back(vertex.surface.x);
+            mesh.surface_uvs.push_back(vertex.surface.y);
+            mesh.material_ids.push_back(kMaterial);
+        }
+        mesh.indices = coarse.indices;
+        mesh.dominant_material = kMaterial;
+        coarse.lod_chart_meshes = {std::move(mesh)};
+        CHECK(renderer.ensure_part(coarse, error) >= 0,
+              error.empty() ? "vt-enrich: ensure coarse part" : error.c_str());
+    }
+
+    const matter::Mat4f identity = identity_matrix();
+    CHECK(renderer.update_instances({{0x7801, identity, 1}}, error),
+          error.empty() ? "vt-enrich: upload instance" : error.c_str());
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices frame{};
+    CHECK(viewer::build_frame_matrices(camera, width, height, frame, error),
+          error.empty() ? "vt-enrich: build frame matrices" : error.c_str());
+
+    // render_gbuffer_and_composite submits and waits, so the wall-clock delta
+    // across it is an honest end-to-end frame cost INCLUDING the tier-2 pass.
+    // Bracketing enriching frames against settled ones is what bounds the
+    // background cost (the spec's "< 10% GPU on the flight path" criterion).
+    double last_render_ms = 0.0;
+    const auto render_once = [&](const char* label) {
+        std::string local;
+        CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, local),
+              local.empty() ? label : local.c_str());
+        const auto started = std::chrono::steady_clock::now();
+        CHECK(renderer.render_gbuffer_and_composite(width, height, local),
+              local.empty() ? label : local.c_str());
+        last_render_ms = std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - started)
+                             .count();
+    };
+    const auto pixel_at = [&](uint32_t x, uint32_t y) {
+        viewer::VkRasterPixel pixel{};
+        std::string local;
+        CHECK(renderer.readback_raster_pixel(x, y, pixel, local),
+              local.empty() ? "vt-enrich: readback pixel" : local.c_str());
+        return pixel;
+    };
+
+    // Screen mapping: at z = -2 with a 90 deg vertical fov and a square target,
+    // the visible half-extent is 2 m, so screen_x = 80 + 40 * world_x. Both
+    // probes land on a TEXEL CENTRE (texels are 0.25 m = 10 px, centres at
+    // x = -0.125, -0.375, ...), so the reading is that texel's own baked value
+    // rather than a bilinear blend of two:
+    //   x = -0.125 m -> 75 : 0.125 m from the fin, a quarter of the 0.5 m cap;
+    //   x = -1.125 m -> 35 : 1.125 m from the fin, past the cap entirely.
+    constexpr uint32_t kNearX = 75;
+    constexpr uint32_t kFarX = 35;
+    constexpr uint32_t kProbeY = 80;
+
+    // Frame 1 fills the pinned tail; the feedback loop then drains the finest
+    // pages. Enrichment trails the fills by at least a frame by construction
+    // (the queue is drained before the fills that feed it), and runs 2 pages a
+    // frame, so a dozen frames is well past "everything resident and enriched".
+    double enriching_frame_ms = 0.0;
+    double settled_frame_ms = 0.0;
+    uint64_t enrich_before = renderer.vt_stats().enrich_total;
+    for (int i = 0; i < 12; ++i) {
+        render_once("vt-enrich: settle frame");
+        const uint64_t enrich_now = renderer.vt_stats().enrich_total;
+        if (enrich_now != enrich_before)
+            enriching_frame_ms = last_render_ms;
+        else
+            settled_frame_ms = last_render_ms;
+        enrich_before = enrich_now;
+    }
+    std::printf("vt-enrich frame cost: enriching=%.3f ms settled=%.3f ms "
+                "(submit+wait, 160x160)\n",
+                enriching_frame_ms, settled_frame_ms);
+
+    const vt::VtResidency::Stats settled = renderer.vt_stats();
+    std::printf("vt-enrich stats: rt=%d samples=%u fills=%llu failed=%llu "
+                "enrich=%llu queue=%u enriched_pages=%u dropped=%llu "
+                "skipped_coarse=%llu\n",
+                rt ? 1 : 0, settled.enrich_samples,
+                static_cast<unsigned long long>(settled.fills_total),
+                static_cast<unsigned long long>(settled.fills_failed_total),
+                static_cast<unsigned long long>(settled.enrich_total),
+                settled.enrich_queue_depth, settled.enriched_pages,
+                static_cast<unsigned long long>(settled.enrich_dropped_total),
+                static_cast<unsigned long long>(
+                    settled.enrich_skipped_coarse_total));
+    CHECK(settled.fills_total >= 2,
+          "vt-enrich: the tail and at least one finer page filled");
+    // The map-or-rollback path: nothing may have been dispatched-but-unwritten,
+    // because a filled-flag that never comes back true is what used to leave a
+    // mapped page pointing at never-written (black) pool memory.
+    CHECK(settled.fills_failed_total == 0,
+          "vt-enrich: every dispatched fill reported success");
+    if (rt) {
+        // The coarse variant's pages are past the fade end and must never have
+        // been queued; the fine variant's must have been.
+        CHECK(settled.enrich_skipped_coarse_total >= 1,
+              "vt-enrich: pages coarser than the contact scale are skipped, "
+              "not traced and multiplied by zero");
+    } else {
+        CHECK(settled.enrich_skipped_coarse_total == 0,
+              "vt-enrich-nort: with no enricher nothing even reaches the "
+              "coarse-page test");
+    }
+
+    const viewer::VkRasterPixel near_probe = pixel_at(kNearX, kProbeY);
+    const viewer::VkRasterPixel far_probe = pixel_at(kFarX, kProbeY);
+    CHECK(near_probe.material_index == kMaterial &&
+              far_probe.material_index == kMaterial,
+          "vt-enrich: both probes land on the charted wall");
+    std::printf("vt-enrich occlusion: near=%.4f far=%.4f\n",
+                static_cast<double>(near_probe.orm.z),
+                static_cast<double>(far_probe.orm.z));
+
+    if (!rt) {
+        // (c), the RT-unavailable arm: no enricher, nothing queued, nothing
+        // enriched, and every page still reads as unoccluded tier-1 content.
+        CHECK(settled.enrich_total == 0,
+              "vt-enrich-nort: no page is ever enriched");
+        CHECK(settled.enrich_queue_depth == 0 && settled.enriched_pages == 0,
+              "vt-enrich-nort: nothing is even queued for tier 2");
+        CHECK(std::fabs(near_probe.orm.z - 1.0f) < 2.0e-2f &&
+                  std::fabs(far_probe.orm.z - 1.0f) < 2.0e-2f,
+              "vt-enrich-nort: tier-1 pages stay unoccluded");
+        CHECK(near_probe.orm.z == far_probe.orm.z,
+              "vt-enrich-nort: occlusion is flat across the occluder's shadow");
+        CHECK(close4(near_probe.albedo,
+                     {page_albedo.x, page_albedo.y, page_albedo.z, 1.0f},
+                     2.0e-2f),
+              "vt-enrich-nort: albedo is the composited tier-1 page");
+        renderer.release_part(0x7801);
+        renderer.release_part(0x7802);
+        return;
+    }
+
+    // (a) baked contact occlusion.
+    CHECK(settled.enrich_total >= 1, "vt-enrich: pages were enriched");
+    CHECK(std::fabs(far_probe.orm.z - 1.0f) < 3.0e-2f,
+          "vt-enrich: a texel beyond the distance cap stays unoccluded");
+    CHECK(near_probe.orm.z < far_probe.orm.z - 5.0e-2f,
+          "vt-enrich: the texel beside the occluder is measurably darker");
+    // The floor (MATTER_VT_ENRICH_MIN_AO, default 0.15) is the structural
+    // guarantee that a baked contact term can never zero out ambient, which is
+    // what blackened open slopes on StreamMountain before the cap ceiling and
+    // this floor went in.
+    CHECK(near_probe.orm.z > 0.14f,
+          "vt-enrich: the occlusion respects the min-ao floor, so a page can "
+          "never go black");
+    // Enrichment must not have disturbed the rest of the page.
+    CHECK(close4(near_probe.albedo,
+                 {page_albedo.x, page_albedo.y, page_albedo.z, 1.0f}, 2.0e-2f),
+          "vt-enrich: albedo survives the ORM read-modify-write");
+    CHECK(std::fabs(near_probe.orm.x - kRoughness) < 3.0e-2f,
+          "vt-enrich: roughness survives the ORM re-encode");
+    CHECK(std::fabs(near_probe.orm.y - kMetallic) < 3.0e-2f,
+          "vt-enrich: metallic survives the ORM re-encode");
+
+    // (b) determinism, twice over. Further frames must reproduce the pixels
+    // bit-exactly, AND the enrichment must not run again over a page it already
+    // refined -- the apply is an in-place multiply, so a second pass would
+    // darken the page a second time.
+    const uint64_t enrich_after_settle = settled.enrich_total;
+    for (int i = 0; i < 6; ++i) render_once("vt-enrich: determinism frame");
+    const viewer::VkRasterPixel near_again = pixel_at(kNearX, kProbeY);
+    const viewer::VkRasterPixel far_again = pixel_at(kFarX, kProbeY);
+    CHECK(renderer.vt_stats().enrich_total == enrich_after_settle,
+          "vt-enrich: a settled frame never re-enriches a resident page");
+    CHECK(near_again.orm.z == near_probe.orm.z &&
+              far_again.orm.z == far_probe.orm.z,
+          "vt-enrich: enriched occlusion is bit-identical across frames");
+    CHECK(near_again.albedo.x == near_probe.albedo.x &&
+              near_again.albedo.y == near_probe.albedo.y &&
+              near_again.albedo.z == near_probe.albedo.z,
+          "vt-enrich: enriched pages are bit-identical across frames");
+
+    // (d) invalidation clears the tier and the re-filled pages re-enrich. The
+    // material edit is what push_vt_compositor_inputs turns into an
+    // invalidate_all_content, which drops resident content AND every tier-2 bit.
+    const matter::Float3 edited_albedo{0.30f, 0.55f, 0.40f};
+    materials[kMaterial].base_roughness[0] = edited_albedo.x;
+    materials[kMaterial].base_roughness[1] = edited_albedo.y;
+    materials[kMaterial].base_roughness[2] = edited_albedo.z;
+    CHECK(renderer.update_materials(materials, 2, 1, error),
+          error.empty() ? "vt-enrich: edit the material table" : error.c_str());
+    for (int i = 0; i < 12; ++i) render_once("vt-enrich: post-edit frame");
+    const vt::VtResidency::Stats reenriched = renderer.vt_stats();
+    std::printf("vt-enrich post-edit: invalidations=%llu enrich=%llu (was %llu) "
+                "enriched_pages=%u\n",
+                static_cast<unsigned long long>(reenriched.invalidations_total),
+                static_cast<unsigned long long>(reenriched.enrich_total),
+                static_cast<unsigned long long>(enrich_after_settle),
+                reenriched.enriched_pages);
+    CHECK(reenriched.invalidations_total == 1,
+          "vt-enrich: the material edit invalidated resident content once");
+    CHECK(reenriched.enrich_total > enrich_after_settle,
+          "vt-enrich: invalidated pages were re-filled AND re-enriched");
+    const viewer::VkRasterPixel near_edited = pixel_at(kNearX, kProbeY);
+    const viewer::VkRasterPixel far_edited = pixel_at(kFarX, kProbeY);
+    CHECK(close4(near_edited.albedo,
+                 {edited_albedo.x, edited_albedo.y, edited_albedo.z, 1.0f},
+                 2.0e-2f),
+          "vt-enrich: the page re-composited from the edited material table");
+    CHECK(std::fabs(far_edited.orm.z - 1.0f) < 3.0e-2f,
+          "vt-enrich: the re-enriched far texel is unoccluded again");
+    CHECK(near_edited.orm.z < far_edited.orm.z - 5.0e-2f,
+          "vt-enrich: the re-enriched near texel carries contact occlusion "
+          "again");
+    // The occlusion is a function of geometry only, so a re-fill + re-enrich of
+    // the same geometry must land on the same value -- if the invalidation had
+    // failed to clear the tier bit, the multiply would have compounded and this
+    // would be visibly darker.
+    CHECK(std::fabs(near_edited.orm.z - near_probe.orm.z) < 2.0e-2f,
+          "vt-enrich: re-enrichment reproduces the same occlusion, not a "
+          "compounded one");
+
+    renderer.release_part(0x7801);
+    renderer.release_part(0x7802);
+    const vt::VtResidency::Stats released = renderer.vt_stats();
+    CHECK(released.variants == 0,
+          "vt-enrich: releasing the part unregisters its variant rung");
+    CHECK(released.enriched_pages == 0,
+          "vt-enrich: releasing the part forgets its tier-2 state");
+}
+
 // WP-G (RT sampling of VT + ray cones): MATTER_VK_SMOKE_MODE=vt-rt.
 //
 // Same two-chart fixture idea as run_vt_path, but driven through the FULL
@@ -6818,7 +7241,11 @@ int main() {
 
     const char* requested_smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
     if (requested_smoke_mode &&
-        std::string(requested_smoke_mode) == "rt-unavailable") {
+        (std::string(requested_smoke_mode) == "rt-unavailable" ||
+         // WP-H: the RT-unavailable arm of the tier-2 enrichment gate. Ray
+         // tracing is a device property, so the only honest way to test the
+         // "no enricher" path is to bring the device up without it.
+         std::string(requested_smoke_mode) == "vt-enrich-nort")) {
         _putenv_s("MATTER_VK_TEST_FORCE_RT_UNAVAILABLE", "1");
     }
 
@@ -6983,6 +7410,17 @@ int main() {
         }
         if (smoke_mode && std::string(smoke_mode) == "vt-surfaces") {
             run_vt_surfaces_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && (std::string(smoke_mode) == "vt-enrich" ||
+                           std::string(smoke_mode) == "vt-enrich-nort")) {
+            run_vt_enrich_path(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();

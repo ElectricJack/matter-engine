@@ -236,6 +236,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/tileset_slicer.cpp \
               $(ME3_DIR)/src/render/bc_encode.cpp \
               $(ME3_DIR)/src/render/vt_compositor.cpp \
+              $(ME3_DIR)/src/render/vt_enrich.cpp \
               $(ME3_DIR)/src/render/vt_residency.cpp \
               $(ME3_DIR)/src/render/vt_stub_filler.cpp \
               $(BC7ENC_DIR)/bc7enc.cpp $(BC7ENC_DIR)/rgbcx.cpp \
@@ -553,7 +554,8 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/tileset_bake_primary.comp.spv \
          build/shaders_vk/tileset_bake_ao.comp.spv \
          build/shaders_vk/vt_composite.comp.spv \
-         build/shaders_vk/vt_bc_encode.comp.spv
+         build/shaders_vk/vt_bc_encode.comp.spv \
+         build/shaders_vk/vt_enrich_ao.comp.spv
 VK_EMBEDDED_HEADER = $(ME3_DIR)/shaders_gen/embedded_spirv.h
 
 build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%
@@ -596,6 +598,12 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_shadow.rgen.spv \
     build/shaders_vk/rt_surface_test.rgen.spv \
     build/shaders_vk/vt_composite.comp.spv: \
     $(ME3_DIR)/shaders_vk/wang_common.glsl
+
+# WP-H (chart VT): the shared chart-resolve includes both page passes consume.
+build/shaders_vk/vt_composite.comp.spv \
+    build/shaders_vk/vt_enrich_ao.comp.spv: \
+    $(ME3_DIR)/shaders_vk/vt_chart_types.glsl \
+    $(ME3_DIR)/shaders_vk/vt_chart_resolve.glsl
 
 # WP-E (chart VT): vt_common.glsl is the shared VT sampling helper (an include,
 # not a stage), so it has no .spv -- but its consumers must rebuild when it
@@ -641,6 +649,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vt_residency.cpp \
         $(ME3_DIR)/src/render/vt_stub_filler.cpp \
         $(ME3_DIR)/src/render/vt_compositor.cpp \
+        $(ME3_DIR)/src/render/vt_enrich.cpp \
         $(ME3_DIR)/tests/vulkan_smoke_tileset_bake_stub.cpp \
         $(ME3_DIR)/src/tileset_gtex.cpp \
         $(ME3_DIR)/src/render/vk_volumetrics.cpp \
@@ -667,6 +676,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vt_residency.cpp \
 	    $(ME3_DIR)/src/render/vt_stub_filler.cpp \
 	    $(ME3_DIR)/src/render/vt_compositor.cpp \
+	    $(ME3_DIR)/src/render/vt_enrich.cpp \
 	    $(ME3_DIR)/tests/vulkan_smoke_tileset_bake_stub.cpp \
 	    $(ME3_DIR)/src/tileset_gtex.cpp \
 	    $(ME3_DIR)/src/render/vk_volumetrics.cpp \

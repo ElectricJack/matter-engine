@@ -26,7 +26,17 @@
 //       per-vertex A->B tape reproduces the debug-ramp HEIGHT-BLEND fill
 //       within quantization epsilon (the tape drives the same height blend,
 //       not a linear crossfade); the aux channel carries the tape's top-2
-//       ids + blend; tape fills are deterministic.
+//       ids + blend; tape fills are deterministic;
+//   (i) adversarial chart orientations — downward/-X/-Z/mirrored/inverted
+//       chart frames: the BC5 normal, round-tripped through the runtime
+//       decoder's exact rotation (tileset_rotate_normal around the geometric
+//       normal), must reproduce the analytic shading normal for every
+//       orientation (regression for the chart-frame/decoder-frame mismatch
+//       that blacked out slopes on StreamMountain);
+//   (j) mesh-cache LRU churn — more distinct variant-rungs than the cache
+//       holds fill with zero skipped requests and non-black content
+//       (regression for the 512-entry hard stop that silently skipped tail
+//       fills and blacked out whole streamed sectors).
 
 #include "check.h"
 
@@ -221,15 +231,32 @@ void ref_wang_sample(const SynthTileset& ts, int ch, float px, float py,
     ref_bilinear(ts, ch, layer, std::min(lod, kTileMips - 1), u, v, out);
 }
 
+// CPU mirror of tileset_common.glsl's tileset_rotate_normal(): the frame the
+// runtime decoders (gbuffer.frag VT branch, rt_surface_common.glsl) rebuild
+// around the geometric normal, and therefore the frame the compositor MUST
+// encode in. t = +X projected off n, b = n x t; degenerate near n ~ +-X
+// falls back to the raw geometric normal.
+V3 ref_rotate_normal(V3 nts, V3 n) {
+    V3 t = add(v3(1, 0, 0), mul(n, -n.x));
+    const float l2 = dot3(t, t);
+    if (l2 < 1e-6f) return n;
+    t = mul(t, 1.0f / std::sqrt(l2));
+    const V3 b = norm3(cross3(n, t));
+    return norm3(add(add(mul(t, nts.x), mul(b, nts.y)), mul(n, nts.z)));
+}
+
 // Full reference composite of one surface point: triplanar |n|^4, detail
-// normal accumulation, chart-frame projection. Mirrors vt_composite.comp.
+// normal accumulation, geometric-normal tangent-frame encode. Mirrors
+// vt_composite.comp (which in turn mirrors tileset_rotate_normal's frame so
+// the encode/decode round trip is lossless).
 struct RefResult {
     float albedo[3];
     float normal_ts[2];   // encoded * 0.5 + 0.5 later by caller if needed
     float orm[3];
+    V3 n_local;           // the shading normal before encoding (part-local)
 };
-RefResult ref_composite_point(const SynthTileset& ts, V3 pos, V3 nrm, V3 T,
-                              V3 B, int lod) {
+RefResult ref_composite_point(const SynthTileset& ts, V3 pos, V3 nrm,
+                              int lod) {
     float w4[3] = {nrm.x * nrm.x * nrm.x * nrm.x,
                    nrm.y * nrm.y * nrm.y * nrm.y,
                    nrm.z * nrm.z * nrm.z * nrm.z};
@@ -255,8 +282,16 @@ RefResult ref_composite_point(const SynthTileset& ts, V3 pos, V3 nrm, V3 T,
                          w4[ax]));
     }
     V3 nl = norm3(add(nrm, dn));
-    const V3 N = norm3(cross3(T, B));
-    float tsn[3] = {dot3(nl, T), dot3(nl, B), dot3(nl, N)};
+    float tsn[3] = {0.0f, 0.0f, 1.0f};
+    V3 t = add(v3(1, 0, 0), mul(nrm, -nrm.x));
+    const float t_len2 = dot3(t, t);
+    if (t_len2 >= 1e-6f) {
+        t = mul(t, 1.0f / std::sqrt(t_len2));
+        const V3 b = norm3(cross3(nrm, t));
+        tsn[0] = dot3(nl, t);
+        tsn[1] = dot3(nl, b);
+        tsn[2] = dot3(nl, nrm);
+    }
     if (tsn[2] < 0.05f) {
         tsn[2] = 0.05f;
         const float l = std::sqrt(tsn[0] * tsn[0] + tsn[1] * tsn[1] +
@@ -271,6 +306,7 @@ RefResult ref_composite_point(const SynthTileset& ts, V3 pos, V3 nrm, V3 T,
     }
     r.normal_ts[0] = tsn[0];
     r.normal_ts[1] = tsn[1];
+    r.n_local = nl;
     return r;
 }
 
@@ -962,8 +998,7 @@ int main() {
                         const float u = (fx - 4.0f) / kChartTpm;
                         const float w = (fz - 4.0f) / kChartTpm;
                         RefResult ref = ref_composite_point(
-                            *ts_a, v3(u, 0, w), v3(0, 1, 0), v3(1, 0, 0),
-                            v3(0, 0, 1), 0);
+                            *ts_a, v3(u, 0, w), v3(0, 1, 0), 0);
                         const uint8_t* got =
                             &albedo_rgba[(size_t(py) * kPageStore + px) * 4];
                         for (int c = 0; c < 3; ++c)
@@ -1039,8 +1074,7 @@ int main() {
                         const float u = (fx - 4.0f) / kChartTpm;
                         const float v = (fy - 4.0f) / kChartTpm;
                         const V3 pos = add(mul(T, u), mul(B, v));
-                        RefResult ref =
-                            ref_composite_point(*ts_a, pos, n, T, B, 0);
+                        RefResult ref = ref_composite_point(*ts_a, pos, n, 0);
                         const uint8_t* got =
                             &albedo_rgba[(size_t(py) * kPageStore + px) * 4];
                         for (int c = 0; c < 3; ++c)
@@ -1260,6 +1294,196 @@ int main() {
                           ptape2.normal == ptape.normal &&
                           ptape2.orm == ptape.orm && ptape2.aux == ptape.aux,
                       "tape: fills are byte-deterministic");
+            }
+
+            // ============ (i) adversarial chart orientations ==============
+            // Regression for the StreamMountain "black slopes" defect: the
+            // compositor used to encode the shading normal in the CHART
+            // plane's T/B/N frame while the runtime decoders rotate it around
+            // the per-pixel GEOMETRIC normal (tileset_rotate_normal). The
+            // frames only agree when the chart plane normal equals the vertex
+            // normal AND the chart tangent equals the decoder's X-projection
+            // — true of the friendly fixtures above, never of real terrain
+            // charts (curved within the segmentation cone, plane_basis
+            // tangents, centroid-flipped/inverted chart normals). Each case
+            // here fills a page and round-trips the stored normal through the
+            // decoder's exact math; the decoded shading normal must match the
+            // analytic reference for EVERY chart orientation, including
+            // downward-facing, decode-degenerate +-X, mirrored plane_basis
+            // tangents, and a chart frame inverted relative to the vertex
+            // normal.
+            {
+                struct OrientCase {
+                    const char* name;
+                    V3 u_dir, v_dir;   // quad geometry (plane-UV axes)
+                    V3 normal;         // vertex normal (unit)
+                    V3 chart_t, chart_b;
+                    uint32_t slot;
+                    uint64_t hash;
+                };
+                const OrientCase cases[] = {
+                    {"-Y downward (plane_basis frame)",
+                     v3(1, 0, 0), v3(0, 0, 1), v3(0, -1, 0),
+                     v3(1, 0, 0), v3(0, 0, 1), 10, 0x2001},
+                    {"-X decode-degenerate axis",
+                     v3(0, -1, 0), v3(0, 0, 1), v3(-1, 0, 0),
+                     v3(0, -1, 0), v3(0, 0, 1), 11, 0x2002},
+                    {"-Z (plane_basis frame)",
+                     v3(0, 1, 0), v3(1, 0, 0), v3(0, 0, -1),
+                     v3(0, 1, 0), v3(1, 0, 0), 12, 0x2003},
+                    {"+Y mirrored plane_basis tangent",
+                     v3(-1, 0, 0), v3(0, 0, 1), v3(0, 1, 0),
+                     v3(-1, 0, 0), v3(0, 0, 1), 13, 0x2004},
+                    {"inverted chart frame vs skewed vertex normal",
+                     v3(1, 0, 0), v3(0, 0, 1),
+                     norm3(v3(0.45f, 1.0f, -0.35f)),
+                     v3(1, 0, 0), v3(0, 0, 1), 14, 0x2005},
+                };
+                for (const OrientCase& oc : cases) {
+                    QuadFixture fix;
+                    fix.add_quad(v3(0, 0, 0), oc.u_dir, oc.v_dir, kQuadExtent,
+                                 oc.normal, kMatA);
+                    fix.atlas.atlas_w = 128;
+                    fix.atlas.atlas_h = 128;
+                    fix.atlas.charts.push_back(make_chart(
+                        v3(0, 0, 0), oc.chart_t, oc.chart_b, 0, 0, 0, 2));
+                    fix.atlas.tri_order = {0, 1};
+                    fix.finalize(oc.hash);
+                    vt::VtFillRequest r = make_request(fix, 0, oc.slot);
+                    CHECK(run_fill(&r, 1), err.c_str());
+                    PageData p;
+                    CHECK(read_slot(oc.slot, p), err.c_str());
+                    std::vector<uint8_t> albedo_rgba;
+                    int bad_blocks = 0;
+                    decode_page_bc7(p.albedo, albedo_rgba, bad_blocks);
+                    CHECK(bad_blocks == 0, "orientation page decodes as BC7");
+                    std::vector<uint8_t> normal_rg;
+                    decode_page_bc5(p.normal, normal_rg);
+
+                    // Is this the decoder's degenerate (+-X) orientation? The
+                    // decoder then ignores the stored texel and returns the
+                    // geometric normal; the encoder must have written the
+                    // matching identity so nothing depended on the texel.
+                    V3 t_probe =
+                        add(v3(1, 0, 0), mul(oc.normal, -oc.normal.x));
+                    const bool degenerate = dot3(t_probe, t_probe) < 1e-6f;
+
+                    float min_cos = 1.0f, max_alb_err = 0.0f;
+                    for (uint32_t py = 12; py < kPageStore - 12; py += 5) {
+                        for (uint32_t px = 12; px < kPageStore - 12; px += 5) {
+                            const float fx = float(int(px) - 4) + 0.5f;
+                            const float fy = float(int(py) - 4) + 0.5f;
+                            const float u = (fx - 4.0f) / kChartTpm;
+                            const float v = (fy - 4.0f) / kChartTpm;
+                            const V3 pos =
+                                add(mul(oc.u_dir, u), mul(oc.v_dir, v));
+                            RefResult ref = ref_composite_point(
+                                *ts_a, pos, oc.normal, 0);
+                            const uint8_t* ga =
+                                &albedo_rgba[(size_t(py) * kPageStore + px) *
+                                             4];
+                            for (int c = 0; c < 3; ++c)
+                                max_alb_err = std::max(
+                                    max_alb_err, std::fabs(ga[c] / 255.0f -
+                                                           ref.albedo[c]));
+                            const uint8_t* gn =
+                                &normal_rg[(size_t(py) * kPageStore + px) *
+                                           2];
+                            const float x = gn[0] / 255.0f * 2.0f - 1.0f;
+                            const float y = gn[1] / 255.0f * 2.0f - 1.0f;
+                            const float z2 =
+                                std::max(0.0f, 1.0f - x * x - y * y);
+                            const V3 decoded = ref_rotate_normal(
+                                v3(x, y, std::sqrt(z2)), oc.normal);
+                            const V3 expected =
+                                degenerate ? oc.normal : ref.n_local;
+                            min_cos = std::min(min_cos,
+                                               dot3(decoded, expected));
+                        }
+                    }
+                    std::printf(
+                        "orientation [%s]: min normal cos %.5f, max albedo "
+                        "err %.4f\n",
+                        oc.name, min_cos, max_alb_err);
+                    CHECK(min_cos > 0.995f,
+                          "adversarial orientation: decoded shading normal "
+                          "matches the analytic reference");
+                    CHECK(max_alb_err < 0.07f,
+                          "adversarial orientation: triplanar albedo matches "
+                          "the analytic reference");
+                }
+            }
+
+            // ============ (j) mesh-cache LRU under variant churn ==========
+            // Regression for the OTHER StreamMountain black-terrain defect:
+            // the mesh cache used to hard-stop at kMaxMeshEntries (512) and
+            // silently skip every fill for later variants — and because the
+            // residency layer maps indirection entries before the filler
+            // runs, each skipped fill (the pinned TAILS included) left pages
+            // pointing at never-written pool memory, i.e. whole streamed
+            // sectors rendered black. Fill more distinct variant-rungs than
+            // the cache holds and require ZERO skipped requests, evictions
+            // happening, and a post-eviction page that still decodes to real
+            // (non-black) content.
+            {
+                const uint64_t skipped_before = compositor->stats().requests_skipped;
+                const uint64_t filled_before = compositor->stats().pages_filled;
+                constexpr uint32_t kChurnVariants = 540;   // > kMaxMeshEntries
+                std::vector<std::unique_ptr<QuadFixture>> churn;
+                churn.reserve(kChurnVariants);
+                for (uint32_t k = 0; k < kChurnVariants; ++k) {
+                    auto fix = std::make_unique<QuadFixture>();
+                    fix->add_quad(v3(0, 0, 0), v3(1, 0, 0), v3(0, 0, 1),
+                                  kQuadExtent, v3(0, 1, 0), kMatA);
+                    fix->atlas = fix_a.atlas;
+                    fix->finalize(0x30000ull + k);
+                    churn.push_back(std::move(fix));
+                }
+                // Fill in sub-batches; all target slot 15 (content identical,
+                // only the cache-churn behaviour is under test).
+                std::vector<vt::VtFillRequest> reqs;
+                for (uint32_t k = 0; k < kChurnVariants;) {
+                    reqs.clear();
+                    for (uint32_t b = 0; b < 128 && k < kChurnVariants;
+                         ++b, ++k)
+                        reqs.push_back(make_request(*churn[k], 0, 15));
+                    CHECK(run_fill(reqs.data(), reqs.size()), err.c_str());
+                }
+                const uint64_t skipped =
+                    compositor->stats().requests_skipped - skipped_before;
+                const uint64_t filled =
+                    compositor->stats().pages_filled - filled_before;
+                std::printf("mesh-cache churn: %u variants, %llu filled, "
+                            "%llu skipped, %llu evictions total\n",
+                            kChurnVariants,
+                            static_cast<unsigned long long>(filled),
+                            static_cast<unsigned long long>(skipped),
+                            static_cast<unsigned long long>(
+                                compositor->stats().mesh_cache_evictions));
+                CHECK(skipped == 0,
+                      "mesh-cache churn: no fill request is silently skipped "
+                      "when variants outnumber the cache");
+                CHECK(filled == kChurnVariants,
+                      "mesh-cache churn: every variant's page was filled");
+                CHECK(compositor->stats().mesh_cache_evictions > 0,
+                      "mesh-cache churn: LRU eviction engaged");
+                // The last fill ran with a fully churned cache; its page must
+                // still carry real composited content, not black.
+                PageData p;
+                CHECK(read_slot(15, p), err.c_str());
+                std::vector<uint8_t> rgba;
+                int bad = 0;
+                decode_page_bc7(p.albedo, rgba, bad);
+                CHECK(bad == 0, "churn page decodes as BC7 mode 6");
+                uint32_t nonblack = 0;
+                for (uint32_t py = 12; py < kPageStore - 12; py += 7)
+                    for (uint32_t px = 12; px < kPageStore - 12; px += 7) {
+                        const uint8_t* t =
+                            &rgba[(size_t(py) * kPageStore + px) * 4];
+                        if (t[0] + t[1] + t[2] > 30) ++nonblack;
+                    }
+                CHECK(nonblack > 200,
+                      "mesh-cache churn: post-eviction page has real content");
             }
 
             // ================= (g) fill-time measurement ==================
