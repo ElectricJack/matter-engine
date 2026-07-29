@@ -591,6 +591,15 @@ struct WorldSession::Impl {
     // currently always returns false, but the flag also fences future providers.
     std::atomic<bool> bake_active{false};
 
+    // Editor LOD Settings (streaming overrides + active resolved profile).
+    // Overrides are written on the app thread and consumed by the worker's
+    // world-connect path; the active profile is written at connect and read
+    // by the panel every frame. One small mutex covers both.
+    mutable std::mutex streaming_lod_mutex;
+    std::unique_ptr<WorldSession::StreamingLodConfig> streaming_lod_overrides;
+    matter_stream::Config active_streaming_lod;
+    bool has_active_streaming_lod = false;
+
     // Sector bake pool (issues/render-streaming-build-cpu follow-up). With
     // MATTER_STREAM_WORKERS=N (default 1 = serial, unchanged), N executor
     // threads run bake_and_stage_sector concurrently while the worker thread
@@ -2865,8 +2874,31 @@ bool WorldSession::Impl::install_world(
             "field_hash=%s, sector_size=%.1f, sea_level=%.2f\n",
             sector_child_hashes.size(), world_field_hash.c_str(),
             world_sector_size, world_sea_level);
-    const matter_stream::Config profile =
+    matter_stream::Config profile =
         make_streaming_profile(world_sector_size, provider->world_settings());
+    {
+        // Editor LOD Settings overrides (set on the app thread; this connect
+        // path runs on the worker) applied over world JS + env, then the
+        // resolved profile is retained for the panel's live display.
+        std::lock_guard<std::mutex> lk(streaming_lod_mutex);
+        if (streaming_lod_overrides) {
+            const auto& o = *streaming_lod_overrides;
+            if (!o.scatter_rings.empty()) {
+                profile.rings.clear();
+                for (const auto& r : o.scatter_rings)
+                    profile.rings.push_back({r.radius, r.value});
+            }
+            if (!o.terrain_bands.empty()) {
+                profile.terrain_bands.clear();
+                for (const auto& b : o.terrain_bands)
+                    profile.terrain_bands.push_back({b.radius, b.value});
+            }
+            profile.terrain_lod_enabled = o.terrain_lod_enabled;
+        }
+        matter_stream::resolve_terrain_defaults(profile);
+        active_streaming_lod = profile;
+        has_active_streaming_lod = true;
+    }
     streaming_profile_activation.stage(profile);
     return true;
 }
@@ -6027,6 +6059,32 @@ streaming::SectorStreamingStatus WorldSession::streaming_status() const {
 
 bool WorldSession::gpu_jobs_idle() const {
     return impl_->gpu_jobs.idle();
+}
+
+bool WorldSession::streaming_lod_config(StreamingLodConfig& out) const {
+    std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
+    if (!impl_->has_active_streaming_lod) return false;
+    const matter_stream::Config& profile = impl_->active_streaming_lod;
+    out.scatter_rings.clear();
+    out.terrain_bands.clear();
+    for (const auto& ring : profile.rings)
+        out.scatter_rings.push_back({ring.radius, ring.rung});
+    for (const auto& band : profile.terrain_bands)
+        out.terrain_bands.push_back({band.radius, band.rung});
+    out.terrain_lod_enabled = profile.terrain_lod_enabled;
+    return true;
+}
+
+void WorldSession::set_streaming_lod_overrides(
+    const StreamingLodConfig& overrides) {
+    std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
+    impl_->streaming_lod_overrides =
+        std::make_unique<StreamingLodConfig>(overrides);
+}
+
+void WorldSession::clear_streaming_lod_overrides() {
+    std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
+    impl_->streaming_lod_overrides.reset();
 }
 
 void WorldSession::pump_gpu_jobs(float ms_budget) {

@@ -555,6 +555,139 @@ void Ui::select_baked_root(uint64_t resolved_hash) {
     scene_tree_state_.selected_root_hash = resolved_hash;
 }
 
+void Ui::draw_lod_settings_panel(matter::WorldSession* session,
+                                 ViewerStats& s,
+                                 const ViewerCommands& commands,
+                                 matter::CameraDesc& camera) {
+    if (!ImGui::Begin("LOD Settings")) {
+        ImGui::End();
+        return;
+    }
+
+    // ---- Live controls: applied every frame, no reload -------------------
+    ImGui::SeparatorText("Dynamic (applies immediately)");
+    ImGui::SliderFloat("Pixel budget", &s.pixel_budget, 0.05f, 4.0f, "%.2f");
+    ImGui::SetItemTooltip(
+        "Scales projected size in LOD selection: <1 picks coarser rungs "
+        "sooner, >1 holds detail farther. Same value as Viewer Debug.");
+    ImGui::SliderFloat("Camera far plane (m)", &camera.far_plane, 500.0f,
+                       20000.0f, "%.0f",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Editor camera draw distance.");
+
+    // ---- Streaming profile: consumed once at world connect ---------------
+    ImGui::SeparatorText("Streaming (requires world reload)");
+    if (!session) {
+        ImGui::TextDisabled("No world session");
+        ImGui::End();
+        return;
+    }
+    auto& st = lod_settings_;
+    {
+        // Live-mirror the active profile until the user edits; a dirty draft
+        // is held until Apply & Reload or Reset so a mid-edit reconnect
+        // cannot stomp it.
+        matter::WorldSession::StreamingLodConfig active;
+        if (session->streaming_lod_config(active)) {
+            if (!st.dirty) st.edit = active;
+            st.have = true;
+        } else if (!st.dirty) {
+            st.have = false;
+        }
+    }
+    if (!st.have) {
+        ImGui::TextDisabled("Waiting for a streaming world connect...");
+        ImGui::End();
+        return;
+    }
+
+    st.dirty |= ImGui::Checkbox("Heightfield terrain LOD ladder",
+                                &st.edit.terrain_lod_enabled);
+    ImGui::SetItemTooltip(
+        "Off: every sector bakes the full-detail voxel mesh (the "
+        "pre-ladder behavior; far more memory and bake time).");
+
+    // Editable radius->value tables. Rows are sanitized (sorted by radius,
+    // non-positive radii dropped) on Apply.
+    auto ring_table = [&st](const char* label, const char* value_label,
+                            std::vector<matter::WorldSession::StreamingLodRing>&
+                                rows,
+                            int value_min, int value_max) {
+        ImGui::PushID(label);
+        ImGui::TextUnformatted(label);
+        int remove_index = -1;
+        for (int i = 0; i < (int)rows.size(); ++i) {
+            ImGui::PushID(i);
+            ImGui::SetNextItemWidth(120.0f);
+            st.dirty |= ImGui::DragFloat("##radius", &rows[i].radius, 8.0f,
+                                         16.0f, 20000.0f, "%.0f m");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(110.0f);
+            st.dirty |= ImGui::SliderInt(value_label, &rows[i].value,
+                                         value_min, value_max);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("X")) remove_index = i;
+            ImGui::PopID();
+        }
+        if (remove_index >= 0 && rows.size() > 1) {
+            rows.erase(rows.begin() + remove_index);
+            st.dirty = true;
+        }
+        if (rows.size() < 8 && ImGui::SmallButton("+ Add")) {
+            matter::WorldSession::StreamingLodRing next =
+                rows.empty() ? matter::WorldSession::StreamingLodRing{256.0f, 0}
+                             : rows.back();
+            next.radius += 256.0f;
+            rows.push_back(next);
+            st.dirty = true;
+        }
+        ImGui::PopID();
+    };
+    ring_table("Scatter rings (radius -> tier: 0 far, 2 near detail)",
+               "##tier", st.edit.scatter_rings, 0, 2);
+    ImGui::Spacing();
+    if (st.edit.terrain_lod_enabled) {
+        ring_table(
+            "Terrain LOD bands (radius -> LOD: 0 one quad, 5 native voxel)",
+            "##lod", st.edit.terrain_bands, 0, 5);
+        ImGui::TextDisabled(
+            "Keep adjacent band radii >= 2 sectors apart; the streamer "
+            "re-balances any pair coarser than 2:1.");
+    }
+
+    if (st.dirty)
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f),
+                           "Pending changes - reload to apply");
+    const bool apply = ImGui::Button("Apply & Reload World");
+    ImGui::SameLine();
+    const bool reset = ImGui::Button("Reset to World Defaults");
+    if (apply) {
+        auto sanitize =
+            [](std::vector<matter::WorldSession::StreamingLodRing>& rows) {
+                rows.erase(std::remove_if(rows.begin(), rows.end(),
+                                          [](const auto& r) {
+                                              return !(r.radius > 0.0f);
+                                          }),
+                           rows.end());
+                std::stable_sort(rows.begin(), rows.end(),
+                                 [](const auto& a, const auto& b) {
+                                     return a.radius < b.radius;
+                                 });
+            };
+        sanitize(st.edit.scatter_rings);
+        sanitize(st.edit.terrain_bands);
+        session->set_streaming_lod_overrides(st.edit);
+        if (commands.reload) commands.reload();
+        st.dirty = false;   // resume live-mirroring the (new) active profile
+    } else if (reset) {
+        session->clear_streaming_lod_overrides();
+        if (commands.reload) commands.reload();
+        st.dirty = false;
+    }
+
+    ImGui::End();
+}
+
 void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
     ImGui::Begin("Viewer Debug");
 

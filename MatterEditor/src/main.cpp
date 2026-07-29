@@ -2143,6 +2143,8 @@ int main() {
                                            viewer_commands);
                 ui.draw_worlds_panel(worlds, stats, viewer_commands);
                 ui.draw_camera_panel(camera);
+                ui.draw_lod_settings_panel(session.get(), stats,
+                                           viewer_commands, camera);
                 // Issue reporter (F9 region / F10 viewport). Drawn last so the
                 // selection overlay and the window sit above the panels they
                 // might be reporting on.

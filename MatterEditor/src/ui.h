@@ -161,6 +161,15 @@ public:
     bool begin_frame(const matter::VulkanFrame& frame, std::string& error);
     bool end_frame(const matter::VulkanFrame& frame, std::string& error);
     void draw_debug_panel(ViewerStats& stats, const ViewerCommands& commands);
+
+    // LOD Settings window: everything level-of-detail / draw-distance in one
+    // place, split into live controls (pixel budget, camera far plane) and
+    // reload-required streaming config (scatter rings, terrain LOD bands,
+    // heightfield ladder toggle) with an Apply & Reload button.
+    void draw_lod_settings_panel(matter::WorldSession* session,
+                                 ViewerStats& stats,
+                                 const ViewerCommands& commands,
+                                 matter::CameraDesc& camera);
     // Bake Lab shell (bake-lab.md §II.5): "Bake Lab" window wrapping
     // BakeLab::draw_contents(), same Begin/End split as draw_console_panel.
     // No-op while lab.visible is false (window close button clears it).
@@ -264,6 +273,16 @@ public:
     void select_baked_root(uint64_t resolved_hash);
 
 private:
+    // LOD Settings panel state: a live mirror of the session's active
+    // streaming profile until the user edits (dirty), then a held draft
+    // until Apply & Reload or Reset.
+    struct LodSettingsState {
+        matter::WorldSession::StreamingLodConfig edit;
+        bool have = false;
+        bool dirty = false;
+    };
+    LodSettingsState lod_settings_;
+
     void build_dockspace();
     bool ensure_viewport_target(uint32_t width, uint32_t height,
                                 VkFormat format, std::string& error);

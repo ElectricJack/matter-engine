@@ -227,6 +227,25 @@ public:
     // only (no mid-job slicing); always makes progress when work is queued.
     void pump_gpu_jobs(float ms_budget);
 
+    // ---- Streaming LOD configuration (editor LOD Settings panel) ----------
+    // A ring maps an anchor radius to a value: the scatter tier (0..2) for
+    // scatter_rings, the terrain LOD (0 coarsest .. 5 native voxel) for
+    // terrain_bands. Innermost first.
+    struct StreamingLodRing { float radius = 0.0f; int value = 0; };
+    struct StreamingLodConfig {
+        std::vector<StreamingLodRing> scatter_rings;
+        std::vector<StreamingLodRing> terrain_bands;
+        bool terrain_lod_enabled = true;
+    };
+    // The ACTIVE resolved profile of the current world (world JS + env +
+    // overrides + engine defaults). False before a world-kind connect.
+    bool streaming_lod_config(StreamingLodConfig& out) const;
+    // Override applied at the NEXT world (re)connect — pair with a world
+    // reload to take effect. Empty ring/band lists fall back to the world's
+    // own values / engine defaults; the enabled flag always applies.
+    void set_streaming_lod_overrides(const StreamingLodConfig& overrides);
+    void clear_streaming_lod_overrides();
+
     // True when no GL-thread job is queued. Lets the caller widen the pump
     // budget only while a streaming backlog exists (sector publishes are
     // ~1 ms each; a fixed small budget drains a 5,000-sector fill at a

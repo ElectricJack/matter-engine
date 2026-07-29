@@ -53,6 +53,12 @@ struct Config {
     std::vector<Ring> terrain_bands;   // radius -> terrain LOD when enabled
 };
 
+// Fill Config::terrain_bands with the default radial profile (scaled by
+// sector_size) when the ladder is enabled and no bands were provided. The
+// streamer constructor applies this itself; external profile consumers (the
+// editor's LOD Settings query) call it to display the same resolved values.
+void resolve_terrain_defaults(Config& cfg);
+
 struct SectorRequest { int64_t tx, tz; int rung; };
 struct Eviction      { int64_t tx, tz; int rung; };
 

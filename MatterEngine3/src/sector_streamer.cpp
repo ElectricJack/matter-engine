@@ -31,22 +31,25 @@ static bool stream_no_evict() {
     return value;
 }
 
+void resolve_terrain_defaults(Config& cfg) {
+    if (!cfg.terrain_lod_enabled || !cfg.terrain_bands.empty()) return;
+    // Radial profile in sector sizes: near disc native voxel (LOD 5),
+    // then heightfield LODs down to a single quad. Wider near bands than
+    // the design table's minimum (3S/5S/8S/14S/24S): editor cameras fly
+    // hundreds of meters up, where 8-16 m cells at the design's 5-8S
+    // radii read as visible facets. Every adjacent pair stays >= 2S
+    // apart so the default map is 2:1-balanced by construction; the
+    // explicit balance pass still guards custom profiles.
+    const float S = cfg.sector_size;
+    cfg.terrain_bands = {
+        {5.0f * S, 5},  {8.0f * S, 4},  {12.0f * S, 3},
+        {18.0f * S, 2}, {27.0f * S, 1}, {40.0f * S, 0},
+    };
+}
+
 SectorStreamer::SectorStreamer(Config cfg)
     : cfg_(std::move(cfg)) {
-    if (cfg_.terrain_lod_enabled && cfg_.terrain_bands.empty()) {
-        // Radial profile in sector sizes: near disc native voxel (LOD 5),
-        // then heightfield LODs down to a single quad. Wider near bands than
-        // the design table's minimum (3S/5S/8S/14S/24S): editor cameras fly
-        // hundreds of meters up, where 8-16 m cells at the design's 5-8S
-        // radii read as visible facets. Every adjacent pair stays >= 2S
-        // apart so the default map is 2:1-balanced by construction; the
-        // explicit balance pass still guards custom profiles.
-        const float S = cfg_.sector_size;
-        cfg_.terrain_bands = {
-            {5.0f * S, 5},  {8.0f * S, 4},  {12.0f * S, 3},
-            {18.0f * S, 2}, {27.0f * S, 1}, {40.0f * S, 0},
-        };
-    }
+    resolve_terrain_defaults(cfg_);
 }
 
 // ---------------------------------------------------------------------------
