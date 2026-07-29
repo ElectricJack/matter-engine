@@ -606,53 +606,185 @@ void Ui::draw_lod_settings_panel(matter::WorldSession* session,
     ImGui::SetItemTooltip(
         "Off: every sector bakes the full-detail voxel mesh (the "
         "pre-ladder behavior; far more memory and bake time).");
+    ImGui::Spacing();
 
-    // Editable radius->value tables. Rows are sanitized (sorted by radius,
-    // non-positive radii dropped) on Apply.
-    auto ring_table = [&st](const char* label, const char* value_label,
-                            std::vector<matter::WorldSession::StreamingLodRing>&
-                                rows,
-                            int value_min, int value_max) {
-        ImGui::PushID(label);
-        ImGui::TextUnformatted(label);
-        int remove_index = -1;
+    // Multi-handle transition bar: one rail scaled 0..camera-far-plane with
+    // a draggable handle per LOD transition. Handles cannot cross (order is
+    // structural), so spacing can be shaped freely and stays valid. Each
+    // segment shows its level number; each handle shows its radius above.
+    const float axis_max = std::max(camera.far_plane, 500.0f);
+    auto transition_bar = [&](const char* str_id,
+                              std::vector<matter::WorldSession::
+                                              StreamingLodRing>& rows,
+                              int& drag_state) -> bool {
+        if (rows.empty()) {
+            ImGui::TextDisabled("(no rings configured)");
+            return false;
+        }
+        bool changed = false;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float label_h = ImGui::GetTextLineHeight();
+        const float bar_h = 26.0f;
+        const float w = std::max(80.0f, ImGui::GetContentRegionAvail().x);
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const ImVec2 bar0{origin.x, origin.y + label_h + 3.0f};
+        ImGui::InvisibleButton(str_id, ImVec2(w, label_h + 3.0f + bar_h));
+        auto to_x = [&](float r) {
+            return bar0.x + std::min(1.0f, std::max(0.0f, r / axis_max)) * w;
+        };
+
+        // Segments: rows[i] covers (radius[i-1], radius[i]]. Brightness maps
+        // detail (higher value = more detail = brighter).
+        int value_max = 1;
+        for (const auto& r : rows) value_max = std::max(value_max, r.value);
+        float seg_x = bar0.x;
         for (int i = 0; i < (int)rows.size(); ++i) {
-            ImGui::PushID(i);
-            ImGui::SetNextItemWidth(120.0f);
-            st.dirty |= ImGui::DragFloat("##radius", &rows[i].radius, 8.0f,
-                                         16.0f, 20000.0f, "%.0f m");
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(110.0f);
-            st.dirty |= ImGui::SliderInt(value_label, &rows[i].value,
-                                         value_min, value_max);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("X")) remove_index = i;
-            ImGui::PopID();
+            const float seg_end = to_x(rows[i].radius);
+            const float t = float(rows[i].value) / float(value_max);
+            const ImU32 fill = ImGui::GetColorU32(
+                ImVec4(0.18f + 0.16f * t, 0.32f + 0.25f * t,
+                       0.45f + 0.35f * t, 1.0f));
+            dl->AddRectFilled(ImVec2(seg_x, bar0.y),
+                              ImVec2(seg_end, bar0.y + bar_h), fill, 2.0f);
+            char label[16];
+            std::snprintf(label, sizeof(label), "%d", rows[i].value);
+            const ImVec2 ts = ImGui::CalcTextSize(label);
+            if (seg_end - seg_x > ts.x + 6.0f) {
+                dl->AddText(ImVec2((seg_x + seg_end - ts.x) * 0.5f,
+                                   bar0.y + (bar_h - ts.y) * 0.5f),
+                            ImGui::GetColorU32(ImGuiCol_Text), label);
+            }
+            seg_x = seg_end;
         }
-        if (remove_index >= 0 && rows.size() > 1) {
-            rows.erase(rows.begin() + remove_index);
-            st.dirty = true;
+        // Beyond the outer ring: not streamed.
+        if (seg_x < bar0.x + w) {
+            dl->AddRectFilled(ImVec2(seg_x, bar0.y),
+                              ImVec2(bar0.x + w, bar0.y + bar_h),
+                              ImGui::GetColorU32(ImVec4(0.12f, 0.12f, 0.14f, 1.0f)),
+                              2.0f);
         }
-        if (rows.size() < 8 && ImGui::SmallButton("+ Add")) {
-            matter::WorldSession::StreamingLodRing next =
-                rows.empty() ? matter::WorldSession::StreamingLodRing{256.0f, 0}
-                             : rows.back();
-            next.radius += 256.0f;
-            rows.push_back(next);
-            st.dirty = true;
+
+        // Handles + radius labels above them.
+        const ImU32 handle_col = ImGui::GetColorU32(ImGuiCol_SliderGrabActive);
+        for (int i = 0; i < (int)rows.size(); ++i) {
+            const float x = to_x(rows[i].radius);
+            dl->AddRectFilled(ImVec2(x - 2.5f, bar0.y - 3.0f),
+                              ImVec2(x + 2.5f, bar0.y + bar_h + 3.0f),
+                              i == drag_state
+                                  ? ImGui::GetColorU32(ImGuiCol_CheckMark)
+                                  : handle_col,
+                              1.5f);
+            char rl[24];
+            std::snprintf(rl, sizeof(rl), "%.0f", rows[i].radius);
+            const ImVec2 ts = ImGui::CalcTextSize(rl);
+            float lx = x - ts.x * 0.5f;
+            lx = std::max(bar0.x, std::min(lx, bar0.x + w - ts.x));
+            dl->AddText(ImVec2(lx, origin.y),
+                        ImGui::GetColorU32(ImGuiCol_TextDisabled), rl);
         }
-        ImGui::PopID();
+
+        // Interaction: grab the nearest handle within 10 px; drag clamps
+        // between the neighboring handles so transitions never reorder.
+        if (ImGui::IsItemActivated()) {
+            const float mx = ImGui::GetIO().MousePos.x;
+            float best = 10.0f;
+            drag_state = -1;
+            for (int i = 0; i < (int)rows.size(); ++i) {
+                const float d = std::fabs(to_x(rows[i].radius) - mx);
+                if (d < best) { best = d; drag_state = i; }
+            }
+        }
+        if (ImGui::IsItemActive() && drag_state >= 0 &&
+            drag_state < (int)rows.size()) {
+            const float mx = ImGui::GetIO().MousePos.x;
+            float r = (mx - bar0.x) / w * axis_max;
+            const float lo = drag_state > 0
+                                 ? rows[drag_state - 1].radius + 1.0f
+                                 : 16.0f;
+            const float hi = drag_state + 1 < (int)rows.size()
+                                 ? rows[drag_state + 1].radius - 1.0f
+                                 : axis_max;
+            r = std::max(lo, std::min(r, hi));
+            if (r != rows[drag_state].radius) {
+                rows[drag_state].radius = r;
+                changed = true;
+            }
+        }
+        if (ImGui::IsItemDeactivated()) drag_state = -1;
+        if (ImGui::IsItemHovered() && drag_state < 0)
+            ImGui::SetTooltip("Drag a handle to move that LOD transition");
+        return changed;
     };
-    ring_table("Scatter rings (radius -> tier: 0 far, 2 near detail)",
-               "##tier", st.edit.scatter_rings, 0, 2);
+
+    ImGui::TextUnformatted("Scatter detail (tier 2 near ... 0 far)");
+    st.dirty |= transition_bar("##scatter_bar", st.edit.scatter_rings,
+                               st.drag_scatter);
     ImGui::Spacing();
     if (st.edit.terrain_lod_enabled) {
-        ring_table(
-            "Terrain LOD bands (radius -> LOD: 0 one quad, 5 native voxel)",
-            "##lod", st.edit.terrain_bands, 0, 5);
-        ImGui::TextDisabled(
-            "Keep adjacent band radii >= 2 sectors apart; the streamer "
-            "re-balances any pair coarser than 2:1.");
+        ImGui::TextUnformatted(
+            "Terrain LOD (5 native voxel ... 0 one quad)");
+        st.dirty |= transition_bar("##bands_bar", st.edit.terrain_bands,
+                                   st.drag_bands);
+        // 2:1 spacing hint against the world's sector size.
+        bool tight = false;
+        for (size_t i = 1; i < st.edit.terrain_bands.size(); ++i) {
+            if (st.edit.terrain_bands[i].radius -
+                    st.edit.terrain_bands[i - 1].radius <
+                2.0f * st.edit.sector_size)
+                tight = true;
+        }
+        if (tight)
+            ImGui::TextColored(
+                ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
+                "Bands closer than 2 sectors (%.0f m) get re-balanced by "
+                "the streamer.",
+                2.0f * st.edit.sector_size);
+    }
+
+    // Numeric fallback for precise values, level edits, and add/remove.
+    if (ImGui::TreeNode("Numeric editing")) {
+        auto ring_table =
+            [&st](const char* label, const char* value_label,
+                  std::vector<matter::WorldSession::StreamingLodRing>& rows,
+                  int value_min, int value_max) {
+                ImGui::PushID(label);
+                ImGui::TextUnformatted(label);
+                int remove_index = -1;
+                for (int i = 0; i < (int)rows.size(); ++i) {
+                    ImGui::PushID(i);
+                    ImGui::SetNextItemWidth(120.0f);
+                    st.dirty |= ImGui::DragFloat("##radius", &rows[i].radius,
+                                                 8.0f, 16.0f, 20000.0f,
+                                                 "%.0f m");
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(110.0f);
+                    st.dirty |= ImGui::SliderInt(value_label, &rows[i].value,
+                                                 value_min, value_max);
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("X")) remove_index = i;
+                    ImGui::PopID();
+                }
+                if (remove_index >= 0 && rows.size() > 1) {
+                    rows.erase(rows.begin() + remove_index);
+                    st.dirty = true;
+                }
+                if (rows.size() < 8 && ImGui::SmallButton("+ Add")) {
+                    matter::WorldSession::StreamingLodRing next =
+                        rows.empty()
+                            ? matter::WorldSession::StreamingLodRing{256.0f, 0}
+                            : rows.back();
+                    next.radius += 256.0f;
+                    rows.push_back(next);
+                    st.dirty = true;
+                }
+                ImGui::PopID();
+            };
+        ring_table("Scatter rings", "##tier", st.edit.scatter_rings, 0, 2);
+        ImGui::Spacing();
+        if (st.edit.terrain_lod_enabled)
+            ring_table("Terrain LOD bands", "##lod", st.edit.terrain_bands,
+                       0, 5);
+        ImGui::TreePop();
     }
 
     if (st.dirty)

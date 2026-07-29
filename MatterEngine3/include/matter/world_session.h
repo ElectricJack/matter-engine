@@ -236,6 +236,10 @@ public:
         std::vector<StreamingLodRing> scatter_rings;
         std::vector<StreamingLodRing> terrain_bands;
         bool terrain_lod_enabled = true;
+        // Informational (filled by streaming_lod_config, ignored by
+        // set_streaming_lod_overrides): the world's sector size, for UI
+        // spacing hints.
+        float sector_size = 64.0f;
     };
     // The ACTIVE resolved profile of the current world (world JS + env +
     // overrides + engine defaults). False before a world-kind connect.

@@ -6072,6 +6072,7 @@ bool WorldSession::streaming_lod_config(StreamingLodConfig& out) const {
     for (const auto& band : profile.terrain_bands)
         out.terrain_bands.push_back({band.radius, band.rung});
     out.terrain_lod_enabled = profile.terrain_lod_enabled;
+    out.sector_size = profile.sector_size;
     return true;
 }
 

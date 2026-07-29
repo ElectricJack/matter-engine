@@ -280,6 +280,9 @@ private:
         matter::WorldSession::StreamingLodConfig edit;
         bool have = false;
         bool dirty = false;
+        // Active drag handle per transition bar (-1 = none).
+        int drag_scatter = -1;
+        int drag_bands = -1;
     };
     LodSettingsState lod_settings_;
 
