@@ -39,23 +39,28 @@ class AlpineConifer extends Part {
     const needleLobe = (center, radius, turn, color) => {
       const forward = [Math.cos(turn) * radius, 0, Math.sin(turn) * radius];
       const side = [-Math.sin(turn) * radius * 0.72, 0, Math.cos(turn) * radius * 0.72];
-      const tip = [center[0] + forward[0] * 0.82, center[1] + radius * 0.52, center[2] + forward[2] * 0.82];
-      const root = [center[0] - forward[0] * 0.58, center[1] - radius * 0.30, center[2] - forward[2] * 0.58];
+      const top = [center[0], center[1] + radius * 0.82, center[2]];
+      const bottom = [center[0], center[1] - radius * 0.62, center[2]];
+      const front = [center[0] + forward[0], center[1], center[2] + forward[2]];
+      const back = [center[0] - forward[0], center[1], center[2] - forward[2]];
       const left = [center[0] + side[0], center[1], center[2] + side[2]];
       const right = [center[0] - side[0], center[1], center[2] - side[2]];
-      const low = [center[0], center[1] - radius * 0.62, center[2]];
       this.fill(MAT.foliageThin);
       this.tint(color[0], color[1], color[2], color[3]);
       this.beginShape(SHAPE.triangles);
-        this.vertex(root[0], root[1], root[2]); this.vertex(left[0], left[1], left[2]); this.vertex(tip[0], tip[1], tip[2]);
-        this.vertex(root[0], root[1], root[2]); this.vertex(tip[0], tip[1], tip[2]); this.vertex(right[0], right[1], right[2]);
-        this.vertex(root[0], root[1], root[2]); this.vertex(low[0], low[1], low[2]); this.vertex(left[0], left[1], left[2]);
-        this.vertex(root[0], root[1], root[2]); this.vertex(right[0], right[1], right[2]); this.vertex(low[0], low[1], low[2]);
+        this.vertex(top[0], top[1], top[2]); this.vertex(front[0], front[1], front[2]); this.vertex(left[0], left[1], left[2]);
+        this.vertex(top[0], top[1], top[2]); this.vertex(left[0], left[1], left[2]); this.vertex(back[0], back[1], back[2]);
+        this.vertex(top[0], top[1], top[2]); this.vertex(back[0], back[1], back[2]); this.vertex(right[0], right[1], right[2]);
+        this.vertex(top[0], top[1], top[2]); this.vertex(right[0], right[1], right[2]); this.vertex(front[0], front[1], front[2]);
+        this.vertex(bottom[0], bottom[1], bottom[2]); this.vertex(left[0], left[1], left[2]); this.vertex(front[0], front[1], front[2]);
+        this.vertex(bottom[0], bottom[1], bottom[2]); this.vertex(back[0], back[1], back[2]); this.vertex(left[0], left[1], left[2]);
+        this.vertex(bottom[0], bottom[1], bottom[2]); this.vertex(right[0], right[1], right[2]); this.vertex(back[0], back[1], back[2]);
+        this.vertex(bottom[0], bottom[1], bottom[2]); this.vertex(front[0], front[1], front[2]); this.vertex(right[0], right[1], right[2]);
       this.endShape();
     };
     const spray = (base, angle, length, state, n, droop) => {
       if (state === 0) return;
-      const tufts = state === 1 ? 2 : 5;
+      const tufts = state === 1 ? 1 : 3;
       const color = needles(n, state);
       for (let tuft = 0; tuft < tufts; ++tuft) {
         const a = angle + (tuft - (tufts - 1) * 0.5) * 0.13 + r.range(-0.06, 0.06);
@@ -63,7 +68,7 @@ class AlpineConifer extends Part {
         const cluster = [base[0] + Math.cos(a) * offset,
                          base[1] + offset * (0.12 - droop),
                          base[2] + Math.sin(a) * offset];
-        const radius = length * S * r.range(0.14, 0.19);
+        const radius = length * S * r.range(0.18, 0.23);
         needleLobe(cluster, radius, a + r.range(-0.12, 0.12), color);
       }
     };

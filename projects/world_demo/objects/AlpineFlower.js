@@ -14,9 +14,9 @@ class AlpineFlower extends Part {
     const dry = q.dryness;
     const golden = Math.PI * (3 - Math.sqrt(5));
     const form = [
-      { stems: 4, low: 0.28, high: 0.47, petals: 9, bloom: 0.180 },
+      { stems: 4, low: 0.28, high: 0.47, petals: 9, bloom: 0.225 },
       { stems: 5, low: 0.38, high: 0.62, petals: 5, bloom: 0.165 },
-      { stems: 7, low: 0.25, high: 0.44, petals: 4, bloom: 0.135 },
+      { stems: 7, low: 0.25, high: 0.44, petals: 5, bloom: 0.175 },
     ][q.form];
     const blooms = Math.max(1, Math.round(form.stems * (1 - dry * 0.68)));
     const stemGreen = dryPalette([0.22, 0.48, 0.13, 1], [0.55, 0.40, 0.16, 1], dry,
@@ -66,10 +66,10 @@ class AlpineFlower extends Part {
     this.fill(MAT.snow);
     for (let k = 0; k < petals; ++k) {
       const a = k * Math.PI * 2 / petals + angle * 0.35;
-      const color = dryPalette([0.98, 0.93, 0.72, 1], [0.72, 0.58, 0.34, 1], dry,
+      const color = dryPalette([1.0, 0.97, 0.82, 1], [0.72, 0.58, 0.34, 1], dry,
                                2000 + q.seed * 31 + stem * 13 + k, 0.05);
-      emitPetal(this, center, [Math.cos(a), 0.12 + dry * 0.12, Math.sin(a)],
-                form.bloom * S, 0.062 * S, color, -0.015 * S);
+      emitPetal(this, center, [Math.cos(a) * 0.70, 0.68 + dry * 0.08, Math.sin(a) * 0.70],
+                form.bloom * S, 0.078 * S, color, 0.018 * S);
     }
     this.fill(MAT.foliageThin);
     emitLeaf(this, [center[0], center[1] - 0.006 * S, center[2]],
@@ -95,15 +95,15 @@ class AlpineFlower extends Part {
   clover(center, form, angle, q, stem) {
     const S = q.size;
     const dry = q.dryness;
-    this.fill(MAT.foliageThin);
+    this.fill(MAT.snow);
     for (let k = 0; k < form.petals; ++k) {
       const a = k * Math.PI * 2 / form.petals + angle * 0.4;
       const base = [center[0] + Math.cos(a) * 0.02 * S, center[1] + (k % 2) * 0.018 * S,
                     center[2] + Math.sin(a) * 0.02 * S];
-      const color = dryPalette([0.79, 0.26, 0.48, 1], [0.64, 0.45, 0.32, 1], dry,
+      const color = dryPalette([0.94, 0.15, 0.47, 1], [0.64, 0.45, 0.32, 1], dry,
                                4000 + q.seed * 23 + stem * 11 + k, 0.07);
-      emitPetal(this, base, [Math.cos(a) * 0.34, 0.94, Math.sin(a) * 0.34],
-                form.bloom * S, 0.066 * S, color, 0.009 * S);
+      emitPetal(this, base, [Math.cos(a) * 0.28, 0.96, Math.sin(a) * 0.28],
+                form.bloom * S, 0.082 * S, color, 0.020 * S);
     }
   }
 }
