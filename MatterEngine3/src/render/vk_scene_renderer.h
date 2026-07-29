@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "chart_atlas.h"   // WP-E: per-rung chart tables travel with a part
 #include "frame_matrices.h"
 #include "gpu_matrix_pack.h"
 #include "matter/lod_contract.h"
@@ -29,6 +30,8 @@
 #include "vk_draw_command.h"
 #include "vk_resources.h"
 #include "vk_temporal.h"
+#include "vt_compositor.h"  // WP-D: tier-1 page compositor (the filler)
+#include "vt_residency.h"  // WP-E: chart-space virtual texturing runtime
 
 namespace matter {
 class VulkanDevice;
@@ -118,6 +121,12 @@ struct VkSceneLod {
     uint32_t first_index = 0;   // into VkScenePart::indices (part-local until ensure_part rebases)
     uint32_t index_count = 0;   // 3 × triangle count
     float threshold = 0.0f;
+    // WP-E: which of the part's LOD rungs (index into VkScenePart::lod_charts
+    // / lod_chart_meshes) this ladder step actually draws. A cluster's ladder
+    // position is NOT the rung index in general — clusters pick their own
+    // subset of meshes — so the chart table has to be named explicitly.
+    // UINT32_MAX means "unknown rung", which resolves to no VT.
+    uint32_t chart_rung = UINT32_MAX;
 };
 
 struct VkSceneCluster {
@@ -136,6 +145,21 @@ struct VkRasterVertex {
     uint32_t pad[3]{};
 };
 
+// WP-E (chart-space VT): the CPU-side rung mesh a VT page filler reads.
+// De-interleaved on purpose — it is exactly the shape vt::VtPartContext pins,
+// so the residency layer can adopt these arrays without a repack. Supplied
+// only for rungs that actually have a chart table; anything missing here makes
+// that rung chartless (legacy path, fail-closed).
+struct VkScenePartChartMesh {
+    std::vector<float> positions;        // 3 per vertex, part-local metres
+    std::vector<float> normals;          // 3 per vertex
+    std::vector<float> surface_uvs;      // 2 per vertex, chart UV in [0,1]
+    std::vector<uint32_t> material_ids;  // 1 per vertex
+    std::vector<uint32_t> indices;       // 3 per triangle, mesh-local
+    uint32_t vertex_count = 0;
+    uint32_t dominant_material = 0xFFFFFFFFu;
+};
+
 struct VkScenePart {
     uint64_t part_hash = 0;
     std::vector<VkSceneCluster> clusters;
@@ -144,6 +168,18 @@ struct VkScenePart {
     // offset within the part).  Global vertex rebase is done by vertexOffset /
     // base addresses (Tasks 4-5); ensure_part never rewrites these values.
     std::vector<uint32_t> indices;
+    // WP-E: per-rung chart tables and their meshes, parallel to the part's LOD
+    // ladder (index = rung). Empty (or an empty entry) means charts = 0 for
+    // that rung, which is the legacy chartless render path.
+    std::vector<chart_atlas::ChartAtlasRung> lod_charts;
+    std::vector<VkScenePartChartMesh> lod_chart_meshes;
+    // Packed material table the VT page filler shades from, exactly as
+    // MaterialRegistryPackForGPU writes it (chart_material_stride floats per
+    // record). Supplied by the caller rather than pulled from the global
+    // registry so the renderer keeps no hidden dependency on it — and so a
+    // test fixture can hand over a synthetic table. Empty = neutral albedo.
+    std::vector<float> chart_material_table;
+    uint32_t chart_material_stride = 0;
 };
 
 namespace vk_scene_detail {
@@ -453,6 +489,19 @@ public:
                       const tileset::BakeInputs& inputs, bool force_rebake,
                       bool dump_png, std::string& error);
     bool consume_gi_history_reset();
+    // WP-E: pool occupancy / fills / evictions for the FrameStats channel.
+    // All-zero when the VT runtime never started (no chart-bearing part).
+    vt::VtResidency::Stats vt_stats() const {
+        return vt_ ? vt_->stats() : vt::VtResidency::Stats{};
+    }
+    bool vt_active() const { return vt_ && vt_->available(); }
+    // WP-E frame hooks. Public only so the file-local raster recorder in
+    // vk_scene_renderer.cpp can reach them; not part of the app-facing API.
+    // pre  = pool/indirection transitions, bounded page fills, feedback clear
+    //        (recorded BEFORE vkCmdBeginRendering — they are transfers).
+    // post = feedback image -> host-visible readback (AFTER vkCmdEndRendering).
+    void vt_record_pre_pass(VkCommandBuffer command_buffer);
+    void vt_record_post_pass(VkCommandBuffer command_buffer);
     bool rt_geometry_classification_dirty(uint64_t part_hash) const;
     void release_part(uint64_t part_hash);
     bool update_instances(const std::vector<VkSceneInstance>& instances,
@@ -728,7 +777,10 @@ public:
     static constexpr uint32_t kGpuZoneDlss         = 7;
     static constexpr uint32_t kGpuZoneComposite    = 8;
     static constexpr uint32_t kGpuZoneVolumetrics  = 9;
-    static constexpr uint32_t kGpuZoneCount        = 10;
+    // WP-E: the VT page-fill pass (residency uploads + the tier-1 compositor's
+    // dispatches and pool copies), recorded just before the G-buffer zone.
+    static constexpr uint32_t kGpuZoneVt           = 10;
+    static constexpr uint32_t kGpuZoneCount        = 11;
     bool gpu_timers_supported() const { return gpu_timers_supported_; }
     float gpu_zone_ms(uint32_t zone) const {
         return zone < kGpuZoneCount ? gpu_smoothed_ms_[zone] : 0.0f;
@@ -843,7 +895,13 @@ private:
         GpuMat4 previous;
         uint32_t history_valid;
         uint32_t instance_token;
-        uint32_t pad[2];
+        // WP-E: the transported vt slot (indirection layer + 1; 0 = no VT).
+        // cull.comp writes it from the per-(part, lod) vt_draw_slots table;
+        // raster.vert forwards it flat to gbuffer.frag. Every other writer of
+        // this struct (the skin tail, tests) leaves it zero, which is the
+        // fail-closed legacy path.
+        uint32_t vt_slot;
+        uint32_t pad;
     };
     static_assert(sizeof(GpuCluster) == 128);
     static_assert(sizeof(GpuInstance) == 160);
@@ -882,6 +940,9 @@ private:
         std::vector<uint32_t> rt_cluster_lod_offsets;
         std::vector<uint32_t> material_ids;
         bool rt_geometry_classification_dirty = false;
+        // WP-E: transported vt slot per LOD rung (0 = chartless rung). Feeds
+        // the vt_draw_slots table cull.comp reads.
+        std::vector<uint32_t> vt_slots;
     };
 
     struct DeviceLimits {
@@ -1057,6 +1118,8 @@ private:
         matter::VkBufferResource skin_work;
         matter::VkBufferResource skin_current_output;
         matter::VkBufferResource skin_previous_output;
+        // WP-E: per-(part_slot, lod) transported vt slots, read by cull.comp.
+        matter::VkBufferResource vt_draw_slots;
         std::vector<VkSkinRasterDraw> ready_skin_raster_draws;
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
@@ -1223,6 +1286,49 @@ private:
     // slot whenever a tileset slot loads or unloads.
     void write_tileset_descriptors_for_frame(VkDescriptorSet set);
 
+    // --- WP-E: chart-space virtual texturing -------------------------------
+    // Creates the fallback (dummy) VT descriptor sources. Always available, so
+    // scene-set bindings 9-13 are legal even when no part has charts and the
+    // residency runtime was never started.
+    bool ensure_vt_dummies(std::string& error);
+    // Starts the residency runtime on first use (first chart-bearing part).
+    // Returns false only when VT is genuinely unusable; the caller then keeps
+    // every part on the legacy path.
+    bool ensure_vt_runtime(std::string& error);
+    // Registers a part's chart-bearing rungs with the residency layer and
+    // records their transported slots into parts_[slot].vt_slots.
+    void register_vt_part(int part_slot, const VkScenePart& part);
+    // Rebuilds the per-(part, lod) vt slot table cull.comp reads.
+    void rebuild_vt_draw_slots();
+    // Feeds the tier-1 compositor the two inputs only the renderer knows: the
+    // bound detail tileset slots and the materialId -> (detail slot, fallback
+    // albedo/ORM) table. vt_compositor.h requires the device to be idle with
+    // respect to prior fills for both setters, so this waits before pushing —
+    // which is why it is driven by a dirty flag and not called per frame.
+    // A push that is not the runtime's first also invalidates the residency
+    // layer's resident pages: they were baked from the inputs being replaced.
+    void push_vt_compositor_inputs();
+    // Retires deferred VtCompositor::invalidate_part calls whose fills can no
+    // longer be in flight (see vt_pending_invalidate_).
+    void drain_vt_invalidations(uint64_t serial);
+    // Writes scene-set bindings 9-13 (draw-slot table, pool, indirection,
+    // variant records, feedback image) for one frame's descriptor set.
+    void write_vt_descriptors_for_frame(FrameResources& frame);
+    // Consumes the previous submission's feedback for this frame slot, resizes
+    // the feedback target to the current raster extent, and refreshes this
+    // frame's VT descriptors. Called once per frame before recording, when the
+    // slot's fence has already been waited on (so updating its set is legal).
+    // Drives its own monotonic counter rather than a VulkanFrame serial: the
+    // legacy immediate path has no serial, and the LRU/retirement logic only
+    // needs monotonicity.
+    void vt_begin_frame(FrameResources& frame, uint32_t frame_slot);
+    // Frame counter at which a compositor mesh cache dropped now can no longer
+    // be read by an unretired fill. VtCompositor::kMaxBatchesInFlight is 4 and
+    // one batch is recorded per frame, so twice that is a comfortable margin.
+    uint64_t vt_invalidate_retire_serial() const {
+        return vt_frame_serial_ + 2u * vt::VtCompositor::kMaxBatchesInFlight;
+    }
+
     matter::VulkanDevice* vulkan_ = nullptr;
     VkAnimationSkinning animation_skinning_;
     std::vector<VkSkinFallback> consumed_animation_skin_fallbacks_;
@@ -1306,6 +1412,47 @@ private:
     VkSampler tileset_sampler_ = VK_NULL_HANDLE;
     matter::VkBufferResource tileset_params_;
     bool tileset_infra_ready_ = false;
+
+    // --- WP-E: chart-space virtual texturing -------------------------------
+    // The residency runtime is started lazily by the first chart-bearing part
+    // (its physical pool is ~0.9 GB by default), so worlds with no charts pay
+    // nothing. Until then — and forever, on a device where VT init failed —
+    // scene-set bindings 9-13 point at the dummies below and every draw
+    // carries vt_slot 0.
+    std::unique_ptr<vt::VtResidency> vt_;
+    bool vt_init_attempted_ = false;
+    bool vt_unavailable_ = false;
+    std::string vt_unavailable_reason_;
+    TilesetImage vt_dummy_indirection_;   // R16G16_UINT 1x1x1
+    TilesetImage vt_dummy_feedback_;      // R16G16B16A16_UINT 1x1x1, GENERAL
+    // Nearest/clamp sampler for the indirection binding. A UINT format has no
+    // LINEAR filter feature, so the tileset sampler cannot stand in for it --
+    // not even on the dummy.
+    VkSampler vt_point_sampler_ = VK_NULL_HANDLE;
+    matter::VkBufferResource vt_dummy_storage_;
+    bool vt_dummies_ready_ = false;
+    // Per-(part_slot, lod) transported slots; rebuilt on part registration.
+    std::vector<uint32_t> vt_draw_slot_table_;
+    bool vt_draw_slots_dirty_ = true;
+    // Borrowed: the residency layer owns the filler. Null when the compositor
+    // could not be created and the WP-E stub filler is standing in.
+    vt::VtCompositor* vt_compositor_ = nullptr;
+    bool vt_inputs_dirty_ = true;
+    // Set by the first push_vt_compositor_inputs() that actually pushed. A
+    // later push means the inputs CHANGED, which makes every resident page
+    // stale (see the invalidate_all_content call there); the first one is the
+    // runtime's own start, where nothing is resident yet.
+    bool vt_inputs_pushed_ = false;
+    // invalidate_part() frees GPU mesh caches a recorded fill may still read,
+    // and its contract wants the device idle w.r.t. fills. Rather than stall a
+    // streaming world on every sector unload, invalidations are held until the
+    // frame serial is far enough past kMaxBatchesInFlight that no fill
+    // referencing them can still be unretired.
+    std::vector<std::pair<uint64_t, uint64_t>> vt_pending_invalidate_;
+    // Monotonic VT frame counter (LRU timestamps + invalidation retirement).
+    // Deliberately independent of VulkanFrame::serial, which the legacy
+    // immediate render path does not have.
+    uint64_t vt_frame_serial_ = 0;
     struct GiHistorySet {
         matter::VkImageResource radiance;
         matter::VkImageResource moments;

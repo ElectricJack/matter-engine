@@ -1,0 +1,204 @@
+#version 460
+// vt_bc_encode.comp — WP-D fast GPU BC7 / BC5 page compression.
+//
+// One thread per 4x4 block; 136/4 = 34 blocks per page axis, dispatched as
+// 5x5 groups of 8x8 (guarded). Each thread encodes the SAME block of all
+// three compressible channels:
+//   * albedo  RGBA8 -> BC7 (mode 6 only — see quality note)
+//   * ORM     RGBA8 -> BC7 (mode 6)
+//   * normal  RG8 (stored in an RGBA8 intermediate) -> BC5 (two BC4 halves)
+// The aux channel is copied uncompressed by the CPU-side recorder.
+//
+// QUALITY TIER: "fast / mode-6 dominant" per the plan — in fact mode 6
+// exclusively, with bounding-box endpoints, per-endpoint P-bit fitting and
+// line-projection index selection. That is the deterministic low-cost tier
+// the spec budgets for tier-1 page fills; the CPU bc7enc path (bc_encode.h)
+// remains the high-quality reference for slices/tails-fallback.
+//
+// DETERMINISM: pure function of the 16 source texels per block. No atomics,
+// no shared memory, fixed iteration orders, ties broken by strict '<'.
+// Identical inputs => identical 16-byte blocks.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#define VT_PAGE_STORE   136
+#define VT_BLOCKS_AXIS  34
+#define VT_BLOCKS_PAGE  (VT_BLOCKS_AXIS * VT_BLOCKS_AXIS)   // 1156
+
+layout(set = 0, binding = 0, rgba8) uniform readonly image2DArray srcAlbedo;
+layout(set = 0, binding = 1, rgba8) uniform readonly image2DArray srcNormal;
+layout(set = 0, binding = 2, rgba8) uniform readonly image2DArray srcOrm;
+// One uvec4 per 16-byte block, indexed out_slot * VT_BLOCKS_PAGE + block.
+layout(std430, set = 0, binding = 3) writeonly buffer OutAlbedo { uvec4 albedo_blocks[]; };
+layout(std430, set = 0, binding = 4) writeonly buffer OutNormal { uvec4 normal_blocks[]; };
+layout(std430, set = 0, binding = 5) writeonly buffer OutOrm    { uvec4 orm_blocks[]; };
+
+layout(push_constant) uniform Push {
+    uint src_layer;   // intermediate image layer to read
+    uint out_slot;    // block-buffer page slot to write
+} pc;
+
+// ---- 128-bit little-endian bitstream --------------------------------------
+void put_bits(inout uvec4 b, inout uint pos, uint val, uint n) {
+    uint word = pos >> 5;
+    uint off = pos & 31u;
+    b[word] |= val << off;
+    if (off != 0u && off + n > 32u && word < 3u)
+        b[word + 1u] |= val >> (32u - off);
+    pos += n;
+}
+
+// ---- BC7 mode 6 -----------------------------------------------------------
+// 7 mode bits, 8x7-bit endpoints (R0 R1 G0 G1 B0 B1 A0 A1), P0, P1, then 63
+// index bits (anchor index 0 stored with 3 bits). Endpoint reconstruction:
+// e8 = (e7 << 1) | P.
+const uint kWeight4[16] = uint[16](0u, 4u, 9u, 13u, 17u, 21u, 26u, 30u,
+                                   34u, 38u, 43u, 47u, 51u, 55u, 60u, 64u);
+
+// Best 7-bit endpoint for target t (0..255) under a fixed P bit.
+uint quant7(uint t, uint p) {
+    int e = (int(t) - int(p)) >> 1;
+    return uint(clamp(e, 0, 127));
+}
+uint recon8(uint e7, uint p) { return (e7 << 1) | p; }
+
+uvec4 encode_bc7_mode6(uvec4 texel[16]) {
+    uvec4 lo = texel[0], hi = texel[0];
+    for (int i = 1; i < 16; ++i) {
+        lo = min(lo, texel[i]);
+        hi = max(hi, texel[i]);
+    }
+    // Per-endpoint P-bit: pick the bit minimizing summed absolute
+    // reconstruction error across the four channels (tie -> P = 0).
+    uint p0 = 0u, p1 = 0u;
+    {
+        uint err0 = 0u, err1 = 0u;
+        for (int c = 0; c < 4; ++c) {
+            err0 += uint(abs(int(recon8(quant7(lo[c], 0u), 0u)) - int(lo[c])));
+            err1 += uint(abs(int(recon8(quant7(lo[c], 1u), 1u)) - int(lo[c])));
+        }
+        if (err1 < err0) p0 = 1u;
+        err0 = 0u; err1 = 0u;
+        for (int c = 0; c < 4; ++c) {
+            err0 += uint(abs(int(recon8(quant7(hi[c], 0u), 0u)) - int(hi[c])));
+            err1 += uint(abs(int(recon8(quant7(hi[c], 1u), 1u)) - int(hi[c])));
+        }
+        if (err1 < err0) p1 = 1u;
+    }
+    uvec4 e0q = uvec4(quant7(lo.x, p0), quant7(lo.y, p0),
+                      quant7(lo.z, p0), quant7(lo.w, p0));
+    uvec4 e1q = uvec4(quant7(hi.x, p1), quant7(hi.y, p1),
+                      quant7(hi.z, p1), quant7(hi.w, p1));
+    vec4 e0 = vec4(recon8(e0q.x, p0), recon8(e0q.y, p0),
+                   recon8(e0q.z, p0), recon8(e0q.w, p0));
+    vec4 e1 = vec4(recon8(e1q.x, p1), recon8(e1q.y, p1),
+                   recon8(e1q.z, p1), recon8(e1q.w, p1));
+
+    // Index per texel: project onto the endpoint line, snap to the nearest
+    // 4-bit interpolation weight (strict '<' tie-break).
+    vec4 d = e1 - e0;
+    float den = dot(d, d);
+    uint idx[16];
+    for (int i = 0; i < 16; ++i) {
+        float t = 0.0;
+        if (den > 1e-6) t = clamp(dot(vec4(texel[i]) - e0, d) / den, 0.0, 1.0);
+        float target = t * 64.0;
+        uint best = 0u;
+        float best_err = 1e30;
+        for (uint w = 0u; w < 16u; ++w) {
+            float err = abs(target - float(kWeight4[w]));
+            if (err < best_err) { best_err = err; best = w; }
+        }
+        idx[i] = best;
+    }
+    // Anchor constraint: index 0 must have its MSB clear; otherwise swap
+    // endpoints and invert every index.
+    if (idx[0] >= 8u) {
+        uvec4 tq = e0q; e0q = e1q; e1q = tq;
+        uint tp = p0; p0 = p1; p1 = tp;
+        for (int i = 0; i < 16; ++i) idx[i] = 15u - idx[i];
+    }
+
+    uvec4 blockBits = uvec4(0u);
+    uint pos = 0u;
+    put_bits(blockBits, pos, 0x40u, 7u);          // mode 6
+    put_bits(blockBits, pos, e0q.x, 7u);          // R0 R1
+    put_bits(blockBits, pos, e1q.x, 7u);
+    put_bits(blockBits, pos, e0q.y, 7u);          // G0 G1
+    put_bits(blockBits, pos, e1q.y, 7u);
+    put_bits(blockBits, pos, e0q.z, 7u);          // B0 B1
+    put_bits(blockBits, pos, e1q.z, 7u);
+    put_bits(blockBits, pos, e0q.w, 7u);          // A0 A1
+    put_bits(blockBits, pos, e1q.w, 7u);
+    put_bits(blockBits, pos, p0, 1u);
+    put_bits(blockBits, pos, p1, 1u);
+    put_bits(blockBits, pos, idx[0], 3u);         // anchor: 3 bits
+    for (int i = 1; i < 16; ++i) put_bits(blockBits, pos, idx[i], 4u);
+    return blockBits;
+}
+
+// ---- BC4 (one 8-byte half of BC5) -----------------------------------------
+// 8-interpolant mode (r0 > r1): c0 = r0, c1 = r1,
+// c_i = ((8-i)*r0 + (i-1)*r1) / 7 for i in 2..7.
+uvec2 encode_bc4(uint v[16]) {
+    uint vmin = v[0], vmax = v[0];
+    for (int i = 1; i < 16; ++i) {
+        vmin = min(vmin, v[i]);
+        vmax = max(vmax, v[i]);
+    }
+    uint r0 = vmax, r1 = vmin;   // r0 >= r1; equal => flat block, indices 0
+    float pal[8];
+    pal[0] = float(r0);
+    pal[1] = float(r1);
+    for (int i = 2; i < 8; ++i)
+        pal[i] = (float(8 - i) * float(r0) + float(i - 1) * float(r1)) / 7.0;
+
+    uvec2 half_block = uvec2(0u);
+    uvec4 scratch = uvec4(0u);
+    uint pos = 0u;
+    put_bits(scratch, pos, r0, 8u);
+    put_bits(scratch, pos, r1, 8u);
+    for (int i = 0; i < 16; ++i) {
+        uint best = 0u;
+        float best_err = 1e30;
+        if (r0 > r1) {
+            for (uint j = 0u; j < 8u; ++j) {
+                float err = abs(float(v[i]) - pal[j]);
+                if (err < best_err) { best_err = err; best = j; }
+            }
+        }
+        put_bits(scratch, pos, best, 3u);
+    }
+    half_block = scratch.xy;
+    return half_block;
+}
+
+void main() {
+    uvec2 blk = gl_GlobalInvocationID.xy;
+    if (blk.x >= uint(VT_BLOCKS_AXIS) || blk.y >= uint(VT_BLOCKS_AXIS)) return;
+    uint out_index = pc.out_slot * uint(VT_BLOCKS_PAGE)
+                   + blk.y * uint(VT_BLOCKS_AXIS) + blk.x;
+    int layer = int(pc.src_layer);
+    ivec2 base = ivec2(blk) * 4;
+
+    uvec4 alb[16];
+    uvec4 orm[16];
+    uint nr[16];
+    uint ng[16];
+    for (int i = 0; i < 16; ++i) {
+        ivec3 at = ivec3(base + ivec2(i & 3, i >> 2), layer);
+        vec4 a = imageLoad(srcAlbedo, at);
+        vec4 n = imageLoad(srcNormal, at);
+        vec4 o = imageLoad(srcOrm, at);
+        alb[i] = uvec4(round(a * 255.0));
+        orm[i] = uvec4(round(o * 255.0));
+        nr[i] = uint(round(n.r * 255.0));
+        ng[i] = uint(round(n.g * 255.0));
+    }
+
+    albedo_blocks[out_index] = encode_bc7_mode6(alb);
+    orm_blocks[out_index] = encode_bc7_mode6(orm);
+    uvec2 red = encode_bc4(nr);
+    uvec2 grn = encode_bc4(ng);
+    normal_blocks[out_index] = uvec4(red.x, red.y, grn.x, grn.y);
+}

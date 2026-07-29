@@ -1556,6 +1556,471 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
 // MaterialGpu.flags_misc[1] low byte = detailSlot + 1), the slot-replacement
 // path, and that unload falls back to the dummy descriptors without
 // validation complaints.
+// WP-E (chart-space virtual texturing): MATTER_VK_SMOKE_MODE=vt.
+//
+// A synthetic two-chart part is registered with chart tables + chart UVs, so
+// the residency runtime starts, pins a tail page, stub-fills it and (via the
+// feedback loop) its finer pages. Then:
+//   (a) the rendered albedo is what the installed filler bakes into the page.
+//       WP-D's tier-1 compositor takes its material inputs from the renderer's
+//       set_materials() push (the MaterialGpuRecord table), NOT from
+//       VtPartContext::material_table — which only the WP-E stub filler reads.
+//       The fixture therefore loads the two tables with DIFFERENT albedos, so
+//       the pixel says which filler is installed as well as proving the VT
+//       sample happened at all (a page that never filled reads as the
+//       compositor's neutral 0.5 grey);
+//   (b) pixels either side of the chart boundary agree, i.e. the page/border
+//       addressing does not produce a seam where two charts meet;
+//   (c) a chartless part rendered in the same scene is bit-identical to the
+//       same part rendered before VT ever started (the regression gate).
+void run_vt_path(matter::VulkanDevice& vulkan) {
+    constexpr uint32_t width = 160;
+    constexpr uint32_t height = 160;
+    // Keep the physical pool to a single array layer; the production default
+    // (8192 pages, ~0.9 GB) is pointless for a 2-chart fixture.
+#ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+#else
+    setenv("MATTER_VT_POOL_PAGES", "256", 1);
+#endif
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "vt: renderer init" : error.c_str());
+    CHECK(!renderer.vt_active(),
+          "vt: the residency runtime does not start before a chart-bearing part");
+
+    // The chart part and the chartless control share this material index.
+    //   `page_albedo`  — the uploaded MaterialGpuRecord. Both the legacy
+    //                    G-buffer path AND the tier-1 compositor (via
+    //                    set_materials) resolve this material to it, so a
+    //                    detail-less material makes VT and legacy agree.
+    //                    That agreement IS the Phase-2 parity property.
+    //   `stub_albedo`  — VtPartContext::material_table, read only by the WP-E
+    //                    stub filler. A page carrying this colour means the
+    //                    compositor is not installed.
+    constexpr uint32_t kMaterial = 5u;
+    const matter::Float3 stub_albedo{0.20f, 0.60f, 0.85f};
+    const matter::Float3 page_albedo{0.90f, 0.05f, 0.10f};
+    constexpr float kMaterialRoughness = 0.40f;
+    constexpr float kMaterialMetallic = 0.0f;
+    // MaterialRegistryPackForGPU's layout: [albedo.xyz, roughness],
+    // [metallic, emission, pad, translucency], [ior, flat, merge, slot].
+    constexpr uint32_t kMaterialStride = 12u;
+    std::vector<float> chart_material_table((kMaterial + 1) * kMaterialStride,
+                                            0.0f);
+    chart_material_table[kMaterial * kMaterialStride + 0] = stub_albedo.x;
+    chart_material_table[kMaterial * kMaterialStride + 1] = stub_albedo.y;
+    chart_material_table[kMaterial * kMaterialStride + 2] = stub_albedo.z;
+    chart_material_table[kMaterial * kMaterialStride + 3] = 0.55f;  // roughness
+    chart_material_table[kMaterial * kMaterialStride + 4] = 0.10f;  // metallic
+    chart_material_table[kMaterial * kMaterialStride + 11] = -1.0f; // no slot
+
+    std::vector<MaterialGpuRecord> materials(kMaterial + 1);
+    materials[kMaterial].base_roughness[0] = page_albedo.x;
+    materials[kMaterial].base_roughness[1] = page_albedo.y;
+    materials[kMaterial].base_roughness[2] = page_albedo.z;
+    materials[kMaterial].base_roughness[3] = kMaterialRoughness;
+    materials[kMaterial].metal_opacity_spec_coat[0] = kMaterialMetallic;
+    materials[kMaterial].metal_opacity_spec_coat[1] = 1.0f;   // opacity
+    // No detail slot: flags_misc[1] stays 0, so the compositor takes the
+    // scalar-fallback branch and bakes exactly this albedo/ORM into the page.
+    CHECK(renderer.update_materials(materials, 1, 1, error),
+          error.empty() ? "vt: stage materials" : error.c_str());
+
+    // --- chartless control part (a quad off to the left, nearer the camera) --
+    const auto quad = [](uint64_t hash, float x0, float x1, float y0, float y1,
+                         float z, float u0, float u1, float v0, float v1,
+                         uint32_t material) {
+        viewer::VkScenePart part = fixed_part(hash, {x0, y0, z}, {x1, y1, z}, 0);
+        const matter::Float3 normal{0.0f, 0.0f, 1.0f};
+        const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};   // a = 0: no tint
+        part.vertices = {
+            {{x0, y0, z}, normal, tint, {u0, v0, 1.0f, 1.0f}, material, {}},
+            {{x1, y0, z}, normal, tint, {u1, v0, 1.0f, 1.0f}, material, {}},
+            {{x1, y1, z}, normal, tint, {u1, v1, 1.0f, 1.0f}, material, {}},
+            {{x0, y1, z}, normal, tint, {u0, v1, 1.0f, 1.0f}, material, {}},
+        };
+        part.indices = {0, 1, 2, 0, 2, 3};
+        part.clusters[0].lods[0] = {0, 6, 0.0f, UINT32_MAX};
+        return part;
+    };
+
+    const viewer::VkScenePart control =
+        quad(0x7601, -1.4f, -1.0f, -0.4f, 0.4f, -1.9f, 0.0f, 0.0f, 0.0f, 0.0f,
+             kMaterial);
+    CHECK(renderer.ensure_part(control, error) >= 0,
+          error.empty() ? "vt: ensure chartless control part" : error.c_str());
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices frame{};
+    CHECK(viewer::build_frame_matrices(camera, width, height, frame, error),
+          error.empty() ? "vt: build frame matrices" : error.c_str());
+
+    const matter::Mat4f identity = identity_matrix();
+    // render_gbuffer_and_composite submits and waits, so the wall-clock delta
+    // across it is an honest end-to-end cost for the frame INCLUDING the VT
+    // fill pass. Frames that fill pages are compared against frames that do
+    // not, which brackets the integrated per-fill cost.
+    double last_render_ms = 0.0;
+    const auto render_once = [&](const char* label) {
+        std::string local;
+        CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, local),
+              local.empty() ? label : local.c_str());
+        const auto started = std::chrono::steady_clock::now();
+        CHECK(renderer.render_gbuffer_and_composite(width, height, local),
+              local.empty() ? label : local.c_str());
+        last_render_ms =
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - started).count();
+    };
+    const auto pixel_at = [&](uint32_t x, uint32_t y) {
+        viewer::VkRasterPixel pixel{};
+        std::string local;
+        CHECK(renderer.readback_raster_pixel(x, y, pixel, local),
+              local.empty() ? "vt: readback pixel" : local.c_str());
+        return pixel;
+    };
+
+    CHECK(renderer.update_instances({{0x7601, identity, 1}}, error),
+          error.empty() ? "vt: upload control instance" : error.c_str());
+    render_once("vt: render chartless-only frame");
+    // Control quad centre: z = -1.9 gives a 1.9 half-extent, so world x -1.2
+    // lands near screen x 29.
+    const viewer::VkRasterPixel control_before = pixel_at(29, 80);
+    CHECK(control_before.material_index == kMaterial,
+          "vt: the control quad is the surface under the probe");
+    CHECK(close4(control_before.albedo,
+                 {page_albedo.x, page_albedo.y, page_albedo.z, 1.0f},
+                 6e-3f),
+          "vt: the chartless control shades from the uploaded material record");
+    CHECK(!renderer.vt_active(),
+          "vt: a chartless-only scene never starts the residency runtime");
+
+    // --- the two-chart part -------------------------------------------------
+    // Atlas 256x128: chart 0 owns page column 0, chart 1 owns page column 1,
+    // so the chart boundary is also a PAGE boundary at the finest mip — the
+    // configuration a border/addressing bug shows up in.
+    //
+    // The chart entries are GEOMETRICALLY CONSISTENT with the UVs (chart_atlas.h's
+    // convention: texel = rect + gutter + (dot(p,T) - dot(origin,T)) * tpm).
+    // The tier-1 compositor analytically rasterizes charts from exactly these
+    // fields, so an entry that disagrees with the vertex UVs bakes a page that
+    // does not correspond to the surface. Both quads are 0.8 m square at
+    // 150 texels/m => 120 texels of content inside a 128-texel rect, leaving
+    // the 4-texel gutter on every edge.
+    viewer::VkScenePart charted =
+        quad(0x7602, -0.8f, 0.8f, -0.4f, 0.4f, -2.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+             kMaterial);
+    {
+        const float z = -2.0f;
+        const float tpm = 150.0f;
+        const matter::Float3 normal{0.0f, 0.0f, 1.0f};
+        const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};
+        const float u0a = 4.0f / 256.0f, u1a = 124.0f / 256.0f;
+        const float u0b = 132.0f / 256.0f, u1b = 252.0f / 256.0f;
+        const float v0 = 4.0f / 128.0f, v1 = 124.0f / 128.0f;
+        charted.vertices = {
+            {{-0.8f, -0.4f, z}, normal, tint, {u0a, v0, 1.0f, 1.0f}, kMaterial, {}},
+            {{ 0.0f, -0.4f, z}, normal, tint, {u1a, v0, 1.0f, 1.0f}, kMaterial, {}},
+            {{ 0.0f,  0.4f, z}, normal, tint, {u1a, v1, 1.0f, 1.0f}, kMaterial, {}},
+            {{-0.8f,  0.4f, z}, normal, tint, {u0a, v1, 1.0f, 1.0f}, kMaterial, {}},
+            {{ 0.0f, -0.4f, z}, normal, tint, {u0b, v0, 1.0f, 1.0f}, kMaterial, {}},
+            {{ 0.8f, -0.4f, z}, normal, tint, {u1b, v0, 1.0f, 1.0f}, kMaterial, {}},
+            {{ 0.8f,  0.4f, z}, normal, tint, {u1b, v1, 1.0f, 1.0f}, kMaterial, {}},
+            {{ 0.0f,  0.4f, z}, normal, tint, {u0b, v1, 1.0f, 1.0f}, kMaterial, {}},
+        };
+        charted.indices = {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7};
+        charted.clusters[0].lods[0] = {0, 12, 0.0f, /*chart_rung=*/0u};
+
+        chart_atlas::ChartAtlasRung rung;
+        rung.atlas_w = 256;
+        rung.atlas_h = 128;
+        rung.charts.resize(2);
+        const float chart_origin_x[2] = {-0.8f, 0.0f};
+        for (int c = 0; c < 2; ++c) {
+            chart_atlas::ChartEntry& entry = rung.charts[c];
+            entry.origin[0] = chart_origin_x[c];
+            entry.origin[1] = -0.4f;
+            entry.origin[2] = z;
+            entry.tangent[0] = 1.0f; entry.tangent[1] = 0.0f; entry.tangent[2] = 0.0f;
+            entry.bitangent[0] = 0.0f; entry.bitangent[1] = 1.0f; entry.bitangent[2] = 0.0f;
+            entry.rect_x = static_cast<uint32_t>(c) * 128u;
+            entry.rect_y = 0;
+            entry.rect_w = 128;
+            entry.rect_h = 128;
+            entry.texels_per_meter = tpm;
+            entry.first_tri = static_cast<uint32_t>(c) * 2u;
+            entry.tri_count = 2;
+        }
+        rung.tri_order = {0, 1, 2, 3};
+        charted.lod_charts = {rung};
+
+        viewer::VkScenePartChartMesh mesh;
+        mesh.vertex_count = 8;
+        for (const viewer::VkRasterVertex& vertex : charted.vertices) {
+            mesh.positions.push_back(vertex.position.x);
+            mesh.positions.push_back(vertex.position.y);
+            mesh.positions.push_back(vertex.position.z);
+            mesh.normals.push_back(vertex.normal.x);
+            mesh.normals.push_back(vertex.normal.y);
+            mesh.normals.push_back(vertex.normal.z);
+            mesh.surface_uvs.push_back(vertex.surface.x);
+            mesh.surface_uvs.push_back(vertex.surface.y);
+            mesh.material_ids.push_back(kMaterial);
+        }
+        mesh.indices = charted.indices;
+        mesh.dominant_material = kMaterial;
+        charted.lod_chart_meshes = {std::move(mesh)};
+        charted.chart_material_table = chart_material_table;
+        charted.chart_material_stride = kMaterialStride;
+    }
+    CHECK(renderer.ensure_part(charted, error) >= 0,
+          error.empty() ? "vt: ensure two-chart part" : error.c_str());
+    CHECK(renderer.vt_active(),
+          "vt: registering a chart-bearing part starts the residency runtime");
+    {
+        const vt::VtResidency::Stats stats = renderer.vt_stats();
+        CHECK(stats.variants == 1, "vt: exactly one (variant, rung) registered");
+        CHECK(stats.pool_pinned == 1, "vt: the variant's tail page is pinned");
+        CHECK(stats.pool_capacity == 256,
+              "vt: MATTER_VT_POOL_PAGES sized the pool");
+    }
+
+    CHECK(renderer.update_instances({{0x7601, identity, 1},
+                                     {0x7602, identity, 2}}, error),
+          error.empty() ? "vt: upload both instances" : error.c_str());
+    // Frame 1 fills the pinned tail; later frames drain whatever the feedback
+    // pass asked for. Four frames is well past the point where the two finest
+    // pages under the probes are resident.
+    double filling_frame_ms = 0.0;
+    double settled_frame_ms = 0.0;
+    uint64_t fills_before_frame = renderer.vt_stats().fills_total;
+    for (int i = 0; i < 4; ++i) {
+        render_once("vt: render VT frame");
+        const uint64_t fills_now = renderer.vt_stats().fills_total;
+        if (fills_now != fills_before_frame)
+            filling_frame_ms = last_render_ms;
+        else
+            settled_frame_ms = last_render_ms;
+        fills_before_frame = fills_now;
+    }
+    std::printf("vt frame cost: filling=%.3f ms settled=%.3f ms "
+                "(submit+wait, 160x160)\n",
+                filling_frame_ms, settled_frame_ms);
+
+    const vt::VtResidency::Stats stats = renderer.vt_stats();
+    std::printf(
+        "vt stats: variants=%u pool=%u/%u pinned=%u fills_total=%llu "
+        "evictions=%llu queue=%u requests_last=%u mesh_bytes=%llu "
+        "pool_bytes=%llu\n",
+        stats.variants, stats.pool_used, stats.pool_capacity, stats.pool_pinned,
+        static_cast<unsigned long long>(stats.fills_total),
+        static_cast<unsigned long long>(stats.evictions_total),
+        stats.queue_depth, stats.requests_last_frame,
+        static_cast<unsigned long long>(stats.mesh_bytes),
+        static_cast<unsigned long long>(stats.pool_bytes));
+    CHECK(stats.fills_total >= 1,
+          "vt: at least the pinned tail page was filled");
+    CHECK(stats.pool_used >= 1, "vt: the pool holds the filled pages");
+    CHECK(stats.evictions_total == 0,
+          "vt: a 2-chart fixture never pressures a 256-page pool");
+    CHECK(stats.requests_last_frame > 0,
+          "vt: the G-buffer feedback pass produced page requests");
+    CHECK(stats.fills_total >= 2,
+          "vt: the feedback loop drained a page beyond the pinned tail");
+    // Every occupied slot must have been written by a fill. A pinned tail
+    // whose fill allocated a SECOND slot instead of writing the pinned one
+    // shows up here as pool_used > fills_total, and leaves the slot every
+    // unmapped entry falls back to holding undefined bytes.
+    CHECK(stats.pool_used <= stats.fills_total,
+          "vt: every resident slot was actually filled (tail included)");
+
+    // (a) the VT sample is what shades the charted quad, and it carries the
+    // COMPOSITOR's material resolution (set_materials), not the stub's.
+    // World x -0.4 / +0.4 at z = -2 (half-extent 2.0) land on screen x 64 / 96.
+    const viewer::VkRasterPixel chart0 = pixel_at(64, 80);
+    const viewer::VkRasterPixel chart1 = pixel_at(96, 80);
+    CHECK(chart0.material_index == kMaterial && chart1.material_index == kMaterial,
+          "vt: both probes land on the charted quad");
+    // BC7 of a (locally) constant page plus unorm8 quantization: ~1/255.
+    CHECK(close4(chart0.albedo,
+                 {page_albedo.x, page_albedo.y, page_albedo.z, 1.0f}, 2.0e-2f),
+          "vt: chart 0 shades from the composited page");
+    CHECK(close4(chart1.albedo,
+                 {page_albedo.x, page_albedo.y, page_albedo.z, 1.0f}, 2.0e-2f),
+          "vt: chart 1 shades from the composited page");
+    // Decisive: the stub filler resolves this material out of
+    // VtPartContext::material_table, which holds a very different colour.
+    CHECK(std::fabs(chart0.albedo.x - stub_albedo.x) > 0.2f ||
+              std::fabs(chart0.albedo.y - stub_albedo.y) > 0.2f ||
+              std::fabs(chart0.albedo.z - stub_albedo.z) > 0.2f,
+          "vt: the tier-1 compositor is the installed filler, not the stub");
+    // A page that never filled reads as the compositor's neutral clear.
+    CHECK(std::fabs(chart0.albedo.x - 0.5f) > 0.1f ||
+              std::fabs(chart0.albedo.y - 0.5f) > 0.1f ||
+              std::fabs(chart0.albedo.z - 0.5f) > 0.1f,
+          "vt: the sampled page is composited content, not the neutral clear");
+    // The chart frame is T=(1,0,0), B=(0,1,0) => N = T x B = the quad's own
+    // +Z normal, and a detail-less material adds no normal delta, so the
+    // page's chart-tangent normal decodes back to the geometric normal.
+    CHECK(std::fabs(chart0.normal.z - 1.0f) < 2.0e-2f,
+          "vt: the page normal decodes to the geometric normal");
+    // The G-buffer ORM attachment is (roughness, metallic, ao). Roughness and
+    // metallic ride the compositor's scalar fallback; occlusion is 1 at tier 1
+    // (WP-H's hemisphere enrichment is what darkens it), so ao is the vertex
+    // term alone.
+    CHECK(std::fabs(chart0.orm.x - kMaterialRoughness) < 2.0e-2f,
+          "vt: page roughness matches the material the compositor was given");
+    CHECK(std::fabs(chart0.orm.y - kMaterialMetallic) < 2.0e-2f,
+          "vt: page metallic matches the material the compositor was given");
+    CHECK(std::fabs(chart0.orm.z - 1.0f) < 2.0e-2f,
+          "vt: tier-1 pages carry unoccluded ORM");
+    // Phase-2 parity: a detail-less material must shade identically whether it
+    // came through a composited page or the legacy path. The chartless control
+    // is the same material shaded the legacy way.
+    CHECK(std::fabs(chart0.albedo.x - control_before.albedo.x) < 2.0e-2f &&
+              std::fabs(chart0.albedo.y - control_before.albedo.y) < 2.0e-2f &&
+              std::fabs(chart0.albedo.z - control_before.albedo.z) < 2.0e-2f,
+          "vt: a detail-less material composites to its legacy shading");
+
+    // (b) no seam where the two charts (and the two finest-mip pages) meet.
+    const viewer::VkRasterPixel left = pixel_at(76, 80);
+    const viewer::VkRasterPixel right = pixel_at(84, 80);
+    CHECK(left.material_index == kMaterial && right.material_index == kMaterial,
+          "vt: the seam probes land on the charted quad");
+    CHECK(std::fabs(left.albedo.x - right.albedo.x) < 6.0e-3f &&
+              std::fabs(left.albedo.y - right.albedo.y) < 6.0e-3f &&
+              std::fabs(left.albedo.z - right.albedo.z) < 6.0e-3f,
+          "vt: no seam across the chart/page boundary beyond filtering epsilon");
+    CHECK(std::fabs(left.albedo.x - chart0.albedo.x) < 6.0e-3f &&
+              std::fabs(right.albedo.x - chart1.albedo.x) < 6.0e-3f,
+          "vt: the boundary neighbourhood matches each chart's interior");
+
+    // Determinism: the compositor is a pure function of its inputs, and the
+    // residency layer must not be re-filling a resident page with something
+    // else. Another frame over the same state has to reproduce the same
+    // pixels EXACTLY -- not within an epsilon.
+    render_once("vt: render VT determinism frame");
+    const viewer::VkRasterPixel chart0_again = pixel_at(64, 80);
+    const viewer::VkRasterPixel chart1_again = pixel_at(96, 80);
+    CHECK(chart0_again.albedo.x == chart0.albedo.x &&
+              chart0_again.albedo.y == chart0.albedo.y &&
+              chart0_again.albedo.z == chart0.albedo.z &&
+              chart0_again.orm.x == chart0.orm.x &&
+              chart0_again.orm.y == chart0.orm.y &&
+              chart0_again.orm.z == chart0.orm.z,
+          "vt: chart 0 is bit-identical across consecutive frames");
+    CHECK(chart1_again.albedo.x == chart1.albedo.x &&
+              chart1_again.albedo.y == chart1.albedo.y &&
+              chart1_again.albedo.z == chart1.albedo.z,
+          "vt: chart 1 is bit-identical across consecutive frames");
+
+    // (c) the chartless control is bit-identical to the pre-VT frame.
+    const viewer::VkRasterPixel control_after = pixel_at(29, 80);
+    CHECK(control_after.material_index == kMaterial,
+          "vt: the control quad still shades under the probe");
+    CHECK(control_after.albedo.x == control_before.albedo.x &&
+              control_after.albedo.y == control_before.albedo.y &&
+              control_after.albedo.z == control_before.albedo.z &&
+              control_after.albedo.w == control_before.albedo.w,
+          "vt: a chartless part renders byte-identically once VT is live");
+    CHECK(control_after.orm.x == control_before.orm.x &&
+              control_after.orm.y == control_before.orm.y &&
+              control_after.orm.z == control_before.orm.z,
+          "vt: a chartless part's ORM is byte-identical once VT is live");
+    CHECK(control_after.normal.x == control_before.normal.x &&
+              control_after.normal.y == control_before.normal.y &&
+              control_after.normal.z == control_before.normal.z,
+          "vt: a chartless part's normal is byte-identical once VT is live");
+
+    // (d) compositor-input invalidation. Editing the material table changes
+    // what the compositor bakes into a page. Rebinding the compositor's inputs
+    // only fixes FUTURE fills: the pages already in the pool -- and above all
+    // the pinned tail, which never expires and is what every unmapped entry
+    // resolves to -- were baked from the OLD table. The renderer's next
+    // push_vt_compositor_inputs() therefore also calls
+    // VtResidency::invalidate_all_content(), which drops the resident unpinned
+    // pages and re-queues every tail for an in-place re-fill. Without it these
+    // probes keep reading page_albedo for the rest of the session.
+    const matter::Float3 edited_albedo{0.10f, 0.85f, 0.35f};
+    const vt::VtResidency::Stats before_invalidate = renderer.vt_stats();
+    materials[kMaterial].base_roughness[0] = edited_albedo.x;
+    materials[kMaterial].base_roughness[1] = edited_albedo.y;
+    materials[kMaterial].base_roughness[2] = edited_albedo.z;
+    CHECK(renderer.update_materials(materials, 2, 1, error),
+          error.empty() ? "vt: edit the material table" : error.c_str());
+    // The next frame pushes the new inputs, invalidates, and re-fills the tail;
+    // the feedback loop takes a few more to bring the finest pages under the
+    // probes back. Six is well past that for a 2-chart fixture.
+    for (int i = 0; i < 6; ++i) render_once("vt: render post-edit VT frame");
+
+    const vt::VtResidency::Stats after_invalidate = renderer.vt_stats();
+    std::printf("vt post-edit stats: invalidations=%llu dropped=%llu "
+                "pool=%u/%u pinned=%u fills_total=%llu\n",
+                static_cast<unsigned long long>(
+                    after_invalidate.invalidations_total),
+                static_cast<unsigned long long>(
+                    after_invalidate.pages_dropped_total),
+                after_invalidate.pool_used, after_invalidate.pool_capacity,
+                after_invalidate.pool_pinned,
+                static_cast<unsigned long long>(after_invalidate.fills_total));
+    CHECK(before_invalidate.invalidations_total == 0,
+          "vt: the runtime's own first input push does not invalidate");
+    CHECK(after_invalidate.invalidations_total == 1,
+          "vt: a material-table edit invalidates resident VT content exactly once");
+    CHECK(after_invalidate.pages_dropped_total >= 1,
+          "vt: the invalidation dropped the pages baked from the old table");
+    CHECK(after_invalidate.pool_pinned == before_invalidate.pool_pinned,
+          "vt: invalidation never drops a pinned tail");
+    CHECK(after_invalidate.fills_total > before_invalidate.fills_total,
+          "vt: the invalidated pages were re-filled");
+    // As above: a tail re-fill that allocated a fresh slot instead of rewriting
+    // its pinned one would leave pool_used ahead of the fills that wrote it.
+    CHECK(after_invalidate.pool_used <= after_invalidate.fills_total,
+          "vt: the in-place tail re-fill did not burn a second slot");
+    const viewer::VkRasterPixel chart0_edited = pixel_at(64, 80);
+    const viewer::VkRasterPixel chart1_edited = pixel_at(96, 80);
+    CHECK(chart0_edited.material_index == kMaterial &&
+              chart1_edited.material_index == kMaterial,
+          "vt: both probes still land on the charted quad after the edit");
+    CHECK(close4(chart0_edited.albedo,
+                 {edited_albedo.x, edited_albedo.y, edited_albedo.z, 1.0f},
+                 2.0e-2f),
+          "vt: chart 0 re-composited from the edited material table");
+    CHECK(close4(chart1_edited.albedo,
+                 {edited_albedo.x, edited_albedo.y, edited_albedo.z, 1.0f},
+                 2.0e-2f),
+          "vt: chart 1 re-composited from the edited material table");
+    // Re-filled pages are as deterministic as first-filled ones.
+    render_once("vt: render post-edit determinism frame");
+    const viewer::VkRasterPixel chart0_edited_again = pixel_at(64, 80);
+    CHECK(chart0_edited_again.albedo.x == chart0_edited.albedo.x &&
+              chart0_edited_again.albedo.y == chart0_edited.albedo.y &&
+              chart0_edited_again.albedo.z == chart0_edited.albedo.z &&
+              chart0_edited_again.orm.x == chart0_edited.orm.x &&
+              chart0_edited_again.orm.y == chart0_edited.orm.y,
+          "vt: re-filled pages are bit-identical across consecutive frames");
+    CHECK(renderer.vt_stats().invalidations_total == 1,
+          "vt: a settled frame does not re-invalidate");
+
+    // Releasing the charted part must return its layer, tail and mesh copies.
+    renderer.release_part(0x7602);
+    const vt::VtResidency::Stats after_release = renderer.vt_stats();
+    CHECK(after_release.variants == 0,
+          "vt: releasing the part unregisters its variant rung");
+    CHECK(after_release.pool_pinned == 0,
+          "vt: releasing the part unpins its tail page");
+    CHECK(after_release.mesh_bytes == 0,
+          "vt: releasing the part frees its CPU mesh copies");
+}
+
 void run_tileset_slot_load(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 160;
     constexpr uint32_t height = 160;
@@ -5904,6 +6369,16 @@ int main() {
         if (smoke_mode && std::string(smoke_mode) == "animation-skin") {
             run_animation_skin_gpu_readback_tests(*vulkan);
             run_animation_skin_record_fault_matrix(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "vt") {
+            run_vt_path(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();

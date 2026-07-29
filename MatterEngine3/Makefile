@@ -335,7 +335,9 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/vol_scatter.comp.spv \
          build/shaders_vk/vol_integrate.comp.spv \
          build/shaders_vk/tileset_bake_primary.comp.spv \
-         build/shaders_vk/tileset_bake_ao.comp.spv
+         build/shaders_vk/tileset_bake_ao.comp.spv \
+         build/shaders_vk/vt_composite.comp.spv \
+         build/shaders_vk/vt_bc_encode.comp.spv
 
 build/shaders_vk/%.spv: shaders_vk/%
 	@mkdir -p $(dir $@)
@@ -373,6 +375,22 @@ build/shaders_vk/vol_density.comp.spv build/shaders_vk/vol_scatter.comp.spv \
     build/shaders_vk/vol_integrate.comp.spv \
     build/shaders_vk/composite.frag.spv: \
     shaders_vk/vol_common.glsl
+
+# WP-D (chart VT): the Wang cell machinery moved into wang_common.glsl, which
+# tileset_common.glsl now includes; every tileset_common consumer therefore
+# also depends on it, and the VT compositor includes it directly.
+build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_shadow.rgen.spv \
+    build/shaders_vk/rt_surface.rchit.spv \
+    build/shaders_vk/rt_visibility.rahit.spv \
+    build/shaders_vk/rt_radiance.rmiss.spv \
+    build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_surface_test.rgen.spv \
+    build/shaders_vk/vt_composite.comp.spv: shaders_vk/wang_common.glsl
+
+# WP-E (chart VT): vt_common.glsl is the shared VT sampling helper. It is an
+# include, not a stage, so it has no .spv of its own -- but every consumer must
+# rebuild when it changes (WP-G adds the RT stages to this list).
+build/shaders_vk/gbuffer.frag.spv: shaders_vk/vt_common.glsl
 
 shaders_gen/embedded_spirv.h: $(VK_SPV) tools/embed_spirv.py
 	python3 tools/embed_spirv.py $@ $(VK_SPV)

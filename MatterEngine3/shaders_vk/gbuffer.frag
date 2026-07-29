@@ -8,6 +8,17 @@
 #define TILESET_PARAMS_BINDING 7
 #include "tileset_common.glsl"
 
+// Chart-space virtual texturing (WP-E). Bindings 10-13 of the scene set (9 is
+// the compute-only vt slot table cull.comp reads); see
+// VkSceneRenderer::create_pipeline. gbuffer.frag is the first consumer of
+// in_surface.xy (the chart UV WP-A writes into the vertex stream).
+#define VT_SET 1
+#define VT_POOL_BINDING 10
+#define VT_INDIRECTION_BINDING 11
+#define VT_VARIANTS_BINDING 12
+#define VT_FEEDBACK_BINDING 13
+#include "vt_common.glsl"
+
 // Phase 2 (Task 10): same FrameConstants block as raster.vert (set 0,
 // binding 0) -- world_to_clip projects the marched world position for the
 // conservative depth write, camera_eye_pixel_budget.xyz is the view-ray
@@ -31,6 +42,10 @@ layout(location = 4) flat in uint in_material_index;
 layout(location = 5) flat in uint in_instance_token;
 layout(location = 6) flat in uint in_material_valid;
 layout(location = 7) in vec3 in_world_pos;
+// WP-E: transported vt slot (indirection layer + 1). 0 == this draw has no
+// chart table, so every VT branch below is skipped and the legacy path runs
+// byte-for-byte as before.
+layout(location = 8) flat in uint in_vt_slot;
 
 layout(location = 0) out vec4 out_albedo;
 layout(location = 1) out vec4 out_normal;
@@ -81,6 +96,15 @@ void main() {
     // the non-tileset branch is covered too.
     float frag_depth = gl_FragCoord.z;
 
+    // WP-E near-band handoff state. `detail_albedo` keeps the live Wang
+    // detail sample BEFORE vertex tint (the ratio form below needs the raw
+    // detail vs. the slicer's mean_albedo), and `near_band` is 1 inside the
+    // POM band, fading to 0 across the same fade the POM march uses. Both
+    // stay at their defaults whenever the tileset branch does not run, and
+    // nothing reads them unless in_vt_slot != 0.
+    vec3 detail_albedo = vec3(1.0);
+    float near_band = 0.0;
+
     // Ground tileset branch (Task 7): MaterialGpu.flags_misc.y low byte
     // carries detailSlot+1 (0 = no tileset). When present, the Wang-sampled
     // ground texture replaces the material's flat base color/normal/ORM.
@@ -116,6 +140,7 @@ void main() {
         roughness = flat_roughness;
         metallic = flat_metallic;
         ao = flat_ao;
+        detail_albedo = flat_albedo;
 
         // Phase 2 (Task 10): world-space POM, gated by distance from camera.
         // Ground POM UI "POM enable" checkbox: off drives tileset.pom_a.x
@@ -127,6 +152,12 @@ void main() {
         float dist = length(in_world_pos - camera_eye);
         float pom_max_distance = tileset.pom_a.z;
         float pom_fade_band = max(tileset.pom_a.w, 1e-4);
+        // WP-E: the VT near band IS the POM band. Inside it the live Wang
+        // detail modulates the VT base (mean-preserving ratio, spec Phase 2);
+        // past it VT is used pure. Computed here (not inside the POM branch)
+        // so the handoff is defined even when POM itself is disabled.
+        near_band = 1.0 - clamp((dist - (pom_max_distance - pom_fade_band)) /
+                                pom_fade_band, 0.0, 1.0);
         int full_steps = int(tileset.pom_a.x);
         if (full_steps > 0 && dist < pom_max_distance + pom_fade_band) {
             vec3 plane_n = normalize(in_normal);
@@ -192,6 +223,7 @@ void main() {
             // fragment must not write a stale marched depth.
             float fade = 1.0 - clamp((dist - (pom_max_distance - pom_fade_band)) /
                                      pom_fade_band, 0.0, 1.0);
+            detail_albedo = mix(flat_albedo, marched_albedo, fade);
             base_color = mix(flat_color, marched_color, fade);
             shading_normal =
                 normalize(mix(flat_shading_normal, marched_shading_normal,
@@ -203,6 +235,72 @@ void main() {
             vec3 shaded_pos = mix(in_world_pos, marched_pos, fade);
             vec4 clip = frame.world_to_clip * vec4(shaded_pos, 1.0);
             if (clip.w > 0.0) frag_depth = clip.z / clip.w;
+        }
+    }
+
+    // ---- WP-E: chart-space virtual texturing --------------------------------
+    // in_vt_slot is 0 for every draw whose part has no chart table, so the
+    // whole block is skipped and the legacy result above is the final one
+    // (the regression gate: chartless parts render byte-identically).
+    // in_vt_slot is `flat` and comes from the draw record, so it is
+    // quad-uniform — the derivatives below are well defined.
+    if (in_vt_slot != 0u) {
+        vec2 atlas_uv = in_surface.xy;
+        float vt_lod =
+            vt_desired_mip(in_vt_slot, dFdx(atlas_uv), dFdy(atlas_uv));
+        VtAddress vt = vt_resolve(in_vt_slot, atlas_uv, vt_lod);
+        if (vt.valid) {
+            vt_write_feedback(vt, ivec2(gl_FragCoord.xy));
+            vec3 vt_albedo = vt_sample_channel(vt, VT_CHANNEL_ALBEDO).rgb;
+            vec3 vt_orm = vt_sample_channel(vt, VT_CHANNEL_ORM).rgb;
+            vec4 vt_aux = vt_sample_channel(vt, VT_CHANNEL_AUX);
+            vec3 vt_normal_ts =
+                vt_decode_normal(vt_sample_channel(vt, VT_CHANNEL_NORMAL));
+
+            // Near band: aux.r carries the page's dominant material id; its
+            // detail slot is the Wang tileset that rides on the VT base. When
+            // that slot is the one the draw already sampled, the live sample
+            // above is reused verbatim; otherwise it is resampled flat (no
+            // second POM march — POM stays exactly as it was).
+            vec3 near_albedo = vt_albedo;
+            if (near_band > 0.0) {
+                int aux_material = int(vt_aux.r * 255.0 + 0.5);
+                int aux_slot =
+                    uint(aux_material) < frame.counts.z
+                        ? tileset_detail_slot(materials[aux_material].flags_misc)
+                        : -1;
+                int ratio_slot = aux_slot >= 0 ? aux_slot : tileset_slot;
+                vec3 detail = detail_albedo;
+                if (aux_slot >= 0 && aux_slot != tileset_slot) {
+                    vec3 aux_normal_ts;
+                    vec3 aux_orm;
+                    detail = tileset_sample_ground(
+                        aux_slot, in_world_pos.xz, dFdx(in_world_pos.xz),
+                        dFdy(in_world_pos.xz), aux_normal_ts, aux_orm);
+                }
+                if (ratio_slot >= 0) {
+                    // Mean-preserving ratio (spec Phase 2): the VT page is the
+                    // macro term, the detail contributes only its deviation
+                    // from its own mean, so the two agree at the band edge.
+                    vec3 mean = max(tileset.mean_albedo[ratio_slot].rgb,
+                                    vec3(0.02));
+                    near_albedo = vt_albedo * clamp(detail / mean, vec3(0.25),
+                                                    vec3(4.0));
+                }
+            }
+            base_color = mix(vt_albedo, near_albedo, near_band) *
+                         mix(vec3(1.0), in_tint.rgb, in_tint.a);
+            // The page normal is chart-tangent-space; the stub writes the
+            // neutral (0,0,1), i.e. the geometric normal.
+            vec3 vt_normal =
+                tileset_rotate_normal(vt_normal_ts, normalize(in_normal));
+            shading_normal =
+                normalize(mix(vt_normal, shading_normal, near_band));
+            roughness = mix(clamp(vt_orm.g, 0.0, 1.0), roughness, near_band);
+            metallic = mix(clamp(vt_orm.b, 0.0, 1.0), metallic, near_band);
+            float vertex_ao = in_surface.w > 0.5 ? clamp(in_surface.z, 0.0, 1.0)
+                                                 : 1.0;
+            ao = mix(vertex_ao * clamp(vt_orm.r, 0.0, 1.0), ao, near_band);
         }
     }
 

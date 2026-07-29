@@ -15,12 +15,15 @@
 
 #include "check.h"
 #include "lod_bake.h"          // build_chart_rung, bake_lods, chart_atlas, part_asset_v2
+#include "part_store.h"        // viewer::PartStore (flat fast path)
 #include "raster_mesh.h"       // viewer::build_raster_mesh_data
 #include "../../libs/MeshChartingLib/include/mesh_charting.h"
 
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -534,9 +537,198 @@ void test_sidecar_roundtrip() {
     std::remove(empty_charts.c_str());
 }
 
+// ---------------------------------------------------------------------------
+// Flat fast path: a part loaded via a .flat.part must come back with populated
+// per-rung chart tables (parallel to lod_mesh_data) and chart UVs in its
+// vertex streams, exactly like the stage_from_snapshot path.
+// ---------------------------------------------------------------------------
+void test_flat_load_charts() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::path("build") / "chart_atlas_flat_fixture";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "parts", ec);
+    struct Cleanup {
+        fs::path root;
+        ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); }
+    } cleanup{root};
+    constexpr uint64_t hash = 0xF1A7C4A75ull;
+
+    // Canonical static .part (content is irrelevant to the flat, but the flat
+    // fast path only engages beside a valid ANLK-free canonical Part).
+    {
+        BLASManager source;
+        TLASManager tlas(4);
+        const std::vector<Tri> tris = build_cube();
+        const std::vector<TriEx> ex = face_normal_triex(tris);
+        source.register_triangles(const_cast<Tri*>(tris.data()), (int)tris.size(),
+                                  ex.data());
+        CHECK(part_asset::save_v2((root / part_asset::cache_path_resolved(hash)).string(),
+                                  source, tlas, nullptr, 0, {}, hash),
+              "flat-path: canonical .part fixture saves");
+    }
+    // v3 flat: two clusters (cube prop + cylinder prop), two LOD levels each
+    // (level 1 reuses the same BLAS entry — decimation is irrelevant here).
+    {
+        BLASManager flat_blas;
+        TLASManager flat_tlas(4);
+        const std::vector<Tri> cube = build_cube();
+        const std::vector<TriEx> cube_ex = face_normal_triex(cube);
+        const std::vector<Tri> cyl = build_cylinder_overhang();
+        const std::vector<TriEx> cyl_ex = face_normal_triex(cyl);
+        const uint32_t cube_index = (uint32_t)flat_blas.get_entries().size();
+        flat_blas.register_triangles(const_cast<Tri*>(cube.data()), (int)cube.size(),
+                                     cube_ex.data());
+        const uint32_t cyl_index = (uint32_t)flat_blas.get_entries().size();
+        flat_blas.register_triangles(const_cast<Tri*>(cyl.data()), (int)cyl.size(),
+                                     cyl_ex.data());
+        auto make_cluster = [](uint32_t blas_index, float extent) {
+            part_asset::FlatCluster cl{};
+            for (int k = 0; k < 3; ++k) { cl.aabb_min[k] = -extent; cl.aabb_max[k] = extent; }
+            part_asset::LodLevel fine;  fine.screen_size_threshold = 0.5f;
+            fine.blas_indices.push_back(blas_index);
+            part_asset::LodLevel coarse; coarse.screen_size_threshold = 0.05f;
+            coarse.blas_indices.push_back(blas_index);
+            cl.lods.push_back(fine);
+            cl.lods.push_back(coarse);
+            return cl;
+        };
+        const std::vector<part_asset::FlatCluster> clusters = {
+            make_cluster(cube_index, 1.0f), make_cluster(cyl_index, 3.0f)};
+        CHECK(part_asset::save_flat_v3((root / part_asset::cache_path_flat(hash)).string(),
+                                       flat_blas, flat_tlas, clusters, hash),
+              "flat-path: .flat.part fixture saves");
+    }
+
+    viewer::PartStore store(root.string());
+    const viewer::LoadedPart* lp = store.get_or_load(hash);
+    CHECK(lp != nullptr, "flat-path: get_or_load succeeds");
+    if (!lp) return;
+    CHECK(!lp->clusters.empty() && lp->clusters.size() == 2,
+          "flat-path: part came back through the flat fast path (2 clusters)");
+    CHECK(lp->lod_charts.size() == lp->lod_mesh_data.size(),
+          "flat-path: lod_charts parallel to lod_mesh_data");
+
+    // Every mesh a cluster ladder step draws (chart_rung = mesh index) must
+    // have a populated chart table AND nonzero chart UVs in its vertex stream.
+    bool cluster_rungs_charted = true;
+    bool cluster_uvs_flow = true;
+    for (const viewer::LoadedCluster& cl : lp->clusters) {
+        for (int mesh_idx : cl.lod_mesh) {
+            if (mesh_idx < 0 || (size_t)mesh_idx >= lp->lod_charts.size()) {
+                cluster_rungs_charted = false;
+                continue;
+            }
+            const chart_atlas::ChartAtlasRung& rung = lp->lod_charts[mesh_idx];
+            if (rung.charts.empty() || rung.atlas_w == 0) cluster_rungs_charted = false;
+            const viewer::RasterMeshData& mesh = lp->lod_mesh_data[mesh_idx];
+            bool nonzero = false;
+            bool in_range = !mesh.surface_uvs.empty();
+            for (float v : mesh.surface_uvs) {
+                if (v != 0.0f) nonzero = true;
+                if (v < 0.0f || v > 1.0f) in_range = false;
+            }
+            if (!nonzero || !in_range) cluster_uvs_flow = false;
+            // Coverage: the rung's tri_order must span the mesh's triangles.
+            if (rung.tri_order.size() != mesh.indices.size() / 3)
+                cluster_rungs_charted = false;
+        }
+    }
+    CHECK(cluster_rungs_charted, "flat-path: every cluster rung carries charts");
+    CHECK(cluster_uvs_flow, "flat-path: chart UVs flow into cluster vertex streams");
+
+    // The legacy whole-part rungs (RT view) are charted too.
+    bool legacy_charted = true;
+    for (size_t li = 0; li < lp->lod_blas.size() && li < lp->lod_charts.size(); ++li)
+        if (lp->lod_charts[li].charts.empty()) legacy_charted = false;
+    CHECK(legacy_charted, "flat-path: legacy whole-part rungs carry charts");
+
+    store.release(hash);
+}
+
+// ---------------------------------------------------------------------------
+// Measurement mode (not part of the automated gate): chart a REAL .flat.part
+// artifact's cluster rungs and print metrics. Usage:
+//   chart_atlas_tests --measure-flat <path/to/<16-hex>.flat.part>
+// ---------------------------------------------------------------------------
+int measure_flat(const char* path_arg) {
+    const std::string path = path_arg;
+    const std::string base = std::filesystem::path(path).filename().string();
+    uint64_t hash = 0;
+    if (base.size() < 16 ||
+        std::sscanf(base.c_str(), "%16llx", (unsigned long long*)&hash) != 1) {
+        printf("measure-flat: cannot parse 16-hex hash from '%s'\n", base.c_str());
+        return 2;
+    }
+    BLASManager blas;
+    TLASManager tlas(65536);
+    std::vector<part_asset::FlatCluster> clusters;
+    std::vector<part_asset::FlatInstanceRef> refs;
+    if (!part_asset::load_flat_v3(path, hash, blas, tlas, clusters, refs)) {
+        printf("measure-flat: load_flat_v3 failed for %s (version %u)\n",
+               path.c_str(), part_asset::peek_format_version(path));
+        return 2;
+    }
+    const auto& entries = blas.get_entries();
+    printf("measure-flat: %s — %zu clusters, %zu BLAS entries\n",
+           path.c_str(), clusters.size(), entries.size());
+    size_t rung_ordinal = 0;
+    for (size_t ci = 0; ci < clusters.size(); ++ci) {
+        for (size_t li = 0; li < clusters[ci].lods.size(); ++li) {
+            std::vector<Tri> tris;
+            std::vector<TriEx> triex;
+            for (uint32_t bi : clusters[ci].lods[li].blas_indices) {
+                if (bi >= entries.size()) continue;
+                tris.insert(tris.end(), entries[bi]->triangles.begin(),
+                            entries[bi]->triangles.end());
+                triex.insert(triex.end(), entries[bi]->tri_extra.begin(),
+                             entries[bi]->tri_extra.end());
+            }
+            if (tris.empty() || triex.size() != tris.size()) continue;
+            const size_t before = indexed_vertex_count(tris, triex);
+            std::vector<TriEx> charted = triex;
+            chart_atlas::ChartAtlasRung rung;
+            if (!lod_bake::build_chart_rung(tris, charted, 16.0f,
+                                            chart_atlas::kChartNormalConeDeg, rung)) {
+                printf("  cluster %zu lod %zu: %zu tris — CHART BUILD FAILED\n",
+                       ci, li, tris.size());
+                continue;
+            }
+            const size_t after = indexed_vertex_count(tris, charted);
+            std::vector<float> pos;
+            std::vector<unsigned int> idx;
+            soup_arrays(tris, pos, idx);
+            float worst = 1.0f;
+            double block_area = 0.0;
+            for (const auto& c : rung.charts) {
+                std::vector<int> list(c.tri_count);
+                for (uint32_t k = 0; k < c.tri_count; ++k)
+                    list[k] = (int)rung.tri_order[c.first_tri + k];
+                const float d = mesh_charting::projection_distortion(
+                    pos.data(), idx.data(), (int)tris.size(), list.data(),
+                    (int)list.size(), c.tangent, c.bitangent);
+                if (d > worst) worst = d;
+                block_area += (double)c.rect_w * (double)c.rect_h;
+            }
+            printf("  cluster %zu lod %zu: tris=%zu charts=%zu atlas=%ux%u "
+                   "distortion=%.3f pack=%.1f%% verts %zu->%zu (%.2f%% inflation)\n",
+                   ci, li, tris.size(), rung.charts.size(), rung.atlas_w,
+                   rung.atlas_h, worst,
+                   100.0 * block_area / ((double)rung.atlas_w * rung.atlas_h),
+                   before, after,
+                   before ? 100.0 * ((double)after / before - 1.0) : 0.0);
+            ++rung_ordinal;
+        }
+    }
+    printf("measure-flat: measured %zu rungs\n", rung_ordinal);
+    return 0;
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 3 && std::strcmp(argv[1], "--measure-flat") == 0)
+        return measure_flat(argv[2]);
     // Fixture 1: cube (hard edges, one chart per face at the 45-degree cone).
     {
         const std::vector<Tri> tris = build_cube();
@@ -563,6 +755,7 @@ int main() {
 
     test_ladder_charts();
     test_sidecar_roundtrip();
+    test_flat_load_charts();
 
     if (g_failures == 0) { printf("chart_atlas_tests: ALL PASS\n"); return 0; }
     printf("chart_atlas_tests: %d FAILURE(S)\n", g_failures);

@@ -13,7 +13,10 @@ try {
         @{ Label = 'rt'; Mode = 'rt' },
         @{ Label = 'rt-disabled'; Mode = 'rt-disabled' },
         @{ Label = 'rt-unavailable'; Mode = 'rt-unavailable' },
-        @{ Label = 'animation skin compute readback'; Mode = 'animation-skin' }
+        @{ Label = 'animation skin compute readback'; Mode = 'animation-skin' },
+        # WP-E: chart-space virtual texturing residency + stub filler +
+        # G-buffer sampling (pages, seams, chartless regression gate).
+        @{ Label = 'chart-space virtual texturing'; Mode = 'vt' }
     )
     foreach ($case in $modes) {
         [Environment]::SetEnvironmentVariable('MATTER_VK_SMOKE_MODE',

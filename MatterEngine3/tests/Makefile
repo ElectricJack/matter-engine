@@ -216,6 +216,15 @@ BCENCODE_CPP = bc_encode_tests.cpp ../src/render/bc_encode.cpp \
 BCENCODE_HEADERS = check.h ../src/render/bc_encode.h ../src/render/tileset_slicer.h
 BCENCODE_CFLAGS = -O2 -I$(BC7ENC_DIR)
 
+# WP-E (chart-space virtual texturing): the residency layer's pure CPU half —
+# virtual layout, indirection resolve, page/border addressing, LRU eviction.
+# Header-only against vt_residency.h, so the suite links no Vulkan symbols and
+# runs headlessly on every platform (the GPU half is MATTER_VK_SMOKE_MODE=vt).
+VTRESIDENCY_TARGET = build/vt_residency_tests
+VTRESIDENCY_CPP = vt_residency_tests.cpp
+VTRESIDENCY_HEADERS = check.h ../src/render/vt_residency.h \
+                      ../src/render/vt_types.h ../src/render/chart_atlas.h
+
 FLECS_DIR = ../../third_party/flecs
 FLECS_C = $(FLECS_DIR)/flecs.c
 ANIMATION_RUNTIME_CPP = ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
@@ -506,6 +515,11 @@ CHARTATLAS_TARGET = build/chart_atlas_tests
 CHARTATLAS_CPP = chart_atlas_tests.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
                  ../src/part_asset_v2.cpp \
                  ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp \
+                 ../src/render/part_store.cpp ../src/render/matrix_math.cpp \
+                 ../src/lod_select.cpp ../src/sector_grid.cpp \
+                 ../src/animation/animation_asset_store.cpp ../src/animation/anim_asset.cpp \
+                 ../src/animation/anim_bundle.cpp ../src/animation/animation_binding_bake.cpp \
+                 ../src/animation/animation_ir.cpp \
                  $(MSL)/mesh_simplifier.cpp \
                  $(MSL)/mesh_indexed.cpp \
                  $(MSL)/mesh_transform.cpp \
@@ -1456,7 +1470,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1586,6 +1600,12 @@ $(BCENCODE_TARGET): $(BCENCODE_CPP) $(BCENCODE_HEADERS) | build
 
 run-bc-encode: $(BCENCODE_TARGET)
 	./$(BCENCODE_TARGET)
+
+$(VTRESIDENCY_TARGET): $(VTRESIDENCY_CPP) $(VTRESIDENCY_HEADERS) | build
+	$(CC) $(VTRESIDENCY_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
+
+run-vt-residency: $(VTRESIDENCY_TARGET)
+	./$(VTRESIDENCY_TARGET)
 
 .PHONY: check-ecs-animation-sources check-physics-animation-sources check-simulation-control-animation-sources
 define check_animation_ecs_runtime_closure
@@ -2308,6 +2328,13 @@ run-resolvecache: resolve-cache-tests
 .PHONY: vulkan-smoke
 vulkan-smoke:
 	$(MAKE) -C ../../MatterEditor vulkan-smoke
+
+# WP-D: tier-1 VT page compositor GPU tests (vt_compositor_tests.cpp). Like
+# vulkan-smoke, the exe is a Windows artifact owned by MatterEditor's
+# cross-build rules (vendored GLFW + Vulkan link line live there).
+.PHONY: run-vt-compositor
+run-vt-compositor:
+	$(MAKE) -C ../../MatterEditor vt-compositor-tests
 
 # ---------------------------------------------------------------------------
 # Clean: every object (build/obj/) and every binary (build/*) now lives under

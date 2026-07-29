@@ -5036,6 +5036,46 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
     }
     if (part.vertices.empty()) return true;
 
+    // WP-E (chart-space VT): hand the renderer the per-rung chart tables the
+    // load-time ladder bake produced, plus the CPU rung meshes the page filler
+    // reads. Both are copied by the VT residency layer at registration, so
+    // this is the only place they need to exist. A rung with an empty chart
+    // table (or a part that predates WP-A) stays on the legacy path.
+    {
+        bool any_charts = false;
+        for (const auto& rung : loaded.lod_charts) {
+            if (!rung.charts.empty()) { any_charts = true; break; }
+        }
+        if (any_charts) {
+            part.lod_charts = loaded.lod_charts;
+            part.lod_chart_meshes.resize(loaded.lod_charts.size());
+            if (material_count > 0) {
+                part.chart_material_stride = MATERIAL_FLOATS_PER_DEF;
+                part.chart_material_table.assign(
+                    static_cast<size_t>(material_count) * MATERIAL_FLOATS_PER_DEF,
+                    0.0f);
+                MaterialRegistryPackForGPU(part.chart_material_table.data());
+            }
+            for (size_t mi = 0;
+                 mi < loaded.lod_mesh_data.size() &&
+                 mi < part.lod_chart_meshes.size(); ++mi) {
+                if (loaded.lod_charts[mi].charts.empty()) continue;
+                const auto& mesh = loaded.lod_mesh_data[mi];
+                if (mesh.vertex_count <= 0 || mesh.indices.empty()) continue;
+                viewer::VkScenePartChartMesh& out = part.lod_chart_meshes[mi];
+                out.vertex_count = static_cast<uint32_t>(mesh.vertex_count);
+                out.positions = mesh.vertices;
+                out.normals = mesh.normals;
+                out.surface_uvs = mesh.surface_uvs;
+                out.material_ids = mesh.material_ids;
+                out.indices = mesh.indices;
+                out.dominant_material =
+                    mesh.material_ids.empty() ? UINT32_MAX
+                                              : mesh.material_ids.front();
+            }
+        }
+    }
+
     // Bake Lab W4 (part-workbench.md SS-I.5): squash a cluster's thresholds
     // so the unmodified Vulkan cull.comp selection loop ("first i with
     // psize >= thresholds[i]") always lands on `level`, regardless of camera
@@ -5067,9 +5107,13 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                     mesh_offsets[mesh_index] == UINT32_MAX ||
                     mesh_index_offsets[mesh_index] == UINT32_MAX) continue;
                 const auto& mesh = loaded.lod_mesh_data[mesh_index];
-                cluster.lods.push_back({mesh_index_offsets[mesh_index],
-                                        static_cast<uint32_t>(mesh.indices.size()),
-                                        source.thresholds[li]});
+                cluster.lods.push_back(
+                    {mesh_index_offsets[mesh_index],
+                     static_cast<uint32_t>(mesh.indices.size()),
+                     source.thresholds[li],
+                     // WP-E: name the rung this ladder step draws, so the
+                     // renderer can resolve its chart table / vt slot.
+                     static_cast<uint32_t>(mesh_index)});
             }
             apply_force_lod(cluster.lods, force_lod);
             if (!cluster.lods.empty()) part.clusters.push_back(std::move(cluster));
@@ -5088,7 +5132,9 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                                         ? loaded.thresholds[li] : 0.0f;
             cluster.lods.push_back({mesh_index_offsets[li],
                                     static_cast<uint32_t>(mesh.indices.size()),
-                                    threshold});
+                                    threshold,
+                                    // WP-E: rung this ladder step draws.
+                                    static_cast<uint32_t>(li)});
         }
         apply_force_lod(cluster.lods, force_lod);
         if (!cluster.lods.empty()) part.clusters.push_back(std::move(cluster));
@@ -5617,6 +5663,23 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.vk_static_append_uploads =
         upload_counters.static_append_uploads;
     impl_->stats.vk_immediate_submits = matter::immediate_submit_count();
+    // WP-E (chart-space virtual texturing) residency census.
+    {
+        const vt::VtResidency::Stats vt_stats = impl_->vk_scene->vt_stats();
+        impl_->stats.vt_active = impl_->vk_scene->vt_active();
+        impl_->stats.vt_variants = vt_stats.variants;
+        impl_->stats.vt_pool_used = vt_stats.pool_used;
+        impl_->stats.vt_pool_capacity = vt_stats.pool_capacity;
+        impl_->stats.vt_pool_pinned = vt_stats.pool_pinned;
+        impl_->stats.vt_fills_last_frame = vt_stats.fills_last_frame;
+        impl_->stats.vt_requests_last_frame = vt_stats.requests_last_frame;
+        impl_->stats.vt_queue_depth = vt_stats.queue_depth;
+        impl_->stats.vt_rejected_variants = vt_stats.rejected_variants;
+        impl_->stats.vt_fills_total = vt_stats.fills_total;
+        impl_->stats.vt_evictions_total = vt_stats.evictions_total;
+        impl_->stats.vt_pool_bytes = vt_stats.pool_bytes;
+        impl_->stats.vt_mesh_bytes = vt_stats.mesh_bytes;
+    }
     impl_->stats.dlss_selected_mode = impl_->vk_scene->selected_dlss_mode();
     impl_->stats.dlss_active_mode = impl_->vk_scene->active_dlss_mode();
     impl_->stats.dlss_internal_width = internal_extent.width;
@@ -5647,6 +5710,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.gpu_dlss_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneDlss);
     impl_->stats.gpu_composite_ms        = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneComposite);
     impl_->stats.gpu_vol_ms              = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolumetrics);
+    impl_->stats.gpu_vt_ms               = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVt);
     return true;
 }
 
