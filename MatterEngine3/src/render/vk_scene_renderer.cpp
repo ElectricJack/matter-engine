@@ -4146,18 +4146,26 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
                     static_cast<size_t>(index_bytes));
         if (!matter::flush_buffer(*rt_index, 0, index_bytes, error)) return -1;
     }
+    // Place the part's geometry: reuse a settled freed range when one fits
+    // (steady-state streaming: an evicted sector's range carries the next
+    // one), otherwise extend the tail as before.
+    settle_free_ranges();
     const uint32_t vertex_base =
-        static_cast<uint32_t>(vertex_staging_.size());
-    vertex_staging_.insert(vertex_staging_.end(), part.vertices.begin(),
-                           part.vertices.end());
+        allocate_vertex_range(static_cast<uint32_t>(part.vertices.size()));
+    if (!part.vertices.empty())
+        std::copy(part.vertices.begin(), part.vertices.end(),
+                  vertex_staging_.begin() + vertex_base);
     const uint32_t index_base =
-        static_cast<uint32_t>(index_staging_.size());
-    index_staging_.insert(index_staging_.end(), part.indices.begin(),
-                          part.indices.end());
+        allocate_index_range(static_cast<uint32_t>(part.indices.size()));
+    if (!part.indices.empty())
+        std::copy(part.indices.begin(), part.indices.end(),
+                  index_staging_.begin() + index_base);
+    const uint32_t cluster_base =
+        allocate_cluster_range(static_cast<uint32_t>(part.clusters.size()));
     const int slot = static_cast<int>(parts_.size());
     PartRecord record{};
     record.hash = part.part_hash;
-    record.cluster_start = static_cast<uint32_t>(cluster_staging_.size());
+    record.cluster_start = cluster_base;
     record.cluster_count = static_cast<uint32_t>(part.clusters.size());
     record.vertex_start = vertex_base;   // kept for Task 4 vertexOffset
     record.vertex_count = static_cast<uint32_t>(part.vertices.size());
@@ -4229,17 +4237,25 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
                     : std::numeric_limits<float>::max();
             cluster.lod_mesh_idx[lod] = lod;
         }
-        cluster_staging_.push_back(cluster);
+        cluster_staging_[cluster_base + i] = cluster;
         std::vector<VkSceneLod> lods = source.lods;
         if (!part.indices.empty()) {
             // Rebase part-local first_index to global index_staging_ offset.
             // Index VALUES are part-local and are never rewritten here.
             for (auto& lod : lods) lod.first_index += index_base;
         }
-        cluster_lods_.push_back(std::move(lods));
+        cluster_lods_[cluster_base + i] = std::move(lods);
     }
     parts_.push_back(record);
     slot_of_[part.part_hash] = slot;
+    // Record the written ranges (interior when a freed range was reused, tail
+    // otherwise) for the ranged upload path.
+    if (record.cluster_count != 0)
+        dirty_cluster_ranges_.push_back({cluster_base, record.cluster_count});
+    if (record.vertex_count != 0)
+        dirty_vertex_ranges_.push_back({vertex_base, record.vertex_count});
+    if (record.index_count != 0)
+        dirty_index_ranges_.push_back({index_base, record.index_count});
     // The O(clusters x LODs) template fill is deferred: the admission check
     // above already proved the fill cannot fail on this registration's
     // account, so a frame that registers several streamed parts pays for one
@@ -4247,8 +4263,10 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     // instead of one per part.
     command_template_dirty_ = true;
     ++static_generation_;
-    // Pure tail-append: every insert above went past the previously uploaded
-    // counts, so the upload can be an in-place tail write.
+    // Ranged write: an interior (reused) range is safe to write in place
+    // because its old bytes went unreferenced for a full in-flight window
+    // before the allocator handed it out; a tail range is safe because no
+    // recorded frame reads past its old size.
     mark_static_append();
     return slot;
 }
@@ -5749,6 +5767,106 @@ void VkSceneRenderer::set_tileset_pom_settings(
     write_tileset_params_buffer();
 }
 
+// ---- Free-range recycling ------------------------------------------------
+// The static staging arrays and their GPU buffers are managed as ranges: a
+// released part's ranges quarantine in `pending` until every frame that could
+// still read the old bytes has retired, then become allocatable. Uniformly
+// sized sector parts make fragmentation low; when nothing fits, allocation
+// falls back to tail growth (the append/grow path that already existed).
+
+void VkSceneRenderer::FreeRangeList::release(uint32_t start, uint32_t count,
+                                             uint64_t serial) {
+    if (count == 0) return;
+    pending.push_back({{start, count}, serial});
+}
+
+void VkSceneRenderer::FreeRangeList::settle(uint64_t safe_serial) {
+    size_t write = 0;
+    for (size_t i = 0; i < pending.size(); ++i) {
+        const PendingRange& entry = pending[i];
+        if (entry.freed_serial > safe_serial) {
+            pending[write++] = pending[i];
+            continue;
+        }
+        // Insert sorted by start and coalesce with both neighbours.
+        Range range = entry.range;
+        auto after = std::lower_bound(
+            free_ranges.begin(), free_ranges.end(), range,
+            [](const Range& a, const Range& b) { return a.start < b.start; });
+        if (after != free_ranges.begin()) {
+            auto before = std::prev(after);
+            if (before->start + before->count == range.start) {
+                range.start = before->start;
+                range.count += before->count;
+                after = free_ranges.erase(before);
+            }
+        }
+        if (after != free_ranges.end() &&
+            range.start + range.count == after->start) {
+            range.count += after->count;
+            after = free_ranges.erase(after);
+        }
+        free_ranges.insert(after, range);
+    }
+    pending.resize(write);
+}
+
+uint32_t VkSceneRenderer::FreeRangeList::allocate(uint32_t count) {
+    if (count == 0) return UINT32_MAX;
+    for (auto it = free_ranges.begin(); it != free_ranges.end(); ++it) {
+        if (it->count < count) continue;
+        const uint32_t start = it->start;
+        if (it->count == count) {
+            free_ranges.erase(it);
+        } else {
+            it->start += count;
+            it->count -= count;
+        }
+        return start;
+    }
+    return UINT32_MAX;
+}
+
+void VkSceneRenderer::FreeRangeList::clear() {
+    free_ranges.clear();
+    pending.clear();
+}
+
+void VkSceneRenderer::settle_free_ranges() {
+    const uint64_t safe_serial =
+        static_frame_serial_ > static_frame_window_
+            ? static_frame_serial_ - static_frame_window_
+            : 0;
+    free_clusters_.settle(safe_serial);
+    free_vertices_.settle(safe_serial);
+    free_indices_.settle(safe_serial);
+}
+
+uint32_t VkSceneRenderer::allocate_cluster_range(uint32_t count) {
+    const uint32_t reused = free_clusters_.allocate(count);
+    if (reused != UINT32_MAX) return reused;
+    const uint32_t start = static_cast<uint32_t>(cluster_staging_.size());
+    cluster_staging_.resize(cluster_staging_.size() + count);
+    cluster_lods_.resize(cluster_lods_.size() + count);
+    return start;
+}
+
+uint32_t VkSceneRenderer::allocate_vertex_range(uint32_t count) {
+    const uint32_t reused = free_vertices_.allocate(count);
+    if (reused != UINT32_MAX) return reused;
+    const uint32_t start = static_cast<uint32_t>(vertex_staging_.size());
+    vertex_staging_.resize(vertex_staging_.size() + count);
+    return start;
+}
+
+uint32_t VkSceneRenderer::allocate_index_range(uint32_t count) {
+    const uint32_t reused = free_indices_.allocate(count);
+    if (reused != UINT32_MAX) return reused;
+    const uint32_t start = static_cast<uint32_t>(index_staging_.size());
+    index_staging_.resize(index_staging_.size() + count);
+    return start;
+}
+
 void VkSceneRenderer::release_part(uint64_t part_hash) {
     if (poisoned()) return;
     // Releasing a part destroys its bottom-level structures, so no cached TLAS
@@ -5756,86 +5874,50 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     ++rt_geometry_epoch_;
     const auto found = slot_of_.find(part_hash);
     if (found == slot_of_.end()) return;
-    // Belt and braces for update_instances()' fast path: the slot_of_ erase and
-    // the cluster_start compaction below are both caught by its snapshot
-    // compare, but this rewrites instance_staging_ directly, so retire the
-    // snapshot outright rather than relying on that.
+    // Belt and braces for update_instances()' fast path: the slot_of_ erase is
+    // caught by its snapshot compare, but this rewrites instance_staging_
+    // directly, so retire the snapshot outright rather than relying on that.
     instance_snapshot_valid_ = false;
     const uint32_t released_slot = static_cast<uint32_t>(found->second);
-    std::vector<GpuCluster> compact_clusters;
-    std::vector<std::vector<VkSceneLod>> compact_lods;
-    std::vector<VkRasterVertex> compact_vertices;
-    std::vector<uint32_t> compact_indices;
-    compact_clusters.reserve(cluster_staging_.size() -
-                             parts_[released_slot].cluster_count);
-    compact_lods.reserve(compact_clusters.capacity());
-    compact_vertices.reserve(vertex_staging_.size() -
-                             parts_[released_slot].vertex_count);
-    compact_indices.reserve(index_staging_.size() -
-                            parts_[released_slot].index_count);
-    for (uint32_t old_slot = 0; old_slot < parts_.size(); ++old_slot) {
-        if (old_slot == released_slot || !parts_[old_slot].live) continue;
-        PartRecord& part = parts_[old_slot];
-        const uint32_t old_cluster_start = part.cluster_start;
-        const uint32_t old_vertex_start = part.vertex_start;
-        const uint32_t old_index_start = part.index_start;
-        part.cluster_start = static_cast<uint32_t>(compact_clusters.size());
-        // Vertex compaction: vertex_start adjusted, vertex VALUES untouched.
-        part.vertex_start = static_cast<uint32_t>(compact_vertices.size());
-        if (part.vertex_count != 0) {
-            compact_vertices.insert(
-                compact_vertices.end(),
-                vertex_staging_.begin() + old_vertex_start,
-                vertex_staging_.begin() + old_vertex_start +
-                    part.vertex_count);
-        }
-        // Index compaction: index staging shifted, first_index rebased,
-        // index VALUES are part-local and are NOT rewritten.
-        const uint32_t index_delta = static_cast<uint32_t>(compact_indices.size());
-        if (part.index_count != 0) {
-            compact_indices.insert(
-                compact_indices.end(),
-                index_staging_.begin() + old_index_start,
-                index_staging_.begin() + old_index_start + part.index_count);
-        }
-        part.index_start = index_delta;
-        for (uint32_t i = 0; i < part.cluster_count; ++i) {
-            GpuCluster cluster =
-                cluster_staging_[old_cluster_start + i];
-            cluster.part_slot = old_slot;
-            compact_clusters.push_back(cluster);
-            std::vector<VkSceneLod> lods =
-                cluster_lods_[old_cluster_start + i];
-            if (part.index_count != 0) {
-                for (auto& lod : lods) {
-                    lod.first_index = index_delta +
-                                      (lod.first_index - old_index_start);
-                }
-            }
-            compact_lods.push_back(std::move(lods));
-        }
-    }
     slot_of_.erase(found);
-    parts_[released_slot] = {};
-    std::vector<GpuInstance> kept_instances;
-    std::vector<uint32_t> kept_slots;
-    kept_instances.reserve(instance_staging_.size());
-    kept_slots.reserve(instance_part_slots_.size());
-    for (size_t i = 0; i < instance_staging_.size(); ++i) {
-        const uint32_t old_slot = instance_part_slots_[i];
-        if (old_slot == released_slot) continue;
-        GpuInstance instance = instance_staging_[i];
-        instance.cluster_start = parts_[old_slot].cluster_start;
-        instance.cluster_count = parts_[old_slot].cluster_count;
-        kept_instances.push_back(instance);
-        kept_slots.push_back(old_slot);
+    PartRecord& record = parts_[released_slot];
+    // Return the geometry ranges to the recycler. No compaction and no static
+    // re-upload: the bytes stay where they are, unreferenced (the instance
+    // filter below removes every reader), until a later registration reuses
+    // the range after the in-flight window has retired.
+    free_clusters_.release(record.cluster_start, record.cluster_count,
+                           static_frame_serial_);
+    free_vertices_.release(record.vertex_start, record.vertex_count,
+                           static_frame_serial_);
+    free_indices_.release(record.index_start, record.index_count,
+                          static_frame_serial_);
+    // Disable the freed clusters CPU-side so the next command-template
+    // rebuild emits nothing for them. The stale GPU copies are never visited
+    // (no live instance spans the range) and are rewritten on reuse.
+    for (uint32_t i = 0; i < record.cluster_count; ++i) {
+        cluster_staging_[record.cluster_start + i] = GpuCluster{};
+        cluster_lods_[record.cluster_start + i].clear();
     }
-    cluster_staging_ = std::move(compact_clusters);
-    cluster_lods_ = std::move(compact_lods);
-    vertex_staging_ = std::move(compact_vertices);
-    index_staging_ = std::move(compact_indices);
-    instance_staging_ = std::move(kept_instances);
-    instance_part_slots_ = std::move(kept_slots);
+    // The slot itself is never reused (cluster.part_slot values and rt_lods
+    // stay stable); the emptied record just stops matching every liveness
+    // test. Its RT buffers drop here, exactly as before.
+    parts_[released_slot] = {};
+
+    // Strip any dynamic tails so the filter below walks index-aligned arrays
+    // (prepare_frame re-merges tails every frame anyway).
+    if (instance_staging_.size() > static_instance_count_)
+        instance_staging_.resize(static_instance_count_);
+    if (rt_instances_.size() > static_rt_instance_count_)
+        rt_instances_.resize(static_rt_instance_count_);
+    size_t write = 0;
+    for (size_t i = 0; i < instance_staging_.size(); ++i) {
+        if (instance_part_slots_[i] == released_slot) continue;
+        instance_staging_[write] = instance_staging_[i];
+        instance_part_slots_[write] = instance_part_slots_[i];
+        ++write;
+    }
+    instance_staging_.resize(write);
+    instance_part_slots_.resize(write);
     rt_instances_.erase(
         std::remove_if(rt_instances_.begin(), rt_instances_.end(),
                        [part_hash](const RtInstance& instance) {
@@ -5848,25 +5930,10 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     for (const auto& instance : instance_staging_)
         max_clusters_per_instance_ =
             std::max(max_clusters_per_instance_, instance.cluster_count);
-    std::string ignored_error;
-    if (!rebuild_command_template(ignored_error)) {
-        instance_staging_.clear();
-        instance_part_slots_.clear();
-        static_instance_count_ = 0;
-        part_instance_counts_.clear();
-        command_template_.clear();
-        part_command_ranges_.clear();
-        raster_command_enabled_.clear();
-        raster_draw_command_count_ = 0;
-        draw_transform_slots_ = 0;
-    } else {
-        ++static_generation_;
-        ++instance_generation_;
-        // Compaction rewrote existing bytes; an in-place tail write would
-        // corrupt what in-flight frames are reading.
-        static_upload_dirty_ = StaticUpload::kFull;
-        note_command_layout_rebuild();
-    }
+    ++instance_generation_;
+    // Per-part instance counts changed; one rebuild per frame covers any
+    // number of releases (flush_command_template / update_instances).
+    command_template_dirty_ = true;
 }
 
 void VkSceneRenderer::set_temporal_frame(const TemporalFrame& frame) {
@@ -6524,54 +6591,50 @@ bool VkSceneRenderer::upload_scene_buffers(
             record_material_upload(material_command_buffer, frame);
     }
     if (static_upload_dirty_ == StaticUpload::kAppend) {
-        // Streaming fast path. Every static mutation since the last upload was
-        // a register_part() tail-append, so bytes below the uploaded counts
-        // are exactly what the live buffers already hold, and in-flight frames
-        // only ever read that prefix (their draw commands predate the new
-        // part). Writing just the tail in place is therefore race-free and
-        // costs O(new part); the full path below recreates the buffers and
-        // rewrites O(world) — during sector streaming that ran nearly every
-        // frame and dominated build_ms (issues/bfb5f13e).
-        VkDeviceSize uploaded_cluster_bytes = 0;
-        VkDeviceSize uploaded_vertex_bytes = 0;
-        VkDeviceSize uploaded_index_bytes = 0;
-        const bool tail_known =
-            vk_scene_detail::checked_mul_to_device_size(
-                uploaded_cluster_count_, sizeof(GpuCluster),
-                uploaded_cluster_bytes, "uploaded cluster bytes", error) &&
-            vk_scene_detail::checked_mul_to_device_size(
-                uploaded_vertex_count_, sizeof(VkRasterVertex),
-                uploaded_vertex_bytes, "uploaded vertex bytes", error) &&
-            vk_scene_detail::checked_mul_to_device_size(
-                uploaded_index_count_, sizeof(uint32_t),
-                uploaded_index_bytes, "uploaded index bytes", error);
-        error.clear();
-        if (tail_known &&
-            cluster_staging_.size() >= uploaded_cluster_count_ &&
-            vertex_staging_.size() >= uploaded_vertex_count_ &&
-            index_staging_.size() >= uploaded_index_count_ &&
-            clusters_.size >= cluster_bytes &&
+        // Streaming fast path. Every static mutation since the last upload
+        // was a register_part() ranged write — into a recycled interior range
+        // whose old bytes sat unreferenced for a full in-flight window, or a
+        // tail extension no recorded frame reads past — so writing just those
+        // ranges in place is race-free and costs O(new parts); the full path
+        // below recreates the buffers and rewrites O(world). During sector
+        // streaming that full path ran nearly every frame and dominated
+        // build_ms (issues/render-streaming-build-cpu).
+        if (clusters_.size >= cluster_bytes &&
             vertices_.size >= vertex_bytes &&
             indices_.size >= index_bytes) {
-            if (!upload_at(clusters_,
-                           cluster_staging_.data() + uploaded_cluster_count_,
-                           cluster_bytes - uploaded_cluster_bytes,
-                           uploaded_cluster_bytes) ||
-                !upload_at(vertices_,
-                           vertex_staging_.data() + uploaded_vertex_count_,
-                           vertex_bytes - uploaded_vertex_bytes,
-                           uploaded_vertex_bytes) ||
-                !upload_at(indices_,
-                           index_staging_.data() + uploaded_index_count_,
-                           index_bytes - uploaded_index_bytes,
-                           uploaded_index_bytes)) {
+            const auto upload_ranges =
+                [&](matter::VkBufferResource& buffer,
+                    const std::vector<std::pair<uint32_t, uint32_t>>& ranges,
+                    const void* base, size_t element_size,
+                    uint64_t* upload_counter) {
+                for (const auto& range : ranges) {
+                    const VkDeviceSize offset =
+                        VkDeviceSize{range.first} * element_size;
+                    const VkDeviceSize size =
+                        VkDeviceSize{range.second} * element_size;
+                    if (!upload_at(buffer,
+                                   static_cast<const char*>(base) + offset,
+                                   size, offset))
+                        return false;
+                }
+                if (!ranges.empty() && upload_counter) ++*upload_counter;
+                return true;
+            };
+            if (!upload_ranges(clusters_, dirty_cluster_ranges_,
+                               cluster_staging_.data(), sizeof(GpuCluster),
+                               &upload_counters_.cluster_uploads) ||
+                !upload_ranges(vertices_, dirty_vertex_ranges_,
+                               vertex_staging_.data(), sizeof(VkRasterVertex),
+                               &upload_counters_.vertex_uploads) ||
+                !upload_ranges(indices_, dirty_index_ranges_,
+                               index_staging_.data(), sizeof(uint32_t),
+                               nullptr)) {
                 return false;
             }
-            if (cluster_bytes != uploaded_cluster_bytes)
-                ++upload_counters_.cluster_uploads;
-            if (vertex_bytes != uploaded_vertex_bytes)
-                ++upload_counters_.vertex_uploads;
             ++upload_counters_.static_append_uploads;
+            dirty_cluster_ranges_.clear();
+            dirty_vertex_ranges_.clear();
+            dirty_index_ranges_.clear();
             uploaded_cluster_count_ =
                 static_cast<uint32_t>(cluster_staging_.size());
             uploaded_vertex_count_ =
@@ -6580,9 +6643,9 @@ bool VkSceneRenderer::upload_scene_buffers(
                 static_cast<uint32_t>(index_staging_.size());
             static_upload_dirty_ = StaticUpload::kClean;
         } else {
-            // A buffer outgrew its capacity (or the counts fell out of sync):
-            // take the recreate + full-rewrite path. Capacity doubles there,
-            // so this happens O(log N) times over a streaming load.
+            // A buffer outgrew its capacity: take the recreate + full-rewrite
+            // path. Capacity doubles there, so this happens O(log N) times
+            // over a streaming load.
             static_upload_dirty_ = StaticUpload::kFull;
         }
     }
@@ -6663,6 +6726,10 @@ bool VkSceneRenderer::upload_scene_buffers(
         vertices_ = std::move(next_vertices);
         indices_ = std::move(next_indices);
         static_upload_dirty_ = StaticUpload::kClean;
+        // The full rewrite covers any pending ranged writes.
+        dirty_cluster_ranges_.clear();
+        dirty_vertex_ranges_.clear();
+        dirty_index_ranges_.clear();
         ++upload_counters_.static_full_uploads;
         if (cluster_bytes != 0) ++upload_counters_.cluster_uploads;
         if (vertex_bytes != 0) ++upload_counters_.vertex_uploads;
@@ -6832,6 +6899,12 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     }
     if (!ensure_frame_resources(frame.frame_slot_count, error)) return false;
     FrameResources& selected = frames_[frame.frame_slot];
+    // Advance the range recycler's notion of time: a freed range becomes
+    // reusable once every frame that could read its old bytes has retired.
+    if (frame.serial > static_frame_serial_)
+        static_frame_serial_ = frame.serial;
+    static_frame_window_ =
+        std::max<uint64_t>(frame.frame_slot_count, 1);
     // Deferred registrations (register_part) must materialise their command
     // template before apply_dynamic_command_layout or the uploads read it.
     if (!flush_command_template(error)) return false;
@@ -8169,6 +8242,9 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
             "Vulkan maxDrawIndirectCount cannot support per-call drawCount=1";
         return false;
     }
+    // Test-path frame progression for the range recycler (no VulkanFrame
+    // serial here; each dispatch is its own settled frame in practice).
+    ++static_frame_serial_;
     if (!flush_command_template(error)) return false;
     if (!validate_draw_command_regions(error)) return false;
     uint32_t group_count = 0;
@@ -9071,6 +9147,12 @@ void VkSceneRenderer::reset() {
     slot_of_.clear();
     cluster_staging_.clear();
     cluster_lods_.clear();
+    free_clusters_.clear();
+    free_vertices_.clear();
+    free_indices_.clear();
+    dirty_cluster_ranges_.clear();
+    dirty_vertex_ranges_.clear();
+    dirty_index_ranges_.clear();
     instance_staging_.clear();
     instance_part_slots_.clear();
     // Retire update_instances()' unchanged-input snapshot with the state it

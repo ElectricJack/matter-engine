@@ -1,6 +1,7 @@
 #include "sector_streamer.h"
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <algorithm>
 #include <limits>
@@ -17,7 +18,15 @@ namespace matter_stream {
 static bool stream_no_evict() {
     static const bool value = [] {
         const char* env = std::getenv("MATTER_STREAM_NO_EVICT");
-        return env != nullptr && env[0] == '1';
+        const bool active = env != nullptr && env[0] == '1';
+        // Self-report so a diagnostic run can prove the toggle reached this
+        // exe (env prefixes and stale builds have burned that assumption
+        // before — worktree-bootstrap gotcha #8).
+        if (active)
+            std::fprintf(stderr,
+                         "[stream] MATTER_STREAM_NO_EVICT=1: evictions and "
+                         "rung rebakes DISABLED (diagnostic)\n");
+        return active;
     }();
     return value;
 }

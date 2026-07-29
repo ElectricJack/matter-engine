@@ -2895,13 +2895,18 @@ bool WorldSession::Impl::release_sector_entry(
 #ifdef MATTER_VULKAN_VIEWER
     release_attempt(entry.resources.vulkan_attempted, [&] {
         if (vk_scene) vk_scene->release_part(entry.part_hash);
-        // Drop the instance cache (the released part's slot is gone) but keep
-        // temporal history: an eviction only REMOVES instances, and history
-        // for departed ids is simply never looked up again. Evictions trail
-        // the camera continuously in a streaming world, so a global temporal
-        // reset here starves DLSS/GI accumulation exactly like the
-        // publish-side one did (issues/render-dlss-not-applied).
-        vk_instance_cache.invalidate();
+        // Rebuild the flat instance set but KEEP the per-source memos: the
+        // evicted source vanishes from the resolver output in this same
+        // release (the world-state delta above), so the next rebuild skips it
+        // and prune_sources() drops its memo; every surviving memo references
+        // only child parts, which sector eviction never releases. The full
+        // invalidate() here used to force re-expanding every source — tens of
+        // thousands of part-store lookups per eviction, dominated by the
+        // grass tier — every time the camera moved past a sector boundary.
+        // Temporal history is likewise kept: an eviction only REMOVES
+        // instances, and history for departed ids is simply never looked up
+        // again (issues/render-dlss-not-applied).
+        vk_instance_cache.invalidate_expansion();
     });
 #endif
     release_attempt(entry.resources.store_attempted, [&] {

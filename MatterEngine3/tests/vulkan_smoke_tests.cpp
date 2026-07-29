@@ -1462,16 +1462,31 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     const VkImage old_albedo = attachments.albedo.image;
     const VkDeviceSize initial_vertex_capacity =
         renderer.raster_vertex_buffer_size();
+    const uint32_t initial_vertex_count = renderer.raster_vertex_count();
     renderer.release_part(901);
-    CHECK(renderer.raster_vertex_count() == 0,
-          "releasing a raster part reclaims its vertices");
+    // Free-range recycling (issues/render-streaming-build-cpu movement
+    // hitches): a release quarantines the part's ranges for the in-flight
+    // window instead of compacting O(world), so the staging high-water mark
+    // is unchanged. What must hold instead is that churn REUSES the ranges —
+    // bounded residency across an evict/publish cycle.
+    CHECK(renderer.raster_vertex_count() == initial_vertex_count,
+          "releasing a raster part keeps the staging high-water mark");
     CHECK(renderer.uploaded_raster_draw_command_count() == 1,
           "staging release preserves the last uploaded raster mask");
     for (uint64_t hash = 902; hash <= 906; ++hash) {
+        // Advance past the in-flight window so the freed range settles and
+        // the next registration reuses it instead of growing the tail.
+        for (int settle = 0; settle < 4; ++settle) {
+            CHECK(renderer.update_instances({{900, identity}}, error) &&
+                      renderer.dispatch_culling(frame, camera.position, 1.0f,
+                                                error),
+                  error.empty() ? "settle freed raster range"
+                                : error.c_str());
+        }
         CHECK(renderer.ensure_part(known_raster_triangle(hash), error) >= 0 &&
-                  renderer.raster_vertex_count() == 3,
+                  renderer.raster_vertex_count() == initial_vertex_count,
               error.empty()
-                  ? "re-adding raster part reuses compact vertex storage"
+                  ? "re-added raster part reuses the freed vertex range"
                   : error.c_str());
         CHECK(renderer.update_instances({{900, identity}, {hash, identity}},
                                         error) &&
@@ -1481,11 +1496,7 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
                             : error.c_str());
         CHECK(renderer.raster_vertex_buffer_size() == initial_vertex_capacity,
               "streaming eviction/reload keeps raster vertex residency bounded");
-        if (hash != 906) {
-            renderer.release_part(hash);
-            CHECK(renderer.raster_vertex_count() == 0,
-                  "streaming eviction releases raster vertex residency");
-        }
+        if (hash != 906) renderer.release_part(hash);
     }
     CHECK(renderer.render_gbuffer_and_composite(96, 64, error),
           error.empty() ? "recreate resized raster attachments"
@@ -4754,6 +4765,13 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
     std::vector<viewer::VkSceneRenderer::RtInstance> rt_instances;
     CHECK(renderer.fill_rt_instances(rt_instances) == 3,
           "release keeps the coherent uploaded RT snapshot until dispatch");
+    // Free-range recycling: settle the freed range past the in-flight window
+    // so re-registration reuses it instead of growing the tail (bounded
+    // storage across an evict/republish cycle replaces eager compaction).
+    for (int settle = 0; settle < 4; ++settle) {
+        CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+              error.empty() ? "settle freed cluster range" : error.c_str());
+    }
     CHECK(renderer.ensure_part(part, error) >= 0,
           error.empty() ? "re-add part without reset" : error.c_str());
     CHECK(renderer.update_instances({near_instance}, error),
@@ -4796,6 +4814,13 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
         renderer.release_part(77);
         CHECK(renderer.cluster_count() == 4,
               "release keeps uploaded cluster count coherent until dispatch");
+        // Settle the freed range so the re-add reuses it — part 77 occupies
+        // the same cluster range every cycle (stable bucket indices below).
+        for (int settle = 0; settle < 4; ++settle) {
+            CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f,
+                                            error),
+                  error.empty() ? "settle churn range" : error.c_str());
+        }
         CHECK(renderer.ensure_part(part, error) >= 0,
               error.empty() ? "re-add churn part" : error.c_str());
         CHECK(renderer.update_instances({mixed_instance, near_instance}, error),
@@ -4818,7 +4843,11 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
                   rt_matrix_equal(churn_rt[1].transform,
                                   near_instance.object_to_world),
               "churn preserves exact surviving RT instances");
-        const uint32_t expected_buckets[] = {1, 9, 19, 27};
+        // Range reuse puts part 77 back into cluster slot 0 every cycle (it
+        // was registered first and always reuses its own freed range), so the
+        // mixed part's clusters sit at 1..3: buckets shift from the eager-
+        // compaction era's {1, 9, 19, 27} (77 last) to {0, 10, 18, 28}.
+        const uint32_t expected_buckets[] = {0, 10, 18, 28};
         bool churn_commands_exact = commands.size() == 4 * viewer::kVkMaxLod;
         for (size_t bucket = 0; bucket < commands.size(); ++bucket) {
             bool expected = false;
@@ -4832,8 +4861,8 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
                     churn_commands_exact &&
                     gpu_matrix_equal(
                         transforms[commands[bucket].first_instance],
-                        bucket == 27 ? near_instance.object_to_world
-                                     : mixed_instance.object_to_world);
+                        bucket == 0 ? near_instance.object_to_world
+                                    : mixed_instance.object_to_world);
             }
         }
         CHECK(churn_commands_exact,

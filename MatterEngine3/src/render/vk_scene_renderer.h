@@ -1466,6 +1466,41 @@ private:
     // flush_command_template before a frame consumes the template).
     bool command_template_dirty_ = false;
     bool flush_command_template(std::string& error);
+    // Free-range recycling for the static cluster/vertex/index staging and
+    // buffers. release_part() returns a part's ranges here (O(part) — no
+    // compaction, no full re-upload) and register_part() reuses them, so a
+    // streaming world's eviction/publish churn does bounded work per sector
+    // and the buffers reach a steady-state watermark. A freed range is
+    // quarantined in `pending` until every frame that could still read its
+    // old bytes has retired — in-place reuse before that would put garbage
+    // under an in-flight frame's draws.
+    struct FreeRangeList {
+        struct Range { uint32_t start = 0; uint32_t count = 0; };
+        struct PendingRange { Range range; uint64_t freed_serial = 0; };
+        std::vector<Range> free_ranges;     // sorted by start, coalesced
+        std::vector<PendingRange> pending;  // awaiting in-flight retirement
+        void release(uint32_t start, uint32_t count, uint64_t serial);
+        void settle(uint64_t safe_serial);  // pending -> free_ranges
+        uint32_t allocate(uint32_t count);  // UINT32_MAX = no fit (extend tail)
+        void clear();
+    };
+    FreeRangeList free_clusters_;
+    FreeRangeList free_vertices_;
+    FreeRangeList free_indices_;
+    // Frame serial the renderer last saw (prepare_frame/dispatch_culling) and
+    // the in-flight window used to settle pending ranges.
+    uint64_t static_frame_serial_ = 0;
+    uint64_t static_frame_window_ = 3;
+    void settle_free_ranges();
+    uint32_t allocate_cluster_range(uint32_t count);
+    uint32_t allocate_vertex_range(uint32_t count);
+    uint32_t allocate_index_range(uint32_t count);
+    // Element ranges of the staging arrays written since the last upload
+    // (interior reuse or tail growth). Uploaded in place by the ranged path
+    // in upload_scene_buffers; a full upload clears them.
+    std::vector<std::pair<uint32_t, uint32_t>> dirty_cluster_ranges_;
+    std::vector<std::pair<uint32_t, uint32_t>> dirty_vertex_ranges_;
+    std::vector<std::pair<uint32_t, uint32_t>> dirty_index_ranges_;
     // Escalate-only: never lets an append downgrade an owed full rewrite.
     void mark_static_append() {
         if (static_upload_dirty_ == StaticUpload::kClean)
