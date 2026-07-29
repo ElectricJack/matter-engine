@@ -56,10 +56,32 @@ class AlpineGroundCover extends Part {
           this.fill(MAT.foliageThin);
           emitLeaf(this, next, leafTip, leafLength * 0.40, leafColor, leafAngle);
 
+          // A few nodes fork into their own short, low two-segment paths.
+          // The deterministic index mask spreads them among parent runners
+          // without turning the mat into a uniform radial starburst.
+          if (j > 1 && j < liveThrough && (i + j * 2) % 3 === 0) {
+            const forkAngle = angle + (j % 2 ? 0.92 : -0.92) + r.range(-0.24, 0.24);
+            const forkLength = r.range(0.075, 0.125) * S;
+            const fork = [next[0] + Math.cos(forkAngle) * forkLength,
+                          next[1] + r.range(-0.006, 0.006) * S,
+                          next[2] + Math.sin(forkAngle) * forkLength];
+            const tipAngle = forkAngle + r.range(-0.24, 0.24);
+            const forkTip = [fork[0] + Math.cos(tipAngle) * forkLength * 0.78,
+                             fork[1] + r.range(0.004, 0.022) * S,
+                             fork[2] + Math.sin(tipAngle) * forkLength * 0.78];
+            this.fill(MAT.bark);
+            this.line(next, fork, 0.008 * S, 0.006 * S);
+            this.line(fork, forkTip, 0.006 * S, 0.004 * S);
+            this.line(fork, [fork[0], -0.028 * S, fork[2]], 0.005 * S, 0.004 * S);
+            this.fill(MAT.foliageThin);
+            emitLeaf(this, fork, forkTip, leafLength * 0.28, leafColor, forkAngle);
+          }
+
           if (flowering && j > 1 && r.random() > 0.42 + dry * 0.36) {
             const flower = [next[0], next[1] + 0.040 * S, next[2]];
             const rays = 4 + (i + j) % 2;
             this.fill(MAT.foliageThin);
+            this.line(next, flower, 0.006 * S, 0.004 * S);
             for (let k = 0; k < rays; ++k) {
               const a = leafAngle + k * Math.PI * 2 / rays;
               const petalColor = dryPalette([0.85, 0.47, 0.58, 1], [0.63, 0.45, 0.25, 1], dry,
