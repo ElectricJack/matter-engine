@@ -819,8 +819,27 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
     // remap adopt_from reports.
 
     std::vector<BLASHandle> lod_handles;
-    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, *staged.staging,
-                                                   triex_ptr, observer_, &lod_handles);
+    // Streamed terrain sectors get the error-bounded terrain ladder: the
+    // generic 10%/1% ratio ladder shattered distant tiles into giant facets
+    // framed by their frozen full-res rims (visible as seams on every distant
+    // mountain), and kept every invisible border-skirt triangle at all rungs.
+    // Detection: only terrain tiles are both large in mesh-local space
+    // (>= half a sector) and fringed with the mesher's exactly-vertical skirt
+    // curtains; closed scatter meshes have no vertical-edge fringe, and box
+    // walls (which do) would dominate their triangle count, so require skirts
+    // to be a minority of the mesh.
+    std::vector<uint8_t> skirt_mask;
+    const size_t skirt_count =
+        lod_bake::count_terrain_skirt_tris(tris, &skirt_mask);
+    const bool terrain_tile = radius >= 32.0f && skirt_count >= 8 &&
+                              skirt_count * 2 <= tris.size();
+    lod_bake::LodLevels lods = terrain_tile
+        ? lod_bake::bake_terrain_lods(tris, skirt_mask, radius,
+                                      lod_bake::TerrainBakeTargets{},
+                                      *staged.staging, triex_ptr, observer_,
+                                      &lod_handles)
+        : lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, *staged.staging,
+                              triex_ptr, observer_, &lod_handles);
     assert(lod_handles.size() == lods.size());
     for (size_t li = 0; li < lods.size() && li < lod_handles.size(); ++li) {
         const auto& L = lods[li];

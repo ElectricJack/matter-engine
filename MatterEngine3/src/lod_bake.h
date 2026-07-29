@@ -91,4 +91,56 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
                     BakeObserver* observer = nullptr,
                     std::vector<BLASHandle>* out_handles = nullptr);
 
+// ---- Terrain-sector ladder (streamed heightfield tiles) --------------------
+//
+// The generic keep-ratio ladder above is wrong for terrain tiles in two ways:
+//
+// 1. Ratio targets are error-unbounded. A 64 m sector decimated to 1% keeps
+//    ~20 interior triangles whose surface can deviate by tens of meters, while
+//    the topological boundary lock keeps the sector rim at full 2 m
+//    resolution. The result is a "picture frame" of fine frozen geometry
+//    around a shattered interior — visible as a grid of seams and giant
+//    mis-shaded facets on every distant mountain.
+//
+// 2. The border skirts terrain_mesher emits (vertical curtains under each
+//    sector edge, ~256 triangles) consist entirely of open-edge vertices, so
+//    the boundary lock freezes ALL of them: at the coarsest rung the invisible
+//    skirts outnumber the visible surface ~10:1.
+//
+// bake_terrain_lods replaces both behaviors: level 0 is the untouched input
+// (surface + skirts), and each coarser level decimates ONLY the surface with
+// an error bound proportional to the part's bound radius (so screen-space
+// error at the level's switch-in distance is a constant couple of pixels),
+// dropping the skirts entirely. Skirts only exist to hide transient streaming
+// holes; those matter at close range (level 0), not hundreds of meters out.
+// The rim stays locked, so any LOD pairing of neighboring sectors remains
+// watertight exactly as before.
+struct TerrainBakeTargets {
+    // Per-level world-space QEM error bound as a fraction of bound_radius.
+    // Level 0 must be 0 (full detail).
+    std::vector<float> eps_ratio = {0.0f, 0.015f, 0.05f};
+    std::vector<float> threshold  = {0.20f, 0.05f, 0.0125f};
+};
+
+// Identify terrain skirt triangles: a triangle containing a vertical edge
+// (two vertices with bitwise-equal x AND z but different y). terrain_mesher's
+// skirt curtains are the only sector geometry with exactly-vertical edges;
+// surface-nets cell centroids never coincide in x/z. Returns the count and
+// optionally fills a parallel 0/1 mask.
+size_t count_terrain_skirt_tris(const std::vector<Tri>& tris,
+                                std::vector<uint8_t>* mask = nullptr);
+
+// Terrain ladder: level 0 = full input; coarser levels = error-bounded QEM of
+// the non-skirt surface (boundary locked, skirts dropped), TriEx reprojected
+// from the full-res surface. Same registration/observer/out_handles contract
+// as bake_lods.
+LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
+                            const std::vector<uint8_t>& skirt_mask,
+                            float bound_radius,
+                            const TerrainBakeTargets& targets,
+                            BLASManager& blas,
+                            const std::vector<TriEx>* triex = nullptr,
+                            BakeObserver* observer = nullptr,
+                            std::vector<BLASHandle>* out_handles = nullptr);
+
 } // namespace lod_bake
