@@ -1459,6 +1459,13 @@ private:
     // disjoint tail write is safe in place.
     enum class StaticUpload : uint8_t { kClean, kAppend, kFull };
     StaticUpload static_upload_dirty_ = StaticUpload::kFull;
+    // A registration appended clusters but the O(clusters x LODs) command
+    // template fill was deferred, so several parts landing in one frame pay
+    // for one rebuild. Set by register_part; cleared by any successful
+    // rebuild_command_template (the update_instances layout rebuild or
+    // flush_command_template before a frame consumes the template).
+    bool command_template_dirty_ = false;
+    bool flush_command_template(std::string& error);
     // Escalate-only: never lets an append downgrade an owed full rewrite.
     void mark_static_append() {
         if (static_upload_dirty_ == StaticUpload::kClean)

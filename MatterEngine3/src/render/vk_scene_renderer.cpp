@@ -4049,6 +4049,29 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         error = "VkScenePart exceeds uint32_t draw-command capacity";
         return -1;
     }
+    // Deferred-fill admission (see command_template_dirty_): a registration
+    // adds clusters but no instances, so of rebuild_command_template's
+    // failure modes only the command-buffer limits can newly trip — and those
+    // are O(1) against the would-be cluster total. The per-part bucket and
+    // transform-slot overflow terms depend on instance counts, which this
+    // call leaves untouched, so the last successful rebuild still vouches for
+    // them and the deferred fill cannot fail for a reason this registration
+    // introduced.
+    {
+        VkDeviceSize admitted_command_bytes = 0;
+        if (!vk_scene_detail::checked_mul_to_device_size(
+                combined_clusters * static_cast<size_t>(kVkMaxLod),
+                sizeof(DrawCommand), admitted_command_bytes,
+                "draw-command buffer", error)) {
+            return -1;
+        }
+        const VkDeviceSize storage_limit =
+            std::min(limits_.max_storage_buffer_range, limits_.max_buffer_size);
+        if (storage_limit != 0 && admitted_command_bytes > storage_limit) {
+            error = "draw-command buffer exceeds Vulkan storage descriptor limit";
+            return -1;
+        }
+    }
     if (part.vertices.size() > std::numeric_limits<uint32_t>::max() ||
         vertex_staging_.size() > std::numeric_limits<uint32_t>::max() -
                                      part.vertices.size()) {
@@ -4217,22 +4240,16 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     }
     parts_.push_back(record);
     slot_of_[part.part_hash] = slot;
-    if (!rebuild_command_template(error)) {
-        slot_of_.erase(part.part_hash);
-        parts_.pop_back();
-        cluster_staging_.resize(record.cluster_start);
-        cluster_lods_.resize(record.cluster_start);
-        vertex_staging_.resize(vertex_base);
-        index_staging_.resize(index_base);
-        std::string ignored_error;
-        rebuild_command_template(ignored_error);
-        return -1;
-    }
+    // The O(clusters x LODs) template fill is deferred: the admission check
+    // above already proved the fill cannot fail on this registration's
+    // account, so a frame that registers several streamed parts pays for one
+    // rebuild (in update_instances' layout path or flush_command_template)
+    // instead of one per part.
+    command_template_dirty_ = true;
     ++static_generation_;
     // Pure tail-append: every insert above went past the previously uploaded
     // counts, so the upload can be an in-place tail write.
     mark_static_append();
-    note_command_layout_rebuild();
     return slot;
 }
 
@@ -6252,6 +6269,15 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
         static_cast<uint32_t>(dynamic_instance_staging_.size());
     part_instance_counts_ = std::move(per_part);
     part_command_ranges_ = std::move(next_part_ranges);
+    // Any successful rebuild covers every deferred registration.
+    command_template_dirty_ = false;
+    return true;
+}
+
+bool VkSceneRenderer::flush_command_template(std::string& error) {
+    if (!command_template_dirty_) return true;
+    if (!rebuild_command_template(error)) return false;
+    note_command_layout_rebuild();
     return true;
 }
 
@@ -6806,6 +6832,9 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     }
     if (!ensure_frame_resources(frame.frame_slot_count, error)) return false;
     FrameResources& selected = frames_[frame.frame_slot];
+    // Deferred registrations (register_part) must materialise their command
+    // template before apply_dynamic_command_layout or the uploads read it.
+    if (!flush_command_template(error)) return false;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     test_last_rt_geometry_records_.clear();
     test_last_rt_blas_build_count_ = 0;
@@ -8140,6 +8169,7 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
             "Vulkan maxDrawIndirectCount cannot support per-call drawCount=1";
         return false;
     }
+    if (!flush_command_template(error)) return false;
     if (!validate_draw_command_regions(error)) return false;
     uint32_t group_count = 0;
     if (!vk_scene_detail::checked_dispatch_groups(
