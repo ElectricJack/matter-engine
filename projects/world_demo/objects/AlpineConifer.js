@@ -4,8 +4,8 @@ import { dryPalette, emitLeaf, vegetationParams } from 'shared-lib/vegetation';
 // The three crowns deliberately share only the low-level drawing idiom.  Pine
 // is a low, many-leader scramble, spruce is a descending tiered spire, and fir
 // keeps fewer, lifted shelves inside a narrow outline.  Leaf diamonds are
-// emitted as three-leaf sprays, so they read as compact needle masses rather
-// than a costly field of individual needles.
+// emitted as overlapped, cross-oriented tufts, so they read as compact needle
+// masses rather than a costly field of individual needles or flat cards.
 class AlpineConifer extends Part {
   static params = { seed: 0, dryness: 0.35, size: 1.0, form: 0 };
 
@@ -38,16 +38,27 @@ class AlpineConifer extends Part {
     };
     const spray = (base, angle, length, state, n, droop) => {
       if (state === 0) return;
-      const count = state === 1 ? 3 : 5;
+      const tufts = state === 1 ? 3 : 4;
       const color = needles(n, state);
       this.fill(MAT.foliageThin);
-      for (let k = 0; k < count; ++k) {
-        const a = angle + (k - 1) * 0.45 + r.range(-0.10, 0.10);
-        const reach = length * S * r.range(0.78, 1.10);
-        const tip = [base[0] + Math.cos(a) * reach,
-                     base[1] + reach * (0.20 - droop + k * 0.06),
-                     base[2] + Math.sin(a) * reach];
-        emitLeaf(this, base, tip, reach * 0.38, color, a + k * 0.7);
+      for (let tuft = 0; tuft < tufts; ++tuft) {
+        const a = angle + (tuft - (tufts - 1) * 0.5) * 0.28 + r.range(-0.08, 0.08);
+        const offset = length * S * (0.06 + tuft * 0.045);
+        const cluster = [base[0] + Math.cos(a) * offset,
+                         base[1] + offset * (0.12 - droop),
+                         base[2] + Math.sin(a) * offset];
+        // Three short, rotated needles overlap at a common node.  The compact
+        // silhouette reads as a tuft at gallery distance while still opening
+        // small gaps between branch tiers and dying out branch-by-branch.
+        for (let needle = 0; needle < 3; ++needle) {
+          const needleAngle = a + (needle - 1) * 0.22 + r.range(-0.07, 0.07);
+          const reach = length * S * r.range(0.68, 0.88);
+          const tip = [cluster[0] + Math.cos(needleAngle) * reach,
+                       cluster[1] + reach * (0.18 - droop + needle * 0.035),
+                       cluster[2] + Math.sin(needleAngle) * reach];
+          emitLeaf(this, cluster, tip, reach * r.range(0.26, 0.32), color,
+                   needleAngle + needle * Math.PI * 0.5);
+        }
       }
     };
 

@@ -39,16 +39,32 @@ class AlpineDeciduous extends Part {
     };
     const leafFan = (base, a, count, size, state, n, color) => {
       if (state === 0) return;
-      const leaves = state === 1 ? Math.max(1, count - 2) : count;
+      const clusters = state === 1
+        ? Math.max(1, Math.ceil((count - 2) / 3))
+        : Math.ceil(count / 3);
+      const leavesPerCluster = state === 1 ? 2 : 3;
       const tint = foliage(n, state, color);
       this.fill(MAT.foliageThin);
-      for (let leaf = 0; leaf < leaves; ++leaf) {
-        const angle = a + (leaf - (leaves - 1) * 0.5) * 0.42 + r.range(-0.11, 0.11);
-        const reach = size * S * r.range(0.75, 1.12);
-        const tip = [base[0] + Math.cos(angle) * reach,
-                     base[1] + reach * r.range(0.24, 0.62),
-                     base[2] + Math.sin(angle) * reach];
-        emitLeaf(this, base, tip, reach * r.range(0.38, 0.54), tint, angle + leaf * 0.68);
+      for (let clusterIndex = 0; clusterIndex < clusters; ++clusterIndex) {
+        const angle = a + (clusterIndex - (clusters - 1) * 0.5) * 0.48 +
+          r.range(-0.10, 0.10);
+        const offset = size * S * (0.16 + clusterIndex * 0.045);
+        const cluster = [base[0] + Math.cos(angle) * offset,
+                         base[1] + offset * r.range(0.16, 0.34),
+                         base[2] + Math.sin(angle) * offset];
+        // Small three-leaf rosettes make one crown unit rather than exposing
+        // a wide fan of independent cards.  The alternating face rotation
+        // keeps the mass legible from the gallery's oblique camera.
+        for (let leaf = 0; leaf < leavesPerCluster; ++leaf) {
+          const leafAngle = angle + (leaf - (leavesPerCluster - 1) * 0.5) * 0.30 +
+            r.range(-0.07, 0.07);
+          const reach = size * S * r.range(0.66, 0.86);
+          const tip = [cluster[0] + Math.cos(leafAngle) * reach,
+                       cluster[1] + reach * r.range(0.22, 0.48),
+                       cluster[2] + Math.sin(leafAngle) * reach];
+          emitLeaf(this, cluster, tip, reach * r.range(0.24, 0.30), tint,
+                   leafAngle + leaf * Math.PI * 0.5);
+        }
       }
     };
     const branch = (base, a, reach, rise, n, pale, leafSize, leafColor, twigs, fanCount) => {
