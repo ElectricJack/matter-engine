@@ -48,7 +48,7 @@ class AlpineDeciduous extends Part {
         const tip = [base[0] + Math.cos(angle) * reach,
                      base[1] + reach * r.range(0.24, 0.62),
                      base[2] + Math.sin(angle) * reach];
-        emitLeaf(this, base, tip, reach * r.range(0.26, 0.39), tint, angle + leaf * 0.68);
+        emitLeaf(this, base, tip, reach * r.range(0.38, 0.54), tint, angle + leaf * 0.68);
       }
     };
     const branch = (base, a, reach, rise, n, pale, leafSize, leafColor, twigs, fanCount) => {
@@ -89,7 +89,7 @@ class AlpineDeciduous extends Part {
         const y = (1.10 + (i % 3) * 0.22) * S;
         const reach = r.range(0.62, 0.88);
         branch([0, y, 0], a, reach, r.range(0.30, 0.54), 30 + i * 20,
-          false, 0.15, [0.18, 0.40, 0.13, 1], 3, 5);
+          false, 0.19, [0.18, 0.40, 0.13, 1], 3, 7);
       }
       return;
     }
@@ -107,7 +107,7 @@ class AlpineDeciduous extends Part {
           const y = (0.92 + i * 0.29) * S;
           branch([root[0] * (1 - y / top[1]), y, root[2] * (1 - y / top[1])], ba,
             r.range(0.42, 0.61), r.range(0.16, 0.35), 220 + stem * 100 + i * 15,
-            true, 0.115, [0.27, 0.49, 0.18, 1], 2, 4);
+            true, 0.145, [0.27, 0.49, 0.18, 1], 3, 5);
         }
       }
       return;
@@ -120,7 +120,7 @@ class AlpineDeciduous extends Part {
       const a = i * pi2 / 6 + r.range(-0.28, 0.28);
       const y = (0.78 + (i % 3) * 0.25) * S;
       branch([0, y, 0], a, r.range(0.77, 1.12), r.range(0.18, 0.48), 430 + i * 24,
-        false, 0.19, [0.20, 0.43, 0.14, 1], 4, 5);
+        false, 0.235, [0.20, 0.43, 0.14, 1], 4, 7);
     }
   }
 }

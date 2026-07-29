@@ -38,7 +38,7 @@ class AlpineConifer extends Part {
     };
     const spray = (base, angle, length, state, n, droop) => {
       if (state === 0) return;
-      const count = state === 1 ? 2 : 3;
+      const count = state === 1 ? 3 : 5;
       const color = needles(n, state);
       this.fill(MAT.foliageThin);
       for (let k = 0; k < count; ++k) {
@@ -47,7 +47,7 @@ class AlpineConifer extends Part {
         const tip = [base[0] + Math.cos(a) * reach,
                      base[1] + reach * (0.20 - droop + k * 0.06),
                      base[2] + Math.sin(a) * reach];
-        emitLeaf(this, base, tip, reach * 0.28, color, a + k * 0.7);
+        emitLeaf(this, base, tip, reach * 0.38, color, a + k * 0.7);
       }
     };
 

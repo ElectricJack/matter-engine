@@ -14,9 +14,9 @@ class AlpineFlower extends Part {
     const dry = q.dryness;
     const golden = Math.PI * (3 - Math.sqrt(5));
     const form = [
-      { stems: 4, low: 0.28, high: 0.47, petals: 9, bloom: 0.105 },
-      { stems: 5, low: 0.38, high: 0.62, petals: 5, bloom: 0.095 },
-      { stems: 7, low: 0.25, high: 0.44, petals: 4, bloom: 0.072 },
+      { stems: 4, low: 0.28, high: 0.47, petals: 9, bloom: 0.180 },
+      { stems: 5, low: 0.38, high: 0.62, petals: 5, bloom: 0.165 },
+      { stems: 7, low: 0.25, high: 0.44, petals: 4, bloom: 0.135 },
     ][q.form];
     const blooms = Math.max(1, Math.round(form.stems * (1 - dry * 0.68)));
     const stemGreen = dryPalette([0.22, 0.48, 0.13, 1], [0.55, 0.40, 0.16, 1], dry,
@@ -69,11 +69,11 @@ class AlpineFlower extends Part {
       const color = dryPalette([0.98, 0.93, 0.72, 1], [0.72, 0.58, 0.34, 1], dry,
                                2000 + q.seed * 31 + stem * 13 + k, 0.05);
       emitPetal(this, center, [Math.cos(a), 0.12 + dry * 0.12, Math.sin(a)],
-                form.bloom * S, 0.034 * S, color, -0.015 * S);
+                form.bloom * S, 0.062 * S, color, -0.015 * S);
     }
     this.fill(MAT.foliageThin);
     emitLeaf(this, [center[0], center[1] - 0.006 * S, center[2]],
-             [center[0], center[1] + 0.042 * S, center[2]], 0.043 * S,
+             [center[0], center[1] + 0.052 * S, center[2]], 0.058 * S,
              dryPalette([0.92, 0.67, 0.10, 1], [0.60, 0.43, 0.17, 1], dry,
                         2500 + q.seed + stem, 0.04), angle);
   }
@@ -88,7 +88,7 @@ class AlpineFlower extends Part {
       const direction = [Math.cos(a) * 0.52, -0.82 - dry * 0.18, Math.sin(a) * 0.52];
       const color = dryPalette([0.28, 0.35, 0.83, 1], [0.54, 0.43, 0.48, 1], dry,
                                3000 + q.seed * 19 + stem * 7 + k, 0.06);
-      emitPetal(this, throat, direction, form.bloom * S, 0.039 * S, color, 0.014 * S);
+      emitPetal(this, throat, direction, form.bloom * S, 0.068 * S, color, 0.014 * S);
     }
   }
 
@@ -103,7 +103,7 @@ class AlpineFlower extends Part {
       const color = dryPalette([0.79, 0.26, 0.48, 1], [0.64, 0.45, 0.32, 1], dry,
                                4000 + q.seed * 23 + stem * 11 + k, 0.07);
       emitPetal(this, base, [Math.cos(a) * 0.34, 0.94, Math.sin(a) * 0.34],
-                form.bloom * S, 0.040 * S, color, 0.009 * S);
+                form.bloom * S, 0.066 * S, color, 0.009 * S);
     }
   }
 }

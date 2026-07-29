@@ -2,8 +2,8 @@
 // shrubs at centre, then the tree collection as the garden's quiet backdrop.
 class VegetationGallery extends World {
   static camera = {
-    position: [46.0, 43.0, 72.0],
-    target: [0.0, 3.5, -29.0],
+    position: [24.0, 22.0, 50.0],
+    target: [0.0, 2.5, -29.0],
   };
 
   static lights = {

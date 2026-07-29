@@ -15,13 +15,13 @@ class AlpineShrub extends Part {
     const dry = q.dryness;
     const profile = [
       { stems: 15, radius: 0.44, low: 0.18, high: 0.36, spread: 0.39,
-        leaves: 3, leaf: 0.060, width: 0.017, tilt: 0.25 },
+        leaves: 5, leaf: 0.076, width: 0.017, tilt: 0.25 },
       { stems: 13, radius: 0.34, low: 0.42, high: 0.72, spread: 0.33,
-        leaves: 5, leaf: 0.115, width: 0.022, tilt: 0.17 },
+        leaves: 7, leaf: 0.135, width: 0.022, tilt: 0.17 },
       { stems: 8, radius: 0.28, low: 0.50, high: 0.94, spread: 0.46,
-        leaves: 3, leaf: 0.073, width: 0.019, tilt: 0.36 },
+        leaves: 5, leaf: 0.088, width: 0.019, tilt: 0.36 },
       { stems: 11, radius: 0.32, low: 0.36, high: 0.67, spread: 0.36,
-        leaves: 4, leaf: 0.090, width: 0.020, tilt: 0.21 },
+        leaves: 6, leaf: 0.108, width: 0.020, tilt: 0.21 },
     ][q.form];
     const golden = Math.PI * (3 - Math.sqrt(5));
 
@@ -68,7 +68,7 @@ class AlpineShrub extends Part {
         const leafColor = dryPalette(green, [0.58, 0.43, 0.18, 1], dry,
                                      1300 + q.seed * 41 + i * 7 + j, 0.14);
         this.fill(MAT.foliageThin);
-        emitLeaf(this, joint, leafTip, reach * r.range(0.36, 0.52), leafColor, side + j * 0.45);
+        emitLeaf(this, joint, leafTip, reach * r.range(0.48, 0.64), leafColor, side + j * 0.45);
 
         // Berries are occasional accents, deliberately fewer in dry crowns.
         if (q.form === 3 && j > 0 && r.random() > 0.54 + dry * 0.28) {
