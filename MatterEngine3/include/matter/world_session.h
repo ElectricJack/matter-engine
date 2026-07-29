@@ -244,6 +244,10 @@ public:
     // The ACTIVE resolved profile of the current world (world JS + env +
     // overrides + engine defaults). False before a world-kind connect.
     bool streaming_lod_config(StreamingLodConfig& out) const;
+    // World-authored volumetrics defaults (World.volumetrics static),
+    // available once a world-kind connect completes. The editor adopts these
+    // into its live volumetrics controls on world load.
+    bool world_volumetrics(VulkanVolumetricsSettings& out) const;
     // Override applied at the NEXT world (re)connect — pair with a world
     // reload to take effect. Empty ring/band lists fall back to the world's
     // own values / engine defaults; the enabled flag always applies.

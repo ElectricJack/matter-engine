@@ -101,7 +101,10 @@ struct ViewerStats {
     bool     hiz_enabled = false;
     // Writable: runtime LOD quality/speed dial. main propagates it to the
     // resolver + composer each frame; also settable via FIFO `budget <f>`.
-    float    pixel_budget = 1.0f;
+    // 2026-07-29 alpine tuning pass default (was 1.0): hold cluster detail
+    // much farther, affordable now that distant terrain is the heightfield
+    // ladder.
+    float    pixel_budget = 3.64f;
     // World picker: main sets `world_current` after each connect. The panel no
     // longer writes a switch-request flag — it issues ViewerCommands::switch_world
     // (index into the enumerated worlds list) instead.

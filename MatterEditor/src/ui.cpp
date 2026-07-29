@@ -574,6 +574,15 @@ void Ui::draw_lod_settings_panel(matter::WorldSession* session,
                        20000.0f, "%.0f",
                        ImGuiSliderFlags_Logarithmic);
     ImGui::SetItemTooltip("Editor camera draw distance.");
+    // Ground POM reach lives here with the other draw-distance controls; the
+    // rest of the POM tuning stays under Viewer Debug > Ground POM. Max
+    // distance may run all the way out to the draw distance.
+    ImGui::SliderFloat("Ground POM max distance (m)",
+                       &s.tileset_pom.max_distance_m, 5.0f,
+                       std::max(camera.far_plane, 5.0f), "%.0f",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SliderFloat("Ground POM fade band (m)", &s.tileset_pom.fade_band_m,
+                       1.0f, 200.0f, "%.1f");
 
     // ---- Streaming profile: consumed once at world connect ---------------
     ImGui::SeparatorText("Streaming (requires world reload)");
@@ -739,6 +748,16 @@ void Ui::draw_lod_settings_panel(matter::WorldSession* session,
                 "Bands closer than 2 sectors (%.0f m) get re-balanced by "
                 "the streamer.",
                 2.0f * st.edit.sector_size);
+        // The streamed area is bounded by the outer SCATTER ring; terrain
+        // bands beyond it exist but no sector out there is resident.
+        if (!st.edit.scatter_rings.empty() &&
+            !st.edit.terrain_bands.empty() &&
+            st.edit.terrain_bands.back().radius >
+                st.edit.scatter_rings.back().radius + 1.0f)
+            ImGui::TextDisabled(
+                "Terrain bands beyond the outer scatter ring (%.0f m) are "
+                "outside the streamed area.",
+                st.edit.scatter_rings.back().radius);
     }
 
     // Numeric fallback for precise values, level edits, and add/remove.
@@ -883,7 +902,7 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
     }
     ImGui::Separator();
 
-    ImGui::SliderFloat("Pixel budget", &s.pixel_budget, 0.1f, 2.0f, "%.2f");
+    ImGui::SliderFloat("Pixel budget", &s.pixel_budget, 0.05f, 4.0f, "%.2f");
     const char* resolvers[] = { "PassThrough", "SectorLod" };
     ImGui::Combo("Resolver", &s.resolver_choice, resolvers, 2);
     if (ImGui::Button("Reload world") && commands.reload) commands.reload();
@@ -917,8 +936,8 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
         ImGui::SliderFloat("Datum bias (m)", &pom.datum_bias_m, 0.0f, 0.3f, "%.3f");
         ImGui::SliderFloat("Max march (m)", &pom.max_march_m, 0.1f, 2.0f, "%.2f");
         ImGui::SliderInt("Steps", &pom.steps, 4, 64);
-        ImGui::SliderFloat("Max distance (m)", &pom.max_distance_m, 5.0f, 100.0f, "%.1f");
-        ImGui::SliderFloat("Fade band (m)", &pom.fade_band_m, 1.0f, 20.0f, "%.1f");
+        ImGui::TextDisabled(
+            "Max distance / fade band moved to the LOD Settings window.");
         ImGui::SliderFloat("AO strength", &pom.ao_strength, 0.0f, 1.0f, "%.2f");
         ImGui::SliderFloat("Shadow strength", &pom.shadow_strength, 0.0f, 2.0f, "%.2f");
         // Phase 2 (horizon-map lighting): blends the baked per-direction

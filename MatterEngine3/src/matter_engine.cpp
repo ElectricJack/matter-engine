@@ -268,6 +268,13 @@ matter_stream::Config make_streaming_profile(
     // bakes the full voxel mesh, as before).
     const char* lod_env = std::getenv("MATTER_TERRAIN_LOD");
     profile.terrain_lod_enabled = !(lod_env && lod_env[0] == '0');
+    // World-authored terrain LOD bands (streaming.terrainBands) replace the
+    // engine's sector-scaled defaults when present.
+    if (!world_settings.terrain_bands.empty()) {
+        profile.terrain_bands.clear();
+        for (const auto& band : world_settings.terrain_bands)
+            profile.terrain_bands.push_back({band.radius, band.rung});
+    }
     return profile;
 }
 
@@ -809,6 +816,10 @@ struct WorldSession::Impl {
 
     // Sea level from the most recent eval_world result (-inf = not a world).
     float world_sea_level = std::numeric_limits<float>::lowest();
+    // World-authored volumetrics defaults, cached at connect for the editor
+    // to adopt (guarded by streaming_lod_mutex alongside the LOD profile).
+    VulkanVolumetricsSettings world_volumetrics_defaults{};
+    bool has_world_volumetrics = false;
 
     // Biomes JSON forwarded to every sector bake.
     std::string world_biomes_json;
@@ -2898,6 +2909,8 @@ bool WorldSession::Impl::install_world(
         matter_stream::resolve_terrain_defaults(profile);
         active_streaming_lod = profile;
         has_active_streaming_lod = true;
+        world_volumetrics_defaults = provider->world_settings().volumetrics;
+        has_world_volumetrics = true;
     }
     streaming_profile_activation.stage(profile);
     return true;
@@ -6086,6 +6099,13 @@ void WorldSession::set_streaming_lod_overrides(
 void WorldSession::clear_streaming_lod_overrides() {
     std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
     impl_->streaming_lod_overrides.reset();
+}
+
+bool WorldSession::world_volumetrics(VulkanVolumetricsSettings& out) const {
+    std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
+    if (!impl_->has_world_volumetrics) return false;
+    out = impl_->world_volumetrics_defaults;
+    return true;
 }
 
 void WorldSession::pump_gpu_jobs(float ms_budget) {

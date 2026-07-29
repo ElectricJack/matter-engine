@@ -578,7 +578,9 @@ void init_camera(matter::CameraDesc& camera) {
     // horizon strip showing through. Reversed-Z depth (near -> 1, far -> 0)
     // keeps plenty of precision at near = 0.1 even with far = 5000.
     camera.near_plane = 0.1f;
-    camera.far_plane = 5000.0f;
+    // 2026-07-29 alpine tuning pass: long alpine sightlines with the
+    // heightfield LOD ladder keeping distant sectors cheap.
+    camera.far_plane = 10951.0f;
 }
 
 void apply_world_resolver_defaults(const std::string& world_name,
@@ -1424,6 +1426,9 @@ int main() {
     bool selected_world_reported = false;
     bool apply_world_camera_after_bake =
         !replay.valid && initial_camera_env == nullptr;
+    // World-authored volumetrics defaults adopt on every world load (initial
+    // and switches); replays keep their recorded settings.
+    bool apply_world_volumetrics_after_bake = !replay.valid;
     const bool test_resize = std::getenv("MATTER_TEST_RESIZE") != nullptr;
     if (replay.valid) {
         // The toggles that change pixels. DLSS is deliberately NOT restored: it
@@ -2409,6 +2414,13 @@ int main() {
                     }
                     apply_world_camera_after_bake = false;
                 }
+                if (bake_ready && apply_world_volumetrics_after_bake) {
+                    matter::VulkanVolumetricsSettings world_vol;
+                    if (session->world_volumetrics(world_vol)) {
+                        stats.volumetrics = world_vol;
+                        apply_world_volumetrics_after_bake = false;
+                    }
+                }
                 console_log.push(
                     event.errors == 0 ? viewer::LogSeverity::Info
                                        : viewer::LogSeverity::Warning,
@@ -2971,6 +2983,7 @@ int main() {
             screenshot_settle = 0;
             apply_world_camera_after_bake =
                 !replay.valid && initial_camera_env == nullptr;
+            apply_world_volumetrics_after_bake = !replay.valid;
             viewer::prepare_world_reload(stats);
             binding.reload();  // clears app models + session->reload()
         }
@@ -2993,6 +3006,7 @@ int main() {
                 bake_ready = false;
                 screenshot_settle = 0;
                 apply_world_camera_after_bake = true;
+                apply_world_volumetrics_after_bake = true;
                 apply_world_resolver_defaults(worlds[selected].world_name, active_radius,
                                               min_projected_size, stats);
             }
