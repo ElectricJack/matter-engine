@@ -318,31 +318,23 @@ bool mesh_sector_heightfield(const terrain_field::FieldRuntime& field,
     };
 
     const float cell = sector_size / float(N);
-    const bool mask_px_edge = (edge_mask & kEdgePosX) != 0;
-    const bool mask_nx_edge = (edge_mask & kEdgeNegX) != 0;
-    const bool mask_pz_edge = (edge_mask & kEdgePosZ) != 0;
-    const bool mask_nz_edge = (edge_mask & kEdgeNegZ) != 0;
 
     // Area-filtered height sampling. Point-sampling the field at coarse
     // lattices aliases its ridged high-frequency layers into sawtooth spikes
     // (a 16 m lattice across a 200 m-wavelength ridged crease randomly clips
-    // crests and troughs), so each vertex takes a 5-tap box filter whose
-    // radius scales with the lattice it belongs to:
-    //   - ordinary vertices: R = cell / 2;
-    //   - vertices ON a masked 2:1 border: R = cell (== the coarse
-    //     neighbor's cell / 2, exactly representable for power-of-two N,
-    //     so both sides of the border compute bitwise-identical heights).
-    // Equal-LOD borders match by symmetry (same R both sides). The only
-    // remaining mismatches are corner pinholes against diagonal-coarser
-    // sectors and the (already approximate) LOD4<->voxel ring — both under
-    // skirts.
-    auto vert_filter_radius = [&](int i, int k) -> float {
-        const bool on_masked =
-            (mask_nx_edge && i == 0) || (mask_px_edge && i == N) ||
-            (mask_nz_edge && k == 0) || (mask_pz_edge && k == N);
-        return on_masked ? cell : 0.5f * cell;
-    };
-    auto filtered_height = [&](float wx, float wz, float r) -> float {
+    // crests and troughs), so each vertex takes a 5-tap box filter at
+    // R = cell / 2 — UNIFORM across the sector. A per-vertex radius that
+    // matched the coarse neighbor on masked borders was tried first; it made
+    // the 2:1 edge itself bitwise but broke the far more numerous same-LOD
+    // corners wherever a band boundary steps (two equal-LOD sectors computed
+    // a shared corner at different radii -> visible slits). With a uniform
+    // radius every equal-LOD border is bitwise-identical in heights AND
+    // normals; a 2:1 band border leaks only the (bounded, few-meter) delta
+    // between the two filter scales, which the depth-scaled skirts on both
+    // sides cover.
+    const float filter_r = 0.5f * cell;
+    auto filtered_height = [&](float wx, float wz) -> float {
+        const float r = filter_r;
         return (field.height_at(wx, wz) +
                 field.height_at(wx + r, wz) + field.height_at(wx - r, wz) +
                 field.height_at(wx, wz + r) + field.height_at(wx, wz - r)) *
@@ -357,8 +349,7 @@ bool mesh_sector_heightfield(const terrain_field::FieldRuntime& field,
     for (int k = 0; k <= N; ++k) {
         for (int i = 0; i <= N; ++i) {
             const float h = filtered_height(float(ox + double(lx(i))),
-                                            float(oz + double(lx(k))),
-                                            vert_filter_radius(i, k));
+                                            float(oz + double(lx(k))));
             if (!std::isfinite(h)) {
                 err = "terrain_mesher: non-finite height";
                 return false;
@@ -387,11 +378,10 @@ bool mesh_sector_heightfield(const terrain_field::FieldRuntime& field,
         if (!vert_ready[idx]) {
             const float wx = float(ox + double(lx(i)));
             const float wz = float(oz + double(lx(k)));
-            const float fr = vert_filter_radius(i, k);
-            const float gx = filtered_height(wx + probe, wz, fr) -
-                             filtered_height(wx - probe, wz, fr);
-            const float gz = filtered_height(wx, wz + probe, fr) -
-                             filtered_height(wx, wz - probe, fr);
+            const float gx = filtered_height(wx + probe, wz) -
+                             filtered_height(wx - probe, wz);
+            const float gz = filtered_height(wx, wz + probe) -
+                             filtered_height(wx, wz - probe);
             V3 n{-gx / (2.0f * probe), 1.0f, -gz / (2.0f * probe)};
             const float len =
                 std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);

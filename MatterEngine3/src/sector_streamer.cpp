@@ -270,46 +270,43 @@ void SectorStreamer::update(float anchor_x, float anchor_z) {
 bool SectorStreamer::next_request(SectorRequest& out) {
     if (inflight_ >= cfg_.max_inflight) return false;
 
-    // Two-pass: holes first (resident_rung == -1 and desired_rung >= 0),
-    // then upgrades/demotions (desired_rung != resident_rung), nearest first.
-    // A sector with cooldown > 0 is skipped.
+    // Nearest first across BOTH holes and upgrades, holes winning ties
+    // within one sector width. The old strict holes-first policy served
+    // brand-new frontier sectors kilometers away (fog-hidden, coarsest LOD)
+    // before promoting the coarse tiles directly under a moving camera —
+    // flying forward left "massive flat triangles" close by while the
+    // invisible frontier baked. Distance is what the eye ranks by; a hole
+    // only outranks an upgrade when they are at comparable range.
+    uint64_t best_k = 0;
+    float best_score = std::numeric_limits<float>::max();
+    bool found = false;
 
-    auto pick = [&](bool holes_only) -> bool {
-        uint64_t best_k = 0;
-        float best_dist = std::numeric_limits<float>::max();
-        bool found = false;
+    for (auto& [k, st] : sectors_) {
+        if (st.inflight_rung >= 0) continue;      // already in flight
+        if (st.cooldown > 0) continue;             // cooling down
+        if (st.desired_rung < 0) continue;        // not desired
+        if (st.desired_rung == st.resident_rung) continue; // satisfied
 
-        for (auto& [k, st] : sectors_) {
-            if (st.inflight_rung >= 0) continue;      // already in flight
-            if (st.cooldown > 0) continue;             // cooling down
-            if (st.desired_rung < 0) continue;        // not desired
-            if (st.desired_rung == st.resident_rung) continue; // satisfied
-
-            bool is_hole = (st.resident_rung < 0);
-            if (holes_only && !is_hole) continue;
-            if (!holes_only && is_hole) continue;
-
-            if (st.dist < best_dist) {
-                best_dist = st.dist;
-                best_k = k;
-                found = true;
-            }
+        const bool is_hole = (st.resident_rung < 0);
+        const float score = is_hole ? st.dist - cfg_.sector_size : st.dist;
+        if (score < best_score) {
+            best_score = score;
+            best_k = k;
+            found = true;
         }
+    }
 
-        if (!found) return false;
+    if (!found) return false;
 
-        auto& st = sectors_.at(best_k);
-        int64_t tx, tz;
-        unkey(best_k, tx, tz);
-        out.tx   = tx;
-        out.tz   = tz;
-        out.rung = st.desired_rung;
-        st.inflight_rung = st.desired_rung;
-        ++inflight_;
-        return true;
-    };
-
-    return pick(true) || pick(false);
+    auto& st = sectors_.at(best_k);
+    int64_t tx, tz;
+    unkey(best_k, tx, tz);
+    out.tx   = tx;
+    out.tz   = tz;
+    out.rung = st.desired_rung;
+    st.inflight_rung = st.desired_rung;
+    ++inflight_;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
