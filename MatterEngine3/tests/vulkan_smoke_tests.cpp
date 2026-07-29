@@ -3875,12 +3875,18 @@ void run_raster_submission_fault(matter::VulkanDevice& vulkan) {
     renderer.reset();
     CHECK(renderer.raster_attachments().hdr.image == VK_NULL_HANDLE,
           "reset renderer keeps attachments hidden until re-render");
+    CHECK(renderer.raster_vertex_count() == 0 &&
+              renderer.raster_index_count() == 0,
+          "reset clears CPU vertex and index staging");
     CHECK(renderer.init(error) && prepare_scene() &&
               renderer.raster_attachments().hdr.image == VK_NULL_HANDLE &&
               renderer.render_gbuffer_and_composite(width, height, error) &&
               renderer.raster_attachments().hdr.image != VK_NULL_HANDLE,
           error.empty() ? "reset and reinit restore raster attachments only after render"
                         : error.c_str());
+    CHECK(renderer.raster_vertex_count() == 3 &&
+              renderer.raster_index_count() == 3,
+          "re-registered scene stages exactly one triangle, no stale tail");
 }
 
 viewer::VkScenePart fixed_part(uint64_t hash, matter::Float3 minimum,

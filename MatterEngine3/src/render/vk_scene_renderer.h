@@ -780,6 +780,10 @@ public:
         return poisoned() ? 0
                           : static_cast<uint32_t>(vertex_staging_.size());
     }
+    uint32_t raster_index_count() const {
+        return poisoned() ? 0
+                          : static_cast<uint32_t>(index_staging_.size());
+    }
     VkDeviceSize raster_vertex_buffer_size() const {
         return poisoned() ? 0 : vertices_.size;
     }
