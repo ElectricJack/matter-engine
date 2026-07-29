@@ -1,0 +1,4 @@
+[0.000] INFO  Connected to AnimatedRigGallery
+[0.424] INFO  Bake finished: 0 parts, 0 errors
+[20.868] INFO  Connected to StreamMeadow
+[21.073] INFO  Bake finished: 0 parts, 0 errors
