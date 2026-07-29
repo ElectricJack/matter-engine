@@ -93,8 +93,8 @@ export function dryPalette(lush, dry, dryness, seed, variation) {
   return mixColor(lush, dry, clamp01(dryness + jitter));
 }
 
-function fill(part, color) {
-  part.fill(color[0], color[1], color[2], color.length > 3 ? color[3] : 1);
+function tint(part, color) {
+  part.tint(color[0], color[1], color[2], color.length > 3 ? color[3] : 1);
 }
 
 function vertex(part, point) {
@@ -113,7 +113,7 @@ export function emitBlade(part, base, tip, width, color, bend) {
   const rootWidth = Math.max(0.0001, width);
   const midWidth = rootWidth * 0.58;
 
-  fill(part, color);
+  tint(part, color);
   part.beginShape(SHAPE.strip);
     vertex(part, sub(base, scale(frame.side, rootWidth)));
     vertex(part, add(base, scale(frame.side, rootWidth)));
@@ -135,7 +135,7 @@ export function emitLeaf(part, base, tip, width, color, twist) {
   const left = sub(mid, scale(edge, radius));
   const right = add(mid, scale(edge, radius));
 
-  fill(part, color);
+  tint(part, color);
   part.beginShape(SHAPE.triangles);
     vertex(part, base); vertex(part, left); vertex(part, tip);
     vertex(part, base); vertex(part, tip); vertex(part, right);
@@ -153,7 +153,7 @@ export function emitPetal(part, center, direction, length, width, color, cup) {
   const left = sub(mid, scale(frame.side, radius));
   const right = add(mid, scale(frame.side, radius));
 
-  fill(part, color);
+  tint(part, color);
   part.beginShape(SHAPE.triangles);
     vertex(part, base); vertex(part, left); vertex(part, tip);
     vertex(part, base); vertex(part, tip); vertex(part, right);
