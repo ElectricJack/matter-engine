@@ -1,5 +1,5 @@
 import { rng } from 'shared-lib/rng';
-import { dryPalette, emitLeaf, vegetationParams } from 'shared-lib/vegetation';
+import { dryPalette, vegetationParams } from 'shared-lib/vegetation';
 
 // Broadleaf trees use explicit two-level branch hierarchies: the few heavy
 // limbs establish a species silhouette, then a bounded number of fine twigs
@@ -37,34 +37,35 @@ class AlpineDeciduous extends Part {
       this.tint(c[0], c[1], c[2], c[3]);
       this.line(a, b, ra * S, rb * S);
     };
+    const crownLobe = (center, radius, turn, color) => {
+      const forward = [Math.cos(turn) * radius, 0, Math.sin(turn) * radius];
+      const side = [-Math.sin(turn) * radius * 0.78, 0, Math.cos(turn) * radius * 0.78];
+      const tip = [center[0] + forward[0] * 0.78, center[1] + radius * 0.62, center[2] + forward[2] * 0.78];
+      const root = [center[0] - forward[0] * 0.62, center[1] - radius * 0.34, center[2] - forward[2] * 0.62];
+      const left = [center[0] + side[0], center[1], center[2] + side[2]];
+      const right = [center[0] - side[0], center[1], center[2] - side[2]];
+      const low = [center[0], center[1] - radius * 0.66, center[2]];
+      this.fill(MAT.foliageThin);
+      this.tint(color[0], color[1], color[2], color[3]);
+      this.beginShape(SHAPE.triangles);
+        this.vertex(root[0], root[1], root[2]); this.vertex(left[0], left[1], left[2]); this.vertex(tip[0], tip[1], tip[2]);
+        this.vertex(root[0], root[1], root[2]); this.vertex(tip[0], tip[1], tip[2]); this.vertex(right[0], right[1], right[2]);
+        this.vertex(root[0], root[1], root[2]); this.vertex(low[0], low[1], low[2]); this.vertex(left[0], left[1], left[2]);
+        this.vertex(root[0], root[1], root[2]); this.vertex(right[0], right[1], right[2]); this.vertex(low[0], low[1], low[2]);
+      this.endShape();
+    };
     const leafFan = (base, a, count, size, state, n, color) => {
       if (state === 0) return;
-      const clusters = state === 1
-        ? Math.max(1, Math.ceil((count - 2) / 3))
-        : Math.ceil(count / 3);
-      const leavesPerCluster = state === 1 ? 2 : 3;
+      const clusters = state === 1 ? Math.max(2, count - 3) : count - 2;
       const tint = foliage(n, state, color);
-      this.fill(MAT.foliageThin);
       for (let clusterIndex = 0; clusterIndex < clusters; ++clusterIndex) {
-        const angle = a + (clusterIndex - (clusters - 1) * 0.5) * 0.48 +
-          r.range(-0.10, 0.10);
-        const offset = size * S * (0.16 + clusterIndex * 0.045);
+        const angle = a + (clusterIndex - (clusters - 1) * 0.5) * 0.20 + r.range(-0.08, 0.08);
+        const offset = size * S * (0.16 + clusterIndex * 0.10);
         const cluster = [base[0] + Math.cos(angle) * offset,
                          base[1] + offset * r.range(0.16, 0.34),
                          base[2] + Math.sin(angle) * offset];
-        // Small three-leaf rosettes make one crown unit rather than exposing
-        // a wide fan of independent cards.  The alternating face rotation
-        // keeps the mass legible from the gallery's oblique camera.
-        for (let leaf = 0; leaf < leavesPerCluster; ++leaf) {
-          const leafAngle = angle + (leaf - (leavesPerCluster - 1) * 0.5) * 0.30 +
-            r.range(-0.07, 0.07);
-          const reach = size * S * r.range(0.66, 0.86);
-          const tip = [cluster[0] + Math.cos(leafAngle) * reach,
-                       cluster[1] + reach * r.range(0.22, 0.48),
-                       cluster[2] + Math.sin(leafAngle) * reach];
-          emitLeaf(this, cluster, tip, reach * r.range(0.24, 0.30), tint,
-                   leafAngle + leaf * Math.PI * 0.5);
-        }
+        const radius = size * S * r.range(0.15, 0.20);
+        crownLobe(cluster, radius, angle + r.range(-0.12, 0.12), tint);
       }
     };
     const branch = (base, a, reach, rise, n, pale, leafSize, leafColor, twigs, fanCount) => {

@@ -1,11 +1,11 @@
 import { rng } from 'shared-lib/rng';
-import { dryPalette, emitLeaf, vegetationParams } from 'shared-lib/vegetation';
+import { dryPalette, vegetationParams } from 'shared-lib/vegetation';
 
 // The three crowns deliberately share only the low-level drawing idiom.  Pine
 // is a low, many-leader scramble, spruce is a descending tiered spire, and fir
 // keeps fewer, lifted shelves inside a narrow outline.  Leaf diamonds are
-// emitted as overlapped, cross-oriented tufts, so they read as compact needle
-// masses rather than a costly field of individual needles or flat cards.
+// emitted as packed needle lobes, so they read as compact crown mass
+// rather than a costly field of individual needles or flat cards.
 class AlpineConifer extends Part {
   static params = { seed: 0, dryness: 0.35, size: 1.0, form: 0 };
 
@@ -36,29 +36,35 @@ class AlpineConifer extends Part {
       this.tint(c[0], c[1], c[2], c[3]);
       this.line(a, b, ra * S, rb * S);
     };
+    const needleLobe = (center, radius, turn, color) => {
+      const forward = [Math.cos(turn) * radius, 0, Math.sin(turn) * radius];
+      const side = [-Math.sin(turn) * radius * 0.72, 0, Math.cos(turn) * radius * 0.72];
+      const tip = [center[0] + forward[0] * 0.82, center[1] + radius * 0.52, center[2] + forward[2] * 0.82];
+      const root = [center[0] - forward[0] * 0.58, center[1] - radius * 0.30, center[2] - forward[2] * 0.58];
+      const left = [center[0] + side[0], center[1], center[2] + side[2]];
+      const right = [center[0] - side[0], center[1], center[2] - side[2]];
+      const low = [center[0], center[1] - radius * 0.62, center[2]];
+      this.fill(MAT.foliageThin);
+      this.tint(color[0], color[1], color[2], color[3]);
+      this.beginShape(SHAPE.triangles);
+        this.vertex(root[0], root[1], root[2]); this.vertex(left[0], left[1], left[2]); this.vertex(tip[0], tip[1], tip[2]);
+        this.vertex(root[0], root[1], root[2]); this.vertex(tip[0], tip[1], tip[2]); this.vertex(right[0], right[1], right[2]);
+        this.vertex(root[0], root[1], root[2]); this.vertex(low[0], low[1], low[2]); this.vertex(left[0], left[1], left[2]);
+        this.vertex(root[0], root[1], root[2]); this.vertex(right[0], right[1], right[2]); this.vertex(low[0], low[1], low[2]);
+      this.endShape();
+    };
     const spray = (base, angle, length, state, n, droop) => {
       if (state === 0) return;
-      const tufts = state === 1 ? 3 : 4;
+      const tufts = state === 1 ? 2 : 5;
       const color = needles(n, state);
-      this.fill(MAT.foliageThin);
       for (let tuft = 0; tuft < tufts; ++tuft) {
-        const a = angle + (tuft - (tufts - 1) * 0.5) * 0.28 + r.range(-0.08, 0.08);
-        const offset = length * S * (0.06 + tuft * 0.045);
+        const a = angle + (tuft - (tufts - 1) * 0.5) * 0.13 + r.range(-0.06, 0.06);
+        const offset = length * S * (0.10 + tuft * 0.105);
         const cluster = [base[0] + Math.cos(a) * offset,
                          base[1] + offset * (0.12 - droop),
                          base[2] + Math.sin(a) * offset];
-        // Three short, rotated needles overlap at a common node.  The compact
-        // silhouette reads as a tuft at gallery distance while still opening
-        // small gaps between branch tiers and dying out branch-by-branch.
-        for (let needle = 0; needle < 3; ++needle) {
-          const needleAngle = a + (needle - 1) * 0.22 + r.range(-0.07, 0.07);
-          const reach = length * S * r.range(0.68, 0.88);
-          const tip = [cluster[0] + Math.cos(needleAngle) * reach,
-                       cluster[1] + reach * (0.18 - droop + needle * 0.035),
-                       cluster[2] + Math.sin(needleAngle) * reach];
-          emitLeaf(this, cluster, tip, reach * r.range(0.26, 0.32), color,
-                   needleAngle + needle * Math.PI * 0.5);
-        }
+        const radius = length * S * r.range(0.14, 0.19);
+        needleLobe(cluster, radius, a + r.range(-0.12, 0.12), color);
       }
     };
 
