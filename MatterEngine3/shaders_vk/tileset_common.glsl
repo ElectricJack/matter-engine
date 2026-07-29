@@ -23,20 +23,35 @@
 
 #extension GL_EXT_nonuniform_qualifier : require
 
-// 24 = 4 slots * 6 channels (Phase 2 horizon-map lighting grew the per-slot
-// channel count from 4 to 6: TILESET_CH_HORIZON_A/B).
+// TILESET_MAX_SLOTS MUST equal tileset::kMaxTilesetSlots (see
+// MatterEngine3/src/tileset_gtex.h — the single source of truth for the slot
+// count; GLSL has no way to import it, so the pairing is by comment plus the
+// static_assert in vk_scene_renderer.cpp that pins the C++ side to the same 8).
+// TILESET_CHANNELS MUST equal VkSceneRenderer::kTilesetChannelCount (Phase 2's
+// horizon-map lighting grew the per-slot channel count from 4 to 6:
+// TILESET_CH_HORIZON_A/B).
+// Descriptor array size = TILESET_MAX_SLOTS * TILESET_CHANNELS = 48, indexed
+// slot*TILESET_CHANNELS + channel.
+#define TILESET_MAX_SLOTS 8
+#define TILESET_CHANNELS  6
 layout(set = TILESET_SET, binding = TILESET_TEX_BINDING)
-    uniform sampler2DArray tilesetTex[24];
+    uniform sampler2DArray tilesetTex[TILESET_MAX_SLOTS * TILESET_CHANNELS];
 layout(set = TILESET_SET, binding = TILESET_PARAMS_BINDING, std140)
     uniform TilesetParams {
-    vec4 tile_size_m;            // per slot
-    vec4 texels_per_meter;
-    vec4 height_min;
-    vec4 height_max;
+    // Per-slot scalars, four to a vec4 (std140 would pad a float[] to 16 bytes
+    // per element). Read them through TILESET_SLOT_SCALAR, never by hand —
+    // with TILESET_MAX_SLOTS > 4 `tile_size_m[slot]` no longer means "slot
+    // `slot`", it means "component `slot` of vec4 0", which silently reads the
+    // wrong slot for 0..3 and is out of bounds beyond that.
+    vec4 tile_size_m[TILESET_MAX_SLOTS / 4];
+    vec4 texels_per_meter[TILESET_MAX_SLOTS / 4];
+    vec4 height_min[TILESET_MAX_SLOTS / 4];
+    vec4 height_max[TILESET_MAX_SLOTS / 4];
     // rgb + valid/has_horizon flag in .w: 0 = not loaded, 1 = loaded (no
     // horizon data, v1 .gtex), 2 = loaded with horizon data (v2 .gtex). See
     // tileset_has_horizon below and VkSceneRenderer::write_tileset_params_buffer.
-    vec4 mean_albedo[4];
+    // One vec4 per slot already, so this one indexes directly.
+    vec4 mean_albedo[TILESET_MAX_SLOTS];
     vec4 pom_a;                  // steps, refine_steps, max_distance_m, fade_band_m
     vec4 pom_b;                  // detail_fade_center_m, detail_fade_width_m, pom_max_relief_m, pom_max_march_m
     // Task 11: direction-to-sun (normalized, world space; xyz) + sun_intensity
@@ -58,6 +73,10 @@ layout(set = TILESET_SET, binding = TILESET_PARAMS_BINDING, std140)
     // tileset_horizon_occlusion below.
     vec4 pom_c;
 } tileset;
+
+// Per-slot scalar accessor: unpacks the vec4-of-4-slots packing described in
+// the TilesetParams block above. `slot` must be in [0, TILESET_MAX_SLOTS).
+#define TILESET_SLOT_SCALAR(field, slot) (tileset.field[(slot) >> 2][(slot) & 3])
 
 #define TILESET_CH_ALBEDO    0
 #define TILESET_CH_NORMAL    1
@@ -94,7 +113,7 @@ int wang_pair_index(int a, int b) {   // de Bruijn cycle {0,0,1,1}
 
 // world XZ -> (array layer, cell-local UV) for one slot.
 void wang_resolve(int slot, vec2 worldXZ, out int layer, out vec2 cellUV) {
-    float ts = tileset.tile_size_m[slot];
+    float ts = TILESET_SLOT_SCALAR(tile_size_m, slot);
     vec2 t = worldXZ / ts;
     vec2 tf = floor(t);
     ivec2 cell = ivec2(tf);
@@ -110,8 +129,8 @@ vec4 tileset_sample(int slot, int channel, vec2 worldXZ,
                     vec2 dWdx, vec2 dWdy) {
     int layer; vec2 uv;
     wang_resolve(slot, worldXZ, layer, uv);
-    float inv = 1.0 / tileset.tile_size_m[slot];
-    return textureGrad(tilesetTex[nonuniformEXT(slot * 6 + channel)],
+    float inv = 1.0 / TILESET_SLOT_SCALAR(tile_size_m, slot);
+    return textureGrad(tilesetTex[nonuniformEXT(slot * TILESET_CHANNELS + channel)],
                        vec3(uv, float(layer)), dWdx * inv, dWdy * inv);
 }
 
@@ -220,7 +239,7 @@ float tileset_relief_h(int slot, float h_range, float relief, vec2 xz,
     // further from 0 and giving the un-clamped litter more visual headroom
     // to stand proud of the now-recessed floor. relief still bounds the
     // total depth this can carve.
-    float raw = tileset.height_min[slot] +
+    float raw = TILESET_SLOT_SCALAR(height_min, slot) +
                 tileset_sample(slot, TILESET_CH_HEIGHT, xz, dWdx, dWdy).r *
                     h_range -
                 tileset.pom_c.x;
@@ -230,7 +249,8 @@ float tileset_relief_h(int slot, float h_range, float relief, vec2 xz,
 vec3 tileset_pom_march(int slot, vec3 ray_origin, vec3 ray_dir,
                        vec3 plane_point, vec3 plane_n,
                        vec2 dWdx, vec2 dWdy, int steps) {
-    float h_range = tileset.height_max[slot] - tileset.height_min[slot];
+    float h_range = TILESET_SLOT_SCALAR(height_max, slot) -
+                    TILESET_SLOT_SCALAR(height_min, slot);
     if (h_range <= 0.0 || steps <= 0) return plane_point;
     float relief = min(h_range, max(tileset.pom_b.z, 1e-4));
 
@@ -316,7 +336,8 @@ vec3 tileset_pom_march(int slot, vec3 ray_origin, vec3 ray_dir,
 float tileset_self_shadow(int slot, vec3 hit_point, vec3 plane_point,
                           vec3 plane_n, vec3 to_sun_dir,
                           vec2 dWdx, vec2 dWdy) {
-    float h_range = tileset.height_max[slot] - tileset.height_min[slot];
+    float h_range = TILESET_SLOT_SCALAR(height_max, slot) -
+                    TILESET_SLOT_SCALAR(height_min, slot);
     if (h_range <= 0.0) return 1.0;
     float relief = min(h_range, max(tileset.pom_b.z, 1e-4));
 

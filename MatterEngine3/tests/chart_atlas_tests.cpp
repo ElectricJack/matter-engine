@@ -1,0 +1,570 @@
+// chart_atlas_tests.cpp — WP-A (chart-space virtual texturing) headless
+// metrics gate. No GPU, no world bakes: synthetic fixtures only.
+//
+// Gates (per the 2026-07-29 plan, WP-A item 4):
+//   - chart coverage == 100% of triangles
+//   - zero chart-rect overlap in the atlas
+//   - per-chart projection distortion < 2.5
+//   - gutter validity (content inset by >= 4 texels; no two charts' content
+//     within 4 texels of each other)
+//   - vertex-split inflation < 15% (indexed weld with vs without chart UVs)
+//   - determinism (same mesh => byte-identical chart table + UVs)
+//   - correctness on a > 64k-vertex mesh (32-bit index path)
+//   - CHRT .part sidecar round-trip; chartless files stay byte-identical and
+//     load with charts = 0 (no version break)
+
+#include "check.h"
+#include "lod_bake.h"          // build_chart_rung, bake_lods, chart_atlas, part_asset_v2
+#include "raster_mesh.h"       // viewer::build_raster_mesh_data
+#include "../../libs/MeshChartingLib/include/mesh_charting.h"
+
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <vector>
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Fixture helpers
+// ---------------------------------------------------------------------------
+
+Tri make_tri(float3 a, float3 b, float3 c) {
+    Tri t{};
+    t.vertex0 = a; t.vertex1 = b; t.vertex2 = c;
+    t.centroid = make_float3((a.x + b.x + c.x) / 3.0f, (a.y + b.y + c.y) / 3.0f,
+                             (a.z + b.z + c.z) / 3.0f);
+    return t;
+}
+
+// Per-face-normal TriEx (materialId 1, neutral tint, zero UV, AO defaults).
+std::vector<TriEx> face_normal_triex(const std::vector<Tri>& tris) {
+    std::vector<TriEx> ex(tris.size());
+    for (size_t i = 0; i < tris.size(); ++i) {
+        const Tri& t = tris[i];
+        float3 n = cross(t.vertex1 - t.vertex0, t.vertex2 - t.vertex0);
+        const float l = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+        n = l > 1e-12f ? make_float3(n.x / l, n.y / l, n.z / l) : make_float3(0, 1, 0);
+        TriEx e{};
+        e.uv0 = e.uv1 = e.uv2 = make_float2(0.0f);
+        e.N0 = e.N1 = e.N2 = n;
+        e.materialId = 1;
+        e.tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
+        ex[i] = e;
+    }
+    return ex;
+}
+
+// Axis-aligned cube, edge 2 m, centered at origin (12 tris, hard edges).
+std::vector<Tri> build_cube() {
+    std::vector<Tri> out;
+    const float s = 1.0f;
+    const float3 v[8] = {
+        make_float3(-s,-s,-s), make_float3( s,-s,-s), make_float3( s, s,-s), make_float3(-s, s,-s),
+        make_float3(-s,-s, s), make_float3( s,-s, s), make_float3( s, s, s), make_float3(-s, s, s)};
+    const int f[6][4] = {
+        {0,3,2,1},  // -Z
+        {4,5,6,7},  // +Z
+        {0,1,5,4},  // -Y
+        {3,7,6,2},  // +Y
+        {0,4,7,3},  // -X
+        {1,2,6,5}}; // +X
+    for (int i = 0; i < 6; ++i) {
+        out.push_back(make_tri(v[f[i][0]], v[f[i][1]], v[f[i][2]]));
+        out.push_back(make_tri(v[f[i][0]], v[f[i][2]], v[f[i][3]]));
+    }
+    return out;
+}
+
+// Capped cylinder (radius 2, height 4, 48 segments) with a flared lip at the
+// top whose underside faces down-outward — a genuine overhang that a world-XZ
+// projection could not chart injectively.
+std::vector<Tri> build_cylinder_overhang() {
+    std::vector<Tri> out;
+    const int   S = 48;
+    const float R = 2.0f, H = 4.0f;
+    const float LIP_R = 2.8f, LIP_Y = 3.4f, LIP_BOT = 2.8f;
+    auto ring = [&](float r, float y, int s) {
+        const float a = (float)s / (float)S * 6.28318530717958647692f;
+        return make_float3(r * std::cos(a), y, r * std::sin(a));
+    };
+    for (int s = 0; s < S; ++s) {
+        const int t = (s + 1) % S;
+        // Side wall.
+        out.push_back(make_tri(ring(R, 0, s), ring(R, H, s), ring(R, H, t)));
+        out.push_back(make_tri(ring(R, 0, s), ring(R, H, t), ring(R, 0, t)));
+        // Lip top: rim outward-down to the lip edge.
+        out.push_back(make_tri(ring(R, H, s), ring(LIP_R, LIP_Y, s), ring(LIP_R, LIP_Y, t)));
+        out.push_back(make_tri(ring(R, H, s), ring(LIP_R, LIP_Y, t), ring(R, H, t)));
+        // Lip underside: overhang faces pointing mostly downward.
+        out.push_back(make_tri(ring(LIP_R, LIP_Y, s), ring(R, LIP_BOT, s), ring(R, LIP_BOT, t)));
+        out.push_back(make_tri(ring(LIP_R, LIP_Y, s), ring(R, LIP_BOT, t), ring(LIP_R, LIP_Y, t)));
+        // Top cap fan.
+        out.push_back(make_tri(make_float3(0, H, 0), ring(R, H, t), ring(R, H, s)));
+        // Bottom cap fan.
+        out.push_back(make_tri(make_float3(0, 0, 0), ring(R, 0, s), ring(R, 0, t)));
+    }
+    return out;
+}
+
+// Rolling heightfield: two octaves, combined slopes up to ~42 degrees —
+// hilly-terrain-like relief without being an adversarial noise field (a
+// greedy 45-degree normal-cone segmentation fragments white-noise normals
+// into thousands of slivers, which no terrain sector resembles).
+float sheet_height(float x, float z) {
+    return 3.0f * std::sin(x * 0.15f) * std::cos(z * 0.13f) +
+           1.0f * std::sin(x * 0.45f + 0.5f) * std::sin(z * 0.40f + 1.3f);
+}
+
+// Large subdivided heightfield-like sheet: (N+1)^2 vertices with N = 260 =>
+// 68,121 unique welded vertices (> 64k, 16-bit indices impossible) and
+// 135,200 triangles. Smooth per-vertex normals so the chartless weld actually
+// merges shared corners (that makes the vertex-split metric meaningful).
+void build_big_sheet(std::vector<Tri>& tris, std::vector<TriEx>& triex) {
+    const int   N = 260;
+    const float EXT = 64.0f;                 // meters, sector-sized
+    const float step = EXT / (float)N;
+    auto pos = [&](int i, int j) {
+        const float x = -EXT * 0.5f + step * (float)i;
+        const float z = -EXT * 0.5f + step * (float)j;
+        return make_float3(x, sheet_height(x, z), z);
+    };
+    auto nrm = [&](int i, int j) {
+        const float x = -EXT * 0.5f + step * (float)i;
+        const float z = -EXT * 0.5f + step * (float)j;
+        const float e = 0.01f;
+        const float dhdx = (sheet_height(x + e, z) - sheet_height(x - e, z)) / (2 * e);
+        const float dhdz = (sheet_height(x, z + e) - sheet_height(x, z - e)) / (2 * e);
+        float3 n = make_float3(-dhdx, 1.0f, -dhdz);
+        const float l = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+        return make_float3(n.x / l, n.y / l, n.z / l);
+    };
+    tris.clear(); triex.clear();
+    tris.reserve((size_t)N * N * 2);
+    triex.reserve((size_t)N * N * 2);
+    for (int j = 0; j < N; ++j) {
+        for (int i = 0; i < N; ++i) {
+            const float3 p00 = pos(i, j),     p10 = pos(i + 1, j);
+            const float3 p01 = pos(i, j + 1), p11 = pos(i + 1, j + 1);
+            const float3 n00 = nrm(i, j),     n10 = nrm(i + 1, j);
+            const float3 n01 = nrm(i, j + 1), n11 = nrm(i + 1, j + 1);
+            tris.push_back(make_tri(p00, p11, p10));
+            tris.push_back(make_tri(p00, p01, p11));
+            TriEx a{}; a.uv0 = a.uv1 = a.uv2 = make_float2(0.0f);
+            a.N0 = n00; a.N1 = n11; a.N2 = n10;
+            a.materialId = 1; a.tint = make_float4(1, 1, 1, 0);
+            TriEx b = a; b.N0 = n00; b.N1 = n01; b.N2 = n11;
+            triex.push_back(a);
+            triex.push_back(b);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Metric helpers
+// ---------------------------------------------------------------------------
+
+// Soup positions/indices matching build_chart_rung's internal layout (needed
+// for the distortion metric, which is measured through MeshChartingLib).
+void soup_arrays(const std::vector<Tri>& tris, std::vector<float>& pos,
+                 std::vector<unsigned int>& idx) {
+    const size_t n = tris.size();
+    pos.resize(n * 9);
+    idx.resize(n * 3);
+    for (size_t t = 0; t < n; ++t) {
+        const float3* v[3] = { &tris[t].vertex0, &tris[t].vertex1, &tris[t].vertex2 };
+        for (int k = 0; k < 3; ++k) {
+            const size_t c = t * 3 + (size_t)k;
+            pos[c * 3 + 0] = v[k]->x; pos[c * 3 + 1] = v[k]->y; pos[c * 3 + 2] = v[k]->z;
+            idx[c] = (unsigned int)c;
+        }
+    }
+}
+
+size_t indexed_vertex_count(const std::vector<Tri>& tris, const std::vector<TriEx>& ex) {
+    const viewer::RasterMeshData mesh = viewer::build_raster_mesh_data(
+        tris.data(), ex.data(), (int)tris.size());
+    return (size_t)mesh.vertex_count;
+}
+
+std::vector<uint8_t> serialize_rung(const chart_atlas::ChartAtlasRung& rung) {
+    std::vector<uint8_t> bytes;
+    chart_atlas::append_chart_rungs(bytes, {rung});
+    return bytes;
+}
+
+// Run every geometric gate on one charted rung. `label` prefixes messages.
+void check_rung_gates(const char* label,
+                      const std::vector<Tri>& tris,
+                      const std::vector<TriEx>& charted,
+                      const chart_atlas::ChartAtlasRung& rung) {
+    char msg[256];
+    const size_t n = tris.size();
+    const uint32_t page = chart_atlas::kVtPagePayload;
+    const uint32_t gutter = chart_atlas::kChartGutterTexels;
+
+    snprintf(msg, sizeof msg, "%s: atlas dims positive and <= %u", label,
+             chart_atlas::kVtMaxAtlasDim);
+    CHECK(rung.atlas_w > 0 && rung.atlas_h > 0 &&
+          rung.atlas_w <= chart_atlas::kVtMaxAtlasDim &&
+          rung.atlas_h <= chart_atlas::kVtMaxAtlasDim, msg);
+    snprintf(msg, sizeof msg, "%s: atlas dims are page multiples", label);
+    CHECK(rung.atlas_w % page == 0 && rung.atlas_h % page == 0, msg);
+
+    // Coverage: tri_order is a permutation of [0, n) and the charts' ranges
+    // partition it exactly.
+    snprintf(msg, sizeof msg, "%s: tri_order covers every triangle exactly once", label);
+    bool cover_ok = rung.tri_order.size() == n;
+    if (cover_ok) {
+        std::vector<uint8_t> seen(n, 0);
+        for (uint32_t t : rung.tri_order) {
+            if (t >= n || seen[t]) { cover_ok = false; break; }
+            seen[t] = 1;
+        }
+    }
+    CHECK(cover_ok, msg);
+    snprintf(msg, sizeof msg, "%s: chart ranges partition tri_order", label);
+    {
+        uint64_t total = 0;
+        bool ranges_ok = true;
+        uint32_t expect_first = 0;
+        for (const auto& c : rung.charts) {
+            if (c.first_tri != expect_first) ranges_ok = false;
+            expect_first += c.tri_count;
+            total += c.tri_count;
+        }
+        CHECK(ranges_ok && total == n, msg);
+    }
+
+    // Page alignment + zero rect overlap + rects inside the atlas.
+    snprintf(msg, sizeof msg, "%s: chart rects page-aligned and inside the atlas", label);
+    bool align_ok = true;
+    for (const auto& c : rung.charts) {
+        if (c.rect_x % page || c.rect_y % page || c.rect_w % page || c.rect_h % page)
+            align_ok = false;
+        if (c.rect_w == 0 || c.rect_h == 0 ||
+            c.rect_x + c.rect_w > rung.atlas_w || c.rect_y + c.rect_h > rung.atlas_h)
+            align_ok = false;
+    }
+    CHECK(align_ok, msg);
+    snprintf(msg, sizeof msg, "%s: zero chart-rect overlap", label);
+    {
+        bool overlap = false;
+        for (size_t a = 0; a < rung.charts.size() && !overlap; ++a)
+            for (size_t b = a + 1; b < rung.charts.size() && !overlap; ++b) {
+                const auto& A = rung.charts[a];
+                const auto& Bc = rung.charts[b];
+                const bool disjoint = A.rect_x + A.rect_w <= Bc.rect_x ||
+                                      Bc.rect_x + Bc.rect_w <= A.rect_x ||
+                                      A.rect_y + A.rect_h <= Bc.rect_y ||
+                                      Bc.rect_y + Bc.rect_h <= A.rect_y;
+                if (!disjoint) overlap = true;
+            }
+        CHECK(!overlap, msg);
+    }
+
+    // UV range + gutter validity: every corner's texel position must sit
+    // inside its chart's rect inset by the gutter. Disjoint rects + the inset
+    // then guarantee no two charts' content is within 2*gutter texels.
+    snprintf(msg, sizeof msg, "%s: UVs in [0,1] and content inset by the %u-texel gutter",
+             label, gutter);
+    {
+        bool uv_ok = true;
+        const float eps = 1e-3f;
+        std::vector<int> chart_of(n, -1);
+        for (size_t c = 0; c < rung.charts.size(); ++c)
+            for (uint32_t k = 0; k < rung.charts[c].tri_count; ++k)
+                chart_of[rung.tri_order[rung.charts[c].first_tri + k]] = (int)c;
+        for (size_t t = 0; t < n && uv_ok; ++t) {
+            const int ci = chart_of[t];
+            if (ci < 0) { uv_ok = false; break; }
+            const auto& c = rung.charts[ci];
+            const float2 uvs[3] = { charted[t].uv0, charted[t].uv1, charted[t].uv2 };
+            for (int k = 0; k < 3; ++k) {
+                const float u = uvs[k].x, v = uvs[k].y;
+                if (!(u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f)) { uv_ok = false; break; }
+                const float tx = u * (float)rung.atlas_w;
+                const float ty = v * (float)rung.atlas_h;
+                if (tx < (float)(c.rect_x + gutter) - eps ||
+                    tx > (float)(c.rect_x + c.rect_w - gutter) + eps ||
+                    ty < (float)(c.rect_y + gutter) - eps ||
+                    ty > (float)(c.rect_y + c.rect_h - gutter) + eps) { uv_ok = false; break; }
+            }
+        }
+        CHECK(uv_ok, msg);
+    }
+
+    // Distortion < 2.5 per chart (max/min singular value of the projection).
+    snprintf(msg, sizeof msg, "%s: per-chart projection distortion < 2.5", label);
+    {
+        std::vector<float> pos;
+        std::vector<unsigned int> idx;
+        soup_arrays(tris, pos, idx);
+        float worst = 1.0f;
+        for (const auto& c : rung.charts) {
+            std::vector<int> list(c.tri_count);
+            for (uint32_t k = 0; k < c.tri_count; ++k)
+                list[k] = (int)rung.tri_order[c.first_tri + k];
+            const float d = mesh_charting::projection_distortion(
+                pos.data(), idx.data(), (int)n, list.data(), (int)list.size(),
+                c.tangent, c.bitangent);
+            if (d > worst) worst = d;
+        }
+        CHECK(worst < 2.5f, msg);
+        printf("  [%s] charts=%zu atlas=%ux%u worst distortion=%.3f\n",
+               label, rung.charts.size(), rung.atlas_w, rung.atlas_h, worst);
+    }
+
+    // Pack efficiency (reported, not gated).
+    {
+        double block_area = 0.0;
+        for (const auto& c : rung.charts)
+            block_area += (double)c.rect_w * (double)c.rect_h;
+        const double atlas_area = (double)rung.atlas_w * (double)rung.atlas_h;
+        printf("  [%s] pack efficiency (block area / atlas area) = %.1f%%\n",
+               label, 100.0 * block_area / atlas_area);
+    }
+}
+
+// Full fixture pass: chart build, gates, vertex-split inflation, determinism.
+void run_fixture(const char* label, const std::vector<Tri>& tris,
+                 const std::vector<TriEx>& base_ex, float tpm) {
+    char msg[256];
+    std::vector<TriEx> charted = base_ex;
+    chart_atlas::ChartAtlasRung rung;
+    snprintf(msg, sizeof msg, "%s: build_chart_rung succeeds", label);
+    const bool ok = lod_bake::build_chart_rung(tris, charted, tpm,
+                                               chart_atlas::kChartNormalConeDeg, rung);
+    CHECK(ok, msg);
+    if (!ok) return;
+
+    check_rung_gates(label, tris, charted, rung);
+
+    // Vertex-split inflation < 15% against the chartless weld.
+    {
+        const size_t before = indexed_vertex_count(tris, base_ex);
+        const size_t after = indexed_vertex_count(tris, charted);
+        snprintf(msg, sizeof msg, "%s: vertex-split inflation < 15%%", label);
+        CHECK(before > 0 && (double)after <= (double)before * 1.15, msg);
+        printf("  [%s] indexed verts %zu -> %zu (%.2f%% inflation)\n", label,
+               before, after,
+               before ? 100.0 * ((double)after / (double)before - 1.0) : 0.0);
+    }
+
+    // Determinism: a second run from the same inputs is byte-identical
+    // (chart table AND uv stream).
+    {
+        std::vector<TriEx> charted2 = base_ex;
+        chart_atlas::ChartAtlasRung rung2;
+        const bool ok2 = lod_bake::build_chart_rung(
+            tris, charted2, tpm, chart_atlas::kChartNormalConeDeg, rung2);
+        snprintf(msg, sizeof msg, "%s: deterministic chart table", label);
+        CHECK(ok2 && serialize_rung(rung) == serialize_rung(rung2), msg);
+        snprintf(msg, sizeof msg, "%s: deterministic UVs", label);
+        bool uv_same = ok2 && charted2.size() == charted.size();
+        for (size_t i = 0; uv_same && i < charted.size(); ++i)
+            uv_same = std::memcmp(&charted[i].uv0, &charted2[i].uv0, sizeof(float2)) == 0 &&
+                      std::memcmp(&charted[i].uv1, &charted2[i].uv1, sizeof(float2)) == 0 &&
+                      std::memcmp(&charted[i].uv2, &charted2[i].uv2, sizeof(float2)) == 0;
+        CHECK(uv_same, msg);
+    }
+
+    // Chart UVs must reach the render-vertex surface stream: the indexed mesh's
+    // surface_uvs (which matter_engine copies verbatim into VkRasterVertex
+    // .surface.xy) must carry nonzero chart UVs.
+    {
+        const viewer::RasterMeshData mesh = viewer::build_raster_mesh_data(
+            tris.data(), charted.data(), (int)tris.size());
+        bool any_nonzero = false;
+        for (float v : mesh.surface_uvs)
+            if (v != 0.0f) { any_nonzero = true; break; }
+        snprintf(msg, sizeof msg, "%s: chart UVs flow into the surface_uv vertex stream", label);
+        CHECK(!mesh.surface_uvs.empty() && any_nonzero, msg);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ladder + sidecar tests
+// ---------------------------------------------------------------------------
+
+void test_ladder_charts() {
+    const std::vector<Tri> tris = build_cube();
+    const std::vector<TriEx> ex = face_normal_triex(tris);
+
+    BLASManager blas;
+    std::vector<BLASHandle> handles;
+    lod_bake::ChartBakeOptions opts;                 // props: 16 t/m every rung
+    std::vector<chart_atlas::ChartAtlasRung> charts;
+    const lod_bake::LodLevels lods = lod_bake::bake_lods(
+        tris, lod_bake::BakeTargets{}, blas, &ex, nullptr, &handles, &opts, &charts);
+    CHECK(lods.size() == charts.size(), "bake_lods: one chart table per rung");
+    CHECK(!charts.empty() && !charts[0].charts.empty(),
+          "bake_lods: rung 0 carries charts");
+    // The registered rung-0 entry must carry the chart UVs (not the caller's
+    // zero UVs) — that is what the loader turns into vertex data.
+    if (!handles.empty()) {
+        const auto* e = blas.get_entry(handles[0]);
+        bool nonzero = false;
+        if (e && e->tri_extra.size() == tris.size())
+            for (const TriEx& t : e->tri_extra)
+                if (t.uv0.x != 0.0f || t.uv0.y != 0.0f ||
+                    t.uv1.x != 0.0f || t.uv1.y != 0.0f) { nonzero = true; break; }
+        CHECK(nonzero, "bake_lods: registered rung-0 TriEx carries chart UVs");
+    }
+    // Caller's TriEx must NOT have been mutated (charting works on a copy).
+    bool caller_untouched = true;
+    for (const TriEx& t : ex)
+        if (t.uv0.x != 0.0f || t.uv0.y != 0.0f) { caller_untouched = false; break; }
+    CHECK(caller_untouched, "bake_lods: caller TriEx not mutated");
+
+    // Terrain ladder density policy: 16 t/m at rung 0, halving per rung.
+    std::vector<Tri> sheet;
+    std::vector<TriEx> sheet_ex;
+    build_big_sheet(sheet, sheet_ex);
+    BLASManager blas2;
+    lod_bake::ChartBakeOptions topts;
+    topts.halve_per_rung = true;
+    std::vector<chart_atlas::ChartAtlasRung> tcharts;
+    std::vector<BLASHandle> thandles;
+    const std::vector<uint8_t> no_skirts(sheet.size(), 0);
+    const lod_bake::LodLevels tlods = lod_bake::bake_terrain_lods(
+        sheet, no_skirts, 45.0f, lod_bake::TerrainBakeTargets{}, blas2,
+        &sheet_ex, nullptr, &thandles, &topts, &tcharts);
+    CHECK(tlods.size() == tcharts.size(), "bake_terrain_lods: one chart table per rung");
+    bool densities_ok = tcharts.size() >= 2 &&
+                        !tcharts[0].charts.empty() && !tcharts[1].charts.empty();
+    if (densities_ok) {
+        densities_ok = tcharts[0].charts[0].texels_per_meter == 16.0f &&
+                       tcharts[1].charts[0].texels_per_meter == 8.0f;
+    }
+    CHECK(densities_ok, "bake_terrain_lods: 16 t/m rung 0, halved at rung 1");
+}
+
+std::vector<uint8_t> read_file_bytes(const std::string& path) {
+    std::vector<uint8_t> bytes;
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return bytes;
+    std::fseek(f, 0, SEEK_END);
+    const long sz = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    bytes.resize((size_t)(sz > 0 ? sz : 0));
+    if (!bytes.empty() && std::fread(bytes.data(), 1, bytes.size(), f) != bytes.size())
+        bytes.clear();
+    std::fclose(f);
+    return bytes;
+}
+
+void test_sidecar_roundtrip() {
+    const std::vector<Tri> tris = build_cube();
+    std::vector<TriEx> charted = face_normal_triex(tris);
+    chart_atlas::ChartAtlasRung rung;
+    CHECK(lod_bake::build_chart_rung(tris, charted, 16.0f,
+                                     chart_atlas::kChartNormalConeDeg, rung),
+          "sidecar: fixture chart build succeeds");
+
+    BLASManager blas;
+    blas.register_triangles(const_cast<Tri*>(tris.data()), (int)tris.size(),
+                            charted.data());
+    TLASManager tlas(64);
+    const uint64_t hash = 0x00C0FFEE12345678ull;
+    const std::vector<part_asset::VolumeEmitter> no_emitters;
+    const std::vector<chart_atlas::ChartAtlasRung> rungs = {rung, rung};
+
+    // 1) With charts: CHRT round-trips bit-exactly through the .part.
+    const std::string with_charts = "build/chart_atlas_with_charts.part";
+    CHECK(part_asset::save_v2(with_charts, blas, tlas, nullptr, 0, {},
+                              no_emitters, rungs, hash),
+          "sidecar: save_v2 with CHRT succeeds");
+    {
+        BLASManager lb; TLASManager lt(64);
+        std::vector<part_asset::ChildInstance> kids;
+        part_asset::LodLevels lods;
+        std::vector<part_asset::VolumeEmitter> emitters;
+        std::vector<chart_atlas::ChartAtlasRung> loaded;
+        CHECK(part_asset::load_v2(with_charts, hash, lb, lt, kids, lods,
+                                  emitters, loaded),
+              "sidecar: chart-aware load_v2 succeeds");
+        std::vector<uint8_t> a, b;
+        chart_atlas::append_chart_rungs(a, rungs);
+        chart_atlas::append_chart_rungs(b, loaded);
+        CHECK(a == b, "sidecar: chart table round-trips byte-identically");
+    }
+    // 2) Chart-unaware loaders must still accept a CHRT-bearing part
+    //    (the strict suffix grammar skips the section).
+    {
+        BLASManager lb; TLASManager lt(64);
+        std::vector<part_asset::ChildInstance> kids;
+        part_asset::LodLevels lods;
+        std::vector<part_asset::VolumeEmitter> emitters;
+        std::optional<part_asset::PartAnimationLink> link;
+        CHECK(part_asset::load_v2(with_charts, hash, lb, lt, kids, lods,
+                                  emitters, link),
+              "sidecar: legacy load_v2 accepts a CHRT-bearing part");
+        CHECK(!link.has_value(), "sidecar: CHRT part is static (no ANLK)");
+    }
+    // 3) Compat guarantee: empty charts write byte-identical output to the
+    //    legacy overload, and the chart-aware loader reads charts = 0 from it.
+    const std::string legacy = "build/chart_atlas_legacy.part";
+    const std::string empty_charts = "build/chart_atlas_empty_charts.part";
+    CHECK(part_asset::save_v2(legacy, blas, tlas, nullptr, 0, {},
+                              no_emitters, hash),
+          "sidecar: legacy save_v2 succeeds");
+    CHECK(part_asset::save_v2(empty_charts, blas, tlas, nullptr, 0, {},
+                              no_emitters,
+                              std::vector<chart_atlas::ChartAtlasRung>{}, hash),
+          "sidecar: save_v2 with empty charts succeeds");
+    {
+        const auto a = read_file_bytes(legacy);
+        const auto b = read_file_bytes(empty_charts);
+        CHECK(!a.empty() && a == b,
+              "sidecar: empty chart table writes byte-identical legacy output");
+        BLASManager lb; TLASManager lt(64);
+        std::vector<part_asset::ChildInstance> kids;
+        part_asset::LodLevels lods;
+        std::vector<part_asset::VolumeEmitter> emitters;
+        std::vector<chart_atlas::ChartAtlasRung> loaded;
+        CHECK(part_asset::load_v2(legacy, hash, lb, lt, kids, lods,
+                                  emitters, loaded),
+              "sidecar: chart-aware load_v2 accepts a chartless part");
+        CHECK(loaded.empty(), "sidecar: chartless part loads with charts = 0");
+    }
+    std::remove(with_charts.c_str());
+    std::remove(legacy.c_str());
+    std::remove(empty_charts.c_str());
+}
+
+} // namespace
+
+int main() {
+    // Fixture 1: cube (hard edges, one chart per face at the 45-degree cone).
+    {
+        const std::vector<Tri> tris = build_cube();
+        run_fixture("cube", tris, face_normal_triex(tris), 16.0f);
+    }
+    // Fixture 2: cylinder with an overhanging lip (curved side walls +
+    // downward-facing underside; charts must stay injective and low-distortion).
+    {
+        const std::vector<Tri> tris = build_cylinder_overhang();
+        run_fixture("cylinder-overhang", tris, face_normal_triex(tris), 16.0f);
+    }
+    // Fixture 3: > 64k-vertex heightfield sheet (32-bit index path).
+    {
+        std::vector<Tri> tris;
+        std::vector<TriEx> ex;
+        build_big_sheet(tris, ex);
+        const size_t welded = indexed_vertex_count(tris, ex);
+        char msg[128];
+        snprintf(msg, sizeof msg, "big-sheet: fixture exceeds 64k welded vertices (%zu)",
+                 welded);
+        CHECK(welded > 65536, msg);
+        run_fixture("big-sheet", tris, ex, 16.0f);
+    }
+
+    test_ladder_charts();
+    test_sidecar_roundtrip();
+
+    if (g_failures == 0) { printf("chart_atlas_tests: ALL PASS\n"); return 0; }
+    printf("chart_atlas_tests: %d FAILURE(S)\n", g_failures);
+    return 1;
+}

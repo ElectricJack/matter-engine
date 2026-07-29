@@ -41,5 +41,24 @@ function blend(a, b, t) {
   return new FieldNode(__emit('blend r' + __reg(a) + ' r' + __reg(b) + ' r' + __reg(t)));
 }
 function heightToDensity(h) { return h; }   // v1 identity marker: density == height field
+// defineMaterial in the FIELD-compilation context (chart-VT spec Phase 3).
+//
+// A field world evaluates its source twice: once in the world-definition loader
+// (which owns material registration — see world_definition_loader.cpp) and once
+// here, to compile field(). Registering twice would be wrong, so here the call
+// only RESOLVES: it hands back the handle the loader already assigned, keeping
+// `const ROCK = defineMaterial(...)` at module scope working identically in
+// both passes. __material_handle is installed natively by ScriptHost::eval_world.
+function defineMaterial(name, spec) {
+  if (typeof __material_handle !== 'function')
+    throw new TypeError('defineMaterial is unavailable in this context');
+  const handle = __material_handle(String(name));
+  if (handle < 0)
+    throw new TypeError("defineMaterial('" + name + "'): not registered — the " +
+                        'world-definition loader assigns handles, so a material ' +
+                        'must be declared at world module scope (or in a ' +
+                        'shared-lib module the world imports), not inside field()');
+  return handle;
+}
 class World {}
 )JS";

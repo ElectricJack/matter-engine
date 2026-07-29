@@ -1601,8 +1601,13 @@ void run_tileset_slot_load(matter::VulkanDevice& vulkan) {
 
     // Fail-closed negatives: bad slot, missing file. Neither may poison the
     // renderer or leave descriptors half-written.
-    CHECK(!renderer.load_tileset_slot(4, gtex_path, error) && !error.empty(),
-          "tileset: slot 4 out of range fails closed");
+    // One past the last valid slot. Derived from tileset::kMaxTilesetSlots so
+    // this stays a genuine out-of-range probe when the slot count changes
+    // (it went 4 -> 8 with the BC-compressed slices); a hardcoded 4 would
+    // silently turn into a real load and then assert the wrong thing.
+    CHECK(!renderer.load_tileset_slot(tileset::kMaxTilesetSlots, gtex_path,
+                                      error) && !error.empty(),
+          "tileset: slot kMaxTilesetSlots out of range fails closed");
     CHECK(!renderer.load_tileset_slot(-1, gtex_path, error) && !error.empty(),
           "tileset: slot -1 out of range fails closed");
     CHECK(!renderer.load_tileset_slot(0, gtex_path + ".missing", error) &&

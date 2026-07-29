@@ -1,5 +1,6 @@
 #include "material_registry.h"
 #include <stddef.h>
+#include <string.h>
 
 // Merge groups: each distinct material type is a group. Shades of one type
 // share a group. Values are arbitrary but must be stable and unique per type.
@@ -91,13 +92,130 @@ static int g_macro_overrides[ME_MAX_MACRO_OVERRIDES] = {
     -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1,
 };
 
-int MaterialRegistryCount(void) { return g_count; }
+// ---------------------------------------------------------------------------
+// Dynamic (per-world) registry extension — chart-VT spec Phase 3 / contract C3
+// ---------------------------------------------------------------------------
+// Appended after the g_count frozen builtins. Cleared by
+// MaterialRegistryResetDynamic() on world (re)connect, so a world's material
+// handles are deterministic: the same script always yields the same indices.
+// The schema is untouched — this is table CONTENT, not layout, so every packing
+// path (GL 12-float, Vulkan MaterialGpuRecord) covers dynamic entries by simply
+// iterating MaterialRegistryCount().
+static MaterialDef g_dynamic[MATERIAL_MAX_TOTAL];
+static char        g_dynamic_names[MATERIAL_MAX_TOTAL][MATERIAL_NAME_MAX];
+static int         g_dynamic_count = 0;
+
+int MaterialRegistryCount(void) { return g_count + g_dynamic_count; }
+
+int MaterialRegistryStaticCount(void) { return g_count; }
+
+int MaterialRegistryDynamicCount(void) { return g_dynamic_count; }
 
 uint32_t MaterialRegistrySchemaVersion(void) { return MATERIAL_SCHEMA_VERSION; }
 
 const MaterialDef* MaterialRegistryGet(int materialId) {
-    if (materialId < 0 || materialId >= g_count) return &g_default;
-    return &g_materials[materialId];
+    if (materialId < 0) return &g_default;
+    if (materialId < g_count) return &g_materials[materialId];
+    if (materialId < g_count + g_dynamic_count)
+        return &g_dynamic[materialId - g_count];
+    return &g_default;
+}
+
+void MaterialRegistryDefaultDynamicDef(MaterialDef* out) {
+    if (!out) return;
+    {
+        /* Neutral opaque dielectric. Field-for-field this mirrors what the
+           MATERIAL_DEF macro bakes in for every builtin entry (opacity 1,
+           specularStrength 1, white specular tint, shadowOpacity 1, both
+           tileset slots -1), so an authored material with no overrides shades
+           exactly like a plain builtin. mergeGroup stays -1: the caller
+           (defineMaterial) assigns a stable per-name group. */
+        const MaterialDef d = {
+            {0.6f, 0.6f, 0.6f},          /* albedo */
+            0.8f,                        /* roughness */
+            0.0f,                        /* metallic */
+            0.0f,                        /* emission */
+            0.0f,                        /* translucency */
+            1.5f,                        /* ior */
+            0,                           /* flatShading */
+            -1,                          /* mergeGroup */
+            0,                           /* meshingAlgorithm */
+            -1,                          /* groundTilesetSlot */
+            -1,                          /* groundMacroSlot */
+            1.0f,                        /* opacity */
+            0.0f,                        /* transmission */
+            {0.0f, 0.0f, 0.0f},          /* emissionColor */
+            {0.0f, 0.0f, 0.0f},          /* absorptionColor */
+            0.0f,                        /* absorptionDistance */
+            0.0f,                        /* thickness */
+            0.0f,                        /* subsurface */
+            {0.0f, 0.0f, 0.0f},          /* scatteringColor */
+            0.0f,                        /* scatteringDistance */
+            0.0f,                        /* anisotropy */
+            0.0f,                        /* clearcoat */
+            0.0f,                        /* clearcoatRoughness */
+            1.0f,                        /* specularStrength */
+            {1.0f, 1.0f, 1.0f},          /* specularTint */
+            0.0f,                        /* alphaCutoff */
+            1.0f,                        /* shadowOpacity */
+            MATERIAL_SURFACE_NONE        /* surfaceFlags */
+        };
+        *out = d;
+    }
+}
+
+int MaterialRegistryFindByName(const char* name) {
+    int i;
+    if (!name || !*name) return -1;
+    for (i = 0; i < g_dynamic_count; ++i)
+        if (strcmp(g_dynamic_names[i], name) == 0) return g_count + i;
+    return -1;
+}
+
+const char* MaterialRegistryNameOf(int materialId) {
+    const int slot = materialId - g_count;
+    if (slot < 0 || slot >= g_dynamic_count) return NULL;
+    return g_dynamic_names[slot];
+}
+
+int MaterialRegistryDefineDynamic(const MaterialDef* def, const char* name) {
+    size_t len;
+    int existing;
+    if (!def || !name || !*name) return MATERIAL_DEFINE_ERR_INVALID;
+    len = strlen(name);
+    if (len + 1 > (size_t)MATERIAL_NAME_MAX) return MATERIAL_DEFINE_ERR_INVALID;
+
+    existing = MaterialRegistryFindByName(name);
+    if (existing >= 0) {
+        /* Idempotent re-definition: identical bytes return the same handle so a
+           shared-lib material can be imported by several modules. A changed
+           definition is an authoring error, not a silent last-writer-wins. */
+        if (memcmp(&g_dynamic[existing - g_count], def, sizeof(MaterialDef)) == 0)
+            return existing;
+        return MATERIAL_DEFINE_ERR_CONFLICT;
+    }
+
+    if (g_count + g_dynamic_count >= MATERIAL_MAX_TOTAL)
+        return MATERIAL_DEFINE_ERR_FULL;
+
+    g_dynamic[g_dynamic_count] = *def;
+    memcpy(g_dynamic_names[g_dynamic_count], name, len + 1);
+    ++g_dynamic_count;
+    return g_count + g_dynamic_count - 1;
+}
+
+void MaterialRegistryResetDynamic(void) {
+    int i;
+    /* Drop the slot/macro overrides that belonged to dynamic ids so a reused
+       index never inherits the previous world's atlas binding. Builtin
+       overrides (e.g. material 16's DIRT binding) are the provider's to
+       manage and are deliberately left alone. */
+    for (i = g_count; i < MATERIAL_MAX_TOTAL; ++i) {
+        if (i < ME_MAX_SLOT_OVERRIDES)  g_slot_overrides[i]  = -1;
+        if (i < ME_MAX_MACRO_OVERRIDES) g_macro_overrides[i] = -1;
+    }
+    for (i = 0; i < g_dynamic_count; ++i) g_dynamic_names[i][0] = '\0';
+    g_dynamic_count = 0;
 }
 
 int MaterialMergeGroup(int materialId) {
@@ -114,13 +232,13 @@ int MaterialIsTransparent(int materialId) {
 
 void MaterialRegistrySetGroundTilesetSlot(int materialId, int slot) {
     if (materialId < 0 || materialId >= ME_MAX_SLOT_OVERRIDES) return;
-    if (slot < -1 || slot > 3) return;
+    if (slot < -1 || slot >= MATERIAL_MAX_DETAIL_SLOTS) return;
     g_slot_overrides[materialId] = slot;
 }
 
 void MaterialRegistrySetGroundMacroSlot(int materialId, int slot) {
     if (materialId < 0 || materialId >= ME_MAX_MACRO_OVERRIDES) return;
-    if (slot < -1 || slot > 3) return;
+    if (slot < -1 || slot >= MATERIAL_MAX_DETAIL_SLOTS) return;
     g_macro_overrides[materialId] = slot;
 }
 
@@ -132,8 +250,9 @@ void MaterialRegistryPackForGPU(float* out) {
     // Slot [11] (previously pad) now carries groundTilesetSlot. If the runtime
     // set an override via MaterialRegistrySetGroundTilesetSlot(), it wins over
     // the static table value (-1 by default in every registry entry).
-    for (int i = 0; i < g_count; ++i) {
-        const MaterialDef* m = &g_materials[i];
+    const int total = MaterialRegistryCount();
+    for (int i = 0; i < total; ++i) {
+        const MaterialDef* m = MaterialRegistryGet(i);
         float* r = out + (size_t)i * MATERIAL_FLOATS_PER_DEF;
         r[0]=m->albedo[0]; r[1]=m->albedo[1]; r[2]=m->albedo[2];
         r[3]=m->roughness; r[4]=m->metallic; r[5]=m->emission;
@@ -147,8 +266,9 @@ void MaterialRegistryPackForGPU(float* out) {
 }
 
 void MaterialRegistryPackRtForGPU(MaterialGpuRecord* out) {
-    for (int i = 0; i < g_count; ++i) {
-        const MaterialDef* m = &g_materials[i];
+    const int total = MaterialRegistryCount();
+    for (int i = 0; i < total; ++i) {
+        const MaterialDef* m = MaterialRegistryGet(i);
         MaterialGpuRecord* r = &out[i];
         r->base_roughness[0] = m->albedo[0];
         r->base_roughness[1] = m->albedo[1];

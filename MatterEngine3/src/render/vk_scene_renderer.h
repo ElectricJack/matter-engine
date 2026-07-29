@@ -22,6 +22,7 @@
 #include "matter/world_definition.h"
 #include "material_registry.h"
 #include "render/dynamic_instance_slots.h"
+#include "tileset_gtex.h"  // tileset::kMaxTilesetSlots (slot-count source of truth)
 #include "vk_gi_contract.h"
 #include "vk_animation_skinning.h"
 #include "vk_animation_bounds.h"
@@ -942,8 +943,10 @@ private:
 
     // std140 UBO — MUST match the plan's Task 6 struct field-for-field
     // (MatterEngine3/shaders_vk/tileset_common.glsl's TilesetParams block
-    // mirrors this: vec4 tile_size_m/texels_per_meter/height_min/height_max,
-    // vec4 mean_albedo[4], vec4 pom_a{steps,refine,max_distance,fade_band},
+    // mirrors this: vec4 tile_size_m/texels_per_meter/height_min/height_max
+    // each [kMaxTilesetSlots/4] (four slots per vec4 — the shader unpacks via
+    // TILESET_SLOT_SCALAR),
+    // vec4 mean_albedo[kMaxTilesetSlots], vec4 pom_a{steps,refine,max_distance,fade_band},
     // vec4 pom_b{fade_center,fade_width,max_relief_m,max_march_m},
     // vec4 sun_dir_intensity{dir.xyz,intensity} (Phase 2 Task 11),
     // vec4 pom_c{datum_bias_m,ao_strength,shadow_strength,horizon_strength}
@@ -952,21 +955,26 @@ private:
     // group below is exactly 16 bytes so the natural C++ layout matches
     // std140 with no manual padding.
     //
-    // Horizon-map has_horizon flag: rather than growing this struct (it must
-    // stay 192 bytes / twelve vec4 records per the static_assert below),
+    // Horizon-map has_horizon flag: rather than adding a field,
     // slot_mean_albedo[slot][3] -- previously a plain 0/1 "slot loaded" bool
-    // unused by any shader -- now encodes both bits: 0.0 = not loaded,
+    // unused by any shader -- encodes both bits: 0.0 = not loaded,
     // 1.0 = loaded without horizon data (v1 .gtex), 2.0 = loaded with
     // horizon data (v2 .gtex). tileset_common.glsl's tileset_has_horizon
     // reads `mean_albedo[slot].w >= 1.5`.
+    //
+    // The per-slot scalar arrays are packed four-to-a-vec4 in std140 (a bare
+    // float[8] would pad to 16 bytes per element, quadrupling them); the
+    // shader unpacks with TILESET_SLOT_SCALAR(field, slot). The C++ side can
+    // keep writing them as a flat float[kMaxTilesetSlots] because that is
+    // byte-identical to vec4[kMaxTilesetSlots/4].
     struct alignas(16) TilesetParamsGpu {
-        float slot_tile_size_m[4]{};
-        float slot_texels_per_meter[4]{};
-        float slot_height_min[4]{};
-        float slot_height_max[4]{};
+        float slot_tile_size_m[tileset::kMaxTilesetSlots]{};
+        float slot_texels_per_meter[tileset::kMaxTilesetSlots]{};
+        float slot_height_min[tileset::kMaxTilesetSlots]{};
+        float slot_height_max[tileset::kMaxTilesetSlots]{};
         // rgb + valid/has_horizon flag in [.][3]: 0 = not loaded, 1 = loaded
         // (no horizon), 2 = loaded (with horizon). See file comment above.
-        float slot_mean_albedo[4][4]{};
+        float slot_mean_albedo[tileset::kMaxTilesetSlots][4]{};
         float pom_steps = 50.0f;
         float pom_refine_steps = 4.0f;
         float pom_max_distance_m = 50.4f;
@@ -1006,8 +1014,20 @@ private:
         // strength; see tileset_common.glsl's tileset_horizon_occlusion.
         float pom_datum_bias_ao_shadow[4] = {0.105f, 0.63f, 0.68f, 1.0f};
     };
-    static_assert(sizeof(TilesetParamsGpu) == 192,
-                  "TilesetParamsGpu must remain twelve vec4 records (std140)");
+    // The GLSL side declares TILESET_MAX_SLOTS 8; keep the two in step. The
+    // /4 packing of the scalar arrays only works for a multiple of four.
+    static_assert(tileset::kMaxTilesetSlots == 8,
+                  "shaders_vk/tileset_common.glsl hardcodes TILESET_MAX_SLOTS 8 "
+                  "(GLSL cannot import kMaxTilesetSlots) -- change both together");
+    static_assert(tileset::kMaxTilesetSlots % 4 == 0,
+                  "per-slot scalars are packed four to a std140 vec4");
+    static_assert(MATERIAL_MAX_DETAIL_SLOTS == tileset::kMaxTilesetSlots,
+                  "material_registry.h's slot-override validation bound must "
+                  "match the renderer's descriptor-array slot count");
+    // 4 scalar arrays x 8 floats (= 4 x two vec4) + 8 mean_albedo vec4
+    // + 4 trailing vec4 (pom_a, pom_b, sun_dir_intensity, pom_c).
+    static_assert(sizeof(TilesetParamsGpu) == 320,
+                  "TilesetParamsGpu must remain twenty vec4 records (std140)");
 
     struct FrameResources {
         matter::VkBufferResource frame_constants;
@@ -1277,7 +1297,7 @@ private:
     VkExtent2D raw_diffuse_extent_{};
 
     // --- Phase 1 tileset Vulkan port (Task 6) ------------------------------
-    TilesetSlotGpu tileset_slots_[4]{};
+    TilesetSlotGpu tileset_slots_[tileset::kMaxTilesetSlots]{};
     // One dummy per distinct format among the 4 channels (albedo and ORM
     // share R8G8B8A8_UNORM, so 3 dummies cover all 4 channel roles).
     TilesetImage tileset_dummy_rgba8_;  // albedo, orm

@@ -4868,7 +4868,8 @@ struct VulkanDiagnosticMaterialOverride {
         const float rounded_slot = std::round(packed_slot);
         if (!std::isfinite(packed_slot) ||
             std::fabs(packed_slot - rounded_slot) > 1e-6f ||
-            rounded_slot < -1.0f || rounded_slot > 3.0f) {
+            rounded_slot < -1.0f ||
+            rounded_slot > (float)(MATERIAL_MAX_DETAIL_SLOTS - 1)) {
             std::fprintf(stderr,
                 "Vulkan diagnostic: invalid packed ground tileset slot %.9g "
                 "for material %d\n",

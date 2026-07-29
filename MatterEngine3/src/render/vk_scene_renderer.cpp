@@ -22,6 +22,7 @@
 #include "matter/world_definition.h"
 #include "matter/world_session.h"
 #include "shaders_gen/embedded_spirv.h"
+#include "bc_encode.h"
 #include "streamline_bridge.h"
 #include "tileset_gtex.h"
 #include "tileset_slicer.h"
@@ -1489,9 +1490,12 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     scene_bindings[6] = descriptor_binding(
         6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         VK_SHADER_STAGE_FRAGMENT_BIT);
-    // Phase 2 (horizon-map lighting): 4 slots * 6 channels (was 4 slots * 4
-    // channels) -- see VkSceneRenderer::kTilesetChannelCount.
-    scene_bindings[6].descriptorCount = 4 * kTilesetChannelCount;
+    // kMaxTilesetSlots slots * kTilesetChannelCount channels (Phase 2's
+    // horizon-map lighting grew the per-slot channel count 4 -> 6; WP-B of
+    // the chart-VT work grew the slot count 4 -> 8). 8 * 6 = 48, and
+    // shaders_vk/tileset_common.glsl declares tilesetTex[48] to match.
+    scene_bindings[6].descriptorCount =
+        tileset::kMaxTilesetSlots * kTilesetChannelCount;
     scene_bindings[7] = descriptor_binding(
         7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
     // C3 dynamic cluster AABBs. Static cluster metadata stays at binding 0;
@@ -1790,7 +1794,8 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
                                VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
                                VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
                                VK_SHADER_STAGE_MISS_BIT_KHR)};
-    bindings[15].descriptorCount = 4 * kTilesetChannelCount;
+    bindings[15].descriptorCount =
+        tileset::kMaxTilesetSlots * kTilesetChannelCount;
     VkDescriptorSetLayoutCreateInfo set_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     set_info.bindingCount =
@@ -2538,15 +2543,16 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         return true;
     }
     // Phase 1 tileset Vulkan port (Task 6): raster set 1 gained binding 6
-    // (4*kTilesetChannelCount combined-image-sampler descriptors -- 24 since
-    // Phase 2's horizon-map channels grew the per-slot channel count 4->6)
-    // and binding 7 (1 uniform buffer, TilesetParams) per frame slot — added
-    // to the +4*kTilesetChannelCount / +1 below.
+    // (kMaxTilesetSlots*kTilesetChannelCount combined-image-sampler
+    // descriptors -- 48 = 8 slots x 6 channels) and binding 7 (1 uniform
+    // buffer, TilesetParams) per frame slot — added to the
+    // +kMaxTilesetSlots*kTilesetChannelCount / +1 below.
     const VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count * 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 21},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-         frame_slot_count * (79 + 4 * kTilesetChannelCount)},
+         frame_slot_count *
+             (79 + tileset::kMaxTilesetSlots * kTilesetChannelCount)},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 22}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -2709,14 +2715,14 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             vkDestroyDescriptorPool(vulkan_->device(), rt_descriptor_pool_,
                                     nullptr);
         // Phase 1 tileset Vulkan port (Task 6): RT set 0 gained binding 15
-        // (4*kTilesetChannelCount combined-image-sampler descriptors -- 24
-        // since Phase 2's horizon-map channels grew the per-slot channel
-        // count 4->6) and binding 16 (1 uniform buffer, TilesetParams) per
-        // frame slot.
+        // (kMaxTilesetSlots*kTilesetChannelCount combined-image-sampler
+        // descriptors -- 48 = 8 slots x 6 channels) and binding 16 (1
+        // uniform buffer, TilesetParams) per frame slot.
         const VkDescriptorPoolSize rt_sizes[] = {
             {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, frame_slot_count},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-             frame_slot_count * (5 + 4 * kTilesetChannelCount)},
+             frame_slot_count *
+                 (5 + tileset::kMaxTilesetSlots * kTilesetChannelCount)},
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 5},
             {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 4},
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count}};
@@ -3232,7 +3238,7 @@ bool VkSceneRenderer::ensure_tileset_infra(std::string& error) {
 }
 
 VkImageView VkSceneRenderer::tileset_channel_view(int slot, int channel) const {
-    if (slot >= 0 && slot < 4) {
+    if (slot >= 0 && slot < tileset::kMaxTilesetSlots) {
         const TilesetSlotGpu& s = tileset_slots_[slot];
         if (s.loaded && s.channels[channel].view != VK_NULL_HANDLE)
             return s.channels[channel].view;
@@ -3247,7 +3253,7 @@ VkImageView VkSceneRenderer::tileset_channel_view(int slot, int channel) const {
 void VkSceneRenderer::write_tileset_params_buffer() {
     if (!tileset_infra_ready_ || tileset_params_.mapped == nullptr) return;
     TilesetParamsGpu params{};
-    for (int slot = 0; slot < 4; ++slot) {
+    for (int slot = 0; slot < tileset::kMaxTilesetSlots; ++slot) {
         const TilesetSlotGpu& s = tileset_slots_[slot];
         params.slot_tile_size_m[slot] = s.tile_size_m;
         params.slot_texels_per_meter[slot] = s.texels_per_meter;
@@ -3299,8 +3305,9 @@ void VkSceneRenderer::write_tileset_params_buffer() {
 
 void VkSceneRenderer::write_tileset_descriptors_for_frame(VkDescriptorSet set) {
     if (set == VK_NULL_HANDLE || !tileset_infra_ready_) return;
-    VkDescriptorImageInfo image_infos[4 * kTilesetChannelCount]{};
-    for (int slot = 0; slot < 4; ++slot) {
+    VkDescriptorImageInfo
+        image_infos[tileset::kMaxTilesetSlots * kTilesetChannelCount]{};
+    for (int slot = 0; slot < tileset::kMaxTilesetSlots; ++slot) {
         for (int channel = 0; channel < kTilesetChannelCount; ++channel) {
             VkDescriptorImageInfo& info =
                 image_infos[slot * kTilesetChannelCount + channel];
@@ -3315,7 +3322,8 @@ void VkSceneRenderer::write_tileset_descriptors_for_frame(VkDescriptorSet set) {
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 6;
-    writes[0].descriptorCount = 4 * kTilesetChannelCount;
+    writes[0].descriptorCount =
+        tileset::kMaxTilesetSlots * kTilesetChannelCount;
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[0].pImageInfo = image_infos;
     writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -3387,9 +3395,10 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
                                         std::string& error) {
     error.clear();
     if (fail_if_poisoned(error)) return false;
-    if (slot < 0 || slot >= 4) {
+    if (slot < 0 || slot >= tileset::kMaxTilesetSlots) {
         error = "load_tileset_slot: slot " + std::to_string(slot) +
-                " out of range [0,4)";
+                " out of range [0," +
+                std::to_string(tileset::kMaxTilesetSlots) + ")";
         return false;
     }
     if (gtex_path.empty()) {
@@ -3532,46 +3541,99 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
             }
         }
     }
+    // --- Block-compress the four core channels ----------------------------
+    //
+    // Mip FIRST (above, on the CPU, per layer), compress SECOND. The order
+    // matters: mipping compressed data would require a decode/re-encode per
+    // level and would lose the property the Wang tiling depends on.
+    //
+    // The seam invariant survives compression exactly. Color-matched tile
+    // edges are byte-identical over a >= 4-texel strip at mip 0
+    // (tileset_slicer.h), tile_px is a multiple of 4, and BC blocks are 4x4
+    // and encoded independently of one another — so the boundary blocks of
+    // two matching layers get identical inputs and, because the encoder is
+    // deterministic, identical outputs. Asserted directly in
+    // tests/bc_encode_tests.cpp (test_edge_strip_survives_compression); see
+    // bc_encode.h's header for the full argument.
+    //
+    // Per-channel choice (VRAM per texel, mip-0):
+    //   albedo  RGBA8 4 B -> BC7  1   B   (RGB + constant alpha)
+    //   normal  RG8   2 B -> BC5  1   B   (two independent unorm channels)
+    //   ORM     RGBA8 4 B -> BC7  1   B
+    //   height  R16   2 B -> BC4  0.5 B   (requantized to R8 first; the unorm
+    //                                      mapping onto [height_min,height_max]
+    //                                      is preserved, so no shader change)
+    // Horizon A/B stay uncompressed RGBA8: they are quarter-resolution and
+    // already ~1/16 the cost of a core channel, and BC7 on four packed,
+    // unrelated elevation scalars would trade real accuracy for nothing.
+    //
+    // Device support: BC is gated by the textureCompressionBC feature, which
+    // every desktop GPU this engine targets has. Probe it anyway and fail
+    // CLOSED with a legible message rather than letting vkCreateImage return
+    // a format error deep inside create_tileset_image (the caller's contract
+    // is "slot load may fail; that slot's ground stays untextured").
+    {
+        const VkFormat probe[3] = {VK_FORMAT_BC7_UNORM_BLOCK,
+                                   VK_FORMAT_BC5_UNORM_BLOCK,
+                                   VK_FORMAT_BC4_UNORM_BLOCK};
+        const char* probe_name[3] = {"BC7_UNORM_BLOCK", "BC5_UNORM_BLOCK",
+                                     "BC4_UNORM_BLOCK"};
+        for (int i = 0; i < 3; ++i) {
+            VkFormatProperties props{};
+            vkGetPhysicalDeviceFormatProperties(vulkan_->physical_device(),
+                                                probe[i], &props);
+            const VkFormatFeatureFlags needed =
+                VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+            if ((props.optimalTilingFeatures & needed) != needed) {
+                error = std::string("load_tileset_slot: device does not "
+                                    "support sampling ") + probe_name[i] +
+                        " (textureCompressionBC missing?): " + gtex_path;
+                return false;
+            }
+        }
+    }
+
+    static const tileset::BcFormat kChannelBc[4] = {
+        tileset::BcFormat::kBc7,  // kTilesetChannelAlbedo
+        tileset::BcFormat::kBc5,  // kTilesetChannelNormal
+        tileset::BcFormat::kBc7,  // kTilesetChannelOrm
+        tileset::BcFormat::kBc4,  // kTilesetChannelHeight
+    };
+    tileset::CompressedChannel compressed[4];
+    size_t uncompressed_core_bytes = 0;
+    for (int c = 0; c < 4; ++c) {
+        uncompressed_core_bytes += tileset::sliced_channel_bytes(*slices[c]);
+        if (!tileset::compress_sliced_channel(
+                *slices[c], kChannelBc[c],
+                /*src_is_r16le=*/c == kTilesetChannelHeight, compressed[c],
+                error)) {
+            error = "load_tileset_slot: " + error + ": " + gtex_path;
+            return false;
+        }
+        // Release the uncompressed slice as soon as its compressed form
+        // exists. At a 4096 atlas an RGBA8 core channel is ~90 MiB, so
+        // holding all four alive alongside their compressed forms would peak
+        // ~350 MiB for nothing. Nothing below reads *slices[c] again — the
+        // upload loop uses compressed[c] and mean_rgb() reads the raw
+        // albedo_rgb8 source, not the slice.
+        *slices[c] = tileset::SlicedChannel{};
+    }
+
     // Index order matches TilesetChannel (albedo/normal/orm/height/
-    // horizon_a/horizon_b); horizon_a/b share albedo/orm's RGBA8 format.
+    // horizon_a/horizon_b). The four core channels are block-compressed; the
+    // horizon pair stays RGBA8 (see the comment above).
     const VkFormat formats[kTilesetChannelCount] = {
-        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8_UNORM,
-        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16_UNORM,
+        VK_FORMAT_BC7_UNORM_BLOCK, VK_FORMAT_BC5_UNORM_BLOCK,
+        VK_FORMAT_BC7_UNORM_BLOCK, VK_FORMAT_BC4_UNORM_BLOCK,
         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
-
-    // Build the single shared staging buffer (all channels/layers/mips) and
-    // the per-image copy regions before touching any renderer state, so a
-    // failure here leaves the previously loaded slot (if any) untouched.
-    size_t total_bytes = 0;
-    for (tileset::SlicedChannel* s : slices)
-        for (const auto& layer : s->layers)
-            for (const auto& mip : layer) total_bytes += mip.size();
-    if (has_horizon) {
-        for (tileset::SlicedChannel* s : horizon_slices)
-            for (const auto& layer : s->layers)
-                for (const auto& mip : layer) total_bytes += mip.size();
-    }
-    if (total_bytes == 0) {
-        error = "load_tileset_slot: sliced atlas produced zero bytes: " + gtex_path;
-        return false;
-    }
-
-    matter::VkBufferResource staging;
-    if (!matter::create_buffer(*vulkan_, static_cast<VkDeviceSize>(total_bytes),
-                               VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging,
-                               error) ||
-        !matter::map_buffer(staging, error)) {
-        return false;
-    }
 
     TilesetImage new_images[kTilesetChannelCount];
     bool created_ok = true;
     for (int c = 0; c < 4 && created_ok; ++c) {
         created_ok = create_tileset_image(
             formats[c], static_cast<uint32_t>(tile_px),
-            static_cast<uint32_t>(slices[c]->mip_count), 16, new_images[c],
+            static_cast<uint32_t>(compressed[c].mip_count), 16, new_images[c],
             error);
     }
     if (created_ok && has_horizon) {
@@ -3588,94 +3650,119 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
         return false;
     }
 
+    // Build the single shared staging blob (all channels/layers/mips) and the
+    // per-image copy regions in one pass, so the offsets the regions record
+    // and the bytes actually written can never drift apart.
     TilesetUploadRecord upload_record;
-    upload_record.staging = staging.buffer;
     upload_record.rt_available = vulkan_->ray_tracing_available();
-    size_t offset = 0;
-    for (int c = 0; c < 4; ++c) {
-        upload_record.images[c] = new_images[c].image;
-        upload_record.mip_counts[c] = static_cast<uint32_t>(slices[c]->mip_count);
-        auto& regions = upload_record.regions[c];
-        regions.reserve(static_cast<size_t>(slices[c]->mip_count) * 16);
+    std::vector<uint8_t> staging_bytes;
+
+    // layers[layer][mip] -> staging bytes + one VkBufferImageCopy per
+    // (layer, mip). expected_bytes(dim) returns the exact size that mip level
+    // must have; a mismatch is a hard fail (never upload a short/long level).
+    auto append_channel = [&](int channel, int base_dim, int mip_count,
+                              const auto& layers, auto&& expected_bytes,
+                              const char* label) -> bool {
+        upload_record.mip_counts[channel] = static_cast<uint32_t>(mip_count);
+        auto& regions = upload_record.regions[channel];
+        regions.reserve(static_cast<size_t>(mip_count) * 16);
         for (int layer = 0; layer < 16; ++layer) {
-            int dim = tile_px;
-            for (int mip = 0; mip < slices[c]->mip_count; ++mip) {
+            int dim = base_dim;
+            for (int mip = 0; mip < mip_count; ++mip) {
                 const std::vector<uint8_t>& data =
-                    slices[c]->layers[static_cast<size_t>(layer)]
-                                     [static_cast<size_t>(mip)];
-                const size_t expected =
-                    static_cast<size_t>(dim) * dim *
-                    static_cast<size_t>(slices[c]->bytes_per_pixel);
-                if (data.size() != expected) {
-                    error = "load_tileset_slot: mip byte-size mismatch (layer " +
+                    layers[static_cast<size_t>(layer)][static_cast<size_t>(mip)];
+                if (data.size() != expected_bytes(dim)) {
+                    error = std::string("load_tileset_slot: ") + label +
+                            " mip byte-size mismatch (layer " +
                             std::to_string(layer) + " mip " +
                             std::to_string(mip) + "): " + gtex_path;
-                    for (auto& image : new_images) destroy_tileset_image(image);
                     return false;
                 }
-                std::memcpy(static_cast<uint8_t*>(staging.mapped) + offset,
-                           data.data(), data.size());
+                // vkCmdCopyBufferToImage requires bufferOffset to be a
+                // multiple of 4 AND, for a block-compressed image, of the
+                // texel-block size (16 B for BC7/BC5, 8 B for BC4). Aligning
+                // every level to 16 satisfies all three at once and costs at
+                // most 15 padding bytes per level. (The old code packed
+                // tightly, which was fine only because every uncompressed
+                // level was already a multiple of 4.)
+                const size_t offset = (staging_bytes.size() + 15u) & ~size_t{15u};
+                staging_bytes.resize(offset + data.size());
+                std::memcpy(staging_bytes.data() + offset, data.data(),
+                            data.size());
+
                 VkBufferImageCopy region{};
                 region.bufferOffset = static_cast<VkDeviceSize>(offset);
+                // bufferRowLength/bufferImageHeight stay 0 = "tightly packed
+                // per imageExtent", which for a compressed format means
+                // ceil(dim/4) blocks per row — exactly what bc_encode emits.
                 region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
                 region.imageSubresource.mipLevel = static_cast<uint32_t>(mip);
                 region.imageSubresource.baseArrayLayer =
                     static_cast<uint32_t>(layer);
                 region.imageSubresource.layerCount = 1;
+                // imageExtent is in TEXELS, not blocks, and is legal below the
+                // block size precisely because it equals the mip's own extent
+                // (the spec's "imageExtent + imageOffset == subresource
+                // dimensions" escape from the multiple-of-block-size rule).
                 region.imageExtent = {static_cast<uint32_t>(dim),
-                                     static_cast<uint32_t>(dim), 1};
+                                      static_cast<uint32_t>(dim), 1};
                 regions.push_back(region);
-                offset += data.size();
-                dim = dim / 2;
+                dim = std::max(1, dim / 2);
             }
         }
+        return true;
+    };
+
+    bool appended_ok = true;
+    for (int c = 0; c < 4 && appended_ok; ++c) {
+        upload_record.images[c] = new_images[c].image;
+        const tileset::BcFormat format = kChannelBc[c];
+        appended_ok = append_channel(
+            c, tile_px, compressed[c].mip_count, compressed[c].layers,
+            [format](int dim) {
+                return tileset::bc_encoded_size(format, dim, dim);
+            },
+            tileset::bc_format_name(format));
     }
-    if (has_horizon) {
-        for (int hc = 0; hc < 2; ++hc) {
+    if (appended_ok && has_horizon) {
+        for (int hc = 0; hc < 2 && appended_ok; ++hc) {
             const int c = kTilesetChannelHorizonA + hc;
-            tileset::SlicedChannel* s = horizon_slices[hc];
+            const tileset::SlicedChannel* s = horizon_slices[hc];
+            const int bpp = s->bytes_per_pixel;
             upload_record.images[c] = new_images[c].image;
-            upload_record.mip_counts[c] = static_cast<uint32_t>(s->mip_count);
-            auto& regions = upload_record.regions[c];
-            regions.reserve(static_cast<size_t>(s->mip_count) * 16);
-            for (int layer = 0; layer < 16; ++layer) {
-                int dim = horizon_tile_px;
-                for (int mip = 0; mip < s->mip_count; ++mip) {
-                    const std::vector<uint8_t>& data =
-                        s->layers[static_cast<size_t>(layer)]
-                                 [static_cast<size_t>(mip)];
-                    const size_t expected = static_cast<size_t>(dim) * dim *
-                        static_cast<size_t>(s->bytes_per_pixel);
-                    if (data.size() != expected) {
-                        error = "load_tileset_slot: horizon mip byte-size "
-                                "mismatch (layer " + std::to_string(layer) +
-                                " mip " + std::to_string(mip) + "): " +
-                                gtex_path;
-                        for (auto& image : new_images)
-                            destroy_tileset_image(image);
-                        return false;
-                    }
-                    std::memcpy(static_cast<uint8_t*>(staging.mapped) + offset,
-                               data.data(), data.size());
-                    VkBufferImageCopy region{};
-                    region.bufferOffset = static_cast<VkDeviceSize>(offset);
-                    region.imageSubresource.aspectMask =
-                        VK_IMAGE_ASPECT_COLOR_BIT;
-                    region.imageSubresource.mipLevel =
-                        static_cast<uint32_t>(mip);
-                    region.imageSubresource.baseArrayLayer =
-                        static_cast<uint32_t>(layer);
-                    region.imageSubresource.layerCount = 1;
-                    region.imageExtent = {static_cast<uint32_t>(dim),
-                                         static_cast<uint32_t>(dim), 1};
-                    regions.push_back(region);
-                    offset += data.size();
-                    dim = dim / 2;
-                }
-            }
+            appended_ok = append_channel(
+                c, horizon_tile_px, s->mip_count, s->layers,
+                [bpp](int dim) {
+                    return static_cast<size_t>(dim) * static_cast<size_t>(dim) *
+                           static_cast<size_t>(bpp);
+                },
+                "horizon");
         }
     }
-    if (!matter::flush_buffer(staging, 0, total_bytes, error)) {
+    if (!appended_ok) {
+        for (auto& image : new_images) destroy_tileset_image(image);
+        return false;
+    }
+    if (staging_bytes.empty()) {
+        error = "load_tileset_slot: sliced atlas produced zero bytes: " + gtex_path;
+        for (auto& image : new_images) destroy_tileset_image(image);
+        return false;
+    }
+
+    matter::VkBufferResource staging;
+    if (!matter::create_buffer(*vulkan_,
+                               static_cast<VkDeviceSize>(staging_bytes.size()),
+                               VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging,
+                               error) ||
+        !matter::map_buffer(staging, error)) {
+        for (auto& image : new_images) destroy_tileset_image(image);
+        return false;
+    }
+    std::memcpy(staging.mapped, staging_bytes.data(), staging_bytes.size());
+    upload_record.staging = staging.buffer;
+    if (!matter::flush_buffer(staging, 0, staging_bytes.size(), error)) {
         for (auto& image : new_images) destroy_tileset_image(image);
         return false;
     }
@@ -3721,11 +3808,42 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
     write_tileset_params_buffer();
     for (auto& frame : frames_)
         write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
+
+    // One line, per slot load: what this slot now costs in VRAM and what it
+    // would have cost uncompressed. The "before" figure is the exact byte
+    // count of the mipped, uncompressed slices this function just compressed,
+    // not an estimate. Horizon channels are reported separately because they
+    // are deliberately NOT compressed and so appear in both totals unchanged.
+    {
+        size_t compressed_core_bytes = 0;
+        for (int c = 0; c < 4; ++c)
+            compressed_core_bytes += tileset::compressed_channel_bytes(compressed[c]);
+        size_t horizon_bytes = 0;
+        if (has_horizon) {
+            for (tileset::SlicedChannel* s : horizon_slices)
+                horizon_bytes += tileset::sliced_channel_bytes(*s);
+        }
+        const double mib = 1.0 / (1024.0 * 1024.0);
+        printf("[tileset] slot %d '%s': %dpx x16 layers x%d mips -- core "
+               "%.1f MiB BC (was %.1f MiB raw, %.2fx smaller)%s\n",
+               slot, gtex_path.c_str(), tile_px, compressed[0].mip_count,
+               (double)compressed_core_bytes * mib,
+               (double)uncompressed_core_bytes * mib,
+               compressed_core_bytes
+                   ? (double)uncompressed_core_bytes / (double)compressed_core_bytes
+                   : 0.0,
+               has_horizon
+                   ? (" + horizon " +
+                      std::to_string((int)((double)horizon_bytes * mib + 0.5)) +
+                      " MiB uncompressed").c_str()
+                   : "");
+        fflush(stdout);
+    }
     return true;
 }
 
 void VkSceneRenderer::unload_tileset_slot(int slot) {
-    if (slot < 0 || slot >= 4) return;
+    if (slot < 0 || slot >= tileset::kMaxTilesetSlots) return;
     if (!tileset_slots_[slot].loaded) return;
     if (vulkan_) vulkan_->wait_idle();
     for (auto& channel : tileset_slots_[slot].channels)
@@ -7761,8 +7879,9 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     // 1's bindings 6/7. Rebuilt from current renderer state (loaded slots or
     // dummies) every frame here, the same way the rest of this array already
     // is — no separate "on slot load" write is needed for the RT set.
-    VkDescriptorImageInfo tileset_image_infos[4 * kTilesetChannelCount]{};
-    for (int slot = 0; slot < 4; ++slot) {
+    VkDescriptorImageInfo
+        tileset_image_infos[tileset::kMaxTilesetSlots * kTilesetChannelCount]{};
+    for (int slot = 0; slot < tileset::kMaxTilesetSlots; ++slot) {
         for (int channel = 0; channel < kTilesetChannelCount; ++channel) {
             VkDescriptorImageInfo& info =
                 tileset_image_infos[slot * kTilesetChannelCount + channel];
@@ -7831,7 +7950,8 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     writes[15].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[15].dstSet = rt_descriptor_sets_[frame.frame_slot];
     writes[15].dstBinding = 15;
-    writes[15].descriptorCount = 4 * kTilesetChannelCount;
+    writes[15].descriptorCount =
+        tileset::kMaxTilesetSlots * kTilesetChannelCount;
     writes[15].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[15].pImageInfo = tileset_image_infos;
     writes[16].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;

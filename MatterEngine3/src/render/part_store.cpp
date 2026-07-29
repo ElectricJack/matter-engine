@@ -833,13 +833,23 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
         lod_bake::count_terrain_skirt_tris(tris, &skirt_mask);
     const bool terrain_tile = radius >= 32.0f && skirt_count >= 8 &&
                               skirt_count * 2 <= tris.size();
+    // WP-A (chart-space VT): every staged part gets per-rung chart tables and
+    // chart UVs in its TriEx (flowing to the render vertex surface.xy through
+    // build_raster_mesh_data below). Density policy: props 16 t/m at every
+    // rung; terrain sectors 16 t/m at rung 0 halving per coarser rung. A rung
+    // whose chart build fails ships an empty table (charts = 0, legacy path).
+    lod_bake::ChartBakeOptions chart_opts;
+    chart_opts.texels_per_meter = 16.0f;
+    chart_opts.halve_per_rung = terrain_tile;
+    std::vector<chart_atlas::ChartAtlasRung> rung_charts;
     lod_bake::LodLevels lods = terrain_tile
         ? lod_bake::bake_terrain_lods(tris, skirt_mask, radius,
                                       lod_bake::TerrainBakeTargets{},
                                       *staged.staging, triex_ptr, observer_,
-                                      &lod_handles)
+                                      &lod_handles, &chart_opts, &rung_charts)
         : lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, *staged.staging,
-                              triex_ptr, observer_, &lod_handles);
+                              triex_ptr, observer_, &lod_handles,
+                              &chart_opts, &rung_charts);
     assert(lod_handles.size() == lods.size());
     for (size_t li = 0; li < lods.size() && li < lod_handles.size(); ++li) {
         const auto& L = lods[li];
@@ -850,6 +860,22 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
         staged.lp.thresholds.push_back(L.screen_size_threshold);
         staged.lp.lod_blas.push_back(lod_handles[li]);
         staged.lp.owned_blas.push_back(staged.lp.lod_blas.back());
+        // Keep lod_charts parallel to lod_blas. register_triangles dedups on
+        // geometry+material+tint (NOT uv), so if a coarser rung collapsed onto
+        // an earlier rung's entry, the entry carries the EARLIER rung's UVs —
+        // reuse that rung's chart table so table and UVs stay coherent.
+        {
+            chart_atlas::ChartAtlasRung table =
+                li < rung_charts.size() ? std::move(rung_charts[li])
+                                        : chart_atlas::ChartAtlasRung{};
+            for (size_t prev = 0; prev + 1 < staged.lp.lod_blas.size(); ++prev) {
+                if (staged.lp.lod_blas[prev] == lod_handles[li]) {
+                    table = staged.lp.lod_charts[prev];
+                    break;
+                }
+            }
+            staged.lp.lod_charts.push_back(std::move(table));
+        }
 
         // Raster mesh data is a copy, so build it from the staged entry before
         // adoption; it does not reference the manager afterwards.

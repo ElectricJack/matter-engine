@@ -425,6 +425,35 @@ static JSContext* new_bake_context(JSRuntime* rt, bool want_modules = false) {
     return ctx;
 }
 
+// __material_handle(name) -> registry index, or -1 when the name is unknown.
+//
+// Chart-VT spec Phase 3: material REGISTRATION is owned by the world-definition
+// loader (world_definition_loader.cpp), which runs before any field
+// compilation. A field world evaluates its source a second time here, so the
+// world_base.js defineMaterial shim needs a lookup — never a second registration,
+// which would make handles depend on evaluation count. Resolve-only keeps the
+// registry single-writer and the handles stable.
+static JSValue sh_material_handle(JSContext* ctx, JSValueConst,
+                                  int argc, JSValueConst* argv) {
+    if (argc < 1 || !JS_IsString(argv[0]))
+        return JS_ThrowTypeError(ctx, "__material_handle(name) requires a string");
+    const char* name = JS_ToCString(ctx, argv[0]);
+    if (!name) return JS_EXCEPTION;
+    const int handle = MaterialRegistryFindByName(name);
+    JS_FreeCString(ctx, name);
+    return JS_NewInt32(ctx, handle);
+}
+
+// Install the resolve-only material lookup that world_base.js's defineMaterial
+// shim calls. Must run before kWorldBaseJS is evaluated in that context.
+static void install_material_handle(JSContext* ctx) {
+    JSValue global = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, global, "__material_handle",
+                      JS_NewCFunction(ctx, sh_material_handle,
+                                      "__material_handle", 1));
+    JS_FreeValue(ctx, global);
+}
+
 // Derive a deterministic 64-bit seed from the merged canonical params JSON. If the
 // params contain a numeric "seed" field, honor it (so authors can pick a seed);
 // otherwise fold the whole canonical JSON via FNV-1a so distinct params still draw
@@ -2184,6 +2213,10 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
             merged = "{}";
             JSRuntime* prt = JS_NewRuntime();
             JSContext* pctx = JS_NewContext(prt);
+            // A world that declares materials at module scope evaluates
+            // defineMaterial here too; without the lookup this whole block
+            // would throw and silently fall back to empty static params.
+            install_material_handle(pctx);
             // Evaluate kWorldBaseJS + source to get the class, read static params.
             std::string setup = std::string(kWorldBaseJS) + "\n" + source
                                 + "\n;globalThis.__worldClass = " + className + ";\n";
@@ -2260,6 +2293,9 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
     auto done = [&]() { JS_FreeContext(ctx); JS_FreeRuntime(rt); };
 
     // 4. Evaluate kWorldBaseJS into the context (defines FieldNode, noise2, …, World).
+    //    install_material_handle first: kWorldBaseJS's defineMaterial shim calls
+    //    it, and a world may declare materials at module scope in step 5.
+    install_material_handle(ctx);
     {
         JSValue v = JS_Eval(ctx, kWorldBaseJS, strlen(kWorldBaseJS),
                             "<world-base>", JS_EVAL_TYPE_GLOBAL);

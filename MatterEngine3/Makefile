@@ -84,6 +84,7 @@ FLECS_DIR   = ../third_party/flecs
 SQL_DIR     = ../libs/SpatialQueryLib
 MEMLIB_DIR  = ../libs/MemoryLib
 MATHLIB_DIR = ../libs/MathLib
+MCL_DIR     = ../libs/MeshChartingLib
 OZZ_DIR     = ../third_party/ozz-animation
 OZZ_BUILD_DIR = $(OZZ_DIR)/build/matter
 OZZ_INCLUDE = $(OZZ_DIR)/include
@@ -96,6 +97,10 @@ OZZ_OFFLINE_LIBS = $(OZZ_OFFLINE_LIB) $(OZZ_RUNTIME_LIBS)
 # Include directories: NEW MatterEngine3 headers, consumed MatterSurfaceLib
 # headers, vendored QuickJS-ng, then raylib (for the BLAS/Tri/TriEx types).
 QJS_DIR       = ../third_party/quickjs-ng
+# Vendored CPU BC1-7 block encoders (MIT / public domain -- see
+# third_party/bc7enc/README.md). Consumed only through
+# src/render/bc_encode.{h,cpp}; nothing else includes these headers.
+BC7ENC_DIR    = ../third_party/bc7enc
 BOX3D_DIR     = ../third_party/box3d
 BOX3D_LIB     = $(BOX3D_DIR)/libbox3d.a
 INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
@@ -103,6 +108,7 @@ INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include \
                 -I$(MATHLIB_DIR)/include \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
+                -I$(BC7ENC_DIR) \
                 -I$(PFL_DIR)/include \
                 -I$(FLECS_DIR) \
                 -I$(OZZ_INCLUDE) \
@@ -142,7 +148,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp \
           src/render/part_store.cpp src/render/world_composer.cpp src/render/world_state.cpp \
           src/render/tileset_provider.cpp \
-          src/render/tileset_slicer.cpp \
+          src/render/tileset_slicer.cpp src/render/bc_encode.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
           src/ecs/ecs_runtime.cpp src/ecs/simulation_control.cpp src/ecs/physics_context.cpp src/ecs/physics_shapes.cpp src/ecs/physics_systems.cpp src/ecs/streaming_systems.cpp src/ecs/transform_system.cpp \
           src/scene/scene_service.cpp src/scene/scene_change_tracker.cpp \
@@ -180,6 +186,7 @@ MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
           $(MSL_DIR)/src/occupancy.cpp $(MSL_DIR)/src/tlas_manager.cpp \
           $(MSL_DIR)/src/part_asset.cpp \
           $(MSL_DIR)/src/lattice.cpp $(MSL_DIR)/src/particle_culling.cpp \
+          $(MCL_DIR)/src/mesh_charting.cpp \
           $(EXTRA_RETOPO_CPP)
 
 # MSL C sources: compiled via gcc to keep extern "C" symbols unmangled.
@@ -212,7 +219,7 @@ ME3_OBJ = $(addprefix $(OBJDIR)/,script_host.o dsl_state.o dsl_bindings.o dsl_an
           raster_mesh.o indexed_part_geometry.o matrix_math.o frame_matrices.o vk_temporal.o vk_gi_math.o vk_lighting_controls.o \
           part_store.o world_composer.o world_state.o \
           tileset_provider.o \
-          tileset_slicer.o \
+          tileset_slicer.o bc_encode.o \
           local_provider.o resolvers.o \
           ecs_runtime.o simulation_control.o physics_context.o physics_shapes.o physics_systems.o streaming_systems.o transform_system.o \
           scene_service.o scene_change_tracker.o \
@@ -232,13 +239,19 @@ ME3_OBJ = $(addprefix $(OBJDIR)/,script_host.o dsl_state.o dsl_bindings.o dsl_an
           dispatch_context.o subscription.o event_hub.o command.o \
           property.o)
 
+# Vendored BC encoder objects. Explicit rules (below) rather than vpath: these
+# are third-party sources that must never be picked up by the generic %.cpp
+# rule's source search.
+BC7ENC_OBJ = $(addprefix $(OBJDIR)/,bc7enc.o rgbcx.o)
+
 # MSL C++ object names (basenames; same flat-object model as ME3_OBJ).
 MSL_OBJ = $(addprefix $(OBJDIR)/,cluster.o cell.o mesh_simplifier.o mesh_indexed.o mesh_smooth.o mesh_transform.o \
           blas_manager.o bvh.o bvh_analyzer.o \
           mesh_worker_pool.o mesh_build_utils.o meshing_algorithm.o \
           marching_cubes_algorithm.o oriented_cube_algorithm.o vertex_ao.o \
           occupancy.o tlas_manager.o part_asset.o \
-          lattice.o particle_culling.o $(if $(EXTRA_RETOPO_CPP),mesh_retopo.o))
+          lattice.o particle_culling.o mesh_charting.o \
+          $(if $(EXTRA_RETOPO_CPP),mesh_retopo.o))
 
 # Build layout: <project>/build/obj/ for objects+deps, <project>/build/ for
 # the archive. Keep the project root source-only.
@@ -368,7 +381,7 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/animation src/render src/provider src/script src/ecs src/scene src/streaming src/event $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src
+vpath %.cpp src src/animation src/render src/provider src/script src/ecs src/scene src/streaming src/event $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
@@ -393,6 +406,16 @@ $(OBJDIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(OBJDIR)
 $(OBJDIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(OBJDIR)
 	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
 
+# Vendored BC encoders. Always -O2 (an -O0 bc7enc is ~30x slower, which would
+# show up directly as world-connect stall time) and -w: these are unmodified
+# upstream sources, so their warnings are not this project's to fix or to read
+# past. Explicit rules, and $(BC7ENC_DIR) is deliberately off vpath.
+$(OBJDIR)/bc7enc.o: $(BC7ENC_DIR)/bc7enc.cpp | $(OBJDIR)
+	$(CC) -c $< -o $@ -std=c++17 -O2 -w -I$(BC7ENC_DIR)
+
+$(OBJDIR)/rgbcx.o: $(BC7ENC_DIR)/rgbcx.cpp | $(OBJDIR)
+	$(CC) -c $< -o $@ -std=c++17 -O2 -w -I$(BC7ENC_DIR)
+
 # EXTRA_CFLAGS changes are invisible to make's dependency graph (objects look
 # up-to-date even though they were compiled with different defines, e.g.
 # MATTER_HAVE_AUTOREMESHER). Every C++ object depends on this stamp file,
@@ -413,8 +436,8 @@ $(OBJDIR)/%.o: %.cpp | $(OBJDIR)
 $(BOX3D_LIB):
 	$(MAKE) -C $(BOX3D_DIR)
 
-$(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BOX3D_LIB)
-	ar rcs $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ)
+$(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BC7ENC_OBJ) $(BOX3D_LIB)
+	ar rcs $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BC7ENC_OBJ)
 
 # Delegate to the test suite (headless, GL-free host + raylib-linked BLAS path).
 test:
