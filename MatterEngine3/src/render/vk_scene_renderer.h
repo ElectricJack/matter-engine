@@ -158,6 +158,11 @@ struct VkScenePartChartMesh {
     std::vector<uint32_t> indices;       // 3 per triangle, mesh-local
     uint32_t vertex_count = 0;
     uint32_t dominant_material = 0xFFFFFFFFu;
+    // WP-F (surfaces() tape): per-vertex u8 weight columns over the part's
+    // VkScenePart::surface_materials — vertex_count * material-count bytes,
+    // CPU-evaluated by the engine's compiled tape (see vt_types.h appends).
+    // Empty = no tape for this rung (TriEx materialId weights).
+    std::vector<uint8_t> surface_weights;
 };
 
 struct VkScenePart {
@@ -180,6 +185,13 @@ struct VkScenePart {
     // test fixture can hand over a synthetic table. Empty = neutral albedo.
     std::vector<float> chart_material_table;
     uint32_t chart_material_stride = 0;
+    // WP-F (surfaces() tape): the tape's declared material registry ids —
+    // the columns of every rung's VkScenePartChartMesh::surface_weights —
+    // and the compiled tape's content hash (folds into VT page invalidation:
+    // update_vt_part_surface with a different hash re-fills page content).
+    // Empty = the part carries no tape classification.
+    std::vector<uint32_t> surface_materials;
+    uint64_t surface_tape_hash = 0;
 };
 
 namespace vk_scene_detail {
@@ -298,6 +310,14 @@ struct RtSurfaceHit {
     float baked_ao = 1.0f;
     float hit_t = 0.0f;
     uint32_t flags = 0;
+    // --- WP-G (chart VT + ray cones), from rt_surface_test.rgen words 20-28 -
+    uint32_t vt_slot = 0;            // 0 = the hit rung carries no chart table
+    bool vt_applied = false;         // a VT page actually resolved and sampled
+    matter::Float3 vt_albedo{};      // tinted VT albedo at the hit
+    float vt_desired_mip = 0.0f;     // virtual mip the ray cone asked for
+    float vt_mapped_mip = 0.0f;      // mip that was actually resident
+    float cone_width = 0.0f;         // world-space cone footprint at the hit
+    float uv_density = 0.0f;         // atlas UV per metre across the hit triangle
 };
 
 struct GiTemporalGpuFixture {
@@ -680,6 +700,14 @@ public:
                    : 0;
     }
     VkDeviceAddress test_rt_geometry_address(uint64_t part_hash) const;
+    // WP-G: cone_width/cone_spread drive the ray cone the test ray carries
+    // (footprint at the origin, spread in radians). The 3-argument overload
+    // keeps the pre-WP-G call sites tracing a degenerate (mip-0) cone.
+    bool record_test_surface_ray(const matter::VulkanFrame& frame,
+                                 matter::Float3 origin,
+                                 matter::Float3 direction,
+                                 uint32_t invalid_part_slot, float cone_width,
+                                 float cone_spread, std::string& error);
     bool record_test_surface_ray(const matter::VulkanFrame& frame,
                                  matter::Float3 origin,
                                  matter::Float3 direction,
@@ -1298,6 +1326,12 @@ private:
     // Registers a part's chart-bearing rungs with the residency layer and
     // records their transported slots into parts_[slot].vt_slots.
     void register_vt_part(int part_slot, const VkScenePart& part);
+    // The single (cluster, lod) -> transported VT slot rule, shared by the
+    // raster table below and WP-G's GpuRtPartRecord::vt_slot so a ray hit and
+    // a raster fragment on the same rung resolve the same indirection layer.
+    // `global_cluster` is an index into cluster_lods_ (NOT part-local).
+    uint32_t vt_slot_for_lod(const PartRecord& record, uint32_t global_cluster,
+                             uint32_t lod_index) const;
     // Rebuilds the per-(part, lod) vt slot table cull.comp reads.
     void rebuild_vt_draw_slots();
     // Feeds the tier-1 compositor the two inputs only the renderer knows: the
@@ -1328,6 +1362,28 @@ private:
     uint64_t vt_invalidate_retire_serial() const {
         return vt_frame_serial_ + 2u * vt::VtCompositor::kMaxBatchesInFlight;
     }
+
+public:
+    // --- WP-F: surfaces()-tape live update ----------------------------------
+    // Replaces registered parts' per-vertex tape classification when the
+    // world's surfaces() tape is edited (a new tape hash) without re-uploading
+    // any geometry. Usage: begin (waits the device idle so no fill still
+    // borrows the old weight arrays), any number of per-part updates, end
+    // (drops every resident page so the next frames re-fill from the new
+    // weights). All three are no-ops when the VT runtime never started.
+    void begin_vt_surface_update();
+    // rung_weights is indexed by rung; an empty entry leaves that rung
+    // stripped of classification. `materials` are the tape's declared
+    // registry ids (the weight columns); empty strips the whole part back to
+    // TriEx materialId weights. Returns true when at least one registered
+    // rung was updated.
+    bool update_vt_part_surface(
+        uint64_t part_hash,
+        const std::vector<std::vector<uint8_t>>& rung_weights,
+        const std::vector<uint32_t>& materials, uint64_t tape_hash);
+    void end_vt_surface_update();
+
+private:
 
     matter::VulkanDevice* vulkan_ = nullptr;
     VkAnimationSkinning animation_skinning_;
@@ -1453,6 +1509,9 @@ private:
     // Deliberately independent of VulkanFrame::serial, which the legacy
     // immediate render path does not have.
     uint64_t vt_frame_serial_ = 0;
+    // WP-F: surfaces()-tape live-update bracket state (begin/update/end).
+    bool vt_surface_update_open_ = false;
+    uint32_t vt_surface_updates_applied_ = 0;
     struct GiHistorySet {
         matter::VkImageResource radiance;
         matter::VkImageResource moments;

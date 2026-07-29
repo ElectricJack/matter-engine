@@ -433,6 +433,13 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
         return kVtNoSlot;
     }
 
+    // WP-F: a usable tape classification needs both arrays and an exact
+    // per-vertex weight matrix; anything else fails closed to the TriEx path.
+    const bool has_surface_tape =
+        context.surface_material_count > 0 && context.surface_weights &&
+        context.surface_materials &&
+        context.surface_material_count <= 8u && context.vertex_count > 0;
+
     // Budget the CPU mesh copy BEFORE taking any slot, so a rejection leaves
     // no partial registration behind.
     const size_t mesh_bytes =
@@ -441,10 +448,15 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
              sizeof(float) * 3 * (context.normals ? 1 : 0) +
              sizeof(float) * 2 * (context.surface_uvs ? 1 : 0) +
              sizeof(uint32_t) * (context.material_ids ? 1 : 0) +
-             4 * (context.tint_rgba ? 1 : 0)) +
+             4 * (context.tint_rgba ? 1 : 0) +
+             (has_surface_tape ? context.surface_material_count : 0)) +
         static_cast<size_t>(context.triangle_count) * 3 * sizeof(uint32_t) +
         static_cast<size_t>(context.material_count) * context.material_stride *
             sizeof(float) +
+        (has_surface_tape
+             ? static_cast<size_t>(context.surface_material_count) *
+                   sizeof(uint32_t)
+             : 0) +
         atlas.charts.size() * sizeof(chart_atlas::ChartEntry) +
         atlas.tri_order.size() * sizeof(uint32_t);
     if (mesh_bytes_used_ + mesh_bytes > mesh_budget_bytes_) {
@@ -516,6 +528,26 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
     } else {
         v.context.indices = nullptr;
         v.context.triangle_count = 0;
+    }
+    // WP-F: adopt the surfaces()-tape classification (fail-closed to the
+    // TriEx materialId path when absent or malformed — has_surface_tape).
+    if (has_surface_tape) {
+        v.surface_weights.assign(
+            context.surface_weights,
+            context.surface_weights +
+                static_cast<size_t>(vertices) * context.surface_material_count);
+        v.surface_materials.assign(
+            context.surface_materials,
+            context.surface_materials + context.surface_material_count);
+        v.context.surface_weights = v.surface_weights.data();
+        v.context.surface_materials = v.surface_materials.data();
+        v.context.surface_material_count = context.surface_material_count;
+        v.context.surface_tape_hash = context.surface_tape_hash;
+    } else {
+        v.context.surface_weights = nullptr;
+        v.context.surface_materials = nullptr;
+        v.context.surface_material_count = 0;
+        v.context.surface_tape_hash = 0;
     }
     v.mesh_bytes = mesh_bytes;
     mesh_bytes_used_ += mesh_bytes;
@@ -623,6 +655,52 @@ uint32_t VtResidency::invalidate_all_content() {
 uint32_t VtResidency::slot_for(uint64_t variant_hash, uint32_t rung) const {
     const auto found = layer_of_.find(variant_key(variant_hash, rung));
     return found == layer_of_.end() ? kVtNoSlot : found->second + 1u;
+}
+
+bool VtResidency::update_variant_surface(uint64_t variant_hash, uint32_t rung,
+                                         const uint8_t* weights,
+                                         size_t weight_bytes,
+                                         const uint32_t* materials,
+                                         uint32_t material_count,
+                                         uint64_t tape_hash) {
+    if (!ready_) return false;
+    const auto found = layer_of_.find(variant_key(variant_hash, rung));
+    if (found == layer_of_.end()) return false;
+    VariantRung& v = variants_[found->second];
+    if (!v.live) return false;
+
+    const size_t old_bytes =
+        v.surface_weights.size() + v.surface_materials.size() * sizeof(uint32_t);
+
+    const bool strip = material_count == 0 || weights == nullptr ||
+                       materials == nullptr || material_count > 8u;
+    const size_t expected =
+        static_cast<size_t>(v.context.vertex_count) * material_count;
+    if (!strip && weight_bytes != expected) return false;
+
+    if (strip) {
+        v.surface_weights.clear();
+        v.surface_materials.clear();
+        v.context.surface_weights = nullptr;
+        v.context.surface_materials = nullptr;
+        v.context.surface_material_count = 0;
+        v.context.surface_tape_hash = 0;
+    } else {
+        v.surface_weights.assign(weights, weights + weight_bytes);
+        v.surface_materials.assign(materials, materials + material_count);
+        v.context.surface_weights = v.surface_weights.data();
+        v.context.surface_materials = v.surface_materials.data();
+        v.context.surface_material_count = material_count;
+        v.context.surface_tape_hash = tape_hash;
+    }
+
+    const size_t new_bytes =
+        v.surface_weights.size() + v.surface_materials.size() * sizeof(uint32_t);
+    v.mesh_bytes = v.mesh_bytes - std::min(v.mesh_bytes, old_bytes) + new_bytes;
+    mesh_bytes_used_ =
+        mesh_bytes_used_ - std::min(mesh_bytes_used_, old_bytes) + new_bytes;
+    stats_.mesh_bytes = mesh_bytes_used_;
+    return true;
 }
 
 void VtResidency::write_variant_record(const VariantRung& v) {

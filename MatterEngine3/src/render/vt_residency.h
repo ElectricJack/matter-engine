@@ -422,6 +422,24 @@ class VtResidency {
     void release_variant(uint64_t variant_hash);
     uint32_t slot_for(uint64_t variant_hash, uint32_t rung) const;
 
+    // WP-F: replace one registered (variant, rung)'s surfaces()-tape
+    // classification in place (owned copies + repointed context fields).
+    // weights must be vertex_count * material_count bytes; material_count of
+    // 0 (or an empty tape) strips the classification, reverting the rung to
+    // the TriEx materialId path. Returns false when the (hash, rung) is not
+    // registered or the sizes disagree with the stored mesh.
+    //
+    // CALLER CONTRACT: the device must be idle with respect to fills that
+    // borrow this variant's context (the renderer's vt-surface update path
+    // wait_idles first), and the caller must drop the filler's cached mesh
+    // buffers (VtCompositor::invalidate_part) plus resident page content
+    // (invalidate_all_content) afterwards — this method only swaps the CPU
+    // inputs.
+    bool update_variant_surface(uint64_t variant_hash, uint32_t rung,
+                                const uint8_t* weights, size_t weight_bytes,
+                                const uint32_t* materials,
+                                uint32_t material_count, uint64_t tape_hash);
+
     // Declares every page currently in the pool stale, because what the
     // INSTALLED FILLER bakes from has changed (a detail tileset slot was
     // loaded/evicted, the material table was edited). Rebinding the filler's
@@ -494,6 +512,10 @@ class VtResidency {
         std::vector<float> positions, normals, surface_uvs, material_table;
         std::vector<uint32_t> material_ids, indices;
         std::vector<uint8_t> tint_rgba;
+        // WP-F: owned copies of the surfaces()-tape classification (see
+        // vt_types.h appends); replaced in place by update_variant_surface.
+        std::vector<uint8_t> surface_weights;
+        std::vector<uint32_t> surface_materials;
         size_t mesh_bytes = 0;
         VtPartContext context{};
         uint32_t tail_slot = 0;

@@ -199,12 +199,58 @@ bool copy_animation_debug_asset(
 }
 
 #ifdef MATTER_VULKAN_VIEWER
+// WP-F (chart-VT Phase 4, contract C4): everything the surfaces()-tape
+// classification of one part registration needs. `tape` is the world's
+// compiled classifier; `field` answers its world queries. `world_anchored`
+// is the provider-side instance-count rule (surface_variant_world_anchored):
+// only a variant referenced by exactly one instance may read world inputs —
+// otherwise they evaluate to fallback constants and the misuse diagnostic
+// fires once. local_to_world is that single instance's row-major transform.
+struct VtSurfaceClassifier {
+    const terrain_field::SurfaceRuntime* tape = nullptr;
+    const terrain_field::FieldRuntime* field = nullptr;
+    uint64_t tape_hash = 0;
+    bool world_anchored = false;
+    float local_to_world[16] = {1, 0, 0, 0, 0, 1, 0, 0,
+                                0, 0, 1, 0, 0, 0, 0, 1};
+};
+
+// Evaluates the tape per vertex into quantized weight columns (the shape
+// VkScenePartChartMesh::surface_weights / vt::VtPartContext carry).
+static void vt_classify_chart_vertices(const VtSurfaceClassifier& classifier,
+                                       const float* positions,
+                                       const float* normals,
+                                       uint32_t vertex_count,
+                                       std::vector<uint8_t>& out) {
+    out.clear();
+    if (!classifier.tape || vertex_count == 0 || !positions) return;
+    const bool misuse =
+        classifier.tape->uses_world_inputs() && !classifier.world_anchored;
+    if (misuse && classifier.tape->note_world_input_misuse()) {
+        fprintf(stderr,
+                "[vt] surfaces(): world inputs (altitude/height/moisture/"
+                "biome/...) on a variant referenced by more than one instance; "
+                "they evaluate to fallback constants for such variants "
+                "(warning once)\n");
+    }
+    terrain_field::SurfaceWorldContext world_ctx;
+    world_ctx.field = classifier.field;
+    world_ctx.local_to_world = classifier.local_to_world;
+    const terrain_field::SurfaceWorldContext* world =
+        classifier.world_anchored ? &world_ctx : nullptr;
+    out.resize(static_cast<size_t>(vertex_count) *
+               classifier.tape->material_count());
+    classifier.tape->classify_vertices(positions, normals, vertex_count, world,
+                                       out.data());
+}
+
 bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         uint64_t part_hash,
                         const viewer::LoadedPart& loaded,
                         bool& drawable,
                         std::string& error,
-                        int force_lod = -1);
+                        int force_lod = -1,
+                        const VtSurfaceClassifier* surface = nullptr);
 #endif
 #ifndef MATTER_VULKAN_ONLY
 // Temporary compatibility boundary for the current OpenGL/raylib renderer.
@@ -670,6 +716,13 @@ struct WorldSession::Impl {
     // succeeds when provider->world_module() is non-empty.
     bool install_world(const std::shared_ptr<matter_async::CancelToken>& token,
                        std::string& err);
+    // WP-F: posted (as a GpuJob) when install_world compiles a surfaces()
+    // tape whose hash differs from the previous generation's — re-evaluates
+    // the per-vertex weight columns of every RESIDENT sector against the new
+    // tape and invalidates VT page content, so a surfaces()-only edit
+    // re-textures the world even though sector hashes (and their meshes)
+    // never changed.
+    void schedule_vt_surface_reclassify();
     // Phase C Task 9: drain sector evictions — release resources for evicted sectors.
     // Called on the worker thread (within a gpu_jobs.run_blocking context or inline).
     struct SectorEntry;
@@ -790,6 +843,12 @@ struct WorldSession::Impl {
     // World-kind field runtime (owned; lives for the session generation).
     // Null for closed-world sessions or before install completes.
     std::unique_ptr<terrain_field::FieldRuntime> world_field;
+
+    // WP-F: compiled surfaces() classifier tape (null when the world defines
+    // no surfaces()). Feeds sector registrations (ensure_vulkan_part's
+    // classifier) and — via the hash — VT page invalidation on tape edits.
+    std::unique_ptr<terrain_field::SurfaceRuntime> world_surface;
+    uint64_t world_surface_hash = 0;
 
     // Sea level from the most recent eval_world result (-inf = not a world).
     float world_sea_level = std::numeric_limits<float>::lowest();
@@ -2621,6 +2680,43 @@ bool WorldSession::Impl::install_world(
     }
     world_field = std::make_unique<terrain_field::FieldRuntime>(std::move(prog));
 
+    // 3b. WP-F: parse the surfaces() tape -> SurfaceRuntime (optional).
+    //     Fail-closed on a malformed tape or an unknown material handle; a
+    //     TAPE change with unchanged sector hashes must still re-fill VT page
+    //     content, so a hash delta schedules the live reclassification below.
+    const uint64_t previous_surface_hash = world_surface_hash;
+    world_surface.reset();
+    world_surface_hash = 0;
+    if (!r.surface_program.empty()) {
+        terrain_field::SurfaceProgram sprog;
+        if (!terrain_field::SurfaceProgram::parse(r.surface_program, sprog,
+                                                  perr)) {
+            err = "install_world: SurfaceProgram::parse failed: " + perr;
+            return false;
+        }
+        const int registry_count = MaterialRegistryCount();
+        for (const auto& slot : sprog.materials) {
+            if (slot.handle < 0 || slot.handle >= registry_count) {
+                err = "install_world: surfaces() references material handle " +
+                      std::to_string(slot.handle) +
+                      " outside the registry (defineMaterial at world module "
+                      "scope assigns valid handles)";
+                return false;
+            }
+        }
+        world_surface =
+            std::make_unique<terrain_field::SurfaceRuntime>(std::move(sprog));
+        world_surface_hash = world_surface->hash();
+        fprintf(stderr,
+                "[vt] surfaces() tape compiled: %u materials, %s inputs, "
+                "hash=%016llx\n",
+                world_surface->material_count(),
+                world_surface->uses_world_inputs() ? "world" : "local",
+                (unsigned long long)world_surface_hash);
+    }
+    if (world_surface_hash != previous_surface_hash)
+        schedule_vt_surface_reclassify();
+
     // 4. Store world constants.
     world_sea_level    = world_field->sea_level();
     world_biomes_json  = r.biomes_json;
@@ -2853,6 +2949,90 @@ bool WorldSession::Impl::install_world(
         make_streaming_profile(world_sector_size, provider->world_settings());
     streaming_profile_activation.stage(profile);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// WorldSession::Impl::schedule_vt_surface_reclassify (WP-F)
+// The surfaces() tape changed (or appeared / disappeared) while sectors may
+// still be resident with unchanged hashes and meshes. Re-evaluate every
+// resident sector's per-vertex weight columns against the new tape on the
+// GL thread and push them through the renderer's vt-surface update bracket,
+// whose end drops every resident VT page so the re-fills bake from the new
+// classification (the tape hash ⇒ invalidation contract).
+// ---------------------------------------------------------------------------
+void WorldSession::Impl::schedule_vt_surface_reclassify() {
+#ifdef MATTER_VULKAN_VIEWER
+    if (!vk_scene) return;
+    matter_async::GpuJob job;
+    job.name = "vt.surfaces.reclassify";
+    job.fn = [this](std::string&) noexcept -> bool {
+        matter_async::assert_gl_thread("vt.surfaces.reclassify");
+        try {
+            if (!vk_scene || !store) return true;
+            vk_scene->begin_vt_surface_update();
+            uint32_t updated = 0;
+            for (auto& kv : sector_map) {
+                const SectorEntry& entry = kv.second;
+                if (!entry.resident || entry.part_hash == 0) continue;
+                const viewer::LoadedPart* loaded =
+                    store->get_or_load(entry.part_hash);
+                if (!loaded || loaded->lod_charts.empty()) continue;
+                std::vector<std::vector<uint8_t>> rung_weights(
+                    loaded->lod_charts.size());
+                std::vector<uint32_t> materials;
+                uint64_t tape_hash = 0;
+                if (world_surface) {
+                    VtSurfaceClassifier classifier;
+                    classifier.tape = world_surface.get();
+                    classifier.field = world_field.get();
+                    classifier.tape_hash = world_surface_hash;
+                    uint32_t refs = 0;
+                    for (const auto& e : state.entries())
+                        if (e.part_hash == entry.part_hash) ++refs;
+                    classifier.world_anchored =
+                        terrain_field::surface_variant_world_anchored(refs);
+                    classifier.local_to_world[3] =
+                        static_cast<float>(kv.first.tx) * world_sector_size;
+                    classifier.local_to_world[11] =
+                        static_cast<float>(kv.first.tz) * world_sector_size;
+                    for (uint32_t k = 0; k < world_surface->material_count();
+                         ++k)
+                        materials.push_back(static_cast<uint32_t>(
+                            world_surface->material_handle(k)));
+                    tape_hash = world_surface_hash;
+                    for (size_t mi = 0; mi < loaded->lod_charts.size() &&
+                                        mi < loaded->lod_mesh_data.size();
+                         ++mi) {
+                        if (loaded->lod_charts[mi].charts.empty()) continue;
+                        const auto& mesh = loaded->lod_mesh_data[mi];
+                        if (mesh.vertex_count <= 0) continue;
+                        vt_classify_chart_vertices(
+                            classifier, mesh.vertices.data(),
+                            mesh.normals.empty() ? nullptr
+                                                 : mesh.normals.data(),
+                            static_cast<uint32_t>(mesh.vertex_count),
+                            rung_weights[mi]);
+                    }
+                }
+                if (vk_scene->update_vt_part_surface(
+                        entry.part_hash, rung_weights, materials, tape_hash))
+                    ++updated;
+            }
+            vk_scene->end_vt_surface_update();
+            if (updated != 0) {
+                fprintf(stderr,
+                        "[vt] surfaces() tape change reclassified %u resident "
+                        "sector variants (hash=%016llx)\n",
+                        updated, (unsigned long long)world_surface_hash);
+            }
+        } catch (...) {
+            // Reclassification is a refinement, never a correctness gate: the
+            // worst case is stale page content until sectors re-stream.
+        }
+        return true;
+    };
+    gpu_jobs.post(std::move(job));
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -3602,9 +3782,33 @@ void WorldSession::Impl::bake_and_stage_sector(
                         published.resources.vulkan_attempted = true;
                         bool drawable = false;
                         std::string vulkan_error;
+                        // WP-F: classify the sector's chart vertices against
+                        // the world's surfaces() tape. World-anchored per the
+                        // provider's instance bookkeeping: the entry applied
+                        // above is the variant's only reference iff no other
+                        // manifest entry shares its hash (sector variants are
+                        // unique by construction; this keeps the rule honest).
+                        VtSurfaceClassifier sector_surface;
+                        const VtSurfaceClassifier* surface_ptr = nullptr;
+                        if (world_surface) {
+                            sector_surface.tape = world_surface.get();
+                            sector_surface.field = world_field.get();
+                            sector_surface.tape_hash = world_surface_hash;
+                            uint32_t refs = 0;
+                            for (const auto& e : state.entries())
+                                if (e.part_hash == sector_hash) ++refs;
+                            sector_surface.world_anchored =
+                                terrain_field::surface_variant_world_anchored(
+                                    refs);
+                            std::memcpy(sector_surface.local_to_world,
+                                        instance.transform,
+                                        sizeof(sector_surface.local_to_world));
+                            surface_ptr = &sector_surface;
+                        }
                         if (!ensure_vulkan_part(
                                 *vk_scene, sector_hash, *loaded,
-                                drawable, vulkan_error)) {
+                                drawable, vulkan_error, /*force_lod=*/-1,
+                                surface_ptr)) {
                             throw std::runtime_error(
                                 vulkan_error.empty()
                                     ? "sector Vulkan registration failed"
@@ -4906,7 +5110,8 @@ struct VulkanDiagnosticMaterialOverride {
 
 bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         uint64_t part_hash, const viewer::LoadedPart& loaded,
-                        bool& drawable, std::string& error, int force_lod) {
+                        bool& drawable, std::string& error, int force_lod,
+                        const VtSurfaceClassifier* surface) {
     drawable = false;
     if (loaded.lod_mesh_data.empty()) return true;
     // Perf: everything below builds a complete VkScenePart (per-vertex material
@@ -5056,6 +5261,19 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                     0.0f);
                 MaterialRegistryPackForGPU(part.chart_material_table.data());
             }
+            // WP-F: when the world compiled a surfaces() tape, classify each
+            // chart rung's vertices into per-vertex weight columns the page
+            // compositor interpolates (world inputs per the anchored rule).
+            const bool classify = surface && surface->tape &&
+                                  surface->tape->material_count() > 0;
+            if (classify) {
+                part.surface_tape_hash = surface->tape_hash;
+                part.surface_materials.reserve(
+                    surface->tape->material_count());
+                for (uint32_t k = 0; k < surface->tape->material_count(); ++k)
+                    part.surface_materials.push_back(static_cast<uint32_t>(
+                        surface->tape->material_handle(k)));
+            }
             for (size_t mi = 0;
                  mi < loaded.lod_mesh_data.size() &&
                  mi < part.lod_chart_meshes.size(); ++mi) {
@@ -5072,6 +5290,12 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                 out.dominant_material =
                     mesh.material_ids.empty() ? UINT32_MAX
                                               : mesh.material_ids.front();
+                if (classify) {
+                    vt_classify_chart_vertices(
+                        *surface, out.positions.data(),
+                        out.normals.empty() ? nullptr : out.normals.data(),
+                        out.vertex_count, out.surface_weights);
+                }
             }
         }
     }

@@ -389,8 +389,13 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_shadow.rgen.spv \
 
 # WP-E (chart VT): vt_common.glsl is the shared VT sampling helper. It is an
 # include, not a stage, so it has no .spv of its own -- but every consumer must
-# rebuild when it changes (WP-G adds the RT stages to this list).
-build/shaders_vk/gbuffer.frag.spv: shaders_vk/vt_common.glsl
+# rebuild when it changes. WP-G added the RT stages: rt_surface_common.glsl now
+# includes vt_common.glsl, so every shader that includes IT is a consumer too.
+build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_surface.rchit.spv \
+    build/shaders_vk/rt_visibility.rahit.spv \
+    build/shaders_vk/rt_radiance.rmiss.spv \
+    build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_surface_test.rgen.spv: shaders_vk/vt_common.glsl
 
 shaders_gen/embedded_spirv.h: $(VK_SPV) tools/embed_spirv.py
 	python3 tools/embed_spirv.py $@ $(VK_SPV)

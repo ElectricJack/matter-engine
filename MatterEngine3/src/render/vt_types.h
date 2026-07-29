@@ -128,6 +128,27 @@ struct VtPartContext {
     // its default), UINT32_MAX when unknown. Cheap hint for whole-page fills.
     uint32_t dominant_material = 0xFFFFFFFFu;
     // --- append new fields below this line only ---
+
+    // WP-F (surfaces() tape, contract C4). Per-vertex material weights the
+    // world's compiled surfaces() tape produced (CPU-evaluated at part
+    // registration; terrain_field::SurfaceRuntime::classify_vertices):
+    //   surface_weights[v * surface_material_count + k] = u8 weight of
+    //   surface_materials[k] (a material registry index) at vertex v,
+    //   normalized so a vertex's weights sum to ~255.
+    // The compositor interpolates the weight columns barycentrically per
+    // texel and keeps the top-2 (vt_composite.comp weight-seam mode 2).
+    // surface_material_count == 0 (or null pointers) means "no tape" — the
+    // filler falls back to the TriEx materialId stub, so an older producer
+    // keeps working unchanged. surface_material_count is capped at 8
+    // (terrain_field::kMaxSurfaceMaterials == the shader packing width).
+    // surface_tape_hash is the tape's content hash: it folds into the page/
+    // tail content key, so an edited tape invalidates resident pages (the
+    // renderer's vt-surface update path drops mesh caches + pool content
+    // whenever it changes).
+    const uint8_t*  surface_weights = nullptr;   // vertex_count * surface_material_count
+    const uint32_t* surface_materials = nullptr; // surface_material_count registry ids
+    uint32_t        surface_material_count = 0;
+    uint64_t        surface_tape_hash = 0;
 };
 
 // One page fill, fully resolved by the residency layer.

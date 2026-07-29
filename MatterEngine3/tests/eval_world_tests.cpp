@@ -2,6 +2,9 @@
 #include "check.h"
 #include "../src/script_host.h"
 #include "../src/terrain_field.h"
+#include "material_registry.h"
+#include <fstream>
+#include <sstream>
 #include <string>
 
 using namespace script_host;
@@ -78,6 +81,138 @@ int main() {
     CHECK(r_nofold.ok, r_nofold.message.c_str());
     CHECK(r_nofold.field_program == r.field_program,
           "fold path is transparent when no shared-lib root is set");
+
+    // ---- WP-F: surfaces() tape record/readback/compile round-trip ----
+    // A world with no surfaces() emits no tape (legacy path).
+    CHECK(r.surface_program.empty(), "no surfaces() => empty surface program");
+
+    static const char* kSurfWorld = R"JS(
+class SurfWorld extends World {
+  static params = { worldSeed: 42 };
+  static world  = { sectorSize: 16, yMin: -64, yMax: 192 };
+  field(p) {
+    const relief   = noise2(p.worldSeed ^ 1, 1/900, 3);
+    const moisture = noise2(p.worldSeed ^ 2, 1/700, 3);
+    const height   = noise2(p.worldSeed ^ 3, 1/160, 4).mul(30);
+    return { density: heightToDensity(height), moisture, relief, seaLevel: 0.0 };
+  }
+  surfaces(s) {
+    const steep = s.slope.smoothstep(0.3, 0.6);
+    const snow  = s.altitude.smoothstep(40, 60).mul(steep.oneMinus());
+    const grass = steep.oneMinus().mul(snow.oneMinus());
+    s.weight(31, grass);
+    s.weight(32, steep);
+    s.weight(33, snow);
+  }
+}
+)JS";
+    WorldEvalResult rs = host.eval_world(kSurfWorld, "{}");
+    CHECK(rs.ok, rs.message.c_str());
+    CHECK(!rs.surface_program.empty(), "surfaces() emits a tape");
+    CHECK(rs.field_program.find("input ") == std::string::npos,
+          "surface ops do not leak into the field program");
+    CHECK(rs.surface_program.find("noise2") == std::string::npos,
+          "field ops do not leak into the surface program");
+    {
+        terrain_field::SurfaceProgram sp;
+        std::string serr;
+        CHECK(terrain_field::SurfaceProgram::parse(rs.surface_program, sp, serr),
+              serr.c_str());
+        CHECK(sp.materials.size() == 3, "3 declared materials survive readback");
+        CHECK(sp.materials[0].handle == 31 && sp.materials[1].handle == 32 &&
+                  sp.materials[2].handle == 33,
+              "material handles preserved in declaration order");
+        CHECK(sp.uses_world_inputs(), "altitude marks the tape world-dependent");
+        // Compile + evaluate: flat/low => grass, steep => rock (proves the
+        // recorded oneMinus()/smoothstep chain evaluates as authored).
+        terrain_field::SurfaceRuntime rt{std::move(sp)};
+        float w[terrain_field::kMaxSurfaceMaterials];
+        const float flat_pos[3] = {0, 5, 0}, up[3] = {0, 1, 0};
+        // Null world context: altitude falls back to 0 => no snow.
+        rt.weights_at(flat_pos, up, nullptr, w);
+        CHECK(w[0] > 0.99f && w[1] < 1e-6f && w[2] < 1e-6f,
+              "recorded tape evaluates: flat sample is grass");
+        const float side[3] = {1, 0.05f, 0};
+        rt.weights_at(flat_pos, side, nullptr, w);
+        CHECK(w[1] > 0.99f, "recorded tape evaluates: steep sample is rock");
+    }
+    // Determinism of the recorded tape (this is the invalidation key).
+    WorldEvalResult rs2 = host.eval_world(kSurfWorld, "{}");
+    CHECK(rs2.ok && rs2.surface_program == rs.surface_program,
+          "surface program deterministic across evals");
+
+    // Fail-closed paths: a throwing surfaces() and one that declares nothing.
+    {
+        WorldEvalResult bad_throw = host.eval_world(
+            "class T extends World {"
+            " field(p) { const n = noise2(1, 0.1, 2);"
+            "  return { density: n, moisture: n, relief: n, seaLevel: 0 }; }"
+            " surfaces(s) { throw new Error('surf-boom'); } }",
+            "{}");
+        CHECK(!bad_throw.ok &&
+                  bad_throw.message.find("surf-boom") != std::string::npos,
+              "surfaces() error surfaces");
+        WorldEvalResult bad_empty = host.eval_world(
+            "class T extends World {"
+            " field(p) { const n = noise2(1, 0.1, 2);"
+            "  return { density: n, moisture: n, relief: n, seaLevel: 0 }; }"
+            " surfaces(s) { return s.slope; } }",
+            "{}");
+        CHECK(!bad_empty.ok &&
+                  bad_empty.message.find("no material weights") != std::string::npos,
+              "surfaces() without s.weight() fails loudly");
+    }
+
+    // ---- WP-F: the shipped ChartVtProof world records a compilable tape ----
+    // eval_world's defineMaterial shim RESOLVES handles the world-definition
+    // loader assigned; mirror the loader by registering the three materials
+    // dynamically first, then evaluate the real world source.
+    {
+        std::ifstream in("../../projects/world_demo/worlds/ChartVtProof.js",
+                         std::ios::binary);
+        CHECK(bool(in), "ChartVtProof.js readable from the tests directory");
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        const std::string proof_source = ss.str();
+
+        MaterialRegistryResetDynamic();
+        MaterialDef def{};
+        MaterialRegistryDefaultDynamicDef(&def);
+        const int grass = MaterialRegistryDefineDynamic(&def, "proofGrass");
+        const int rock = MaterialRegistryDefineDynamic(&def, "proofRock");
+        const int snow = MaterialRegistryDefineDynamic(&def, "proofSnow");
+        CHECK(grass >= 30 && rock > grass && snow > rock,
+              "dynamic proof materials registered");
+
+        WorldEvalResult proof = host.eval_world(proof_source, "{}");
+        CHECK(proof.ok, proof.message.c_str());
+        CHECK(!proof.surface_program.empty(), "ChartVtProof records a tape");
+        terrain_field::SurfaceProgram sp;
+        std::string serr;
+        CHECK(terrain_field::SurfaceProgram::parse(proof.surface_program, sp,
+                                                   serr),
+              serr.c_str());
+        CHECK(sp.materials.size() == 3 && sp.uses_world_inputs(),
+              "ChartVtProof declares 3 materials and reads world inputs");
+        CHECK(sp.materials[0].handle == grass &&
+                  sp.materials[1].handle == rock &&
+                  sp.materials[2].handle == snow,
+              "ChartVtProof weights resolve to the registered handles");
+        // Compile + smoke-evaluate: flat/low grass, steep rock, flat/high
+        // snow — under a world context whose altitude is the local y.
+        terrain_field::SurfaceRuntime rt{std::move(sp)};
+        terrain_field::SurfaceWorldContext wctx{nullptr, nullptr};
+        float w[terrain_field::kMaxSurfaceMaterials];
+        const float up[3] = {0, 1, 0}, side[3] = {1, 0.05f, 0};
+        const float low[3] = {0, 5, 0}, high[3] = {0, 90, 0};
+        rt.weights_at(low, up, &wctx, w);
+        CHECK(w[0] > 0.99f, "ChartVtProof: flat low ground is grass");
+        rt.weights_at(high, side, &wctx, w);
+        CHECK(w[1] > 0.99f, "ChartVtProof: steep faces are rock");
+        rt.weights_at(high, up, &wctx, w);
+        CHECK(w[2] > 0.99f, "ChartVtProof: flat high ground is snow");
+        MaterialRegistryResetDynamic();
+    }
 
     return check_summary();
 }

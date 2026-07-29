@@ -90,6 +90,10 @@ struct WorldEvalResult {
     bool ok = false;
     std::string message;          // error text when !ok
     std::string field_program;    // canonical op-line text for FieldProgram::parse
+    // WP-F: canonical op-line text for terrain_field::SurfaceProgram::parse,
+    // recorded by the world's optional surfaces(s) method. Empty when the
+    // world defines no surfaces() (legacy path: TriEx materialId weights).
+    std::string surface_program;
     std::string biomes_json;      // JSON.stringify of biomes() return value
     float sector_size = 16.0f;
     float y_min = -64.0f;

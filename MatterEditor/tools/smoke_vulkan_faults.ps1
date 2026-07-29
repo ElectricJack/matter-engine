@@ -16,7 +16,13 @@ try {
         @{ Label = 'animation skin compute readback'; Mode = 'animation-skin' },
         # WP-E: chart-space virtual texturing residency + stub filler +
         # G-buffer sampling (pages, seams, chartless regression gate).
-        @{ Label = 'chart-space virtual texturing'; Mode = 'vt' }
+        @{ Label = 'chart-space virtual texturing'; Mode = 'vt' },
+        # WP-F: surfaces() classifier tape driving VT page composition
+        # (tape regions, determinism, tape-edit invalidation, strip fallback).
+        @{ Label = 'chart VT surfaces() tape'; Mode = 'vt-surfaces' },
+        # WP-G: RT sampling of VT pages + ray cones (G-buffer/traced-hit
+        # consistency, cone-mip monotonicity).
+        @{ Label = 'chart VT in the RT path'; Mode = 'vt-rt' }
     )
     foreach ($case in $modes) {
         [Environment]::SetEnvironmentVariable('MATTER_VK_SMOKE_MODE',

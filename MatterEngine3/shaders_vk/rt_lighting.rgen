@@ -143,6 +143,61 @@ vec3 rt_sky_irradiance(vec3 normal) {
     return sky_irradiance(normal, constants.sky_color);
 }
 
+// --- WP-G ray cone model ----------------------------------------------------
+//
+// One cone per path, carried in RtSurfacePayload as (width at the ray origin,
+// spread angle). Width at a hit = width + spread * t, folded in by
+// rt_surface.rchit and read back as RtSurface::cone_width.
+//
+// Spawn: the primary cone's spread is the angular size of one TRACED pixel
+// (gl_LaunchSizeEXT, i.e. the trace_scale-reduced grid this raygen actually
+// runs on, not the G-buffer grid), measured directly off clip_to_world so no
+// new push constant is needed. Its width at the primary shading point is that
+// angle times the camera distance, divided by |n.v| so grazing surfaces get
+// the stretched footprint they really have (clamped at 0.1 => 10x, the usual
+// guard against the grazing singularity).
+//
+// Per-bounce widening (the cheap standard approximation, documented as such):
+//   * specular / reflection: spread += 2 * alpha, alpha = roughness^2. For
+//     small alpha this is ~2x the GGX lobe's half-angle, so a mirror keeps a
+//     near-pixel-tight cone and a rough surface immediately blurs to a coarse
+//     mip -- exactly the behaviour the old fixed spread could not express.
+//   * diffuse / cosine-hemisphere: the true lobe is the whole hemisphere, so
+//     there is no finite "correct" cone. RT_CONE_DIFFUSE_SPREAD is a bounded
+//     stand-in: wide enough that one-sample GI reads a smooth mip instead of
+//     aliasing, narrow enough that a nearby bounce still resolves structure.
+//   * refraction walk: spread is carried through unchanged. Refraction scales
+//     the footprint by the IOR ratio, but the walk's radiance lookups are
+//     already a coarse approximation of the transported image and the extra
+//     term is not worth the state.
+// Cones only ever widen, and are clamped so a path cannot run away.
+const float RT_CONE_DIFFUSE_SPREAD = 0.35;
+const float RT_CONE_MAX_SPREAD = 1.5;
+
+float cone_spread_after_roughness(float spread, float roughness) {
+    float alpha = clamp(roughness, 0.0, 1.0);
+    alpha *= alpha;
+    return min(spread + 2.0 * alpha, RT_CONE_MAX_SPREAD);
+}
+
+// Angular footprint of one traced pixel, straight out of clip_to_world:
+// the angle between the ray through this pixel's centre and the ray through
+// the neighbouring pixel in x. Reversed-Z: NDC z = 1.0 is the near plane, and
+// z = 0.5 is a finite point further along the same ray (z = 0.0 is the
+// infinite far plane and unprojects with w = 0).
+vec3 unproject(vec2 uv, float ndc_z) {
+    vec4 h = constants.clip_to_world *
+             vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, ndc_z, 1.0);
+    return h.xyz / h.w;
+}
+
+float primary_pixel_spread(vec2 launch_uv) {
+    vec2 step_uv = launch_uv + vec2(1.0 / float(gl_LaunchSizeEXT.x), 0.0);
+    vec3 d0 = normalize(unproject(launch_uv, 0.5) - unproject(launch_uv, 1.0));
+    vec3 d1 = normalize(unproject(step_uv, 0.5) - unproject(step_uv, 1.0));
+    return max(length(d1 - d0), 1e-6);
+}
+
 vec3 hit_emission(RtSurface surface, out vec3 base, out vec3 shading_normal,
                   out float horizon_mean_occlusion) {
     base = vec3(0.0);
@@ -155,6 +210,20 @@ vec3 hit_emission(RtSurface surface, out vec3 base, out vec3 shading_normal,
     base = mix(material.base_roughness.rgb, surface.tint.rgb, tint_blend);
     vec3 emission_color = mix(material.emission_strength.rgb,
                               surface.tint.rgb, tint_blend);
+    // WP-G: chart VT takes precedence over everything below. A hit on a
+    // VT-bearing part shades from the same pages the raster G-buffer samples,
+    // at the ray cone's mip -- so GI, reflections and the refraction walk all
+    // see the primary pixel's appearance instead of re-deriving it.
+    RtVtSample vt_hit = rt_vt_sample(surface);
+    if (vt_hit.applied) {
+        base = vt_hit.albedo;
+        shading_normal = vt_hit.normal;
+        // VT pages carry no horizon data; tier-1 occlusion rides ORM.r and
+        // WP-H's hemisphere enrichment is what will darken it.
+        horizon_mean_occlusion = 0.0;
+        return emission_color * max(material.emission_strength.w, 0.0) *
+               constants.emission_multiplier;
+    }
     // Ground tileset override (Task 9): replace the flat material color
     // (and the normal used for sky-irradiance shading below) with a
     // Wang-sampled ground texture when the hit material carries a detail
@@ -264,10 +333,23 @@ void main() {
                          (uint(source_pixel.y) * 0x9e3779b9u) ^
                          (constants.presented_frame_index * 0x85ebca6bu) ^
                          0xc2b2ae35u);
+    // WP-G: spawn the path's ray cone from the traced-pixel footprint at this
+    // primary shading point (see the cone model above hit_emission).
+    vec3 primary_near_world = unproject(source_uv, 1.0);
+    vec3 primary_view = normalize(primary_near_world - world);
+    float pixel_spread = primary_pixel_spread(launch_uv);
+    float primary_cone_width =
+        pixel_spread * length(world - primary_near_world) /
+        max(abs(dot(normal, primary_view)), 0.1);
     vec3 bounce = vec3(0.0);
     vec3 throughput = vec3(1.0);
     vec3 vertex_origin = world + normal * constants.bias;
     vec3 vertex_normal = normal;
+    // GI walks the diffuse lobe, so the cone widens by the diffuse stand-in at
+    // every vertex; its width starts at the primary pixel footprint.
+    float vertex_cone_width = primary_cone_width;
+    float vertex_cone_spread =
+        min(pixel_spread + RT_CONE_DIFFUSE_SPREAD, RT_CONE_MAX_SPREAD);
     vec3 to_sun = normalize(constants.to_sun);
     for (int vertex = 0; vertex < 2; ++vertex) {
         vec3 direction = cosine_direction(vertex_normal, seed);
@@ -304,6 +386,8 @@ void main() {
         }
         hit.surface = invalid_rt_surface();
         hit.part_slot = hit.primitive = 0xffffffffu;
+        hit.cone_width = vertex_cone_width;
+        hit.cone_spread = vertex_cone_spread;
         traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, 1, 0, 1,
                     vertex_origin, constants.bias, direction,
                     constants.max_distance, 1);
@@ -358,6 +442,12 @@ void main() {
         vertex_origin = hit.surface.position +
                         hit.surface.normal * constants.bias;
         vertex_normal = hit.surface.normal;
+        // Continue the cone from this vertex: its width at the hit becomes the
+        // next segment's origin width, and the diffuse lobe widens it again.
+        vertex_cone_width = hit.surface.cone_width;
+        vertex_cone_spread =
+            min(vertex_cone_spread + RT_CONE_DIFFUSE_SPREAD,
+                RT_CONE_MAX_SPREAD);
     }
     vec3 primary_diffuse = albedo.rgb * (1.0 - orm.y);
     vec3 raw = primary_diffuse * bounce * orm.z *
@@ -415,6 +505,12 @@ void main() {
         if (n_dot_l > 0.0 && pdf > 1e-8 && lobe_probability > 1e-6) {
             hit.surface = invalid_rt_surface();
             hit.part_slot = hit.primitive = 0xffffffffu;
+            // WP-G: the reflection cone starts at the primary footprint and
+            // widens by the sampled lobe's roughness, so a mirror stays sharp
+            // and a rough reflector reads a coarse VT/tileset mip.
+            hit.cone_width = primary_cone_width;
+            hit.cone_spread =
+                cone_spread_after_roughness(pixel_spread, roughness);
             traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, 1, 0, 1,
                         world + normal * constants.bias, constants.bias,
                         reflected, constants.max_distance, 1);
@@ -473,9 +569,14 @@ void main() {
                 float path_length = 0.0;
                 bool shaded = false;
                 vec3 exit_radiance = vec3(0.0);
+                // WP-G: the refraction walk carries the primary cone (see the
+                // cone model: no IOR rescale, deliberately).
+                float walk_cone_width = primary_cone_width;
                 for (int event = 0; event < 4 && !shaded; ++event) {
                     hit.surface = invalid_rt_surface();
                     hit.part_slot = hit.primitive = 0xffffffffu;
+                    hit.cone_width = walk_cone_width;
+                    hit.cone_spread = pixel_spread;
                     traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, 1, 0, 1,
                                 walk_origin, constants.bias, walk_dir,
                                 constants.max_distance, 1);
@@ -505,8 +606,11 @@ void main() {
                         vec3 exit_origin = hit.surface.position -
                                            hit.surface.normal *
                                                constants.bias;
+                        float exit_cone_width = hit.surface.cone_width;
                         hit.surface = invalid_rt_surface();
                         hit.part_slot = hit.primitive = 0xffffffffu;
+                        hit.cone_width = exit_cone_width;
+                        hit.cone_spread = pixel_spread;
                         traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, 1, 0,
                                     1, exit_origin, constants.bias, exit_dir,
                                     constants.max_distance, 1);
@@ -523,6 +627,7 @@ void main() {
                                                  hit.surface.normal));
                     walk_origin = hit.surface.position +
                                   hit.surface.normal * constants.bias;
+                    walk_cone_width = hit.surface.cone_width;
                 }
                 if (!shaded) {
                     // Event cap reached while still inside: fall back to

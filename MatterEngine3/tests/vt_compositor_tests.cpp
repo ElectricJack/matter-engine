@@ -19,7 +19,14 @@
 //   (e) BC5 normal roundtrip error bounded;
 //   (f) two-chart page seam — decoded albedo continuous across the chart
 //       boundary of a coarse-mip page;
-//   (g) fill-time measurement (timestamp queries, reported per page).
+//   (g) fill-time measurement (timestamp queries, reported per page);
+//   (h) WP-F surfaces()-tape weights (weight-seam mode 2) — a uniform
+//       single-material tape is byte-identical to the mode-0 fill (the tape
+//       path adds nothing when one material owns a texel); a linear
+//       per-vertex A->B tape reproduces the debug-ramp HEIGHT-BLEND fill
+//       within quantization epsilon (the tape drives the same height blend,
+//       not a linear crossfade); the aux channel carries the tape's top-2
+//       ids + blend; tape fills are deterministic.
 
 #include "check.h"
 
@@ -652,6 +659,21 @@ struct QuadFixture {
     chart_atlas::ChartAtlasRung atlas;
     vt::VtPartContext ctx;
     uint64_t variant_hash = 0;
+    // WP-F: optional surfaces()-tape classification.
+    std::vector<uint8_t> tape_weights;     // vertex_count * tape_mats.size()
+    std::vector<uint32_t> tape_mats;
+
+    // Call after finalize(). weights_per_vertex is column-major per vertex.
+    void apply_tape(std::vector<uint32_t> mats,
+                    std::vector<uint8_t> weights_per_vertex,
+                    uint64_t tape_hash) {
+        tape_mats = std::move(mats);
+        tape_weights = std::move(weights_per_vertex);
+        ctx.surface_weights = tape_weights.data();
+        ctx.surface_materials = tape_mats.data();
+        ctx.surface_material_count = uint32_t(tape_mats.size());
+        ctx.surface_tape_hash = tape_hash;
+    }
 
     void finalize(uint64_t hash) {
         variant_hash = hash;
@@ -1120,6 +1142,124 @@ int main() {
                 CHECK(max_step < 0.12f,
                       "two-chart seam: albedo continuous across the chart "
                       "boundary");
+            }
+
+            // ================= (h) WP-F surfaces()-tape weights ===========
+            {
+                // h1: a uniform pure-A tape must be BYTE-identical to the
+                // mode-0 fill of the same geometry (slot 0 above): with one
+                // material owning every texel the tape path collapses to the
+                // same single-material sampling.
+                QuadFixture fix_tape_a;
+                fix_tape_a.add_quad(v3(0, 0, 0), v3(1, 0, 0), v3(0, 0, 1),
+                                    kQuadExtent, v3(0, 1, 0), kMatA);
+                fix_tape_a.atlas = fix_a.atlas;
+                fix_tape_a.finalize(0x1005);
+                fix_tape_a.apply_tape(
+                    {kMatA, kMatB},
+                    {255, 0, 255, 0, 255, 0, 255, 0},   // 4 verts x 2 cols
+                    0xF00D0001ull);
+                vt::VtFillRequest rt_a = make_request(fix_tape_a, 0, 6);
+                CHECK(run_fill(&rt_a, 1), err.c_str());
+                PageData pa, pt;
+                CHECK(read_slot(0, pa) && read_slot(6, pt), err.c_str());
+                CHECK(pt.albedo == pa.albedo,
+                      "tape: uniform single-material tape matches mode-0 "
+                      "albedo byte-exactly");
+                CHECK(pt.normal == pa.normal,
+                      "tape: uniform tape matches mode-0 normal byte-exactly");
+                CHECK(pt.orm == pa.orm,
+                      "tape: uniform tape matches mode-0 ORM byte-exactly");
+                CHECK(pt.aux == pa.aux,
+                      "tape: uniform tape writes the same aux (dominant = A, "
+                      "blend 0)");
+
+                // h2: a linear A->B tape (A at u=0 verts, B at u=extent
+                // verts; barycentric interpolation of {0,255} corners is the
+                // exact linear ramp) must reproduce the debug-ramp fill with
+                // start 0 / width kQuadExtent — the mode the height-blend
+                // identities in (c) already proved is a HEIGHT blend. Match
+                // within quantization epsilon: the two compute the same
+                // per-texel weights modulo fp rounding, so decoded texels may
+                // differ by BC-encode noise only.
+                QuadFixture fix_tape_ramp;
+                fix_tape_ramp.add_quad(v3(0, 0, 0), v3(1, 0, 0), v3(0, 0, 1),
+                                       kQuadExtent, v3(0, 1, 0), kMatA);
+                fix_tape_ramp.atlas = fix_a.atlas;
+                fix_tape_ramp.finalize(0x1006);
+                // add_quad corner order: (0,0), (+u,0), (+u,+v), (0,+v).
+                fix_tape_ramp.apply_tape({kMatA, kMatB},
+                                         {255, 0, 0, 255, 0, 255, 255, 0},
+                                         0xF00D0002ull);
+                vt::VtFillRequest rt_ramp = make_request(fix_tape_ramp, 0, 7);
+                CHECK(run_fill(&rt_ramp, 1), err.c_str());
+                compositor->set_weight_mode(
+                    vt::VtCompositor::WeightMode::kDebugRampBlend, kMatA,
+                    kMatB, 0.0f, kQuadExtent);
+                vt::VtFillRequest r_ref = make_request(fix_a, 0, 8);
+                CHECK(run_fill(&r_ref, 1), err.c_str());
+                compositor->set_weight_mode(
+                    vt::VtCompositor::WeightMode::kTriangleMaterial);
+                PageData ptape, pref;
+                CHECK(read_slot(7, ptape) && read_slot(8, pref), err.c_str());
+                std::vector<uint8_t> tape_rgba, ref_rgba;
+                int bad_tape = 0, bad_ref = 0;
+                decode_page_bc7(ptape.albedo, tape_rgba, bad_tape);
+                decode_page_bc7(pref.albedo, ref_rgba, bad_ref);
+                CHECK(bad_tape == 0 && bad_ref == 0,
+                      "tape ramp pages decode as BC7 mode 6");
+                float max_delta = 0.0f;
+                for (uint32_t py = 8; py < kPageStore - 8; py += 3) {
+                    for (uint32_t px = 8; px < kPageStore - 8; px += 3) {
+                        const size_t o = (size_t(py) * kPageStore + px) * 4;
+                        for (int c = 0; c < 3; ++c)
+                            max_delta = std::max(
+                                max_delta,
+                                std::fabs(tape_rgba[o + c] / 255.0f -
+                                          ref_rgba[o + c] / 255.0f));
+                    }
+                }
+                std::printf("tape ramp vs debug ramp: max albedo delta %.4f\n",
+                            max_delta);
+                CHECK(max_delta < 0.03f,
+                      "tape: interpolated tape weights drive the SAME "
+                      "height-blend as the proven debug ramp (not a "
+                      "different crossfade)");
+
+                // h3: aux carries the tape's top-2 ids and a blend that
+                // grows along the ramp (dominant flips A->B at mid-page).
+                const auto aux_at = [&](uint32_t px, uint32_t py) {
+                    return &ptape.aux[(size_t(py) * kPageStore + px) * 4];
+                };
+                const uint8_t* left = aux_at(20, 68);
+                const uint8_t* right = aux_at(116, 68);
+                CHECK(left[0] == kMatA,
+                      "tape aux: dominant id near u=0 is material A");
+                CHECK(right[0] == kMatB,
+                      "tape aux: dominant id near u=max is material B");
+                CHECK(left[1] == kMatB,
+                      "tape aux: secondary id near u=0 is material B");
+                // Somewhere along the ramp the height blend actually mixes
+                // (an aux blend byte strictly between the extremes). The
+                // exact profile is height-channel-dependent, so assert
+                // existence, not monotonicity.
+                bool mixes = false;
+                for (uint32_t px = 12; px < kPageStore - 12 && !mixes; ++px) {
+                    const uint8_t blend = aux_at(px, 68)[2];
+                    mixes = blend > 10 && blend < 245;
+                }
+                CHECK(mixes,
+                      "tape aux: the ramp band carries fractional blends");
+
+                // h4: tape fills are deterministic (same request twice).
+                vt::VtFillRequest rt_again = make_request(fix_tape_ramp, 0, 9);
+                CHECK(run_fill(&rt_again, 1), err.c_str());
+                PageData ptape2;
+                CHECK(read_slot(9, ptape2), err.c_str());
+                CHECK(ptape2.albedo == ptape.albedo &&
+                          ptape2.normal == ptape.normal &&
+                          ptape2.orm == ptape.orm && ptape2.aux == ptape.aux,
+                      "tape: fills are byte-deterministic");
             }
 
             // ================= (g) fill-time measurement ==================

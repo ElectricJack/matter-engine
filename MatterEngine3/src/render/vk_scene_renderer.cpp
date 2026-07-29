@@ -1859,9 +1859,32 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR |
                                VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
                                VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_MISS_BIT_KHR),
+        // WP-G (chart VT in the RT path): 17/18/19 mirror raster set 1's VT
+        // bindings 10/11/12 (pool array, indirection, variant table). Same
+        // all-four-stages reasoning as 15/16 above: vt_common.glsl is pulled
+        // in by rt_surface_common.glsl, so every stage that includes it lists
+        // these globals in its entry-point interface whether or not it
+        // samples. Binding 13 (feedback) is NOT mirrored — rays never request
+        // pages.
+        descriptor_binding(17, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR |
+                               VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_MISS_BIT_KHR),
+        descriptor_binding(18, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR |
+                               VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_MISS_BIT_KHR),
+        descriptor_binding(19, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR |
+                               VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
                                VK_SHADER_STAGE_MISS_BIT_KHR)};
     bindings[15].descriptorCount =
         tileset::kMaxTilesetSlots * kTilesetChannelCount;
+    bindings[17].descriptorCount = vt::kVtChannelCount;
     VkDescriptorSetLayoutCreateInfo set_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     set_info.bindingCount =
@@ -2726,7 +2749,9 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             !ensure_candidate_buffer(frame.rt_error_counter,
                                      sizeof(GpuRtCounters),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
-            !ensure_candidate_buffer(frame.rt_test_output, 20 * sizeof(uint32_t),
+            // 0-17 surface query, 18/19 reflection-lobe counters,
+            // 20-28 WP-G VT/ray-cone readback (rt_surface_test.rgen).
+            !ensure_candidate_buffer(frame.rt_test_output, 32 * sizeof(uint32_t),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.gi_atrous_markers,
                                      5 * sizeof(uint32_t),
@@ -2791,13 +2816,17 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         // (kMaxTilesetSlots*kTilesetChannelCount combined-image-sampler
         // descriptors -- 48 = 8 slots x 6 channels) and binding 16 (1
         // uniform buffer, TilesetParams) per frame slot.
+        // WP-G: plus bindings 17 (kVtChannelCount = 4 VT pool samplers) and
+        // 18 (1 indirection sampler) combined-image-samplers, and 19 (1
+        // storage buffer, the VT variant table).
         const VkDescriptorPoolSize rt_sizes[] = {
             {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, frame_slot_count},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
              frame_slot_count *
-                 (5 + tileset::kMaxTilesetSlots * kTilesetChannelCount)},
+                 (5 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
+                  vt::kVtChannelCount + 1)},
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 5},
-            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 4},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 5},
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count}};
         VkDescriptorPoolCreateInfo rt_pool{
             VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -3775,6 +3804,24 @@ void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
                                      : part.chart_material_table.data();
         context.material_count = material_count;
         context.material_stride = material_stride;
+        // WP-F: hand over the surfaces()-tape classification when the caller
+        // computed one for this rung. Size mismatches fail closed to the
+        // TriEx materialId path (the residency layer validates again).
+        if (!part.surface_materials.empty() &&
+            rung < part.lod_chart_meshes.size()) {
+            const VkScenePartChartMesh& mesh = part.lod_chart_meshes[rung];
+            const size_t expected =
+                static_cast<size_t>(mesh.vertex_count) *
+                part.surface_materials.size();
+            if (!mesh.surface_weights.empty() &&
+                mesh.surface_weights.size() == expected) {
+                context.surface_weights = mesh.surface_weights.data();
+                context.surface_materials = part.surface_materials.data();
+                context.surface_material_count =
+                    static_cast<uint32_t>(part.surface_materials.size());
+                context.surface_tape_hash = part.surface_tape_hash;
+            }
+        }
         const uint32_t slot = vt_->register_variant(
             part.part_hash, static_cast<uint32_t>(rung), atlas, context);
         record.vt_slots[rung] = slot;
@@ -3782,24 +3829,101 @@ void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
     }
 }
 
+// --- WP-F: surfaces()-tape live update --------------------------------------
+// A tape edit changes what the compositor bakes into every page of every
+// tape-classified variant, without touching geometry or tileset bindings. The
+// bracket mirrors push_vt_compositor_inputs' discipline: wait the device idle
+// once (tape edits are live-edit events, not per-frame ones), swap the CPU
+// weight columns in the residency layer's owned copies, drop the compositor's
+// cached GPU triangle streams (they embed the old weights), then declare all
+// resident page content stale so the queued re-fills bake from the new tape.
+
+void VkSceneRenderer::begin_vt_surface_update() {
+    vt_surface_update_open_ = false;
+    vt_surface_updates_applied_ = 0;
+    if (!vt_ || !vt_->available()) return;
+    // No fill referencing the old weight arrays (or the mesh caches about to
+    // be invalidated) may still be unretired while we swap them.
+    vulkan_->wait_idle();
+    vt_surface_update_open_ = true;
+}
+
+bool VkSceneRenderer::update_vt_part_surface(
+    uint64_t part_hash, const std::vector<std::vector<uint8_t>>& rung_weights,
+    const std::vector<uint32_t>& materials, uint64_t tape_hash) {
+    if (!vt_surface_update_open_ || !vt_ || !vt_->available()) return false;
+    bool updated = false;
+    // Same rung sweep bound as VtResidency::release_variant.
+    for (uint32_t rung = 0; rung < 32u; ++rung) {
+        if (vt_->slot_for(part_hash, rung) == vt::kVtNoSlot) continue;
+        const std::vector<uint8_t>* weights =
+            rung < rung_weights.size() ? &rung_weights[rung] : nullptr;
+        const bool strip =
+            materials.empty() || weights == nullptr || weights->empty();
+        const bool ok = vt_->update_variant_surface(
+            part_hash, rung, strip ? nullptr : weights->data(),
+            strip ? 0 : weights->size(), strip ? nullptr : materials.data(),
+            strip ? 0u : static_cast<uint32_t>(materials.size()), tape_hash);
+        updated = updated || ok;
+    }
+    if (updated) {
+        // The compositor's cached per-(variant, rung) triangle buffers embed
+        // the per-vertex weights; rebuild them from the swapped context on the
+        // next fill. Safe immediately: begin_vt_surface_update wait_idled.
+        if (vt_compositor_) vt_compositor_->invalidate_part(part_hash);
+        ++vt_surface_updates_applied_;
+    }
+    return updated;
+}
+
+void VkSceneRenderer::end_vt_surface_update() {
+    if (!vt_surface_update_open_) return;
+    vt_surface_update_open_ = false;
+    if (vt_surface_updates_applied_ == 0) return;
+    vt_surface_updates_applied_ = 0;
+    // Same reasoning as push_vt_compositor_inputs: swapping inputs only fixes
+    // FUTURE fills; every resident page (pinned tails included) was baked from
+    // the old tape. invalidate_all_content only QUEUES re-fills — they drain
+    // in the next record_frame, strictly after the updates above.
+    if (vt_ && vt_->available()) vt_->invalidate_all_content();
+}
+
+uint32_t VkSceneRenderer::vt_slot_for_lod(const PartRecord& record,
+                                          uint32_t global_cluster,
+                                          uint32_t lod_index) const {
+    // The ONE (cluster, lod) -> vt slot mapping. Both consumers go through it:
+    // rebuild_vt_draw_slots() (raster, via cull.comp's vt_draw_slots table)
+    // and emit_ray_instances() (WP-G, via GpuRtPartRecord::vt_slot). A ray hit
+    // and a raster fragment on the same rung MUST address the same indirection
+    // layer, so these two must never drift apart — hence the shared helper
+    // rather than a second transcription of the rule.
+    //
+    // A cluster's ladder position is not its rung index: VkSceneLod::chart_rung
+    // names the rung the step actually draws.
+    if (record.vt_slots.empty()) return vt::kVtNoSlot;
+    if (global_cluster >= cluster_lods_.size()) return vt::kVtNoSlot;
+    const std::vector<VkSceneLod>& lods = cluster_lods_[global_cluster];
+    if (lod_index >= lods.size()) return vt::kVtNoSlot;
+    const uint32_t rung = lods[lod_index].chart_rung;
+    if (rung >= record.vt_slots.size()) return vt::kVtNoSlot;
+    return record.vt_slots[rung];
+}
+
 void VkSceneRenderer::rebuild_vt_draw_slots() {
     // Indexed exactly like command_template_: cluster_index * kVkMaxLod + lod,
-    // which is the `bucket` cull.comp already computes. Per-cluster rather
-    // than per-part because a cluster's ladder position is not its rung
-    // index — VkSceneLod::chart_rung names the rung the step actually draws.
+    // which is the `bucket` cull.comp already computes.
     vt_draw_slot_table_.assign(cluster_staging_.size() * kVkMaxLod,
                                vt::kVtNoSlot);
     for (size_t cluster = 0; cluster < cluster_lods_.size(); ++cluster) {
         const uint32_t part_slot = cluster_staging_[cluster].part_slot;
         if (part_slot >= parts_.size()) continue;
         const PartRecord& record = parts_[part_slot];
-        if (record.vt_slots.empty()) continue;
-        const std::vector<VkSceneLod>& lods = cluster_lods_[cluster];
-        for (size_t lod = 0; lod < lods.size() && lod < kVkMaxLod; ++lod) {
-            const uint32_t rung = lods[lod].chart_rung;
-            if (rung >= record.vt_slots.size()) continue;
+        const size_t lod_count =
+            std::min<size_t>(cluster_lods_[cluster].size(), kVkMaxLod);
+        for (size_t lod = 0; lod < lod_count; ++lod) {
             vt_draw_slot_table_[cluster * kVkMaxLod + lod] =
-                record.vt_slots[rung];
+                vt_slot_for_lod(record, static_cast<uint32_t>(cluster),
+                                static_cast<uint32_t>(lod));
         }
     }
     vt_draw_slots_dirty_ = false;
@@ -5100,6 +5224,14 @@ bool VkSceneRenderer::record_test_surface_ray(
     const matter::VulkanFrame& frame, matter::Float3 origin,
     matter::Float3 direction, uint32_t invalid_part_slot,
     std::string& error) {
+    return record_test_surface_ray(frame, origin, direction, invalid_part_slot,
+                                   0.0f, 0.0f, error);
+}
+
+bool VkSceneRenderer::record_test_surface_ray(
+    const matter::VulkanFrame& frame, matter::Float3 origin,
+    matter::Float3 direction, uint32_t invalid_part_slot, float cone_width,
+    float cone_spread, std::string& error) {
     error.clear();
     if (!vulkan_->ray_tracing_available() || rt_pipeline_ == VK_NULL_HANDLE ||
         frame.command_buffer == VK_NULL_HANDLE ||
@@ -5133,7 +5265,10 @@ bool VkSceneRenderer::record_test_surface_ray(
     struct alignas(16) SurfaceTestConstants {
         float origin_tmin[4];
         float direction_tmax[4];
+        float cone[4];   // WP-G: (width at origin, spread angle, 0, 0)
     } constants{};
+    constants.cone[0] = cone_width;
+    constants.cone[1] = cone_spread;
     constants.origin_tmin[0] = origin.x;
     constants.origin_tmin[1] = origin.y;
     constants.origin_tmin[2] = origin.z;
@@ -5239,7 +5374,7 @@ bool VkSceneRenderer::readback_test_surface_hit(
     if (!matter::map_buffer(selected.rt_test_output, error) ||
         !matter::map_buffer(selected.rt_error_counter, error) ||
         !matter::invalidate_buffer(selected.rt_test_output, 0,
-                                   18 * sizeof(uint32_t), error) ||
+                                   29 * sizeof(uint32_t), error) ||
         !matter::invalidate_buffer(selected.rt_error_counter, 0,
                                    sizeof(GpuRtCounters), error)) return false;
     const auto* words =
@@ -5264,6 +5399,15 @@ bool VkSceneRenderer::readback_test_surface_hit(
                 as_float(words[14]), as_float(words[15])};
     hit.uv[0] = as_float(words[16]);
     hit.uv[1] = as_float(words[17]);
+    // WP-G: words 18/19 are rt_lighting.rgen's reflection-lobe counters.
+    hit.vt_slot = words[20];
+    hit.vt_applied = words[21] != 0u;
+    hit.vt_albedo = {as_float(words[22]), as_float(words[23]),
+                     as_float(words[24])};
+    hit.vt_desired_mip = as_float(words[25]);
+    hit.vt_mapped_mip = as_float(words[26]);
+    hit.cone_width = as_float(words[27]);
+    hit.uv_density = as_float(words[28]);
     invalid_count =
         *static_cast<const uint32_t*>(selected.rt_error_counter.mapped);
     return true;
@@ -8255,6 +8399,12 @@ bool VkSceneRenderer::emit_ray_instances(
         record.vertex_count = part.vertex_count;
         record.primitive_count = lod.primitive_count;
         record.valid = 1u;
+        // WP-G: the VT slot for the exact rung this BLAS traces.
+        // RtLodRecord::cluster_index is PART-LOCAL; cluster_lods_ (and the
+        // raster vt_draw_slots table) are indexed globally, so rebase first.
+        record.vt_slot =
+            vt_slot_for_lod(part, part.cluster_start + lod.cluster_index,
+                            lod.lod_index);
         part_records.push_back(record);
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
         const bool built_this_frame = std::any_of(
@@ -8499,7 +8649,30 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     }
     VkDescriptorBufferInfo tileset_params_info{tileset_params_.buffer, 0,
                                                sizeof(TilesetParamsGpu)};
-    VkWriteDescriptorSet writes[17]{};
+    // WP-G: bindings 17/18/19 mirror raster set 1's VT bindings 10/11/12,
+    // built from exactly the same live/dummy state
+    // write_vt_descriptors_for_frame() uses so a ray and a fragment resolve
+    // against the identical pool, indirection and variant table.
+    VkDescriptorImageInfo vt_pool_infos[vt::kVtChannelCount]{};
+    const bool vt_live = vt_ && vt_->available();
+    for (uint32_t c = 0; c < vt::kVtChannelCount; ++c) {
+        vt_pool_infos[c].sampler =
+            vt_live ? vt_->pool_sampler() : tileset_sampler_;
+        vt_pool_infos[c].imageView =
+            vt_live ? vt_->pool_view(c) : tileset_dummy_rgba8_.view;
+        vt_pool_infos[c].imageLayout =
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    // UINT formats never advertise LINEAR filtering — the indirection always
+    // takes the dedicated nearest sampler, dummy included.
+    VkDescriptorImageInfo vt_indirection_info{
+        vt_point_sampler_,
+        vt_live ? vt_->indirection_view() : vt_dummy_indirection_.view,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorBufferInfo vt_variants_info{
+        vt_live ? vt_->variant_buffer() : vt_dummy_storage_.buffer, 0,
+        vt_live ? vt_->variant_buffer_size() : VkDeviceSize{64}};
+    VkWriteDescriptorSet writes[20]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].pNext = &as_write;
     writes[0].dstSet = rt_descriptor_sets_[frame.frame_slot];
@@ -8567,7 +8740,20 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     writes[16].descriptorCount = 1;
     writes[16].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[16].pBufferInfo = &tileset_params_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 17, writes, 0, nullptr);
+    for (uint32_t i = 17; i < 20; ++i) {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = rt_descriptor_sets_[frame.frame_slot];
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+    }
+    writes[17].descriptorCount = vt::kVtChannelCount;
+    writes[17].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[17].pImageInfo = vt_pool_infos;
+    writes[18].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[18].pImageInfo = &vt_indirection_info;
+    writes[19].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[19].pBufferInfo = &vt_variants_info;
+    vkUpdateDescriptorSets(vulkan_->device(), 20, writes, 0, nullptr);
     struct alignas(16) ShadowConstants {
         GpuMat4 clip_to_world;
         float to_sun_max_distance[4];
@@ -8806,6 +8992,18 @@ bool VkSceneRenderer::record_cull_and_render(
         gi_candidate_attempt_token_ = 0;
         gi_history_reset_pending_ = true;
     }
+    // WP-E/WP-G: this frame slot's fence has already been waited on, so
+    // consuming its previous feedback readback and rewriting its VT
+    // descriptors is safe. It must happen BEFORE anything binds scene set 1
+    // into this command buffer -- write_vt_descriptors_for_frame() updates
+    // that very set, and updating a set already bound in a RECORDING command
+    // buffer invalidates the buffer (VUID-...-commandBuffer-recording; without
+    // UPDATE_AFTER_BIND the binding is not allowed to change). The cull
+    // dispatch below is the first such binding, so the call sits here rather
+    // than next to the raster record where the immediate path keeps it.
+    // ensure_raster_targets() above has already published raster_extent_,
+    // which is what sizes the feedback target.
+    vt_begin_frame(selected, frame.frame_slot);
     update_composite_descriptor(selected);
     // prepare_frame owns the existing scene resources for this slot. Newly
     // created/replaced attachments are retained here before commands reference
@@ -8991,10 +9189,9 @@ bool VkSceneRenderer::record_cull_and_render(
                         kGpuZoneVt};       // WP-E: vt_zone
     if (volumetrics_)
         volumetrics_->set_lighting(frame_lighting);
-    // WP-E: this frame slot's fence has already been waited on, so consuming
-    // its previous feedback readback and rewriting its VT descriptors is safe
-    // here and only here.
-    vt_begin_frame(selected, frame.frame_slot);
+    // (vt_begin_frame ran near the top of this function — see the note there:
+    // it rewrites scene set 1, which the cull dispatch has already bound by
+    // the time control reaches here.)
     record_raster(frame.command_buffer, &record);
     if (!ray_trace_ok) return false;
     raster_attachments_ready_ = true;

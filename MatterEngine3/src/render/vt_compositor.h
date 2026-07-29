@@ -98,12 +98,20 @@ class VtCompositor final : public VtPageFiller {
     // Distinct fill() batches that may be in flight on the GPU at once.
     static constexpr uint32_t kMaxBatchesInFlight = 4;
 
-    // Material-weight source for vt_composite.comp's seam function (WP-F
-    // replaces the shader-side body; these modes exist for Phase 2 + tests).
+    // Material-weight source for vt_composite.comp's seam function.
+    // kTriangleMaterial is the resting default; requests against a part whose
+    // VtPartContext carries surfaces()-tape weights (surface_material_count
+    // > 0) are promoted per-request to kSurfaceTape — barycentrically
+    // interpolated per-vertex weight columns, top-2 kept per texel (WP-F,
+    // contract C4). The debug ramp remains a test-only override.
     enum class WeightMode : uint32_t {
         kTriangleMaterial = 0,   // Phase-2 stub: TriEx materialId, weight 1
         kDebugRampBlend = 1,     // test hook: 2-material ramp along plane U
+        kSurfaceTape = 2,        // WP-F: per-vertex tape weights (auto-selected)
     };
+    // Per-vertex tape weights packed into the GPU triangle stream, 8 u8
+    // columns per vertex — must equal terrain_field::kMaxSurfaceMaterials.
+    static constexpr uint32_t kMaxSurfaceMaterials = 8;
 
     // pipeline_cache may be VK_NULL_HANDLE. Fail-closed: nullptr + err.
     static std::unique_ptr<VtCompositor> create(VkDevice device,

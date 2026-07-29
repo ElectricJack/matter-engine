@@ -16,7 +16,8 @@ struct Op {
     enum Kind {
         Const, Noise2, Ridge2, Warp2,
         Add, Mul, Min, Max, Clamp,
-        Blend, Smoothstep
+        Blend, Smoothstep,
+        Input            // surfaces() tape only: read a per-sample input (oct = code)
     } kind;
     int a = -1, b = -1, c = -1;        // register operands (-1 = unused)
     float f0 = 0, f1 = 0, f2 = 0, f3 = 0; // literals: value/freq/gain/lac/edges
@@ -81,6 +82,125 @@ private:
     void eval_regs(float regs[], int count, float x, float z) const;
 
     float eval_reg(int target, float x, float z) const;
+};
+
+// ---------------------------------------------------------------------------
+// surfaces() classifier tape (chart-VT spec Phase 4 / plan contract C4).
+//
+// A world instance method `surfaces(s)` records an op tape (world_base.js.h,
+// `globalThis.__surface_ops` + `__surface_mats`) that the host reads back as
+// canonical text; SurfaceProgram::parse compiles it here, next to the terrain
+// field whose op set it reuses. SurfaceRuntime evaluates the tape per surface
+// sample (part-local position + normal always; world-frame queries only when
+// the caller supplies a SurfaceWorldContext — the world-anchored rule) into
+// weights over the declared materials. The page compositor consumes the
+// weights as per-vertex u8 columns (classify_vertices) and keeps the top-2
+// per texel on the GPU.
+// ---------------------------------------------------------------------------
+
+// Per-sample inputs an `input <name>` op can read. Codes are the parse order
+// below; kSurfaceInputWorldFirst and up require a world context.
+enum SurfaceInput : int {
+    kSurfInLocalX = 0,   // part-local position, metres
+    kSurfInLocalY = 1,
+    kSurfInLocalZ = 2,
+    kSurfInNormalY = 3,  // part-local unit normal y
+    kSurfInSlope = 4,    // clamp(1 - normal.y, 0, 1): 0 flat, 1 vertical+
+    // ---- world inputs (world-anchored variants only) ----
+    kSurfInWorldX = 5,   // world-space position of the sample
+    kSurfInAltitude = 6, // world-space y
+    kSurfInWorldZ = 7,
+    kSurfInHeight = 8,   // terrain field height at (worldX, worldZ)
+    kSurfInMoisture = 9,
+    kSurfInRelief = 10,
+    kSurfInBiome = 11,   // FieldRuntime::Biome as float (0..3)
+    kSurfInCount = 12,
+};
+constexpr int kSurfaceInputWorldFirst = kSurfInWorldX;
+
+// Hard cap on declared tape materials; mirrored by the compositor's per-vertex
+// weight packing (vt_compositor.cpp / vt_composite.comp pack 8 u8 weights per
+// mesh vertex — keep the two in sync).
+constexpr int kMaxSurfaceMaterials = 8;
+
+// The world-anchored rule (contract C4): only a variant referenced by exactly
+// one instance may read world inputs (terrain sectors qualify by design).
+inline bool surface_variant_world_anchored(uint32_t instance_count) {
+    return instance_count == 1;
+}
+
+struct SurfaceProgram {
+    // Parse canonical text: op lines (const/noise2/ridge2/add/mul/min/max/
+    // clamp/blend/smoothstep/input) followed by `material <handle> r<reg>`
+    // directives. warp2 is NOT part of the surface op set. Returns false and
+    // sets err on any violation (including 0 or > kMaxSurfaceMaterials
+    // declared materials).
+    static bool parse(const std::string& text, SurfaceProgram& out, std::string& err);
+
+    // FNV-1a 64-bit hash over the canonical program text bytes. Folds into the
+    // VT page/tail content key so an edited tape invalidates resident pages.
+    uint64_t hash() const;
+
+    const std::string& text() const { return text_; }
+    bool uses_world_inputs() const { return uses_world_inputs_; }
+
+    struct MaterialSlot {
+        int handle = -1;   // material registry index
+        int reg = -1;      // weight register
+    };
+
+    std::vector<Op> ops;
+    std::vector<MaterialSlot> materials;
+
+private:
+    bool uses_world_inputs_ = false;
+    std::string text_;
+};
+
+// World-frame evaluation context. `field` supplies height/moisture/relief/
+// biome; `local_to_world` is a row-major float[16] (null = identity). Passing
+// no context at all (null SurfaceWorldContext*) makes every world input
+// evaluate to its deterministic fallback constant.
+struct SurfaceWorldContext {
+    const FieldRuntime* field = nullptr;
+    const float* local_to_world = nullptr;
+};
+
+class SurfaceRuntime {
+public:
+    explicit SurfaceRuntime(SurfaceProgram p);
+
+    const SurfaceProgram& program() const { return prog_; }
+    uint64_t hash() const { return prog_.hash(); }
+    bool uses_world_inputs() const { return prog_.uses_world_inputs(); }
+    uint32_t material_count() const { return (uint32_t)prog_.materials.size(); }
+    int material_handle(uint32_t i) const { return prog_.materials[i].handle; }
+
+    // Weights (clamped >= 0, NOT normalized) for one sample. out_weights has
+    // material_count() entries. `world` null => world inputs read fallback
+    // constants (worldX/altitude/worldZ/height = 0, moisture/relief = 0.5,
+    // biome = 1 — deterministic, never instance-dependent).
+    void weights_at(const float pos[3], const float nrm[3],
+                    const SurfaceWorldContext* world, float* out_weights) const;
+
+    // Quantized per-vertex evaluation over an indexed mesh stream (positions
+    // 3*n; normals 3*n, may be null => +Y). Per vertex the weights are
+    // normalized to sum 1 then quantized to u8 (all-zero => material 0 gets
+    // 255). `out` receives vertex_count * material_count() bytes, weight
+    // column-major per vertex.
+    void classify_vertices(const float* positions, const float* normals,
+                           uint32_t vertex_count,
+                           const SurfaceWorldContext* world,
+                           uint8_t* out) const;
+
+    // Warn-once latch for the world-input misuse diagnostic (world inputs on
+    // a variant that is not world-anchored). Returns true exactly once per
+    // runtime instance; the caller owns the actual message.
+    bool note_world_input_misuse() const;
+
+private:
+    SurfaceProgram prog_;
+    mutable bool misuse_noted_ = false;
 };
 
 } // namespace terrain_field

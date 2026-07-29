@@ -32,15 +32,25 @@ struct GpuTri {
     float p0[4], p1[4], p2[4];
     float n0[4], n1[4], n2[4];
     uint32_t mat[4];
+    // WP-F: per-vertex surfaces()-tape weights, 8 u8 columns per vertex
+    // (kMaxSurfaceMaterials), 2 u32 per vertex:
+    //   wA = {v0 cols 0-3, v0 cols 4-7, v1 cols 0-3, v1 cols 4-7}
+    //   wB = {v2 cols 0-3, v2 cols 4-7, 0, 0}
+    // All zero when the part carries no tape (weight mode never reads them).
+    uint32_t wA[4];
+    uint32_t wB[4];
 };
-static_assert(sizeof(GpuTri) == 112, "GpuTri must match std430 layout");
+static_assert(sizeof(GpuTri) == 144, "GpuTri must match std430 layout");
 
 struct GpuFillRequest {
     uint32_t a[4];   // page_x, page_y, mip, out_layer
     uint32_t b[4];   // cand_offset, cand_count, weight_mode, debug materials
     float debug_params[4];
+    // WP-F: tape material registry ids for weight columns 0-7 (u8 each, x =
+    // cols 0-3, y = cols 4-7), z = declared column count, w unused.
+    uint32_t tape[4];
 };
-static_assert(sizeof(GpuFillRequest) == 48, "GpuFillRequest layout");
+static_assert(sizeof(GpuFillRequest) == 64, "GpuFillRequest layout");
 
 struct GpuVtMaterial {
     float albedo[4];
@@ -685,6 +695,14 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
     if (mesh_cache.size() >= kMaxMeshEntries) return nullptr;
     if (atlas->charts.empty()) return nullptr;
 
+    // WP-F: whether this part carries a surfaces()-tape classification whose
+    // per-vertex weight columns get packed into the triangle stream below.
+    const bool has_tape =
+        ctx->surface_material_count > 0 &&
+        ctx->surface_material_count <= VtCompositor::kMaxSurfaceMaterials &&
+        ctx->surface_weights != nullptr;
+    const uint32_t tape_cols = has_tape ? ctx->surface_material_count : 0;
+
     // Reorder triangles chart-grouped (tri_order) with per-vertex plane
     // coordinates precomputed against each chart's basis.
     std::vector<GpuChart> gcharts(atlas->charts.size());
@@ -728,9 +746,11 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
             float pos[3][3];
             bool corners_ok = true;
             uint32_t corner0 = 0;
+            uint32_t corners[3] = {0, 0, 0};
             for (int v = 0; v < 3; ++v) {
                 const uint32_t corner = ctx->indices[3 * ti + v];
                 if (corner >= ctx->vertex_count) { corners_ok = false; break; }
+                corners[v] = corner;
                 if (v == 0) corner0 = corner;
                 for (int k = 0; k < 3; ++k)
                     pos[v][k] = ctx->positions[3 * corner + k];
@@ -775,6 +795,28 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
                           : 0u;
             }
             g_tri.mat[0] = mat & 0xFFu;
+            if (has_tape) {
+                // Pack each corner's u8 weight columns: 2 u32 per vertex,
+                // little-endian within the u32 (column k at bit 8*(k&3)).
+                const auto pack_pair = [&](uint32_t corner, uint32_t out[2]) {
+                    out[0] = 0;
+                    out[1] = 0;
+                    const uint8_t* w =
+                        ctx->surface_weights + size_t(corner) * tape_cols;
+                    for (uint32_t k = 0; k < tape_cols; ++k)
+                        out[k >> 2] |= uint32_t(w[k]) << ((k & 3u) * 8u);
+                };
+                uint32_t pair[2];
+                pack_pair(corners[0], pair);
+                g_tri.wA[0] = pair[0];
+                g_tri.wA[1] = pair[1];
+                pack_pair(corners[1], pair);
+                g_tri.wA[2] = pair[0];
+                g_tri.wA[3] = pair[1];
+                pack_pair(corners[2], pair);
+                g_tri.wB[0] = pair[0];
+                g_tri.wB[1] = pair[1];
+            }
             gtris.push_back(g_tri);
             ++emitted;
         }
@@ -1079,12 +1121,34 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
         g.a[3] = rec_index % kBatchStride;   // intermediate layer in group
         g.b[0] = cand_offset;
         g.b[1] = cand_count;
-        g.b[2] = static_cast<uint32_t>(im.weight_mode);
+        // WP-F: a part carrying surfaces()-tape weights promotes the resting
+        // default to the tape mode per request; the debug-ramp test override
+        // still wins so the WP-D goldens keep exercising their fixed path.
+        const bool has_tape =
+            ctx->surface_material_count > 0 &&
+            ctx->surface_material_count <= kMaxSurfaceMaterials &&
+            ctx->surface_weights != nullptr &&
+            ctx->surface_materials != nullptr;
+        const WeightMode mode =
+            (has_tape && im.weight_mode == WeightMode::kTriangleMaterial)
+                ? WeightMode::kSurfaceTape
+                : im.weight_mode;
+        g.b[2] = static_cast<uint32_t>(mode);
         g.b[3] = (im.debug_mat_a & 0xFFFFu) | (im.debug_mat_b << 16);
         g.debug_params[0] = im.debug_blend_start;
         g.debug_params[1] = im.debug_blend_width;
         g.debug_params[2] = 0.0f;
         g.debug_params[3] = 0.0f;
+        g.tape[0] = 0;
+        g.tape[1] = 0;
+        g.tape[2] = 0;
+        g.tape[3] = 0;
+        if (has_tape) {
+            for (uint32_t k = 0; k < ctx->surface_material_count; ++k)
+                g.tape[k >> 2] |= (ctx->surface_materials[k] & 0xFFu)
+                                  << ((k & 3u) * 8u);
+            g.tape[2] = ctx->surface_material_count;
+        }
         recs.push_back(Rec{entry, pool, rec_index, req.physical_slot});
     }
     if (recs.empty()) return;

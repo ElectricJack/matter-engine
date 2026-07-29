@@ -70,7 +70,17 @@ typedef struct GpuRtPartRecord {
     uint32_t vertex_count;      // part unique-vertex count
     uint32_t primitive_count;   // index_count / 3 for this BLAS
     uint32_t valid;
-    uint32_t pad0, pad1, pad2, pad3;
+    // WP-G (chart VT in the RT path): the transported VT slot (layer + 1;
+    // vt::kVtNoSlot == 0 means "this BLAS's rung has no chart table") for the
+    // exact (cluster, LOD) this TLAS instance traces. Resolved from the SAME
+    // (part.vt_slots, VkSceneLod::chart_rung) mapping that feeds cull.comp's
+    // vt_draw_slots table, so a ray hit and a raster fragment on the same
+    // rung address the same indirection layer -- see
+    // VkSceneRenderer::vt_slot_for_lod(). Occupies the former pad0; the
+    // record is still exactly three vec4s and the shader-side stride guard
+    // (vertex_stride != 72) is untouched.
+    uint32_t vt_slot;
+    uint32_t pad1, pad2, pad3;
 } GpuRtPartRecord;              // 48 bytes: "three vec4 records"
 
 #ifdef __cplusplus

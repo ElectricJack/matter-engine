@@ -2588,3 +2588,37 @@ run-physicsevents: $(PHYSICSEVENTS_TARGET)
 clean: clean-physicsevents
 clean-physicsevents:
 	rm -f build/physicsevents_tests
+
+# ---------------------------------------------------------------------------
+# WP-F — surfaces() classifier tape (terrain_field SurfaceProgram/Runtime).
+# Self-contained append-only block (tileset_metrics pattern): headless, no GL,
+# links terrain_field.cpp directly.
+# ---------------------------------------------------------------------------
+SURFACEFIELD_TARGET = build/surface_field_tests
+SURFACEFIELD_CPP    = surface_field_tests.cpp ../src/terrain_field.cpp
+SURFACEFIELD_OBJS   = $(call obj_list,def,$(SURFACEFIELD_CPP))
+
+$(eval $(call objrule_cpp,def,surface_field_tests.cpp))
+
+$(SURFACEFIELD_TARGET): $(SURFACEFIELD_OBJS)
+	$(CC) $(SURFACEFIELD_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+run-surfacefield: $(SURFACEFIELD_TARGET)
+	./$(SURFACEFIELD_TARGET)
+
+.PHONY: run-surfacefield clean-surfacefield
+clean: clean-surfacefield
+clean-surfacefield:
+	rm -f build/surface_field_tests
+
+# ---------------------------------------------------------------------------
+# WP-F — surfaces() tape GPU test: the vt-surfaces smoke mode of the Vulkan
+# smoke executable (MatterEditor cross-build owns the exe, like vulkan-smoke /
+# run-vt-compositor). Also part of the full vulkan-smoke suite via
+# tools/smoke_vulkan_faults.ps1.
+# ---------------------------------------------------------------------------
+.PHONY: run-vt-surfaces
+run-vt-surfaces:
+	$(MAKE) -C ../../MatterEditor build/windows/vulkan_smoke_tests.exe
+	cd ../../MatterEditor/build/windows && \
+	    MATTER_VK_SMOKE_MODE=vt-surfaces ./vulkan_smoke_tests.exe
