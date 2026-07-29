@@ -209,6 +209,11 @@ public:
 
     bool render(const CameraDesc& cam, const VulkanFrame& frame,
                 const RenderOptions& opts, std::string& err);
+
+    // Apply an optional camera spawn authored by the active World JavaScript.
+    // Returns false when the world did not provide static camera settings.
+    bool apply_authored_camera(CameraDesc& camera) const;
+
     // Resolve the temporal candidate recorded by render(). Call exactly once
     // with the result returned by VulkanDevice::end_frame.
     void finish_vulkan_frame(uint64_t frame_serial, bool presented);

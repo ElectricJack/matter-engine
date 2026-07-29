@@ -19,13 +19,18 @@ import { candidatesInRect } from 'shared-lib/scatter_grid';
 // stable as tiers change underfoot.
 
 const SECTOR = 64.0;
-const ROCK_VARIANTS = 8, PEBBLE_VARIANTS = 6, GRASS_VARIANTS = 5;
-const TREE_VARIANTS = 3;
-const BOULDER_SIZES = [2.5, 4.0], BOULDER_SEEDS = 4;
-const BOULDER_MIN_DIST = 70.0;
-const TREE_MIN_DIST = 9.0;
-const GRASS_SLOPE_MAX = 0.5;
-const TREE_SLOPE_MAX = 0.5;
+const ROCK_VARIANTS    = 8, PEBBLE_VARIANTS = 6, GRASS_VARIANTS = 5;
+const TREE_VARIANTS    = 3;
+// Reuse the modest cached rock meshes and scale their instances to colossal
+// proportions. Baking 25/40 m Rock variants blocks world connection while
+// eight new procedural meshes are generated; 2.5/4 m meshes at 10x have the
+// intended world-space footprint without that cold-start cost.
+const BOULDER_SIZES    = [2.5, 4.0], BOULDER_SEEDS = 4;
+const BOULDER_SCALE    = 10.0;
+const BOULDER_MIN_DIST = 180.0;
+const TREE_MIN_DIST    = 9.0;
+const GRASS_SLOPE_MAX  = 0.5;
+const TREE_SLOPE_MAX   = 0.5;
 
 // ---- patch noise: value-noise FBM in [-1, 1], world-space ------------------
 function hash2(ix, iz, seed) {
@@ -64,14 +69,23 @@ function patch(x, z, seed, freq) {
 // sector, which is what the child-hash stability actually needs.
 function assetVariants(biomesJson) {
   const req = [];
-  for (let s = 0; s < ROCK_VARIANTS; ++s) req.push({ module: 'Rock', params: { seed: s } });
+  for (let s = 0; s < ROCK_VARIANTS; ++s)
+    req.push({ module: 'Rock', params: { seed: s } });
+
   for (const sz of BOULDER_SIZES)
     for (let s = 0; s < BOULDER_SEEDS; ++s)
       req.push({ module: 'Rock', params: { seed: s, size: sz } });
-  for (let s = 0; s < PEBBLE_VARIANTS; ++s) req.push({ module: 'Pebble', params: { seed: s } });
-  for (let s = 0; s < GRASS_VARIANTS; ++s) req.push({ module: 'Grass', params: { seed: s } });
+
+  //for (let s = 0; s < PEBBLE_VARIANTS; ++s)
+  //  req.push({ module: 'Pebble', params: { seed: s } });
+
+  for (let s = 0; s < GRASS_VARIANTS; ++s)
+      req.push({ module: 'Grass', params: { seed: s } });
+
   if (anyBiomeWantsTrees(biomesJson))
-    for (let s = 0; s < TREE_VARIANTS; ++s) req.push({ module: 'Tree', params: { seed: s } });
+    for (let s = 0; s < TREE_VARIANTS; ++s)
+      req.push({ module: 'Tree', params: { seed: s } });
+
   return req;
 }
 
@@ -101,10 +115,15 @@ class WorldSector extends Part {
   static requires(p) { return assetVariants(p && p.biomes); }
 
   build(p) {
-    this.terrainVolume(p.tx, p.tz, 0, [MAT.grass, MAT.dirt, MAT.rock, MAT.snow]);
-    if (!p.biomes) return;   // no biome table -> terrain only
+    const table = p.biomes ? JSON.parse(p.biomes) : null;
+    const oneDirtMaterial =
+      table && table.__terrain && table.__terrain.material === 'dirt';
+    const terrainMaterials = oneDirtMaterial
+      ? [MAT.dirt, MAT.dirt, MAT.dirt, MAT.dirt]
+      : [MAT.grass, MAT.dirt, MAT.rock, MAT.snow];
+    this.terrainVolume(p.tx, p.tz, 0, terrainMaterials);
+    if (!table) return;   // no biome table -> terrain only
 
-    const table = JSON.parse(p.biomes);
     const ox = p.tx * SECTOR, oz = p.tz * SECTOR;
     const counts = table[this.biomeAt(ox + SECTOR / 2, oz + SECTOR / 2)] || {};
     const seed = p.worldSeed >>> 0;
@@ -149,7 +168,7 @@ class WorldSector extends Part {
     for (const c of candidatesInRect(seed, 2, BOULDER_MIN_DIST, ox, oz, SECTOR, SECTOR)) {
       if (this.biomeAt(c.x, c.z) === 'ocean') continue;
       const sz = BOULDER_SIZES[(c.u * BOULDER_SIZES.length) | 0];
-      const s = 0.8 + 0.4 * c.v;
+      const s = (0.8 + 0.4 * c.v) * BOULDER_SCALE;
       this.pushMatrix();
       this.translate(c.x - ox, this.heightAt(c.x, c.z) - 0.15 * sz * s, c.z - oz);
       this.rotateY(c.rot);
@@ -170,11 +189,9 @@ class WorldSector extends Part {
       const s = r.range(0.6, 1.8);
       put('Rock', { seed: r.int(ROCK_VARIANTS) }, wx, wz, s, 0.15 * s);
     }
-    for (let i = 0, n = counts.pebbles | 0; i < n; ++i) {
-      const [wx, wz] = inSector();
-      if (this.biomeAt(wx, wz) === 'ocean') continue;
-      put('Pebble', { seed: r.int(PEBBLE_VARIANTS) }, wx, wz, r.range(0.5, 1.5), 0.02);
-    }
+    // Pebble variants are intentionally omitted from assetVariants(), so do
+    // not emit pebble children here either. Keeping placement enabled without
+    // declared variants rejects every sector that contains a pebble.
 
     if (p.rung < 2) return;
 

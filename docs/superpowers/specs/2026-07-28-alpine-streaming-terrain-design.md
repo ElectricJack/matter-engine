@@ -2,14 +2,14 @@
 
 **Date:** 2026-07-28  
 **Status:** Approved for implementation planning  
-**World:** `StreamMeadow`
+**World:** `StreamMountain` (with `StreamMeadow` retained)
 
 ## Goal
 
-Replace StreamMeadow's mellow rolling terrain with colossal alpine ranges: sharp
-upper ridges, narrow flyable valleys, calmer erosion-shaped lower slopes, and
-roughly 450–650 m of summit-to-valley relief. Preserve deterministic infinite
-streaming and keep terrain baking affordable.
+Add a StreamMountain world with colossal alpine ranges: sharp upper ridges,
+narrow flyable valleys, calmer erosion-shaped lower slopes, and roughly
+450–650 m of summit-to-valley relief. Preserve StreamMeadow unchanged, retain
+deterministic infinite streaming, and keep terrain baking affordable.
 
 The first version continues to use the existing ForestFloor meadow material
 across the complete terrain surface. Rock, snow, and other elevation-specific
@@ -17,7 +17,7 @@ materials are deferred.
 
 ## Current State
 
-- `StreamMeadow.field()` combines two low-amplitude smooth noise fields and
+- The baseline `StreamMeadow.field()` combines two low-amplitude smooth noise fields and
   produces approximately `-2…24 m` terrain inside a `-32…96 m` world range.
 - The native terrain field already provides `noise2`, `ridge2`, `warp2`,
   arithmetic composition, `smoothstep`, and `blend`.
@@ -29,7 +29,7 @@ materials are deferred.
   Raising the ceiling to accommodate colossal mountains would therefore
   multiply memory traffic, density evaluations, and extraction work.
 - `terrainVolume` can classify grass, dirt, rock, and snow, but the packed
-  ForestFloor atlas used by StreamMeadow is bound to `MAT.dirt`.
+  ForestFloor atlas used by both streaming worlds is bound to `MAT.dirt`.
 
 ## Scope
 
@@ -41,7 +41,7 @@ This cycle includes:
 3. A six-level terrain LOD ladder, from one quad to the 2 m voxel surface.
 4. Strict 2:1 adjacency balancing and one-step transition stitching.
 5. Separation of terrain LOD from scatter detail.
-6. Mapping every StreamMeadow terrain classification to `MAT.dirt`.
+6. Mapping every StreamMountain terrain classification to `MAT.dirt`.
 7. Automated geometry, streaming, determinism, and terrain-character tests.
 
 This cycle does not include:
@@ -114,7 +114,7 @@ The height graph is emitted before the moisture and relief controls. Since
 `height_at` evaluates only through the height register, height sampling does not
 pay for unused biome controls.
 
-StreamMeadow retains its thresholds above the control-noise range so its
+StreamMountain sets its thresholds above the control-noise range so its
 above-sea-level terrain continues to classify as Foothills for scatter
 selection. The field program must remain below the existing 64-operation limit.
 
@@ -232,7 +232,7 @@ summits therefore use the same ForestFloor packed material as valley floors.
 
 Biome and slope queries remain available for scatter filtering and future
 material work. This change does not remove native rock or snow classification;
-it only maps StreamMeadow's generated terrain buckets to one material.
+it only maps StreamMountain's generated terrain buckets to one material.
 
 ## Data Flow
 
@@ -298,7 +298,7 @@ it only maps StreamMeadow's generated terrain buckets to one material.
 
 ### Materials
 
-- Every StreamMeadow terrain bucket resolves to `MAT.dirt`.
+- Every StreamMountain terrain bucket resolves to `MAT.dirt`.
 - Existing ForestFloor tileset binding remains active.
 
 ### Performance
@@ -318,7 +318,7 @@ expected orders-of-magnitude triangle reduction.
 
 ### Rendered acceptance
 
-A StreamMeadow fly-through must show:
+A StreamMountain fly-through must show:
 
 - mountain ranges rather than isolated smooth hills;
 - a clear sense of 450–650 m vertical scale;
@@ -336,5 +336,6 @@ naturally invalidates affected transient terrain variants. Scatter child assets
 remain reusable. No cache deletion or artifact migration is required.
 
 The new heightfield generator and balanced terrain LOD inputs are reusable by
-future streaming worlds, but this cycle changes only StreamMeadow's authored
-terrain and material mapping.
+future streaming worlds. StreamMountain opts into the alpine terrain and
+single-material mapping, while StreamMeadow retains its original field and
+material behavior.

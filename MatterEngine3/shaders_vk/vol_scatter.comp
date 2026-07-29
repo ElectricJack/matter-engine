@@ -80,7 +80,7 @@ void main() {
                 gl_RayFlagsOpaqueEXT,
                 0xFF,
                 world_pos, 0.1,
-                to_sun, VOL_FAR);
+                to_sun, VOL_SHADOW_FAR);
             rayQueryProceedEXT(rq);
             if (rayQueryGetIntersectionTypeEXT(rq, true) !=
                 gl_RayQueryCommittedIntersectionNoneEXT) {

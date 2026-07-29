@@ -347,8 +347,12 @@ struct VkSceneLighting {
     float vol_debug_view = 0.0f;
     float camera_near = 1.0f;
     float camera_far = 5000.0f;
+    float camera_y = 0.0f;
+    float vol_cloud_top = 0.0f;
+    float vol_height_layer = 0.0f;
+    float vol_pad = 0.0f;
 };
-static_assert(sizeof(VkSceneLighting) == 96);
+static_assert(sizeof(VkSceneLighting) == 112);
 
 struct VkSceneUploadCounters {
     uint64_t vertex_uploads = 0;
@@ -1401,6 +1405,8 @@ private:
     std::unique_ptr<VkVolumetrics> volumetrics_;
     bool volumetrics_enabled_ = false;
     float volumetrics_debug_view_ = 0.0f;
+    bool volumetrics_height_layer_ = false;
+    float volumetrics_cloud_top_ = 0.0f;
     matter::TilesetPomSettings tileset_pom_settings_{};
     uint32_t last_rt_samples_ = 1;
     bool last_rt_debug_view_ = false;

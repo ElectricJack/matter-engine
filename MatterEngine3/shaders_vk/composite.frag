@@ -55,6 +55,10 @@ layout(push_constant) uniform SceneLighting {
     float vol_debug_view;
     float camera_near;
     float camera_far;
+    float camera_y;
+    float vol_cloud_top;
+    float vol_height_layer;
+    float vol_pad;
 } lighting;
 
 #include "sky_common.glsl"
@@ -71,6 +75,16 @@ vec3 compute_view_ray(vec2 uv) {
     return normalize(fwd +
         right * ndc.x * lighting.aspect_ratio * lighting.tan_half_fov +
         up    * ndc.y * lighting.tan_half_fov);
+}
+
+float integrated_slice_at_depth(float depth) {
+    // vol_integrate stores each texel after integrating through that froxel's
+    // far edge. Shift the lookup back by half a texel so a terrain hit samples
+    // the integral ending at the hit instead of blending in the next froxel
+    // behind it. At kilometre scale that leaked froxel can be tens of metres
+    // deep, enough to put valley fog over an otherwise clear summit.
+    return clamp(depth_to_slice_n(depth) - 0.5 / float(VOL_D),
+                 0.0, 1.0 - 0.5 / float(VOL_D));
 }
 
 void main() {
@@ -114,19 +128,19 @@ void main() {
         out_hdr = vec4(visibility, 1.0);
         return;
     }
-    if (lighting.vol_debug_view > 2.5) {
+    if (lighting.vol_debug_view > 0.5) {
         float depth_sample = texture(depth_texture, in_uv).r;
         // Reversed-ZO inverse: hw=1 -> near, hw=0 -> far (see
         // vol_scatter.comp's prev_depth for the plug-in verification).
         float linear_depth = lighting.camera_near * lighting.camera_far /
             max(depth_sample * (lighting.camera_far - lighting.camera_near) +
                 lighting.camera_near, 1e-6);
-        float slice_n = depth_to_slice_n(linear_depth);
+        float slice_n = integrated_slice_at_depth(linear_depth);
         vec3 uvw = vec3(in_uv, slice_n);
-        if (lighting.vol_debug_view > 4.5) {
+        if (lighting.vol_debug_view > 2.5) {
             vec4 integrated = texture(vol_integrated_texture, uvw);
             out_hdr = vec4(integrated.rgb, 1.0);
-        } else if (lighting.vol_debug_view > 3.5) {
+        } else if (lighting.vol_debug_view > 1.5) {
             vec4 integrated = texture(vol_integrated_texture, uvw);
             out_hdr = vec4(integrated.rgb * 5.0, 1.0);
         } else {
@@ -216,10 +230,28 @@ void main() {
         float linear_depth = lighting.camera_near * lighting.camera_far /
             max(depth_sample * (lighting.camera_far - lighting.camera_near) +
                 lighting.camera_near, 1e-6);
-        float slice_n = depth_to_slice_n(linear_depth);
-        vec3 uvw = vec3(in_uv, slice_n);
-        vec4 integrated = texture(vol_integrated_texture, uvw);
-        linear_hdr = linear_hdr * integrated.a + integrated.rgb;
+        vec3 view_ray = compute_view_ray(in_uv);
+        vec3 camera_forward =
+            normalize(vec3(lighting.camera_fwd_x, lighting.camera_fwd_y,
+                           lighting.camera_fwd_z));
+        float ray_distance =
+            linear_depth / max(dot(view_ray, camera_forward), 1e-4);
+        float surface_y = lighting.camera_y + view_ray.y * ray_distance;
+
+        // A straight view ray whose camera and terrain endpoints are both
+        // above a horizontal cloud layer cannot pass through that layer.
+        // Enforce that invariant after froxel integration so coarse distant
+        // slices cannot leak valley density over mountain summits.
+        bool entirely_above_clouds =
+            lighting.vol_height_layer > 0.5 &&
+            lighting.camera_y >= lighting.vol_cloud_top &&
+            surface_y >= lighting.vol_cloud_top;
+        if (!entirely_above_clouds) {
+            float slice_n = integrated_slice_at_depth(linear_depth);
+            vec3 uvw = vec3(in_uv, slice_n);
+            vec4 integrated = texture(vol_integrated_texture, uvw);
+            linear_hdr = linear_hdr * integrated.a + integrated.rgb;
+        }
     }
 
     out_hdr = vec4(linear_hdr, 1.0);

@@ -358,11 +358,11 @@ struct RasterRecord {
     uint32_t frame_slot = 0;
     float frame_time = 0.0f;
     uint32_t volumetrics_zone = 0;
-    VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;
+    matter::VkAccelerationStructureResource* tlas = nullptr;
 };
 
 void record_raster(VkCommandBuffer command_buffer, void* user_data) {
-    const auto& record = *static_cast<RasterRecord*>(user_data);
+    auto& record = *static_cast<RasterRecord*>(user_data);
     const auto valid_skin_draw = [&record](const VkSkinRasterDraw& draw) {
         if (draw.output_frame_slot >= record.skin_buffer_count ||
             record.skin_vertex_buffers == nullptr ||
@@ -602,7 +602,11 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     }
 
     // --- Volumetrics pass: froxel density + scatter + integrate ---
-    if (record.volumetrics && record.volumetrics->active()) {
+    const bool volumetrics_ready =
+        record.volumetrics && record.volumetrics->active() &&
+        record.tlas && record.tlas->handle != VK_NULL_HANDLE &&
+        (!record.renderer || record.renderer->rt_effective_observed());
+    if (volumetrics_ready) {
         if (record.ts_pool != VK_NULL_HANDLE && record.ts_written) {
             write_ts(command_buffer, record.ts_pool, record.volumetrics_zone, false);
             record.ts_written[record.volumetrics_zone] |= 1u;
@@ -610,12 +614,17 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         std::string vol_error;
         record.volumetrics->record(
             command_buffer, record.frame_slot,
-            *record.depth, record.tlas, *record.matrices,
+            *record.depth, record.tlas->handle, *record.matrices,
             record.frame_time, vol_error);
         if (record.ts_pool != VK_NULL_HANDLE && record.ts_written) {
             write_ts(command_buffer, record.ts_pool, record.volumetrics_zone, true);
             record.ts_written[record.volumetrics_zone] |= 2u;
         }
+    } else {
+        // A streaming scene can be empty while its first sectors bake, or can
+        // retain an invalidated TLAS handle after a world switch. Do not sample
+        // stale integrated volume data or bind that TLAS for ray queries.
+        record.lighting.vol_enabled = 0.0f;
     }
 
     VkRenderingAttachmentInfo hdr_attachment{
@@ -5751,6 +5760,10 @@ void VkSceneRenderer::set_volumetrics_settings(
     const matter::FogSettings& fog) {
     volumetrics_enabled_ = s.enabled;
     volumetrics_debug_view_ = s.vol_debug_view;
+    volumetrics_height_layer_ = fog.height_layer;
+    volumetrics_cloud_top_ =
+        fog.min_height + s.fog_floor_offset +
+        (fog.max_height - fog.min_height) * s.fog_falloff_mul;
     if (volumetrics_)
         volumetrics_->update_settings(s, fog);
 }
@@ -8156,6 +8169,10 @@ bool VkSceneRenderer::record_cull_and_render(
                                 matrices.view_to_clip.m[10];
     frame_lighting.camera_near = matrices.view_to_clip.m[11] /
                                  (matrices.view_to_clip.m[10] + 1.0f);
+    frame_lighting.camera_y = camera_eye.y;
+    frame_lighting.vol_cloud_top = volumetrics_cloud_top_;
+    frame_lighting.vol_height_layer =
+        volumetrics_height_layer_ ? 1.0f : 0.0f;
     std::vector<VkBuffer> skin_current_buffers(frames_.size(), VK_NULL_HANDLE);
     std::vector<VkBuffer> skin_previous_buffers(frames_.size(), VK_NULL_HANDLE);
     std::vector<uint32_t> skin_vertex_counts(frames_.size(), 0);
@@ -8219,7 +8236,7 @@ bool VkSceneRenderer::record_cull_and_render(
                         frame.frame_slot,
                         static_cast<float>(frame.serial) * (1.0f / 60.0f),
                         kGpuZoneVolumetrics,
-                        selected.rt_tlas.handle};
+                        &selected.rt_tlas};
     if (volumetrics_)
         volumetrics_->set_lighting(frame_lighting);
     record_raster(frame.command_buffer, &record);

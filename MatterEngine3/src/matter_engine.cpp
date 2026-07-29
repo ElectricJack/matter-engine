@@ -230,7 +230,9 @@ public:
     }
 };
 
-matter_stream::Config make_streaming_profile(float sector_size) {
+matter_stream::Config make_streaming_profile(
+    float sector_size,
+    const matter::WorldSettings& world_settings) {
     matter_stream::Config profile;
     profile.sector_size = sector_size;
     profile.rings = {
@@ -238,6 +240,12 @@ matter_stream::Config make_streaming_profile(float sector_size) {
         {8.0f * sector_size, 1},
         {40.0f * sector_size, 0}
     };
+    if (!world_settings.streaming_rings.empty()) {
+        profile.rings.clear();
+        profile.rings.reserve(world_settings.streaming_rings.size());
+        for (const auto& ring : world_settings.streaming_rings)
+            profile.rings.push_back({ring.radius, ring.rung});
+    }
     const char* rings_env = std::getenv("MATTER_STREAM_RINGS");
     if (rings_env) {
         profile.rings.clear();
@@ -1536,6 +1544,11 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         double world_ms = std::chrono::duration<double, std::milli>(
             clk_t::now() - t_world_start).count();
         if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "install", "cancelled"); return; }
+
+        // The world-kind branch returns before the closed-world fog publication
+        // below. Publish the authored fog here so streamed worlds do not retain
+        // the default zero-density settings for their entire session.
+        authored_fog_ = provider->world_settings().fog;
 
         // World-kind sessions use an empty manifest; sectors are streamed.
         viewer::WorldManifest empty_manifest;
@@ -2837,7 +2850,7 @@ bool WorldSession::Impl::install_world(
             sector_child_hashes.size(), world_field_hash.c_str(),
             world_sector_size, world_sea_level);
     const matter_stream::Config profile =
-        make_streaming_profile(world_sector_size);
+        make_streaming_profile(world_sector_size, provider->world_settings());
     streaming_profile_activation.stage(profile);
     return true;
 }
@@ -4197,6 +4210,16 @@ flecs::world& WorldSession::ecs() {
 
 const flecs::world& WorldSession::ecs() const {
     return impl_->ecs_runtime.world();
+}
+
+bool WorldSession::apply_authored_camera(CameraDesc& camera) const {
+    if (!impl_->provider) return false;
+    const WorldCameraSettings& authored =
+        impl_->provider->world_settings().camera;
+    if (!authored.authored) return false;
+    camera.position = authored.position;
+    camera.target = authored.target;
+    return true;
 }
 
 WorldSession::~WorldSession() {

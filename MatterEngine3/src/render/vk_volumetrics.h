@@ -44,7 +44,8 @@ static constexpr uint32_t kVolGridW = 160;
 static constexpr uint32_t kVolGridH = 90;
 static constexpr uint32_t kVolGridD = 128;
 static constexpr uint32_t kVolMaxEmitters = 256;
-static constexpr float    kVolFarRange = 300.0f;
+static constexpr float    kVolFroxelFarRange = 3000.0f;
+static constexpr float    kVolShadowFarRange = 300.0f;
 static constexpr uint32_t kVolNoiseSize = 32;
 
 class VkVolumetrics {
@@ -187,6 +188,10 @@ private:
     float fog_falloff_ = 30.0f;
     float fog_color_[3] = {0.9f, 0.92f, 0.95f};
     float fog_wind_[3] = {0.0f, 0.0f, 0.0f};
+    bool fog_height_layer_ = false;
+    float fog_min_height_ = 0.0f;
+    float fog_max_height_ = 0.0f;
+    float fog_noise_scale_ = 0.0018f;
     float fog_density_mul_ = 1.0f;
     float fog_floor_offset_ = 0.0f;
     float fog_falloff_mul_ = 1.0f;
