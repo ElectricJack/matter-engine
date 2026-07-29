@@ -338,11 +338,19 @@ bool mesh_sector_heightfield(const terrain_field::FieldRuntime& field,
         }
     }
 
-    // Vertex table with fixed-step gradient normals (2 m, matching the voxel
-    // path's probe scale so shared border vertices shade identically at every
-    // LOD). Built lazily per vertex; odd vertices on masked borders are never
+    // Vertex table with gradient normals filtered at the LOD's own scale:
+    // probe = half a cell (clamped to the voxel path's 2 m at the finest
+    // levels, so the LOD4<->voxel border shades consistently). A fixed 2 m
+    // probe was tried first and lit distant sectors terribly — at a 64 m
+    // quad it samples four essentially random micro-slopes of the ±6 m
+    // surface noise, so far tiles shaded as noise instead of as their
+    // filtered slope. Scaling the probe trades that for a mild normal
+    // mismatch at 2:1 band borders (fine side filters at c/2, coarse at c),
+    // the same order of pop the geometry itself has there.
+    // Built lazily per vertex; odd vertices on masked borders are never
     // requested.
-    const float probe = 2.0f;
+    const float cell_size = sector_size / float(N);
+    const float probe = std::max(2.0f, 0.5f * cell_size);
     std::vector<HfVert> verts(size_t(N + 1) * size_t(N + 1));
     std::vector<uint8_t> vert_ready(size_t(N + 1) * size_t(N + 1), 0);
     auto vert = [&](int i, int k) -> const HfVert& {

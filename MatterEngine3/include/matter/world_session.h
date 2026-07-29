@@ -227,6 +227,12 @@ public:
     // only (no mid-job slicing); always makes progress when work is queued.
     void pump_gpu_jobs(float ms_budget);
 
+    // True when no GL-thread job is queued. Lets the caller widen the pump
+    // budget only while a streaming backlog exists (sector publishes are
+    // ~1 ms each; a fixed small budget drains a 5,000-sector fill at a
+    // handful per frame).
+    bool gpu_jobs_idle() const;
+
     // Phase C Task 3: set the spatial focus for the next bake pass.
     // publish_pipeline sorts parts ascending by min dist² from focus to any
     // of that part's manifest entry translations; parts with no placement sort

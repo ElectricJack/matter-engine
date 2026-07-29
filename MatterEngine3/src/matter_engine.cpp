@@ -982,8 +982,17 @@ void WorldSession::Impl::ensure_worker_started() {
 // serial path with zero extra threads.
 void WorldSession::Impl::ensure_bake_pool_started() {
     if (!bake_pool.empty() || stream_worker_count != 1) return;
+    // Default scales with the machine instead of the old serial 1: a sector
+    // bake costs ~11 ms of fixed script-host work even for a 2-triangle
+    // heightfield tile, so a ~5,000-sector disc is a minute of serial CPU
+    // that four executors turn into ~15 s. The pool was race-validated at 4
+    // (MATTER_RACE_WORKERS harness; serial-vs-4-worker replay byte-identical)
+    // — stay within that unless MATTER_STREAM_WORKERS asks for more.
+    const unsigned hw = std::thread::hardware_concurrency();
+    const int default_workers =
+        std::max(1, std::min(4, int(hw > 0 ? hw / 4 : 1)));
     const char* env = std::getenv("MATTER_STREAM_WORKERS");
-    int requested = env ? std::atoi(env) : 1;
+    int requested = env ? std::atoi(env) : default_workers;
     if (requested < 1) requested = 1;
     if (requested > 16) requested = 16;
     stream_worker_count = requested;
@@ -3386,12 +3395,29 @@ void WorldSession::Impl::bake_and_stage_sector(
         script_host::ScriptHost bake_host;
         bake_host.set_shared_lib_roots(provider_ref->shared_lib_roots());
 
+        // MATTER_STREAM_BAKE_PROFILE: per-sector bake wall time on the
+        // worker. Coarse heightfield sectors emit a handful of triangles, so
+        // when the disc still takes minutes to fill the split between this
+        // (JS host + scatter + serialize) and the publish job (see
+        // MATTER_STREAM_PUBLISH_PROFILE) says which side to chase.
+        const bool bake_prof =
+            std::getenv("MATTER_STREAM_BAKE_PROFILE") != nullptr;
+        const auto bake_t0 = std::chrono::steady_clock::now();
+
         script_host::BakeResult br;
         try {
             br = bake_host.bake_source(
                 world_sector_source, sector_params, opts,
                 sector_child_hashes.data(), sector_child_hashes.size(),
                 sector_child_modules.data(), sector_child_params.data());
+            if (bake_prof) {
+                const double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - bake_t0).count();
+                std::fprintf(stderr,
+                    "[stream.bake] sector(%lld,%lld) lod=%d %.1f ms\n",
+                    (long long)req.tx, (long long)req.tz,
+                    matter_stream::variant_terrain_lod(req.rung), ms);
+            }
         } catch (const std::exception& exception) {
             mark_publication_for_retry(
                 completion_index, /*rollback_complete=*/true,
@@ -5997,6 +6023,10 @@ AnimationRuntimeStats WorldSession::animation_runtime_stats() const {
 streaming::SectorStreamingStatus WorldSession::streaming_status() const {
     std::lock_guard<std::mutex> lock(impl_->streaming_status_mutex);
     return impl_->streaming_status_copy;
+}
+
+bool WorldSession::gpu_jobs_idle() const {
+    return impl_->gpu_jobs.idle();
 }
 
 void WorldSession::pump_gpu_jobs(float ms_budget) {

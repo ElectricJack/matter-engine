@@ -2374,7 +2374,11 @@ int main() {
         // (scene deltas from tick N reach the UI this frame, not N+1).
         property_scheduler.flush_dirty();
         camera_input_order.tick_scene();
-        session->pump_gpu_jobs(4.0f);
+        // Streaming backlog: sector publishes are ~1 ms each, so the fixed
+        // 4 ms budget drained a 5,000-sector world fill at only a handful
+        // per frame — minutes of "terrain still popping in". Widen the
+        // budget while jobs are queued; quiet frames keep the old cost.
+        session->pump_gpu_jobs(session->gpu_jobs_idle() ? 4.0f : 14.0f);
         // Sector publish lands here. Channel::pump checks its budget AFTER
         // running a job, so one long publish can blow past the 4ms argument.
         phase.pump = phase_split();
