@@ -317,6 +317,38 @@ bool mesh_sector_heightfield(const terrain_field::FieldRuntime& field,
         return float(double(sector_size) * double(i) / double(N));
     };
 
+    const float cell = sector_size / float(N);
+    const bool mask_px_edge = (edge_mask & kEdgePosX) != 0;
+    const bool mask_nx_edge = (edge_mask & kEdgeNegX) != 0;
+    const bool mask_pz_edge = (edge_mask & kEdgePosZ) != 0;
+    const bool mask_nz_edge = (edge_mask & kEdgeNegZ) != 0;
+
+    // Area-filtered height sampling. Point-sampling the field at coarse
+    // lattices aliases its ridged high-frequency layers into sawtooth spikes
+    // (a 16 m lattice across a 200 m-wavelength ridged crease randomly clips
+    // crests and troughs), so each vertex takes a 5-tap box filter whose
+    // radius scales with the lattice it belongs to:
+    //   - ordinary vertices: R = cell / 2;
+    //   - vertices ON a masked 2:1 border: R = cell (== the coarse
+    //     neighbor's cell / 2, exactly representable for power-of-two N,
+    //     so both sides of the border compute bitwise-identical heights).
+    // Equal-LOD borders match by symmetry (same R both sides). The only
+    // remaining mismatches are corner pinholes against diagonal-coarser
+    // sectors and the (already approximate) LOD4<->voxel ring — both under
+    // skirts.
+    auto vert_filter_radius = [&](int i, int k) -> float {
+        const bool on_masked =
+            (mask_nx_edge && i == 0) || (mask_px_edge && i == N) ||
+            (mask_nz_edge && k == 0) || (mask_pz_edge && k == N);
+        return on_masked ? cell : 0.5f * cell;
+    };
+    auto filtered_height = [&](float wx, float wz, float r) -> float {
+        return (field.height_at(wx, wz) +
+                field.height_at(wx + r, wz) + field.height_at(wx - r, wz) +
+                field.height_at(wx, wz + r) + field.height_at(wx, wz - r)) *
+               0.2f;
+    };
+
     // Heights once per lattice point.
     std::vector<float> heights(size_t(N + 1) * size_t(N + 1));
     auto hat = [&](int i, int k) -> float& {
@@ -324,8 +356,9 @@ bool mesh_sector_heightfield(const terrain_field::FieldRuntime& field,
     };
     for (int k = 0; k <= N; ++k) {
         for (int i = 0; i <= N; ++i) {
-            const float h = field.height_at(float(ox + double(lx(i))),
-                                            float(oz + double(lx(k))));
+            const float h = filtered_height(float(ox + double(lx(i))),
+                                            float(oz + double(lx(k))),
+                                            vert_filter_radius(i, k));
             if (!std::isfinite(h)) {
                 err = "terrain_mesher: non-finite height";
                 return false;
@@ -338,19 +371,15 @@ bool mesh_sector_heightfield(const terrain_field::FieldRuntime& field,
         }
     }
 
-    // Vertex table with gradient normals filtered at the LOD's own scale:
-    // probe = half a cell (clamped to the voxel path's 2 m at the finest
-    // levels, so the LOD4<->voxel border shades consistently). A fixed 2 m
-    // probe was tried first and lit distant sectors terribly — at a 64 m
-    // quad it samples four essentially random micro-slopes of the ±6 m
-    // surface noise, so far tiles shaded as noise instead of as their
-    // filtered slope. Scaling the probe trades that for a mild normal
-    // mismatch at 2:1 band borders (fine side filters at c/2, coarse at c),
-    // the same order of pop the geometry itself has there.
-    // Built lazily per vertex; odd vertices on masked borders are never
-    // requested.
-    const float cell_size = sector_size / float(N);
-    const float probe = std::max(2.0f, 0.5f * cell_size);
+    // Vertex table with gradient normals differentiated from the SAME
+    // filtered height function as the positions (probe = half a cell,
+    // clamped to the voxel path's 2 m at the finest levels). A fixed 2 m
+    // point probe was tried first and lit distant sectors terribly — at a
+    // 64 m quad it samples four essentially random micro-slopes of the
+    // ±6 m surface noise, so far tiles shaded as noise instead of as their
+    // filtered slope. Built lazily per vertex; odd vertices on masked
+    // borders are never requested.
+    const float probe = std::max(2.0f, 0.5f * cell);
     std::vector<HfVert> verts(size_t(N + 1) * size_t(N + 1));
     std::vector<uint8_t> vert_ready(size_t(N + 1) * size_t(N + 1), 0);
     auto vert = [&](int i, int k) -> const HfVert& {
@@ -358,10 +387,11 @@ bool mesh_sector_heightfield(const terrain_field::FieldRuntime& field,
         if (!vert_ready[idx]) {
             const float wx = float(ox + double(lx(i)));
             const float wz = float(oz + double(lx(k)));
-            const float gx = field.height_at(wx + probe, wz) -
-                             field.height_at(wx - probe, wz);
-            const float gz = field.height_at(wx, wz + probe) -
-                             field.height_at(wx, wz - probe);
+            const float fr = vert_filter_radius(i, k);
+            const float gx = filtered_height(wx + probe, wz, fr) -
+                             filtered_height(wx - probe, wz, fr);
+            const float gz = filtered_height(wx, wz + probe, fr) -
+                             filtered_height(wx, wz - probe, fr);
             V3 n{-gx / (2.0f * probe), 1.0f, -gz / (2.0f * probe)};
             const float len =
                 std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
@@ -511,7 +541,6 @@ bool mesh_sector_heightfield(const terrain_field::FieldRuntime& field,
 
     // Skirts under the ACTUAL border polyline (coarse-only vertices on
     // masked edges), outward wound, same depth policy as the voxel path.
-    const float cell = sector_size / float(N);
     const float skirt_depth = std::max(8.0f, 2.0f * cell);
     auto emit_skirt = [&](const HfVert& a, const HfVert& b, V3 normal) {
         if (a.p.x == b.p.x && a.p.z == b.p.z) return;
