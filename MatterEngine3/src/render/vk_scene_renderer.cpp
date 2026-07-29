@@ -2027,8 +2027,21 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     VkPipelineRasterizationStateCreateInfo rasterization{
         VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rasterization.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterization.cullMode = VK_CULL_MODE_NONE;
-    rasterization.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    // Every mesh source (terrain surface-nets, marching-cubes scatter, skirt
+    // strips) emits right-hand outward-normal geometry: counter-clockwise
+    // seen from outside. The projection's y-flip and the negative-height
+    // viewport cancel, so outside views land counter-clockwise in framebuffer
+    // space too — hence COUNTER_CLOCKWISE front + backface culling by
+    // default. MATTER_RASTER_CULL=none|front overrides for A/B comparison
+    // and winding diagnosis.
+    rasterization.cullMode = VK_CULL_MODE_BACK_BIT;
+    if (const char* cull_env = std::getenv("MATTER_RASTER_CULL")) {
+        if (std::strcmp(cull_env, "none") == 0)
+            rasterization.cullMode = VK_CULL_MODE_NONE;
+        else if (std::strcmp(cull_env, "front") == 0)
+            rasterization.cullMode = VK_CULL_MODE_FRONT_BIT;
+    }
+    rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterization.lineWidth = 1.0f;
     VkPipelineMultisampleStateCreateInfo multisample{
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
@@ -2213,7 +2226,17 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     composite_create.pVertexInputState = &no_vertex_input;
     composite_create.pInputAssemblyState = &input_assembly;
     composite_create.pViewportState = &viewport_state;
-    composite_create.pRasterizationState = &rasterization;
+    // Fullscreen pass: never cull. This previously shared the gbuffer's
+    // rasterization state, which was harmless only while that state was
+    // CULL_MODE_NONE — with scene backface culling enabled it would cull the
+    // composite triangle itself and black out the frame.
+    VkPipelineRasterizationStateCreateInfo fullscreen_rasterization{
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    fullscreen_rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+    fullscreen_rasterization.cullMode = VK_CULL_MODE_NONE;
+    fullscreen_rasterization.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    fullscreen_rasterization.lineWidth = 1.0f;
+    composite_create.pRasterizationState = &fullscreen_rasterization;
     composite_create.pMultisampleState = &multisample;
     composite_create.pColorBlendState = &hdr_color_blend;
     composite_create.pDynamicState = &dynamic;

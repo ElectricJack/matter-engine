@@ -229,8 +229,14 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
             out,
             uint32_t(field.material_at(
                 0.5f * (awx + bwx), 0.5f * (awz + bwz))));
-        push_tri(bucket, a, bb, b);
-        push_tri(bucket, a, ba, bb);
+        // Wind to match the surface convention (counter-clockwise seen from
+        // outside the sector, geometric normal agreeing with the authored
+        // outward `normal`) so backface culling keeps the curtain visible
+        // from outside. The previous (a, bb, b)/(a, ba, bb) order faced the
+        // geometric normal INTO the sector: with culling enabled the skirts
+        // vanished from outside views — exactly the case they exist for.
+        push_tri(bucket, a, b, bb);
+        push_tri(bucket, a, bb, ba);
     };
     for (int s = 0; s < n; ++s) {
         const float a = float(s) * voxel;
