@@ -880,6 +880,11 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
             staged.lp.clusters.push_back(std::move(cluster));
         }
     }
+    // A staged part must be fully formed: commit_staged re-derives this from
+    // clusters.size(), and leaving it 0 here made the staged flavor diverge
+    // from the committed flavor once the synthetic cluster above existed
+    // (partstore_race_tests' golden phase folds fine_cluster_count).
+    staged.lp.fine_cluster_count = (uint32_t)staged.lp.clusters.size();
     staged.ok = true;
     return staged;
 }

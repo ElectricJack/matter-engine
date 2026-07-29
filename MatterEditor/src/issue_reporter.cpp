@@ -308,6 +308,8 @@ bool write_state_json(const std::filesystem::path& path,
         << frame_stats.vk_instance_cache_expansions
         << ", \"command_layout_rebuilds\": "
         << frame_stats.vk_command_layout_rebuilds
+        << ", \"static_full\": " << frame_stats.vk_static_full_uploads
+        << ", \"static_append\": " << frame_stats.vk_static_append_uploads
         << ", \"immediate_submits\": " << frame_stats.vk_immediate_submits
         << "}\n";
     out << "  }\n";

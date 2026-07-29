@@ -356,6 +356,13 @@ struct VkSceneUploadCounters {
     uint64_t instance_uploads = 0;
     uint64_t command_uploads = 0;
     uint64_t command_layout_rebuilds = 0;
+    // How the cluster/vertex/index staging reached the GPU: a full pass
+    // recreates the buffers and rewrites every byte (O(world)); an append
+    // writes only the staging tail past the already-uploaded counts
+    // (O(new part)). Streaming publishes must take the append path — a full
+    // count that climbs with resident parts is the O(N^2) load regression.
+    uint64_t static_full_uploads = 0;
+    uint64_t static_append_uploads = 0;
 };
 
 struct PartCommandRange {
@@ -737,6 +744,14 @@ public:
                                          std::string& error);
     void set_test_scene_failure(uint32_t fail_after_replacements,
                                 uint32_t fail_after_uploads);
+    // Escalate a pending append-mode static upload to the full recreate path,
+    // so fault tests that target buffer *replacements* stay deterministic
+    // instead of depending on whether the appended part happened to fit the
+    // live buffers' capacity.
+    void test_force_full_static_upload() {
+        if (static_upload_dirty_ != StaticUpload::kClean)
+            static_upload_dirty_ = StaticUpload::kFull;
+    }
     void set_test_frame_resource_failure(uint32_t fail_after_allocations);
     // Fails one named animation-skin resource operation without poisoning the
     // renderer; the queue must degrade to retained/bind pose transactionally.
@@ -782,6 +797,9 @@ public:
     }
     VkDeviceSize raster_vertex_buffer_size() const {
         return poisoned() ? 0 : vertices_.size;
+    }
+    VkDeviceSize raster_index_buffer_size() const {
+        return poisoned() ? 0 : indices_.size;
     }
     uint32_t raster_draw_command_count() const {
         return poisoned() ? 0 : raster_draw_command_count_;
@@ -1417,11 +1435,77 @@ private:
     bool instance_inputs_match_snapshot(
         const std::vector<VkSceneInstance>& instances) const noexcept;
     void snapshot_instance_inputs(const std::vector<VkSceneInstance>& instances);
+    // Candidate-build scratch reused across update_instances() calls. During
+    // sector streaming the candidate set is rebuilt nearly every frame; these
+    // keep that from allocating and releasing ~24 MB per frame. The commit
+    // paths swap them with the staging vectors (or recycle the retired
+    // staging), so capacity survives in both directions.
+    std::vector<GpuInstance> candidate_instances_scratch_;
+    std::vector<uint32_t> candidate_slots_scratch_;
+    std::vector<RtInstance> candidate_rt_scratch_;
+    // Generation the uploaded_rt_instances_ mirror was last copied at; an
+    // unchanged generation means unchanged content, so the ~60k-record deep
+    // copy per frame can be skipped.
+    uint64_t uploaded_rt_instances_generation_ = 0;
 
     uint64_t instance_generation_ = 1;
     uint64_t static_generation_ = 1;
     uint64_t command_generation_ = 1;
-    bool static_upload_dirty_ = true;
+    // What the next upload_scene_buffers() owes the static cluster/vertex/
+    // index buffers. kAppend is only valid while every mutation since the
+    // last upload was a pure tail-append (register_part); anything that
+    // rewrites existing bytes (release_part compaction, reset) must escalate
+    // to kFull, because in-flight frames read the live buffers and only a
+    // disjoint tail write is safe in place.
+    enum class StaticUpload : uint8_t { kClean, kAppend, kFull };
+    StaticUpload static_upload_dirty_ = StaticUpload::kFull;
+    // A registration appended clusters but the O(clusters x LODs) command
+    // template fill was deferred, so several parts landing in one frame pay
+    // for one rebuild. Set by register_part; cleared by any successful
+    // rebuild_command_template (the update_instances layout rebuild or
+    // flush_command_template before a frame consumes the template).
+    bool command_template_dirty_ = false;
+    bool flush_command_template(std::string& error);
+    // Free-range recycling for the static cluster/vertex/index staging and
+    // buffers. release_part() returns a part's ranges here (O(part) — no
+    // compaction, no full re-upload) and register_part() reuses them, so a
+    // streaming world's eviction/publish churn does bounded work per sector
+    // and the buffers reach a steady-state watermark. A freed range is
+    // quarantined in `pending` until every frame that could still read its
+    // old bytes has retired — in-place reuse before that would put garbage
+    // under an in-flight frame's draws.
+    struct FreeRangeList {
+        struct Range { uint32_t start = 0; uint32_t count = 0; };
+        struct PendingRange { Range range; uint64_t freed_serial = 0; };
+        std::vector<Range> free_ranges;     // sorted by start, coalesced
+        std::vector<PendingRange> pending;  // awaiting in-flight retirement
+        void release(uint32_t start, uint32_t count, uint64_t serial);
+        void settle(uint64_t safe_serial);  // pending -> free_ranges
+        uint32_t allocate(uint32_t count);  // UINT32_MAX = no fit (extend tail)
+        void clear();
+    };
+    FreeRangeList free_clusters_;
+    FreeRangeList free_vertices_;
+    FreeRangeList free_indices_;
+    // Frame serial the renderer last saw (prepare_frame/dispatch_culling) and
+    // the in-flight window used to settle pending ranges.
+    uint64_t static_frame_serial_ = 0;
+    uint64_t static_frame_window_ = 3;
+    void settle_free_ranges();
+    uint32_t allocate_cluster_range(uint32_t count);
+    uint32_t allocate_vertex_range(uint32_t count);
+    uint32_t allocate_index_range(uint32_t count);
+    // Element ranges of the staging arrays written since the last upload
+    // (interior reuse or tail growth). Uploaded in place by the ranged path
+    // in upload_scene_buffers; a full upload clears them.
+    std::vector<std::pair<uint32_t, uint32_t>> dirty_cluster_ranges_;
+    std::vector<std::pair<uint32_t, uint32_t>> dirty_vertex_ranges_;
+    std::vector<std::pair<uint32_t, uint32_t>> dirty_index_ranges_;
+    // Escalate-only: never lets an append downgrade an owed full rewrite.
+    void mark_static_append() {
+        if (static_upload_dirty_ == StaticUpload::kClean)
+            static_upload_dirty_ = StaticUpload::kAppend;
+    }
     VkSceneUploadCounters upload_counters_{};
     VkCullStats cached_stats_{};
     // GPU timestamp support. Cached at init time from device properties.

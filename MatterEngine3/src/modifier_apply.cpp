@@ -6,6 +6,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 
 #ifdef MATTER_HAVE_AUTOREMESHER
 #include "mesh_retopo.hpp"
@@ -88,6 +89,13 @@ MeshIndexed apply_stack(MeshIndexed mesh,
             opts.seed = m.seed;
             opts.timeout_seconds = m.timeout_seconds;
             opts.threads = 1;  // determinism
+            // Serialize retopo across bake threads: geogram's globals
+            // (Logger, ProcessManager, attribute registry) and the blacklist
+            // journal (in-memory set + appended file) were only ever exercised
+            // single-caller, and retopo is rare enough in streamed content
+            // that the lock costs nothing.
+            static std::mutex retopo_mutex;
+            std::lock_guard<std::mutex> retopo_lock(retopo_mutex);
             bl::begin_attempt(h);
             RetopoResult r = retopo(mesh, opts);
             bl::end_attempt(h);

@@ -177,20 +177,60 @@ void GiTemporalState::seed_presented_for_test(
 }
 #endif
 
+namespace {
+inline std::uint32_t transform_slot_hash(std::uint64_t id) {
+    // Fibonacci-style mix; the ids are already hashes but cheap insurance
+    // against clustered low bits costs one multiply.
+    std::uint64_t mixed = id * 0x9E3779B97F4A7C15ull;
+    return static_cast<std::uint32_t>(mixed >> 32);
+}
+}  // namespace
+
 void TemporalState::TransformTable::build_map() {
     if (map_built) return;
-    map.clear();
-    map.reserve(ids.size());
+    std::size_t capacity = 16;
+    while (capacity < ids.size() * 2) capacity *= 2;
+    slot_keys.assign(capacity, 0);
+    slot_entries.assign(capacity, -1);
+    slot_mask = static_cast<std::uint32_t>(capacity - 1);
+    bool repeated = false;
     // In-order assignment, so a repeated id keeps its LAST value — the exact
     // behaviour of the `next.transforms[id] = transform` loop this replaces.
-    for (std::size_t index = 0; index < ids.size(); ++index)
-        map[ids[index]] = values[index];
-    unique = map.size() == ids.size();
+    for (std::size_t index = 0; index < ids.size(); ++index) {
+        const std::uint64_t id = ids[index];
+        std::uint32_t slot = transform_slot_hash(id) & slot_mask;
+        while (true) {
+            if (slot_entries[slot] < 0) {
+                slot_keys[slot] = id;
+                slot_entries[slot] = static_cast<std::int32_t>(index);
+                break;
+            }
+            if (slot_keys[slot] == id) {
+                slot_entries[slot] = static_cast<std::int32_t>(index);
+                repeated = true;
+                break;
+            }
+            slot = (slot + 1) & slot_mask;
+        }
+    }
+    unique = !repeated;
     unique_known = true;
     map_built = true;
 }
 
-TemporalFrame TemporalState::begin(
+const matter::Mat4f* TemporalState::TransformTable::find(
+    std::uint64_t id) const {
+    if (!map_built || slot_entries.empty()) return nullptr;
+    std::uint32_t slot = transform_slot_hash(id) & slot_mask;
+    while (true) {
+        const std::int32_t entry = slot_entries[slot];
+        if (entry < 0) return nullptr;
+        if (slot_keys[slot] == id) return &values[static_cast<std::size_t>(entry)];
+        slot = (slot + 1) & slot_mask;
+    }
+}
+
+const TemporalFrame& TemporalState::begin(
     const FrameMatrices& current_unjittered, VkExtent2D internal_extent,
     VkExtent2D output_extent, const std::vector<TemporalInstance>& instances,
     bool jitter_enabled, TemporalInvalidation invalidation) {
@@ -283,10 +323,7 @@ TemporalFrame TemporalState::begin(
         if (aligned) {
             previous = &presented_.transforms.values[index];
         } else {
-            const auto found =
-                presented_.transforms.map.find(instance.instance_id);
-            if (found != presented_.transforms.map.end())
-                previous = &found->second;
+            previous = presented_.transforms.find(instance.instance_id);
         }
         const bool valid = !frame.reset && previous != nullptr;
         frame.instances.push_back(

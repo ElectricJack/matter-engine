@@ -1,10 +1,35 @@
 #include "sector_streamer.h"
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <limits>
 
 namespace matter_stream {
+
+// Diagnostic (issues/render-streaming-build-cpu follow-up): with
+// MATTER_STREAM_NO_EVICT=1 a sector that becomes resident stays resident at
+// its first rung forever — no out-of-ring evictions, no rung-change rebakes
+// (which would double-publish a tile if only the eviction half were
+// suppressed). Movement then only ADDS sectors, which isolates publish cost
+// from eviction cost when chasing movement hitches. Residency grows without
+// bound; test runs only.
+static bool stream_no_evict() {
+    static const bool value = [] {
+        const char* env = std::getenv("MATTER_STREAM_NO_EVICT");
+        const bool active = env != nullptr && env[0] == '1';
+        // Self-report so a diagnostic run can prove the toggle reached this
+        // exe (env prefixes and stale builds have burned that assumption
+        // before — worktree-bootstrap gotcha #8).
+        if (active)
+            std::fprintf(stderr,
+                         "[stream] MATTER_STREAM_NO_EVICT=1: evictions and "
+                         "rung rebakes DISABLED (diagnostic)\n");
+        return active;
+    }();
+    return value;
+}
 
 SectorStreamer::SectorStreamer(Config cfg)
     : cfg_(std::move(cfg)) {}
@@ -80,6 +105,12 @@ void SectorStreamer::update(float anchor_x, float anchor_z) {
             // Hysteresis: only demote/evict a resident if its distance exceeds
             // (ring_radius_for_current_rung + hysteresis).
             if (st.resident_rung >= 0) {
+                if (stream_no_evict()) {
+                    // Freeze at the resident rung: no upgrade/demote requests,
+                    // so on_published() can never queue a replacement eviction.
+                    st.desired_rung = st.resident_rung;
+                    continue;
+                }
                 // Find the ring radius that produced resident_rung.
                 float ring_radius = 0.0f;
                 for (const auto& ring : cfg_.rings) {
@@ -101,7 +132,7 @@ void SectorStreamer::update(float anchor_x, float anchor_z) {
                 // Hysteresis: only evict if dist > outer_ring + hysteresis.
                 // The outer ring is the last ring's radius.
                 float outer_r = cfg_.rings.empty() ? 0.0f : cfg_.rings.back().radius;
-                if (st.dist > outer_r + cfg_.hysteresis) {
+                if (!stream_no_evict() && st.dist > outer_r + cfg_.hysteresis) {
                     evictions_.push_back({0, 0, st.resident_rung});
                     int64_t etx, etz;
                     unkey(k, etx, etz);
