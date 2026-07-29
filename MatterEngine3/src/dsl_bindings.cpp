@@ -1218,6 +1218,72 @@ static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* 
     return JS_UNDEFINED;
 }
 
+// terrainHeightfield(tx, tz, lod, edgeMask, matArray)
+// Meshes one sector as a heightfield LOD grid (terrain LODs 0-4 of the
+// alpine ladder: 1x1 .. 16x16 cells) and pushes the result into the triangle
+// buffer. Evaluates height_at per lattice point only — no voxel volume.
+// edgeMask marks cardinal neighbors exactly one LOD coarser (bit 0 = +x,
+// bit 1 = -x, bit 2 = +z, bit 3 = -z); those borders are stitched 2:1
+// against the coarse neighbor's boundary vertices. matArray as terrainVolume.
+static JSValue j_terrainHeightfield(JSContext* c, JSValueConst, int n,
+                                    JSValueConst* a) {
+    DslState* st = state_of(c);
+    if (st->generating_animation()) {
+        st->set_error("geometry authoring is forbidden during generate");
+        return JS_UNDEFINED;
+    }
+    const WorldBinding& w = st->world();
+    if (!w.field) {
+        st->set_error("terrainHeightfield: no world bound — set "
+                      "BakeOptions.world before baking a terrain sector");
+        return JS_UNDEFINED;
+    }
+    if (n < 4) {
+        st->set_error(
+            "terrainHeightfield: requires (tx, tz, lod, edgeMask[, mats])");
+        return JS_UNDEFINED;
+    }
+
+    int64_t tx = 0, tz = 0;
+    JS_ToInt64(c, &tx, a[0]);
+    JS_ToInt64(c, &tz, a[1]);
+    int32_t lod = 0, edge_mask = 0;
+    JS_ToInt32(c, &lod, a[2]);
+    JS_ToInt32(c, &edge_mask, a[3]);
+
+    uint32_t mat[4] = {0, 1, 2, 3};
+    if (n >= 5 && JS_IsArray(a[4])) {
+        for (int i = 0; i < 4; ++i) {
+            JSValue v = JS_GetPropertyUint32(c, a[4], (uint32_t)i);
+            if (!JS_IsUndefined(v)) {
+                int32_t m = 0; JS_ToInt32(c, &m, v);
+                mat[i] = (uint32_t)m;
+            }
+            JS_FreeValue(c, v);
+        }
+    }
+
+    terrain_mesher::SectorMesh mesh;
+    std::string err;
+    if (!terrain_mesher::mesh_sector_heightfield(
+            *w.field, tx, tz, lod, edge_mask,
+            w.sector_size, w.y_min, w.y_max, mesh, err)) {
+        st->set_error("terrainHeightfield: " + err);
+        return JS_UNDEFINED;
+    }
+
+    for (const auto& bkt : mesh.buckets) {
+        uint32_t mat_id = bkt.material < 4 ? mat[bkt.material] : mat[0];
+        const size_t n_tris = bkt.positions.size() / 9;
+        for (size_t t = 0; t < n_tris; ++t) {
+            st->pushTerrainTriangle(&bkt.positions[t * 9],
+                                    &bkt.normals[t * 9],
+                                    (int)mat_id);
+        }
+    }
+    return JS_UNDEFINED;
+}
+
 // emitVolume({ pos, dir, radius, spread, length, density, color, rise, turbulence })
 static JSValue j_emitVolume(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     DslState* st = state_of(c);
@@ -1314,6 +1380,8 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_emitVolume",j_emitVolume,1);
     // Terrain verb binding (Task 5: terrainVolume).
     bind("__terrainVolume",j_terrainVolume,4);
+    // Heightfield terrain LOD ladder (alpine design, LODs 0-4).
+    bind("__terrainHeightfield",j_terrainHeightfield,5);
     // World query verbs (Task 7: heightAt/slopeAt/moistureAt/biomeAt).
     bind("__heightAt",j_heightAt,2);
     bind("__slopeAt",j_slopeAt,2);

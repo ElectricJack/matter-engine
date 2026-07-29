@@ -203,5 +203,76 @@ int main() {
         CHECK(at_end < 9500, "no leak after flight");
         printf("  long flight: peak=%zu end=%zu\n", peak, at_end);
     }
+
+    // --- terrain LOD ladder: bands, 2:1 balance, edge masks ------------------
+    {
+        Config tcfg;
+        tcfg.sector_size = 64.0f;
+        tcfg.rings = { {128.0f, 2}, {320.0f, 1}, {2560.0f, 0} };
+        tcfg.terrain_lod_enabled = true;   // default design bands 3S..40S
+        SectorStreamer s(tcfg);
+
+        // Settle and record the FINAL accepted variant per sector.
+        struct V { int rung; };
+        std::unordered_map<long long, int> final_variant;
+        auto skey = [](int64_t tx, int64_t tz) {
+            return (long long)((tx << 20) ^ (tz & 0xFFFFF));
+        };
+        for (int i = 0; i < 20000; ++i) {
+            s.update(32.0f, 32.0f);
+            SectorRequest q; bool any = false;
+            while (s.next_request(q)) {
+                any = true;
+                if (s.on_published(q.tx, q.tz, q.rung))
+                    final_variant[skey(q.tx, q.tz)] = q.rung;
+            }
+            s.take_evictions();
+            if (!any && i > 2) break;
+        }
+        CHECK(!final_variant.empty(), "terrain ladder settled");
+
+        bool all_packed = true, near_is_voxel = true, far_is_coarse = true;
+        bool balanced = true, masks_ok = true;
+        int seen_lods = 0;
+        for (const auto& [k, v] : final_variant) {
+            if (!variant_packed(v)) { all_packed = false; continue; }
+            const int64_t tx = k >> 20;
+            const int64_t tz = (int64_t)(int32_t)((k & 0xFFFFF) << 12) >> 12;
+            const float cx = (float(tx) + 0.5f) * 64.0f - 32.0f;
+            const float cz = (float(tz) + 0.5f) * 64.0f - 32.0f;
+            const float d = std::sqrt(cx * cx + cz * cz);
+            const int lod = variant_terrain_lod(v);
+            seen_lods |= 1 << lod;
+            if (d < 150.0f && lod != 5) near_is_voxel = false;
+            if (d > 1700.0f && lod > 1) far_is_coarse = false;
+
+            int expect_mask = 0;
+            const int64_t ntx[4] = {tx + 1, tx - 1, tx, tx};
+            const int64_t ntz[4] = {tz, tz, tz + 1, tz - 1};
+            for (int n = 0; n < 4; ++n) {
+                auto it = final_variant.find(skey(ntx[n], ntz[n]));
+                if (it == final_variant.end()) continue;
+                const int nlod = variant_terrain_lod(it->second);
+                if (nlod - lod > 1 || lod - nlod > 1) balanced = false;
+                if (nlod == lod - 1) expect_mask |= 1 << n;
+            }
+            if (variant_edge_mask(v) != expect_mask) masks_ok = false;
+        }
+        CHECK(all_packed, "every terrain-ladder variant carries the marker");
+        CHECK(near_is_voxel, "sectors inside 3S stay native voxel (lod 5)");
+        CHECK(far_is_coarse, "outer-band sectors coarsen to lod <= 1");
+        CHECK(seen_lods == 0x3F, "all six LOD levels appear in the settled disc");
+        CHECK(balanced, "settled cardinal neighbors differ by at most one LOD");
+        CHECK(masks_ok, "edge masks name exactly the one-coarser neighbors");
+
+        // Legacy path untouched: same rings without the flag produce bare rungs.
+        Config bare = tcfg; bare.terrain_lod_enabled = false;
+        SectorStreamer s2(bare);
+        s2.update(32.0f, 32.0f);
+        SectorRequest q;
+        CHECK(s2.next_request(q), "legacy streamer still requests");
+        CHECK(!variant_packed(q.rung) && q.rung >= 0 && q.rung <= 2,
+              "legacy request carries a bare scatter rung");
+    }
     return check_summary();
 }

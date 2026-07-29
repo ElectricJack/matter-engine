@@ -105,7 +105,13 @@ function anyBiomeWantsTrees(biomesJson) {
 }
 
 class WorldSector extends Part {
-  static params = { tx: 0, tz: 0, rung: 0, worldSeed: 0, fieldHash: '', biomes: '' };
+  // terrainLod: 5 = native voxel mesh (near), 0-4 = heightfield LOD grids
+  // (1x1 .. 16x16 cells) — see the alpine terrain design. edgeMask marks
+  // cardinal neighbors exactly one LOD coarser (bit 0 = +x, 1 = -x, 2 = +z,
+  // 3 = -z); the mesher stitches those borders 2:1. Defaults keep older
+  // engines (which send neither) on the voxel path.
+  static params = { tx: 0, tz: 0, rung: 0, terrainLod: 5, edgeMask: 0,
+                    worldSeed: 0, fieldHash: '', biomes: '' };
   // FIXED variant list — independent of tx/tz so the whole asset set installs
   // once at world load and every sector bake hits the same child hashes.
   // Method form (script_host eval_requires calls `static requires` with the
@@ -121,7 +127,12 @@ class WorldSector extends Part {
     const terrainMaterials = oneDirtMaterial
       ? [MAT.dirt, MAT.dirt, MAT.dirt, MAT.dirt]
       : [MAT.grass, MAT.dirt, MAT.rock, MAT.snow];
-    this.terrainVolume(p.tx, p.tz, 0, terrainMaterials);
+    const terrainLod = p.terrainLod === undefined ? 5 : (p.terrainLod | 0);
+    if (terrainLod < 5)
+      this.terrainHeightfield(p.tx, p.tz, terrainLod, p.edgeMask | 0,
+                              terrainMaterials);
+    else
+      this.terrainVolume(p.tx, p.tz, 0, terrainMaterials);
     if (!table) return;   // no biome table -> terrain only
 
     const ox = p.tx * SECTOR, oz = p.tz * SECTOR;

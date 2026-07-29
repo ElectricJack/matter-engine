@@ -261,6 +261,13 @@ matter_stream::Config make_streaming_profile(
         }
     }
     profile.max_inflight = 16;
+    // Heightfield terrain LOD ladder (alpine design): streamed sectors carry
+    // a terrain LOD + coarser-neighbor edge mask; WorldSector picks the
+    // heightfield generator for LODs 0-4 and the voxel mesher for LOD 5.
+    // MATTER_TERRAIN_LOD=0 disables for A/B comparison (every sector then
+    // bakes the full voxel mesh, as before).
+    const char* lod_env = std::getenv("MATTER_TERRAIN_LOD");
+    profile.terrain_lod_enabled = !(lod_env && lod_env[0] == '0');
     return profile;
 }
 
@@ -3354,10 +3361,18 @@ void WorldSession::Impl::bake_and_stage_sector(
             else biomes_escaped += c;
         }
 
+        // req.rung is a packed terrain variant when the streamer runs the
+        // heightfield LOD ladder; the decode helpers pass bare legacy rungs
+        // through as (scatter, terrain LOD 5, empty mask). WorldSector's
+        // `rung` stays the SCATTER TIER so child-asset hashes remain stable
+        // across terrain LOD changes.
         char params_buf[1024];
         std::snprintf(params_buf, sizeof(params_buf),
-            R"({"tx":%lld,"tz":%lld,"rung":%d,"worldSeed":%llu,"fieldHash":"%s","biomes":"%s"})",
-            (long long)req.tx, (long long)req.tz, req.rung,
+            R"({"tx":%lld,"tz":%lld,"rung":%d,"terrainLod":%d,"edgeMask":%d,"worldSeed":%llu,"fieldHash":"%s","biomes":"%s"})",
+            (long long)req.tx, (long long)req.tz,
+            matter_stream::variant_scatter(req.rung),
+            matter_stream::variant_terrain_lod(req.rung),
+            matter_stream::variant_edge_mask(req.rung),
             (unsigned long long)world_seed, world_field_hash.c_str(),
             biomes_escaped.c_str());
         std::string sector_params(params_buf);

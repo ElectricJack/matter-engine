@@ -90,6 +90,7 @@ globalThis.Part = class Part {
   paths(rec,opts)        { __pf_stampPaths((rec&&rec.__id!==undefined)?rec.__id:rec, opts); }
   emitVolume(opts)       { __dsl_emitVolume(opts); }
   terrainVolume(tx,tz,rung,mats) { __terrainVolume(tx,tz,rung,(mats===undefined?null:mats)); }
+  terrainHeightfield(tx,tz,lod,edgeMask,mats) { __terrainHeightfield(tx,tz,lod,edgeMask,(mats===undefined?null:mats)); }
   heightAt(x,z)   { return __heightAt(x,z); }
   slopeAt(x,z)    { return __slopeAt(x,z); }
   moistureAt(x,z) { return __moistureAt(x,z); }
