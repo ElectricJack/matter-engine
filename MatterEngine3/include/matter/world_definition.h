@@ -94,7 +94,11 @@ struct TilesetPomSettings {
     // much longer POM reach); the pre-existing hardcoded TilesetParamsGpu
     // values they replaced were relief 0.178, datum 0.105, march 0.73,
     // steps 50, distance 50.4, fade 1.0, ao 0.63, shadow 0.68, horizon 1.0.
-    bool  enabled            = true;
+    //
+    // enabled defaults to false (2026-07-29): the march is opt-in from the
+    // viewer's "Ground POM" panel. The tuned values below are kept so that
+    // ticking the box restores the alpine tuning in one click.
+    bool  enabled            = false;
     float relief_cap_m       = 0.260f;  // pom_max_relief_m
     float datum_bias_m       = 0.240f;  // Ground POM datum-bias fix knob
     float max_march_m        = 1.65f;   // pom_max_march_m

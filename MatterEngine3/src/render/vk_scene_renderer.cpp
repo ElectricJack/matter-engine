@@ -9115,7 +9115,12 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     constants.bias = ray_tracing_settings_.bias;
     constants.samples = std::max(1u, ray_tracing_settings_.samples);
     constants.debug_view = ray_tracing_settings_.debug_view ? 1u : 0u;
-    constants.pom_lift = tileset_pom_settings_.relief_cap_m + 0.02f;
+    // With POM disabled the ground stays flat at the datum, so there is no
+    // displaced roof to escape -- lifting by the relief cap would then push
+    // the shadow origin past real contact occluders. Keep only the epsilon.
+    constants.pom_lift = tileset_pom_settings_.enabled
+                             ? tileset_pom_settings_.relief_cap_m + 0.02f
+                             : 0.02f;
     last_rt_samples_ = constants.samples;
     last_rt_debug_view_ = constants.debug_view != 0;
     vkCmdBindPipeline(frame.command_buffer,

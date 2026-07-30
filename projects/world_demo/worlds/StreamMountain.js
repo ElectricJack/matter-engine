@@ -97,8 +97,11 @@ class StreamMountain extends World {
   // Editor volumetrics defaults for this world (adopted into the live
   // volumetrics controls on world load). Thin fog multiplier + strong
   // falloff keep the long alpine sightlines readable.
+  //
+  // Off by default (2026-07-29). The tuned multipliers below are kept so the
+  // viewer's Volumetrics "Enable" checkbox restores this look in one click.
   static volumetrics = {
-    enabled: true,
+    enabled: false,
     phaseG: 0.30,
     temporalBlend: 0.85,
     fogDensityMul: 0.06,

@@ -310,10 +310,11 @@ matter_stream::Config make_streaming_profile(
     // Heightfield terrain LOD ladder (alpine design): streamed sectors carry
     // a terrain LOD + coarser-neighbor edge mask; WorldSector picks the
     // heightfield generator for LODs 0-4 and the voxel mesher for LOD 5.
-    // MATTER_TERRAIN_LOD=0 disables for A/B comparison (every sector then
-    // bakes the full voxel mesh, as before).
+    // Disabled by default (2026-07-29): every sector bakes the full voxel
+    // mesh, as it did pre-ladder. MATTER_TERRAIN_LOD=1 opts back in for A/B
+    // comparison; the editor's LOD Settings checkbox does the same per-world.
     const char* lod_env = std::getenv("MATTER_TERRAIN_LOD");
-    profile.terrain_lod_enabled = !(lod_env && lod_env[0] == '0');
+    profile.terrain_lod_enabled = lod_env && lod_env[0] != '0';
     // World-authored terrain LOD bands (streaming.terrainBands) replace the
     // engine's sector-scaled defaults when present.
     if (!world_settings.terrain_bands.empty()) {
