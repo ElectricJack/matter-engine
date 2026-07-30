@@ -37,42 +37,99 @@ class AlpineDeciduous extends Part {
       this.tint(c[0], c[1], c[2], c[3]);
       this.line(a, b, ra * S, rb * S);
     };
-    const crownLobe = (center, radius, turn, color) => {
-      const forward = [Math.cos(turn) * radius, 0, Math.sin(turn) * radius];
-      const side = [-Math.sin(turn) * radius * 0.78, 0, Math.cos(turn) * radius * 0.78];
-      const top = [center[0], center[1] + radius * 0.88, center[2]];
-      const bottom = [center[0], center[1] - radius * 0.68, center[2]];
-      const front = [center[0] + forward[0], center[1], center[2] + forward[2]];
-      const back = [center[0] - forward[0], center[1], center[2] - forward[2]];
-      const left = [center[0] + side[0], center[1], center[2] + side[2]];
-      const right = [center[0] - side[0], center[1], center[2] - side[2]];
-      const low = [center[0], center[1] - radius * 0.66, center[2]];
+    const crownMass = (base, angle, count, size, state, color) => {
+      const live = state === 2;
+      const sides = live ? 6 : 5;
+      const ringCount = live ? 3 : 2;
+      const densityScale = 0.88 + Math.min(7, count) * 0.018;
+      const span = size * S * (live ? 2.55 : 1.45) * densityScale;
+      const halfWidth = size * S * (live ? 1.04 : 0.67) * densityScale;
+      const halfHeight = size * S * (live ? 0.90 : 0.57) * densityScale;
+      const slope = live ? 0.24 : 0.18;
+      const axisScale = 1 / Math.sqrt(1 + slope * slope);
+      const axis = [Math.cos(angle) * axisScale, slope * axisScale,
+                    Math.sin(angle) * axisScale];
+      const side = [-Math.sin(angle), 0, Math.cos(angle)];
+      const up = [-Math.cos(angle) * slope * axisScale, axisScale,
+                  -Math.sin(angle) * slope * axisScale];
+      const axial = live ? [-0.30, 0.02, 0.32] : [-0.12, 0.16];
+      const bulge = live ? [0.76, 1.0, 0.82] : [0.86, 0.76];
+      const rings = [];
+      const phase = r.range(-0.42, 0.42);
+
+      for (let ringIndex = 0; ringIndex < ringCount; ++ringIndex) {
+        const sideShift = r.range(-0.20, 0.20) * halfWidth;
+        const upShift = r.range(-0.13, 0.18) * halfHeight;
+        const center = [
+          base[0] + axis[0] * span * axial[ringIndex] +
+            side[0] * sideShift + up[0] * upShift,
+          base[1] + axis[1] * span * axial[ringIndex] +
+            side[1] * sideShift + up[1] * upShift,
+          base[2] + axis[2] * span * axial[ringIndex] +
+            side[2] * sideShift + up[2] * upShift,
+        ];
+        const ring = [];
+        for (let point = 0; point < sides; ++point) {
+          const theta = phase + ringIndex * 0.31 + point * pi2 / sides;
+          const irregularity = r.range(0.80, 1.18) * bulge[ringIndex];
+          const across = Math.cos(theta) * halfWidth * irregularity;
+          const vertical = Math.sin(theta) * halfHeight *
+            r.range(0.86, 1.16) * bulge[ringIndex];
+          ring.push([
+            center[0] + side[0] * across + up[0] * vertical,
+            center[1] + side[1] * across + up[1] * vertical,
+            center[2] + side[2] * across + up[2] * vertical,
+          ]);
+        }
+        rings.push(ring);
+      }
+
+      const start = [
+        base[0] - axis[0] * span * (live ? 0.44 : 0.28) +
+          side[0] * r.range(-0.10, 0.10) * halfWidth,
+        base[1] - axis[1] * span * (live ? 0.44 : 0.28) -
+          halfHeight * r.range(0.01, 0.12),
+        base[2] - axis[2] * span * (live ? 0.44 : 0.28) +
+          side[2] * r.range(-0.10, 0.10) * halfWidth,
+      ];
+      const end = [
+        base[0] + axis[0] * span * (live ? 0.46 : 0.30) +
+          up[0] * r.range(-0.06, 0.12) * halfHeight,
+        base[1] + axis[1] * span * (live ? 0.46 : 0.30) +
+          up[1] * r.range(-0.06, 0.12) * halfHeight,
+        base[2] + axis[2] * span * (live ? 0.46 : 0.30) +
+          up[2] * r.range(-0.06, 0.12) * halfHeight,
+      ];
+
       this.fill(MAT.foliageThin);
       this.tint(color[0], color[1], color[2], color[3]);
       this.beginShape(SHAPE.triangles);
-        this.vertex(top[0], top[1], top[2]); this.vertex(front[0], front[1], front[2]); this.vertex(left[0], left[1], left[2]);
-        this.vertex(top[0], top[1], top[2]); this.vertex(left[0], left[1], left[2]); this.vertex(back[0], back[1], back[2]);
-        this.vertex(top[0], top[1], top[2]); this.vertex(back[0], back[1], back[2]); this.vertex(right[0], right[1], right[2]);
-        this.vertex(top[0], top[1], top[2]); this.vertex(right[0], right[1], right[2]); this.vertex(front[0], front[1], front[2]);
-        this.vertex(bottom[0], bottom[1], bottom[2]); this.vertex(left[0], left[1], left[2]); this.vertex(front[0], front[1], front[2]);
-        this.vertex(bottom[0], bottom[1], bottom[2]); this.vertex(back[0], back[1], back[2]); this.vertex(left[0], left[1], left[2]);
-        this.vertex(bottom[0], bottom[1], bottom[2]); this.vertex(right[0], right[1], right[2]); this.vertex(back[0], back[1], back[2]);
-        this.vertex(bottom[0], bottom[1], bottom[2]); this.vertex(front[0], front[1], front[2]); this.vertex(right[0], right[1], right[2]);
+      for (let point = 0; point < sides; ++point) {
+        const next = (point + 1) % sides;
+        this.vertex(start[0], start[1], start[2]);
+        this.vertex(rings[0][next][0], rings[0][next][1], rings[0][next][2]);
+        this.vertex(rings[0][point][0], rings[0][point][1], rings[0][point][2]);
+        for (let ringIndex = 0; ringIndex < ringCount - 1; ++ringIndex) {
+          const a = rings[ringIndex][point];
+          const b = rings[ringIndex][next];
+          const c = rings[ringIndex + 1][next];
+          const d = rings[ringIndex + 1][point];
+          this.vertex(a[0], a[1], a[2]); this.vertex(b[0], b[1], b[2]);
+          this.vertex(c[0], c[1], c[2]);
+          this.vertex(a[0], a[1], a[2]); this.vertex(c[0], c[1], c[2]);
+          this.vertex(d[0], d[1], d[2]);
+        }
+        const last = rings[ringCount - 1];
+        this.vertex(last[point][0], last[point][1], last[point][2]);
+        this.vertex(last[next][0], last[next][1], last[next][2]);
+        this.vertex(end[0], end[1], end[2]);
+      }
       this.endShape();
     };
     const leafFan = (base, a, count, size, state, n, color) => {
       if (state === 0) return;
-      const clusters = state === 1 ? 2 : Math.min(4, Math.max(3, count - 3));
       const tint = foliage(n, state, color);
-      for (let clusterIndex = 0; clusterIndex < clusters; ++clusterIndex) {
-        const angle = a + (clusterIndex - (clusters - 1) * 0.5) * 0.20 + r.range(-0.08, 0.08);
-        const offset = size * S * (0.16 + clusterIndex * 0.10);
-        const cluster = [base[0] + Math.cos(angle) * offset,
-                         base[1] + offset * r.range(0.16, 0.34),
-                         base[2] + Math.sin(angle) * offset];
-        const radius = size * S * r.range(0.75, 0.98);
-        crownLobe(cluster, radius, angle + r.range(-0.12, 0.12), tint);
-      }
+      crownMass(base, a + r.range(-0.10, 0.10), count, size, state, tint);
     };
     const branch = (base, a, reach, rise, n, pale, leafSize, leafColor, twigs, fanCount) => {
       const state = vitality(n);
