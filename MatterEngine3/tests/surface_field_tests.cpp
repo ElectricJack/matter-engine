@@ -420,5 +420,197 @@ int main() {
               "curv falls back to 0 without a world context");
     }
 
+    // ---- 3D noise ops (texel-tape P1): parse + input implication ----
+    {
+        // Part-local 3D noise claims no world inputs; the world pair implies
+        // worldX/altitude/worldZ (keeps the misuse diagnostic honest).
+        SurfaceProgram lp;
+        CHECK(parse_tape("noise3 7 0.25 3 0.5 2\nclamp r0 0 1\nmaterial 2 r1\n",
+                         lp, err),
+              err.c_str());
+        CHECK(!lp.uses_world_inputs(), "noise3 is not a world input");
+        constexpr uint32_t kWorld3Mask = (1u << kSurfInWorldX) |
+                                         (1u << kSurfInAltitude) |
+                                         (1u << kSurfInWorldZ);
+        SurfaceProgram wp;
+        CHECK(parse_tape("noise3w 7 0.25 3 0.5 2\nmaterial 2 r0\n", wp, err),
+              err.c_str());
+        CHECK(wp.uses_world_inputs(), "noise3w marks the tape world-dependent");
+        CHECK((wp.input_mask() & kWorld3Mask) == kWorld3Mask,
+              "noise3w implies worldX/altitude/worldZ in the input mask");
+        SurfaceProgram rp;
+        CHECK(parse_tape("ridge3w 7 0.25 3 0.5 2 5 0.11 6\nmaterial 2 r0\n",
+                         rp, err),
+              err.c_str());
+        CHECK(rp.uses_world_inputs() && (rp.input_mask() & kWorld3Mask) == kWorld3Mask,
+              "ridge3w (warped) implies worldX/altitude/worldZ too");
+
+        // Warp tail is all-or-nothing: exactly [wseed wfreq wamp].
+        SurfaceProgram bad;
+        CHECK(!parse_tape("noise3 7 0.25 3 0.5 2 5\nmaterial 2 r0\n", bad, err),
+              "1-token warp tail rejected");
+        CHECK(!parse_tape("noise3 7 0.25 3 0.5 2 5 0.11\nmaterial 2 r0\n",
+                          bad, err),
+              "2-token warp tail rejected");
+        CHECK(!parse_tape("ridge3w 7 0.25 3 0.5 2 5 0.11 6 9\nmaterial 2 r0\n",
+                          bad, err),
+              "4-token warp tail rejected");
+        CHECK(!parse_tape("fract r0\nmaterial 2 r0\n", bad, err),
+              "fract self/forward register ref rejected");
+
+        // The tape-only 3D ops must NOT parse as field ops.
+        FieldProgram fbad;
+        CHECK(!FieldProgram::parse("noise3 7 0.25 3 0.5 2\nheight r0\n"
+                                   "moisture r0\nrelief r0\nseaLevel 0\n"
+                                   "biome 0.65 0.35\n",
+                                   fbad, err),
+              "FieldProgram rejects noise3");
+        CHECK(!FieldProgram::parse("const 1\nfract r0\nheight r0\nmoisture r0\n"
+                                   "relief r0\nseaLevel 0\nbiome 0.65 0.35\n",
+                                   fbad, err),
+              "FieldProgram rejects fract");
+    }
+
+    // ---- 3D noise: hash — a warp tail is a different tape ----
+    {
+        const char* plain =
+            "noise3 7 0.25 3 0.5 2\nconst 2\nadd r0 r1\nmaterial 2 r2\n";
+        const char* warped =
+            "noise3 7 0.25 3 0.5 2 5 0.11 6\nconst 2\nadd r0 r1\nmaterial 2 r2\n";
+        SurfaceProgram a, b, c;
+        CHECK(parse_tape(plain, a, err), err.c_str());
+        CHECK(parse_tape(plain, b, err), err.c_str());
+        CHECK(parse_tape(warped, c, err), err.c_str());
+        CHECK(a.hash() == b.hash(), "same 3D-noise text parses to the same hash");
+        CHECK(a.hash() != c.hash(), "adding a warp tail changes the hash");
+    }
+
+    // ---- 3D noise: golden vectors pinned from the shipped implementation ----
+    // Exact floats (%.9g round-trips binary32): any drift in hash3i/
+    // value_noise3/fbm3/the warp displacement changes these, and that must be
+    // a deliberate page-invalidating decision, not an accident. Every tape
+    // adds 2 so the >= 0 weight clamp never masks a comparison.
+    {
+        const float pos[3] = {3.7f, 1.5f, -2.2f}, up[3] = {0, 1, 0};
+        float w[kMaxSurfaceMaterials], w2[kMaxSurfaceMaterials];
+
+        SurfaceProgram np;
+        CHECK(parse_tape("noise3 7 0.25 3 0.5 2\nconst 2\nadd r0 r1\n"
+                         "material 2 r2\n",
+                         np, err),
+              err.c_str());
+        SurfaceRuntime nrt{std::move(np)};
+        nrt.weights_at(pos, up, nullptr, w);
+        CHECK(w[0] == 1.79261982f, "noise3 golden value");
+        nrt.weights_at(pos, up, &world, w2);
+        CHECK(w[0] == w2[0], "local 3D noise ignores the world context");
+
+        SurfaceProgram rp;
+        CHECK(parse_tape("ridge3 7 0.25 3 0.5 2\nconst 2\nadd r0 r1\n"
+                         "material 2 r2\n",
+                         rp, err),
+              err.c_str());
+        SurfaceRuntime rrt{std::move(rp)};
+        rrt.weights_at(pos, up, nullptr, w);
+        CHECK(w[0] == 2.52229452f, "ridge3 golden value");
+
+        // Warp on/off: warped != unwarped, both bit-stable across calls.
+        SurfaceProgram wp;
+        CHECK(parse_tape("noise3 7 0.25 3 0.5 2 5 0.11 6\nconst 2\nadd r0 r1\n"
+                         "material 2 r2\n",
+                         wp, err),
+              err.c_str());
+        SurfaceRuntime wrt{std::move(wp)};
+        wrt.weights_at(pos, up, nullptr, w);
+        CHECK(w[0] == 1.7238971f, "warped noise3 golden value");
+        CHECK(w[0] != 1.79261982f, "warp displaces the sample point");
+        wrt.weights_at(pos, up, nullptr, w2);
+        CHECK(w[0] == w2[0], "warped noise3 deterministic across calls");
+
+        // fract: x - floor(x), including the negative branch.
+        SurfaceProgram fp;
+        CHECK(parse_tape("const 3.7\nfract r0\nmaterial 2 r1\n", fp, err),
+              err.c_str());
+        SurfaceRuntime frt{std::move(fp)};
+        frt.weights_at(pos, up, nullptr, w);
+        CHECK(w[0] == 0.700000048f, "fract golden value (3.7f -> frac part)");
+        SurfaceProgram fnp;
+        CHECK(parse_tape("const -1.25\nfract r0\nmaterial 2 r1\n", fnp, err),
+              err.c_str());
+        SurfaceRuntime fnrt{std::move(fnp)};
+        fnrt.weights_at(pos, up, nullptr, w);
+        CHECK(w[0] == 0.75f, "fract of a negative wraps up (-1.25 -> 0.75)");
+    }
+
+    // ---- noise3w: world-frame 3D noise, altitude axis, fallback constant ----
+    {
+        const char* kTape3w =
+            "noise3w 7 0.25 3 0.5 2\nconst 2\nadd r0 r1\nmaterial 2 r2\n";
+        SurfaceProgram np;
+        CHECK(parse_tape(kTape3w, np, err), err.c_str());
+        SurfaceRuntime wn{std::move(np)};
+        const float pos[3] = {3.7f, 1.5f, -2.2f}, up[3] = {0, 1, 0};
+        float a[kMaxSurfaceMaterials], b[kMaxSurfaceMaterials];
+        wn.weights_at(pos, up, &world, a);
+        CHECK(a[0] == 1.93807423f, "noise3w golden value under the sector transform");
+        // The altitude axis participates: lifting the part changes the value.
+        float lifted[16];
+        std::memcpy(lifted, l2w, sizeof(lifted));
+        lifted[7] = 100.0f;
+        SurfaceWorldContext upCtx{&field, lifted};
+        wn.weights_at(pos, up, &upCtx, b);
+        CHECK(a[0] != b[0], "world Y feeds the 3D sample point");
+        // Continuity across sectors: compensating the transform delta lands on
+        // the same world point and reproduces the value exactly.
+        float l2wB[16];
+        std::memcpy(l2wB, l2w, sizeof(l2wB));
+        l2wB[3] = 192.0f;
+        SurfaceWorldContext worldB{&field, l2wB};
+        wn.weights_at(pos, up, &worldB, b);
+        CHECK(a[0] != b[0], "same local position, different sector: different value");
+        const float posComp[3] = {3.7f - 64.0f, 1.5f, -2.2f};
+        wn.weights_at(posComp, up, &worldB, b);
+        CHECK(a[0] == b[0], "same world position across sectors: same value");
+        // Identity transform: world 3D noise == local 3D noise (one fbm core).
+        float ident[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        SurfaceWorldContext identCtx{&field, ident};
+        SurfaceProgram lp;
+        CHECK(parse_tape("noise3 7 0.25 3 0.5 2\nconst 2\nadd r0 r1\n"
+                         "material 2 r2\n",
+                         lp, err),
+              err.c_str());
+        SurfaceRuntime ln{std::move(lp)};
+        wn.weights_at(pos, up, &identCtx, a);
+        ln.weights_at(pos, up, nullptr, b);
+        CHECK(a[0] == b[0], "identity transform: world 3D noise == local 3D noise");
+        // Null context pins the sample to world (0, 0, 0) — the deterministic
+        // fallback constant (same convention as noise2w).
+        wn.weights_at(pos, up, nullptr, a);
+        CHECK(a[0] == 2.42036104f, "noise3w fallback golden value");
+        wn.weights_at(posComp, up, nullptr, b);
+        CHECK(a[0] == b[0], "null context pins world 3D noise to a constant");
+    }
+
+    // ---- const dedup + the 64-op cap hold for the new line forms ----
+    {
+        SurfaceProgram dp;
+        CHECK(parse_tape("const 2\nnoise3 7 0.25 3 0.5 2\nconst 2\nadd r1 r2\n"
+                         "material 2 r3\n",
+                         dp, err),
+              err.c_str());
+        CHECK(dp.ops.size() == 3, "const dedup unchanged around a noise3 line");
+        SurfaceRuntime rt{std::move(dp)};
+        const float pos[3] = {3.7f, 1.5f, -2.2f}, up[3] = {0, 1, 0};
+        float w[kMaxSurfaceMaterials];
+        rt.weights_at(pos, up, nullptr, w);
+        CHECK(w[0] == 1.79261982f, "remapped refs still evaluate the noise3 golden");
+        std::string over;
+        for (int i = 0; i < 64; ++i) over += "const " + std::to_string(i) + "\n";
+        over += "noise3 7 0.25 3 0.5 2\nmaterial 2 r64\n";
+        SurfaceProgram op_;
+        CHECK(!parse_tape(over.c_str(), op_, err),
+              "a noise3 op past 64 emitted ops still trips the cap");
+    }
+
     return check_summary();
 }

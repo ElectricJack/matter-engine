@@ -21,12 +21,23 @@ struct Op {
         Input,           // read a per-sample input (oct = code)
         Noise2World,     // fbm over WORLD (x, z) — world-anchored variants
         Ridge2World,
-        FieldCurv        // field curvature probe at world (x, z), radius = f0
+        FieldCurv,       // field curvature probe at world (x, z), radius = f0
+        Noise3,          // 3D fbm over part-local (x, y, z), optional warp tail
+        Ridge3,          // 3D ridge variant (same per-octave shape as Ridge2)
+        Noise3World,     // 3D fbm over WORLD (x, y, z) — world-anchored variants
+        Ridge3World,
+        Fract            // x - floor(x); unary
     } kind;
     int a = -1, b = -1, c = -1;        // register operands (-1 = unused)
     float f0 = 0, f1 = 0, f2 = 0, f3 = 0; // literals: value/freq/gain/lac/edges
     uint32_t seed = 0;
     int oct = 0;
+    // Optional [wseed wfreq wamp] domain-warp tail on the 3D noise ops. The
+    // struct layout is internal (canonical TEXT is the compatibility surface);
+    // wf2 is the spare the GPU op packing reserves.
+    bool warp = false;                 // tail present on this op
+    uint32_t wseed = 0;                // explicit warp seed token
+    float wf0 = 0, wf1 = 0, wf2 = 0;   // warp freq / warp amp / spare
 };
 
 // ---------------------------------------------------------------------------
@@ -146,10 +157,13 @@ inline bool surface_variant_world_anchored(uint32_t instance_count) {
 
 struct SurfaceProgram {
     // Parse canonical text: op lines (const/noise2/ridge2/noise2w/ridge2w/
-    // curv/add/sub/mul/min/max/clamp/blend/smoothstep/abs/oneminus/pow/input)
-    // followed by `material <handle> r<reg>` directives. warp2 is NOT part of
-    // the surface op set. Returns false and sets err on any violation
-    // (including 0 or > kMaxSurfaceMaterials declared materials).
+    // noise3/ridge3/noise3w/ridge3w/curv/add/sub/mul/min/max/clamp/blend/
+    // smoothstep/abs/oneminus/pow/fract/input) followed by
+    // `material <handle> r<reg>` directives. warp2 is NOT part of the surface
+    // op set — the 3D noise ops carry an optional [wseed wfreq wamp] tail that
+    // domain-warps their own sample point instead. Returns false and sets err
+    // on any violation (including 0 or > kMaxSurfaceMaterials declared
+    // materials, or a warp tail that is not exactly 0 or 3 tokens).
     //
     // Register refs in the text are SOURCE ordinals (the line order the JS
     // recorder emitted). Identical `const` lines are deduplicated at parse
@@ -165,7 +179,8 @@ struct SurfaceProgram {
     bool uses_world_inputs() const { return uses_world_inputs_; }
 
     // Bitmask over SurfaceInput codes the program actually reads (directly via
-    // `input`, or implied — noise2w/ridge2w/curv imply worldX/worldZ). Lets
+    // `input`, or implied — noise2w/ridge2w/curv imply worldX/worldZ;
+    // noise3w/ridge3w imply worldX/altitude/worldZ). Lets
     // the runtime skip field queries (height/moisture/relief/biome/fslope are
     // full program evaluations each) for inputs no op consumes.
     uint32_t input_mask() const { return input_mask_; }

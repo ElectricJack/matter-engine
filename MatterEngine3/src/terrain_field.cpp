@@ -57,6 +57,59 @@ float fbm2(float x, float z, uint32_t seed, int oct, float gain, float lac,
     return sum / norm;   // ~-1..1
 }
 
+// 3D lattice hash: hash2i's avalanche mix with a third multiply-fold for y.
+// hash2i's fold constants are the odd xxHash32 primes (374761393 = PRIME32_5,
+// 668265263 = PRIME32_4, 2246822519 = PRIME32_2); y takes the remaining one,
+// 3266489917 = PRIME32_3, keeping the whole lattice hash one constant family.
+// Bit-exact uint arithmetic — the determinism anchor for the GPU twin.
+inline uint32_t hash3i(int32_t ix, int32_t iy, int32_t iz, uint32_t seed) {
+    uint32_t h = (uint32_t)ix * 374761393u + (uint32_t)iy * 3266489917u
+               + (uint32_t)iz * 668265263u + seed * 2246822519u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return h ^ (h >> 16);
+}
+
+inline float rand01_3(int32_t ix, int32_t iy, int32_t iz, uint32_t seed) {
+    return (float)(hash3i(ix, iy, iz, seed) & 0xffffff) / (float)0x1000000;
+}
+
+float value_noise3(float x, float y, float z, uint32_t seed) {
+    int32_t ix = (int32_t)std::floor(x), iy = (int32_t)std::floor(y),
+            iz = (int32_t)std::floor(z);
+    float fx = x - ix, fy = y - iy, fz = z - iz;
+    // Trilinear over the 8 cell corners, same smoothstep fade as value_noise.
+    float c000 = rand01_3(ix,     iy,     iz,     seed);
+    float c100 = rand01_3(ix + 1, iy,     iz,     seed);
+    float c010 = rand01_3(ix,     iy + 1, iz,     seed);
+    float c110 = rand01_3(ix + 1, iy + 1, iz,     seed);
+    float c001 = rand01_3(ix,     iy,     iz + 1, seed);
+    float c101 = rand01_3(ix + 1, iy,     iz + 1, seed);
+    float c011 = rand01_3(ix,     iy + 1, iz + 1, seed);
+    float c111 = rand01_3(ix + 1, iy + 1, iz + 1, seed);
+    float u = smooth5(fx), v = smooth5(fy), w = smooth5(fz);
+    float x00 = c000 + (c100 - c000) * u;
+    float x10 = c010 + (c110 - c010) * u;
+    float x01 = c001 + (c101 - c001) * u;
+    float x11 = c011 + (c111 - c011) * u;
+    float y0 = x00 + (x10 - x00) * v;
+    float y1 = x01 + (x11 - x01) * v;
+    return y0 + (y1 - y0) * w;   // 0..1
+}
+
+float fbm3(float x, float y, float z, uint32_t seed, int oct, float gain,
+           float lac, float freq, bool ridged) {
+    float amp = 1.0f, sum = 0.0f, norm = 0.0f;
+    for (int i = 0; i < oct; ++i) {
+        float n = value_noise3(x * freq, y * freq, z * freq,
+                               seed + (uint32_t)i * 131u);
+        n = n * 2.0f - 1.0f;                        // -1..1
+        if (ridged) n = 1.0f - std::fabs(n) * 2.0f; // ridge: peaks at lattice
+        sum += n * amp; norm += amp;
+        amp *= gain; freq *= lac;
+    }
+    return sum / norm;   // ~-1..1
+}
+
 // Tokenize a line by whitespace. Returns tokens.
 std::vector<std::string> tokenize(const std::string& line) {
     std::vector<std::string> toks;
@@ -448,6 +501,11 @@ void FieldRuntime::eval_regs(float regs[], int count, float x, float z) const {
         case Op::Noise2World:
         case Op::Ridge2World:
         case Op::FieldCurv:
+        case Op::Noise3:
+        case Op::Ridge3:
+        case Op::Noise3World:
+        case Op::Ridge3World:
+        case Op::Fract:
             // surfaces()-tape-only ops; FieldProgram::parse never emits them.
             regs[i] = 0.0f;
             break;
@@ -527,6 +585,21 @@ int surface_input_code(const std::string& name) {
     for (int i = 0; i < kSurfInCount; ++i)
         if (name == kSurfaceInputNames[i]) return i;
     return -1;
+}
+
+// 3D fbm for one tape op, applying its optional domain warp first: the sample
+// point is displaced per axis before the fbm — p' = p + amp * (n(p·wfreq) · 2
+// − 1) — where n is single-octave 3D value noise and the three axis seeds
+// derive from the explicit wseed token (wseed, wseed^0x9e37, wseed^0x7f4a —
+// the same axis-decorrelation xors warp2 uses).
+float fbm3_op(const Op& o, float x, float y, float z, bool ridged) {
+    if (o.warp) {
+        const float sx = x * o.wf0, sy = y * o.wf0, sz = z * o.wf0;
+        x += o.wf1 * (value_noise3(sx, sy, sz, o.wseed)           * 2.0f - 1.0f);
+        y += o.wf1 * (value_noise3(sx, sy, sz, o.wseed ^ 0x9e37u) * 2.0f - 1.0f);
+        z += o.wf1 * (value_noise3(sx, sy, sz, o.wseed ^ 0x7f4au) * 2.0f - 1.0f);
+    }
+    return fbm3(x, y, z, o.seed, o.oct, o.f1, o.f2, o.f0, ridged);
 }
 
 } // namespace
@@ -666,6 +739,48 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
                 out.uses_world_inputs_ = true;
                 out.input_mask_ |= (1u << kSurfInWorldX) | (1u << kSurfInWorldZ);
             }
+        }
+        else if (op == "noise3" || op == "ridge3" ||
+                 op == "noise3w" || op == "ridge3w") {
+            // noise3|ridge3 seed freq oct gain lac [wseed wfreq wamp] — 3D fbm
+            // over part-local (x, y, z), so it varies along vertical surfaces
+            // where the 2D pair smears. noise3w|ridge3w — same params over
+            // WORLD (x, y, z); world-anchored variants only (fallback context
+            // pins them to world (0, 0, 0)). The optional 3-token tail domain-
+            // warps the op's own sample point before the fbm (see fbm3_op) —
+            // the tape's substitute for the field program's stateful warp2.
+            const bool is_world = (op == "noise3w" || op == "ridge3w");
+            const bool is_ridge = (op == "ridge3" || op == "ridge3w");
+            o.kind = is_world ? (is_ridge ? Op::Ridge3World : Op::Noise3World)
+                              : (is_ridge ? Op::Ridge3 : Op::Noise3);
+            if (!require_uint(1, o.seed)) return false;
+            if (!require_float(2, o.f0))  return false; // freq
+            if (!require_int(3, o.oct))   return false;
+            if (!require_float(4, o.f1))  return false; // gain
+            if (!require_float(5, o.f2))  return false; // lac
+            if (toks.size() != 6) {
+                // Warp tail is all-or-nothing: exactly [wseed wfreq wamp].
+                if (toks.size() != 9) {
+                    err = std::string(op) +
+                          ": warp tail must be exactly 'wseed wfreq wamp'";
+                    return false;
+                }
+                o.warp = true;
+                if (!require_uint(6, o.wseed)) return false;
+                if (!require_float(7, o.wf0))  return false; // warp freq
+                if (!require_float(8, o.wf1))  return false; // warp amp
+            }
+            if (is_world) {
+                out.uses_world_inputs_ = true;
+                out.input_mask_ |= (1u << kSurfInWorldX) |
+                                   (1u << kSurfInAltitude) |
+                                   (1u << kSurfInWorldZ);
+            }
+        }
+        else if (op == "fract") {
+            // fract a — x - floor(x); unary (strata banding).
+            o.kind = Op::Fract;
+            if (!require_reg(1, o.a)) return false;
         }
         else if (op == "curv") {
             // curv radius — field curvature probe at world (x, z), metres.
@@ -842,6 +957,27 @@ void SurfaceRuntime::weights_at(const float pos[3], const float nrm[3],
                 ? world->field->curvature_at(in[kSurfInWorldX],
                                              in[kSurfInWorldZ], o.f0)
                 : 0.0f;
+            break;
+        case Op::Noise3:
+            regs[i] = fbm3_op(o, in[kSurfInLocalX], in[kSurfInLocalY],
+                              in[kSurfInLocalZ], false);
+            break;
+        case Op::Ridge3:
+            regs[i] = fbm3_op(o, in[kSurfInLocalX], in[kSurfInLocalY],
+                              in[kSurfInLocalZ], true);
+            break;
+        case Op::Noise3World:
+            // World-frame 3D fbm. Without a world context wx/wy/wz hold
+            // fallback 0 — a constant, per contract (same rule as noise2w).
+            regs[i] = fbm3_op(o, in[kSurfInWorldX], in[kSurfInAltitude],
+                              in[kSurfInWorldZ], false);
+            break;
+        case Op::Ridge3World:
+            regs[i] = fbm3_op(o, in[kSurfInWorldX], in[kSurfInAltitude],
+                              in[kSurfInWorldZ], true);
+            break;
+        case Op::Fract:
+            regs[i] = regs[o.a] - std::floor(regs[o.a]);
             break;
         case Op::Add:
             regs[i] = regs[o.a] + regs[o.b];

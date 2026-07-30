@@ -199,6 +199,65 @@ class OpsWorld extends World {
               "extended-op tape evaluates deterministically");
     }
 
+    // ---- texel-tape P1: 3D noise recorders + warp tail + fract ----
+    // s.noise3/ridge3/noise3World/ridge3World record the canonical 3D-noise
+    // lines (defaults oct=3 gain=0.5 lac=2, optional {seed, freq, amp} warp
+    // object appending the 3-token tail), and node.fract() records its unary.
+    {
+        static const char* kTape3World = R"JS(
+class Tape3World extends World {
+  static params = { worldSeed: 9 };
+  static world  = { sectorSize: 16, yMin: -64, yMax: 192 };
+  field(p) {
+    const n = noise2(p.worldSeed, 1/300, 3);
+    return { density: heightToDensity(n.mul(20)), moisture: n, relief: n, seaLevel: 0 };
+  }
+  surfaces(s) {
+    const strata = s.noise3World(21, 0.02, 3, 0.5, 2.0, {seed: 5, freq: 0.11, amp: 6});
+    const band   = s.altitude.add(strata.mul(6)).mul(0.125).fract();
+    const local  = s.noise3(7, 0.25).add(s.ridge3World(12, 0.01));
+    s.weight(31, band);
+    s.weight(32, local.clamp(0, 1));
+  }
+}
+)JS";
+        WorldEvalResult t3 = host.eval_world(kTape3World, "{}");
+        CHECK(t3.ok, t3.message.c_str());
+        CHECK(t3.surface_program.find("noise3w 21 0.02 3 0.5 2 5 0.11 6\n") !=
+                  std::string::npos,
+              "noise3World records the warp tail in canonical token order");
+        CHECK(t3.surface_program.find("noise3 7 0.25 3 0.5 2\n") !=
+                  std::string::npos,
+              "noise3 defaults record as oct=3 gain=0.5 lac=2, no tail");
+        CHECK(t3.surface_program.find("ridge3w 12 0.01 3 0.5 2\n") !=
+                  std::string::npos,
+              "ridge3World records its canonical line");
+        CHECK(t3.surface_program.find("fract r") != std::string::npos,
+              "fract() records its unary op");
+        CHECK(t3.field_program.find("noise3") == std::string::npos &&
+                  t3.field_program.find("fract") == std::string::npos,
+              "3D-noise/fract ops do not leak into the field program");
+        terrain_field::SurfaceProgram sp;
+        std::string serr;
+        CHECK(terrain_field::SurfaceProgram::parse(t3.surface_program, sp, serr),
+              serr.c_str());
+        CHECK(sp.uses_world_inputs(),
+              "noise3w/ridge3w mark the tape world-dependent");
+        // Compile + evaluate under the fallback context: deterministic.
+        terrain_field::SurfaceRuntime rt{std::move(sp)};
+        float w[terrain_field::kMaxSurfaceMaterials];
+        float w2[terrain_field::kMaxSurfaceMaterials];
+        const float pos[3] = {2, 7, -3}, up[3] = {0, 1, 0};
+        rt.weights_at(pos, up, nullptr, w);
+        rt.weights_at(pos, up, nullptr, w2);
+        CHECK(w[0] == w2[0] && w[1] == w2[1],
+              "3D-noise tape evaluates deterministically");
+        // The recorded tape is the invalidation key: byte-stable across evals.
+        WorldEvalResult t3b = host.eval_world(kTape3World, "{}");
+        CHECK(t3b.ok && t3b.surface_program == t3.surface_program,
+              "3D-noise surface program deterministic across evals");
+    }
+
     // Fail-closed paths: a throwing surfaces() and one that declares nothing.
     {
         WorldEvalResult bad_throw = host.eval_world(

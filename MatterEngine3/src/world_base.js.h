@@ -61,6 +61,13 @@ function __sreg(v) {
   if (v instanceof SurfaceNode) return v.r;
   return __semit('const ' + (+v));
 }
+// Optional domain-warp tail for the 3D noise recorders: {seed, freq, amp}
+// appends the 3-token [wseed wfreq wamp] tail (all-or-nothing, see
+// SurfaceProgram::parse).
+function __swarp(w) {
+  if (w === undefined) return '';
+  return ' ' + (w.seed >>> 0) + ' ' + (+w.freq) + ' ' + (+w.amp);
+}
 class SurfaceNode {
   constructor(r) { this.r = r; }
   add(o)  { return new SurfaceNode(__semit('add r' + this.r + ' r' + __sreg(o))); }
@@ -73,6 +80,7 @@ class SurfaceNode {
   pow(e)  { return new SurfaceNode(__semit('pow r' + this.r + ' ' + (+e))); }
   clamp(lo, hi) { return new SurfaceNode(__semit('clamp r' + this.r + ' ' + (+lo) + ' ' + (+hi))); }
   smoothstep(e0, e1) { return new SurfaceNode(__semit('smoothstep ' + (+e0) + ' ' + (+e1) + ' r' + this.r)); }
+  fract() { return new SurfaceNode(__semit('fract r' + this.r)); }
 }
 function __surfaceArg() {
   const s = {
@@ -107,6 +115,46 @@ function __surfaceArg() {
       if (lacunarity === undefined) lacunarity = 2.0;
       return new SurfaceNode(__semit('ridge2w ' + (seed >>> 0) + ' ' + (+freq) + ' ' +
                                      (octaves | 0) + ' ' + (+gain) + ' ' + (+lacunarity)));
+    },
+    // 3D fbm noise over PART-LOCAL (x, y, z) — varies along vertical surfaces
+    // where the 2D pair smears into stripes. `warp` = {seed, freq, amp}
+    // optionally domain-warps the op's own sample point (organic boundary
+    // shapes) — one op, no stateful warp2 in the tape.
+    noise3(seed, freq, octaves, gain, lacunarity, warp) {
+      if (octaves === undefined) octaves = 3;
+      if (gain === undefined) gain = 0.5;
+      if (lacunarity === undefined) lacunarity = 2.0;
+      return new SurfaceNode(__semit('noise3 ' + (seed >>> 0) + ' ' + (+freq) + ' ' +
+                                     (octaves | 0) + ' ' + (+gain) + ' ' + (+lacunarity) +
+                                     __swarp(warp)));
+    },
+    ridge3(seed, freq, octaves, gain, lacunarity, warp) {
+      if (octaves === undefined) octaves = 3;
+      if (gain === undefined) gain = 0.5;
+      if (lacunarity === undefined) lacunarity = 2.0;
+      return new SurfaceNode(__semit('ridge3 ' + (seed >>> 0) + ' ' + (+freq) + ' ' +
+                                     (octaves | 0) + ' ' + (+gain) + ' ' + (+lacunarity) +
+                                     __swarp(warp)));
+    },
+    // 3D fbm over WORLD (x, y, z) — continuous across sector variants, and the
+    // altitude axis makes strata banding expressible (pair with .fract()).
+    // World-anchored variants only (elsewhere it pins to world (0, 0, 0): a
+    // constant).
+    noise3World(seed, freq, octaves, gain, lacunarity, warp) {
+      if (octaves === undefined) octaves = 3;
+      if (gain === undefined) gain = 0.5;
+      if (lacunarity === undefined) lacunarity = 2.0;
+      return new SurfaceNode(__semit('noise3w ' + (seed >>> 0) + ' ' + (+freq) + ' ' +
+                                     (octaves | 0) + ' ' + (+gain) + ' ' + (+lacunarity) +
+                                     __swarp(warp)));
+    },
+    ridge3World(seed, freq, octaves, gain, lacunarity, warp) {
+      if (octaves === undefined) octaves = 3;
+      if (gain === undefined) gain = 0.5;
+      if (lacunarity === undefined) lacunarity = 2.0;
+      return new SurfaceNode(__semit('ridge3w ' + (seed >>> 0) + ' ' + (+freq) + ' ' +
+                                     (octaves | 0) + ' ' + (+gain) + ' ' + (+lacunarity) +
+                                     __swarp(warp)));
     },
     // Field curvature at the sample's world (x, z): height deficit vs the
     // 4-neighbour ring average at `radius` metres. Positive = concave
