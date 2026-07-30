@@ -1043,9 +1043,8 @@ bool bake_tileset_vk(matter::VulkanDevice& vulkan, const SettledTorus& settled,
                               hmax, horizon_a, horizon_b, horizon_w, horizon_h);
 
         // 17. Write .gtex. V3 emits the full six-channel v2 atlas (adds the
-        //     horizon channels save_gtex's trailing optional params take);
-        //     kEngineBakeVersion is intentionally unchanged (validation build,
-        //     bumped at V4 per the milestone plan).
+        //     horizon channels save_gtex's trailing optional params take).
+        //     kEngineBakeVersion is 4 as of the AO trace-normal fix.
         GTexHeader hdr{};
         hdr.tile_size_m = settled.cfg.size;
         hdr.texels_per_meter = settled.cfg.texels_per_meter;

@@ -18,6 +18,14 @@
 // different tiles therefore trace an IDENTICAL ray set, and each ray contributes
 // only a boolean "hit within maxRayDist" — making the per-texel result
 // independent of traversal order.
+//
+// ONE DELIBERATE DIVERGENCE from the GL ancestor: the trace frame N is the
+// owning triangle's GEOMETRIC normal, not the interpolated vertex normal. See
+// the long note in main(). This does not weaken the seam invariant — it
+// strengthens it, because a face normal is constant per triangle where the
+// interpolated normal varied per texel across it, and congruent boundary-strip
+// geometry has congruent triangles by the settle contract either way. The four
+// byte-preserved items above are untouched.
 // -----------------------------------------------------------------------------
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
@@ -29,17 +37,18 @@ layout(set = 0, binding = 1) uniform accelerationStructureEXT tlas;
 // Per-triangle geometry, global (concatenated across all BLAS entries). Layout
 // is 18 floats per triangle: v0.xyz, v1.xyz, v2.xyz, n0.xyz, n1.xyz, n2.xyz.
 layout(std430, set = 0, binding = 2) readonly buffer TriDataBuf { float triData[]; };
-// Per-triangle material id (global). -1 = "fall back to instance material".
-layout(std430, set = 0, binding = 3) readonly buffer TriMatBuf  { int   triMat[];  };
 // Per-BLAS first-triangle offset into the global arrays, indexed by the
 // instance custom index (= BLAS entry index).
 layout(std430, set = 0, binding = 4) readonly buffer TriFirstBuf { uint triFirst[]; };
-// Per-instance fallback material id, indexed by gl_InstanceID (TLAS build order).
-layout(std430, set = 0, binding = 5) readonly buffer InstMatBuf  { int  instMat[];  };
-// Material table (canonical 12-float MaterialRegistryPackForGPU layout):
-//   [0..2] albedo.rgb, [3] roughness, [4] metallic, [5] emission, [6] pad,
-//   [7] translucency, [8] ior, [9] flatShading, [10] mergeGroup, [11] slot
-layout(std430, set = 0, binding = 6) readonly buffer MaterialBuf { float mats[]; };
+
+// Bindings 3 (TriMatBuf), 5 (InstMatBuf) and 6 (MaterialBuf) are declared by the
+// host's ao_set_layout (tileset_bake_vk.cpp builds 7 bindings, shaped after the
+// primary pass) but are no longer read here: this pass stopped consulting
+// materials when the trace frame moved to the geometric normal, since the only
+// thing it needed a material for was the flatShading branch. They are left out
+// of the shader rather than declared-and-unused; a descriptor that the layout
+// provides and the shader does not reference is valid. Trimming the host layout
+// to 4 bindings is a separate cleanup.
 
 layout(push_constant) uniform Push {
     int   atlasW;
@@ -52,8 +61,6 @@ layout(push_constant) uniform Push {
     int   aoSamples;     // 64
     float maxRayDist;    // = cfg.edge_strip_width
 } pc;
-
-bool mat_flat(int id) { return mats[id * 12 + 9] > 0.5; }
 
 vec3 tri_vec3(uint tri, int slot) {
     uint b = tri * 18u + uint(slot) * 3u;
@@ -134,16 +141,12 @@ void main() {
 
     // Primary-hit reconstruction — identical to tileset_bake_primary.comp.
     int  blasIndex = rayQueryGetIntersectionInstanceCustomIndexEXT(prq, true);
-    int  instId    = rayQueryGetIntersectionInstanceIdEXT(prq, true);
     uint prim      = uint(rayQueryGetIntersectionPrimitiveIndexEXT(prq, true));
     vec2 bary      = rayQueryGetIntersectionBarycentricsEXT(prq, true);
     float tHit     = rayQueryGetIntersectionTEXT(prq, true);
     mat4x3 o2w     = rayQueryGetIntersectionObjectToWorldEXT(prq, true);
 
     uint gtri = triFirst[blasIndex] + prim;
-
-    int triM = triMat[gtri];
-    int mid  = (triM >= 0) ? triM : instMat[instId];
 
     float bu = 1.0 - bary.x - bary.y;
     float bv = bary.x;
@@ -152,13 +155,56 @@ void main() {
     vec3 v0 = tri_vec3(gtri, 0), v1 = tri_vec3(gtri, 1), v2 = tri_vec3(gtri, 2);
     vec3 faceN = cross(v1 - v0, v2 - v0);
 
-    vec3 localN;
-    if (mat_flat(mid)) {
-        localN = faceN;
-    } else {
+    // GEOMETRIC hemisphere, not the shading one. This pass used to build the
+    // trace frame from the interpolated vertex normal whenever the material was
+    // not flatShading, and that is wrong for the same reason it was wrong in
+    // vt_enrich_ao.comp: self-occlusion is a property of the geometry the
+    // acceleration structure actually holds, so the lobe has to sit on the
+    // triangle's own plane.
+    //
+    // Part meshes make the gap large. A voxel part with no modifier stack keeps
+    // the mesher's analytic SDF-gradient normals (script_host.cpp's per-cell
+    // branch), which are a function of world position and deliberately finer
+    // than the lattice they were sampled on, and ForestFloor bakes its litter
+    // very coarse -- Twig at size 4.0 is a ~2-4 cm capsule meshed at ~1.2-2.2 cm
+    // voxels, i.e. 2-3 voxels across the radius, plus smooth-min blends at the
+    // kink and the side-branch joint. Measured over the shipping ForestFloor
+    // variants (tests/tileset_ao_normal_probe.cpp): vertex normals tilt off
+    // their own face plane by 39 deg at p90 and 74 deg at p99 on Twig, and at
+    // the worst percentile 80% of the cosine lobe started out pointing BELOW
+    // the face. Worse, 2-7% of surface points came out fully inverted -- the
+    // `N.y < 0` re-orientation below is applied to a normal that has already
+    // tilted past horizontal, so it lands on the far side of the facet and the
+    // frame points INTO the solid. Every one of the 64 rays then hits and the
+    // texel bakes to ao = 0: a permanent black speck in the ground atlas
+    // (measured worst-case delta 1.000, 4 of 448 Twig sample points).
+    //
+    // Flat-shaded materials already took `localN = faceN`, so for them the
+    // arithmetic below is unchanged and their atlas bytes are untouched. That
+    // covers everything in ForestFloor except BARK/Twig -- but the smooth path
+    // is live for 13 other registry materials (ceramic, wax, chrome, copper,
+    // glass, foliage), which are exactly the ones a curved SDF part would use,
+    // so this was latent rather than absent.
+    //
+    // NOT the same fix as tileset_bake_primary.comp, which must keep the
+    // interpolated normal: that one writes the atlas NORMAL map, where
+    // sub-mesh shading detail is the point. Only the AO trace frame was wrong.
+    //
+    // Orientation: the up-flip, not vt_enrich_ao's sign-match against the
+    // shading normal. This is a top-down ortho bake, so the topmost hit's
+    // outward geometric normal necessarily has N.y >= 0, and that invariant is
+    // independent of the vertex normals. Sign-matching would reintroduce the
+    // defect, since on these meshes the shading normal is the unreliable term
+    // (it is what lands on the wrong side of the facet 2-7% of the time);
+    // vt_enrich_ao has no bake-space up axis available and must sign-match.
+    vec3 localN = faceN;
+    if (dot(faceN, faceN) < 1e-20) {
+        // Degenerate triangle: no plane to trace around. Defensive only -- RT
+        // traversal cannot report a committed hit on a zero-area triangle -- so
+        // fall back to the shading normal, then to +Y rather than normalize(0).
         vec3 n0 = tri_vec3(gtri, 3), n1 = tri_vec3(gtri, 4), n2 = tri_vec3(gtri, 5);
         localN = bu * n0 + bv * n1 + bw * n2;
-        if (dot(localN, localN) < 1e-20) localN = faceN;
+        if (dot(localN, localN) < 1e-20) localN = vec3(0.0, 1.0, 0.0);
     }
     vec3 N = normalize(mat3(o2w) * localN);
     if (N.y < 0.0) N = -N;
