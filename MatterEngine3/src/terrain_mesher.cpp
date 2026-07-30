@@ -3,6 +3,7 @@
 
 #include "terrain_mesher.h"
 #include <cmath>
+#include <limits>
 #include <unordered_map>
 
 namespace terrain_mesher {
@@ -58,16 +59,47 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     const double ox   = double(tx) * double(sector_size);
     const double oz   = double(tz) * double(sector_size);
 
-    // Use the full slab range so adjacent sectors share the same Y lattice alignment.
-    // Per-sector Y clipping would shift y0 independently, breaking watertight seams.
-    const float y0 = y_min;
-    const float y1 = y_max;
-    const int   ny = std::max(1, int(std::ceil((y1 - y0) / voxel)));
+    // Evaluate height once per X/Z lattice point, then mesh only a narrow Y
+    // slab snapped to the authored global lattice. Neighboring sectors can use
+    // different depths without shifting their shared sample coordinates.
+    const int sx = n + 3, szn = n + 3;
+    std::vector<float> heights(size_t(sx) * size_t(szn));
+    auto hat = [&](int i, int k) -> float& {
+        return heights[size_t(k) * size_t(sx) + size_t(i)];
+    };
+    float h_min = std::numeric_limits<float>::infinity();
+    float h_max = -std::numeric_limits<float>::infinity();
+    for (int k = 0; k < szn; ++k) {
+        for (int i = 0; i < sx; ++i) {
+            const float h = field.height_at(
+                float(ox + (i - 1) * double(voxel)),
+                float(oz + (k - 1) * double(voxel)));
+            if (!std::isfinite(h)) {
+                err = "terrain_mesher: non-finite height";
+                return false;
+            }
+            hat(i, k) = h;
+            h_min = std::min(h_min, h);
+            h_max = std::max(h_max, h);
+        }
+    }
+    if (h_min < y_min || h_max > y_max) {
+        err = "terrain_mesher: sampled height outside authored Y range";
+        return false;
+    }
 
-    // Density lattice dimensions:
+    const int global_ny =
+        std::max(1, int(std::ceil((y_max - y_min) / voxel)));
+    const int j0_global = std::max(
+        0, int(std::floor((h_min - y_min) / voxel)) - 2);
+    const int j1_global = std::min(
+        global_ny, int(std::ceil((h_max - y_min) / voxel)) + 2);
+    const float y0 = y_min + float(j0_global) * voxel;
+    const int sy = j1_global - j0_global + 1;
+
+    // Narrow density lattice dimensions:
     //   x/z: (n+3) samples — one ring outside on each side (i=-1..n+1)
-    //   y:   (ny+1) samples — from y0 to y0 + ny*voxel
-    const int sx = n + 3, sy = ny + 1, szn = n + 3;
+    //   y: globally aligned samples from j0_global through j1_global
     std::vector<float> d(size_t(sx) * size_t(sy) * size_t(szn));
     auto at = [&](int i, int j, int k) -> float& {
         return d[(size_t(k) * size_t(sy) + size_t(j)) * size_t(sx) + size_t(i)];
@@ -75,10 +107,7 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     for (int k = 0; k < szn; ++k)
         for (int j = 0; j < sy; ++j)
             for (int i = 0; i < sx; ++i)
-                at(i, j, k) = field.density_at(
-                    float(ox + (i - 1) * double(voxel)),
-                    y0 + j * voxel,
-                    float(oz + (k - 1) * double(voxel)));
+                at(i, j, k) = hat(i, k) - (y0 + j * voxel);
 
     // Surface-nets: one vertex per mixed-sign cell, placed at the centroid of
     // edge crossing positions. Normal from central-diff of the density field.
@@ -181,6 +210,42 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
                                   /*flip=*/a <= 0, wxs, wzs + 0.5f * voxel);
                 }
             }
+
+    // The old full-height slab implicitly produced border walls. Emit the
+    // intended shallow skirts directly so local slab clipping does not change
+    // the sector seam contract or drag geometry down to the global y_min.
+    const float skirt_depth = std::max(8.0f, 4.0f * voxel);
+    auto emit_skirt_segment = [&](float ax, float az, float bx, float bz,
+                                  V3 normal) {
+        const float awx = float(ox) + ax, awz = float(oz) + az;
+        const float bwx = float(ox) + bx, bwz = float(oz) + bz;
+        const float ah = field.height_at(awx, awz);
+        const float bh = field.height_at(bwx, bwz);
+        CellVert a{V3{ax, ah, az}, normal};
+        CellVert b{V3{bx, bh, bz}, normal};
+        CellVert ba{V3{ax, ah - skirt_depth, az}, normal};
+        CellVert bb{V3{bx, bh - skirt_depth, bz}, normal};
+        MaterialBucket& bucket = bucket_for(
+            out,
+            uint32_t(field.material_at(
+                0.5f * (awx + bwx), 0.5f * (awz + bwz))));
+        // Wind to match the surface convention (counter-clockwise seen from
+        // outside the sector, geometric normal agreeing with the authored
+        // outward `normal`) so backface culling keeps the curtain visible
+        // from outside. The previous (a, bb, b)/(a, ba, bb) order faced the
+        // geometric normal INTO the sector: with culling enabled the skirts
+        // vanished from outside views — exactly the case they exist for.
+        push_tri(bucket, a, b, bb);
+        push_tri(bucket, a, bb, ba);
+    };
+    for (int s = 0; s < n; ++s) {
+        const float a = float(s) * voxel;
+        const float b = float(s + 1) * voxel;
+        emit_skirt_segment(0.0f, b, 0.0f, a, V3{-1, 0, 0});
+        emit_skirt_segment(sector_size, a, sector_size, b, V3{1, 0, 0});
+        emit_skirt_segment(a, 0.0f, b, 0.0f, V3{0, 0, -1});
+        emit_skirt_segment(b, sector_size, a, sector_size, V3{0, 0, 1});
+    }
 
     return true;
 }

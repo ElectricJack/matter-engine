@@ -37,6 +37,24 @@ struct FogSettings {
     float falloff  = 30.0f;
     float color[3] = {0.9f, 0.92f, 0.95f};
     float wind[3]  = {0.0f, 0.0f, 0.0f};
+    // Optional bounded cloud layer. When enabled, density is full below
+    // min_height, smoothly reaches zero at max_height, and is carved by
+    // low-frequency 3D noise. Legacy floor/falloff fog remains the default.
+    bool height_layer = false;
+    float min_height = 0.0f;
+    float max_height = 0.0f;
+    float noise_scale = 0.0018f;
+};
+
+struct WorldStreamingRing {
+    float radius = 0.0f;
+    int rung = 0;
+};
+
+struct WorldCameraSettings {
+    bool authored = false;
+    Float3 position{};
+    Float3 target{};
 };
 
 struct VulkanVolumetricsSettings {
@@ -100,6 +118,11 @@ struct WorldSettings {
     Float3 sky_color{0.38f, 0.43f, 0.52f};
 
     FogSettings fog{};
+    WorldCameraSettings camera{};
+
+    // Optional world-authored sector streaming profile. Empty preserves the
+    // engine defaults. Rings are innermost-first with increasing radii.
+    std::vector<WorldStreamingRing> streaming_rings;
 };
 
 // Typed component validation deliberately occurs later at the SceneRegistry

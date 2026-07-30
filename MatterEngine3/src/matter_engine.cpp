@@ -230,7 +230,9 @@ public:
     }
 };
 
-matter_stream::Config make_streaming_profile(float sector_size) {
+matter_stream::Config make_streaming_profile(
+    float sector_size,
+    const matter::WorldSettings& world_settings) {
     matter_stream::Config profile;
     profile.sector_size = sector_size;
     profile.rings = {
@@ -238,6 +240,12 @@ matter_stream::Config make_streaming_profile(float sector_size) {
         {8.0f * sector_size, 1},
         {40.0f * sector_size, 0}
     };
+    if (!world_settings.streaming_rings.empty()) {
+        profile.rings.clear();
+        profile.rings.reserve(world_settings.streaming_rings.size());
+        for (const auto& ring : world_settings.streaming_rings)
+            profile.rings.push_back({ring.radius, ring.rung});
+    }
     const char* rings_env = std::getenv("MATTER_STREAM_RINGS");
     if (rings_env) {
         profile.rings.clear();
@@ -575,6 +583,42 @@ struct WorldSession::Impl {
     // torn down and rebuilt. Cheap insurance: LocalProvider::poll_deltas
     // currently always returns false, but the flag also fences future providers.
     std::atomic<bool> bake_active{false};
+
+    // Sector bake pool (issues/render-streaming-build-cpu follow-up). With
+    // MATTER_STREAM_WORKERS=N (default 1 = serial, unchanged), N executor
+    // threads run bake_and_stage_sector concurrently while the worker thread
+    // keeps sole ownership of the streaming Coordinator — worker_step /
+    // next_request / evictions mutate worker-confined coordinator state and
+    // are single-thread by contract. Tasks are dispatched ONLY by the worker
+    // thread; results funnel through the (thread-safe) publication-completion
+    // ledger, GpuJobQueue, and event hub exactly as in serial mode. Commands
+    // that tear down bake inputs (world_field, provider, streaming profile)
+    // must quiesce_bake_pool() first — the serial path got that ordering for
+    // free from the single worker loop.
+    struct SectorBakeTask {
+        streaming::detail::TaggedRequest request;
+        size_t completion_index = 0;
+        std::shared_ptr<viewer::LocalProvider> provider_ref;
+    };
+    int stream_worker_count = 1;
+    std::vector<std::thread> bake_pool;
+    std::deque<SectorBakeTask> bake_pool_queue;
+    std::mutex bake_pool_mutex;
+    std::condition_variable bake_pool_cv;       // wakes executors
+    std::condition_variable bake_pool_idle_cv;  // wakes the quiesce waiter
+    size_t bake_pool_active = 0;
+    bool bake_pool_shutdown = false;
+    void ensure_bake_pool_started();
+    void bake_pool_loop();
+    void quiesce_bake_pool();
+    void shutdown_bake_pool();
+    // Bake one sector, stage its part, and post the GL publish job. Shared by
+    // the serial path and the pool executors; the request/completion pair is
+    // always reserved by the worker thread beforehand.
+    void bake_and_stage_sector(
+        const streaming::detail::TaggedRequest& request,
+        size_t completion_index,
+        const std::shared_ptr<viewer::LocalProvider>& provider_ref);
 
     // Bake Lab (task 1.2): per-session bake trace. execute_bake resets it and
     // makes it the worker thread's current collector for the duration of the
@@ -926,11 +970,123 @@ void WorldSession::Impl::ensure_worker_started() {
     worker = std::thread([this] { worker_loop(); });
 }
 
+// Lazily spawn the sector-bake executor pool. Worker-thread only, so the
+// members are settled before any dispatch. MATTER_STREAM_WORKERS<=1 keeps the
+// serial path with zero extra threads.
+void WorldSession::Impl::ensure_bake_pool_started() {
+    if (!bake_pool.empty() || stream_worker_count != 1) return;
+    const char* env = std::getenv("MATTER_STREAM_WORKERS");
+    int requested = env ? std::atoi(env) : 1;
+    if (requested < 1) requested = 1;
+    if (requested > 16) requested = 16;
+    stream_worker_count = requested;
+    if (requested <= 1) return;
+    fprintf(stderr, "[stream] bake pool: %d workers\n", requested);
+    bake_pool.reserve(static_cast<size_t>(requested));
+    for (int i = 0; i < requested; ++i)
+        bake_pool.emplace_back([this] { bake_pool_loop(); });
+}
+
+void WorldSession::Impl::bake_pool_loop() {
+    for (;;) {
+        SectorBakeTask task;
+        {
+            std::unique_lock<std::mutex> lock(bake_pool_mutex);
+            bake_pool_cv.wait(lock, [this] {
+                return bake_pool_shutdown || !bake_pool_queue.empty();
+            });
+            if (bake_pool_queue.empty()) {
+                if (bake_pool_shutdown) return;
+                continue;
+            }
+            task = std::move(bake_pool_queue.front());
+            bake_pool_queue.pop_front();
+            ++bake_pool_active;
+        }
+        // bake_and_stage_sector handles its own failure paths (retry marks +
+        // BakeError events); an escaping exception has already marked the
+        // completion for retry via its guard's unwind, so only report here —
+        // mirroring run_idle_worker_step_noexcept on the serial path.
+        try {
+            bake_and_stage_sector(task.request, task.completion_index,
+                                  task.provider_ref);
+        } catch (const std::bad_alloc&) {
+            events::BakeError event;
+            event.code = BakeErrorCode::OutOfMemory;
+            event.phase = "stream";
+            event.message = "sector bake worker: std::bad_alloc";
+            hub_.emit(std::move(event));
+        } catch (const std::exception& exception) {
+            events::BakeError event;
+            event.code = BakeErrorCode::Internal;
+            event.phase = "stream";
+            event.message = exception.what();
+            hub_.emit(std::move(event));
+        } catch (...) {
+            events::BakeError event;
+            event.code = BakeErrorCode::Internal;
+            event.phase = "stream";
+            event.message = "unknown sector bake worker failure";
+            hub_.emit(std::move(event));
+        }
+        {
+            std::lock_guard<std::mutex> lock(bake_pool_mutex);
+            --bake_pool_active;
+        }
+        bake_pool_idle_cv.notify_all();
+    }
+}
+
+// Worker-thread barrier before anything that tears down bake inputs: queued
+// tasks are cancelled (their reserved completions marked for retry, exactly
+// what the in-task guard would do) and executing bakes are waited out —
+// bounded by one sector bake per executor. Only the worker thread dispatches,
+// and it is the caller here, so no new task can arrive during the wait.
+void WorldSession::Impl::quiesce_bake_pool() {
+    if (bake_pool.empty()) return;
+    std::vector<SectorBakeTask> cancelled;
+    {
+        std::unique_lock<std::mutex> lock(bake_pool_mutex);
+        while (!bake_pool_queue.empty()) {
+            cancelled.push_back(std::move(bake_pool_queue.front()));
+            bake_pool_queue.pop_front();
+        }
+        bake_pool_idle_cv.wait(lock,
+                               [this] { return bake_pool_active == 0; });
+    }
+    for (const SectorBakeTask& task : cancelled) {
+        mark_publication_for_retry(task.completion_index,
+                                   /*rollback_complete=*/true,
+                                   /*published=*/false);
+    }
+}
+
+void WorldSession::Impl::shutdown_bake_pool() {
+    if (bake_pool.empty()) return;
+    quiesce_bake_pool();
+    {
+        std::lock_guard<std::mutex> lock(bake_pool_mutex);
+        bake_pool_shutdown = true;
+    }
+    bake_pool_cv.notify_all();
+    for (std::thread& executor : bake_pool) executor.join();
+    bake_pool.clear();
+    {
+        std::lock_guard<std::mutex> lock(bake_pool_mutex);
+        bake_pool_shutdown = false;
+    }
+}
+
 void WorldSession::Impl::worker_loop() {
     struct ExitMarker {
-        std::atomic<bool>& exited;
-        ~ExitMarker() { exited.store(true, std::memory_order_release); }
-    } exit_marker{worker_exited};
+        Impl* owner;
+        ~ExitMarker() {
+            // Backstop: no worker exit (including an unwinding one) may leave
+            // pool executors running — the destructor joins only `worker`.
+            owner->shutdown_bake_pool();
+            owner->worker_exited.store(true, std::memory_order_release);
+        }
+    } exit_marker{this};
     auto clear_streaming_once = [this](bool restore_on_failure) {
         std::string clear_error;
         bool cleared = false;
@@ -977,6 +1133,7 @@ void WorldSession::Impl::worker_loop() {
             if (!got_cmd && !timed_out) {
                 // Shutdown + drained. Detach was invalidated by the app thread;
                 // clear on this worker and queue FIFO app cleanup before exit.
+                shutdown_bake_pool();
                 refine_ctrl.reset();
                 refine_provider.reset();
                 refine_pending_upgrades_.clear();
@@ -986,7 +1143,12 @@ void WorldSession::Impl::worker_loop() {
 
             if (got_cmd) {
                 // A command arrived — execute it (supersedes refine/stream).
+                // Every command may tear down state in-flight bakes read
+                // (world_field, provider artifacts, streaming profile), so
+                // the pool must go idle before any of them run.
+                quiesce_bake_pool();
                 if (cmd.kind == matter_async::CommandKind::Shutdown) {
+                    shutdown_bake_pool();
                     refine_ctrl.reset();
                     refine_provider.reset();
                     refine_pending_upgrades_.clear();
@@ -1021,6 +1183,7 @@ void WorldSession::Impl::worker_loop() {
                             break;
                         case matter_async::CommandKind::Shutdown:
                             bake_active.store(false, std::memory_order_release);
+                            shutdown_bake_pool();
                             refine_ctrl.reset();
                             refine_provider.reset();
                             refine_pending_upgrades_.clear();
@@ -1381,6 +1544,11 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         double world_ms = std::chrono::duration<double, std::milli>(
             clk_t::now() - t_world_start).count();
         if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "install", "cancelled"); return; }
+
+        // The world-kind branch returns before the closed-world fog publication
+        // below. Publish the authored fog here so streamed worlds do not retain
+        // the default zero-density settings for their entire session.
+        authored_fog_ = provider->world_settings().fog;
 
         // World-kind sessions use an empty manifest; sectors are streamed.
         viewer::WorldManifest empty_manifest;
@@ -2682,7 +2850,7 @@ bool WorldSession::Impl::install_world(
             sector_child_hashes.size(), world_field_hash.c_str(),
             world_sector_size, world_sea_level);
     const matter_stream::Config profile =
-        make_streaming_profile(world_sector_size);
+        make_streaming_profile(world_sector_size, provider->world_settings());
     streaming_profile_activation.stage(profile);
     return true;
 }
@@ -2740,13 +2908,18 @@ bool WorldSession::Impl::release_sector_entry(
 #ifdef MATTER_VULKAN_VIEWER
     release_attempt(entry.resources.vulkan_attempted, [&] {
         if (vk_scene) vk_scene->release_part(entry.part_hash);
-        // Drop the instance cache (the released part's slot is gone) but keep
-        // temporal history: an eviction only REMOVES instances, and history
-        // for departed ids is simply never looked up again. Evictions trail
-        // the camera continuously in a streaming world, so a global temporal
-        // reset here starves DLSS/GI accumulation exactly like the
-        // publish-side one did (issues/render-dlss-not-applied).
-        vk_instance_cache.invalidate();
+        // Rebuild the flat instance set but KEEP the per-source memos: the
+        // evicted source vanishes from the resolver output in this same
+        // release (the world-state delta above), so the next rebuild skips it
+        // and prune_sources() drops its memo; every surviving memo references
+        // only child parts, which sector eviction never releases. The full
+        // invalidate() here used to force re-expanding every source — tens of
+        // thousands of part-store lookups per eviction, dominated by the
+        // grass tier — every time the camera moved past a sector boundary.
+        // Temporal history is likewise kept: an eviction only REMOVES
+        // instances, and history for departed ids is simply never looked up
+        // again (issues/render-dlss-not-applied).
+        vk_instance_cache.invalidate_expansion();
     });
 #endif
     release_attempt(entry.resources.store_attempted, [&] {
@@ -3139,34 +3312,20 @@ void WorldSession::Impl::publish_graph_snapshot() {
 }
 
 // ---------------------------------------------------------------------------
-// WorldSession::Impl::execute_sector_stream_step
-// Phase C Task 9: one sector-streaming step. Called by worker_loop in the
-// pop_wait timeout slot when coordinator work is eligible and no command is pending.
-//
-// Per step:
-//   1. Update camera position on the streamer.
-//   2. Drain evictions (sectors camera left behind).
-//   3. Service bake requests (holes and upgrades, nearest first).
-//   4. On bake success → GL publish job.
-//   5. After first cycle with no remaining holes → emit BakeFinished.
+// WorldSession::Impl::bake_and_stage_sector
 // ---------------------------------------------------------------------------
-void WorldSession::Impl::execute_sector_stream_step() {
-    auto& coordinator = ecs_runtime.streaming_coordinator();
-    coordinator.worker_step();
-    std::string eviction_error;
-    if (!drain_sector_evictions(/*require_empty=*/false, eviction_error)) {
-        events::BakeError event;
-        event.code = BakeErrorCode::GpuError;
-        event.phase = "stream";
-        event.message = eviction_error.empty()
-            ? "sector eviction failed"
-            : eviction_error;
-        hub_.emit(std::move(event));
-        return;
-    }
-    if (!provider || !world_field) return;
-
-    // 3. Service bake requests.
+// Bake one sector, stage its part, and post the GL publish job. Runs on the
+// worker thread in serial mode or on a pool executor with
+// MATTER_STREAM_WORKERS>1. Everything touched here is request-local,
+// immutable while streaming is active (world_field, sector sources, profile —
+// quiesce_bake_pool() fences their teardown), or funnels through a
+// thread-safe channel (publication completions, gpu_jobs, hub_).
+// The do/while(false) wrapper preserves the body's original loop-abandon
+// `continue;` statements as "give up on this sector".
+void WorldSession::Impl::bake_and_stage_sector(
+    const streaming::detail::TaggedRequest& request,
+    size_t completion_index,
+    const std::shared_ptr<viewer::LocalProvider>& provider_ref) {
     struct TrackedRequestGuard {
         Impl* owner = nullptr;
         size_t index = kNoPublicationCompletion;
@@ -3181,20 +3340,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
         void disarm() noexcept { armed = false; }
     };
 
-    while (true) {
-        const auto provider_ref = provider;
-        PublicationCompletion* reserved =
-            reserve_publication_completion(provider_ref);
-        if (!reserved) break;
-
-        streaming::detail::TaggedRequest request;
-        const bool have_request = coordinator.next_request(request);
-        if (!have_request) {
-            release_reserved_publication_completion(*reserved);
-            break;
-        }
-        reserved->request = request;
-        const size_t completion_index = reserved->index;
+    do {
         TrackedRequestGuard tracked_guard{this, completion_index};
 
         const matter_stream::SectorRequest& req = request.sector;
@@ -3218,12 +3364,12 @@ void WorldSession::Impl::execute_sector_stream_step() {
 
         // Bake this sector.
         script_host::BakeOptions opts;
-        opts.parts_dir = provider->transient_dir();
+        opts.parts_dir = provider_ref->transient_dir();
         opts.world.field       = world_field.get();
         world_profile.apply(opts.world);
 
         script_host::ScriptHost bake_host;
-        bake_host.set_shared_lib_roots(provider->shared_lib_roots());
+        bake_host.set_shared_lib_roots(provider_ref->shared_lib_roots());
 
         script_host::BakeResult br;
         try {
@@ -3534,6 +3680,67 @@ void WorldSession::Impl::execute_sector_stream_step() {
             event.phase = "stream";
             event.message = "unknown sector publication post failure";
             hub_.emit(std::move(event));
+        }
+    } while (false);
+}
+
+// ---------------------------------------------------------------------------
+// WorldSession::Impl::execute_sector_stream_step
+// Phase C Task 9: one sector-streaming step, now a dispatcher. Reservation and
+// coordinator pulls stay on this thread (the Coordinator's single worker by
+// contract); bake execution runs inline in serial mode or on the bake pool.
+// ---------------------------------------------------------------------------
+void WorldSession::Impl::execute_sector_stream_step() {
+    auto& coordinator = ecs_runtime.streaming_coordinator();
+    coordinator.worker_step();
+    std::string eviction_error;
+    if (!drain_sector_evictions(/*require_empty=*/false, eviction_error)) {
+        events::BakeError event;
+        event.code = BakeErrorCode::GpuError;
+        event.phase = "stream";
+        event.message = eviction_error.empty()
+            ? "sector eviction failed"
+            : eviction_error;
+        hub_.emit(std::move(event));
+        return;
+    }
+    if (!provider || !world_field) return;
+    ensure_bake_pool_started();
+
+    // 3. Service bake requests.
+    while (true) {
+        if (stream_worker_count > 1) {
+            // Cap the backlog at the executor count so sectors keep being
+            // pulled nearest-first as capacity frees up instead of aging in
+            // a stale-priority queue.
+            std::lock_guard<std::mutex> pool_lock(bake_pool_mutex);
+            if (bake_pool_queue.size() + bake_pool_active >=
+                static_cast<size_t>(stream_worker_count)) {
+                break;
+            }
+        }
+        const auto provider_ref = provider;
+        PublicationCompletion* reserved =
+            reserve_publication_completion(provider_ref);
+        if (!reserved) break;
+
+        streaming::detail::TaggedRequest request;
+        const bool have_request = coordinator.next_request(request);
+        if (!have_request) {
+            release_reserved_publication_completion(*reserved);
+            break;
+        }
+        reserved->request = request;
+        const size_t completion_index = reserved->index;
+        if (stream_worker_count > 1) {
+            {
+                std::lock_guard<std::mutex> pool_lock(bake_pool_mutex);
+                bake_pool_queue.push_back(
+                    {request, completion_index, provider_ref});
+            }
+            bake_pool_cv.notify_one();
+        } else {
+            bake_and_stage_sector(request, completion_index, provider_ref);
         }
     }
 
@@ -4003,6 +4210,16 @@ flecs::world& WorldSession::ecs() {
 
 const flecs::world& WorldSession::ecs() const {
     return impl_->ecs_runtime.world();
+}
+
+bool WorldSession::apply_authored_camera(CameraDesc& camera) const {
+    if (!impl_->provider) return false;
+    const WorldCameraSettings& authored =
+        impl_->provider->world_settings().camera;
+    if (!authored.authored) return false;
+    camera.position = authored.position;
+    camera.target = authored.target;
+    return true;
 }
 
 WorldSession::~WorldSession() {
@@ -5004,8 +5221,11 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                                       internal_extent.height, unjittered, err))
         return false;
     const auto begin_temporal =
-        [&](const std::vector<viewer::TemporalInstance>& temporal_instances) {
-            const viewer::TemporalFrame temporal = impl_->vk_temporal.begin(
+        [&](const std::vector<viewer::TemporalInstance>& temporal_instances)
+            -> const viewer::TemporalFrame& {
+            // By reference: valid until the next begin(), which only happens
+            // next frame. Copying it out cost ~8 MB per streaming frame.
+            const viewer::TemporalFrame& temporal = impl_->vk_temporal.begin(
                 unjittered, internal_extent, frame.extent, temporal_instances,
                 temporal_jitter_enabled && !temporal_instances.empty(),
                 {.camera_cut = frame.swapchain_recreated});
@@ -5202,7 +5422,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     }
     const std::vector<viewer::TemporalInstance>& temporal_instances =
         impl_->vk_temporal_instances;
-    const viewer::TemporalFrame temporal = begin_temporal(temporal_instances);
+    const viewer::TemporalFrame& temporal = begin_temporal(temporal_instances);
     const viewer::FrameMatrices& matrices = temporal.current_jittered;
     bool animation_skin_queue_pending_seal = false;
     impl_->vk_scene->set_temporal_frame(temporal);
@@ -5392,6 +5612,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.vk_instance_uploads = upload_counters.instance_uploads;
     impl_->stats.vk_command_layout_rebuilds =
         upload_counters.command_layout_rebuilds;
+    impl_->stats.vk_static_full_uploads = upload_counters.static_full_uploads;
+    impl_->stats.vk_static_append_uploads =
+        upload_counters.static_append_uploads;
     impl_->stats.vk_immediate_submits = matter::immediate_submit_count();
     impl_->stats.dlss_selected_mode = impl_->vk_scene->selected_dlss_mode();
     impl_->stats.dlss_active_mode = impl_->vk_scene->active_dlss_mode();

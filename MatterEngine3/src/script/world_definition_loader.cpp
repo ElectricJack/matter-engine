@@ -6,6 +6,7 @@ extern "C" {
 #include "quickjs.h"
 }
 
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -532,6 +533,31 @@ bool extract_fog(JSContext* context,
                     "fog density, floor, and falloff must be numeric");
     }
 
+    const bool has_min_height = has_property(context, fog_val, "minHeight");
+    const bool has_max_height = has_property(context, fog_val, "maxHeight");
+    if (has_min_height != has_max_height) {
+        JS_FreeValue(context, fog_val);
+        return fail(desc, error, "fog",
+                    "fog minHeight and maxHeight must be authored together");
+    }
+    if (has_min_height) {
+        if (!optional_number(context, fog_val, "minHeight", fog.min_height) ||
+            !optional_number(context, fog_val, "maxHeight", fog.max_height) ||
+            !optional_number(context, fog_val, "noiseScale", fog.noise_scale) ||
+            !std::isfinite(fog.min_height) ||
+            !std::isfinite(fog.max_height) ||
+            !std::isfinite(fog.noise_scale) ||
+            fog.max_height <= fog.min_height ||
+            fog.noise_scale <= 0.0f) {
+            JS_FreeValue(context, fog_val);
+            return fail(
+                desc, error, "fog",
+                "fog height layer requires maxHeight > minHeight and a "
+                "positive noiseScale");
+        }
+        fog.height_layer = true;
+    }
+
     JSValue color = JS_GetPropertyStr(context, fog_val, "color");
     if (!JS_IsUndefined(color) && !float3_array_value(context, color, fog.color)) {
         JS_FreeValue(context, color);
@@ -551,6 +577,137 @@ bool extract_fog(JSContext* context,
     JS_FreeValue(context, wind);
 
     JS_FreeValue(context, fog_val);
+    return true;
+}
+
+bool extract_camera(JSContext* context,
+                    JSValueConst world_class,
+                    const WorldLoadDesc& desc,
+                    WorldDefinition& definition,
+                    WorldLoadError& error) {
+    JSValue camera = JS_GetPropertyStr(context, world_class, "camera");
+    if (JS_IsUndefined(camera)) {
+        JS_FreeValue(context, camera);
+        return true;
+    }
+    if (!JS_IsObject(camera)) {
+        JS_FreeValue(context, camera);
+        return fail(desc, error, "camera", "World.camera must be an object");
+    }
+
+    JSValue position = JS_GetPropertyStr(context, camera, "position");
+    JSValue target = JS_GetPropertyStr(context, camera, "target");
+    WorldCameraSettings authored;
+    const bool vectors_ok =
+        float3_value(context, position, authored.position) &&
+        float3_value(context, target, authored.target);
+    JS_FreeValue(context, position);
+    JS_FreeValue(context, target);
+    JS_FreeValue(context, camera);
+
+    const Float3 delta{
+        authored.target.x - authored.position.x,
+        authored.target.y - authored.position.y,
+        authored.target.z - authored.position.z};
+    const bool finite =
+        std::isfinite(authored.position.x) &&
+        std::isfinite(authored.position.y) &&
+        std::isfinite(authored.position.z) &&
+        std::isfinite(authored.target.x) &&
+        std::isfinite(authored.target.y) &&
+        std::isfinite(authored.target.z);
+    const float distance_squared =
+        delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
+    if (!vectors_ok || !finite || distance_squared <= 1e-6f) {
+        return fail(
+            desc, error, "camera",
+            "camera position and target must be distinct finite float3 arrays");
+    }
+
+    authored.authored = true;
+    definition.settings.camera = authored;
+    return true;
+}
+
+bool extract_streaming(JSContext* context,
+                       JSValueConst world_class,
+                       const WorldLoadDesc& desc,
+                       WorldDefinition& definition,
+                       WorldLoadError& error) {
+    JSValue streaming = JS_GetPropertyStr(context, world_class, "streaming");
+    if (JS_IsUndefined(streaming)) {
+        JS_FreeValue(context, streaming);
+        return true;
+    }
+    if (!JS_IsObject(streaming)) {
+        JS_FreeValue(context, streaming);
+        return fail(desc, error, "streaming",
+                    "World.streaming must be an object");
+    }
+
+    JSValue rings = JS_GetPropertyStr(context, streaming, "rings");
+    if (JS_IsUndefined(rings)) {
+        JS_FreeValue(context, rings);
+        JS_FreeValue(context, streaming);
+        return true;
+    }
+
+    std::uint32_t count = 0;
+    if (!array_length(context, rings, count) || count == 0) {
+        JS_FreeValue(context, rings);
+        JS_FreeValue(context, streaming);
+        return fail(desc, error, "streaming.rings",
+                    "streaming.rings must be a non-empty array");
+    }
+
+    float previous_radius = 0.0f;
+    int previous_rung = -1;
+    std::vector<WorldStreamingRing> parsed;
+    parsed.reserve(count);
+    for (std::uint32_t index = 0; index < count; ++index) {
+        JSValue entry = JS_GetPropertyUint32(context, rings, index);
+        if (!JS_IsObject(entry)) {
+            JS_FreeValue(context, entry);
+            JS_FreeValue(context, rings);
+            JS_FreeValue(context, streaming);
+            return fail(
+                desc, error,
+                "streaming.rings[" + std::to_string(index) + "]",
+                "each streaming ring must be an object");
+        }
+        JSValue radius_value = JS_GetPropertyStr(context, entry, "radius");
+        JSValue rung_value = JS_GetPropertyStr(context, entry, "rung");
+        float radius = 0.0f;
+        float rung_number = -1.0f;
+        const bool valid_values =
+            number_value(context, radius_value, radius) &&
+            number_value(context, rung_value, rung_number);
+        JS_FreeValue(context, radius_value);
+        JS_FreeValue(context, rung_value);
+        JS_FreeValue(context, entry);
+
+        const int rung = int(rung_number);
+        const bool ordered =
+            std::isfinite(radius) && radius > previous_radius && rung >= 0 &&
+            std::isfinite(rung_number) && rung_number == float(rung) &&
+            (index == 0 || rung == previous_rung - 1);
+        if (!valid_values || !ordered) {
+            JS_FreeValue(context, rings);
+            JS_FreeValue(context, streaming);
+            return fail(
+                desc, error,
+                "streaming.rings[" + std::to_string(index) + "]",
+                "rings require increasing positive radii and consecutive "
+                "descending non-negative rungs");
+        }
+        parsed.push_back({radius, int(rung)});
+        previous_radius = radius;
+        previous_rung = int(rung);
+    }
+
+    definition.settings.streaming_rings = std::move(parsed);
+    JS_FreeValue(context, rings);
+    JS_FreeValue(context, streaming);
     return true;
 }
 
@@ -797,6 +954,8 @@ class World {}
               extract_settings(context, world_class, desc, definition, error) &&
               extract_lights(context, world_class, desc, definition, error) &&
               extract_fog(context, world_class, desc, definition, error) &&
+              extract_camera(context, world_class, desc, definition, error) &&
+              extract_streaming(context, world_class, desc, definition, error) &&
               append_static_entities(context, world_class, desc, error);
     if (!ok) {
         definition = WorldDefinition{};

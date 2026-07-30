@@ -3,7 +3,6 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
-#include <unordered_map>
 #include <vector>
 
 #include "frame_matrices.h"
@@ -114,7 +113,11 @@ private:
 
 class TemporalState {
 public:
-    TemporalFrame begin(const FrameMatrices& current_unjittered,
+    // Returns a reference into the internal candidate state; it stays valid
+    // until the next begin() call. (It used to return by value — at ~60k
+    // streaming instances that copied ~8 MB of TemporalInstanceFrame records
+    // out, and the caller's copy-assignments doubled it.)
+    const TemporalFrame& begin(const FrameMatrices& current_unjittered,
                         VkExtent2D internal_extent, VkExtent2D output_extent,
                         const std::vector<TemporalInstance>& instances,
                         bool jitter_enabled,
@@ -124,35 +127,36 @@ public:
     void invalidate() noexcept;
 
 private:
-    // Keyed lookup only (find / insert / whole-container move) — never
-    // iterated in key order — so an unordered_map is the right container:
-    // begin() inserts one node per instance every frame plus two lookups,
-    // which is O(n log n) with a red-black tree and O(n) hashed.
-    using TransformMap = std::unordered_map<std::uint64_t, matter::Mat4f>;
-
     // Per-instance transforms carried from one presented frame to the next.
     //
-    // Perf: the map used to be rebuilt from scratch every frame — one node
-    // allocation plus two hashed lookups per instance, which at ~59k instances
-    // was measured at ~17 ms of the ~18 ms begin() spends. A parked camera over
-    // a static world re-derives an identical map every frame.
+    // Perf: the keyed index used to be a std::unordered_map rebuilt from
+    // scratch every frame — one node allocation plus two hashed lookups per
+    // instance, which at ~59k instances was measured at ~17 ms of the ~18 ms
+    // begin() spends. A parked camera over a static world re-derives an
+    // identical map every frame.
     //
     // So the authoritative storage is the index-aligned (ids, values) pair,
-    // which is trivially cheap to fill, and the map is materialised only when a
-    // frame actually needs keyed lookup (i.e. when the instance set changed).
-    // `map` is always built by build_map(), which replays the assignments in
-    // order and therefore keeps the original last-writer-wins behaviour for
-    // repeated ids; `ids_unique` records whether that ever mattered.
+    // which is trivially cheap to fill, and the keyed index is materialised
+    // only when a frame actually needs keyed lookup (i.e. when the instance
+    // set changed). The index itself is a flat linear-probe table over the
+    // entry indices — one contiguous fill instead of ~n node allocations,
+    // which matters during sector streaming where the set changes every
+    // frame. build_map() replays the assignments in order and therefore keeps
+    // the original last-writer-wins behaviour for repeated ids; `unique`
+    // records whether that ever mattered.
     struct TransformTable {
         std::vector<std::uint64_t> ids;
         std::vector<matter::Mat4f> values;   // values[i] belongs to ids[i]
-        TransformMap map;
+        std::vector<std::uint64_t> slot_keys;
+        std::vector<std::int32_t> slot_entries;  // -1 empty, else values index
+        std::uint32_t slot_mask = 0;
         bool map_built = false;
         // Whether `ids` holds no repeats. Known once build_map() has run, and
         // carried forward across frames that reuse the same id sequence.
         bool unique_known = false;
         bool unique = false;
         void build_map();
+        const matter::Mat4f* find(std::uint64_t id) const;
     };
 
     struct PresentedState {

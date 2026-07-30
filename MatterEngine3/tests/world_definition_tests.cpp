@@ -474,6 +474,9 @@ class FogWorld extends World {
     density: 0.05,
     floor: -10.0,
     falloff: 50.0,
+    minHeight: 4.0,
+    maxHeight: 64.0,
+    noiseScale: 0.002,
     color: [0.8, 0.85, 0.9],
     wind: [1.0, 0.0, 0.5],
   };
@@ -489,6 +492,11 @@ class FogWorld extends World {
     CHECK(nearly_equal(fog.density, 0.05f), "fog density extracted");
     CHECK(nearly_equal(fog.floor, -10.0f), "fog floor extracted");
     CHECK(nearly_equal(fog.falloff, 50.0f), "fog falloff extracted");
+    CHECK(fog.height_layer &&
+              nearly_equal(fog.min_height, 4.0f) &&
+              nearly_equal(fog.max_height, 64.0f) &&
+              nearly_equal(fog.noise_scale, 0.002f),
+          "fog bounded height layer extracted");
     CHECK(nearly_equal(fog.color[0], 0.8f) &&
               nearly_equal(fog.color[1], 0.85f) &&
               nearly_equal(fog.color[2], 0.9f),
@@ -516,6 +524,9 @@ class NoFogWorld extends World {
     CHECK(nearly_equal(fog.density, 0.0f), "fog density defaults to 0 (no fog)");
     CHECK(nearly_equal(fog.floor, 0.0f), "fog floor defaults to 0");
     CHECK(nearly_equal(fog.falloff, 30.0f), "fog falloff defaults to 30");
+    CHECK(!fog.height_layer &&
+              nearly_equal(fog.noise_scale, 0.0018f),
+          "fog bounded height layer defaults off");
     CHECK(nearly_equal(fog.color[0], 0.9f) &&
               nearly_equal(fog.color[1], 0.92f) &&
               nearly_equal(fog.color[2], 0.95f),
@@ -524,6 +535,35 @@ class NoFogWorld extends World {
               nearly_equal(fog.wind[1], 0.0f) &&
               nearly_equal(fog.wind[2], 0.0f),
           "fog wind defaults to zero");
+}
+
+void test_streaming_ring_extraction() {
+    Fixture fixture;
+    const fs::path path = fixture.write("StreamingWorld.js", R"JS(
+class StreamingWorld extends World {
+  static roots = [{ module: 'Root' }];
+  static streaming = {
+    rings: [
+      { radius: 128, rung: 2 },
+      { radius: 320, rung: 1 },
+      { radius: 4800, rung: 0 },
+    ],
+  };
+}
+)JS");
+
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+
+    const auto& rings = definition.settings.streaming_rings;
+    CHECK(rings.size() == 3, "world streaming rings extracted");
+    CHECK(rings.size() == 3 &&
+              nearly_equal(rings[0].radius, 128.0f) && rings[0].rung == 2 &&
+              nearly_equal(rings[1].radius, 320.0f) && rings[1].rung == 1 &&
+              nearly_equal(rings[2].radius, 4800.0f) && rings[2].rung == 0,
+          "world streaming ring values preserve authored order");
 }
 
 void test_vulkan_volumetrics_settings_defaults() {
@@ -559,6 +599,7 @@ int main() {
     test_build_entities_failures_clear_partial_definition();
     test_fog_extraction_with_authored_values();
     test_fog_defaults_when_absent();
+    test_streaming_ring_extraction();
     test_vulkan_volumetrics_settings_defaults();
     return check_summary();
 }

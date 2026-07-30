@@ -1462,16 +1462,31 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     const VkImage old_albedo = attachments.albedo.image;
     const VkDeviceSize initial_vertex_capacity =
         renderer.raster_vertex_buffer_size();
+    const uint32_t initial_vertex_count = renderer.raster_vertex_count();
     renderer.release_part(901);
-    CHECK(renderer.raster_vertex_count() == 0,
-          "releasing a raster part reclaims its vertices");
+    // Free-range recycling (issues/render-streaming-build-cpu movement
+    // hitches): a release quarantines the part's ranges for the in-flight
+    // window instead of compacting O(world), so the staging high-water mark
+    // is unchanged. What must hold instead is that churn REUSES the ranges —
+    // bounded residency across an evict/publish cycle.
+    CHECK(renderer.raster_vertex_count() == initial_vertex_count,
+          "releasing a raster part keeps the staging high-water mark");
     CHECK(renderer.uploaded_raster_draw_command_count() == 1,
           "staging release preserves the last uploaded raster mask");
     for (uint64_t hash = 902; hash <= 906; ++hash) {
+        // Advance past the in-flight window so the freed range settles and
+        // the next registration reuses it instead of growing the tail.
+        for (int settle = 0; settle < 4; ++settle) {
+            CHECK(renderer.update_instances({{900, identity}}, error) &&
+                      renderer.dispatch_culling(frame, camera.position, 1.0f,
+                                                error),
+                  error.empty() ? "settle freed raster range"
+                                : error.c_str());
+        }
         CHECK(renderer.ensure_part(known_raster_triangle(hash), error) >= 0 &&
-                  renderer.raster_vertex_count() == 3,
+                  renderer.raster_vertex_count() == initial_vertex_count,
               error.empty()
-                  ? "re-adding raster part reuses compact vertex storage"
+                  ? "re-added raster part reuses the freed vertex range"
                   : error.c_str());
         CHECK(renderer.update_instances({{900, identity}, {hash, identity}},
                                         error) &&
@@ -1481,11 +1496,7 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
                             : error.c_str());
         CHECK(renderer.raster_vertex_buffer_size() == initial_vertex_capacity,
               "streaming eviction/reload keeps raster vertex residency bounded");
-        if (hash != 906) {
-            renderer.release_part(hash);
-            CHECK(renderer.raster_vertex_count() == 0,
-                  "streaming eviction releases raster vertex residency");
-        }
+        if (hash != 906) renderer.release_part(hash);
     }
     CHECK(renderer.render_gbuffer_and_composite(96, 64, error),
           error.empty() ? "recreate resized raster attachments"
@@ -4131,6 +4142,103 @@ void run_frame_upload_tests(matter::VulkanDevice& vulkan) {
           "camera-only frame leaves scene uploads and command layout intact");
 }
 
+// Streaming-append contract (issues/bfb5f13e): registering a part into a live
+// scene must reach the GPU as a tail append into the existing static buffers,
+// not a recreate + O(world) rewrite. Full re-uploads are legal only when a
+// buffer outgrew its capacity — capacity doubles, so over a streaming load
+// they are O(log N) while appends carry the steady state.
+void run_static_append_upload_tests(matter::VulkanDevice& vulkan) {
+    std::string error;
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices frame{};
+    CHECK(viewer::build_frame_matrices(camera, 320, 320, frame, error),
+          error.empty() ? "build streamed-append matrices" : error.c_str());
+
+    // Even parts sit in front of the camera, odd parts behind it. The final
+    // emitted/culled split therefore depends on every appended cluster's AABB
+    // bytes actually reaching the GPU: an append that left zeroes would put
+    // that cluster's degenerate box at the (visible) origin and skew the count.
+    const auto streamed_part = [](uint64_t hash, float z_center) {
+        viewer::VkScenePart part = fixed_part(
+            hash, {-0.25f, -0.25f, z_center - 0.25f},
+            {0.25f, 0.25f, z_center + 0.25f}, 0);
+        const matter::Float3 normal{0.0f, 1.0f, 0.0f};
+        const matter::Float4 tint{0.9f, 0.1f, 0.3f, 0.0f};
+        part.vertices = {
+            {{-0.25f, -0.25f, z_center}, normal, tint,
+             {0.0f, 0.0f, 0.0f, 1.0f}, 7u, {}},
+            {{0.25f, -0.25f, z_center}, normal, tint,
+             {0.0f, 0.0f, 0.0f, 1.0f}, 7u, {}},
+            {{0.0f, 0.25f, z_center}, normal, tint,
+             {0.0f, 0.0f, 0.0f, 1.0f}, 7u, {}},
+        };
+        part.indices = {0, 1, 2};
+        return part;
+    };
+
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "init streamed-append renderer" : error.c_str());
+    const matter::Mat4f identity = identity_matrix();
+    std::vector<viewer::VkSceneInstance> instances;
+    constexpr int kStreamedParts = 16;
+    uint64_t fulls = 0;
+    uint64_t appends = 0;
+    for (int i = 0; i < kStreamedParts; ++i) {
+        const uint64_t hash = 2000 + static_cast<uint64_t>(i);
+        const float z_center = (i % 2 == 0) ? -2.0f : 2.0f;
+        CHECK(renderer.ensure_part(streamed_part(hash, z_center), error) >= 0,
+              error.empty() ? "register streamed part" : error.c_str());
+        instances.push_back({hash, identity});
+        CHECK(renderer.update_instances(instances, error),
+              error.empty() ? "upload streamed instances" : error.c_str());
+        const VkDeviceSize cluster_capacity = renderer.cluster_buffer_size();
+        const VkDeviceSize vertex_capacity =
+            renderer.raster_vertex_buffer_size();
+        const VkDeviceSize index_capacity = renderer.raster_index_buffer_size();
+        const viewer::VkSceneUploadCounters before = renderer.upload_counters();
+        CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+              error.empty() ? "dispatch streamed cull" : error.c_str());
+        const viewer::VkSceneUploadCounters after = renderer.upload_counters();
+        const uint64_t full_delta =
+            after.static_full_uploads - before.static_full_uploads;
+        const uint64_t append_delta =
+            after.static_append_uploads - before.static_append_uploads;
+        CHECK(full_delta + append_delta == 1,
+              "each streamed registration performs exactly one static upload");
+        const bool capacity_grew =
+            renderer.cluster_buffer_size() > cluster_capacity ||
+            renderer.raster_vertex_buffer_size() > vertex_capacity ||
+            renderer.raster_index_buffer_size() > index_capacity;
+        CHECK(full_delta == 0 || capacity_grew,
+              "full static re-uploads happen only when a buffer must grow");
+        CHECK(capacity_grew || append_delta == 1,
+              "a registration that fits existing capacity appends in place");
+        fulls += full_delta;
+        appends += append_delta;
+    }
+    // Capacity doubles per buffer, so across 16 single-part registrations each
+    // of the three buffers can force at most ~4 growth re-uploads; the rest
+    // must take the append path regardless of exact struct sizes.
+    CHECK(appends >= 4, "append path carries the streaming steady state");
+    std::printf("streamed static uploads: %llu appends / %llu fulls\n",
+                static_cast<unsigned long long>(appends),
+                static_cast<unsigned long long>(fulls));
+    viewer::VkCullStats stats{};
+    CHECK(renderer.cull_stats(stats, error),
+          error.empty() ? "read streamed cull stats" : error.c_str());
+    CHECK(stats.emitted == kStreamedParts / 2,
+          "appended front clusters are emitted from GPU cluster data");
+    CHECK(stats.frustum_culled == kStreamedParts / 2,
+          "appended behind clusters are culled from GPU cluster data");
+}
+
 void run_display_transform_tests(matter::VulkanDevice& vulkan) {
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
@@ -4657,6 +4765,13 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
     std::vector<viewer::VkSceneRenderer::RtInstance> rt_instances;
     CHECK(renderer.fill_rt_instances(rt_instances) == 3,
           "release keeps the coherent uploaded RT snapshot until dispatch");
+    // Free-range recycling: settle the freed range past the in-flight window
+    // so re-registration reuses it instead of growing the tail (bounded
+    // storage across an evict/republish cycle replaces eager compaction).
+    for (int settle = 0; settle < 4; ++settle) {
+        CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+              error.empty() ? "settle freed cluster range" : error.c_str());
+    }
     CHECK(renderer.ensure_part(part, error) >= 0,
           error.empty() ? "re-add part without reset" : error.c_str());
     CHECK(renderer.update_instances({near_instance}, error),
@@ -4699,6 +4814,13 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
         renderer.release_part(77);
         CHECK(renderer.cluster_count() == 4,
               "release keeps uploaded cluster count coherent until dispatch");
+        // Settle the freed range so the re-add reuses it — part 77 occupies
+        // the same cluster range every cycle (stable bucket indices below).
+        for (int settle = 0; settle < 4; ++settle) {
+            CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f,
+                                            error),
+                  error.empty() ? "settle churn range" : error.c_str());
+        }
         CHECK(renderer.ensure_part(part, error) >= 0,
               error.empty() ? "re-add churn part" : error.c_str());
         CHECK(renderer.update_instances({mixed_instance, near_instance}, error),
@@ -4721,7 +4843,11 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
                   rt_matrix_equal(churn_rt[1].transform,
                                   near_instance.object_to_world),
               "churn preserves exact surviving RT instances");
-        const uint32_t expected_buckets[] = {1, 9, 19, 27};
+        // Range reuse puts part 77 back into cluster slot 0 every cycle (it
+        // was registered first and always reuses its own freed range), so the
+        // mixed part's clusters sit at 1..3: buckets shift from the eager-
+        // compaction era's {1, 9, 19, 27} (77 last) to {0, 10, 18, 28}.
+        const uint32_t expected_buckets[] = {0, 10, 18, 28};
         bool churn_commands_exact = commands.size() == 4 * viewer::kVkMaxLod;
         for (size_t bucket = 0; bucket < commands.size(); ++bucket) {
             bool expected = false;
@@ -4735,8 +4861,8 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
                     churn_commands_exact &&
                     gpu_matrix_equal(
                         transforms[commands[bucket].first_instance],
-                        bucket == 27 ? near_instance.object_to_world
-                                     : mixed_instance.object_to_world);
+                        bucket == 0 ? near_instance.object_to_world
+                                    : mixed_instance.object_to_world);
             }
         }
         CHECK(churn_commands_exact,
@@ -4944,6 +5070,10 @@ void run_vk_scene_checked_size_tests(matter::VulkanDevice& vulkan) {
                       {scene.instances[0], scene.instances[1]}, error),
               error.empty() ? "stage replacement-fault growth"
                             : error.c_str());
+        // The appended part may or may not fit the live buffers' capacity;
+        // force the full recreate path so the replacement fault below is
+        // reachable deterministically.
+        renderer.test_force_full_static_upload();
         renderer.set_test_scene_failure(1,
             std::numeric_limits<uint32_t>::max());
         CHECK(!renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error) &&
@@ -5742,6 +5872,7 @@ int main() {
         }
         if (smoke_mode && std::string(smoke_mode) == "cull") {
             run_frame_upload_tests(*vulkan);
+            run_static_append_upload_tests(*vulkan);
             run_frame_record_tests(*vulkan);
             run_frame_resource_recovery_tests(*vulkan);
             run_vk_scene_checked_size_tests(*vulkan);
@@ -5828,6 +5959,7 @@ int main() {
 
         uint32_t retained_probe_destroyed = 0;
         run_frame_upload_tests(*vulkan);
+        run_static_append_upload_tests(*vulkan);
         run_frame_record_tests(*vulkan);
         run_frame_resource_recovery_tests(*vulkan);
         run_tileset_slot_load(*vulkan);

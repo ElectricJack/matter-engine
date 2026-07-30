@@ -4,20 +4,25 @@
 const uint VOL_W = 160;
 const uint VOL_H = 90;
 const uint VOL_D = 128;
-const float VOL_FAR = 300.0;
+// View-space froxel coverage must be large enough for streamed landscapes.
+// Keep shadow rays separate: tracing every froxel several kilometres through
+// a dense terrain TLAS is unnecessary and can trigger severe GPU stalls.
+const float VOL_FROXEL_FAR = 3000.0;
+const float VOL_SHADOW_FAR = 300.0;
 const float VOL_NEAR = 0.1;
 
 // Exponential slice-to-depth mapping: concentrates precision near the camera.
-// slice in [0, VOL_D], depth in [VOL_NEAR, VOL_FAR].
+// slice in [0, VOL_D], depth in [VOL_NEAR, VOL_FROXEL_FAR].
 float slice_to_depth(float slice) {
     float t = slice / float(VOL_D);
-    return VOL_NEAR * pow(VOL_FAR / VOL_NEAR, t);
+    return VOL_NEAR * pow(VOL_FROXEL_FAR / VOL_NEAR, t);
 }
 
 // Inverse: depth to normalized slice [0, 1].
 float depth_to_slice_n(float depth) {
-    float clamped = clamp(depth, VOL_NEAR, VOL_FAR);
-    return log(clamped / VOL_NEAR) / log(VOL_FAR / VOL_NEAR);
+    float clamped = clamp(depth, VOL_NEAR, VOL_FROXEL_FAR);
+    return log(clamped / VOL_NEAR) /
+           log(VOL_FROXEL_FAR / VOL_NEAR);
 }
 
 // Henyey-Greenstein phase function.

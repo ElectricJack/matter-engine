@@ -1003,6 +1003,7 @@ int main() {
 
     matter::CameraDesc camera{};
     init_camera(camera);
+    const char* initial_camera_env = std::getenv("MATTER_CAM");
     if (replay.valid) {
         // Full projection, not just eye/target: a different fov or near/far
         // reprojects everything and the diff would be all noise.
@@ -1014,7 +1015,7 @@ int main() {
         if (replay.near_plane > 0.0f) camera.near_plane = replay.near_plane;
         if (replay.far_plane > 0.0f) camera.far_plane = replay.far_plane;
     }
-    if (const char* value = std::getenv("MATTER_CAM")) {
+    if (const char* value = initial_camera_env) {
         float c[6];
         if (std::sscanf(value, "%f,%f,%f,%f,%f,%f", &c[0], &c[1], &c[2],
                         &c[3], &c[4], &c[5]) == 6) {
@@ -1058,7 +1059,6 @@ int main() {
             return 1;
         }
     }
-
     viewer::ViewerStats stats{};
     stats.world_current = initial_world;
     stats.gpu_cull_active = true;
@@ -1422,6 +1422,8 @@ int main() {
     int screenshot_failures = 0;
     bool bake_ready = false;
     bool selected_world_reported = false;
+    bool apply_world_camera_after_bake =
+        !replay.valid && initial_camera_env == nullptr;
     const bool test_resize = std::getenv("MATTER_TEST_RESIZE") != nullptr;
     if (replay.valid) {
         // The toggles that change pixels. DLSS is deliberately NOT restored: it
@@ -2390,6 +2392,17 @@ int main() {
             else if (event.type == matter::EventType::BakeFinished) {
                 std::printf("bake finished (%d errors)\n", event.errors);
                 bake_ready = event.errors == 0;
+                if (bake_ready && apply_world_camera_after_bake) {
+                    if (session->apply_authored_camera(camera)) {
+                        std::printf(
+                            "world camera: eye(%.1f,%.1f,%.1f) "
+                            "target(%.1f,%.1f,%.1f)\n",
+                            camera.position.x, camera.position.y,
+                            camera.position.z, camera.target.x,
+                            camera.target.y, camera.target.z);
+                    }
+                    apply_world_camera_after_bake = false;
+                }
                 console_log.push(
                     event.errors == 0 ? viewer::LogSeverity::Info
                                        : viewer::LogSeverity::Warning,
@@ -2950,6 +2963,8 @@ int main() {
             binding.clear_pending_reload();
             bake_ready = false;
             screenshot_settle = 0;
+            apply_world_camera_after_bake =
+                !replay.valid && initial_camera_env == nullptr;
             viewer::prepare_world_reload(stats);
             binding.reload();  // clears app models + session->reload()
         }
@@ -2971,6 +2986,7 @@ int main() {
                                  "Connected to " + worlds[selected].world_name);
                 bake_ready = false;
                 screenshot_settle = 0;
+                apply_world_camera_after_bake = true;
                 apply_world_resolver_defaults(worlds[selected].world_name, active_radius,
                                               min_projected_size, stats);
             }

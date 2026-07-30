@@ -240,4 +240,119 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
     return out;
 }
 
+size_t count_terrain_skirt_tris(const std::vector<Tri>& tris,
+                                std::vector<uint8_t>* mask) {
+    if (mask) mask->assign(tris.size(), 0);
+    size_t count = 0;
+    for (size_t i = 0; i < tris.size(); ++i) {
+        const Tri& t = tris[i];
+        const float3* v[3] = { &t.vertex0, &t.vertex1, &t.vertex2 };
+        bool vertical = false;
+        for (int a = 0; a < 3 && !vertical; ++a) {
+            const int b = (a + 1) % 3;
+            vertical = v[a]->x == v[b]->x && v[a]->z == v[b]->z &&
+                       v[a]->y != v[b]->y;
+        }
+        if (vertical) {
+            ++count;
+            if (mask) (*mask)[i] = 1;
+        }
+    }
+    return count;
+}
+
+LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
+                            const std::vector<uint8_t>& skirt_mask,
+                            float bound_radius,
+                            const TerrainBakeTargets& targets,
+                            BLASManager& blas,
+                            const std::vector<TriEx>* triex,
+                            BakeObserver* observer,
+                            std::vector<BLASHandle>* out_handles) {
+    LodLevels out;
+    if (out_handles) out_handles->clear();
+    BAKE_SPAN(bake_trace::kSpanLod);
+
+    const bool triex_usable = triex && triex->size() == tris.size();
+    const bool lb_prof = std::getenv("MATTER_LOD_BAKE_PROFILE") != nullptr;
+
+    // Surface-only source (skirts removed) for every decimated level.
+    std::vector<Tri> surface;
+    std::vector<TriEx> surface_ex;
+    surface.reserve(tris.size());
+    if (triex_usable) surface_ex.reserve(tris.size());
+    for (size_t i = 0; i < tris.size(); ++i) {
+        if (i < skirt_mask.size() && skirt_mask[i]) continue;
+        surface.push_back(tris[i]);
+        if (triex_usable) surface_ex.push_back((*triex)[i]);
+    }
+
+    // Reproject source built once from the full-res surface (ladder-invariant,
+    // same reasoning as bake_lods).
+    std::unique_ptr<MeshIndexed> src_m;
+    std::unique_ptr<ReprojectSource> src_index;
+
+    for (size_t lvl = 0; lvl < targets.eps_ratio.size(); ++lvl) {
+        BAKE_SPAN(bake_trace::kSpanLodRung);
+        const auto rung_t0 = std::chrono::steady_clock::now();
+        const float eps = targets.eps_ratio[lvl] * bound_radius;
+        const bool full = eps <= 0.0f;
+
+        std::vector<Tri> decimated;
+        std::vector<TriEx> reprojected;
+        if (!full) {
+            decimated = decimate_to_error(surface, eps,
+                                          /*use_aabb_bounds=*/false);
+            if (decimated.empty()) decimated = surface;
+            if (!surface_ex.empty()) {
+                if (!src_index) {
+                    src_m = std::make_unique<MeshIndexed>(
+                        from_tri(surface, &surface_ex));
+                    src_index = std::make_unique<ReprojectSource>(
+                        *src_m, ReprojectNormals::SampleSource);
+                }
+                MeshIndexed tgt_m = from_tri(decimated, nullptr);
+                reproject_triex(*src_index, tgt_m);
+                std::vector<Tri> unwelded_unused;
+                to_tri(tgt_m, unwelded_unused, reprojected);
+            }
+        }
+        const std::vector<Tri>& geo = full ? tris : decimated;
+        BAKE_COUNT("tris_in",    (double)tris.size());
+        BAKE_COUNT("tris_out",   (double)geo.size());
+        BAKE_COUNT("keep_ratio", tris.empty()
+                       ? 0.0 : (double)geo.size() / (double)tris.size());
+        const TriEx* ex = nullptr;
+        if (full && triex_usable)                                ex = triex->data();
+        else if (!full && reprojected.size() == geo.size() &&
+                 !reprojected.empty())                           ex = reprojected.data();
+        BLASHandle h = blas.register_triangles(
+            const_cast<Tri*>(geo.data()), (int)geo.size(), ex);
+        if (out_handles) out_handles->push_back(h);
+        uint32_t idx = UINT32_MAX;
+        const auto& entries = blas.get_entries();
+        for (size_t i = 0; i < entries.size(); ++i) {
+            if (entries[i]->handle == h) { idx = (uint32_t)i; break; }
+        }
+        if (lb_prof) {
+            std::fprintf(stderr,
+                "[terrain-rung] lvl=%zu eps=%.2f tris=%zu->%zu (surface %zu, "
+                "skirts %zu)\n",
+                lvl, (double)eps, tris.size(), geo.size(), surface.size(),
+                tris.size() - surface.size());
+        }
+        LodLevel L;
+        L.screen_size_threshold = targets.threshold[lvl];
+        if (idx != UINT32_MAX) L.blas_indices.push_back(idx);
+        out.push_back(std::move(L));
+
+        if (observer) {
+            const double rung_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - rung_t0).count();
+            observer->on_rung_ready((int)lvl, (int)geo.size(), rung_ms);
+        }
+    }
+    return out;
+}
+
 } // namespace lod_bake

@@ -771,6 +771,10 @@ void VkVolumetrics::update_settings(
     fog_density_ = fog.density;
     fog_floor_ = fog.floor;
     fog_falloff_ = fog.falloff;
+    fog_height_layer_ = fog.height_layer;
+    fog_min_height_ = fog.min_height;
+    fog_max_height_ = fog.max_height;
+    fog_noise_scale_ = fog.noise_scale;
     for (int i = 0; i < 3; ++i) {
         fog_color_[i] = fog.color[i];
         fog_wind_[i] = fog.wind[i];
@@ -907,8 +911,16 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     }
     density_pc.frame_time = frame_time;
     density_pc.fog_density = fog_density_ * fog_density_mul_;
-    density_pc.fog_floor = fog_floor_ + fog_floor_offset_;
-    density_pc.fog_falloff = fog_falloff_ * fog_falloff_mul_;
+    if (fog_height_layer_) {
+        const float layer_min = fog_min_height_ + fog_floor_offset_;
+        const float layer_depth =
+            (fog_max_height_ - fog_min_height_) * fog_falloff_mul_;
+        density_pc.fog_floor = layer_min;
+        density_pc.fog_falloff = layer_min + layer_depth;
+    } else {
+        density_pc.fog_floor = fog_floor_ + fog_floor_offset_;
+        density_pc.fog_falloff = fog_falloff_ * fog_falloff_mul_;
+    }
     // Reversed-ZO projection: m[10] = n/(f-n), m[11] = f*n/(f-n), so the
     // recovery identities are m[11]/m[10] = far and m[11]/(m[10]+1) = near
     // (the standard-ZO identities with roles swapped).
@@ -920,7 +932,9 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     }
     density_pc.camera_far = matrices.view_to_clip.m[11] /
                             matrices.view_to_clip.m[10];
-    density_pc.pad2 = 0.0f;
+    // Preserve the 128-byte push-constant ABI: positive pad2 opts into the
+    // bounded cloud layer and carries its world-to-noise coordinate scale.
+    density_pc.pad2 = fog_height_layer_ ? fog_noise_scale_ : 0.0f;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, density_pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,

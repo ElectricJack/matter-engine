@@ -51,15 +51,54 @@ void main() {
         vec4 world_h = pc.clip_to_world * clip_pos;
         vec3 world_pos = world_h.xyz / world_h.w;
 
-        // --- Height fog ---
+        // --- Height fog / bounded valley cloud layer ---
         float y = world_pos.y;
-        float height_fog = pc.fog_density *
-            exp(-max(y - pc.fog_floor, 0.0) / max(pc.fog_falloff, 0.01));
+        float height_fog;
+        if (pc.pad2 > 0.0) {
+            // Full density below min height, followed by a deliberately sharp
+            // smooth fade to zero at max height. Squaring the mask keeps the
+            // cloud deck from becoming a tall, uniform column of haze.
+            float height_mask =
+                1.0 - smoothstep(pc.fog_floor, pc.fog_falloff, y);
+            height_mask *= height_mask;
 
-        // Wind-displaced noise for fog variation.
-        vec3 noise_coord = (world_pos + pc.fog_wind * pc.frame_time) * 0.02;
-        float noise_val = texture(noise_tex, noise_coord).r;
-        height_fog *= mix(0.5, 1.5, noise_val);
+            // Keep the cloud field vertically coherent so view-ray integration
+            // does not average fully 3D noise back into uniform haze. X/Z
+            // carries the broad bank shapes; only a small fraction of the
+            // layer height enters the third texture coordinate.
+            float layer_depth = max(pc.fog_falloff - pc.fog_floor, 0.01);
+            float layer_t =
+                clamp((y - pc.fog_floor) / layer_depth, 0.0, 1.0);
+            vec2 cloud_xz =
+                (world_pos.xz + pc.fog_wind.xz * pc.frame_time) * pc.pad2;
+            vec3 noise_coord = vec3(
+                cloud_xz,
+                0.19 + layer_t * 0.12 +
+                    pc.fog_wind.y * pc.frame_time * pc.pad2);
+            float n0 = texture(noise_tex, noise_coord).r;
+            float n1 = texture(
+                noise_tex, noise_coord * 2.03 + vec3(0.31, 0.17, 0.53)).g;
+            float n2 = texture(
+                noise_tex, noise_coord * 4.11 + vec3(0.73, 0.47, 0.19)).b;
+            float cloud_fbm = n0 * 0.57 + n1 * 0.29 + n2 * 0.14;
+            float cloud_shape = smoothstep(0.46, 0.57, cloud_fbm);
+            cloud_shape *= cloud_shape;
+            // Valley cloud decks must remain opaque between their billowing
+            // banks. Keep a dense floor beneath the noise so no clear hole can
+            // reveal the valley, while retaining stronger cloud-shaped cores.
+            cloud_shape = mix(0.18, 1.0, cloud_shape);
+            height_fog = pc.fog_density * height_mask *
+                         cloud_shape * 2.4;
+        } else {
+            // Legacy exponential height fog.
+            height_fog = pc.fog_density *
+                exp(-max(y - pc.fog_floor, 0.0) /
+                    max(pc.fog_falloff, 0.01));
+            vec3 noise_coord =
+                (world_pos + pc.fog_wind * pc.frame_time) * 0.02;
+            float noise_val = texture(noise_tex, noise_coord).r;
+            height_fog *= mix(0.5, 1.5, noise_val);
+        }
 
         vec3 fog_albedo = pc.fog_color;
         float extinction = height_fog;
