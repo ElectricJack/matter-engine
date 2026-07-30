@@ -53,8 +53,12 @@ enum class DlssMode : uint8_t { Native, Quality, Balanced, Performance };
 const char* dlss_mode_name(DlssMode mode) noexcept;
 
 struct VulkanLightingOverrides {
-    float sun_multiplier = 1.0f;
-    float sky_multiplier = 1.0f;
+    // sun/sky are the 2026-07-30 tuning pass (both were 1.0): a hotter key
+    // against a dimmer sky is what separates lit slope from shadowed slope
+    // once the terrain is mostly one gray rock material. These are the values
+    // the viewer's "Reset to World" button restores.
+    float sun_multiplier = 1.67f;
+    float sky_multiplier = 0.77f;
     float emission_multiplier = 1.0f;
     float exposure_ev = -2.0f;
     float composite_debug_view = 0.0f;

@@ -57,27 +57,36 @@ static int display_unorm_code(float linear, VkFormat swapchain_format) {
 }
 
 static void test_viewer_lighting_controls() {
+    // These seams assert that a reset restores THE DEFAULT, not that the
+    // default holds any particular value — so they compare against the struct
+    // rather than repeating its literals. test_vulkan_lighting_override_contract
+    // below is the one place the values themselves are pinned.
+    const matter::VulkanLightingOverrides world{};
+    auto matches_world = [&world](const matter::VulkanLightingOverrides& v) {
+        return v.sun_multiplier == world.sun_multiplier &&
+               v.sky_multiplier == world.sky_multiplier &&
+               v.emission_multiplier == world.emission_multiplier &&
+               v.exposure_ev == world.exposure_ev;
+    };
+
     viewer::ViewerStats stats{};
     stats.lighting.sun_multiplier = 0.25f;
     stats.lighting.sky_multiplier = 0.5f;
     stats.lighting.emission_multiplier = 0.75f;
     stats.lighting.exposure_ev = 3.0f;
     viewer::reset_lighting_controls(stats);
-    CHECK(stats.lighting.sun_multiplier == 1.0f,
+    CHECK(stats.lighting.sun_multiplier == world.sun_multiplier,
           "world reset restores authored sun multiplier");
-    CHECK(stats.lighting.sky_multiplier == 1.0f,
+    CHECK(stats.lighting.sky_multiplier == world.sky_multiplier,
           "world reset restores authored sky multiplier");
-    CHECK(stats.lighting.emission_multiplier == 1.0f,
+    CHECK(stats.lighting.emission_multiplier == world.emission_multiplier,
           "world reset restores authored emission multiplier");
-    CHECK(stats.lighting.exposure_ev == -2.0f,
+    CHECK(stats.lighting.exposure_ev == world.exposure_ev,
           "world reset restores default display exposure");
 
     stats.lighting = {0.25f, 0.5f, 0.75f, 3.0f};
     viewer::prepare_world_reload(stats);
-    CHECK(stats.lighting.sun_multiplier == 1.0f &&
-              stats.lighting.sky_multiplier == 1.0f &&
-              stats.lighting.emission_multiplier == 1.0f &&
-              stats.lighting.exposure_ev == -2.0f,
+    CHECK(matches_world(stats.lighting),
           "reload seam resets all Viewer lighting controls");
 
     stats.lighting = {0.25f, 0.5f, 0.75f, 3.0f};
@@ -88,17 +97,17 @@ static void test_viewer_lighting_controls() {
               stats.lighting.exposure_ev == 3.0f,
           "failed world-switch seam preserves Viewer lighting controls");
     viewer::complete_world_switch(stats, true);
-    CHECK(stats.lighting.sun_multiplier == 1.0f &&
-              stats.lighting.sky_multiplier == 1.0f &&
-              stats.lighting.emission_multiplier == 1.0f &&
-              stats.lighting.exposure_ev == -2.0f,
+    CHECK(matches_world(stats.lighting),
           "successful world-switch seam resets all Viewer lighting controls");
 }
 
 static void test_vulkan_lighting_override_contract() {
+    // 2026-07-30 tuning pass: sun/sky moved off 1.0 (see the struct comment in
+    // world_session.h). Pinned here on purpose — these are what every world
+    // loads with and what "Reset to World" restores.
     matter::VulkanLightingOverrides defaults{};
-    CHECK(defaults.sun_multiplier == 1.0f, "sun override defaults to one");
-    CHECK(defaults.sky_multiplier == 1.0f, "sky override defaults to one");
+    CHECK(defaults.sun_multiplier == 1.67f, "sun override defaults to 1.67");
+    CHECK(defaults.sky_multiplier == 0.77f, "sky override defaults to 0.77");
     CHECK(defaults.emission_multiplier == 1.0f,
           "emission override defaults to one");
     CHECK(defaults.exposure_ev == -2.0f, "display exposure defaults to -2 EV");

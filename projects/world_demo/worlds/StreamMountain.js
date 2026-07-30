@@ -99,20 +99,34 @@ class StreamMountain extends World {
   // distant sectors cost a handful of triangles, so both the scatter rings
   // and the terrain bands reach much farther than the old full-detail-only
   // streamer could afford (which OOMed at 4800 m of voxel sectors).
+  //
+  // Rings pulled in on 2026-07-30 (was 368/1115/2922). Scatter is the
+  // INSTANCE cost, not the triangle cost, and it does not get the ladder's
+  // discount with distance the way terrain does — a 2922 m tier-0 ring is
+  // millions of resolved instances for grass nobody can resolve. 150/500/1000
+  // keeps dense scatter where it reads and stops it at 1 km; terrain keeps
+  // going to 10095 on the heightfield rungs, which is where the sightlines
+  // actually come from.
   static streaming = {
     rings: [
-      { radius: 368.0, rung: 2 },
-      { radius: 1115.0, rung: 1 },
-      { radius: 2922.0, rung: 0 },
+      { radius: 150.0, rung: 2 },
+      { radius: 500.0, rung: 1 },
+      { radius: 1000.0, rung: 0 },
     ],
     // Heightfield terrain LOD bands (radius -> LOD, 5 = native voxel mesh,
     // 0 = one quad). Hand-tuned in the editor's LOD Settings window.
+    //
+    // Retuned 2026-07-30 (was 961/1486/2120/2862/5943/10095). The native-voxel
+    // band pulls in hard, 961 -> 318, and everything from LOD 3 out pushes
+    // further away: the expensive rung is the one that has to be small, and
+    // once it is, the cheap rungs can afford to cover far more ground. The
+    // outer band is unchanged at 10095 and still sets the far plane.
     terrainBands: [
-      { radius: 961.0, lod: 5 },
-      { radius: 1486.0, lod: 4 },
-      { radius: 2120.0, lod: 3 },
-      { radius: 2862.0, lod: 2 },
-      { radius: 5943.0, lod: 1 },
+      { radius: 318.0, lod: 5 },
+      { radius: 1186.0, lod: 4 },
+      { radius: 2605.0, lod: 3 },
+      { radius: 4702.0, lod: 2 },
+      { radius: 7753.0, lod: 1 },
       { radius: 10095.0, lod: 0 },
     ],
   };
@@ -121,13 +135,17 @@ class StreamMountain extends World {
   // volumetrics controls on world load). Thin fog multiplier + strong
   // falloff keep the long alpine sightlines readable.
   //
-  // Off by default (2026-07-29). The tuned multipliers below are kept so the
-  // viewer's Volumetrics "Enable" checkbox restores this look in one click.
+  // ON by default as of 2026-07-30, reversing the 2026-07-29 opt-in default:
+  // the aerial perspective is what gives the range its depth, so the world
+  // should load looking like this rather than needing a checkbox first.
+  // Density halved with it (0.06 -> 0.03) — always-on fog wants to be half as
+  // thick as fog you switch on to look at — and phaseG nudged 0.30 -> 0.34 for
+  // slightly tighter forward scattering around the sun.
   static volumetrics = {
-    enabled: false,
-    phaseG: 0.30,
+    enabled: true,
+    phaseG: 0.34,
     temporalBlend: 0.85,
-    fogDensityMul: 0.06,
+    fogDensityMul: 0.03,
     fogFalloffMul: 3.44,
   };
 

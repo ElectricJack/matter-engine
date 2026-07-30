@@ -579,8 +579,10 @@ void init_camera(matter::CameraDesc& camera) {
     // keeps plenty of precision at near = 0.1 even with far = 5000.
     camera.near_plane = 0.1f;
     // 2026-07-29 alpine tuning pass: long alpine sightlines with the
-    // heightfield LOD ladder keeping distant sectors cheap.
-    camera.far_plane = 10951.0f;
+    // heightfield LOD ladder keeping distant sectors cheap. Trimmed
+    // 10951 -> 10241 on 2026-07-30 to sit just past StreamMountain's
+    // outermost terrain band (10095 m) instead of well beyond it.
+    camera.far_plane = 10241.0f;
 }
 
 void apply_world_resolver_defaults(const std::string& world_name,

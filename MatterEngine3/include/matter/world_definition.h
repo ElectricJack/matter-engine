@@ -90,20 +90,28 @@ struct TilesetPomSettings {
     // tile sample still applies either way -- only the parallax/self-shadow
     // displacement is gated.
     //
-    // Defaults are the 2026-07-29 alpine tuning pass (stronger relief and a
-    // much longer POM reach); the pre-existing hardcoded TilesetParamsGpu
-    // values they replaced were relief 0.178, datum 0.105, march 0.73,
-    // steps 50, distance 50.4, fade 1.0, ao 0.63, shadow 0.68, horizon 1.0.
+    // Defaults are the 2026-07-30 tuning pass. The 2026-07-29 pass they
+    // replaced ran relief 0.260, datum 0.240, march 1.65, steps 40,
+    // distance 100.0; the pre-existing hardcoded TilesetParamsGpu values
+    // before that were relief 0.178, datum 0.105, march 0.73, steps 50,
+    // distance 50.4, fade 1.0, ao 0.63, shadow 0.68, horizon 1.0.
     //
-    // enabled defaults to false (2026-07-29): the march is opt-in from the
-    // viewer's "Ground POM" panel. The tuned values below are kept so that
-    // ticking the box restores the alpine tuning in one click.
-    bool  enabled            = false;
-    float relief_cap_m       = 0.260f;  // pom_max_relief_m
-    float datum_bias_m       = 0.240f;  // Ground POM datum-bias fix knob
-    float max_march_m        = 1.65f;   // pom_max_march_m
-    int   steps              = 40;      // pom_steps (linear march steps near camera)
-    float max_distance_m     = 100.0f;  // pom_max_distance_m
+    // enabled defaults to TRUE as of 2026-07-30, reversing the 2026-07-29
+    // opt-in default: with steps down to 30 and the reach traded for it, the
+    // march is what the ground is supposed to look like rather than a thing
+    // you switch on to inspect it.
+    //
+    // The 30-step / 1564 m pairing is the shape of this pass: steps 40 -> 30
+    // pays for max_distance 100 -> 1564, so the parallax reaches most of the
+    // way to the fog wall instead of dying just past the camera, at a slightly
+    // coarser march per texel. Relief up (0.260 -> 0.352) and datum down
+    // (0.240 -> 0.168) both deepen what that march has to bite into.
+    bool  enabled            = true;
+    float relief_cap_m       = 0.352f;  // pom_max_relief_m
+    float datum_bias_m       = 0.168f;  // Ground POM datum-bias fix knob
+    float max_march_m        = 1.59f;   // pom_max_march_m
+    int   steps              = 30;      // pom_steps (linear march steps near camera)
+    float max_distance_m     = 1564.0f; // pom_max_distance_m
     float fade_band_m        = 20.0f;   // pom_fade_band_m
     float ao_strength        = 0.91f;   // baked-AO texel blend factor
     float shadow_strength    = 1.40f;   // self-shadow blend factor
