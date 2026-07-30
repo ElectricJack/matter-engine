@@ -31,6 +31,8 @@ class AlpineDeciduous extends Part {
       state === 1 ? [0.58, 0.48, 0.16, 1] : base,
       state === 1 ? [0.63, 0.39, 0.13, 1] : [0.55, 0.34, 0.12, 1],
       dry, 800 + q.seed * 37 + n, 0.12);
+    const cloudRng = (n) =>
+      rng(47400 + q.seed * 131 + form * 1009 + n * 17);
     const wood = (a, b, ra, rb, n, pale) => {
       const c = bark(n, pale);
       this.fill(MAT.bark);
@@ -39,6 +41,7 @@ class AlpineDeciduous extends Part {
     };
     const canopyCloud = (center, radii, state, n, baseColor) => {
       if (state === 0) return;
+      const cr = cloudRng(n);
       const live = state === 2;
       const sides = live ? 8 : 6;
       const ringCount = live ? 3 : 2;
@@ -49,37 +52,37 @@ class AlpineDeciduous extends Part {
       const axial = live ? [-0.38, 0.02, 0.40] : [-0.24, 0.25];
       const bulge = live ? [0.77, 1.0, 0.75] : [0.88, 0.79];
       const rings = [];
-      const phase = r.range(-0.42, 0.42);
+      const phase = cr.range(-0.42, 0.42);
 
       for (let ringIndex = 0; ringIndex < ringCount; ++ringIndex) {
         const ringCenter = [
-          center[0] + r.range(-0.12, 0.12) * rx,
-          center[1] + axial[ringIndex] * ry + r.range(-0.05, 0.06) * ry,
-          center[2] + r.range(-0.12, 0.12) * rz,
+          center[0] + cr.range(-0.12, 0.12) * rx,
+          center[1] + axial[ringIndex] * ry + cr.range(-0.05, 0.06) * ry,
+          center[2] + cr.range(-0.12, 0.12) * rz,
         ];
         const ring = [];
         for (let point = 0; point < sides; ++point) {
           const theta = phase + ringIndex * 0.27 + point * pi2 / sides;
-          const irregularity = r.range(0.80, 1.18) * bulge[ringIndex];
+          const irregularity = cr.range(0.80, 1.18) * bulge[ringIndex];
           ring.push([
             ringCenter[0] + Math.cos(theta) * rx * irregularity,
-            ringCenter[1] + r.range(-0.10, 0.10) * ry,
+            ringCenter[1] + cr.range(-0.10, 0.10) * ry,
             ringCenter[2] + Math.sin(theta) * rz *
-              r.range(0.82, 1.17) * bulge[ringIndex],
+              cr.range(0.82, 1.17) * bulge[ringIndex],
           ]);
         }
         rings.push(ring);
       }
 
       const bottom = [
-        center[0] + r.range(-0.06, 0.06) * rx,
+        center[0] + cr.range(-0.06, 0.06) * rx,
         center[1] - (live ? 0.70 : 0.48) * ry,
-        center[2] + r.range(-0.06, 0.06) * rz,
+        center[2] + cr.range(-0.06, 0.06) * rz,
       ];
       const top = [
-        center[0] + r.range(-0.07, 0.07) * rx,
+        center[0] + cr.range(-0.07, 0.07) * rx,
         center[1] + (live ? 0.72 : 0.49) * ry,
-        center[2] + r.range(-0.07, 0.07) * rz,
+        center[2] + cr.range(-0.07, 0.07) * rz,
       ];
       const color = foliage(n, state, baseColor);
       this.fill(MAT.foliageThin);

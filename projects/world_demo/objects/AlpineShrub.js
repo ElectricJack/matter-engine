@@ -24,6 +24,8 @@ class AlpineShrub extends Part {
         leaves: 6, leaf: 0.108, width: 0.020, tilt: 0.21 },
     ][q.form];
     const golden = Math.PI * (3 - Math.sqrt(5));
+    const leafRng = (stem, site) =>
+      rng(28200 + q.seed * 131 + q.form * 1009 + stem * 97 + site * 17);
 
     for (let i = 0; i < profile.stems; ++i) {
       const angle = i * golden + r.range(-0.27, 0.27);
@@ -53,25 +55,28 @@ class AlpineShrub extends Part {
       const branchLives = branchVitality > dry * (q.form === 2 ? 0.94 : 0.82);
       const leafSites = profile.leaves - (branchLives ? 0 : 1);
       for (let j = 0; j < leafSites; ++j) {
+        const lr = leafRng(i, j);
         const t = (j + 1) / (leafSites + 1);
         const joint = t < 0.5
           ? [base[0] + (knee[0] - base[0]) * (t * 2), base[1] + (knee[1] - base[1]) * (t * 2), base[2] + (knee[2] - base[2]) * (t * 2)]
           : [knee[0] + (tip[0] - knee[0]) * (t * 2 - 1), knee[1] + (tip[1] - knee[1]) * (t * 2 - 1), knee[2] + (tip[2] - knee[2]) * (t * 2 - 1)];
-        const siteLives = branchLives && r.random() > dry * (0.42 + 0.25 * j / profile.leaves);
+        const siteLives = branchLives &&
+          lr.random() > dry * (0.42 + 0.25 * j / profile.leaves);
         if (!siteLives) continue;
-        const side = angle + (j % 2 ? 1.34 : -1.26) + r.range(-0.26, 0.26);
-        const reach = profile.leaf * S * r.range(0.76, 1.18);
+        const side = angle + (j % 2 ? 1.34 : -1.26) + lr.range(-0.26, 0.26);
+        const reach = profile.leaf * S * lr.range(0.76, 1.18);
         const leafTip = [joint[0] + Math.cos(side) * reach,
-                         joint[1] + reach * r.range(0.30, 0.68),
+                         joint[1] + reach * lr.range(0.30, 0.68),
                          joint[2] + Math.sin(side) * reach];
         const green = q.form === 3 ? [0.19, 0.39, 0.14, 1] : [0.22, 0.46, 0.16, 1];
         const leafColor = dryPalette(green, [0.58, 0.43, 0.18, 1], dry,
                                      1300 + q.seed * 41 + i * 7 + j, 0.14);
         this.fill(MAT.foliageThin);
-        emitLeaf(this, joint, leafTip, reach * r.range(0.48, 0.64), leafColor, side + j * 0.45);
+        emitLeaf(this, joint, leafTip, reach * lr.range(0.48, 0.64),
+          leafColor, side + j * 0.45);
 
         // Berries are occasional accents, deliberately fewer in dry crowns.
-        if (q.form === 3 && j > 0 && r.random() > 0.54 + dry * 0.28) {
+        if (q.form === 3 && j > 0 && lr.random() > 0.54 + dry * 0.28) {
           const fruitBase = [leafTip[0] * 0.92 + joint[0] * 0.08,
                              leafTip[1] - 0.012 * S,
                              leafTip[2] * 0.92 + joint[2] * 0.08];

@@ -30,6 +30,8 @@ class AlpineConifer extends Part {
       state === 1 ? [0.29, 0.38, 0.12, 1] : [0.075, 0.28, 0.105, 1],
       state === 1 ? [0.55, 0.39, 0.13, 1] : [0.46, 0.31, 0.10, 1],
       dry, 900 + q.seed * 31 + n, 0.10);
+    const shelfRng = (n) =>
+      rng(41200 + q.seed * 131 + form * 1009 + n * 17);
     const drawWood = (a, b, ra, rb, n) => {
       const c = bark(n);
       this.fill(MAT.bark);
@@ -38,10 +40,11 @@ class AlpineConifer extends Part {
     };
     const needleShelf = (center, angle, reach, arms, state, n, outerRise) => {
       if (state === 0) return;
+      const sr = shelfRng(n);
       const live = state === 2;
       const color = needles(n, state);
       const sector = pi2 / arms;
-      const centerAngle = angle + r.range(-0.045, 0.045);
+      const centerAngle = angle + sr.range(-0.045, 0.045);
       const halfAngle = live
         ? [sector * 0.22, sector * 0.58, sector * 0.43]
         : [sector * 0.18, sector * 0.34, sector * 0.27];
@@ -49,7 +52,7 @@ class AlpineConifer extends Part {
         ? [reach * 0.27, reach * 0.63, reach * 1.02]
         : [reach * 0.29, reach * 0.49, reach * 0.70];
       const thickness = reach * (live ? 0.095 : 0.065);
-      const levelOffset = r.range(-0.055, 0.055) * reach;
+      const levelOffset = sr.range(-0.055, 0.055) * reach;
       const top = [];
       const bottom = [];
       for (let slice = 0; slice < 3; ++slice) {
@@ -58,20 +61,20 @@ class AlpineConifer extends Part {
         for (let band = 0; band < radial.length; ++band) {
           const t = band / (radial.length - 1);
           const radiusVariation = band === 2
-            ? r.range(0.88, 1.12)
-            : r.range(0.94, 1.07);
+            ? sr.range(0.88, 1.12)
+            : sr.range(0.94, 1.07);
           const radius = radial[band] * radiusVariation;
           const theta = centerAngle + (slice - 1) * halfAngle[band] +
-            r.range(-0.025, 0.025);
+            sr.range(-0.025, 0.025);
           const edgeTaper = band === 1 ? 1.0 : (band === 0 ? 0.52 : 0.36);
           const bandThickness = thickness * edgeTaper;
           const middleLift = band === 1 ? thickness * 0.28 : 0;
           const shelfY = center[1] + levelOffset + outerRise * t + middleLift +
-            reach * r.range(-0.032, 0.032);
+            reach * sr.range(-0.032, 0.032);
           const x = center[0] + Math.cos(theta) * radius;
           const z = center[2] + Math.sin(theta) * radius;
-          topRow.push([x, shelfY + bandThickness * r.range(0.38, 0.58), z]);
-          bottomRow.push([x, shelfY - bandThickness * r.range(0.42, 0.62), z]);
+          topRow.push([x, shelfY + bandThickness * sr.range(0.38, 0.58), z]);
+          bottomRow.push([x, shelfY - bandThickness * sr.range(0.42, 0.62), z]);
         }
         top.push(topRow);
         bottom.push(bottomRow);

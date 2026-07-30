@@ -17,6 +17,9 @@ class AlpineGroundCover extends Part {
     const runners = flowering ? 8 : 10;
     const segments = flowering ? 5 : 6;
     const golden = Math.PI * (3 - Math.sqrt(5));
+    const segmentRng = (runner, segment, channel) =>
+      rng(39100 + q.seed * 131 + q.form * 1009 + runner * 521 +
+        segment * 31 + channel * 7001);
 
     for (let i = 0; i < runners; ++i) {
       const angle = i * golden + r.range(-0.36, 0.36);
@@ -27,11 +30,14 @@ class AlpineGroundCover extends Part {
                       r.range(-0.035, 0.035) * S];
 
       for (let j = 1; j <= segments; ++j) {
+        const structureRng = segmentRng(i, j, 0);
         const t = j / segments;
-        const tipLift = j === segments && r.random() > 0.56 ? r.range(0.025, 0.085) * S : 0;
-        const wobble = Math.sin(t * Math.PI * r.range(1.1, 1.8) + i) * 0.018 * S;
+        const tipLift = j === segments && structureRng.random() > 0.56
+          ? structureRng.range(0.025, 0.085) * S : 0;
+        const wobble = Math.sin(t * Math.PI *
+          structureRng.range(1.1, 1.8) + i) * 0.018 * S;
         const next = [Math.cos(angle) * runLength * t + Math.cos(angle + Math.PI / 2) * (sideDrift * t + wobble),
-                      -0.018 * S + r.range(-0.008, 0.010) * S + tipLift,
+                      -0.018 * S + structureRng.range(-0.008, 0.010) * S + tipLift,
                       Math.sin(angle) * runLength * t + Math.sin(angle + Math.PI / 2) * (sideDrift * t + wobble)];
         const runnerColor = dryPalette([0.24, 0.31, 0.10, 1], [0.39, 0.23, 0.10, 1], dry,
                                        300 + q.seed * 17 + i * 11 + j, 0.08);
@@ -46,10 +52,13 @@ class AlpineGroundCover extends Part {
         }
 
         if (j <= liveThrough) {
-          const leafAngle = angle + (j % 2 ? 1.28 : -1.28) + r.range(-0.20, 0.20);
-          const leafLength = (flowering ? 0.084 : 0.097) * S * r.range(0.76, 1.16);
+          const leafRng = segmentRng(i, j, 1);
+          const leafAngle = angle + (j % 2 ? 1.28 : -1.28) +
+            leafRng.range(-0.20, 0.20);
+          const leafLength = (flowering ? 0.084 : 0.097) * S *
+            leafRng.range(0.76, 1.16);
           const leafTip = [next[0] + Math.cos(leafAngle) * leafLength,
-                           next[1] + leafLength * r.range(0.22, 0.52),
+                           next[1] + leafLength * leafRng.range(0.22, 0.52),
                            next[2] + Math.sin(leafAngle) * leafLength];
           const leafColor = dryPalette([0.18, 0.47, 0.13, 1], [0.57, 0.42, 0.16, 1], dry,
                                        1000 + q.seed * 31 + i * 9 + j, 0.13);
@@ -60,14 +69,16 @@ class AlpineGroundCover extends Part {
           // The deterministic index mask spreads them among parent runners
           // without turning the mat into a uniform radial starburst.
           if (j > 1 && j < liveThrough && (i + j * 2) % 3 === 0) {
-            const forkAngle = angle + (j % 2 ? 0.92 : -0.92) + r.range(-0.24, 0.24);
-            const forkLength = r.range(0.075, 0.125) * S;
+            const forkRng = segmentRng(i, j, 2);
+            const forkAngle = angle + (j % 2 ? 0.92 : -0.92) +
+              forkRng.range(-0.24, 0.24);
+            const forkLength = forkRng.range(0.075, 0.125) * S;
             const fork = [next[0] + Math.cos(forkAngle) * forkLength,
-                          next[1] + r.range(-0.006, 0.006) * S,
+                          next[1] + forkRng.range(-0.006, 0.006) * S,
                           next[2] + Math.sin(forkAngle) * forkLength];
-            const tipAngle = forkAngle + r.range(-0.24, 0.24);
+            const tipAngle = forkAngle + forkRng.range(-0.24, 0.24);
             const forkTip = [fork[0] + Math.cos(tipAngle) * forkLength * 0.78,
-                             fork[1] + r.range(0.004, 0.022) * S,
+                             fork[1] + forkRng.range(0.004, 0.022) * S,
                              fork[2] + Math.sin(tipAngle) * forkLength * 0.78];
             this.fill(MAT.bark);
             this.line(next, fork, 0.008 * S, 0.006 * S);
@@ -77,7 +88,9 @@ class AlpineGroundCover extends Part {
             emitLeaf(this, fork, forkTip, leafLength * 0.28, leafColor, forkAngle);
           }
 
-          if (flowering && j > 1 && r.random() > 0.42 + dry * 0.36) {
+          const flowerRng = segmentRng(i, j, 3);
+          if (flowering && j > 1 &&
+              flowerRng.random() > 0.42 + dry * 0.36) {
             const flower = [next[0], next[1] + 0.040 * S, next[2]];
             const rays = 4 + (i + j) % 2;
             this.fill(MAT.foliageThin);

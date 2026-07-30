@@ -13,11 +13,13 @@ export function clamp01(value) {
 export function vegetationParams(p, formCount) {
   const source = p || {};
   const count = Math.max(1, Math.floor(finite(formCount, 1)));
+  const form = source.form;
   return {
     seed: Math.floor(finite(source.seed, 0)),
     dryness: clamp01(finite(source.dryness, 0.35)),
     size: Math.max(0.1, Math.min(8, finite(source.size, 1))),
-    form: Math.max(0, Math.min(count - 1, Math.floor(finite(source.form, 0)))),
+    form: typeof form === 'number' && isFinite(form) &&
+      Math.floor(form) === form && form >= 0 && form < count ? form : 0,
   };
 }
 
