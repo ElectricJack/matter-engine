@@ -913,6 +913,9 @@ TREEBAKE_CPP = tree_bake_check.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP
 ROCKPROF_TARGET = build/rock_bake_profile
 ROCKPROF_CPP = rock_bake_profile.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
+SLABPROBE_TARGET = build/slab_bake_probe
+SLABPROBE_CPP = slab_bake_probe.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
+
 AONORMPROBE_TARGET = build/tileset_ao_normal_probe
 AONORMPROBE_CPP = tileset_ao_normal_probe.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
@@ -1299,6 +1302,7 @@ sh_CPP_SRCS := $(sort \
     $(GALLERY_CPP) \
     $(TREEBAKE_CPP) \
     $(ROCKPROF_CPP) \
+    $(SLABPROBE_CPP) \
     $(SECTORPROF_CPP) \
     $(AONORMPROBE_CPP) \
     $(GRASSLOD_CPP) \
@@ -1463,6 +1467,7 @@ EXAMPLE_OBJS = $(call obj_list,sh,$(EXAMPLE_CPP)) $(call obj_list,mslc,$(EXAMPLE
 GALLERY_OBJS = $(call obj_list,sh,$(GALLERY_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 TREEBAKE_OBJS = $(call obj_list,sh,$(TREEBAKE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 ROCKPROF_OBJS = $(call obj_list,sh,$(ROCKPROF_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
+SLABPROBE_OBJS = $(call obj_list,sh,$(SLABPROBE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 AONORMPROBE_OBJS = $(call obj_list,sh,$(AONORMPROBE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 GRASSLOD_OBJS = $(call obj_list,sh,$(GRASSLOD_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 STRESSFOREST_OBJS = $(call obj_list,sh,$(STRESSFOREST_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
@@ -1958,6 +1963,14 @@ $(ROCKPROF_TARGET): $(ROCKPROF_OBJS)
 
 run-rock-profile: $(ROCKPROF_TARGET)
 	./$(ROCKPROF_TARGET)
+
+# Part-module bake probe (triangle counts per seed; AlpineSlab diagnostics).
+$(SLABPROBE_TARGET): $(SLABPROBE_OBJS)
+	$(CC) $(SLABPROBE_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
+
+run-slab-probe: $(SLABPROBE_TARGET)
+	./$(SLABPROBE_TARGET)
 
 # AO trace-normal measurement probe (prints numbers; not a regression gate).
 $(AONORMPROBE_TARGET): $(AONORMPROBE_OBJS)
