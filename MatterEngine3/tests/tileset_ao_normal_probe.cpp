@@ -162,9 +162,16 @@ int main(int argc, char** argv) {
     FileModuleResolver resolver(host, schemas);
     HostBaker baker(host, ".");
 
-    // The exact variants ForestFloor.js `requires`.
+    // The variants ForestFloor.js `requires`, plus Twig.
+    //
+    // Twig is NO LONGER scattered by ForestFloor — it was dropped because a long
+    // thin capsule cannot rest flat when the tileset snaps each piece to a single
+    // height over uneven soil. It stays here on purpose: it is the sharpest
+    // measured case of SDF-gradient vertex normals leaving their own face plane
+    // (39 deg at p90, 74 deg at p99) and the evidence tileset_bake_ao.comp's
+    // trace-normal note cites, so removing it would make that note unreproducible.
     std::vector<Case> cases = {
-        {"Pebble", 0, 2.0, 0.0}, {"Pebble", 3, 2.0, 0.0},
+        {"Pebble", 0, 2.0, 0.0}, {"Pebble", 3, 2.0, 0.0}, {"Pebble", 5, 2.0, 0.0},
         {"Rock",   0, 1.2, 2.5},
         {"Twig",   0, 4.0, 0.0}, {"Twig", 1, 4.0, 0.0}, {"Twig", 2, 4.0, 0.0},
         {"Leaf",  -1, 0.0, 0.0},

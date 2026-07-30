@@ -39,16 +39,18 @@ layout(set = 0, binding = 1) uniform accelerationStructureEXT tlas;
 layout(std430, set = 0, binding = 2) readonly buffer TriDataBuf { float triData[]; };
 // Per-BLAS first-triangle offset into the global arrays, indexed by the
 // instance custom index (= BLAS entry index).
-layout(std430, set = 0, binding = 4) readonly buffer TriFirstBuf { uint triFirst[]; };
+layout(std430, set = 0, binding = 3) readonly buffer TriFirstBuf { uint triFirst[]; };
 
-// Bindings 3 (TriMatBuf), 5 (InstMatBuf) and 6 (MaterialBuf) are declared by the
-// host's ao_set_layout (tileset_bake_vk.cpp builds 7 bindings, shaped after the
-// primary pass) but are no longer read here: this pass stopped consulting
-// materials when the trace frame moved to the geometric normal, since the only
-// thing it needed a material for was the flatShading branch. They are left out
-// of the shader rather than declared-and-unused; a descriptor that the layout
-// provides and the shader does not reference is valid. Trimming the host layout
-// to 4 bindings is a separate cleanup.
+// This pass reads NO materials: the trace frame is the owning triangle's
+// geometric normal (see main()), and the flatShading lookup was the only thing
+// that ever needed one. So its descriptor set is four DENSELY numbered bindings
+// and is deliberately NOT the primary pass' layout with holes punched in it —
+// tri_mat, inst_mat and mats are simply absent here, while the primary pass
+// keeps all of them at its own binding numbers and is untouched.
+//
+// The renumber is the coupling to watch: binding 3 is tri_first, which in the
+// primary pass' numbering is tri_mat. tileset_bake_vk.cpp's ao_binds/ao_writes
+// must stay in step with THIS list, not with the primary pass'.
 
 layout(push_constant) uniform Push {
     int   atlasW;

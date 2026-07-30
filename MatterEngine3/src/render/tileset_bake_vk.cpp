@@ -316,6 +316,11 @@ bool bake_tileset_vk(matter::VulkanDevice& vulkan, const SettledTorus& settled,
         //    triangle arrays; the CPU BVH it also builds is unused (spec §I.4).
         BLASManager blas;
         const int n_settled = (int)settled.instances.size();
+        // Starting hint only. A part contributes one TLAS instance per BLAS
+        // entry it draws (the no-modifier voxel path emits one per cell per
+        // merge group), so the real count is a multiple of this that only
+        // assemble_torus_bvh can know; it calls ensure_instance_capacity once
+        // the parts are loaded and then verifies nothing was dropped.
         const int tlas_cap = (n_settled + 1) * 5 / 4 + 32;
         TLASManager tlas(tlas_cap);
         if (!assemble_torus_bvh(settled, inputs, blas, tlas, err)) return false;
@@ -817,23 +822,32 @@ bool bake_tileset_vk(matter::VulkanDevice& vulkan, const SettledTorus& settled,
         }
         vkUpdateDescriptorSets(device, 10, writes, 0, nullptr);
 
-        // 13b. AO pass (V2): its own 7-binding descriptor set layout, pipeline,
-        //      pool, and set. Bindings: 0 = R8 AO storage image, 1 = the SAME
-        //      TLAS, 2..6 = the SAME tri_data/tri_mat/tri_first/inst_mat/material
-        //      SSBOs the primary pass reads.
-        VkDescriptorSetLayoutBinding ao_binds[7]{};
-        for (int i = 0; i < 7; ++i) {
+        // 13b. AO pass (V2): its own 4-binding descriptor set layout, pipeline,
+        //      pool, and set. Bindings, matching shaders_vk/tileset_bake_ao.comp
+        //      exactly: 0 = R8 AO storage image, 1 = the SAME TLAS, 2 = the SAME
+        //      tri_data SSBO, 3 = the SAME tri_first SSBO.
+        //
+        //      This is NOT the primary pass' binding numbering. That pass has
+        //      tri_mat at 3, inst_mat at 5 and mats at 6; the AO pass reads no
+        //      materials at all (its trace frame is the triangle's geometric
+        //      normal, so the flatShading lookup that needed them is gone), so
+        //      its four bindings are numbered densely and tri_first lands at 3
+        //      where the primary pass keeps tri_mat. The SSBOs themselves are
+        //      still the shared ones built above — the primary pass needs all
+        //      five and nothing about its layout changes here.
+        VkDescriptorSetLayoutBinding ao_binds[4]{};
+        for (int i = 0; i < 4; ++i) {
             ao_binds[i].binding = (uint32_t)i;
             ao_binds[i].descriptorCount = 1;
             ao_binds[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
         }
         ao_binds[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         ao_binds[1].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-        for (int i = 2; i < 7; ++i)
-            ao_binds[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        ao_binds[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        ao_binds[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         VkDescriptorSetLayoutCreateInfo ao_set_ci{
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        ao_set_ci.bindingCount = 7;
+        ao_set_ci.bindingCount = 4;
         ao_set_ci.pBindings = ao_binds;
         vr = vkCreateDescriptorSetLayout(device, &ao_set_ci, nullptr,
                                          &ao_set_layout);
@@ -893,7 +907,7 @@ bool bake_tileset_vk(matter::VulkanDevice& vulkan, const SettledTorus& settled,
         const VkDescriptorPoolSize ao_pool_sizes[] = {
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
             {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1},
-            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5}};
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
         VkDescriptorPoolCreateInfo ao_pool_ci{
             VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         ao_pool_ci.maxSets = 1;
@@ -919,9 +933,14 @@ bool bake_tileset_vk(matter::VulkanDevice& vulkan, const SettledTorus& settled,
         VkDescriptorImageInfo ao_image_info{};
         ao_image_info.imageView = img_ao.view;
         ao_image_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-        // Reuse as_write / buf_infos (same TLAS + SSBOs) — only the binding
-        // slots differ (TLAS 4->1, SSBOs 5..9->2..6).
-        VkWriteDescriptorSet ao_writes[7]{};
+        // Reuse as_write / buf_infos (same TLAS + SSBOs); only the binding slots
+        // differ, and the AO pass takes just two of the five buffers. buf_infos
+        // is ordered {tri_data, tri_mat, tri_first, inst_mat, mats}, so the two
+        // it wants are indices 0 and 2 — NOT 0 and 1. Written out one at a time
+        // rather than in a loop because the mapping is no longer contiguous on
+        // either side, and a stride that happened to compile would bind tri_mat
+        // where the shader expects tri_first.
+        VkWriteDescriptorSet ao_writes[4]{};
         ao_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         ao_writes[0].dstSet = ao_dset;
         ao_writes[0].dstBinding = 0;
@@ -934,15 +953,19 @@ bool bake_tileset_vk(matter::VulkanDevice& vulkan, const SettledTorus& settled,
         ao_writes[1].dstBinding = 1;
         ao_writes[1].descriptorCount = 1;
         ao_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-        for (int i = 0; i < 5; ++i) {
-            ao_writes[2 + i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            ao_writes[2 + i].dstSet = ao_dset;
-            ao_writes[2 + i].dstBinding = (uint32_t)(2 + i);
-            ao_writes[2 + i].descriptorCount = 1;
-            ao_writes[2 + i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            ao_writes[2 + i].pBufferInfo = &buf_infos[i];
-        }
-        vkUpdateDescriptorSets(device, 7, ao_writes, 0, nullptr);
+        ao_writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        ao_writes[2].dstSet = ao_dset;
+        ao_writes[2].dstBinding = 2;              // TriDataBuf
+        ao_writes[2].descriptorCount = 1;
+        ao_writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        ao_writes[2].pBufferInfo = &buf_infos[0]; // tri_data
+        ao_writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        ao_writes[3].dstSet = ao_dset;
+        ao_writes[3].dstBinding = 3;              // TriFirstBuf
+        ao_writes[3].descriptorCount = 1;
+        ao_writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        ao_writes[3].pBufferInfo = &buf_infos[2]; // tri_first
+        vkUpdateDescriptorSets(device, 4, ao_writes, 0, nullptr);
 
         // 14. Height range + ray origin.
         float hmin = 0.0f, hmax = 1.0f, max_top = 1.0f;

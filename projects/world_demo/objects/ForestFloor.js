@@ -8,9 +8,8 @@
 
 class ForestFloor extends Tileset {
   static requires = [
-    ...[0, 1, 2, 3].map(s => ({ module: 'Pebble', params: { seed: s, size: 2.0 } })),
+    ...[0, 1, 2, 3, 4, 5].map(s => ({ module: 'Pebble', params: { seed: s, size: 2.0 } })),
     ...[0, 1].map(s => ({ module: 'Rock',   params: { seed: s, size: 1.2, detail: 2.5 } })),
-    ...[0, 1, 2].map(s => ({ module: 'Twig', params: { seed: s, size: 4.0 } })),
     { module: 'Leaf' },
   ];
 
@@ -73,27 +72,36 @@ class ForestFloor extends Tileset {
     // base_height + fit_half_height - embed * 2 * fit_half_height.
     //
     // Scale notes (final size = authored native size * layer scale):
-    //   Pebble : baked at size 2.0 (~0.5 m blob, fine grid) -> 0.4-1.0x -> 20-50 cm
+    //   Pebble : baked at size 2.0 (~0.5 m blob, fine grid) -> 0.15-0.45x -> 7-22 cm
     //   Rock   : baked at size 1.2, detail 2.5              -> 0.5-0.9x -> 0.6-1.1 m
-    //   Twig   : baked at size 4.0 (~0.7-1.4 m, voxelized)  -> 0.6-1.1x
     //   Leaf   : native ~1 m blade                          -> 0.15-0.28x -> 15-28 cm
     //
+    // No twigs. The voxelized Twig is a long thin capsule with a kink and a
+    // side-branch, and the tileset lays litter down by snapping each piece to
+    // base_height + fit_half_height (physics is off for this bake), which puts a
+    // twig's whole length at one height over soil that is not level -- so twigs
+    // hovered at one end and sank at the other instead of resting flat. A ~2-4 cm
+    // capsule cannot hide that. Twig.js is left in place, just not scattered here.
+    //
     // Distribution: cluster placement (gaussian clumps around uniform centers)
-    // for pebbles/twigs/leaves reads as litter drifts; rocks go sparse poisson.
+    // for pebbles/leaves reads as litter drifts; rocks go sparse poisson.
+    //
+    // Pebbles are deliberately many and small: scatter_cluster draws ~8 points
+    // per centre with a FIXED sigma of 0.15 m, so shrinking the pebble while the
+    // clump radius stays put is what turns "a few big stones jammed together"
+    // into a heap of small ones. Hence 12/m^2 at 7-22 cm rather than 1.8/m^2 at
+    // 20-50 cm, and 6 seed variants so a 900-pebble floor does not visibly
+    // repeat. Every pebble is several BLAS entries in the bake BVH, so this is
+    // also what the torus-BVH instance ceiling now has to absorb.
     this.layer('Pebble', {
-      density: 1.8, scale: [0.4, 1.0], placement: 'cluster',
+      density: 12.0, scale: [0.15, 0.45], placement: 'cluster',
       physics: false, embed: 0.2,
-      params: r => ({ seed: r.int(4), size: 2.0 }),
+      params: r => ({ seed: r.int(6), size: 2.0 }),
     });
     this.layer('Rock', {
       density: 0.35, scale: [0.5, 0.9], placement: 'poisson',
       physics: false, embed: 0.15,
       params: r => ({ seed: r.int(2), size: 1.2, detail: 2.5 }),
-    });
-    this.layer('Twig', {
-      density: 1.0, scale: [0.7, 1.2], placement: 'cluster',
-      physics: false, embed: 0.05,
-      params: r => ({ seed: r.int(3), size: 4.0 }),
     });
     this.layer('Leaf', {
       density: 4.0, scale: [0.16, 0.3], placement: 'cluster',

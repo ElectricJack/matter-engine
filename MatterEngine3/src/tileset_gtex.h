@@ -52,7 +52,13 @@ inline constexpr uint32_t kGTexVersion     = 2u;
 // key is (pose_hash, script_source_hash, kEngineBakeVersion, kBox3dVersion), so
 // without this bump every already-baked .gtex would keep being served with the
 // old, self-occluded AO.
-inline constexpr uint32_t kEngineBakeVersion = 4u;
+//
+// 4 -> 5: assemble_torus_bvh registers EVERY BLAS entry a part draws instead of
+// only entries.front(). The no-modifier voxel path emits one entry per cell per
+// merge group, so multi-cell litter was reaching the bake as a fragment of itself
+// (a Pebble contributed 3 of its 496 triangles); every channel changes wherever
+// the missing geometry now appears.
+inline constexpr uint32_t kEngineBakeVersion = 5u;
 inline constexpr uint32_t kBox3dVersion    = 1u;
 
 // Ground-tileset sampler slots the renderer can hold simultaneously — the
