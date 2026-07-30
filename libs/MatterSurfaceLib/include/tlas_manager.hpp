@@ -85,7 +85,17 @@ public:
         bool is_imposter = false;
     };
     void draw_batch(const std::vector<DrawInstance>& instances);
-    
+
+    // Raise the instance ceiling to at least `n` (never lowers it).
+    //
+    // draw() REFUSES past the ceiling and reports it with nothing but a printf,
+    // so a caller that under-counts silently bakes/renders missing geometry.
+    // Callers that only learn their true instance count partway through — e.g.
+    // assemble_torus_bvh, which cannot know how many BLAS entries a part
+    // contributes until it has loaded the part — should call this once the count
+    // is known instead of guessing a constructor argument.
+    void ensure_instance_capacity(int n);
+
     // Clear all recorded instances (for new frame)
     void clear();
     

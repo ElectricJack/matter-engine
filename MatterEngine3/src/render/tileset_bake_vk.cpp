@@ -316,6 +316,11 @@ bool bake_tileset_vk(matter::VulkanDevice& vulkan, const SettledTorus& settled,
         //    triangle arrays; the CPU BVH it also builds is unused (spec §I.4).
         BLASManager blas;
         const int n_settled = (int)settled.instances.size();
+        // Starting hint only. A part contributes one TLAS instance per BLAS
+        // entry it draws (the no-modifier voxel path emits one per cell per
+        // merge group), so the real count is a multiple of this that only
+        // assemble_torus_bvh can know; it calls ensure_instance_capacity once
+        // the parts are loaded and then verifies nothing was dropped.
         const int tlas_cap = (n_settled + 1) * 5 / 4 + 32;
         TLASManager tlas(tlas_cap);
         if (!assemble_torus_bvh(settled, inputs, blas, tlas, err)) return false;

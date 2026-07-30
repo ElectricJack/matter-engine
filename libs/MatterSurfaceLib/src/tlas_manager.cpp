@@ -137,6 +137,12 @@ void TLASManager::draw_batch(const std::vector<DrawInstance>& instances) {
     }
 }
 
+void TLASManager::ensure_instance_capacity(int n) {
+    if (n <= max_instances_) return;
+    max_instances_ = n;
+    draw_records_.reserve(static_cast<size_t>(n));
+}
+
 void TLASManager::clear() {
     draw_records_.clear();
     next_instance_id_ = 1;
