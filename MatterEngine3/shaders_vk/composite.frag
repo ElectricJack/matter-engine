@@ -175,6 +175,40 @@ void main() {
     }
     vec3 sun = sun_response * lighting.sun_color * lighting.sun_intensity *
                visibility;
+    // Per-texel metalness (G-buffer ORM.y, the VT surfaces() tape 'metallic'
+    // lane): metals have no diffuse, so `sun_response` above is zero for
+    // them, and the traced reflection lane only sees the sun through its
+    // lobe-prefiltered miss disk -- which vanishes for rough lobes. Without
+    // this term a rough metal in full sunlight reads as a dark pit. Add the
+    // analytic GGX sun lobe for the METAL component only: F0 is the texel
+    // albedo, the whole term is weighted by `metallic` so it is exactly zero
+    // for dielectrics (the regression gate -- this block must not change
+    // metalness-0 pixels), and the RT shadow visibility that already gates
+    // the diffuse sun term gates this one too. Deterministic (no rays, no
+    // denoiser lane). Known approximation: a mirror-smooth metal aimed dead
+    // at the sun can also catch the traced lane's miss disk (prefilter -> 1
+    // there), double-counting up to ~2x on a few glint pixels; accepted over
+    // threading a lobe-selection term between two shaders.
+    if (metallic > 0.0 && direct > 0.0) {
+        vec3 view = -compute_view_ray(in_uv);
+        vec3 sun_half = normalize(view + to_sun);
+        float n_dot_v = max(dot(normal, view), 1e-4);
+        float n_dot_h = max(dot(normal, sun_half), 0.0);
+        float v_dot_h = max(dot(view, sun_half), 1e-4);
+        float alpha = max(roughness * roughness, 0.0004);
+        float a2 = alpha * alpha;
+        float d_denom = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0;
+        float ggx_d = a2 / max(3.14159265359 * d_denom * d_denom, 1e-8);
+        float g1v = 2.0 * n_dot_v /
+            max(n_dot_v + sqrt(a2 + (1.0 - a2) * n_dot_v * n_dot_v), 1e-6);
+        float g1l = 2.0 * direct /
+            max(direct + sqrt(a2 + (1.0 - a2) * direct * direct), 1e-6);
+        vec3 metal_f = albedo.rgb +
+            (vec3(1.0) - albedo.rgb) * pow(1.0 - v_dot_h, 5.0);
+        sun += metallic * metal_f * ggx_d * g1v * g1l /
+               max(4.0 * n_dot_v * direct, 1e-6) * direct *
+               lighting.sun_color * lighting.sun_intensity * visibility;
+    }
     float encoded_emission = normal_payload.w;
     float emission_strength =
         !isnan(encoded_emission) && !isinf(encoded_emission) &&
