@@ -7,6 +7,8 @@
 #include "part_graph.h"   // params_from_json, params_to_json — canonical JSON normalizer
 #include "terrain_mesher.h"
 #include "triangle_emit.hpp"
+#include <atomic>   // terrain_verb_census() backing counters
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -1123,26 +1125,57 @@ static JSValue j_ts_variant(JSContext* c, JSValueConst, int n, JSValueConst* a) 
 // ---------------------------------------------------------------------------
 // World query verbs: heightAt / slopeAt / moistureAt / biomeAt
 // All fail loudly when no world field is bound.
+//
+// Each carries a census timer (see dsl_bindings.h): the scatter loop calls
+// these once per candidate, so their aggregate is what separates "the terrain
+// mesher is slow" from "the scatter is slow" inside the build phase.
 // ---------------------------------------------------------------------------
+namespace {
+std::atomic<unsigned long long> g_volume_calls{0}, g_volume_us{0},
+    g_volume_tris{0}, g_height_calls{0}, g_height_us{0}, g_biome_calls{0},
+    g_biome_us{0};
+
+// RAII: adds its lifetime in microseconds to `us` and bumps `calls`.
+struct VerbTimer {
+    std::atomic<unsigned long long>& us;
+    std::chrono::steady_clock::time_point t0 =
+        std::chrono::steady_clock::now();
+    explicit VerbTimer(std::atomic<unsigned long long>& u,
+                       std::atomic<unsigned long long>& calls) : us(u) {
+        calls.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~VerbTimer() {
+        us.fetch_add((unsigned long long)std::chrono::duration_cast<
+                         std::chrono::microseconds>(
+                         std::chrono::steady_clock::now() - t0).count(),
+                     std::memory_order_relaxed);
+    }
+};
+}  // namespace
+
 static JSValue j_heightAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
+    VerbTimer _vt(g_height_us, g_height_calls);
     DslState* st = state_of(c);
     const WorldBinding& w = st->world();
     if (!w.field) { st->set_error("heightAt: no world field bound"); return JS_UNDEFINED; }
     return JS_NewFloat64(c, w.field->height_at((float)argd(c, a[0]), (float)argd(c, a[1])));
 }
 static JSValue j_slopeAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
+    VerbTimer _vt(g_height_us, g_height_calls);
     DslState* st = state_of(c);
     const WorldBinding& w = st->world();
     if (!w.field) { st->set_error("slopeAt: no world field bound"); return JS_UNDEFINED; }
     return JS_NewFloat64(c, w.field->slope_at((float)argd(c, a[0]), (float)argd(c, a[1])));
 }
 static JSValue j_moistureAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
+    VerbTimer _vt(g_biome_us, g_biome_calls);
     DslState* st = state_of(c);
     const WorldBinding& w = st->world();
     if (!w.field) { st->set_error("moistureAt: no world field bound"); return JS_UNDEFINED; }
     return JS_NewFloat64(c, w.field->moisture_at((float)argd(c, a[0]), (float)argd(c, a[1])));
 }
 static JSValue j_biomeAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
+    VerbTimer _vt(g_biome_us, g_biome_calls);
     DslState* st = state_of(c);
     const WorldBinding& w = st->world();
     if (!w.field) { st->set_error("biomeAt: no world field bound"); return JS_UNDEFINED; }
@@ -1197,11 +1230,17 @@ static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* 
 
     terrain_mesher::SectorMesh mesh;
     std::string err;
-    if (!terrain_mesher::mesh_sector(*w.field, tx, tz, rung,
-                                      w.sector_size, w.y_min, w.y_max, mesh, err)) {
-        st->set_error("terrainVolume: " + err);
-        return JS_UNDEFINED;
+    {
+        VerbTimer _vt(g_volume_us, g_volume_calls);
+        if (!terrain_mesher::mesh_sector(*w.field, tx, tz, rung,
+                                          w.sector_size, w.y_min, w.y_max, mesh, err)) {
+            st->set_error("terrainVolume: " + err);
+            return JS_UNDEFINED;
+        }
     }
+    for (const auto& bkt : mesh.buckets)
+        g_volume_tris.fetch_add(bkt.positions.size() / 9,
+                                std::memory_order_relaxed);
 
     // Emit each material bucket with the mesher's gradient normals for smooth
     // terrain shading. Uses pushTerrainTriangle to bypass the face-normal
@@ -1404,3 +1443,17 @@ void install_bindings(JSContext* ctx) {
 }
 
 } // namespace dsl
+
+namespace dsl {
+TerrainVerbCensus terrain_verb_census() {
+    TerrainVerbCensus c;
+    c.volume_calls = g_volume_calls.load(std::memory_order_relaxed);
+    c.volume_us    = g_volume_us.load(std::memory_order_relaxed);
+    c.volume_tris  = g_volume_tris.load(std::memory_order_relaxed);
+    c.height_calls = g_height_calls.load(std::memory_order_relaxed);
+    c.height_us    = g_height_us.load(std::memory_order_relaxed);
+    c.biome_calls  = g_biome_calls.load(std::memory_order_relaxed);
+    c.biome_us     = g_biome_us.load(std::memory_order_relaxed);
+    return c;
+}
+}  // namespace dsl

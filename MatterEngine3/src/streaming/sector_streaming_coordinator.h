@@ -75,7 +75,12 @@ struct Snapshot {
 // must acquire a claim before asking Coordinator for another request.
 class PublicationCompletionCapacity {
 public:
-    static constexpr size_t kCapacity = 32;
+    // A sector holds a claim from dispatch until its publication is
+    // acknowledged, so this is a hard ceiling on max_inflight and therefore on
+    // fill throughput (Little's law). 32 bound the pool at ~12 executors; the
+    // array is bools plus a fixed PublicationCompletion each, so headroom here
+    // is cheap.
+    static constexpr size_t kCapacity = 128;
 
     bool try_reserve(size_t& slot) noexcept;
     void release(size_t slot) noexcept;

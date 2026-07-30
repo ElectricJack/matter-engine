@@ -13,6 +13,7 @@ extern "C" {
 #include "animation/animation_runtime_asset.h"
 #include "animation/ozz_adapter.h"
 #include "render/indexed_part_geometry.h"
+#include "render/part_store.h"   // definition of script_host::BakedGeometry
 #include "lod_bake.h"
 #include "triangle_emit.hpp" // direct-triangle (mesh) session buffer
 #include "dsl_state.h"
@@ -2130,6 +2131,31 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                     ? part_asset::cache_path_hints(r.resolved_hash)
                     : opts.parts_dir + "/" + part_asset::cache_path_hints(r.resolved_hash);
                 part_asset::save_flatten_hints(hpath, hints);
+            }
+            // Streaming fast path (BakeOptions::retain_geometry): hand back the
+            // geometry save_v2 was just given, so the caller can stage this part
+            // without decoding the artifact we just wrote. The write above
+            // already happened and is untouched — this only keeps the inputs
+            // alive past the end of this scope.
+            //
+            // Static path only. An animated bake reaches save through the
+            // `has_persisted_binding` branch, which ALSO appends its finalized
+            // per-owner LOD streams to `blas` and writes an ANLK trailer; the
+            // reader of such a part takes PartStore's partitioned path, which is
+            // not stageable at all. Retaining there would hand the caller a
+            // manager whose contents no longer match a stageable snapshot.
+            //
+            // `blas` is dead after this point (the hints block above is the last
+            // use, and `tlas` only ever held handles into it), so this moves
+            // rather than copies — the whole point is to pay nothing for the
+            // retention beyond the pointer.
+            if (opts.retain_geometry && !has_persisted_binding) {
+                auto retained = std::make_shared<BakedGeometry>();
+                retained->blas = std::make_unique<BLASManager>(std::move(blas));
+                retained->children = kids;
+                retained->lods = lods;
+                retained->emitters = emitters;
+                r.geometry = std::move(retained);
             }
         }
         phases.end_phase();  // close kSpanSave; part-bake stays open

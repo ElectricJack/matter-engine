@@ -13,11 +13,40 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
 
 namespace matter::animation { struct BindingBake; }
+
+namespace script_host {
+
+// The in-memory geometry a bake hands to part_asset::save_v2, retained so a
+// caller can stage the part WITHOUT decoding the .part it just wrote back off
+// disk (10.9 ms per streamed sector on StreamMountain — see
+// docs/sector-bake-time-findings-2026-07-30.md §"Skip the disk round-trip").
+//
+// Populated only when BakeOptions::retain_geometry is set AND the bake took the
+// static (non-animated) path; every other bake leaves BakeResult::geometry null
+// and pays nothing. The artifact is still written unconditionally: this is a
+// retained copy of the writer's inputs, never a replacement for the write.
+//
+// Declared incomplete in script_host.h (which holds it only through a
+// shared_ptr) and DEFINED here, because this is the header where both the
+// producer and the consumer already have BLASManager / part_asset in scope.
+//
+// The fields mirror exactly what save_v2 serializes and what
+// PartStore::read_coherent_snapshot decodes back, so that
+// PartStore::stage_from_bake can reconstruct the identical snapshot.
+struct BakedGeometry {
+    std::unique_ptr<BLASManager>                  blas;      // every registered entry, in order
+    std::vector<part_asset::ChildInstance>        children;  // the child table save_v2 wrote
+    part_asset::LodLevels                         lods;      // empty for every static bake
+    std::vector<part_asset::VolumeEmitter>        emitters;  // the EMIT trailer's contents
+};
+
+} // namespace script_host
 
 namespace viewer {
 
@@ -130,6 +159,15 @@ public:
         uint64_t                     part_hash = 0;
         LoadedPart                   lp;
         std::unique_ptr<BLASManager> staging;
+        // Sub-step attribution, always filled (four steady_clock reads per
+        // staged part). stage_load dominates streamed-sector cost -- 109 ms of
+        // a 168 ms executor task on StreamMountain -- and until these existed
+        // it was a single opaque number, so the streaming profile blamed the
+        // bake. Rendered by [stream.task]; see matter_engine.cpp.
+        double read_ms   = 0.0;  // read_coherent_snapshot (artifact decode)
+        double prep_ms   = 0.0;  // triangle/TriEx gather, AABB, skirt detect
+        double ladder_ms = 0.0;  // bake_terrain_lods / bake_lods
+        double tail_ms   = 0.0;  // raster mesh data + cluster/chart tables
     };
 
     // Decode `part_hash` and bake its ladder WITHOUT touching any shared state.
@@ -145,8 +183,37 @@ public:
     // generation was readable, or the part is animated (the partitioned path
     // registers into the shared manager and inserts into the shared animation
     // asset store). Sectors are coherent and non-animated, so they stage.
-    StagedPart stage_load(uint64_t part_hash);
+    // first_rung (default 0 = every rung, today's behaviour): index of the
+    // finest LOD ladder rung to bake. A caller that knows the part cannot be
+    // DRAWN at a finer rung -- a streamed sector whose distance already puts
+    // it below that rung's projected-size threshold -- passes a higher value
+    // to skip that rung's decimation and TriEx reprojection entirely. Honoured
+    // only by the terrain ladder; see lod_bake::TerrainBakeTargets::first_rung.
+    StagedPart stage_load(uint64_t part_hash, size_t first_rung = 0);
 
+    // Same result as stage_load(part_hash), assembled from the geometry the
+    // bake that produced `part_hash` still holds in memory instead of from the
+    // .part it wrote. The artifact write is unaffected -- only the read-back
+    // goes away (10.9 ms per streamed sector; see BakedGeometry above).
+    //
+    // Reconstructs the CoherentSnapshot read_coherent_snapshot would have
+    // produced from that artifact and hands it to the SAME stage_from_snapshot,
+    // so the StagedPart is byte-identical, not merely equivalent. The
+    // reconstruction replicates save_v2's two normalizations exactly:
+    //   * the per-entry TriEx source selection (entry tri_extra when parallel,
+    //     else the mesh's triEx array), and
+    //   * zeroing TriEx's trailing alignment padding.
+    // Anything the reconstruction cannot vouch for (no manager, an entry whose
+    // triangle/TriEx/BVH arrays are not self-consistent) returns ok=false so
+    // the caller falls back to stage_load. Fail safe, never fail closed.
+    //
+    // Like stage_load, touches NO shared state beyond the bake observer, so it
+    // is callable from a streaming worker while the app thread renders.
+    // Non-destructive: `baked` is only read, so a verification pass can stage
+    // from it and from disk and compare the two.
+    StagedPart stage_from_bake(uint64_t part_hash,
+                               const script_host::BakedGeometry& baked,
+                               size_t first_rung = 0);
 
     // Publish a staged part: adopt its BLAS entries into the shared manager,
     // remap its handles, insert it, and build its expansion. Bounded --
@@ -255,12 +322,21 @@ private:
     // path is animation_assets_.insert, which sits deliberately AFTER this call.
     bool read_coherent_snapshot(uint64_t part_hash, CoherentSnapshot& out) const;
 
+    // Rebuild the CoherentSnapshot that read_coherent_snapshot would have
+    // produced from the artifact save_v2 wrote for `baked`. Static (no
+    // BLASManager registration order changes, no shared state), so it is safe
+    // from any thread. False = could not vouch for equivalence; the caller must
+    // fall back to the artifact.
+    static bool snapshot_from_baked(const script_host::BakedGeometry& baked,
+                                    CoherentSnapshot& out);
+
     // Shared body of stage_load() and get_or_load()'s non-partitioned tail:
     // gather the decoded triangles, bake the ladder into a private manager, and
     // build the LoadedPart. `animation_asset` is null for anything stage_load
     // accepts; get_or_load passes the asset it already resolved.
     StagedPart stage_from_snapshot(uint64_t part_hash, CoherentSnapshot& snapshot,
-                                   const matter::animation::AnimAsset* animation_asset);
+                                   const matter::animation::AnimAsset* animation_asset,
+                                   size_t first_rung = 0);
 
     std::string                       cache_root_;
     std::string                       scratch_dir_;     // Task 2: transient scratch dir
@@ -280,6 +356,24 @@ private:
     std::set<uint64_t>                load_failed_;      // suppress repeat logging
     BakeObserver*                     observer_ = nullptr;  // W3: optional per-rung observer
 };
+
+// Deep, BITWISE comparison of two staged parts — the verification gate for
+// PartStore::stage_from_bake (MATTER_STREAM_STAGE_VERIFY=1 in
+// WorldSession::Impl::bake_and_stage_sector runs both paths through this).
+//
+// Compares everything a committed part is made of: bound_radius, thresholds,
+// LOD handles, owned handles, the child table, every LOD's raster mesh arrays,
+// every rung's chart table, every cluster (AABB / radius / thresholds / handles
+// / mesh indices), fine_cluster_count, AND the staging BLASManager's per-entry
+// triangle and TriEx bytes. Floats are compared by memcmp rather than ==, so a
+// NaN that matches bit-for-bit counts as equal and -0.0f/+0.0f do not.
+//
+// The timing fields (read/prep/ladder/tail_ms) are deliberately NOT compared.
+// `first_difference`, when non-null, receives the name of the first field that
+// differed (untouched on a match).
+bool staged_parts_equal(const PartStore::StagedPart& a,
+                        const PartStore::StagedPart& b,
+                        std::string* first_difference = nullptr);
 
 } // namespace viewer
 

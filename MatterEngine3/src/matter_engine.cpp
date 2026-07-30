@@ -60,6 +60,9 @@
 // full definition above is in play.
 namespace viewer { struct VkScenePart; }
 
+#include "lod_bake.h"      // ladder_census() for the [stream.ladder] line
+#include "dsl_bindings.h"  // terrain_verb_census() for the [stream.build] line
+
 // Task 10: live-edit watcher + production seams.
 #include "live_edit.h"
 #include "live_edit_error_hub.h"  // I.11: hub-backed live-edit ErrorSink adapter
@@ -358,7 +361,14 @@ matter_stream::Config make_streaming_profile(
     // ACKNOWLEDGED, not until its bake ends — so this caps throughput at
     // max_inflight / publish-latency, independent of how fast sectors bake.
     // MATTER_STREAM_INFLIGHT overrides it for A/B measurement.
-    profile.max_inflight = 16;
+    // Raised 16 -> 64 (2026-07-30). A sector holds its slot from dispatch until
+    // ACKNOWLEDGE, so by Little's law this bounds fill rate at
+    // max_inflight / publish-latency no matter how fast sectors bake. At 16 it
+    // was the binding constraint once the bake got cheap: the same disc that
+    // fills in 56.8 s at 16 filled in 48.3 s at 96. 64 sits clear of that knee
+    // and still leaves 2x headroom under the 128-slot completion pool
+    // (PublicationCompletionCapacity::kCapacity, also raised today).
+    profile.max_inflight = 64;
     if (const char* inflight_env = std::getenv("MATTER_STREAM_INFLIGHT")) {
         const int parsed = std::atoi(inflight_env);
         if (parsed > 0) profile.max_inflight = parsed;
@@ -366,11 +376,16 @@ matter_stream::Config make_streaming_profile(
     // Heightfield terrain LOD ladder (alpine design): streamed sectors carry
     // a terrain LOD + coarser-neighbor edge mask; WorldSector picks the
     // heightfield generator for LODs 0-4 and the voxel mesher for LOD 5.
-    // Disabled by default (2026-07-29): every sector bakes the full voxel
-    // mesh, as it did pre-ladder. MATTER_TERRAIN_LOD=1 opts back in for A/B
-    // comparison; the editor's LOD Settings checkbox does the same per-world.
+    // Re-enabled by default (2026-07-30) after measuring what "off" costs: with
+    // the ladder off every sector bakes the full voxel mesh AND PartStore
+    // re-derives a full QEM ladder from it, so a sector 2.9 km out costs the
+    // same 176 ms as one underfoot. Marginal far-sector cost is 173 ms off vs
+    // 31 ms on, and StreamMountain's 6547-sector disc fills in 48 s instead of
+    // ~5 min. MATTER_TERRAIN_LOD=0 is the A/B kill-switch; the editor's LOD
+    // Settings checkbox does the same per-world.
+    // See docs/sector-bake-time-findings-2026-07-30.md.
     const char* lod_env = std::getenv("MATTER_TERRAIN_LOD");
-    profile.terrain_lod_enabled = lod_env && lod_env[0] != '0';
+    profile.terrain_lod_enabled = !(lod_env && lod_env[0] == '0');
     // World-authored terrain LOD bands (streaming.terrainBands) replace the
     // engine's sector-scaled defaults when present.
     if (!world_settings.terrain_bands.empty()) {
@@ -750,6 +765,33 @@ struct WorldSession::Impl {
     uint64_t stream_fill_sectors = 0;
     uint64_t stream_fill_steps = 0;
     double stream_fill_step_ms = 0.0;
+    // Worker-task cost census, rendered into the [stream.rate] line.
+    //
+    // MATTER_STREAM_BAKE_PROFILE times bake_source ONLY, which is a minority
+    // of what an executor actually does per sector -- stage_load and the
+    // VkScenePart prebuild are the rest, and neither was ever measured. It
+    // also prints one stderr line per sector, which is not free: with three
+    // per-sector lines enabled, matched-population bakes measured 81.6 ms
+    // against 44.9 ms quiet, and fill throughput halved. So these accumulate
+    // into atomics and are rendered once per [stream.rate] line (~1 per 12 s)
+    // instead of per sector.
+    std::atomic<uint64_t> stream_task_count{0};
+    std::atomic<uint64_t> stream_task_bake_us{0};      // bake_source
+    std::atomic<uint64_t> stream_task_stage_us{0};     // store->stage_load
+    std::atomic<uint64_t> stream_task_prebuild_us{0};  // build_vulkan_part
+    std::atomic<uint64_t> stream_task_total_us{0};     // whole executor task
+    std::atomic<uint64_t> stream_task_idle_us{0};      // executor waiting for work
+    // Last rendered frame's own splits, mirrored off the render thread for the
+    // [stream.frame] telemetry line (see the store site in render_frame).
+    std::atomic<uint64_t> frame_resolve_us{0};
+    std::atomic<uint64_t> frame_build_us{0};
+    std::atomic<uint64_t> frame_draw_us{0};
+    std::atomic<uint64_t> frame_instances{0};
+    // stage_load internals (PartStore::StagedPart splits).
+    std::atomic<uint64_t> stream_stage_read_us{0};     // artifact decode
+    std::atomic<uint64_t> stream_stage_prep_us{0};     // tri/TriEx gather + AABB
+    std::atomic<uint64_t> stream_stage_ladder_us{0};   // LOD ladder re-bake
+    std::atomic<uint64_t> stream_stage_tail_us{0};     // raster mesh + clusters
     // Bake one sector, stage its part, and post the GL publish job. Shared by
     // the serial path and the pool executors; the request/completion pair is
     // always reserved by the worker thread beforehand.
@@ -1135,15 +1177,29 @@ void WorldSession::Impl::ensure_bake_pool_started() {
     // bake costs ~11 ms of fixed script-host work even for a 2-triangle
     // heightfield tile, so a ~5,000-sector disc is a minute of serial CPU
     // that four executors turn into ~15 s. The pool was race-validated at 4
-    // (MATTER_RACE_WORKERS harness; serial-vs-4-worker replay byte-identical)
-    // — stay within that unless MATTER_STREAM_WORKERS asks for more.
+    // (MATTER_RACE_WORKERS harness; serial-vs-4-worker replay byte-identical).
+    //
+    // Raised from cores/4-capped-at-4 to cores/2-capped-at-12 (2026-07-30).
+    // The old 4 was the race-validation number, not a measured optimum: on a
+    // 24-core machine it left 20 cores idle and StreamMountain filled at
+    // 22 sectors/s against 51/s at 12 executors. The cap is 12 because past it
+    // the render thread's per-frame cost -- not the pool -- is the ceiling
+    // (~51/s), and extra executors only starve: at 20 they measured 56% busy
+    // with an empty queue while per-task cost inflated 46% from memory-
+    // bandwidth contention in the LOD ladder. Executors share no mutable state
+    // (see bake_and_stage_sector); MATTER_STREAM_WORKERS overrides either way.
     const unsigned hw = std::thread::hardware_concurrency();
     const int default_workers =
-        std::max(1, std::min(4, int(hw > 0 ? hw / 4 : 1)));
+        std::max(1, std::min(12, int(hw > 0 ? hw / 2 : 1)));
     const char* env = std::getenv("MATTER_STREAM_WORKERS");
     int requested = env ? std::atoi(env) : default_workers;
     if (requested < 1) requested = 1;
-    if (requested > 16) requested = 16;
+    // Ceiling exists to catch typos, not to express a safe limit -- it used to
+    // be 16, which silently clamped MATTER_STREAM_WORKERS=20 to 16 and made a
+    // scaling sweep read as "20 threads bought nothing". Executors hold no
+    // shared state (see bake_and_stage_sector), so the real limits upstream are
+    // max_inflight and the publication completion pool.
+    if (requested > 32) requested = 32;
     stream_worker_count = requested;
     if (requested <= 1) return;
     fprintf(stderr, "[stream] bake pool: %d workers\n", requested);
@@ -1163,9 +1219,18 @@ void WorldSession::Impl::bake_pool_loop() {
         SectorBakeTask task;
         {
             std::unique_lock<std::mutex> lock(bake_pool_mutex);
+            // Time spent parked here is the executor's idle time. It is the
+            // number that says whether a slow fill is bake-bound: an executor
+            // that spends most of its life in this wait is starved by the
+            // dispatcher, not busy baking.
+            const auto wait_t0 = std::chrono::steady_clock::now();
             bake_pool_cv.wait(lock, [this] {
                 return bake_pool_shutdown || !bake_pool_queue.empty();
             });
+            stream_task_idle_us.fetch_add(
+                (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - wait_t0).count(),
+                std::memory_order_relaxed);
             if (bake_pool_queue.empty()) {
                 if (bake_pool_shutdown) return;
                 continue;
@@ -1174,6 +1239,7 @@ void WorldSession::Impl::bake_pool_loop() {
             bake_pool_queue.pop_front();
             ++bake_pool_active;
         }
+        const auto task_t0 = std::chrono::steady_clock::now();
         // bake_and_stage_sector handles its own failure paths (retry marks +
         // BakeError events); an escaping exception has already marked the
         // completion for retry via its guard's unwind, so only report here —
@@ -1200,6 +1266,11 @@ void WorldSession::Impl::bake_pool_loop() {
             event.message = "unknown sector bake worker failure";
             hub_.emit(std::move(event));
         }
+        stream_task_total_us.fetch_add(
+            (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - task_t0).count(),
+            std::memory_order_relaxed);
+        stream_task_count.fetch_add(1, std::memory_order_relaxed);
         {
             std::lock_guard<std::mutex> lock(bake_pool_mutex);
             --bake_pool_active;
@@ -3860,6 +3931,11 @@ void WorldSession::Impl::bake_and_stage_sector(
         opts.parts_dir = provider_ref->transient_dir();
         opts.world.field       = world_field.get();
         world_profile.apply(opts.world);
+        // Keep the geometry save_v2 is about to serialize, so the staging step
+        // below can consume it instead of decoding the .part straight back off
+        // disk. The write still happens exactly as before -- see
+        // BakeOptions::retain_geometry. This is the ONLY caller that sets it.
+        opts.retain_geometry = true;
 
         script_host::ScriptHost bake_host;
         bake_host.set_shared_lib_roots(provider_ref->shared_lib_roots());
@@ -3879,6 +3955,10 @@ void WorldSession::Impl::bake_and_stage_sector(
                 world_sector_source, sector_params, opts,
                 sector_child_hashes.data(), sector_child_hashes.size(),
                 sector_child_modules.data(), sector_child_params.data());
+            stream_task_bake_us.fetch_add(
+                (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - bake_t0).count(),
+                std::memory_order_relaxed);
             if (bake_prof) {
                 const double ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - bake_t0).count();
@@ -3951,9 +4031,138 @@ void WorldSession::Impl::bake_and_stage_sector(
         // and needs a copyable callable while StagedPart owns a unique_ptr.
         // ok=false (unreadable generation, or an animated part) falls back to
         // get_or_load in the job, which is the old behaviour.
+        //
+        // The bake above just wrote this sector's .part AND, because
+        // opts.retain_geometry was set, handed back the geometry it serialized.
+        // Staging from that skips decoding the file we wrote one line ago:
+        // 10.9 ms of a 184 ms task, for data that never left memory, and a
+        // streamed sector variant is transient by design so nothing else ever
+        // reads that artifact (docs/sector-bake-time-findings-2026-07-30.md
+        // §"Skip the disk round-trip"). The artifact is still written.
+        //
+        // MATTER_STREAM_STAGE_FROM_MEMORY=0 restores the decode path so the two
+        // can be diffed from one binary, same shape as MATTER_STREAM_PREBUILD.
+        // Read once into a function-local static: this runs per sector on
+        // several executors, and getenv is neither cheap nor thread-safe
+        // against a concurrent setenv.
+        static const bool stage_from_memory = [] {
+            const char* v = std::getenv("MATTER_STREAM_STAGE_FROM_MEMORY");
+            return !(v && std::strcmp(v, "0") == 0);
+        }();
+        // MATTER_STREAM_STAGE_VERIFY=1: stage BOTH ways and byte-compare the
+        // results, mirroring MATTER_STREAM_PREBUILD_VERIFY below. Costs a full
+        // extra decode AND a full extra ladder bake per sector, so it is a
+        // proof run, not something to leave on.
+        static const bool stage_verify =
+            std::getenv("MATTER_STREAM_STAGE_VERIFY") != nullptr;
         const float sector_size = world_sector_size;
-        auto staged_load = std::make_shared<viewer::PartStore::StagedPart>(
-            store->stage_load(sector_hash));
+        // Skip ladder rungs this sector can never be DRAWN at. lod_select picks
+        // by projected size = bound_radius / distance, and rung 0's threshold is
+        // 0.20 -- so a sector of radius r stops selecting rung 0 beyond 5r,
+        // which for a 64 m sector (r ~= 45 m) is ~225 m. The scatter tier is the
+        // distance signal already in the request: tier 2 is the innermost ring
+        // (368 m here) and everything coarser starts at least a ring further
+        // out, comfortably past that 225 m crossover even before hysteresis.
+        //
+        // So: innermost tier bakes the full ladder, everything else starts at
+        // rung 1. That skips rung 0's chart build and BVH registration on the
+        // ~85% of a disc that is beyond the inner ring, and -- because rung 1
+        // then becomes the cascade's base -- keeps the cascade intact. Deliberately
+        // NOT first_rung=2 for the outer tier: with rung 1 skipped there is
+        // nothing to cascade from AND rung 2 inherits the one-time
+        // ReprojectSource BVH build rung 1 was amortising, which measures worse
+        // than baking both. MATTER_STREAM_FIRST_RUNG=0 disables the whole policy.
+        // OFF by default (2026-07-30). Measured: enabling it made the streamer
+        // churn -- 74 stream.apply_evictions jobs at 53-174 ms each, plus
+        // "coherent load failed" as evicted transient artifacts were re-read --
+        // on a disc that completes with ZERO evictions when it is off. Dropping
+        // a rung changes the staged part's cluster set and therefore its
+        // bound_radius, which feeds the projected-size LOD math the streamer's
+        // promote/demote hysteresis reads, so the sector oscillates.
+        //
+        // Skipping rungs is still the right idea and the machinery is kept
+        // (lod_bake::TerrainBakeTargets::first_rung, plumbed through
+        // PartStore::stage_load/stage_from_bake): it is worth ~60-105 ms on
+        // sectors that will never be drawn fine. But it needs demand-driven rung
+        // PROMOTION so an approaching camera re-bakes the finer rung, and a
+        // bound_radius that stays keyed to the part's full extent rather than to
+        // whichever rungs happened to be baked. Neither exists yet.
+        // MATTER_STREAM_FIRST_RUNG=1 re-enables it for that work.
+        static const bool first_rung_policy =
+            std::getenv("MATTER_STREAM_FIRST_RUNG") != nullptr &&
+            std::strcmp(std::getenv("MATTER_STREAM_FIRST_RUNG"), "0") != 0;
+        const size_t sector_first_rung =
+            (first_rung_policy && matter_stream::variant_scatter(req.rung) < 2)
+                ? 1u : 0u;
+        const auto stage_t0 = std::chrono::steady_clock::now();
+        std::shared_ptr<viewer::PartStore::StagedPart> staged_load;
+        if (stage_from_memory && br.geometry) {
+            auto from_memory = std::make_shared<viewer::PartStore::StagedPart>(
+                store->stage_from_bake(sector_hash, *br.geometry,
+                                       sector_first_rung));
+            // ok=false means stage_from_bake could not vouch for equivalence
+            // with the artifact; fall through to the decode rather than
+            // publishing something it is unsure about.
+            if (from_memory->ok) staged_load = std::move(from_memory);
+        }
+        // Null geometry covers every case the fast path does not own: an
+        // animated (ANLK) bake, a bake that took the partitioned path, a
+        // failed save, and the kill-switch. All of them land here, on today's
+        // exact behaviour.
+        const bool staged_from_memory = static_cast<bool>(staged_load);
+        if (!staged_load) {
+            staged_load = std::make_shared<viewer::PartStore::StagedPart>(
+                store->stage_load(sector_hash, sector_first_rung));
+        }
+        stream_task_stage_us.fetch_add(
+            (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - stage_t0).count(),
+            std::memory_order_relaxed);
+        stream_stage_read_us.fetch_add(
+            (uint64_t)(staged_load->read_ms * 1000.0), std::memory_order_relaxed);
+        stream_stage_prep_us.fetch_add(
+            (uint64_t)(staged_load->prep_ms * 1000.0), std::memory_order_relaxed);
+        stream_stage_ladder_us.fetch_add(
+            (uint64_t)(staged_load->ladder_ms * 1000.0), std::memory_order_relaxed);
+        stream_stage_tail_us.fetch_add(
+            (uint64_t)(staged_load->tail_ms * 1000.0), std::memory_order_relaxed);
+
+        // The verification gate for the elision. Deliberately AFTER the
+        // accumulators so a verify run's extra decode does not pollute the
+        // [stream.stage] numbers it exists to justify. Both paths stage into
+        // their own private BLASManager and touch no shared state, so running
+        // them back to back on an executor is as safe as running one.
+        if (stage_verify && staged_from_memory) {
+            // Same first_rung as the path under test: this gate exists to prove
+            // in-memory staging equals artifact staging, and handing the
+            // reference a different ladder would report the rung policy as a
+            // geometry mismatch on every sector outside the inner ring.
+            const viewer::PartStore::StagedPart reference =
+                store->stage_load(sector_hash, sector_first_rung);
+            std::string difference;
+            const bool same = viewer::staged_parts_equal(
+                *staged_load, reference, &difference);
+            static std::atomic<uint64_t> verify_match{0};
+            static std::atomic<uint64_t> verify_mismatch{0};
+            if (same) verify_match.fetch_add(1, std::memory_order_relaxed);
+            else      verify_mismatch.fetch_add(1, std::memory_order_relaxed);
+            const uint64_t matched = verify_match.load(std::memory_order_relaxed);
+            const uint64_t mismatched =
+                verify_mismatch.load(std::memory_order_relaxed);
+            if (!same || ((matched + mismatched) % 200) == 0) {
+                std::fprintf(stderr,
+                    "[stream.stage.verify] match=%llu MISMATCH=%llu%s%s\n",
+                    (unsigned long long)matched,
+                    (unsigned long long)mismatched,
+                    same ? "" : "  <-- differs at: ",
+                    same ? "" : difference.c_str());
+            }
+        }
+        // Bound peak memory: the retained BLAS table is dead the moment staging
+        // is done with it, and this task still has the prebuild and the job post
+        // ahead of it. With a dozen executors in flight that is worth reclaiming
+        // here rather than at the end of the iteration.
+        br.geometry.reset();
 
         // Also convert the staged part into the renderer's VkScenePart HERE,
         // on the worker. That conversion (per-vertex repacking + cluster
@@ -3994,6 +4203,7 @@ void WorldSession::Impl::bake_and_stage_sector(
             const char* v = std::getenv("MATTER_STREAM_PREBUILD");
             return !(v && std::strcmp(v, "0") == 0);
         }();
+        const auto prebuild_t0 = std::chrono::steady_clock::now();
         if (staged_load->ok && prebuild_enabled && !diagnostic_material_override) {
             VtSurfaceClassifier sector_surface;
             const VtSurfaceClassifier* surface_ptr = nullptr;
@@ -4021,6 +4231,10 @@ void WorldSession::Impl::bake_and_stage_sector(
                 prebuilt_part = std::move(built);
             }
         }
+        stream_task_prebuild_us.fetch_add(
+            (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - prebuild_t0).count(),
+            std::memory_order_relaxed);
 #endif
         try {
             matter_async::GpuJob publish_job;
@@ -4390,6 +4604,10 @@ void WorldSession::Impl::execute_sector_stream_step() {
     // 3. Service bake requests.
     const auto step_t0 = std::chrono::steady_clock::now();
     size_t dispatched = 0;
+    // Did this step stop because the streamer had NOTHING left to want, as
+    // opposed to because a capacity gate closed? Only the former means the disc
+    // is full; see the BakeFinished latch at the bottom.
+    bool requests_exhausted = false;
     while (true) {
         if (stream_worker_count > 1) {
             // Cap the backlog at the executor count so sectors keep being
@@ -4410,6 +4628,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
         const bool have_request = coordinator.next_request(request);
         if (!have_request) {
             release_reserved_publication_completion(*reserved);
+            requests_exhausted = true;
             break;
         }
         reserved->request = request;
@@ -4452,6 +4671,91 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     elapsed_ms > 0 ? 100.0 * stream_fill_step_ms / elapsed_ms : 0.0,
                     snap.status.resident_sectors, snap.status.inflight_sectors,
                     bake_pool_outstanding());
+            // Executor-side census. `busy` is the fraction of executor-seconds
+            // spent inside a task; the balance is the cv wait in
+            // bake_pool_loop. Low busy% with sectors still pending means the
+            // dispatcher is starving the pool, and no amount of making the
+            // bake cheaper will help until that is fixed.
+            const uint64_t tasks = stream_task_count.load(std::memory_order_relaxed);
+            if (tasks > 0) {
+                const double busy_ms =
+                    stream_task_total_us.load(std::memory_order_relaxed) / 1000.0;
+                const double idle_ms =
+                    stream_task_idle_us.load(std::memory_order_relaxed) / 1000.0;
+                fprintf(stderr,
+                        "[stream.task] n=%llu task=%.1f ms "
+                        "(bake %.1f + stage %.1f + prebuild %.1f + other %.1f) "
+                        "busy=%.0f%% executors=%d\n",
+                        (unsigned long long)tasks, busy_ms / tasks,
+                        stream_task_bake_us.load(std::memory_order_relaxed)
+                            / 1000.0 / tasks,
+                        stream_task_stage_us.load(std::memory_order_relaxed)
+                            / 1000.0 / tasks,
+                        stream_task_prebuild_us.load(std::memory_order_relaxed)
+                            / 1000.0 / tasks,
+                        (busy_ms
+                         - (stream_task_bake_us.load(std::memory_order_relaxed)
+                            + stream_task_stage_us.load(std::memory_order_relaxed)
+                            + stream_task_prebuild_us.load(std::memory_order_relaxed))
+                               / 1000.0) / tasks,
+                        (busy_ms + idle_ms) > 0
+                            ? 100.0 * busy_ms / (busy_ms + idle_ms) : 0.0,
+                        stream_worker_count);
+                fprintf(stderr,
+                        "[stream.stage] read=%.1f prep=%.1f ladder=%.1f "
+                        "tail=%.1f ms\n",
+                        stream_stage_read_us.load(std::memory_order_relaxed)
+                            / 1000.0 / tasks,
+                        stream_stage_prep_us.load(std::memory_order_relaxed)
+                            / 1000.0 / tasks,
+                        stream_stage_ladder_us.load(std::memory_order_relaxed)
+                            / 1000.0 / tasks,
+                        stream_stage_tail_us.load(std::memory_order_relaxed)
+                            / 1000.0 / tasks);
+                // Inside the ladder: what the 100 ms is actually made of.
+                // Per RUNG, not per sector -- a terrain sector bakes
+                // TerrainBakeTargets::eps_ratio.size() of them.
+                fprintf(stderr,
+                        "[stream.frame] resolve=%.1f build=%.1f draw=%.1f ms "
+                        "instances=%llu\n",
+                        frame_resolve_us.load(std::memory_order_relaxed) / 1000.0,
+                        frame_build_us.load(std::memory_order_relaxed) / 1000.0,
+                        frame_draw_us.load(std::memory_order_relaxed) / 1000.0,
+                        (unsigned long long)frame_instances.load(
+                            std::memory_order_relaxed));
+                // Inside bake_source's `build` phase: one native terrain
+                // mesher call vs the scatter loop's per-candidate field
+                // queries. Everything else in `build` is JS interpretation.
+                const dsl::TerrainVerbCensus vc = dsl::terrain_verb_census();
+                fprintf(stderr,
+                        "[stream.build] mesher=%.1f ms (%llu tris) "
+                        "heightAt/slopeAt=%.1f ms (%llu calls) "
+                        "biomeAt/moistureAt=%.1f ms (%llu calls) per sector\n",
+                        vc.volume_us / 1000.0 / tasks,
+                        (unsigned long long)(vc.volume_calls
+                            ? vc.volume_tris / vc.volume_calls : 0),
+                        vc.height_us / 1000.0 / tasks,
+                        (unsigned long long)(vc.height_calls / tasks),
+                        vc.biome_us / 1000.0 / tasks,
+                        (unsigned long long)(vc.biome_calls / tasks));
+                const lod_bake::LadderCensus lc = lod_bake::ladder_census();
+                for (size_t r = 0; r < lod_bake::kMaxCensusRungs; ++r) {
+                    if (lc.rungs[r] == 0) continue;
+                    const double n = (double)lc.rungs[r];
+                    fprintf(stderr,
+                            "[stream.ladder] rung%zu decimate=%.1f "
+                            "reproject=%.1f chart=%.1f blas=%.1f = %.1f "
+                            "ms/sector  tris %llu->%llu\n",
+                            r, lc.decimate_us[r] / 1000.0 / tasks,
+                            lc.reproject_us[r] / 1000.0 / tasks,
+                            lc.chart_us[r] / 1000.0 / tasks,
+                            lc.blas_us[r] / 1000.0 / tasks,
+                            (lc.decimate_us[r] + lc.reproject_us[r] +
+                             lc.chart_us[r] + lc.blas_us[r]) / 1000.0 / tasks,
+                            (unsigned long long)(lc.tris_in[r] / (uint64_t)n),
+                            (unsigned long long)(lc.tris_out[r] / (uint64_t)n));
+                }
+            }
         }
     }
 
@@ -4473,9 +4777,21 @@ void WorldSession::Impl::execute_sector_stream_step() {
     // After the first cycle with no remaining holes, emit BakeFinished from the
     // copied coordinator snapshot only.
     const streaming::detail::Snapshot snapshot = coordinator.snapshot();
+    // `inflight == 0` alone is NOT "the disc is full", and reading it that way
+    // fires BakeFinished mid-fill. An executor decrements bake_pool_active only
+    // after bake_and_stage_sector returns, which is after it POSTS the publish
+    // job -- so a sector can be published and acknowledged (inflight back to 0)
+    // while its executor is still counted active. The dispatch loop above then
+    // breaks on the `queue + active >= stream_worker_count` cap without pulling
+    // the next hole, and this test sees zero inflight with thousands of sectors
+    // still to bake. Observed latching at 2,521 of StreamMountain's 6,547.
+    // Requiring an idle pool closes that window: no executor in flight means no
+    // publish is in the post-but-unacknowledged gap either.
     if (!world_initial_load_done &&
         snapshot.status.resident_sectors > 0 &&
-        snapshot.status.inflight_sectors == 0) {
+        snapshot.status.inflight_sectors == 0 &&
+        bake_pool_outstanding() == 0 &&
+        requests_exhausted) {
         world_initial_load_done = true;
         if (stream_fill_timing) {
             stream_fill_timing = false;
@@ -6570,6 +6886,22 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.draw_ms =
         std::chrono::duration<float, std::milli>(draw_end - draw_start).count();
     impl_->stats.instances_resolved = static_cast<uint32_t>(instances.size());
+    // Cross-thread mirror for the [stream.frame] line: the streaming worker
+    // renders the fill telemetry and needs the render thread's per-FRAME cost,
+    // which is a different number from the per-PUBLISH stream.publish job the
+    // previous pass optimised. When this climbs, publishes drain slower and
+    // the fill goes publish-bound no matter how many bake executors are up.
+    impl_->frame_resolve_us.store(
+        (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+            resolve_end - resolve_start).count(), std::memory_order_relaxed);
+    impl_->frame_build_us.store(
+        (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+            build_end - build_start).count(), std::memory_order_relaxed);
+    impl_->frame_draw_us.store(
+        (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+            draw_end - draw_start).count(), std::memory_order_relaxed);
+    impl_->frame_instances.store((uint64_t)instances.size(),
+                                 std::memory_order_relaxed);
     const viewer::VkCullStats cull_stats = impl_->vk_scene->cached_cull_stats();
     impl_->stats.instances_drawn = cull_stats.emitted;
     impl_->stats.clusters_culled = cull_stats.frustum_culled;

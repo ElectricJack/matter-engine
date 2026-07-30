@@ -12,6 +12,7 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cstddef>   // offsetof (TriEx named-member span, see snapshot_from_baked)
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -806,10 +807,19 @@ bool PartStore::read_coherent_snapshot(uint64_t part_hash,
 
 PartStore::StagedPart PartStore::stage_from_snapshot(
         uint64_t part_hash, CoherentSnapshot& snapshot,
-        const matter::animation::AnimAsset* animation_asset) {
+        const matter::animation::AnimAsset* animation_asset,
+        size_t first_rung) {
     StagedPart staged;
     staged.part_hash = part_hash;
     staged.staging   = std::make_unique<BLASManager>();
+    auto stage_mark = std::chrono::steady_clock::now();
+    auto stage_split = [&stage_mark]() -> double {
+        const auto now = std::chrono::steady_clock::now();
+        const double ms =
+            std::chrono::duration<double, std::milli>(now - stage_mark).count();
+        stage_mark = now;
+        return ms;
+    };
     auto& scratch  = snapshot.scratch;
     auto& children = snapshot.children;
     // Gather full-res triangles (and their parallel per-triangle TriEx, which
@@ -901,14 +911,24 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
     chart_opts.texels_per_meter = 16.0f;
     chart_opts.halve_per_rung = terrain_tile;
     std::vector<chart_atlas::ChartAtlasRung> rung_charts;
+    staged.prep_ms = stage_split();
+    // first_rung: skip ladder rungs this part can never be DRAWN at. The
+    // caller asserts it from the part's placement -- a streamed sector's
+    // scatter tier is a distance proxy -- and only the terrain ladder honours
+    // it, because only terrain sectors are placed at a known distance. Rungs
+    // below it cost nothing: no decimation, no reprojection, no registration.
+    // 0 (every non-streaming caller) is exactly today's behaviour.
+    lod_bake::TerrainBakeTargets terrain_targets;
+    terrain_targets.first_rung = first_rung;
     lod_bake::LodLevels lods = terrain_tile
         ? lod_bake::bake_terrain_lods(tris, skirt_mask, radius,
-                                      lod_bake::TerrainBakeTargets{},
+                                      terrain_targets,
                                       *staged.staging, triex_ptr, observer_,
                                       &lod_handles, &chart_opts, &rung_charts)
         : lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, *staged.staging,
                               triex_ptr, observer_, &lod_handles,
                               &chart_opts, &rung_charts);
+    staged.ladder_ms = stage_split();
     assert(lod_handles.size() == lods.size());
     for (size_t li = 0; li < lods.size() && li < lod_handles.size(); ++li) {
         const auto& L = lods[li];
@@ -989,20 +1009,272 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
     // from the committed flavor once the synthetic cluster above existed
     // (partstore_race_tests' golden phase folds fine_cluster_count).
     staged.lp.fine_cluster_count = (uint32_t)staged.lp.clusters.size();
+    staged.tail_ms = stage_split();
     staged.ok = true;
     return staged;
 }
 
-PartStore::StagedPart PartStore::stage_load(uint64_t part_hash) {
+PartStore::StagedPart PartStore::stage_load(uint64_t part_hash,
+                                            size_t first_rung) {
     StagedPart staged;
     staged.part_hash = part_hash;
     CoherentSnapshot snapshot;
-    if (!read_coherent_snapshot(part_hash, snapshot)) return staged;
+    const auto read_t0 = std::chrono::steady_clock::now();
+    const bool read_ok = read_coherent_snapshot(part_hash, snapshot);
+    const double read_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - read_t0).count();
+    if (!read_ok) { staged.read_ms = read_ms; return staged; }
     // Animated parts take the partitioned path, which registers into the shared
     // BLAS manager and inserts into the shared animation asset store. Not
     // stageable; the caller loads them on the owning thread.
-    if (snapshot.animation_link) return staged;
-    return stage_from_snapshot(part_hash, snapshot, nullptr);
+    if (snapshot.animation_link) { staged.read_ms = read_ms; return staged; }
+    StagedPart out =
+        stage_from_snapshot(part_hash, snapshot, nullptr, first_rung);
+    out.read_ms = read_ms;
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// stage_from_bake — the artifact round-trip elision.
+//
+// A streamed sector's bake writes a .part (12 ms) that stage_load then decodes
+// straight back (10.9 ms) into geometry the bake still had in registers. The
+// artifact still has to be written -- it is the content-addressed cache entry
+// and the publication ledger's retained artifact -- but nothing has to read it
+// back, so long as what we hand to stage_from_snapshot is EXACTLY what the
+// decode would have produced.
+//
+// That equivalence is not assumed, it is reconstructed. save_v2's writer
+// (append_common_body) applies exactly two transforms on the way out:
+//
+//   1. TriEx source selection: an entry serializes `tri_extra` when that array
+//      is parallel to the triangles, else the mesh's own triEx array.
+//   2. TriEx trailing alignment padding (the 4 bytes after ao2, since
+//      sizeof(TriEx) == 96 but the named members end at 92) is zeroed through a
+//      staging copy, so that allocator garbage there cannot make two otherwise
+//      identical bakes byte-differ.
+//
+// Everything else is a verbatim byte copy: triangles, BVH nodes, triangle
+// indices, the entry hash and ref_count, and the entry ORDER. The reader
+// (parse_common_body + publish_common_body) replays those bytes through
+// register_prebuilt -- which is exactly what this does, with the same two
+// transforms applied. So the reconstructed manager is the manager load_v2 would
+// have built, entry for entry and byte for byte, and stage_from_snapshot cannot
+// tell the two apart.
+// ---------------------------------------------------------------------------
+bool PartStore::snapshot_from_baked(const script_host::BakedGeometry& baked,
+                                    CoherentSnapshot& out) {
+    if (!baked.blas) return false;
+    // save_v2's staging copy hardcodes 92 named bytes. Pin that here too: if
+    // TriEx ever grows a member, BOTH the writer's normalization and this
+    // reconstruction are wrong, and a build break is the only honest outcome.
+    constexpr size_t kTriExNamedBytes = offsetof(TriEx, ao2) + sizeof(float);
+    static_assert(sizeof(TriEx) == 96 && kTriExNamedBytes == 92,
+                  "TriEx layout changed; part_asset_v2.cpp's save-side padding "
+                  "normalization (kTriExPad = 92) must change with it");
+
+    auto scratch = std::make_unique<BLASManager>();
+    std::vector<TriEx> normalized;
+    for (const auto& e : baked.blas->get_entries()) {
+        // Anything whose parallel arrays are not self-consistent is something
+        // this reconstruction cannot vouch for. Bail rather than guess -- the
+        // caller falls back to decoding the artifact, which is always correct.
+        if (!e || !e->mesh || !e->bvh) return false;
+        if (e->mesh->triCount <= 0) return false;
+        const size_t tri_count = static_cast<size_t>(e->mesh->triCount);
+        if (e->triangles.size() != tri_count) return false;
+        if (e->bvh->nodesUsed == 0 || !e->bvh->bvhNode || !e->bvh->triIdx) return false;
+
+        // (1) Exactly append_common_body's selection.
+        const TriEx* triex_src = (!e->tri_extra.empty() && e->tri_extra.size() == tri_count)
+                                     ? e->tri_extra.data() : e->mesh->triEx;
+        if (triex_src) {
+            // (2) Exactly append_common_body's padding normalization.
+            normalized.assign(tri_count, TriEx{});
+            for (size_t t = 0; t < tri_count; ++t) {
+                std::memset(&normalized[t], 0, sizeof(TriEx));
+                std::memcpy(&normalized[t], &triex_src[t], kTriExNamedBytes);
+            }
+        }
+        // register_prebuilt, not register_triangles: no BVH is rebuilt and no
+        // dedup runs, which is what the reader does. (Dedup already happened
+        // when the bake registered these entries; re-running it here would
+        // collapse entries the artifact keeps separate.)
+        if (scratch->register_prebuilt(
+                e->triangles.data(), triex_src ? normalized.data() : nullptr,
+                static_cast<int>(tri_count), e->bvh->bvhNode, e->bvh->nodesUsed,
+                e->bvh->triIdx, e->hash, e->ref_count) == INVALID_BLAS_HANDLE)
+            return false;
+    }
+
+    out.scratch = std::move(scratch);
+    out.children = baked.children;
+    out.lods_in = baked.lods;
+    out.emitters = baked.emitters;
+    // No ANLK: BakedGeometry is retained only on the static save path, so the
+    // artifact this stands in for carries no animation link either.
+    out.animation_link.reset();
+    out.loaded_animation = {};
+    return true;
+}
+
+PartStore::StagedPart PartStore::stage_from_bake(
+        uint64_t part_hash, const script_host::BakedGeometry& baked,
+        size_t first_rung) {
+    StagedPart staged;
+    staged.part_hash = part_hash;
+    CoherentSnapshot snapshot;
+    // Charged to read_ms, the slot the artifact decode used to occupy, so the
+    // [stream.stage] telemetry keeps reading as "cost of getting the geometry
+    // in front of the ladder" on both paths and the saving is legible there.
+    const auto read_t0 = std::chrono::steady_clock::now();
+    const bool built = snapshot_from_baked(baked, snapshot);
+    const double read_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - read_t0).count();
+    if (!built) { staged.read_ms = read_ms; return staged; }
+    StagedPart out =
+        stage_from_snapshot(part_hash, snapshot, nullptr, first_rung);
+    out.read_ms = read_ms;
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// staged_parts_equal — the proof, not a spot check.
+// ---------------------------------------------------------------------------
+namespace {
+
+// Bitwise vector compare. operator== on a float vector makes NaN != NaN and
+// -0.0f == +0.0f, neither of which is what "the two paths produced the same
+// bytes" means.
+template <class T>
+bool bitwise_equal(const std::vector<T>& a, const std::vector<T>& b) {
+    if (a.size() != b.size()) return false;
+    return a.empty() ||
+           std::memcmp(a.data(), b.data(), a.size() * sizeof(T)) == 0;
+}
+
+bool bitwise_equal(float a, float b) {
+    return std::memcmp(&a, &b, sizeof(float)) == 0;
+}
+
+bool mesh_data_equal(const RasterMeshData& a, const RasterMeshData& b) {
+    return a.vertex_count == b.vertex_count &&
+           bitwise_equal(a.vertices, b.vertices) &&
+           bitwise_equal(a.normals, b.normals) &&
+           bitwise_equal(a.colors, b.colors) &&
+           bitwise_equal(a.texcoords, b.texcoords) &&
+           bitwise_equal(a.surface_uvs, b.surface_uvs) &&
+           bitwise_equal(a.material_ids, b.material_ids) &&
+           bitwise_equal(a.baked_ao, b.baked_ao) &&
+           bitwise_equal(a.indices, b.indices);
+}
+
+bool chart_rung_equal(const chart_atlas::ChartAtlasRung& a,
+                      const chart_atlas::ChartAtlasRung& b) {
+    return a.atlas_w == b.atlas_w && a.atlas_h == b.atlas_h &&
+           bitwise_equal(a.charts, b.charts) &&
+           bitwise_equal(a.tri_order, b.tri_order);
+}
+
+// Geometry identity, member-wise — NOT a raw memcmp of the Tri/TriEx arrays.
+//
+// Both types carry bytes nothing ever reads: Tri unions each float3 with an
+// __m128, leaving 4 unused bytes per vertex slot, and TriEx is 96 bytes with
+// its named members ending at 92. The engine defines geometry identity
+// member-wise everywhere for exactly this reason (BLASManager::triangles_equal
+// and calculate_hash were both FIXED to be member-wise after a contiguous
+// compare read padding and ignored vertex2.y/z — partstore_race_tests proofs
+// A/B). The LOD ladder that produces these entries has no obligation to zero
+// those bytes, so comparing them would report allocator residue as a geometry
+// difference and make this gate cry wolf. Every byte the GPU, the BVH, the
+// chart bake and the raster mesh actually consume IS compared here.
+bool tri_streams_equal(const std::vector<Tri>& a, const std::vector<Tri>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (std::memcmp(&a[i].vertex0,  &b[i].vertex0,  sizeof(float3)) != 0 ||
+            std::memcmp(&a[i].vertex1,  &b[i].vertex1,  sizeof(float3)) != 0 ||
+            std::memcmp(&a[i].vertex2,  &b[i].vertex2,  sizeof(float3)) != 0 ||
+            std::memcmp(&a[i].centroid, &b[i].centroid, sizeof(float3)) != 0)
+            return false;
+    }
+    return true;
+}
+
+bool triex_streams_equal(const std::vector<TriEx>& a, const std::vector<TriEx>& b) {
+    if (a.size() != b.size()) return false;
+    constexpr size_t kNamed = offsetof(TriEx, ao2) + sizeof(float);  // 92 of 96
+    for (size_t i = 0; i < a.size(); ++i)
+        if (std::memcmp(&a[i], &b[i], kNamed) != 0) return false;
+    return true;
+}
+
+bool cluster_equal(const LoadedCluster& a, const LoadedCluster& b) {
+    return std::memcmp(a.aabb_min, b.aabb_min, sizeof a.aabb_min) == 0 &&
+           std::memcmp(a.aabb_max, b.aabb_max, sizeof a.aabb_max) == 0 &&
+           bitwise_equal(a.radius, b.radius) &&
+           bitwise_equal(a.thresholds, b.thresholds) &&
+           bitwise_equal(a.lod_blas, b.lod_blas) &&
+           bitwise_equal(a.lod_mesh, b.lod_mesh);
+}
+
+} // namespace
+
+bool staged_parts_equal(const PartStore::StagedPart& a,
+                        const PartStore::StagedPart& b,
+                        std::string* first_difference) {
+    const auto differ = [first_difference](const char* what) {
+        if (first_difference) *first_difference = what;
+        return false;
+    };
+    if (a.ok != b.ok)               return differ("ok");
+    if (!a.ok)                      return true;   // both unusable: nothing to compare
+    if (a.part_hash != b.part_hash) return differ("part_hash");
+
+    const LoadedPart& x = a.lp;
+    const LoadedPart& y = b.lp;
+    if (!bitwise_equal(x.bound_radius, y.bound_radius)) return differ("bound_radius");
+    if (x.fine_cluster_count != y.fine_cluster_count)   return differ("fine_cluster_count");
+    if (!bitwise_equal(x.inline_cutover, y.inline_cutover)) return differ("inline_cutover");
+    if (!bitwise_equal(x.thresholds, y.thresholds))     return differ("thresholds");
+    if (!bitwise_equal(x.lod_blas, y.lod_blas))         return differ("lod_blas");
+    if (!bitwise_equal(x.owned_blas, y.owned_blas))     return differ("owned_blas");
+    // ChildInstance is padding-free by static_assert, so a flat memcmp is exact.
+    if (!bitwise_equal(x.children, y.children))         return differ("children");
+    if (!bitwise_equal(x.flat_refs, y.flat_refs))       return differ("flat_refs");
+    if (x.animation_asset != y.animation_asset)         return differ("animation_asset");
+
+    if (x.lod_mesh_data.size() != y.lod_mesh_data.size()) return differ("lod_mesh_data.size");
+    for (size_t i = 0; i < x.lod_mesh_data.size(); ++i)
+        if (!mesh_data_equal(x.lod_mesh_data[i], y.lod_mesh_data[i]))
+            return differ("lod_mesh_data");
+
+    if (x.lod_charts.size() != y.lod_charts.size()) return differ("lod_charts.size");
+    for (size_t i = 0; i < x.lod_charts.size(); ++i)
+        if (!chart_rung_equal(x.lod_charts[i], y.lod_charts[i]))
+            return differ("lod_charts");
+
+    if (x.clusters.size() != y.clusters.size()) return differ("clusters.size");
+    for (size_t i = 0; i < x.clusters.size(); ++i)
+        if (!cluster_equal(x.clusters[i], y.clusters[i]))
+            return differ("clusters");
+
+    // The staged BLAS entries are the geometry itself; comparing only the
+    // LoadedPart would miss a ladder that produced the same handles over
+    // different triangles.
+    if (!a.staging || !b.staging) return differ("staging");
+    const auto& ea = a.staging->get_entries();
+    const auto& eb = b.staging->get_entries();
+    if (ea.size() != eb.size()) return differ("staging.entries.size");
+    for (size_t i = 0; i < ea.size(); ++i) {
+        if (!ea[i] || !eb[i])                          return differ("staging.entry");
+        if (ea[i]->hash != eb[i]->hash)                return differ("staging.entry.hash");
+        if (ea[i]->ref_count != eb[i]->ref_count)      return differ("staging.entry.ref_count");
+        if (!tri_streams_equal(ea[i]->triangles, eb[i]->triangles))
+            return differ("staging.entry.triangles");
+        if (!triex_streams_equal(ea[i]->tri_extra, eb[i]->tri_extra))
+            return differ("staging.entry.tri_extra");
+    }
+    return true;
 }
 
 const LoadedPart* PartStore::commit_staged(StagedPart staged) {

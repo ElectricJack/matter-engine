@@ -259,7 +259,11 @@ public:
     struct StreamingLodConfig {
         std::vector<StreamingLodRing> scatter_rings;
         std::vector<StreamingLodRing> terrain_bands;
-        bool terrain_lod_enabled = false;
+        // Matches make_streaming_profile's default (on since 2026-07-30). Only
+        // the value the LOD Settings panel shows before its first live-mirror
+        // of the active profile, but a `false` here read as "the ladder is off"
+        // while the engine had it on.
+        bool terrain_lod_enabled = true;
         // Informational (filled by streaming_lod_config, ignored by
         // set_streaming_lod_overrides): the world's sector size, for UI
         // spacing hints.

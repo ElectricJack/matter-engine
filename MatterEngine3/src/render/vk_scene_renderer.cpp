@@ -18,6 +18,7 @@
 
 #include "gpu_matrix_pack.h"
 #include "matrix_math.h"
+#include "vk_build_profile.h"
 #include "matter/vulkan_device.h"
 #include "matter/world_definition.h"
 #include "matter/world_session.h"
@@ -31,6 +32,35 @@
 
 namespace viewer {
 namespace {
+
+// ---- per-frame build-cost kill switches ---------------------------------
+// Each guards one CPU-time optimisation in the build region and defaults to
+// ON. Read exactly once into a function-local static; never per frame and
+// never per instance. None of them changes what is drawn -- they select
+// between two implementations of the same result -- so a flip is an A/B of
+// cost only. See docs/sector-bake-time-findings-2026-07-30.md.
+bool env_flag_on(const char* name) {
+    const char* value = std::getenv(name);
+    return value == nullptr || value[0] == '\0' || value[0] != '0';
+}
+
+// Flat mirror of slot_of_ for the per-instance part lookup.
+bool slot_index_enabled() {
+    static const bool value = env_flag_on("MATTER_VK_SLOT_INDEX");
+    return value;
+}
+
+// Version-counter form of update_instances()' slot_of_/parts_ snapshot.
+bool snapshot_version_enabled() {
+    static const bool value = env_flag_on("MATTER_VK_SNAPSHOT_VERSION");
+    return value;
+}
+
+// Fused compare-and-copy in set_temporal_frame().
+bool temporal_copy_fuse_enabled() {
+    static const bool value = env_flag_on("MATTER_VK_TEMPORAL_COPY");
+    return value;
+}
 
 struct alignas(16) FrameConstants {
     GpuMat4 world_to_clip;
@@ -4235,14 +4265,20 @@ uint32_t VkSceneRenderer::vt_slot_for_lod(const PartRecord& record,
 void VkSceneRenderer::rebuild_vt_draw_slots() {
     // Indexed exactly like command_template_: cluster_index * kVkMaxLod + lod,
     // which is the `bucket` cull.comp already computes.
+    vk_perf::reserve_geometric(vt_draw_slot_table_,
+                               cluster_staging_.size() * kVkMaxLod);
     vt_draw_slot_table_.assign(cluster_staging_.size() * kVkMaxLod,
                                vt::kVtNoSlot);
     for (size_t cluster = 0; cluster < cluster_lods_.size(); ++cluster) {
-        const uint32_t part_slot = cluster_staging_[cluster].part_slot;
+        const GpuCluster& staged = cluster_staging_[cluster];
+        const uint32_t part_slot = staged.part_slot;
         if (part_slot >= parts_.size()) continue;
         const PartRecord& record = parts_[part_slot];
+        // staged.lod_count == cluster_lods_[cluster].size(); see
+        // rebuild_command_template. Avoids a per-cluster heap indirection in a
+        // loop that runs over every cluster in the world.
         const size_t lod_count =
-            std::min<size_t>(cluster_lods_[cluster].size(), kVkMaxLod);
+            std::min<size_t>(staged.lod_count, kVkMaxLod);
         for (size_t lod = 0; lod < lod_count; ++lod) {
             vt_draw_slot_table_[cluster * kVkMaxLod + lod] =
                 vt_slot_for_lod(record, static_cast<uint32_t>(cluster),
@@ -5431,6 +5467,9 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     }
     parts_.push_back(record);
     slot_of_[part.part_hash] = slot;
+    // Retires the flat lookup mirror and update_instances()' input snapshot in
+    // one integer (see slot_of_version_).
+    ++slot_of_version_;
     // WP-E: chart-bearing rungs get a VT registration (and start the residency
     // runtime on first use). A part with no charts leaves vt_slots all zero,
     // which is exactly the legacy path.
@@ -5457,6 +5496,46 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     // recorded frame reads past its old size.
     mark_static_append();
     return slot;
+}
+
+void VkSceneRenderer::refresh_part_slot_index() const {
+    // Power-of-two, at least 2x occupancy, so linear probing stays short.
+    size_t capacity = 16;
+    while (capacity < slot_of_.size() * 2) capacity *= 2;
+    part_slot_keys_.assign(capacity, 0);
+    part_slot_entries_.assign(capacity, -1);
+    part_slot_mask_ = static_cast<uint32_t>(capacity - 1);
+    for (const auto& entry : slot_of_) {
+        // Fibonacci mix: part hashes are already well distributed, but the low
+        // bits are what the mask keeps and one multiply is free next to a
+        // cache miss.
+        uint32_t slot = static_cast<uint32_t>(
+                            (entry.first * 0x9E3779B97F4A7C15ull) >> 32) &
+                        part_slot_mask_;
+        while (part_slot_entries_[slot] >= 0) slot = (slot + 1) & part_slot_mask_;
+        part_slot_keys_[slot] = entry.first;
+        part_slot_entries_[slot] = static_cast<int32_t>(entry.second);
+    }
+    part_slot_index_version_ = slot_of_version_;
+}
+
+int VkSceneRenderer::part_slot_lookup(uint64_t part_hash) const {
+    if (!slot_index_enabled()) {
+        const auto found = slot_of_.find(part_hash);
+        return found == slot_of_.end() ? -1 : found->second;
+    }
+    if (part_slot_index_version_ != slot_of_version_ ||
+        part_slot_entries_.empty())
+        refresh_part_slot_index();
+    uint32_t slot =
+        static_cast<uint32_t>((part_hash * 0x9E3779B97F4A7C15ull) >> 32) &
+        part_slot_mask_;
+    while (true) {
+        const int32_t entry = part_slot_entries_[slot];
+        if (entry < 0) return -1;
+        if (part_slot_keys_[slot] == part_hash) return entry;
+        slot = (slot + 1) & part_slot_mask_;
+    }
 }
 
 bool VkSceneRenderer::part_raster_range(
@@ -7110,6 +7189,9 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     instance_snapshot_valid_ = false;
     const uint32_t released_slot = static_cast<uint32_t>(found->second);
     slot_of_.erase(found);
+    // Covers both the erase and the `parts_[released_slot] = {}` below; nothing
+    // reads the version in between (see slot_of_version_).
+    ++slot_of_version_;
     PartRecord& record = parts_[released_slot];
     // Return the geometry ranges to the recycler. No compaction and no static
     // re-upload: the bytes stay where they are, unreferenced (the instance
@@ -7193,29 +7275,89 @@ void VkSceneRenderer::set_temporal_frame(const TemporalFrame& frame) {
     // The flag is sticky: it is only cleared when update_instances() takes a
     // fresh snapshot, so any number of set_temporal_frame() calls between two
     // update_instances() calls are covered.
-    if (!temporal_history_changed_) {
-        bool same = temporal_frame_.reset == frame.reset;
-        // When both frames are reset the history contributes nothing to the
-        // output in either case, so the per-entry data cannot matter.
-        if (same && !frame.reset) {
-            same = temporal_frame_.instances.size() == frame.instances.size();
-            for (size_t index = 0; same && index < frame.instances.size();
-                 ++index) {
-                const TemporalInstanceFrame& previous =
-                    temporal_frame_.instances[index];
-                const TemporalInstanceFrame& next = frame.instances[index];
-                if (previous.instance_id != next.instance_id ||
-                    previous.history_valid != next.history_valid ||
-                    (next.history_valid &&
-                     std::memcmp(previous.previous_object_to_world.m,
-                                 next.previous_object_to_world.m,
-                                 sizeof(next.previous_object_to_world.m)) != 0))
-                    same = false;
+    if (!temporal_copy_fuse_enabled()) {
+        if (!temporal_history_changed_) {
+            vk_build_profile::Scope compare_scope(
+                vk_build_profile::kSetTemporalCompare);
+            bool same = temporal_frame_.reset == frame.reset;
+            // When both frames are reset the history contributes nothing to the
+            // output in either case, so the per-entry data cannot matter.
+            if (same && !frame.reset) {
+                same =
+                    temporal_frame_.instances.size() == frame.instances.size();
+                for (size_t index = 0; same && index < frame.instances.size();
+                     ++index) {
+                    const TemporalInstanceFrame& previous =
+                        temporal_frame_.instances[index];
+                    const TemporalInstanceFrame& next = frame.instances[index];
+                    if (previous.instance_id != next.instance_id ||
+                        previous.history_valid != next.history_valid ||
+                        (next.history_valid &&
+                         std::memcmp(
+                             previous.previous_object_to_world.m,
+                             next.previous_object_to_world.m,
+                             sizeof(next.previous_object_to_world.m)) != 0))
+                        same = false;
+                }
             }
+            if (!same) temporal_history_changed_ = true;
         }
-        if (!same) temporal_history_changed_ = true;
+        {
+            vk_build_profile::Scope copy_scope(
+                vk_build_profile::kSetTemporalCopy);
+            temporal_frame_ = frame;
+        }
+        return;
     }
-    temporal_frame_ = frame;
+    // Perf: the compare above and the `temporal_frame_ = frame` below each walk
+    // the same ~90k-entry, ~13 MB TemporalInstanceFrame array, so the pair cost
+    // three full traversals per frame -- and vector's copy-assign allocates
+    // EXACTLY the source size when it has to grow, which during a fill is every
+    // frame (13 MB allocated, copied and freed each time). One pass does both,
+    // and resize_geometric restores amortised growth. The comparison result and
+    // the resulting contents are identical.
+    const bool compare_needed = !temporal_history_changed_;
+    const size_t count = frame.instances.size();
+    // Exactly the branch structure of the legacy path above: the per-entry data
+    // (and therefore a size mismatch) only matters when neither frame is a
+    // reset, because on a reset the history contributes nothing either way.
+    bool same = temporal_frame_.reset == frame.reset;
+    const bool history_matters = compare_needed && same && !frame.reset;
+    if (history_matters && temporal_frame_.instances.size() != count)
+        same = false;
+    const bool per_entry_compare = history_matters && same;
+    {
+        vk_build_profile::Scope copy_scope(vk_build_profile::kSetTemporalCopy);
+        // Grow first so every destination entry exists. When the sizes differ
+        // `same` is already settled, so the stale tail is never compared.
+        vk_perf::resize_geometric(temporal_frame_.instances, count);
+        for (size_t index = 0; index < count; ++index) {
+            TemporalInstanceFrame& previous = temporal_frame_.instances[index];
+            const TemporalInstanceFrame& next = frame.instances[index];
+            if (per_entry_compare && same &&
+                (previous.instance_id != next.instance_id ||
+                 previous.history_valid != next.history_valid ||
+                 (next.history_valid &&
+                  std::memcmp(previous.previous_object_to_world.m,
+                              next.previous_object_to_world.m,
+                              sizeof(next.previous_object_to_world.m)) != 0)))
+                same = false;
+            previous = next;
+        }
+    }
+    if (compare_needed && !same) temporal_history_changed_ = true;
+    // Everything except the instance array, which the loop above already owns.
+    temporal_frame_.current_unjittered = frame.current_unjittered;
+    temporal_frame_.previous_unjittered = frame.previous_unjittered;
+    temporal_frame_.current_jittered = frame.current_jittered;
+    temporal_frame_.previous_jittered = frame.previous_jittered;
+    temporal_frame_.internal_extent = frame.internal_extent;
+    temporal_frame_.output_extent = frame.output_extent;
+    temporal_frame_.jitter_pixels[0] = frame.jitter_pixels[0];
+    temporal_frame_.jitter_pixels[1] = frame.jitter_pixels[1];
+    temporal_frame_.reset = frame.reset;
+    temporal_frame_.attempt_token = frame.attempt_token;
+    temporal_frame_.presented_frame_index = frame.presented_frame_index;
 }
 
 bool VkSceneRenderer::instance_inputs_match_snapshot(
@@ -7229,6 +7371,12 @@ bool VkSceneRenderer::instance_inputs_match_snapshot(
         std::memcmp(instance_input_snapshot_.data(), instances.data(),
                     instances.size() * sizeof(VkSceneInstance)) != 0)
         return false;
+    // Inputs (2) and (3) collapse to one integer: slot_of_version_ moves on
+    // every mutation of slot_of_ and on every write of the PartRecord cluster
+    // range fields (see its declaration). Walking the std::map here cost an
+    // O(parts) pointer chase per frame for a question a counter answers.
+    if (snapshot_version_enabled())
+        return snapshot_slot_of_version_ == slot_of_version_;
     if (part_cluster_snapshot_.size() != parts_.size()) return false;
     for (size_t slot = 0; slot < parts_.size(); ++slot) {
         if (part_cluster_snapshot_[slot].first != parts_[slot].cluster_start ||
@@ -7248,12 +7396,21 @@ bool VkSceneRenderer::instance_inputs_match_snapshot(
 
 void VkSceneRenderer::snapshot_instance_inputs(
     const std::vector<VkSceneInstance>& instances) {
-    instance_input_snapshot_ = instances;
-    slot_of_snapshot_.assign(slot_of_.begin(), slot_of_.end());
-    part_cluster_snapshot_.resize(parts_.size());
-    for (size_t slot = 0; slot < parts_.size(); ++slot)
-        part_cluster_snapshot_[slot] = {parts_[slot].cluster_start,
-                                        parts_[slot].cluster_count};
+    // resize + memcpy, not copy-assign: vector's operator= allocates exactly
+    // the source size when it has to grow, so a fill that gains instances every
+    // frame reallocated this ~8 MB block every frame.
+    vk_perf::resize_geometric(instance_input_snapshot_, instances.size());
+    if (!instances.empty())
+        std::memcpy(instance_input_snapshot_.data(), instances.data(),
+                    instances.size() * sizeof(VkSceneInstance));
+    snapshot_slot_of_version_ = slot_of_version_;
+    if (!snapshot_version_enabled()) {
+        slot_of_snapshot_.assign(slot_of_.begin(), slot_of_.end());
+        part_cluster_snapshot_.resize(parts_.size());
+        for (size_t slot = 0; slot < parts_.size(); ++slot)
+            part_cluster_snapshot_[slot] = {parts_[slot].cluster_start,
+                                            parts_[slot].cluster_count};
+    }
     instance_snapshot_generation_ = instance_generation_;
     temporal_history_changed_ = false;
     instance_snapshot_valid_ = true;
@@ -7304,20 +7461,26 @@ bool VkSceneRenderer::update_instances(
     // generation, or updating max_clusters_per_instance_. Returning here does
     // exactly the same thing, minus ~24 MB of per-frame allocation (candidate
     // instances/slots/RT plus one hash-map node per instance).
-    if (instance_snapshot_valid_ && !temporal_history_changed_ &&
-        instance_generation_ == instance_snapshot_generation_ &&
-        instance_part_slots_.size() == instance_staging_.size() &&
-        instance_inputs_match_snapshot(instances))
-        return true;
+    {
+        vk_build_profile::Scope fast_scope(vk_build_profile::kUiFastPath);
+        if (instance_snapshot_valid_ && !temporal_history_changed_ &&
+            instance_generation_ == instance_snapshot_generation_ &&
+            instance_part_slots_.size() == instance_staging_.size() &&
+            instance_inputs_match_snapshot(instances))
+            return true;
+    }
     std::vector<GpuInstance>& candidate_instances = candidate_instances_scratch_;
     std::vector<uint32_t>& candidate_slots = candidate_slots_scratch_;
     std::vector<RtInstance>& candidate_rt = candidate_rt_scratch_;
     candidate_instances.clear();
     candidate_slots.clear();
     candidate_rt.clear();
-    candidate_instances.reserve(instances.size());
-    candidate_slots.reserve(instances.size());
-    candidate_rt.reserve(instances.size());
+    // Geometric, not exact: reserve(n) allocates exactly n, so a fill whose
+    // instance count ticks up every frame reallocated all three of these
+    // (~14 MB + ~7 MB + 0.4 MB) on every frame instead of O(log N) times.
+    vk_perf::reserve_geometric(candidate_instances, instances.size());
+    vk_perf::reserve_geometric(candidate_slots, instances.size());
+    vk_perf::reserve_geometric(candidate_rt, instances.size());
     uint32_t candidate_max_clusters = 0;
     // Perf: the per-instance history lookup below used to be a std::find_if
     // linear scan of temporal_frame_.instances — O(instances^2), ~848M
@@ -7363,12 +7526,18 @@ bool VkSceneRenderer::update_instances(
         const auto found = temporal_by_id.find(stable_id);
         return found != temporal_by_id.end() ? found->second : nullptr;
     };
+    vk_build_profile::Scope build_scope(vk_build_profile::kUiBuildLoop);
     for (size_t source_index = 0; source_index < instances.size();
          ++source_index) {
         const VkSceneInstance& source = instances[source_index];
-        const auto found = slot_of_.find(source.part_hash);
-        if (found == slot_of_.end()) continue;
-        const PartRecord& part = parts_[found->second];
+        // Perf: this was slot_of_.find() -- a red-black-tree descent per
+        // instance, i.e. ~90k walks of a several-thousand-node std::map per
+        // frame during a fill, each costing multiple dependent cache misses.
+        // part_slot_lookup answers the identical question in one probe of a
+        // flat table derived from the same map (see slot_of_version_).
+        const int found_slot = part_slot_lookup(source.part_hash);
+        if (found_slot < 0) continue;
+        const PartRecord& part = parts_[static_cast<size_t>(found_slot)];
         GpuInstance instance{};
         instance.object_to_world = pack_glsl_mat4(source.object_to_world);
         instance.previous_object_to_world = instance.object_to_world;
@@ -7388,7 +7557,7 @@ bool VkSceneRenderer::update_instances(
                 pack_glsl_mat4(temporal->previous_object_to_world);
             instance.history_valid = 1;
         }
-        instance.part_slot = static_cast<uint32_t>(found->second);
+        instance.part_slot = static_cast<uint32_t>(found_slot);
         instance.cluster_start = part.cluster_start;
         instance.cluster_count = part.cluster_count;
         candidate_instances.push_back(instance);
@@ -7400,20 +7569,26 @@ bool VkSceneRenderer::update_instances(
         std::memcpy(rt.transform, source.object_to_world.m, sizeof(rt.transform));
         candidate_rt.push_back(rt);
     }
+    build_scope.stop();
+    vk_build_profile::Scope compare_scope(vk_build_profile::kUiCompare);
+    // One slots compare, not two: `identical` and `layout_changed` asked the
+    // same O(instances) question and both used to walk the array.
+    const bool slots_equal = candidate_slots == instance_part_slots_;
     const bool identical =
-        candidate_instances.size() == instance_staging_.size() &&
-        candidate_slots == instance_part_slots_ &&
+        candidate_instances.size() == instance_staging_.size() && slots_equal &&
         std::equal(candidate_instances.begin(), candidate_instances.end(),
                    instance_staging_.begin(),
                    [](const GpuInstance& left, const GpuInstance& right) {
                        return std::memcmp(&left, &right, sizeof(left)) == 0;
                    });
+    compare_scope.stop();
     if (identical) {
+        vk_build_profile::Scope snapshot_scope(vk_build_profile::kUiSnapshot);
         snapshot_instance_inputs(instances);
         return true;
     }
 
-    const bool layout_changed = candidate_slots != instance_part_slots_;
+    const bool layout_changed = !slots_equal;
     if (!layout_changed) {
         // Swap, not move: the retired staging keeps its capacity inside the
         // scratch vectors for the next rebuild.
@@ -7424,6 +7599,7 @@ bool VkSceneRenderer::update_instances(
         static_instance_count_ = instance_staging_.size();
         static_rt_instance_count_ = rt_instances_.size();
         ++instance_generation_;
+        vk_build_profile::Scope snapshot_scope(vk_build_profile::kUiSnapshot);
         snapshot_instance_inputs(instances);
         return true;
     }
@@ -7441,6 +7617,7 @@ bool VkSceneRenderer::update_instances(
     instance_part_slots_ = std::move(candidate_slots);
     rt_instances_ = std::move(candidate_rt);
     max_clusters_per_instance_ = candidate_max_clusters;
+    vk_build_profile::Scope layout_scope(vk_build_profile::kUiLayout);
     if (layout_changed && !rebuild_command_template(error)) {
         instance_staging_ = std::move(old_instances);
         instance_part_slots_ = std::move(old_slots);
@@ -7455,11 +7632,18 @@ bool VkSceneRenderer::update_instances(
         instance_snapshot_valid_ = false;
         return false;
     }
+    layout_scope.stop();
     static_instance_count_ = instance_staging_.size();
     static_rt_instance_count_ = rt_instances_.size();
     ++instance_generation_;
-    if (layout_changed) note_command_layout_rebuild();
-    snapshot_instance_inputs(instances);
+    if (layout_changed) {
+        note_command_layout_rebuild();
+        vk_build_profile::note_layout_rebuild();
+    }
+    {
+        vk_build_profile::Scope snapshot_scope(vk_build_profile::kUiSnapshot);
+        snapshot_instance_inputs(instances);
+    }
     // Recycle the retired staging as next call's scratch capacity. (The
     // rollback path above returns before this and keeps the old vectors.)
     candidate_instances = std::move(old_instances);
@@ -7502,12 +7686,17 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
     for (size_t cluster_index = 0; cluster_index < cluster_staging_.size();
          ++cluster_index) {
         const GpuCluster& cluster = cluster_staging_[cluster_index];
-        const auto& lods = cluster_lods_[cluster_index];
         if (cluster.part_slot >= per_part.size()) {
             error = "cluster part bucket is outside the active part table";
             return false;
         }
-        for (size_t lod = 0; lod < lods.size(); ++lod) {
+        // GpuCluster::lod_count IS cluster_lods_[i].size(): ensure_part writes
+        // both from the same source.lods (and admission caps it at kVkMaxLod),
+        // release_part zeroes both, reset() clears both, and
+        // allocate_cluster_range resizes them together. Reading the flat copy
+        // avoids chasing a separate heap block per cluster in a loop that runs
+        // over every cluster in the world on every layout rebuild.
+        for (uint32_t lod = 0; lod < cluster.lod_count; ++lod) {
             if (!checked_u32_add(first_instance, per_part[cluster.part_slot],
                                  first_instance, "draw transform slots",
                                  error)) {
@@ -7526,6 +7715,13 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
         return false;
     }
 
+    // Geometric growth: assign() sizes the block exactly, so a streaming fill
+    // that adds clusters every frame reallocated the whole command template
+    // (clusters x 9 x 20 B) and its enable mask on every frame.
+    vk_perf::reserve_geometric(command_template_,
+                               static_cast<size_t>(command_count));
+    vk_perf::reserve_geometric(raster_command_enabled_,
+                               static_cast<size_t>(command_count));
     command_template_.assign(static_cast<size_t>(command_count), {});
     raster_command_enabled_.assign(static_cast<size_t>(command_count), 0);
     std::vector<PartCommandRange> next_part_ranges;
@@ -7632,16 +7828,18 @@ bool VkSceneRenderer::apply_dynamic_command_layout(std::string& error) {
     for (size_t cluster_index = 0; cluster_index < cluster_staging_.size();
          ++cluster_index) {
         const GpuCluster& cluster = cluster_staging_[cluster_index];
-        const auto& lods = cluster_lods_[cluster_index];
         if (cluster.part_slot >= merged_counts.size()) {
             error = "cluster part bucket is outside the active part table";
             return false;
         }
-        for (size_t lod = 0; lod < kVkMaxLod; ++lod) {
+        // cluster.lod_count == cluster_lods_[cluster_index].size(); see
+        // rebuild_command_template for why that holds.
+        const uint32_t lod_count = cluster.lod_count;
+        for (uint32_t lod = 0; lod < kVkMaxLod; ++lod) {
             DrawCommand& command =
                 command_template_[cluster_index * kVkMaxLod + lod];
             command.first_instance = first_instance;
-            if (lod < lods.size() &&
+            if (lod < lod_count &&
                 !checked_u32_add(first_instance,
                                  merged_counts[cluster.part_slot],
                                  first_instance, "draw transform slots",
@@ -7834,6 +8032,7 @@ bool VkSceneRenderer::upload_scene_buffers(
         if (material_command_buffer != VK_NULL_HANDLE)
             record_material_upload(material_command_buffer, frame);
     }
+    vk_build_profile::Scope static_scope(vk_build_profile::kPfUploadStatic);
     if (static_upload_dirty_ == StaticUpload::kAppend) {
         // Streaming fast path. Every static mutation since the last upload
         // was a register_part() ranged write — into a recycled interior range
@@ -7985,6 +8184,7 @@ bool VkSceneRenderer::upload_scene_buffers(
             static_cast<uint32_t>(index_staging_.size());
     }
 
+    static_scope.stop();
     if (frame.static_generation != static_generation_) {
         update_descriptor(frame.descriptor_sets[1], 0,
                           VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, clusters_);
@@ -8014,6 +8214,7 @@ bool VkSceneRenderer::upload_scene_buffers(
     // uint32) and uploaded unconditionally each frame — a stale table would
     // hand a draw the wrong variant's pages, which is exactly the kind of bug
     // that only shows up under streaming.
+    vk_build_profile::Scope vt_slots_scope(vk_build_profile::kPfVtSlots);
     if (vt_draw_slots_dirty_) rebuild_vt_draw_slots();
     const VkDeviceSize vt_slot_bytes =
         static_cast<VkDeviceSize>(vt_draw_slot_table_.size()) * sizeof(uint32_t);
@@ -8025,12 +8226,18 @@ bool VkSceneRenderer::upload_scene_buffers(
     if (vt_slot_bytes != 0 &&
         !upload(frame.vt_draw_slots, vt_draw_slot_table_.data(), vt_slot_bytes))
         return false;
+    vt_slots_scope.stop();
 
-    if (frame.instance_generation != instance_generation_) {
-        if (!upload(frame.instances, instance_staging_.data(), instance_bytes))
-            return false;
-        if (instance_bytes != 0) ++upload_counters_.instance_uploads;
-        frame.instance_generation = instance_generation_;
+    {
+        vk_build_profile::Scope instances_scope(
+            vk_build_profile::kPfUploadInstances);
+        if (frame.instance_generation != instance_generation_) {
+            if (!upload(frame.instances, instance_staging_.data(),
+                        instance_bytes))
+                return false;
+            if (instance_bytes != 0) ++upload_counters_.instance_uploads;
+            frame.instance_generation = instance_generation_;
+        }
     }
     // Fill the skin transform tail from the same dynamic-instance records the
     // static lane uses. cull.comp never writes here (explicit skinned draws are
@@ -8062,8 +8269,11 @@ bool VkSceneRenderer::upload_scene_buffers(
                                    tail_offset, error))
             return false;
     }
+    vk_build_profile::Scope commands_scope(vk_build_profile::kPfUploadCommands);
     if (frame.command_generation != command_generation_)
         frame.command_generation = command_generation_;
+    // Unconditional by design: cull.comp writes instance_count into these
+    // records on the GPU, so the CPU template has to be restored every frame.
     if (!upload(frame.commands, command_template_.data(), command_bytes))
         return false;
     if (command_bytes != 0) ++upload_counters_.command_uploads;
@@ -8074,14 +8284,22 @@ bool VkSceneRenderer::upload_scene_buffers(
     }
     uploaded_command_count_ = static_cast<uint32_t>(command_template_.size());
     uploaded_transform_slots_ = draw_transform_slots_;
+    // Copy-assign reallocates exactly; pre-grow so a fill does not rebuild this
+    // mirror's block every frame.
+    vk_perf::reserve_geometric(uploaded_raster_command_enabled_,
+                               raster_command_enabled_.size());
     uploaded_raster_command_enabled_ = raster_command_enabled_;
     uploaded_raster_draw_command_count_ = raster_draw_command_count_;
+    commands_scope.stop();
     // Every writer of rt_instances_ content bumps instance_generation_
     // (update_instances, the dynamic merge under dynamic_dirty_,
     // release_part, reset), so an unchanged generation means the mirror is
     // already current and the per-frame deep copy can be skipped.
     if (uploaded_rt_instances_generation_ != instance_generation_ ||
         uploaded_rt_instances_.size() != rt_instances_.size()) {
+        vk_build_profile::Scope rt_scope(vk_build_profile::kPfUploadOther);
+        vk_perf::reserve_geometric(uploaded_rt_instances_,
+                                   rt_instances_.size());
         uploaded_rt_instances_ = rt_instances_;
         uploaded_rt_instances_generation_ = instance_generation_;
     }
@@ -8165,7 +8383,10 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         std::max<uint64_t>(frame.frame_slot_count, 1);
     // Deferred registrations (register_part) must materialise their command
     // template before apply_dynamic_command_layout or the uploads read it.
-    if (!flush_command_template(error)) return false;
+    {
+        vk_build_profile::Scope flush_scope(vk_build_profile::kPfFlushTemplate);
+        if (!flush_command_template(error)) return false;
+    }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     test_last_rt_geometry_records_.clear();
     test_last_rt_blas_build_count_ = 0;
@@ -8218,6 +8439,7 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     // The dynamic tails are stripped at the start of the next update_instances()
     // and defensively here, so repeated prepare_frame() calls cannot stack
     // duplicate tails.
+    vk_build_profile::Scope dynamic_scope(vk_build_profile::kPfDynamic);
     if (instance_staging_.size() > static_instance_count_)
         instance_staging_.resize(static_instance_count_);
     if (rt_instances_.size() > static_rt_instance_count_)
@@ -8262,6 +8484,8 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         if (!apply_dynamic_command_layout(error)) return false;
         dynamic_command_layout_applied_ = dynamic_instance_count_ > 0;
     }
+    dynamic_scope.stop();
+    vk_build_profile::Scope anim_scope(vk_build_profile::kPfAnimBounds);
     // Bounds are resolved from the immutable current/previous pose pair before
     // this frame's cull dispatch. An empty set still uploads one inert record
     // so the storage descriptor remains valid on implementations that reject
@@ -8299,11 +8523,17 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
             animation_bounds_bytes, 0, error)) {
         return false;
     }
-    if (!upload_scene_buffers(selected, frame.command_buffer, false, error) ||
-        !upload_frame_constants(selected, matrices, camera_eye, pixel_budget,
-                                error)) {
+    anim_scope.stop();
+    if (!upload_scene_buffers(selected, frame.command_buffer, false, error))
         return false;
+    {
+        vk_build_profile::Scope constants_scope(
+            vk_build_profile::kPfUploadOther);
+        if (!upload_frame_constants(selected, matrices, camera_eye,
+                                    pixel_budget, error))
+            return false;
     }
+    vk_build_profile::Scope stats_scope(vk_build_profile::kPfStats);
     if (!matter::map_buffer(selected.stats, error)) return poison(error);
     if (selected.stats_valid) {
         if (!matter::invalidate_buffer(selected.stats, 0, sizeof(VkCullStats),
@@ -8319,7 +8549,9 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     std::memset(selected.stats.mapped, 0, sizeof(VkCullStats));
     if (!matter::flush_buffer(selected.stats, 0, sizeof(VkCullStats), error))
         return poison(error);
+    stats_scope.stop();
     active_frame_index_ = frame.frame_slot;
+    vk_build_profile::Scope retain_scope(vk_build_profile::kPfRetain);
     std::vector<std::shared_ptr<void>> resources{
         clusters_.lifetime,
         vertices_.lifetime,
@@ -8346,7 +8578,16 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         orm_.lifetime,
         depth_.lifetime,
         hdr_.lifetime};
-    return vulkan_->retain_for_frame(frame, std::move(resources), error);
+    const bool retained =
+        vulkan_->retain_for_frame(frame, std::move(resources), error);
+    retain_scope.stop();
+    // Last statement of the build region the engine times as stats.build_ms.
+    // Renders at most one aggregate line per interval, and only under
+    // MATTER_VK_BUILD_PROFILE=1.
+    vk_build_profile::frame_end(instance_staging_.size(),
+                                cluster_staging_.size(), parts_.size(),
+                                command_template_.size());
+    return retained;
 }
 
 bool VkSceneRenderer::validate_draw_command_regions(std::string& error) const {
@@ -8466,9 +8707,11 @@ bool VkSceneRenderer::build_ray_geometry(
     const std::vector<VkAnimationBoundsGpuRecord> rt_planning_bounds =
         animation_bounds_.gpu_records();
     for (const RtInstance& source : rt_instances_) {
-        const auto found = slot_of_.find(source.part_hash);
-        if (found == slot_of_.end()) continue;
-        PartRecord& part = parts_[static_cast<size_t>(found->second)];
+        // Same flat mirror update_instances() uses -- this is the other
+        // per-instance std::map descent in the frame (draw_ms's share).
+        const int found_slot = part_slot_lookup(source.part_hash);
+        if (found_slot < 0) continue;
+        PartRecord& part = parts_[static_cast<size_t>(found_slot)];
         matter::Mat4f object_to_world{};
         std::memcpy(object_to_world.m, source.transform,
                     sizeof(object_to_world.m));
@@ -10561,6 +10804,7 @@ void VkSceneRenderer::reset() {
     }
     parts_.clear();
     slot_of_.clear();
+    ++slot_of_version_;
     vt_deferred_parts_ = 0;
     vt_rung_requests_.clear();
     cluster_staging_.clear();

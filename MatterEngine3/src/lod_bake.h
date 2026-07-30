@@ -150,11 +150,49 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
 // holes; those matter at close range (level 0), not hundreds of meters out.
 // The rim stays locked, so any LOD pairing of neighboring sectors remains
 // watertight exactly as before.
+// Process-wide, monotonic ladder cost census. The terrain ladder re-bake is
+// the single biggest cost in a streamed sector -- 104 ms of a 176 ms executor
+// task on StreamMountain -- and it is four very different jobs per rung, so a
+// single number for the whole ladder does not say which to attack. Always
+// accumulating (four steady_clock reads per rung); readers take deltas.
+// Rendered by [stream.ladder]; see matter_engine.cpp.
+// Indexed by rung: [0] is the full-detail rung (eps 0 -> no decimation and no
+// reprojection), so a "bake only the rungs we will render" policy needs to know
+// which rungs actually cost anything. kMaxCensusRungs covers any plausible
+// ladder; rungs past it fold into the last slot.
+// A rung skipped via TerrainBakeTargets::first_rung contributes NOTHING here --
+// not even a `rungs` tick -- so the per-rung averages a reader computes stay
+// averages over rungs that were actually baked. Counting a skipped rung as a
+// zero-cost one would quietly halve the very numbers this exists to report.
+// `tris_in` is the SECTOR's triangle count, not the decimator's input: with
+// cascading on (see bake_terrain_lods) rung N>0 collapses rung N-1's output,
+// so the mesh handed to the decimator is far smaller than `tris_in` suggests.
+// That is the whole point of the cascade, and it shows up in decimate_us.
+inline constexpr size_t kMaxCensusRungs = 4;
+struct LadderCensus {
+    uint64_t rungs[kMaxCensusRungs]        = {};
+    uint64_t decimate_us[kMaxCensusRungs]  = {};  // decimate_to_error (QEM)
+    uint64_t reproject_us[kMaxCensusRungs] = {};  // from_tri+reproject_triex+to_tri
+    uint64_t chart_us[kMaxCensusRungs]     = {};  // build_chart_rung (VT atlas)
+    uint64_t blas_us[kMaxCensusRungs]      = {};  // register_triangles (BVH)
+    uint64_t tris_in[kMaxCensusRungs]      = {};
+    uint64_t tris_out[kMaxCensusRungs]     = {};
+};
+LadderCensus ladder_census();
+
 struct TerrainBakeTargets {
     // Per-level world-space QEM error bound as a fraction of bound_radius.
     // Level 0 must be 0 (full detail).
     std::vector<float> eps_ratio = {0.0f, 0.015f, 0.05f};
     std::vector<float> threshold  = {0.20f, 0.05f, 0.0125f};
+
+    // Index of the finest rung to actually bake. Rungs below this are skipped
+    // entirely -- not decimated, not reprojected, not registered, and absent from
+    // the returned LodLevels / out_handles / out_charts. 0 = bake every rung
+    // (default, today's behaviour). Callers that know a part can never be drawn at
+    // a fine rung -- a streamed sector hundreds of metres out -- set this to skip
+    // the decimation and reprojection those rungs would cost.
+    size_t first_rung = 0;
 };
 
 // Identify terrain skirt triangles: a triangle containing a vertical edge
@@ -170,7 +208,18 @@ size_t count_terrain_skirt_tris(const std::vector<Tri>& tris,
 // from the full-res surface. Same registration/observer/out_handles contract
 // as bake_lods.
 // Chart args as in bake_lods; with chart_opts->halve_per_rung the density
-// halves per coarser rung (terrain policy: 16 t/m rung 0, 8, 4, ...).
+// halves per coarser rung (terrain policy: 16 t/m rung 0, 8, 4, ...). Density
+// keys off the TRUE rung index, so first_rung does not change a rung's atlas
+// resolution -- rung 1 is 8 t/m whether or not rung 0 was baked.
+//
+// Coarse rungs CASCADE: rung N decimates rung N-1's output, not the full-res
+// surface. QEM cost tracks its input size, so decimating full-res twice made
+// rung 2 cost as much as rung 1 for a third of the output. The rim is a fixed
+// point of the boundary-locked collapse (see the argument at the decimation
+// site), so this is watertight-neutral; what it does change is that a cascaded
+// rung's deviation from full-res is bounded by the SUM of the eps values along
+// the chain, not by its own eps. MATTER_LOD_CASCADE=0 restores the
+// decimate-every-rung-from-full-res path.
 LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
                             const std::vector<uint8_t>& skirt_mask,
                             float bound_radius,

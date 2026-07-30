@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 #include <mutex>
@@ -13,6 +14,13 @@
 #include "matter/animation_diagnostic.h"  // full animation diagnostic list (D1)
 
 namespace script_host {
+
+// The in-memory geometry a bake hands to save_v2, retained when
+// BakeOptions::retain_geometry asks for it (see BakeResult::geometry).
+// DEFINED in render/part_store.h — this header holds it only through a
+// shared_ptr, and an incomplete type is all that needs, which keeps
+// blas_manager/part_asset out of every script_host.h includer.
+struct BakedGeometry;
 
 struct BakeError {
     bool        ok = true;        // true = no error
@@ -48,6 +56,22 @@ struct BakeOptions {
     // every pre-W5 caller ever sets) means "seed from this call's own merged
     // params" — byte-identical to the pre-W5 code path.
     std::string seed_params_json;
+    // Streaming fast path: when true, a bake that SUCCEEDS on the static
+    // (non-animated) path additionally hands back, in BakeResult::geometry, the
+    // very BLASManager + child table it just serialized — so the caller can
+    // stage the part without decoding the .part back off disk (10.9 ms per
+    // streamed sector; see docs/sector-bake-time-findings-2026-07-30.md).
+    //
+    // Does NOT change what is written: save_v2 still runs, unconditionally and
+    // with the same bytes. The only effect is that the geometry outlives the
+    // bake instead of being dropped on return.
+    //
+    // Default false, and the ONLY caller that sets it is
+    // WorldSession::Impl::bake_and_stage_sector — every other bake keeps
+    // today's peak memory, since retaining a whole part's BLAS table for the
+    // lifetime of a BakeResult is only worth it when something is about to
+    // stage from it immediately.
+    bool retain_geometry = false;
 };
 
 struct BakeResult {
@@ -75,6 +99,18 @@ struct BakeResult {
     // failure.  When non-empty, animation_diagnostics.front() is the diagnostic
     // `error.message` was collapsed from.
     std::vector<matter::AnimationDiagnostic> animation_diagnostics;
+    // BakeOptions::retain_geometry's output: the in-memory geometry save_v2 was
+    // just handed, so a caller can stage this part without reading back the
+    // artifact it wrote. Feed it to PartStore::stage_from_bake.
+    //
+    // NULL unless retain_geometry was set AND the bake succeeded AND it took
+    // the static path. An animated bake (which writes an ANLK-linked candidate
+    // and adds its finalized LOD streams to the same manager) never sets it, so
+    // a caller can treat non-null as "this is a plain static part". Callers must
+    // handle null by loading the artifact — see stage_from_bake's fallback
+    // contract. shared_ptr, so BakeResult stays freely copyable and the type can
+    // stay incomplete in this header.
+    std::shared_ptr<const BakedGeometry> geometry;
 };
 
 struct TilesetEvalResult {

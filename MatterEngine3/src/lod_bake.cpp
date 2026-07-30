@@ -8,6 +8,8 @@
 #include "../../libs/MatterSurfaceLib/include/mesh_indexed.hpp"
 #include "../../libs/MatterSurfaceLib/include/mesh_transform.hpp"  // reproject_triex
 #include "../../libs/MeshChartingLib/include/mesh_charting.h"      // WP-A chart build
+#include <algorithm>  // std::min (first_rung clamp)
+#include <atomic>   // ladder_census() backing counters
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -266,6 +268,14 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
     // counters. Observation-only; no-op without a current collector.
     BAKE_SPAN(bake_trace::kSpanLod);
 
+    // No cascade and no first_rung here, unlike bake_terrain_lods. BakeTargets
+    // targets a keep_ratio, which is RELATIVE to the decimator's input: cascading
+    // 0.1 then 0.01 yields 0.001 of the original, so the ladder would have to
+    // renormalize every ratio against the previous rung and would then produce
+    // different triangle counts than it does today. This is also the prop ladder,
+    // not the streamed-sector one — it is not the 114 ms/sector in the profile —
+    // so the change would be all risk and no measured win.
+
     // Every decimated rung reprojects against the SAME full-res source, so the
     // welded source mesh and everything reproject_triex derives from it (source
     // centroids, the centroid hash, face normals, and the triangle-AABB overlap
@@ -431,6 +441,42 @@ size_t count_terrain_skirt_tris(const std::vector<Tri>& tris,
     return count;
 }
 
+namespace {
+// Backing store for ladder_census(). Relaxed atomics: readers want an
+// aggregate, not a coherent instant.
+std::atomic<uint64_t> g_ladder_rungs[kMaxCensusRungs],
+    g_ladder_decimate_us[kMaxCensusRungs], g_ladder_reproject_us[kMaxCensusRungs],
+    g_ladder_chart_us[kMaxCensusRungs], g_ladder_blas_us[kMaxCensusRungs],
+    g_ladder_tris_in[kMaxCensusRungs], g_ladder_tris_out[kMaxCensusRungs];
+
+size_t census_slot(size_t lvl) {
+    return lvl < kMaxCensusRungs ? lvl : kMaxCensusRungs - 1;
+}
+
+// Elapsed microseconds since `mark`, advancing `mark` to now.
+uint64_t split_us(std::chrono::steady_clock::time_point& mark) {
+    const auto now = std::chrono::steady_clock::now();
+    const uint64_t us = (uint64_t)std::chrono::duration_cast<
+        std::chrono::microseconds>(now - mark).count();
+    mark = now;
+    return us;
+}
+}  // namespace
+
+LadderCensus ladder_census() {
+    LadderCensus c;
+    for (size_t i = 0; i < kMaxCensusRungs; ++i) {
+        c.rungs[i]        = g_ladder_rungs[i].load(std::memory_order_relaxed);
+        c.decimate_us[i]  = g_ladder_decimate_us[i].load(std::memory_order_relaxed);
+        c.reproject_us[i] = g_ladder_reproject_us[i].load(std::memory_order_relaxed);
+        c.chart_us[i]     = g_ladder_chart_us[i].load(std::memory_order_relaxed);
+        c.blas_us[i]      = g_ladder_blas_us[i].load(std::memory_order_relaxed);
+        c.tris_in[i]      = g_ladder_tris_in[i].load(std::memory_order_relaxed);
+        c.tris_out[i]     = g_ladder_tris_out[i].load(std::memory_order_relaxed);
+    }
+    return c;
+}
+
 LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
                             const std::vector<uint8_t>& skirt_mask,
                             float bound_radius,
@@ -449,6 +495,23 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
     const bool triex_usable = triex && triex->size() == tris.size();
     const bool lb_prof = std::getenv("MATTER_LOD_BAKE_PROFILE") != nullptr;
 
+    // MATTER_LOD_CASCADE=0 restores the pre-2026-07-30 path where every coarse
+    // rung decimates the FULL-RES surface. Kept as a kill-switch because the
+    // cascade changes what the coarsest rung's geometry IS (not just how long
+    // it takes to build) — if a distant tile ever looks wrong this isolates the
+    // cascade from the rest of the ladder without a rebuild.
+    // Read once into a function-local static, not per rung: bake_terrain_lods
+    // runs on every streaming worker concurrently and getenv is not safe
+    // against a concurrent setenv, so 3 getenv calls per sector x N workers is
+    // both wasteful and the wrong shape. C++11 magic statics make the
+    // initialization itself thread-safe. (lb_prof above is per call and stays
+    // that way — it is the pre-existing MATTER_LOD_BAKE_PROFILE idiom and only
+    // gates an fprintf that already dwarfs the getenv.)
+    static const bool cascade_enabled = []() {
+        const char* v = std::getenv("MATTER_LOD_CASCADE");
+        return !(v && v[0] == '0');
+    }();
+
     // Surface-only source (skirts removed) for every decimated level.
     std::vector<Tri> surface;
     std::vector<TriEx> surface_ex;
@@ -465,18 +528,142 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
     std::unique_ptr<MeshIndexed> src_m;
     std::unique_ptr<ReprojectSource> src_index;
 
-    for (size_t lvl = 0; lvl < targets.eps_ratio.size(); ++lvl) {
+    // Cascade state: the previous BAKED rung's decimated output and the eps it
+    // was produced at. Empty until a decimated rung has actually run, so the
+    // first decimated rung — whichever one first_rung makes it — always starts
+    // from `surface`, never from a rung that was skipped.
+    std::vector<Tri> cascade_prev;
+    float cascade_prev_eps = 0.0f;
+
+    const size_t rung_count = targets.eps_ratio.size();
+    // Clamp so the ladder is never empty. A part with zero rungs registers no
+    // BLAS at all, and PartStore then treats it as a pure assembler — the
+    // sector publishes as an invisible hole, which is strictly worse than a
+    // too-coarse mesh. "Skip everything finer than X" therefore degrades to
+    // "bake only the coarsest rung I have", not to "bake nothing".
+    const size_t first_rung =
+        rung_count > 0 ? std::min(targets.first_rung, rung_count - 1) : 0;
+    // Everything a rung costs — decimation, reprojection, charting, BLAS
+    // registration, and every census counter — lives inside this loop, so
+    // starting at first_rung skips all of it and a skipped rung leaves no trace
+    // in `out`, `out_handles`, `out_charts` or the census. The three outputs
+    // stay parallel and equal-length (one push per iteration, unconditionally),
+    // which is what part_store's assert(lod_handles.size() == lods.size())
+    // checks.
+    //
+    // Surviving rungs keep their OWN targets.threshold[lvl] — deliberately NOT
+    // renumbered. lod_select picks by threshold VALUE and clamps to the finest
+    // entry it has, so a ladder that starts at rung 1 simply never offers
+    // anything finer than 0.05 and a close camera draws that. Compacting the
+    // thresholds would instead tell the selector the coarse mesh is the
+    // near-field one, which is a different (wrong) statement.
+    //
+    // With first_rung > 0 the eps==0 `full` rung is skipped, so terrain_mesher's
+    // skirt curtains — which only ever ship on that rung — are absent from every
+    // baked rung. Intended: skirts hide transient streaming holes at close
+    // range, and setting first_rung is precisely the caller asserting this part
+    // is never drawn at close range. Every surviving rung is still decimated
+    // from `surface` (the full-res, skirt-free mesh built above), so skipping
+    // rung 0 costs detail nowhere except the skirts.
+    for (size_t lvl = first_rung; lvl < rung_count; ++lvl) {
         BAKE_SPAN(bake_trace::kSpanLodRung);
         const auto rung_t0 = std::chrono::steady_clock::now();
+        auto census_mark = rung_t0;
         const float eps = targets.eps_ratio[lvl] * bound_radius;
         const bool full = eps <= 0.0f;
 
         std::vector<Tri> decimated;
         std::vector<TriEx> reprojected;
+        size_t dec_in = 0;        // triangles actually handed to the decimator
+        bool   cascaded = false;  // ...and whether they came from a coarser rung
         if (!full) {
-            decimated = decimate_to_error(surface, eps,
+            // CASCADE. Rung N decimates rung N-1's output, not `surface`. QEM
+            // cost tracks the INPUT size, which is why rung 2 cost as much as
+            // rung 1 on StreamMountain (24.0 vs 22.2 ms) while producing a
+            // third of the triangles — both were collapsing the same
+            // 6131-triangle full-res surface.
+            //
+            // Watertightness is unaffected, and the reason is structural rather
+            // than empirical. decimate_to_error runs with lock_boundary=true,
+            // and in mesh_simplifier a boundary-locked vertex:
+            //   - is never removed. buildEdge rejects an edge whose ends are
+            //     both locked, and when exactly one end is locked it makes that
+            //     end the SURVIVOR; only the non-survivor is ever marked
+            //     removed.
+            //   - is never moved. The survivor's position is written under
+            //     `if (!verts[e.vi].locked)`.
+            // And a rim edge (both ends locked) cannot be eaten indirectly: if
+            // an interior apex c collapses into rim vertex a, the triangle
+            // carrying rim edge (a,b) degenerates, but the second triangle at
+            // the manifold edge (b,c) retargets c->a and carries (a,b) forward.
+            // So the open boundary of the input is the open boundary of the
+            // output, bit for bit — the rim is a FIXED POINT of this pass. A
+            // fixed point composes: rim(decimate(decimate(S))) == rim(S).
+            // Cascading therefore hands sector N's rung 2 exactly the rim
+            // polyline sector N+1's rung 1 has, which is the property every LOD
+            // pairing has always relied on.
+            //
+            // use_aabb_bounds=false is load-bearing here. The face-plane lock
+            // keys off the INPUT mesh's AABB, and a decimated intermediate can
+            // have a slightly smaller AABB than full-res — locking a different
+            // vertex set on the cascaded pass than on the direct one. Terrain
+            // passes false (only the topological lock is live), so the lock set
+            // is derived from topology, which is what the fixed-point argument
+            // above needs.
+            //
+            // The one caveat, stated rather than glossed: the cascade adds a
+            // from_tri weld (1e-4) over a mesh that now contains QEM-OPTIMAL
+            // positions, which the direct path never re-welds. If such a
+            // computed vertex landed within 0.1 mm of a rim vertex and came
+            // first in triangle order it would become the weld representative
+            // and shift the rim by up to 1e-4 m. That is the same tolerance the
+            // ladder already welds full-res at, it is bounded (not compounding
+            // — each pass re-welds at the same absolute epsilon), and 0.1 mm at
+            // a coarse rung's switch-in distance of hundreds of metres is many
+            // orders below a pixel. It is not, however, the bitwise identity the
+            // paragraph above establishes for the lock itself, so: watertight by
+            // construction, with a 1e-4 weld floor inherited from the pipeline.
+            //
+            // What DOES change is the error semantics, and we do not paper over
+            // it. eps is still ABSOLUTE (targets.eps_ratio[lvl] * bound_radius)
+            // but it is now measured against the rung being collapsed, not
+            // against full-res, and mesh_simplifier rebuilds its quadrics from
+            // scratch on every call (decimate() zeroes v.q before seeding), so
+            // pass N does not inherit pass N-1's accumulated error. A cascaded
+            // rung's true deviation from full-res is bounded by the SUM of the
+            // eps values along its chain — 0.015R + 0.05R at the default
+            // targets, not 0.05R. That looser bound is not enforced anywhere
+            // and is not claimed anywhere; MATTER_LOD_CASCADE=0 buys the tight
+            // one back at ~12 ms/sector.
+            //
+            // Only cascade to a strictly coarser rung: a ladder whose eps does
+            // not increase monotonically would be asking an already-coarser
+            // mesh for detail it no longer has, so such a rung falls back to
+            // full-res rather than silently under-delivering.
+            cascaded = cascade_enabled && !cascade_prev.empty() &&
+                       eps > cascade_prev_eps;
+            const std::vector<Tri>& dec_src = cascaded ? cascade_prev : surface;
+            dec_in = dec_src.size();
+            decimated = decimate_to_error(dec_src, eps,
                                           /*use_aabb_bounds=*/false);
-            if (decimated.empty()) decimated = surface;
+            if (decimated.empty()) decimated = dec_src;
+            // Hand this rung's output to the next coarser one. A copy, not a
+            // move: `decimated` is still this rung's geometry for reprojection,
+            // charting and registration below. ~70 KB at rung 1, against the
+            // ~12 ms the cascade takes off rung 2.
+            if (cascade_enabled) {
+                cascade_prev     = decimated;
+                cascade_prev_eps = eps;
+            }
+            g_ladder_decimate_us[census_slot(lvl)].fetch_add(
+                split_us(census_mark), std::memory_order_relaxed);
+            // Reprojection still sources from the FULL-RES surface via
+            // src_index, NEVER from the cascade intermediate. Material, tint,
+            // UV and shading-normal error would otherwise compound down the
+            // chain the way position error does, and unlike position error it
+            // is directly visible: a rung two reprojections removed from the
+            // authored data drifts material IDs across biome boundaries and
+            // smears the sampled normals it was supposed to inherit.
             if (!surface_ex.empty()) {
                 if (!src_index) {
                     src_m = std::make_unique<MeshIndexed>(
@@ -488,8 +675,11 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
                 reproject_triex(*src_index, tgt_m);
                 std::vector<Tri> unwelded_unused;
                 to_tri(tgt_m, unwelded_unused, reprojected);
+                g_ladder_reproject_us[census_slot(lvl)].fetch_add(
+                    split_us(census_mark), std::memory_order_relaxed);
             }
         }
+        census_mark = std::chrono::steady_clock::now();
         const std::vector<Tri>& geo = full ? tris : decimated;
         BAKE_COUNT("tris_in",    (double)tris.size());
         BAKE_COUNT("tris_out",   (double)geo.size());
@@ -514,8 +704,17 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
             else
                 rung_charts = {};
         }
+        g_ladder_chart_us[census_slot(lvl)].fetch_add(
+            split_us(census_mark), std::memory_order_relaxed);
         BLASHandle h = blas.register_triangles(
             const_cast<Tri*>(geo.data()), (int)geo.size(), ex);
+        g_ladder_blas_us[census_slot(lvl)].fetch_add(
+            split_us(census_mark), std::memory_order_relaxed);
+        g_ladder_rungs[census_slot(lvl)].fetch_add(1, std::memory_order_relaxed);
+        g_ladder_tris_in[census_slot(lvl)].fetch_add(
+            tris.size(), std::memory_order_relaxed);
+        g_ladder_tris_out[census_slot(lvl)].fetch_add(
+            geo.size(), std::memory_order_relaxed);
         if (out_handles) out_handles->push_back(h);
         uint32_t idx = UINT32_MAX;
         const auto& entries = blas.get_entries();
@@ -523,11 +722,15 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
             if (entries[i]->handle == h) { idx = (uint32_t)i; break; }
         }
         if (lb_prof) {
+            // `dec_in` is what the QEM pass actually collapsed, which under
+            // cascading is the previous rung, not `surface` — the one number
+            // that says whether the cascade is live for this rung.
             std::fprintf(stderr,
                 "[terrain-rung] lvl=%zu eps=%.2f tris=%zu->%zu (surface %zu, "
-                "skirts %zu)\n",
+                "skirts %zu, decimated %zu%s)\n",
                 lvl, (double)eps, tris.size(), geo.size(), surface.size(),
-                tris.size() - surface.size());
+                tris.size() - surface.size(), dec_in,
+                cascaded ? " cascaded" : "");
         }
         LodLevel L;
         L.screen_size_threshold = targets.threshold[lvl];

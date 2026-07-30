@@ -1671,6 +1671,34 @@ private:
 
     std::vector<PartRecord> parts_;
     std::map<uint64_t, int> slot_of_;
+    // Monotonic version of the part table. Bumped by the ONLY three writers of
+    // slot_of_ -- ensure_part's insert, release_part's erase, reset()'s clear --
+    // each of which is also the only writer of the parts_ fields the per-frame
+    // build loop reads (PartRecord::cluster_start / .cluster_count are assigned
+    // exclusively in ensure_part, immediately before the matching insert, and
+    // cleared by release_part's `parts_[slot] = {}` and reset()'s clear). So an
+    // unchanged version proves both "the same hashes resolve to the same slots"
+    // and "those slots carry the same cluster ranges".
+    uint64_t slot_of_version_ = 1;
+    // Flat open-addressed mirror of slot_of_, rebuilt lazily whenever the
+    // version moves.
+    //
+    // Perf: slot_of_ is a std::map, and update_instances() does one find() per
+    // resolved instance -- ~90k red-black-tree descents per frame during a
+    // sector fill, each several pointer hops into a table of thousands of
+    // nodes. That is the dominant term in build_ms. The mirror answers the same
+    // question in one probe of a contiguous power-of-two table. It is derived
+    // state with a single source of truth (slot_of_ itself), so it cannot
+    // desynchronise: any mutation moves the version and the next lookup
+    // rebuilds. Entries are -1 for empty, which keeps hash 0 a legal key.
+    mutable std::vector<uint64_t> part_slot_keys_;
+    mutable std::vector<int32_t> part_slot_entries_;
+    mutable uint32_t part_slot_mask_ = 0;
+    mutable uint64_t part_slot_index_version_ = 0;
+    void refresh_part_slot_index() const;
+    // slot_of_.find(hash)->second, or -1. Behaviourally identical to the map
+    // lookup it replaces. MATTER_VK_SLOT_INDEX=0 forwards to slot_of_ directly.
+    int part_slot_lookup(uint64_t part_hash) const;
     std::vector<GpuCluster> cluster_staging_;
     std::vector<std::vector<VkSceneLod>> cluster_lods_;
     std::vector<GpuInstance> instance_staging_;
@@ -1775,6 +1803,14 @@ private:
     //   (3) parts_[slot].cluster_start / .cluster_count -- the only
     //       PartRecord fields the build loop reads
     std::vector<std::pair<uint32_t, uint32_t>> part_cluster_snapshot_;
+    //   (2)+(3) collapse to one integer compare against slot_of_version_ (see
+    //       its declaration for why that counter covers both). The flattened
+    //       vectors above are the fallback, kept alive by
+    //       MATTER_VK_SNAPSHOT_VERSION=0; the version is strictly more
+    //       conservative -- it also reports a change for a mutation that
+    //       happens to restore the previous contents, which only costs a
+    //       redundant rebuild.
+    uint64_t snapshot_slot_of_version_ = 0;
     //   (4) temporal_frame_: sticky, set by set_temporal_frame() whenever the
     //       history data the build loop reads differs from what the renderer
     //       already held. Starts true so the first call always builds.

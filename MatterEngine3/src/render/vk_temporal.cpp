@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <utility>
 
 #include "matrix_math.h"
+#include "vk_build_profile.h"
 
 namespace viewer {
 namespace {
@@ -218,17 +221,48 @@ void TemporalState::TransformTable::build_map() {
     map_built = true;
 }
 
-const matter::Mat4f* TemporalState::TransformTable::find(
+std::int32_t TemporalState::TransformTable::find_index(
     std::uint64_t id) const {
-    if (!map_built || slot_entries.empty()) return nullptr;
+    if (!map_built || slot_entries.empty()) return -1;
     std::uint32_t slot = transform_slot_hash(id) & slot_mask;
     while (true) {
         const std::int32_t entry = slot_entries[slot];
-        if (entry < 0) return nullptr;
-        if (slot_keys[slot] == id) return &values[static_cast<std::size_t>(entry)];
+        if (entry < 0) return -1;
+        if (slot_keys[slot] == id) return entry;
         slot = (slot + 1) & slot_mask;
     }
 }
+
+const matter::Mat4f* TemporalState::TransformTable::find(
+    std::uint64_t id) const {
+    const std::int32_t entry = find_index(id);
+    return entry < 0 ? nullptr : &values[static_cast<std::size_t>(entry)];
+}
+
+namespace {
+
+// Kill switch for begin()'s candidate-storage recycling (see
+// TemporalState::spare_). MATTER_VK_TEMPORAL_RECYCLE=0 restores the original
+// "build into a fresh CandidateState and move it in" behaviour.
+bool temporal_recycle_enabled() {
+    static const bool value = [] {
+        const char* env = std::getenv("MATTER_VK_TEMPORAL_RECYCLE");
+        return env == nullptr || env[0] == '\0' || env[0] != '0';
+    }();
+    return value;
+}
+
+// Kill switch for the cursor-tracked history lookup in begin().
+// MATTER_VK_TEMPORAL_CURSOR=0 restores the unconditional hashed find().
+bool temporal_cursor_enabled() {
+    static const bool value = [] {
+        const char* env = std::getenv("MATTER_VK_TEMPORAL_CURSOR");
+        return env == nullptr || env[0] == '\0' || env[0] != '0';
+    }();
+    return value;
+}
+
+}  // namespace
 
 const TemporalFrame& TemporalState::begin(
     const FrameMatrices& current_unjittered, VkExtent2D internal_extent,
@@ -239,7 +273,20 @@ const TemporalFrame& TemporalState::begin(
         force_reset_ = true;
     }
 
-    CandidateState next{};
+    const bool recycle = temporal_recycle_enabled();
+    CandidateState fresh;                       // unused when recycling
+    CandidateState& next = recycle ? spare_ : fresh;
+    if (recycle) {
+        // spare_ carries a retired frame's storage. Reset exactly the fields a
+        // value-initialised CandidateState{} would have zeroed and that the
+        // code below does not unconditionally overwrite; everything else is
+        // assigned outright further down.
+        next.frame.instances.clear();
+        next.transforms.map_built = false;
+        next.transforms.unique_known = false;
+        next.transforms.unique = false;
+        next.transforms.slot_mask = 0;
+    }
     TemporalFrame& frame = next.frame;
     frame.current_unjittered = current_unjittered;
     frame.internal_extent = internal_extent;
@@ -254,6 +301,11 @@ const TemporalFrame& TemporalState::begin(
             current_unjittered, frame.jitter_pixels[0], frame.jitter_pixels[1],
             internal_extent);
     } else {
+        // The value-initialised CandidateState this used to build into left
+        // these at zero on the un-jittered path; recycled storage must not
+        // inherit the previous frame's offsets.
+        frame.jitter_pixels[0] = 0.0f;
+        frame.jitter_pixels[1] = 0.0f;
         frame.current_jittered = current_unjittered;
     }
 
@@ -269,6 +321,7 @@ const TemporalFrame& TemporalState::begin(
                    presented_.transforms.unique &&
                    presented_.transforms.ids.size() == instances.size();
     if (aligned) {
+        vk_build_profile::Scope align_scope(vk_build_profile::kTemporalAlign);
         for (std::size_t index = 0; index < instances.size(); ++index) {
             if (presented_.transforms.ids[index] !=
                 instances[index].instance_id) {
@@ -278,11 +331,14 @@ const TemporalFrame& TemporalState::begin(
         }
     }
 
-    next.transforms.ids.resize(instances.size());
-    next.transforms.values.resize(instances.size());
-    for (std::size_t index = 0; index < instances.size(); ++index) {
-        next.transforms.ids[index] = instances[index].instance_id;
-        next.transforms.values[index] = instances[index].object_to_world;
+    {
+        vk_build_profile::Scope fill_scope(vk_build_profile::kTemporalFill);
+        vk_perf::resize_geometric(next.transforms.ids, instances.size());
+        vk_perf::resize_geometric(next.transforms.values, instances.size());
+        for (std::size_t index = 0; index < instances.size(); ++index) {
+            next.transforms.ids[index] = instances[index].instance_id;
+            next.transforms.values[index] = instances[index].object_to_world;
+        }
     }
 
     if (aligned) {
@@ -294,6 +350,7 @@ const TemporalFrame& TemporalState::begin(
         // Keyed path: presented_ may have reached here through a run of fast
         // frames, so its map is materialised on demand (identical contents —
         // build_map() replays the same in-order assignments).
+        vk_build_profile::Scope map_scope(vk_build_profile::kTemporalMap);
         presented_.transforms.build_map();
         next.transforms.build_map();
     }
@@ -316,22 +373,68 @@ const TemporalFrame& TemporalState::begin(
     frame.previous_jittered = frame.reset
                                   ? frame.current_jittered
                                   : presented_.jittered;
-    frame.instances.reserve(instances.size());
-    for (std::size_t index = 0; index < instances.size(); ++index) {
-        const TemporalInstance& instance = instances[index];
-        const matter::Mat4f* previous = nullptr;
-        if (aligned) {
-            previous = &presented_.transforms.values[index];
-        } else {
-            previous = presented_.transforms.find(instance.instance_id);
+    vk_perf::reserve_geometric(frame.instances, instances.size());
+    // Perf: cursor-tracked history resolution.
+    //
+    // `aligned` demands that the WHOLE id sequence is unchanged, which a
+    // streaming world breaks on almost every frame — one published sector
+    // inserts ids and every later index shifts. That dropped the entire pass
+    // onto the hashed find(), ~90k random probes across a ~9 MB table per
+    // frame, for a set whose surviving members are still in their original
+    // relative order.
+    //
+    // So walk presented_ with an independent cursor. `unique` (established by
+    // build_map above, and required for this path) means no id repeats, so
+    // ids[cursor] == id implies find_index(id) == cursor EXACTLY — the
+    // shortcut and the hashed lookup cannot disagree. Anything else falls
+    // through to find_index, which is authoritative and also resyncs the
+    // cursor, so an insertion costs one probe per NEW id and a deletion one
+    // probe to step over it, instead of one probe per instance.
+    const bool cursor_path = !aligned && temporal_cursor_enabled() &&
+                             presented_.transforms.unique_known &&
+                             presented_.transforms.unique;
+    const std::size_t presented_count = presented_.transforms.ids.size();
+    std::size_t cursor = 0;
+    {
+        vk_build_profile::Scope history_scope(
+            vk_build_profile::kTemporalHistory);
+        for (std::size_t index = 0; index < instances.size(); ++index) {
+            const TemporalInstance& instance = instances[index];
+            const matter::Mat4f* previous = nullptr;
+            if (aligned) {
+                previous = &presented_.transforms.values[index];
+            } else if (cursor_path) {
+                if (cursor < presented_count &&
+                    presented_.transforms.ids[cursor] == instance.instance_id) {
+                    previous = &presented_.transforms.values[cursor];
+                    ++cursor;
+                } else {
+                    const std::int32_t entry =
+                        presented_.transforms.find_index(instance.instance_id);
+                    if (entry >= 0) {
+                        previous =
+                            &presented_.transforms.values[
+                                static_cast<std::size_t>(entry)];
+                        cursor = static_cast<std::size_t>(entry) + 1;
+                    }
+                }
+            } else {
+                previous = presented_.transforms.find(instance.instance_id);
+            }
+            const bool valid = !frame.reset && previous != nullptr;
+            frame.instances.push_back(
+                {instance.instance_id, instance.object_to_world,
+                 valid ? *previous : instance.object_to_world, valid});
         }
-        const bool valid = !frame.reset && previous != nullptr;
-        frame.instances.push_back(
-            {instance.instance_id, instance.object_to_world,
-             valid ? *previous : instance.object_to_world, valid});
     }
 
-    candidate_ = std::move(next);
+    if (recycle) {
+        // next IS spare_; after the swap candidate_ holds this frame and
+        // spare_ holds the retired storage for the next one.
+        std::swap(candidate_, next);
+    } else {
+        candidate_ = std::move(next);
+    }
     has_candidate_ = true;
     return candidate_.frame;
 }
@@ -343,7 +446,11 @@ bool TemporalState::commit_presented(std::uint64_t attempt_token) {
     presented_.jittered = candidate_.frame.current_jittered;
     presented_.internal_extent = candidate_.frame.internal_extent;
     presented_.output_extent = candidate_.frame.output_extent;
-    presented_.transforms = std::move(candidate_.transforms);
+    // Swap rather than move: the retired presented table's storage goes back
+    // to the candidate, which begin() recycles (see spare_). Observably
+    // identical — candidate_.transforms is fully rewritten by the next
+    // begin() and is never read in between.
+    std::swap(presented_.transforms, candidate_.transforms);
     has_presented_ = true;
     has_candidate_ = false;
     force_reset_ = false;

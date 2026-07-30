@@ -156,6 +156,9 @@ private:
         bool unique_known = false;
         bool unique = false;
         void build_map();
+        // Entry index for `id`, or -1. find() is the same lookup returning the
+        // value; begin()'s cursor path needs the index so it can resync.
+        std::int32_t find_index(std::uint64_t id) const;
         const matter::Mat4f* find(std::uint64_t id) const;
     };
 
@@ -174,6 +177,19 @@ private:
 
     PresentedState presented_{};
     CandidateState candidate_{};
+    // Retired candidate storage, recycled by begin().
+    //
+    // Perf: begin() used to build into a fresh `CandidateState next{}` and
+    // move it in. At ~90k streaming instances that is ~6.5 MB of (ids, values)
+    // plus ~13 MB of TemporalInstanceFrame allocated and released EVERY frame,
+    // and on Windows a large block is decommitted on free, so the next frame
+    // also takes a soft page fault per 4 KB of the fresh block. Nothing about
+    // the candidate's storage is per-frame state, so it cycles here instead:
+    // begin() fills `spare_` and swaps it into `candidate_`, and
+    // commit_presented() swaps (rather than moves) the transform table into
+    // `presented_`, which hands the retired presented table back. Every field
+    // that CandidateState{} zero-initialised is reset explicitly in begin().
+    CandidateState spare_{};
     bool has_presented_ = false;
     bool has_candidate_ = false;
     bool force_reset_ = true;
