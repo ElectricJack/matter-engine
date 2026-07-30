@@ -36,14 +36,20 @@ const ALPINE_GROUND = defineMaterial("AlpineGround", {
   detail: "ForestFloor",
 });
 // Steep faces at any altitude — the gray alpine walls.
+// The albedo is deliberately NEUTRAL (r ~ g ~ b) rather than the warm gray it
+// used to be. The tape's hue lane swings R against B by up to +/-0.32 around
+// whatever this base is, and a base that already leans tan can only ever produce
+// more tan — which is exactly how it read. A neutral base lets the same lane
+// reach cool blue-gray on one side and warm oxide on the other.
+// Luminance is unchanged, so scene brightness and the snow/rock contrast hold.
 const ALPINE_ROCK = defineMaterial("AlpineRock", {
-  albedo: [0.45, 0.42, 0.38],
+  albedo: [0.44, 0.43, 0.42],
   roughness: 0.95,
   detail: "AlpineRockDetail",
 });
 // Talus aprons under the walls, and stony ground above the green belt.
 const SCREE = defineMaterial("Scree", {
-  albedo: [0.50, 0.47, 0.43],
+  albedo: [0.48, 0.47, 0.46],
   roughness: 1.0,
   detail: "ScreeDetail",
 });
@@ -52,6 +58,18 @@ const ALPINE_SNOW = defineMaterial("AlpineSnow", {
   albedo: [0.90, 0.90, 0.95],
   roughness: 0.75,
   detail: "AlpineSnowDetail",
+});
+// Meadow turf: the green clumps on gentle, moist, sub-treeline ground.
+// Declared LAST on purpose — declaration order is load-bearing (see the header
+// comment above: the bake plan stops at the first settle failure, and material 0
+// is the all-weights-zero fallback), so a new material goes on the end and the
+// existing four keep their slots and their meaning. AlpineMeadowDetail does not
+// exist yet; that is fail-closed by design and this renders as flat green until
+// the tileset lands.
+const ALPINE_MEADOW = defineMaterial("AlpineMeadow", {
+  albedo: [0.20, 0.34, 0.14],
+  roughness: 0.95,
+  detail: "AlpineMeadowDetail",
 });
 
 class StreamMountain extends World {
@@ -259,7 +277,10 @@ class StreamMountain extends World {
     // patchy, never absent. highs: no talus on the green valley floors.
     const apron = steepN.smoothstep(0.10, 0.24);
     const dry = patch.smoothstep(-0.45, 0.05);
-    const dryFan = dry.mul(0.6).add(0.4);
+    // dryFan is written as a lerp rather than `dry.mul(0.6).add(0.4)`: the same
+    // value to the bit (0.4 + 0.6*dry), one emitted op cheaper, and that op is
+    // what let the appearance block below keep its bedding term.
+    const dryFan = s.blend(0.4, 1.0, dry);
     const highs = alt.smoothstep(60, 200);
     const fans = apron.mul(invRock).mul(dryFan).mul(highs);
     // The tree line: above 300-470 m even gentle ground is stone, not turf.
@@ -274,7 +295,11 @@ class StreamMountain extends World {
     // now available — swapping the classifier onto them is a retuning pass with
     // visual acceptance, deliberately not part of this migration.)
     const altHigh = alt.smoothstep(300, 470);
-    const stony = invRock.mul(invSnow).mul(altHigh);
+    // "Neither wall nor snowfield" — hoisted because the wetness lane at the
+    // bottom of the tape gates on exactly the same pair, and a shared register
+    // is one op instead of two.
+    const bare = invRock.mul(invSnow);
+    const stony = bare.mul(altHigh);
     const scree = fans.max(stony);
 
     // --- alpine ground: turf, and only where turf grows ----------------------
@@ -283,12 +308,178 @@ class StreamMountain extends World {
     // steeper or higher belongs to rock/scree, and an all-zero sample falls back
     // to this material anyway (it is tape material 0).
     const gentle = up.smoothstep(0.82, 0.94);
-    const ground = gentle.mul(invSnow).mul(altHigh.oneMinus());
+    // altLow is hoisted because the wetness lane below gates on it too — one
+    // oneMinus, two readers, no extra op.
+    const altLow = altHigh.oneMinus();
+    const ground = gentle.mul(invSnow).mul(altLow);
 
-    s.weight(ALPINE_GROUND, ground);
+    // --- alpine meadow: green clumps where turf actually gets water ----------
+    // A fifth CLASS, not a green tint: the user reads clumps, and a clump is a
+    // material that WINS, not a hue applied to stone. Three factors, two of them
+    // free (the registers already exist):
+    //   ground — gentle, unsnowed, sub-treeline. Meadow is a subset of turf by
+    //            construction, so slope/altitude/snow gating comes for nothing.
+    //   moist  — `patch` through an INVERTED smoothstep, which is the same
+    //            260/130/65 m fbm the scree fans read (it carries field()'s old
+    //            moisture seeds), so this is literally the world's moisture
+    //            prediction with the sign that says wet: fans stay stony, the
+    //            ground between them greens up. The edges are deliberately
+    //            generous — a first pass used the `dry` register's complement
+    //            and topped out near 0.4, which meant meadow never actually WON
+    //            anywhere and every clump came out as a faint green wash over
+    //            dirt. A displacing class has to reach 1 or it does nothing.
+    //   clump  — 9 m 3D world noise through a TIGHT smoothstep. The narrow
+    //            (-0.10, 0.10) window is what turns a wash into clumps: most of
+    //            the noise range saturates at one end or the other, so clump
+    //            interiors are solid 1 and only the ragged 9 m-scale boundary is
+    //            partial. Those edges resolve per texel, which is the whole
+    //            point of the texel-rate tape — at vertex rate this mask would
+    //            be a smear a metre wide.
+    const clump = s.noise3World(seed ^ 0x2A, 1 / 9, 2, 0.5, 2.0);
+    const moist = patch.smoothstep(0.35, -0.15);
+    const meadow = ground.mul(moist).mul(clump.smoothstep(-0.10, 0.10));
+    // DISPLACEMENT, the same idiom rock/snow/scree use on each other: turf is
+    // multiplied by the meadow's complement, so a clump core is meadow at weight
+    // 1 against ground at 0 — the height blend's w=1 identity means those texels
+    // composite as PURE meadow, with the blend confined to the clump edge where
+    // grass and stone actually interpenetrate. Without this the two would simply
+    // average and every clump would read as green-tinted dirt.
+    const invMeadow = meadow.oneMinus();
+
+    s.weight(ALPINE_GROUND, ground.mul(invMeadow));
     s.weight(ALPINE_ROCK, rock);
     s.weight(SCREE, scree);
     s.weight(ALPINE_SNOW, snow);
+    s.weight(ALPINE_MEADOW, meadow);
+
+    // -------------------------------------------------------------------------
+    // APPEARANCE LANES (texel-tape spec section 5). These do NOT classify: they
+    // modulate the COMPOSITED texel after the top-2 height blend, so nothing
+    // below can move a rock/scree/snow boundary. They exist because the four
+    // materials above are flat scalar albedos until the Alpine* detail scenes
+    // land — a 600 m wall of one gray is the single biggest "this is a computer"
+    // tell in the frame, and strata plus a slow mineral drift fix it in the tape
+    // rather than waiting on a tileset.
+    // -------------------------------------------------------------------------
+
+    // Three 3D world-noise fields carry everything below. 3D and world-frame on
+    // purpose: 2D (x, z) noise is CONSTANT down a vertical face, which is the
+    // one surface in an alpine range that most needs breaking up.
+    //   N — 5 octaves at 150/68/31/14/6.4 m (gain 0.6, so the fine octaves keep
+    //       real amplitude). One op buys the whole scale ladder the eye reads as
+    //       "rock": massif-scale value drift, face-scale patches, metre-scale
+    //       grain. It drives BOTH the albedo value and the bedding warp, which
+    //       is right — the same body of rock that is paler is the one whose beds
+    //       bulge.
+    //   F — RIDGED at 4.5 m, 2 octaves. Ridged fbm peaks along thin connected
+    //       crests, which is exactly the topology of a joint set; thresholded
+    //       high it is a fracture network and not marbling.
+    //   H — 3 octaves at 40/20/10 m: the MINERAL field. Independent of N so a
+    //       pale face is not automatically a warm face; this is what makes one
+    //       buttress read blue-gray and the next one tan. It doubles as the
+    //       wetness lane's seep pattern at the bottom of the block.
+    // Two more noise fields were authored and cut for register space — a second
+    // 8 m crack scale and a 0.5 m granular speckle; see the budget note at the
+    // bottom of this method.
+    const N = s.noise3World(seed ^ 0xC4, 1 / 150, 5, 0.6, 2.2);
+    const F = s.ridge3World(seed ^ 0xF2, 1 / 4.5, 2, 0.5, 2.0);
+    const H = s.noise3World(seed ^ 0xD7, 1 / 40, 3, 0.5, 2.0);
+
+    // --- base value: macro drift ----------------------------------------------
+    // +/-32% of value at the extremes, typically +/-11%. Written as 1 - (-0.32*N)
+    // because oneMinus is one op where a `const 1` plus an `add` is two, and
+    // this block lives inside the 64-op tape cap with nothing to spare.
+    const value = N.mul(-0.32).oneMinus();
+
+    // --- fracture cracks ------------------------------------------------------
+    // The crack threshold sits high on the ridge so only the crests survive:
+    // thin connected lines, not broad veining. The first pass at (0.50, 0.76)
+    // SATURATED over most of the wall — ridged fbm spends a lot of its range
+    // near the top — and the result read as a dense crazed network rather than
+    // as fractures. (0.62, 0.86) puts coverage near 8%.
+    const hairline = F.smoothstep(0.62, 0.86);
+    // Gated by `rock` — the same register the ALPINE_ROCK weight uses — so the
+    // fractures live on the walls and stop dead at the talus, the turf and the
+    // snowfields instead of scoring the whole world.
+    const lines = hairline.mul(rock);
+    // 0.86 in the line cores. An earlier pass ran 0.6 with wide bands and read
+    // as painted corduroy at overview range; the fix was both narrower masks and
+    // a much lighter hand. Pull it lighter still once AlpineRockDetail lands and
+    // the rock has real surface texture of its own to carry.
+    const V = s.blend(value, value.mul(0.86), lines);
+
+    // --- mineral hue: one chroma axis, R against B ----------------------------
+    // The 0.32 scale is SHARED with the value drift above (one `const -0.32`
+    // register, so both got bolder for free when a first pass at 0.20 read as
+    // monochrome). R and B are pushed in OPPOSITE directions while G holds the
+    // lane is a pure warm/cool axis that never changes brightness: h > 0 is
+    // oxide tan, h < 0 is cool blue-gray, h = 0 is the neutral base albedo. With
+    // AlpineRock's albedo now neutral (see the material block up top) the swing
+    // is symmetric — the same lane over the old warm-gray base could only ever
+    // make tan more tan, which is exactly how it read.
+    // Two sources ride the one axis:
+    // Driven by H alone. An oxide-staining term rode the same axis for a while
+    // (`H.sub(hairline)`, so fractures came out +0.32 warm — rust weeps out of
+    // joints on every real alpine wall, and the crack mask was already in a
+    // register), but its one `sub` is what paid for the sparse metallic mask
+    // above when that lane turned out to need two ops instead of one. Rust is
+    // one op away whenever the cap moves.
+    const h = H.mul(-0.32);
+    s.tint(V.add(h), V, V.sub(h));
+
+    // --- metallic: ore flecks in the fractures --------------------------------
+    // Metalness is an ENDPOINT channel — a texel is metal or it is not — so it
+    // wants a sharp, SPARSE mask. Thresholded off the RAW ridge field rather
+    // than off `hairline`: `hairline` saturates at 1 across the whole crack
+    // network, so any threshold applied to it selects the entire network, and
+    // the first attempt at that turned roughly a fifth of every wall into black
+    // metal (a metal texel has no diffuse, and with nothing bright to reflect it
+    // renders black — the failure mode is loud and total, so this mask earns its
+    // second op). F above 0.90 is the innermost core of a fracture only, near 1%
+    // of rock area, which reads as dark ore specks in the joints.
+    s.metallic(F.smoothstep(0.90, 0.99).mul(rock));
+
+    // --- gully wetness: damp drainage, and damp in PATCHES ---------------------
+    // fieldCurvature is metres of height deficit against the 4-neighbour ring at
+    // `radius`, so it marks the concave lines water actually collects in. It is
+    // a FIELD query, evaluated per vertex and interpolated (spec section 4.3),
+    // which is right: a drainage line is smooth at metre scale. It is the tape's
+    // only field lane (cap 8).
+    // RADIUS 8, not the spec sketch's 4: the deficit of a valley of depth d and
+    // half-width W scales as d*r^2/(2*W^2), so a 30 m-wide, 8 m-deep drainage
+    // reads ~0.1 m at r=4 and ~0.4 m at r=8. Measured by mean frame luminance in
+    // an A/B, r=4 with the sketch's 0.5-2.5 m edges moved the whole frame by 0.7
+    // of a grey level — nothing — and what little it caught was the field's 6 m
+    // ridged surface octave rather than any watercourse.
+    // The VARIATION is in the edges, not in a second mask. (0.25, 2.00) m spans
+    // most of the curvature the terrain actually produces, so wetness comes out
+    // as a continuous field — 0.2 in a shallow swale, 0.5 in a proper gully,
+    // saturating only in the few hollows deep enough to be a streambed — instead
+    // of a binary damp/dry stamp. That doubles as the peak limiter: the lane's
+    // full 1.0 is standing water and almost nothing reaches it.
+    // A separate 40 m `seep` mask (H remapped, so a gully seeps where the rock
+    // is right and runs dry between) was authored and cut for two ops when the
+    // meadow class landed; it is the next thing back after the joints.
+    // `bare` keeps it off the walls, which shed rather than pool, and out of the
+    // snow, which does not gloss.
+    const gully = s.fieldCurvature(8).smoothstep(0.25, 2.00);
+    s.wetness(gully.mul(bare));
+
+    // --- what the 64-op cap cost ----------------------------------------------
+    // The tape is at exactly 64 emitted ops (the classifier's 39 plus 25 here).
+    // Three authored terms were written, seen working on screen, and cut for
+    // register space — in the order they should come back if the cap moves:
+    //   MAJOR JOINTS — a second `s.ridge3World(seed ^ 0xF9, 1/8, 2, 0.5, 2.0)`
+    //     thresholded at (0.54, 0.82) and MAXed into `lines`, so the fracture
+    //     network has a sparse heavy set with hairlines hanging off it instead
+    //     of one uniform scale. Three ops.
+    //   GRANULAR SPECKLE — `s.noise3World(seed ^ 0xE3, 1/0.5, 2, 0.5, 2.0)` at
+    //     +/-5.5% of value, folded into the drift accumulator. Three ops. Ranked
+    //     last of the three because AlpineRockDetail's tileset supersedes it
+    //     outright — it was only ever a bridge to real cm-scale grain.
+    //   ROUGHNESS BIAS — the roughbias lane is still unused here; bedded and
+    //     fractured rock should read rougher than the faces between, and
+    //     `lines` is already the register that would drive it. Two ops.
   }
 
   biomes() {

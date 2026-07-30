@@ -448,7 +448,9 @@ class TapePlain extends World {
         const int rock = MaterialRegistryDefineDynamic(&def, "AlpineRock");
         const int scree = MaterialRegistryDefineDynamic(&def, "Scree");
         const int snow = MaterialRegistryDefineDynamic(&def, "AlpineSnow");
-        CHECK(ground >= 30 && rock > ground && scree > rock && snow > scree,
+        const int meadow = MaterialRegistryDefineDynamic(&def, "AlpineMeadow");
+        CHECK(ground >= 30 && rock > ground && scree > rock && snow > scree &&
+                  meadow > snow,
               "dynamic alpine materials registered");
 
         WorldEvalResult mtn = host.eval_world(mountain_source, "{}");
@@ -458,12 +460,13 @@ class TapePlain extends World {
         std::string serr;
         CHECK(terrain_field::SurfaceProgram::parse(mtn.surface_program, sp, serr),
               serr.c_str());
-        CHECK(sp.materials.size() == 4 && sp.uses_world_inputs(),
-              "StreamMountain declares 4 materials and reads world inputs");
+        CHECK(sp.materials.size() == 5 && sp.uses_world_inputs(),
+              "StreamMountain declares 5 materials and reads world inputs");
         CHECK(sp.materials[0].handle == ground &&
                   sp.materials[1].handle == rock &&
                   sp.materials[2].handle == scree &&
-                  sp.materials[3].handle == snow,
+                  sp.materials[3].handle == snow &&
+                  sp.materials[4].handle == meadow,
               "StreamMountain weights resolve in declaration order");
         // The tape shares the 64-register budget with every literal it names;
         // leave the headroom visible so an edit that blows it fails here.
