@@ -294,6 +294,7 @@ struct VtSurfaceTapePack {
                            kVtNoAppearanceReg};
     uint8_t rough_bias_reg = kVtNoAppearanceReg;
     uint8_t wetness_reg = kVtNoAppearanceReg;
+    uint8_t metallic_reg = kVtNoAppearanceReg;
     bool ok = false;
     bool lane_overflow = false;
     std::string err;
@@ -501,6 +502,7 @@ inline bool vt_pack_surface_tape(const terrain_field::SurfaceProgram& prog,
         if (!pack_app_reg(prog.tint_reg[c], out.tint_reg[c])) return false;
     if (!pack_app_reg(prog.rough_bias_reg, out.rough_bias_reg)) return false;
     if (!pack_app_reg(prog.wetness_reg, out.wetness_reg)) return false;
+    if (!pack_app_reg(prog.metallic_reg, out.metallic_reg)) return false;
 
     out.ok = true;
     return true;

@@ -64,7 +64,7 @@ globalThis.__surface_mats = [];
 // duplicate directive reaches SurfaceProgram::parse and is rejected there:
 // one "at most one of each" rule, enforced in one place.
 globalThis.__surface_matlines = [];
-globalThis.__surface_applines = [[], [], []];
+globalThis.__surface_applines = [[], [], [], []];
 function __sflush() {
   const out = globalThis.__surface_mats;
   out.length = 0;
@@ -208,11 +208,15 @@ function __surfaceArg() {
     //   tint          each component clamped to [0, 2] at eval; albedo *= tint
     //   roughnessBias clamped to [-0.5, 0.5]; added to ORM roughness
     //   wetness       clamped to [0, 1]; darkens albedo and drops roughness
+    //   metallic      clamped to [0, 1]; WRITES ORM metalness. Endpoints only
+    //                 in PBR terms — use sharp sparse masks (mineral flecks,
+    //                 ore veins), not broad half-metal washes.
     tint(r, g, b) {
       __sapp(0, 'tint r' + __sreg(r) + ' r' + __sreg(g) + ' r' + __sreg(b));
     },
     roughnessBias(n) { __sapp(1, 'roughbias r' + __sreg(n)); },
     wetness(n) { __sapp(2, 'wetness r' + __sreg(n)); },
+    metallic(n) { __sapp(3, 'metallic r' + __sreg(n)); },
   };
   // Inputs, recorded lazily so the tape only carries what surfaces() reads —
   // that keeps uses-world-inputs detection (and the misuse diagnostic) honest.

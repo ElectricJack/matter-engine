@@ -344,6 +344,7 @@ struct VtCompositor::Impl {
                                     kVtNoAppearanceReg};
         uint8_t tape_rough_reg = kVtNoAppearanceReg;
         uint8_t tape_wet_reg = kVtNoAppearanceReg;
+        uint8_t tape_metal_reg = kVtNoAppearanceReg;
     };
     std::map<std::pair<uint64_t, uint32_t>, MeshEntry> mesh_cache;
     // Monotonic fill()-batch counter, and per-ring lists of evicted or
@@ -935,6 +936,7 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
                         sizeof(entry.tape_tint_reg));
             entry.tape_rough_reg = tape_pack.rough_bias_reg;
             entry.tape_wet_reg = tape_pack.wetness_reg;
+            entry.tape_metal_reg = tape_pack.metallic_reg;
             auto* arena_ops = static_cast<VtGpuSurfOp*>(tape_arena.mapped) +
                               static_cast<size_t>(entry.tape_slot) *
                                   kTapeSlotOps;
@@ -1297,13 +1299,15 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
         static constexpr float kIdentity12[12] = {1, 0, 0, 0, 0, 1,
                                                   0, 0, 0, 0, 1, 0};
         std::memcpy(g.xform, kIdentity12, sizeof(g.xform));
-        // P3: no appearance directives by default (three sentinel bytes in x).
+        // P3: no appearance directives by default (three sentinel bytes in x;
+        // w carries the metallic register and must default to the sentinel
+        // too — 0 is a valid register index).
         g.app[0] = uint32_t(kVtNoAppearanceReg) |
                    (uint32_t(kVtNoAppearanceReg) << 8) |
                    (uint32_t(kVtNoAppearanceReg) << 16);
         g.app[1] = kVtNoAppearanceReg;
         g.app[2] = kVtNoAppearanceReg;
-        g.app[3] = 0;
+        g.app[3] = kVtNoAppearanceReg;
         if (has_tape) {
             for (uint32_t k = 0; k < ctx->surface_material_count; ++k)
                 g.tape[k >> 2] |= (ctx->surface_materials[k] & 0xFFu)
@@ -1324,6 +1328,7 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
                        (uint32_t(entry->tape_tint_reg[2]) << 16);
             g.app[1] = entry->tape_rough_reg;
             g.app[2] = entry->tape_wet_reg;
+            g.app[3] = entry->tape_metal_reg;
             std::memcpy(g.xform, ctx->surface_local_to_world,
                         sizeof(g.xform));
         }

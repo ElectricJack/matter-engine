@@ -335,12 +335,13 @@ void vt_tape_eval(uint ops_offset, uint ops_count,
 
 // ---- P3: appearance-lane application ---------------------------------------
 // Modulates ONE COMPOSITED texel (after the top-2 height blend, before BC
-// encode) in the fixed order tint -> roughbias -> wetness. `app` is the fill
-// request's packed directive registers: x = tint regs (r | g << 8 | b << 16),
-// y = roughbias reg, z = wetness reg — each byte VT_APP_NO_REG when the tape
-// declares no such directive, in which case that lane is a no-op and the texel
-// is bit-identical to a tape without the directive at all. `regs` is the
-// post-vt_tape_eval register file, so this is mode-3 only by construction.
+// encode) in the fixed order tint -> roughbias -> wetness -> metallic. `app`
+// is the fill request's packed directive registers: x = tint regs
+// (r | g << 8 | b << 16), y = roughbias reg, z = wetness reg, w = metallic
+// reg — each byte VT_APP_NO_REG when the tape declares no such directive, in
+// which case that lane is a no-op and the texel is bit-identical to a tape
+// without the directive at all. `regs` is the post-vt_tape_eval register
+// file, so this is mode-3 only by construction.
 void vt_apply_appearance(uvec4 app, float regs[VT_TAPE_MAX_OPS],
                          inout vec3 albedo, inout vec3 orm) {
     uint tint_regs = app.x;
@@ -359,6 +360,11 @@ void vt_apply_appearance(uvec4 app, float regs[VT_TAPE_MAX_OPS],
         float wet = clamp(regs[app.z], 0.0, 1.0);
         albedo *= mix(1.0, VT_APP_WET_ALBEDO, wet);
         orm.g = mix(orm.g, VT_APP_WET_ROUGH, wet);
+    }
+    // metallic WRITES orm.b (base materials bake metalness 0); [0, 1] clamp
+    // mirrors SurfaceRuntime::appearance_at.
+    if (app.w != VT_APP_NO_REG) {
+        orm.b = clamp(regs[app.w], 0.0, 1.0);
     }
 }
 

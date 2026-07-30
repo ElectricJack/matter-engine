@@ -628,16 +628,19 @@ int main() {
             "material 7 r0\n"
             "tint r1 r2 r1\n"
             "roughbias r3\n"
-            "wetness r4\n";
+            "wetness r4\n"
+            "metallic r2\n";
         SurfaceProgram ap;
         CHECK(parse_tape(kApp, ap, err), err.c_str());
-        CHECK(ap.has_tint() && ap.has_rough_bias() && ap.has_wetness(),
-              "appearance: all three directives parse");
+        CHECK(ap.has_tint() && ap.has_rough_bias() && ap.has_wetness() &&
+                  ap.has_metallic(),
+              "appearance: all four directives parse");
         CHECK(ap.has_appearance(), "appearance: has_appearance() agrees");
         CHECK(ap.tint_reg[0] == 1 && ap.tint_reg[1] == 2 && ap.tint_reg[2] == 1,
               "tint: three independent register refs (repeat allowed)");
-        CHECK(ap.rough_bias_reg == 3 && ap.wetness_reg == 4,
-              "roughbias/wetness register refs");
+        CHECK(ap.rough_bias_reg == 3 && ap.wetness_reg == 4 &&
+                  ap.metallic_reg == 2,
+              "roughbias/wetness/metallic register refs");
         CHECK(ap.materials.size() == 1,
               "appearance directives do not become material columns");
 
@@ -651,6 +654,8 @@ int main() {
               "appearance: tint evaluates from its registers");
         CHECK(app.rough_bias == 0.3f && app.wetness == 0.75f,
               "appearance: roughbias/wetness evaluate from their registers");
+        CHECK(app.metallic == 0.8f,
+              "appearance: metallic evaluates from its register");
         SurfaceProgram plainp;
         CHECK(parse_tape("const 0.5\nmaterial 7 r0\n", plainp, err),
               err.c_str());
@@ -661,7 +666,7 @@ int main() {
         plain_rt.appearance_at(pos, up, nullptr, identity);
         CHECK(identity.tint[0] == 1.0f && identity.tint[1] == 1.0f &&
                   identity.tint[2] == 1.0f && identity.rough_bias == 0.0f &&
-                  identity.wetness == 0.0f,
+                  identity.wetness == 0.0f && identity.metallic == 0.0f,
               "appearance: an undeclared lane evaluates to its identity");
 
         // ---- clamps (spec section 5 ranges) ----
@@ -723,6 +728,35 @@ int main() {
         CHECK(!parse_tape("const 1\nmaterial 7 r0\nwetness r0\nwetness r0\n",
                           bad, err),
               "duplicate wetness directive is rejected");
+        CHECK(!parse_tape("const 1\nmaterial 7 r0\nmetallic r0\n"
+                          "metallic r0\n",
+                          bad, err),
+              "duplicate metallic directive is rejected");
+        CHECK(!parse_tape("const 1\nmaterial 7 r0\nmetallic 0.5\n", bad, err),
+              "metallic takes a register, not a literal");
+        {
+            // metallic evaluation + clamp: 1.6 clamps to 1, -0.2 clamps to 0.
+            SurfaceProgram mp;
+            CHECK(parse_tape("const 1\nconst 1.6\nmaterial 7 r0\n"
+                             "metallic r1\n",
+                             mp, err),
+                  err.c_str());
+            SurfaceRuntime mrt{mp};
+            const float mpos[3] = {0, 0, 0}, mup[3] = {0, 1, 0};
+            SurfaceAppearance mapp;
+            mrt.appearance_at(mpos, mup, nullptr, mapp);
+            CHECK(mapp.metallic == 1.0f, "appearance: metallic clamps to 1");
+            SurfaceProgram mp2;
+            // r1 = 0.2, r2 = 0.8, r3 = r1 - r2 = -0.6 -> clamps to 0.
+            CHECK(parse_tape("const 1\nconst 0.2\noneminus r1\n"
+                             "sub r1 r2\nmaterial 7 r0\nmetallic r3\n",
+                             mp2, err),
+                  err.c_str());
+            SurfaceRuntime mrt2{mp2};
+            SurfaceAppearance mapp2;
+            mrt2.appearance_at(mpos, mup, nullptr, mapp2);
+            CHECK(mapp2.metallic == 0.0f, "appearance: metallic clamps to 0");
+        }
         CHECK(!parse_tape("const 1\nmaterial 7 r0\ntint r0\n", bad, err),
               "a 2-token tint is rejected");
         CHECK(!parse_tape("const 1\nmaterial 7 r0\ntint r0 r0\n", bad, err),
