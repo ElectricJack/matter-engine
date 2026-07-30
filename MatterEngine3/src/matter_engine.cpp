@@ -53,6 +53,12 @@
 #include "render/matrix_math.h"
 #include "render/vt_surface_tape.h"  // P2: field-lane scan + f16 lane values
 #endif
+// Headless builds (no MATTER_VULKAN_VIEWER) still compile the streaming
+// publish path, which declares an (always-empty there) prebuilt-part handle.
+// An empty shared_ptr of an incomplete type is fully defined behavior, so a
+// forward declaration is all the headless build needs. Harmless when the
+// full definition above is in play.
+namespace viewer { struct VkScenePart; }
 
 // Task 10: live-edit watcher + production seams.
 #include "live_edit.h"
@@ -199,6 +205,15 @@ bool copy_animation_debug_asset(
     return true;
 }
 
+// MATTER_STREAM_PUBLISH_PROFILE sub-splits for ensure_vulkan_part, which is
+// ~96% of a sector publish. GL/app thread only, so thread_local is enough:
+// ensure_vulkan_part resets them on entry and the publish job reads them
+// immediately after the call returns.
+thread_local double g_pub_classify_ms = 0.0;
+thread_local double g_pub_cpu_ms = 0.0;
+thread_local double g_pub_gpu_ms = 0.0;
+thread_local double g_pub_vertexloop_ms = 0.0;
+
 #ifdef MATTER_VULKAN_VIEWER
 // WP-F (chart-VT Phase 4, contract C4): everything the surfaces()-tape
 // classification of one part registration needs. `tape` is the world's
@@ -276,6 +291,14 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         std::string& error,
                         int force_lod = -1,
                         const VtSurfaceClassifier* surface = nullptr);
+// ensure_vulkan_part split so a streaming worker can do the CPU half off the
+// render thread; see the definitions for the thread contract.
+bool build_vulkan_part(uint64_t part_hash, const viewer::LoadedPart& loaded,
+                       int force_lod, const VtSurfaceClassifier* surface,
+                       viewer::VkScenePart& part);
+bool register_vulkan_part(viewer::VkSceneRenderer& renderer, uint64_t part_hash,
+                          const viewer::VkScenePart& part, bool& drawable,
+                          std::string& error);
 #endif
 #ifndef MATTER_VULKAN_ONLY
 // Temporary compatibility boundary for the current OpenGL/raylib renderer.
@@ -331,7 +354,15 @@ matter_stream::Config make_streaming_profile(
             if (radius > 0.0f) profile.rings.push_back({radius, rung});
         }
     }
+    // A sector holds an inflight slot from dispatch until its publication is
+    // ACKNOWLEDGED, not until its bake ends — so this caps throughput at
+    // max_inflight / publish-latency, independent of how fast sectors bake.
+    // MATTER_STREAM_INFLIGHT overrides it for A/B measurement.
     profile.max_inflight = 16;
+    if (const char* inflight_env = std::getenv("MATTER_STREAM_INFLIGHT")) {
+        const int parsed = std::atoi(inflight_env);
+        if (parsed > 0) profile.max_inflight = parsed;
+    }
     // Heightfield terrain LOD ladder (alpine design): streamed sectors carry
     // a terrain LOD + coarser-neighbor edge mask; WorldSector picks the
     // heightfield generator for LODs 0-4 and the voxel mesher for LOD 5.
@@ -707,6 +738,18 @@ struct WorldSession::Impl {
     void bake_pool_loop();
     void quiesce_bake_pool();
     void shutdown_bake_pool();
+
+    // queue + active, under bake_pool_mutex. 0 in serial mode. Reported by the
+    // streaming telemetry below so a fill can be attributed to the bake pool,
+    // the publish stage, or the streamer's inflight cap.
+    size_t bake_pool_outstanding();
+    // Wall clock of the current disc fill, for the MATTER_STREAM_FILL_PROFILE
+    // summary line emitted when the initial load completes.
+    std::chrono::steady_clock::time_point stream_fill_start{};
+    bool stream_fill_timing = false;
+    uint64_t stream_fill_sectors = 0;
+    uint64_t stream_fill_steps = 0;
+    double stream_fill_step_ms = 0.0;
     // Bake one sector, stage its part, and post the GL publish job. Shared by
     // the serial path and the pool executors; the request/completion pair is
     // always reserved by the worker thread beforehand.
@@ -1107,6 +1150,12 @@ void WorldSession::Impl::ensure_bake_pool_started() {
     bake_pool.reserve(static_cast<size_t>(requested));
     for (int i = 0; i < requested; ++i)
         bake_pool.emplace_back([this] { bake_pool_loop(); });
+}
+
+size_t WorldSession::Impl::bake_pool_outstanding() {
+    if (bake_pool.empty()) return 0;
+    std::lock_guard<std::mutex> lock(bake_pool_mutex);
+    return bake_pool_queue.size() + bake_pool_active;
 }
 
 void WorldSession::Impl::bake_pool_loop() {
@@ -1657,6 +1706,16 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         auto t_world_start = clk_t::now();
         std::string werr;
         world_initial_load_done = false;  // reset for this generation
+        // MATTER_STREAM_FILL_PROFILE: time the disc fill from the end of
+        // install_world to the first all-holes-filled step, so the summary
+        // separates streaming throughput from the one-time child-asset bakes.
+        // Its own gate, not MATTER_STREAM_BAKE_PROFILE's: that one prints a
+        // line per sector, and 5,000 stderr writes from four executors is
+        // itself a measurable load on the thing being measured.
+        stream_fill_timing = std::getenv("MATTER_STREAM_FILL_PROFILE") != nullptr;
+        stream_fill_sectors = 0;
+        stream_fill_steps = 0;
+        stream_fill_step_ms = 0.0;
         if (!install_world(token, werr)) {
             fprintf(stderr, "install_world: %s\n", werr.c_str());
             emit_error(is_cancelled() ? BakeErrorCode::Cancelled : classify_error(werr),
@@ -1665,6 +1724,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         }
         double world_ms = std::chrono::duration<double, std::milli>(
             clk_t::now() - t_world_start).count();
+        stream_fill_start = std::chrono::steady_clock::now();
         if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "install", "cancelled"); return; }
 
         // The world-kind branch returns before the closed-world fog publication
@@ -3894,12 +3954,81 @@ void WorldSession::Impl::bake_and_stage_sector(
         const float sector_size = world_sector_size;
         auto staged_load = std::make_shared<viewer::PartStore::StagedPart>(
             store->stage_load(sector_hash));
+
+        // Also convert the staged part into the renderer's VkScenePart HERE,
+        // on the worker. That conversion (per-vertex repacking + cluster
+        // packing) measured 11.4 ms of a 13.9 ms stream.publish, and it
+        // touches no renderer and no GPU state -- only the read-only material
+        // registry -- so it has no business on the render thread. Leaving it
+        // there capped disc fill at one publish per frame, because the pump's
+        // ms_budget bounds how many jobs START, never how long one TAKES.
+        //
+        // Almost all of that cost is the surfaces() tape classification, not
+        // the vertex repacking (measured 8.77 ms vs 0.21 ms): with the
+        // default demand-driven VT path, part.lod_chart_meshes stays empty,
+        // so build_vulkan_part's legacy-parity block re-classifies EVERY LOD
+        // rung's vertices from scratch to derive the per-vertex material
+        // argmax. That needs the VtSurfaceClassifier, which the publish job
+        // derives from app-thread manifest state -- but every input is
+        // reproducible here:
+        //   * tape / field / tape_hash are install_world-owned and, like
+        //     world_field, fenced by quiesce_bake_pool() for the whole time
+        //     streaming is live.
+        //   * local_to_world is the sector's own placement, the same
+        //     tx/tz * sector_size translation the job builds below.
+        //   * world_anchored comes from the count of manifest entries sharing
+        //     this part hash. The job counts it AFTER applying this sector's
+        //     entry, and sector variants are unique by construction (the
+        //     job's own comment), so that count is 1 here by the same rule.
+        //
+        // MATTER_VK_DIAGNOSTIC_GROUND_TILESET_MATERIAL still falls back to
+        // building inside the job: its override mutates the global material
+        // registry, which concurrent executors must not race on.
+        std::shared_ptr<viewer::VkScenePart> prebuilt_part;
+#ifdef MATTER_VULKAN_VIEWER
+        static const bool diagnostic_material_override =
+            std::getenv("MATTER_VK_DIAGNOSTIC_GROUND_TILESET_MATERIAL") != nullptr;
+        // MATTER_STREAM_PREBUILD=0 forces the old build-inside-the-job path,
+        // so the two can be diffed pixel-for-pixel from one binary.
+        static const bool prebuild_enabled = [] {
+            const char* v = std::getenv("MATTER_STREAM_PREBUILD");
+            return !(v && std::strcmp(v, "0") == 0);
+        }();
+        if (staged_load->ok && prebuild_enabled && !diagnostic_material_override) {
+            VtSurfaceClassifier sector_surface;
+            const VtSurfaceClassifier* surface_ptr = nullptr;
+            if (world_surface) {
+                sector_surface.tape = world_surface.get();
+                sector_surface.field = world_field.get();
+                sector_surface.tape_hash = world_surface_hash;
+                sector_surface.world_anchored =
+                    terrain_field::surface_variant_world_anchored(1);
+                std::memset(sector_surface.local_to_world, 0,
+                            sizeof(sector_surface.local_to_world));
+                sector_surface.local_to_world[0] = 1.0f;
+                sector_surface.local_to_world[5] = 1.0f;
+                sector_surface.local_to_world[10] = 1.0f;
+                sector_surface.local_to_world[15] = 1.0f;
+                sector_surface.local_to_world[3] =
+                    static_cast<float>(req.tx) * sector_size;
+                sector_surface.local_to_world[11] =
+                    static_cast<float>(req.tz) * sector_size;
+                surface_ptr = &sector_surface;
+            }
+            auto built = std::make_shared<viewer::VkScenePart>();
+            if (build_vulkan_part(sector_hash, staged_load->lp,
+                                  /*force_lod=*/-1, surface_ptr, *built)) {
+                prebuilt_part = std::move(built);
+            }
+        }
+#endif
         try {
             matter_async::GpuJob publish_job;
             publish_job.name = "stream.publish";
             publish_job.fn =
                 [this, request, sector_hash, sector_size, provider_ref,
-                 completion_index, staged_load](std::string&) noexcept -> bool {
+                 completion_index, staged_load,
+                 prebuilt_part](std::string&) noexcept -> bool {
                 matter_async::assert_gl_thread("stream.publish");
                 PublicationCompletion* completion =
                     start_publication_completion(completion_index);
@@ -4052,33 +4181,108 @@ void WorldSession::Impl::bake_and_stage_sector(
                         published.resources.vulkan_attempted = true;
                         bool drawable = false;
                         std::string vulkan_error;
-                        // WP-F: classify the sector's chart vertices against
-                        // the world's surfaces() tape. World-anchored per the
-                        // provider's instance bookkeeping: the entry applied
-                        // above is the variant's only reference iff no other
-                        // manifest entry shares its hash (sector variants are
-                        // unique by construction; this keeps the rule honest).
-                        VtSurfaceClassifier sector_surface;
-                        const VtSurfaceClassifier* surface_ptr = nullptr;
-                        if (world_surface) {
-                            sector_surface.tape = world_surface.get();
-                            sector_surface.field = world_field.get();
-                            sector_surface.tape_hash = world_surface_hash;
-                            uint32_t refs = 0;
-                            for (const auto& e : state.entries())
-                                if (e.part_hash == sector_hash) ++refs;
-                            sector_surface.world_anchored =
-                                terrain_field::surface_variant_world_anchored(
-                                    refs);
-                            std::memcpy(sector_surface.local_to_world,
-                                        instance.transform,
-                                        sizeof(sector_surface.local_to_world));
-                            surface_ptr = &sector_surface;
+                        bool vulkan_ok = false;
+                        // MATTER_STREAM_PREBUILD_VERIFY=1: rebuild the part the
+                        // OLD way, with the classifier derived from live
+                        // app-thread state, and assert it is byte-identical to
+                        // what the worker produced. This is the gate for the
+                        // worker prebuild: the classification depends on
+                        // world_anchored (a manifest ref count) and the
+                        // sector transform, both of which the worker
+                        // reproduces rather than reads.
+                        static const bool prebuild_verify =
+                            std::getenv("MATTER_STREAM_PREBUILD_VERIFY") != nullptr;
+                        if (prebuilt_part && prebuild_verify) {
+                            VtSurfaceClassifier ref_surface;
+                            const VtSurfaceClassifier* ref_ptr = nullptr;
+                            if (world_surface) {
+                                ref_surface.tape = world_surface.get();
+                                ref_surface.field = world_field.get();
+                                ref_surface.tape_hash = world_surface_hash;
+                                uint32_t refs = 0;
+                                for (const auto& e : state.entries())
+                                    if (e.part_hash == sector_hash) ++refs;
+                                ref_surface.world_anchored =
+                                    terrain_field::surface_variant_world_anchored(
+                                        refs);
+                                std::memcpy(
+                                    ref_surface.local_to_world,
+                                    instance.transform,
+                                    sizeof(ref_surface.local_to_world));
+                                ref_ptr = &ref_surface;
+                            }
+                            viewer::VkScenePart reference;
+                            const bool ref_built = build_vulkan_part(
+                                sector_hash, *loaded, /*force_lod=*/-1,
+                                ref_ptr, reference);
+                            const viewer::VkScenePart& got = *prebuilt_part;
+                            const bool same =
+                                ref_built &&
+                                reference.vertices.size() == got.vertices.size() &&
+                                reference.indices == got.indices &&
+                                reference.surface_materials ==
+                                    got.surface_materials &&
+                                reference.surface_tape_hash ==
+                                    got.surface_tape_hash &&
+                                reference.vt_deferred_rung_mask ==
+                                    got.vt_deferred_rung_mask &&
+                                reference.clusters.size() == got.clusters.size() &&
+                                (reference.vertices.empty() ||
+                                 std::memcmp(reference.vertices.data(),
+                                             got.vertices.data(),
+                                             reference.vertices.size() *
+                                                 sizeof(viewer::VkRasterVertex)) == 0);
+                            static uint64_t verify_ok = 0, verify_bad = 0;
+                            if (same) ++verify_ok; else ++verify_bad;
+                            if (((verify_ok + verify_bad) % 200) == 0 || !same) {
+                                std::fprintf(stderr,
+                                    "[stream.prebuild.verify] match=%llu "
+                                    "MISMATCH=%llu%s\n",
+                                    (unsigned long long)verify_ok,
+                                    (unsigned long long)verify_bad,
+                                    same ? "" : "  <-- this sector differs");
+                            }
                         }
-                        if (!ensure_vulkan_part(
+                        if (prebuilt_part) {
+                            // The worker already ran the conversion, including
+                            // the surfaces() classification, against a
+                            // classifier reproduced from the same inputs the
+                            // else-branch derives here.
+                            vulkan_ok = register_vulkan_part(
+                                *vk_scene, sector_hash, *prebuilt_part,
+                                drawable, vulkan_error);
+                        } else {
+                            // WP-F: classify the sector's chart vertices
+                            // against the world's surfaces() tape.
+                            // World-anchored per the provider's instance
+                            // bookkeeping: the entry applied above is the
+                            // variant's only reference iff no other manifest
+                            // entry shares its hash (sector variants are unique
+                            // by construction; this keeps the rule honest).
+                            VtSurfaceClassifier sector_surface;
+                            const VtSurfaceClassifier* surface_ptr = nullptr;
+                            if (world_surface) {
+                                sector_surface.tape = world_surface.get();
+                                sector_surface.field = world_field.get();
+                                sector_surface.tape_hash = world_surface_hash;
+                                uint32_t refs = 0;
+                                for (const auto& e : state.entries())
+                                    if (e.part_hash == sector_hash) ++refs;
+                                sector_surface.world_anchored =
+                                    terrain_field::surface_variant_world_anchored(
+                                        refs);
+                                std::memcpy(
+                                    sector_surface.local_to_world,
+                                    instance.transform,
+                                    sizeof(sector_surface.local_to_world));
+                                surface_ptr = &sector_surface;
+                            }
+                            vulkan_ok = ensure_vulkan_part(
                                 *vk_scene, sector_hash, *loaded,
                                 drawable, vulkan_error, /*force_lod=*/-1,
-                                surface_ptr)) {
+                                surface_ptr);
+                        }
+                        if (!vulkan_ok) {
                             throw std::runtime_error(
                                 vulkan_error.empty()
                                     ? "sector Vulkan registration failed"
@@ -4104,12 +4308,14 @@ void WorldSession::Impl::bake_and_stage_sector(
                         std::fprintf(stderr,
                             "[stream.publish] sector(%lld,%lld,r%d) "
                             "load=%.1f state=%.1f tracer=%.1f culler=%.1f "
-                            "vulkan=%.1f cache=%.1f ms\n",
+                            "vulkan=%.1f [cpu=%.1f vloop=%.1f classify=%.1f gpu=%.1f] "
+                            "cache=%.1f ms\n",
                             (long long)request.sector.tx,
                             (long long)request.sector.tz,
                             (int)request.sector.rung,
                             t_load, t_state, t_tracer, t_culler,
-                            t_vulkan, t_cache);
+                            t_vulkan, g_pub_cpu_ms, g_pub_vertexloop_ms,
+                            g_pub_classify_ms, g_pub_gpu_ms, t_cache);
                     }
 #ifndef MATTER_VULKAN_ONLY
                     if (composer) {
@@ -4182,6 +4388,8 @@ void WorldSession::Impl::execute_sector_stream_step() {
     ensure_bake_pool_started();
 
     // 3. Service bake requests.
+    const auto step_t0 = std::chrono::steady_clock::now();
+    size_t dispatched = 0;
     while (true) {
         if (stream_worker_count > 1) {
             // Cap the backlog at the executor count so sectors keep being
@@ -4216,6 +4424,35 @@ void WorldSession::Impl::execute_sector_stream_step() {
         } else {
             bake_and_stage_sector(request, completion_index, provider_ref);
         }
+        ++dispatched;
+    }
+    if (stream_fill_timing) {
+        ++stream_fill_steps;
+        stream_fill_sectors += dispatched;
+        const auto step_now = std::chrono::steady_clock::now();
+        stream_fill_step_ms += std::chrono::duration<double, std::milli>(
+            step_now - step_t0).count();
+        // Periodic progress. `pool` vs `inflight` is what attributes a slow
+        // fill: pool at its cap means bake-bound, inflight pinned at
+        // max_inflight with an idle pool means the publish/acknowledge stage
+        // is the limiter.
+        if (stream_fill_steps % 200 == 0) {
+            const double elapsed_ms = std::chrono::duration<double, std::milli>(
+                step_now - stream_fill_start).count();
+            const auto snap = coordinator.snapshot();
+            fprintf(stderr,
+                    "[stream.rate] t=%.1f s dispatched=%llu (%.0f/s) "
+                    "steps=%llu step_avg=%.1f ms worker_in_steps=%.0f%% "
+                    "resident=%u inflight=%u pool=%zu\n",
+                    elapsed_ms / 1000.0,
+                    (unsigned long long)stream_fill_sectors,
+                    elapsed_ms > 0 ? stream_fill_sectors * 1000.0 / elapsed_ms : 0.0,
+                    (unsigned long long)stream_fill_steps,
+                    stream_fill_step_ms / stream_fill_steps,
+                    elapsed_ms > 0 ? 100.0 * stream_fill_step_ms / elapsed_ms : 0.0,
+                    snap.status.resident_sectors, snap.status.inflight_sectors,
+                    bake_pool_outstanding());
+        }
     }
 
     // Process acknowledgements that arrived while baking/posting and publish a
@@ -4240,6 +4477,20 @@ void WorldSession::Impl::execute_sector_stream_step() {
         snapshot.status.resident_sectors > 0 &&
         snapshot.status.inflight_sectors == 0) {
         world_initial_load_done = true;
+        if (stream_fill_timing) {
+            stream_fill_timing = false;
+            const double fill_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - stream_fill_start).count();
+            fprintf(stderr,
+                    "[stream.fill] %.2f s  resident=%u dispatched=%llu "
+                    "steps=%llu step_avg=%.2f ms rate=%.0f/s workers=%d\n",
+                    fill_ms / 1000.0, snapshot.status.resident_sectors,
+                    (unsigned long long)stream_fill_sectors,
+                    (unsigned long long)stream_fill_steps,
+                    stream_fill_steps ? stream_fill_step_ms / stream_fill_steps : 0.0,
+                    fill_ms > 0 ? stream_fill_sectors * 1000.0 / fill_ms : 0.0,
+                    stream_worker_count);
+        }
         events::BakeFinished ev;
         ev.errors = 0;
         hub_.emit(std::move(ev));
@@ -5403,12 +5654,48 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
     // from slot_of_ and forces the rebuild. When the override is unchanged the
     // registered part already carries the forced thresholds — which is exactly
     // what ensure_part()'s early-out returned before.
+    g_pub_classify_ms = 0.0;
+    g_pub_cpu_ms = 0.0;
+    g_pub_gpu_ms = 0.0;
+    const auto pub_fn_t0 = std::chrono::steady_clock::now();
     if (renderer.registered_part_slot(part_hash) >= 0) {
         error.clear();
         drawable = true;
         return true;
     }
     viewer::VkScenePart part;
+    if (!build_vulkan_part(part_hash, loaded, force_lod, surface, part))
+        return true;
+    const auto gpu_t0 = std::chrono::steady_clock::now();
+    g_pub_cpu_ms =
+        std::chrono::duration<double, std::milli>(gpu_t0 - pub_fn_t0).count();
+    drawable = renderer.ensure_part(part, error) >= 0;
+    g_pub_gpu_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - gpu_t0).count();
+    return drawable || error.empty();
+}
+
+// Everything ensure_vulkan_part does EXCEPT the two renderer calls: converts a
+// decoded LoadedPart into the renderer's VkScenePart (per-vertex repacking,
+// chart/VT declaration, cluster packing). Touches no renderer and no GPU state,
+// so a streaming worker can run it off the render thread — which is the point:
+// measured at 11.4 ms of the 13.9 ms stream.publish job, on the render thread,
+// where GpuJobQueue::pump's progress guarantee runs it to completion regardless
+// of the frame's ms_budget.
+//
+// Returns false when there is nothing to register (no meshes, no vertices, no
+// clusters) — the callers' "return true, drawable stays false" case.
+//
+// Reads the global material registry (MaterialRegistryGet/Count), which is
+// written at world load and read-only while sectors stream.
+bool build_vulkan_part(uint64_t part_hash,
+                              const viewer::LoadedPart& loaded,
+                              int force_lod,
+                              const VtSurfaceClassifier* surface,
+                              viewer::VkScenePart& part) {
+    if (loaded.lod_mesh_data.empty()) return false;
+    const auto build_t0 = std::chrono::steady_clock::now();
+    g_pub_vertexloop_ms = 0.0;
     part.part_hash = part_hash;
     const int material_count = MaterialRegistryCount();
     VulkanDiagnosticMaterialOverride diagnostic_override(material_count);
@@ -5509,7 +5796,9 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
         for (uint32_t idx : mesh.indices)
             part.indices.push_back(mesh_offsets[mi] + idx);
     }
-    if (part.vertices.empty()) return true;
+    if (part.vertices.empty()) return false;
+    g_pub_vertexloop_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - build_t0).count();
 
     // WP-E (chart-space VT): hand the renderer the per-rung chart tables the
     // load-time ladder bake produced, plus the CPU rung meshes the page filler
@@ -5598,6 +5887,7 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         mesh.material_ids.empty() ? UINT32_MAX
                                                   : mesh.material_ids.front();
                     if (classify) {
+                        const auto cls_t0 = std::chrono::steady_clock::now();
                         vt_classify_chart_vertices(
                             *surface, out.positions.data(),
                             out.normals.empty() ? nullptr
@@ -5607,6 +5897,11 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         out.surface_lane_count = vt_compute_chart_lanes(
                             *surface, out.positions.data(), out.vertex_count,
                             out.surface_lanes);
+                        // Lane evaluation is the same per-vertex publish-path
+                        // cost the classify telemetry watches — timed together.
+                        g_pub_classify_ms +=
+                            std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - cls_t0).count();
                     }
                 }
             }
@@ -5641,11 +5936,15 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         !part.lod_chart_meshes[mi].surface_weights.empty()) {
                         weights = &part.lod_chart_meshes[mi].surface_weights;
                     } else {
+                        const auto cls2_t0 = std::chrono::steady_clock::now();
                         vt_classify_chart_vertices(
                             *surface, mesh.vertices.data(),
                             mesh.normals.empty() ? nullptr
                                                  : mesh.normals.data(),
                             static_cast<uint32_t>(mesh.vertex_count), scratch);
+                        g_pub_classify_ms +=
+                            std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - cls2_t0).count();
                         weights = &scratch;
                     }
                     if (weights->size() !=
@@ -5740,8 +6039,29 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
         apply_force_lod(cluster.lods, force_lod);
         if (!cluster.lods.empty()) part.clusters.push_back(std::move(cluster));
     }
-    if (part.clusters.empty()) return true;
+    if (part.clusters.empty()) return false;
+    return true;
+}
+
+// Register a VkScenePart a worker already built. Mirrors ensure_vulkan_part's
+// two renderer calls exactly, minus the conversion in between.
+bool register_vulkan_part(viewer::VkSceneRenderer& renderer,
+                                 uint64_t part_hash,
+                                 const viewer::VkScenePart& part,
+                                 bool& drawable, std::string& error) {
+    drawable = false;
+    g_pub_classify_ms = 0.0;
+    g_pub_cpu_ms = 0.0;
+    if (renderer.registered_part_slot(part_hash) >= 0) {
+        error.clear();
+        drawable = true;
+        g_pub_gpu_ms = 0.0;
+        return true;
+    }
+    const auto gpu_t0 = std::chrono::steady_clock::now();
     drawable = renderer.ensure_part(part, error) >= 0;
+    g_pub_gpu_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - gpu_t0).count();
     return drawable || error.empty();
 }
 
