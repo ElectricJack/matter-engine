@@ -89,22 +89,31 @@ struct TilesetPomSettings {
     // VkSceneRenderer::set_tileset_pom_settings). The flat (Phase 1) Wang
     // tile sample still applies either way -- only the parallax/self-shadow
     // displacement is gated.
-    bool  enabled            = true;
-    float relief_cap_m       = 0.178f;  // pom_max_relief_m
-    float datum_bias_m       = 0.105f;  // NEW: see file comment above
-    float max_march_m        = 0.73f;   // pom_max_march_m
-    int   steps              = 50;      // pom_steps (linear march steps near camera)
-    float max_distance_m     = 50.4f;   // pom_max_distance_m
-    float fade_band_m        = 1.0f;    // pom_fade_band_m
-    float ao_strength        = 0.63f;   // baked-AO texel blend factor
-    float shadow_strength    = 0.68f;   // self-shadow blend factor
+    //
+    // Defaults are the 2026-07-29 alpine tuning pass (stronger relief and a
+    // much longer POM reach); the pre-existing hardcoded TilesetParamsGpu
+    // values they replaced were relief 0.178, datum 0.105, march 0.73,
+    // steps 50, distance 50.4, fade 1.0, ao 0.63, shadow 0.68, horizon 1.0.
+    //
+    // enabled defaults to false (2026-07-29): the march is opt-in from the
+    // viewer's "Ground POM" panel. The tuned values below are kept so that
+    // ticking the box restores the alpine tuning in one click.
+    bool  enabled            = false;
+    float relief_cap_m       = 0.260f;  // pom_max_relief_m
+    float datum_bias_m       = 0.240f;  // Ground POM datum-bias fix knob
+    float max_march_m        = 1.65f;   // pom_max_march_m
+    int   steps              = 40;      // pom_steps (linear march steps near camera)
+    float max_distance_m     = 100.0f;  // pom_max_distance_m
+    float fade_band_m        = 20.0f;   // pom_fade_band_m
+    float ao_strength        = 0.91f;   // baked-AO texel blend factor
+    float shadow_strength    = 1.40f;   // self-shadow blend factor
     // Horizon-map occlusion strength (Phase 2 horizon-map lighting): blends
     // the per-direction baked horizon occlusion toward 0 (no occlusion)
     // instead of always applying it at full strength. Mirrors ao_strength /
     // shadow_strength's blend-factor convention. Consumed by
     // TilesetParamsGpu.pom_c.w (see vk_scene_renderer.h/.cpp) and by
     // tileset_common.glsl's tileset_horizon_occlusion.
-    float horizon_strength   = 1.0f;
+    float horizon_strength   = 0.47f;
 };
 
 struct WorldSettings {
@@ -123,6 +132,16 @@ struct WorldSettings {
     // Optional world-authored sector streaming profile. Empty preserves the
     // engine defaults. Rings are innermost-first with increasing radii.
     std::vector<WorldStreamingRing> streaming_rings;
+
+    // Optional world-authored heightfield terrain LOD bands (radius ->
+    // terrain LOD, innermost-first, consecutive descending LODs). Empty
+    // preserves the engine's sector-scaled default profile.
+    std::vector<WorldStreamingRing> terrain_bands;
+
+    // World-authored volumetrics defaults (World.volumetrics static). The
+    // editor adopts these into its live volumetrics controls when the world
+    // loads; enabled defaults to false so worlds opt in.
+    VulkanVolumetricsSettings volumetrics{};
 };
 
 // Typed component validation deliberately occurs later at the SceneRegistry

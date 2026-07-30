@@ -72,18 +72,40 @@ class StreamMountain extends World {
     wind:      [0.12, 0.0, 0.04],
   };
 
+  // 2026-07-29 alpine tuning pass: with the heightfield terrain-LOD ladder,
+  // distant sectors cost a handful of triangles, so both the scatter rings
+  // and the terrain bands reach much farther than the old full-detail-only
+  // streamer could afford (which OOMed at 4800 m of voxel sectors).
   static streaming = {
-    // Keep expensive scatter close. The outer ring stops where the height fog
-    // fully swallows the silhouettes (~2.5 km in editor captures): the earlier
-    // 4800 m ring streamed ~17,600 full-detail sectors, none of them visible
-    // past ~3 km, and ran the editor past 45 GB resident (std::bad_alloc).
-    // True 5 km vistas need the heightfield terrain-LOD ladder from the
-    // 2026-07-28 alpine design doc, not more full-detail sectors.
     rings: [
-      { radius: 128.0, rung: 2 },
-      { radius: 320.0, rung: 1 },
-      { radius: 2560.0, rung: 0 },
+      { radius: 368.0, rung: 2 },
+      { radius: 1115.0, rung: 1 },
+      { radius: 2922.0, rung: 0 },
     ],
+    // Heightfield terrain LOD bands (radius -> LOD, 5 = native voxel mesh,
+    // 0 = one quad). Hand-tuned in the editor's LOD Settings window.
+    terrainBands: [
+      { radius: 961.0, lod: 5 },
+      { radius: 1486.0, lod: 4 },
+      { radius: 2120.0, lod: 3 },
+      { radius: 2862.0, lod: 2 },
+      { radius: 5943.0, lod: 1 },
+      { radius: 10095.0, lod: 0 },
+    ],
+  };
+
+  // Editor volumetrics defaults for this world (adopted into the live
+  // volumetrics controls on world load). Thin fog multiplier + strong
+  // falloff keep the long alpine sightlines readable.
+  //
+  // Off by default (2026-07-29). The tuned multipliers below are kept so the
+  // viewer's Volumetrics "Enable" checkbox restores this look in one click.
+  static volumetrics = {
+    enabled: false,
+    phaseG: 0.30,
+    temporalBlend: 0.85,
+    fogDensityMul: 0.06,
+    fogFalloffMul: 3.44,
   };
 
   static biomeThresholds = { mountRelief: 2.0, rockyMoisture: 2.0 };

@@ -101,7 +101,10 @@ struct ViewerStats {
     bool     hiz_enabled = false;
     // Writable: runtime LOD quality/speed dial. main propagates it to the
     // resolver + composer each frame; also settable via FIFO `budget <f>`.
-    float    pixel_budget = 1.0f;
+    // 2026-07-29 alpine tuning pass default (was 1.0): hold cluster detail
+    // much farther, affordable now that distant terrain is the heightfield
+    // ladder.
+    float    pixel_budget = 3.64f;
     // World picker: main sets `world_current` after each connect. The panel no
     // longer writes a switch-request flag — it issues ViewerCommands::switch_world
     // (index into the enumerated worlds list) instead.
@@ -175,6 +178,15 @@ public:
     bool begin_frame(const matter::VulkanFrame& frame, std::string& error);
     bool end_frame(const matter::VulkanFrame& frame, std::string& error);
     void draw_debug_panel(ViewerStats& stats, const ViewerCommands& commands);
+
+    // LOD Settings window: everything level-of-detail / draw-distance in one
+    // place, split into live controls (pixel budget, camera far plane) and
+    // reload-required streaming config (scatter rings, terrain LOD bands,
+    // heightfield ladder toggle) with an Apply & Reload button.
+    void draw_lod_settings_panel(matter::WorldSession* session,
+                                 ViewerStats& stats,
+                                 const ViewerCommands& commands,
+                                 matter::CameraDesc& camera);
     // Viewport banner shown while vt_rejected_variants != 0. Drawn on the
     // foreground draw list (like the simulation border tint) so it is visible
     // even when the Viewer Debug window is collapsed or buried — a rejected
@@ -284,6 +296,19 @@ public:
     void select_baked_root(uint64_t resolved_hash);
 
 private:
+    // LOD Settings panel state: a live mirror of the session's active
+    // streaming profile until the user edits (dirty), then a held draft
+    // until Apply & Reload or Reset.
+    struct LodSettingsState {
+        matter::WorldSession::StreamingLodConfig edit;
+        bool have = false;
+        bool dirty = false;
+        // Active drag handle per transition bar (-1 = none).
+        int drag_scatter = -1;
+        int drag_bands = -1;
+    };
+    LodSettingsState lod_settings_;
+
     void build_dockspace();
     bool ensure_viewport_target(uint32_t width, uint32_t height,
                                 VkFormat format, std::string& error);

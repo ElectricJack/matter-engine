@@ -984,7 +984,112 @@ bool extract_streaming(JSContext* context,
 
     definition.settings.streaming_rings = std::move(parsed);
     JS_FreeValue(context, rings);
+
+    // Optional heightfield terrain LOD bands: same shape/ordering contract
+    // as rings ({radius, lod}, increasing radii, consecutive descending
+    // LODs), innermost band = finest level.
+    JSValue bands = JS_GetPropertyStr(context, streaming, "terrainBands");
+    if (!JS_IsUndefined(bands)) {
+        std::uint32_t band_count = 0;
+        if (!array_length(context, bands, band_count) || band_count == 0) {
+            JS_FreeValue(context, bands);
+            JS_FreeValue(context, streaming);
+            return fail(desc, error, "streaming.terrainBands",
+                        "streaming.terrainBands must be a non-empty array");
+        }
+        float prev_radius = 0.0f;
+        int prev_lod = -1;
+        std::vector<WorldStreamingRing> parsed_bands;
+        parsed_bands.reserve(band_count);
+        for (std::uint32_t index = 0; index < band_count; ++index) {
+            JSValue entry = JS_GetPropertyUint32(context, bands, index);
+            JSValue radius_value =
+                JS_IsObject(entry) ? JS_GetPropertyStr(context, entry, "radius")
+                                   : JS_UNDEFINED;
+            JSValue lod_value =
+                JS_IsObject(entry) ? JS_GetPropertyStr(context, entry, "lod")
+                                   : JS_UNDEFINED;
+            float radius = 0.0f;
+            float lod_number = -1.0f;
+            const bool valid_values =
+                JS_IsObject(entry) &&
+                number_value(context, radius_value, radius) &&
+                number_value(context, lod_value, lod_number);
+            JS_FreeValue(context, radius_value);
+            JS_FreeValue(context, lod_value);
+            JS_FreeValue(context, entry);
+
+            const int lod = int(lod_number);
+            const bool ordered =
+                std::isfinite(radius) && radius > prev_radius && lod >= 0 &&
+                lod <= 5 && std::isfinite(lod_number) &&
+                lod_number == float(lod) &&
+                (index == 0 || lod == prev_lod - 1);
+            if (!valid_values || !ordered) {
+                JS_FreeValue(context, bands);
+                JS_FreeValue(context, streaming);
+                return fail(
+                    desc, error,
+                    "streaming.terrainBands[" + std::to_string(index) + "]",
+                    "terrain bands require increasing positive radii and "
+                    "consecutive descending LODs in 0..5");
+            }
+            parsed_bands.push_back({radius, lod});
+            prev_radius = radius;
+            prev_lod = lod;
+        }
+        definition.settings.terrain_bands = std::move(parsed_bands);
+    }
+    JS_FreeValue(context, bands);
     JS_FreeValue(context, streaming);
+    return true;
+}
+
+// World.volumetrics static: editor volumetrics defaults for this world.
+// Optional; every field optional with the struct default.
+bool extract_volumetrics(JSContext* context,
+                         JSValueConst world_class,
+                         const WorldLoadDesc& desc,
+                         WorldDefinition& definition,
+                         WorldLoadError& error) {
+    JSValue vol = JS_GetPropertyStr(context, world_class, "volumetrics");
+    if (JS_IsUndefined(vol)) {
+        JS_FreeValue(context, vol);
+        return true;
+    }
+    if (!JS_IsObject(vol)) {
+        JS_FreeValue(context, vol);
+        return fail(desc, error, "volumetrics",
+                    "World.volumetrics must be an object");
+    }
+    VulkanVolumetricsSettings& out = definition.settings.volumetrics;
+    JSValue enabled = JS_GetPropertyStr(context, vol, "enabled");
+    if (!JS_IsUndefined(enabled)) out.enabled = JS_ToBool(context, enabled);
+    JS_FreeValue(context, enabled);
+    const struct { const char* name; float* target; } fields[] = {
+        {"phaseG", &out.phase_g},
+        {"temporalBlend", &out.temporal_blend},
+        {"fogDensityMul", &out.fog_density_mul},
+        {"fogFalloffMul", &out.fog_falloff_mul},
+        {"fogFloorOffset", &out.fog_floor_offset},
+    };
+    for (const auto& field : fields) {
+        JSValue value = JS_GetPropertyStr(context, vol, field.name);
+        if (!JS_IsUndefined(value)) {
+            float parsed = 0.0f;
+            if (!number_value(context, value, parsed) ||
+                !std::isfinite(parsed)) {
+                JS_FreeValue(context, value);
+                JS_FreeValue(context, vol);
+                return fail(desc, error,
+                            std::string("volumetrics.") + field.name,
+                            "must be a finite number");
+            }
+            *field.target = parsed;
+        }
+        JS_FreeValue(context, value);
+    }
+    JS_FreeValue(context, vol);
     return true;
 }
 
@@ -1248,6 +1353,8 @@ class World {}
               extract_fog(context, world_class, desc, definition, error) &&
               extract_camera(context, world_class, desc, definition, error) &&
               extract_streaming(context, world_class, desc, definition, error) &&
+              extract_volumetrics(context, world_class, desc, definition,
+                                  error) &&
               append_static_entities(context, world_class, desc, error);
     if (!ok) {
         definition = WorldDefinition{};

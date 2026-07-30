@@ -555,6 +555,290 @@ void Ui::select_baked_root(uint64_t resolved_hash) {
     scene_tree_state_.selected_root_hash = resolved_hash;
 }
 
+void Ui::draw_lod_settings_panel(matter::WorldSession* session,
+                                 ViewerStats& s,
+                                 const ViewerCommands& commands,
+                                 matter::CameraDesc& camera) {
+    if (!ImGui::Begin("LOD Settings")) {
+        ImGui::End();
+        return;
+    }
+
+    // ---- Live controls: applied every frame, no reload -------------------
+    ImGui::SeparatorText("Dynamic (applies immediately)");
+    ImGui::SliderFloat("Pixel budget", &s.pixel_budget, 0.05f, 4.0f, "%.2f");
+    ImGui::SetItemTooltip(
+        "Scales projected size in LOD selection: <1 picks coarser rungs "
+        "sooner, >1 holds detail farther. Same value as Viewer Debug.");
+    ImGui::SliderFloat("Camera far plane (m)", &camera.far_plane, 500.0f,
+                       20000.0f, "%.0f",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Editor camera draw distance.");
+    // Ground POM reach lives here with the other draw-distance controls; the
+    // rest of the POM tuning stays under Viewer Debug > Ground POM. Max
+    // distance may run all the way out to the draw distance.
+    ImGui::SliderFloat("Ground POM max distance (m)",
+                       &s.tileset_pom.max_distance_m, 5.0f,
+                       std::max(camera.far_plane, 5.0f), "%.0f",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SliderFloat("Ground POM fade band (m)", &s.tileset_pom.fade_band_m,
+                       1.0f, 200.0f, "%.1f");
+
+    // ---- Streaming profile: consumed once at world connect ---------------
+    ImGui::SeparatorText("Streaming (requires world reload)");
+    if (!session) {
+        ImGui::TextDisabled("No world session");
+        ImGui::End();
+        return;
+    }
+    auto& st = lod_settings_;
+    {
+        // Live-mirror the active profile until the user edits; a dirty draft
+        // is held until Apply & Reload or Reset so a mid-edit reconnect
+        // cannot stomp it.
+        matter::WorldSession::StreamingLodConfig active;
+        if (session->streaming_lod_config(active)) {
+            if (!st.dirty) st.edit = active;
+            st.have = true;
+        } else if (!st.dirty) {
+            st.have = false;
+        }
+    }
+    if (!st.have) {
+        ImGui::TextDisabled("Waiting for a streaming world connect...");
+        ImGui::End();
+        return;
+    }
+
+    st.dirty |= ImGui::Checkbox("Heightfield terrain LOD ladder",
+                                &st.edit.terrain_lod_enabled);
+    ImGui::SetItemTooltip(
+        "Off: every sector bakes the full-detail voxel mesh (the "
+        "pre-ladder behavior; far more memory and bake time).");
+    ImGui::Spacing();
+
+    // Multi-handle transition bar: one rail scaled 0..camera-far-plane with
+    // a draggable handle per LOD transition. Handles cannot cross (order is
+    // structural), so spacing can be shaped freely and stays valid. Each
+    // segment shows its level number; each handle shows its radius above.
+    const float axis_max = std::max(camera.far_plane, 500.0f);
+    auto transition_bar = [&](const char* str_id,
+                              std::vector<matter::WorldSession::
+                                              StreamingLodRing>& rows,
+                              int& drag_state) -> bool {
+        if (rows.empty()) {
+            ImGui::TextDisabled("(no rings configured)");
+            return false;
+        }
+        bool changed = false;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float label_h = ImGui::GetTextLineHeight();
+        const float bar_h = 26.0f;
+        const float w = std::max(80.0f, ImGui::GetContentRegionAvail().x);
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const ImVec2 bar0{origin.x, origin.y + label_h + 3.0f};
+        ImGui::InvisibleButton(str_id, ImVec2(w, label_h + 3.0f + bar_h));
+        auto to_x = [&](float r) {
+            return bar0.x + std::min(1.0f, std::max(0.0f, r / axis_max)) * w;
+        };
+
+        // Segments: rows[i] covers (radius[i-1], radius[i]]. Brightness maps
+        // detail (higher value = more detail = brighter).
+        int value_max = 1;
+        for (const auto& r : rows) value_max = std::max(value_max, r.value);
+        float seg_x = bar0.x;
+        for (int i = 0; i < (int)rows.size(); ++i) {
+            const float seg_end = to_x(rows[i].radius);
+            const float t = float(rows[i].value) / float(value_max);
+            const ImU32 fill = ImGui::GetColorU32(
+                ImVec4(0.18f + 0.16f * t, 0.32f + 0.25f * t,
+                       0.45f + 0.35f * t, 1.0f));
+            dl->AddRectFilled(ImVec2(seg_x, bar0.y),
+                              ImVec2(seg_end, bar0.y + bar_h), fill, 2.0f);
+            char label[16];
+            std::snprintf(label, sizeof(label), "%d", rows[i].value);
+            const ImVec2 ts = ImGui::CalcTextSize(label);
+            if (seg_end - seg_x > ts.x + 6.0f) {
+                dl->AddText(ImVec2((seg_x + seg_end - ts.x) * 0.5f,
+                                   bar0.y + (bar_h - ts.y) * 0.5f),
+                            ImGui::GetColorU32(ImGuiCol_Text), label);
+            }
+            seg_x = seg_end;
+        }
+        // Beyond the outer ring: not streamed.
+        if (seg_x < bar0.x + w) {
+            dl->AddRectFilled(ImVec2(seg_x, bar0.y),
+                              ImVec2(bar0.x + w, bar0.y + bar_h),
+                              ImGui::GetColorU32(ImVec4(0.12f, 0.12f, 0.14f, 1.0f)),
+                              2.0f);
+        }
+
+        // Handles + radius labels above them.
+        const ImU32 handle_col = ImGui::GetColorU32(ImGuiCol_SliderGrabActive);
+        for (int i = 0; i < (int)rows.size(); ++i) {
+            const float x = to_x(rows[i].radius);
+            dl->AddRectFilled(ImVec2(x - 2.5f, bar0.y - 3.0f),
+                              ImVec2(x + 2.5f, bar0.y + bar_h + 3.0f),
+                              i == drag_state
+                                  ? ImGui::GetColorU32(ImGuiCol_CheckMark)
+                                  : handle_col,
+                              1.5f);
+            char rl[24];
+            std::snprintf(rl, sizeof(rl), "%.0f", rows[i].radius);
+            const ImVec2 ts = ImGui::CalcTextSize(rl);
+            float lx = x - ts.x * 0.5f;
+            lx = std::max(bar0.x, std::min(lx, bar0.x + w - ts.x));
+            dl->AddText(ImVec2(lx, origin.y),
+                        ImGui::GetColorU32(ImGuiCol_TextDisabled), rl);
+        }
+
+        // Interaction: grab the nearest handle within 10 px; drag clamps
+        // between the neighboring handles so transitions never reorder.
+        if (ImGui::IsItemActivated()) {
+            const float mx = ImGui::GetIO().MousePos.x;
+            float best = 10.0f;
+            drag_state = -1;
+            for (int i = 0; i < (int)rows.size(); ++i) {
+                const float d = std::fabs(to_x(rows[i].radius) - mx);
+                if (d < best) { best = d; drag_state = i; }
+            }
+        }
+        if (ImGui::IsItemActive() && drag_state >= 0 &&
+            drag_state < (int)rows.size()) {
+            const float mx = ImGui::GetIO().MousePos.x;
+            float r = (mx - bar0.x) / w * axis_max;
+            const float lo = drag_state > 0
+                                 ? rows[drag_state - 1].radius + 1.0f
+                                 : 16.0f;
+            const float hi = drag_state + 1 < (int)rows.size()
+                                 ? rows[drag_state + 1].radius - 1.0f
+                                 : axis_max;
+            r = std::max(lo, std::min(r, hi));
+            if (r != rows[drag_state].radius) {
+                rows[drag_state].radius = r;
+                changed = true;
+            }
+        }
+        if (ImGui::IsItemDeactivated()) drag_state = -1;
+        if (ImGui::IsItemHovered() && drag_state < 0)
+            ImGui::SetTooltip("Drag a handle to move that LOD transition");
+        return changed;
+    };
+
+    ImGui::TextUnformatted("Scatter detail (tier 2 near ... 0 far)");
+    st.dirty |= transition_bar("##scatter_bar", st.edit.scatter_rings,
+                               st.drag_scatter);
+    ImGui::Spacing();
+    if (st.edit.terrain_lod_enabled) {
+        ImGui::TextUnformatted(
+            "Terrain LOD (5 native voxel ... 0 one quad)");
+        st.dirty |= transition_bar("##bands_bar", st.edit.terrain_bands,
+                                   st.drag_bands);
+        // 2:1 spacing hint against the world's sector size.
+        bool tight = false;
+        for (size_t i = 1; i < st.edit.terrain_bands.size(); ++i) {
+            if (st.edit.terrain_bands[i].radius -
+                    st.edit.terrain_bands[i - 1].radius <
+                2.0f * st.edit.sector_size)
+                tight = true;
+        }
+        if (tight)
+            ImGui::TextColored(
+                ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
+                "Bands closer than 2 sectors (%.0f m) get re-balanced by "
+                "the streamer.",
+                2.0f * st.edit.sector_size);
+        // The streamed area is bounded by the outer SCATTER ring; terrain
+        // bands beyond it exist but no sector out there is resident.
+        if (!st.edit.scatter_rings.empty() &&
+            !st.edit.terrain_bands.empty() &&
+            st.edit.terrain_bands.back().radius >
+                st.edit.scatter_rings.back().radius + 1.0f)
+            ImGui::TextDisabled(
+                "Terrain bands beyond the outer scatter ring (%.0f m) are "
+                "outside the streamed area.",
+                st.edit.scatter_rings.back().radius);
+    }
+
+    // Numeric fallback for precise values, level edits, and add/remove.
+    if (ImGui::TreeNode("Numeric editing")) {
+        auto ring_table =
+            [&st](const char* label, const char* value_label,
+                  std::vector<matter::WorldSession::StreamingLodRing>& rows,
+                  int value_min, int value_max) {
+                ImGui::PushID(label);
+                ImGui::TextUnformatted(label);
+                int remove_index = -1;
+                for (int i = 0; i < (int)rows.size(); ++i) {
+                    ImGui::PushID(i);
+                    ImGui::SetNextItemWidth(120.0f);
+                    st.dirty |= ImGui::DragFloat("##radius", &rows[i].radius,
+                                                 8.0f, 16.0f, 20000.0f,
+                                                 "%.0f m");
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(110.0f);
+                    st.dirty |= ImGui::SliderInt(value_label, &rows[i].value,
+                                                 value_min, value_max);
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("X")) remove_index = i;
+                    ImGui::PopID();
+                }
+                if (remove_index >= 0 && rows.size() > 1) {
+                    rows.erase(rows.begin() + remove_index);
+                    st.dirty = true;
+                }
+                if (rows.size() < 8 && ImGui::SmallButton("+ Add")) {
+                    matter::WorldSession::StreamingLodRing next =
+                        rows.empty()
+                            ? matter::WorldSession::StreamingLodRing{256.0f, 0}
+                            : rows.back();
+                    next.radius += 256.0f;
+                    rows.push_back(next);
+                    st.dirty = true;
+                }
+                ImGui::PopID();
+            };
+        ring_table("Scatter rings", "##tier", st.edit.scatter_rings, 0, 2);
+        ImGui::Spacing();
+        if (st.edit.terrain_lod_enabled)
+            ring_table("Terrain LOD bands", "##lod", st.edit.terrain_bands,
+                       0, 5);
+        ImGui::TreePop();
+    }
+
+    if (st.dirty)
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f),
+                           "Pending changes - reload to apply");
+    const bool apply = ImGui::Button("Apply & Reload World");
+    ImGui::SameLine();
+    const bool reset = ImGui::Button("Reset to World Defaults");
+    if (apply) {
+        auto sanitize =
+            [](std::vector<matter::WorldSession::StreamingLodRing>& rows) {
+                rows.erase(std::remove_if(rows.begin(), rows.end(),
+                                          [](const auto& r) {
+                                              return !(r.radius > 0.0f);
+                                          }),
+                           rows.end());
+                std::stable_sort(rows.begin(), rows.end(),
+                                 [](const auto& a, const auto& b) {
+                                     return a.radius < b.radius;
+                                 });
+            };
+        sanitize(st.edit.scatter_rings);
+        sanitize(st.edit.terrain_bands);
+        session->set_streaming_lod_overrides(st.edit);
+        if (commands.reload) commands.reload();
+        st.dirty = false;   // resume live-mirroring the (new) active profile
+    } else if (reset) {
+        session->clear_streaming_lod_overrides();
+        if (commands.reload) commands.reload();
+        st.dirty = false;
+    }
+
+    ImGui::End();
+}
+
 void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
     ImGui::Begin("Viewer Debug");
 
@@ -642,7 +926,7 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
     }
     ImGui::Separator();
 
-    ImGui::SliderFloat("Pixel budget", &s.pixel_budget, 0.1f, 2.0f, "%.2f");
+    ImGui::SliderFloat("Pixel budget", &s.pixel_budget, 0.05f, 4.0f, "%.2f");
     const char* resolvers[] = { "PassThrough", "SectorLod" };
     ImGui::Combo("Resolver", &s.resolver_choice, resolvers, 2);
     if (ImGui::Button("Reload world") && commands.reload) commands.reload();
@@ -676,8 +960,8 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
         ImGui::SliderFloat("Datum bias (m)", &pom.datum_bias_m, 0.0f, 0.3f, "%.3f");
         ImGui::SliderFloat("Max march (m)", &pom.max_march_m, 0.1f, 2.0f, "%.2f");
         ImGui::SliderInt("Steps", &pom.steps, 4, 64);
-        ImGui::SliderFloat("Max distance (m)", &pom.max_distance_m, 5.0f, 100.0f, "%.1f");
-        ImGui::SliderFloat("Fade band (m)", &pom.fade_band_m, 1.0f, 20.0f, "%.1f");
+        ImGui::TextDisabled(
+            "Max distance / fade band moved to the LOD Settings window.");
         ImGui::SliderFloat("AO strength", &pom.ao_strength, 0.0f, 1.0f, "%.2f");
         ImGui::SliderFloat("Shadow strength", &pom.shadow_strength, 0.0f, 2.0f, "%.2f");
         // Phase 2 (horizon-map lighting): blends the baked per-direction

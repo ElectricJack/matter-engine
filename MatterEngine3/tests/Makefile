@@ -906,6 +906,9 @@ TREEBAKE_CPP = tree_bake_check.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP
 ROCKPROF_TARGET = build/rock_bake_profile
 ROCKPROF_CPP = rock_bake_profile.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
+AONORMPROBE_TARGET = build/tileset_ao_normal_probe
+AONORMPROBE_CPP = tileset_ao_normal_probe.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
+
 GRASSLOD_TARGET = build/grass_lod_tests
 GRASSLOD_CPP = grass_lod_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
@@ -1289,6 +1292,7 @@ sh_CPP_SRCS := $(sort \
     $(GALLERY_CPP) \
     $(TREEBAKE_CPP) \
     $(ROCKPROF_CPP) \
+    $(AONORMPROBE_CPP) \
     $(GRASSLOD_CPP) \
     $(STRESSFOREST_CPP) \
     $(LIGHTING_GARDEN_CPP) \
@@ -1450,6 +1454,7 @@ EXAMPLE_OBJS = $(call obj_list,sh,$(EXAMPLE_CPP)) $(call obj_list,mslc,$(EXAMPLE
 GALLERY_OBJS = $(call obj_list,sh,$(GALLERY_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 TREEBAKE_OBJS = $(call obj_list,sh,$(TREEBAKE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 ROCKPROF_OBJS = $(call obj_list,sh,$(ROCKPROF_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
+AONORMPROBE_OBJS = $(call obj_list,sh,$(AONORMPROBE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 GRASSLOD_OBJS = $(call obj_list,sh,$(GRASSLOD_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 STRESSFOREST_OBJS = $(call obj_list,sh,$(STRESSFOREST_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 LIGHTING_GARDEN_OBJS = $(call obj_list,sh,$(LIGHTING_GARDEN_CPP)) \
@@ -1937,6 +1942,14 @@ $(ROCKPROF_TARGET): $(ROCKPROF_OBJS)
 run-rock-profile: $(ROCKPROF_TARGET)
 	./$(ROCKPROF_TARGET)
 
+# AO trace-normal measurement probe (prints numbers; not a regression gate).
+$(AONORMPROBE_TARGET): $(AONORMPROBE_OBJS)
+	$(CC) $(AONORMPROBE_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
+
+run-ao-normal-probe: $(AONORMPROBE_TARGET)
+	./$(AONORMPROBE_TARGET)
+
 # --- Viewer GL-free logic suite.
 ../shaders_gen/embedded_shaders.h:
 	$(MAKE) -C .. shaders_gen/embedded_shaders.h
@@ -2131,7 +2144,7 @@ run-sectorstream: $(SECTORSTREAM_TARGET)
 	./$(SECTORSTREAM_TARGET)
 
 $(SECTORCOORD_TARGET): $(SECTORCOORD_OBJS)
-	$(CC) $(SECTORCOORD_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS)
+	$(CC) $(SECTORCOORD_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(FLECS_PLATFORM_LIBS)
 
 run-sectorcoord: $(SECTORCOORD_TARGET)
 	./$(SECTORCOORD_TARGET)

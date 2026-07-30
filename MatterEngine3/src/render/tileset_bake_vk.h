@@ -12,8 +12,9 @@
 // CPU scan over the host-side full-res height buffer (no rays, no BVH; see
 // gtex_bake_horizon_cpu below) — producing the two quarter-res HORIZON_A/B
 // channels, so the emitted atlas is now the full six-channel v2 .gtex form
-// (spec §I.4 Pass 3, §II.1 V3). kEngineBakeVersion is intentionally left
-// UNCHANGED through V3 (bumped at V4 per the task's milestone plan).
+// (spec §I.4 Pass 3, §II.1 V3). kEngineBakeVersion was intentionally left
+// UNCHANGED through V3; it is now 4, bumped by the AO trace-normal fix in
+// shaders_vk/tileset_bake_ao.comp (see tileset_gtex.h for the reasoning).
 //
 // The channel-repack helpers below are pure (no Vulkan) so they can be unit
 // tested headlessly — they are the analytic validation substitute for the GPU

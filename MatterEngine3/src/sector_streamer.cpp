@@ -31,8 +31,26 @@ static bool stream_no_evict() {
     return value;
 }
 
+void resolve_terrain_defaults(Config& cfg) {
+    if (!cfg.terrain_lod_enabled || !cfg.terrain_bands.empty()) return;
+    // Radial profile in sector sizes: near disc native voxel (LOD 5),
+    // then heightfield LODs down to a single quad. Wider near bands than
+    // the design table's minimum (3S/5S/8S/14S/24S): editor cameras fly
+    // hundreds of meters up, where 8-16 m cells at the design's 5-8S
+    // radii read as visible facets. Every adjacent pair stays >= 2S
+    // apart so the default map is 2:1-balanced by construction; the
+    // explicit balance pass still guards custom profiles.
+    const float S = cfg.sector_size;
+    cfg.terrain_bands = {
+        {5.0f * S, 5},  {8.0f * S, 4},  {12.0f * S, 3},
+        {18.0f * S, 2}, {27.0f * S, 1}, {40.0f * S, 0},
+    };
+}
+
 SectorStreamer::SectorStreamer(Config cfg)
-    : cfg_(std::move(cfg)) {}
+    : cfg_(std::move(cfg)) {
+    resolve_terrain_defaults(cfg_);
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -49,6 +67,89 @@ int SectorStreamer::desired_rung_for_dist(float d) const {
     for (const auto& ring : cfg_.rings)
         if (d <= ring.radius) return ring.rung;
     return -1; // beyond all rings
+}
+
+int SectorStreamer::desired_lod_for_dist(float d) const {
+    for (const auto& band : cfg_.terrain_bands)
+        if (d <= band.radius) return band.rung;
+    // Beyond the last band (but still inside a scatter ring, or held resident
+    // by hysteresis): coarsest configured level.
+    return cfg_.terrain_bands.empty() ? 5 : cfg_.terrain_bands.back().rung;
+}
+
+// Terrain-LOD pass (terrain_lod_enabled): band lookup with demotion
+// hysteresis, 2:1 cardinal balance, edge masks, variant repack. Runs after
+// the scatter scan/hysteresis has finalized desired_rung as a bare-or-packed
+// value whose scatter bits are authoritative.
+void SectorStreamer::assign_terrain_lods() {
+    // Pass 1: per-sector band LOD with demotion hysteresis.
+    for (auto& [k, st] : sectors_) {
+        st.desired_lod = -1;
+        if (st.desired_rung < 0) continue;
+        if (stream_no_evict() && st.resident_rung >= 0) {
+            // Diagnostic freeze: keep the resident variant verbatim (the
+            // update() scan already pinned desired_rung to it).
+            st.desired_lod = variant_terrain_lod(st.resident_rung);
+            continue;
+        }
+        int lod = desired_lod_for_dist(st.dist);
+        if (st.resident_rung >= 0) {
+            const int res_lod = variant_terrain_lod(st.resident_rung);
+            if (res_lod > lod) {
+                // Demotion to a coarser level: only past the resident level's
+                // band radius plus hysteresis (mirrors the scatter rule).
+                float band_radius = 0.0f;
+                for (const auto& band : cfg_.terrain_bands)
+                    if (band.rung == res_lod) { band_radius = band.radius; break; }
+                if (st.dist <= band_radius + cfg_.hysteresis) lod = res_lod;
+            }
+        }
+        st.desired_lod = lod;
+    }
+
+    // Pass 2: 2:1 balance. Promote the coarser side of any cardinal pair
+    // differing by more than one level. "lod = max(lod, neighbor - 1)" is
+    // monotone, so the fixpoint is iteration-order independent; levels are
+    // bounded by 5, so a handful of sweeps suffices.
+    for (int sweep = 0; sweep < 8; ++sweep) {
+        bool changed = false;
+        for (auto& [k, st] : sectors_) {
+            if (st.desired_lod < 0) continue;
+            if (stream_no_evict() && st.resident_rung >= 0) continue;
+            int64_t tx, tz;
+            unkey(k, tx, tz);
+            const int64_t ntx[4] = {tx + 1, tx - 1, tx, tx};
+            const int64_t ntz[4] = {tz, tz, tz + 1, tz - 1};
+            for (int n = 0; n < 4; ++n) {
+                auto it = sectors_.find(key(ntx[n], ntz[n]));
+                if (it == sectors_.end() || it->second.desired_lod < 0) continue;
+                if (it->second.desired_lod - st.desired_lod > 1) {
+                    st.desired_lod = it->second.desired_lod - 1;
+                    changed = true;
+                }
+            }
+        }
+        if (!changed) break;
+    }
+
+    // Pass 3: coarser-neighbor edge masks + repack. Bit layout matches
+    // terrain_mesher::EdgeMaskBits (bit 0 = +x, 1 = -x, 2 = +z, 3 = -z).
+    for (auto& [k, st] : sectors_) {
+        if (st.desired_rung < 0 || st.desired_lod < 0) continue;
+        if (stream_no_evict() && st.resident_rung >= 0) continue;
+        int64_t tx, tz;
+        unkey(k, tx, tz);
+        const int64_t ntx[4] = {tx + 1, tx - 1, tx, tx};
+        const int64_t ntz[4] = {tz, tz, tz + 1, tz - 1};
+        int mask = 0;
+        for (int n = 0; n < 4; ++n) {
+            auto it = sectors_.find(key(ntx[n], ntz[n]));
+            if (it == sectors_.end() || it->second.desired_lod < 0) continue;
+            if (it->second.desired_lod == st.desired_lod - 1) mask |= 1 << n;
+        }
+        st.desired_rung = pack_variant(variant_scatter(st.desired_rung),
+                                       st.desired_lod, mask);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -111,18 +212,25 @@ void SectorStreamer::update(float anchor_x, float anchor_z) {
                     st.desired_rung = st.resident_rung;
                     continue;
                 }
-                // Find the ring radius that produced resident_rung.
+                // Scatter comparisons use the variant's scatter bits: with
+                // terrain_lod_enabled the resident value is a packed variant,
+                // and the freshly scanned desired value is still bare scatter
+                // at this stage (assign_terrain_lods repacks afterwards).
+                const int res_scatter = variant_scatter(st.resident_rung);
+                // Find the ring radius that produced the resident scatter.
                 float ring_radius = 0.0f;
                 for (const auto& ring : cfg_.rings) {
-                    if (ring.rung == st.resident_rung) { ring_radius = ring.radius; break; }
+                    if (ring.rung == res_scatter) { ring_radius = ring.radius; break; }
                 }
-                // If desired_rung > resident_rung (promotion): no hysteresis, proceed.
-                // If desired_rung < resident_rung (demotion): hysteresis applies.
-                if (st.desired_rung < st.resident_rung) {
+                // If desired > resident (promotion): no hysteresis, proceed.
+                // If desired < resident (demotion): hysteresis applies.
+                if (st.desired_rung < res_scatter) {
                     // Demotion: only proceed if dist > ring_radius + hysteresis.
                     if (st.dist <= ring_radius + cfg_.hysteresis) {
-                        // Still within hysteresis — freeze desired at current resident rung.
-                        st.desired_rung = st.resident_rung;
+                        // Still within hysteresis — freeze desired scatter at
+                        // the resident tier (the terrain pass below reads only
+                        // the scatter bits from this value).
+                        st.desired_rung = res_scatter;
                     }
                 }
             }
@@ -150,6 +258,12 @@ void SectorStreamer::update(float anchor_x, float anchor_z) {
         }
     }
     for (uint64_t k : to_erase) sectors_.erase(k);
+
+    // Terrain LOD ladder: assign per-sector heightfield LODs, balance to 2:1
+    // cardinal adjacency, compute edge masks, and repack desired_rung as a
+    // variant. Must run after the scatter hysteresis/eviction pass so it
+    // sees the final desired scatter tiers and the surviving entries.
+    if (cfg_.terrain_lod_enabled) assign_terrain_lods();
 }
 
 // ---------------------------------------------------------------------------
@@ -159,46 +273,43 @@ void SectorStreamer::update(float anchor_x, float anchor_z) {
 bool SectorStreamer::next_request(SectorRequest& out) {
     if (inflight_ >= cfg_.max_inflight) return false;
 
-    // Two-pass: holes first (resident_rung == -1 and desired_rung >= 0),
-    // then upgrades/demotions (desired_rung != resident_rung), nearest first.
-    // A sector with cooldown > 0 is skipped.
+    // Nearest first across BOTH holes and upgrades, holes winning ties
+    // within one sector width. The old strict holes-first policy served
+    // brand-new frontier sectors kilometers away (fog-hidden, coarsest LOD)
+    // before promoting the coarse tiles directly under a moving camera —
+    // flying forward left "massive flat triangles" close by while the
+    // invisible frontier baked. Distance is what the eye ranks by; a hole
+    // only outranks an upgrade when they are at comparable range.
+    uint64_t best_k = 0;
+    float best_score = std::numeric_limits<float>::max();
+    bool found = false;
 
-    auto pick = [&](bool holes_only) -> bool {
-        uint64_t best_k = 0;
-        float best_dist = std::numeric_limits<float>::max();
-        bool found = false;
+    for (auto& [k, st] : sectors_) {
+        if (st.inflight_rung >= 0) continue;      // already in flight
+        if (st.cooldown > 0) continue;             // cooling down
+        if (st.desired_rung < 0) continue;        // not desired
+        if (st.desired_rung == st.resident_rung) continue; // satisfied
 
-        for (auto& [k, st] : sectors_) {
-            if (st.inflight_rung >= 0) continue;      // already in flight
-            if (st.cooldown > 0) continue;             // cooling down
-            if (st.desired_rung < 0) continue;        // not desired
-            if (st.desired_rung == st.resident_rung) continue; // satisfied
-
-            bool is_hole = (st.resident_rung < 0);
-            if (holes_only && !is_hole) continue;
-            if (!holes_only && is_hole) continue;
-
-            if (st.dist < best_dist) {
-                best_dist = st.dist;
-                best_k = k;
-                found = true;
-            }
+        const bool is_hole = (st.resident_rung < 0);
+        const float score = is_hole ? st.dist - cfg_.sector_size : st.dist;
+        if (score < best_score) {
+            best_score = score;
+            best_k = k;
+            found = true;
         }
+    }
 
-        if (!found) return false;
+    if (!found) return false;
 
-        auto& st = sectors_.at(best_k);
-        int64_t tx, tz;
-        unkey(best_k, tx, tz);
-        out.tx   = tx;
-        out.tz   = tz;
-        out.rung = st.desired_rung;
-        st.inflight_rung = st.desired_rung;
-        ++inflight_;
-        return true;
-    };
-
-    return pick(true) || pick(false);
+    auto& st = sectors_.at(best_k);
+    int64_t tx, tz;
+    unkey(best_k, tx, tz);
+    out.tx   = tx;
+    out.tz   = tz;
+    out.rung = st.desired_rung;
+    st.inflight_rung = st.desired_rung;
+    ++inflight_;
+    return true;
 }
 
 // ---------------------------------------------------------------------------

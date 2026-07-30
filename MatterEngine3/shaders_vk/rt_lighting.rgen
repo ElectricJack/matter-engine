@@ -402,11 +402,16 @@ void main() {
     // cosine-ray loop below can apply per-ray horizon occlusion for the
     // primary pixel -- this is the same detail-slot lookup the roof escape
     // already performs, just hoisted out so it survives past this if block.
+    //
+    // The lift is gated on pom_a.x (pom_steps) because the "POM enable"
+    // checkbox drives it to 0: with the march skipped the GBuffer depth IS
+    // the flat mesh, there is no recessed point to escape, and lifting by
+    // the relief cap would only push the origin past real contact occluders.
     int ground_tileset_slot = -1;
     if (identity.x < rt_materials.length()) {
         RtMaterialGpu roof_mat = rt_materials[identity.x];
         ground_tileset_slot = tileset_detail_slot(roof_mat.flags_misc);
-        if (ground_tileset_slot >= 0)
+        if (ground_tileset_slot >= 0 && tileset.pom_a.x > 0.0)
             world += normal * (tileset.pom_b.z + 0.02);
     }
     uint seed = pcg_hash(uint(source_pixel.x) ^

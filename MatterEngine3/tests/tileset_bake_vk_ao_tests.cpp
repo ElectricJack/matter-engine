@@ -15,6 +15,11 @@
 //       local dirs => equal world dirs under the shared basis.)
 //   (c) pack_orm_ao replication — the VK header's gtex_pack_orm_ao matches the
 //       GL bake's original static packing (orm[i*3+0] = ao[i]).
+//   (d) Geometric trace frame — a hemisphere built on the owning triangle's face
+//       normal never emits a ray below that triangle's own plane, whereas one
+//       built on a tilted interpolated normal does, in the closed-form
+//       proportion. This is the invariant the shader's trace-normal choice
+//       exists to hold; see the long note in tileset_bake_ao.comp's main().
 //
 // The atlas byte-equality of boundary strips under HW traversal (spec §I.6
 // leg 3, float-path drift) is GPU-only and remains runtime-pending.
@@ -187,10 +192,99 @@ static void test_pack_orm_ao() {
     CHECK(orm[6] == 255 && orm[7] == 50  && orm[8] == 5);
 }
 
+// ---------------------------------------------------------------------------
+// (d) Geometric trace frame.
+//
+// tileset_bake_ao.comp builds its cosine lobe on the owning triangle's
+// geometric normal. The property that buys: no ray starts out pointing below
+// the plane of the very triangle the ray query is about to test, so a texel on
+// an unoccluded facet cannot occlude itself.
+//
+// The interpolated vertex normal does not have that property, and on real part
+// meshes the gap is not small. Measured over the shipping ForestFloor variants
+// with tests/tileset_ao_normal_probe.cpp: SDF-gradient vertex normals tilt off
+// their own face plane by 39 deg at p90 and 74 deg at p99 on Twig (a ~2-4 cm
+// capsule meshed at ~1.2-2.2 cm voxels), and 2-7% of surface points came out
+// fully inverted — tilted past horizontal, so the shader's `N.y < 0` flip sent
+// them to the far side of the facet and the frame pointed into the solid. Those
+// texels bake to ao = 0: black specks in the ground atlas.
+// ---------------------------------------------------------------------------
+static void test_geometric_trace_frame() {
+    // Enough samples that the closed form below is not swamped by MC noise; the
+    // shader's per-texel count is 64, but the generator is indexed by i so the
+    // sequence extends.
+    const int kN = 40000;
+    const uint32_t seed = 0xA0A0A0u;
+    // Fraction of a cosine lobe built on trace_n that starts out below faceN's
+    // plane — i.e. pointing into the solid the ray query is about to test.
+    auto below_fraction = [&](Vec3 faceN, Vec3 trace_n) {
+        Mat3 F = make_basis(trace_n);
+        int below = 0;
+        for (int i = 0; i < kN; ++i) {
+            uint32_t h1 = splitmix32(7u * 73856093u ^ 11u * 19349663u ^
+                                     (uint32_t)i * 83492791u ^ seed);
+            uint32_t h2 = splitmix32(h1);
+            if (dot3(mat3_mul(F, cosine_hemi(u01(h1), u01(h2))), faceN) < 0.0f) ++below;
+        }
+        return (double)below / (double)kN;
+    };
+
+    // The invariant the shader now holds, at any facet orientation: tracing
+    // around the face normal never dips below the face.
+    const Vec3 facets[] = {
+        {0, 1, 0},                                  // flat ground
+        normalize3({0.5f, 0.87f, 0.0f}),            // 30 deg slope
+        normalize3({0.995f, 0.1f, 0.0f}),           // near-vertical, e.g. a silhouette facet
+        normalize3({-0.4f, 0.3f, 0.87f}),
+    };
+    for (const Vec3& f : facets) CHECK(below_fraction(f, f) == 0.0);
+
+    // A shading normal tilted by theta sends (1 - cos theta)/2 of the cosine
+    // lobe below the face plane — the cosine distribution is uniform on the
+    // projected disk, and the plane cuts off a half-disk minus a half-ellipse of
+    // semi-axis cos(theta). Each of those rays begins inside the solid.
+    const float kDeg2Rad = 0.01745329252f;
+    const Vec3 up{0, 1, 0};
+    const float thetas[] = {20.0f, 39.0f, 60.0f, 74.0f};   // p90 and p99 are 39 and 74
+    for (float deg : thetas) {
+        const float th = deg * kDeg2Rad;
+        const Vec3 tilted = normalize3({std::sin(th), std::cos(th), 0.0f});
+        const double got = below_fraction(up, tilted);
+        const double want = (1.0 - std::cos((double)th)) * 0.5;
+        CHECK(std::fabs(got - want) < 0.01);
+        CHECK(got > 0.0);            // non-vacuity: the defect is real at every tilt
+    }
+    // At the measured p99 tilt, better than a third of the hemisphere is wrong.
+    CHECK(below_fraction(up, normalize3({std::sin(74.0f * kDeg2Rad),
+                                         std::cos(74.0f * kDeg2Rad), 0.0f})) > 0.35);
+
+    // The inverted case, which is what actually bakes black. It needs a STEEP
+    // facet: the shader re-orients its trace normal upward with
+    // `if (N.y < 0.0) N = -N`, and while both the facet normal and the shading
+    // normal then have y >= 0, two near-horizontal vectors in that half space
+    // can still be more than 90 deg apart. So a silhouette-adjacent facet whose
+    // interpolated normal leans the other way ends up on the far side of its own
+    // plane and the whole lobe points into the solid — ao = 0, a black texel.
+    // The probe measured this on 1-4% of the visible sample points of every
+    // SDF-gradient part variant, and 0% on the flat-normal ones (Rock, Leaf).
+    const Vec3 steep = normalize3({0.995f, 0.1f, 0.0f});
+    const Vec3 leaning_back = normalize3({-0.995f, 0.1f, 0.0f});
+    CHECK(steep.y > 0.0f && leaning_back.y > 0.0f);        // neither triggers the flip
+    CHECK(dot3(leaning_back, steep) < 0.0f);               // yet: far side of the facet
+    // Not exactly 1.0, and it cannot be: a lobe reaches 90 deg off its axis, so
+    // for every ray to be below the facet the two normals would have to be a
+    // full 180 deg apart. At the 168.6 deg these are, the escaping sliver is
+    // bounded by cos^2(168.6 - 90) = 3.9%, so at least 96% of the lobe starts
+    // inside the solid — enough that terminate-on-first-hit drives ao to ~0.
+    CHECK(below_fraction(steep, leaning_back) > 0.95);
+    CHECK(below_fraction(steep, steep) == 0.0);            // the fix, same facet
+}
+
 int main() {
     test_determinism();
     test_seam_invariance();
     test_pack_orm_ao();
+    test_geometric_trace_frame();
     if (g_failures == 0) {
         std::printf("tileset_bake_vk_ao_tests: all passed\n");
         return 0;

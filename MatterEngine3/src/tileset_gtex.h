@@ -42,7 +42,17 @@ inline constexpr uint32_t kGTexVersion     = 2u;
 // GL-baked atlas now fails gtex_cache_hit honestly and is rebaked. No
 // dual-accept, no migration shim. Also folded into the resolve-cache key
 // (resolve_cache.cpp:298) and the settle-cache key (tileset_bake.cpp:665).
-inline constexpr uint32_t kEngineBakeVersion = 3u;
+//
+// 3 -> 4: shaders_vk/tileset_bake_ao.comp now traces its hemisphere around the
+// owning triangle's geometric normal instead of the interpolated vertex normal
+// (see the note in that shader's main()). ORM.r changes wherever a smooth-shaded
+// material is visible in the atlas — flat-shaded materials are bit-identical, so
+// on the shipping ForestFloor only BARK/Twig texels move. That is still a
+// content change, and nothing else in the cache key can see a shader edit: the
+// key is (pose_hash, script_source_hash, kEngineBakeVersion, kBox3dVersion), so
+// without this bump every already-baked .gtex would keep being served with the
+// old, self-occluded AO.
+inline constexpr uint32_t kEngineBakeVersion = 4u;
 inline constexpr uint32_t kBox3dVersion    = 1u;
 
 // Ground-tileset sampler slots the renderer can hold simultaneously — the

@@ -299,10 +299,10 @@ void test_example_worlds_preserve_manifest_authoring() {
         {"FloorDemo", {{"FloorDemo", false, false},
                        {"ForestFloor", false, true}}},
         {"RockGallery", {{"RockGallery", true, false}}},
-        {"StressForest50k", {{"StressForest50k", true, false}}},
-        {"StressForest100k", {{"StressForest100k", true, false}}},
-        {"StressForest200k", {{"StressForest200k", true, false}}},
-        {"StressForest500k", {{"StressForest500k", true, false}}},
+        // The StressForest{50k,100k,200k,500k} entries died with the worlds
+        // themselves ("Remove outdated worlds", 530b7a11): this table checks
+        // that SHIPPED example worlds keep their manifest authoring, so a
+        // deleted world has nothing left to preserve.
     };
     CHECK(fs::is_directory(project / "objects"),
           "example project exposes object modules under objects/");

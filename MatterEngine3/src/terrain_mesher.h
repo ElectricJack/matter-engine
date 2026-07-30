@@ -40,4 +40,43 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
                  float sector_size, float y_min, float y_max,
                  SectorMesh& out, std::string& err);
 
+// Heightfield terrain LOD ladder (2026-07-28 alpine design, LODs 0-4).
+//
+// Meshes one sector as an N x N regular height grid, N = 1 << lod
+// (lod 0 -> one quad, lod 4 -> 16x16 cells). Evaluates height_at once per
+// X/Z lattice point (plus four fixed-step probes per USED vertex for the
+// gradient normal) and never allocates a voxel density volume. Positions are
+// sector-local in x/z, world-absolute in y — same contract as mesh_sector.
+//
+// edge_mask marks cardinal neighbors that are exactly ONE terrain LOD
+// coarser (bit 0 = +x, bit 1 = -x, bit 2 = +z, bit 3 = -z). On a masked
+// edge the odd boundary vertices are dropped and the border cell rows are
+// re-triangulated against the coarse neighbor's boundary vertices (even
+// lattice points), so the shared border polyline is bitwise-identical to
+// the coarse neighbor's own edge — watertight, with no T-vertices. Unmasked
+// edges keep the full grid boundary, which is bitwise-identical between
+// equal-LOD neighbors. lod 0 is the coarsest level and must pass
+// edge_mask 0.
+//
+// Lattice coordinates are computed as double(S) * i / N (exact for the
+// power-of-two N), so a coarse neighbor's lattice point and the fine
+// sector's even lattice point produce identical height_at arguments.
+// Normal probes use a fixed 2 m step regardless of lod, so a border vertex
+// shades identically at every level.
+//
+// Skirts follow the ACTUAL emitted border polyline (coarse vertices only on
+// masked edges) at the same depth policy as mesh_sector, wound outward.
+bool mesh_sector_heightfield(const terrain_field::FieldRuntime& field,
+                             int64_t tx, int64_t tz, int lod, int edge_mask,
+                             float sector_size, float y_min, float y_max,
+                             SectorMesh& out, std::string& err);
+
+// Edge-mask bit layout shared by the mesher, the streamer, and WorldSector.
+enum EdgeMaskBits {
+    kEdgePosX = 1,
+    kEdgeNegX = 2,
+    kEdgePosZ = 4,
+    kEdgeNegZ = 8,
+};
+
 } // namespace terrain_mesher
