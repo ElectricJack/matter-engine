@@ -147,6 +147,20 @@ struct ViewerStats {
     // EMA averages them away — the peak is what actually breaks frame cadence.
     float loop_peak_pump_ms    = 0.0f;
     float loop_peak_acquire_ms = 0.0f;
+    // Chart-space virtual texturing census. vt_rejected_variants != 0 means
+    // some part of the world was refused a VT variant and is rendering the
+    // legacy path — i.e. it IGNORES its authored surfaces() classification.
+    // That degradation is otherwise invisible in-app, so the viewport shows a
+    // warning banner while the count is nonzero.
+    bool     vt_active = false;
+    uint32_t vt_variants = 0;
+    uint32_t vt_max_variants = 0;
+    uint32_t vt_rejected_variants = 0;
+    uint32_t vt_pool_used = 0;
+    uint32_t vt_pool_capacity = 0;
+    uint32_t vt_pool_pinned = 0;
+    uint64_t vt_mesh_bytes = 0;
+    uint64_t vt_mesh_budget_bytes = 0;
 };
 
 void reset_lighting_controls(ViewerStats& stats);
@@ -161,6 +175,12 @@ public:
     bool begin_frame(const matter::VulkanFrame& frame, std::string& error);
     bool end_frame(const matter::VulkanFrame& frame, std::string& error);
     void draw_debug_panel(ViewerStats& stats, const ViewerCommands& commands);
+    // Viewport banner shown while vt_rejected_variants != 0. Drawn on the
+    // foreground draw list (like the simulation border tint) so it is visible
+    // even when the Viewer Debug window is collapsed or buried — a rejected
+    // variant renders plausible-looking legacy shading, which is exactly why
+    // an author tuning a surfaces() tape needs an unmissable signal.
+    void draw_vt_warning_banner(const ViewerStats& stats);
     // Bake Lab shell (bake-lab.md §II.5): "Bake Lab" window wrapping
     // BakeLab::draw_contents(), same Begin/End split as draw_console_panel.
     // No-op while lab.visible is false (window close button clears it).

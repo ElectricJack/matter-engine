@@ -2138,6 +2138,7 @@ int main() {
                 ui.draw_viewport_window();
                 ui.draw_console_panel(console_log);
                 ui.draw_debug_panel(stats, viewer_commands);
+                ui.draw_vt_warning_banner(stats);
                 ui.draw_bake_lab_panel(bake_lab, &app_hub, session.get(), worlds, stats);
                 ui.draw_asset_browser_panel(asset_browser, worlds, stats, shared_lib,
                                            viewer_commands);
@@ -2593,6 +2594,15 @@ int main() {
         stats.gpu_denoise_ms         = frame_stats.gpu_denoise_ms;
         stats.gpu_dlss_ms            = frame_stats.gpu_dlss_ms;
         stats.gpu_composite_ms       = frame_stats.gpu_composite_ms;
+        stats.vt_active              = frame_stats.vt_active;
+        stats.vt_variants            = frame_stats.vt_variants;
+        stats.vt_max_variants        = frame_stats.vt_max_variants;
+        stats.vt_rejected_variants   = frame_stats.vt_rejected_variants;
+        stats.vt_pool_used           = frame_stats.vt_pool_used;
+        stats.vt_pool_capacity       = frame_stats.vt_pool_capacity;
+        stats.vt_pool_pinned         = frame_stats.vt_pool_pinned;
+        stats.vt_mesh_bytes          = frame_stats.vt_mesh_bytes;
+        stats.vt_mesh_budget_bytes   = frame_stats.vt_mesh_budget_bytes;
 
         bool ui_frame_completed = false;
         if (ui_frame_ready) {
