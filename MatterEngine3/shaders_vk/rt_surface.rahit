@@ -1,0 +1,42 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+
+// RT PBR Phase 1: any-hit for the SURFACE hit group (SBT record 1), added so
+// the refraction walk's non-opaque re-trace (rt_lighting.rgen's
+// trace_walk_ray, walk_alpha_test == 1) can skip alpha-tested texels instead
+// of occluding refraction with the foliage card's solid silhouette.
+//
+// Scope is deliberately the alpha test ONLY: every other candidate (glass
+// backfaces the walk needs, thin-walled scatterers, plain non-opaque
+// surfaces) is accepted by returning, which keeps closest-hit traversal
+// semantics identical to the legacy OpaqueEXT trace. Rays that set
+// gl_RayFlagsOpaqueEXT (GI, specular, the opaque-layer walk pass) never run
+// this shader, and BLAS geometry built from fully opaque materials carries
+// VK_GEOMETRY_OPAQUE_BIT_KHR, so the cost is confined to non-opaque
+// candidates on rays that opted in.
+
+#define RT_SURFACE_HIT_SHADER 1
+#include "rt_surface_common.glsl"
+
+hitAttributeEXT vec2 hit_barycentrics;
+
+const uint MATERIAL_ALPHA_TESTED = 1u << 2u;
+
+void main() {
+    RtSurface surface = load_rt_surface(hit_barycentrics);
+    // Invalid part records and out-of-range materials accept the hit: the
+    // closest-hit shader reports the same invalid surface it would have under
+    // OpaqueEXT, so the error stays visible instead of being skipped.
+    if ((surface.flags & RT_SURFACE_VALID) == 0u) return;
+    if (surface.material_index >= rt_materials.length()) return;
+    RtMaterialGpu material = rt_materials[surface.material_index];
+    float opacity = clamp(material.metal_opacity_spec_coat.y, 0.0, 1.0);
+    float alpha_cutoff = clamp(material.scattering_shape.z, 0.0, 1.0);
+    // Same material-constant alpha test rt_visibility.rahit applies for
+    // shadow rays.
+    if ((material.flags_misc.x & MATERIAL_ALPHA_TESTED) != 0u &&
+        opacity < alpha_cutoff) {
+        ignoreIntersectionEXT;
+    }
+}

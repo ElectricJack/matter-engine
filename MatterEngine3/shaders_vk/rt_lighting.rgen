@@ -15,6 +15,11 @@ layout(set = 0, binding = 11) uniform usampler2D identity_texture;
 layout(set = 0, binding = 12, rgba16f) uniform image2D raw_specular_image;
 layout(set = 0, binding = 13, rg16f) uniform image2D raw_specular_aux_image;
 layout(set = 0, binding = 14, rgba16f) uniform image2D raw_transmission_image;
+// RT PBR Phase 1: transmission denoiser lane. Mirrors raw_specular_aux's
+// (hit_t, roughness) contract so the temporal/atrous chain can treat rough
+// transmission like rough reflection (bindings 15-19 are the tileset/VT
+// mirrors declared by rt_surface_common.glsl).
+layout(set = 0, binding = 20, rg16f) uniform image2D raw_transmission_aux_image;
 layout(set = 0, binding = 6, std430) buffer LightingTestOutput {
     uint lighting_test_words[];
 };
@@ -22,6 +27,18 @@ layout(set = 0, binding = 6, std430) buffer LightingTestOutput {
 // Test-only lobe-selection counters; drivers fold the false branch out of the
 // production pipeline at vkCreateRayTracingPipelinesKHR time.
 layout(constant_id = 0) const uint count_reflection_lobe_samples = 0u;
+// RT PBR Phase 1: alpha-tested occluders in the refraction walk. 0 = legacy
+// single OpaqueEXT trace (alpha-tested foliage occludes as a solid
+// silhouette); 1 = the two-mask pattern the shadow rays use (opaque layer
+// 0x01 traced OpaqueEXT first, then the non-opaque layer 0x02 with the
+// rt_surface.rahit alpha test, bounded by the opaque hit distance).
+layout(constant_id = 1) const uint walk_alpha_test = 0u;
+
+// Materials rougher than this sample a VNDF half-vector at the walk's entry
+// and exit refractions; smoother ones keep the exact legacy geometric-normal
+// path (the byte-compatibility gate for existing glass). 0.02 matches the
+// specular lane's roughness clamp floor.
+const float RT_SMOOTH_TRANSMISSION_ROUGHNESS = 0.02;
 
 layout(push_constant) uniform GiConstants {
     mat4 clip_to_world;
@@ -115,6 +132,32 @@ void basis(vec3 n, out vec3 t, out vec3 b) {
                                    : vec3(1.0, 0.0, 0.0);
     t = normalize(cross(helper, n));
     b = cross(n, t);
+}
+
+// RT PBR Phase 1 (rough transmission): refract `incident` through a VNDF
+// half-vector sampled around `normal` at `roughness`. `view` is the
+// unit vector from the surface toward the incident ray's origin (so
+// dot(view, normal) > 0), `eta` the refraction ratio refract() expects for
+// this boundary. Falls back to `geometric_dir` -- the geometric-normal
+// refraction already in hand -- when the sampled microfacet suffers grazing
+// TIR or throws the ray back above the surface. Bias accepted over a
+// re-sample loop (documented in the companion spec, Phase 1).
+vec3 rough_refract(vec3 incident, vec3 view, vec3 normal, float eta,
+                   float roughness, vec3 geometric_dir, inout uint seed) {
+    vec3 tangent, bitangent;
+    basis(normal, tangent, bitangent);
+    vec3 view_local = vec3(dot(view, tangent), dot(view, bitangent),
+                           max(dot(view, normal), 1e-4));
+    vec3 half_local = sample_ggx_vndf(view_local, roughness,
+        vec2(random_float(seed), random_float(seed)));
+    vec3 half_vector = normalize(tangent * half_local.x +
+                                 bitangent * half_local.y +
+                                 normal * half_local.z);
+    vec3 perturbed = refract(incident, half_vector, eta);
+    if (dot(perturbed, perturbed) > 1e-8 &&
+        dot(perturbed, normal) < 0.0)
+        return normalize(perturbed);
+    return geometric_dir;
 }
 
 vec3 sky_environment(vec3 direction) {
@@ -281,6 +324,42 @@ vec3 hit_radiance_sunlit(RtSurface surface, vec3 to_sun) {
     return radiance;
 }
 
+// RT PBR Phase 1: one refraction-walk segment, leaving the result in the
+// `hit` payload. walk_alpha_test == 0 keeps the legacy behaviour bit-exactly:
+// a single OpaqueEXT trace against both TLAS layers, where alpha-tested
+// foliage occludes as a solid silhouette. walk_alpha_test == 1 traces the
+// opaque layer (0x01) OpaqueEXT first, then re-traces the non-opaque layer
+// (0x02) without OpaqueEXT -- running rt_surface.rahit's alpha test -- capped
+// at the opaque hit distance, and keeps the nearer result. The cap makes the
+// second trace cheap and the nearest-hit selection implicit.
+void trace_walk_ray(vec3 origin, vec3 direction, float cone_width,
+                    float cone_spread) {
+    hit.surface = invalid_rt_surface();
+    hit.part_slot = hit.primitive = 0xffffffffu;
+    hit.cone_width = cone_width;
+    hit.cone_spread = cone_spread;
+    if (walk_alpha_test == 0u) {
+        traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, 1, 0, 1,
+                    origin, constants.bias, direction,
+                    constants.max_distance, 1);
+        return;
+    }
+    traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0x01, 1, 0, 1,
+                origin, constants.bias, direction, constants.max_distance, 1);
+    RtSurface opaque_surface = hit.surface;
+    float non_opaque_limit =
+        (opaque_surface.flags & RT_SURFACE_VALID) != 0u
+            ? opaque_surface.hit_t : constants.max_distance;
+    hit.surface = invalid_rt_surface();
+    hit.part_slot = hit.primitive = 0xffffffffu;
+    hit.cone_width = cone_width;
+    hit.cone_spread = cone_spread;
+    traceRayEXT(scene, gl_RayFlagsNoneEXT, 0x02, 1, 0, 1,
+                origin, constants.bias, direction, non_opaque_limit, 1);
+    if ((hit.surface.flags & RT_SURFACE_VALID) == 0u)
+        hit.surface = opaque_surface;
+}
+
 void main() {
     ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
     float depth;
@@ -303,6 +382,7 @@ void main() {
         imageStore(raw_specular_image, pixel, vec4(0.0));
         imageStore(raw_specular_aux_image, pixel, vec4(0.0));
         imageStore(raw_transmission_image, pixel, vec4(0.0));
+        imageStore(raw_transmission_aux_image, pixel, vec4(0.0));
         return;
     }
     vec3 normal = normal_sample * inversesqrt(normal_length_squared);
@@ -542,11 +622,18 @@ void main() {
 
     vec3 transmitted = vec3(0.0);
     float transmission_weight = 0.0;
+    // Denoiser aux lane: (hit distance, lobe roughness), same contract as
+    // specular_aux above. Stays (0, 0) for pixels with no transmission.
+    vec2 transmission_aux = vec2(0.0);
     if (identity.x < rt_materials.length()) {
         RtMaterialGpu trans_material = rt_materials[identity.x];
         transmission_weight = clamp(trans_material.transmission.x, 0.0, 1.0);
         if (transmission_weight > 0.0) {
             float ior = max(trans_material.transmission.y, 1.0001);
+            float trans_roughness =
+                clamp(trans_material.base_roughness.w, 0.0, 1.0);
+            bool rough_transmission =
+                trans_roughness >= RT_SMOOTH_TRANSMISSION_ROUGHNESS;
             // Reversed-Z: near plane is NDC z = 1.0 (see the specular-path
             // note above; z = 0.0 here made trans_view point away from the
             // camera, which black-holed glass seen from outside).
@@ -566,20 +653,26 @@ void main() {
             } else {
                 vec3 walk_origin = world - normal * constants.bias;
                 vec3 walk_dir = normalize(refracted);
+                // Rough (frosted) entry: perturb only the boundary event.
+                // The interior TIR bounces below stay deterministic (bounded
+                // noise, bounded cost -- companion spec, Phase 1).
+                if (rough_transmission)
+                    walk_dir = rough_refract(-trans_view, trans_view, normal,
+                                             1.0 / ior, trans_roughness,
+                                             walk_dir, seed);
                 float path_length = 0.0;
+                // Aux hit distance: medium path plus the final segment when
+                // the walk resolves a surface, max_distance when it escapes
+                // to the environment (the specular lane's miss contract).
+                float signal_t = constants.max_distance;
                 bool shaded = false;
                 vec3 exit_radiance = vec3(0.0);
                 // WP-G: the refraction walk carries the primary cone (see the
                 // cone model: no IOR rescale, deliberately).
                 float walk_cone_width = primary_cone_width;
                 for (int event = 0; event < 4 && !shaded; ++event) {
-                    hit.surface = invalid_rt_surface();
-                    hit.part_slot = hit.primitive = 0xffffffffu;
-                    hit.cone_width = walk_cone_width;
-                    hit.cone_spread = pixel_spread;
-                    traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, 1, 0, 1,
-                                walk_origin, constants.bias, walk_dir,
-                                constants.max_distance, 1);
+                    trace_walk_ray(walk_origin, walk_dir, walk_cone_width,
+                                   pixel_spread);
                     if ((hit.surface.flags & RT_SURFACE_VALID) == 0u) {
                         // Open geometry: no backface found. The authored
                         // thickness stands in for the medium path length.
@@ -593,6 +686,7 @@ void main() {
                     if ((hit.surface.flags & RT_SURFACE_FRONT_FACE) != 0u) {
                         exit_radiance = hit_radiance_sunlit(hit.surface,
                                                             to_sun);
+                        signal_t = path_length;
                         shaded = true;
                         break;
                     }
@@ -603,21 +697,34 @@ void main() {
                                             ior);
                     if (dot(exit_dir, exit_dir) > 1e-8) {
                         exit_dir = normalize(exit_dir);
+                        // Rough (frosted) exit: same perturbation, at the
+                        // exit surface's authored roughness. Only taken when
+                        // the geometric exit already succeeded, so interior
+                        // TIR classification is untouched; a sampled
+                        // microfacet that fails falls back to the geometric
+                        // direction inside rough_refract.
+                        float exit_roughness =
+                            hit.surface.material_index < rt_materials.length()
+                                ? clamp(rt_materials[hit.surface.material_index]
+                                            .base_roughness.w, 0.0, 1.0)
+                                : 0.0;
+                        if (exit_roughness >= RT_SMOOTH_TRANSMISSION_ROUGHNESS)
+                            exit_dir = rough_refract(
+                                walk_dir, -walk_dir, hit.surface.normal, ior,
+                                exit_roughness, exit_dir, seed);
                         vec3 exit_origin = hit.surface.position -
                                            hit.surface.normal *
                                                constants.bias;
                         float exit_cone_width = hit.surface.cone_width;
-                        hit.surface = invalid_rt_surface();
-                        hit.part_slot = hit.primitive = 0xffffffffu;
-                        hit.cone_width = exit_cone_width;
-                        hit.cone_spread = pixel_spread;
-                        traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, 1, 0,
-                                    1, exit_origin, constants.bias, exit_dir,
-                                    constants.max_distance, 1);
-                        exit_radiance =
-                            (hit.surface.flags & RT_SURFACE_VALID) != 0u
-                                ? hit_radiance_sunlit(hit.surface, to_sun)
-                                : environment(exit_dir);
+                        trace_walk_ray(exit_origin, exit_dir, exit_cone_width,
+                                       pixel_spread);
+                        if ((hit.surface.flags & RT_SURFACE_VALID) != 0u) {
+                            exit_radiance = hit_radiance_sunlit(hit.surface,
+                                                                to_sun);
+                            signal_t = path_length + hit.surface.hit_t;
+                        } else {
+                            exit_radiance = environment(exit_dir);
+                        }
                         shaded = true;
                         break;
                     }
@@ -647,6 +754,17 @@ void main() {
                     : vec3(1.0);
                 transmitted = exit_radiance * (1.0 - fresnel) *
                               transmittance;
+                if (rough_transmission) {
+                    // Firefly clamp on the stochastic lane only, matching the
+                    // GI lane's 8.0 luminance cap. The smooth path is
+                    // deterministic (no VNDF sample was drawn), and clamping
+                    // it would break the byte-compatibility gate for
+                    // existing glass.
+                    float trans_lum =
+                        dot(transmitted, vec3(0.2126, 0.7152, 0.0722));
+                    if (trans_lum > 8.0) transmitted *= 8.0 / trans_lum;
+                }
+                transmission_aux = vec2(signal_t, trans_roughness);
             }
         }
     }
@@ -654,4 +772,6 @@ void main() {
         transmitted = vec3(0.0);
     imageStore(raw_transmission_image, pixel,
                vec4(transmitted, transmission_weight));
+    imageStore(raw_transmission_aux_image, pixel,
+               vec4(transmission_aux, 0.0, 0.0));
 }

@@ -258,8 +258,19 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
         shutdown();
         return false;
     }
-    max_variants_ = env_u32("MATTER_VT_MAX_VARIANTS", 1024u, 4u,
-                            max_layers < 4096u ? max_layers : 4096u);
+    // One indirection ARRAY LAYER per (variant, rung), so this is hard-capped
+    // by the device's maxImageArrayLayers no matter what the env asks for (an
+    // RTX 4090 reports >= 8192; the Vulkan floor is 256).
+    //
+    // 8192, not 1024: a streamed world registers one variant per resident
+    // sector rung, and StreamMountain's 2560 m ring is ~5000 sectors. At 1024
+    // most of the world was refused a layer and fell back to the legacy path,
+    // which renders but IGNORES the authored surfaces() classification -- the
+    // uniform tan far field with a visible boundary. The cost is 32 KiB of
+    // indirection image per layer (8192 layers = 256 MiB), paid up front at
+    // init; drop MATTER_VT_MAX_VARIANTS on a memory-tight device.
+    max_variants_ = env_u32("MATTER_VT_MAX_VARIANTS", 8192u, 4u,
+                            max_layers < 8192u ? max_layers : 8192u);
     max_fills_per_frame_ =
         env_u32("MATTER_VT_FILLS_PER_FRAME", 8u, 1u, kMaxFillFlags);
     // WP-H: tier-2 budget is deliberately SEPARATE from the fill budget --
@@ -268,9 +279,15 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     // the tier without unloading the enricher. The upper bound is the
     // enricher's own per-batch capacity (VtEnricher::kMaxRequestsPerBatch).
     max_enrich_per_frame_ = env_u32("MATTER_VT_ENRICH_PER_FRAME", 2u, 0u, 16u);
+    // CPU mesh copies (see register_variant's LIFETIME note). Sized for a
+    // streamed world: a rung-0 StreamMountain terrain sector costs on the order
+    // of 100 KB of copied streams, so a full 2048-layer census lands in the low
+    // hundreds of MB. 1024 MB leaves headroom for denser rungs (a rung-2 sector
+    // has ~16x the vertices of rung 0) without letting a runaway world grow the
+    // heap without bound.
     mesh_budget_bytes_ =
-        static_cast<size_t>(env_u32("MATTER_VT_MESH_BUDGET_MB", 256u, 1u,
-                                    8192u)) *
+        static_cast<size_t>(env_u32("MATTER_VT_MESH_BUDGET_MB", 1024u, 1u,
+                                    16384u)) *
         1024u * 1024u;
 
     const VkFormat formats[kVtChannelCount] = {
@@ -380,6 +397,8 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
                                   kVtPoolLayerEdgeTexels;
     stats_ = Stats{};
     stats_.pool_capacity = pool_pages_;
+    stats_.max_variants = max_variants_;
+    stats_.mesh_budget_bytes = mesh_budget_bytes_;
     stats_.pool_bytes = layer_texels * pool_layers * (1 + 1 + 1 + 4);
     stats_.enrich_samples = enricher_ ? enricher_->sample_count() : 0u;
     ready_ = true;
@@ -418,6 +437,7 @@ void VtResidency::shutdown() {
     slot_tier_.clear();
     variant_records_.clear();
     mesh_bytes_used_ = 0;
+    warned_rejection_ = false;
     feedback_w_ = feedback_h_ = 0;
     ready_ = false;
     vulkan_ = nullptr;
@@ -449,6 +469,33 @@ void VtResidency::set_enricher(std::unique_ptr<VtPageEnricher> enricher) {
 // Variant registration
 // ---------------------------------------------------------------------------
 
+void VtResidency::note_rejection(const char* reason, size_t wanted_bytes) {
+    ++stats_.rejected_variants;
+    if (warned_rejection_) return;
+    warned_rejection_ = true;
+    // WARN ONCE, loudly. A rejected variant does not fail -- it falls back to
+    // the legacy per-material path, which renders but ignores the authored
+    // surfaces() classification. In a streamed world that shows up as a uniform
+    // far field with a visible boundary, and nothing else in the pipeline
+    // reports it. Raise the knobs named here rather than guessing from pixels.
+    const double used_mb =
+        static_cast<double>(mesh_bytes_used_) / (1024.0 * 1024.0);
+    const double budget_mb =
+        static_cast<double>(mesh_budget_bytes_) / (1024.0 * 1024.0);
+    const double wanted_kb = static_cast<double>(wanted_bytes) / 1024.0;
+    std::fprintf(stderr,
+                 "[vt] WARNING: variant registration REJECTED (%s) -- this "
+                 "part falls back to the legacy path and ignores its "
+                 "surfaces() classification. variants=%u/%u, mesh=%.1f/%.1f "
+                 "MiB, wanted=%.1f KiB. Raise MATTER_VT_MAX_VARIANTS "
+                 "(indirection layers, capped by maxImageArrayLayers) and/or "
+                 "MATTER_VT_MESH_BUDGET_MB. Further rejections are counted in "
+                 "the VT census (vt_rejected_variants) but not logged.\n",
+                 reason, stats_.variants, max_variants_, used_mb, budget_mb,
+                 wanted_kb);
+    std::fflush(stderr);
+}
+
 uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
                                        const chart_atlas::ChartAtlasRung& atlas,
                                        const VtPartContext& context) {
@@ -463,38 +510,19 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
     if (!vt_build_layout(atlas.atlas_w, atlas.atlas_h, layout))
         return kVtNoSlot;
     if (free_layers_.empty()) {
-        ++stats_.rejected_variants;
+        note_rejection("no free indirection layer", 0);
         return kVtNoSlot;
     }
 
     // WP-F: a usable tape classification needs both arrays and an exact
     // per-vertex weight matrix; anything else fails closed to the TriEx path.
-    const bool has_surface_tape =
-        context.surface_material_count > 0 && context.surface_weights &&
-        context.surface_materials &&
-        context.surface_material_count <= 8u && context.vertex_count > 0;
+    const bool has_surface_tape = vt_context_has_surface_tape(context);
 
     // Budget the CPU mesh copy BEFORE taking any slot, so a rejection leaves
     // no partial registration behind.
-    const size_t mesh_bytes =
-        static_cast<size_t>(context.vertex_count) *
-            (sizeof(float) * 3 * (context.positions ? 1 : 0) +
-             sizeof(float) * 3 * (context.normals ? 1 : 0) +
-             sizeof(float) * 2 * (context.surface_uvs ? 1 : 0) +
-             sizeof(uint32_t) * (context.material_ids ? 1 : 0) +
-             4 * (context.tint_rgba ? 1 : 0) +
-             (has_surface_tape ? context.surface_material_count : 0)) +
-        static_cast<size_t>(context.triangle_count) * 3 * sizeof(uint32_t) +
-        static_cast<size_t>(context.material_count) * context.material_stride *
-            sizeof(float) +
-        (has_surface_tape
-             ? static_cast<size_t>(context.surface_material_count) *
-                   sizeof(uint32_t)
-             : 0) +
-        atlas.charts.size() * sizeof(chart_atlas::ChartEntry) +
-        atlas.tri_order.size() * sizeof(uint32_t);
+    const size_t mesh_bytes = vt_variant_mesh_bytes(atlas, context);
     if (mesh_bytes_used_ + mesh_bytes > mesh_budget_bytes_) {
-        ++stats_.rejected_variants;
+        note_rejection("CPU mesh budget spent", mesh_bytes);
         return kVtNoSlot;
     }
 
@@ -505,6 +533,11 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
     const VtPageKey tail_page{layout.mip_count - 1u, 0u, 0u};
     if (!slots_.acquire(key, tail_page, /*pinned=*/true, frame_index_,
                         tail_slot, evicted)) {
+        // Every page slot is a pinned tail already: the pool cannot hold one
+        // more variant. Same fail-closed-to-legacy outcome as the two budget
+        // gates above, so it is counted (and warned about) the same way.
+        note_rejection("page pool exhausted by pinned tails "
+                       "(raise MATTER_VT_POOL_PAGES)", 0);
         return kVtNoSlot;
     }
     if (evicted.live) {

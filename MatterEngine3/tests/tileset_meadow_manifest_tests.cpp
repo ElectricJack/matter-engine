@@ -6,6 +6,7 @@
 
 #include "script/world_definition_loader.h"
 #include "detail_bake_plan.h"
+#include "tileset_gtex.h"   // tileset::kMaxTilesetSlots (slot-count source of truth)
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -58,7 +59,7 @@ int main() {
     // therefore produce exactly what the old hardcoded loop produced — one bake
     // per tileset root, bound to material 16 and to nothing else — and must not
     // pick up any dynamic materials they never declared.
-    for (const char* world : {"Meadow.js", "StreamMountain.js", "FloorDemo.js"}) {
+    for (const char* world : {"Meadow.js", "FloorDemo.js"}) {
         matter::WorldDefinition legacy;
         matter::WorldLoadError legacy_err;
         matter::WorldLoadDesc legacy_desc;
@@ -83,6 +84,71 @@ int main() {
             REQUIRE(plan[i].materials.size() == 1);
             REQUIRE(plan[i].materials[0] == tileset::kDeprecatedTilesetRootMaterial);
         }
+    }
+
+    // StreamMountain migrated to defineMaterial (chart-VT Phase 4): it declares
+    // four alpine materials AND keeps the deprecated `tileset: true` ForestFloor
+    // root. That combination is only sound because plan_detail_bakes() merges
+    // the root with AlpineGround's identical `detail: "ForestFloor"` request —
+    // one settle, one .gtex, one slot, two bound materials (16 + AlpineGround).
+    // Assert exactly that, so a future edit that splits them (a detailDensity
+    // on AlpineGround, params on the root) is caught here rather than as a
+    // doubled 350 s settle and a wasted slot at runtime.
+    {
+        matter::WorldDefinition mountain;
+        matter::WorldLoadError mountain_err;
+        matter::WorldLoadDesc mountain_desc;
+        mountain_desc.world_path = (worlds_dir / "StreamMountain.js").string();
+        const bool mountain_ok = matter::load_world_definition(
+            mountain_desc, mountain, mountain_err);
+        if (!mountain_ok)
+            std::fprintf(stderr, "  StreamMountain.js: %s\n",
+                         mountain_err.message.c_str());
+        REQUIRE(mountain_ok);
+
+        REQUIRE(mountain.materials.size() == 4);
+        const char* const expect_names[4] = {"AlpineGround", "AlpineRock",
+                                             "Scree", "AlpineSnow"};
+        const char* const expect_detail[4] = {"ForestFloor", "AlpineRockDetail",
+                                              "ScreeDetail", "AlpineSnowDetail"};
+        for (size_t i = 0; i < mountain.materials.size() && i < 4; ++i) {
+            REQUIRE(mountain.materials[i].name == expect_names[i]);
+            REQUIRE(mountain.materials[i].detail_module == expect_detail[i]);
+            REQUIRE(mountain.materials[i].detail_density == 0);
+            REQUIRE(mountain.materials[i].index >= 0);
+        }
+
+        std::vector<tileset::DetailBakeRoot> mountain_roots;
+        for (const matter::WorldRoot& root : mountain.roots)
+            if (root.tileset)
+                mountain_roots.push_back({root.module, root.params_json});
+        REQUIRE(mountain_roots.size() == 1);
+
+        const std::vector<tileset::DetailBakeRequest> plan =
+            tileset::plan_detail_bakes(mountain_roots, mountain.materials);
+        // 4 detail scenes, not 5: the root folded into AlpineGround's.
+        REQUIRE(plan.size() == 4);
+        if (plan.size() == 4) {
+            REQUIRE(plan[0].module == "ForestFloor");
+            REQUIRE(plan[0].from_tileset_root);
+            REQUIRE(plan[0].materials.size() == 2);
+            REQUIRE(plan[0].materials[0] ==
+                    tileset::kDeprecatedTilesetRootMaterial);
+            REQUIRE(plan[0].materials[1] == mountain.materials[0].index);
+            // ForestFloor first in the plan matters while the Alpine* detail
+            // scenes are still missing: run_tileset_deferred stops at the first
+            // settle failure, so the one scene that exists must be ahead of
+            // them.
+            for (size_t i = 1; i < plan.size(); ++i) {
+                REQUIRE(plan[i].module == expect_detail[i]);
+                REQUIRE(!plan[i].from_tileset_root);
+                REQUIRE(plan[i].materials.size() == 1);
+                REQUIRE(plan[i].materials[0] == mountain.materials[i].index);
+            }
+        }
+        // Every declared detail scene must fit the slot pool with room to
+        // spare; sharing ForestFloor is what keeps that true.
+        REQUIRE((int)plan.size() <= tileset::kMaxTilesetSlots);
     }
 
     std::fprintf(stderr, "tileset_meadow_manifest_tests: %d run, %d failed\n",

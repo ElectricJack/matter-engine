@@ -2944,11 +2944,45 @@ int main() {
         }
 
         if (!stats_label.empty()) {
-            std::printf("STATS,%s,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%d\n",
+            // APPEND-ONLY format (scripts parse by position). The five trailing
+            // VT fields are the chart-space virtual-texturing census: a
+            // vt_rejected != 0 means part of the world silently fell back to
+            // the legacy path and is ignoring its surfaces() classification.
+            std::printf("STATS,%s,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%d"
+                        ",%u,%u,%u,%.1f,%.1f\n",
                         stats_label.c_str(), stats.frame_ms, stats.resolve_ms,
                         stats.build_ms, stats.draw_ms, stats.instances_active,
                         stats.raster_batches, stats.raster_tris,
-                        stats.culled_clusters, stats.gpu_culled_hiz);
+                        stats.culled_clusters, stats.gpu_culled_hiz,
+                        frame_stats.vt_variants,
+                        frame_stats.vt_rejected_variants,
+                        frame_stats.vt_max_variants,
+                        static_cast<double>(frame_stats.vt_mesh_bytes) /
+                            (1024.0 * 1024.0),
+                        static_cast<double>(
+                            frame_stats.vt_mesh_budget_bytes) /
+                            (1024.0 * 1024.0));
+            std::printf("STATSVT,%s,active=%d,variants=%u/%u,rejected=%u,"
+                        "mesh=%.1f/%.1f MiB,pool=%u/%u,pinned=%u,queue=%u,"
+                        "fills=%llu,evictions=%llu\n",
+                        stats_label.c_str(),
+                        frame_stats.vt_active ? 1 : 0,
+                        frame_stats.vt_variants,
+                        frame_stats.vt_max_variants,
+                        frame_stats.vt_rejected_variants,
+                        static_cast<double>(frame_stats.vt_mesh_bytes) /
+                            (1024.0 * 1024.0),
+                        static_cast<double>(
+                            frame_stats.vt_mesh_budget_bytes) /
+                            (1024.0 * 1024.0),
+                        frame_stats.vt_pool_used,
+                        frame_stats.vt_pool_capacity,
+                        frame_stats.vt_pool_pinned,
+                        frame_stats.vt_queue_depth,
+                        static_cast<unsigned long long>(
+                            frame_stats.vt_fills_total),
+                        static_cast<unsigned long long>(
+                            frame_stats.vt_evictions_total));
             stats_label.clear();
         }
         // Post-frame seam (event-system.md S I.13). Reload / world-switch are

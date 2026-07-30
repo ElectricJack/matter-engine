@@ -207,10 +207,18 @@ void main() {
             vec3 reflect_dir = reflect(-view_ray, normal);
             vec3 through_dir = tir ? reflect_dir : refract_dir;
             vec3 to_sun = normalize(-lighting.sun_direction);
+            // Legacy glass packs black absorption; treat as clear. Same guard
+            // rt_lighting.rgen applies before Beer-Lambert -- without it a
+            // zeroed absorptionColor multiplied this fallback to black (the
+            // historical "black glass" failure, reachable whenever the RT
+            // transmission lane did not cover this pixel).
+            vec3 fallback_absorption = mat.absorption_pad.rgb;
+            if (dot(fallback_absorption, fallback_absorption) < 1e-8)
+                fallback_absorption = vec3(1.0);
             transmission.rgb = sky_with_sun(through_dir, lighting.sky_color,
                                             to_sun, lighting.sun_color,
                                             lighting.sun_intensity * 0.5)
-                             * mat.absorption_pad.rgb;
+                             * fallback_absorption;
             glass_reflection = sky_with_sun(reflect_dir, lighting.sky_color,
                                             to_sun, lighting.sun_color,
                                             lighting.sun_intensity)

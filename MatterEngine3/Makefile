@@ -330,6 +330,7 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/gi_temporal.comp.spv \
          build/shaders_vk/gi_atrous.comp.spv \
          build/shaders_vk/rt_surface.rchit.spv \
+         build/shaders_vk/rt_surface.rahit.spv \
          build/shaders_vk/rt_surface_test.rgen.spv \
          build/shaders_vk/vol_density.comp.spv \
          build/shaders_vk/vol_scatter.comp.spv \
@@ -355,7 +356,8 @@ build/shaders_vk/raster_skin.vert.spv: shaders_vk/raster.vert shaders_vk/materia
 
 build/shaders_vk/gbuffer.frag.spv: shaders_vk/tileset_common.glsl
 
-build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_visibility.rahit.spv \
+build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
+    build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_radiance.rmiss.spv \
     build/shaders_vk/rt_lighting.rgen.spv \
     build/shaders_vk/rt_surface_test.rgen.spv: \
@@ -382,6 +384,7 @@ build/shaders_vk/vol_density.comp.spv build/shaders_vk/vol_scatter.comp.spv \
 # also depends on it, and the VT compositor includes it directly.
 build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_shadow.rgen.spv \
     build/shaders_vk/rt_surface.rchit.spv \
+    build/shaders_vk/rt_surface.rahit.spv \
     build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_radiance.rmiss.spv \
     build/shaders_vk/rt_lighting.rgen.spv \
@@ -403,6 +406,7 @@ build/shaders_vk/vt_composite.comp.spv \
 # rebuild when it changes. WP-G added the RT stages: rt_surface_common.glsl now
 # includes vt_common.glsl, so every shader that includes IT is a consumer too.
 build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_surface.rchit.spv \
+    build/shaders_vk/rt_surface.rahit.spv \
     build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_radiance.rmiss.spv \
     build/shaders_vk/rt_lighting.rgen.spv \

@@ -5892,6 +5892,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         const vt::VtResidency::Stats vt_stats = impl_->vk_scene->vt_stats();
         impl_->stats.vt_active = impl_->vk_scene->vt_active();
         impl_->stats.vt_variants = vt_stats.variants;
+        impl_->stats.vt_max_variants = vt_stats.max_variants;
         impl_->stats.vt_pool_used = vt_stats.pool_used;
         impl_->stats.vt_pool_capacity = vt_stats.pool_capacity;
         impl_->stats.vt_pool_pinned = vt_stats.pool_pinned;
@@ -5903,6 +5904,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->stats.vt_evictions_total = vt_stats.evictions_total;
         impl_->stats.vt_pool_bytes = vt_stats.pool_bytes;
         impl_->stats.vt_mesh_bytes = vt_stats.mesh_bytes;
+        impl_->stats.vt_mesh_budget_bytes = vt_stats.mesh_budget_bytes;
     }
     impl_->stats.dlss_selected_mode = impl_->vk_scene->selected_dlss_mode();
     impl_->stats.dlss_active_mode = impl_->vk_scene->active_dlss_mode();

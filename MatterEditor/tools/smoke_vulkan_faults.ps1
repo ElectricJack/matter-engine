@@ -10,7 +10,21 @@ try {
     $modes = @(
         @{ Label = 'Streamline missing instance proxy'; Mode = 'streamline-missing-instance-proxy' },
         @{ Label = 'Streamline missing device proxy'; Mode = 'streamline-missing-device-proxy' },
-        @{ Label = 'rt'; Mode = 'rt' },
+        # The rt mode's scenario suite is dominated by ~7k single-pixel
+        # readbacks (specular/visibility scans at ~4 ms per immediate
+        # submit round-trip) and runs ~35 s on the RTX 4090 -- it outgrew
+        # the default 15 s gate well before RT PBR Phase 1 (measured 30 s
+        # with the pre-phase readback layout). The per-mode timeout keeps
+        # the gate's purpose (hang detection) without failing a passing
+        # mode on wall-clock growth.
+        @{ Label = 'rt'; Mode = 'rt'; TimeoutMilliseconds = 90000 },
+        # RT PBR Phase 1: microfacet (frosted) transmission -- roughness-blur
+        # monotonicity, energy conservation, smooth-glass byte parity, the
+        # composite fallback guard, and alpha-tested occluders in the walk.
+        # ~10 s of settled-frame renders and row readbacks; headroom for
+        # slower drivers.
+        @{ Label = 'rt frosted transmission'; Mode = 'rt-transmission'
+           TimeoutMilliseconds = 45000 },
         @{ Label = 'rt-disabled'; Mode = 'rt-disabled' },
         @{ Label = 'rt-unavailable'; Mode = 'rt-unavailable' },
         @{ Label = 'animation skin compute readback'; Mode = 'animation-skin' },
@@ -33,6 +47,11 @@ try {
     foreach ($case in $modes) {
         [Environment]::SetEnvironmentVariable('MATTER_VK_SMOKE_MODE',
             $case.Mode, [EnvironmentVariableTarget]::Process)
+        $caseTimeout = $TimeoutMilliseconds
+        if ($case.ContainsKey('TimeoutMilliseconds')) {
+            $caseTimeout = [Math]::Max($caseTimeout,
+                                       $case.TimeoutMilliseconds)
+        }
         Write-Output "Vulkan executable smoke: $($case.Label)"
         $process = $null
         try {
@@ -55,10 +74,10 @@ try {
             }
             $stdoutTask = $process.StandardOutput.ReadToEndAsync()
             $stderrTask = $process.StandardError.ReadToEndAsync()
-            if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            if (-not $process.WaitForExit($caseTimeout)) {
                 $process.Kill()
                 $process.WaitForExit()
-                throw "$($case.Label) exceeded the bounded $TimeoutMilliseconds ms gate"
+                throw "$($case.Label) exceeded the bounded $caseTimeout ms gate"
             }
             $log = @(($stdoutTask.Result -split "`r?`n") +
                      ($stderrTask.Result -split "`r?`n")) |

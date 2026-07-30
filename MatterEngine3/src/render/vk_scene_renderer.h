@@ -274,6 +274,11 @@ struct VkRasterPixel {
     matter::Float4 accumulated_diffuse{};
     matter::Float4 raw_specular{};
     matter::Float4 accumulated_specular{};
+    // RT PBR Phase 1: raw + denoised transmission (rgb radiance, a coverage)
+    // and the transmission aux lane (x = hit_t, y = roughness).
+    matter::Float4 raw_transmission{};
+    matter::Float4 accumulated_transmission{};
+    matter::Float3 transmission_aux{};
 };
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -1155,8 +1160,10 @@ private:
         VkDescriptorSet skin_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet display_descriptor_set = VK_NULL_HANDLE;
-        VkDescriptorSet gi_temporal_descriptor_sets[2]{};
-        VkDescriptorSet gi_atrous_descriptor_sets[6]{};
+        // Three denoised signals (diffuse, specular, transmission), one
+        // temporal set each and three a-trous ping-pong sets each.
+        VkDescriptorSet gi_temporal_descriptor_sets[3]{};
+        VkDescriptorSet gi_atrous_descriptor_sets[9]{};
         uint64_t static_generation = 0;
         uint64_t instance_generation = 0;
         uint64_t command_generation = 0;
@@ -1461,6 +1468,9 @@ private:
     matter::VkImageResource raw_specular_;
     matter::VkImageResource raw_specular_aux_;
     matter::VkImageResource raw_transmission_;
+    // RT PBR Phase 1: (hit_t, roughness) sibling of raw_specular_aux_ for the
+    // transmission denoiser lane.
+    matter::VkImageResource raw_transmission_aux_;
     matter::VkImageResource vol_dummy_3d_;
     VkExtent2D raw_diffuse_extent_{};
 
@@ -1533,8 +1543,12 @@ private:
         matter::VkImageResource aux;
     } gi_history_[2];
     GiHistorySet gi_spec_history_[2];
+    // RT PBR Phase 1: transmission history mirrors the specular chain
+    // (signal mode 2 in gi_temporal.comp / gi_atrous.comp).
+    GiHistorySet gi_trans_history_[2];
     matter::VkImageResource gi_atrous_[2];
     matter::VkImageResource gi_spec_atrous_[2];
+    matter::VkImageResource gi_trans_atrous_[2];
     uint32_t gi_filtered_index_ = 0;
     bool gi_filtered_valid_ = false;
     uint32_t gi_presented_history_index_ = 0;

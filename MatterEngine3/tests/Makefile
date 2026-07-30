@@ -2636,3 +2636,16 @@ run-vt-enrich:
 	    MATTER_VK_SMOKE_MODE=vt-enrich ./vulkan_smoke_tests.exe
 	cd ../../MatterEditor/build/windows && \
 	    MATTER_VK_SMOKE_MODE=vt-enrich-nort ./vulkan_smoke_tests.exe
+
+# ---------------------------------------------------------------------------
+# RT PBR Phase 1 — microfacet (frosted) transmission GPU test: the
+# rt-transmission smoke mode (frosted-slab-over-checker fixture; roughness
+# blur monotonicity, energy conservation, smooth-glass byte parity, composite
+# fallback guard, alpha-tested walk occluders). Also part of the full
+# vulkan-smoke suite via tools/smoke_vulkan_faults.ps1.
+# ---------------------------------------------------------------------------
+.PHONY: run-rt-transmission
+run-rt-transmission:
+	$(MAKE) -C ../../MatterEditor build/windows/vulkan_smoke_tests.exe
+	cd ../../MatterEditor/build/windows && \
+	    MATTER_VK_SMOKE_MODE=rt-transmission ./vulkan_smoke_tests.exe
