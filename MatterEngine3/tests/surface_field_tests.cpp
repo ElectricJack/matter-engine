@@ -612,5 +612,153 @@ int main() {
               "a noise3 op past 64 emitted ops still trips the cap");
     }
 
+    // ================= P3 appearance lanes (spec section 5) ==============
+    //
+    // Canonical grammar, one directive of each kind at most, registers are
+    // backward refs like a material's, values clamped at EVALUATION (not at
+    // parse) to [0, 2] / [-0.5, 0.5] / [0, 1].
+    {
+        // ---- parse + register wiring ----
+        const char* kApp =
+            "const 0.5\n"        // r0 = weight
+            "const 1.25\n"       // r1
+            "const 0.8\n"        // r2
+            "const 0.3\n"        // r3
+            "const 0.75\n"       // r4
+            "material 7 r0\n"
+            "tint r1 r2 r1\n"
+            "roughbias r3\n"
+            "wetness r4\n";
+        SurfaceProgram ap;
+        CHECK(parse_tape(kApp, ap, err), err.c_str());
+        CHECK(ap.has_tint() && ap.has_rough_bias() && ap.has_wetness(),
+              "appearance: all three directives parse");
+        CHECK(ap.has_appearance(), "appearance: has_appearance() agrees");
+        CHECK(ap.tint_reg[0] == 1 && ap.tint_reg[1] == 2 && ap.tint_reg[2] == 1,
+              "tint: three independent register refs (repeat allowed)");
+        CHECK(ap.rough_bias_reg == 3 && ap.wetness_reg == 4,
+              "roughbias/wetness register refs");
+        CHECK(ap.materials.size() == 1,
+              "appearance directives do not become material columns");
+
+        // ---- evaluation + defaults ----
+        const float pos[3] = {1.0f, 2.0f, 3.0f}, up[3] = {0, 1, 0};
+        SurfaceAppearance app;
+        SurfaceRuntime art{ap};
+        art.appearance_at(pos, up, nullptr, app);
+        CHECK(app.tint[0] == 1.25f && app.tint[1] == 0.8f &&
+                  app.tint[2] == 1.25f,
+              "appearance: tint evaluates from its registers");
+        CHECK(app.rough_bias == 0.3f && app.wetness == 0.75f,
+              "appearance: roughbias/wetness evaluate from their registers");
+        SurfaceProgram plainp;
+        CHECK(parse_tape("const 0.5\nmaterial 7 r0\n", plainp, err),
+              err.c_str());
+        CHECK(!plainp.has_appearance(),
+              "a tape without directives declares no appearance");
+        SurfaceRuntime plain_rt{plainp};
+        SurfaceAppearance identity;
+        plain_rt.appearance_at(pos, up, nullptr, identity);
+        CHECK(identity.tint[0] == 1.0f && identity.tint[1] == 1.0f &&
+                  identity.tint[2] == 1.0f && identity.rough_bias == 0.0f &&
+                  identity.wetness == 0.0f,
+              "appearance: an undeclared lane evaluates to its identity");
+
+        // ---- clamps (spec section 5 ranges) ----
+        SurfaceProgram cp;
+        CHECK(parse_tape("const 0.5\nconst 3\nconst -1\nconst 0.9\n"
+                         "material 7 r0\ntint r1 r2 r1\nroughbias r3\n"
+                         "wetness r2\n",
+                         cp, err),
+              err.c_str());
+        SurfaceRuntime crt{cp};
+        SurfaceAppearance capp;
+        crt.appearance_at(pos, up, nullptr, capp);
+        CHECK(capp.tint[0] == kSurfaceTintMax && capp.tint[1] == 0.0f,
+              "appearance: tint clamps to [0, 2]");
+        CHECK(capp.rough_bias == kSurfaceRoughBiasLimit,
+              "appearance: roughbias clamps to +0.5");
+        CHECK(capp.wetness == 0.0f, "appearance: wetness clamps to [0, 1]");
+        SurfaceProgram cn;
+        CHECK(parse_tape("const 0.5\nconst -0.9\nmaterial 7 r0\n"
+                         "roughbias r1\n",
+                         cn, err),
+              err.c_str());
+        SurfaceAppearance napp;
+        SurfaceRuntime{cn}.appearance_at(pos, up, nullptr, napp);
+        CHECK(napp.rough_bias == -kSurfaceRoughBiasLimit,
+              "appearance: roughbias clamps to -0.5");
+
+        // ---- a lane may be any expression, world inputs included ----
+        SurfaceProgram wp2;
+        CHECK(parse_tape("const 0.5\ninput wy\nsmoothstep 0 10 r1\n"
+                         "material 7 r0\nwetness r2\n",
+                         wp2, err),
+              err.c_str());
+        CHECK(wp2.uses_world_inputs(),
+              "appearance: a lane driven by a world input keeps the tape "
+              "world-dependent");
+        const float l2w[16] = {1, 0, 0, 0, 0, 1, 0, 5, 0, 0, 1, 0, 0, 0, 0, 1};
+        SurfaceWorldContext wctx;
+        wctx.local_to_world = l2w;
+        SurfaceRuntime wrt{wp2};
+        SurfaceAppearance wapp, dapp;
+        const float wpos[3] = {0.0f, 0.0f, 0.0f};
+        wrt.appearance_at(wpos, up, &wctx, wapp);   // world y = 5 -> midway
+        wrt.appearance_at(wpos, up, nullptr, dapp); // fallback y = 0 -> dry
+        CHECK(wapp.wetness == 0.5f, "appearance: spatially varying wetness");
+        CHECK(dapp.wetness == 0.0f,
+              "appearance: world lane falls back with no world context");
+
+        // ---- rejection paths ----
+        SurfaceProgram bad;
+        CHECK(!parse_tape("const 1\nmaterial 7 r0\ntint r0 r0 r0\n"
+                          "tint r0 r0 r0\n",
+                          bad, err),
+              "duplicate tint directive is rejected");
+        CHECK(!parse_tape("const 1\nmaterial 7 r0\nroughbias r0\n"
+                          "roughbias r0\n",
+                          bad, err),
+              "duplicate roughbias directive is rejected");
+        CHECK(!parse_tape("const 1\nmaterial 7 r0\nwetness r0\nwetness r0\n",
+                          bad, err),
+              "duplicate wetness directive is rejected");
+        CHECK(!parse_tape("const 1\nmaterial 7 r0\ntint r0\n", bad, err),
+              "a 2-token tint is rejected");
+        CHECK(!parse_tape("const 1\nmaterial 7 r0\ntint r0 r0\n", bad, err),
+              "a 3-token tint is rejected");
+        CHECK(!parse_tape("const 1\nmaterial 7 r0\ntint r0 r0 r0 r0\n", bad,
+                          err),
+              "a 5-token tint is rejected");
+        CHECK(!parse_tape("const 1\nmaterial 7 r0\nwetness\n", bad, err),
+              "a bare wetness is rejected");
+        CHECK(!parse_tape("const 1\nmaterial 7 r0\nwetness 0.5\n", bad, err),
+              "wetness takes a register, not a literal");
+        CHECK(!parse_tape("const 1\nmaterial 7 r0\ntint r0 r9 r0\n", bad, err),
+              "tint rejects a forward/out-of-range register ref");
+        CHECK(!parse_tape("const 1\nwetness r0\n", bad, err),
+              "appearance directives do not satisfy the material requirement");
+
+        // ---- the hash (page-invalidation key) folds the directives ----
+        SurfaceProgram h0, h1, h2, h3;
+        CHECK(parse_tape("const 1\nconst 0.4\nmaterial 7 r0\n", h0, err),
+              err.c_str());
+        CHECK(parse_tape("const 1\nconst 0.4\nmaterial 7 r0\nwetness r1\n", h1,
+                         err),
+              err.c_str());
+        CHECK(parse_tape("const 1\nconst 0.4\nmaterial 7 r0\nroughbias r1\n",
+                         h2, err),
+              err.c_str());
+        CHECK(parse_tape("const 1\nconst 0.4\nmaterial 7 r0\nwetness r1\n", h3,
+                         err),
+              err.c_str());
+        CHECK(h0.hash() != h1.hash(),
+              "adding an appearance directive changes the tape hash");
+        CHECK(h1.hash() != h2.hash(),
+              "different appearance directives hash differently");
+        CHECK(h1.hash() == h3.hash(),
+              "the same directive text hashes identically");
+    }
+
     return check_summary();
 }

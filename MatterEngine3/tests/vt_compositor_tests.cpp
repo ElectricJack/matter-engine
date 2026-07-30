@@ -2150,6 +2150,330 @@ int main() {
                           "budget");
                     vkDestroyQueryPool(vulkan->device(), qp, nullptr);
                 }
+
+                // ======== (k8) P3 appearance lanes (spec §5) ==============
+                //
+                // Every fixture below drives a CONSTANT single-material tape,
+                // so the composited texel before appearance is exactly
+                // material 3's scalar albedo/ORM — each lane's effect is then
+                // an analytic number on the page (BC7 tolerance aside), and
+                // the page is uniform so any interior texel is a sample.
+                //
+                // (A constant single-column tape also composites identically
+                // under mode 2 and mode 3 — weight 0.5 quantizes to the sole
+                // column at 255 either way — which is what makes the
+                // "appearance requires mode 3" fail-soft check at the end a
+                // clean byte comparison.)
+                {
+                    mats5[3].albedo[0] = 0.4f;
+                    mats5[3].albedo[1] = 0.5f;
+                    mats5[3].albedo[2] = 0.6f;
+                    mats5[3].orm[0] = 1.0f;   // occlusion
+                    mats5[3].orm[1] = 0.4f;   // roughness — room for +-0.5
+                    mats5[3].orm[2] = 0.0f;   // metallic
+                    vulkan->wait_idle();
+                    compositor->set_materials(mats5, 5);
+                    const float kBaseAlbedo[3] = {0.4f, 0.5f, 0.6f};
+                    const float kBaseRough = 0.4f;
+                    // BC7 mode-6 endpoint fitting on a uniform page is tight;
+                    // 1/255 rounding plus the encoder's search is well inside
+                    // this.
+                    const float kTol = 0.02f;
+
+                    struct AppPage {
+                        PageData raw;
+                        std::vector<uint8_t> albedo, orm;
+                    };
+                    uint64_t app_hash = 0x4100;
+                    uint32_t app_slot = 0;
+                    auto fill_app = [&](const std::string& text, AppPage& out,
+                                        vt::VtCompositor* comp) {
+                        terrain_field::SurfaceProgram sp;
+                        std::string perr;
+                        CHECK(terrain_field::SurfaceProgram::parse(text, sp,
+                                                                   perr),
+                              perr.c_str());
+                        terrain_field::SurfaceRuntime rt(sp);
+                        QuadFixture fix;
+                        fix.add_quad(v3(0, 0, 0), v3(1, 0, 0), v3(0, 0, 1),
+                                     kQuadExtent, v3(0, 1, 0), kMatA);
+                        fix.atlas = fix_a.atlas;
+                        fix.finalize(++app_hash);
+                        const uint32_t mc = rt.material_count();
+                        std::vector<uint8_t> w(4 * mc);
+                        rt.classify_vertices(fix.positions.data(),
+                                             fix.normals.data(), 4, nullptr,
+                                             w.data());
+                        std::vector<uint32_t> ids;
+                        for (uint32_t i = 0; i < mc; ++i)
+                            ids.push_back(uint32_t(rt.material_handle(i)));
+                        fix.apply_tape(ids, w, 0xA9000000ull + app_hash);
+                        fix.apply_tape_text(text, /*world_anchored=*/false);
+                        const uint32_t slot = app_slot;
+                        app_slot = (app_slot + 1u) % 16u;
+                        vt::VtFillRequest r = make_request(fix, 0, slot);
+                        if (comp == compositor.get()) {
+                            CHECK(run_fill(&r, 1), err.c_str());
+                        } else {
+                            CHECK(tc.begin(err), err.c_str());
+                            comp->fill(tc.cmd, &r, 1);
+                            CHECK(tc.submit(err), err.c_str());
+                        }
+                        CHECK(read_slot(slot, out.raw), err.c_str());
+                        int bad_a = 0, bad_o = 0;
+                        decode_page_bc7(out.raw.albedo, out.albedo, bad_a);
+                        decode_page_bc7(out.raw.orm, out.orm, bad_o);
+                        CHECK(bad_a == 0 && bad_o == 0,
+                              "appearance page decodes as BC7 mode 6");
+                    };
+                    // Interior sample points, away from the border and from
+                    // any block the boundary fixture kinks.
+                    auto chan = [&](const std::vector<uint8_t>& img,
+                                    uint32_t px, uint32_t py, int c) {
+                        return img[(size_t(py) * kPageStore + px) * 4 + c] /
+                               255.0f;
+                    };
+                    auto uniform_err = [&](const std::vector<uint8_t>& img,
+                                           const float* expect, int channels) {
+                        float worst = 0.0f;
+                        for (uint32_t py = 16; py < kPageStore - 16; py += 7)
+                            for (uint32_t px = 16; px < kPageStore - 16;
+                                 px += 7)
+                                for (int c = 0; c < channels; ++c)
+                                    worst = std::max(
+                                        worst, std::fabs(chan(img, px, py, c) -
+                                                         expect[c]));
+                        return worst;
+                    };
+
+                    // ---- (k8a) identity defaults are byte-identical ----
+                    // A tape with NO directives and a tape whose directives
+                    // hold identity values (tint 1,1,1 / roughbias 0 /
+                    // wetness 0) must produce the same page bits — the P2
+                    // regression guard (the P2 baseline itself cannot be
+                    // memcmp'd in-process across a shader edit).
+                    AppPage none, ident;
+                    fill_app("const 0.5\nmaterial 3 r0\n", none,
+                             compositor.get());
+                    fill_app("const 0.5\nconst 1\nconst 0\nmaterial 3 r0\n"
+                             "tint r1 r1 r1\nroughbias r2\nwetness r2\n",
+                             ident, compositor.get());
+                    CHECK(none.raw.albedo == ident.raw.albedo &&
+                              none.raw.normal == ident.raw.normal &&
+                              none.raw.orm == ident.raw.orm &&
+                              none.raw.aux == ident.raw.aux,
+                          "appearance: identity directives are byte-identical "
+                          "to no directives");
+                    const float base_orm[3] = {1.0f, kBaseRough, 0.0f};
+                    CHECK(uniform_err(none.albedo, kBaseAlbedo, 3) < kTol,
+                          "appearance: the undirected page is the material's "
+                          "scalar albedo");
+                    CHECK(uniform_err(none.orm, base_orm, 3) < kTol,
+                          "appearance: the undirected page is the material's "
+                          "scalar ORM");
+
+                    // ---- (k8b) tint golden ----
+                    AppPage tinted;
+                    fill_app("const 0.5\nconst 1.5\nconst 0.8\nconst 1\n"
+                             "material 3 r0\ntint r1 r2 r3\n",
+                             tinted, compositor.get());
+                    const float tint_expect[3] = {0.4f * 1.5f, 0.5f * 0.8f,
+                                                  0.6f * 1.0f};
+                    const float tint_alb_err =
+                        uniform_err(tinted.albedo, tint_expect, 3);
+                    std::printf("appearance tint (1.5, 0.8, 1.0): max albedo "
+                                "err %.4f\n",
+                                tint_alb_err);
+                    CHECK(tint_alb_err < kTol,
+                          "appearance: tint scales each albedo channel");
+                    CHECK(uniform_err(tinted.orm, base_orm, 3) < kTol,
+                          "appearance: tint leaves ORM alone");
+
+                    // ---- (k8c) roughness bias golden ----
+                    AppPage rough;
+                    fill_app("const 0.5\nconst 0.3\nmaterial 3 r0\n"
+                             "roughbias r1\n",
+                             rough, compositor.get());
+                    const float rough_expect[3] = {1.0f, kBaseRough + 0.3f,
+                                                   0.0f};
+                    const float rough_err =
+                        uniform_err(rough.orm, rough_expect, 3);
+                    std::printf("appearance roughbias +0.3: max ORM err "
+                                "%.4f\n",
+                                rough_err);
+                    CHECK(rough_err < kTol,
+                          "appearance: roughbias raises ORM green only");
+                    CHECK(uniform_err(rough.albedo, kBaseAlbedo, 3) < kTol,
+                          "appearance: roughbias leaves albedo alone");
+
+                    // ---- (k8d) wetness golden ----
+                    AppPage wet;
+                    fill_app("const 0.5\nconst 1\nmaterial 3 r0\nwetness r1\n",
+                             wet, compositor.get());
+                    const float wet_alb[3] = {0.4f * 0.55f, 0.5f * 0.55f,
+                                              0.6f * 0.55f};
+                    const float wet_orm[3] = {1.0f, 0.08f, 0.0f};
+                    const float wet_alb_err = uniform_err(wet.albedo, wet_alb, 3);
+                    const float wet_orm_err = uniform_err(wet.orm, wet_orm, 3);
+                    std::printf("appearance wetness 1.0: max albedo err %.4f, "
+                                "max ORM err %.4f\n",
+                                wet_alb_err, wet_orm_err);
+                    CHECK(wet_alb_err < kTol,
+                          "appearance: wetness darkens albedo by 0.55");
+                    CHECK(wet_orm_err < kTol,
+                          "appearance: wetness drives roughness to 0.08");
+
+                    // ---- (k8e) clamps ----
+                    AppPage tint3, tint2;
+                    fill_app("const 0.5\nconst 3\nmaterial 3 r0\n"
+                             "tint r1 r1 r1\n",
+                             tint3, compositor.get());
+                    fill_app("const 0.5\nconst 2\nmaterial 3 r0\n"
+                             "tint r1 r1 r1\n",
+                             tint2, compositor.get());
+                    CHECK(tint3.raw.albedo == tint2.raw.albedo,
+                          "appearance: tint register 3.0 clamps to 2.0");
+                    CHECK(std::fabs(chan(tint3.albedo, 40, 40, 0) - 0.8f) <
+                              kTol,
+                          "appearance: clamped tint scales albedo by exactly "
+                          "2");
+                    AppPage rb9, rb5;
+                    fill_app("const 0.5\nconst 0.9\nmaterial 3 r0\n"
+                             "roughbias r1\n",
+                             rb9, compositor.get());
+                    fill_app("const 0.5\nconst 0.5\nmaterial 3 r0\n"
+                             "roughbias r1\n",
+                             rb5, compositor.get());
+                    CHECK(rb9.raw.orm == rb5.raw.orm,
+                          "appearance: roughbias 0.9 clamps to +0.5");
+                    CHECK(std::fabs(chan(rb9.orm, 40, 40, 1) -
+                                    (kBaseRough + 0.5f)) < kTol,
+                          "appearance: clamped roughbias adds exactly 0.5");
+                    AppPage wet_neg;
+                    fill_app("const 0.5\nconst -0.5\nmaterial 3 r0\n"
+                             "wetness r1\n",
+                             wet_neg, compositor.get());
+                    CHECK(wet_neg.raw.albedo == none.raw.albedo &&
+                              wet_neg.raw.orm == none.raw.orm,
+                          "appearance: wetness -0.5 clamps to 0 (no-op)");
+
+                    // ---- (k8f) application order ----
+                    // tint then wetness composes multiplicatively on albedo.
+                    AppPage tw;
+                    fill_app("const 0.5\nconst 1.5\nconst 0.8\nconst 1\n"
+                             "material 3 r0\ntint r1 r2 r3\nwetness r3\n",
+                             tw, compositor.get());
+                    const float tw_expect[3] = {0.4f * 1.5f * 0.55f,
+                                                0.5f * 0.8f * 0.55f,
+                                                0.6f * 1.0f * 0.55f};
+                    CHECK(uniform_err(tw.albedo, tw_expect, 3) < kTol,
+                          "appearance: tint then wetness compose "
+                          "multiplicatively");
+                    // roughbias BEFORE wetness is the order that is actually
+                    // observable: wetness overrides the biased roughness
+                    // rather than being biased itself. At w = 0.5,
+                    //   correct  : mix(clamp(0.4 + 0.5), 0.08, 0.5) = 0.49
+                    //   reversed : clamp(mix(0.4, 0.08, 0.5) + 0.5) = 0.74
+                    AppPage rw;
+                    fill_app("const 0.5\nconst 0.5\nmaterial 3 r0\n"
+                             "roughbias r1\nwetness r1\n",
+                             rw, compositor.get());
+                    const float rw_g = chan(rw.orm, 40, 40, 1);
+                    const float rw_expect =
+                        0.5f * (kBaseRough + 0.5f) + 0.5f * 0.08f;
+                    std::printf("appearance roughbias+wetness: ORM green %.4f "
+                                "(order-correct %.4f, reversed %.4f)\n",
+                                rw_g, rw_expect, 0.74f);
+                    CHECK(std::fabs(rw_g - rw_expect) < kTol,
+                          "appearance: roughbias applies BEFORE wetness");
+
+                    // ---- (k8g) spatially varying wetness ----
+                    // A smoothstep on part-local x: the same step fixture the
+                    // P2 boundary test uses, driving wetness instead of a
+                    // material column. Texel-rate, so the wet/dry edge lands
+                    // on the authored line, not on a vertex span.
+                    AppPage grad;
+                    fill_app("input lx\nsmoothstep 0.9375 0.9575 r0\n"
+                             "const 0.5\nmaterial 3 r2\nwetness r1\n",
+                             grad, compositor.get());
+                    uint32_t cross = 0;
+                    for (uint32_t px = 12; px < kPageStore - 12; ++px) {
+                        if (chan(grad.albedo, px, 68, 0) <
+                            0.5f * (kBaseAlbedo[0] + wet_alb[0])) {
+                            cross = px;
+                            break;
+                        }
+                    }
+                    std::printf("appearance wetness step: dry r %.3f, wet r "
+                                "%.3f, crossing at px %u\n",
+                                chan(grad.albedo, 24, 68, 0),
+                                chan(grad.albedo, 120, 68, 0), cross);
+                    CHECK(std::fabs(chan(grad.albedo, 24, 68, 0) -
+                                    kBaseAlbedo[0]) < kTol,
+                          "appearance: the dry half is unmodulated");
+                    CHECK(std::fabs(chan(grad.albedo, 120, 68, 0) -
+                                    wet_alb[0]) < kTol,
+                          "appearance: the wet half is fully darkened");
+                    CHECK(std::fabs(chan(grad.orm, 120, 68, 1) - 0.08f) < kTol,
+                          "appearance: the wet half is fully glossy");
+                    CHECK(cross >= 64 && cross <= 72,
+                          "appearance: the wetness edge lands on the authored "
+                          "line (texel rate)");
+
+                    // ---- (k8h) fail-soft: appearance requires mode 3 ----
+                    // The directives address TAPE REGISTERS, so a part that
+                    // does not run the tape per texel carries no appearance.
+                    // Forced onto mode 2 by the env gate, the wetness fixture
+                    // must come back byte-identical to the undirected page —
+                    // documented in the spec's "requires mode 3 in practice".
+                    {
+#ifdef _WIN32
+                        _putenv_s("MATTER_VT_TAPE_GPU", "0");
+#else
+                        setenv("MATTER_VT_TAPE_GPU", "0", 1);
+#endif
+                        auto gated = vt::VtCompositor::create(
+                            vulkan->device(), vulkan->physical_device(),
+                            VK_NULL_HANDLE, err);
+                        CHECK(gated != nullptr, err.c_str());
+                        CHECK(!gated->tape_gpu_enabled(),
+                              "appearance fail-soft: gate closed");
+                        CHECK(gated->set_tilesets(slots, 2, err), err.c_str());
+                        gated->set_materials(mats5, 5);
+                        AppPage gated_wet;
+                        fill_app(
+                            "const 0.5\nconst 1\nmaterial 3 r0\nwetness r1\n",
+                            gated_wet, gated.get());
+                        CHECK(gated->stats().tape_mode3_entries == 0,
+                              "appearance fail-soft: no mode-3 entry packed");
+                        CHECK(gated_wet.raw.albedo == none.raw.albedo &&
+                                  gated_wet.raw.orm == none.raw.orm &&
+                                  gated_wet.raw.aux == none.raw.aux,
+                              "appearance fail-soft: a mode-2 part ignores the "
+                              "appearance lanes");
+                        CHECK(gated_wet.raw.albedo != wet.raw.albedo,
+                              "appearance fail-soft: mode 3 really did apply "
+                              "wetness");
+                        vulkan->wait_idle();
+                        gated.reset();
+#ifdef _WIN32
+                        _putenv_s("MATTER_VT_TAPE_GPU", "");
+#else
+                        unsetenv("MATTER_VT_TAPE_GPU");
+#endif
+                    }
+
+                    // ---- (k8i) determinism with appearance applied ----
+                    AppPage wet_again;
+                    fill_app("const 0.5\nconst 1\nmaterial 3 r0\nwetness r1\n",
+                             wet_again, compositor.get());
+                    CHECK(wet_again.raw.albedo == wet.raw.albedo &&
+                              wet_again.raw.normal == wet.raw.normal &&
+                              wet_again.raw.orm == wet.raw.orm &&
+                              wet_again.raw.aux == wet.raw.aux,
+                          "appearance: the modulated page is deterministic "
+                          "across variants and submits");
+                }
             }
 
             std::printf("compositor stats: %llu pages, %llu skipped, %llu "

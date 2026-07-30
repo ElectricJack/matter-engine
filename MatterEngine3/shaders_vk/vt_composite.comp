@@ -24,6 +24,8 @@
 //      sample properly filtered tileset mips, not aliased ones).
 //   5. Height-blend the top-2 materials by the tilesets' height channels
 //      (exact passthrough at w = 0 / w = 1 — tested identities).
+//   5b. Apply P3's appearance lanes (tint / roughbias / wetness) to the
+//      composited texel — mode 3 only, since they read tape registers.
 //   6. Write albedo / tangent-space normal / ORM / aux (dominant material
 //      id, secondary id, blend) to the intermediate storage images;
 //      vt_bc_encode.comp compresses them afterwards. The normal is encoded
@@ -77,6 +79,11 @@ struct GpuFillRequest {
     vec4 xform0;         // local_to_world rows (row-major 4x3); identity for
     vec4 xform1;         // non-world-anchored parts (never read there: the
     vec4 xform2;         // packer pre-resolved their world ops to consts)
+    // P3 (appearance lanes, mode 3): the tape registers the output directives
+    // read. x = tint regs (r | g << 8 | b << 16), y = roughbias reg,
+    // z = wetness reg, w = pad. Each byte VT_APP_NO_REG (0xFF) when the tape
+    // declares no such directive.
+    uvec4 app;
 };
 struct GpuVtMaterial {
     vec4 albedo;         // scalar fallback albedo (rgb) when no detail slot
@@ -202,6 +209,12 @@ SurfSample sample_material(uint mat_id, vec3 pos, vec3 nrm, float footprint_m) {
 //           zero-coverage TriEx fallback as mode 2.
 // ---------------------------------------------------------------------------
 
+// P3: the mode-3 register file survives the seam so the appearance lanes can
+// read their directive registers after the height blend (main() below). Set
+// only on the mode-3 path; g_tape_regs is meaningless unless g_tape_ready.
+float g_tape_regs[VT_TAPE_MAX_OPS];
+bool g_tape_ready = false;
+
 // Shared top-2 selection over per-column weights (modes 2/3): fixed ascending
 // scan, strict '>' so ties keep the lowest column, top-2 renormalized, no
 // coverage -> the TriEx id (determinism contract of the seam).
@@ -278,9 +291,9 @@ void vt_material_weights(GpuFillRequest req, GpuTri tri, vec3 bary,
         vec4 ph = vec4(pos, 1.0);
         vec3 wpos = vec3(dot(req.xform0, ph), dot(req.xform1, ph),
                          dot(req.xform2, ph));
-        float regs[VT_TAPE_MAX_OPS];
         vt_tape_eval(req.tape2.x, req.tape2.y, pos, ny, slope, wpos,
-                     tri, bary, regs);
+                     tri, bary, g_tape_regs);
+        g_tape_ready = true;   // P3 reads the same registers after the blend
         uint count = min(req.tape.z, 8u);
         float col_w[8];
         for (uint k = 0u; k < 8u; ++k) col_w[k] = -1.0;
@@ -288,7 +301,7 @@ void vt_material_weights(GpuFillRequest req, GpuTri tri, vec3 bary,
             uint reg = ((k < 4u ? req.tape2.z : req.tape2.w)
                         >> ((k & 3u) * 8u)) & 0xFFu;
             // CPU: out_weights[k] = max(0, regs[reg]).
-            col_w[k] = max(regs[reg], 0.0);
+            col_w[k] = max(g_tape_regs[reg], 0.0);
         }
         vt_top2_select(count, col_w, req.tape, tri_mat, m0, w0, m1, w1);
         return;
@@ -357,6 +370,19 @@ void main() {
         albedo = mix(s0.albedo, s1.albedo, blend);
         orm    = mix(s0.orm,    s1.orm,    blend);
         dn     = mix(s0.delta_n, s1.delta_n, blend);
+    }
+
+    // ---- P3 appearance lanes: albedo tint / roughness bias / wetness,
+    // applied to the COMPOSITED texel — after the top-2 height blend, before
+    // BC encode — in the fixed order tint -> roughbias -> wetness (spec §5).
+    // They modulate the blended result rather than any one material: the use
+    // case is macro variation ACROSS a surface (anti-tiling drift, gully
+    // wetness), which is orthogonal to which material won. Mode 3 only: the
+    // directives address tape registers, so mode-2 parts and the legacy
+    // fallback carry no appearance (documented fail-soft). Aux is untouched —
+    // the near-band handoff still keys off (dominant, secondary, blend).
+    if (g_tape_ready) {
+        vt_apply_appearance(req.app, g_tape_regs, albedo, orm);
     }
 
     // ---- final normal, encoded relative to the interpolated GEOMETRIC

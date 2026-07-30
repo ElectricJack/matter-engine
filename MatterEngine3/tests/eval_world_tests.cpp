@@ -258,6 +258,97 @@ class Tape3World extends World {
               "3D-noise surface program deterministic across evals");
     }
 
+    // ---- texel-tape P3: appearance-lane recorders ----
+    // s.tint / s.roughnessBias / s.wetness record the canonical directive
+    // lines AFTER every material line, in the fixed order tint, roughbias,
+    // wetness — regardless of the order surfaces() called them, so the tape
+    // hash (the page-invalidation key) is authoring-order independent.
+    {
+        static const char* kTapeApp = R"JS(
+class TapeApp extends World {
+  static params = { worldSeed: 4 };
+  static world  = { sectorSize: 16, yMin: -64, yMax: 192 };
+  field(p) {
+    const n = noise2(p.worldSeed, 1/300, 3);
+    return { density: heightToDensity(n.mul(20)), moisture: n, relief: n, seaLevel: 0 };
+  }
+  surfaces(s) {
+    const steep = s.slope.smoothstep(0.3, 0.6);
+    // Deliberately "wrong" call order: wetness, then a weight, then tint,
+    // then roughbias — the recorder must still emit mats, tint, roughbias,
+    // wetness.
+    s.wetness(s.fieldCurvature(4).smoothstep(0.5, 2.5));
+    s.weight(31, steep.oneMinus());
+    const drift = s.noise3World(0xC4, 1/140, 3).mul(0.1).add(1.0);
+    s.tint(drift, drift, 0.98);
+    s.weight(32, steep);
+    s.roughnessBias(0.25);
+  }
+}
+)JS";
+        WorldEvalResult ta = host.eval_world(kTapeApp, "{}");
+        CHECK(ta.ok, ta.message.c_str());
+        const size_t p_mat31 = ta.surface_program.find("material 31 r");
+        const size_t p_mat32 = ta.surface_program.find("material 32 r");
+        const size_t p_tint  = ta.surface_program.find("\ntint r");
+        const size_t p_rough = ta.surface_program.find("\nroughbias r");
+        const size_t p_wet   = ta.surface_program.find("\nwetness r");
+        CHECK(p_mat31 != std::string::npos && p_mat32 != std::string::npos &&
+                  p_tint != std::string::npos && p_rough != std::string::npos &&
+                  p_wet != std::string::npos,
+              "appearance: all three directives and both materials record");
+        CHECK(p_mat31 < p_mat32 && p_mat32 < p_tint && p_tint < p_rough &&
+                  p_rough < p_wet,
+              "appearance: canonical order is materials, tint, roughbias, "
+              "wetness regardless of JS call order");
+        CHECK(ta.surface_program.find("tint r") <
+                  ta.surface_program.find("wetness r"),
+              "appearance: tint precedes wetness (application order)");
+        terrain_field::SurfaceProgram sap;
+        std::string saerr;
+        CHECK(terrain_field::SurfaceProgram::parse(ta.surface_program, sap,
+                                                   saerr),
+              saerr.c_str());
+        CHECK(sap.has_tint() && sap.has_rough_bias() && sap.has_wetness(),
+              "appearance: the recorded tape compiles with all three lanes");
+        CHECK(sap.materials.size() == 2,
+              "appearance: directives do not add material columns");
+        // A plain number coerces through __sreg exactly like a SurfaceNode.
+        CHECK(sap.tint_reg[2] != sap.tint_reg[0] && sap.tint_reg[0] >= 0,
+              "appearance: tint accepts a plain number for one component");
+        WorldEvalResult ta2 = host.eval_world(kTapeApp, "{}");
+        CHECK(ta2.ok && ta2.surface_program == ta.surface_program,
+              "appearance: recorded tape is byte-stable across evals");
+        // The lanes are optional: the same world without them is a different
+        // tape (the hash covers invalidation) but still compiles.
+        static const char* kTapePlain = R"JS(
+class TapePlain extends World {
+  static params = { worldSeed: 4 };
+  static world  = { sectorSize: 16, yMin: -64, yMax: 192 };
+  field(p) {
+    const n = noise2(p.worldSeed, 1/300, 3);
+    return { density: heightToDensity(n.mul(20)), moisture: n, relief: n, seaLevel: 0 };
+  }
+  surfaces(s) {
+    const steep = s.slope.smoothstep(0.3, 0.6);
+    s.weight(31, steep.oneMinus());
+    s.weight(32, steep);
+  }
+}
+)JS";
+        WorldEvalResult tp = host.eval_world(kTapePlain, "{}");
+        CHECK(tp.ok, tp.message.c_str());
+        CHECK(tp.surface_program.find("tint ") == std::string::npos &&
+                  tp.surface_program.find("wetness ") == std::string::npos,
+              "appearance: a world that declares none records none");
+        terrain_field::SurfaceProgram spp;
+        CHECK(terrain_field::SurfaceProgram::parse(tp.surface_program, spp,
+                                                   saerr),
+              saerr.c_str());
+        CHECK(!spp.has_appearance() && spp.hash() != sap.hash(),
+              "appearance: declaring lanes changes the tape hash");
+    }
+
     // Fail-closed paths: a throwing surfaces() and one that declares nothing.
     {
         WorldEvalResult bad_throw = host.eval_world(

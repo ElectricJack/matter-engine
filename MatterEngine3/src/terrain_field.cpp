@@ -573,6 +573,10 @@ FieldRuntime::Material FieldRuntime::material_at(float x, float z) const {
 // SurfaceProgram — surfaces() classifier tape (chart-VT Phase 4, contract C4).
 // ---------------------------------------------------------------------------
 
+static_assert(kMaxOps == kMaxSurfaceOps,
+              "the surface tape's public op cap must equal the field "
+              "interpreter's register file (shader VT_TAPE_MAX_OPS mirrors it)");
+
 namespace {
 
 // input-op name <-> code table (must stay in sync with SurfaceInput).
@@ -669,6 +673,49 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
                 return false;
             }
             out.materials.push_back(slot);
+            continue;
+        }
+
+        // ---- P3 appearance directives (spec §5) ----
+        // `tint rR rG rB`, `roughbias rN`, `wetness rN`: register refs exactly
+        // like a material's (backward, source ordinals), at most one directive
+        // of each kind. Token counts are EXACT — a 2-token `tint` is a typo,
+        // not a shorthand. Clamping happens at evaluation, not here: the tape
+        // may compute any value and the lane's documented range is the
+        // contract at the point of use (SurfaceRuntime::appearance_at and the
+        // mode-3 shader apply the identical clamps).
+        if (op == "tint" || op == "roughbias" || op == "wetness") {
+            const bool is_tint = (op == "tint");
+            const size_t want = is_tint ? 4u : 2u;
+            if (toks.size() != want) {
+                err = is_tint ? std::string("tint: expected 'tint rR rG rB'")
+                              : op + ": expected '" + op + " rN'";
+                return false;
+            }
+            const bool dup = is_tint ? out.has_tint()
+                           : (op == "roughbias") ? out.has_rough_bias()
+                                                 : out.has_wetness();
+            if (dup) {
+                err = op + ": declared twice (at most one per tape)";
+                return false;
+            }
+            int regs[3] = {-1, -1, -1};
+            for (size_t t = 1; t < want; ++t) {
+                regs[t - 1] = resolve_reg(toks[t]);
+                if (regs[t - 1] < 0) {
+                    err = op + ": expected backward register ref";
+                    return false;
+                }
+            }
+            if (is_tint) {
+                out.tint_reg[0] = regs[0];
+                out.tint_reg[1] = regs[1];
+                out.tint_reg[2] = regs[2];
+            } else if (op == "roughbias") {
+                out.rough_bias_reg = regs[0];
+            } else {
+                out.wetness_reg = regs[0];
+            }
             continue;
         }
 
@@ -874,9 +921,9 @@ SurfaceRuntime::SurfaceRuntime(SurfaceProgram p)
     : prog_(std::move(p))
 {}
 
-void SurfaceRuntime::weights_at(const float pos[3], const float nrm[3],
-                                const SurfaceWorldContext* world,
-                                float* out_weights) const {
+void SurfaceRuntime::eval_regs(const float pos[3], const float nrm[3],
+                               const SurfaceWorldContext* world,
+                               float* regs) const {
     // ---- per-sample input vector ----
     float in[kSurfInCount];
     in[kSurfInLocalX] = pos[0];
@@ -933,7 +980,6 @@ void SurfaceRuntime::weights_at(const float pos[3], const float nrm[3],
     }
 
     // ---- evaluate every register (bounded by kMaxOps, enforced at parse) ----
-    float regs[kMaxOps] = {};
     const auto& ops = prog_.ops;
     for (int i = 0; i < (int)ops.size(); ++i) {
         const Op& o = ops[i];
@@ -1034,9 +1080,38 @@ void SurfaceRuntime::weights_at(const float pos[3], const float nrm[3],
             break;
         }
     }
+}
 
+void SurfaceRuntime::weights_at(const float pos[3], const float nrm[3],
+                                const SurfaceWorldContext* world,
+                                float* out_weights) const {
+    float regs[kMaxOps] = {};
+    eval_regs(pos, nrm, world, regs);
     for (size_t k = 0; k < prog_.materials.size(); ++k)
         out_weights[k] = std::max(0.0f, regs[prog_.materials[k].reg]);
+}
+
+void SurfaceRuntime::appearance_at(const float pos[3], const float nrm[3],
+                                   const SurfaceWorldContext* world,
+                                   SurfaceAppearance& out) const {
+    out = SurfaceAppearance{};   // identity for every absent directive
+    if (!prog_.has_appearance()) return;
+    float regs[kMaxOps] = {};
+    eval_regs(pos, nrm, world, regs);
+    auto clamp_to = [](float v, float lo, float hi) {
+        return std::max(lo, std::min(hi, v));
+    };
+    if (prog_.has_tint()) {
+        for (int c = 0; c < 3; ++c)
+            out.tint[c] =
+                clamp_to(regs[prog_.tint_reg[c]], 0.0f, kSurfaceTintMax);
+    }
+    if (prog_.has_rough_bias())
+        out.rough_bias = clamp_to(regs[prog_.rough_bias_reg],
+                                  -kSurfaceRoughBiasLimit,
+                                  kSurfaceRoughBiasLimit);
+    if (prog_.has_wetness())
+        out.wetness = clamp_to(regs[prog_.wetness_reg], 0.0f, 1.0f);
 }
 
 void SurfaceRuntime::classify_vertices(const float* positions,

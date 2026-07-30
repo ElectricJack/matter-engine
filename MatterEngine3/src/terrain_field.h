@@ -149,6 +149,35 @@ constexpr int kSurfaceInputWorldFirst = kSurfInWorldX;
 // mesh vertex — keep the two in sync).
 constexpr int kMaxSurfaceMaterials = 8;
 
+// Hard cap on emitted (deduplicated) tape ops — mirrors FieldRuntime::kMaxOps
+// and the shader's VT_TAPE_MAX_OPS register file.
+constexpr int kMaxSurfaceOps = 64;
+
+// ---------------------------------------------------------------------------
+// P3 appearance lanes (texel-tape spec §5). Three optional output directives
+// recorded after the `material` lines; each names tape register(s) whose value
+// modulates the COMPOSITED texel (after the top-2 height blend, before BC
+// encode) in the fixed order tint -> roughbias -> wetness.
+//
+// The clamp ranges and the wetness response below are the single source of
+// truth for three consumers that must never drift apart:
+//   * SurfaceRuntime::appearance_at (CPU evaluation),
+//   * shaders_vk/vt_surface_tape.glsl's VT_APP_* defines (GPU mode 3),
+//   * the goldens in tests/surface_field_tests.cpp / vt_compositor_tests.cpp.
+// ---------------------------------------------------------------------------
+constexpr float kSurfaceTintMax        = 2.0f;   // tint clamps to [0, 2]
+constexpr float kSurfaceRoughBiasLimit = 0.5f;   // roughbias clamps to [-.5,.5]
+constexpr float kSurfaceWetAlbedoScale = 0.55f;  // albedo *= mix(1, .55, w)
+constexpr float kSurfaceWetRoughness   = 0.08f;  // orm.g = mix(orm.g, .08, w)
+
+// Evaluated appearance for one sample; the defaults ARE the identity (a tape
+// with no directives leaves the composited texel untouched).
+struct SurfaceAppearance {
+    float tint[3] = {1.0f, 1.0f, 1.0f};
+    float rough_bias = 0.0f;
+    float wetness = 0.0f;
+};
+
 // The world-anchored rule (contract C4): only a variant referenced by exactly
 // one instance may read world inputs (terrain sectors qualify by design).
 inline bool surface_variant_world_anchored(uint32_t instance_count) {
@@ -159,11 +188,14 @@ struct SurfaceProgram {
     // Parse canonical text: op lines (const/noise2/ridge2/noise2w/ridge2w/
     // noise3/ridge3/noise3w/ridge3w/curv/add/sub/mul/min/max/clamp/blend/
     // smoothstep/abs/oneminus/pow/fract/input) followed by
-    // `material <handle> r<reg>` directives. warp2 is NOT part of the surface
-    // op set — the 3D noise ops carry an optional [wseed wfreq wamp] tail that
-    // domain-warps their own sample point instead. Returns false and sets err
-    // on any violation (including 0 or > kMaxSurfaceMaterials declared
-    // materials, or a warp tail that is not exactly 0 or 3 tokens).
+    // `material <handle> r<reg>` directives and the optional P3 appearance
+    // directives `tint rR rG rB`, `roughbias rN`, `wetness rN` (at most one of
+    // each; every register is a backward ref like a material's). warp2 is NOT
+    // part of the surface op set — the 3D noise ops carry an optional
+    // [wseed wfreq wamp] tail that domain-warps their own sample point
+    // instead. Returns false and sets err on any violation (including 0 or
+    // > kMaxSurfaceMaterials declared materials, a warp tail that is not
+    // exactly 0 or 3 tokens, or a duplicate/malformed appearance directive).
     //
     // Register refs in the text are SOURCE ordinals (the line order the JS
     // recorder emitted). Identical `const` lines are deduplicated at parse
@@ -192,6 +224,20 @@ struct SurfaceProgram {
 
     std::vector<Op> ops;
     std::vector<MaterialSlot> materials;
+
+    // P3 appearance lanes: the register each directive reads, -1 when the
+    // directive is absent (identity). tint_reg[0] < 0 means "no tint" — the
+    // three components are set together or not at all.
+    int tint_reg[3] = {-1, -1, -1};
+    int rough_bias_reg = -1;
+    int wetness_reg = -1;
+
+    bool has_tint() const { return tint_reg[0] >= 0; }
+    bool has_rough_bias() const { return rough_bias_reg >= 0; }
+    bool has_wetness() const { return wetness_reg >= 0; }
+    bool has_appearance() const {
+        return has_tint() || has_rough_bias() || has_wetness();
+    }
 
 private:
     bool uses_world_inputs_ = false;
@@ -236,6 +282,21 @@ public:
     void weights_at(const float pos[3], const float nrm[3],
                     const SurfaceWorldContext* world, float* out_weights) const;
 
+    // P3 appearance lanes for one sample, CLAMPED to their documented ranges
+    // (tint [0, kSurfaceTintMax], rough_bias +-kSurfaceRoughBiasLimit, wetness
+    // [0, 1]). A tape without a given directive yields that lane's identity,
+    // so the result is always safe to apply unconditionally.
+    //
+    // This is the CPU twin of the mode-3 shader's application (spec §5). The
+    // per-vertex u8 pipeline (classify_vertices) has no channels to carry
+    // appearance, so mode-2 parts and the legacy fallback path apply NONE of
+    // it — appearance requires weight-seam mode 3, exactly as the spec's
+    // "requires mode 3 in practice" anticipates. This entry point exists for
+    // tests, tooling, and any future CPU-side consumer.
+    void appearance_at(const float pos[3], const float nrm[3],
+                       const SurfaceWorldContext* world,
+                       SurfaceAppearance& out) const;
+
     // Quantized per-vertex evaluation over an indexed mesh stream (positions
     // 3*n; normals 3*n, may be null => +Y). Per vertex the weights are
     // normalized to sum 1 then quantized to u8 (all-zero => material 0 gets
@@ -252,6 +313,12 @@ public:
     bool note_world_input_misuse() const;
 
 private:
+    // Evaluate every register into `regs` (capacity kMaxSurfaceOps, enforced
+    // at parse). The single evaluation path behind weights_at/appearance_at,
+    // so the two can never disagree about what a register holds.
+    void eval_regs(const float pos[3], const float nrm[3],
+                   const SurfaceWorldContext* world, float* regs) const;
+
     SurfaceProgram prog_;
     mutable bool misuse_noted_ = false;
 };

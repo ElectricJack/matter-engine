@@ -71,6 +71,18 @@ struct GpuSurfOp {
 
 #define VT_TAPE_MAX_OPS 64
 
+// ---- P3 appearance lanes (texel-tape spec section 5) ----------------------
+// The clamp ranges and the wetness response mirror terrain_field.h's
+// kSurfaceTintMax / kSurfaceRoughBiasLimit / kSurfaceWetAlbedoScale /
+// kSurfaceWetRoughness (SurfaceRuntime::appearance_at is the CPU twin).
+// VT_APP_NO_REG mirrors vt_surface_tape.h's kVtNoAppearanceReg: registers are
+// 0..63, so 0xFF is an unambiguous "directive absent".
+#define VT_APP_NO_REG      0xFFu
+#define VT_APP_TINT_MAX    2.0
+#define VT_APP_ROUGH_LIMIT 0.5
+#define VT_APP_WET_ALBEDO  0.55
+#define VT_APP_WET_ROUGH   0.08
+
 #ifndef VT_TAPE_OPS_SET
 #define VT_TAPE_OPS_SET 1
 #endif
@@ -318,6 +330,35 @@ void vt_tape_eval(uint ops_offset, uint ops_count,
             break;
         }
         regs[i] = r;
+    }
+}
+
+// ---- P3: appearance-lane application ---------------------------------------
+// Modulates ONE COMPOSITED texel (after the top-2 height blend, before BC
+// encode) in the fixed order tint -> roughbias -> wetness. `app` is the fill
+// request's packed directive registers: x = tint regs (r | g << 8 | b << 16),
+// y = roughbias reg, z = wetness reg — each byte VT_APP_NO_REG when the tape
+// declares no such directive, in which case that lane is a no-op and the texel
+// is bit-identical to a tape without the directive at all. `regs` is the
+// post-vt_tape_eval register file, so this is mode-3 only by construction.
+void vt_apply_appearance(uvec4 app, float regs[VT_TAPE_MAX_OPS],
+                         inout vec3 albedo, inout vec3 orm) {
+    uint tint_regs = app.x;
+    if ((tint_regs & 0xFFu) != VT_APP_NO_REG) {
+        vec3 tint = vec3(regs[tint_regs & 0xFFu],
+                         regs[(tint_regs >> 8) & 0xFFu],
+                         regs[(tint_regs >> 16) & 0xFFu]);
+        albedo *= clamp(tint, 0.0, VT_APP_TINT_MAX);
+    }
+    if (app.y != VT_APP_NO_REG) {
+        float bias = clamp(regs[app.y], -VT_APP_ROUGH_LIMIT,
+                           VT_APP_ROUGH_LIMIT);
+        orm.g = clamp(orm.g + bias, 0.0, 1.0);
+    }
+    if (app.z != VT_APP_NO_REG) {
+        float wet = clamp(regs[app.z], 0.0, 1.0);
+        albedo *= mix(1.0, VT_APP_WET_ALBEDO, wet);
+        orm.g = mix(orm.g, VT_APP_WET_ROUGH, wet);
     }
 }
 

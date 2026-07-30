@@ -44,8 +44,12 @@ struct GpuFillRequest {
     // part is not world-anchored (never read there — the packer pre-resolved
     // its world ops to constants).
     float xform[12];
+    // P3 (appearance lanes, mode 3): the tape registers the output directives
+    // read — x = tint regs (r | g << 8 | b << 16), y = roughbias reg,
+    // z = wetness reg, w = pad. Each byte kVtNoAppearanceReg when absent.
+    uint32_t app[4];
 };
-static_assert(sizeof(GpuFillRequest) == 128, "GpuFillRequest layout");
+static_assert(sizeof(GpuFillRequest) == 144, "GpuFillRequest layout");
 
 struct GpuVtMaterial {
     float albedo[4];
@@ -333,6 +337,13 @@ struct VtCompositor::Impl {
         uint32_t tape_op_count = 0;
         uint32_t tape_lane_count = 0;
         uint8_t tape_weight_reg[8]{};
+        // P3: the appearance directives' registers (kVtNoAppearanceReg when
+        // the tape declares none). They travel with the entry exactly like the
+        // weight registers — same tape, same pack, same lifetime.
+        uint8_t tape_tint_reg[3] = {kVtNoAppearanceReg, kVtNoAppearanceReg,
+                                    kVtNoAppearanceReg};
+        uint8_t tape_rough_reg = kVtNoAppearanceReg;
+        uint8_t tape_wet_reg = kVtNoAppearanceReg;
     };
     std::map<std::pair<uint64_t, uint32_t>, MeshEntry> mesh_cache;
     // Monotonic fill()-batch counter, and per-ring lists of evicted or
@@ -920,6 +931,10 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
             entry.tape_lane_count = tape_pack.scan.count;
             std::memcpy(entry.tape_weight_reg, tape_pack.weight_reg,
                         sizeof(entry.tape_weight_reg));
+            std::memcpy(entry.tape_tint_reg, tape_pack.tint_reg,
+                        sizeof(entry.tape_tint_reg));
+            entry.tape_rough_reg = tape_pack.rough_bias_reg;
+            entry.tape_wet_reg = tape_pack.wetness_reg;
             auto* arena_ops = static_cast<VtGpuSurfOp*>(tape_arena.mapped) +
                               static_cast<size_t>(entry.tape_slot) *
                                   kTapeSlotOps;
@@ -1282,6 +1297,13 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
         static constexpr float kIdentity12[12] = {1, 0, 0, 0, 0, 1,
                                                   0, 0, 0, 0, 1, 0};
         std::memcpy(g.xform, kIdentity12, sizeof(g.xform));
+        // P3: no appearance directives by default (three sentinel bytes in x).
+        g.app[0] = uint32_t(kVtNoAppearanceReg) |
+                   (uint32_t(kVtNoAppearanceReg) << 8) |
+                   (uint32_t(kVtNoAppearanceReg) << 16);
+        g.app[1] = kVtNoAppearanceReg;
+        g.app[2] = kVtNoAppearanceReg;
+        g.app[3] = 0;
         if (has_tape) {
             for (uint32_t k = 0; k < ctx->surface_material_count; ++k)
                 g.tape[k >> 2] |= (ctx->surface_materials[k] & 0xFFu)
@@ -1297,6 +1319,11 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
                 g.tape2[2 + (k >> 2)] |=
                     static_cast<uint32_t>(entry->tape_weight_reg[k])
                     << ((k & 3u) * 8u);
+            g.app[0] = uint32_t(entry->tape_tint_reg[0]) |
+                       (uint32_t(entry->tape_tint_reg[1]) << 8) |
+                       (uint32_t(entry->tape_tint_reg[2]) << 16);
+            g.app[1] = entry->tape_rough_reg;
+            g.app[2] = entry->tape_wet_reg;
             std::memcpy(g.xform, ctx->surface_local_to_world,
                         sizeof(g.xform));
         }

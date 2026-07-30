@@ -56,6 +56,29 @@ function heightToDensity(h) { return h; }   // v1 identity marker: density == he
 // Compiled natively by terrain_field::SurfaceProgram.
 globalThis.__surface_ops = [];
 globalThis.__surface_mats = [];
+// P3 appearance lanes: s.tint/s.roughnessBias/s.wetness record into FIXED
+// slots (tint, roughbias, wetness) that are re-emitted AFTER every material
+// line, so the canonical text — and therefore the tape hash, and therefore
+// page invalidation — never depends on the order surfaces() happened to call
+// them in. Each slot keeps every recorded line rather than overwriting, so a
+// duplicate directive reaches SurfaceProgram::parse and is rejected there:
+// one "at most one of each" rule, enforced in one place.
+globalThis.__surface_matlines = [];
+globalThis.__surface_applines = [[], [], []];
+function __sflush() {
+  const out = globalThis.__surface_mats;
+  out.length = 0;
+  for (const line of globalThis.__surface_matlines) out.push(line);
+  // Appearance lines ride only alongside real material weights. With none
+  // declared the tape is invalid either way, and the host's "surfaces()
+  // declared no material weights" diagnostic (which counts __surface_mats)
+  // must stay reachable.
+  if (globalThis.__surface_matlines.length === 0) return;
+  for (const slot of globalThis.__surface_applines)
+    for (const line of slot) out.push(line);
+}
+function __smat(line) { globalThis.__surface_matlines.push(line); __sflush(); }
+function __sapp(slot, line) { globalThis.__surface_applines[slot].push(line); __sflush(); }
 function __semit(line) { globalThis.__surface_ops.push(line); return globalThis.__surface_ops.length - 1; }
 function __sreg(v) {
   if (v instanceof SurfaceNode) return v.r;
@@ -172,8 +195,24 @@ function __surfaceArg() {
     // Declare a material's weight field. `material` is a defineMaterial handle
     // (or a raw registry index); the host retains the top-2 per texel.
     weight(material, w) {
-      globalThis.__surface_mats.push('material ' + (material | 0) + ' r' + __sreg(w));
+      __smat('material ' + (material | 0) + ' r' + __sreg(w));
     },
+    // ---- P3 appearance lanes (texel-tape spec section 5) ----
+    // Outputs beyond material weights, applied to the COMPOSITED texel after
+    // the top-2 height blend in the fixed order tint -> roughbias -> wetness.
+    // They deliberately do not vary per material: the use case is macro
+    // variation ACROSS a surface (anti-tiling drift, gully wetness). Each
+    // argument is a SurfaceNode or a plain number. At most one call of each
+    // per tape. Requires weight-seam mode 3 (the per-texel GPU tape); on a
+    // mode-2 part or the legacy fallback the lanes are ignored.
+    //   tint          each component clamped to [0, 2] at eval; albedo *= tint
+    //   roughnessBias clamped to [-0.5, 0.5]; added to ORM roughness
+    //   wetness       clamped to [0, 1]; darkens albedo and drops roughness
+    tint(r, g, b) {
+      __sapp(0, 'tint r' + __sreg(r) + ' r' + __sreg(g) + ' r' + __sreg(b));
+    },
+    roughnessBias(n) { __sapp(1, 'roughbias r' + __sreg(n)); },
+    wetness(n) { __sapp(2, 'wetness r' + __sreg(n)); },
   };
   // Inputs, recorded lazily so the tape only carries what surfaces() reads —
   // that keeps uses-world-inputs detection (and the misuse diagnostic) honest.

@@ -12,7 +12,11 @@
 //   2. the per-vertex f16 lane packing (vt_compute_surface_lanes /
 //      vt_f32_to_f16 — mirrored by unpackHalf2x16 in the shader);
 //   3. the GpuSurfOp instruction encoding (struct + kind numbering), mirrored
-//      by shaders_vk/vt_surface_tape.glsl. Keep the two in lockstep.
+//      by shaders_vk/vt_surface_tape.glsl. Keep the two in lockstep;
+//   4. (P3) the appearance-lane register packing — which tape register each
+//      output directive reads, with kVtNoAppearanceReg for "absent". The
+//      compositor forwards these on the GPU fill request and the shader's
+//      vt_apply_appearance reads them back.
 //
 // Header-only on purpose (same rationale as vt_chart_gpu.h): the standalone
 // compositor test exe must see these without a new engine TU. The only .cpp
@@ -269,12 +273,27 @@ enum VtSurfOpKind : uint32_t {
     kVtSopLaneRead = 22,    // a = lane index (CPU-rewritten Input/FieldCurv)
 };
 
+// Absent-directive sentinel for the packed P3 appearance registers. Registers
+// are 0..63 (kMaxSurfaceOps), so 0xFF can never be a real index; the GPU
+// request carries the same byte and the shader tests against the same value
+// (VT_APP_NO_REG in vt_surface_tape.glsl).
+constexpr uint8_t kVtNoAppearanceReg = 0xFFu;
+
 // One packed program, ready for the compositor's tape arena.
 struct VtSurfaceTapePack {
     std::vector<VtGpuSurfOp> ops;
     uint8_t weight_reg[terrain_field::kMaxSurfaceMaterials]{};  // per column
     uint32_t weight_reg_count = 0;
     VtSurfaceLaneScan scan;   // lane table (count == the part's lane budget)
+    // P3 appearance lanes: the tape register each directive reads, or
+    // kVtNoAppearanceReg. Registers survive the pack unchanged — every op maps
+    // 1:1 onto one GpuSurfOp (including the world pre-resolve, which rewrites
+    // an op's KIND but never its index), so a SurfaceProgram register index is
+    // also a GPU register index.
+    uint8_t tint_reg[3] = {kVtNoAppearanceReg, kVtNoAppearanceReg,
+                           kVtNoAppearanceReg};
+    uint8_t rough_bias_reg = kVtNoAppearanceReg;
+    uint8_t wetness_reg = kVtNoAppearanceReg;
     bool ok = false;
     bool lane_overflow = false;
     std::string err;
@@ -467,6 +486,22 @@ inline bool vt_pack_surface_tape(const terrain_field::SurfaceProgram& prog,
         }
         out.weight_reg[k] = static_cast<uint8_t>(reg);
     }
+
+    // P3 appearance directive registers (absent -> sentinel).
+    auto pack_app_reg = [&](int reg, uint8_t& dst) -> bool {
+        if (reg < 0) { dst = kVtNoAppearanceReg; return true; }
+        if (reg >= static_cast<int>(out.ops.size())) {
+            out.err = "appearance directive register out of range";
+            return false;
+        }
+        dst = static_cast<uint8_t>(reg);
+        return true;
+    };
+    for (int c = 0; c < 3; ++c)
+        if (!pack_app_reg(prog.tint_reg[c], out.tint_reg[c])) return false;
+    if (!pack_app_reg(prog.rough_bias_reg, out.rough_bias_reg)) return false;
+    if (!pack_app_reg(prog.wetness_reg, out.wetness_reg)) return false;
+
     out.ok = true;
     return true;
 }
