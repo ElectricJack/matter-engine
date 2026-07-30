@@ -1,0 +1,339 @@
+#version 460
+// vt_composite.comp — WP-D tier-1 chart-page compositor (chart-space virtual
+// texturing, spec Phase 2b).
+//
+// One dispatch per requested page: 17x17 workgroups of 8x8 cover the full
+// 136^2 physical page (128 payload + 4-texel border on every side). Per
+// texel:
+//   1. Map the physical texel to its virtual-atlas texel at the request's
+//      mip, then to finest-mip coordinates (texel centers).
+//   2. Resolve the owning surface point via vt_chart_resolve.glsl — the
+//      SHARED resolve, also used by WP-H's vt_enrich_ao.comp so a page and
+//      the occlusion later multiplied into it can never disagree about which
+//      triangle a texel belongs to.
+//   3. Evaluate material weights behind the vt_material_weights seam
+//      (mode 0: the triangle's TriEx materialId at weight 1; mode 1: the
+//      2-material debug ramp for tests; mode 2: WP-F's surfaces() tape —
+//      per-vertex weight columns interpolated barycentrically, top-2 kept).
+//   4. Sample each weighted material's Wang detail tileset TRIPLANAR in
+//      part-local space (three planar samples along the local axes weighted
+//      |n|^4), with textureLod at the page-texel footprint (mip policy: a
+//      page at mip M has texels of 2^M / chart_tpm meters, so coarse pages
+//      sample properly filtered tileset mips, not aliased ones).
+//   5. Height-blend the top-2 materials by the tilesets' height channels
+//      (exact passthrough at w = 0 / w = 1 — tested identities).
+//   6. Write albedo / tangent-space normal / ORM / aux (dominant material
+//      id, secondary id, blend) to the intermediate storage images;
+//      vt_bc_encode.comp compresses them afterwards. The normal is encoded
+//      relative to the interpolated geometric normal in the exact frame
+//      tileset_rotate_normal() rebuilds at decode time (NOT the chart
+//      plane's frame — see the encode step below).
+//
+// DETERMINISM: no time, no random, fixed iteration orders, ties broken by
+// strict '<' (first candidate wins). Identical inputs => identical texels.
+
+#extension GL_EXT_nonuniform_qualifier : require
+
+#include "wang_common.glsl"
+#include "vt_chart_types.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// MUST equal vt::VtCompositor::kMaxDetailSlots (vt_compositor.h).
+#define VT_MAX_SLOTS 8
+// Channels bound per slot (albedo, normal RG, ORM, height) — a subset of the
+// 6-channel runtime tileset arrays; horizon channels are not composited.
+#define VT_CH_ALBEDO 0
+#define VT_CH_NORMAL 1
+#define VT_CH_ORM    2
+#define VT_CH_HEIGHT 3
+#define VT_CHANNELS  4
+
+// ---- set 0: per-(variant, rung) mesh/chart cache (built CPU-side from the
+// part context, cached across fills). Struct layouts live in
+// vt_chart_types.glsl / vt_chart_gpu.h. ------------------------------------
+
+layout(std430, set = 0, binding = 0) readonly buffer ChartsBuf { GpuChart charts[]; };
+layout(std430, set = 0, binding = 1) readonly buffer TrisBuf   { GpuTri tris[]; };
+
+// ---- set 1: per-batch-slot resources --------------------------------------
+
+struct GpuFillRequest {
+    uvec4 a;             // x page_x, y page_y, z mip, w out_layer (intermediate)
+    uvec4 b;             // x cand_offset, y cand_count, z weight_mode,
+                         // w debug materials (mat_a | mat_b << 16)
+    vec4 debug_params;   // weight_mode 1: x = blend start (plane U, meters),
+                         //                y = blend width (meters)
+    uvec4 tape;          // weight_mode 2: x = tape material ids for columns
+                         // 0-3 (u8 each), y = ids for columns 4-7, z = count
+};
+struct GpuVtMaterial {
+    vec4 albedo;         // scalar fallback albedo (rgb) when no detail slot
+    vec4 orm;            // xyz scalar fallback ORM
+    ivec4 slot;          // x = detail tileset slot, -1 = none
+};
+
+layout(std430, set = 1, binding = 0) readonly buffer RequestBuf { GpuFillRequest requests[]; };
+layout(std430, set = 1, binding = 1) readonly buffer CandBuf    { uint cand_charts[]; };
+layout(std430, set = 1, binding = 2) readonly buffer MaterialBuf { GpuVtMaterial materials[]; };
+layout(set = 1, binding = 3, std140) uniform VtTilesetParams {
+    // Per-slot scalars, four to a vec4 (same packing discipline as
+    // tileset_common.glsl's TilesetParams — read via VT_SLOT_SCALAR).
+    vec4 tile_size_m[VT_MAX_SLOTS / 4];
+    vec4 texels_per_meter[VT_MAX_SLOTS / 4];
+} vtp;
+#define VT_SLOT_SCALAR(field, slot) (vtp.field[(slot) >> 2][(slot) & 3])
+
+layout(set = 1, binding = 4)
+    uniform sampler2DArray vtTilesetTex[VT_MAX_SLOTS * VT_CHANNELS];
+
+layout(set = 1, binding = 5, rgba8) uniform writeonly image2DArray outAlbedo;
+layout(set = 1, binding = 6, rgba8) uniform writeonly image2DArray outNormal;
+layout(set = 1, binding = 7, rgba8) uniform writeonly image2DArray outOrm;
+layout(set = 1, binding = 8, rgba8) uniform writeonly image2DArray outAux;
+
+layout(push_constant) uniform Push { uint req_index; } pc;
+
+// Shared chart resolve (needs charts[]/tris[]/cand_charts[] declared above).
+#include "vt_chart_resolve.glsl"
+
+// ---------------------------------------------------------------------------
+// Triplanar Wang sampling of one material's detail tileset.
+// ---------------------------------------------------------------------------
+struct SurfSample {
+    vec3 albedo;
+    vec3 delta_n;    // part-local normal perturbation (added, then normalized)
+    vec3 orm;
+    float height;    // normalized [0,1] tileset height (0.5 for flat/scalar)
+};
+
+vec4 vt_tileset_lod(int slot, int channel, vec2 planarM, float lod) {
+    int layer; vec2 uv;
+    wang_resolve_size(VT_SLOT_SCALAR(tile_size_m, slot), planarM, layer, uv);
+    int tex = slot * VT_CHANNELS + channel;
+    float max_lod = float(textureQueryLevels(vtTilesetTex[nonuniformEXT(tex)]) - 1);
+    return textureLod(vtTilesetTex[nonuniformEXT(tex)],
+                      vec3(uv, float(layer)), clamp(lod, 0.0, max_lod));
+}
+
+SurfSample sample_material(uint mat_id, vec3 pos, vec3 nrm, float footprint_m) {
+    GpuVtMaterial m = materials[mat_id & 0xFFu];
+    SurfSample s;
+    s.delta_n = vec3(0.0);
+    int slot = m.slot.x;
+    if (slot < 0 || slot >= VT_MAX_SLOTS) {
+        s.albedo = m.albedo.rgb;
+        s.orm    = m.orm.xyz;
+        s.height = 0.5;
+        return s;
+    }
+    // |n|^4 triplanar weights, normalized.
+    vec3 w4 = nrm * nrm; w4 *= w4;
+    float wsum = w4.x + w4.y + w4.z;
+    w4 = (wsum > 1e-8) ? w4 / wsum : vec3(0.0, 1.0, 0.0);
+
+    // Mip policy: LOD from the page-texel footprint against this tileset's
+    // texel density, so a page at mip M reads matching tileset filtering.
+    float duv_texels = footprint_m * VT_SLOT_SCALAR(texels_per_meter, slot);
+    float lod = log2(max(duv_texels, 1.0));
+
+    // Fixed per-axis planar frames (sign-independent — mirrored content on
+    // back faces is the accepted tier-1 tradeoff, documented).
+    //   X axis: coords (p.z, p.y), T=(0,0,1), B=(0,1,0)
+    //   Y axis: coords (p.x, p.z), T=(1,0,0), B=(0,0,1)
+    //   Z axis: coords (p.x, p.y), T=(1,0,0), B=(0,1,0)
+    vec2 pc[3];
+    pc[0] = pos.zy; pc[1] = pos.xz; pc[2] = pos.xy;
+    const vec3 axisT[3] = vec3[3](vec3(0, 0, 1), vec3(1, 0, 0), vec3(1, 0, 0));
+    const vec3 axisB[3] = vec3[3](vec3(0, 1, 0), vec3(0, 0, 1), vec3(0, 1, 0));
+
+    vec3 albedo = vec3(0.0), orm = vec3(0.0), dn = vec3(0.0);
+    float height = 0.0;
+    for (int ax = 0; ax < 3; ++ax) {
+        float w = w4[ax];
+        if (w <= 1e-5) continue;
+        vec4 alb = vt_tileset_lod(slot, VT_CH_ALBEDO, pc[ax], lod);
+        vec4 nr  = vt_tileset_lod(slot, VT_CH_NORMAL, pc[ax], lod);
+        vec4 om  = vt_tileset_lod(slot, VT_CH_ORM,    pc[ax], lod);
+        vec4 hg  = vt_tileset_lod(slot, VT_CH_HEIGHT, pc[ax], lod);
+        vec2 rg = nr.rg * 2.0 - 1.0;
+        albedo += w * alb.rgb;
+        orm    += w * om.rgb;
+        height += w * hg.r;
+        dn     += w * (axisT[ax] * rg.x + axisB[ax] * rg.y);
+    }
+    s.albedo = albedo;
+    s.orm    = orm;
+    s.height = height;
+    s.delta_n = dn;
+    return s;
+}
+
+// ---------------------------------------------------------------------------
+// Material-weight seam (contract C4). Outputs stay fixed: top-2 materials
+// with weights summing to 1 (w1 == 0 => single).
+//   mode 0: Phase-2 stub — the triangle's TriEx materialId at weight 1.
+//   mode 1: debug/test — analytic 2-material ramp along plane U.
+//   mode 2: WP-F surfaces() tape — per-vertex u8 weight columns (GpuTri
+//           wA/wB) interpolated barycentrically, top-2 kept, ids resolved
+//           through the request's tape material table. Fixed ascending scan
+//           with strict '>' so ties keep the lowest column (determinism).
+// ---------------------------------------------------------------------------
+void vt_material_weights(uint weight_mode, uint debug_mats, vec4 debug_params,
+                         uvec4 tape, GpuTri tri, vec3 bary,
+                         vec3 pos, vec3 nrm, vec2 plane_uv,
+                         out uint m0, out float w0, out uint m1, out float w1) {
+    uint tri_mat = tri.mat.x;
+    if (weight_mode == 1u) {
+        // Debug/test mode: analytic 2-material ramp along plane U so the
+        // height-blend path (and its w=0 / w=1 passthrough identities) is
+        // testable independently of the tape.
+        m0 = debug_mats & 0xFFFFu;
+        m1 = (debug_mats >> 16) & 0xFFFFu;
+        w1 = clamp((plane_uv.x - debug_params.x) / max(debug_params.y, 1e-6),
+                   0.0, 1.0);
+        w0 = 1.0 - w1;
+        return;
+    }
+    if (weight_mode == 2u) {
+        uint count = min(tape.z, 8u);
+        uint best_col = 0u;  float best_w = -1.0;
+        uint next_col = 0u;  float next_w = -1.0;
+        for (uint k = 0u; k < count; ++k) {
+            uint word = k >> 2u;
+            uint shift = (k & 3u) * 8u;
+            float v0 = float((tri.wA[word]      >> shift) & 0xFFu);
+            float v1 = float((tri.wA[2u + word] >> shift) & 0xFFu);
+            float v2 = float((tri.wB[word]      >> shift) & 0xFFu);
+            float w = (bary.x * v0 + bary.y * v1 + bary.z * v2) * (1.0 / 255.0);
+            if (w > best_w) {
+                next_w = best_w; next_col = best_col;
+                best_w = w;      best_col = k;
+            } else if (w > next_w) {
+                next_w = w; next_col = k;
+            }
+        }
+        if (best_w <= 0.0) {
+            // No tape coverage at this texel: fall back to the TriEx id.
+            m0 = tri_mat; w0 = 1.0;
+            m1 = tri_mat; w1 = 0.0;
+            return;
+        }
+        uint id0 = ((best_col < 4u ? tape.x : tape.y) >> ((best_col & 3u) * 8u)) & 0xFFu;
+        if (next_w <= 0.0) {
+            m0 = id0; w0 = 1.0;
+            m1 = id0; w1 = 0.0;
+            return;
+        }
+        uint id1 = ((next_col < 4u ? tape.x : tape.y) >> ((next_col & 3u) * 8u)) & 0xFFu;
+        float sum = best_w + next_w;
+        m0 = id0; w0 = best_w / sum;
+        m1 = id1; w1 = next_w / sum;
+        return;
+    }
+    // Phase-2 stub: single material from the triangle's TriEx materialId.
+    m0 = tri_mat; w0 = 1.0;
+    m1 = tri_mat; w1 = 0.0;
+}
+
+void main() {
+    uvec2 t = gl_GlobalInvocationID.xy;
+    if (t.x >= uint(VT_PAGE_STORE) || t.y >= uint(VT_PAGE_STORE)) return;
+    GpuFillRequest req = requests[pc.req_index];
+    int out_layer = int(req.a.w);
+    ivec3 store_at = ivec3(ivec2(t), out_layer);
+
+    uint mip = req.a.z;
+
+    // ---- resolve owning surface point over the candidate charts ----
+    VtSurfacePoint sp =
+        vt_resolve_page_texel(t, req.a.xy, mip, req.b.x, req.b.y);
+
+    if (!sp.found) {
+        // No candidates (page over empty atlas space) — neutral fill.
+        imageStore(outAlbedo, store_at, vec4(0.5, 0.5, 0.5, 1.0));
+        imageStore(outNormal, store_at, vec4(0.5, 0.5, 0.0, 0.0));
+        imageStore(outOrm,    store_at, vec4(1.0, 0.8, 0.0, 1.0));
+        imageStore(outAux,    store_at, vec4(1.0, 1.0, 0.0, 1.0));
+        return;
+    }
+
+    GpuTri tri = tris[sp.tri];
+    vec3 pos = sp.pos;
+    vec3 nrm = sp.nrm;
+    vec2 plane_uv = sp.plane_uv;
+    float footprint_m = sp.footprint_m;
+
+    // ---- material weights (seam) + top-2 height blend ----
+    uint m0, m1; float w0, w1;
+    vt_material_weights(req.b.z, req.b.w, req.debug_params, req.tape,
+                        tri, sp.bary, pos, nrm, plane_uv, m0, w0, m1, w1);
+
+    vec3 albedo, orm, dn;
+    float blend;
+    if (w1 <= 0.0) {
+        SurfSample s0 = sample_material(m0, pos, nrm, footprint_m);
+        albedo = s0.albedo; orm = s0.orm; dn = s0.delta_n;
+        m1 = m0; blend = 0.0;
+    } else if (w0 <= 0.0) {
+        SurfSample s1 = sample_material(m1, pos, nrm, footprint_m);
+        albedo = s1.albedo; orm = s1.orm; dn = s1.delta_n;
+        // Dominant aux slot carries the surviving material.
+        m0 = m1; blend = 0.0;
+    } else {
+        SurfSample s0 = sample_material(m0, pos, nrm, footprint_m);
+        SurfSample s1 = sample_material(m1, pos, nrm, footprint_m);
+        // Height blend: material whose (height + weight) stands taller wins
+        // within a fixed blend depth. Passthrough is exact only via the
+        // w<=0 branches above (tested identities).
+        const float kBlendDepth = 0.2;
+        float a0 = s0.height + w0;
+        float a1 = s1.height + w1;
+        float ma = max(a0, a1) - kBlendDepth;
+        float b0 = max(a0 - ma, 0.0);
+        float b1 = max(a1 - ma, 0.0);
+        blend = b1 / (b0 + b1);
+        albedo = mix(s0.albedo, s1.albedo, blend);
+        orm    = mix(s0.orm,    s1.orm,    blend);
+        dn     = mix(s0.delta_n, s1.delta_n, blend);
+    }
+
+    // ---- final normal, encoded relative to the interpolated GEOMETRIC
+    // normal — in EXACTLY the frame tileset_rotate_normal() reconstructs
+    // (t = +X projected off n, b = n x t; tileset_common.glsl). Both
+    // consumers (gbuffer.frag's VT branch and rt_surface_common.glsl) decode
+    // by rotating around the per-pixel / per-hit geometric normal, which
+    // interpolates the same vertex normals this pass interpolates, so the
+    // round trip is lossless. Encoding against any other frame (the chart
+    // plane's T/B/N, as this pass originally did) skews the decoded shading
+    // normal by however far the chart plane tilts from the local surface —
+    // up to the segmentation cone, or ~180 degrees for inverted chart
+    // normals — which blacked out whole charts on real terrain.
+    vec3 n_local = normalize(nrm + dn);
+    vec3 ts;
+    vec3 t_axis = vec3(1.0, 0.0, 0.0) - nrm * nrm.x;
+    float t_len2 = dot(t_axis, t_axis);
+    if (t_len2 < 1e-6) {
+        // Geometric normal ~ +-X: the decoder falls back to the raw
+        // geometric normal here, so encode the matching identity (the
+        // detail perturbation is dropped for this orientation on both
+        // sides — consistent, and vanishingly rare on charts).
+        ts = vec3(0.0, 0.0, 1.0);
+    } else {
+        t_axis *= inversesqrt(t_len2);
+        vec3 b_axis = normalize(cross(nrm, t_axis));
+        ts = vec3(dot(n_local, t_axis), dot(n_local, b_axis),
+                  dot(n_local, nrm));
+    }
+    // The runtime reconstructs z = sqrt(1 - x^2 - y^2); keep z positive so
+    // the BC5 pair stays decodable (n_local = nrm + a bounded detail delta,
+    // so z >= 0 is the overwhelming case anyway).
+    if (ts.z < 0.05) { ts.z = 0.05; ts = normalize(ts); }
+
+    imageStore(outAlbedo, store_at, vec4(albedo, 1.0));
+    imageStore(outNormal, store_at, vec4(ts.xy * 0.5 + 0.5, 0.0, 0.0));
+    imageStore(outOrm,    store_at, vec4(orm, 1.0));
+    imageStore(outAux,    store_at,
+               vec4(float(m0 & 0xFFu) / 255.0, float(m1 & 0xFFu) / 255.0,
+                    blend, 1.0));
+}

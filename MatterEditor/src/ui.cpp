@@ -890,6 +890,30 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
     }
     ImGui::Separator();
 
+    if (s.vt_active) {
+        ImGui::Text("VT: %u/%u variants  pool %u/%u (%u pinned)  mesh %.1f/%.1f MiB",
+                    s.vt_variants, s.vt_max_variants, s.vt_pool_used,
+                    s.vt_pool_capacity, s.vt_pool_pinned,
+                    static_cast<double>(s.vt_mesh_bytes) / (1024.0 * 1024.0),
+                    static_cast<double>(s.vt_mesh_budget_bytes) /
+                        (1024.0 * 1024.0));
+        if (s.vt_rejected_variants > 0) {
+            ImGui::TextColored(
+                ImVec4(1.0f, 0.35f, 0.30f, 1.0f),
+                "VT: %u variant registration%s REJECTED — affected parts "
+                "ignore their surfaces() classification",
+                s.vt_rejected_variants,
+                s.vt_rejected_variants == 1 ? "" : "s");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "The variant layer pool (MATTER_VT_MAX_VARIANTS) or the CPU "
+                    "mesh budget (MATTER_VT_MESH_BUDGET_MB) filled up. Rejected "
+                    "parts fall back to the legacy per-material path: correct "
+                    "geometry, but the authored surfaces() tape is ignored.");
+        }
+        ImGui::Separator();
+    }
+
     const char* hit_tag = s.batch_cache_hit ? " [cached]" : "";
     ImGui::Text("Raster: %d batches / %d tris  culled: %d%s",
                 s.raster_batches, s.raster_tris, s.culled_clusters, hit_tag);
@@ -963,6 +987,33 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
     }
 
     ImGui::End();
+}
+
+void Ui::draw_vt_warning_banner(const ViewerStats& s) {
+    if (!s.vt_active || s.vt_rejected_variants == 0) return;
+    char text[256];
+    std::snprintf(text, sizeof(text),
+                  "VT budget exceeded: %u variant%s rejected — affected parts "
+                  "ignore their surfaces() classification  (variants %u/%u, "
+                  "mesh %.0f/%.0f MiB)",
+                  s.vt_rejected_variants,
+                  s.vt_rejected_variants == 1 ? "" : "s", s.vt_variants,
+                  s.vt_max_variants,
+                  static_cast<double>(s.vt_mesh_bytes) / (1024.0 * 1024.0),
+                  static_cast<double>(s.vt_mesh_budget_bytes) /
+                      (1024.0 * 1024.0));
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    const ImVec2 text_size = ImGui::CalcTextSize(text);
+    const float pad = 6.0f;
+    const float x = viewport_rect_.x +
+                    (viewport_rect_.w - text_size.x) * 0.5f - pad;
+    const float y = viewport_rect_.y + 8.0f;
+    draw->AddRectFilled(ImVec2(x, y),
+                        ImVec2(x + text_size.x + pad * 2.0f,
+                               y + text_size.y + pad * 2.0f),
+                        IM_COL32(120, 20, 10, 220), 4.0f);
+    draw->AddText(ImVec2(x + pad, y + pad), IM_COL32(255, 210, 200, 255),
+                  text);
 }
 
 void Ui::draw_bake_lab_panel(BakeLab& lab, matter::evt::Hub* app_hub,

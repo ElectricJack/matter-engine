@@ -68,7 +68,12 @@ bool save(const std::string& path, const BLASManager& blas,
     std::vector<uint8_t> body;
 
     // --- Materials ---
-    const uint32_t mcount = static_cast<uint32_t>(MaterialRegistryCount());
+    // Static count, not MaterialRegistryCount(): per-world dynamic entries
+    // (defineMaterial, chart-VT spec Phase 3) must never change the bytes a
+    // baked part carries, or every cached artifact would invalidate whenever a
+    // world declares a material. The builtin table is the frozen contract this
+    // validates; dynamic ids are resolved at render time from the live registry.
+    const uint32_t mcount = static_cast<uint32_t>(MaterialRegistryStaticCount());
     put<uint32_t>(body, mcount);
     for (uint32_t i = 0; i < mcount; ++i)
         put_bytes(body, MaterialRegistryGet(static_cast<int>(i)), sizeof(MaterialDef));
@@ -164,7 +169,7 @@ bool load(const std::string& path, uint64_t expected_hash,
     // --- Materials (validate against the live code-defined registry) ---
     const uint32_t mcount = r.get<uint32_t>();
     if (!r.ok) return false;
-    if (static_cast<int>(mcount) != MaterialRegistryCount()) return false;
+    if (static_cast<int>(mcount) != MaterialRegistryStaticCount()) return false;
     for (uint32_t i = 0; i < mcount; ++i) {
         const uint8_t* md = r.take(sizeof(MaterialDef));
         if (!r.ok) return false;

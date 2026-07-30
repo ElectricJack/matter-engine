@@ -502,13 +502,36 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             }
             if (tris.empty()) continue;
             const TriEx* ex = (triex.size() == tris.size()) ? triex.data() : nullptr;
+            // WP-A follow-up (flat coverage): chart this rung before
+            // registration, same policy as stage_from_snapshot's prop path
+            // (16 t/m, no per-rung halving — flats are scattered props;
+            // terrain sectors never take the flat path). Fail-closed: a rung
+            // whose chart build fails ships an empty table (charts = 0).
+            std::vector<TriEx> charted;
+            chart_atlas::ChartAtlasRung rung_table;
+            bool charted_ok = false;
+            if (ex) {
+                charted.assign(triex.begin(), triex.end());
+                charted_ok = lod_bake::build_chart_rung(
+                    tris, charted, 16.0f, chart_atlas::kChartNormalConeDeg,
+                    rung_table);
+                if (charted_ok) ex = charted.data();
+                else rung_table = {};
+            }
             BLASHandle h = blas_.register_triangles(tris.data(), (int)tris.size(), ex);
             lp.owned_blas.push_back(h);
             lp.thresholds.push_back(thr);
             lp.lod_blas.push_back(h);
 
             // Append legacy whole-part mesh-data at lod_mesh_data[li] (parallel to lod_blas).
-            if (const auto* e = blas_.get_entry(h)) {
+            // Charted rungs build from the LOCAL charted TriEx rather than the
+            // registered entry: register_triangles dedups on geometry+material
+            // +tint (not UV), so the entry may carry another registrant's UVs
+            // — the chart table must stay coherent with the vertex stream.
+            if (charted_ok) {
+                lp.lod_mesh_data.push_back(
+                    build_raster_mesh_data(tris.data(), charted.data(), (int)tris.size()));
+            } else if (const auto* e = blas_.get_entry(h)) {
                 const TriEx* mesh_ex = (e->tri_extra.size() == e->triangles.size() && !e->tri_extra.empty())
                                           ? e->tri_extra.data() : nullptr;
                 lp.lod_mesh_data.push_back(
@@ -516,6 +539,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             } else {
                 lp.lod_mesh_data.push_back({});
             }
+            lp.lod_charts.push_back(std::move(rung_table));   // parallel to lod_mesh_data
         }
         if (lp.lod_blas.empty()) return rollback();
 
@@ -553,12 +577,29 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 }
                 if (ctris.empty()) continue;
                 const TriEx* cex = (ctriex.size() == ctris.size()) ? ctriex.data() : nullptr;
+                // WP-A follow-up: chart the cluster rung (same contract as the
+                // legacy-view loop above). These are the meshes the raster
+                // clusters actually draw (chart_rung = mesh index).
+                std::vector<TriEx> ccharted;
+                chart_atlas::ChartAtlasRung crung_table;
+                bool ccharted_ok = false;
+                if (cex) {
+                    ccharted.assign(ctriex.begin(), ctriex.end());
+                    ccharted_ok = lod_bake::build_chart_rung(
+                        ctris, ccharted, 16.0f, chart_atlas::kChartNormalConeDeg,
+                        crung_table);
+                    if (ccharted_ok) cex = ccharted.data();
+                    else crung_table = {};
+                }
                 BLASHandle ch = blas_.register_triangles(ctris.data(), (int)ctris.size(), cex);
                 lp.owned_blas.push_back(ch);
 
                 // Append cluster-level mesh-data after the legacy whole-part entries.
                 int mesh_idx = (int)lp.lod_mesh_data.size();
-                if (const auto* ce = blas_.get_entry(ch)) {
+                if (ccharted_ok) {
+                    lp.lod_mesh_data.push_back(
+                        build_raster_mesh_data(ctris.data(), ccharted.data(), (int)ctris.size()));
+                } else if (const auto* ce = blas_.get_entry(ch)) {
                     const TriEx* mex = (ce->tri_extra.size() == ce->triangles.size() && !ce->tri_extra.empty())
                                            ? ce->tri_extra.data() : nullptr;
                     lp.lod_mesh_data.push_back(
@@ -566,6 +607,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 } else {
                     lp.lod_mesh_data.push_back({});
                 }
+                lp.lod_charts.push_back(std::move(crung_table));  // parallel to lod_mesh_data
 
                 cl_out.thresholds.push_back(lod_in.screen_size_threshold);
                 cl_out.lod_blas.push_back(ch);
@@ -631,13 +673,29 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             }
             if (tris.empty()) continue;
             const TriEx* ex = (triex.size() == tris.size()) ? triex.data() : nullptr;
+            // WP-A follow-up: chart the v2-flat rung (same contract as the v3
+            // branch above).
+            std::vector<TriEx> charted;
+            chart_atlas::ChartAtlasRung rung_table;
+            bool charted_ok = false;
+            if (ex) {
+                charted.assign(triex.begin(), triex.end());
+                charted_ok = lod_bake::build_chart_rung(
+                    tris, charted, 16.0f, chart_atlas::kChartNormalConeDeg,
+                    rung_table);
+                if (charted_ok) ex = charted.data();
+                else rung_table = {};
+            }
             BLASHandle h = blas_.register_triangles(tris.data(), (int)tris.size(), ex);
             lp.owned_blas.push_back(h);
             lp.thresholds.push_back(lods_in[li].screen_size_threshold);
             lp.lod_blas.push_back(h);
 
             int mesh_idx = (int)lp.lod_mesh_data.size();
-            if (const auto* e = blas_.get_entry(h)) {
+            if (charted_ok) {
+                lp.lod_mesh_data.push_back(
+                    build_raster_mesh_data(tris.data(), charted.data(), (int)tris.size()));
+            } else if (const auto* e = blas_.get_entry(h)) {
                 const TriEx* mesh_ex = (e->tri_extra.size() == e->triangles.size() && !e->tri_extra.empty())
                                           ? e->tri_extra.data() : nullptr;
                 lp.lod_mesh_data.push_back(
@@ -645,6 +703,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             } else {
                 lp.lod_mesh_data.push_back({});
             }
+            lp.lod_charts.push_back(std::move(rung_table));   // parallel to lod_mesh_data
 
             // Accumulate synthetic cluster level (mirrors legacy view exactly).
             syn_cl.thresholds.push_back(lods_in[li].screen_size_threshold);
@@ -833,13 +892,23 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
         lod_bake::count_terrain_skirt_tris(tris, &skirt_mask);
     const bool terrain_tile = radius >= 32.0f && skirt_count >= 8 &&
                               skirt_count * 2 <= tris.size();
+    // WP-A (chart-space VT): every staged part gets per-rung chart tables and
+    // chart UVs in its TriEx (flowing to the render vertex surface.xy through
+    // build_raster_mesh_data below). Density policy: props 16 t/m at every
+    // rung; terrain sectors 16 t/m at rung 0 halving per coarser rung. A rung
+    // whose chart build fails ships an empty table (charts = 0, legacy path).
+    lod_bake::ChartBakeOptions chart_opts;
+    chart_opts.texels_per_meter = 16.0f;
+    chart_opts.halve_per_rung = terrain_tile;
+    std::vector<chart_atlas::ChartAtlasRung> rung_charts;
     lod_bake::LodLevels lods = terrain_tile
         ? lod_bake::bake_terrain_lods(tris, skirt_mask, radius,
                                       lod_bake::TerrainBakeTargets{},
                                       *staged.staging, triex_ptr, observer_,
-                                      &lod_handles)
+                                      &lod_handles, &chart_opts, &rung_charts)
         : lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, *staged.staging,
-                              triex_ptr, observer_, &lod_handles);
+                              triex_ptr, observer_, &lod_handles,
+                              &chart_opts, &rung_charts);
     assert(lod_handles.size() == lods.size());
     for (size_t li = 0; li < lods.size() && li < lod_handles.size(); ++li) {
         const auto& L = lods[li];
@@ -850,6 +919,22 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
         staged.lp.thresholds.push_back(L.screen_size_threshold);
         staged.lp.lod_blas.push_back(lod_handles[li]);
         staged.lp.owned_blas.push_back(staged.lp.lod_blas.back());
+        // Keep lod_charts parallel to lod_blas. register_triangles dedups on
+        // geometry+material+tint (NOT uv), so if a coarser rung collapsed onto
+        // an earlier rung's entry, the entry carries the EARLIER rung's UVs —
+        // reuse that rung's chart table so table and UVs stay coherent.
+        {
+            chart_atlas::ChartAtlasRung table =
+                li < rung_charts.size() ? std::move(rung_charts[li])
+                                        : chart_atlas::ChartAtlasRung{};
+            for (size_t prev = 0; prev + 1 < staged.lp.lod_blas.size(); ++prev) {
+                if (staged.lp.lod_blas[prev] == lod_handles[li]) {
+                    table = staged.lp.lod_charts[prev];
+                    break;
+                }
+            }
+            staged.lp.lod_charts.push_back(std::move(table));
+        }
 
         // Raster mesh data is a copy, so build it from the staged entry before
         // adoption; it does not reference the manager afterwards.

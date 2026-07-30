@@ -163,10 +163,28 @@ struct EntityRecipe : RawEntityRecipe {
     bool valid = false;
 };
 
+// A material declared by the world script through `defineMaterial(name, spec)`
+// (chart-VT spec Phase 3 / plan contract C3). The MaterialDef itself is already
+// installed in the global material registry by the time the loader returns —
+// `index` is the handle the script saw, so it is a plain material id usable
+// anywhere `MAT.*` is. This record retains only what the *provider* needs
+// afterwards: which materials want an automated detail-tileset bake.
+struct WorldMaterial {
+    std::string name;
+    int index = -1;              // registry handle (>= MaterialRegistryStaticCount())
+    std::string detail_module;   // Tileset module to bake; empty = no detail bake
+    // texelsPerMeter override applied to the baked atlas. <= 0 keeps whatever
+    // density the tileset module's own `tile({ texelsPerMeter })` authored.
+    int detail_density = 0;
+};
+
 struct WorldDefinition {
     std::vector<WorldRoot> roots;
     std::vector<WorldLight> lights;
     std::vector<RawEntityRecipe> entities;
+    // Declaration order; the loader guarantees these were defined before roots
+    // were extracted, so a root's params may reference their handles.
+    std::vector<WorldMaterial> materials;
     WorldSettings settings{};
 };
 

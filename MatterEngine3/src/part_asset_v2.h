@@ -9,6 +9,7 @@
 #include "part_asset.h"   // v1 (MatterSurfaceLib via -I../../libs/MatterSurfaceLib/include):
                           // fnv1a64, cache_path, kMagic, BLASManager/TLASManager,
                           // MaterialDef, Tri/TriEx/BVHNode
+#include "render/chart_atlas.h"  // chart-space VT sidecar schema (contract C1)
 
 #include <cstddef>
 #include <cstdint>
@@ -190,6 +191,23 @@ bool save_v2(const std::string& path, const BLASManager& blas,
              const std::vector<uint32_t>& child_level_mask,
              uint64_t resolved_hash);
 
+// Chart-space virtual texturing (WP-A) — chart sidecar section. Extends the
+// v2 body with an OPTIONAL tagged "CHRT" trailer (same additive-trailer
+// pattern as EMIT/LMSK; written after EMIT, before any ANLK): a u32 byte-size
+// frame around the chart_atlas payload (version, then one ChartAtlasRung per
+// LOD rung, ladder order — see chart_atlas.h for the exact encoding). THE
+// COMPAT GUARANTEE: the trailer is written ONLY when rung_charts is non-empty,
+// so every existing call site writes byte-identical output; and loaders that
+// do not ask for charts skip the section, so older AND chartless parts load
+// with charts = 0 (legacy path, no version break).
+bool save_v2(const std::string& path, const BLASManager& blas,
+             const TLASManager& tlas,
+             const ChildInstance* children, size_t child_count,
+             const LodLevels& lods,
+             const std::vector<VolumeEmitter>& emitters,
+             const std::vector<chart_atlas::ChartAtlasRung>& rung_charts,
+             uint64_t resolved_hash);
+
 // Atomically publish source_path at target_path, replacing an existing target
 // without deleting it first. Failure leaves the previous target intact.
 enum class FileReplaceOutcome {
@@ -260,6 +278,18 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
              LodLevels& lods_out,
              std::vector<VolumeEmitter>& emitters_out,
              std::vector<uint32_t>& child_level_mask_out,
+             PartAssetLoadFailure* failure = nullptr,
+             std::string* reason = nullptr);
+
+// WP-A: overload that also reads the optional CHRT chart-sidecar trailer.
+// rung_charts_out is left EMPTY when the trailer is absent or carries an
+// unknown chart-section version (compat default: charts = 0, legacy path).
+bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
+             BLASManager& blas, TLASManager& tlas,
+             std::vector<ChildInstance>& children_out,
+             LodLevels& lods_out,
+             std::vector<VolumeEmitter>& emitters_out,
+             std::vector<chart_atlas::ChartAtlasRung>& rung_charts_out,
              PartAssetLoadFailure* failure = nullptr,
              std::string* reason = nullptr);
 

@@ -696,6 +696,15 @@ struct VulkanDevice::Impl {
         if (!features2.features.multiDrawIndirect) {
             missing.emplace_back("VkPhysicalDeviceFeatures::multiDrawIndirect");
         }
+        // WP-E (chart-space virtual texturing): gbuffer.frag stores VT page
+        // requests into a 1/8-res storage image. A fragment-stage store is
+        // invalid without this feature, and the G-buffer pipeline is not
+        // optional, so this joins the hard requirements rather than becoming a
+        // silent validation failure at pipeline creation.
+        if (!features2.features.fragmentStoresAndAtomics) {
+            missing.emplace_back(
+                "VkPhysicalDeviceFeatures::fragmentStoresAndAtomics");
+        }
         if (!features12.timelineSemaphore) {
             missing.emplace_back(
                 "VkPhysicalDeviceVulkan12Features::timelineSemaphore");
@@ -1074,6 +1083,14 @@ struct VulkanDevice::Impl {
         // creation, for anisotropyEnable=VK_TRUE to be valid at all.
         features2.features.samplerAnisotropy =
             rt_features2.features.samplerAnisotropy;
+        // WP-E (chart-space virtual texturing): gbuffer.frag writes VT page
+        // requests into a 1/8-res storage image, which is a fragment-stage
+        // store. Gated on the same physical-device query as the others, so a
+        // device without it simply never gets the feedback loop (the renderer
+        // checks the same feature before creating the feedback target, and
+        // every variant still samples its always-resident tail).
+        features2.features.fragmentStoresAndAtomics =
+            rt_features2.features.fragmentStoresAndAtomics;
         features2.pNext = &features12;
 
         VkDeviceCreateInfo create{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};

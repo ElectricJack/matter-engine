@@ -235,8 +235,13 @@ static bool append_common_body(std::vector<uint8_t>& body,
                                const LodLevels& lods,
                                std::unordered_map<BLASHandle, uint32_t>& handle_to_index_out) {
     // --- Materials ---
+    // Static count, not MaterialRegistryCount(): per-world dynamic entries
+    // (defineMaterial, chart-VT spec Phase 3) append after the 30 builtins and
+    // must not change a baked part's bytes — otherwise declaring a material
+    // would invalidate every cached artifact. The frozen builtin table is what
+    // this block pins; dynamic ids resolve at render time from the live registry.
     put<uint32_t>(body, MaterialRegistrySchemaVersion());
-    const uint32_t mcount = static_cast<uint32_t>(MaterialRegistryCount());
+    const uint32_t mcount = static_cast<uint32_t>(MaterialRegistryStaticCount());
     put<uint32_t>(body, mcount);
     for (uint32_t i = 0; i < mcount; ++i)
         put_bytes(body, MaterialRegistryGet(static_cast<int>(i)), sizeof(MaterialDef));
@@ -403,7 +408,7 @@ bool is_cache_artifact_header_compatible(
     }
     const size_t material_prefix_size =
         2u * sizeof(uint32_t) +
-        static_cast<size_t>(MaterialRegistryCount()) * sizeof(MaterialDef);
+        static_cast<size_t>(MaterialRegistryStaticCount()) * sizeof(MaterialDef);
     std::vector<uint8_t> prefix(material_prefix_size);
     const size_t got = std::fread(prefix.data(), 1, prefix.size(), f);
     std::fclose(f);
@@ -418,7 +423,7 @@ bool is_cache_artifact_header_compatible(
     const uint32_t material_count = material_reader.get<uint32_t>();
     if (!material_reader.ok ||
         material_schema != MaterialRegistrySchemaVersion() ||
-        material_count != static_cast<uint32_t>(MaterialRegistryCount()))
+        material_count != static_cast<uint32_t>(MaterialRegistryStaticCount()))
         return false;
     for (uint32_t i = 0; i < material_count; ++i) {
         const uint8_t* serialized = material_reader.take(sizeof(MaterialDef));
@@ -491,7 +496,7 @@ static bool parse_common_body(Reader& r, ParsedCommonBody& out,
     }
     const uint32_t mcount = r.get<uint32_t>();
     if (!r.ok) return false;
-    if (static_cast<int>(mcount) != MaterialRegistryCount()) return false;
+    if (static_cast<int>(mcount) != MaterialRegistryStaticCount()) return false;
     for (uint32_t i = 0; i < mcount; ++i) {
         const uint8_t* md = r.take(sizeof(MaterialDef));
         if (!r.ok) return false;
@@ -721,6 +726,22 @@ static bool parse_v2_suffix(const PartV2Preflight& input, uint64_t expected_reso
             if (!r.ok) return fail("corrupt LMSK trailer");
         }
     }
+    // WP-A's CHRT trailer (chart-space VT sidecar) is byte-size framed; inert
+    // here -- the chart table is read by the load_v2 overload that asks for it
+    // -- but it must be skipped so chart-bearing parts still load through the
+    // strict suffix grammar (same rationale as LMSK above).
+    if (r.p != r.end && static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
+        uint32_t tag = 0;
+        std::memcpy(&tag, r.p, sizeof(tag));
+        if (tag == 0x43485254u) { // CHRT
+            r.p += sizeof(tag);
+            const uint32_t bytes = r.get<uint32_t>();
+            if (!r.ok || bytes > static_cast<uint64_t>(r.end - r.p))
+                return fail("corrupt CHRT trailer");
+            r.take(static_cast<size_t>(bytes));
+            if (!r.ok) return fail("corrupt CHRT trailer");
+        }
+    }
     if (r.p == r.end) return true;
     if (!accept_animation_link) return fail("unknown part trailer");
     if (static_cast<size_t>(r.end - r.p) != 36) return fail("corrupt ANLK trailer");
@@ -855,6 +876,35 @@ bool save_v2(const std::string& path, const BLASManager& blas,
         put<uint32_t>(body, static_cast<uint32_t>(child_level_mask.size()));
         put_bytes(body, child_level_mask.data(),
                   child_level_mask.size() * sizeof(uint32_t));
+    }
+    return write_file_atomic(path, kFormatVersionV2, resolved_hash, body);
+}
+
+bool save_v2(const std::string& path, const BLASManager& blas,
+             const TLASManager& tlas,
+             const ChildInstance* children, size_t child_count,
+             const LodLevels& lods,
+             const std::vector<VolumeEmitter>& emitters,
+             const std::vector<chart_atlas::ChartAtlasRung>& rung_charts,
+             uint64_t resolved_hash) {
+    std::vector<uint8_t> body;
+    std::unordered_map<BLASHandle, uint32_t> h2i;
+    if (!append_common_body(body, blas, tlas, children, child_count, lods, h2i))
+        return false;
+    if (!emitters.empty()) {
+        put<uint32_t>(body, 0x454D4954u);  // "EMIT" tag
+        put<uint32_t>(body, static_cast<uint32_t>(emitters.size()));
+        put_bytes(body, emitters.data(), emitters.size() * sizeof(VolumeEmitter));
+    }
+    // WP-A: CHRT trailer — written ONLY when charts exist, so chartless parts
+    // stay byte-identical (same gate discipline as EMIT/LMSK above). Payload is
+    // byte-size framed so chart-unaware readers can skip it wholesale.
+    if (!rung_charts.empty()) {
+        std::vector<uint8_t> payload;
+        chart_atlas::append_chart_rungs(payload, rung_charts);
+        put<uint32_t>(body, 0x43485254u);  // "CHRT" tag
+        put<uint32_t>(body, static_cast<uint32_t>(payload.size()));
+        put_bytes(body, payload.data(), payload.size());
     }
     return write_file_atomic(path, kFormatVersionV2, resolved_hash, body);
 }
@@ -1030,6 +1080,102 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
                             "LMSK trailer size does not match child table");
             child_level_mask_out.resize(count);
             std::memcpy(child_level_mask_out.data(), data, bytes);
+        }
+    }
+    return true;
+}
+
+// WP-A: emitters + chart-sidecar overload. Absent CHRT (older or chartless
+// parts) => rung_charts_out stays empty (charts = 0, legacy path).
+bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
+             BLASManager& blas, TLASManager& tlas,
+             std::vector<ChildInstance>& children_out,
+             LodLevels& lods_out,
+             std::vector<VolumeEmitter>& emitters_out,
+             std::vector<chart_atlas::ChartAtlasRung>& rung_charts_out,
+             PartAssetLoadFailure* failure,
+             std::string* reason) {
+    emitters_out.clear();
+    children_out.clear();
+    lods_out.clear();
+    rung_charts_out.clear();
+    if (failure) *failure = PartAssetLoadFailure::None;
+    if (reason) reason->clear();
+
+    const auto fail = [failure, reason](PartAssetLoadFailure value, const char* message) {
+        if (failure) *failure = value;
+        if (reason) *reason = message;
+        return false;
+    };
+
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return fail(PartAssetLoadFailure::Header, "invalid part header");
+    std::fseek(f, 0, SEEK_END);
+    long sz = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (sz < 40) { std::fclose(f); return fail(PartAssetLoadFailure::Header, "invalid part header"); }
+    std::vector<uint8_t> buf(static_cast<size_t>(sz));
+    bool read_ok = std::fread(buf.data(), 1, buf.size(), f) == buf.size();
+    std::fclose(f);
+    if (!read_ok) return fail(PartAssetLoadFailure::Header, "invalid part header");
+
+    Reader r{ buf.data(), buf.data() + buf.size() };
+    uint64_t content_hash = 0;
+    if (!read_and_validate_header(r, expected_resolved_hash, kFormatVersionV2, content_hash))
+        return fail(PartAssetLoadFailure::Header, "invalid part header");
+    if (fnv1a64(r.p, static_cast<size_t>(r.end - r.p)) != content_hash)
+        return fail(PartAssetLoadFailure::CorruptBody, "corrupt part body");
+
+    std::vector<BLASHandle> handles;
+    if (!read_common_body(r, blas, tlas, children_out, lods_out, handles, failure, reason)) {
+        if (failure && *failure == PartAssetLoadFailure::None)
+            *failure = PartAssetLoadFailure::CorruptBody;
+        if (reason && reason->empty()) *reason = "corrupt part body";
+        return false;
+    }
+
+    // Probe for the optional EMIT trailer (EOF-tolerant, same as elsewhere).
+    if (r.p < r.end && static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
+        uint32_t tag = 0;
+        std::memcpy(&tag, r.p, sizeof(uint32_t));
+        if (tag == 0x454D4954u) {
+            r.p += sizeof(uint32_t);
+            const uint32_t count = r.get<uint32_t>();
+            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt EMIT trailer");
+            const size_t bytes = static_cast<size_t>(count) * sizeof(VolumeEmitter);
+            const uint8_t* data = r.take(bytes);
+            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt EMIT trailer");
+            emitters_out.resize(count);
+            std::memcpy(emitters_out.data(), data, bytes);
+        }
+    }
+
+    // Skip an optional LMSK trailer (this overload does not surface it).
+    if (r.p < r.end && static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
+        uint32_t tag = 0;
+        std::memcpy(&tag, r.p, sizeof(uint32_t));
+        if (tag == 0x4C4D534Bu) {
+            r.p += sizeof(uint32_t);
+            const uint32_t count = r.get<uint32_t>();
+            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt LMSK trailer");
+            r.take(static_cast<size_t>(count) * sizeof(uint32_t));
+            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt LMSK trailer");
+        }
+    }
+
+    // WP-A: probe for the optional CHRT trailer. Absent => charts = 0.
+    if (r.p < r.end && static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
+        uint32_t tag = 0;
+        std::memcpy(&tag, r.p, sizeof(uint32_t));
+        if (tag == 0x43485254u) {
+            r.p += sizeof(uint32_t);
+            const uint32_t bytes = r.get<uint32_t>();
+            if (!r.ok || bytes > static_cast<uint64_t>(r.end - r.p))
+                return fail(PartAssetLoadFailure::CorruptBody, "corrupt CHRT trailer");
+            const uint8_t* data = r.take(static_cast<size_t>(bytes));
+            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt CHRT trailer");
+            if (!chart_atlas::parse_chart_rungs(data, data + bytes, rung_charts_out))
+                return fail(PartAssetLoadFailure::CorruptBody, "corrupt CHRT trailer");
         }
     }
     return true;

@@ -49,6 +49,24 @@ uint64_t gtex_content_hash(uint64_t pose_hash,
     return h;
 }
 
+uint64_t gtex_script_identity_hash(
+    uint64_t script_source_hash,
+    const std::vector<uint64_t>& sorted_child_hashes)
+{
+    // Empty list is the identity: a childless tileset keeps the exact key it
+    // had before this fold existed, so its cached atlas is not gratuitously
+    // invalidated. (Tilesets WITH children are invalidated once, by design —
+    // their old atlases could be stale w.r.t. appearance-only child edits.)
+    if (sorted_child_hashes.empty()) return script_source_hash;
+
+    // Domain-separated from gtex_content_hash's seed so the two folds can
+    // never alias, and length-terminated so {a} and {a, 0} differ.
+    uint64_t h = splitmix64(0x9E3779B97F4A7C15ull ^ script_source_hash);
+    for (uint64_t child : sorted_child_hashes) h = splitmix64(h ^ child);
+    h = splitmix64(h ^ (uint64_t)sorted_child_hashes.size());
+    return h;
+}
+
 // -----------------------------------------------------------------------------
 // PNG encode-to-memory helper (stb_image_write callback).
 // -----------------------------------------------------------------------------

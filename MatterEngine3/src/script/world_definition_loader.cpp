@@ -4,6 +4,7 @@
 
 extern "C" {
 #include "quickjs.h"
+#include "material_registry.h"
 }
 
 #include <cmath>
@@ -276,6 +277,282 @@ JSValue append_entity(JSContext* context,
         context, entities, count, JS_DupValue(context, arguments[0]));
     JS_FreeValue(context, entities);
     return result < 0 ? JS_EXCEPTION : JS_UNDEFINED;
+}
+
+// ---------------------------------------------------------------------------
+// defineMaterial(name, spec) — chart-VT spec Phase 3 / plan contract C3
+// ---------------------------------------------------------------------------
+// The binding runs during world-source evaluation, which happens before
+// extract_roots(), so a root's params may reference a returned handle. After
+// the roots are read the binding is replaced by a throwing stub (see
+// install_define_material_epilogue) — a material defined from buildEntities()
+// would be too late to schedule its detail bake, and silently doing nothing is
+// the failure mode this diagnoses.
+//
+// The handle is the live registry index: defineMaterial calls
+// MaterialRegistryDefineDynamic() immediately, so the value the script sees is
+// the same id the renderer will index. That makes this loader the one place
+// that mutates the registry's dynamic tail, and load_world_definition() resets
+// that tail on entry so repeated loads are idempotent.
+
+// Collector installed as the context opaque for the duration of a load.
+struct MaterialCollector {
+    std::vector<WorldMaterial>* materials = nullptr;
+};
+
+std::uint32_t fnv1a32(const std::string& text) {
+    std::uint32_t hash = 2166136261u;
+    for (const unsigned char byte : text) {
+        hash ^= byte;
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+bool spec_number(JSContext* context, JSValueConst spec, const char* key,
+                 float& output, bool& present) {
+    JSValue value = JS_GetPropertyStr(context, spec, key);
+    present = !JS_IsUndefined(value);
+    const bool ok = !present || number_value(context, value, output);
+    JS_FreeValue(context, value);
+    return ok;
+}
+
+bool spec_int(JSContext* context, JSValueConst spec, const char* key,
+              int& output, bool& present) {
+    float number = 0.0f;
+    if (!spec_number(context, spec, key, number, present)) return false;
+    if (present) {
+        if (!std::isfinite(number)) return false;
+        output = static_cast<int>(number);
+    }
+    return true;
+}
+
+bool spec_float3(JSContext* context, JSValueConst spec, const char* key,
+                 float output[3], bool& present) {
+    JSValue value = JS_GetPropertyStr(context, spec, key);
+    present = !JS_IsUndefined(value);
+    const bool ok = !present || float3_array_value(context, value, output);
+    JS_FreeValue(context, value);
+    return ok;
+}
+
+// Optional boolean that folds into MaterialDef::surfaceFlags.
+bool spec_flag(JSContext* context, JSValueConst spec, const char* key,
+               std::uint32_t bit, std::uint32_t& flags) {
+    JSValue value = JS_GetPropertyStr(context, spec, key);
+    const bool present = !JS_IsUndefined(value);
+    if (present && JS_ToBool(context, value) != 0) flags |= bit;
+    JS_FreeValue(context, value);
+    return true;
+}
+
+const char* const kMaterialSpecKeys[] = {
+    "albedo", "roughness", "metallic", "emission", "translucency", "ior",
+    "flatShading", "mergeGroup", "meshingAlgorithm", "opacity", "transmission",
+    "emissionColor", "absorptionColor", "absorptionDistance", "thickness",
+    "subsurface", "scatteringColor", "scatteringDistance", "anisotropy",
+    "clearcoat", "clearcoatRoughness", "specularStrength", "specularTint",
+    "alphaCutoff", "shadowOpacity",
+    "thinWalled", "doubleSided", "alphaTested", "volumeBoundary",
+    "detail", "detailDensity",
+};
+
+// A typo in a spec key would otherwise shade with a silently-defaulted value,
+// which is exactly the class of bug this authoring surface exists to remove.
+bool reject_unknown_spec_keys(JSContext* context, JSValueConst spec,
+                              std::string& unknown) {
+    JSPropertyEnum* properties = nullptr;
+    std::uint32_t count = 0;
+    if (JS_GetOwnPropertyNames(context, &properties, &count, spec,
+                               JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) != 0)
+        return false;
+    bool ok = true;
+    for (std::uint32_t index = 0; index < count && ok; ++index) {
+        const char* text = JS_AtomToCString(context, properties[index].atom);
+        if (!text) { ok = false; break; }
+        bool known = false;
+        for (const char* key : kMaterialSpecKeys)
+            if (std::strcmp(key, text) == 0) { known = true; break; }
+        if (!known) { unknown = text; ok = false; }
+        JS_FreeCString(context, text);
+    }
+    JS_FreePropertyEnum(context, properties, count);
+    return ok;
+}
+
+JSValue define_material(JSContext* context,
+                        JSValueConst,
+                        int argument_count,
+                        JSValueConst* arguments) {
+    MaterialCollector* collector =
+        static_cast<MaterialCollector*>(JS_GetContextOpaque(context));
+    if (!collector || !collector->materials)
+        return JS_ThrowInternalError(context, "material collector unavailable");
+
+    std::string name;
+    if (argument_count < 1 || !string_value(context, arguments[0], name) ||
+        name.empty()) {
+        return JS_ThrowTypeError(
+            context, "defineMaterial(name, spec): name must be a non-empty string");
+    }
+    if (name.size() + 1 > static_cast<std::size_t>(MATERIAL_NAME_MAX)) {
+        return JS_ThrowTypeError(context,
+                                 "defineMaterial: name '%s' exceeds %d characters",
+                                 name.c_str(), MATERIAL_NAME_MAX - 1);
+    }
+
+    const bool has_spec = argument_count >= 2 && !JS_IsUndefined(arguments[1]) &&
+                          !JS_IsNull(arguments[1]);
+    if (has_spec && !JS_IsObject(arguments[1])) {
+        return JS_ThrowTypeError(
+            context, "defineMaterial('%s'): spec must be an object", name.c_str());
+    }
+    JSValue spec = has_spec ? JS_DupValue(context, arguments[1])
+                            : JS_NewObject(context);
+
+    std::string unknown_key;
+    if (!reject_unknown_spec_keys(context, spec, unknown_key)) {
+        JS_FreeValue(context, spec);
+        if (!unknown_key.empty())
+            return JS_ThrowTypeError(context,
+                                     "defineMaterial('%s'): unknown spec field '%s'",
+                                     name.c_str(), unknown_key.c_str());
+        return JS_EXCEPTION;
+    }
+
+    MaterialDef def{};
+    MaterialRegistryDefaultDynamicDef(&def);
+    // Distinct dynamic materials must not share a merge group with each other
+    // or with a builtin (0..25), or the SDF mesher would blend them. Derived
+    // from the name so the group is stable across loads and independent of
+    // declaration order.
+    def.mergeGroup = 1000 + static_cast<int>(fnv1a32(name) % 1000000u);
+
+    bool present = false;
+    bool ok = spec_float3(context, spec, "albedo", def.albedo, present) &&
+              spec_number(context, spec, "roughness", def.roughness, present) &&
+              spec_number(context, spec, "metallic", def.metallic, present) &&
+              spec_number(context, spec, "emission", def.emission, present) &&
+              spec_number(context, spec, "translucency", def.translucency, present) &&
+              spec_number(context, spec, "ior", def.ior, present) &&
+              spec_number(context, spec, "opacity", def.opacity, present) &&
+              spec_number(context, spec, "transmission", def.transmission, present) &&
+              spec_float3(context, spec, "emissionColor", def.emissionColor, present) &&
+              spec_float3(context, spec, "absorptionColor", def.absorptionColor, present) &&
+              spec_number(context, spec, "absorptionDistance", def.absorptionDistance, present) &&
+              spec_number(context, spec, "thickness", def.thickness, present) &&
+              spec_number(context, spec, "subsurface", def.subsurface, present) &&
+              spec_float3(context, spec, "scatteringColor", def.scatteringColor, present) &&
+              spec_number(context, spec, "scatteringDistance", def.scatteringDistance, present) &&
+              spec_number(context, spec, "anisotropy", def.anisotropy, present) &&
+              spec_number(context, spec, "clearcoat", def.clearcoat, present) &&
+              spec_number(context, spec, "clearcoatRoughness", def.clearcoatRoughness, present) &&
+              spec_number(context, spec, "specularStrength", def.specularStrength, present) &&
+              spec_float3(context, spec, "specularTint", def.specularTint, present) &&
+              spec_number(context, spec, "alphaCutoff", def.alphaCutoff, present) &&
+              spec_number(context, spec, "shadowOpacity", def.shadowOpacity, present) &&
+              spec_int(context, spec, "flatShading", def.flatShading, present) &&
+              spec_int(context, spec, "mergeGroup", def.mergeGroup, present) &&
+              spec_int(context, spec, "meshingAlgorithm", def.meshingAlgorithm, present);
+    if (!ok) {
+        JS_FreeValue(context, spec);
+        return JS_ThrowTypeError(
+            context,
+            "defineMaterial('%s'): numeric fields must be finite numbers and "
+            "color fields must contain 3 numbers",
+            name.c_str());
+    }
+
+    std::uint32_t flags = def.surfaceFlags;
+    spec_flag(context, spec, "thinWalled", MATERIAL_THIN_WALLED, flags);
+    spec_flag(context, spec, "doubleSided", MATERIAL_DOUBLE_SIDED, flags);
+    spec_flag(context, spec, "alphaTested", MATERIAL_ALPHA_TESTED, flags);
+    spec_flag(context, spec, "volumeBoundary", MATERIAL_VOLUME_BOUNDARY, flags);
+    def.surfaceFlags = flags;
+
+    WorldMaterial record;
+    record.name = name;
+
+    JSValue detail = JS_GetPropertyStr(context, spec, "detail");
+    if (!JS_IsUndefined(detail) &&
+        (!string_value(context, detail, record.detail_module) ||
+         record.detail_module.empty())) {
+        JS_FreeValue(context, detail);
+        JS_FreeValue(context, spec);
+        return JS_ThrowTypeError(
+            context, "defineMaterial('%s'): detail must be a Tileset module name",
+            name.c_str());
+    }
+    JS_FreeValue(context, detail);
+
+    float density = 0.0f;
+    bool density_present = false;
+    if (!spec_number(context, spec, "detailDensity", density, density_present) ||
+        (density_present && (!std::isfinite(density) || density <= 0.0f))) {
+        JS_FreeValue(context, spec);
+        return JS_ThrowTypeError(
+            context, "defineMaterial('%s'): detailDensity must be a positive number",
+            name.c_str());
+    }
+    if (density_present) record.detail_density = static_cast<int>(density);
+    if (density_present && record.detail_module.empty()) {
+        JS_FreeValue(context, spec);
+        return JS_ThrowTypeError(
+            context,
+            "defineMaterial('%s'): detailDensity requires a detail tileset",
+            name.c_str());
+    }
+    JS_FreeValue(context, spec);
+
+    const int handle = MaterialRegistryDefineDynamic(&def, name.c_str());
+    if (handle == MATERIAL_DEFINE_ERR_CONFLICT) {
+        return JS_ThrowTypeError(
+            context,
+            "defineMaterial('%s'): already defined with a different spec; a "
+            "repeated definition must be identical",
+            name.c_str());
+    }
+    if (handle == MATERIAL_DEFINE_ERR_FULL) {
+        return JS_ThrowRangeError(
+            context,
+            "defineMaterial('%s'): material registry is full (%d entries max)",
+            name.c_str(), MATERIAL_MAX_TOTAL);
+    }
+    if (handle < 0) {
+        return JS_ThrowTypeError(context, "defineMaterial('%s'): rejected",
+                                 name.c_str());
+    }
+
+    record.index = handle;
+    // A repeated identical definition returns the same handle; keep exactly one
+    // record per material so the provider does not schedule the bake twice.
+    for (WorldMaterial& existing : *collector->materials) {
+        if (existing.index != handle) continue;
+        if (existing.detail_module != record.detail_module ||
+            existing.detail_density != record.detail_density) {
+            return JS_ThrowTypeError(
+                context,
+                "defineMaterial('%s'): repeated definition changes the detail "
+                "tileset",
+                name.c_str());
+        }
+        return JS_NewInt32(context, handle);
+    }
+    collector->materials->push_back(std::move(record));
+    return JS_NewInt32(context, handle);
+}
+
+JSValue define_material_too_late(JSContext* context,
+                                 JSValueConst,
+                                 int,
+                                 JSValueConst*) {
+    return JS_ThrowTypeError(
+        context,
+        "defineMaterial must be called while the world module evaluates "
+        "(module scope or a class static), before World.roots is read — a "
+        "material declared later cannot schedule its detail-tileset bake");
 }
 
 bool extract_settings_object(JSContext* context,
@@ -937,6 +1214,12 @@ bool load_world_definition(const WorldLoadDesc& desc,
     definition = WorldDefinition{};
     error = WorldLoadError{};
 
+    // Contract C3: the dynamic registry tail is per-world. Clearing it here (not
+    // only at provider connect) is what makes handles deterministic — loading
+    // the same world twice yields the same indices, and a second world never
+    // inherits the first world's materials. Builtin ids 0..29 are untouched.
+    MaterialRegistryResetDynamic();
+
     std::string source;
     if (!read_text_file(desc.world_path, source)) {
         return fail(desc, error, "source", "unable to read world source");
@@ -996,6 +1279,15 @@ class World {}
     JS_SetPropertyStr(context, global, "__matter_params", params);
     JS_SetPropertyStr(context, global, "__matter_world_seed",
                       JS_NewInt64(context, static_cast<std::int64_t>(desc.world_seed)));
+    // defineMaterial must exist before the world module evaluates: materials are
+    // declared at module scope / in class statics, and roots may reference the
+    // returned handles. The collector lives on the stack for this whole call and
+    // rides the context opaque (this context has no other opaque owner).
+    MaterialCollector material_collector;
+    material_collector.materials = &definition.materials;
+    JS_SetContextOpaque(context, &material_collector);
+    JS_SetPropertyStr(context, global, "defineMaterial",
+                      JS_NewCFunction(context, define_material, "defineMaterial", 2));
     JS_FreeValue(context, global);
 
     const std::string wrapped = source +
@@ -1070,6 +1362,17 @@ class World {}
         JS_FreeValue(context, world_class);
         cleanup();
         return false;
+    }
+
+    // Roots are read; anything declaring a material from here on (buildEntities)
+    // is too late for the provider's detail-bake scheduling, so say so loudly
+    // instead of accepting a material nothing will ever bake.
+    {
+        JSValue globals = JS_GetGlobalObject(context);
+        JS_SetPropertyStr(
+            context, globals, "defineMaterial",
+            JS_NewCFunction(context, define_material_too_late, "defineMaterial", 2));
+        JS_FreeValue(context, globals);
     }
 
     // Bypass an authored constructor: the contract evaluates class statics and

@@ -55,6 +55,29 @@ inline constexpr uint32_t kGTexVersion     = 2u;
 inline constexpr uint32_t kEngineBakeVersion = 4u;
 inline constexpr uint32_t kBox3dVersion    = 1u;
 
+// Ground-tileset sampler slots the renderer can hold simultaneously — the
+// SINGLE source of truth for that count. Everything that bounds a slot index
+// derives from this constant:
+//   * VkSceneRenderer::tileset_slots_ / load_tileset_slot / unload_tileset_slot
+//     / write_tileset_params_buffer / the descriptor writes (both raster set 1
+//     binding 6 and RT set 0 binding 15, sized kMaxTilesetSlots *
+//     kTilesetChannelCount) and TilesetParamsGpu's per-slot arrays,
+//   * LocalProvider::compose_world's fail-closed "too many tileset roots" gate,
+//   * MaterialRegistrySetGroundTilesetSlot / SetGroundMacroSlot's range check
+//     (material_registry.c is C and cannot include this C++ header — the
+//     literal there carries a comment pointing back here).
+//
+// GLSL COUNTERPART (there is no cross-language constant mechanism, so these
+// are paired by comment and by the static_assert in vk_scene_renderer.cpp):
+//   MatterEngine3/shaders_vk/tileset_common.glsl  #define TILESET_MAX_SLOTS 8
+// Changing one without the other silently mismatches the descriptor array
+// size against the shader's declared array — change both together.
+//
+// Raised 4 -> 8 for the chart-VT work (spec Phase 3): affordable because
+// tileset slices are BC-compressed now (bc_encode.h), which cut per-slot VRAM
+// by ~3.4x.
+inline constexpr int kMaxTilesetSlots = 8;
+
 enum ChannelId : uint32_t {
     CHAN_ALBEDO_RGB8   = 0,
     CHAN_NORMAL_RG8    = 1,
@@ -96,6 +119,28 @@ uint64_t gtex_content_hash(uint64_t pose_hash,
                            uint64_t script_source_hash,
                            uint32_t engine_bake_version,
                            uint32_t box3d_version);
+
+// Fold the tileset root's resolved CHILD hashes into its own script-source
+// hash, producing the value callers must pass as gtex_content_hash's
+// `script_source_hash`.
+//
+// Why: the .gtex cache key used to be (pose_hash, root .js source bytes,
+// versions). pose_hash covers the SETTLE — where each child body came to
+// rest — so a child edit that moves geometry does invalidate the atlas. But
+// an APPEARANCE-only child edit (recolour a pebble, change its roughness,
+// swap a material) leaves every settled pose bit-identical and never touches
+// the root's source, so the stale atlas kept being served: the ground still
+// showed the old pebbles until someone wiped .cache by hand. The settle cache
+// key already folds this exact list (tileset_bake.h settle_cache_key); the
+// .gtex key now does too, closing the gap.
+//
+// sorted_child_hashes must be sorted ascending by the caller (same contract as
+// settle_cache_key) so the key is independent of `requires` declaration order.
+// An EMPTY list returns script_source_hash unchanged, so a tileset with no
+// children keeps its historical key.
+uint64_t gtex_script_identity_hash(
+    uint64_t script_source_hash,
+    const std::vector<uint64_t>& sorted_child_hashes);
 
 // Write to <path>.tmp, then atomically rename to <path>. Returns false + err on
 // any I/O or PNG-encode failure. Non-null buffers must all be sized w*h*Cpp for

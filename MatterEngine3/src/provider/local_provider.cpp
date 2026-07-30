@@ -271,6 +271,10 @@ bool LocalProvider::load_authored_world(std::string& err) {
     authored_lights_ = std::move(adapted.lights);
     world_settings_ = adapted.settings;
     authored_entities_ = definition.entities;
+    // defineMaterial() already installed these in the global registry while the
+    // world script evaluated (chart-VT contract C3); what we keep here is the
+    // scheduling half — which materials want an automated detail-tileset bake.
+    world_materials_ = definition.materials;
 
     // Field worlds retain the existing eval_world/streaming path. The statics
     // loader intentionally does not execute field(), so identify the authored
@@ -328,13 +332,14 @@ void LocalProvider::append_entity_part_roots() {
 bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy policy) {
     // Reset all mutable state at entry so repeated install_graph() calls are
     // idempotent. Unload any previously-loaded tileset slots so a re-connect
-    // for a different world doesn't inherit stale atlases. Also reset the
-    // material-16 (DIRT) binding so the shader sees -1 (unbound) until the
-    // new bake installs a fresh slot.
+    // for a different world doesn't inherit stale atlases. reset_tileset_bindings
+    // unbinds every material this provider pointed at a detail slot (material 16
+    // via the deprecated root path, plus any defineMaterial() detail), empties
+    // the LRU pool, and drops the previous world's dynamic registry entries.
 #ifndef MATTER_VULKAN_ONLY
     viewer::tileset_provider::unload_all();
 #endif
-    MaterialRegistrySetGroundTilesetSlot(16, -1);
+    reset_tileset_bindings();
     baked_tileset_count_ = 0;
 
     baked_count_ = 0;
@@ -768,12 +773,13 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
     //
     // Guard: fail-closed BEFORE any GL/disk work if the manifest declares more
     // tileset roots than we have sampler-array slots.
-    constexpr int kTilesetSlots = 4;
-    if ((int)tileset_indices_.size() > kTilesetSlots) {
+    // tileset::kMaxTilesetSlots (tileset_gtex.h) is the single source of truth
+    // for the sampler-array slot count; do not re-declare a local literal here.
+    if ((int)tileset_indices_.size() > tileset::kMaxTilesetSlots) {
         err = "LocalProvider: manifest declares " +
               std::to_string(tileset_indices_.size()) +
               " tileset roots but only " +
-              std::to_string(kTilesetSlots) +
+              std::to_string(tileset::kMaxTilesetSlots) +
               " slots are available";
         return false;
     }
@@ -785,14 +791,49 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
     return true;
 }
 
+std::vector<LocalProvider::DetailBakeRequest>
+LocalProvider::collect_detail_bake_requests() const {
+    // Ordering and merging rules live in detail_bake_plan.h so they can be
+    // unit-tested without a provider; this member only supplies the inputs.
+    std::vector<tileset::DetailBakeRoot> roots;
+    roots.reserve(tileset_indices_.size());
+    for (const size_t ti : tileset_indices_) {
+        if (ti >= roots_.size()) continue;
+        roots.push_back({roots_[ti].module, params_to_json(roots_[ti].params)});
+    }
+    return tileset::plan_detail_bakes(roots, world_materials_);
+}
+
+void LocalProvider::reset_tileset_bindings() {
+    // Every material this provider pointed at a detail slot goes back to
+    // untextured (scalar albedo), so a re-connect for a different world never
+    // samples the previous world's atlas. Material 16 is unbound
+    // unconditionally: the deprecated root path bound it before this
+    // bookkeeping existed, and a warm restore may not have recorded it.
+    MaterialRegistrySetGroundTilesetSlot(tileset::kDeprecatedTilesetRootMaterial, -1);
+    for (const int material : tileset_slots_.reset())
+        MaterialRegistrySetGroundTilesetSlot(material, -1);
+    tileset_evict_warned_ = false;
+    world_materials_.clear();
+    // Contract C3: the dynamic registry tail is per-world. load_world_definition
+    // resets it too (it must, to keep handles deterministic); doing it here as
+    // well makes the "on world (re)connect" guarantee hold even for paths that
+    // reset the provider without reloading the world source.
+    MaterialRegistryResetDynamic();
+}
+
 bool LocalProvider::run_tileset_deferred(
     std::function<void(int done, int total, const char* module)> on_tileset_part,
     std::function<bool()> is_cancelled,
     std::string& err)
 {
 #if defined(MATTER_HAVE_SCRIPT_HOST)
-    // Guard: max slots checked at compose_world time; indices already validated.
-    const int total = (int)tileset_indices_.size();
+    // Chart-VT spec Phase 3: the loop is no longer "every `tileset: true` root,
+    // hardwired to material 16". It is "every declared detail bake" — the
+    // deprecated roots plus every defineMaterial() that named a `detail`
+    // module — each binding its OWN materials to the slot its atlas lands in.
+    const std::vector<DetailBakeRequest> requests = collect_detail_bake_requests();
+    const int total = (int)requests.size();
     if (total == 0) return true;   // nothing to do; keep traces free of empty spans
 
     // Bake Lab task 1.3 (docs/bake-lab.md §II.1): the tileset phase is no
@@ -815,13 +856,18 @@ bool LocalProvider::run_tileset_deferred(
         return fn(e);
     };
 
+    // sorted_child_hashes is an OUT param: the phase already sorts the root's
+    // resolved child hashes for the settle cache key, and the .gtex key needs
+    // the same list (see gtex_script_identity_hash below).
     auto settle_tileset = [&](const std::string& root_module,
                               const std::string& root_params_json,
                               tileset::SettledTorus& settled,
+                              std::vector<uint64_t>& sorted_child_hashes,
                               std::string& settle_err) -> bool {
+        sorted_child_hashes.clear();
         return tileset::run_tileset_phase_from_objects(
             abs_schemas_, root_module, root_params_json, abs_cache_root_,
-            settled, settle_err, abs_shared_lib_roots_);
+            settled, settle_err, abs_shared_lib_roots_, &sorted_child_hashes);
     };
 
     // Slot load, shared by the post-bake and cache-hit paths (spec §I.7 "Slot
@@ -829,9 +875,14 @@ bool LocalProvider::run_tileset_deferred(
     // bake and a cache hit go through one identical MaterialRegistry +
     // vk_tileset_load pair. A load failure is non-fatal — that slot's ground
     // stays untextured (matches vk_tileset_load's documented contract).
+    // `materials` is the request's binding list: the deprecated `tileset: true`
+    // root supplies {16}, a defineMaterial() detail supplies its own id, and a
+    // detail scene shared by several materials supplies all of them.
     auto load_slot = [&](int slot, const std::string& gtex_path,
-                         const std::string& root_module, const char* tag) {
-        MaterialRegistrySetGroundTilesetSlot(16, slot);
+                         const std::string& root_module,
+                         const std::vector<int>& materials, const char* tag) {
+        for (const int material : materials)
+            MaterialRegistrySetGroundTilesetSlot(material, slot);
         std::string ve;
         if (cfg_.vk_tileset_load && !cfg_.vk_tileset_load(slot, gtex_path, ve)) {
             fprintf(stderr,
@@ -841,8 +892,40 @@ bool LocalProvider::run_tileset_deferred(
             fflush(stderr);
             return;
         }
-        printf("LocalProvider: tileset '%s' -> slot %d (%s) [%s]\n",
-               root_module.c_str(), slot, gtex_path.c_str(), tag);
+        std::string bound;
+        for (const int material : materials) {
+            if (!bound.empty()) bound += ",";
+            bound += std::to_string(material);
+        }
+        printf("LocalProvider: tileset '%s' -> slot %d, material(s) %s (%s) [%s]\n",
+               root_module.c_str(), slot, bound.c_str(), gtex_path.c_str(), tag);
+    };
+
+    // LRU acquire, shared by both arms: slots are a cache keyed by `.gtex`
+    // content hash. A world with no more detail scenes than slots gets exactly
+    // the assignment the old monotonic counter produced (lowest free index
+    // first); beyond that the least-recently-acquired atlas is displaced and
+    // its materials fall back to scalar albedo rather than sampling a slot that
+    // now holds someone else's texels.
+    auto acquire_slot = [&](uint64_t key, const std::string& root_module) -> int {
+        const tileset::DetailSlotBinder::Acquired r = tileset_slots_.acquire(key);
+        if (r.slot < 0) return -1;
+        if (r.evicted) {
+            for (const int material : r.unbound)
+                MaterialRegistrySetGroundTilesetSlot(material, -1);
+            if (!tileset_evict_warned_) {
+                tileset_evict_warned_ = true;
+                fprintf(stderr,
+                        "[local_provider] detail-tileset slots exhausted (%d): "
+                        "evicting the least-recently-used atlas for '%s'. The "
+                        "displaced materials fall back to their scalar albedo. "
+                        "Declare fewer detail tilesets, or share one detail "
+                        "scene between materials. (warned once)\n",
+                        tileset_slots_.capacity(), root_module.c_str());
+                fflush(stderr);
+            }
+        }
+        return r.slot;
     };
 
     for (int idx = 0; idx < total; ++idx) {
@@ -851,14 +934,13 @@ bool LocalProvider::run_tileset_deferred(
             return false;
         }
 
-        const size_t ti = tileset_indices_[(size_t)idx];
-        const std::string root_module = roots_[ti].module;
-        const std::string root_params_json = params_to_json(roots_[ti].params);
+        const DetailBakeRequest& request = requests[(size_t)idx];
+        const std::string root_module = request.module;
+        const std::string root_params_json = request.params_json;
 
         if (on_tileset_part)
             on_tileset_part(idx, total, root_module.c_str());
 
-        const int slot_idx = baked_tileset_count_;
         // Two arms, no preprocessor gate (spec §I.7): bake-capable when a
         // Vulkan bake callback is bound, load-only when it is not.
         const bool can_bake = static_cast<bool>(cfg_.vk_tileset_bake);
@@ -872,9 +954,11 @@ bool LocalProvider::run_tileset_deferred(
             fflush(stderr);
         }
         tileset::SettledTorus settled;
+        std::vector<uint64_t> sorted_child_hashes;
         {
             std::string se;
-            if (!settle_tileset(root_module, root_params_json, settled, se)) {
+            if (!settle_tileset(root_module, root_params_json, settled,
+                                sorted_child_hashes, se)) {
                 err = "LocalProvider: tileset '" + root_module + "' settle failed: " + se;
                 return false;
             }
@@ -883,7 +967,21 @@ bool LocalProvider::run_tileset_deferred(
             printf("LocalProvider: tileset '%s' settle ok (deferred headless)\n",
                    root_module.c_str());
 
-        // Script source hash — the other half of the .gtex cache key.
+        // Script identity — the other half of the .gtex cache key.
+        //
+        // The root .js source bytes alone are NOT enough: pose_hash covers
+        // where the children settled, so a child edit that MOVES geometry
+        // invalidates the atlas, but an appearance-only child edit (recolour a
+        // pebble, retune its roughness) leaves every pose bit-identical and
+        // never touches the root source — the stale atlas kept being served
+        // until someone wiped .cache by hand. Folding in the sorted child
+        // resolved_hash list (the same list the settle cache key already
+        // folds) closes that gap. See gtex_script_identity_hash's comment in
+        // tileset_gtex.h.
+        //
+        // This value flows on to cfg_.vk_tileset_bake as well, so the bake's
+        // own `expected` recomputation (tileset_bake_vk.cpp) stays in lockstep
+        // with the probe below without a second signature change.
         const std::string root_js_path = abs_schemas_ + "/" + root_module + ".js";
         uint64_t script_source_hash = 0;
         {
@@ -896,10 +994,38 @@ bool LocalProvider::run_tileset_deferred(
             // Unreadable script -> hash 0 -> the load-only probe fails closed;
             // the bake arm simply rebakes.
         }
-        const std::string gtex_path = abs_cache_root_ + "/" + root_module + ".gtex";
+        script_source_hash = tileset::gtex_script_identity_hash(
+            script_source_hash, sorted_child_hashes);
+
+        // detailDensity: an authoring override on the atlas raster density. It
+        // changes only how finely the settled scene is sampled, never the
+        // settle itself, so it is applied after settling and folded into the
+        // cache key (via the same script-identity slot) plus the artifact name
+        // — two materials pointing one detail scene at different densities are
+        // two different atlases and must not share a `.gtex`.
+        std::string gtex_name = root_module;
+        if (request.texels_per_meter > 0 &&
+            request.texels_per_meter != settled.cfg.texels_per_meter) {
+            settled.cfg.texels_per_meter = request.texels_per_meter;
+            const std::vector<uint64_t> density_fold{
+                static_cast<uint64_t>(request.texels_per_meter)};
+            script_source_hash =
+                tileset::gtex_script_identity_hash(script_source_hash, density_fold);
+            gtex_name += "@tpm" + std::to_string(request.texels_per_meter);
+        }
+
+        const std::string gtex_path = abs_cache_root_ + "/" + gtex_name + ".gtex";
         const uint64_t expected = tileset::gtex_content_hash(
             settled.report.pose_hash, script_source_hash,
             tileset::kEngineBakeVersion, tileset::kBox3dVersion);
+
+        const int slot_idx = acquire_slot(expected, root_module);
+        if (slot_idx < 0) {
+            err = "LocalProvider: tileset '" + root_module +
+                  "': no detail-tileset slots are configured";
+            return false;
+        }
+        tileset_slots_.bind(expected, request.materials);
 
         if (can_bake) {
             // ---- Bake-capable arm: Vulkan hardware-RT .gtex bake ------------
@@ -919,7 +1045,8 @@ bool LocalProvider::run_tileset_deferred(
                     ge = "vk_tileset_bake(" + root_module + "): " + be;
                     return false;
                 }
-                load_slot(slot_idx, gtex_path, root_module, "deferred");
+                load_slot(slot_idx, gtex_path, root_module, request.materials,
+                          "deferred");
                 return true;
             }, te);
 
@@ -932,10 +1059,15 @@ bool LocalProvider::run_tileset_deferred(
             ++baked_tileset_count_;
         } else if (tileset::gtex_cache_hit(gtex_path, expected)) {
             // ---- Load-only arm: serve a cached atlas ------------------------
-            load_slot(slot_idx, gtex_path, root_module, "headless cache hit");
+            load_slot(slot_idx, gtex_path, root_module, request.materials,
+                      "headless cache hit");
             ++baked_tileset_count_;
         } else {
             // ---- Load-only arm: cache miss, non-fatal -----------------------
+            // The slot stays reserved for this key (the scheduling bookkeeping
+            // is what a headless run asserts) but no material is bound, so the
+            // materials keep their scalar albedo.
+            tileset_slots_.forget(expected);
             // Diagnostic detail: distinguish "no file" from "stale hash"
             // (a stale hash names the half that moved via the stored header).
             tileset::GTexHeader stale_hdr;
@@ -1040,7 +1172,7 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // Null callbacks: no progress reporting, no cancellation on the sync path.
     // FATAL on this sync path (pre-Task-15 behavior): connect() callers (tests,
     // gallery_bake, viewer_logic_tests) expect a fully prepared world on success.
-    if (!tileset_indices_.empty()) {
+    if (!collect_detail_bake_requests().empty()) {
         std::string te;
         if (!run_tileset_deferred(nullptr, nullptr, te)) {
             err = "LocalProvider::connect: tileset phase failed: " + te;
@@ -1178,7 +1310,7 @@ bool LocalProvider::restore_from_cache(
 #ifndef MATTER_VULKAN_ONLY
     viewer::tileset_provider::unload_all();
 #endif
-    MaterialRegistrySetGroundTilesetSlot(16, -1);
+    reset_tileset_bindings();
     baked_tileset_count_ = 0;
     baked_count_  = 0;
     hit_count_    = 0;

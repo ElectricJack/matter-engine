@@ -3,6 +3,7 @@
 
 #include <mutex>
 #include "blas_manager.hpp"     // MSL BLASManager / BLASHandle
+#include "chart_atlas.h"        // chart-space VT sidecar (WP-A, contract C1)
 #include "lod_select.h"         // lod_select::PartLodTable
 #include "part_asset_v2.h"      // part_asset::ChildInstance
 #include "raster_mesh.h"        // RasterMeshData
@@ -59,6 +60,11 @@ struct LoadedPart {
     std::vector<BLASHandle> lod_blas;       // lod_blas[i] -> BLAS for LOD level i
     float                   bound_radius = 0.0f;
     std::vector<float>      thresholds;      // per-LOD screen-size thresholds
+    // WP-A (chart-space VT): per-rung chart tables, parallel to lod_blas.
+    // Built by the load-time ladder bake; an empty table for a rung means
+    // charts = 0 (legacy chartless path). Produced but unconsumed until the
+    // VT runtime (WP-E) lands.
+    std::vector<chart_atlas::ChartAtlasRung> lod_charts;
     std::vector<part_asset::ChildInstance> children;   // baked child-instance table (may be empty)
     std::vector<RasterMeshData> lod_mesh_data;  // parallel to lod_blas (CPU-only; GL upload is lazy)
     // Immutable owner streams from a partitioned animation artifact.  The

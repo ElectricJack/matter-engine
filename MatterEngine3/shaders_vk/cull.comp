@@ -52,7 +52,10 @@ struct DrawTransform {
     mat4 previous;
     uint history_valid;
     uint instance_token;
-    uint pad1;
+    // WP-E (chart-space VT): transported vt slot (indirection layer + 1;
+    // 0 = this draw has no chart table). Written below from the per-(part,
+    // lod) vt_draw_slots table and forwarded flat by raster.vert.
+    uint vt_slot;
     uint pad2;
 };
 
@@ -96,6 +99,13 @@ layout(set = 1, binding = 4, std430) buffer Stats {
 };
 layout(set = 1, binding = 8, std430) readonly buffer DynamicAnimationBounds {
     DynamicAnimationBound dynamic_animation_bounds[];
+};
+// WP-E: transported vt slots, one per (cluster, lod) bucket -- the same
+// cluster_index * MAX_LOD + lod indexing `commands` uses. Always bound (a
+// one-entry dummy when the VT runtime never started), so the bounds check
+// at the write site is the only gate.
+layout(set = 1, binding = 9, std430) readonly buffer VtDrawSlots {
+    uint vt_draw_slots[];
 };
 
 // Dynamic records are keyed by (instance slot, serialized cluster index, LOD).
@@ -307,6 +317,13 @@ void main() {
     draw_transforms[first + slot].previous = instance.previous_transform;
     draw_transforms[first + slot].history_valid = instance.history_valid;
     draw_transforms[first + slot].instance_token = instance.instance_token;
+    // WP-E: the vt slot table is indexed exactly like `commands` -- one entry
+    // per (cluster, lod) bucket. Fail closed: an out-of-range bucket (dummy
+    // buffer, or a table that has not caught up with a just-registered part)
+    // means "no VT" and the fragment shader takes the legacy path.
+    draw_transforms[first + slot].vt_slot =
+        bucket < vt_draw_slots.length() ? vt_draw_slots[bucket] : 0u;
+    draw_transforms[first + slot].pad2 = 0u;
     atomicAdd(emitted, 1u);
     atomicAdd(triangles, commands[bucket].index_count / 3u);
     if (slot == 0u) atomicAdd(batches, 1u);

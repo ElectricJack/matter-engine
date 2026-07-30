@@ -7,8 +7,10 @@
 #include "../../libs/MatterSurfaceLib/include/mesh_simplifier.hpp"
 #include "../../libs/MatterSurfaceLib/include/mesh_indexed.hpp"
 #include "../../libs/MatterSurfaceLib/include/mesh_transform.hpp"  // reproject_triex
+#include "../../libs/MeshChartingLib/include/mesh_charting.h"      // WP-A chart build
 #include <chrono>
 #include <cmath>
+#include <limits>
 
 namespace lod_bake {
 
@@ -103,12 +105,162 @@ std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon,
 // interior — Task 11 kept it as a thin adapter rather than collapsing it,
 // because lod_bake's public functions still return std::vector<Tri>.
 
+// ---- Chart-space virtual texturing (WP-A) ----------------------------------
+//
+// Charts a single rung mesh: normal-cone segmentation (MeshChartingLib),
+// per-chart planar projection at `texels_per_meter`, page-aligned shelf pack
+// (kVtPagePayload grid, kChartGutterTexels gutters, clamped to kVtMaxAtlasDim
+// by halving the density), then atlas UVs written into triex.uv0/1/2
+// normalized [0,1] over the atlas. Purely a TriEx.uv rewrite — positions,
+// normals, materials, tint, AO are untouched, and downstream vertex welding
+// (indexed_part_geometry keys on the UV) performs the vertex split between
+// charts automatically.
+bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
+                      float texels_per_meter, float cone_deg,
+                      chart_atlas::ChartAtlasRung& out) {
+    namespace mc = mesh_charting;
+    out = {};
+    const int n = (int)tris.size();
+    if (n <= 0 || triex.size() != tris.size() || !(texels_per_meter > 0.0f) ||
+        !(cone_deg > 0.0f) || cone_deg >= 90.0f)
+        return false;
+
+    // Triangle soup -> position/index arrays (welding happens inside
+    // build_adjacency by exact position, so soup corners are fine and the
+    // 32-bit path carries any sector-sized mesh).
+    std::vector<float> pos((size_t)n * 9);
+    std::vector<unsigned int> idx((size_t)n * 3);
+    for (int t = 0; t < n; ++t) {
+        const float3* v[3] = { &tris[t].vertex0, &tris[t].vertex1, &tris[t].vertex2 };
+        for (int k = 0; k < 3; ++k) {
+            const size_t corner = (size_t)t * 3 + k;
+            pos[corner * 3 + 0] = v[k]->x;
+            pos[corner * 3 + 1] = v[k]->y;
+            pos[corner * 3 + 2] = v[k]->z;
+            idx[corner] = (unsigned int)corner;
+        }
+    }
+
+    const auto adj = mc::build_adjacency(pos.data(), idx.data(), n);
+    int n_charts = 0;
+    const auto cid = mc::segment_charts(pos.data(), idx.data(), n, adj, cone_deg, n_charts);
+    if (n_charts <= 0) return false;
+
+    // Per-chart plane basis from the area-weighted average normal.
+    const auto normals = mc::chart_average_normals(pos.data(), idx.data(), n, cid, n_charts);
+    std::vector<float> T((size_t)n_charts * 3), B((size_t)n_charts * 3);
+    for (int c = 0; c < n_charts; ++c)
+        mc::plane_basis(&normals[(size_t)c * 3], &T[(size_t)c * 3], &B[(size_t)c * 3]);
+
+    // Per-chart planar extents (meters in plane space).
+    const float inf = std::numeric_limits<float>::infinity();
+    std::vector<float> minU((size_t)n_charts,  inf), minV((size_t)n_charts,  inf);
+    std::vector<float> maxU((size_t)n_charts, -inf), maxV((size_t)n_charts, -inf);
+    auto project = [&](int c, const float3& p, float& u, float& v) {
+        const float* tc = &T[(size_t)c * 3];
+        const float* bc = &B[(size_t)c * 3];
+        u = p.x * tc[0] + p.y * tc[1] + p.z * tc[2];
+        v = p.x * bc[0] + p.y * bc[1] + p.z * bc[2];
+    };
+    for (int t = 0; t < n; ++t) {
+        const int c = cid[t];
+        const float3* v[3] = { &tris[t].vertex0, &tris[t].vertex1, &tris[t].vertex2 };
+        for (int k = 0; k < 3; ++k) {
+            float u, w;
+            project(c, *v[k], u, w);
+            if (u < minU[c]) minU[c] = u;
+            if (u > maxU[c]) maxU[c] = u;
+            if (w < minV[c]) minV[c] = w;
+            if (w > maxV[c]) maxV[c] = w;
+        }
+    }
+
+    // Pack at the requested density; halve until the page-aligned atlas fits
+    // within kVtMaxAtlasDim (the clamp policy). Floor: 1/64 texel per meter.
+    const int page   = (int)chart_atlas::kVtPagePayload;
+    const int gutter = (int)chart_atlas::kChartGutterTexels;
+    const int maxdim = (int)chart_atlas::kVtMaxAtlasDim;
+    float tpm = texels_per_meter;
+    int atlas_w = 0, atlas_h = 0;
+    std::vector<mc::PagedChartSize> sizes((size_t)n_charts);
+    std::vector<mc::PagedChartPlacement> placements;
+    bool packed = false;
+    while (tpm >= 1.0f / 64.0f) {
+        for (int c = 0; c < n_charts; ++c) {
+            const float eu = maxU[c] - minU[c];
+            const float ev = maxV[c] - minV[c];
+            sizes[c].content_w = std::max(1, (int)std::ceil((double)eu * tpm));
+            sizes[c].content_h = std::max(1, (int)std::ceil((double)ev * tpm));
+        }
+        if (mc::pack_charts_paged(sizes, page, gutter, maxdim,
+                                  atlas_w, atlas_h, placements)) {
+            packed = true;
+            break;
+        }
+        tpm *= 0.5f;
+    }
+    if (!packed) return false;
+
+    // Chart-grouped triangle order (counting sort — deterministic).
+    std::vector<uint32_t> first((size_t)n_charts, 0), count((size_t)n_charts, 0);
+    for (int t = 0; t < n; ++t) count[cid[t]]++;
+    uint32_t running = 0;
+    for (int c = 0; c < n_charts; ++c) { first[c] = running; running += count[c]; }
+    out.tri_order.resize((size_t)n);
+    {
+        std::vector<uint32_t> cursor = first;
+        for (int t = 0; t < n; ++t) out.tri_order[cursor[cid[t]]++] = (uint32_t)t;
+    }
+
+    out.atlas_w = (uint32_t)atlas_w;
+    out.atlas_h = (uint32_t)atlas_h;
+    out.charts.resize((size_t)n_charts);
+    for (int c = 0; c < n_charts; ++c) {
+        chart_atlas::ChartEntry& e = out.charts[c];
+        const float* tc = &T[(size_t)c * 3];
+        const float* bc = &B[(size_t)c * 3];
+        for (int i = 0; i < 3; ++i) {
+            e.origin[i]    = minU[c] * tc[i] + minV[c] * bc[i];
+            e.tangent[i]   = tc[i];
+            e.bitangent[i] = bc[i];
+        }
+        e.rect_x = (uint32_t)placements[c].x;
+        e.rect_y = (uint32_t)placements[c].y;
+        e.rect_w = (uint32_t)placements[c].w;
+        e.rect_h = (uint32_t)placements[c].h;
+        e.texels_per_meter = tpm;
+        e.first_tri = first[c];
+        e.tri_count = count[c];
+    }
+
+    // Chart UVs into TriEx, normalized [0,1] over the atlas (not texels).
+    const float inv_w = 1.0f / (float)atlas_w;
+    const float inv_h = 1.0f / (float)atlas_h;
+    for (int t = 0; t < n; ++t) {
+        const int c = cid[t];
+        const float3* v[3] = { &tris[t].vertex0, &tris[t].vertex1, &tris[t].vertex2 };
+        float2* uv[3] = { &triex[t].uv0, &triex[t].uv1, &triex[t].uv2 };
+        for (int k = 0; k < 3; ++k) {
+            float u, w;
+            project(c, *v[k], u, w);
+            const float tx = (float)placements[c].x + (float)gutter + (u - minU[c]) * tpm;
+            const float ty = (float)placements[c].y + (float)gutter + (w - minV[c]) * tpm;
+            uv[k]->x = tx * inv_w;
+            uv[k]->y = ty * inv_h;
+        }
+    }
+    return true;
+}
+
 LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
                     BLASManager& blas, const std::vector<TriEx>* triex,
                     BakeObserver* observer,
-                    std::vector<BLASHandle>* out_handles) {
+                    std::vector<BLASHandle>* out_handles,
+                    const ChartBakeOptions* chart_opts,
+                    std::vector<chart_atlas::ChartAtlasRung>* out_charts) {
     LodLevels out;
     if (out_handles) out_handles->clear();
+    if (out_charts) out_charts->clear();
     // Bake Lab task 1.5 (docs/bake-lab.md §II.1): one kSpanLod around the
     // ladder, one kSpanLodRung child per level with tris_in/tris_out/keep_ratio
     // counters. Observation-only; no-op without a current collector.
@@ -201,6 +353,23 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
         const TriEx* ex = nullptr;
         if (full && triex && triex->size() == geo.size())      ex = triex->data();
         else if (!full && reprojected.size() == geo.size())    ex = reprojected.data();
+        // WP-A chart build: rewrite this rung's TriEx UVs with chart-atlas UVs
+        // before registration. Charted TriEx lives in a local copy so the
+        // caller's `triex` (full level) stays const. Fail-closed: on failure
+        // the rung registers unchanged UVs and its chart table stays empty.
+        std::vector<TriEx> charted_ex;
+        chart_atlas::ChartAtlasRung rung_charts;
+        if (chart_opts && ex) {
+            charted_ex.assign(ex, ex + geo.size());
+            float tpm = chart_opts->texels_per_meter;
+            if (chart_opts->halve_per_rung && lvl > 0)
+                tpm /= (float)(1u << (lvl < 30 ? lvl : 30));
+            if (build_chart_rung(geo, charted_ex, tpm, chart_opts->cone_deg,
+                                 rung_charts))
+                ex = charted_ex.data();
+            else
+                rung_charts = {};
+        }
         // register_triangles may deduplicate (returning an existing handle), so we
         // must NOT pre-record entries().size() as the index — it would be off-by-N
         // if prior identical geometry already occupies that slot. Look up the returned
@@ -230,6 +399,7 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
         L.screen_size_threshold = targets.threshold[lvl];
         if (idx != UINT32_MAX) L.blas_indices.push_back(idx);
         out.push_back(std::move(L));
+        if (out_charts) out_charts->push_back(std::move(rung_charts));
 
         if (observer) {
             const double rung_ms = std::chrono::duration<double, std::milli>(
@@ -268,9 +438,12 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
                             BLASManager& blas,
                             const std::vector<TriEx>* triex,
                             BakeObserver* observer,
-                            std::vector<BLASHandle>* out_handles) {
+                            std::vector<BLASHandle>* out_handles,
+                            const ChartBakeOptions* chart_opts,
+                            std::vector<chart_atlas::ChartAtlasRung>* out_charts) {
     LodLevels out;
     if (out_handles) out_handles->clear();
+    if (out_charts) out_charts->clear();
     BAKE_SPAN(bake_trace::kSpanLod);
 
     const bool triex_usable = triex && triex->size() == tris.size();
@@ -326,6 +499,21 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
         if (full && triex_usable)                                ex = triex->data();
         else if (!full && reprojected.size() == geo.size() &&
                  !reprojected.empty())                           ex = reprojected.data();
+        // WP-A chart build (terrain policy: density halves per coarser rung).
+        // Same fail-closed contract as bake_lods above.
+        std::vector<TriEx> charted_ex;
+        chart_atlas::ChartAtlasRung rung_charts;
+        if (chart_opts && ex) {
+            charted_ex.assign(ex, ex + geo.size());
+            float tpm = chart_opts->texels_per_meter;
+            if (chart_opts->halve_per_rung && lvl > 0)
+                tpm /= (float)(1u << (lvl < 30 ? lvl : 30));
+            if (build_chart_rung(geo, charted_ex, tpm, chart_opts->cone_deg,
+                                 rung_charts))
+                ex = charted_ex.data();
+            else
+                rung_charts = {};
+        }
         BLASHandle h = blas.register_triangles(
             const_cast<Tri*>(geo.data()), (int)geo.size(), ex);
         if (out_handles) out_handles->push_back(h);
@@ -345,6 +533,7 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
         L.screen_size_threshold = targets.threshold[lvl];
         if (idx != UINT32_MAX) L.blas_indices.push_back(idx);
         out.push_back(std::move(L));
+        if (out_charts) out_charts->push_back(std::move(rung_charts));
 
         if (observer) {
             const double rung_ms = std::chrono::duration<double, std::milli>(

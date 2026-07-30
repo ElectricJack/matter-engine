@@ -1,0 +1,111 @@
+import { rng } from 'shared-lib/rng';
+import { dryPalette, emitLeaf, emitPetal, vegetationParams } from 'shared-lib/vegetation';
+
+// These are genuine low paths, not a flat decal: each runner rises and sinks
+// slightly at rooted nodes, and ends in a few lifted searching tips.  Drought
+// shortens only the living section of each path while retaining its brown
+// runner, so the mat never vanishes as one uniform sheet.
+class AlpineGroundCover extends Part {
+  static params = { seed: 0, dryness: 0.35, size: 1.0, form: 0 };
+
+  build(p) {
+    const q = vegetationParams(p, 2);
+    const r = rng(9100 + q.seed);
+    const S = q.size;
+    const dry = q.dryness;
+    const flowering = q.form === 1;
+    const runners = flowering ? 8 : 10;
+    const segments = flowering ? 5 : 6;
+    const golden = Math.PI * (3 - Math.sqrt(5));
+    const segmentRng = (runner, segment, channel) =>
+      rng(39100 + q.seed * 131 + q.form * 1009 + runner * 521 +
+        segment * 31 + channel * 7001);
+
+    for (let i = 0; i < runners; ++i) {
+      const angle = i * golden + r.range(-0.36, 0.36);
+      const runLength = r.range(flowering ? 0.46 : 0.50, flowering ? 0.76 : 0.84) * S;
+      const sideDrift = r.range(-0.14, 0.14) * S;
+      const liveThrough = Math.max(1, Math.round(segments * (0.44 + (1 - dry) * r.range(0.36, 0.56))));
+      let previous = [r.range(-0.035, 0.035) * S, -0.021 * S,
+                      r.range(-0.035, 0.035) * S];
+
+      for (let j = 1; j <= segments; ++j) {
+        const structureRng = segmentRng(i, j, 0);
+        const t = j / segments;
+        const tipLift = j === segments && structureRng.random() > 0.56
+          ? structureRng.range(0.025, 0.085) * S : 0;
+        const wobble = Math.sin(t * Math.PI *
+          structureRng.range(1.1, 1.8) + i) * 0.018 * S;
+        const next = [Math.cos(angle) * runLength * t + Math.cos(angle + Math.PI / 2) * (sideDrift * t + wobble),
+                      -0.018 * S + structureRng.range(-0.008, 0.010) * S + tipLift,
+                      Math.sin(angle) * runLength * t + Math.sin(angle + Math.PI / 2) * (sideDrift * t + wobble)];
+        const runnerColor = dryPalette([0.24, 0.31, 0.10, 1], [0.39, 0.23, 0.10, 1], dry,
+                                       300 + q.seed * 17 + i * 11 + j, 0.08);
+        this.fill(MAT.bark);
+        this.tint(runnerColor[0], runnerColor[1], runnerColor[2], runnerColor[3]);
+        this.line(previous, next, 0.011 * S, 0.008 * S);
+
+        // A tiny downward spur makes the attachment at every runner node
+        // visible in close views, including on the dry, leafless tail.
+        if (j < segments) {
+          this.line(next, [next[0], -0.029 * S, next[2]], 0.007 * S, 0.005 * S);
+        }
+
+        if (j <= liveThrough) {
+          const leafRng = segmentRng(i, j, 1);
+          const leafAngle = angle + (j % 2 ? 1.28 : -1.28) +
+            leafRng.range(-0.20, 0.20);
+          const leafLength = (flowering ? 0.084 : 0.097) * S *
+            leafRng.range(0.76, 1.16);
+          const leafTip = [next[0] + Math.cos(leafAngle) * leafLength,
+                           next[1] + leafLength * leafRng.range(0.22, 0.52),
+                           next[2] + Math.sin(leafAngle) * leafLength];
+          const leafColor = dryPalette([0.18, 0.47, 0.13, 1], [0.57, 0.42, 0.16, 1], dry,
+                                       1000 + q.seed * 31 + i * 9 + j, 0.13);
+          this.fill(MAT.foliageThin);
+          emitLeaf(this, next, leafTip, leafLength * 0.40, leafColor, leafAngle);
+
+          // A few nodes fork into their own short, low two-segment paths.
+          // The deterministic index mask spreads them among parent runners
+          // without turning the mat into a uniform radial starburst.
+          if (j > 1 && j < liveThrough && (i + j * 2) % 3 === 0) {
+            const forkRng = segmentRng(i, j, 2);
+            const forkAngle = angle + (j % 2 ? 0.92 : -0.92) +
+              forkRng.range(-0.24, 0.24);
+            const forkLength = forkRng.range(0.075, 0.125) * S;
+            const fork = [next[0] + Math.cos(forkAngle) * forkLength,
+                          next[1] + forkRng.range(-0.006, 0.006) * S,
+                          next[2] + Math.sin(forkAngle) * forkLength];
+            const tipAngle = forkAngle + forkRng.range(-0.24, 0.24);
+            const forkTip = [fork[0] + Math.cos(tipAngle) * forkLength * 0.78,
+                             fork[1] + forkRng.range(0.004, 0.022) * S,
+                             fork[2] + Math.sin(tipAngle) * forkLength * 0.78];
+            this.fill(MAT.bark);
+            this.line(next, fork, 0.008 * S, 0.006 * S);
+            this.line(fork, forkTip, 0.006 * S, 0.004 * S);
+            this.line(fork, [fork[0], -0.028 * S, fork[2]], 0.005 * S, 0.004 * S);
+            this.fill(MAT.foliageThin);
+            emitLeaf(this, fork, forkTip, leafLength * 0.28, leafColor, forkAngle);
+          }
+
+          const flowerRng = segmentRng(i, j, 3);
+          if (flowering && j > 1 &&
+              flowerRng.random() > 0.42 + dry * 0.36) {
+            const flower = [next[0], next[1] + 0.040 * S, next[2]];
+            const rays = 4 + (i + j) % 2;
+            this.fill(MAT.foliageThin);
+            this.line(next, flower, 0.006 * S, 0.004 * S);
+            for (let k = 0; k < rays; ++k) {
+              const a = leafAngle + k * Math.PI * 2 / rays;
+              const petalColor = dryPalette([0.85, 0.47, 0.58, 1], [0.63, 0.45, 0.25, 1], dry,
+                                             1700 + q.seed * 37 + i * 13 + j * 3 + k, 0.05);
+              emitPetal(this, flower, [Math.cos(a), 0.48, Math.sin(a)],
+                        0.050 * S, 0.020 * S, petalColor, 0.006 * S);
+            }
+          }
+        }
+        previous = next;
+      }
+    }
+  }
+}

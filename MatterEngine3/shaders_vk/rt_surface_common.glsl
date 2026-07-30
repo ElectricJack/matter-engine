@@ -15,23 +15,55 @@
 #define TILESET_PARAMS_BINDING 16
 #include "tileset_common.glsl"
 
+// WP-G (chart VT in the RT path): RT set 0 mirrors the raster set 1 VT
+// bindings 10/11/12 at 17/18/19 -- the same mirroring trick the tileset port
+// used for 15/16 above, and for the same reason (0-16 are taken). Binding 13
+// (the feedback storage image) is deliberately NOT mirrored: rays never
+// request pages (spec Phase 5 leaves RT-side feedback optional and off), so
+// VT_FEEDBACK_BINDING stays undefined here and vt_write_feedback() compiles
+// to nothing. Every shader that includes this file declares 17-19 even if it
+// never samples VT; the renderer writes them uniformly across the RT set.
+#define VT_SET 0
+#define VT_POOL_BINDING 17
+#define VT_INDIRECTION_BINDING 18
+#define VT_VARIANTS_BINDING 19
+#include "vt_common.glsl"
+
 struct RtSurface {
     vec3 position;
     float hit_t;
     vec3 normal;
     uint material_index;
     vec4 tint;
-    vec2 uv;
+    vec2 uv;              // chart-atlas UV when vt_slot != 0 (WP-A/WP-G)
     float baked_ao;
     uint flags;
+    // --- WP-G additions ----------------------------------------------------
+    // Transported VT slot of the hit BLAS's rung (0 = chartless => legacy).
+    uint vt_slot;
+    // Atlas-UV units per world metre across the hit triangle, from the
+    // triangle's UV area / world area (the standard ray-cone texture-LOD
+    // estimator). Multiplying by the cone footprint gives the UV-space
+    // derivative vt_desired_mip() wants. 0 for a degenerate/chartless triangle.
+    float uv_density;
+    // World-space cone footprint width at the hit point: the incoming cone
+    // width plus spread * hit_t, written by the closest-hit shader. This is
+    // the quantity that replaced RT_TILESET_CONE_SPREAD * hit_t.
+    float cone_width;
 };
 
+// Ray cone (WP-G). `cone_width` is the footprint width at the RAY ORIGIN and
+// `cone_spread` the cone's spread angle in radians (small-angle: width grows
+// by spread * distance). Both are INPUTS written by the raygen before every
+// traceRayEXT on this payload; the closest-hit shader consumes them and folds
+// the result into RtSurface::cone_width. They occupy the two words that were
+// pad0/pad1, so the payload size is unchanged.
 struct RtSurfacePayload {
     RtSurface surface;
     uint part_slot;
     uint primitive;
-    uint pad0;
-    uint pad1;
+    float cone_width;
+    float cone_spread;
 };
 
 struct GpuRtPartRecord {
@@ -41,7 +73,8 @@ struct GpuRtPartRecord {
     uint vertex_count;
     uint primitive_count;
     uint valid;
-    uint pad0; uint pad1; uint pad2; uint pad3;
+    uint vt_slot;   // WP-G, was pad0 (see vk_gi_contract.h)
+    uint pad1; uint pad2; uint pad3;
 };
 
 struct RtRasterVertex {
@@ -98,12 +131,11 @@ layout(set = 0, binding = 5, std430) buffer RtErrorCounter {
 // itself is already textured by gbuffer.frag/Task 7 via the albedo/normal/orm
 // G-buffer textures rt_lighting.rgen reads back).
 //
-// Gradient proxy: no ray-cone/footprint term exists in RtSurfacePayload or
-// RtSurface today (checked before adding one), so the mip/AA footprint is
-// approximated as hit_distance * a fixed cone-spread constant — a constant
-// angle stand-in for the true pixel-footprint cone (sufficient for diffuse
-// GI/reflection ground LOD, which never needs to be pixel-sharp).
-const float RT_TILESET_CONE_SPREAD = 0.01;
+// WP-G: the fixed RT_TILESET_CONE_SPREAD = 0.01 stand-in is GONE. The
+// footprint is now surface.cone_width -- a real ray cone spawned from the
+// primary pixel's angular footprint and widened per bounce (see
+// rt_lighting.rgen's cone model). The ground tileset is addressed by world
+// XZ, so a world-space footprint width IS its UV derivative; no conversion.
 
 struct RtTilesetSample {
     bool applied;
@@ -128,7 +160,7 @@ RtTilesetSample rt_tileset_sample(RtMaterialGpu material, RtSurface surface) {
     result.mean_occlusion = 0.0;
     int slot = tileset_detail_slot(material.flags_misc);
     if (slot < 0) return result;
-    float footprint = max(max(surface.hit_t, 0.0) * RT_TILESET_CONE_SPREAD, 1e-4);
+    float footprint = max(surface.cone_width, 1e-4);
     vec2 dWdx = vec2(footprint, 0.0);
     vec2 dWdy = vec2(0.0, footprint);
     vec3 normal_ts, orm;
@@ -141,6 +173,73 @@ RtTilesetSample rt_tileset_sample(RtMaterialGpu material, RtSurface surface) {
     result.roughness = clamp(orm.g, 0.0, 1.0);
     result.mean_occlusion = tileset_horizon_mean_occlusion(
         slot, surface.position.xz, dWdx, dWdy);
+    return result;
+}
+
+// --- WP-G: chart-space virtual texturing at a traced hit --------------------
+//
+// Structurally the same sample the raster G-buffer takes (vt_common.glsl,
+// shared verbatim), so a secondary hit on a VT part shades from the SAME
+// pages the primary pixel does -- consistency by construction rather than by
+// re-deriving the appearance from the tileset.
+//
+// Differences from gbuffer.frag, both deliberate:
+//   * Mip comes from the ray cone, not dFdx/dFdy (no derivatives in an RT
+//     stage). duv = cone footprint (metres) * uv_density (atlas UV / metre).
+//   * No near-band handoff. gbuffer.frag modulates the VT base by the live
+//     Wang detail tileset inside the POM fade distance (the mean-preserving
+//     ratio trick); secondary rays use PURE VT at every distance. The ratio
+//     term is a mean-preserving high-frequency detail whose expectation is
+//     the VT base itself, so dropping it is unbiased for GI/reflection
+//     integrals -- and replicating it would need per-hit POM state that does
+//     not exist off the primary pixel.
+//   * No feedback write: rays never request pages (see the binding note at
+//     the top of this file).
+// Unmapped pages resolve to the pinned tail inside vt_resolve(), so this
+// never faults and never waits.
+struct RtVtSample {
+    bool  applied;
+    vec3  albedo;
+    vec3  normal;      // world-space shading normal; = surface.normal if !applied
+    float roughness;
+    float metallic;
+    float occlusion;
+    float desired_mip; // cone-selected virtual mip (debug/test readback)
+    float mapped_mip;  // what was actually resident (<= desired when coarser)
+};
+
+RtVtSample rt_vt_sample(RtSurface surface) {
+    RtVtSample result;
+    result.applied = false;
+    result.albedo = vec3(0.0);
+    result.normal = surface.normal;
+    result.roughness = 0.0;
+    result.metallic = 0.0;
+    result.occlusion = 1.0;
+    result.desired_mip = 0.0;
+    result.mapped_mip = 0.0;
+    if (surface.vt_slot == 0u) return result;
+    // Cone footprint -> atlas-UV footprint. An isotropic square footprint is
+    // the right model here: the cone has no anisotropy of its own, and
+    // uv_density is already the isotropic UV-per-metre of the hit triangle.
+    float duv = max(surface.cone_width, 0.0) * surface.uv_density;
+    float lod = vt_desired_mip(surface.vt_slot, vec2(duv, 0.0), vec2(0.0, duv));
+    VtAddress address = vt_resolve(surface.vt_slot, surface.uv, lod);
+    if (!address.valid) return result;
+    vec3 albedo = vt_sample_channel(address, VT_CHANNEL_ALBEDO).rgb;
+    vec3 orm = vt_sample_channel(address, VT_CHANNEL_ORM).rgb;
+    vec3 normal_ts =
+        vt_decode_normal(vt_sample_channel(address, VT_CHANNEL_NORMAL));
+    // Same tint application as gbuffer.frag's VT branch.
+    float tint_blend = clamp(surface.tint.a, 0.0, 1.0);
+    result.applied = true;
+    result.albedo = albedo * mix(vec3(1.0), surface.tint.rgb, tint_blend);
+    result.normal = tileset_rotate_normal(normal_ts, surface.normal);
+    result.occlusion = clamp(orm.r, 0.0, 1.0);
+    result.roughness = clamp(orm.g, 0.0, 1.0);
+    result.metallic = clamp(orm.b, 0.0, 1.0);
+    result.desired_mip = float(address.desired_mip);
+    result.mapped_mip = float(address.mapped_mip);
     return result;
 }
 
@@ -183,6 +282,9 @@ RtSurface invalid_rt_surface() {
     surface.uv = vec2(0.0);
     surface.baked_ao = 1.0;
     surface.flags = 0u;
+    surface.vt_slot = 0u;
+    surface.uv_density = 0.0;
+    surface.cone_width = 0.0;
     return surface;
 }
 
@@ -231,6 +333,31 @@ RtSurface load_rt_surface(vec2 hit_barycentrics) {
                        v1.surface.z * weights.y + v2.surface.z * weights.z;
     surface.flags = RT_SURFACE_VALID |
                     (front_face ? RT_SURFACE_FRONT_FACE : 0u);
+
+    // WP-G: VT addressing state. surface.uv above is already the chart-atlas
+    // UV (the same surface.xy the raster path forwards) -- no vertex format
+    // change was needed, and the 72-byte stride guard above still holds.
+    surface.vt_slot = part.vt_slot;
+    surface.uv_density = 0.0;
+    surface.cone_width = 0.0;
+    if (part.vt_slot != 0u) {
+        // Isotropic atlas-UV-per-metre across this triangle: sqrt of the
+        // ratio of its UV area to its WORLD area (Ray Tracing Gems ch. 20's
+        // ray-cone LOD estimator). Object-space edges are pushed through the
+        // instance transform so non-uniform instance scale is accounted for.
+        vec2 duv1 = v1.surface.xy - v0.surface.xy;
+        vec2 duv2 = v2.surface.xy - v0.surface.xy;
+        float uv_area = abs(duv1.x * duv2.y - duv1.y * duv2.x);
+        mat3 object_to_world = mat3(gl_ObjectToWorldEXT);
+        vec3 e1 = object_to_world * (v1.position - v0.position);
+        vec3 e2 = object_to_world * (v2.position - v0.position);
+        float world_area = length(cross(e1, e2));
+        // A degenerate triangle (or one with collapsed UVs) leaves density 0,
+        // which pins the sample to mip 0 -- the safe direction: it can only
+        // over-request sharpness, never sample outside the atlas.
+        surface.uv_density =
+            world_area > 1e-12 ? sqrt(uv_area / world_area) : 0.0;
+    }
     return surface;
 }
 #endif
