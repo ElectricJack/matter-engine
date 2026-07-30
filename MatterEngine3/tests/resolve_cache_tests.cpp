@@ -386,7 +386,9 @@ static void test_project_sources_define_key_and_stale_manifest_is_ignored() {
         root + "/engine-shared");
     CHECK(k4 != k5);
 
-    REQUIRE(write_file(root + "/WorldData/TestWorld/world.manifest",
+    // Generated artifacts live outside the scanned tiers; a stale manifest in
+    // the cache directory must never perturb the key.
+    REQUIRE(write_file(root + "/.cache/TestWorld/world.manifest",
                        "This stale manifest must never enter the key\n"));
     uint64_t k6 = resolve_cache::compute_key(
         world, "{}", root + "/objects", root + "/shared-lib",
