@@ -315,9 +315,11 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
                      "(MATTER_VT_MAX_VARIANTS) but this device allows at most "
                      "%u array layers for the R16G16_UINT indirection image "
                      "(maxImageArrayLayers=%u, per-format maxArrayLayers=%u). "
-                     "One layer is one (variant, rung), so a streamed world "
-                     "with more resident sector rungs than %u will have the "
-                     "remainder fall back to the legacy path.\n",
+                     "One layer is one (variant, rung). Registration is "
+                     "demand-driven, so this caps the on-screen WORKING SET, "
+                     "not the resident ring; only frames that WANT more than "
+                     "%u (variant, rung)s at once fall back (tape-classified "
+                     "legacy) for the excess.\n",
                      max_variants_, requested_variants, max_indirection_layers,
                      max_layers, indirection_limits.maxArrayLayers,
                      max_variants_);
