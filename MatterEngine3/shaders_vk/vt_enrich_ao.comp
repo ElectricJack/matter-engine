@@ -198,11 +198,32 @@ void main() {
         imageStore(outOrm, store_at, base);
         return;
     }
+    // GEOMETRIC hemisphere, not the shading one. sp.nrm interpolates the
+    // part's vertex normals, and for terrain those are analytic field-gradient
+    // normals that deliberately carry finer detail than the mesh (StreamMountain
+    // bakes its 1.5 m surface-noise octave into normals over a 2 m lattice).
+    // Around that normal the cosine lobe tilts up to tens of degrees off the
+    // actual triangle plane, so a systematic fraction of rays leaves the origin
+    // pointing BELOW the face, hits the ray's own triangle within the cap, and
+    // collapses ao over whole open slopes (the 2026-07-29 sun-averted-slope
+    // blackout). Self-occlusion is a property of the geometry the acceleration
+    // structure actually holds, so the trace frame must be the triangle's own
+    // plane: sub-mesh normal detail is the live lighting's job, for exactly the
+    // reason the MIP FADE note gives for sub-texel detail. Real creases and
+    // overhangs are mesh geometry and still darken.
+    GpuTri own = tris[sp.tri];
+    vec3 face_n = cross(own.p1.xyz - own.p0.xyz, own.p2.xyz - own.p0.xyz);
+    float face_len = length(face_n);
+    // Degenerate triangle: fall back to the shading normal. Orient the face
+    // normal to agree with the shading side (terrain interiors never disagree;
+    // this guards mirrored/two-sided content).
+    vec3 trace_n = (face_len > 1e-12) ? face_n / face_len : sp.nrm;
+    if (dot(trace_n, sp.nrm) < 0.0) trace_n = -trace_n;
     // Origin bias off the surface, scaled to the ray length actually traced so
     // it stays a fixed tiny fraction of the cap at every mip and part scale.
     float bias = max(1e-4, 0.02 * max_ray_dist);
-    vec3 P = sp.pos + sp.nrm * bias;
-    mat3 F = make_basis(sp.nrm);
+    vec3 P = sp.pos + trace_n * bias;
+    mat3 F = make_basis(trace_n);
 
     // Deterministic seeding: the VIRTUAL atlas texel at this mip, not the
     // physical slot texel. A page re-filled into a different pool slot, or the

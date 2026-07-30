@@ -193,6 +193,26 @@ struct VkScenePart {
     // Empty = the part carries no tape classification.
     std::vector<uint32_t> surface_materials;
     uint64_t surface_tape_hash = 0;
+    // Demand-driven VT (the streamed-world default): bit r set = rung r has a
+    // chart table, but the payload above (lod_charts / lod_chart_meshes /
+    // chart_material_table) is deliberately NOT populated. register_vt_part
+    // records the mask and registers nothing; variants materialize later
+    // through register_vt_rung() when the demand pass wants a rung on screen,
+    // rebuilt from data the part store still owns. Zero (with populated
+    // payloads) is the eager path: every chart rung registers at ensure_part,
+    // exactly the pre-demand behaviour the smoke fixtures drive.
+    uint32_t vt_deferred_rung_mask = 0;
+};
+
+// Demand-driven VT: one wanted-but-unregistered (part, rung), surfaced by the
+// renderer's per-frame demand pass and drained by the engine, which rebuilds
+// the atlas + context from the part store and answers with register_vt_rung().
+// `priority` is the largest projected size that wanted the rung this frame —
+// the drained list arrives sorted by it, biggest on screen first.
+struct VtRungRequest {
+    uint64_t part_hash = 0;
+    uint32_t rung = 0;
+    float priority = 0.0f;
 };
 
 namespace vk_scene_detail {
@@ -274,6 +294,11 @@ struct VkRasterPixel {
     matter::Float4 accumulated_diffuse{};
     matter::Float4 raw_specular{};
     matter::Float4 accumulated_specular{};
+    // RT PBR Phase 1: raw + denoised transmission (rgb radiance, a coverage)
+    // and the transmission aux lane (x = hit_t, y = roughness).
+    matter::Float4 raw_transmission{};
+    matter::Float4 accumulated_transmission{};
+    matter::Float3 transmission_aux{};
 };
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -972,6 +997,18 @@ private:
         // WP-E: transported vt slot per LOD rung (0 = chartless rung). Feeds
         // the vt_draw_slots table cull.comp reads.
         std::vector<uint32_t> vt_slots;
+        // Demand-driven VT bookkeeping. vt_rung_mask bit r = rung r has a
+        // chart table in the part store and may be registered on demand; zero
+        // means the part is eager (or chartless) and the demand pass leaves
+        // it alone entirely — eager registrations are never auto-evicted.
+        // vt_last_wanted[r] is the vt_demand_frame_ stamp of the last frame
+        // whose CPU LOD mirror selected rung r for any of this part's
+        // clusters; it is both the LRU key and the this-frame guard.
+        // vt_last_requested[r] throttles duplicate registration requests
+        // while one is already in flight to the engine.
+        uint32_t vt_rung_mask = 0;
+        std::array<uint64_t, kVkMaxLod> vt_last_wanted{};
+        std::array<uint64_t, kVkMaxLod> vt_last_requested{};
     };
 
     struct DeviceLimits {
@@ -1155,8 +1192,10 @@ private:
         VkDescriptorSet skin_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet display_descriptor_set = VK_NULL_HANDLE;
-        VkDescriptorSet gi_temporal_descriptor_sets[2]{};
-        VkDescriptorSet gi_atrous_descriptor_sets[6]{};
+        // Three denoised signals (diffuse, specular, transmission), one
+        // temporal set each and three a-trous ping-pong sets each.
+        VkDescriptorSet gi_temporal_descriptor_sets[3]{};
+        VkDescriptorSet gi_atrous_descriptor_sets[9]{};
         uint64_t static_generation = 0;
         uint64_t instance_generation = 0;
         uint64_t command_generation = 0;
@@ -1389,7 +1428,39 @@ public:
         const std::vector<uint32_t>& materials, uint64_t tape_hash);
     void end_vt_surface_update();
 
+    // --- Demand-driven VT variant registration ------------------------------
+    // Moves the wanted-but-unregistered (part, rung) list built by the last
+    // frame's demand pass into `out` (sorted by priority, bounded by
+    // MATTER_VT_REQUESTS_PER_FRAME). The engine services each entry from the
+    // part store and answers with register_vt_rung(); an entry it cannot
+    // service is simply dropped — the demand pass re-surfaces the rung next
+    // frame for as long as it stays wanted.
+    void take_vt_rung_requests(std::vector<VtRungRequest>& out);
+    // Registers ONE deferred (part, rung) variant. Starts the VT runtime on
+    // first use. When the layer pool or the CPU mesh budget is full, evicts
+    // least-recently-wanted demand-managed variants (never eager ones, never
+    // one wanted this frame) until the registration fits; if it still cannot
+    // fit, the residency layer counts the rejection and the caller's request
+    // simply retries on a later frame — over-budget is a working-set signal
+    // now, not a permanent verdict. Returns true when the rung ends up
+    // registered. `atlas` and every array `context` points at are borrowed
+    // for the call only (the residency layer copies synchronously).
+    bool register_vt_rung(uint64_t part_hash, uint32_t rung,
+                          const chart_atlas::ChartAtlasRung& atlas,
+                          const vt::VtPartContext& context);
+
 private:
+    // Per-frame working-set maintenance for demand-driven VT. Mirrors
+    // cull.comp's LOD selection exactly (same clusters, same thresholds, same
+    // projected-size formula) over the static instance set to stamp
+    // vt_last_wanted per (part, rung), queue registration requests for wanted
+    // rungs with no slot, and release variants that stayed unwanted for
+    // MATTER_VT_LINGER_FRAMES. Cheap no-op while no deferred part is live.
+    void update_vt_demand(matter::Float3 camera_eye, float pixel_budget);
+    // Releases one demand-managed (part, rung) variant: residency layer,
+    // vt_slots entry, draw-slot table dirty, deferred filler-cache
+    // invalidation (same retirement discipline as release_part).
+    void evict_vt_rung(PartRecord& record, uint32_t rung);
 
     matter::VulkanDevice* vulkan_ = nullptr;
     VkAnimationSkinning animation_skinning_;
@@ -1461,6 +1532,9 @@ private:
     matter::VkImageResource raw_specular_;
     matter::VkImageResource raw_specular_aux_;
     matter::VkImageResource raw_transmission_;
+    // RT PBR Phase 1: (hit_t, roughness) sibling of raw_specular_aux_ for the
+    // transmission denoiser lane.
+    matter::VkImageResource raw_transmission_aux_;
     matter::VkImageResource vol_dummy_3d_;
     VkExtent2D raw_diffuse_extent_{};
 
@@ -1522,6 +1596,20 @@ private:
     // WP-F: surfaces()-tape live-update bracket state (begin/update/end).
     bool vt_surface_update_open_ = false;
     uint32_t vt_surface_updates_applied_ = 0;
+    // Demand-driven VT working-set state. vt_demand_frame_ is the demand
+    // pass's own monotonic clock (one tick per update_vt_demand call);
+    // vt_last_wanted/vt_last_requested stamps compare against it.
+    // vt_deferred_parts_ counts live PartRecords with a nonzero vt_rung_mask
+    // so the per-frame pass can no-op in scenes with no deferred parts.
+    uint64_t vt_demand_frame_ = 0;
+    uint32_t vt_deferred_parts_ = 0;
+    std::vector<VtRungRequest> vt_rung_requests_;
+    // Env-tunable working-set knobs, read once on first demand pass:
+    // MATTER_VT_LINGER_FRAMES (how long a variant survives unwanted before
+    // its layer is reclaimed) and MATTER_VT_REQUESTS_PER_FRAME (registration
+    // requests surfaced to the engine per frame).
+    uint32_t vt_linger_frames_ = 0;
+    uint32_t vt_max_requests_ = 0;
     struct GiHistorySet {
         matter::VkImageResource radiance;
         matter::VkImageResource moments;
@@ -1533,8 +1621,12 @@ private:
         matter::VkImageResource aux;
     } gi_history_[2];
     GiHistorySet gi_spec_history_[2];
+    // RT PBR Phase 1: transmission history mirrors the specular chain
+    // (signal mode 2 in gi_temporal.comp / gi_atrous.comp).
+    GiHistorySet gi_trans_history_[2];
     matter::VkImageResource gi_atrous_[2];
     matter::VkImageResource gi_spec_atrous_[2];
+    matter::VkImageResource gi_trans_atrous_[2];
     uint32_t gi_filtered_index_ = 0;
     bool gi_filtered_valid_ = false;
     uint32_t gi_presented_history_index_ = 0;

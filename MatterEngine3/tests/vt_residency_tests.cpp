@@ -292,6 +292,179 @@ void test_entry_packing() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Registration cost model + the fail-closed capacity gates
+// ---------------------------------------------------------------------------
+// register_variant refuses a registration when either capacity gate is spent
+// and the part then renders through the LEGACY per-material path — correct
+// topology, authored surfaces() classification ignored. That silent fallback is
+// what made StreamMountain's far field uniform tan, so the arithmetic behind it
+// is pinned here: the per-variant cost, the gate order, and the invariant that a
+// refused registration spends nothing.
+
+// A StreamMountain-shaped rung-0 terrain sector: 64 m sector at 2 m voxels, one
+// 4-material surfaces() tape, the packed material registry travelling with the
+// part. Numbers are the shape of the world the defaults must fit, not a fixture
+// for any particular bake.
+struct SectorFixture {
+    std::vector<float> positions, normals, uvs, material_table;
+    std::vector<uint32_t> material_ids, indices;
+    std::vector<uint8_t> weights;
+    std::vector<uint32_t> materials;
+    chart_atlas::ChartAtlasRung atlas;
+    VtPartContext context;
+
+    SectorFixture(uint32_t vertices, uint32_t triangles, uint32_t charts,
+                  uint32_t tape_materials, uint32_t registry_materials,
+                  uint32_t registry_stride) {
+        positions.assign(size_t(vertices) * 3, 0.0f);
+        normals.assign(size_t(vertices) * 3, 0.0f);
+        uvs.assign(size_t(vertices) * 2, 0.0f);
+        material_ids.assign(vertices, 0u);
+        indices.assign(size_t(triangles) * 3, 0u);
+        material_table.assign(size_t(registry_materials) * registry_stride, 0.0f);
+        weights.assign(size_t(vertices) * tape_materials, 0u);
+        materials.assign(tape_materials, 0u);
+        atlas.atlas_w = 1024;
+        atlas.atlas_h = 1024;
+        atlas.charts.assign(charts, chart_atlas::ChartEntry{});
+        atlas.tri_order.assign(triangles, 0u);
+        context.vertex_count = vertices;
+        context.triangle_count = triangles;
+        context.positions = positions.data();
+        context.normals = normals.data();
+        context.surface_uvs = uvs.data();
+        context.material_ids = material_ids.data();
+        context.indices = indices.data();
+        context.material_table = material_table.data();
+        context.material_count = registry_materials;
+        context.material_stride = registry_stride;
+        context.surface_weights = weights.data();
+        context.surface_materials = materials.data();
+        context.surface_material_count = tape_materials;
+    }
+};
+
+void test_registration_cost() {
+    // Per-vertex cost with every stream present and a 4-column tape:
+    // 12 + 12 + 8 + 4 (no tint) + 4 = 40 bytes. Per triangle: 12 (indices) + 4
+    // (tri_order). Plus 64 bytes per chart and the registry snapshot.
+    SectorFixture s(/*vertices=*/2000, /*triangles=*/3800, /*charts=*/24,
+                    /*tape_materials=*/4, /*registry_materials=*/32,
+                    /*registry_stride=*/32);
+    CHECK(vt_context_has_surface_tape(s.context),
+          "a complete 4-material tape classification is usable");
+    const size_t expected =
+        size_t(2000) * (12 + 12 + 8 + 4 + 4) +          // vertex streams
+        size_t(3800) * 12 +                              // indices
+        size_t(32) * 32 * 4 +                            // material registry
+        4 * sizeof(uint32_t) +                           // tape material ids
+        size_t(24) * sizeof(chart_atlas::ChartEntry) +   // chart table
+        size_t(3800) * sizeof(uint32_t);                 // tri_order
+    CHECK(vt_variant_mesh_bytes(s.atlas, s.context) == expected,
+          "the per-variant mesh cost is the sum of every copied stream");
+
+    // The tape columns are only charged when they are actually adopted.
+    VtPartContext untaped = s.context;
+    untaped.surface_weights = nullptr;
+    CHECK(!vt_context_has_surface_tape(untaped),
+          "a tape with no weight matrix fails closed");
+    CHECK(vt_variant_mesh_bytes(s.atlas, untaped) ==
+              expected - size_t(2000) * 4 - 4 * sizeof(uint32_t),
+          "a fail-closed tape costs neither weight columns nor material ids");
+
+    // A null optional stream is not copied and not charged.
+    VtPartContext bare = s.context;
+    bare.normals = nullptr;
+    bare.surface_uvs = nullptr;
+    CHECK(vt_variant_mesh_bytes(s.atlas, bare) ==
+              expected - size_t(2000) * (12 + 8),
+          "null optional streams cost nothing");
+
+    // The shipped default has to fit the shipped world. 2048 indirection layers
+    // is the ceiling maxImageArrayLayers imposes on current desktop drivers, so
+    // that -- not the 5000-sector ring -- is the census the budget must cover.
+    const size_t per_variant = vt_variant_mesh_bytes(s.atlas, s.context);
+    const size_t default_budget_mb = 1024;
+    CHECK(per_variant * 2048 < default_budget_mb * 1024 * 1024,
+          "the default mesh budget covers a full 2048-layer variant census");
+}
+
+void test_registration_gates() {
+    SectorFixture s(/*vertices=*/2000, /*triangles=*/3800, /*charts=*/24,
+                    /*tape_materials=*/4, /*registry_materials=*/32,
+                    /*registry_stride=*/32);
+    const size_t per_variant = vt_variant_mesh_bytes(s.atlas, s.context);
+
+    // --- tiny layer cap: register N + 1, the last one is refused -------------
+    const uint32_t caps = 4;   // the env floor for MATTER_VT_MAX_VARIANTS
+    uint32_t live = 0;
+    size_t used = 0;
+    uint32_t rejected = 0;
+    for (uint32_t i = 0; i < caps + 1u; ++i) {
+        const VtRejectReason verdict = vt_registration_verdict(
+            live, caps, used, /*budget=*/per_variant * 64, per_variant);
+        if (verdict == VtRejectReason::Accept) {
+            ++live;
+            used += per_variant;
+            continue;
+        }
+        CHECK(verdict == VtRejectReason::NoLayer,
+              "the (N+1)th registration is refused for want of a layer");
+        ++rejected;
+    }
+    CHECK(live == caps, "exactly the capped number of variants registered");
+    CHECK(rejected == 1, "the census counts the one rejection");
+    CHECK(used == size_t(caps) * per_variant,
+          "a refused registration spends no mesh budget");
+
+    // The refusal is not sticky: releasing a variant frees its layer AND its
+    // bytes, and the next registration is accepted again.
+    --live;
+    used -= per_variant;
+    CHECK(vt_registration_verdict(live, caps, used, per_variant * 64,
+                                  per_variant) == VtRejectReason::Accept,
+          "a freed layer is reusable");
+
+    // --- tiny mesh budget: the layer is free but the bytes are not -----------
+    CHECK(vt_registration_verdict(/*live=*/0, /*max=*/1024, /*used=*/0,
+                                  /*budget=*/per_variant - 1, per_variant) ==
+              VtRejectReason::MeshBudget,
+          "a registration larger than the whole budget is refused");
+    CHECK(vt_registration_verdict(0, 1024, 0, per_variant, per_variant) ==
+              VtRejectReason::Accept,
+          "a registration that exactly fills the budget is accepted");
+    CHECK(vt_registration_verdict(0, 1024, 1, per_variant, per_variant) ==
+              VtRejectReason::MeshBudget,
+          "the budget is on the TOTAL, not the single registration");
+
+    // Gate order matters: with both spent, layer exhaustion is what is
+    // reported, because register_variant checks it first (and so must never be
+    // seen to take a layer it then hands back).
+    CHECK(vt_registration_verdict(4, 4, per_variant, per_variant,
+                                  per_variant) == VtRejectReason::NoLayer,
+          "layer exhaustion outranks the mesh budget in the verdict");
+
+    // --- sampling falls back cleanly ---------------------------------------
+    // A refused registration returns kVtNoSlot, which is 0, which is exactly
+    // what an unclassified draw record already carries — so the shader's VT
+    // branch is simply not taken. Nothing about a rejection can point a sample
+    // at a layer that was never reset.
+    CHECK(kVtNoSlot == 0u,
+          "the no-VT sentinel is the zero a rejected part keeps");
+    VtVariantLayout layout{};
+    CHECK(vt_build_layout(s.atlas.atlas_w, s.atlas.atlas_h, layout),
+          "the refused variant's layout was still well formed");
+    VtIndirectionMap unregistered;   // never reset: no layer was taken
+    CHECK(unregistered.resident_count() == 0,
+          "a refused registration leaves no resident page behind");
+    CHECK(!unregistered.in_range(0, 0, 0),
+          "an unreset indirection layer resolves nothing in range");
+    const VtEntry entry = unregistered.resolve(0, 0, 0);
+    CHECK(entry.slot == 0 && entry.mapped_mip == 0,
+          "resolving an unreset layer is defined and points at slot 0");
+}
+
 }  // namespace
 
 int main() {
@@ -301,6 +474,8 @@ int main() {
     test_border_math();
     test_slot_pool();
     test_entry_packing();
+    test_registration_cost();
+    test_registration_gates();
     std::printf("vt residency tests complete\n");
     return check_summary();
 }

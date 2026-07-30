@@ -2138,6 +2138,7 @@ int main() {
                 ui.draw_viewport_window();
                 ui.draw_console_panel(console_log);
                 ui.draw_debug_panel(stats, viewer_commands);
+                ui.draw_vt_warning_banner(stats);
                 ui.draw_bake_lab_panel(bake_lab, &app_hub, session.get(), worlds, stats);
                 ui.draw_asset_browser_panel(asset_browser, worlds, stats, shared_lib,
                                            viewer_commands);
@@ -2593,6 +2594,15 @@ int main() {
         stats.gpu_denoise_ms         = frame_stats.gpu_denoise_ms;
         stats.gpu_dlss_ms            = frame_stats.gpu_dlss_ms;
         stats.gpu_composite_ms       = frame_stats.gpu_composite_ms;
+        stats.vt_active              = frame_stats.vt_active;
+        stats.vt_variants            = frame_stats.vt_variants;
+        stats.vt_max_variants        = frame_stats.vt_max_variants;
+        stats.vt_rejected_variants   = frame_stats.vt_rejected_variants;
+        stats.vt_pool_used           = frame_stats.vt_pool_used;
+        stats.vt_pool_capacity       = frame_stats.vt_pool_capacity;
+        stats.vt_pool_pinned         = frame_stats.vt_pool_pinned;
+        stats.vt_mesh_bytes          = frame_stats.vt_mesh_bytes;
+        stats.vt_mesh_budget_bytes   = frame_stats.vt_mesh_budget_bytes;
 
         bool ui_frame_completed = false;
         if (ui_frame_ready) {
@@ -2944,11 +2954,45 @@ int main() {
         }
 
         if (!stats_label.empty()) {
-            std::printf("STATS,%s,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%d\n",
+            // APPEND-ONLY format (scripts parse by position). The five trailing
+            // VT fields are the chart-space virtual-texturing census: a
+            // vt_rejected != 0 means part of the world silently fell back to
+            // the legacy path and is ignoring its surfaces() classification.
+            std::printf("STATS,%s,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%d"
+                        ",%u,%u,%u,%.1f,%.1f\n",
                         stats_label.c_str(), stats.frame_ms, stats.resolve_ms,
                         stats.build_ms, stats.draw_ms, stats.instances_active,
                         stats.raster_batches, stats.raster_tris,
-                        stats.culled_clusters, stats.gpu_culled_hiz);
+                        stats.culled_clusters, stats.gpu_culled_hiz,
+                        frame_stats.vt_variants,
+                        frame_stats.vt_rejected_variants,
+                        frame_stats.vt_max_variants,
+                        static_cast<double>(frame_stats.vt_mesh_bytes) /
+                            (1024.0 * 1024.0),
+                        static_cast<double>(
+                            frame_stats.vt_mesh_budget_bytes) /
+                            (1024.0 * 1024.0));
+            std::printf("STATSVT,%s,active=%d,variants=%u/%u,rejected=%u,"
+                        "mesh=%.1f/%.1f MiB,pool=%u/%u,pinned=%u,queue=%u,"
+                        "fills=%llu,evictions=%llu\n",
+                        stats_label.c_str(),
+                        frame_stats.vt_active ? 1 : 0,
+                        frame_stats.vt_variants,
+                        frame_stats.vt_max_variants,
+                        frame_stats.vt_rejected_variants,
+                        static_cast<double>(frame_stats.vt_mesh_bytes) /
+                            (1024.0 * 1024.0),
+                        static_cast<double>(
+                            frame_stats.vt_mesh_budget_bytes) /
+                            (1024.0 * 1024.0),
+                        frame_stats.vt_pool_used,
+                        frame_stats.vt_pool_capacity,
+                        frame_stats.vt_pool_pinned,
+                        frame_stats.vt_queue_depth,
+                        static_cast<unsigned long long>(
+                            frame_stats.vt_fills_total),
+                        static_cast<unsigned long long>(
+                            frame_stats.vt_evictions_total));
             stats_label.clear();
         }
         // Post-frame seam (event-system.md S I.13). Reload / world-switch are

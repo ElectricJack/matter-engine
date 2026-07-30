@@ -5143,6 +5143,541 @@ static void rt_scenario_baked_ao_and_gi_disable(RtPathContext& ctx) {
 // ---------------------------------------------------------------------------
 // Driver: run all native RT path scenarios in original order
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// RT PBR Phase 1 — microfacet (frosted) transmission + correctness fixes.
+// MATTER_VK_SMOKE_MODE=rt-transmission.
+//
+// Fixture: a two-quad glass slab (front face at z=-2, back face at z=-2.2)
+// seen by a 90-degree camera at the origin, with a large wall at z=-6 behind
+// it. The wall is authored either as alternating 0.6 m white/dark stripes
+// (blur measurements) or as a uniform white field (energy measurements) by
+// re-authoring the dark stripe material -- same geometry, different table.
+//
+// Covered gates:
+//   * blur grows monotonically with authored glass roughness (accumulated
+//     transmission stddev across a stripe row strictly decreases);
+//   * transmitted energy at the slab is within 2% of the smooth slab
+//     (uniform wall, where hit radiance is direction-independent, so the
+//     comparison isolates the perturbation math);
+//   * smooth glass byte-parity: roughness 0.0 and 0.019 (both below the 0.02
+//     sampling threshold) produce bit-identical raw transmission, and the
+//     denoiser chain passes smooth pixels through bit-exactly
+//     (accumulated == raw);
+//   * determinism: equal presented_frame_index => bit-identical raw signal;
+//   * the composite fallback guard: a zeroed absorptionColor through the
+//     coverage < 0.01 branch is non-black and matches a white absorption
+//     (the black-glass regression test that never existed);
+//   * alpha-tested occluders in the walk: with the two-mask walk (default) a
+//     failing alpha-test card between slab and wall is skipped; with
+//     MATTER_RT_WALK_ALPHA_TEST=0 it silhouettes the refraction (legacy),
+//     and the RT gpu-zone cost of both is printed for the ~5% budget check.
+// ---------------------------------------------------------------------------
+static float rt_trans_luminance(const matter::Float4& v) {
+    return 0.2126f * v.x + 0.7152f * v.y + 0.0722f * v.z;
+}
+
+static viewer::VkScenePart rt_trans_quad(uint64_t hash, float x0, float x1,
+                                         float y0, float y1, float z,
+                                         float nz, uint32_t material) {
+    viewer::VkScenePart part = fixed_part(
+        hash, {x0, y0, z - 0.01f}, {x1, y1, z + 0.01f}, 0);
+    const matter::Float3 normal{0.0f, 0.0f, nz};
+    const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};
+    const matter::Float4 surf{0.0f, 0.0f, 1.0f, 1.0f};
+    part.vertices = {
+        {{x0, y0, z}, normal, tint, surf, material, {}},
+        {{x1, y0, z}, normal, tint, surf, material, {}},
+        {{x1, y1, z}, normal, tint, surf, material, {}},
+        {{x0, y1, z}, normal, tint, surf, material, {}}};
+    // Winding decides gl_HitKindEXT: +z quads face the camera (front hits for
+    // camera rays), -z quads face away so the refraction walk's forward ray
+    // reaches them as BACKFACES -- the exit-refraction event under test.
+    if (nz > 0.0f)
+        part.indices = {0, 1, 2, 0, 2, 3};
+    else
+        part.indices = {0, 2, 1, 0, 3, 2};
+    part.clusters[0].lods[0] = {0, 6, 0.0f};
+    return part;
+}
+
+void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
+    if (!vulkan.ray_tracing_available()) {
+        std::printf("rt-transmission: ray tracing unavailable, skipping\n");
+        return;
+    }
+    constexpr uint32_t width = 320;
+    constexpr uint32_t height = 200;
+    constexpr uint32_t kGlass = 1;
+    constexpr uint32_t kWhite = 2;
+    constexpr uint32_t kDark = 3;
+    constexpr uint32_t kFoliage = 4;
+    constexpr uint32_t kMaterialAlphaTested = 1u << 2u;
+    std::string error;
+
+    std::vector<MaterialGpuRecord> materials;
+    uint64_t shading_revision = 1;
+    const auto author = [&](float glass_roughness, float dark_albedo,
+                            matter::Float3 glass_absorption) {
+        materials.assign(5, MaterialGpuRecord{});
+        materials[0].metal_opacity_spec_coat[1] = 1.0f;
+        materials[0].scattering_shape[3] = 1.0f;
+        materials[kGlass].base_roughness[0] = 1.0f;
+        materials[kGlass].base_roughness[1] = 1.0f;
+        materials[kGlass].base_roughness[2] = 1.0f;
+        materials[kGlass].base_roughness[3] = glass_roughness;
+        materials[kGlass].metal_opacity_spec_coat[1] = 1.0f;
+        materials[kGlass].transmission[0] = 1.0f;   // transmission
+        materials[kGlass].transmission[1] = 1.5f;   // ior
+        materials[kGlass].transmission[2] = 0.2f;   // thickness fallback
+        materials[kGlass].transmission[3] = 0.0f;   // absorption distance
+        materials[kGlass].absorption_pad[0] = glass_absorption.x;
+        materials[kGlass].absorption_pad[1] = glass_absorption.y;
+        materials[kGlass].absorption_pad[2] = glass_absorption.z;
+        materials[kWhite].base_roughness[0] = 0.85f;
+        materials[kWhite].base_roughness[1] = 0.85f;
+        materials[kWhite].base_roughness[2] = 0.85f;
+        materials[kWhite].base_roughness[3] = 0.6f;
+        materials[kWhite].metal_opacity_spec_coat[1] = 1.0f;
+        materials[kWhite].scattering_shape[3] = 1.0f;
+        materials[kDark] = materials[kWhite];
+        materials[kDark].base_roughness[0] = dark_albedo;
+        materials[kDark].base_roughness[1] = dark_albedo;
+        materials[kDark].base_roughness[2] = dark_albedo;
+        materials[kFoliage].base_roughness[0] = 0.8f;
+        materials[kFoliage].base_roughness[1] = 0.05f;
+        materials[kFoliage].base_roughness[2] = 0.05f;
+        materials[kFoliage].base_roughness[3] = 0.5f;
+        materials[kFoliage].metal_opacity_spec_coat[1] = 0.3f;  // opacity
+        materials[kFoliage].scattering_shape[2] = 0.5f;         // cutoff
+        materials[kFoliage].scattering_shape[3] = 1.0f;
+        materials[kFoliage].flags_misc[0] = kMaterialAlphaTested;
+    };
+
+    // Shared scene builder so the legacy-walk renderer sees the same world.
+    const auto build_scene = [&](viewer::VkSceneRenderer& renderer,
+                                 bool with_foliage) {
+        CHECK(renderer.ensure_part(rt_trans_quad(7801, -2.4f, 2.4f, -1.4f,
+                                                 1.4f, -2.0f, 1.0f, kGlass),
+                                   error) >= 0,
+              error.empty() ? "rt-transmission: slab front" : error.c_str());
+        CHECK(renderer.ensure_part(rt_trans_quad(7802, -2.4f, 2.4f, -1.4f,
+                                                 1.4f, -2.2f, -1.0f, kGlass),
+                                   error) >= 0,
+              error.empty() ? "rt-transmission: slab back" : error.c_str());
+        // Striped wall: 80 stripes of 0.6 m across x in [-24, 24].
+        viewer::VkScenePart wall = fixed_part(
+            7803, {-24.0f, -16.0f, -6.01f}, {24.0f, 16.0f, -5.99f}, 0);
+        wall.vertices.clear();
+        wall.indices.clear();
+        const matter::Float3 wall_normal{0.0f, 0.0f, 1.0f};
+        const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};
+        const matter::Float4 surf{0.0f, 0.0f, 1.0f, 1.0f};
+        for (int stripe = 0; stripe < 80; ++stripe) {
+            const float x0 = -24.0f + 0.6f * static_cast<float>(stripe);
+            const float x1 = x0 + 0.6f;
+            const uint32_t material = (stripe & 1) ? kDark : kWhite;
+            const uint32_t base = static_cast<uint32_t>(wall.vertices.size());
+            wall.vertices.push_back(
+                {{x0, -16.0f, -6.0f}, wall_normal, tint, surf, material, {}});
+            wall.vertices.push_back(
+                {{x1, -16.0f, -6.0f}, wall_normal, tint, surf, material, {}});
+            wall.vertices.push_back(
+                {{x1, 16.0f, -6.0f}, wall_normal, tint, surf, material, {}});
+            wall.vertices.push_back(
+                {{x0, 16.0f, -6.0f}, wall_normal, tint, surf, material, {}});
+            for (uint32_t index : {0u, 1u, 2u, 0u, 2u, 3u})
+                wall.indices.push_back(base + index);
+        }
+        wall.clusters[0].lods[0] = {
+            0, static_cast<uint32_t>(wall.indices.size()), 0.0f};
+        CHECK(renderer.ensure_part(wall, error) >= 0,
+              error.empty() ? "rt-transmission: striped wall" : error.c_str());
+        std::vector<viewer::VkSceneInstance> instances = {
+            {7801, identity_matrix()},
+            {7802, identity_matrix()},
+            {7803, identity_matrix()}};
+        if (with_foliage) {
+            // Alpha-tested card between slab and wall: opacity 0.3 < cutoff
+            // 0.5, so a correct alpha test skips it entirely.
+            CHECK(renderer.ensure_part(rt_trans_quad(7804, -1.2f, 1.2f, -1.0f,
+                                                     1.0f, -4.0f, 1.0f,
+                                                     kFoliage),
+                                       error) >= 0,
+                  error.empty() ? "rt-transmission: foliage card"
+                                : error.c_str());
+            instances.push_back({7804, identity_matrix()});
+        }
+        CHECK(renderer.update_instances(instances, error),
+              error.empty() ? "rt-transmission: upload instances"
+                            : error.c_str());
+    };
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 100.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, width, height, matrices, error),
+          error.empty() ? "rt-transmission: matrices" : error.c_str());
+    viewer::VkSceneLighting lighting{};
+    lighting.sun_direction = {0.2f, -0.4f, -0.9f};
+    matter::VulkanRayTracingSettings rt_enabled{};
+    rt_enabled.enabled = true;
+    rt_enabled.max_distance = 100.0f;
+    rt_enabled.bias = 0.001f;
+    rt_enabled.samples = 1;
+    matter::VulkanGiSettings gi{};
+    gi.enabled = 1;
+    gi.max_bounces = 1;
+    gi.samples_per_pixel = 1;
+    gi.trace_scale = 1.0f;
+
+    viewer::TemporalFrame temporal{};
+    temporal.current_unjittered = matrices;
+    temporal.previous_unjittered = matrices;
+    temporal.current_jittered = matrices;
+    temporal.previous_jittered = matrices;
+    temporal.internal_extent = {width, height};
+    temporal.output_extent = {width, height};
+    uint64_t attempt_token = 5000;
+    uint64_t presented_index = 1;
+
+    const auto configure = [&](viewer::VkSceneRenderer& renderer) {
+        renderer.set_lighting(lighting);
+        renderer.set_ray_tracing_settings(rt_enabled);
+        renderer.set_gi_settings(gi);
+    };
+    const auto render_frame = [&](viewer::VkSceneRenderer& renderer,
+                                  bool reset, uint64_t frame_index) {
+        temporal.reset = reset;
+        temporal.attempt_token = ++attempt_token;
+        temporal.presented_frame_index = frame_index;
+        renderer.set_temporal_frame(temporal);
+        matter::VulkanFrame frame{};
+        std::string local;
+        const bool ok = vulkan.begin_frame(frame, local) &&
+            renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                   local) &&
+            renderer.record_cull_and_render(frame, matrices, camera.position,
+                                            1.0f, local) &&
+            renderer.record_composite_to_swapchain(frame, local) &&
+            vulkan.end_frame(frame, local);
+        renderer.finish_ray_tracing_frame(frame.serial, ok);
+        CHECK(ok, local.empty() ? "rt-transmission: render frame"
+                                : local.c_str());
+    };
+    // Slab pixels: screen x in [40, 280], y in [30, 170]; sample the center
+    // row well inside the slab.
+    constexpr uint32_t kRowY = 100;
+    constexpr uint32_t kRowX0 = 64;
+    constexpr uint32_t kRowX1 = 256;
+    const auto sample_row = [&](viewer::VkSceneRenderer& renderer,
+                                uint32_t step, bool accumulated) {
+        std::vector<matter::Float4> row;
+        for (uint32_t x = kRowX0; x <= kRowX1; x += step) {
+            viewer::VkRasterPixel pixel{};
+            CHECK(renderer.readback_raster_pixel(x, kRowY, pixel, error),
+                  error.empty() ? "rt-transmission: row readback"
+                                : error.c_str());
+            CHECK(pixel.material_index == kGlass,
+                  "rt-transmission: row probe lands on the glass slab");
+            row.push_back(accumulated ? pixel.accumulated_transmission
+                                      : pixel.raw_transmission);
+        }
+        return row;
+    };
+    // Stripe contrast: mean luminance over pixels whose straight-through ray
+    // lands on a white stripe minus the mean over dark-stripe pixels. Class
+    // means average pixel noise across ~half the row each, so the metric
+    // tracks BLUR (cross-stripe mixing) instead of residual 1-spp noise --
+    // a plain row stddev reads the noise floor as "contrast" at high
+    // roughness. Pixels within 0.12 m of a stripe boundary are skipped
+    // (refraction offset through the 0.2 m slab is a few centimetres).
+    const auto stripe_contrast = [&](const std::vector<matter::Float4>& row,
+                                     uint32_t step) {
+        double sum[2] = {0.0, 0.0};
+        int count[2] = {0, 0};
+        for (size_t p = 0; p < row.size(); ++p) {
+            const uint32_t x = kRowX0 + static_cast<uint32_t>(p) * step;
+            const double ndc_x =
+                (static_cast<double>(x) + 0.5) / width * 2.0 - 1.0;
+            // 90-degree vfov, 1.6 aspect: at the wall depth (6 m) the ray's
+            // lateral world offset is ndc_x * 1.6 * 6.
+            const double wall_x = ndc_x * 1.6 * 6.0;
+            const double stripe_pos = (wall_x + 24.0) / 0.6;
+            const double in_stripe = stripe_pos - std::floor(stripe_pos);
+            if (in_stripe < 0.2 || in_stripe > 0.8) continue;
+            const int parity = static_cast<int>(std::floor(stripe_pos)) & 1;
+            sum[parity] += rt_trans_luminance(row[p]);
+            ++count[parity];
+        }
+        CHECK(count[0] > 4 && count[1] > 4,
+              "rt-transmission: both stripe classes are sampled");
+        return sum[0] / std::max(count[0], 1) -
+               sum[1] / std::max(count[1], 1);
+    };
+    const auto mean_luminance = [](const std::vector<matter::Float4>& row) {
+        double mean = 0.0;
+        for (const auto& v : row) mean += rt_trans_luminance(v);
+        return mean / static_cast<double>(row.size());
+    };
+
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "rt-transmission: renderer init" : error.c_str());
+    author(0.0f, 0.05f, {1.0f, 1.0f, 1.0f});
+    CHECK(renderer.update_materials(materials, shading_revision++, 1, error),
+          error.empty() ? "rt-transmission: stage materials" : error.c_str());
+    build_scene(renderer, false);
+    configure(renderer);
+
+    // --- (1) blur grows monotonically with roughness (striped wall) --------
+    // The ladder tops out at 0.5, double the spec's authored frosted range
+    // (GlacialIce: 0.05-0.25). Beyond ~0.6 the documented grazing-TIR
+    // fallback -- a sampled microfacet whose refract() fails keeps the
+    // GEOMETRIC direction, bias accepted over a re-sample loop -- re-adds a
+    // sharp image fraction, so stripe contrast stops being a pure blur
+    // measure out there (measured: contrast 0.018 at r=0.45 vs 0.060 at
+    // r=0.8 from exactly that sharp fallback fraction).
+    const float ladder[4] = {0.0f, 0.1f, 0.25f, 0.5f};
+    double contrast[4] = {0.0, 0.0, 0.0, 0.0};
+    for (int i = 0; i < 4; ++i) {
+        author(ladder[i], 0.05f, {1.0f, 1.0f, 1.0f});
+        CHECK(renderer.update_materials(materials, shading_revision++, 1,
+                                        error),
+              error.empty() ? "rt-transmission: ladder materials"
+                            : error.c_str());
+        render_frame(renderer, true, presented_index++);
+        for (int f = 0; f < 15; ++f)
+            render_frame(renderer, false, presented_index++);
+        // Average the denoised row over four more frames so the residual
+        // 1-spp noise cannot mask the contrast ordering between adjacent
+        // roughness rungs.
+        std::vector<matter::Float4> averaged;
+        for (int f = 0; f < 4; ++f) {
+            render_frame(renderer, false, presented_index++);
+            vulkan.wait_idle();
+            const auto row = sample_row(renderer, 4, true);
+            if (averaged.empty()) averaged.assign(row.size(), {});
+            for (size_t p = 0; p < row.size(); ++p) {
+                averaged[p].x += row[p].x * 0.25f;
+                averaged[p].y += row[p].y * 0.25f;
+                averaged[p].z += row[p].z * 0.25f;
+                averaged[p].w += row[p].w * 0.25f;
+            }
+        }
+        contrast[i] = stripe_contrast(averaged, 4);
+        // Aux-lane contract at one rough rung: (hit_t, roughness).
+        if (i == 2) {
+            viewer::VkRasterPixel pixel{};
+            CHECK(renderer.readback_raster_pixel(160, kRowY, pixel, error),
+                  error.c_str());
+            CHECK(std::fabs(pixel.transmission_aux.y - ladder[i]) < 0.01f,
+                  "rt-transmission: aux carries the authored roughness");
+            CHECK(pixel.transmission_aux.x > 1.0f &&
+                      pixel.transmission_aux.x < 50.0f,
+                  "rt-transmission: aux carries a finite hit distance");
+            CHECK(pixel.raw_transmission.w > 0.9f &&
+                      pixel.accumulated_transmission.w > 0.9f,
+                  "rt-transmission: coverage rides alpha through the denoiser");
+        }
+    }
+    std::printf("rt-transmission blur: stripe contrast(r=%.2f..%.2f) = "
+                "%.5f %.5f %.5f %.5f\n",
+                ladder[0], ladder[3], contrast[0], contrast[1], contrast[2],
+                contrast[3]);
+    for (int i = 1; i < 4; ++i)
+        CHECK(contrast[i] < contrast[i - 1],
+              "rt-transmission: blur grows monotonically with roughness");
+    CHECK(contrast[3] < 0.25 * contrast[0],
+          "rt-transmission: the roughest slab collapses stripe contrast");
+
+    // --- (2) transmitted energy within 2% of the smooth slab (uniform wall).
+    // hit_radiance is direction-independent, so any perturbed exit ray sees
+    // the same wall radiance; a deviation here is an energy bug in the
+    // perturbation itself, not Monte Carlo noise.
+    double energy[4] = {0.0, 0.0, 0.0, 0.0};
+    for (int i = 0; i < 4; ++i) {
+        author(ladder[i], 0.85f, {1.0f, 1.0f, 1.0f});
+        CHECK(renderer.update_materials(materials, shading_revision++, 1,
+                                        error),
+              error.empty() ? "rt-transmission: energy materials"
+                            : error.c_str());
+        render_frame(renderer, true, presented_index++);
+        double sum = 0.0;
+        int frames = 0;
+        for (int f = 0; f < 4; ++f) {
+            render_frame(renderer, false, presented_index++);
+            vulkan.wait_idle();
+            sum += mean_luminance(sample_row(renderer, 16, false));
+            ++frames;
+        }
+        energy[i] = sum / frames;
+    }
+    std::printf("rt-transmission energy: mean(r=%.2f..%.2f) = "
+                "%.5f %.5f %.5f %.5f\n",
+                ladder[0], ladder[3], energy[0], energy[1], energy[2],
+                energy[3]);
+    // 2% integration-sanity bound across the ladder. (For reference: at
+    // r = 0.8, well past the authored range, real extra TIR bounces from
+    // steep sampled microfacets cost ~2.7% -- genuine frost transport, not
+    // an estimator bug.)
+    for (int i = 1; i < 4; ++i)
+        CHECK(std::fabs(energy[i] - energy[0]) <= 0.02 * energy[0],
+              "rt-transmission: rough transmission conserves energy within 2%");
+
+    // --- (3) determinism + smooth byte-parity (uniform wall) ---------------
+    const uint64_t fixed_index = presented_index + 100;
+    author(0.0f, 0.85f, {1.0f, 1.0f, 1.0f});
+    CHECK(renderer.update_materials(materials, shading_revision++, 1, error),
+          error.c_str());
+    render_frame(renderer, true, fixed_index);
+    vulkan.wait_idle();
+    const auto smooth_row = sample_row(renderer, 8, false);
+    const auto smooth_accumulated = sample_row(renderer, 8, true);
+    render_frame(renderer, true, fixed_index);
+    vulkan.wait_idle();
+    const auto repeat_row = sample_row(renderer, 8, false);
+    bool deterministic = true;
+    bool passthrough = true;
+    for (size_t i = 0; i < smooth_row.size(); ++i) {
+        deterministic = deterministic &&
+            smooth_row[i].x == repeat_row[i].x &&
+            smooth_row[i].y == repeat_row[i].y &&
+            smooth_row[i].z == repeat_row[i].z &&
+            smooth_row[i].w == repeat_row[i].w;
+        passthrough = passthrough &&
+            smooth_row[i].x == smooth_accumulated[i].x &&
+            smooth_row[i].y == smooth_accumulated[i].y &&
+            smooth_row[i].z == smooth_accumulated[i].z &&
+            smooth_row[i].w == smooth_accumulated[i].w;
+    }
+    CHECK(deterministic,
+          "rt-transmission: fixed frame index reproduces bit-identical rays");
+    CHECK(passthrough,
+          "rt-transmission: smooth pixels pass the denoiser bit-exactly");
+    // Roughness below the 0.02 sampling threshold must not perturb anything:
+    // no VNDF sample is drawn, so the whole lane stays bit-identical.
+    author(0.019f, 0.85f, {1.0f, 1.0f, 1.0f});
+    CHECK(renderer.update_materials(materials, shading_revision++, 1, error),
+          error.c_str());
+    render_frame(renderer, true, fixed_index);
+    vulkan.wait_idle();
+    const auto threshold_row = sample_row(renderer, 8, false);
+    bool byte_identical = true;
+    for (size_t i = 0; i < smooth_row.size(); ++i) {
+        byte_identical = byte_identical &&
+            smooth_row[i].x == threshold_row[i].x &&
+            smooth_row[i].y == threshold_row[i].y &&
+            smooth_row[i].z == threshold_row[i].z &&
+            smooth_row[i].w == threshold_row[i].w;
+    }
+    CHECK(byte_identical,
+          "rt-transmission: sub-threshold roughness is byte-identical to smooth");
+
+    // --- (4) composite fallback guard (black-glass regression) -------------
+    // RT off => the transmission lane is cleared, coverage < 0.01, and the
+    // composite takes the material fallback branch. A zeroed absorptionColor
+    // must behave exactly like a clear (white) one.
+    matter::VulkanRayTracingSettings rt_disabled{};
+    rt_disabled.enabled = false;
+    renderer.set_ray_tracing_settings(rt_disabled);
+    author(0.0f, 0.85f, {0.0f, 0.0f, 0.0f});
+    CHECK(renderer.update_materials(materials, shading_revision++, 1, error),
+          error.c_str());
+    render_frame(renderer, true, presented_index++);
+    vulkan.wait_idle();
+    viewer::VkRasterPixel black_absorption{};
+    CHECK(renderer.readback_raster_pixel(160, kRowY, black_absorption, error),
+          error.c_str());
+    author(0.0f, 0.85f, {1.0f, 1.0f, 1.0f});
+    CHECK(renderer.update_materials(materials, shading_revision++, 1, error),
+          error.c_str());
+    render_frame(renderer, true, presented_index++);
+    vulkan.wait_idle();
+    viewer::VkRasterPixel white_absorption{};
+    CHECK(renderer.readback_raster_pixel(160, kRowY, white_absorption, error),
+          error.c_str());
+    std::printf("rt-transmission fallback: black-absorption hdr=%.5f "
+                "white-absorption hdr=%.5f\n",
+                rt_trans_luminance(black_absorption.hdr),
+                rt_trans_luminance(white_absorption.hdr));
+    CHECK(rt_trans_luminance(black_absorption.hdr) > 0.02f,
+          "rt-transmission: zeroed-absorption fallback is non-black");
+    CHECK(std::fabs(rt_trans_luminance(black_absorption.hdr) -
+                    rt_trans_luminance(white_absorption.hdr)) < 1e-3f,
+          "rt-transmission: the fallback guard treats black absorption as clear");
+    renderer.set_ray_tracing_settings(rt_enabled);
+
+    // --- (5) alpha-tested occluders in the walk + cost --------------------
+    // Default (two-mask) walk: the failing alpha-test card is skipped, so the
+    // center pixel still transmits the gray wall.
+    author(0.0f, 0.05f, {1.0f, 1.0f, 1.0f});
+    CHECK(renderer.update_materials(materials, shading_revision++, 1, error),
+          error.c_str());
+    build_scene(renderer, true);
+    render_frame(renderer, true, presented_index++);
+    for (int f = 0; f < 19; ++f)
+        render_frame(renderer, false, presented_index++);
+    vulkan.wait_idle();
+    viewer::VkRasterPixel masked_center{};
+    CHECK(renderer.readback_raster_pixel(160, kRowY, masked_center, error),
+          error.c_str());
+    const float masked_rt_ms =
+        renderer.gpu_timers_supported()
+            ? renderer.gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneRt)
+            : 0.0f;
+    CHECK(masked_center.raw_transmission.x <
+              2.0f * masked_center.raw_transmission.y + 0.05f,
+          "rt-transmission: two-mask walk skips the failing alpha-test card");
+
+    // Legacy walk (spec constant off): the same card silhouettes refraction
+    // and its red albedo dominates the transmitted color.
+    _putenv_s("MATTER_RT_WALK_ALPHA_TEST", "0");
+    {
+        viewer::VkSceneRenderer legacy(vulkan);
+        CHECK(legacy.init(error),
+              error.empty() ? "rt-transmission: legacy renderer init"
+                            : error.c_str());
+        CHECK(legacy.update_materials(materials, 1, 1, error),
+              error.c_str());
+        build_scene(legacy, true);
+        configure(legacy);
+        render_frame(legacy, true, presented_index++);
+        for (int f = 0; f < 19; ++f)
+            render_frame(legacy, false, presented_index++);
+        vulkan.wait_idle();
+        viewer::VkRasterPixel legacy_center{};
+        CHECK(legacy.readback_raster_pixel(160, kRowY, legacy_center, error),
+              error.c_str());
+        const float legacy_rt_ms =
+            legacy.gpu_timers_supported()
+                ? legacy.gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneRt)
+                : 0.0f;
+        std::printf("rt-transmission alpha walk: masked=(%.4f %.4f %.4f) "
+                    "legacy=(%.4f %.4f %.4f)\n",
+                    masked_center.raw_transmission.x,
+                    masked_center.raw_transmission.y,
+                    masked_center.raw_transmission.z,
+                    legacy_center.raw_transmission.x,
+                    legacy_center.raw_transmission.y,
+                    legacy_center.raw_transmission.z);
+        std::printf("rt-transmission walk cost: two-mask rt=%.3f ms, "
+                    "legacy rt=%.3f ms (%+.1f%%)\n",
+                    masked_rt_ms, legacy_rt_ms,
+                    legacy_rt_ms > 0.0f
+                        ? (masked_rt_ms - legacy_rt_ms) / legacy_rt_ms * 100.0f
+                        : 0.0f);
+        CHECK(legacy_center.raw_transmission.x >
+                  2.0f * legacy_center.raw_transmission.y,
+              "rt-transmission: legacy walk silhouettes the red card (control)");
+    }
+    _putenv_s("MATTER_RT_WALK_ALPHA_TEST", "");
+}
+
 void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     run_native_multilod_rt_mapping(vulkan);
     run_rt_lod_compaction_invariant(vulkan);
@@ -7463,6 +7998,16 @@ int main() {
         }
         if (smoke_mode && std::string(smoke_mode) == "rt") {
             run_native_ray_tracing_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "rt-transmission") {
+            run_rt_transmission_path(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();

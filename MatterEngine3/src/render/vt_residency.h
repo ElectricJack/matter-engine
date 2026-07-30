@@ -107,6 +107,75 @@ inline bool vt_build_layout(uint32_t atlas_w, uint32_t atlas_h,
     return mips != 0;
 }
 
+// ---------------------------------------------------------------------------
+// Registration cost + the fail-closed gate (pure CPU; VtResidency applies it)
+// ---------------------------------------------------------------------------
+// A usable surfaces()-tape classification needs both arrays and an exact
+// per-vertex weight matrix; anything else fails closed to the TriEx materialId
+// path. Shared by the cost model and register_variant so the two can never
+// disagree about whether the tape columns are being copied.
+inline bool vt_context_has_surface_tape(const VtPartContext& context) {
+    return context.surface_material_count > 0 && context.surface_weights &&
+           context.surface_materials && context.surface_material_count <= 8u &&
+           context.vertex_count > 0;
+}
+
+// Exactly the CPU bytes register_variant will COPY for this registration (see
+// its LIFETIME note): every stream VtPartContext points at, plus the chart
+// table and triangle order of the atlas. This is the quantity
+// MATTER_VT_MESH_BUDGET_MB budgets, so sizing that knob for a world means
+// evaluating this function on one of its variants and multiplying.
+//
+// Per vertex, with everything present: 12 (positions) + 12 (normals) +
+// 8 (surface_uvs) + 4 (material_ids) + 4 (tint_rgba) + surface_material_count
+// (tape weight columns, one u8 each) = 40 + tape columns. Per triangle: 12.
+inline size_t vt_variant_mesh_bytes(const chart_atlas::ChartAtlasRung& atlas,
+                                    const VtPartContext& context) {
+    const bool tape = vt_context_has_surface_tape(context);
+    return static_cast<size_t>(context.vertex_count) *
+               (sizeof(float) * 3 * (context.positions ? 1 : 0) +
+                sizeof(float) * 3 * (context.normals ? 1 : 0) +
+                sizeof(float) * 2 * (context.surface_uvs ? 1 : 0) +
+                sizeof(uint32_t) * (context.material_ids ? 1 : 0) +
+                4 * (context.tint_rgba ? 1 : 0) +
+                (tape ? context.surface_material_count : 0)) +
+           static_cast<size_t>(context.triangle_count) * 3 * sizeof(uint32_t) +
+           static_cast<size_t>(context.material_count) *
+               context.material_stride * sizeof(float) +
+           (tape ? static_cast<size_t>(context.surface_material_count) *
+                       sizeof(uint32_t)
+                 : 0) +
+           atlas.charts.size() * sizeof(chart_atlas::ChartEntry) +
+           atlas.tri_order.size() * sizeof(uint32_t);
+}
+
+// Why a registration was refused. Every non-Accept verdict means the part keeps
+// rendering through the LEGACY per-material path: correct topology and (since
+// the tape's per-vertex argmax is baked into the legacy vertex stream)
+// correct classification, but flat per-material shading instead of composited
+// pages — no detail tileset, no tier-2 AO. Before that argmax bake it was worse
+// still: the refused far field rendered as one uniform material with a visible
+// boundary against the VT'd near field.
+enum class VtRejectReason {
+    Accept = 0,
+    NoLayer,      // every indirection array layer is taken (MATTER_VT_MAX_VARIANTS)
+    MeshBudget,   // the CPU mesh copy would exceed MATTER_VT_MESH_BUDGET_MB
+};
+
+// The two capacity gates register_variant applies BEFORE it takes any slot, so
+// a rejection can never leave a partial registration behind. Layer exhaustion
+// is checked first, matching register_variant's order.
+inline VtRejectReason vt_registration_verdict(uint32_t live_variants,
+                                              uint32_t max_variants,
+                                              size_t mesh_bytes_used,
+                                              size_t mesh_budget_bytes,
+                                              size_t mesh_bytes_wanted) {
+    if (live_variants >= max_variants) return VtRejectReason::NoLayer;
+    if (mesh_bytes_used + mesh_bytes_wanted > mesh_budget_bytes)
+        return VtRejectReason::MeshBudget;
+    return VtRejectReason::Accept;
+}
+
 // One indirection entry, as stored in R16G16_UINT.
 struct VtEntry {
     uint16_t slot = 0;        // physical page slot
@@ -365,6 +434,8 @@ class VtResidency {
   public:
     struct Stats {
         uint32_t variants = 0;          // registered (variant, rung) layers
+        uint32_t max_variants = 0;      // indirection layers the pool was sized for
+        uint64_t mesh_budget_bytes = 0; // MATTER_VT_MESH_BUDGET_MB, in bytes
         uint32_t pool_capacity = 0;
         uint32_t pool_used = 0;
         uint32_t pool_pinned = 0;
@@ -427,13 +498,27 @@ class VtResidency {
     // VtPartContext the filler receives points at this object's copies, which
     // live exactly as long as the registration. The copies are what makes the
     // "borrowed, outlives every queued fill" clause of vt_types.h true, and
-    // they are budgeted: MATTER_VT_MESH_BUDGET_MB (default 256) caps the
+    // they are budgeted: MATTER_VT_MESH_BUDGET_MB (default 1024) caps the
     // total, and a registration that would exceed it fails closed to the
     // legacy path rather than growing without bound across a streamed world.
+    //
+    // A rejection is NOT silent: it bumps Stats::rejected_variants and the
+    // first one logs a warning naming MATTER_VT_MAX_VARIANTS and
+    // MATTER_VT_MESH_BUDGET_MB. Rejections are how a streamed world ends up
+    // half-VT'd (near field classified, far field uniform legacy shading with
+    // a visible boundary), so they must be visible in the census, not inferred
+    // from pixels.
     uint32_t register_variant(uint64_t variant_hash, uint32_t rung,
                               const chart_atlas::ChartAtlasRung& atlas,
                               const VtPartContext& context);
     void release_variant(uint64_t variant_hash);
+    // Per-rung release for the renderer's demand-driven working set: an LRU
+    // eviction frees ONE (variant, rung) layer + its mesh copy + pinned tail
+    // without touching the part's other rungs. Same in-flight discipline as
+    // the full release (the caller defers filler-cache invalidation by the
+    // fill retirement horizon; the CPU copies die immediately because every
+    // recorded fill has already staged what it reads).
+    void release_variant(uint64_t variant_hash, uint32_t rung);
     uint32_t slot_for(uint64_t variant_hash, uint32_t rung) const;
 
     // WP-F: replace one registered (variant, rung)'s surfaces()-tape
@@ -559,6 +644,15 @@ class VtResidency {
     void destroy_pool_image(PoolImage& image);
     bool create_indirection(uint32_t layers, std::string& error);
     void write_variant_record(const VariantRung& v);
+    // Counts a fail-closed-to-legacy registration and warns ONCE, naming the
+    // env knobs. `wanted_bytes` is the mesh copy the rejected registration
+    // would have taken (0 when the layer table, not the budget, was the limit).
+    void note_rejection(const char* reason, size_t wanted_bytes);
+    // Shared teardown for both release_variant overloads: frees the layer,
+    // slots, queued fills and mesh copy of one (variant, rung) key. Returns
+    // false when the key is not registered. Does NOT refresh the pool-level
+    // stats lines — callers do, once, after their sweep.
+    bool release_variant_key(uint64_t key);
     // `force` queues a page even when the indirection already maps it —
     // the pinned tail is mapped at registration but still needs its fill.
     void queue_page(VariantRung& v, VtPageKey page, bool force = false,
@@ -623,6 +717,7 @@ class VtResidency {
     uint32_t max_variants_ = 0;
     size_t mesh_budget_bytes_ = 0;
     size_t mesh_bytes_used_ = 0;
+    bool warned_rejection_ = false;
     uint64_t frame_index_ = 0;
     uint32_t frame_slot_ = 0;
 

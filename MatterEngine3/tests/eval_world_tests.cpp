@@ -3,6 +3,7 @@
 #include "../src/script_host.h"
 #include "../src/terrain_field.h"
 #include "material_registry.h"
+#include <cmath>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -268,6 +269,117 @@ class OpsWorld extends World {
         CHECK(w[1] > 0.99f, "ChartVtProof: steep faces are rock");
         rt.weights_at(high, up, &wctx, w);
         CHECK(w[2] > 0.99f, "ChartVtProof: flat high ground is snow");
+        MaterialRegistryResetDynamic();
+    }
+
+    // ---- The shipped StreamMountain world: 4 materials + an alpine tape -----
+    // Same shape as the ChartVtProof block above (register the dynamic
+    // materials the world-definition loader would have assigned, then evaluate
+    // the real world source), but the assertions are about the classification
+    // itself: the four deterministic corners of the tape, and — evaluated
+    // against StreamMountain's OWN field, which is where the tape's
+    // relief/moisture channels come from — that all four classes actually occur
+    // across the range and land where alpine photographs put them.
+    {
+        std::ifstream in("../../projects/world_demo/worlds/StreamMountain.js",
+                         std::ios::binary);
+        CHECK(bool(in), "StreamMountain.js readable from the tests directory");
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        const std::string mountain_source = ss.str();
+
+        MaterialRegistryResetDynamic();
+        MaterialDef def{};
+        MaterialRegistryDefaultDynamicDef(&def);
+        const int ground = MaterialRegistryDefineDynamic(&def, "AlpineGround");
+        const int rock = MaterialRegistryDefineDynamic(&def, "AlpineRock");
+        const int scree = MaterialRegistryDefineDynamic(&def, "Scree");
+        const int snow = MaterialRegistryDefineDynamic(&def, "AlpineSnow");
+        CHECK(ground >= 30 && rock > ground && scree > rock && snow > scree,
+              "dynamic alpine materials registered");
+
+        WorldEvalResult mtn = host.eval_world(mountain_source, "{}");
+        CHECK(mtn.ok, mtn.message.c_str());
+        CHECK(!mtn.surface_program.empty(), "StreamMountain records a tape");
+        terrain_field::SurfaceProgram sp;
+        std::string serr;
+        CHECK(terrain_field::SurfaceProgram::parse(mtn.surface_program, sp, serr),
+              serr.c_str());
+        CHECK(sp.materials.size() == 4 && sp.uses_world_inputs(),
+              "StreamMountain declares 4 materials and reads world inputs");
+        CHECK(sp.materials[0].handle == ground &&
+                  sp.materials[1].handle == rock &&
+                  sp.materials[2].handle == scree &&
+                  sp.materials[3].handle == snow,
+              "StreamMountain weights resolve in declaration order");
+        // The tape shares the 64-register budget with every literal it names;
+        // leave the headroom visible so an edit that blows it fails here.
+        CHECK((int)sp.ops.size() <= 64,   // terrain_field.cpp kMaxOps
+              "StreamMountain tape fits the op budget");
+
+        terrain_field::FieldProgram fp;
+        std::string ferr;
+        CHECK(terrain_field::FieldProgram::parse(mtn.field_program, fp, ferr),
+              ferr.c_str());
+        terrain_field::FieldRuntime mf(std::move(fp));
+        terrain_field::SurfaceRuntime rt{std::move(sp)};
+        // No local_to_world: world x/z are the sample's x/z, so the field's
+        // relief/moisture channels are read at the point being classified.
+        terrain_field::SurfaceWorldContext wctx{&mf, nullptr};
+        float w[terrain_field::kMaxSurfaceMaterials];
+        const float up[3] = {0, 1, 0}, wall[3] = {1, 0.05f, 0};
+
+        // Corners that hold for EVERY (x, z) — the noise channels are bounded,
+        // so these four are properties of the tape, not of a lucky sample.
+        const float valley[3] = {130, 20, -70};
+        rt.weights_at(valley, up, &wctx, w);
+        CHECK(w[0] > 0.99f && w[1] < 1e-6f && w[2] < 1e-6f && w[3] < 1e-6f,
+              "StreamMountain: flat valley floor is alpine ground");
+        const float face[3] = {130, 260, -70};
+        rt.weights_at(face, wall, &wctx, w);
+        CHECK(w[1] > 0.99f, "StreamMountain: steep faces are rock");
+        const float summit[3] = {130, 700, -70};
+        rt.weights_at(summit, up, &wctx, w);
+        CHECK(w[3] > 0.99f, "StreamMountain: flat summit ground is snow");
+        rt.weights_at(summit, wall, &wctx, w);
+        CHECK(w[1] > 0.99f && w[3] < 1e-6f,
+              "StreamMountain: snow sheds off summit walls (they stay rock)");
+
+        // Sweep the real terrain: altitude from the field, normal tilt from the
+        // field gradient. Every class must occur, and snow/ground must not
+        // occur where the alps would not put them.
+        int wins[4] = {0, 0, 0, 0};
+        int total = 0;
+        float lowest_snow = 1e9f, highest_ground = -1e9f;
+        for (int ix = -24; ix <= 24; ++ix) {
+            for (int iz = -24; iz <= 24; ++iz) {
+                const float x = (float)ix * 50.0f, z = (float)iz * 50.0f;
+                const float h = mf.height_at(x, z);
+                const float g = mf.slope_at(x, z);          // |grad h|
+                const float inv_len = 1.0f / std::sqrt(1.0f + g * g);
+                const float pos[3] = {x, h, z};
+                const float nrm[3] = {g * inv_len, inv_len, 0.0f};
+                rt.weights_at(pos, nrm, &wctx, w);
+                int best = 0;
+                for (int k = 1; k < 4; ++k)
+                    if (w[k] > w[best]) best = k;
+                ++wins[best];
+                ++total;
+                if (best == 3 && h < lowest_snow) lowest_snow = h;
+                if (best == 0 && h > highest_ground) highest_ground = h;
+            }
+        }
+        CHECK(total == 49 * 49, "swept the whole grid");
+        CHECK(wins[0] > 0 && wins[1] > 0 && wins[2] > 0 && wins[3] > 0,
+              "all four alpine classes occur across the range");
+        // Valleys are the biggest single class (the range is mostly below the
+        // tree line at this seed) and snow the smallest — the shape the alpine
+        // reference photos have.
+        CHECK(wins[0] > wins[3], "ground covers more ground than snow");
+        CHECK(lowest_snow > 300.0f,
+              "no snow-dominant sample below 300 m (noise-broken, not random)");
+        CHECK(highest_ground < 560.0f,
+              "no turf-dominant sample above 560 m (stony belt takes over)");
         MaterialRegistryResetDynamic();
     }
 

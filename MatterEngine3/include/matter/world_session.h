@@ -157,6 +157,7 @@ struct FrameStats {
     // VT runtime never started (no chart-bearing part in the scene).
     bool     vt_active = false;
     uint32_t vt_variants = 0;          // registered (variant, rung) layers
+    uint32_t vt_max_variants = 0;      // MATTER_VT_MAX_VARIANTS, post-clamp
     uint32_t vt_pool_used = 0;         // occupied physical page slots
     uint32_t vt_pool_capacity = 0;
     uint32_t vt_pool_pinned = 0;       // always-resident tails
@@ -168,6 +169,7 @@ struct FrameStats {
     uint64_t vt_evictions_total = 0;
     uint64_t vt_pool_bytes = 0;
     uint64_t vt_mesh_bytes = 0;        // CPU mesh copies held for the filler
+    uint64_t vt_mesh_budget_bytes = 0; // MATTER_VT_MESH_BUDGET_MB, in bytes
     DlssMode dlss_selected_mode = DlssMode::Native;
     DlssMode dlss_active_mode = DlssMode::Native;
     uint32_t dlss_internal_width = 0;
