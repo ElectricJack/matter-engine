@@ -1,5 +1,6 @@
 #include "vt_residency.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 
@@ -20,6 +21,14 @@ uint64_t page_key(uint32_t layer, const VtPageKey& p) {
 }
 
 uint32_t env_u32(const char* name, uint32_t fallback, uint32_t lo, uint32_t hi) {
+    // The fallback obeys [lo, hi] too: callers pass device-derived caps as
+    // `hi` (e.g. max_variants_' indirection layer limit), and an unset env
+    // var must not smuggle a default past them. NVIDIA driver 610.74 dropped
+    // maxImageArrayLayers for the indirection's R16G16_UINT to 2048, which
+    // turned the unclamped 8192 default into a validation failure at
+    // vkCreateImage time.
+    if (fallback < lo) fallback = lo;
+    if (fallback > hi) fallback = hi;
     const char* value = std::getenv(name);
     if (!value || value[0] == '\0') return fallback;
     char* end = nullptr;
@@ -259,18 +268,61 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
         return false;
     }
     // One indirection ARRAY LAYER per (variant, rung), so this is hard-capped
-    // by the device's maxImageArrayLayers no matter what the env asks for (an
-    // RTX 4090 reports >= 8192; the Vulkan floor is 256).
+    // by what the device can actually CREATE for the indirection image, no
+    // matter what the env asks for.
     //
-    // 8192, not 1024: a streamed world registers one variant per resident
-    // sector rung, and StreamMountain's 2560 m ring is ~5000 sectors. At 1024
-    // most of the world was refused a layer and fell back to the legacy path,
-    // which renders but IGNORES the authored surfaces() classification -- the
-    // uniform tan far field with a visible boundary. The cost is 32 KiB of
-    // indirection image per layer (8192 layers = 256 MiB), paid up front at
-    // init; drop MATTER_VT_MAX_VARIANTS on a memory-tight device.
+    // That cap is NOT properties.limits.maxImageArrayLayers alone: the
+    // per-format Image Creation Limits (VUID-VkImageCreateInfo-arrayLayers-
+    // 02256) can be tighter -- current NVIDIA drivers report 2048 for
+    // R16G16_UINT while the general limit is 8192, and creating the 8192-layer
+    // indirection tripped validation. Query the format-specific limit for the
+    // exact image we create below and clamp to the smaller of the two.
+    //
+    // 8192, not 1024, as the default ask: a streamed world registers one
+    // variant per resident sector rung, and StreamMountain's 2560 m ring is
+    // ~5000 sectors. At 1024 most of the world was refused a layer and fell
+    // back to the legacy path, which renders but IGNORES the authored
+    // surfaces() classification -- the uniform tan far field with a visible
+    // boundary. The cost is 32 KiB of indirection image per layer; drop
+    // MATTER_VT_MAX_VARIANTS on a memory-tight device.
+    VkImageFormatProperties indirection_limits{};
+    uint32_t max_indirection_layers = max_layers;
+    if (vkGetPhysicalDeviceImageFormatProperties(
+            vulkan.physical_device(), VK_FORMAT_R16G16_UINT,
+            VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0,
+            &indirection_limits) == VK_SUCCESS &&
+        indirection_limits.maxArrayLayers > 0) {
+        max_indirection_layers =
+            std::min(max_indirection_layers,
+                     indirection_limits.maxArrayLayers);
+    }
+    const uint32_t requested_variants =
+        env_u32("MATTER_VT_MAX_VARIANTS", 8192u, 4u, 0xFFFFFFFFu);
     max_variants_ = env_u32("MATTER_VT_MAX_VARIANTS", 8192u, 4u,
-                            max_layers < 8192u ? max_layers : 8192u);
+                            max_indirection_layers < 8192u
+                                ? max_indirection_layers
+                                : 8192u);
+    if (requested_variants > max_variants_) {
+        // Say BOTH numbers, loudly and once. Without this the census reads
+        // "variants=2048/2048, rejected=N" and the obvious move -- raise
+        // MATTER_VT_MAX_VARIANTS -- silently does nothing, because the wall is
+        // the device's per-format array-layer limit, not the setting. Getting
+        // past it needs the indirection restructure (several variants per
+        // layer, or a buffer instead of an array image), not a bigger number.
+        std::fprintf(stderr,
+                     "[vt] variant layers CLAMPED to %u: %u were requested "
+                     "(MATTER_VT_MAX_VARIANTS) but this device allows at most "
+                     "%u array layers for the R16G16_UINT indirection image "
+                     "(maxImageArrayLayers=%u, per-format maxArrayLayers=%u). "
+                     "One layer is one (variant, rung), so a streamed world "
+                     "with more resident sector rungs than %u will have the "
+                     "remainder fall back to the legacy path.\n",
+                     max_variants_, requested_variants, max_indirection_layers,
+                     max_layers, indirection_limits.maxArrayLayers,
+                     max_variants_);
+        std::fflush(stderr);
+    }
     max_fills_per_frame_ =
         env_u32("MATTER_VT_FILLS_PER_FRAME", 8u, 1u, kMaxFillFlags);
     // WP-H: tier-2 budget is deliberately SEPARATE from the fill budget --
@@ -488,7 +540,9 @@ void VtResidency::note_rejection(const char* reason, size_t wanted_bytes) {
                  "part falls back to the legacy path and ignores its "
                  "surfaces() classification. variants=%u/%u, mesh=%.1f/%.1f "
                  "MiB, wanted=%.1f KiB. Raise MATTER_VT_MAX_VARIANTS "
-                 "(indirection layers, capped by maxImageArrayLayers) and/or "
+                 "(indirection layers -- already clamped to the most this "
+                 "device can create, so variants==max means the CAP is the "
+                 "wall, not the setting) and/or "
                  "MATTER_VT_MESH_BUDGET_MB. Further rejections are counted in "
                  "the VT census (vt_rejected_variants) but not logged.\n",
                  reason, stats_.variants, max_variants_, used_mb, budget_mb,
@@ -649,38 +703,49 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
     return layer + 1u;
 }
 
+bool VtResidency::release_variant_key(uint64_t key) {
+    const auto found = layer_of_.find(key);
+    if (found == layer_of_.end()) return false;
+    const uint32_t layer = found->second;
+    VariantRung& v = variants_[layer];
+    // Release every slot this variant owns.
+    for (uint32_t slot = 0; slot < slots_.capacity(); ++slot) {
+        const VtSlotPool::Owner& o = slots_.owner(slot);
+        if (o.live && o.variant_key == key) {
+            slot_reset_tier(slot);
+            slots_.release(slot);
+        }
+    }
+    // Drop queued fills for it.
+    for (size_t i = queue_.size(); i-- > 0;) {
+        if (queue_[i].layer == layer) {
+            queued_keys_.erase(page_key(layer, queue_[i].page));
+            queue_.erase(queue_.begin() + static_cast<long>(i));
+        }
+    }
+    mesh_bytes_used_ -= std::min(mesh_bytes_used_, v.mesh_bytes);
+    v = VariantRung{};
+    stats_.mesh_bytes = mesh_bytes_used_;
+    variant_records_[layer] = VariantRecordGpu{};
+    variant_records_dirty_ = true;
+    free_layers_.push_back(layer);
+    layer_of_.erase(found);
+    if (stats_.variants) --stats_.variants;
+    return true;
+}
+
 void VtResidency::release_variant(uint64_t variant_hash) {
     if (!ready_) return;
-    for (uint32_t rung = 0; rung < 32u; ++rung) {
-        const uint64_t key = variant_key(variant_hash, rung);
-        const auto found = layer_of_.find(key);
-        if (found == layer_of_.end()) continue;
-        const uint32_t layer = found->second;
-        VariantRung& v = variants_[layer];
-        // Release every slot this variant owns.
-        for (uint32_t slot = 0; slot < slots_.capacity(); ++slot) {
-            const VtSlotPool::Owner& o = slots_.owner(slot);
-            if (o.live && o.variant_key == key) {
-                slot_reset_tier(slot);
-                slots_.release(slot);
-            }
-        }
-        // Drop queued fills for it.
-        for (size_t i = queue_.size(); i-- > 0;) {
-            if (queue_[i].layer == layer) {
-                queued_keys_.erase(page_key(layer, queue_[i].page));
-                queue_.erase(queue_.begin() + static_cast<long>(i));
-            }
-        }
-        mesh_bytes_used_ -= std::min(mesh_bytes_used_, v.mesh_bytes);
-        v = VariantRung{};
-        stats_.mesh_bytes = mesh_bytes_used_;
-        variant_records_[layer] = VariantRecordGpu{};
-        variant_records_dirty_ = true;
-        free_layers_.push_back(layer);
-        layer_of_.erase(found);
-        if (stats_.variants) --stats_.variants;
-    }
+    for (uint32_t rung = 0; rung < 32u; ++rung)
+        release_variant_key(variant_key(variant_hash, rung));
+    stats_.pool_used = slots_.used();
+    stats_.pool_pinned = slots_.pinned();
+    stats_.queue_depth = static_cast<uint32_t>(queue_.size());
+}
+
+void VtResidency::release_variant(uint64_t variant_hash, uint32_t rung) {
+    if (!ready_) return;
+    if (!release_variant_key(variant_key(variant_hash, rung))) return;
     stats_.pool_used = slots_.used();
     stats_.pool_pinned = slots_.pinned();
     stats_.queue_depth = static_cast<uint32_t>(queue_.size());

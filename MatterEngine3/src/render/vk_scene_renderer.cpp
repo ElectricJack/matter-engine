@@ -3838,6 +3838,20 @@ void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
     if (part_slot < 0 || static_cast<size_t>(part_slot) >= parts_.size()) return;
     PartRecord& record = parts_[part_slot];
     record.vt_slots.assign(kVkMaxLod, vt::kVtNoSlot);
+    // Demand-driven path: the part declares which rungs COULD carry a VT
+    // variant and ships no payload. Nothing registers here — the per-frame
+    // demand pass surfaces (part, rung) requests when a rung is actually
+    // selected on screen, and the engine answers with register_vt_rung().
+    // Deliberately no ensure_vt_runtime() either: a world whose deferred
+    // parts never get close enough to want a variant never starts the
+    // runtime, exactly like a chartless world.
+    if (part.vt_deferred_rung_mask != 0) {
+        record.vt_rung_mask = part.vt_deferred_rung_mask;
+        record.vt_last_wanted.fill(0);
+        record.vt_last_requested.fill(0);
+        ++vt_deferred_parts_;
+        return;
+    }
     bool any_charts = false;
     for (const chart_atlas::ChartAtlasRung& rung : part.lod_charts) {
         if (!rung.charts.empty()) { any_charts = true; break; }
@@ -3908,6 +3922,202 @@ void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
             part.part_hash, static_cast<uint32_t>(rung), atlas, context);
         record.vt_slots[rung] = slot;
         if (slot != vt::kVtNoSlot) vt_draw_slots_dirty_ = true;
+    }
+}
+
+// --- Demand-driven VT variant registration ----------------------------------
+
+void VkSceneRenderer::take_vt_rung_requests(std::vector<VtRungRequest>& out) {
+    out.clear();
+    out.swap(vt_rung_requests_);
+}
+
+void VkSceneRenderer::evict_vt_rung(PartRecord& record, uint32_t rung) {
+    if (rung >= record.vt_slots.size() ||
+        record.vt_slots[rung] == vt::kVtNoSlot)
+        return;
+    if (vt_) vt_->release_variant(record.hash, rung);
+    record.vt_slots[rung] = vt::kVtNoSlot;
+    // Same deferred filler-cache retirement as release_part: a fill recorded
+    // this frame may still read the compositor/enricher buffers cached for
+    // this part. Re-registration after the drop rebuilds them (content-
+    // addressed, so only tape edits actually change what gets rebuilt).
+    if (vt_compositor_ || vt_enricher_)
+        vt_pending_invalidate_.emplace_back(record.hash,
+                                            vt_invalidate_retire_serial());
+    vt_draw_slots_dirty_ = true;
+}
+
+bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
+                                       const chart_atlas::ChartAtlasRung& atlas,
+                                       const vt::VtPartContext& context) {
+    const auto found = slot_of_.find(part_hash);
+    if (found == slot_of_.end()) return false;   // part unloaded since request
+    PartRecord& record = parts_[found->second];
+    if (rung >= kVkMaxLod || ((record.vt_rung_mask >> rung) & 1u) == 0u)
+        return false;
+    if (record.vt_slots.size() < kVkMaxLod)
+        record.vt_slots.assign(kVkMaxLod, vt::kVtNoSlot);
+    if (record.vt_slots[rung] != vt::kVtNoSlot) return true;   // already live
+    std::string error;
+    if (!ensure_vt_runtime(error)) return false;
+
+    // Working-set admission: when the layer pool or the CPU mesh budget is
+    // full, reclaim least-recently-wanted demand-managed variants until the
+    // registration fits. Eager registrations (vt_rung_mask == 0) and anything
+    // wanted THIS demand frame are never victims — if only those remain, the
+    // working set genuinely exceeds the budget, the residency layer counts
+    // the rejection, and the warning banner tells the author which knob to
+    // raise. The request itself simply retries while the rung stays wanted.
+    const size_t wanted_bytes = vt::vt_variant_mesh_bytes(atlas, context);
+    for (;;) {
+        const vt::VtResidency::Stats& s = vt_->stats();
+        if (vt::vt_registration_verdict(s.variants, s.max_variants,
+                                        s.mesh_bytes, s.mesh_budget_bytes,
+                                        wanted_bytes) ==
+            vt::VtRejectReason::Accept)
+            break;
+        PartRecord* victim_record = nullptr;
+        uint32_t victim_rung = 0;
+        uint64_t victim_stamp = UINT64_MAX;
+        for (PartRecord& candidate : parts_) {
+            if (!candidate.live || candidate.vt_rung_mask == 0u) continue;
+            const size_t rung_count =
+                std::min<size_t>(candidate.vt_slots.size(), kVkMaxLod);
+            for (uint32_t r = 0; r < rung_count; ++r) {
+                if (candidate.vt_slots[r] == vt::kVtNoSlot) continue;
+                const uint64_t stamp = candidate.vt_last_wanted[r];
+                if (stamp >= vt_demand_frame_) continue;   // wanted this frame
+                if (stamp < victim_stamp) {
+                    victim_stamp = stamp;
+                    victim_record = &candidate;
+                    victim_rung = r;
+                }
+            }
+        }
+        if (!victim_record) break;   // nothing evictable; let the gate reject
+        evict_vt_rung(*victim_record, victim_rung);
+    }
+
+    const uint32_t slot = vt_->register_variant(part_hash, rung, atlas, context);
+    record.vt_slots[rung] = slot;
+    if (slot != vt::kVtNoSlot) vt_draw_slots_dirty_ = true;
+    return slot != vt::kVtNoSlot;
+}
+
+void VkSceneRenderer::update_vt_demand(matter::Float3 camera_eye,
+                                       float pixel_budget) {
+    if (vt_deferred_parts_ == 0) return;
+    if (vt_linger_frames_ == 0) {
+        const auto env_u32 = [](const char* name, uint32_t fallback,
+                                uint32_t lo, uint32_t hi) {
+            const char* raw = std::getenv(name);
+            if (!raw || !*raw) return fallback;
+            char* end = nullptr;
+            const unsigned long value = std::strtoul(raw, &end, 10);
+            if (end == raw) return fallback;
+            return static_cast<uint32_t>(
+                std::min<unsigned long>(hi, std::max<unsigned long>(lo, value)));
+        };
+        vt_linger_frames_ = env_u32("MATTER_VT_LINGER_FRAMES", 240u, 2u, 100000u);
+        vt_max_requests_ = env_u32("MATTER_VT_REQUESTS_PER_FRAME", 16u, 1u, 256u);
+    }
+    ++vt_demand_frame_;
+
+    // Stamp wanted rungs: the exact CPU mirror of cull.comp's LOD selection
+    // (same clusters, thresholds and projected-size formula) over the static
+    // instance set. instance_staging_ holds exactly that set here — dynamic
+    // tails are merged later, in prepare_frame, and dynamic (animated)
+    // instances are not deferred-VT parts. A near-threshold float divergence
+    // from the GPU costs one frame of classified-legacy fallback for one
+    // cluster, nothing more.
+    vt_rung_requests_.clear();
+    for (const GpuInstance& instance : instance_staging_) {
+        if (instance.part_slot >= parts_.size()) continue;
+        PartRecord& record = parts_[instance.part_slot];
+        if (record.vt_rung_mask == 0u || !record.live) continue;
+        const float* m = instance.object_to_world.elements;   // column-major
+        const float scale =
+            (std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]) +
+             std::sqrt(m[4] * m[4] + m[5] * m[5] + m[6] * m[6]) +
+             std::sqrt(m[8] * m[8] + m[9] * m[9] + m[10] * m[10])) /
+            3.0f;
+        const uint32_t cluster_end = instance.cluster_start +
+                                     instance.cluster_count;
+        for (uint32_t c = instance.cluster_start;
+             c < cluster_end && c < cluster_staging_.size(); ++c) {
+            const GpuCluster& cluster = cluster_staging_[c];
+            const float lx = (cluster.aabb_min[0] + cluster.aabb_max[0]) * 0.5f;
+            const float ly = (cluster.aabb_min[1] + cluster.aabb_max[1]) * 0.5f;
+            const float lz = (cluster.aabb_min[2] + cluster.aabb_max[2]) * 0.5f;
+            const float wx = m[0] * lx + m[4] * ly + m[8] * lz + m[12];
+            const float wy = m[1] * lx + m[5] * ly + m[9] * lz + m[13];
+            const float wz = m[2] * lx + m[6] * ly + m[10] * lz + m[14];
+            const float dx = wx - camera_eye.x;
+            const float dy = wy - camera_eye.y;
+            const float dz = wz - camera_eye.z;
+            const float distance_to_eye =
+                std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 0.01f);
+            const float projected_size =
+                cluster.radius * scale / distance_to_eye * pixel_budget;
+            uint32_t lod = cluster.lod_count != 0 ? cluster.lod_count - 1u : 0u;
+            for (uint32_t i = 0; i < cluster.lod_count; ++i) {
+                if (projected_size >= cluster.thresholds[i]) {
+                    lod = i;
+                    break;
+                }
+            }
+            if (c >= cluster_lods_.size()) continue;
+            const std::vector<VkSceneLod>& lods = cluster_lods_[c];
+            if (lod >= lods.size()) continue;
+            const uint32_t rung = lods[lod].chart_rung;
+            if (rung >= kVkMaxLod ||
+                ((record.vt_rung_mask >> rung) & 1u) == 0u)
+                continue;
+            record.vt_last_wanted[rung] = vt_demand_frame_;
+            const bool registered =
+                rung < record.vt_slots.size() &&
+                record.vt_slots[rung] != vt::kVtNoSlot;
+            if (!registered &&
+                record.vt_last_requested[rung] != vt_demand_frame_) {
+                record.vt_last_requested[rung] = vt_demand_frame_;
+                vt_rung_requests_.push_back(
+                    {record.hash, rung, projected_size});
+            } else if (!registered) {
+                // Already queued this frame by another cluster/instance —
+                // keep the highest priority for the sort below.
+                for (VtRungRequest& request : vt_rung_requests_) {
+                    if (request.part_hash == record.hash &&
+                        request.rung == rung) {
+                        request.priority =
+                            std::max(request.priority, projected_size);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    std::sort(vt_rung_requests_.begin(), vt_rung_requests_.end(),
+              [](const VtRungRequest& a, const VtRungRequest& b) {
+                  return a.priority > b.priority;
+              });
+    if (vt_rung_requests_.size() > vt_max_requests_)
+        vt_rung_requests_.resize(vt_max_requests_);
+
+    // Linger release: reclaim variants no instance has wanted for a while.
+    // Proactive (not just under admission pressure) so the pool tracks the
+    // camera instead of pinning the high-water-mark working set forever.
+    if (!vt_ || !vt_->available()) return;
+    for (PartRecord& record : parts_) {
+        if (!record.live || record.vt_rung_mask == 0u) continue;
+        const size_t rung_count =
+            std::min<size_t>(record.vt_slots.size(), kVkMaxLod);
+        for (uint32_t r = 0; r < rung_count; ++r) {
+            if (record.vt_slots[r] == vt::kVtNoSlot) continue;
+            if (vt_demand_frame_ - record.vt_last_wanted[r] >
+                vt_linger_frames_)
+                evict_vt_rung(record, r);
+        }
     }
 }
 
@@ -6902,6 +7112,8 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
         vt_pending_invalidate_.emplace_back(part_hash,
                                             vt_invalidate_retire_serial());
     vt_draw_slots_dirty_ = true;
+    if (record.vt_rung_mask != 0u && vt_deferred_parts_ != 0u)
+        --vt_deferred_parts_;
     // The slot itself is never reused (cluster.part_slot values and rt_lods
     // stay stable); the emptied record just stops matching every liveness
     // test. Its RT buffers drop here, exactly as before.
@@ -9101,6 +9313,11 @@ bool VkSceneRenderer::record_cull_and_render(
         return false;
     }
     if (!validate_draw_command_regions(error)) return false;
+    // Demand-driven VT: stamp wanted rungs against this frame's camera,
+    // surface registration requests (the engine drains them before its next
+    // render call) and reclaim lingering variants. Before prepare_frame so a
+    // release lands in this frame's vt_draw_slots upload.
+    update_vt_demand(camera_eye, pixel_budget);
     const VkExtent2D internal_extent =
         temporal_frame_.internal_extent.width != 0
             ? temporal_frame_.internal_extent
@@ -10312,6 +10529,8 @@ void VkSceneRenderer::reset() {
     }
     parts_.clear();
     slot_of_.clear();
+    vt_deferred_parts_ = 0;
+    vt_rung_requests_.clear();
     cluster_staging_.clear();
     cluster_lods_.clear();
     free_clusters_.clear();

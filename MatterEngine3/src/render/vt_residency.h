@@ -150,9 +150,12 @@ inline size_t vt_variant_mesh_bytes(const chart_atlas::ChartAtlasRung& atlas,
 }
 
 // Why a registration was refused. Every non-Accept verdict means the part keeps
-// rendering through the LEGACY per-material path — correct topology, but the
-// authored surfaces() classification is ignored, which in a streamed world
-// reads as a uniform far field with a visible boundary.
+// rendering through the LEGACY per-material path: correct topology and (since
+// the tape's per-vertex argmax is baked into the legacy vertex stream)
+// correct classification, but flat per-material shading instead of composited
+// pages — no detail tileset, no tier-2 AO. Before that argmax bake it was worse
+// still: the refused far field rendered as one uniform material with a visible
+// boundary against the VT'd near field.
 enum class VtRejectReason {
     Accept = 0,
     NoLayer,      // every indirection array layer is taken (MATTER_VT_MAX_VARIANTS)
@@ -509,6 +512,13 @@ class VtResidency {
                               const chart_atlas::ChartAtlasRung& atlas,
                               const VtPartContext& context);
     void release_variant(uint64_t variant_hash);
+    // Per-rung release for the renderer's demand-driven working set: an LRU
+    // eviction frees ONE (variant, rung) layer + its mesh copy + pinned tail
+    // without touching the part's other rungs. Same in-flight discipline as
+    // the full release (the caller defers filler-cache invalidation by the
+    // fill retirement horizon; the CPU copies die immediately because every
+    // recorded fill has already staged what it reads).
+    void release_variant(uint64_t variant_hash, uint32_t rung);
     uint32_t slot_for(uint64_t variant_hash, uint32_t rung) const;
 
     // WP-F: replace one registered (variant, rung)'s surfaces()-tape
@@ -638,6 +648,11 @@ class VtResidency {
     // env knobs. `wanted_bytes` is the mesh copy the rejected registration
     // would have taken (0 when the layer table, not the budget, was the limit).
     void note_rejection(const char* reason, size_t wanted_bytes);
+    // Shared teardown for both release_variant overloads: frees the layer,
+    // slots, queued fills and mesh copy of one (variant, rung) key. Returns
+    // false when the key is not registered. Does NOT refresh the pool-level
+    // stats lines — callers do, once, after their sweep.
+    bool release_variant_key(uint64_t key);
     // `force` queues a page even when the indirection already maps it —
     // the pinned tail is mapped at registration but still needs its fill.
     void queue_page(VariantRung& v, VtPageKey page, bool force = false,

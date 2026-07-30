@@ -723,6 +723,7 @@ struct WorldSession::Impl {
     // re-textures the world even though sector hashes (and their meshes)
     // never changed.
     void schedule_vt_surface_reclassify();
+    void service_vt_rung_requests();
     // Phase C Task 9: drain sector evictions — release resources for evicted sectors.
     // Called on the worker thread (within a gpu_jobs.run_blocking context or inline).
     struct SectorEntry;
@@ -3036,6 +3037,132 @@ void WorldSession::Impl::schedule_vt_surface_reclassify() {
 }
 
 // ---------------------------------------------------------------------------
+// WorldSession::Impl::service_vt_rung_requests (demand-driven VT)
+// The renderer's per-frame demand pass surfaced (part, rung) variants that
+// are wanted on screen but not registered. Rebuild each one's atlas and
+// VtPartContext from the part store's retained LoadedPart (the same data the
+// eager path copied at ensure time), re-run the surfaces() tape for exactly
+// that rung, and answer with register_vt_rung(). Everything the context
+// points at is borrowed for the call — the residency layer copies
+// synchronously. Runs on the render/GL thread, right before the frame that
+// will first draw the registered variant.
+// ---------------------------------------------------------------------------
+void WorldSession::Impl::service_vt_rung_requests() {
+#ifdef MATTER_VULKAN_VIEWER
+    if (!vk_scene || !store) return;
+    std::vector<viewer::VtRungRequest> requests;
+    vk_scene->take_vt_rung_requests(requests);
+    if (requests.empty()) return;
+
+    // Per-batch shared inputs: one registry pack every context borrows, the
+    // instance-count bookkeeping for the world-anchored rule, and the
+    // resident-sector reverse index that supplies each variant's world
+    // transform (mirrors schedule_vt_surface_reclassify).
+    std::vector<float> material_table;
+    const int material_count = MaterialRegistryCount();
+    if (material_count > 0) {
+        material_table.assign(
+            static_cast<size_t>(material_count) * MATERIAL_FLOATS_PER_DEF,
+            0.0f);
+        MaterialRegistryPackForGPU(material_table.data());
+    }
+    std::unordered_map<uint64_t, uint32_t> refs_by_hash;
+    refs_by_hash.reserve(state.entries().size());
+    for (const auto& e : state.entries()) ++refs_by_hash[e.part_hash];
+    std::unordered_map<uint64_t, std::pair<float, float>> sector_by_hash;
+    if (world_surface) {
+        sector_by_hash.reserve(sector_map.size());
+        for (const auto& kv : sector_map) {
+            if (!kv.second.resident || kv.second.part_hash == 0) continue;
+            sector_by_hash.emplace(
+                kv.second.part_hash,
+                std::make_pair(
+                    static_cast<float>(kv.first.tx) * world_sector_size,
+                    static_cast<float>(kv.first.tz) * world_sector_size));
+        }
+    }
+
+    std::vector<uint8_t> weights;
+    std::vector<uint32_t> materials;
+    for (const viewer::VtRungRequest& request : requests) {
+        const viewer::LoadedPart* loaded = store->get_or_load(request.part_hash);
+        if (!loaded) continue;   // unloaded since the request; demand re-asks
+        if (request.rung >= loaded->lod_charts.size() ||
+            request.rung >= loaded->lod_mesh_data.size())
+            continue;
+        const chart_atlas::ChartAtlasRung& atlas =
+            loaded->lod_charts[request.rung];
+        if (atlas.charts.empty()) continue;
+        const auto& mesh = loaded->lod_mesh_data[request.rung];
+        if (mesh.vertex_count <= 0 || mesh.indices.empty()) continue;
+
+        vt::VtPartContext context;
+        context.variant_hash = request.part_hash;
+        context.rung = request.rung;
+        context.rung_count =
+            static_cast<uint32_t>(loaded->lod_charts.size());
+        context.positions =
+            mesh.vertices.empty() ? nullptr : mesh.vertices.data();
+        context.normals = mesh.normals.empty() ? nullptr : mesh.normals.data();
+        context.surface_uvs =
+            mesh.surface_uvs.empty() ? nullptr : mesh.surface_uvs.data();
+        context.material_ids =
+            mesh.material_ids.empty() ? nullptr : mesh.material_ids.data();
+        context.vertex_count = static_cast<uint32_t>(mesh.vertex_count);
+        context.indices = mesh.indices.data();
+        context.triangle_count =
+            static_cast<uint32_t>(mesh.indices.size() / 3u);
+        context.dominant_material = mesh.material_ids.empty()
+                                        ? UINT32_MAX
+                                        : mesh.material_ids.front();
+        context.material_table =
+            material_table.empty() ? nullptr : material_table.data();
+        context.material_count = static_cast<uint32_t>(material_count);
+        context.material_stride = MATERIAL_FLOATS_PER_DEF;
+
+        // WP-F: sector variants classify against the CURRENT tape — a tape
+        // edited while the variant was unregistered is picked up here, so a
+        // re-registration can never resurrect stale weights.
+        weights.clear();
+        materials.clear();
+        if (world_surface && world_surface->material_count() > 0) {
+            const auto sector = sector_by_hash.find(request.part_hash);
+            if (sector != sector_by_hash.end()) {
+                VtSurfaceClassifier classifier;
+                classifier.tape = world_surface.get();
+                classifier.field = world_field.get();
+                classifier.tape_hash = world_surface_hash;
+                const auto refs = refs_by_hash.find(request.part_hash);
+                classifier.world_anchored =
+                    terrain_field::surface_variant_world_anchored(
+                        refs == refs_by_hash.end() ? 0u : refs->second);
+                classifier.local_to_world[3] = sector->second.first;
+                classifier.local_to_world[11] = sector->second.second;
+                vt_classify_chart_vertices(
+                    classifier, mesh.vertices.data(),
+                    mesh.normals.empty() ? nullptr : mesh.normals.data(),
+                    static_cast<uint32_t>(mesh.vertex_count), weights);
+                if (!weights.empty()) {
+                    materials.reserve(world_surface->material_count());
+                    for (uint32_t k = 0; k < world_surface->material_count();
+                         ++k)
+                        materials.push_back(static_cast<uint32_t>(
+                            world_surface->material_handle(k)));
+                    context.surface_weights = weights.data();
+                    context.surface_materials = materials.data();
+                    context.surface_material_count =
+                        static_cast<uint32_t>(materials.size());
+                    context.surface_tape_hash = world_surface_hash;
+                }
+            }
+        }
+        vk_scene->register_vt_rung(request.part_hash, request.rung, atlas,
+                                   context);
+    }
+#endif
+}
+
+// ---------------------------------------------------------------------------
 // WorldSession::Impl::drain_sector_evictions
 // Phase C Task 9: process pending evictions from the sector streamer.
 // Removes instances from world state, releases GPU and PartStore resources,
@@ -5252,15 +5379,6 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
             if (!rung.charts.empty()) { any_charts = true; break; }
         }
         if (any_charts) {
-            part.lod_charts = loaded.lod_charts;
-            part.lod_chart_meshes.resize(loaded.lod_charts.size());
-            if (material_count > 0) {
-                part.chart_material_stride = MATERIAL_FLOATS_PER_DEF;
-                part.chart_material_table.assign(
-                    static_cast<size_t>(material_count) * MATERIAL_FLOATS_PER_DEF,
-                    0.0f);
-                MaterialRegistryPackForGPU(part.chart_material_table.data());
-            }
             // WP-F: when the world compiled a surfaces() tape, classify each
             // chart rung's vertices into per-vertex weight columns the page
             // compositor interpolates (world inputs per the anchored rule).
@@ -5274,27 +5392,67 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                     part.surface_materials.push_back(static_cast<uint32_t>(
                         surface->tape->material_handle(k)));
             }
-            for (size_t mi = 0;
-                 mi < loaded.lod_mesh_data.size() &&
-                 mi < part.lod_chart_meshes.size(); ++mi) {
-                if (loaded.lod_charts[mi].charts.empty()) continue;
-                const auto& mesh = loaded.lod_mesh_data[mi];
-                if (mesh.vertex_count <= 0 || mesh.indices.empty()) continue;
-                viewer::VkScenePartChartMesh& out = part.lod_chart_meshes[mi];
-                out.vertex_count = static_cast<uint32_t>(mesh.vertex_count);
-                out.positions = mesh.vertices;
-                out.normals = mesh.normals;
-                out.surface_uvs = mesh.surface_uvs;
-                out.material_ids = mesh.material_ids;
-                out.indices = mesh.indices;
-                out.dominant_material =
-                    mesh.material_ids.empty() ? UINT32_MAX
-                                              : mesh.material_ids.front();
-                if (classify) {
-                    vt_classify_chart_vertices(
-                        *surface, out.positions.data(),
-                        out.normals.empty() ? nullptr : out.normals.data(),
-                        out.vertex_count, out.surface_weights);
+            // Demand-driven VT (default): declare the registrable rungs and
+            // ship NO payload — no chart-table copy, no per-rung mesh copies,
+            // no packed material table. Variants materialize later through
+            // the renderer's demand pass + WorldSession's request servicing,
+            // rebuilt from this same LoadedPart (the store keeps it CPU-side
+            // for the part's whole life). Eagerly copying the payload here
+            // for every streamed sector is exactly what made whole-world VT
+            // registration O(world) in CPU bytes. MATTER_VT_EAGER=1 restores
+            // the register-everything-at-load behaviour.
+            static const bool vt_eager =
+                std::getenv("MATTER_VT_EAGER") != nullptr;
+            if (!vt_eager) {
+                uint32_t rung_mask = 0;
+                const size_t mask_rungs =
+                    std::min<size_t>(loaded.lod_charts.size(), 32u);
+                for (size_t mi = 0; mi < mask_rungs; ++mi) {
+                    if (loaded.lod_charts[mi].charts.empty()) continue;
+                    if (mi >= loaded.lod_mesh_data.size()) continue;
+                    const auto& mesh = loaded.lod_mesh_data[mi];
+                    if (mesh.vertex_count <= 0 || mesh.indices.empty())
+                        continue;
+                    rung_mask |= 1u << mi;
+                }
+                part.vt_deferred_rung_mask = rung_mask;
+            } else {
+                part.lod_charts = loaded.lod_charts;
+                part.lod_chart_meshes.resize(loaded.lod_charts.size());
+                if (material_count > 0) {
+                    part.chart_material_stride = MATERIAL_FLOATS_PER_DEF;
+                    part.chart_material_table.assign(
+                        static_cast<size_t>(material_count) *
+                            MATERIAL_FLOATS_PER_DEF,
+                        0.0f);
+                    MaterialRegistryPackForGPU(part.chart_material_table.data());
+                }
+                for (size_t mi = 0;
+                     mi < loaded.lod_mesh_data.size() &&
+                     mi < part.lod_chart_meshes.size(); ++mi) {
+                    if (loaded.lod_charts[mi].charts.empty()) continue;
+                    const auto& mesh = loaded.lod_mesh_data[mi];
+                    if (mesh.vertex_count <= 0 || mesh.indices.empty())
+                        continue;
+                    viewer::VkScenePartChartMesh& out =
+                        part.lod_chart_meshes[mi];
+                    out.vertex_count =
+                        static_cast<uint32_t>(mesh.vertex_count);
+                    out.positions = mesh.vertices;
+                    out.normals = mesh.normals;
+                    out.surface_uvs = mesh.surface_uvs;
+                    out.material_ids = mesh.material_ids;
+                    out.indices = mesh.indices;
+                    out.dominant_material =
+                        mesh.material_ids.empty() ? UINT32_MAX
+                                                  : mesh.material_ids.front();
+                    if (classify) {
+                        vt_classify_chart_vertices(
+                            *surface, out.positions.data(),
+                            out.normals.empty() ? nullptr
+                                                : out.normals.data(),
+                            out.vertex_count, out.surface_weights);
+                    }
                 }
             }
             // Fail-closed parity for the LEGACY path: bake the tape's argmax
@@ -5906,6 +6064,10 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->vk_scene->set_composite_debug_view(controls.composite_debug_view);
     const auto build_end = std::chrono::steady_clock::now();
     const auto draw_start = std::chrono::steady_clock::now();
+    // Demand-driven VT: register the (part, rung) variants last frame's
+    // demand pass asked for, so this frame's vt_draw_slots table already
+    // carries them (their tail fills record inside record_cull_and_render).
+    impl_->service_vt_rung_requests();
     if (!impl_->vk_scene->record_cull_and_render(
             frame, matrices, cam.position, budget, err)) {
         impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
