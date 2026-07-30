@@ -74,14 +74,19 @@ class AlpineRockDetail extends Tileset {
 
     // Broken bed fragments lying on the outcrop. Snapped (no settle): flat
     // slabs on terraced rock sit naturally with a fraction embedded.
+    // Scale ranges are HALF the original: AlpineSlab bakes at a doubled
+    // native size so its box core clears the part mesher's ~67 mm voxel
+    // (see AlpineSlab.js header); world-space size is unchanged.
     this.layer('AlpineSlab', {
-      density: 0.5, scale: [0.7, 1.3], placement: 'poisson',
+      density: 0.5, scale: [0.35, 0.65], placement: 'poisson',
       physics: false, embed: 0.42,
       params: r => ({ seed: r.int(4) }),
     });
     // Frost-shatter rubble collecting in cracks and against risers.
+    // ScreeStone's native height grew 0.2 -> ~0.45 m (same mesher-resolution
+    // reason); scales are multiplied by ~0.44 to keep 5-22 cm world rubble.
     this.layer('ScreeStone', {
-      density: 2.6, scale: [0.22, 0.5], placement: 'cluster',
+      density: 2.6, scale: [0.10, 0.22], placement: 'cluster',
       physics: false, embed: 0.4,
       params: r => ({ seed: r.int(6) }),
     });

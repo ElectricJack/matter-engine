@@ -98,7 +98,7 @@ public:
 private:
     FieldProgram prog_;
 
-    static constexpr int kMaxOps = 64;
+    static constexpr int kMaxOps = 96;
 
     // Evaluate register [0..target] into regs[], using (x, z) as world coords.
     void eval_regs(float regs[], int count, float x, float z) const;
@@ -150,14 +150,17 @@ constexpr int kSurfaceInputWorldFirst = kSurfInWorldX;
 constexpr int kMaxSurfaceMaterials = 8;
 
 // Hard cap on emitted (deduplicated) tape ops — mirrors FieldRuntime::kMaxOps
-// and the shader's VT_TAPE_MAX_OPS register file.
-constexpr int kMaxSurfaceOps = 64;
+// and the shader's VT_TAPE_MAX_OPS register file. Raised 64 -> 96 when the
+// StreamMountain P4 pass proved 64 binding (strata + speckle + seep terms were
+// cut for budget); the GPU cost is the register file and the arena slot, both
+// measured harmless at 64 with headroom.
+constexpr int kMaxSurfaceOps = 96;
 
 // ---------------------------------------------------------------------------
 // P3 appearance lanes (texel-tape spec §5). Three optional output directives
 // recorded after the `material` lines; each names tape register(s) whose value
 // modulates the COMPOSITED texel (after the top-2 height blend, before BC
-// encode) in the fixed order tint -> roughbias -> wetness.
+// encode) in the fixed order tint -> roughbias -> wetness -> metallic.
 //
 // The clamp ranges and the wetness response below are the single source of
 // truth for three consumers that must never drift apart:
@@ -169,6 +172,10 @@ constexpr float kSurfaceTintMax        = 2.0f;   // tint clamps to [0, 2]
 constexpr float kSurfaceRoughBiasLimit = 0.5f;   // roughbias clamps to [-.5,.5]
 constexpr float kSurfaceWetAlbedoScale = 0.55f;  // albedo *= mix(1, .55, w)
 constexpr float kSurfaceWetRoughness   = 0.08f;  // orm.g = mix(orm.g, .08, w)
+// metallic writes orm.b directly (clamped [0, 1]). Deliberately a raw write,
+// not a bias: base materials bake metalness 0, and PBR metalness is only
+// meaningful near its endpoints — the lane exists for sparse mineral flecks /
+// ore veins, not broad half-metal surfaces.
 
 // Evaluated appearance for one sample; the defaults ARE the identity (a tape
 // with no directives leaves the composited texel untouched).
@@ -176,6 +183,7 @@ struct SurfaceAppearance {
     float tint[3] = {1.0f, 1.0f, 1.0f};
     float rough_bias = 0.0f;
     float wetness = 0.0f;
+    float metallic = 0.0f;
 };
 
 // The world-anchored rule (contract C4): only a variant referenced by exactly
@@ -189,8 +197,9 @@ struct SurfaceProgram {
     // noise3/ridge3/noise3w/ridge3w/curv/add/sub/mul/min/max/clamp/blend/
     // smoothstep/abs/oneminus/pow/fract/input) followed by
     // `material <handle> r<reg>` directives and the optional P3 appearance
-    // directives `tint rR rG rB`, `roughbias rN`, `wetness rN` (at most one of
-    // each; every register is a backward ref like a material's). warp2 is NOT
+    // directives `tint rR rG rB`, `roughbias rN`, `wetness rN`, `metallic rN`
+    // (at most one of each; every register is a backward ref like a
+    // material's). warp2 is NOT
     // part of the surface op set — the 3D noise ops carry an optional
     // [wseed wfreq wamp] tail that domain-warps their own sample point
     // instead. Returns false and sets err on any violation (including 0 or
@@ -231,12 +240,15 @@ struct SurfaceProgram {
     int tint_reg[3] = {-1, -1, -1};
     int rough_bias_reg = -1;
     int wetness_reg = -1;
+    int metallic_reg = -1;
 
     bool has_tint() const { return tint_reg[0] >= 0; }
     bool has_rough_bias() const { return rough_bias_reg >= 0; }
     bool has_wetness() const { return wetness_reg >= 0; }
+    bool has_metallic() const { return metallic_reg >= 0; }
     bool has_appearance() const {
-        return has_tint() || has_rough_bias() || has_wetness();
+        return has_tint() || has_rough_bias() || has_wetness() ||
+               has_metallic();
     }
 
 private:

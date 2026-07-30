@@ -54,19 +54,25 @@ class ScreeDetail extends Tileset {
     }, MAT.dirt);
 
     // Stones, coarse -> fine so later drops pack into earlier gaps.
-    // Native ScreeStone height ~0.2 m at scale 1.
+    // Native ScreeStone height ~0.45 m at scale 1 (bake-big-place-small: the
+    // part mesher's ~67 mm voxels forced a larger native bake, see
+    // ScreeStone.js header); scales are ~0.44x the original ranges so the
+    // world-space stone sizes below are unchanged.
+    // Densities raised ~1.5x over the first authored pass: the initial bake's
+    // albedo dump showed ~45% exposed dirt matrix, and scree should read as
+    // stone-on-stone with only dark slivers of matrix between.
     this.layer('ScreeStone', {              // frame stones, 20-35 cm
-      density: 4.5, scale: [1.0, 1.6], placement: 'poisson',
+      density: 6.5, scale: [0.48, 0.78], placement: 'poisson',
       physics: true,
       params: r => ({ seed: r.int(6) }),
     });
     this.layer('ScreeStone', {              // packing stones, 12-21 cm
-      density: 13.0, scale: [0.6, 1.05], placement: 'uniform',
+      density: 19.0, scale: [0.27, 0.47], placement: 'uniform',
       physics: true,
       params: r => ({ seed: r.int(6) }),
     });
     this.layer('ScreeStone', {              // chips and shards, 7-12 cm
-      density: 24.0, scale: [0.35, 0.62], placement: 'uniform',
+      density: 34.0, scale: [0.16, 0.28], placement: 'uniform',
       physics: true,
       params: r => ({ seed: r.int(6) }),
     });

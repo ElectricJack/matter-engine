@@ -68,8 +68,10 @@ class AlpineSnowDetail extends Tileset {
       params: r => ({ seed: r.int(3) }),
     });
     // Rare stone tips breaking the crust: deeply embedded, ~6-9 cm proud.
+    // Scales are ~0.44x the original: ScreeStone's native height grew
+    // 0.2 -> ~0.45 m for mesher-resolution reasons (ScreeStone.js header).
     this.layer('ScreeStone', {
-      density: 0.22, scale: [0.9, 1.6], placement: 'poisson',
+      density: 0.22, scale: [0.4, 0.71], placement: 'poisson',
       physics: false, embed: 0.75,
       params: r => ({ seed: r.int(6) }),
     });

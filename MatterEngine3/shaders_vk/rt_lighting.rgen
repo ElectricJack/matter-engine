@@ -544,6 +544,18 @@ void main() {
     vec3 specular = vec3(0.0);
     vec2 specular_aux = vec2(0.0, orm.x);
     float selected_f0 = 0.0;
+    // Per-texel metalness (G-buffer ORM.y): VT pages (orm.b, the surfaces()
+    // tape 'metallic' lane) and ground tilesets author metalness per texel;
+    // the flat material record knows nothing about it. The diffuse lanes
+    // already kill diffuse by orm.y (above, and composite.frag's ambient/sun
+    // terms), so this specular lobe MUST pick up that energy as albedo-tinted
+    // F0 -- otherwise metal texels render black. For a chartless/untextured
+    // draw the G-buffer's orm.y IS the material's own metallic (gbuffer.frag
+    // writes it), so max() below is an exact no-op there up to attachment
+    // quantization; for metalness-0 pixels everything in this block is
+    // bit-identical to the pre-metal-fold arithmetic (the dielectric
+    // regression gate).
+    float texel_metallic = clamp(orm.y, 0.0, 1.0);
     if (identity.x < rt_materials.length() && orm.x <=
         constants.max_reflection_roughness) {
         RtMaterialGpu primary = rt_materials[identity.x];
@@ -557,13 +569,21 @@ void main() {
             atomicAdd(lighting_test_words[choose_coat ? 19u : 18u], 1u);
         float lobe_probability = choose_coat ? coat_probability
                                              : (1.0 - coat_probability);
+        float metallic = max(clamp(primary.metal_opacity_spec_coat.x, 0.0, 1.0),
+                             texel_metallic);
         float roughness = choose_coat
             ? clamp(primary.specular_tint_coat_roughness.w, 0.02, 1.0)
             : base_roughness;
         vec3 f0 = choose_coat ? vec3(0.04) :
             mix(vec3(0.04) * max(primary.metal_opacity_spec_coat.z, 0.0) *
                     max(primary.specular_tint_coat_roughness.rgb, vec3(0.0)),
-                base_color, clamp(primary.metal_opacity_spec_coat.x, 0.0, 1.0));
+                base_color, metallic);
+        // Metal texels follow the per-texel (VT/tileset) roughness rather
+        // than the flat material's: the tape authors both channels together.
+        // Guarded so metalness-0 pixels keep the exact legacy roughness.
+        if (!choose_coat && texel_metallic > 0.0)
+            roughness = mix(roughness, clamp(orm.x, 0.02, 1.0),
+                            texel_metallic);
         selected_f0 = dot(f0, vec3(0.3333333333));
         // Reversed-Z: the near plane is NDC z = 1.0 (z = 0.0 is now the far
         // plane; unprojecting it flips the view vector ~180 degrees).
@@ -618,6 +638,23 @@ void main() {
                                     ? hit.surface.hit_t : constants.max_distance,
                                 roughness);
         }
+    } else if (identity.x < rt_materials.length() && texel_metallic > 0.0) {
+        // Reflection lane capped off (orm.x > max_reflection_roughness) but
+        // the texel is metallic: diffuse is killed by orm.y everywhere, so
+        // without this the texel goes black. Tier-1 floor, no rays: the same
+        // sky-irradiance term the diffuse path uses, fresnel-weighted with the
+        // metal's albedo-F0 and scaled by texel_metallic so it vanishes
+        // continuously at metalness 0 (where skipping the lane is the
+        // legitimate legacy behaviour). primary_view was computed above off
+        // the (possibly POM-lifted) shading point.
+        RtMaterialGpu primary = rt_materials[identity.x];
+        vec3 base_color = mix(primary.base_roughness.rgb, albedo.rgb,
+                              clamp(albedo.a, 0.0, 1.0));
+        float n_dot_v = max(dot(normal, primary_view), 1e-4);
+        specular = texel_metallic * schlick_fresnel(base_color, n_dot_v) *
+                   rt_sky_irradiance(normal) *
+                   constants.reflection_multiplier;
+        selected_f0 = dot(base_color * texel_metallic, vec3(0.3333333333));
     }
     if (any(isnan(specular)) || any(isinf(specular))) specular = vec3(0.0);
     float spec_lum = dot(specular, vec3(0.2126, 0.7152, 0.0722));

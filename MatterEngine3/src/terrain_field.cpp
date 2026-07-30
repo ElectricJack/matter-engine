@@ -13,7 +13,7 @@
 // ---------------------------------------------------------------------------
 // File-scope constants shared between parse (static fn) and eval.
 // ---------------------------------------------------------------------------
-static constexpr int kMaxOps = 64;
+static constexpr int kMaxOps = 96;
 
 // ---------------------------------------------------------------------------
 // Internal noise core (file-scope anonymous namespace).
@@ -276,7 +276,7 @@ bool FieldProgram::parse(const std::string& text, FieldProgram& out, std::string
                 reg_out = r; is_imm = false; return true;
             }
             // float literal: emit implicit const op first
-            if (op_idx + 1 >= kMaxOps) { err = "too many ops (implicit const would exceed 64)"; return false; }
+            if (op_idx + 1 >= kMaxOps) { err = "too many ops (implicit const would exceed the op cap)"; return false; }
             try { imm_out = parse_float(toks[tok_idx]); }
             catch (...) { err = std::string(op) + ": invalid float"; return false; }
             is_imm = true;
@@ -684,7 +684,8 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
         // may compute any value and the lane's documented range is the
         // contract at the point of use (SurfaceRuntime::appearance_at and the
         // mode-3 shader apply the identical clamps).
-        if (op == "tint" || op == "roughbias" || op == "wetness") {
+        if (op == "tint" || op == "roughbias" || op == "wetness" ||
+            op == "metallic") {
             const bool is_tint = (op == "tint");
             const size_t want = is_tint ? 4u : 2u;
             if (toks.size() != want) {
@@ -694,7 +695,8 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
             }
             const bool dup = is_tint ? out.has_tint()
                            : (op == "roughbias") ? out.has_rough_bias()
-                                                 : out.has_wetness();
+                           : (op == "wetness")   ? out.has_wetness()
+                                                 : out.has_metallic();
             if (dup) {
                 err = op + ": declared twice (at most one per tape)";
                 return false;
@@ -713,8 +715,10 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
                 out.tint_reg[2] = regs[2];
             } else if (op == "roughbias") {
                 out.rough_bias_reg = regs[0];
-            } else {
+            } else if (op == "wetness") {
                 out.wetness_reg = regs[0];
+            } else {
+                out.metallic_reg = regs[0];
             }
             continue;
         }
@@ -1112,6 +1116,8 @@ void SurfaceRuntime::appearance_at(const float pos[3], const float nrm[3],
                                   kSurfaceRoughBiasLimit);
     if (prog_.has_wetness())
         out.wetness = clamp_to(regs[prog_.wetness_reg], 0.0f, 1.0f);
+    if (prog_.has_metallic())
+        out.metallic = clamp_to(regs[prog_.metallic_reg], 0.0f, 1.0f);
 }
 
 void SurfaceRuntime::classify_vertices(const float* positions,

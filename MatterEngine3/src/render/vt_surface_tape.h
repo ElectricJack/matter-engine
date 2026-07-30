@@ -274,7 +274,7 @@ enum VtSurfOpKind : uint32_t {
 };
 
 // Absent-directive sentinel for the packed P3 appearance registers. Registers
-// are 0..63 (kMaxSurfaceOps), so 0xFF can never be a real index; the GPU
+// are 0..kMaxSurfaceOps-1 (< 0xFF), so 0xFF can never be a real index; the GPU
 // request carries the same byte and the shader tests against the same value
 // (VT_APP_NO_REG in vt_surface_tape.glsl).
 constexpr uint8_t kVtNoAppearanceReg = 0xFFu;
@@ -294,6 +294,7 @@ struct VtSurfaceTapePack {
                            kVtNoAppearanceReg};
     uint8_t rough_bias_reg = kVtNoAppearanceReg;
     uint8_t wetness_reg = kVtNoAppearanceReg;
+    uint8_t metallic_reg = kVtNoAppearanceReg;
     bool ok = false;
     bool lane_overflow = false;
     std::string err;
@@ -323,7 +324,8 @@ inline bool vt_pack_surface_tape(const terrain_field::SurfaceProgram& prog,
         out.err = "empty tape";
         return false;
     }
-    if (prog.ops.size() > 64) {   // FieldRuntime::kMaxOps — parse enforces it
+    if (prog.ops.size() >
+        static_cast<size_t>(terrain_field::kMaxSurfaceOps)) {  // parse enforces
         out.err = "tape exceeds 64 ops";
         return false;
     }
@@ -501,6 +503,7 @@ inline bool vt_pack_surface_tape(const terrain_field::SurfaceProgram& prog,
         if (!pack_app_reg(prog.tint_reg[c], out.tint_reg[c])) return false;
     if (!pack_app_reg(prog.rough_bias_reg, out.rough_bias_reg)) return false;
     if (!pack_app_reg(prog.wetness_reg, out.wetness_reg)) return false;
+    if (!pack_app_reg(prog.metallic_reg, out.metallic_reg)) return false;
 
     out.ok = true;
     return true;

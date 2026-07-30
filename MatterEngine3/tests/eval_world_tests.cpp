@@ -278,6 +278,7 @@ class TapeApp extends World {
     // then roughbias — the recorder must still emit mats, tint, roughbias,
     // wetness.
     s.wetness(s.fieldCurvature(4).smoothstep(0.5, 2.5));
+    s.metallic(s.noise3(0xE1, 1/0.7, 2).smoothstep(0.8, 0.95));
     s.weight(31, steep.oneMinus());
     const drift = s.noise3World(0xC4, 1/140, 3).mul(0.1).add(1.0);
     s.tint(drift, drift, 0.98);
@@ -293,14 +294,15 @@ class TapeApp extends World {
         const size_t p_tint  = ta.surface_program.find("\ntint r");
         const size_t p_rough = ta.surface_program.find("\nroughbias r");
         const size_t p_wet   = ta.surface_program.find("\nwetness r");
+        const size_t p_met   = ta.surface_program.find("\nmetallic r");
         CHECK(p_mat31 != std::string::npos && p_mat32 != std::string::npos &&
                   p_tint != std::string::npos && p_rough != std::string::npos &&
-                  p_wet != std::string::npos,
-              "appearance: all three directives and both materials record");
+                  p_wet != std::string::npos && p_met != std::string::npos,
+              "appearance: all four directives and both materials record");
         CHECK(p_mat31 < p_mat32 && p_mat32 < p_tint && p_tint < p_rough &&
-                  p_rough < p_wet,
+                  p_rough < p_wet && p_wet < p_met,
               "appearance: canonical order is materials, tint, roughbias, "
-              "wetness regardless of JS call order");
+              "wetness, metallic regardless of JS call order");
         CHECK(ta.surface_program.find("tint r") <
                   ta.surface_program.find("wetness r"),
               "appearance: tint precedes wetness (application order)");
@@ -309,8 +311,9 @@ class TapeApp extends World {
         CHECK(terrain_field::SurfaceProgram::parse(ta.surface_program, sap,
                                                    saerr),
               saerr.c_str());
-        CHECK(sap.has_tint() && sap.has_rough_bias() && sap.has_wetness(),
-              "appearance: the recorded tape compiles with all three lanes");
+        CHECK(sap.has_tint() && sap.has_rough_bias() && sap.has_wetness() &&
+                  sap.has_metallic(),
+              "appearance: the recorded tape compiles with all four lanes");
         CHECK(sap.materials.size() == 2,
               "appearance: directives do not add material columns");
         // A plain number coerces through __sreg exactly like a SurfaceNode.
@@ -445,7 +448,9 @@ class TapePlain extends World {
         const int rock = MaterialRegistryDefineDynamic(&def, "AlpineRock");
         const int scree = MaterialRegistryDefineDynamic(&def, "Scree");
         const int snow = MaterialRegistryDefineDynamic(&def, "AlpineSnow");
-        CHECK(ground >= 30 && rock > ground && scree > rock && snow > scree,
+        const int meadow = MaterialRegistryDefineDynamic(&def, "AlpineMeadow");
+        CHECK(ground >= 30 && rock > ground && scree > rock && snow > scree &&
+                  meadow > snow,
               "dynamic alpine materials registered");
 
         WorldEvalResult mtn = host.eval_world(mountain_source, "{}");
@@ -455,16 +460,17 @@ class TapePlain extends World {
         std::string serr;
         CHECK(terrain_field::SurfaceProgram::parse(mtn.surface_program, sp, serr),
               serr.c_str());
-        CHECK(sp.materials.size() == 4 && sp.uses_world_inputs(),
-              "StreamMountain declares 4 materials and reads world inputs");
+        CHECK(sp.materials.size() == 5 && sp.uses_world_inputs(),
+              "StreamMountain declares 5 materials and reads world inputs");
         CHECK(sp.materials[0].handle == ground &&
                   sp.materials[1].handle == rock &&
                   sp.materials[2].handle == scree &&
-                  sp.materials[3].handle == snow,
+                  sp.materials[3].handle == snow &&
+                  sp.materials[4].handle == meadow,
               "StreamMountain weights resolve in declaration order");
-        // The tape shares the 64-register budget with every literal it names;
+        // The tape shares the register budget with every literal it names;
         // leave the headroom visible so an edit that blows it fails here.
-        CHECK((int)sp.ops.size() <= 64,   // terrain_field.cpp kMaxOps
+        CHECK((int)sp.ops.size() <= terrain_field::kMaxSurfaceOps,
               "StreamMountain tape fits the op budget");
 
         terrain_field::FieldProgram fp;

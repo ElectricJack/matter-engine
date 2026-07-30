@@ -1,11 +1,12 @@
 // TilesetGallery — viewer/QA world for the alpine detail tilesets.
 //
-// Three near-flat ground bands split by worldX, each bound to one of the new
+// Four near-flat ground bands split by worldX, each bound to one of the new
 // detail tilesets through the Wave-1 authoring API (defineMaterial +
 // surfaces()), so each atlas can be inspected full-screen at POM range:
-//   x < -8   GalleryRock  -> AlpineRockDetail  (strata / outcrop)
-//   -8..8    GalleryScree -> ScreeDetail       (settled talus)
-//   x > 8    GallerySnow  -> AlpineSnowDetail  (sastrugi snow)
+//   x < -8   GalleryRock   -> AlpineRockDetail   (strata / outcrop)
+//   -8..8    GalleryScree  -> ScreeDetail        (settled talus)
+//   8..24    GallerySnow   -> AlpineSnowDetail   (sastrugi snow)
+//   x > 24   GalleryMeadow -> AlpineMeadowDetail (clumpy tufted turf)
 // The ground undulates ~0.5 m at 45 m wavelength — flat enough to read the
 // atlases cleanly, bent enough that grazing sun rakes across them. The sun is
 // pinned low (~25 deg elevation) to exercise POM self-shadowing / horizon
@@ -28,6 +29,11 @@ const GALLERY_SNOW = defineMaterial("GallerySnow", {
   albedo: [0.92, 0.94, 0.97],
   roughness: 0.55,
   detail: "AlpineSnowDetail",
+});
+const GALLERY_MEADOW = defineMaterial("GalleryMeadow", {
+  albedo: [0.32, 0.44, 0.22],
+  roughness: 0.95,
+  detail: "AlpineMeadowDetail",
 });
 
 class TilesetGallery extends World {
@@ -71,13 +77,16 @@ class TilesetGallery extends World {
   // Bands by world X (terrain sectors are world-anchored variants, so world
   // inputs are valid here). 4 m soft crossfades at x = -8 and x = +8.
   surfaces(s) {
-    const toSnow = s.worldX.smoothstep(6, 10);        // 1 on the snow side
+    const toSnow = s.worldX.smoothstep(6, 10);        // 1 past the scree band
+    const toMeadow = s.worldX.smoothstep(22, 26);     // 1 on the meadow side
     const offRock = s.worldX.smoothstep(-10, -6);     // 0 on the rock side
     const rock = offRock.oneMinus();
     const scree = offRock.mul(toSnow.oneMinus());
+    const snow = toSnow.mul(toMeadow.oneMinus());
     s.weight(GALLERY_ROCK, rock);
     s.weight(GALLERY_SCREE, scree);
-    s.weight(GALLERY_SNOW, toSnow);
+    s.weight(GALLERY_SNOW, snow);
+    s.weight(GALLERY_MEADOW, toMeadow);
   }
 
   biomes() {
