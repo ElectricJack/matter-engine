@@ -302,10 +302,12 @@ void test_entry_packing() {
 // is pinned here: the per-variant cost, the gate order, and the invariant that a
 // refused registration spends nothing.
 
-// A StreamMountain-shaped rung-0 terrain sector: 64 m sector at 2 m voxels, one
-// 4-material surfaces() tape, the packed material registry travelling with the
-// part. Numbers are the shape of the world the defaults must fit, not a fixture
-// for any particular bake.
+// A StreamMountain-shaped rung-0 terrain sector: 64 m sector, one 4-material
+// surfaces() tape, the packed material registry travelling with the part. The
+// vertex/triangle counts are calibrated so vt_variant_mesh_bytes lands on the
+// figure a real StreamMountain run reports -- 1024 registered variants held
+// 97.7 MiB of copied mesh, i.e. ~97 KiB each. This is the shape of the world
+// the shipped defaults have to fit, not a fixture for a particular bake.
 struct SectorFixture {
     std::vector<float> positions, normals, uvs, material_table;
     std::vector<uint32_t> material_ids, indices;
@@ -349,18 +351,18 @@ void test_registration_cost() {
     // Per-vertex cost with every stream present and a 4-column tape:
     // 12 + 12 + 8 + 4 (no tint) + 4 = 40 bytes. Per triangle: 12 (indices) + 4
     // (tri_order). Plus 64 bytes per chart and the registry snapshot.
-    SectorFixture s(/*vertices=*/2000, /*triangles=*/3800, /*charts=*/24,
-                    /*tape_materials=*/4, /*registry_materials=*/32,
-                    /*registry_stride=*/32);
+    const uint32_t kVerts = 1300, kTris = 2470, kCharts = 24;
+    SectorFixture s(kVerts, kTris, kCharts, /*tape_materials=*/4,
+                    /*registry_materials=*/32, /*registry_stride=*/32);
     CHECK(vt_context_has_surface_tape(s.context),
           "a complete 4-material tape classification is usable");
     const size_t expected =
-        size_t(2000) * (12 + 12 + 8 + 4 + 4) +          // vertex streams
-        size_t(3800) * 12 +                              // indices
+        size_t(kVerts) * (12 + 12 + 8 + 4 + 4) +         // vertex streams
+        size_t(kTris) * 12 +                             // indices
         size_t(32) * 32 * 4 +                            // material registry
         4 * sizeof(uint32_t) +                           // tape material ids
-        size_t(24) * sizeof(chart_atlas::ChartEntry) +   // chart table
-        size_t(3800) * sizeof(uint32_t);                 // tri_order
+        size_t(kCharts) * sizeof(chart_atlas::ChartEntry) +  // chart table
+        size_t(kTris) * sizeof(uint32_t);                // tri_order
     CHECK(vt_variant_mesh_bytes(s.atlas, s.context) == expected,
           "the per-variant mesh cost is the sum of every copied stream");
 
@@ -370,7 +372,7 @@ void test_registration_cost() {
     CHECK(!vt_context_has_surface_tape(untaped),
           "a tape with no weight matrix fails closed");
     CHECK(vt_variant_mesh_bytes(s.atlas, untaped) ==
-              expected - size_t(2000) * 4 - 4 * sizeof(uint32_t),
+              expected - size_t(kVerts) * 4 - 4 * sizeof(uint32_t),
           "a fail-closed tape costs neither weight columns nor material ids");
 
     // A null optional stream is not copied and not charged.
@@ -378,20 +380,50 @@ void test_registration_cost() {
     bare.normals = nullptr;
     bare.surface_uvs = nullptr;
     CHECK(vt_variant_mesh_bytes(s.atlas, bare) ==
-              expected - size_t(2000) * (12 + 8),
+              expected - size_t(kVerts) * (12 + 8),
           "null optional streams cost nothing");
 
-    // The shipped default has to fit the shipped world. 2048 indirection layers
-    // is the ceiling maxImageArrayLayers imposes on current desktop drivers, so
-    // that -- not the 5000-sector ring -- is the census the budget must cover.
     const size_t per_variant = vt_variant_mesh_bytes(s.atlas, s.context);
-    const size_t default_budget_mb = 1024;
-    CHECK(per_variant * 2048 < default_budget_mb * 1024 * 1024,
-          "the default mesh budget covers a full 2048-layer variant census");
+    CHECK(per_variant > 90u * 1024u && per_variant < 105u * 1024u,
+          "a StreamMountain-shaped rung-0 sector variant costs ~95 KiB");
+
+    // THE SIZING ARGUMENT for the shipped defaults, as an assertion.
+    //
+    // Two real measurements on StreamMountain (RTX 4090, 2026-07-29): the first
+    // 1024 registered variants held 97.7 MiB (95 KiB each, all rung 0); at
+    // 2048 registered they held 244.3 MiB (122 KiB each, the average pulled up
+    // by the denser rung-1/rung-2 sectors near the camera). So 122 KiB is the
+    // number to size against, not 95.
+    //
+    // MATTER_VT_MAX_VARIANTS asks for 8192 (the device grants fewer -- 2048 on
+    // this driver's R16G16_UINT array-layer limit -- but the budget has to cover
+    // the ask, because a device with a laxer limit would actually take them).
+    // 8192 x 122 KiB is ~0.95 GiB, which is why MATTER_VT_MESH_BUDGET_MB is
+    // 1024 and not 512: at 512 the byte budget, not the layer cap, would start
+    // refusing variants around 4300 and no amount of raising MAX_VARIANTS would
+    // help. If the cost model grows a stream, this is the assertion that says
+    // the budget needs revisiting.
+    SectorFixture dense(/*vertices=*/1700, /*triangles=*/3230, kCharts,
+                        /*tape_materials=*/4, /*registry_materials=*/32,
+                        /*registry_stride=*/32);
+    const size_t measured_per_variant =
+        vt_variant_mesh_bytes(dense.atlas, dense.context);
+    CHECK(measured_per_variant > 118u * 1024u &&
+              measured_per_variant < 128u * 1024u,
+          "the measured StreamMountain per-variant average is ~122 KiB");
+    const size_t default_budget_bytes = size_t(1024) * 1024 * 1024;
+    const size_t default_max_variants = 8192;
+    CHECK(measured_per_variant * default_max_variants < default_budget_bytes,
+          "MATTER_VT_MESH_BUDGET_MB=1024 covers a saturated 8192-layer census "
+          "at the measured per-variant cost");
+    // And the byte budget must NOT be the first wall, or raising the layer cap
+    // buys nothing.
+    CHECK(default_budget_bytes / measured_per_variant > default_max_variants,
+          "the byte budget is not the binding constraint at the layer cap");
 }
 
 void test_registration_gates() {
-    SectorFixture s(/*vertices=*/2000, /*triangles=*/3800, /*charts=*/24,
+    SectorFixture s(/*vertices=*/1300, /*triangles=*/2470, /*charts=*/24,
                     /*tape_materials=*/4, /*registry_materials=*/32,
                     /*registry_stride=*/32);
     const size_t per_variant = vt_variant_mesh_bytes(s.atlas, s.context);

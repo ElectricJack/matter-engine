@@ -2972,7 +2972,13 @@ int main() {
                         static_cast<double>(
                             frame_stats.vt_mesh_budget_bytes) /
                             (1024.0 * 1024.0));
-            std::printf("STATSVT,%s,active=%d,variants=%u/%u,rejected=%u,"
+            std::fflush(stdout);
+            // The VT census goes to STDERR, next to the rest of the [vk]/[vt]
+            // diagnostics, and unbuffered: a streamed-world capture that dies
+            // during shutdown must not lose the one line that says how much of
+            // the world actually got virtual texturing.
+            std::fprintf(stderr,
+                        "STATSVT,%s,active=%d,variants=%u/%u,rejected=%u,"
                         "mesh=%.1f/%.1f MiB,pool=%u/%u,pinned=%u,queue=%u,"
                         "fills=%llu,evictions=%llu\n",
                         stats_label.c_str(),
@@ -2993,6 +2999,7 @@ int main() {
                             frame_stats.vt_fills_total),
                         static_cast<unsigned long long>(
                             frame_stats.vt_evictions_total));
+            std::fflush(stderr);
             stats_label.clear();
         }
         // Post-frame seam (event-system.md S I.13). Reload / world-switch are
