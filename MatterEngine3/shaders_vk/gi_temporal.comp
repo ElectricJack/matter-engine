@@ -62,8 +62,17 @@ void main() {
     vec2 uv = (vec2(pixel) + 0.5) / vec2(pc.temporalExtent);
     ivec2 sourcePixel = clamp(ivec2(uv * vec2(pc.gbufferExtent)), ivec2(0),
                               ivec2(pc.gbufferExtent) - 1);
-    vec3 raw = texelFetch(rawSignal, pixel, 0).rgb;
+    // signalMode: 0 = diffuse GI, 1 = specular reflection, 2 = transmission
+    // (RT PBR Phase 1). Modes 1 and 2 share the aux (hit_t, roughness)
+    // contract; mode 2 additionally carries the raw alpha (transmission
+    // coverage) through to the composite, and passes smooth pixels
+    // (roughness < 0.02) through untouched -- the smooth path is
+    // deterministic, and filtering it would break the byte-compatibility
+    // gate for existing glass.
+    vec4 rawSample = texelFetch(rawSignal, pixel, 0);
+    vec3 raw = rawSample.rgb;
     vec2 aux = texelFetch(rawAux, pixel, 0).rg;
+    bool smoothPassthrough = pc.signalMode == 2u && aux.y < 0.02;
     float depth = texelFetch(depthTex, sourcePixel, 0).r;
     vec3 normal = normalize(texelFetch(normalTex, sourcePixel, 0).xyz);
     uvec2 identity = texelFetch(identityTex, sourcePixel, 0).rg;
@@ -101,14 +110,14 @@ void main() {
             rejection = REJECT_MATERIAL;
         else if (identity.y != oldIdentity.y)
             rejection = REJECT_INSTANCE;
-        else if (pc.signalMode == 1u) {
+        else if (pc.signalMode >= 1u) {
             vec2 oldAux = texelFetch(previousAux, previousPixel, 0).rg;
             float threshold = max(0.05, 0.1 * max(aux.x, oldAux.x));
             if (abs(aux.x - oldAux.x) > threshold)
                 rejection = REJECT_HIT_DISTANCE;
         }
     }
-    if (rejection == 0u) {
+    if (rejection == 0u && !smoothPassthrough) {
         vec3 neighborhoodMin = vec3(1e30);
         vec3 neighborhoodMax = vec3(-1e30);
         for (int y = -1; y <= 1; ++y)
@@ -132,7 +141,10 @@ void main() {
         firstMoment = mix(oldMoments.x, firstMoment, alpha);
         secondMoment = mix(oldMoments.y, secondMoment, alpha);
     }
-    imageStore(outRadiance, pixel, vec4(accumulated, 1.0));
+    // Transmission carries its coverage (raw alpha) through to the composite;
+    // the diffuse/specular lanes keep their historical constant 1.0.
+    imageStore(outRadiance, pixel,
+               vec4(accumulated, pc.signalMode == 2u ? rawSample.a : 1.0));
     imageStore(outMoments, pixel, vec4(firstMoment, secondMoment, 0.0, 0.0));
     imageStore(outHistory, pixel, uvec4(historyLength));
     imageStore(outDepth, pixel, vec4(depth));

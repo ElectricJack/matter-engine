@@ -116,5 +116,42 @@ int main() {
         CHECK(!err.empty(), "error message set");
         CHECK(!FieldProgram::parse("const 1\n", p, err), "missing height directive rejected");
     }
+    // --- sub / abs / oneminus / pow -----------------------------------------
+    {
+        FieldRuntime f = make(
+            "const 5\n"        // r0
+            "const 2\n"        // r1
+            "sub r1 r0\n"      // r2 = -3
+            "abs r2\n"         // r3 = 3
+            "pow r3 2\n"       // r4 = 9
+            "oneminus r4\n"    // r5 = -8
+            "abs r5\n"         // r6 = 8
+            "const 0.5\n"      // r7
+            "height r6\nmoisture r7\nrelief r7\nseaLevel 0\nbiome 0.65 0.35\n");
+        CHECK(std::fabs(f.height_at(0, 0) - 8.0f) < 1e-5f,
+              "sub/abs/pow/oneminus chain evaluates");
+        // pow clamps its base to >= 0 (fractional exponents stay total).
+        FieldRuntime g = make(
+            "const -4\nconst 0.5\npow r0 0.5\n"
+            "height r2\nmoisture r1\nrelief r1\nseaLevel -1\nbiome 0.65 0.35\n");
+        CHECK(g.height_at(0, 0) == 0.0f, "pow clamps negative bases to 0");
+    }
+    // --- curvature_at: zero on constants, sign matches the ring average -----
+    {
+        FieldRuntime flat = make(
+            "const 5\nconst 0.5\nconst 0.5\n"
+            "height r0\nmoisture r1\nrelief r2\nseaLevel 0\nbiome 0.65 0.35\n");
+        CHECK(flat.curvature_at(3, 7, 4.0f) == 0.0f, "constant field: zero curvature");
+        FieldRuntime n = make(
+            "noise2 1234 0.01 4 0.5 2.0\nconst 60\nmul r0 r1\nconst 0.5\n"
+            "height r2\nmoisture r3\nrelief r3\nseaLevel 0\nbiome 0.65 0.35\n");
+        const float x = 37.0f, z = -12.0f, e = 8.0f;
+        const float manual =
+            (n.height_at(x + e, z) + n.height_at(x - e, z) +
+             n.height_at(x, z + e) + n.height_at(x, z - e)) * 0.25f -
+            n.height_at(x, z);
+        CHECK(std::fabs(n.curvature_at(x, z, e) - manual) < 1e-6f,
+              "curvature_at is the ring-average height deficit");
+    }
     return check_summary();
 }

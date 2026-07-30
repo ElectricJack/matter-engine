@@ -23,6 +23,9 @@ layout(location = 4) flat out uint out_material_index;
 layout(location = 5) flat out uint out_instance_token;
 layout(location = 6) flat out uint out_material_valid;
 layout(location = 7) out vec3 out_world_pos;
+// WP-E (chart-space VT): pass the draw record's transported vt slot through
+// flat; gbuffer.frag branches on it. 0 = no VT (legacy path).
+layout(location = 8) flat out uint out_vt_slot;
 
 layout(set = 0, binding = 0, std140) uniform FrameConstants {
     mat4 world_to_clip;
@@ -39,7 +42,7 @@ struct DrawTransform {
     mat4 previous;
     uint history_valid;
     uint instance_token;
-    uint pad1;
+    uint vt_slot;
     uint pad2;
 };
 
@@ -76,4 +79,5 @@ void main() {
     out_instance_token = draw.instance_token;
     out_material_valid = in_material_index < frame.counts.z ? 1u : 0u;
     out_world_pos = world.xyz;
+    out_vt_slot = draw.vt_slot;
 }

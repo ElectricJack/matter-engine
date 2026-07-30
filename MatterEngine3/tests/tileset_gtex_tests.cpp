@@ -136,6 +136,57 @@ int main() {
     CHECK(h1 != 0);
 
     // ------------------------------------------------------------------
+    // Child-hash fold (gtex_script_identity_hash). The .gtex cache key used
+    // to be (pose_hash, root .js source, versions) only. pose_hash catches a
+    // child edit that MOVES geometry, but an appearance-only child edit
+    // (recolour a pebble) leaves every settled pose bit-identical and never
+    // touches the root source — so the stale atlas kept being served. Folding
+    // the sorted child resolved_hash list in closes that gap.
+    // ------------------------------------------------------------------
+    {
+        const uint64_t root_src = 0x1234ABCD5678EF01ull;
+        const std::vector<uint64_t> children_a = {0x11ull, 0x22ull, 0x33ull};
+        // Same children, one of them edited (its resolved_hash moved).
+        const std::vector<uint64_t> children_b = {0x11ull, 0x22ull, 0x99ull};
+
+        const uint64_t id_a = gtex_script_identity_hash(root_src, children_a);
+        const uint64_t id_b = gtex_script_identity_hash(root_src, children_b);
+        CHECK(id_a == gtex_script_identity_hash(root_src, children_a));  // stable
+        CHECK(id_a != id_b);   // a child edit moves the script identity
+        CHECK(id_a != root_src);
+
+        // ...and therefore moves the .gtex cache key, WITHOUT any change to
+        // pose_hash or the engine/box3d versions. This is the actual
+        // regression being locked down: same settle, same root source, new
+        // child appearance => the cached atlas must be rejected.
+        const uint64_t pose = 0xFEEDFACECAFEBEEFull;
+        const uint64_t key_a =
+            gtex_content_hash(pose, id_a, kEngineBakeVersion, kBox3dVersion);
+        const uint64_t key_b =
+            gtex_content_hash(pose, id_b, kEngineBakeVersion, kBox3dVersion);
+        CHECK(key_a != key_b);
+
+        // The empty list is the identity, so a childless tileset keeps the
+        // exact key it had before this fold existed (no gratuitous
+        // invalidation of atlases that could not be stale).
+        CHECK(gtex_script_identity_hash(root_src, {}) == root_src);
+        CHECK(gtex_content_hash(pose, gtex_script_identity_hash(root_src, {}),
+                                kEngineBakeVersion, kBox3dVersion) ==
+              gtex_content_hash(pose, root_src, kEngineBakeVersion,
+                                kBox3dVersion));
+
+        // Order independence is the CALLER's contract (sort ascending), but
+        // the fold must at least distinguish a genuinely different multiset
+        // and not collapse on length alone.
+        CHECK(gtex_script_identity_hash(root_src, {0x11ull, 0x22ull}) !=
+              gtex_script_identity_hash(root_src, {0x11ull, 0x22ull, 0x00ull}));
+        CHECK(gtex_script_identity_hash(root_src, {0x11ull}) !=
+              gtex_script_identity_hash(root_src, {0x22ull}));
+        // A different root source with the same children is still distinct.
+        CHECK(gtex_script_identity_hash(root_src + 1, children_a) != id_a);
+    }
+
+    // ------------------------------------------------------------------
     // v1 backward-compat: a freshly written v1 file (old 6-buffer save_gtex,
     // no horizon args — `p` above was subsequently corrupted by the magic-byte
     // test, so re-save to a new path) must load via the FULL 8-vector

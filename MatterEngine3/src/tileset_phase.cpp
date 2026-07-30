@@ -42,7 +42,8 @@ static bool run_tileset_phase_impl(const std::string& schemas_dir,
                                    const std::string& canonical_root_params_json,
                                    const std::string& parts_cache_dir,
                                    SettledTorus& out, std::string& err,
-                                   const std::vector<std::string>& shared_lib_roots)
+                                   const std::vector<std::string>& shared_lib_roots,
+                                   std::vector<uint64_t>* out_sorted_child_hashes = nullptr)
 {
     // -----------------------------------------------------------------------
     // 1. Load the tileset root's source.
@@ -177,6 +178,13 @@ static bool run_tileset_phase_impl(const std::string& schemas_dir,
     std::vector<uint64_t> sorted_hashes = child_hashes;
     std::sort(sorted_hashes.begin(), sorted_hashes.end());
 
+    // Hand the same list to the caller before any of the early returns below:
+    // the .gtex cache key folds it too (gtex_script_identity_hash), and a
+    // settle-cache HIT must publish it just as a cold settle does — otherwise
+    // the second run of an appearance-edited tileset would silently fall back
+    // to the childless key and re-serve the stale atlas.
+    if (out_sorted_child_hashes) *out_sorted_child_hashes = sorted_hashes;
+
     const uint64_t cache_key = settle_cache_key(
         script_source_hash, sorted_hashes, canonical_root_params_json);
 
@@ -215,12 +223,13 @@ bool run_tileset_phase_from_objects(
     const std::string& canonical_root_params_json,
     const std::string& parts_cache_dir,
     SettledTorus& out, std::string& err,
-    const std::vector<std::string>& shared_lib_roots)
+    const std::vector<std::string>& shared_lib_roots,
+    std::vector<uint64_t>* out_sorted_child_hashes)
 {
     return run_tileset_phase_impl(objects_dir, root_module,
                                   canonical_root_params_json,
                                   parts_cache_dir, out, err,
-                                  shared_lib_roots);
+                                  shared_lib_roots, out_sorted_child_hashes);
 }
 
 } // namespace tileset
@@ -240,7 +249,7 @@ bool run_tileset_phase_from_objects(const std::string&, const std::string&,
 bool run_tileset_phase_from_objects(
     const std::string&, const std::string&, const std::string&,
     const std::string&, SettledTorus&, std::string& err,
-    const std::vector<std::string>&)
+    const std::vector<std::string>&, std::vector<uint64_t>*)
 {
     err = "tileset_phase: built without MATTER_HAVE_SCRIPT_HOST";
     return false;

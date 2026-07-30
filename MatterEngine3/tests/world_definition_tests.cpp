@@ -2,7 +2,14 @@
 #include "check.h"
 #include "../src/provider/local_provider.h"
 #include "../src/script/world_definition_loader.h"
+#include "../src/detail_bake_plan.h"
+#include "../src/tileset_slot_allocator.h"
 
+extern "C" {
+#include "material_registry.h"
+}
+
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -585,6 +592,312 @@ void test_vulkan_volumetrics_settings_defaults() {
     CHECK(nearly_equal(vol.vol_debug_view, 0.0f), "vol_debug_view defaults to 0.0");
 }
 
+// ---------------------------------------------------------------------------
+// defineMaterial + automated detail bakes + slot allocator (chart-VT Phase 3)
+// ---------------------------------------------------------------------------
+
+void test_define_material_round_trip() {
+    Fixture fixture;
+    const fs::path path = fixture.write("Materials.js", R"JS(
+const ROCK = defineMaterial('AlpineRock', {
+  albedo: [0.42, 0.40, 0.38], roughness: 0.9, metallic: 0.0,
+  detail: 'AlpineRockDetail', detailDensity: 24,
+});
+const SNOW = defineMaterial('AlpineSnow', {
+  albedo: [0.93, 0.95, 1.0], roughness: 0.55, clearcoat: 0.4,
+  detail: 'AlpineSnowDetail',
+});
+class MaterialWorld extends World {
+  static roots = [{ module: 'Terrain', params: { rock: ROCK, snow: SNOW } }];
+}
+)JS");
+
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+
+    const int base = MaterialRegistryStaticCount();
+    CHECK(definition.materials.size() == 2, "both declared materials recorded");
+    if (definition.materials.size() != 2) return;
+    CHECK(definition.materials[0].name == "AlpineRock" &&
+              definition.materials[1].name == "AlpineSnow",
+          "materials retain declaration order");
+    CHECK(definition.materials[0].index == base &&
+              definition.materials[1].index == base + 1,
+          "handles are appended after the frozen builtin table");
+    CHECK(MaterialRegistryCount() == base + 2,
+          "dynamic entries extend the registry count the GPU pack iterates");
+    CHECK(MaterialRegistryDynamicCount() == 2, "dynamic count tracks declarations");
+
+    // The handle the script saw is the id the renderer will index.
+    CHECK(definition.roots.size() == 1 &&
+              definition.roots[0].params_json ==
+                  "{\"rock\":" + std::to_string(base) +
+                      ",\"snow\":" + std::to_string(base + 1) + "}",
+          "handles are plain ints usable in root params");
+
+    const MaterialDef* rock = MaterialRegistryGet(base);
+    CHECK(nearly_equal(rock->albedo[0], 0.42f) &&
+              nearly_equal(rock->albedo[1], 0.40f) &&
+              nearly_equal(rock->albedo[2], 0.38f) &&
+              nearly_equal(rock->roughness, 0.9f) &&
+              nearly_equal(rock->metallic, 0.0f),
+          "authored spec fields reach the MaterialDef");
+    CHECK(nearly_equal(rock->opacity, 1.0f) &&
+              nearly_equal(rock->specularStrength, 1.0f) &&
+              nearly_equal(rock->specularTint[0], 1.0f) &&
+              nearly_equal(rock->shadowOpacity, 1.0f) &&
+              rock->groundTilesetSlot == -1 && rock->groundMacroSlot == -1,
+          "unspecified fields take the builtin-matching defaults");
+    const MaterialDef* snow = MaterialRegistryGet(base + 1);
+    CHECK(nearly_equal(snow->clearcoat, 0.4f), "advanced fields are mappable");
+    CHECK(rock->mergeGroup != snow->mergeGroup && rock->mergeGroup >= 1000 &&
+              snow->mergeGroup >= 1000,
+          "dynamic materials get distinct merge groups above the builtin range");
+
+    CHECK(MaterialRegistryFindByName("AlpineRock") == base &&
+              MaterialRegistryNameOf(base) == std::string("AlpineRock"),
+          "name lookup round-trips");
+    CHECK(MaterialRegistryFindByName("NotDeclared") == -1,
+          "unknown names do not resolve");
+
+    CHECK(definition.materials[0].detail_module == "AlpineRockDetail" &&
+              definition.materials[0].detail_density == 24,
+          "detail module and density are retained for the bake scheduler");
+    CHECK(definition.materials[1].detail_module == "AlpineSnowDetail" &&
+              definition.materials[1].detail_density == 0,
+          "an omitted detailDensity keeps the tileset module's own density");
+}
+
+void test_define_material_reset_between_worlds() {
+    Fixture fixture;
+    const fs::path first = fixture.write("First.js", R"JS(
+defineMaterial('OnlyFirst', { roughness: 0.3 });
+class FirstWorld extends World { static roots = []; }
+)JS");
+    const fs::path second = fixture.write("Second.js", R"JS(
+const A = defineMaterial('SecondA', { roughness: 0.4 });
+class SecondWorld extends World { static roots = [{ module: 'X', params: { a: A } }]; }
+)JS");
+
+    const int base = MaterialRegistryStaticCount();
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(first), definition, error),
+          error.message.c_str());
+    CHECK(MaterialRegistryFindByName("OnlyFirst") == base,
+          "first world's material occupies the first dynamic index");
+
+    CHECK(matter::load_world_definition(fixture.desc(second), definition, error),
+          error.message.c_str());
+    CHECK(MaterialRegistryFindByName("OnlyFirst") == -1,
+          "loading a world drops the previous world's dynamic entries");
+    CHECK(MaterialRegistryFindByName("SecondA") == base,
+          "the freed index is reused, so handles stay deterministic");
+    CHECK(MaterialRegistryDynamicCount() == 1, "no leakage across loads");
+
+    // Same world twice must produce identical handles (idempotent load).
+    CHECK(matter::load_world_definition(fixture.desc(second), definition, error),
+          error.message.c_str());
+    CHECK(definition.materials.size() == 1 &&
+              definition.materials[0].index == base,
+          "re-loading one world yields the same handle");
+}
+
+void test_define_material_name_collision_rules() {
+    Fixture fixture;
+    const int base = MaterialRegistryStaticCount();
+
+    // Identical re-definition is the shared-lib import case: same handle, one
+    // record, no error.
+    const fs::path same = fixture.write("Same.js", R"JS(
+const A = defineMaterial('Shared', { roughness: 0.5, albedo: [0.1, 0.2, 0.3] });
+const B = defineMaterial('Shared', { roughness: 0.5, albedo: [0.1, 0.2, 0.3] });
+class SameWorld extends World { static roots = [{ module: 'X', params: { a: A, b: B } }]; }
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(same), definition, error),
+          error.message.c_str());
+    CHECK(definition.materials.size() == 1 &&
+              definition.materials[0].index == base,
+          "an identical re-definition collapses to one material");
+    CHECK(definition.roots.size() == 1 &&
+              definition.roots[0].params_json ==
+                  "{\"a\":" + std::to_string(base) + ",\"b\":" +
+                      std::to_string(base) + "}",
+          "both call sites receive the same handle");
+
+    const fs::path differ = fixture.write("Differ.js", R"JS(
+defineMaterial('Shared', { roughness: 0.5 });
+defineMaterial('Shared', { roughness: 0.9 });
+class DifferWorld extends World { static roots = []; }
+)JS");
+    CHECK(!matter::load_world_definition(fixture.desc(differ), definition, error),
+          "a mismatched re-definition is rejected");
+    CHECK(error.property_path == "source" &&
+              error.message.find("different spec") != std::string::npos,
+          "the mismatch diagnostic names the cause");
+}
+
+void test_define_material_rejects_bad_specs() {
+    Fixture fixture;
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+
+    const fs::path typo = fixture.write("Typo.js", R"JS(
+defineMaterial('Typo', { roughnes: 0.5 });
+class TypoWorld extends World { static roots = []; }
+)JS");
+    CHECK(!matter::load_world_definition(fixture.desc(typo), definition, error),
+          "a misspelled spec field is rejected rather than silently defaulted");
+    CHECK(error.message.find("unknown spec field 'roughnes'") != std::string::npos,
+          "the unknown-field diagnostic names the field");
+
+    const fs::path density = fixture.write("Density.js", R"JS(
+defineMaterial('NoDetail', { detailDensity: 16 });
+class DensityWorld extends World { static roots = []; }
+)JS");
+    CHECK(!matter::load_world_definition(fixture.desc(density), definition, error),
+          "detailDensity without a detail tileset is rejected");
+
+    const fs::path late = fixture.write("Late.js", R"JS(
+class LateWorld extends World {
+  static roots = [];
+  buildEntities() { defineMaterial('TooLate', {}); }
+}
+)JS");
+    CHECK(!matter::load_world_definition(fixture.desc(late), definition, error),
+          "declaring a material after roots resolve is diagnosed");
+    CHECK(error.property_path == "buildEntities" &&
+              error.message.find("before World.roots is read") != std::string::npos,
+          "the too-late diagnostic explains the ordering requirement");
+}
+
+void test_detail_bake_plan_ordering_and_merging() {
+    // The deprecated alias alone must produce exactly what the hardcoded path
+    // produced: one request for the root module bound to material 16.
+    std::vector<tileset::DetailBakeRoot> roots{{"ForestFloor", "{}"}};
+    auto plan = tileset::plan_detail_bakes(roots, {});
+    CHECK(plan.size() == 1 && plan[0].module == "ForestFloor" &&
+              plan[0].materials.size() == 1 && plan[0].materials[0] == 16 &&
+              plan[0].from_tileset_root && plan[0].texels_per_meter == 0,
+          "a `tileset: true` root still binds material 16 and nothing else");
+
+    // Declared materials append after the roots, in declaration order.
+    std::vector<matter::WorldMaterial> materials{
+        {"Rock", 30, "RockDetail", 0},
+        {"Snow", 31, "SnowDetail", 24},
+        {"Scree", 32, "RockDetail", 0},     // shares Rock's detail scene
+        {"Plain", 33, "", 0},               // no detail: never scheduled
+        {"Dense", 34, "RockDetail", 48},    // same module, different density
+    };
+    plan = tileset::plan_detail_bakes(roots, materials);
+    CHECK(plan.size() == 4, "one request per distinct (module, params, density)");
+    if (plan.size() != 4) return;
+    CHECK(plan[0].module == "ForestFloor" && plan[0].materials[0] == 16,
+          "deprecated roots stay first so existing slot assignment is unchanged");
+    CHECK(plan[1].module == "RockDetail" && plan[1].materials.size() == 2 &&
+              plan[1].materials[0] == 30 && plan[1].materials[1] == 32,
+          "materials sharing a detail scene share one bake and one slot");
+    CHECK(plan[2].module == "SnowDetail" && plan[2].texels_per_meter == 24 &&
+              plan[2].materials.size() == 1 && plan[2].materials[0] == 31,
+          "detailDensity rides along with its request");
+    CHECK(plan[3].module == "RockDetail" && plan[3].texels_per_meter == 48 &&
+              plan[3].materials[0] == 34,
+          "a different density is a different atlas, not a merge");
+    for (const auto& request : plan)
+        CHECK(request.materials[0] != 33, "a material without detail is not scheduled");
+}
+
+void test_slot_allocator_eviction_order() {
+    tileset::SlotAllocator allocator(3);
+    CHECK(allocator.capacity() == 3 && allocator.size() == 0,
+          "a fresh allocator holds nothing");
+
+    const auto a = allocator.acquire(0xAAu);
+    const auto b = allocator.acquire(0xBBu);
+    const auto c = allocator.acquire(0xCCu);
+    CHECK(a.slot == 0 && b.slot == 1 && c.slot == 2,
+          "free slots are handed out lowest-index first");
+    CHECK(!a.evicted && !b.evicted && !c.evicted && !a.reused,
+          "filling the pool evicts nothing");
+
+    const auto again = allocator.acquire(0xAAu);
+    CHECK(again.slot == 0 && again.reused && !again.evicted,
+          "a resident key keeps its slot and is not re-baked");
+
+    // A is now most-recently-used, so B is the victim.
+    const auto d = allocator.acquire(0xDDu);
+    CHECK(d.slot == 1 && d.evicted && d.evicted_key == 0xBBu &&
+              d.evicted_slot == 1,
+          "the least-recently-acquired atlas is displaced");
+    CHECK(allocator.find(0xBBu) == -1 && allocator.find(0xAAu) == 0 &&
+              allocator.find(0xDDu) == 1,
+          "the evicted key is no longer resident");
+
+    const std::vector<uint64_t> mru = allocator.keys_mru_first();
+    CHECK(mru.size() == 3 && mru[0] == 0xDDu && mru[1] == 0xAAu &&
+              mru[2] == 0xCCu,
+          "recency order tracks acquire and reuse alike");
+
+    allocator.touch(0xCCu);
+    const auto e = allocator.acquire(0xEEu);
+    CHECK(e.evicted && e.evicted_key == 0xAAu,
+          "touch() promotes a key out of the victim position");
+
+    allocator.reset();
+    CHECK(allocator.size() == 0 && allocator.find(0xCCu) == -1,
+          "reset empties the pool");
+
+    CHECK(tileset::kSlotAllocatorCapacity == tileset::kMaxTilesetSlots,
+          "the pool size is the renderer's slot count, not a second literal");
+}
+
+// The bind/evict bookkeeping the provider applies to the material registry:
+// what a headless run can assert about "would bake + bind" without a GPU.
+void test_slot_binder_reports_displaced_materials() {
+    tileset::DetailSlotBinder binder(2);
+
+    const auto first = binder.acquire(0x11u);
+    CHECK(first.slot == 0 && !first.evicted, "first atlas takes slot 0");
+    binder.bind(0x11u, {16});                       // deprecated root -> DIRT
+
+    const auto second = binder.acquire(0x22u);
+    CHECK(second.slot == 1 && !second.evicted, "second atlas takes slot 1");
+    binder.bind(0x22u, {30, 32});                   // a shared detail scene
+
+    // Pool full. The next atlas displaces the least-recently-acquired one and
+    // must name its materials so they can fall back to scalar albedo.
+    const auto third = binder.acquire(0x33u);
+    CHECK(third.slot == 0 && third.evicted && third.evicted_key == 0x11u,
+          "the LRU atlas is the victim");
+    CHECK(third.unbound.size() == 1 && third.unbound[0] == 16,
+          "eviction names exactly the displaced materials");
+    binder.bind(0x33u, {31});
+
+    // Re-acquiring a resident key rebinds nothing and evicts nothing.
+    const auto again = binder.acquire(0x22u);
+    CHECK(again.slot == 1 && again.reused && !again.evicted &&
+              again.unbound.empty(),
+          "a cached atlas is neither re-baked nor re-slotted");
+
+    // A reservation whose atlas never loaded (headless cache miss) keeps its
+    // slot but binds nothing, so reset() must not report its materials.
+    const auto missed = binder.acquire(0x44u);
+    CHECK(missed.evicted && missed.unbound.size() == 1 &&
+              missed.unbound[0] == 31,
+          "the displaced material is reported before the new atlas loads");
+    binder.forget(0x44u);
+
+    std::vector<int> released = binder.reset();
+    std::sort(released.begin(), released.end());
+    CHECK(released.size() == 2 && released[0] == 30 && released[1] == 32,
+          "reset returns every still-bound material and nothing else");
+    CHECK(binder.allocator().size() == 0, "reset empties the pool");
+}
+
 } // namespace
 
 int main() {
@@ -601,5 +914,12 @@ int main() {
     test_fog_defaults_when_absent();
     test_streaming_ring_extraction();
     test_vulkan_volumetrics_settings_defaults();
+    test_define_material_round_trip();
+    test_define_material_reset_between_worlds();
+    test_define_material_name_collision_rules();
+    test_define_material_rejects_bad_specs();
+    test_detail_bake_plan_ordering_and_merging();
+    test_slot_allocator_eviction_order();
+    test_slot_binder_reports_displaced_materials();
     return check_summary();
 }

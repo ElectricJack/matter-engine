@@ -153,6 +153,23 @@ struct FrameStats {
     uint64_t vk_static_full_uploads = 0;
     uint64_t vk_static_append_uploads = 0;
     uint64_t vk_immediate_submits = 0;
+    // WP-E (chart-space virtual texturing) residency census. All zero when the
+    // VT runtime never started (no chart-bearing part in the scene).
+    bool     vt_active = false;
+    uint32_t vt_variants = 0;          // registered (variant, rung) layers
+    uint32_t vt_max_variants = 0;      // MATTER_VT_MAX_VARIANTS, post-clamp
+    uint32_t vt_pool_used = 0;         // occupied physical page slots
+    uint32_t vt_pool_capacity = 0;
+    uint32_t vt_pool_pinned = 0;       // always-resident tails
+    uint32_t vt_fills_last_frame = 0;
+    uint32_t vt_requests_last_frame = 0;
+    uint32_t vt_queue_depth = 0;
+    uint32_t vt_rejected_variants = 0; // fell back to legacy (budget/layers)
+    uint64_t vt_fills_total = 0;
+    uint64_t vt_evictions_total = 0;
+    uint64_t vt_pool_bytes = 0;
+    uint64_t vt_mesh_bytes = 0;        // CPU mesh copies held for the filler
+    uint64_t vt_mesh_budget_bytes = 0; // MATTER_VT_MESH_BUDGET_MB, in bytes
     DlssMode dlss_selected_mode = DlssMode::Native;
     DlssMode dlss_active_mode = DlssMode::Native;
     uint32_t dlss_internal_width = 0;
@@ -179,6 +196,9 @@ struct FrameStats {
     float gpu_dlss_ms           = 0;
     float gpu_composite_ms      = 0;
     float gpu_vol_ms            = 0;
+    // WP-E: the chart-VT page-fill pass (residency uploads + tier-1
+    // compositor dispatches + pool copies). 0 when VT is not active.
+    float gpu_vt_ms             = 0;
     bool  gpu_timers_supported  = false;
     uint64_t ecs_fixed_steps = 0;
     uint64_t ecs_dropped_steps = 0;

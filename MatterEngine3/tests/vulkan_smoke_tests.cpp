@@ -1556,6 +1556,1488 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
 // MaterialGpu.flags_misc[1] low byte = detailSlot + 1), the slot-replacement
 // path, and that unload falls back to the dummy descriptors without
 // validation complaints.
+// WP-E (chart-space virtual texturing): MATTER_VK_SMOKE_MODE=vt.
+//
+// A synthetic two-chart part is registered with chart tables + chart UVs, so
+// the residency runtime starts, pins a tail page, stub-fills it and (via the
+// feedback loop) its finer pages. Then:
+//   (a) the rendered albedo is what the installed filler bakes into the page.
+//       WP-D's tier-1 compositor takes its material inputs from the renderer's
+//       set_materials() push (the MaterialGpuRecord table), NOT from
+//       VtPartContext::material_table — which only the WP-E stub filler reads.
+//       The fixture therefore loads the two tables with DIFFERENT albedos, so
+//       the pixel says which filler is installed as well as proving the VT
+//       sample happened at all (a page that never filled reads as the
+//       compositor's neutral 0.5 grey);
+//   (b) pixels either side of the chart boundary agree, i.e. the page/border
+//       addressing does not produce a seam where two charts meet;
+//   (c) a chartless part rendered in the same scene is bit-identical to the
+//       same part rendered before VT ever started (the regression gate).
+void run_vt_path(matter::VulkanDevice& vulkan) {
+    constexpr uint32_t width = 160;
+    constexpr uint32_t height = 160;
+    // Keep the physical pool to a single array layer; the production default
+    // (8192 pages, ~0.9 GB) is pointless for a 2-chart fixture.
+#ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+#else
+    setenv("MATTER_VT_POOL_PAGES", "256", 1);
+#endif
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "vt: renderer init" : error.c_str());
+    CHECK(!renderer.vt_active(),
+          "vt: the residency runtime does not start before a chart-bearing part");
+
+    // The chart part and the chartless control share this material index.
+    //   `page_albedo`  — the uploaded MaterialGpuRecord. Both the legacy
+    //                    G-buffer path AND the tier-1 compositor (via
+    //                    set_materials) resolve this material to it, so a
+    //                    detail-less material makes VT and legacy agree.
+    //                    That agreement IS the Phase-2 parity property.
+    //   `stub_albedo`  — VtPartContext::material_table, read only by the WP-E
+    //                    stub filler. A page carrying this colour means the
+    //                    compositor is not installed.
+    constexpr uint32_t kMaterial = 5u;
+    const matter::Float3 stub_albedo{0.20f, 0.60f, 0.85f};
+    const matter::Float3 page_albedo{0.90f, 0.05f, 0.10f};
+    constexpr float kMaterialRoughness = 0.40f;
+    constexpr float kMaterialMetallic = 0.0f;
+    // MaterialRegistryPackForGPU's layout: [albedo.xyz, roughness],
+    // [metallic, emission, pad, translucency], [ior, flat, merge, slot].
+    constexpr uint32_t kMaterialStride = 12u;
+    std::vector<float> chart_material_table((kMaterial + 1) * kMaterialStride,
+                                            0.0f);
+    chart_material_table[kMaterial * kMaterialStride + 0] = stub_albedo.x;
+    chart_material_table[kMaterial * kMaterialStride + 1] = stub_albedo.y;
+    chart_material_table[kMaterial * kMaterialStride + 2] = stub_albedo.z;
+    chart_material_table[kMaterial * kMaterialStride + 3] = 0.55f;  // roughness
+    chart_material_table[kMaterial * kMaterialStride + 4] = 0.10f;  // metallic
+    chart_material_table[kMaterial * kMaterialStride + 11] = -1.0f; // no slot
+
+    std::vector<MaterialGpuRecord> materials(kMaterial + 1);
+    materials[kMaterial].base_roughness[0] = page_albedo.x;
+    materials[kMaterial].base_roughness[1] = page_albedo.y;
+    materials[kMaterial].base_roughness[2] = page_albedo.z;
+    materials[kMaterial].base_roughness[3] = kMaterialRoughness;
+    materials[kMaterial].metal_opacity_spec_coat[0] = kMaterialMetallic;
+    materials[kMaterial].metal_opacity_spec_coat[1] = 1.0f;   // opacity
+    // No detail slot: flags_misc[1] stays 0, so the compositor takes the
+    // scalar-fallback branch and bakes exactly this albedo/ORM into the page.
+    CHECK(renderer.update_materials(materials, 1, 1, error),
+          error.empty() ? "vt: stage materials" : error.c_str());
+
+    // --- chartless control part (a quad off to the left, nearer the camera) --
+    const auto quad = [](uint64_t hash, float x0, float x1, float y0, float y1,
+                         float z, float u0, float u1, float v0, float v1,
+                         uint32_t material) {
+        viewer::VkScenePart part = fixed_part(hash, {x0, y0, z}, {x1, y1, z}, 0);
+        const matter::Float3 normal{0.0f, 0.0f, 1.0f};
+        const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};   // a = 0: no tint
+        part.vertices = {
+            {{x0, y0, z}, normal, tint, {u0, v0, 1.0f, 1.0f}, material, {}},
+            {{x1, y0, z}, normal, tint, {u1, v0, 1.0f, 1.0f}, material, {}},
+            {{x1, y1, z}, normal, tint, {u1, v1, 1.0f, 1.0f}, material, {}},
+            {{x0, y1, z}, normal, tint, {u0, v1, 1.0f, 1.0f}, material, {}},
+        };
+        part.indices = {0, 1, 2, 0, 2, 3};
+        part.clusters[0].lods[0] = {0, 6, 0.0f, UINT32_MAX};
+        return part;
+    };
+
+    const viewer::VkScenePart control =
+        quad(0x7601, -1.4f, -1.0f, -0.4f, 0.4f, -1.9f, 0.0f, 0.0f, 0.0f, 0.0f,
+             kMaterial);
+    CHECK(renderer.ensure_part(control, error) >= 0,
+          error.empty() ? "vt: ensure chartless control part" : error.c_str());
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices frame{};
+    CHECK(viewer::build_frame_matrices(camera, width, height, frame, error),
+          error.empty() ? "vt: build frame matrices" : error.c_str());
+
+    const matter::Mat4f identity = identity_matrix();
+    // render_gbuffer_and_composite submits and waits, so the wall-clock delta
+    // across it is an honest end-to-end cost for the frame INCLUDING the VT
+    // fill pass. Frames that fill pages are compared against frames that do
+    // not, which brackets the integrated per-fill cost.
+    double last_render_ms = 0.0;
+    const auto render_once = [&](const char* label) {
+        std::string local;
+        CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, local),
+              local.empty() ? label : local.c_str());
+        const auto started = std::chrono::steady_clock::now();
+        CHECK(renderer.render_gbuffer_and_composite(width, height, local),
+              local.empty() ? label : local.c_str());
+        last_render_ms =
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - started).count();
+    };
+    const auto pixel_at = [&](uint32_t x, uint32_t y) {
+        viewer::VkRasterPixel pixel{};
+        std::string local;
+        CHECK(renderer.readback_raster_pixel(x, y, pixel, local),
+              local.empty() ? "vt: readback pixel" : local.c_str());
+        return pixel;
+    };
+
+    CHECK(renderer.update_instances({{0x7601, identity, 1}}, error),
+          error.empty() ? "vt: upload control instance" : error.c_str());
+    render_once("vt: render chartless-only frame");
+    // Control quad centre: z = -1.9 gives a 1.9 half-extent, so world x -1.2
+    // lands near screen x 29.
+    const viewer::VkRasterPixel control_before = pixel_at(29, 80);
+    CHECK(control_before.material_index == kMaterial,
+          "vt: the control quad is the surface under the probe");
+    CHECK(close4(control_before.albedo,
+                 {page_albedo.x, page_albedo.y, page_albedo.z, 1.0f},
+                 6e-3f),
+          "vt: the chartless control shades from the uploaded material record");
+    CHECK(!renderer.vt_active(),
+          "vt: a chartless-only scene never starts the residency runtime");
+
+    // --- the two-chart part -------------------------------------------------
+    // Atlas 256x128: chart 0 owns page column 0, chart 1 owns page column 1,
+    // so the chart boundary is also a PAGE boundary at the finest mip — the
+    // configuration a border/addressing bug shows up in.
+    //
+    // The chart entries are GEOMETRICALLY CONSISTENT with the UVs (chart_atlas.h's
+    // convention: texel = rect + gutter + (dot(p,T) - dot(origin,T)) * tpm).
+    // The tier-1 compositor analytically rasterizes charts from exactly these
+    // fields, so an entry that disagrees with the vertex UVs bakes a page that
+    // does not correspond to the surface. Both quads are 0.8 m square at
+    // 150 texels/m => 120 texels of content inside a 128-texel rect, leaving
+    // the 4-texel gutter on every edge.
+    viewer::VkScenePart charted =
+        quad(0x7602, -0.8f, 0.8f, -0.4f, 0.4f, -2.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+             kMaterial);
+    {
+        const float z = -2.0f;
+        const float tpm = 150.0f;
+        const matter::Float3 normal{0.0f, 0.0f, 1.0f};
+        const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};
+        const float u0a = 4.0f / 256.0f, u1a = 124.0f / 256.0f;
+        const float u0b = 132.0f / 256.0f, u1b = 252.0f / 256.0f;
+        const float v0 = 4.0f / 128.0f, v1 = 124.0f / 128.0f;
+        charted.vertices = {
+            {{-0.8f, -0.4f, z}, normal, tint, {u0a, v0, 1.0f, 1.0f}, kMaterial, {}},
+            {{ 0.0f, -0.4f, z}, normal, tint, {u1a, v0, 1.0f, 1.0f}, kMaterial, {}},
+            {{ 0.0f,  0.4f, z}, normal, tint, {u1a, v1, 1.0f, 1.0f}, kMaterial, {}},
+            {{-0.8f,  0.4f, z}, normal, tint, {u0a, v1, 1.0f, 1.0f}, kMaterial, {}},
+            {{ 0.0f, -0.4f, z}, normal, tint, {u0b, v0, 1.0f, 1.0f}, kMaterial, {}},
+            {{ 0.8f, -0.4f, z}, normal, tint, {u1b, v0, 1.0f, 1.0f}, kMaterial, {}},
+            {{ 0.8f,  0.4f, z}, normal, tint, {u1b, v1, 1.0f, 1.0f}, kMaterial, {}},
+            {{ 0.0f,  0.4f, z}, normal, tint, {u0b, v1, 1.0f, 1.0f}, kMaterial, {}},
+        };
+        charted.indices = {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7};
+        charted.clusters[0].lods[0] = {0, 12, 0.0f, /*chart_rung=*/0u};
+
+        chart_atlas::ChartAtlasRung rung;
+        rung.atlas_w = 256;
+        rung.atlas_h = 128;
+        rung.charts.resize(2);
+        const float chart_origin_x[2] = {-0.8f, 0.0f};
+        for (int c = 0; c < 2; ++c) {
+            chart_atlas::ChartEntry& entry = rung.charts[c];
+            entry.origin[0] = chart_origin_x[c];
+            entry.origin[1] = -0.4f;
+            entry.origin[2] = z;
+            entry.tangent[0] = 1.0f; entry.tangent[1] = 0.0f; entry.tangent[2] = 0.0f;
+            entry.bitangent[0] = 0.0f; entry.bitangent[1] = 1.0f; entry.bitangent[2] = 0.0f;
+            entry.rect_x = static_cast<uint32_t>(c) * 128u;
+            entry.rect_y = 0;
+            entry.rect_w = 128;
+            entry.rect_h = 128;
+            entry.texels_per_meter = tpm;
+            entry.first_tri = static_cast<uint32_t>(c) * 2u;
+            entry.tri_count = 2;
+        }
+        rung.tri_order = {0, 1, 2, 3};
+        charted.lod_charts = {rung};
+
+        viewer::VkScenePartChartMesh mesh;
+        mesh.vertex_count = 8;
+        for (const viewer::VkRasterVertex& vertex : charted.vertices) {
+            mesh.positions.push_back(vertex.position.x);
+            mesh.positions.push_back(vertex.position.y);
+            mesh.positions.push_back(vertex.position.z);
+            mesh.normals.push_back(vertex.normal.x);
+            mesh.normals.push_back(vertex.normal.y);
+            mesh.normals.push_back(vertex.normal.z);
+            mesh.surface_uvs.push_back(vertex.surface.x);
+            mesh.surface_uvs.push_back(vertex.surface.y);
+            mesh.material_ids.push_back(kMaterial);
+        }
+        mesh.indices = charted.indices;
+        mesh.dominant_material = kMaterial;
+        charted.lod_chart_meshes = {std::move(mesh)};
+        charted.chart_material_table = chart_material_table;
+        charted.chart_material_stride = kMaterialStride;
+    }
+    CHECK(renderer.ensure_part(charted, error) >= 0,
+          error.empty() ? "vt: ensure two-chart part" : error.c_str());
+    CHECK(renderer.vt_active(),
+          "vt: registering a chart-bearing part starts the residency runtime");
+    {
+        const vt::VtResidency::Stats stats = renderer.vt_stats();
+        CHECK(stats.variants == 1, "vt: exactly one (variant, rung) registered");
+        CHECK(stats.pool_pinned == 1, "vt: the variant's tail page is pinned");
+        CHECK(stats.pool_capacity == 256,
+              "vt: MATTER_VT_POOL_PAGES sized the pool");
+    }
+
+    CHECK(renderer.update_instances({{0x7601, identity, 1},
+                                     {0x7602, identity, 2}}, error),
+          error.empty() ? "vt: upload both instances" : error.c_str());
+    // Frame 1 fills the pinned tail; later frames drain whatever the feedback
+    // pass asked for. Four frames is well past the point where the two finest
+    // pages under the probes are resident.
+    double filling_frame_ms = 0.0;
+    double settled_frame_ms = 0.0;
+    uint64_t fills_before_frame = renderer.vt_stats().fills_total;
+    for (int i = 0; i < 4; ++i) {
+        render_once("vt: render VT frame");
+        const uint64_t fills_now = renderer.vt_stats().fills_total;
+        if (fills_now != fills_before_frame)
+            filling_frame_ms = last_render_ms;
+        else
+            settled_frame_ms = last_render_ms;
+        fills_before_frame = fills_now;
+    }
+    std::printf("vt frame cost: filling=%.3f ms settled=%.3f ms "
+                "(submit+wait, 160x160)\n",
+                filling_frame_ms, settled_frame_ms);
+
+    const vt::VtResidency::Stats stats = renderer.vt_stats();
+    std::printf(
+        "vt stats: variants=%u pool=%u/%u pinned=%u fills_total=%llu "
+        "evictions=%llu queue=%u requests_last=%u mesh_bytes=%llu "
+        "pool_bytes=%llu\n",
+        stats.variants, stats.pool_used, stats.pool_capacity, stats.pool_pinned,
+        static_cast<unsigned long long>(stats.fills_total),
+        static_cast<unsigned long long>(stats.evictions_total),
+        stats.queue_depth, stats.requests_last_frame,
+        static_cast<unsigned long long>(stats.mesh_bytes),
+        static_cast<unsigned long long>(stats.pool_bytes));
+    CHECK(stats.fills_total >= 1,
+          "vt: at least the pinned tail page was filled");
+    CHECK(stats.pool_used >= 1, "vt: the pool holds the filled pages");
+    CHECK(stats.evictions_total == 0,
+          "vt: a 2-chart fixture never pressures a 256-page pool");
+    CHECK(stats.requests_last_frame > 0,
+          "vt: the G-buffer feedback pass produced page requests");
+    CHECK(stats.fills_total >= 2,
+          "vt: the feedback loop drained a page beyond the pinned tail");
+    // Every occupied slot must have been written by a fill. A pinned tail
+    // whose fill allocated a SECOND slot instead of writing the pinned one
+    // shows up here as pool_used > fills_total, and leaves the slot every
+    // unmapped entry falls back to holding undefined bytes.
+    CHECK(stats.pool_used <= stats.fills_total,
+          "vt: every resident slot was actually filled (tail included)");
+
+    // (a) the VT sample is what shades the charted quad, and it carries the
+    // COMPOSITOR's material resolution (set_materials), not the stub's.
+    // World x -0.4 / +0.4 at z = -2 (half-extent 2.0) land on screen x 64 / 96.
+    const viewer::VkRasterPixel chart0 = pixel_at(64, 80);
+    const viewer::VkRasterPixel chart1 = pixel_at(96, 80);
+    CHECK(chart0.material_index == kMaterial && chart1.material_index == kMaterial,
+          "vt: both probes land on the charted quad");
+    // BC7 of a (locally) constant page plus unorm8 quantization: ~1/255.
+    CHECK(close4(chart0.albedo,
+                 {page_albedo.x, page_albedo.y, page_albedo.z, 1.0f}, 2.0e-2f),
+          "vt: chart 0 shades from the composited page");
+    CHECK(close4(chart1.albedo,
+                 {page_albedo.x, page_albedo.y, page_albedo.z, 1.0f}, 2.0e-2f),
+          "vt: chart 1 shades from the composited page");
+    // Decisive: the stub filler resolves this material out of
+    // VtPartContext::material_table, which holds a very different colour.
+    CHECK(std::fabs(chart0.albedo.x - stub_albedo.x) > 0.2f ||
+              std::fabs(chart0.albedo.y - stub_albedo.y) > 0.2f ||
+              std::fabs(chart0.albedo.z - stub_albedo.z) > 0.2f,
+          "vt: the tier-1 compositor is the installed filler, not the stub");
+    // A page that never filled reads as the compositor's neutral clear.
+    CHECK(std::fabs(chart0.albedo.x - 0.5f) > 0.1f ||
+              std::fabs(chart0.albedo.y - 0.5f) > 0.1f ||
+              std::fabs(chart0.albedo.z - 0.5f) > 0.1f,
+          "vt: the sampled page is composited content, not the neutral clear");
+    // The chart frame is T=(1,0,0), B=(0,1,0) => N = T x B = the quad's own
+    // +Z normal, and a detail-less material adds no normal delta, so the
+    // page's chart-tangent normal decodes back to the geometric normal.
+    CHECK(std::fabs(chart0.normal.z - 1.0f) < 2.0e-2f,
+          "vt: the page normal decodes to the geometric normal");
+    // The G-buffer ORM attachment is (roughness, metallic, ao). Roughness and
+    // metallic ride the compositor's scalar fallback; occlusion is 1 at tier 1
+    // (WP-H's hemisphere enrichment is what darkens it), so ao is the vertex
+    // term alone.
+    CHECK(std::fabs(chart0.orm.x - kMaterialRoughness) < 2.0e-2f,
+          "vt: page roughness matches the material the compositor was given");
+    CHECK(std::fabs(chart0.orm.y - kMaterialMetallic) < 2.0e-2f,
+          "vt: page metallic matches the material the compositor was given");
+    CHECK(std::fabs(chart0.orm.z - 1.0f) < 2.0e-2f,
+          "vt: tier-1 pages carry unoccluded ORM");
+    // Phase-2 parity: a detail-less material must shade identically whether it
+    // came through a composited page or the legacy path. The chartless control
+    // is the same material shaded the legacy way.
+    CHECK(std::fabs(chart0.albedo.x - control_before.albedo.x) < 2.0e-2f &&
+              std::fabs(chart0.albedo.y - control_before.albedo.y) < 2.0e-2f &&
+              std::fabs(chart0.albedo.z - control_before.albedo.z) < 2.0e-2f,
+          "vt: a detail-less material composites to its legacy shading");
+
+    // (b) no seam where the two charts (and the two finest-mip pages) meet.
+    const viewer::VkRasterPixel left = pixel_at(76, 80);
+    const viewer::VkRasterPixel right = pixel_at(84, 80);
+    CHECK(left.material_index == kMaterial && right.material_index == kMaterial,
+          "vt: the seam probes land on the charted quad");
+    CHECK(std::fabs(left.albedo.x - right.albedo.x) < 6.0e-3f &&
+              std::fabs(left.albedo.y - right.albedo.y) < 6.0e-3f &&
+              std::fabs(left.albedo.z - right.albedo.z) < 6.0e-3f,
+          "vt: no seam across the chart/page boundary beyond filtering epsilon");
+    CHECK(std::fabs(left.albedo.x - chart0.albedo.x) < 6.0e-3f &&
+              std::fabs(right.albedo.x - chart1.albedo.x) < 6.0e-3f,
+          "vt: the boundary neighbourhood matches each chart's interior");
+
+    // Determinism: the compositor is a pure function of its inputs, and the
+    // residency layer must not be re-filling a resident page with something
+    // else. Another frame over the same state has to reproduce the same
+    // pixels EXACTLY -- not within an epsilon.
+    render_once("vt: render VT determinism frame");
+    const viewer::VkRasterPixel chart0_again = pixel_at(64, 80);
+    const viewer::VkRasterPixel chart1_again = pixel_at(96, 80);
+    CHECK(chart0_again.albedo.x == chart0.albedo.x &&
+              chart0_again.albedo.y == chart0.albedo.y &&
+              chart0_again.albedo.z == chart0.albedo.z &&
+              chart0_again.orm.x == chart0.orm.x &&
+              chart0_again.orm.y == chart0.orm.y &&
+              chart0_again.orm.z == chart0.orm.z,
+          "vt: chart 0 is bit-identical across consecutive frames");
+    CHECK(chart1_again.albedo.x == chart1.albedo.x &&
+              chart1_again.albedo.y == chart1.albedo.y &&
+              chart1_again.albedo.z == chart1.albedo.z,
+          "vt: chart 1 is bit-identical across consecutive frames");
+
+    // (c) the chartless control is bit-identical to the pre-VT frame.
+    const viewer::VkRasterPixel control_after = pixel_at(29, 80);
+    CHECK(control_after.material_index == kMaterial,
+          "vt: the control quad still shades under the probe");
+    CHECK(control_after.albedo.x == control_before.albedo.x &&
+              control_after.albedo.y == control_before.albedo.y &&
+              control_after.albedo.z == control_before.albedo.z &&
+              control_after.albedo.w == control_before.albedo.w,
+          "vt: a chartless part renders byte-identically once VT is live");
+    CHECK(control_after.orm.x == control_before.orm.x &&
+              control_after.orm.y == control_before.orm.y &&
+              control_after.orm.z == control_before.orm.z,
+          "vt: a chartless part's ORM is byte-identical once VT is live");
+    CHECK(control_after.normal.x == control_before.normal.x &&
+              control_after.normal.y == control_before.normal.y &&
+              control_after.normal.z == control_before.normal.z,
+          "vt: a chartless part's normal is byte-identical once VT is live");
+
+    // (d) compositor-input invalidation. Editing the material table changes
+    // what the compositor bakes into a page. Rebinding the compositor's inputs
+    // only fixes FUTURE fills: the pages already in the pool -- and above all
+    // the pinned tail, which never expires and is what every unmapped entry
+    // resolves to -- were baked from the OLD table. The renderer's next
+    // push_vt_compositor_inputs() therefore also calls
+    // VtResidency::invalidate_all_content(), which drops the resident unpinned
+    // pages and re-queues every tail for an in-place re-fill. Without it these
+    // probes keep reading page_albedo for the rest of the session.
+    const matter::Float3 edited_albedo{0.10f, 0.85f, 0.35f};
+    const vt::VtResidency::Stats before_invalidate = renderer.vt_stats();
+    materials[kMaterial].base_roughness[0] = edited_albedo.x;
+    materials[kMaterial].base_roughness[1] = edited_albedo.y;
+    materials[kMaterial].base_roughness[2] = edited_albedo.z;
+    CHECK(renderer.update_materials(materials, 2, 1, error),
+          error.empty() ? "vt: edit the material table" : error.c_str());
+    // The next frame pushes the new inputs, invalidates, and re-fills the tail;
+    // the feedback loop takes a few more to bring the finest pages under the
+    // probes back. Six is well past that for a 2-chart fixture.
+    for (int i = 0; i < 6; ++i) render_once("vt: render post-edit VT frame");
+
+    const vt::VtResidency::Stats after_invalidate = renderer.vt_stats();
+    std::printf("vt post-edit stats: invalidations=%llu dropped=%llu "
+                "pool=%u/%u pinned=%u fills_total=%llu\n",
+                static_cast<unsigned long long>(
+                    after_invalidate.invalidations_total),
+                static_cast<unsigned long long>(
+                    after_invalidate.pages_dropped_total),
+                after_invalidate.pool_used, after_invalidate.pool_capacity,
+                after_invalidate.pool_pinned,
+                static_cast<unsigned long long>(after_invalidate.fills_total));
+    CHECK(before_invalidate.invalidations_total == 0,
+          "vt: the runtime's own first input push does not invalidate");
+    CHECK(after_invalidate.invalidations_total == 1,
+          "vt: a material-table edit invalidates resident VT content exactly once");
+    CHECK(after_invalidate.pages_dropped_total >= 1,
+          "vt: the invalidation dropped the pages baked from the old table");
+    CHECK(after_invalidate.pool_pinned == before_invalidate.pool_pinned,
+          "vt: invalidation never drops a pinned tail");
+    CHECK(after_invalidate.fills_total > before_invalidate.fills_total,
+          "vt: the invalidated pages were re-filled");
+    // As above: a tail re-fill that allocated a fresh slot instead of rewriting
+    // its pinned one would leave pool_used ahead of the fills that wrote it.
+    CHECK(after_invalidate.pool_used <= after_invalidate.fills_total,
+          "vt: the in-place tail re-fill did not burn a second slot");
+    const viewer::VkRasterPixel chart0_edited = pixel_at(64, 80);
+    const viewer::VkRasterPixel chart1_edited = pixel_at(96, 80);
+    CHECK(chart0_edited.material_index == kMaterial &&
+              chart1_edited.material_index == kMaterial,
+          "vt: both probes still land on the charted quad after the edit");
+    CHECK(close4(chart0_edited.albedo,
+                 {edited_albedo.x, edited_albedo.y, edited_albedo.z, 1.0f},
+                 2.0e-2f),
+          "vt: chart 0 re-composited from the edited material table");
+    CHECK(close4(chart1_edited.albedo,
+                 {edited_albedo.x, edited_albedo.y, edited_albedo.z, 1.0f},
+                 2.0e-2f),
+          "vt: chart 1 re-composited from the edited material table");
+    // Re-filled pages are as deterministic as first-filled ones.
+    render_once("vt: render post-edit determinism frame");
+    const viewer::VkRasterPixel chart0_edited_again = pixel_at(64, 80);
+    CHECK(chart0_edited_again.albedo.x == chart0_edited.albedo.x &&
+              chart0_edited_again.albedo.y == chart0_edited.albedo.y &&
+              chart0_edited_again.albedo.z == chart0_edited.albedo.z &&
+              chart0_edited_again.orm.x == chart0_edited.orm.x &&
+              chart0_edited_again.orm.y == chart0_edited.orm.y,
+          "vt: re-filled pages are bit-identical across consecutive frames");
+    CHECK(renderer.vt_stats().invalidations_total == 1,
+          "vt: a settled frame does not re-invalidate");
+
+    // Releasing the charted part must return its layer, tail and mesh copies.
+    renderer.release_part(0x7602);
+    const vt::VtResidency::Stats after_release = renderer.vt_stats();
+    CHECK(after_release.variants == 0,
+          "vt: releasing the part unregisters its variant rung");
+    CHECK(after_release.pool_pinned == 0,
+          "vt: releasing the part unpins its tail page");
+    CHECK(after_release.mesh_bytes == 0,
+          "vt: releasing the part frees its CPU mesh copies");
+}
+
+// WP-F (surfaces() classifier tape): MATTER_VK_SMOKE_MODE=vt-surfaces.
+//
+// A three-chart strip whose VtPartContext carries per-vertex tape weights
+// (the form the engine's compiled surfaces() tape produces): quad 0 is pure
+// material A, quad 1 pure B, quad 2 pure C — all three sharing ONE TriEx
+// materialId, so any color difference between the quads can only come from
+// the tape (weight-seam mode 2), never from the Phase-2 materialId stub.
+// Asserts:
+//   (a) different tape regions produce different page content (each quad
+//       shades with its tape material's albedo, not the TriEx material's);
+//   (b) determinism across frames (bit-identical resampling);
+//   (c) an edited tape (renderer begin/update/end vt-surface bracket with a
+//       new tape hash) invalidates resident content exactly once and the
+//       re-filled pages show the NEW classification (regions swapped).
+void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
+    constexpr uint32_t width = 160;
+    constexpr uint32_t height = 160;
+#ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+#else
+    setenv("MATTER_VT_POOL_PAGES", "256", 1);
+#endif
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "vt-surfaces: renderer init" : error.c_str());
+
+    // Tape materials: three detail-less materials with far-apart albedos.
+    // kTriMaterial is the TriEx id every vertex carries — its albedo is a
+    // fourth colour that must NEVER appear on the strip while the tape is
+    // active.
+    constexpr uint32_t kMatGrass = 3u;
+    constexpr uint32_t kMatRock = 4u;
+    constexpr uint32_t kMatSnow = 5u;
+    constexpr uint32_t kTriMaterial = 6u;
+    const matter::Float3 grass_albedo{0.10f, 0.70f, 0.15f};
+    const matter::Float3 rock_albedo{0.45f, 0.30f, 0.20f};
+    const matter::Float3 snow_albedo{0.90f, 0.92f, 0.95f};
+    const matter::Float3 tri_albedo{0.85f, 0.05f, 0.80f};
+    std::vector<MaterialGpuRecord> materials(kTriMaterial + 1);
+    const auto set_material = [&](uint32_t index, const matter::Float3& albedo) {
+        materials[index].base_roughness[0] = albedo.x;
+        materials[index].base_roughness[1] = albedo.y;
+        materials[index].base_roughness[2] = albedo.z;
+        materials[index].base_roughness[3] = 0.5f;   // roughness
+        materials[index].metal_opacity_spec_coat[0] = 0.0f;
+        materials[index].metal_opacity_spec_coat[1] = 1.0f;   // opacity
+    };
+    set_material(kMatGrass, grass_albedo);
+    set_material(kMatRock, rock_albedo);
+    set_material(kMatSnow, snow_albedo);
+    set_material(kTriMaterial, tri_albedo);
+    CHECK(renderer.update_materials(materials, 1, 1, error),
+          error.empty() ? "vt-surfaces: stage materials" : error.c_str());
+
+    // ---- the three-chart strip -------------------------------------------
+    // Three 0.8 m quads side by side at z = -2 (camera fov 90 deg => the
+    // strip spans screen x 32..128), one chart per quad, atlas 384x128.
+    const float z = -2.0f;
+    const float quad_w = 0.8f;
+    const float tpm = 150.0f;
+    viewer::VkScenePart part = fixed_part(0x7710, {-1.2f, -0.4f, z},
+                                          {1.2f, 0.4f, z}, 0);
+    part.vertices.clear();
+    part.indices.clear();
+    const matter::Float3 normal{0.0f, 0.0f, 1.0f};
+    const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};
+    chart_atlas::ChartAtlasRung rung;
+    rung.atlas_w = 384;
+    rung.atlas_h = 128;
+    for (int q = 0; q < 3; ++q) {
+        const float x0 = -1.2f + quad_w * float(q);
+        const float x1 = x0 + quad_w;
+        const float u0 = (float(q) * 128.0f + 4.0f) / 384.0f;
+        const float u1 = (float(q) * 128.0f + 124.0f) / 384.0f;
+        const float v0 = 4.0f / 128.0f, v1 = 124.0f / 128.0f;
+        const uint32_t base = static_cast<uint32_t>(part.vertices.size());
+        part.vertices.push_back(
+            {{x0, -0.4f, z}, normal, tint, {u0, v0, 1.0f, 1.0f}, kTriMaterial, {}});
+        part.vertices.push_back(
+            {{x1, -0.4f, z}, normal, tint, {u1, v0, 1.0f, 1.0f}, kTriMaterial, {}});
+        part.vertices.push_back(
+            {{x1, 0.4f, z}, normal, tint, {u1, v1, 1.0f, 1.0f}, kTriMaterial, {}});
+        part.vertices.push_back(
+            {{x0, 0.4f, z}, normal, tint, {u0, v1, 1.0f, 1.0f}, kTriMaterial, {}});
+        const uint32_t idx[6] = {base, base + 1, base + 2,
+                                 base, base + 2, base + 3};
+        part.indices.insert(part.indices.end(), idx, idx + 6);
+
+        chart_atlas::ChartEntry entry{};
+        entry.origin[0] = x0;
+        entry.origin[1] = -0.4f;
+        entry.origin[2] = z;
+        entry.tangent[0] = 1.0f;
+        entry.bitangent[1] = 1.0f;
+        entry.rect_x = static_cast<uint32_t>(q) * 128u;
+        entry.rect_y = 0;
+        entry.rect_w = 128;
+        entry.rect_h = 128;
+        entry.texels_per_meter = tpm;
+        entry.first_tri = static_cast<uint32_t>(q) * 2u;
+        entry.tri_count = 2;
+        rung.charts.push_back(entry);
+        rung.tri_order.push_back(static_cast<uint32_t>(q) * 2u);
+        rung.tri_order.push_back(static_cast<uint32_t>(q) * 2u + 1u);
+    }
+    part.clusters[0].lods[0] = {0, 18, 0.0f, /*chart_rung=*/0u};
+    part.lod_charts = {rung};
+
+    viewer::VkScenePartChartMesh mesh;
+    mesh.vertex_count = static_cast<uint32_t>(part.vertices.size());
+    for (const viewer::VkRasterVertex& vertex : part.vertices) {
+        mesh.positions.push_back(vertex.position.x);
+        mesh.positions.push_back(vertex.position.y);
+        mesh.positions.push_back(vertex.position.z);
+        mesh.normals.push_back(vertex.normal.x);
+        mesh.normals.push_back(vertex.normal.y);
+        mesh.normals.push_back(vertex.normal.z);
+        mesh.surface_uvs.push_back(vertex.surface.x);
+        mesh.surface_uvs.push_back(vertex.surface.y);
+        mesh.material_ids.push_back(kTriMaterial);
+    }
+    mesh.indices = part.indices;
+    mesh.dominant_material = kTriMaterial;
+    // The tape: quad q's four vertices give column q weight 255 — exactly
+    // what terrain_field::SurfaceRuntime::classify_vertices produces for a
+    // saturated classifier.
+    const auto weights_for = [&](uint32_t col0, uint32_t col1, uint32_t col2) {
+        std::vector<uint8_t> weights(size_t(mesh.vertex_count) * 3u, 0);
+        const uint32_t cols[3] = {col0, col1, col2};
+        for (uint32_t v = 0; v < mesh.vertex_count; ++v)
+            weights[size_t(v) * 3u + cols[v / 4u]] = 255;
+        return weights;
+    };
+    mesh.surface_weights = weights_for(0, 1, 2);   // grass | rock | snow
+    part.lod_chart_meshes = {std::move(mesh)};
+    part.surface_materials = {kMatGrass, kMatRock, kMatSnow};
+    part.surface_tape_hash = 0x5EAF00D100000001ull;
+
+    CHECK(renderer.ensure_part(part, error) >= 0,
+          error.empty() ? "vt-surfaces: ensure charted strip" : error.c_str());
+    CHECK(renderer.vt_active(),
+          "vt-surfaces: chart-bearing part starts the residency runtime");
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices frame{};
+    CHECK(viewer::build_frame_matrices(camera, width, height, frame, error),
+          error.empty() ? "vt-surfaces: build frame matrices" : error.c_str());
+    const matter::Mat4f identity = identity_matrix();
+    CHECK(renderer.update_instances({{0x7710, identity, 1}}, error),
+          error.empty() ? "vt-surfaces: upload instance" : error.c_str());
+
+    const auto render_once = [&](const char* label) {
+        std::string local;
+        CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, local),
+              local.empty() ? label : local.c_str());
+        CHECK(renderer.render_gbuffer_and_composite(width, height, local),
+              local.empty() ? label : local.c_str());
+    };
+    const auto pixel_at = [&](uint32_t x, uint32_t y) {
+        viewer::VkRasterPixel pixel{};
+        std::string local;
+        CHECK(renderer.readback_raster_pixel(x, y, pixel, local),
+              local.empty() ? "vt-surfaces: readback pixel" : local.c_str());
+        return pixel;
+    };
+    const auto close_albedo = [](const viewer::VkRasterPixel& pixel,
+                                 const matter::Float3& want, float epsilon) {
+        return std::fabs(pixel.albedo.x - want.x) < epsilon &&
+               std::fabs(pixel.albedo.y - want.y) < epsilon &&
+               std::fabs(pixel.albedo.z - want.z) < epsilon;
+    };
+
+    // Quad centres (world x -0.8 / 0 / +0.8 at z = -2) land on screen x
+    // 48 / 80 / 112 with the 90-degree camera.
+    for (int i = 0; i < 5; ++i) render_once("vt-surfaces: render VT frame");
+    const viewer::VkRasterPixel p_grass = pixel_at(48, 80);
+    const viewer::VkRasterPixel p_rock = pixel_at(80, 80);
+    const viewer::VkRasterPixel p_snow = pixel_at(112, 80);
+    CHECK(p_grass.material_index == kTriMaterial &&
+              p_rock.material_index == kTriMaterial &&
+              p_snow.material_index == kTriMaterial,
+          "vt-surfaces: all probes land on the strip");
+    // (a) three tape regions, three different page contents.
+    CHECK(close_albedo(p_grass, grass_albedo, 2.0e-2f),
+          "vt-surfaces: quad 0 shades from the tape's grass material");
+    CHECK(close_albedo(p_rock, rock_albedo, 2.0e-2f),
+          "vt-surfaces: quad 1 shades from the tape's rock material");
+    CHECK(close_albedo(p_snow, snow_albedo, 2.0e-2f),
+          "vt-surfaces: quad 2 shades from the tape's snow material");
+    // Decisive against the Phase-2 stub: the shared TriEx material's albedo
+    // appears nowhere.
+    CHECK(!close_albedo(p_grass, tri_albedo, 0.2f) &&
+              !close_albedo(p_rock, tri_albedo, 0.2f) &&
+              !close_albedo(p_snow, tri_albedo, 0.2f),
+          "vt-surfaces: the TriEx materialId stub is not what filled the pages");
+
+    // (b) determinism: another frame over settled state is bit-identical.
+    render_once("vt-surfaces: determinism frame");
+    const viewer::VkRasterPixel p_grass2 = pixel_at(48, 80);
+    const viewer::VkRasterPixel p_snow2 = pixel_at(112, 80);
+    CHECK(p_grass2.albedo.x == p_grass.albedo.x &&
+              p_grass2.albedo.y == p_grass.albedo.y &&
+              p_grass2.albedo.z == p_grass.albedo.z &&
+              p_snow2.albedo.x == p_snow.albedo.x &&
+              p_snow2.albedo.y == p_snow.albedo.y &&
+              p_snow2.albedo.z == p_snow.albedo.z,
+          "vt-surfaces: tape-classified pages are bit-identical across frames");
+
+    // (c) tape edit: swap grass and snow columns under a NEW tape hash. The
+    // renderer bracket must invalidate resident content exactly once and the
+    // re-fills must show the swapped classification.
+    const vt::VtResidency::Stats before_edit = renderer.vt_stats();
+    renderer.begin_vt_surface_update();
+    std::vector<std::vector<uint8_t>> new_weights(1);
+    new_weights[0] = weights_for(2, 1, 0);   // snow | rock | grass
+    CHECK(renderer.update_vt_part_surface(0x7710, new_weights,
+                                          {kMatGrass, kMatRock, kMatSnow},
+                                          0x5EAF00D100000002ull),
+          "vt-surfaces: the registered rung accepts the edited tape");
+    renderer.end_vt_surface_update();
+    for (int i = 0; i < 6; ++i) render_once("vt-surfaces: post-edit frame");
+    const vt::VtResidency::Stats after_edit = renderer.vt_stats();
+    std::printf("vt-surfaces stats: fills=%llu -> %llu, invalidations=%llu, "
+                "dropped=%llu\n",
+                static_cast<unsigned long long>(before_edit.fills_total),
+                static_cast<unsigned long long>(after_edit.fills_total),
+                static_cast<unsigned long long>(after_edit.invalidations_total),
+                static_cast<unsigned long long>(after_edit.pages_dropped_total));
+    CHECK(after_edit.invalidations_total ==
+              before_edit.invalidations_total + 1,
+          "vt-surfaces: the tape edit invalidates resident content exactly once");
+    CHECK(after_edit.fills_total > before_edit.fills_total,
+          "vt-surfaces: the invalidated pages re-filled");
+    const viewer::VkRasterPixel e_left = pixel_at(48, 80);
+    const viewer::VkRasterPixel e_mid = pixel_at(80, 80);
+    const viewer::VkRasterPixel e_right = pixel_at(112, 80);
+    CHECK(close_albedo(e_left, snow_albedo, 2.0e-2f),
+          "vt-surfaces: after the edit quad 0 re-filled as snow");
+    CHECK(close_albedo(e_mid, rock_albedo, 2.0e-2f),
+          "vt-surfaces: after the edit quad 1 is still rock");
+    CHECK(close_albedo(e_right, grass_albedo, 2.0e-2f),
+          "vt-surfaces: after the edit quad 2 re-filled as grass");
+    // Post-edit determinism.
+    render_once("vt-surfaces: post-edit determinism frame");
+    const viewer::VkRasterPixel e_left2 = pixel_at(48, 80);
+    CHECK(e_left2.albedo.x == e_left.albedo.x &&
+              e_left2.albedo.y == e_left.albedo.y &&
+              e_left2.albedo.z == e_left.albedo.z,
+          "vt-surfaces: re-filled pages are bit-identical across frames");
+
+    // Stripping the tape reverts to the TriEx materialId stub — the fourth
+    // colour finally appears, proving the mode flag travels per request.
+    renderer.begin_vt_surface_update();
+    CHECK(renderer.update_vt_part_surface(0x7710, {}, {}, 0),
+          "vt-surfaces: stripping the tape updates the registered rung");
+    renderer.end_vt_surface_update();
+    for (int i = 0; i < 6; ++i) render_once("vt-surfaces: stripped frame");
+    const viewer::VkRasterPixel stripped = pixel_at(80, 80);
+    CHECK(close_albedo(stripped, tri_albedo, 2.0e-2f),
+          "vt-surfaces: without the tape the TriEx materialId stub shades "
+          "the strip");
+
+    renderer.release_part(0x7710);
+    CHECK(renderer.vt_stats().variants == 0,
+          "vt-surfaces: release returns the variant");
+}
+
+// WP-H (tier-2 hemisphere AO page enrichment): MATTER_VK_SMOKE_MODE=vt-enrich
+// and MATTER_VK_SMOKE_MODE=vt-enrich-nort.
+//
+// FIXTURE — a known occluder, in ONE variant so it lands in that variant's own
+// acceleration structure (part-local self-occlusion is all tier 2 bakes):
+//   chart 0  a 3 x 3 m wall in the plane z = -2, normal +Z;
+//   chart 1  a 1 m deep "fin" standing on it in the plane x = 0, so the wall
+//            texels next to x = 0 are occluded and the ones far from it are not.
+// Texel density is a deliberate 4 texels/m, so one page texel is 0.25 m ≈ 10
+// screen pixels and a probe cannot straddle the contact band. The effective cap
+// is min(cap_texels x texel, cap_meters) = min(4 x 0.25, 0.5) = 0.5 m — the
+// ABSOLUTE ceiling binds here, which is the point: the near probe sits on the
+// texel whose centre is 0.125 m from the fin (a quarter of the cap, strongly
+// occluded) and the far probe on one 1.125 m away (outside the cap entirely, so
+// exactly unoccluded). The mip fade is 1.0 at this footprint (0.25 m < the
+// 0.5 m fade start), so this fixture exercises the un-faded contact regime.
+//
+// The G-buffer's ORM.z is the shaded occlusion, and for a detail-less material
+// gbuffer.frag reduces to `ao = vertex_ao * vt_orm.r` with vertex_ao = 1 (the
+// fixture's surface.zw is (1,1)), so ORM.z reads back the page's occlusion
+// channel directly.
+//
+// Asserts:
+//   (a) post-enrichment occlusion is darker next to the fin than far from it,
+//       and the far probe is still essentially unoccluded;
+//   (b) determinism — further frames reproduce the pixels bit-exactly, and the
+//       enrichment does not run again over an already-enriched page (which is
+//       what stops the in-place multiply from compounding);
+//   (c) albedo / roughness / metallic are bit-identical to the un-enriched arm,
+//       i.e. tier 2 touches ONLY the occlusion channel;
+//   (d) a material-table edit invalidates page content, and the re-filled pages
+//       are re-enriched (contrast comes back).
+// The `vt-enrich-nort` mode forces the device to report no ray tracing
+// (MATTER_VK_TEST_FORCE_RT_UNAVAILABLE, the existing rt-unavailable pattern) and
+// runs the same fixture: no enricher loads, nothing is ever queued, and every
+// probe reads unoccluded tier-1 content — today's behaviour, unchanged.
+void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
+    const bool rt = vulkan.ray_tracing_available();
+    constexpr uint32_t width = 160;
+    constexpr uint32_t height = 160;
+#ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+    _putenv_s("MATTER_VT_ENRICH_PER_FRAME", "2");
+#else
+    setenv("MATTER_VT_POOL_PAGES", "256", 1);
+    setenv("MATTER_VT_ENRICH_PER_FRAME", "2", 1);
+#endif
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "vt-enrich: renderer init" : error.c_str());
+
+    constexpr uint32_t kMaterial = 5u;
+    constexpr float kRoughness = 0.40f;
+    constexpr float kMetallic = 0.0f;
+    const matter::Float3 page_albedo{0.85f, 0.80f, 0.72f};
+    std::vector<MaterialGpuRecord> materials(kMaterial + 1);
+    materials[kMaterial].base_roughness[0] = page_albedo.x;
+    materials[kMaterial].base_roughness[1] = page_albedo.y;
+    materials[kMaterial].base_roughness[2] = page_albedo.z;
+    materials[kMaterial].base_roughness[3] = kRoughness;
+    materials[kMaterial].metal_opacity_spec_coat[0] = kMetallic;
+    materials[kMaterial].metal_opacity_spec_coat[1] = 1.0f;   // opacity
+    CHECK(renderer.update_materials(materials, 1, 1, error),
+          error.empty() ? "vt-enrich: stage materials" : error.c_str());
+
+    constexpr float kWallZ = -2.0f;
+    constexpr float kHalf = 1.5f;      // wall half-extent, metres
+    constexpr float kFinDepth = 1.0f;  // how far the fin stands off the wall
+    constexpr float kTpm = 4.0f;       // texels/m => 0.25 m texels, 1.0 m cap
+    viewer::VkScenePart charted =
+        fixed_part(0x7801, {-kHalf, -kHalf, kWallZ}, {kHalf, kHalf, kWallZ + kFinDepth},
+                   0);
+    {
+        const matter::Float3 wall_n{0.0f, 0.0f, 1.0f};
+        const matter::Float3 fin_n{-1.0f, 0.0f, 0.0f};
+        const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};   // a = 0: no tint
+        // Chart 0 (wall): texel = 4 + (p.x + 1.5) * tpm, same in v with p.y.
+        const auto wu = [&](float x) { return (4.0f + (x + kHalf) * kTpm) / 256.0f; };
+        const auto wv = [&](float y) { return (4.0f + (y + kHalf) * kTpm) / 128.0f; };
+        // Chart 1 (fin): rect starts at atlas x 128; plane U = p.z, V = p.y.
+        const auto fu = [&](float z) {
+            return (128.0f + 4.0f + (z - kWallZ) * kTpm) / 256.0f;
+        };
+        charted.vertices = {
+            {{-kHalf, -kHalf, kWallZ}, wall_n, tint, {wu(-kHalf), wv(-kHalf), 1.0f, 1.0f}, kMaterial, {}},
+            {{ kHalf, -kHalf, kWallZ}, wall_n, tint, {wu( kHalf), wv(-kHalf), 1.0f, 1.0f}, kMaterial, {}},
+            {{ kHalf,  kHalf, kWallZ}, wall_n, tint, {wu( kHalf), wv( kHalf), 1.0f, 1.0f}, kMaterial, {}},
+            {{-kHalf,  kHalf, kWallZ}, wall_n, tint, {wu(-kHalf), wv( kHalf), 1.0f, 1.0f}, kMaterial, {}},
+            {{0.0f, -kHalf, kWallZ}, fin_n, tint, {fu(kWallZ), wv(-kHalf), 1.0f, 1.0f}, kMaterial, {}},
+            {{0.0f, -kHalf, kWallZ + kFinDepth}, fin_n, tint, {fu(kWallZ + kFinDepth), wv(-kHalf), 1.0f, 1.0f}, kMaterial, {}},
+            {{0.0f,  kHalf, kWallZ + kFinDepth}, fin_n, tint, {fu(kWallZ + kFinDepth), wv( kHalf), 1.0f, 1.0f}, kMaterial, {}},
+            {{0.0f,  kHalf, kWallZ}, fin_n, tint, {fu(kWallZ), wv( kHalf), 1.0f, 1.0f}, kMaterial, {}},
+        };
+        charted.indices = {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7};
+        charted.clusters[0].lods[0] = {0, 12, 0.0f, /*chart_rung=*/0u};
+
+        chart_atlas::ChartAtlasRung rung;
+        rung.atlas_w = 256;
+        rung.atlas_h = 128;
+        rung.charts.resize(2);
+        chart_atlas::ChartEntry& wall = rung.charts[0];
+        wall.origin[0] = -kHalf; wall.origin[1] = -kHalf; wall.origin[2] = kWallZ;
+        wall.tangent[0] = 1.0f; wall.tangent[1] = 0.0f; wall.tangent[2] = 0.0f;
+        wall.bitangent[0] = 0.0f; wall.bitangent[1] = 1.0f; wall.bitangent[2] = 0.0f;
+        wall.rect_x = 0; wall.rect_y = 0; wall.rect_w = 128; wall.rect_h = 128;
+        wall.texels_per_meter = kTpm;
+        wall.first_tri = 0; wall.tri_count = 2;
+        chart_atlas::ChartEntry& fin = rung.charts[1];
+        fin.origin[0] = 0.0f; fin.origin[1] = -kHalf; fin.origin[2] = kWallZ;
+        fin.tangent[0] = 0.0f; fin.tangent[1] = 0.0f; fin.tangent[2] = 1.0f;
+        fin.bitangent[0] = 0.0f; fin.bitangent[1] = 1.0f; fin.bitangent[2] = 0.0f;
+        fin.rect_x = 128; fin.rect_y = 0; fin.rect_w = 128; fin.rect_h = 128;
+        fin.texels_per_meter = kTpm;
+        fin.first_tri = 2; fin.tri_count = 2;
+        rung.tri_order = {0, 1, 2, 3};
+        charted.lod_charts = {rung};
+
+        viewer::VkScenePartChartMesh mesh;
+        mesh.vertex_count = 8;
+        for (const viewer::VkRasterVertex& vertex : charted.vertices) {
+            mesh.positions.push_back(vertex.position.x);
+            mesh.positions.push_back(vertex.position.y);
+            mesh.positions.push_back(vertex.position.z);
+            mesh.normals.push_back(vertex.normal.x);
+            mesh.normals.push_back(vertex.normal.y);
+            mesh.normals.push_back(vertex.normal.z);
+            mesh.surface_uvs.push_back(vertex.surface.x);
+            mesh.surface_uvs.push_back(vertex.surface.y);
+            mesh.material_ids.push_back(kMaterial);
+        }
+        mesh.indices = charted.indices;
+        mesh.dominant_material = kMaterial;
+        charted.lod_chart_meshes = {std::move(mesh)};
+    }
+    CHECK(renderer.ensure_part(charted, error) >= 0,
+          error.empty() ? "vt-enrich: ensure occluder part" : error.c_str());
+    CHECK(renderer.vt_active(), "vt-enrich: the residency runtime started");
+    {
+        const vt::VtResidency::Stats started = renderer.vt_stats();
+        if (rt) {
+            CHECK(started.enrich_samples >= 8u && started.enrich_samples <= 64u,
+                  "vt-enrich: the enricher reports its ray budget");
+        } else {
+            CHECK(started.enrich_samples == 0u,
+                  "vt-enrich-nort: no enricher loads without ray tracing");
+        }
+    }
+
+    // A second, deliberately COARSE variant: 0.5 texels/m, so even its finest
+    // page has 2 m texels — past the enricher's fade end. Tier 2 must never
+    // queue it (the guard that stops a streamed terrain sector's coarse mips
+    // from being enriched at a scale where the cap used to grow to tens of
+    // metres and blacken open slopes). It needs no instance: registration
+    // queues its pinned tail, and record_frame fills that regardless of
+    // visibility, which is exactly the path queue_enrich sits on.
+    {
+        viewer::VkScenePart coarse =
+            fixed_part(0x7802, {-32.0f, -32.0f, -80.0f}, {32.0f, 32.0f, -80.0f}, 0);
+        const matter::Float3 n{0.0f, 0.0f, 1.0f};
+        const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};
+        const auto cu = [](float x) { return (4.0f + (x + 32.0f) * 0.5f) / 256.0f; };
+        const auto cv = [](float y) { return (4.0f + (y + 32.0f) * 0.5f) / 128.0f; };
+        coarse.vertices = {
+            {{-32.0f, -32.0f, -80.0f}, n, tint, {cu(-32.0f), cv(-32.0f), 1.0f, 1.0f}, kMaterial, {}},
+            {{ 32.0f, -32.0f, -80.0f}, n, tint, {cu( 32.0f), cv(-32.0f), 1.0f, 1.0f}, kMaterial, {}},
+            {{ 32.0f,  32.0f, -80.0f}, n, tint, {cu( 32.0f), cv( 32.0f), 1.0f, 1.0f}, kMaterial, {}},
+            {{-32.0f,  32.0f, -80.0f}, n, tint, {cu(-32.0f), cv( 32.0f), 1.0f, 1.0f}, kMaterial, {}},
+        };
+        coarse.indices = {0, 1, 2, 0, 2, 3};
+        coarse.clusters[0].lods[0] = {0, 6, 0.0f, /*chart_rung=*/0u};
+        chart_atlas::ChartAtlasRung rung;
+        rung.atlas_w = 256;
+        rung.atlas_h = 128;
+        rung.charts.resize(1);
+        chart_atlas::ChartEntry& c = rung.charts[0];
+        c.origin[0] = -32.0f; c.origin[1] = -32.0f; c.origin[2] = -80.0f;
+        c.tangent[0] = 1.0f; c.bitangent[1] = 1.0f;
+        c.rect_x = 0; c.rect_y = 0; c.rect_w = 128; c.rect_h = 128;
+        c.texels_per_meter = 0.5f;
+        c.first_tri = 0; c.tri_count = 2;
+        rung.tri_order = {0, 1};
+        coarse.lod_charts = {rung};
+        viewer::VkScenePartChartMesh mesh;
+        mesh.vertex_count = 4;
+        for (const viewer::VkRasterVertex& vertex : coarse.vertices) {
+            mesh.positions.push_back(vertex.position.x);
+            mesh.positions.push_back(vertex.position.y);
+            mesh.positions.push_back(vertex.position.z);
+            mesh.normals.push_back(vertex.normal.x);
+            mesh.normals.push_back(vertex.normal.y);
+            mesh.normals.push_back(vertex.normal.z);
+            mesh.surface_uvs.push_back(vertex.surface.x);
+            mesh.surface_uvs.push_back(vertex.surface.y);
+            mesh.material_ids.push_back(kMaterial);
+        }
+        mesh.indices = coarse.indices;
+        mesh.dominant_material = kMaterial;
+        coarse.lod_chart_meshes = {std::move(mesh)};
+        CHECK(renderer.ensure_part(coarse, error) >= 0,
+              error.empty() ? "vt-enrich: ensure coarse part" : error.c_str());
+    }
+
+    const matter::Mat4f identity = identity_matrix();
+    CHECK(renderer.update_instances({{0x7801, identity, 1}}, error),
+          error.empty() ? "vt-enrich: upload instance" : error.c_str());
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices frame{};
+    CHECK(viewer::build_frame_matrices(camera, width, height, frame, error),
+          error.empty() ? "vt-enrich: build frame matrices" : error.c_str());
+
+    // render_gbuffer_and_composite submits and waits, so the wall-clock delta
+    // across it is an honest end-to-end frame cost INCLUDING the tier-2 pass.
+    // Bracketing enriching frames against settled ones is what bounds the
+    // background cost (the spec's "< 10% GPU on the flight path" criterion).
+    double last_render_ms = 0.0;
+    const auto render_once = [&](const char* label) {
+        std::string local;
+        CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, local),
+              local.empty() ? label : local.c_str());
+        const auto started = std::chrono::steady_clock::now();
+        CHECK(renderer.render_gbuffer_and_composite(width, height, local),
+              local.empty() ? label : local.c_str());
+        last_render_ms = std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - started)
+                             .count();
+    };
+    const auto pixel_at = [&](uint32_t x, uint32_t y) {
+        viewer::VkRasterPixel pixel{};
+        std::string local;
+        CHECK(renderer.readback_raster_pixel(x, y, pixel, local),
+              local.empty() ? "vt-enrich: readback pixel" : local.c_str());
+        return pixel;
+    };
+
+    // Screen mapping: at z = -2 with a 90 deg vertical fov and a square target,
+    // the visible half-extent is 2 m, so screen_x = 80 + 40 * world_x. Both
+    // probes land on a TEXEL CENTRE (texels are 0.25 m = 10 px, centres at
+    // x = -0.125, -0.375, ...), so the reading is that texel's own baked value
+    // rather than a bilinear blend of two:
+    //   x = -0.125 m -> 75 : 0.125 m from the fin, a quarter of the 0.5 m cap;
+    //   x = -1.125 m -> 35 : 1.125 m from the fin, past the cap entirely.
+    constexpr uint32_t kNearX = 75;
+    constexpr uint32_t kFarX = 35;
+    constexpr uint32_t kProbeY = 80;
+
+    // Frame 1 fills the pinned tail; the feedback loop then drains the finest
+    // pages. Enrichment trails the fills by at least a frame by construction
+    // (the queue is drained before the fills that feed it), and runs 2 pages a
+    // frame, so a dozen frames is well past "everything resident and enriched".
+    double enriching_frame_ms = 0.0;
+    double settled_frame_ms = 0.0;
+    uint64_t enrich_before = renderer.vt_stats().enrich_total;
+    for (int i = 0; i < 12; ++i) {
+        render_once("vt-enrich: settle frame");
+        const uint64_t enrich_now = renderer.vt_stats().enrich_total;
+        if (enrich_now != enrich_before)
+            enriching_frame_ms = last_render_ms;
+        else
+            settled_frame_ms = last_render_ms;
+        enrich_before = enrich_now;
+    }
+    std::printf("vt-enrich frame cost: enriching=%.3f ms settled=%.3f ms "
+                "(submit+wait, 160x160)\n",
+                enriching_frame_ms, settled_frame_ms);
+
+    const vt::VtResidency::Stats settled = renderer.vt_stats();
+    std::printf("vt-enrich stats: rt=%d samples=%u fills=%llu failed=%llu "
+                "enrich=%llu queue=%u enriched_pages=%u dropped=%llu "
+                "skipped_coarse=%llu\n",
+                rt ? 1 : 0, settled.enrich_samples,
+                static_cast<unsigned long long>(settled.fills_total),
+                static_cast<unsigned long long>(settled.fills_failed_total),
+                static_cast<unsigned long long>(settled.enrich_total),
+                settled.enrich_queue_depth, settled.enriched_pages,
+                static_cast<unsigned long long>(settled.enrich_dropped_total),
+                static_cast<unsigned long long>(
+                    settled.enrich_skipped_coarse_total));
+    CHECK(settled.fills_total >= 2,
+          "vt-enrich: the tail and at least one finer page filled");
+    // The map-or-rollback path: nothing may have been dispatched-but-unwritten,
+    // because a filled-flag that never comes back true is what used to leave a
+    // mapped page pointing at never-written (black) pool memory.
+    CHECK(settled.fills_failed_total == 0,
+          "vt-enrich: every dispatched fill reported success");
+    if (rt) {
+        // The coarse variant's pages are past the fade end and must never have
+        // been queued; the fine variant's must have been.
+        CHECK(settled.enrich_skipped_coarse_total >= 1,
+              "vt-enrich: pages coarser than the contact scale are skipped, "
+              "not traced and multiplied by zero");
+    } else {
+        CHECK(settled.enrich_skipped_coarse_total == 0,
+              "vt-enrich-nort: with no enricher nothing even reaches the "
+              "coarse-page test");
+    }
+
+    const viewer::VkRasterPixel near_probe = pixel_at(kNearX, kProbeY);
+    const viewer::VkRasterPixel far_probe = pixel_at(kFarX, kProbeY);
+    CHECK(near_probe.material_index == kMaterial &&
+              far_probe.material_index == kMaterial,
+          "vt-enrich: both probes land on the charted wall");
+    std::printf("vt-enrich occlusion: near=%.4f far=%.4f\n",
+                static_cast<double>(near_probe.orm.z),
+                static_cast<double>(far_probe.orm.z));
+
+    if (!rt) {
+        // (c), the RT-unavailable arm: no enricher, nothing queued, nothing
+        // enriched, and every page still reads as unoccluded tier-1 content.
+        CHECK(settled.enrich_total == 0,
+              "vt-enrich-nort: no page is ever enriched");
+        CHECK(settled.enrich_queue_depth == 0 && settled.enriched_pages == 0,
+              "vt-enrich-nort: nothing is even queued for tier 2");
+        CHECK(std::fabs(near_probe.orm.z - 1.0f) < 2.0e-2f &&
+                  std::fabs(far_probe.orm.z - 1.0f) < 2.0e-2f,
+              "vt-enrich-nort: tier-1 pages stay unoccluded");
+        CHECK(near_probe.orm.z == far_probe.orm.z,
+              "vt-enrich-nort: occlusion is flat across the occluder's shadow");
+        CHECK(close4(near_probe.albedo,
+                     {page_albedo.x, page_albedo.y, page_albedo.z, 1.0f},
+                     2.0e-2f),
+              "vt-enrich-nort: albedo is the composited tier-1 page");
+        renderer.release_part(0x7801);
+        renderer.release_part(0x7802);
+        return;
+    }
+
+    // (a) baked contact occlusion.
+    CHECK(settled.enrich_total >= 1, "vt-enrich: pages were enriched");
+    CHECK(std::fabs(far_probe.orm.z - 1.0f) < 3.0e-2f,
+          "vt-enrich: a texel beyond the distance cap stays unoccluded");
+    CHECK(near_probe.orm.z < far_probe.orm.z - 5.0e-2f,
+          "vt-enrich: the texel beside the occluder is measurably darker");
+    // The floor (MATTER_VT_ENRICH_MIN_AO, default 0.15) is the structural
+    // guarantee that a baked contact term can never zero out ambient, which is
+    // what blackened open slopes on StreamMountain before the cap ceiling and
+    // this floor went in.
+    CHECK(near_probe.orm.z > 0.14f,
+          "vt-enrich: the occlusion respects the min-ao floor, so a page can "
+          "never go black");
+    // Enrichment must not have disturbed the rest of the page.
+    CHECK(close4(near_probe.albedo,
+                 {page_albedo.x, page_albedo.y, page_albedo.z, 1.0f}, 2.0e-2f),
+          "vt-enrich: albedo survives the ORM read-modify-write");
+    CHECK(std::fabs(near_probe.orm.x - kRoughness) < 3.0e-2f,
+          "vt-enrich: roughness survives the ORM re-encode");
+    CHECK(std::fabs(near_probe.orm.y - kMetallic) < 3.0e-2f,
+          "vt-enrich: metallic survives the ORM re-encode");
+
+    // (b) determinism, twice over. Further frames must reproduce the pixels
+    // bit-exactly, AND the enrichment must not run again over a page it already
+    // refined -- the apply is an in-place multiply, so a second pass would
+    // darken the page a second time.
+    const uint64_t enrich_after_settle = settled.enrich_total;
+    for (int i = 0; i < 6; ++i) render_once("vt-enrich: determinism frame");
+    const viewer::VkRasterPixel near_again = pixel_at(kNearX, kProbeY);
+    const viewer::VkRasterPixel far_again = pixel_at(kFarX, kProbeY);
+    CHECK(renderer.vt_stats().enrich_total == enrich_after_settle,
+          "vt-enrich: a settled frame never re-enriches a resident page");
+    CHECK(near_again.orm.z == near_probe.orm.z &&
+              far_again.orm.z == far_probe.orm.z,
+          "vt-enrich: enriched occlusion is bit-identical across frames");
+    CHECK(near_again.albedo.x == near_probe.albedo.x &&
+              near_again.albedo.y == near_probe.albedo.y &&
+              near_again.albedo.z == near_probe.albedo.z,
+          "vt-enrich: enriched pages are bit-identical across frames");
+
+    // (d) invalidation clears the tier and the re-filled pages re-enrich. The
+    // material edit is what push_vt_compositor_inputs turns into an
+    // invalidate_all_content, which drops resident content AND every tier-2 bit.
+    const matter::Float3 edited_albedo{0.30f, 0.55f, 0.40f};
+    materials[kMaterial].base_roughness[0] = edited_albedo.x;
+    materials[kMaterial].base_roughness[1] = edited_albedo.y;
+    materials[kMaterial].base_roughness[2] = edited_albedo.z;
+    CHECK(renderer.update_materials(materials, 2, 1, error),
+          error.empty() ? "vt-enrich: edit the material table" : error.c_str());
+    for (int i = 0; i < 12; ++i) render_once("vt-enrich: post-edit frame");
+    const vt::VtResidency::Stats reenriched = renderer.vt_stats();
+    std::printf("vt-enrich post-edit: invalidations=%llu enrich=%llu (was %llu) "
+                "enriched_pages=%u\n",
+                static_cast<unsigned long long>(reenriched.invalidations_total),
+                static_cast<unsigned long long>(reenriched.enrich_total),
+                static_cast<unsigned long long>(enrich_after_settle),
+                reenriched.enriched_pages);
+    CHECK(reenriched.invalidations_total == 1,
+          "vt-enrich: the material edit invalidated resident content once");
+    CHECK(reenriched.enrich_total > enrich_after_settle,
+          "vt-enrich: invalidated pages were re-filled AND re-enriched");
+    const viewer::VkRasterPixel near_edited = pixel_at(kNearX, kProbeY);
+    const viewer::VkRasterPixel far_edited = pixel_at(kFarX, kProbeY);
+    CHECK(close4(near_edited.albedo,
+                 {edited_albedo.x, edited_albedo.y, edited_albedo.z, 1.0f},
+                 2.0e-2f),
+          "vt-enrich: the page re-composited from the edited material table");
+    CHECK(std::fabs(far_edited.orm.z - 1.0f) < 3.0e-2f,
+          "vt-enrich: the re-enriched far texel is unoccluded again");
+    CHECK(near_edited.orm.z < far_edited.orm.z - 5.0e-2f,
+          "vt-enrich: the re-enriched near texel carries contact occlusion "
+          "again");
+    // The occlusion is a function of geometry only, so a re-fill + re-enrich of
+    // the same geometry must land on the same value -- if the invalidation had
+    // failed to clear the tier bit, the multiply would have compounded and this
+    // would be visibly darker.
+    CHECK(std::fabs(near_edited.orm.z - near_probe.orm.z) < 2.0e-2f,
+          "vt-enrich: re-enrichment reproduces the same occlusion, not a "
+          "compounded one");
+
+    renderer.release_part(0x7801);
+    renderer.release_part(0x7802);
+    const vt::VtResidency::Stats released = renderer.vt_stats();
+    CHECK(released.variants == 0,
+          "vt-enrich: releasing the part unregisters its variant rung");
+    CHECK(released.enriched_pages == 0,
+          "vt-enrich: releasing the part forgets its tier-2 state");
+}
+
+// WP-G (RT sampling of VT + ray cones): MATTER_VK_SMOKE_MODE=vt-rt.
+//
+// Same two-chart fixture idea as run_vt_path, but driven through the FULL
+// frame path (prepare/record_cull_and_render/composite) so the RT pipeline
+// runs, and with the two charts carrying DIFFERENT materials so a page mix-up
+// is visible. Asserts the two Phase-5 exit criteria:
+//
+//   (1) Consistency. A traced hit on a VT part resolves the SAME page the
+//       G-buffer fragment at that surface point resolved: per chart, the
+//       ray's VT albedo agrees with the G-buffer albedo within filtering
+//       epsilon, and the two charts do NOT agree with each other (which is
+//       what rules out "any page will do").
+//   (2) Cone-mip monotonicity. Tracing the same surface point from
+//       increasing distances with a fixed cone spread selects
+//       monotonically coarser virtual mips, and the cone footprint at the
+//       hit grows with distance. This is the property the deleted
+//       RT_TILESET_CONE_SPREAD constant could only fake.
+void run_vt_rt_path(matter::VulkanDevice& vulkan) {
+    if (!vulkan.ray_tracing_available()) {
+        std::printf("vt-rt: ray tracing unavailable, skipping\n");
+        return;
+    }
+    // The frame path renders at the swapchain extent (the hidden 320x200 GLFW
+    // window), not at a caller-chosen size, so the matrices and the probe
+    // pixel arithmetic below both use it.
+    constexpr uint32_t width = 320;
+    constexpr uint32_t height = 200;
+#ifdef _WIN32
+    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+#else
+    setenv("MATTER_VT_POOL_PAGES", "256", 1);
+#endif
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "vt-rt: renderer init" : error.c_str());
+
+    // Two detail-less materials: the compositor bakes each one's flat albedo
+    // into the pages of the chart whose triangles carry it, so chart 0 and
+    // chart 1 end up visibly different colours.
+    constexpr uint32_t kMaterialA = 5u;
+    constexpr uint32_t kMaterialB = 6u;
+    const matter::Float3 albedo_a{0.90f, 0.10f, 0.15f};
+    const matter::Float3 albedo_b{0.10f, 0.25f, 0.85f};
+    std::vector<MaterialGpuRecord> materials(kMaterialB + 1);
+    materials[kMaterialA].base_roughness[0] = albedo_a.x;
+    materials[kMaterialA].base_roughness[1] = albedo_a.y;
+    materials[kMaterialA].base_roughness[2] = albedo_a.z;
+    materials[kMaterialA].base_roughness[3] = 0.40f;
+    materials[kMaterialA].metal_opacity_spec_coat[1] = 1.0f;
+    materials[kMaterialB].base_roughness[0] = albedo_b.x;
+    materials[kMaterialB].base_roughness[1] = albedo_b.y;
+    materials[kMaterialB].base_roughness[2] = albedo_b.z;
+    materials[kMaterialB].base_roughness[3] = 0.40f;
+    materials[kMaterialB].metal_opacity_spec_coat[1] = 1.0f;
+    CHECK(renderer.update_materials(materials, 1, 1, error),
+          error.empty() ? "vt-rt: stage materials" : error.c_str());
+
+    // Geometry: the run_vt_path two-chart quad (0.8 m square halves at
+    // z = -2, 150 texels/m into a 256x128 atlas, page-aligned so the chart
+    // boundary is also a finest-mip page boundary), with per-half materials.
+    constexpr float kQuadZ = -2.0f;
+    viewer::VkScenePart charted =
+        fixed_part(0x7611, {-0.8f, -0.4f, kQuadZ}, {0.8f, 0.4f, kQuadZ}, 0);
+    {
+        const float tpm = 150.0f;
+        const matter::Float3 normal{0.0f, 0.0f, 1.0f};
+        const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};   // a = 0: no tint
+        const float u0a = 4.0f / 256.0f, u1a = 124.0f / 256.0f;
+        const float u0b = 132.0f / 256.0f, u1b = 252.0f / 256.0f;
+        const float v0 = 4.0f / 128.0f, v1 = 124.0f / 128.0f;
+        charted.vertices = {
+            {{-0.8f, -0.4f, kQuadZ}, normal, tint, {u0a, v0, 1.0f, 1.0f}, kMaterialA, {}},
+            {{ 0.0f, -0.4f, kQuadZ}, normal, tint, {u1a, v0, 1.0f, 1.0f}, kMaterialA, {}},
+            {{ 0.0f,  0.4f, kQuadZ}, normal, tint, {u1a, v1, 1.0f, 1.0f}, kMaterialA, {}},
+            {{-0.8f,  0.4f, kQuadZ}, normal, tint, {u0a, v1, 1.0f, 1.0f}, kMaterialA, {}},
+            {{ 0.0f, -0.4f, kQuadZ}, normal, tint, {u0b, v0, 1.0f, 1.0f}, kMaterialB, {}},
+            {{ 0.8f, -0.4f, kQuadZ}, normal, tint, {u1b, v0, 1.0f, 1.0f}, kMaterialB, {}},
+            {{ 0.8f,  0.4f, kQuadZ}, normal, tint, {u1b, v1, 1.0f, 1.0f}, kMaterialB, {}},
+            {{ 0.0f,  0.4f, kQuadZ}, normal, tint, {u0b, v1, 1.0f, 1.0f}, kMaterialB, {}},
+        };
+        charted.indices = {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7};
+        charted.clusters[0].lods[0] = {0, 12, 0.0f, /*chart_rung=*/0u};
+
+        chart_atlas::ChartAtlasRung rung;
+        rung.atlas_w = 256;
+        rung.atlas_h = 128;
+        rung.charts.resize(2);
+        const float chart_origin_x[2] = {-0.8f, 0.0f};
+        for (int c = 0; c < 2; ++c) {
+            chart_atlas::ChartEntry& entry = rung.charts[c];
+            entry.origin[0] = chart_origin_x[c];
+            entry.origin[1] = -0.4f;
+            entry.origin[2] = kQuadZ;
+            entry.tangent[0] = 1.0f; entry.tangent[1] = 0.0f; entry.tangent[2] = 0.0f;
+            entry.bitangent[0] = 0.0f; entry.bitangent[1] = 1.0f; entry.bitangent[2] = 0.0f;
+            entry.rect_x = static_cast<uint32_t>(c) * 128u;
+            entry.rect_y = 0;
+            entry.rect_w = 128;
+            entry.rect_h = 128;
+            entry.texels_per_meter = tpm;
+            entry.first_tri = static_cast<uint32_t>(c) * 2u;
+            entry.tri_count = 2;
+        }
+        rung.tri_order = {0, 1, 2, 3};
+        charted.lod_charts = {rung};
+
+        viewer::VkScenePartChartMesh mesh;
+        mesh.vertex_count = 8;
+        for (const viewer::VkRasterVertex& vertex : charted.vertices) {
+            mesh.positions.push_back(vertex.position.x);
+            mesh.positions.push_back(vertex.position.y);
+            mesh.positions.push_back(vertex.position.z);
+            mesh.normals.push_back(vertex.normal.x);
+            mesh.normals.push_back(vertex.normal.y);
+            mesh.normals.push_back(vertex.normal.z);
+            mesh.surface_uvs.push_back(vertex.surface.x);
+            mesh.surface_uvs.push_back(vertex.surface.y);
+            mesh.material_ids.push_back(vertex.material_index);
+        }
+        mesh.indices = charted.indices;
+        mesh.dominant_material = kMaterialA;
+        charted.lod_chart_meshes = {std::move(mesh)};
+    }
+    CHECK(renderer.ensure_part(charted, error) >= 0,
+          error.empty() ? "vt-rt: ensure two-chart part" : error.c_str());
+    CHECK(renderer.vt_active(), "vt-rt: the residency runtime started");
+
+    const matter::Mat4f identity = identity_matrix();
+    CHECK(renderer.update_instances({{0x7611, identity, 1}}, error),
+          error.empty() ? "vt-rt: upload instance" : error.c_str());
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 100.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, width, height, matrices, error),
+          error.empty() ? "vt-rt: build frame matrices" : error.c_str());
+
+    matter::VulkanRayTracingSettings rt_settings{};
+    rt_settings.enabled = true;
+    rt_settings.max_distance = 200.0f;
+    renderer.set_ray_tracing_settings(rt_settings);
+    matter::VulkanGiSettings gi{};
+    gi.enabled = 1;
+    gi.max_bounces = 1;
+    gi.samples_per_pixel = 1;
+    renderer.set_gi_settings(gi);
+
+    // A frame with an optional test surface ray appended. The G-buffer,
+    // the TLAS and the VT feedback/fill loop all advance here, so the same
+    // frame both shades the raster probes and traces the RT probes.
+    viewer::RtSurfaceHit probe_hit{};
+    uint32_t probe_invalid = 0;
+    const auto frame_with_probe = [&](bool trace, matter::Float3 origin,
+                                      matter::Float3 direction,
+                                      float cone_width, float cone_spread) {
+        std::string local;
+        matter::VulkanFrame frame{};
+        if (!vulkan.begin_frame(frame, local)) {
+            CHECK(false, local.empty() ? "vt-rt: begin frame" : local.c_str());
+            return;
+        }
+        bool recorded =
+            renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                   local) &&
+            renderer.record_cull_and_render(frame, matrices, camera.position,
+                                            1.0f, local) &&
+            renderer.record_composite_to_swapchain(frame, local);
+        if (recorded && trace)
+            recorded = renderer.record_test_surface_ray(
+                frame, origin, direction, UINT32_MAX, cone_width, cone_spread,
+                local);
+        const bool submitted = recorded && vulkan.end_frame(frame, local);
+        renderer.finish_ray_tracing_frame(frame.serial, submitted);
+        CHECK(submitted, local.empty() ? "vt-rt: submit frame" : local.c_str());
+        if (!submitted) return;
+        vulkan.wait_idle();
+        if (trace)
+            CHECK(renderer.readback_test_surface_hit(frame.frame_slot,
+                                                     probe_hit, probe_invalid,
+                                                     local),
+                  local.empty() ? "vt-rt: readback probe" : local.c_str());
+    };
+
+    // Settle: frame 1 fills the pinned tail, the feedback loop then drains the
+    // finest pages under the on-screen probes.
+    for (int i = 0; i < 6; ++i)
+        frame_with_probe(false, {}, {}, 0.0f, 0.0f);
+
+    const auto pixel_at = [&](uint32_t x, uint32_t y) {
+        viewer::VkRasterPixel pixel{};
+        std::string local;
+        CHECK(renderer.readback_raster_pixel(x, y, pixel, local),
+              local.empty() ? "vt-rt: readback pixel" : local.c_str());
+        return pixel;
+    };
+    // 90 deg vertical fov at z = -2 gives a 2.0 half-height; the 320x200
+    // aspect widens that to a 3.2 half-width. World x -0.4 / +0.4 therefore
+    // land on screen x 140 / 180, and y = 0 on screen y 100.
+    const viewer::VkRasterPixel raster_a = pixel_at(140, 100);
+    const viewer::VkRasterPixel raster_b = pixel_at(180, 100);
+    CHECK(raster_a.material_index == kMaterialA &&
+              raster_b.material_index == kMaterialB,
+          "vt-rt: the raster probes land on the two charted halves");
+    std::printf("vt-rt raster: A=(%.4f %.4f %.4f) B=(%.4f %.4f %.4f)\n",
+                raster_a.albedo.x, raster_a.albedo.y, raster_a.albedo.z,
+                raster_b.albedo.x, raster_b.albedo.y, raster_b.albedo.z);
+    CHECK(close4(raster_a.albedo, {albedo_a.x, albedo_a.y, albedo_a.z, 1.0f},
+                 2.0e-2f),
+          "vt-rt: chart 0 rasterizes from its own composited page");
+    CHECK(close4(raster_b.albedo, {albedo_b.x, albedo_b.y, albedo_b.z, 1.0f},
+                 2.0e-2f),
+          "vt-rt: chart 1 rasterizes from its own composited page");
+
+    // --- (1) consistency: the same surface point, traced ---------------------
+    // A near-degenerate cone (tiny spread) asks for the same finest mip the
+    // 160x160 raster fragment did, so the two must agree texel-for-texel up
+    // to filtering.
+    const float kProbeSpread = 1.0e-4f;
+    const matter::Float3 forward{0.0f, 0.0f, -1.0f};
+    frame_with_probe(true, {-0.4f, 0.0f, 1.0f}, forward, 0.0f, kProbeSpread);
+    const viewer::RtSurfaceHit hit_a = probe_hit;
+    frame_with_probe(true, {0.4f, 0.0f, 1.0f}, forward, 0.0f, kProbeSpread);
+    const viewer::RtSurfaceHit hit_b = probe_hit;
+    std::printf("vt-rt traced: A slot=%u applied=%d albedo=(%.4f %.4f %.4f) "
+                "mip=%.2f/%.2f cone=%.5f density=%.4f\n",
+                hit_a.vt_slot, hit_a.vt_applied ? 1 : 0, hit_a.vt_albedo.x,
+                hit_a.vt_albedo.y, hit_a.vt_albedo.z, hit_a.vt_desired_mip,
+                hit_a.vt_mapped_mip, hit_a.cone_width, hit_a.uv_density);
+    std::printf("vt-rt traced: B slot=%u applied=%d albedo=(%.4f %.4f %.4f) "
+                "mip=%.2f/%.2f cone=%.5f density=%.4f\n",
+                hit_b.vt_slot, hit_b.vt_applied ? 1 : 0, hit_b.vt_albedo.x,
+                hit_b.vt_albedo.y, hit_b.vt_albedo.z, hit_b.vt_desired_mip,
+                hit_b.vt_mapped_mip, hit_b.cone_width, hit_b.uv_density);
+    CHECK(probe_invalid == 0, "vt-rt: no invalid RT part records");
+    CHECK(hit_a.valid && hit_b.valid, "vt-rt: both probe rays hit the quad");
+    CHECK(hit_a.material_index == kMaterialA &&
+              hit_b.material_index == kMaterialB,
+          "vt-rt: the probe rays hit the halves the raster probes did");
+    CHECK(hit_a.vt_slot != 0 && hit_a.vt_slot == hit_b.vt_slot,
+          "vt-rt: the hit BLAS carries the part rung's transported VT slot");
+    CHECK(hit_a.vt_applied && hit_b.vt_applied,
+          "vt-rt: the traced hits resolved a VT page");
+    CHECK(hit_a.uv_density > 0.0f,
+          "vt-rt: the hit triangle yields a positive atlas-UV density");
+    // Never-fault contract: a page the cone asked for that is not resident
+    // resolves DOWN the chain (ultimately to the pinned tail), never to a
+    // finer mip that does not exist in the pool.
+    CHECK(hit_a.vt_mapped_mip >= hit_a.vt_desired_mip &&
+              hit_b.vt_mapped_mip >= hit_b.vt_desired_mip,
+          "vt-rt: an unmapped page falls back to a coarser resident mip");
+    // The Phase-5 exit criterion. 2e-2 is the same filtering/BC7 epsilon the
+    // raster assertions above use.
+    CHECK(std::fabs(hit_a.vt_albedo.x - raster_a.albedo.x) < 2.0e-2f &&
+              std::fabs(hit_a.vt_albedo.y - raster_a.albedo.y) < 2.0e-2f &&
+              std::fabs(hit_a.vt_albedo.z - raster_a.albedo.z) < 2.0e-2f,
+          "vt-rt: chart 0 traced shading agrees with its G-buffer shading");
+    CHECK(std::fabs(hit_b.vt_albedo.x - raster_b.albedo.x) < 2.0e-2f &&
+              std::fabs(hit_b.vt_albedo.y - raster_b.albedo.y) < 2.0e-2f &&
+              std::fabs(hit_b.vt_albedo.z - raster_b.albedo.z) < 2.0e-2f,
+          "vt-rt: chart 1 traced shading agrees with its G-buffer shading");
+    // Decisive: the two charts are different pages of the same variant, so
+    // agreement above is addressing, not a constant.
+    CHECK(std::fabs(hit_a.vt_albedo.x - hit_b.vt_albedo.x) > 0.3f ||
+              std::fabs(hit_a.vt_albedo.z - hit_b.vt_albedo.z) > 0.3f,
+          "vt-rt: the two charts trace to their own distinct pages");
+
+    // --- (2) cone-mip monotonicity ------------------------------------------
+    // Same surface point, same spread, four increasing distances. Footprint =
+    // spread * t, so the requested mip must never decrease and must strictly
+    // increase across the 16x distance sweep.
+    const float kSweepSpread = 5.0e-4f;
+    const float distances[4] = {1.0f, 5.0f, 13.0f, 29.0f};   // z of the origin
+    float mips[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float cones[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    for (int i = 0; i < 4; ++i) {
+        frame_with_probe(true, {-0.4f, 0.0f, distances[i]}, forward, 0.0f,
+                         kSweepSpread);
+        CHECK(probe_hit.valid && probe_hit.vt_applied,
+              "vt-rt: the cone sweep ray hit a VT page");
+        mips[i] = probe_hit.vt_desired_mip;
+        cones[i] = probe_hit.cone_width;
+    }
+    std::printf("vt-rt cone sweep: t=%.1f..%.1f mips=%.0f %.0f %.0f %.0f "
+                "cones=%.5f %.5f %.5f %.5f\n",
+                distances[0] - kQuadZ, distances[3] - kQuadZ, mips[0], mips[1],
+                mips[2], mips[3], cones[0], cones[1], cones[2], cones[3]);
+    for (int i = 1; i < 4; ++i) {
+        CHECK(cones[i] > cones[i - 1],
+              "vt-rt: the cone footprint grows with hit distance");
+        CHECK(mips[i] >= mips[i - 1],
+              "vt-rt: a farther hit never selects a finer mip");
+    }
+    CHECK(mips[3] > mips[0],
+          "vt-rt: a 16x farther hit selects a strictly coarser mip");
+    CHECK(mips[0] == 0.0f,
+          "vt-rt: the nearest hit still resolves the finest mip");
+
+    // Perf sanity. These are EMA-smoothed GPU zone timings for a 2-quad
+    // fixture, so they are a "nothing pathological happened" gate, not a
+    // flight-path benchmark: at this scene scale the RT zone is dominated by
+    // fixed dispatch overhead and the VT sample is far below the noise floor.
+    for (int i = 0; i < 4; ++i)
+        frame_with_probe(false, {}, {}, 0.0f, 0.0f);
+    if (renderer.gpu_timers_supported()) {
+        std::printf("vt-rt gpu zones (ms): total=%.3f gbuffer=%.3f rt=%.3f "
+                    "vt=%.3f\n",
+                    renderer.gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneTotal),
+                    renderer.gpu_zone_ms(
+                        viewer::VkSceneRenderer::kGpuZoneGBuffer),
+                    renderer.gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneRt),
+                    renderer.gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVt));
+    }
+}
+
 void run_tileset_slot_load(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 160;
     constexpr uint32_t height = 160;
@@ -1601,8 +3083,13 @@ void run_tileset_slot_load(matter::VulkanDevice& vulkan) {
 
     // Fail-closed negatives: bad slot, missing file. Neither may poison the
     // renderer or leave descriptors half-written.
-    CHECK(!renderer.load_tileset_slot(4, gtex_path, error) && !error.empty(),
-          "tileset: slot 4 out of range fails closed");
+    // One past the last valid slot. Derived from tileset::kMaxTilesetSlots so
+    // this stays a genuine out-of-range probe when the slot count changes
+    // (it went 4 -> 8 with the BC-compressed slices); a hardcoded 4 would
+    // silently turn into a real load and then assert the wrong thing.
+    CHECK(!renderer.load_tileset_slot(tileset::kMaxTilesetSlots, gtex_path,
+                                      error) && !error.empty(),
+          "tileset: slot kMaxTilesetSlots out of range fails closed");
     CHECK(!renderer.load_tileset_slot(-1, gtex_path, error) && !error.empty(),
           "tileset: slot -1 out of range fails closed");
     CHECK(!renderer.load_tileset_slot(0, gtex_path + ".missing", error) &&
@@ -3656,6 +5143,541 @@ static void rt_scenario_baked_ao_and_gi_disable(RtPathContext& ctx) {
 // ---------------------------------------------------------------------------
 // Driver: run all native RT path scenarios in original order
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// RT PBR Phase 1 — microfacet (frosted) transmission + correctness fixes.
+// MATTER_VK_SMOKE_MODE=rt-transmission.
+//
+// Fixture: a two-quad glass slab (front face at z=-2, back face at z=-2.2)
+// seen by a 90-degree camera at the origin, with a large wall at z=-6 behind
+// it. The wall is authored either as alternating 0.6 m white/dark stripes
+// (blur measurements) or as a uniform white field (energy measurements) by
+// re-authoring the dark stripe material -- same geometry, different table.
+//
+// Covered gates:
+//   * blur grows monotonically with authored glass roughness (accumulated
+//     transmission stddev across a stripe row strictly decreases);
+//   * transmitted energy at the slab is within 2% of the smooth slab
+//     (uniform wall, where hit radiance is direction-independent, so the
+//     comparison isolates the perturbation math);
+//   * smooth glass byte-parity: roughness 0.0 and 0.019 (both below the 0.02
+//     sampling threshold) produce bit-identical raw transmission, and the
+//     denoiser chain passes smooth pixels through bit-exactly
+//     (accumulated == raw);
+//   * determinism: equal presented_frame_index => bit-identical raw signal;
+//   * the composite fallback guard: a zeroed absorptionColor through the
+//     coverage < 0.01 branch is non-black and matches a white absorption
+//     (the black-glass regression test that never existed);
+//   * alpha-tested occluders in the walk: with the two-mask walk (default) a
+//     failing alpha-test card between slab and wall is skipped; with
+//     MATTER_RT_WALK_ALPHA_TEST=0 it silhouettes the refraction (legacy),
+//     and the RT gpu-zone cost of both is printed for the ~5% budget check.
+// ---------------------------------------------------------------------------
+static float rt_trans_luminance(const matter::Float4& v) {
+    return 0.2126f * v.x + 0.7152f * v.y + 0.0722f * v.z;
+}
+
+static viewer::VkScenePart rt_trans_quad(uint64_t hash, float x0, float x1,
+                                         float y0, float y1, float z,
+                                         float nz, uint32_t material) {
+    viewer::VkScenePart part = fixed_part(
+        hash, {x0, y0, z - 0.01f}, {x1, y1, z + 0.01f}, 0);
+    const matter::Float3 normal{0.0f, 0.0f, nz};
+    const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};
+    const matter::Float4 surf{0.0f, 0.0f, 1.0f, 1.0f};
+    part.vertices = {
+        {{x0, y0, z}, normal, tint, surf, material, {}},
+        {{x1, y0, z}, normal, tint, surf, material, {}},
+        {{x1, y1, z}, normal, tint, surf, material, {}},
+        {{x0, y1, z}, normal, tint, surf, material, {}}};
+    // Winding decides gl_HitKindEXT: +z quads face the camera (front hits for
+    // camera rays), -z quads face away so the refraction walk's forward ray
+    // reaches them as BACKFACES -- the exit-refraction event under test.
+    if (nz > 0.0f)
+        part.indices = {0, 1, 2, 0, 2, 3};
+    else
+        part.indices = {0, 2, 1, 0, 3, 2};
+    part.clusters[0].lods[0] = {0, 6, 0.0f};
+    return part;
+}
+
+void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
+    if (!vulkan.ray_tracing_available()) {
+        std::printf("rt-transmission: ray tracing unavailable, skipping\n");
+        return;
+    }
+    constexpr uint32_t width = 320;
+    constexpr uint32_t height = 200;
+    constexpr uint32_t kGlass = 1;
+    constexpr uint32_t kWhite = 2;
+    constexpr uint32_t kDark = 3;
+    constexpr uint32_t kFoliage = 4;
+    constexpr uint32_t kMaterialAlphaTested = 1u << 2u;
+    std::string error;
+
+    std::vector<MaterialGpuRecord> materials;
+    uint64_t shading_revision = 1;
+    const auto author = [&](float glass_roughness, float dark_albedo,
+                            matter::Float3 glass_absorption) {
+        materials.assign(5, MaterialGpuRecord{});
+        materials[0].metal_opacity_spec_coat[1] = 1.0f;
+        materials[0].scattering_shape[3] = 1.0f;
+        materials[kGlass].base_roughness[0] = 1.0f;
+        materials[kGlass].base_roughness[1] = 1.0f;
+        materials[kGlass].base_roughness[2] = 1.0f;
+        materials[kGlass].base_roughness[3] = glass_roughness;
+        materials[kGlass].metal_opacity_spec_coat[1] = 1.0f;
+        materials[kGlass].transmission[0] = 1.0f;   // transmission
+        materials[kGlass].transmission[1] = 1.5f;   // ior
+        materials[kGlass].transmission[2] = 0.2f;   // thickness fallback
+        materials[kGlass].transmission[3] = 0.0f;   // absorption distance
+        materials[kGlass].absorption_pad[0] = glass_absorption.x;
+        materials[kGlass].absorption_pad[1] = glass_absorption.y;
+        materials[kGlass].absorption_pad[2] = glass_absorption.z;
+        materials[kWhite].base_roughness[0] = 0.85f;
+        materials[kWhite].base_roughness[1] = 0.85f;
+        materials[kWhite].base_roughness[2] = 0.85f;
+        materials[kWhite].base_roughness[3] = 0.6f;
+        materials[kWhite].metal_opacity_spec_coat[1] = 1.0f;
+        materials[kWhite].scattering_shape[3] = 1.0f;
+        materials[kDark] = materials[kWhite];
+        materials[kDark].base_roughness[0] = dark_albedo;
+        materials[kDark].base_roughness[1] = dark_albedo;
+        materials[kDark].base_roughness[2] = dark_albedo;
+        materials[kFoliage].base_roughness[0] = 0.8f;
+        materials[kFoliage].base_roughness[1] = 0.05f;
+        materials[kFoliage].base_roughness[2] = 0.05f;
+        materials[kFoliage].base_roughness[3] = 0.5f;
+        materials[kFoliage].metal_opacity_spec_coat[1] = 0.3f;  // opacity
+        materials[kFoliage].scattering_shape[2] = 0.5f;         // cutoff
+        materials[kFoliage].scattering_shape[3] = 1.0f;
+        materials[kFoliage].flags_misc[0] = kMaterialAlphaTested;
+    };
+
+    // Shared scene builder so the legacy-walk renderer sees the same world.
+    const auto build_scene = [&](viewer::VkSceneRenderer& renderer,
+                                 bool with_foliage) {
+        CHECK(renderer.ensure_part(rt_trans_quad(7801, -2.4f, 2.4f, -1.4f,
+                                                 1.4f, -2.0f, 1.0f, kGlass),
+                                   error) >= 0,
+              error.empty() ? "rt-transmission: slab front" : error.c_str());
+        CHECK(renderer.ensure_part(rt_trans_quad(7802, -2.4f, 2.4f, -1.4f,
+                                                 1.4f, -2.2f, -1.0f, kGlass),
+                                   error) >= 0,
+              error.empty() ? "rt-transmission: slab back" : error.c_str());
+        // Striped wall: 80 stripes of 0.6 m across x in [-24, 24].
+        viewer::VkScenePart wall = fixed_part(
+            7803, {-24.0f, -16.0f, -6.01f}, {24.0f, 16.0f, -5.99f}, 0);
+        wall.vertices.clear();
+        wall.indices.clear();
+        const matter::Float3 wall_normal{0.0f, 0.0f, 1.0f};
+        const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};
+        const matter::Float4 surf{0.0f, 0.0f, 1.0f, 1.0f};
+        for (int stripe = 0; stripe < 80; ++stripe) {
+            const float x0 = -24.0f + 0.6f * static_cast<float>(stripe);
+            const float x1 = x0 + 0.6f;
+            const uint32_t material = (stripe & 1) ? kDark : kWhite;
+            const uint32_t base = static_cast<uint32_t>(wall.vertices.size());
+            wall.vertices.push_back(
+                {{x0, -16.0f, -6.0f}, wall_normal, tint, surf, material, {}});
+            wall.vertices.push_back(
+                {{x1, -16.0f, -6.0f}, wall_normal, tint, surf, material, {}});
+            wall.vertices.push_back(
+                {{x1, 16.0f, -6.0f}, wall_normal, tint, surf, material, {}});
+            wall.vertices.push_back(
+                {{x0, 16.0f, -6.0f}, wall_normal, tint, surf, material, {}});
+            for (uint32_t index : {0u, 1u, 2u, 0u, 2u, 3u})
+                wall.indices.push_back(base + index);
+        }
+        wall.clusters[0].lods[0] = {
+            0, static_cast<uint32_t>(wall.indices.size()), 0.0f};
+        CHECK(renderer.ensure_part(wall, error) >= 0,
+              error.empty() ? "rt-transmission: striped wall" : error.c_str());
+        std::vector<viewer::VkSceneInstance> instances = {
+            {7801, identity_matrix()},
+            {7802, identity_matrix()},
+            {7803, identity_matrix()}};
+        if (with_foliage) {
+            // Alpha-tested card between slab and wall: opacity 0.3 < cutoff
+            // 0.5, so a correct alpha test skips it entirely.
+            CHECK(renderer.ensure_part(rt_trans_quad(7804, -1.2f, 1.2f, -1.0f,
+                                                     1.0f, -4.0f, 1.0f,
+                                                     kFoliage),
+                                       error) >= 0,
+                  error.empty() ? "rt-transmission: foliage card"
+                                : error.c_str());
+            instances.push_back({7804, identity_matrix()});
+        }
+        CHECK(renderer.update_instances(instances, error),
+              error.empty() ? "rt-transmission: upload instances"
+                            : error.c_str());
+    };
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 100.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, width, height, matrices, error),
+          error.empty() ? "rt-transmission: matrices" : error.c_str());
+    viewer::VkSceneLighting lighting{};
+    lighting.sun_direction = {0.2f, -0.4f, -0.9f};
+    matter::VulkanRayTracingSettings rt_enabled{};
+    rt_enabled.enabled = true;
+    rt_enabled.max_distance = 100.0f;
+    rt_enabled.bias = 0.001f;
+    rt_enabled.samples = 1;
+    matter::VulkanGiSettings gi{};
+    gi.enabled = 1;
+    gi.max_bounces = 1;
+    gi.samples_per_pixel = 1;
+    gi.trace_scale = 1.0f;
+
+    viewer::TemporalFrame temporal{};
+    temporal.current_unjittered = matrices;
+    temporal.previous_unjittered = matrices;
+    temporal.current_jittered = matrices;
+    temporal.previous_jittered = matrices;
+    temporal.internal_extent = {width, height};
+    temporal.output_extent = {width, height};
+    uint64_t attempt_token = 5000;
+    uint64_t presented_index = 1;
+
+    const auto configure = [&](viewer::VkSceneRenderer& renderer) {
+        renderer.set_lighting(lighting);
+        renderer.set_ray_tracing_settings(rt_enabled);
+        renderer.set_gi_settings(gi);
+    };
+    const auto render_frame = [&](viewer::VkSceneRenderer& renderer,
+                                  bool reset, uint64_t frame_index) {
+        temporal.reset = reset;
+        temporal.attempt_token = ++attempt_token;
+        temporal.presented_frame_index = frame_index;
+        renderer.set_temporal_frame(temporal);
+        matter::VulkanFrame frame{};
+        std::string local;
+        const bool ok = vulkan.begin_frame(frame, local) &&
+            renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                   local) &&
+            renderer.record_cull_and_render(frame, matrices, camera.position,
+                                            1.0f, local) &&
+            renderer.record_composite_to_swapchain(frame, local) &&
+            vulkan.end_frame(frame, local);
+        renderer.finish_ray_tracing_frame(frame.serial, ok);
+        CHECK(ok, local.empty() ? "rt-transmission: render frame"
+                                : local.c_str());
+    };
+    // Slab pixels: screen x in [40, 280], y in [30, 170]; sample the center
+    // row well inside the slab.
+    constexpr uint32_t kRowY = 100;
+    constexpr uint32_t kRowX0 = 64;
+    constexpr uint32_t kRowX1 = 256;
+    const auto sample_row = [&](viewer::VkSceneRenderer& renderer,
+                                uint32_t step, bool accumulated) {
+        std::vector<matter::Float4> row;
+        for (uint32_t x = kRowX0; x <= kRowX1; x += step) {
+            viewer::VkRasterPixel pixel{};
+            CHECK(renderer.readback_raster_pixel(x, kRowY, pixel, error),
+                  error.empty() ? "rt-transmission: row readback"
+                                : error.c_str());
+            CHECK(pixel.material_index == kGlass,
+                  "rt-transmission: row probe lands on the glass slab");
+            row.push_back(accumulated ? pixel.accumulated_transmission
+                                      : pixel.raw_transmission);
+        }
+        return row;
+    };
+    // Stripe contrast: mean luminance over pixels whose straight-through ray
+    // lands on a white stripe minus the mean over dark-stripe pixels. Class
+    // means average pixel noise across ~half the row each, so the metric
+    // tracks BLUR (cross-stripe mixing) instead of residual 1-spp noise --
+    // a plain row stddev reads the noise floor as "contrast" at high
+    // roughness. Pixels within 0.12 m of a stripe boundary are skipped
+    // (refraction offset through the 0.2 m slab is a few centimetres).
+    const auto stripe_contrast = [&](const std::vector<matter::Float4>& row,
+                                     uint32_t step) {
+        double sum[2] = {0.0, 0.0};
+        int count[2] = {0, 0};
+        for (size_t p = 0; p < row.size(); ++p) {
+            const uint32_t x = kRowX0 + static_cast<uint32_t>(p) * step;
+            const double ndc_x =
+                (static_cast<double>(x) + 0.5) / width * 2.0 - 1.0;
+            // 90-degree vfov, 1.6 aspect: at the wall depth (6 m) the ray's
+            // lateral world offset is ndc_x * 1.6 * 6.
+            const double wall_x = ndc_x * 1.6 * 6.0;
+            const double stripe_pos = (wall_x + 24.0) / 0.6;
+            const double in_stripe = stripe_pos - std::floor(stripe_pos);
+            if (in_stripe < 0.2 || in_stripe > 0.8) continue;
+            const int parity = static_cast<int>(std::floor(stripe_pos)) & 1;
+            sum[parity] += rt_trans_luminance(row[p]);
+            ++count[parity];
+        }
+        CHECK(count[0] > 4 && count[1] > 4,
+              "rt-transmission: both stripe classes are sampled");
+        return sum[0] / std::max(count[0], 1) -
+               sum[1] / std::max(count[1], 1);
+    };
+    const auto mean_luminance = [](const std::vector<matter::Float4>& row) {
+        double mean = 0.0;
+        for (const auto& v : row) mean += rt_trans_luminance(v);
+        return mean / static_cast<double>(row.size());
+    };
+
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "rt-transmission: renderer init" : error.c_str());
+    author(0.0f, 0.05f, {1.0f, 1.0f, 1.0f});
+    CHECK(renderer.update_materials(materials, shading_revision++, 1, error),
+          error.empty() ? "rt-transmission: stage materials" : error.c_str());
+    build_scene(renderer, false);
+    configure(renderer);
+
+    // --- (1) blur grows monotonically with roughness (striped wall) --------
+    // The ladder tops out at 0.5, double the spec's authored frosted range
+    // (GlacialIce: 0.05-0.25). Beyond ~0.6 the documented grazing-TIR
+    // fallback -- a sampled microfacet whose refract() fails keeps the
+    // GEOMETRIC direction, bias accepted over a re-sample loop -- re-adds a
+    // sharp image fraction, so stripe contrast stops being a pure blur
+    // measure out there (measured: contrast 0.018 at r=0.45 vs 0.060 at
+    // r=0.8 from exactly that sharp fallback fraction).
+    const float ladder[4] = {0.0f, 0.1f, 0.25f, 0.5f};
+    double contrast[4] = {0.0, 0.0, 0.0, 0.0};
+    for (int i = 0; i < 4; ++i) {
+        author(ladder[i], 0.05f, {1.0f, 1.0f, 1.0f});
+        CHECK(renderer.update_materials(materials, shading_revision++, 1,
+                                        error),
+              error.empty() ? "rt-transmission: ladder materials"
+                            : error.c_str());
+        render_frame(renderer, true, presented_index++);
+        for (int f = 0; f < 15; ++f)
+            render_frame(renderer, false, presented_index++);
+        // Average the denoised row over four more frames so the residual
+        // 1-spp noise cannot mask the contrast ordering between adjacent
+        // roughness rungs.
+        std::vector<matter::Float4> averaged;
+        for (int f = 0; f < 4; ++f) {
+            render_frame(renderer, false, presented_index++);
+            vulkan.wait_idle();
+            const auto row = sample_row(renderer, 4, true);
+            if (averaged.empty()) averaged.assign(row.size(), {});
+            for (size_t p = 0; p < row.size(); ++p) {
+                averaged[p].x += row[p].x * 0.25f;
+                averaged[p].y += row[p].y * 0.25f;
+                averaged[p].z += row[p].z * 0.25f;
+                averaged[p].w += row[p].w * 0.25f;
+            }
+        }
+        contrast[i] = stripe_contrast(averaged, 4);
+        // Aux-lane contract at one rough rung: (hit_t, roughness).
+        if (i == 2) {
+            viewer::VkRasterPixel pixel{};
+            CHECK(renderer.readback_raster_pixel(160, kRowY, pixel, error),
+                  error.c_str());
+            CHECK(std::fabs(pixel.transmission_aux.y - ladder[i]) < 0.01f,
+                  "rt-transmission: aux carries the authored roughness");
+            CHECK(pixel.transmission_aux.x > 1.0f &&
+                      pixel.transmission_aux.x < 50.0f,
+                  "rt-transmission: aux carries a finite hit distance");
+            CHECK(pixel.raw_transmission.w > 0.9f &&
+                      pixel.accumulated_transmission.w > 0.9f,
+                  "rt-transmission: coverage rides alpha through the denoiser");
+        }
+    }
+    std::printf("rt-transmission blur: stripe contrast(r=%.2f..%.2f) = "
+                "%.5f %.5f %.5f %.5f\n",
+                ladder[0], ladder[3], contrast[0], contrast[1], contrast[2],
+                contrast[3]);
+    for (int i = 1; i < 4; ++i)
+        CHECK(contrast[i] < contrast[i - 1],
+              "rt-transmission: blur grows monotonically with roughness");
+    CHECK(contrast[3] < 0.25 * contrast[0],
+          "rt-transmission: the roughest slab collapses stripe contrast");
+
+    // --- (2) transmitted energy within 2% of the smooth slab (uniform wall).
+    // hit_radiance is direction-independent, so any perturbed exit ray sees
+    // the same wall radiance; a deviation here is an energy bug in the
+    // perturbation itself, not Monte Carlo noise.
+    double energy[4] = {0.0, 0.0, 0.0, 0.0};
+    for (int i = 0; i < 4; ++i) {
+        author(ladder[i], 0.85f, {1.0f, 1.0f, 1.0f});
+        CHECK(renderer.update_materials(materials, shading_revision++, 1,
+                                        error),
+              error.empty() ? "rt-transmission: energy materials"
+                            : error.c_str());
+        render_frame(renderer, true, presented_index++);
+        double sum = 0.0;
+        int frames = 0;
+        for (int f = 0; f < 4; ++f) {
+            render_frame(renderer, false, presented_index++);
+            vulkan.wait_idle();
+            sum += mean_luminance(sample_row(renderer, 16, false));
+            ++frames;
+        }
+        energy[i] = sum / frames;
+    }
+    std::printf("rt-transmission energy: mean(r=%.2f..%.2f) = "
+                "%.5f %.5f %.5f %.5f\n",
+                ladder[0], ladder[3], energy[0], energy[1], energy[2],
+                energy[3]);
+    // 2% integration-sanity bound across the ladder. (For reference: at
+    // r = 0.8, well past the authored range, real extra TIR bounces from
+    // steep sampled microfacets cost ~2.7% -- genuine frost transport, not
+    // an estimator bug.)
+    for (int i = 1; i < 4; ++i)
+        CHECK(std::fabs(energy[i] - energy[0]) <= 0.02 * energy[0],
+              "rt-transmission: rough transmission conserves energy within 2%");
+
+    // --- (3) determinism + smooth byte-parity (uniform wall) ---------------
+    const uint64_t fixed_index = presented_index + 100;
+    author(0.0f, 0.85f, {1.0f, 1.0f, 1.0f});
+    CHECK(renderer.update_materials(materials, shading_revision++, 1, error),
+          error.c_str());
+    render_frame(renderer, true, fixed_index);
+    vulkan.wait_idle();
+    const auto smooth_row = sample_row(renderer, 8, false);
+    const auto smooth_accumulated = sample_row(renderer, 8, true);
+    render_frame(renderer, true, fixed_index);
+    vulkan.wait_idle();
+    const auto repeat_row = sample_row(renderer, 8, false);
+    bool deterministic = true;
+    bool passthrough = true;
+    for (size_t i = 0; i < smooth_row.size(); ++i) {
+        deterministic = deterministic &&
+            smooth_row[i].x == repeat_row[i].x &&
+            smooth_row[i].y == repeat_row[i].y &&
+            smooth_row[i].z == repeat_row[i].z &&
+            smooth_row[i].w == repeat_row[i].w;
+        passthrough = passthrough &&
+            smooth_row[i].x == smooth_accumulated[i].x &&
+            smooth_row[i].y == smooth_accumulated[i].y &&
+            smooth_row[i].z == smooth_accumulated[i].z &&
+            smooth_row[i].w == smooth_accumulated[i].w;
+    }
+    CHECK(deterministic,
+          "rt-transmission: fixed frame index reproduces bit-identical rays");
+    CHECK(passthrough,
+          "rt-transmission: smooth pixels pass the denoiser bit-exactly");
+    // Roughness below the 0.02 sampling threshold must not perturb anything:
+    // no VNDF sample is drawn, so the whole lane stays bit-identical.
+    author(0.019f, 0.85f, {1.0f, 1.0f, 1.0f});
+    CHECK(renderer.update_materials(materials, shading_revision++, 1, error),
+          error.c_str());
+    render_frame(renderer, true, fixed_index);
+    vulkan.wait_idle();
+    const auto threshold_row = sample_row(renderer, 8, false);
+    bool byte_identical = true;
+    for (size_t i = 0; i < smooth_row.size(); ++i) {
+        byte_identical = byte_identical &&
+            smooth_row[i].x == threshold_row[i].x &&
+            smooth_row[i].y == threshold_row[i].y &&
+            smooth_row[i].z == threshold_row[i].z &&
+            smooth_row[i].w == threshold_row[i].w;
+    }
+    CHECK(byte_identical,
+          "rt-transmission: sub-threshold roughness is byte-identical to smooth");
+
+    // --- (4) composite fallback guard (black-glass regression) -------------
+    // RT off => the transmission lane is cleared, coverage < 0.01, and the
+    // composite takes the material fallback branch. A zeroed absorptionColor
+    // must behave exactly like a clear (white) one.
+    matter::VulkanRayTracingSettings rt_disabled{};
+    rt_disabled.enabled = false;
+    renderer.set_ray_tracing_settings(rt_disabled);
+    author(0.0f, 0.85f, {0.0f, 0.0f, 0.0f});
+    CHECK(renderer.update_materials(materials, shading_revision++, 1, error),
+          error.c_str());
+    render_frame(renderer, true, presented_index++);
+    vulkan.wait_idle();
+    viewer::VkRasterPixel black_absorption{};
+    CHECK(renderer.readback_raster_pixel(160, kRowY, black_absorption, error),
+          error.c_str());
+    author(0.0f, 0.85f, {1.0f, 1.0f, 1.0f});
+    CHECK(renderer.update_materials(materials, shading_revision++, 1, error),
+          error.c_str());
+    render_frame(renderer, true, presented_index++);
+    vulkan.wait_idle();
+    viewer::VkRasterPixel white_absorption{};
+    CHECK(renderer.readback_raster_pixel(160, kRowY, white_absorption, error),
+          error.c_str());
+    std::printf("rt-transmission fallback: black-absorption hdr=%.5f "
+                "white-absorption hdr=%.5f\n",
+                rt_trans_luminance(black_absorption.hdr),
+                rt_trans_luminance(white_absorption.hdr));
+    CHECK(rt_trans_luminance(black_absorption.hdr) > 0.02f,
+          "rt-transmission: zeroed-absorption fallback is non-black");
+    CHECK(std::fabs(rt_trans_luminance(black_absorption.hdr) -
+                    rt_trans_luminance(white_absorption.hdr)) < 1e-3f,
+          "rt-transmission: the fallback guard treats black absorption as clear");
+    renderer.set_ray_tracing_settings(rt_enabled);
+
+    // --- (5) alpha-tested occluders in the walk + cost --------------------
+    // Default (two-mask) walk: the failing alpha-test card is skipped, so the
+    // center pixel still transmits the gray wall.
+    author(0.0f, 0.05f, {1.0f, 1.0f, 1.0f});
+    CHECK(renderer.update_materials(materials, shading_revision++, 1, error),
+          error.c_str());
+    build_scene(renderer, true);
+    render_frame(renderer, true, presented_index++);
+    for (int f = 0; f < 19; ++f)
+        render_frame(renderer, false, presented_index++);
+    vulkan.wait_idle();
+    viewer::VkRasterPixel masked_center{};
+    CHECK(renderer.readback_raster_pixel(160, kRowY, masked_center, error),
+          error.c_str());
+    const float masked_rt_ms =
+        renderer.gpu_timers_supported()
+            ? renderer.gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneRt)
+            : 0.0f;
+    CHECK(masked_center.raw_transmission.x <
+              2.0f * masked_center.raw_transmission.y + 0.05f,
+          "rt-transmission: two-mask walk skips the failing alpha-test card");
+
+    // Legacy walk (spec constant off): the same card silhouettes refraction
+    // and its red albedo dominates the transmitted color.
+    _putenv_s("MATTER_RT_WALK_ALPHA_TEST", "0");
+    {
+        viewer::VkSceneRenderer legacy(vulkan);
+        CHECK(legacy.init(error),
+              error.empty() ? "rt-transmission: legacy renderer init"
+                            : error.c_str());
+        CHECK(legacy.update_materials(materials, 1, 1, error),
+              error.c_str());
+        build_scene(legacy, true);
+        configure(legacy);
+        render_frame(legacy, true, presented_index++);
+        for (int f = 0; f < 19; ++f)
+            render_frame(legacy, false, presented_index++);
+        vulkan.wait_idle();
+        viewer::VkRasterPixel legacy_center{};
+        CHECK(legacy.readback_raster_pixel(160, kRowY, legacy_center, error),
+              error.c_str());
+        const float legacy_rt_ms =
+            legacy.gpu_timers_supported()
+                ? legacy.gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneRt)
+                : 0.0f;
+        std::printf("rt-transmission alpha walk: masked=(%.4f %.4f %.4f) "
+                    "legacy=(%.4f %.4f %.4f)\n",
+                    masked_center.raw_transmission.x,
+                    masked_center.raw_transmission.y,
+                    masked_center.raw_transmission.z,
+                    legacy_center.raw_transmission.x,
+                    legacy_center.raw_transmission.y,
+                    legacy_center.raw_transmission.z);
+        std::printf("rt-transmission walk cost: two-mask rt=%.3f ms, "
+                    "legacy rt=%.3f ms (%+.1f%%)\n",
+                    masked_rt_ms, legacy_rt_ms,
+                    legacy_rt_ms > 0.0f
+                        ? (masked_rt_ms - legacy_rt_ms) / legacy_rt_ms * 100.0f
+                        : 0.0f);
+        CHECK(legacy_center.raw_transmission.x >
+                  2.0f * legacy_center.raw_transmission.y,
+              "rt-transmission: legacy walk silhouettes the red card (control)");
+    }
+    _putenv_s("MATTER_RT_WALK_ALPHA_TEST", "");
+}
+
 void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     run_native_multilod_rt_mapping(vulkan);
     run_rt_lod_compaction_invariant(vulkan);
@@ -5754,7 +7776,11 @@ int main() {
 
     const char* requested_smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
     if (requested_smoke_mode &&
-        std::string(requested_smoke_mode) == "rt-unavailable") {
+        (std::string(requested_smoke_mode) == "rt-unavailable" ||
+         // WP-H: the RT-unavailable arm of the tier-2 enrichment gate. Ray
+         // tracing is a device property, so the only honest way to test the
+         // "no enricher" path is to bring the device up without it.
+         std::string(requested_smoke_mode) == "vt-enrich-nort")) {
         _putenv_s("MATTER_VK_TEST_FORCE_RT_UNAVAILABLE", "1");
     }
 
@@ -5907,6 +7933,47 @@ int main() {
             glfwTerminate();
             return check_summary();
         }
+        if (smoke_mode && std::string(smoke_mode) == "vt") {
+            run_vt_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "vt-surfaces") {
+            run_vt_surfaces_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && (std::string(smoke_mode) == "vt-enrich" ||
+                           std::string(smoke_mode) == "vt-enrich-nort")) {
+            run_vt_enrich_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "vt-rt") {
+            run_vt_rt_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
         if (smoke_mode && std::string(smoke_mode) == "tileset") {
             run_tileset_slot_load(*vulkan);
             std::printf("validation errors: %u\n",
@@ -5931,6 +7998,16 @@ int main() {
         }
         if (smoke_mode && std::string(smoke_mode) == "rt") {
             run_native_ray_tracing_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "rt-transmission") {
+            run_rt_transmission_path(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();

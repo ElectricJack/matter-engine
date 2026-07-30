@@ -3,6 +3,7 @@
 #include "blas_manager.hpp" // BLASManager
 #include "part_asset_v2.h"  // SP-1 LodLevel/LodLevels (authoritative shape)
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
+#include "render/chart_atlas.h"    // chart-space VT sidecar schema (contract C1)
 #include <cstdint>
 #include <vector>
 
@@ -43,6 +44,31 @@ std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon,
 // target)`. Callers historically built through Tri/TriEx vectors; those sites
 // wrap via MSL `from_tri`/`to_tri` until lod_bake itself is refactored to
 // MeshIndexed at its boundary (Task 11).
+
+// ---- Chart-space virtual texturing (WP-A) ----------------------------------
+//
+// Per-rung chart build: normal-cone segmentation, per-chart planar projection
+// at a texel-density policy, page-aligned atlas pack, and chart UVs written
+// into the rung's TriEx.uv0/1/2 (normalized [0,1] over the atlas). Vertices
+// shared across charts split downstream at the indexed weld (the weld key
+// already includes the UV), so this step never touches positions or topology.
+struct ChartBakeOptions {
+    // Rung-0 texel density. Policy: props 16 t/m at every rung; terrain
+    // sectors 16 t/m at rung 0 halving per coarser rung (halve_per_rung).
+    float texels_per_meter = 16.0f;
+    bool  halve_per_rung   = false;
+    float cone_deg         = chart_atlas::kChartNormalConeDeg;
+};
+
+// Build the chart atlas for ONE rung mesh and write chart UVs into `triex`
+// (parallel to `tris`). The requested density is halved until the page-aligned
+// pack fits within kVtMaxAtlasDim^2 (the clamp policy); below a floor of
+// 1/64 t/m the build fails. On failure returns false, `out` is empty and
+// `triex` is untouched (fail-closed: the rung ships charts = 0, legacy path).
+// Deterministic: identical input produces a byte-identical chart table + UVs.
+bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
+                      float texels_per_meter, float cone_deg,
+                      chart_atlas::ChartAtlasRung& out);
 
 // Per-level decimation targets (keep-ratios) and matching selection thresholds.
 // Defaults: LOD0 = full (1.0), LOD1 ~ 1/10, LOD2 ~ 1/100. Thresholds are on the
@@ -86,10 +112,19 @@ struct BakeTargets {
 // absolute index is also the part-local one it serializes) and NOT true for the
 // shared PartStore manager, where sectors stream in and out continuously.
 // Handles survive that; indices do not.
+// `chart_opts` (optional, WP-A): when non-null AND the rung has usable TriEx,
+// each rung's TriEx gets chart UVs (build_chart_rung) before BLAS
+// registration, and `out_charts` (when non-null) receives one ChartAtlasRung
+// per level, in ladder order (empty rung table = charting failed or was
+// inapplicable for that level; fail-closed to the legacy chartless path).
+// Both default to null, so every existing call site is chart-free and
+// byte-identical to before.
 LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
                     BLASManager& blas, const std::vector<TriEx>* triex = nullptr,
                     BakeObserver* observer = nullptr,
-                    std::vector<BLASHandle>* out_handles = nullptr);
+                    std::vector<BLASHandle>* out_handles = nullptr,
+                    const ChartBakeOptions* chart_opts = nullptr,
+                    std::vector<chart_atlas::ChartAtlasRung>* out_charts = nullptr);
 
 // ---- Terrain-sector ladder (streamed heightfield tiles) --------------------
 //
@@ -134,6 +169,8 @@ size_t count_terrain_skirt_tris(const std::vector<Tri>& tris,
 // the non-skirt surface (boundary locked, skirts dropped), TriEx reprojected
 // from the full-res surface. Same registration/observer/out_handles contract
 // as bake_lods.
+// Chart args as in bake_lods; with chart_opts->halve_per_rung the density
+// halves per coarser rung (terrain policy: 16 t/m rung 0, 8, 4, ...).
 LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
                             const std::vector<uint8_t>& skirt_mask,
                             float bound_radius,
@@ -141,6 +178,8 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
                             BLASManager& blas,
                             const std::vector<TriEx>* triex = nullptr,
                             BakeObserver* observer = nullptr,
-                            std::vector<BLASHandle>* out_handles = nullptr);
+                            std::vector<BLASHandle>* out_handles = nullptr,
+                            const ChartBakeOptions* chart_opts = nullptr,
+                            std::vector<chart_atlas::ChartAtlasRung>* out_charts = nullptr);
 
 } // namespace lod_bake

@@ -6,6 +6,7 @@
 // Intended as the SP-3 bridge from world definition to the GPU render phase.
 
 #include "tileset_bake.h"       // SettledTorus, BakeInputs
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -31,12 +32,20 @@ bool run_tileset_phase_from_objects(const std::string& objects_dir,
                                     const std::string& parts_cache_dir,
                                     SettledTorus& out, std::string& err,
                                     const std::string& shared_lib_root = "");
+// out_sorted_child_hashes (optional): on success, receives the root's resolved
+// child hashes sorted ascending — the exact list this function already folds
+// into the settle cache key. Callers that build the .gtex cache key need it
+// too (see gtex_script_identity_hash in tileset_gtex.h): pose_hash alone does
+// not notice an appearance-only child edit, so without this list a recoloured
+// pebble keeps serving a stale atlas. Left untouched when the function fails,
+// and set to an empty vector for a childless tileset.
 bool run_tileset_phase_from_objects(
     const std::string& objects_dir,
     const std::string& root_module,
     const std::string& canonical_root_params_json,
     const std::string& parts_cache_dir,
     SettledTorus& out, std::string& err,
-    const std::vector<std::string>& shared_lib_roots);
+    const std::vector<std::string>& shared_lib_roots,
+    std::vector<uint64_t>* out_sorted_child_hashes = nullptr);
 
 } // namespace tileset

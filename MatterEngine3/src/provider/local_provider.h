@@ -7,6 +7,8 @@
 #include "part_graph.h"           // PartGraph, InstallResult, ChildRequest
 #include "part_graph_snapshot.h"  // Task 9: live-edit graph snapshot
 #include "matter/world_definition.h"
+#include "tileset_slot_allocator.h"  // LRU detail-tileset slot pool (chart-VT C3)
+#include "detail_bake_plan.h"        // DetailBakeRequest / plan_detail_bakes
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
 #include "script_host.h"
@@ -296,6 +298,26 @@ public:
     // Reusable after a cone rebake. Requires install_graph() to have succeeded.
     bool compose_world(WorldManifest& out, std::string& err);
 
+    // Materials the world script declared via defineMaterial(), in declaration
+    // order (chart-VT spec Phase 3). Populated by load_authored_world(); the
+    // MaterialDefs themselves already live in the global material registry by
+    // then. Entries carrying a `detail` module drive run_tileset_deferred().
+    const std::vector<matter::WorldMaterial>& world_materials() const {
+        return world_materials_;
+    }
+
+    // One automated detail-tileset bake: a Tileset module plus the materials
+    // bound to whichever slot its `.gtex` lands in. Deprecated `tileset: true`
+    // roots produce one of these bound to material 16; each defineMaterial()
+    // with a `detail` module produces one bound to its own id. See
+    // detail_bake_plan.h for the ordering and merging rules.
+    using DetailBakeRequest = tileset::DetailBakeRequest;
+
+    // Ordered bake requests for the loaded world: `tileset: true` roots first
+    // (so an existing world's slot assignment is byte-identical to before this
+    // existed), then declared materials in declaration order.
+    std::vector<DetailBakeRequest> collect_detail_bake_requests() const;
+
     // Run the deferred tileset phase for all tileset roots after BakeFinished.
     // settle_cache_load → on miss: ensure_part_baked children + settle_tileset
     // + settle_cache_save; then the Vulkan .gtex bake via cfg_.vk_tileset_bake
@@ -444,6 +466,15 @@ private:
     std::vector<part_graph::ChildRequest> roots_for_install_;
     std::vector<size_t>                   install_to_orig_;
     std::vector<size_t>                   tileset_indices_;
+    // defineMaterial() declarations from the world script (chart-VT Phase 3).
+    std::vector<matter::WorldMaterial>    world_materials_;
+    // Detail-tileset slots as an LRU cache keyed by `.gtex` content hash.
+    // Evicting unbinds the victim's materials (they fall back to scalar albedo).
+    tileset::DetailSlotBinder             tileset_slots_;
+    bool                                  tileset_evict_warned_ = false;
+    // Unbind every material this provider pointed at a detail slot and empty
+    // the LRU. Called wherever the tileset slots were previously reset.
+    void reset_tileset_bindings();
     size_t                                entity_part_root_start_ = 0;
     part_graph::InstallResult             ir_;
     static std::set<std::string> collect_entity_part_modules(

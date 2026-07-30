@@ -1,0 +1,259 @@
+#version 460
+#extension GL_EXT_ray_query : require
+
+// vt_enrich_ao.comp — WP-H tier-2 hemisphere AO page enrichment (chart-space
+// virtual texturing, spec Phase 6).
+//
+// One dispatch per already-filled page (or resident tail): 17x17 workgroups of
+// 8x8 cover the full 136^2 physical page store (128 payload + 4-texel border on
+// every side — border texels are enriched too, so a bilinear fetch at a page
+// edge does not step from occluded to unoccluded content). Per texel:
+//
+//   1. Resolve the owning surface point with vt_chart_resolve.glsl — the SAME
+//      code vt_composite.comp used to bake the page this pass modifies. That
+//      sharing is the correctness mechanism: a texel that resolved to triangle
+//      T when its albedo/ORM was composited must resolve to T here, or the
+//      occlusion lands on a different piece of surface.
+//   2. Trace `sample_count` (32 by default, spec says 32-64) cosine-weighted
+//      hemisphere occlusion rays with rayQueryEXT against the VARIANT'S OWN
+//      acceleration structure — a single-BLAS TLAS over exactly this rung's
+//      mesh, in part-local space.
+//
+//      SCOPE, deliberately: this bakes PART-LOCAL SELF-OCCLUSION only. The
+//      page is shared by every instance of the variant (pages are keyed by
+//      resolved_hash, not stable_id — spec "Coordinate frames"), so anything
+//      world-dependent would be wrong for all but one placement. Occlusion
+//      from other objects, terrain, and the sky is the live RT lighting's job
+//      and is explicitly NOT baked here.
+//
+//   3. Distance cap = min(`cap_texels` (4) x the page-texel size in metres at
+//      this mip, `cap_meters` (0.5 m)). The texel-relative term keeps the cap
+//      arrangement-independent at the fine mips the spec was written for; the
+//      ABSOLUTE ceiling is what keeps it a CONTACT term.
+//
+//      Why the ceiling is not optional: the texel footprint grows 2x per mip
+//      AND the per-rung density halves per LOD rung, so on a 16 t/m terrain
+//      sector the texel-relative cap alone reaches ~8-32 m by mip 5-7. At that
+//      radius a mountainside's own hemisphere is legitimately full of its own
+//      terrain, so ao collapses toward 0 over whole open slopes — which
+//      multiplied into ambient (diffuse x sky x ao) blackens them, turns a
+//      micro contact term into full-strength macro AO, and double-counts what
+//      the live RT lighting already computes at that scale. Capped at 0.5 m an
+//      open slope traces essentially nothing (ao ~ 1) and only real crevices,
+//      cracks and overhang contacts darken. This is the same reasoning as the
+//      .gtex bake's absolute edge-strip cap.
+//
+//      Two further guards, for the same reason:
+//        * MIP FADE. Once a page texel is itself larger than the cap, the
+//          traced value is sub-texel detail that the texel cannot represent —
+//          point-sampling it just injects noise over a large area. Strength
+//          therefore fades to 0 as the footprint grows from cap_meters to
+//          VT_ENRICH_FADE_SPAN x cap_meters, and the residency layer skips
+//          queueing pages past that entirely (so the rays are never traced).
+//        * FLOOR. The applied factor never goes below `min_ao`: one hemisphere
+//          sample of a contact term must not be able to zero out ambient, and
+//          a fully enclosed crevice still receives bounce light in reality.
+//
+//   4. Read the page's CURRENT ORM texel out of the physical pool (BC7,
+//      hardware-decoded through a sampler), multiply `occlusion` (channel R)
+//      by mix(1, ao, strength), and write the result to an intermediate RGBA8
+//      image. vt_bc_encode.comp re-compresses it and the recorder copies the
+//      ORM blocks back over the same page slot — the read-modify-write the
+//      spec asks for, in place, with the indirection untouched.
+//
+// DETERMINISM: the RNG is seeded from the VIRTUAL ATLAS TEXEL at this mip plus
+// the mip index and a fixed constant seed — no time, no frame counter, no
+// atomics. Two enrichment passes over the same page from the same tier-1 base
+// therefore produce byte-identical blocks, which is what lets an enriched page
+// be treated as a pure function of its inputs like every other cached artifact
+// in the engine.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#include "vt_chart_types.glsl"
+
+// Physical pool geometry — MUST match vt_types.h (kVtPagesPerLayerEdge,
+// kVtPoolLayerEdgeTexels) and vt_common.glsl.
+#define VT_POOL_LAYER_EDGE 2176.0
+
+// ---- set 0: per-(variant, rung) chart/triangle streams + the variant's own
+// acceleration structure. All three are cached together per (variant, rung) by
+// vt_enrich.cpp; bindings 0/1 have the same layout as vt_composite.comp's set 0
+// (vt_chart_gpu.h builds both streams). -------------------------------------
+layout(std430, set = 0, binding = 0) readonly buffer ChartsBuf { GpuChart charts[]; };
+layout(std430, set = 0, binding = 1) readonly buffer TrisBuf   { GpuTri tris[]; };
+layout(set = 0, binding = 2) uniform accelerationStructureEXT variant_tlas;
+
+// ---- set 1: per-batch resources -------------------------------------------
+struct GpuEnrichRequest {
+    uvec4 a;   // x page_x, y page_y, z mip, w out_layer (intermediate)
+    uvec4 b;   // x cand_offset, y cand_count, z sample_count, w seed
+    uvec4 c;   // x slot_origin_x, y slot_origin_y, z pool_layer, w unused
+    vec4  d;   // x strength, y cap_texels, z cap_meters, w min_ao
+};
+
+// Strength reaches 0 when the page texel is this multiple of cap_meters wide
+// (see the MIP FADE note in the header). Must match vt_enrich.cpp's
+// kEnrichFadeSpan, which the residency layer's coarse-page skip also uses.
+#define VT_ENRICH_FADE_SPAN 4.0
+
+layout(std430, set = 1, binding = 0) readonly buffer RequestBuf {
+    GpuEnrichRequest requests[];
+};
+layout(std430, set = 1, binding = 1) readonly buffer CandBuf { uint cand_charts[]; };
+// The physical pool's ORM channel (BC7): sampled, so the hardware decodes the
+// block for us. A NEAREST/CLAMP sampler plus texel-centre coordinates makes
+// this an exact texel read.
+layout(set = 1, binding = 2) uniform sampler2DArray poolOrm;
+layout(set = 1, binding = 3, rgba8) uniform writeonly image2DArray outOrm;
+
+layout(push_constant) uniform Push { uint req_index; } pc;
+
+// Shared chart resolve (needs charts[]/tris[]/cand_charts[] declared above).
+#include "vt_chart_resolve.glsl"
+
+// ---------------------------------------------------------------------------
+// RNG / basis — byte-preserved from shaders_vk/tileset_bake_ao.comp:69-95, so
+// the two hemisphere bakes in this engine sample the same sequence for the same
+// seed triple. Do NOT alter any line.
+// ---------------------------------------------------------------------------
+
+// SplitMix32-style bit hash (32-bit output).
+uint splitmix32(uint x) {
+    x += 0x9E3779B9u;
+    x = (x ^ (x >> 16)) * 0x85EBCA6Bu;
+    x = (x ^ (x >> 13)) * 0xC2B2AE35u;
+    return x ^ (x >> 16);
+}
+
+// Uniform [0,1) from a 32-bit hash.
+float u01(uint h) { return float(h & 0x00FFFFFFu) / 16777216.0; }
+
+// Cosine-weighted hemisphere direction in the local frame (N = +Y).
+vec3 cosine_hemi(vec2 uv) {
+    float r = sqrt(uv.x);
+    float phi = 6.28318530718 * uv.y;
+    float x = r * cos(phi);
+    float z = r * sin(phi);
+    float y = sqrt(max(0.0, 1.0 - uv.x));
+    return vec3(x, y, z);
+}
+
+// Build an orthonormal frame with N as +Y.
+mat3 make_basis(vec3 n) {
+    vec3 t = abs(n.y) < 0.999 ? vec3(0, 1, 0) : vec3(1, 0, 0);
+    vec3 b = normalize(cross(t, n));
+    vec3 tt = cross(n, b);
+    return mat3(b, n, tt);
+}
+
+// Occlusion test: early-exit BVH traversal, terminate-on-first-hit,
+// distance-capped. Each ray contributes only a boolean "hit within maxRayDist",
+// so the per-texel result is independent of traversal order.
+bool occludeQuery(vec3 P, vec3 dir, float maxRayDist) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, variant_tlas,
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+        0xFFu,
+        P, 0.0,
+        dir, maxRayDist);
+    rayQueryProceedEXT(rq);
+    return rayQueryGetIntersectionTypeEXT(rq, true) !=
+           gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+void main() {
+    uvec2 t = gl_GlobalInvocationID.xy;
+    if (t.x >= uint(VT_PAGE_STORE) || t.y >= uint(VT_PAGE_STORE)) return;
+    GpuEnrichRequest req = requests[pc.req_index];
+    ivec3 store_at = ivec3(ivec2(t), int(req.a.w));
+
+    // The page's CURRENT ORM texel, straight out of the physical pool slot.
+    // Texel centres + a NEAREST sampler => an exact fetch of the decoded BC7
+    // texel. Every path below writes this back (possibly unmodified), so the
+    // re-encode never invents content for a texel it could not enrich.
+    vec2 pool_uv = (vec2(req.c.xy) + vec2(t) + 0.5) / VT_POOL_LAYER_EDGE;
+    vec4 base = textureLod(poolOrm, vec3(pool_uv, float(req.c.z)), 0.0);
+
+    uint mip = req.a.z;
+    VtSurfacePoint sp =
+        vt_resolve_page_texel(t, req.a.xy, mip, req.b.x, req.b.y);
+    if (!sp.found || sp.footprint_m <= 0.0) {
+        imageStore(outOrm, store_at, base);
+        return;
+    }
+
+    // Distance cap: texel-relative, then clamped by the absolute contact-scale
+    // ceiling (see the header note — this ceiling is what stops open slopes
+    // from collapsing to ao = 0 at coarse mips).
+    float cap_meters = max(req.d.z, 1e-4);
+    float max_ray_dist = min(max(req.d.y, 1e-6) * sp.footprint_m, cap_meters);
+    // Mip fade: a texel wider than the cap cannot represent what the cap
+    // measures, so stop pretending it can.
+    float fade_end = VT_ENRICH_FADE_SPAN * cap_meters;
+    float mip_fade = clamp((fade_end - sp.footprint_m) /
+                               max(fade_end - cap_meters, 1e-4),
+                           0.0, 1.0);
+    if (mip_fade <= 0.0) {
+        imageStore(outOrm, store_at, base);
+        return;
+    }
+    // GEOMETRIC hemisphere, not the shading one. sp.nrm interpolates the
+    // part's vertex normals, and for terrain those are analytic field-gradient
+    // normals that deliberately carry finer detail than the mesh (StreamMountain
+    // bakes its 1.5 m surface-noise octave into normals over a 2 m lattice).
+    // Around that normal the cosine lobe tilts up to tens of degrees off the
+    // actual triangle plane, so a systematic fraction of rays leaves the origin
+    // pointing BELOW the face, hits the ray's own triangle within the cap, and
+    // collapses ao over whole open slopes (the 2026-07-29 sun-averted-slope
+    // blackout). Self-occlusion is a property of the geometry the acceleration
+    // structure actually holds, so the trace frame must be the triangle's own
+    // plane: sub-mesh normal detail is the live lighting's job, for exactly the
+    // reason the MIP FADE note gives for sub-texel detail. Real creases and
+    // overhangs are mesh geometry and still darken.
+    GpuTri own = tris[sp.tri];
+    vec3 face_n = cross(own.p1.xyz - own.p0.xyz, own.p2.xyz - own.p0.xyz);
+    float face_len = length(face_n);
+    // Degenerate triangle: fall back to the shading normal. Orient the face
+    // normal to agree with the shading side (terrain interiors never disagree;
+    // this guards mirrored/two-sided content).
+    vec3 trace_n = (face_len > 1e-12) ? face_n / face_len : sp.nrm;
+    if (dot(trace_n, sp.nrm) < 0.0) trace_n = -trace_n;
+    // Origin bias off the surface, scaled to the ray length actually traced so
+    // it stays a fixed tiny fraction of the cap at every mip and part scale.
+    float bias = max(1e-4, 0.02 * max_ray_dist);
+    vec3 P = sp.pos + trace_n * bias;
+    mat3 F = make_basis(trace_n);
+
+    // Deterministic seeding: the VIRTUAL atlas texel at this mip, not the
+    // physical slot texel. A page re-filled into a different pool slot, or the
+    // same content reached through a different page, traces the identical ray
+    // set. Border texels index outside the page's own payload and wrap in
+    // two's complement — still a pure function of the coordinate.
+    ivec2 vt_texel = ivec2(req.a.xy) * VT_PAGE_PAYLOAD - VT_PAGE_BORDER
+                   + ivec2(t);
+    uint local_x = uint(vt_texel.x);
+    uint local_y = uint(vt_texel.y);
+    uint mip_salt = mip * 0x9E3779B9u;
+
+    int samples = int(max(req.b.z, 1u));
+    int occluded = 0;
+    for (int i = 0; i < samples; ++i) {
+        uint h1 = splitmix32(local_x * 73856093u ^ local_y * 19349663u
+                             ^ uint(i) * 83492791u ^ mip_salt ^ req.b.w);
+        uint h2 = splitmix32(h1);
+        vec2 uv = vec2(u01(h1), u01(h2));
+        vec3 dir = F * cosine_hemi(uv);
+        if (occludeQuery(P, dir, max_ray_dist)) ++occluded;
+    }
+    float ao = 1.0 - float(occluded) / float(samples);
+    float applied = mix(1.0, ao, clamp(req.d.x, 0.0, 1.0) * mip_fade);
+    // Floor: a single hemisphere sample of a contact term must never be able to
+    // zero out ambient (ambient = diffuse x sky x ao downstream).
+    applied = max(applied, clamp(req.d.w, 0.0, 1.0));
+
+    // Multiply into the ORM occlusion channel; roughness/metallic/alpha pass
+    // through untouched.
+    imageStore(outOrm, store_at,
+               vec4(clamp(base.r * applied, 0.0, 1.0), base.g, base.b, base.a));
+}

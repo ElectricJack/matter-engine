@@ -12,6 +12,10 @@ layout(set = 0, binding = 6, std430) buffer SurfaceTestOutput {
 layout(push_constant) uniform SurfaceTestConstants {
     vec4 origin_tmin;
     vec4 direction_tmax;
+    // WP-G: (cone width at the ray origin, cone spread angle, unused, unused).
+    // Lets a test drive the ray cone explicitly instead of inferring it from a
+    // camera, which is what the cone-mip monotonicity assertion needs.
+    vec4 cone;
 } constants;
 
 layout(location = 1) rayPayloadEXT RtSurfacePayload surface_payload;
@@ -20,6 +24,8 @@ void main() {
     surface_payload.surface = invalid_rt_surface();
     surface_payload.part_slot = 0xffffffffu;
     surface_payload.primitive = 0xffffffffu;
+    surface_payload.cone_width = constants.cone.x;
+    surface_payload.cone_spread = constants.cone.y;
     traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, 1, 0, 1,
                 constants.origin_tmin.xyz, constants.origin_tmin.w,
                 normalize(constants.direction_tmax.xyz),
@@ -43,4 +49,18 @@ void main() {
     output_words[15] = floatBitsToUint(surface.tint.w);
     output_words[16] = floatBitsToUint(surface.uv.x);
     output_words[17] = floatBitsToUint(surface.uv.y);
+    // Words 18/19 belong to rt_lighting.rgen's reflection-lobe counters (same
+    // storage buffer, binding 6) — do not reuse them here.
+    // WP-G VT/cone readback (words 20-27, mirrored by
+    // VkSceneRenderer::readback_test_surface_hit).
+    RtVtSample vt = rt_vt_sample(surface);
+    output_words[20] = surface.vt_slot;
+    output_words[21] = vt.applied ? 1u : 0u;
+    output_words[22] = floatBitsToUint(vt.albedo.x);
+    output_words[23] = floatBitsToUint(vt.albedo.y);
+    output_words[24] = floatBitsToUint(vt.albedo.z);
+    output_words[25] = floatBitsToUint(vt.desired_mip);
+    output_words[26] = floatBitsToUint(vt.mapped_mip);
+    output_words[27] = floatBitsToUint(surface.cone_width);
+    output_words[28] = floatBitsToUint(surface.uv_density);
 }

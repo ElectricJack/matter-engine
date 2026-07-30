@@ -42,6 +42,10 @@ IMGUIZMO_PATH = ../third_party/ImGuizmo
 QJS_DIR     = ../third_party/quickjs-ng
 QJS_INC     = -I$(QJS_DIR)
 BOX3D_DIR   = ../third_party/box3d
+# Vendored CPU BC1-7 block encoders (MIT / public domain -- see
+# third_party/bc7enc/README.md). Reached only through
+# MatterEngine3/src/render/bc_encode.{h,cpp}.
+BC7ENC_DIR  = ../third_party/bc7enc
 BOX3D_LIB   = $(BOX3D_DIR)/libbox3d.a
 WIN_BOX3D_LIB = $(BOX3D_DIR)/build-mingw/libbox3d.a
 ME3_DIR     = ../MatterEngine3
@@ -80,6 +84,7 @@ INCLUDE_PATHS = -I$(ME3_DIR)/include \
                 -I$(BOX3D_DIR)/include \
                 -I$(FLECS_DIR) \
                 -I$(OZZ_INCLUDE) \
+                -I$(BC7ENC_DIR) \
                 -I../third_party/Vulkan-Headers/include
 
 # Windows direct-source build also needs private ME3 src/ headers since it
@@ -229,6 +234,12 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/vk_animation_skinning.cpp $(ME3_DIR)/src/render/vk_animation_bounds.cpp \
               $(ME3_DIR)/src/render/animation_skin_bridge.cpp \
               $(ME3_DIR)/src/render/tileset_slicer.cpp \
+              $(ME3_DIR)/src/render/bc_encode.cpp \
+              $(ME3_DIR)/src/render/vt_compositor.cpp \
+              $(ME3_DIR)/src/render/vt_enrich.cpp \
+              $(ME3_DIR)/src/render/vt_residency.cpp \
+              $(ME3_DIR)/src/render/vt_stub_filler.cpp \
+              $(BC7ENC_DIR)/bc7enc.cpp $(BC7ENC_DIR)/rgbcx.cpp \
               $(ME3_DIR)/src/render/tileset_bake_vk.cpp \
               $(ME3_DIR)/src/render/vk_volumetrics.cpp $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
               $(ME3_DIR)/src/render/vk_instance_cache.cpp \
@@ -288,6 +299,7 @@ WIN_MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
               $(MSL_DIR)/src/occupancy.cpp $(MSL_DIR)/src/tlas_manager.cpp \
               $(MSL_DIR)/src/part_asset.cpp \
               $(MSL_DIR)/src/lattice.cpp $(MSL_DIR)/src/particle_culling.cpp \
+              ../libs/MeshChartingLib/src/mesh_charting.cpp \
               $(AR_CORE_MSL_CPP)
 
 WIN_PIPELINE_C = $(MSL_DIR)/src/surface.c \
@@ -335,7 +347,9 @@ vpath %.cpp src $(ME3_DIR)/src $(ME3_DIR)/src/animation $(ME3_DIR)/src/render $(
              $(ME3_DIR)/src/scene \
              $(MSL_DIR)/src $(SQL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
              $(IMGUIZMO_PATH) \
-             ../libs/ParticleFlowLib/src
+             ../libs/ParticleFlowLib/src \
+             ../libs/MeshChartingLib/src \
+             $(BC7ENC_DIR)
 vpath %.c $(MSL_DIR)/src $(SQL_DIR)/src $(MEMLIB_DIR)/src $(QJS_DIR) $(FLECS_DIR)
 
 # `windows` is the only build target until Phase 5b adds a Linux Vulkan one
@@ -356,6 +370,13 @@ W_CPP_OBJ  = $(addprefix $(W_OBJ_DIR)/,$(CPP_NAMES_WIN_ALL:.cpp=.o))
 W_QJS_OBJ  = $(addprefix $(W_OBJ_DIR)/,$(QJS_NAMES:.c=.o))
 W_PIPC_OBJ = $(addprefix $(W_OBJ_DIR)/,$(PIPC_NAMES_WIN:.c=.o))
 W_FLECS_OBJ = $(W_OBJ_DIR)/$(FLECS_NAME:.c=.o)
+# Vendored BC encoders as PREBUILT objects (they are already in $(W_CPP_OBJ)
+# via WIN_ME3_CPP; this name exists so the vulkan_smoke_tests.exe recipe --
+# which compiles its whole source list in one -Wall -Wextra -Werror g++ call
+# -- can LINK them instead of compiling them. Unmodified upstream sources do
+# not survive -Werror -Wextra, and patching them would break the "vendored
+# verbatim" contract in third_party/bc7enc/README.md.)
+W_BC7ENC_OBJ = $(W_OBJ_DIR)/bc7enc.o $(W_OBJ_DIR)/rgbcx.o
 W_ALL_OBJ  = $(W_CPP_OBJ) $(W_QJS_OBJ) $(W_PIPC_OBJ) $(W_FLECS_OBJ)
 
 $(W_DIR) $(W_OBJ_DIR):
@@ -526,12 +547,16 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/gi_temporal.comp.spv \
          build/shaders_vk/gi_atrous.comp.spv \
          build/shaders_vk/rt_surface.rchit.spv \
+         build/shaders_vk/rt_surface.rahit.spv \
          build/shaders_vk/rt_surface_test.rgen.spv \
          build/shaders_vk/vol_density.comp.spv \
          build/shaders_vk/vol_scatter.comp.spv \
          build/shaders_vk/vol_integrate.comp.spv \
          build/shaders_vk/tileset_bake_primary.comp.spv \
-         build/shaders_vk/tileset_bake_ao.comp.spv
+         build/shaders_vk/tileset_bake_ao.comp.spv \
+         build/shaders_vk/vt_composite.comp.spv \
+         build/shaders_vk/vt_bc_encode.comp.spv \
+         build/shaders_vk/vt_enrich_ao.comp.spv
 VK_EMBEDDED_HEADER = $(ME3_DIR)/shaders_gen/embedded_spirv.h
 
 build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%
@@ -551,7 +576,8 @@ build/shaders_vk/raster_skin.vert.spv: $(ME3_DIR)/shaders_vk/raster.vert \
 
 build/shaders_vk/gbuffer.frag.spv: $(ME3_DIR)/shaders_vk/tileset_common.glsl
 
-build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_visibility.rahit.spv \
+build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
+    build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_radiance.rmiss.spv \
     build/shaders_vk/rt_lighting.rgen.spv \
     build/shaders_vk/rt_surface_test.rgen.spv: \
@@ -563,6 +589,36 @@ build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
 
 build/shaders_vk/gi_temporal.comp.spv build/shaders_vk/gi_atrous.comp.spv: \
     $(ME3_DIR)/shaders_vk/gi_common.glsl
+
+# WP-D (chart VT): tileset_common.glsl includes wang_common.glsl; every
+# tileset_common consumer depends on it, and vt_composite includes it directly.
+build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_shadow.rgen.spv \
+    build/shaders_vk/rt_surface.rchit.spv \
+    build/shaders_vk/rt_surface.rahit.spv \
+    build/shaders_vk/rt_visibility.rahit.spv \
+    build/shaders_vk/rt_radiance.rmiss.spv \
+    build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_surface_test.rgen.spv \
+    build/shaders_vk/vt_composite.comp.spv: \
+    $(ME3_DIR)/shaders_vk/wang_common.glsl
+
+# WP-H (chart VT): the shared chart-resolve includes both page passes consume.
+build/shaders_vk/vt_composite.comp.spv \
+    build/shaders_vk/vt_enrich_ao.comp.spv: \
+    $(ME3_DIR)/shaders_vk/vt_chart_types.glsl \
+    $(ME3_DIR)/shaders_vk/vt_chart_resolve.glsl
+
+# WP-E (chart VT): vt_common.glsl is the shared VT sampling helper (an include,
+# not a stage), so it has no .spv -- but its consumers must rebuild when it
+# changes. WP-G added the RT stages: rt_surface_common.glsl now includes
+# vt_common.glsl, so every shader that includes IT is a consumer too.
+build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_surface.rchit.spv \
+    build/shaders_vk/rt_surface.rahit.spv \
+    build/shaders_vk/rt_visibility.rahit.spv \
+    build/shaders_vk/rt_radiance.rmiss.spv \
+    build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_surface_test.rgen.spv: \
+    $(ME3_DIR)/shaders_vk/vt_common.glsl
 
 $(VK_EMBEDDED_HEADER): $(VK_SPV) $(ME3_DIR)/tools/embed_spirv.py
 	python3 $(ME3_DIR)/tools/embed_spirv.py $@ $(VK_SPV)
@@ -593,6 +649,11 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_animation_bounds.cpp \
         $(ME3_DIR)/src/animation/animation_budget.cpp \
         $(ME3_DIR)/src/render/tileset_slicer.cpp \
+        $(ME3_DIR)/src/render/bc_encode.cpp \
+        $(ME3_DIR)/src/render/vt_residency.cpp \
+        $(ME3_DIR)/src/render/vt_stub_filler.cpp \
+        $(ME3_DIR)/src/render/vt_compositor.cpp \
+        $(ME3_DIR)/src/render/vt_enrich.cpp \
         $(ME3_DIR)/tests/vulkan_smoke_tileset_bake_stub.cpp \
         $(ME3_DIR)/src/tileset_gtex.cpp \
         $(ME3_DIR)/src/render/vk_volumetrics.cpp \
@@ -603,7 +664,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_gi_math.cpp \
         $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
         $(ME3_DIR)/src/render/matrix_math.cpp \
-        $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ)
+        $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ) $(W_BC7ENC_OBJ)
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp src/ui_lighting_controls.cpp \
 	    $(ME3_DIR)/src/render/streamline_bridge.cpp \
@@ -615,6 +676,11 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_animation_bounds.cpp \
 	    $(ME3_DIR)/src/animation/animation_budget.cpp \
 	    $(ME3_DIR)/src/render/tileset_slicer.cpp \
+	    $(ME3_DIR)/src/render/bc_encode.cpp \
+	    $(ME3_DIR)/src/render/vt_residency.cpp \
+	    $(ME3_DIR)/src/render/vt_stub_filler.cpp \
+	    $(ME3_DIR)/src/render/vt_compositor.cpp \
+	    $(ME3_DIR)/src/render/vt_enrich.cpp \
 	    $(ME3_DIR)/tests/vulkan_smoke_tileset_bake_stub.cpp \
 	    $(ME3_DIR)/src/tileset_gtex.cpp \
 	    $(ME3_DIR)/src/render/vk_volumetrics.cpp \
@@ -626,7 +692,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_gi_math.cpp \
 	    $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
 	    $(ME3_DIR)/src/render/matrix_math.cpp \
-	    $(GLFW_WIN_LIB) $(W_FLECS_OBJ) -o $@ \
+	    $(GLFW_WIN_LIB) $(W_FLECS_OBJ) $(W_BC7ENC_OBJ) -o $@ \
 	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
 	    -ffunction-sections -Wl,--gc-sections \
 	    -static \
@@ -635,6 +701,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    -DMATTER_HAVE_STREAMLINE=$(HAVE_STREAMLINE) \
 	    -DMATTER_VK_TEST_LAYER_PATH='"$(VULKAN_RUNTIME_DIR)"' \
 	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
+	    -I$(BC7ENC_DIR) \
 	    -I../third_party/raylib/src \
 	    -I../libs/MatterSurfaceLib/include \
 	    -I../libs/SpatialQueryLib/include \
@@ -666,6 +733,54 @@ build/windows/vulkan_compat_tests.exe: \
 	    -DMATTER_VULKAN_COMPAT_TESTING \
 	    -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
 	    -I../third_party/raylib/src
+
+# ---- WP-D: standalone GPU test for the tier-1 VT page compositor ----------
+# Same device-bootstrap pattern as vulkan_smoke_tests.exe (hidden GLFW window
+# + VulkanDevice with validation), but a deliberately minimal TU list: the
+# compositor is standalone by contract, so the exe proves it links against
+# nothing beyond the device layer.
+build/windows/vt_compositor_tests.exe: \
+        $(ME3_DIR)/tests/vt_compositor_tests.cpp \
+        $(ME3_DIR)/src/render/vt_compositor.cpp \
+        $(ME3_DIR)/src/render/vt_compositor.h \
+        $(ME3_DIR)/src/render/vt_types.h \
+        $(ME3_DIR)/src/render/chart_atlas.h \
+        $(ME3_DIR)/src/render/vk_context.cpp \
+        $(ME3_DIR)/src/render/vk_resources.cpp \
+        $(ME3_DIR)/src/render/streamline_bridge.cpp \
+        $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ)
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) $(ME3_DIR)/tests/vt_compositor_tests.cpp \
+	    $(ME3_DIR)/src/render/vt_compositor.cpp \
+	    $(ME3_DIR)/src/render/vk_context.cpp \
+	    $(ME3_DIR)/src/render/vk_resources.cpp \
+	    $(ME3_DIR)/src/render/streamline_bridge.cpp \
+	    $(GLFW_WIN_LIB) $(W_FLECS_OBJ) -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
+	    -Wno-unused-parameter \
+	    -ffunction-sections -Wl,--gc-sections \
+	    -static \
+	    -DVK_USE_PLATFORM_WIN32_KHR \
+	    -DMATTER_HAVE_STREAMLINE=$(HAVE_STREAMLINE) \
+	    -DMATTER_VK_TEST_LAYER_PATH='"$(VULKAN_RUNTIME_DIR)"' \
+	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
+	    -I$(ME3_DIR)/src/render \
+	    -I$(ME3_DIR)/tests \
+	    -I$(FLECS_DIR) \
+	    -I../third_party/raylib/src \
+	    -I../libs/MatterSurfaceLib/include \
+	    -I../libs/SpatialQueryLib/include \
+	    -I../libs/MemoryLib/include \
+	    -I../libs/MathLib/include \
+	    -I../third_party/raylib/src/external/glfw/include \
+	    $(if $(filter 1,$(HAVE_STREAMLINE)),-I"$(STREAMLINE_PATH)/include") \
+	    -I$(VULKAN_INCLUDE) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 \
+	    $(WIN_SYSTEM_LIBS) -Wl,-Bstatic
+
+.PHONY: vt-compositor-tests
+vt-compositor-tests: vulkan-preflight $(GLFW_WIN_LIB) \
+                     build/windows/vt_compositor_tests.exe
+	cd build/windows && ./vt_compositor_tests.exe
 
 # ---- Windows compile rules
 $(W_CPP_OBJ): $(W_OBJ_DIR)/%.o: %.cpp | $(W_OBJ_DIR)

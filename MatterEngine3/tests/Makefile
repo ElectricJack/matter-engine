@@ -202,6 +202,29 @@ TILESETSLICER_TARGET = build/tileset_slicer_tests
 TILESETSLICER_CPP = tileset_slicer_tests.cpp ../src/render/tileset_slicer.cpp
 TILESETSLICER_HEADERS = check.h ../src/render/tileset_slicer.h
 
+# BC block-compression suite. Same CPU-only, no-GL/VK/raylib model as
+# TILESETSLICER above, plus the vendored encoders (third_party/bc7enc). Built
+# with -O2 unconditionally: the suite compresses a few megatexels and an -O0
+# bc7enc/rgbcx is roughly 30x slower, which would turn a 2-second test into a
+# minute. Optimization does not change the output bytes (the determinism test
+# in the suite is what proves that).
+BC7ENC_DIR = ../../third_party/bc7enc
+BCENCODE_TARGET = build/bc_encode_tests
+BCENCODE_CPP = bc_encode_tests.cpp ../src/render/bc_encode.cpp \
+               ../src/render/tileset_slicer.cpp \
+               $(BC7ENC_DIR)/bc7enc.cpp $(BC7ENC_DIR)/rgbcx.cpp
+BCENCODE_HEADERS = check.h ../src/render/bc_encode.h ../src/render/tileset_slicer.h
+BCENCODE_CFLAGS = -O2 -I$(BC7ENC_DIR)
+
+# WP-E (chart-space virtual texturing): the residency layer's pure CPU half —
+# virtual layout, indirection resolve, page/border addressing, LRU eviction.
+# Header-only against vt_residency.h, so the suite links no Vulkan symbols and
+# runs headlessly on every platform (the GPU half is MATTER_VK_SMOKE_MODE=vt).
+VTRESIDENCY_TARGET = build/vt_residency_tests
+VTRESIDENCY_CPP = vt_residency_tests.cpp
+VTRESIDENCY_HEADERS = check.h ../src/render/vt_residency.h \
+                      ../src/render/vt_types.h ../src/render/chart_atlas.h
+
 FLECS_DIR = ../../third_party/flecs
 FLECS_C = $(FLECS_DIR)/flecs.c
 ANIMATION_RUNTIME_CPP = ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
@@ -268,14 +291,21 @@ MSL = ../../libs/MatterSurfaceLib/src
 # Shared source-of-truth libraries (compiled from source, not copied into MSL).
 SQL = ../../libs/SpatialQueryLib
 MEMLIB = ../../libs/MemoryLib
+MCL = ../../libs/MeshChartingLib
 
+# mesh_charting.cpp (MeshChartingLib) rides in the BLAS set because
+# lod_bake.cpp now calls it for the WP-A chart build, and every target that
+# links lod_bake.cpp reaches MSL sources through this set (directly or via
+# COMMON_MSL_FULL_SRC). GPU_MSL_CPP below lists it explicitly (that list does
+# not include this one).
 COMMON_MSL_BLAS_SRC = \
     $(MSL)/blas_manager.cpp \
     $(SQL)/src/bvh.cpp \
     $(MSL)/tlas_manager.cpp \
     $(MSL)/vertex_ao.cpp \
     $(MSL)/occupancy.cpp \
-    $(MSL)/part_asset.cpp
+    $(MSL)/part_asset.cpp \
+    $(MCL)/src/mesh_charting.cpp
 
 COMMON_MSL_FULL_SRC = \
     $(COMMON_MSL_BLAS_SRC) \
@@ -476,6 +506,25 @@ COMP_CPP = composition_tests.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
            $(MSL)/mesh_transform.cpp \
            $(COMMON_MSL_BLAS_SRC)
 COMP_C   = $(MSL)/material_registry.c
+
+# WP-A (chart-space virtual texturing): headless chart-atlas metrics gate.
+# Same closure shape as COMP above (lod_bake + part_asset_v2 + BLAS backend;
+# mesh_charting.cpp arrives via COMMON_MSL_BLAS_SRC) plus the indexed-geometry
+# weld for the vertex-split-inflation metric.
+CHARTATLAS_TARGET = build/chart_atlas_tests
+CHARTATLAS_CPP = chart_atlas_tests.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
+                 ../src/part_asset_v2.cpp \
+                 ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp \
+                 ../src/render/part_store.cpp ../src/render/matrix_math.cpp \
+                 ../src/lod_select.cpp ../src/sector_grid.cpp \
+                 ../src/animation/animation_asset_store.cpp ../src/animation/anim_asset.cpp \
+                 ../src/animation/anim_bundle.cpp ../src/animation/animation_binding_bake.cpp \
+                 ../src/animation/animation_ir.cpp \
+                 $(MSL)/mesh_simplifier.cpp \
+                 $(MSL)/mesh_indexed.cpp \
+                 $(MSL)/mesh_transform.cpp \
+                 $(COMMON_MSL_BLAS_SRC)
+CHARTATLAS_C   = $(MSL)/material_registry.c
 
 FLATTEN_TARGET = build/part_flatten_tests
 FLATTEN_CPP = part_flatten_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp \
@@ -919,12 +968,16 @@ WORLD_DEFINITION_TARGET = build/world_definition_tests
 WORLD_DEFINITION_CPP = world_definition_tests.cpp \
                        ../src/script/world_definition_loader.cpp \
                        ../src/module_resolver.cpp
+# defineMaterial (chart-VT Phase 3) makes the loader call into the material
+# registry, so the registry TU joins this otherwise QuickJS-only link.
+WORLD_DEFINITION_C   = $(MSL)/material_registry.c
 
 # Phase 4 Task 13: PhysicsPlayground world and closure.
 PHYSICS_PLAYGROUND_TARGET = build/physics_playground_tests
 PHYSICS_PLAYGROUND_CPP    = physics_playground_tests.cpp \
                             ../src/script/world_definition_loader.cpp \
                             ../src/module_resolver.cpp
+PHYSICS_PLAYGROUND_C      = $(MSL)/material_registry.c
 
 # Phase C Task 4 — eval_world: World builder DSL + ScriptHost::eval_world (sh flavor).
 EVALWORLD_TARGET = build/eval_world_tests
@@ -1119,6 +1172,7 @@ GPU_MSL_CPP = \
     $(MSL)/oriented_cube_algorithm.cpp $(MSL)/vertex_ao.cpp \
     $(MSL)/occupancy.cpp $(MSL)/tlas_manager.cpp $(MSL)/part_asset.cpp \
     $(MSL)/lattice.cpp $(MSL)/particle_culling.cpp \
+    $(MCL)/src/mesh_charting.cpp \
     $(GPU_AR_CORE_CPP)
 
 GPU_MSL_C   = $(COMMON_MSL_C)
@@ -1187,6 +1241,7 @@ def_CPP_SRCS := $(sort \
     $(GRAPH_SOURCES) \
     $(TRIVAR_CPP) \
     $(COMP_CPP) \
+    $(CHARTATLAS_CPP) \
     $(FLATTEN_CPP) \
     $(TILESETTORUSBVH_CPP) \
     $(ISO_CPP) \
@@ -1352,6 +1407,7 @@ PARTV2_OBJS = $(call obj_list,def,$(PARTV2_CPP)) $(call obj_list,mslc,$(PARTV2_C
 GRAPH_OBJS  = $(call obj_list,def,$(GRAPH_SOURCES)) $(call obj_list,mslc,$(GRAPH_C))
 TRIVAR_OBJS = $(call obj_list,def,$(TRIVAR_CPP)) $(call obj_list,mslc,$(TRIVAR_C))
 COMP_OBJS   = $(call obj_list,def,$(COMP_CPP)) $(call obj_list,mslc,$(COMP_C))
+CHARTATLAS_OBJS = $(call obj_list,def,$(CHARTATLAS_CPP)) $(call obj_list,mslc,$(CHARTATLAS_C))
 FLATTEN_OBJS = $(call obj_list,def,$(FLATTEN_CPP)) $(call obj_list,mslc,$(FLATTEN_C))
 TILESETTORUSBVH_OBJS = $(call obj_list,def,$(TILESETTORUSBVH_CPP)) $(call obj_list,mslc,$(TILESETTORUSBVH_C))
 TILESETMEADOWMANIFEST_OBJS = $(call obj_list,qjs,$(TILESETMEADOWMANIFEST_CPP)) $(call obj_list,mslc,$(TILESETMEADOWMANIFEST_C)) $(qjsc_C_OBJS)
@@ -1384,8 +1440,8 @@ MODBAKE_OBJS = $(call obj_list,qjs,$(MODBAKE_CPP)) $(call obj_list,mslc,$(MODBAK
 ANIMATION_DIAGNOSTICS_OBJS = $(call obj_list,qjs,$(ANIMATION_DIAGNOSTICS_CPP)) $(call obj_list,mslc,$(ANIMATION_DIAGNOSTICS_C)) $(qjsc_C_OBJS)
 TILESETDSL_OBJS = $(call obj_list,qjs,$(TILESETDSL_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
 TERRAINNOISE_OBJS = $(call obj_list,qjs,$(TERRAINNOISE_CPP)) $(qjsc_C_OBJS)
-WORLD_DEFINITION_OBJS = $(call obj_list,qjs,$(WORLD_DEFINITION_CPP)) $(qjsc_C_OBJS)
-PHYSICS_PLAYGROUND_OBJS = $(call obj_list,qjs,$(PHYSICS_PLAYGROUND_CPP)) $(qjsc_C_OBJS)
+WORLD_DEFINITION_OBJS = $(call obj_list,qjs,$(WORLD_DEFINITION_CPP)) $(call obj_list,mslc,$(WORLD_DEFINITION_C)) $(qjsc_C_OBJS)
+PHYSICS_PLAYGROUND_OBJS = $(call obj_list,qjs,$(PHYSICS_PLAYGROUND_CPP)) $(call obj_list,mslc,$(PHYSICS_PLAYGROUND_C)) $(qjsc_C_OBJS)
 EVALWORLD_OBJS = $(call obj_list,sh,$(EVALWORLD_CPP)) $(call obj_list,mslc,$(EVALWORLD_C)) $(qjsc_C_OBJS)
 FOLDCACHE_OBJS = $(call obj_list,sh,$(FOLDCACHE_CPP)) $(call obj_list,mslc,$(FOLDCACHE_C)) $(qjsc_C_OBJS)
 
@@ -1414,7 +1470,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1538,6 +1594,18 @@ $(TILESETSLICER_TARGET): $(TILESETSLICER_CPP) $(TILESETSLICER_HEADERS) | build
 
 run-tilesetslicer: $(TILESETSLICER_TARGET)
 	./$(TILESETSLICER_TARGET)
+
+$(BCENCODE_TARGET): $(BCENCODE_CPP) $(BCENCODE_HEADERS) | build
+	$(CC) $(BCENCODE_CPP) -o $@ $(CFLAGS) $(BCENCODE_CFLAGS) $(INCLUDE_PATHS)
+
+run-bc-encode: $(BCENCODE_TARGET)
+	./$(BCENCODE_TARGET)
+
+$(VTRESIDENCY_TARGET): $(VTRESIDENCY_CPP) $(VTRESIDENCY_HEADERS) | build
+	$(CC) $(VTRESIDENCY_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
+
+run-vt-residency: $(VTRESIDENCY_TARGET)
+	./$(VTRESIDENCY_TARGET)
 
 .PHONY: check-ecs-animation-sources check-physics-animation-sources check-simulation-control-animation-sources
 define check_animation_ecs_runtime_closure
@@ -1805,6 +1873,15 @@ $(COMP_TARGET): $(COMP_OBJS)
 
 run-comp: $(COMP_TARGET)
 	./$(COMP_TARGET)
+
+# WP-A chart-space VT: headless chart-atlas metrics gate (coverage, overlap,
+# distortion, gutters, vertex-split inflation, determinism, 32-bit mesh,
+# CHRT sidecar round-trip).
+$(CHARTATLAS_TARGET): $(CHARTATLAS_OBJS)
+	$(CC) $(CHARTATLAS_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-chart-atlas: $(CHARTATLAS_TARGET)
+	./$(CHARTATLAS_TARGET)
 
 # Bake-time subtree flattening + error-bounded LOD ladder.
 $(FLATTEN_TARGET): $(FLATTEN_OBJS)
@@ -2252,6 +2329,13 @@ run-resolvecache: resolve-cache-tests
 vulkan-smoke:
 	$(MAKE) -C ../../MatterEditor vulkan-smoke
 
+# WP-D: tier-1 VT page compositor GPU tests (vt_compositor_tests.cpp). Like
+# vulkan-smoke, the exe is a Windows artifact owned by MatterEditor's
+# cross-build rules (vendored GLFW + Vulkan link line live there).
+.PHONY: run-vt-compositor
+run-vt-compositor:
+	$(MAKE) -C ../../MatterEditor vt-compositor-tests
+
 # ---------------------------------------------------------------------------
 # Clean: every object (build/obj/) and every binary (build/*) now lives under
 # build/, so removing the whole tree is sufficient. The clean-* sub-targets
@@ -2504,3 +2588,64 @@ run-physicsevents: $(PHYSICSEVENTS_TARGET)
 clean: clean-physicsevents
 clean-physicsevents:
 	rm -f build/physicsevents_tests
+
+# ---------------------------------------------------------------------------
+# WP-F — surfaces() classifier tape (terrain_field SurfaceProgram/Runtime).
+# Self-contained append-only block (tileset_metrics pattern): headless, no GL,
+# links terrain_field.cpp directly.
+# ---------------------------------------------------------------------------
+SURFACEFIELD_TARGET = build/surface_field_tests
+SURFACEFIELD_CPP    = surface_field_tests.cpp ../src/terrain_field.cpp
+SURFACEFIELD_OBJS   = $(call obj_list,def,$(SURFACEFIELD_CPP))
+
+$(eval $(call objrule_cpp,def,surface_field_tests.cpp))
+
+$(SURFACEFIELD_TARGET): $(SURFACEFIELD_OBJS)
+	$(CC) $(SURFACEFIELD_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm
+
+run-surfacefield: $(SURFACEFIELD_TARGET)
+	./$(SURFACEFIELD_TARGET)
+
+.PHONY: run-surfacefield clean-surfacefield
+clean: clean-surfacefield
+clean-surfacefield:
+	rm -f build/surface_field_tests
+
+# ---------------------------------------------------------------------------
+# WP-F — surfaces() tape GPU test: the vt-surfaces smoke mode of the Vulkan
+# smoke executable (MatterEditor cross-build owns the exe, like vulkan-smoke /
+# run-vt-compositor). Also part of the full vulkan-smoke suite via
+# tools/smoke_vulkan_faults.ps1.
+# ---------------------------------------------------------------------------
+.PHONY: run-vt-surfaces
+run-vt-surfaces:
+	$(MAKE) -C ../../MatterEditor build/windows/vulkan_smoke_tests.exe
+	cd ../../MatterEditor/build/windows && \
+	    MATTER_VK_SMOKE_MODE=vt-surfaces ./vulkan_smoke_tests.exe
+
+# ---------------------------------------------------------------------------
+# WP-H — tier-2 hemisphere AO page enrichment GPU test: the vt-enrich and
+# vt-enrich-nort smoke modes (occluder fixture with, and without, hardware ray
+# tracing). Both are also part of the full vulkan-smoke suite via
+# tools/smoke_vulkan_faults.ps1.
+# ---------------------------------------------------------------------------
+.PHONY: run-vt-enrich
+run-vt-enrich:
+	$(MAKE) -C ../../MatterEditor build/windows/vulkan_smoke_tests.exe
+	cd ../../MatterEditor/build/windows && \
+	    MATTER_VK_SMOKE_MODE=vt-enrich ./vulkan_smoke_tests.exe
+	cd ../../MatterEditor/build/windows && \
+	    MATTER_VK_SMOKE_MODE=vt-enrich-nort ./vulkan_smoke_tests.exe
+
+# ---------------------------------------------------------------------------
+# RT PBR Phase 1 — microfacet (frosted) transmission GPU test: the
+# rt-transmission smoke mode (frosted-slab-over-checker fixture; roughness
+# blur monotonicity, energy conservation, smooth-glass byte parity, composite
+# fallback guard, alpha-tested walk occluders). Also part of the full
+# vulkan-smoke suite via tools/smoke_vulkan_faults.ps1.
+# ---------------------------------------------------------------------------
+.PHONY: run-rt-transmission
+run-rt-transmission:
+	$(MAKE) -C ../../MatterEditor build/windows/vulkan_smoke_tests.exe
+	cd ../../MatterEditor/build/windows && \
+	    MATTER_VK_SMOKE_MODE=rt-transmission ./vulkan_smoke_tests.exe

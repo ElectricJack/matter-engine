@@ -425,6 +425,35 @@ static JSContext* new_bake_context(JSRuntime* rt, bool want_modules = false) {
     return ctx;
 }
 
+// __material_handle(name) -> registry index, or -1 when the name is unknown.
+//
+// Chart-VT spec Phase 3: material REGISTRATION is owned by the world-definition
+// loader (world_definition_loader.cpp), which runs before any field
+// compilation. A field world evaluates its source a second time here, so the
+// world_base.js defineMaterial shim needs a lookup — never a second registration,
+// which would make handles depend on evaluation count. Resolve-only keeps the
+// registry single-writer and the handles stable.
+static JSValue sh_material_handle(JSContext* ctx, JSValueConst,
+                                  int argc, JSValueConst* argv) {
+    if (argc < 1 || !JS_IsString(argv[0]))
+        return JS_ThrowTypeError(ctx, "__material_handle(name) requires a string");
+    const char* name = JS_ToCString(ctx, argv[0]);
+    if (!name) return JS_EXCEPTION;
+    const int handle = MaterialRegistryFindByName(name);
+    JS_FreeCString(ctx, name);
+    return JS_NewInt32(ctx, handle);
+}
+
+// Install the resolve-only material lookup that world_base.js's defineMaterial
+// shim calls. Must run before kWorldBaseJS is evaluated in that context.
+static void install_material_handle(JSContext* ctx) {
+    JSValue global = JS_GetGlobalObject(ctx);
+    JS_SetPropertyStr(ctx, global, "__material_handle",
+                      JS_NewCFunction(ctx, sh_material_handle,
+                                      "__material_handle", 1));
+    JS_FreeValue(ctx, global);
+}
+
 // Derive a deterministic 64-bit seed from the merged canonical params JSON. If the
 // params contain a numeric "seed" field, honor it (so authors can pick a seed);
 // otherwise fold the whole canonical JSON via FNV-1a so distinct params still draw
@@ -2184,6 +2213,10 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
             merged = "{}";
             JSRuntime* prt = JS_NewRuntime();
             JSContext* pctx = JS_NewContext(prt);
+            // A world that declares materials at module scope evaluates
+            // defineMaterial here too; without the lookup this whole block
+            // would throw and silently fall back to empty static params.
+            install_material_handle(pctx);
             // Evaluate kWorldBaseJS + source to get the class, read static params.
             std::string setup = std::string(kWorldBaseJS) + "\n" + source
                                 + "\n;globalThis.__worldClass = " + className + ";\n";
@@ -2260,6 +2293,9 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
     auto done = [&]() { JS_FreeContext(ctx); JS_FreeRuntime(rt); };
 
     // 4. Evaluate kWorldBaseJS into the context (defines FieldNode, noise2, …, World).
+    //    install_material_handle first: kWorldBaseJS's defineMaterial shim calls
+    //    it, and a world may declare materials at module scope in step 5.
+    install_material_handle(ctx);
     {
         JSValue v = JS_Eval(ctx, kWorldBaseJS, strlen(kWorldBaseJS),
                             "<world-base>", JS_EVAL_TYPE_GLOBAL);
@@ -2479,6 +2515,70 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
             JS_FreeValue(ctx, biomesResult);
         }
         JS_FreeValue(ctx, biomesFn);
+    }
+
+    // 12. Call surfaces(s) if present (chart-VT Phase 4 / contract C4): build
+    //     the input-accessor argument via world_base.js's __surfaceArg(), run
+    //     the method, and read back the recorded tape — op lines from
+    //     __surface_ops, then the `material` output directives from
+    //     __surface_mats (kept separate so directives never perturb register
+    //     numbering). Fail-closed: a throwing surfaces(), or one that declares
+    //     no weights, fails the whole eval.
+    {
+        JSValue surfFn = JS_GetPropertyStr(ctx, inst, "surfaces");
+        if (JS_IsFunction(ctx, surfFn)) {
+            JSValue g = JS_GetGlobalObject(ctx);
+            JSValue makeArg = JS_GetPropertyStr(ctx, g, "__surfaceArg");
+            JSValue arg = JS_Call(ctx, makeArg, JS_UNDEFINED, 0, nullptr);
+            JS_FreeValue(ctx, makeArg);
+            if (JS_IsException(arg)) {
+                BakeError e = harvest_exception(ctx);
+                r.message = "surfaces() argument setup failed: " + e.message;
+                JS_FreeValue(ctx, surfFn);
+                JS_FreeValue(ctx, g);
+                JS_FreeValue(ctx, inst); JS_FreeValue(ctx, cls); done(); return r;
+            }
+            JSValue surfResult = JS_Call(ctx, surfFn, inst, 1, &arg);
+            JS_FreeValue(ctx, arg);
+            if (JS_IsException(surfResult)) {
+                BakeError e = harvest_exception(ctx);
+                r.message = e.message;
+                JS_FreeValue(ctx, surfResult);
+                JS_FreeValue(ctx, surfFn);
+                JS_FreeValue(ctx, g);
+                JS_FreeValue(ctx, inst); JS_FreeValue(ctx, cls); done(); return r;
+            }
+            JS_FreeValue(ctx, surfResult);   // return value unused; the tape is the output
+
+            std::string prog;
+            auto append_lines = [&](const char* prop) {
+                JSValue arr = JS_GetPropertyStr(ctx, g, prop);
+                uint32_t len = 0;
+                JSValue lenV = JS_GetPropertyStr(ctx, arr, "length");
+                JS_ToUint32(ctx, &len, lenV);
+                JS_FreeValue(ctx, lenV);
+                uint32_t appended = 0;
+                for (uint32_t i = 0; i < len; ++i) {
+                    JSValue line = JS_GetPropertyUint32(ctx, arr, i);
+                    const char* s = JS_ToCString(ctx, line);
+                    if (s) { prog += s; prog += '\n'; ++appended; JS_FreeCString(ctx, s); }
+                    JS_FreeValue(ctx, line);
+                }
+                JS_FreeValue(ctx, arr);
+                return appended;
+            };
+            append_lines("__surface_ops");
+            const uint32_t mats = append_lines("__surface_mats");
+            JS_FreeValue(ctx, g);
+            if (mats == 0) {
+                r.message = "surfaces() declared no material weights — call "
+                            "s.weight(materialHandle, node) at least once";
+                JS_FreeValue(ctx, surfFn);
+                JS_FreeValue(ctx, inst); JS_FreeValue(ctx, cls); done(); return r;
+            }
+            r.surface_program = std::move(prog);
+        }
+        JS_FreeValue(ctx, surfFn);
     }
 
     JS_FreeValue(ctx, inst);

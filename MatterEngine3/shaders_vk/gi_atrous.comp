@@ -46,9 +46,16 @@ void main() {
     vec3 centerNormal = texelFetch(normalTex, pixel, 0).xyz;
     uvec2 centerIdentity = texelFetch(identityTex, pixel, 0).rg;
     uint centerHistory = texelFetch(historyTex, pixel, 0).r;
-    if (pc.signalMode > 1u ||
+    vec2 centerAux = texelFetch(auxTex, pixel, 0).rg;
+    // signalMode: 0 = diffuse GI (radius 2), 1 = specular (radius 1, aux
+    // edge-stops), 2 = transmission (RT PBR Phase 1: same as specular, but a
+    // smooth pixel -- aux roughness < 0.02 -- passes through untouched: the
+    // smooth refraction path is deterministic and spatial filtering it would
+    // break the byte-compatibility gate for existing glass).
+    if (pc.signalMode > 2u ||
         (pc.signalMode == 0u && pc.kernelRadius != 2u) ||
-        (pc.signalMode == 1u && pc.kernelRadius != 1u) ||
+        (pc.signalMode >= 1u && pc.kernelRadius != 1u) ||
+        (pc.signalMode == 2u && centerAux.y < 0.02) ||
         centerHistory == 0u || centerIdentity.x == 0xffffffffu ||
         !finite3(centerSignal.rgb) || isnan(centerDepth) || isinf(centerDepth) ||
         dot(centerNormal, centerNormal) < 1e-12) {
@@ -73,7 +80,6 @@ void main() {
     vec3 sum = vec3(0.0);
     float weightSum = 0.0;
     int radius = int(pc.kernelRadius);
-    vec2 centerAux = texelFetch(auxTex, pixel, 0).rg;
     for (int y = -radius; y <= radius; ++y) {
         for (int x = -radius; x <= radius; ++x) {
             ivec2 q = pixel + ivec2(x, y) * int(pc.stepWidth);
@@ -98,7 +104,7 @@ void main() {
             float wn = pow(max(dot(centerNormal, normal), 0.0),
                            pc.normalPower);
             float wh = 1.0;
-            if (pc.signalMode == 1u) {
+            if (pc.signalMode >= 1u) {
                 vec2 aux = texelFetch(auxTex, q, 0).rg;
                 float hitScale = max(0.05, 0.1 * max(centerAux.x, aux.x));
                 wh = exp(-abs(centerAux.x - aux.x) / hitScale) *
