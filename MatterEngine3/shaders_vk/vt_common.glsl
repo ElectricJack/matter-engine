@@ -4,7 +4,7 @@
 // Chart-space virtual texturing — sampling helper (WP-E, contract C2).
 //
 // Pass-agnostic on purpose: gbuffer.frag consumes it today, the RT hit shaders
-// will consume it verbatim in WP-G. It never reads gl_FragCoord, never uses
+// consume it verbatim (WP-G). It never reads gl_FragCoord, never uses
 // dFdx/dFdy internally (the caller supplies the atlas-UV derivatives, which a
 // ray hit computes from its cone), and never writes anything except through
 // the explicitly-called vt_write_feedback().
@@ -12,13 +12,31 @@
 // Include contract — define BEFORE including:
 //   VT_SET                 descriptor set index
 //   VT_POOL_BINDING        sampler2DArray vt_pool[4]   (albedo, normal, ORM, aux)
-//   VT_INDIRECTION_BINDING usampler2DArray vt_indirection
+//   VT_INDIRECTION_BINDING readonly storage buffer of packed u32 entries
 //   VT_VARIANTS_BINDING    readonly buffer of VtVariantRecord
 // Optionally define VT_FEEDBACK_BINDING (a uimage2D) to enable
 // vt_write_feedback(); without it the function compiles to a no-op.
 //
 // Everything below mirrors MatterEngine3/src/render/vt_residency.h. Keep the
-// two in lockstep: page geometry, indirection stacking, entry packing.
+// two in lockstep: page geometry, table layout, entry packing.
+//
+// --- Indirection table layout (mirrors vt_build_layout) ---------------------
+// The indirection is ONE u32 storage buffer shared by every (variant, rung);
+// each registration owns an exact-sized table at record.table_offset. Inside a
+// table the virtual mip grids are concatenated finest-first:
+//
+//   pw(m) = ceil(max(atlas_w >> m, 1) / 128) = (max(atlas_w >> m, 1) + 127) >> 7
+//         = ceil(atlas_w / (128 << m))            (integer-division identity)
+//   ph(m) likewise from atlas_h
+//   mip_offset[m] = sum_{k < m} pw(k) * ph(k)     (precomputed in the record,
+//                                                  so no loop here)
+//   entry(m, px, py) = vt_indirection[table_offset + mip_offset[m]
+//                                     + py * pw(m) + px]
+//
+// Entry packing: low 16 bits = physical page slot, high 16 = the mip whose
+// page that slot actually holds. Every entry is always valid (worst case the
+// variant's pinned tail), so resolution is ONE buffer load plus arithmetic —
+// no walk loop, no fault path.
 
 #ifndef VT_SET
 #error "vt_common.glsl: define VT_SET before including this file"
@@ -40,7 +58,6 @@
 #define VT_PAGES_PER_EDGE    16u
 #define VT_PAGES_PER_LAYER   256u
 #define VT_POOL_LAYER_EDGE   2176.0
-#define VT_INDIRECTION_W     64
 #define VT_MAX_MIPS          8
 
 #define VT_CHANNEL_ALBEDO 0
@@ -50,15 +67,23 @@
 
 layout(set = VT_SET, binding = VT_POOL_BINDING)
 uniform sampler2DArray vt_pool[4];
-layout(set = VT_SET, binding = VT_INDIRECTION_BINDING)
-uniform usampler2DArray vt_indirection;
+layout(set = VT_SET, binding = VT_INDIRECTION_BINDING, std430)
+readonly buffer VtIndirection {
+    uint vt_indirection[];
+};
 
+// Mirrors VtResidency::VariantRecordGpu (vt_residency.h) — append-only, keep
+// in lockstep.
 struct VtVariantRecord {
     uint atlas_w;
     uint atlas_h;
     uint mip_count;
     uint flags;            // bit0 = valid
-    uint mip_row[VT_MAX_MIPS];
+    uint mip_offset[VT_MAX_MIPS];   // word offsets of each mip grid, in-table
+    uint table_offset;     // word offset of this variant's table in the SSBO
+    uint pages_w;          // finest-mip page grid dims (= pw(0)/ph(0))
+    uint pages_h;
+    uint generation;       // debug correlation only; never read here
 };
 layout(set = VT_SET, binding = VT_VARIANTS_BINDING, std430)
 readonly buffer VtVariants {
@@ -73,7 +98,7 @@ uniform writeonly uimage2D vt_feedback;
 // Everything one sample needs, resolved once and shared by all four channels.
 struct VtAddress {
     bool  valid;
-    uint  layer;           // indirection array layer
+    uint  layer;           // variant slot index
     uint  desired_mip;     // what the pixel footprint asked for
     uint  mapped_mip;      // what is actually resident
     uint  desired_px;      // page coords at desired_mip (for feedback)
@@ -95,9 +120,10 @@ float vt_desired_mip(uint slot, vec2 duv_dx, vec2 duv_dy) {
 }
 
 // Resolves an atlas UV to a physical pool location. `slot` is the transported
-// vt slot (layer + 1); 0 means "no VT" and yields address.valid == false.
-// Never faults: the indirection always carries at least the pinned tail entry,
-// so one texelFetch is enough — no walk loop, no unbounded work in the shader.
+// vt slot (variant index + 1); 0 means "no VT" and yields address.valid ==
+// false. Never faults: the indirection always carries at least the pinned
+// tail entry, so one buffer load is enough — no walk loop, no unbounded work
+// in the shader.
 VtAddress vt_resolve(uint slot, vec2 atlas_uv, float lod) {
     VtAddress address;
     address.valid = false;
@@ -118,12 +144,13 @@ VtAddress vt_resolve(uint slot, vec2 atlas_uv, float lod) {
     uint max_mip = record.mip_count - 1u;
     uint mip = uint(clamp(floor(lod), 0.0, float(max_mip)));
 
-    // Page coords at the desired mip.
+    // Page coords at the desired mip: pw(m) closed-form from the atlas dims
+    // (see the table-layout note at the top of this file).
     vec2 uv = clamp(atlas_uv, vec2(0.0), vec2(0.999999));
     uint aw = max(record.atlas_w >> mip, 1u);
     uint ah = max(record.atlas_h >> mip, 1u);
-    uint pages_x = max((aw + 127u) / 128u, 1u);
-    uint pages_y = max((ah + 127u) / 128u, 1u);
+    uint pages_x = (aw + 127u) >> 7u;
+    uint pages_y = (ah + 127u) >> 7u;
     vec2 texel = uv * vec2(float(aw), float(ah));
     uint px = min(uint(floor(texel.x / VT_PAGE_PAYLOAD)), pages_x - 1u);
     uint py = min(uint(floor(texel.y / VT_PAGE_PAYLOAD)), pages_y - 1u);
@@ -131,18 +158,19 @@ VtAddress vt_resolve(uint slot, vec2 atlas_uv, float lod) {
     address.desired_px = px;
     address.desired_py = py;
 
-    // Indirection fetch: mip grids are stacked vertically inside the layer.
-    ivec3 entry_coord = ivec3(int(px), int(record.mip_row[mip] + py), int(layer));
-    uvec4 entry = texelFetch(vt_indirection, entry_coord, 0);
-    uint physical_slot = entry.x;
-    uint mapped_mip = min(entry.y, max_mip);
+    // Indirection fetch: one load from the variant's exact-sized table.
+    uint entry_index =
+        record.table_offset + record.mip_offset[mip] + py * pages_x + px;
+    uint entry = vt_indirection[entry_index];
+    uint physical_slot = entry & 0xFFFFu;
+    uint mapped_mip = min(entry >> 16u, max_mip);
     address.mapped_mip = mapped_mip;
 
     // Recompute the in-page position at the mip that is actually resident.
     uint maw = max(record.atlas_w >> mapped_mip, 1u);
     uint mah = max(record.atlas_h >> mapped_mip, 1u);
-    uint mpx = max((maw + 127u) / 128u, 1u);
-    uint mpy = max((mah + 127u) / 128u, 1u);
+    uint mpx = (maw + 127u) >> 7u;
+    uint mpy = (mah + 127u) >> 7u;
     vec2 mtexel = uv * vec2(float(maw), float(mah));
     float mpage_x = min(floor(mtexel.x / VT_PAGE_PAYLOAD), float(mpx - 1u));
     float mpage_y = min(floor(mtexel.y / VT_PAGE_PAYLOAD), float(mpy - 1u));

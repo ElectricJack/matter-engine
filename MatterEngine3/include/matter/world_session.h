@@ -170,6 +170,10 @@ struct FrameStats {
     uint64_t vt_pool_bytes = 0;
     uint64_t vt_mesh_bytes = 0;        // CPU mesh copies held for the filler
     uint64_t vt_mesh_budget_bytes = 0; // MATTER_VT_MESH_BUDGET_MB, in bytes
+    // Buffer-indirection census (exact-sized tables in one SSBO; replaced the
+    // 2048-layer-capped image array).
+    uint64_t vt_indirection_bytes = 0;          // live table blocks
+    uint64_t vt_indirection_capacity_bytes = 0; // MATTER_VT_INDIRECTION_MB
     DlssMode dlss_selected_mode = DlssMode::Native;
     DlssMode dlss_active_mode = DlssMode::Native;
     uint32_t dlss_internal_width = 0;

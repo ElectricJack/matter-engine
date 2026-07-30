@@ -6218,6 +6218,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->stats.vt_pool_bytes = vt_stats.pool_bytes;
         impl_->stats.vt_mesh_bytes = vt_stats.mesh_bytes;
         impl_->stats.vt_mesh_budget_bytes = vt_stats.mesh_budget_bytes;
+        impl_->stats.vt_indirection_bytes = vt_stats.indirection_used_bytes;
+        impl_->stats.vt_indirection_capacity_bytes =
+            vt_stats.indirection_capacity_bytes;
     }
     impl_->stats.dlss_selected_mode = impl_->vk_scene->selected_dlss_mode();
     impl_->stats.dlss_active_mode = impl_->vk_scene->active_dlss_mode();

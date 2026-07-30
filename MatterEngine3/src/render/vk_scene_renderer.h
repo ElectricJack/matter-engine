@@ -1560,12 +1560,9 @@ private:
     bool vt_init_attempted_ = false;
     bool vt_unavailable_ = false;
     std::string vt_unavailable_reason_;
-    TilesetImage vt_dummy_indirection_;   // R16G16_UINT 1x1x1
     TilesetImage vt_dummy_feedback_;      // R16G16B16A16_UINT 1x1x1, GENERAL
-    // Nearest/clamp sampler for the indirection binding. A UINT format has no
-    // LINEAR filter feature, so the tileset sampler cannot stand in for it --
-    // not even on the dummy.
-    VkSampler vt_point_sampler_ = VK_NULL_HANDLE;
+    // Dummy storage buffer standing in for the indirection buffer (11/18) and
+    // the variant table (12/19) until the VT runtime is live.
     matter::VkBufferResource vt_dummy_storage_;
     bool vt_dummies_ready_ = false;
     // Per-(part_slot, lod) transported slots; rebuilt on part registration.

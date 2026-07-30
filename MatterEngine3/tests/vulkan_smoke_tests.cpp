@@ -1796,13 +1796,15 @@ void run_vt_path(matter::VulkanDevice& vulkan) {
     CHECK(renderer.update_instances({{0x7601, identity, 1},
                                      {0x7602, identity, 2}}, error),
           error.empty() ? "vt: upload both instances" : error.c_str());
-    // Frame 1 fills the pinned tail; later frames drain whatever the feedback
-    // pass asked for. Four frames is well past the point where the two finest
-    // pages under the probes are resident.
+    // Frame 1 fills the pinned tail but draws LEGACY (the tail gate holds
+    // vt_slot at 0 until the tail's fill frame is submitted — the streaming
+    // black-flash fix); VT draws start on frame 2, their feedback comes back
+    // three frames later (the readback ring), and the finest pages under the
+    // probes fill the frame after that. Seven frames is well past all of it.
     double filling_frame_ms = 0.0;
     double settled_frame_ms = 0.0;
     uint64_t fills_before_frame = renderer.vt_stats().fills_total;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 7; ++i) {
         render_once("vt: render VT frame");
         const uint64_t fills_now = renderer.vt_stats().fills_total;
         if (fills_now != fills_before_frame)

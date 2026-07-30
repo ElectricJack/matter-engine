@@ -1420,11 +1420,7 @@ void VkSceneRenderer::destroy_pipeline() {
     vt_init_attempted_ = false;
     vt_unavailable_ = false;
     vt_unavailable_reason_.clear();
-    destroy_tileset_image(vt_dummy_indirection_);
     destroy_tileset_image(vt_dummy_feedback_);
-    if (vt_point_sampler_ != VK_NULL_HANDLE)
-        vkDestroySampler(device, vt_point_sampler_, nullptr);
-    vt_point_sampler_ = VK_NULL_HANDLE;
     vt_dummy_storage_.reset();
     vt_dummies_ready_ = false;
     vt_draw_slot_table_.clear();
@@ -1537,7 +1533,8 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     // Bindings 9-13 (WP-E, chart-space virtual texturing):
     //   9  vt_draw_slots  storage buffer, COMPUTE  (cull.comp -> DrawTransform)
     //   10 vt_pool[4]     combined image samplers, FRAGMENT
-    //   11 vt_indirection combined image sampler,  FRAGMENT
+    //   11 vt_indirection storage buffer,          FRAGMENT (was an image
+    //      array; the buffer indirection removed the 2048-layer format cap)
     //   12 vt_variants    storage buffer,          FRAGMENT
     //   13 vt_feedback    storage image,           FRAGMENT
     std::array<VkDescriptorSetLayoutBinding, 14> scene_bindings{};
@@ -1567,8 +1564,7 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
         VK_SHADER_STAGE_FRAGMENT_BIT);
     scene_bindings[10].descriptorCount = vt::kVtChannelCount;
     scene_bindings[11] = descriptor_binding(
-        11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        VK_SHADER_STAGE_FRAGMENT_BIT);
+        11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
     scene_bindings[12] = descriptor_binding(
         12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
     scene_bindings[13] = descriptor_binding(
@@ -1866,18 +1862,20 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
                                VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
                                VK_SHADER_STAGE_MISS_BIT_KHR),
         // WP-G (chart VT in the RT path): 17/18/19 mirror raster set 1's VT
-        // bindings 10/11/12 (pool array, indirection, variant table). Same
-        // all-four-stages reasoning as 15/16 above: vt_common.glsl is pulled
-        // in by rt_surface_common.glsl, so every stage that includes it lists
-        // these globals in its entry-point interface whether or not it
+        // bindings 10/11/12 (pool array, indirection buffer, variant table).
+        // Same all-four-stages reasoning as 15/16 above: vt_common.glsl is
+        // pulled in by rt_surface_common.glsl, so every stage that includes it
+        // lists these globals in its entry-point interface whether or not it
         // samples. Binding 13 (feedback) is NOT mirrored — rays never request
-        // pages.
+        // pages. 18 became a STORAGE_BUFFER with the buffer indirection (it
+        // was the R16G16_UINT image array whose 2048-layer format cap forced
+        // the redesign).
         descriptor_binding(17, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR |
                                VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
                                VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
                                VK_SHADER_STAGE_MISS_BIT_KHR),
-        descriptor_binding(18, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        descriptor_binding(18, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR |
                                VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
                                VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
@@ -2665,21 +2663,23 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     // descriptors -- 48 = 8 slots x 6 channels) and binding 7 (1 uniform
     // buffer, TilesetParams) per frame slot — added to the
     // +kMaxTilesetSlots*kTilesetChannelCount / +1 below.
-    // WP-E adds, per frame slot: 2 storage buffers (vt_draw_slots at 9,
-    // vt_variants at 12), kVtChannelCount + 1 combined image samplers (the
-    // pool array at 10 and the indirection at 11), and 1 storage image
-    // (feedback at 13).
+    // WP-E adds, per frame slot: 3 storage buffers (vt_draw_slots at 9, the
+    // vt_indirection buffer at 11, vt_variants at 12), kVtChannelCount
+    // combined image samplers (the pool array at 10), and 1 storage image
+    // (feedback at 13). The indirection moved from a sampled image array to a
+    // storage buffer with the buffer-indirection redesign — hence 27 storage
+    // buffers, not 26, and no "+1" sampler.
     // RT PBR Phase 1 adds, per frame slot: one gi_temporal set (13 combined
     // samplers, 8 storage images) and three gi_atrous sets (7 combined
     // samplers, 1 storage image, 1 storage buffer each) for the transmission
     // signal chain -- the counts below already fold those in.
     const VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count * 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 26},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 27},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count *
              (113 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
-              vt::kVtChannelCount + 1)},
+              vt::kVtChannelCount)},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 34}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -2849,19 +2849,20 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         // (kMaxTilesetSlots*kTilesetChannelCount combined-image-sampler
         // descriptors -- 48 = 8 slots x 6 channels) and binding 16 (1
         // uniform buffer, TilesetParams) per frame slot.
-        // WP-G: plus bindings 17 (kVtChannelCount = 4 VT pool samplers) and
-        // 18 (1 indirection sampler) combined-image-samplers, and 19 (1
-        // storage buffer, the VT variant table).
+        // WP-G: plus binding 17 (kVtChannelCount = 4 VT pool samplers)
+        // combined-image-samplers, and 18/19 storage buffers (the VT
+        // indirection buffer and the variant table — 18 was an indirection
+        // sampler before the buffer-indirection redesign).
         const VkDescriptorPoolSize rt_sizes[] = {
             {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, frame_slot_count},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
              frame_slot_count *
                  (5 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
-                  vt::kVtChannelCount + 1)},
+                  vt::kVtChannelCount)},
             // 6 storage images: visibility, raw diffuse, raw specular +
             // aux, raw transmission + aux (RT PBR Phase 1).
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 6},
-            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 5},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 6},
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count}};
         VkDescriptorPoolCreateInfo rt_pool{
             VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -3479,19 +3480,18 @@ void VkSceneRenderer::write_tileset_descriptors_for_frame(VkDescriptorSet set) {
 
 namespace {
 struct VtDummyInitRecord {
-    VkImage indirection = VK_NULL_HANDLE;
     VkImage feedback = VK_NULL_HANDLE;
 };
 
-// Clears the two dummy images and parks them in the layouts the descriptor
-// writes promise: SHADER_READ_ONLY_OPTIMAL for the sampled indirection dummy,
-// GENERAL for the storage-image feedback dummy.
+// Clears the dummy feedback image and parks it in the layout the descriptor
+// writes promise: GENERAL for the storage-image feedback dummy. (The old
+// sampled indirection dummy is gone — the indirection is a storage buffer
+// now, and the shared vt_dummy_storage_ buffer stands in for it.)
 void record_vt_dummy_init(VkCommandBuffer cmd, void* user_data) {
     const auto& rec = *static_cast<VtDummyInitRecord*>(user_data);
     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     const VkClearColorValue zero{};
-    const struct { VkImage image; VkImageLayout final_layout; } targets[2] = {
-        {rec.indirection, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+    const struct { VkImage image; VkImageLayout final_layout; } targets[1] = {
         {rec.feedback, VK_IMAGE_LAYOUT_GENERAL}};
     for (const auto& target : targets) {
         VkImageMemoryBarrier2 to_dst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
@@ -3530,14 +3530,9 @@ void record_vt_dummy_init(VkCommandBuffer cmd, void* user_data) {
 bool VkSceneRenderer::ensure_vt_dummies(std::string& error) {
     if (vt_dummies_ready_) return true;
     // Storage-image dummy for the feedback binding needs STORAGE usage, which
-    // create_tileset_image does not request, so both are built here through
-    // the same raw path with an explicit usage argument. Reusing
-    // create_tileset_image for the sampled one keeps the memory plumbing
-    // identical; only usage differs, so the feedback image is created inline.
-    if (!create_tileset_image(VK_FORMAT_R16G16_UINT, 1, 1, 1,
-                              vt_dummy_indirection_, error)) {
-        return false;
-    }
+    // create_tileset_image does not request, so it is created inline here.
+    // The indirection and variant-table bindings are storage buffers and both
+    // dummy through vt_dummy_storage_ below.
     {
         const VkDevice device = vulkan_->device();
         VkImageCreateInfo create{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -3590,8 +3585,7 @@ bool VkSceneRenderer::ensure_vt_dummies(std::string& error) {
             return false;
         }
     }
-    VtDummyInitRecord record{vt_dummy_indirection_.image,
-                             vt_dummy_feedback_.image};
+    VtDummyInitRecord record{vt_dummy_feedback_.image};
     if (!matter::submit_immediate(*vulkan_, record_vt_dummy_init, &record,
                                   error,
                                   matter::ImmediateSubmitPhase::image_transition)) {
@@ -3602,20 +3596,6 @@ bool VkSceneRenderer::ensure_vt_dummies(std::string& error) {
                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0,
                                vt_dummy_storage_, error)) {
         return false;
-    }
-    {
-        VkSamplerCreateInfo point{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-        point.magFilter = VK_FILTER_NEAREST;
-        point.minFilter = VK_FILTER_NEAREST;
-        point.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-        point.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        point.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        point.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        if (vkCreateSampler(vulkan_->device(), &point, nullptr,
-                            &vt_point_sampler_) != VK_SUCCESS) {
-            error = "vkCreateSampler(vt indirection) failed";
-            return false;
-        }
     }
     vt_dummies_ready_ = true;
     return true;
@@ -3716,16 +3696,16 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
     const vt::VtResidency::Stats& started = vt_->stats();
     std::fprintf(stderr,
                  "[vk] chart-space VT online: %u page pool (%.0f MiB), "
-                 "%u variant layers (MATTER_VT_MAX_VARIANTS, %.0f MiB "
-                 "indirection), %.0f MiB mesh budget "
+                 "%u variant slots (MATTER_VT_MAX_VARIANTS, soft bound), "
+                 "%.0f MiB indirection arena (MATTER_VT_INDIRECTION_MB, "
+                 "exact-sized tables), %.0f MiB mesh budget "
                  "(MATTER_VT_MESH_BUDGET_MB), %u fills/frame, filler=%s, "
                  "tier2=%s (%u rays/texel, %u pages/frame)\n",
                  started.pool_capacity,
                  static_cast<double>(started.pool_bytes) / (1024.0 * 1024.0),
                  started.max_variants,
-                 static_cast<double>(started.max_variants) *
-                     static_cast<double>(vt::kVtIndirectionWidth) *
-                     vt::kVtIndirectionHeight * 4.0 / (1024.0 * 1024.0),
+                 static_cast<double>(started.indirection_capacity_bytes) /
+                     (1024.0 * 1024.0),
                  static_cast<double>(started.mesh_budget_bytes) /
                      (1024.0 * 1024.0),
                  vt_->max_fills_per_frame(),
@@ -4203,7 +4183,19 @@ uint32_t VkSceneRenderer::vt_slot_for_lod(const PartRecord& record,
     if (lod_index >= lods.size()) return vt::kVtNoSlot;
     const uint32_t rung = lods[lod_index].chart_rung;
     if (rung >= record.vt_slots.size()) return vt::kVtNoSlot;
-    return record.vt_slots[rung];
+    const uint32_t slot = record.vt_slots[rung];
+    if (slot == vt::kVtNoSlot) return vt::kVtNoSlot;
+    // TAIL GATE (streaming black-flash fix): a freshly registered variant's
+    // pinned tail is MAPPED immediately but FILLED through the bounded fill
+    // queue — potentially frames later under a streaming burst. Until the
+    // residency layer says the tail's content is guaranteed written for any
+    // draw recorded now, the draw must keep vt_slot 0 and render through the
+    // legacy classified-but-flat path (a brief flat window, never a black
+    // one). vt_begin_frame republishes this table the frame a tail becomes
+    // ready (consume_activation_dirty), so the gate lifts within a frame of
+    // the fill landing.
+    if (!vt_ || !vt_->slot_active(slot)) return vt::kVtNoSlot;
+    return slot;
 }
 
 void VkSceneRenderer::rebuild_vt_draw_slots() {
@@ -4237,14 +4229,12 @@ void VkSceneRenderer::write_vt_descriptors_for_frame(FrameResources& frame) {
             live ? vt_->pool_view(c) : tileset_dummy_rgba8_.view;
         pool_infos[c].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
-    // A UINT format never advertises the LINEAR filter feature, so the
-    // indirection binding always takes the dedicated nearest sampler --
-    // including on the dummy, which is a validation error waiting to happen
-    // if it borrows the (anisotropic, linear) tileset sampler.
-    VkDescriptorImageInfo indirection_info{
-        vt_point_sampler_,
-        live ? vt_->indirection_view() : vt_dummy_indirection_.view,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // The indirection is a storage buffer since the buffer-indirection
+    // redesign; the dummy storage buffer stands in for it (and for the
+    // variant table) until the runtime is live.
+    VkDescriptorBufferInfo indirection_info{
+        live ? vt_->indirection_buffer() : vt_dummy_storage_.buffer, 0,
+        live ? vt_->indirection_buffer_size() : VkDeviceSize{64}};
     VkDescriptorBufferInfo variants_info{
         live ? vt_->variant_buffer() : vt_dummy_storage_.buffer, 0,
         live ? vt_->variant_buffer_size() : VkDeviceSize{64}};
@@ -4265,8 +4255,8 @@ void VkSceneRenderer::write_vt_descriptors_for_frame(FrameResources& frame) {
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[0].pImageInfo = pool_infos;
     writes[1].dstBinding = 11;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].pImageInfo = &indirection_info;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[1].pBufferInfo = &indirection_info;
     writes[2].dstBinding = 12;
     writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[2].pBufferInfo = &variants_info;
@@ -4286,6 +4276,10 @@ void VkSceneRenderer::vt_begin_frame(FrameResources& frame,
     push_vt_compositor_inputs();
     drain_vt_invalidations(vt_frame_serial_);
     vt_->begin_frame(vt_frame_serial_, frame_slot);
+    // Tail-gate activations: variants whose tail fill landed last frame may
+    // now enter the VT path, so the (cluster, lod) -> vt_slot table must be
+    // republished (it is otherwise only rebuilt on registration/release).
+    if (vt_->consume_activation_dirty()) vt_draw_slots_dirty_ = true;
     std::string error;
     if (raster_extent_.width != 0 && raster_extent_.height != 0 &&
         !vt_->ensure_feedback(raster_extent_.width, raster_extent_.height,
@@ -8991,12 +8985,11 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         vt_pool_infos[c].imageLayout =
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
-    // UINT formats never advertise LINEAR filtering — the indirection always
-    // takes the dedicated nearest sampler, dummy included.
-    VkDescriptorImageInfo vt_indirection_info{
-        vt_point_sampler_,
-        vt_live ? vt_->indirection_view() : vt_dummy_indirection_.view,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // The indirection is a storage buffer since the buffer-indirection
+    // redesign; the dummy storage buffer stands in until VT is live.
+    VkDescriptorBufferInfo vt_indirection_info{
+        vt_live ? vt_->indirection_buffer() : vt_dummy_storage_.buffer, 0,
+        vt_live ? vt_->indirection_buffer_size() : VkDeviceSize{64}};
     VkDescriptorBufferInfo vt_variants_info{
         vt_live ? vt_->variant_buffer() : vt_dummy_storage_.buffer, 0,
         vt_live ? vt_->variant_buffer_size() : VkDeviceSize{64}};
@@ -9077,8 +9070,8 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     writes[17].descriptorCount = vt::kVtChannelCount;
     writes[17].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[17].pImageInfo = vt_pool_infos;
-    writes[18].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[18].pImageInfo = &vt_indirection_info;
+    writes[18].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[18].pBufferInfo = &vt_indirection_info;
     writes[19].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[19].pBufferInfo = &vt_variants_info;
     // RT PBR Phase 1: binding 20 is the transmission aux storage image.

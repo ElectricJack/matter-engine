@@ -28,18 +28,33 @@ void test_layout() {
     CHECK(!vt_build_layout(chart_atlas::kVtMaxAtlasDim * 2, 512, layout),
           "atlas wider than kVtMaxAtlasDim is rejected");
 
-    // 8192 is the worst case: mips 8192..64 is 8 levels and the stacked page
-    // grids (64+32+16+8+4+2+1+1) fill the indirection layer exactly.
+    // 8192 is the worst case: mips 8192..64 is 8 levels and the concatenated
+    // page grids sum to 4096+1024+256+64+16+4+1+1 = 5462 exact entries — the
+    // number kVtMaxTableWords pins.
     CHECK(vt_build_layout(8192, 8192, layout), "8192 atlas builds");
     CHECK(layout.mip_count == 8, "8192 atlas has 8 mips down to the tail");
     CHECK(layout.page_w[0] == 64 && layout.page_h[0] == 64,
           "8192 atlas is 64x64 pages at mip 0");
     CHECK(layout.page_w[7] == 1 && layout.page_h[7] == 1,
           "the tail mip is a single page");
-    CHECK(layout.mip_row[0] == 0, "mip 0 starts at row 0");
-    CHECK(layout.mip_row[1] == 64, "mip 1 starts after mip 0's 64 rows");
-    CHECK(layout.mip_row[7] + layout.page_h[7] == kVtIndirectionHeight,
-          "the stacked mip rows fill the indirection layer exactly");
+    CHECK(layout.mip_offset[0] == 0, "mip 0's grid starts the table");
+    CHECK(layout.mip_offset[1] == 4096,
+          "mip 1's grid starts after mip 0's 64x64 entries");
+    CHECK(layout.mip_offset[7] == 5461,
+          "the tail entry is the last table word");
+    CHECK(layout.entry_count == kVtMaxTableWords,
+          "the 8192 atlas needs exactly kVtMaxTableWords entries");
+
+    // EXACT sizing is the point of the buffer indirection: a 512^2 atlas
+    // needs 16+4+1+1 = 22 entries (88 bytes), not the old 64x128 = 32 KiB
+    // fixed layer.
+    CHECK(vt_build_layout(512, 512, layout), "512 atlas builds");
+    CHECK(layout.mip_count == 4, "512 atlas has 4 mips down to the tail");
+    CHECK(layout.entry_count == 16 + 4 + 1 + 1,
+          "a 512^2 atlas costs exactly 22 table entries");
+    CHECK(layout.mip_offset[1] == 16 && layout.mip_offset[2] == 20 &&
+              layout.mip_offset[3] == 21,
+          "mip offsets are the running prefix sum of the grid sizes");
 
     // A small atlas stops at the first mip inside the tail budget.
     CHECK(vt_build_layout(256, 128, layout), "256x128 atlas builds");
@@ -49,10 +64,26 @@ void test_layout() {
           "256x128 is 2x1 pages at mip 0");
     CHECK(layout.page_w[2] == 1 && layout.page_h[2] == 1,
           "the 64x32 tail is one page");
+    CHECK(layout.entry_count == 2 + 1 + 1,
+          "a 256x128 atlas costs exactly 4 table entries");
 
     // An atlas already inside the tail budget is a single (tail) mip.
     CHECK(vt_build_layout(64, 64, layout), "64x64 atlas builds");
     CHECK(layout.mip_count == 1, "a 64x64 atlas is nothing but its tail");
+    CHECK(layout.entry_count == 1, "a tail-only atlas is one entry");
+
+    // The shader recomputes pw(m) closed-form as (max(w>>m,1)+127)>>7; that
+    // must agree with the layout's page_w for every mip of an odd-sized atlas
+    // (page-aligned only at the finest mip, like real chart packs).
+    CHECK(vt_build_layout(1920, 1080, layout), "1920x1080 atlas builds");
+    for (uint32_t m = 0; m < layout.mip_count; ++m) {
+        const uint32_t w = layout.atlas_w >> m ? layout.atlas_w >> m : 1u;
+        const uint32_t h = layout.atlas_h >> m ? layout.atlas_h >> m : 1u;
+        CHECK(layout.page_w[m] == ((w + 127u) >> 7u),
+              "closed-form pw(m) matches the layout");
+        CHECK(layout.page_h[m] == ((h + 127u) >> 7u),
+              "closed-form ph(m) matches the layout");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -122,15 +153,21 @@ void test_indirection() {
     entry = map.resolve(99, 0, 0);
     CHECK(entry.slot == 7, "an out-of-range mip resolves to the tail");
 
-    // Texel packing must match R16G16_UINT (R = slot, G = mapped mip).
+    // Entry packing must match the shader's unpack (low 16 = slot, high 16 =
+    // mapped mip).
     map.map(0, 0, 0, 300);
     const std::vector<uint32_t>& texels = map.texels();
     const uint32_t packed =
         texels[VtIndirectionMap::texel_index_for(layout, 0, 0, 0)];
     CHECK((packed & 0xFFFFu) == 300u, "entry low half is the physical slot");
     CHECK((packed >> 16) == 0u, "entry high half is the mapped mip");
-    CHECK(map.texels().size() == kVtIndirectionWidth * kVtIndirectionHeight,
-          "the mirror is exactly one indirection layer");
+    CHECK(map.texels().size() == layout.entry_count,
+          "the mirror is exactly the variant's exact-sized table");
+    // texel_index_for must agree with the shader's addressing:
+    // mip_offset[m] + py * pw(m) + px.
+    CHECK(VtIndirectionMap::texel_index_for(layout, 1, 2, 3) ==
+              layout.mip_offset[1] + 3u * layout.page_w[1] + 2u,
+          "table indexing is mip_offset + row-major within the mip grid");
 }
 
 void test_indirection_dirty() {
@@ -249,8 +286,10 @@ void test_slot_pool() {
           "a full pool with one pin still recycles the unpinned slot");
     CHECK(recycled == spare, "the unpinned slot is the one recycled");
     CHECK(evicted.variant_key == 2, "the unpinned owner is what came back");
-    CHECK(pinned_pool.evictable() == 1,
+    CHECK(pinned_pool.evictable(3) == 1,
           "only the unpinned slot is ever evictable");
+    CHECK(pinned_pool.evictable(2) == 0,
+          "a slot last used the current frame is hysteresis-protected");
 
     // A pool of nothing but pins cannot serve a fill; acquire must fail rather
     // than steal a tail (stealing a tail would break the never-fault promise).
@@ -259,17 +298,43 @@ void test_slot_pool() {
     uint32_t only = 0;
     CHECK(all_pinned.acquire(1, VtPageKey{0, 0, 0}, true, 0, only, evicted),
           "the single slot pins");
+    const uint64_t pinned_generation = all_pinned.owner(only).generation;
+    CHECK(pinned_generation != 0, "an acquire stamps a nonzero generation");
     uint32_t denied = 0;
     CHECK(!all_pinned.acquire(2, VtPageKey{0, 0, 0}, false, 1, denied, evicted),
           "an all-pinned pool refuses to evict a pinned tail");
 
-    // release() returns a slot to the free list and un-counts the pin.
-    all_pinned.release(only);
+    // Variant-death release parks the slot in the GRAVEYARD: it is not
+    // allocatable until its retire serial has passed collect() — an in-flight
+    // frame's draw records may still resolve into it until then.
+    all_pinned.release(only, /*retire_serial=*/10);
     CHECK(all_pinned.used() == 0 && all_pinned.pinned() == 0,
           "releasing a pinned slot clears both counters");
-    CHECK(all_pinned.acquire(3, VtPageKey{0, 0, 0}, false, 2, denied, evicted),
-          "the released slot is reusable");
-    CHECK(!evicted.live, "reusing a released slot is not an eviction");
+    CHECK(all_pinned.graveyard_slots() == 1,
+          "the released slot ages in the graveyard");
+    CHECK(!all_pinned.acquire(3, VtPageKey{0, 0, 0}, false, 5, denied, evicted),
+          "a graveyarded slot is NOT allocatable before its retire serial");
+    all_pinned.collect(9);
+    CHECK(all_pinned.graveyard_slots() == 1,
+          "collect before the retire serial keeps the grave");
+    CHECK(!all_pinned.acquire(3, VtPageKey{0, 0, 0}, false, 9, denied, evicted),
+          "still not allocatable one frame early");
+    all_pinned.collect(10);
+    CHECK(all_pinned.graveyard_slots() == 0,
+          "collect at the retire serial matures the slot");
+    CHECK(all_pinned.acquire(3, VtPageKey{0, 0, 0}, false, 11, denied, evicted),
+          "the matured slot is reusable");
+    CHECK(!evicted.live, "reusing a matured slot is not an eviction");
+    CHECK(all_pinned.owner(denied).generation > pinned_generation,
+          "reuse stamps a strictly newer generation");
+
+    // release_now() (the never-mapped rollback / device-idle path) skips the
+    // graveyard by design.
+    all_pinned.release_now(denied);
+    CHECK(all_pinned.graveyard_slots() == 0 && all_pinned.used() == 0,
+          "release_now frees immediately");
+    CHECK(all_pinned.acquire(4, VtPageKey{0, 0, 0}, false, 12, denied, evicted),
+          "a release_now slot is immediately reusable");
 
     // A zero-capacity pool fails closed rather than indexing nothing.
     VtSlotPool empty;
@@ -277,6 +342,151 @@ void test_slot_pool() {
     uint32_t none = 0;
     CHECK(!empty.acquire(1, VtPageKey{0, 0, 0}, false, 0, none, evicted),
           "a zero-capacity pool never hands out a slot");
+}
+
+// ---------------------------------------------------------------------------
+// Eviction hysteresis (exhaustion behaviour: degrade, never thrash)
+// ---------------------------------------------------------------------------
+void test_slot_hysteresis() {
+    VtSlotPool pool;
+    pool.reset(2);
+    uint32_t a = 0, b = 0, c = 0;
+    VtSlotPool::Owner evicted;
+    CHECK(pool.acquire(1, VtPageKey{0, 0, 0}, false, /*frame=*/5, a, evicted),
+          "first slot acquires");
+    CHECK(pool.acquire(2, VtPageKey{0, 1, 0}, false, 5, b, evicted),
+          "second slot acquires");
+    // Both pages were requested (touched) this frame: NOTHING is evictable,
+    // so admission fails cleanly instead of evicting a page the same frame's
+    // feedback asked for — the caller retries next frame while the
+    // indirection serves coarser coverage.
+    CHECK(pool.evictable(5) == 0,
+          "pages requested by the current frame are ineligible for eviction");
+    CHECK(!pool.acquire(3, VtPageKey{0, 2, 0}, false, 5, c, evicted),
+          "a fully-protected pool refuses to evict (no thrash)");
+    // Next frame the protection window moves and LRU eviction resumes.
+    CHECK(pool.evictable(6) == 2, "the window is one frame wide");
+    CHECK(pool.acquire(3, VtPageKey{0, 2, 0}, false, 6, c, evicted),
+          "eviction resumes the next frame");
+    CHECK(evicted.live && evicted.variant_key == 1,
+          "the LRU (first-acquired) slot is the victim");
+    // touch() re-arms protection: the untouched slot is the only candidate.
+    pool.touch(c, 7);
+    uint32_t d = 0;
+    CHECK(pool.acquire(4, VtPageKey{0, 3, 0}, false, 7, d, evicted),
+          "an unprotected slot still evicts");
+    CHECK(evicted.variant_key == 2,
+          "the touched slot is skipped; the stale one is the victim");
+
+    // A widened window (MATTER_VT_EVICT_PROTECT_FRAMES) keeps pages requested
+    // every FEW frames protected — the jittered-feedback case, where a hot
+    // page is only sampled into the feedback buffer every couple of frames
+    // and a one-frame window would let it ping-pong with its competitor.
+    VtSlotPool wide;
+    wide.reset(1);
+    wide.set_protect_frames(4);
+    uint32_t w = 0, w2 = 0;
+    CHECK(wide.acquire(1, VtPageKey{0, 0, 0}, false, 10, w, evicted),
+          "the single slot acquires");
+    CHECK(!wide.acquire(2, VtPageKey{0, 1, 0}, false, 13, w2, evicted),
+          "a page used 3 frames ago is still protected by a 4-frame window");
+    CHECK(wide.evictable(13) == 0, "the window reports it unevictable");
+    CHECK(wide.acquire(2, VtPageKey{0, 1, 0}, false, 14, w2, evicted),
+          "the window expires exactly protect_frames after last use");
+}
+
+// ---------------------------------------------------------------------------
+// Indirection table sub-allocator (exact sizes, size-class reuse, graveyard)
+// ---------------------------------------------------------------------------
+void test_table_allocator() {
+    // Size classes are pow-2 from 16 words: internal fragmentation <= 2x.
+    CHECK(VtTableAllocator::class_words(VtTableAllocator::size_class(1)) == 16,
+          "tiny tables round to the 16-word floor class");
+    CHECK(VtTableAllocator::class_words(VtTableAllocator::size_class(22)) == 32,
+          "a 512^2 atlas's 22-entry table rounds to a 32-word block");
+    CHECK(VtTableAllocator::class_words(
+              VtTableAllocator::size_class(kVtMaxTableWords)) == 8192,
+          "the worst-case table rounds to an 8192-word block");
+
+    VtTableAllocator alloc;
+    alloc.reset(/*capacity_words=*/1024);
+    uint32_t off_a = 0, block_a = 0;
+    uint64_t gen_a = 0;
+    CHECK(alloc.acquire(22, /*frame=*/1, off_a, block_a, gen_a),
+          "a fresh arena serves a table");
+    CHECK(off_a == 0 && block_a == 32, "first block bumps from offset 0");
+    uint32_t off_b = 0, block_b = 0;
+    uint64_t gen_b = 0;
+    CHECK(alloc.acquire(17, 1, off_b, block_b, gen_b),
+          "a second table allocates");
+    CHECK(off_b == 32 && block_b == 32,
+          "same class packs contiguously off the bump pointer");
+    CHECK(gen_b > gen_a, "generations are strictly monotonic");
+    CHECK(alloc.used_words() == 64 && alloc.live_blocks() == 2,
+          "accounting tracks live blocks exactly");
+
+    // Graveyard: a released block is invisible to acquire until collect().
+    alloc.release(off_a, block_a, /*retire_serial=*/9);
+    CHECK(alloc.graveyard_blocks() == 1 && alloc.used_words() == 32,
+          "release moves the block to the graveyard");
+    uint32_t off_c = 0, block_c = 0;
+    uint64_t gen_c = 0;
+    CHECK(alloc.acquire(30, 2, off_c, block_c, gen_c),
+          "acquire keeps working while the grave ages");
+    CHECK(off_c == 64,
+          "the graveyarded block is NOT reused early — fresh words instead");
+    alloc.collect(8);
+    CHECK(alloc.graveyard_blocks() == 1,
+          "collect before the retire serial keeps the grave");
+    alloc.collect(9);
+    CHECK(alloc.graveyard_blocks() == 0, "collect at the serial matures it");
+    uint32_t off_d = 0, block_d = 0;
+    uint64_t gen_d = 0;
+    CHECK(alloc.acquire(25, 10, off_d, block_d, gen_d),
+          "a matured block serves the next same-class table");
+    CHECK(off_d == off_a && block_d == 32,
+          "size-class reuse hands back the freed block");
+    CHECK(gen_d > gen_c, "reuse stamps a strictly newer generation");
+
+    // Exhaustion fails closed: the arena refuses, nothing is disturbed.
+    uint32_t off_e = 0, block_e = 0;
+    uint64_t gen_e = 0;
+    CHECK(!alloc.acquire(2000, 11, off_e, block_e, gen_e),
+          "a table larger than the remaining arena is refused cleanly");
+    CHECK(alloc.live_blocks() == 3 && alloc.used_words() == 96,
+          "a refused acquire spends nothing");
+    CHECK(!alloc.acquire(0, 11, off_e, block_e, gen_e),
+          "a zero-word table is refused");
+    CHECK(!alloc.acquire(kVtMaxTableWords * 2u, 11, off_e, block_e, gen_e),
+          "a table beyond the largest class is refused");
+
+    // release_now (registration rollback) returns capacity immediately.
+    alloc.release_now(off_d, block_d);
+    CHECK(alloc.used_words() == 64 && alloc.graveyard_blocks() == 0,
+          "release_now skips the graveyard");
+    CHECK(alloc.acquire(20, 11, off_e, block_e, gen_e) && off_e == off_d,
+          "a rolled-back block is immediately reusable");
+}
+
+// ---------------------------------------------------------------------------
+// Tail-gated activation (the streaming black-flash fix)
+// ---------------------------------------------------------------------------
+// Registration maps every entry to the pinned tail immediately, but the tail
+// FILL drains through the bounded queue — the draw side must not route
+// through the VT path until the fill's frame is submitted. This rule is what
+// VtResidency::slot_active applies; a registered-but-unfilled-tail variant
+// must report "not VT-active".
+void test_tail_activation_rule() {
+    CHECK(!vt_slot_activation_rule(/*live=*/true, kVtTailNotReady, 1000),
+          "a registered variant whose tail was never written is NOT VT-active");
+    CHECK(!vt_slot_activation_rule(/*live=*/false, 5, 1000),
+          "a released variant is never VT-active");
+    CHECK(!vt_slot_activation_rule(true, 101, 100),
+          "not active before the tail's ready serial (fill frame + 1)");
+    CHECK(vt_slot_activation_rule(true, 100, 100),
+          "active exactly at the ready serial");
+    CHECK(vt_slot_activation_rule(true, 100, 5000),
+          "active ever after");
 }
 
 // ---------------------------------------------------------------------------
@@ -395,14 +605,15 @@ void test_registration_cost() {
     // by the denser rung-1/rung-2 sectors near the camera). So 122 KiB is the
     // number to size against, not 95.
     //
-    // MATTER_VT_MAX_VARIANTS asks for 8192 (the device grants fewer -- 2048 on
-    // this driver's R16G16_UINT array-layer limit -- but the budget has to cover
-    // the ask, because a device with a laxer limit would actually take them).
-    // 8192 x 122 KiB is ~0.95 GiB, which is why MATTER_VT_MESH_BUDGET_MB is
-    // 1024 and not 512: at 512 the byte budget, not the layer cap, would start
-    // refusing variants around 4300 and no amount of raising MAX_VARIANTS would
-    // help. If the cost model grows a stream, this is the assertion that says
-    // the budget needs revisiting.
+    // Since the buffer indirection, MATTER_VT_MAX_VARIANTS (default 32768) is
+    // a SOFT bookkeeping bound — the 2048 R16G16_UINT array-layer wall is
+    // gone. The REAL working-set limits are the CPU mesh budget and the page
+    // pool: at 122 KiB/variant, MATTER_VT_MESH_BUDGET_MB=1024 admits ~8.6k
+    // variants — comfortably past the old 2048 wall (the redesign's point)
+    // and below the variant-slot bound (so the byte budget, not the slot
+    // table, is what a saturated world hits first, exactly as intended). If
+    // the cost model grows a stream, these assertions say the budgets need
+    // revisiting.
     SectorFixture dense(/*vertices=*/1700, /*triangles=*/3230, kCharts,
                         /*tape_materials=*/4, /*registry_materials=*/32,
                         /*registry_stride=*/32);
@@ -412,14 +623,26 @@ void test_registration_cost() {
               measured_per_variant < 128u * 1024u,
           "the measured StreamMountain per-variant average is ~122 KiB");
     const size_t default_budget_bytes = size_t(1024) * 1024 * 1024;
-    const size_t default_max_variants = 8192;
-    CHECK(measured_per_variant * default_max_variants < default_budget_bytes,
-          "MATTER_VT_MESH_BUDGET_MB=1024 covers a saturated 8192-layer census "
-          "at the measured per-variant cost");
-    // And the byte budget must NOT be the first wall, or raising the layer cap
-    // buys nothing.
-    CHECK(default_budget_bytes / measured_per_variant > default_max_variants,
-          "the byte budget is not the binding constraint at the layer cap");
+    const size_t default_max_variants = 32768;
+    const size_t budget_admits = default_budget_bytes / measured_per_variant;
+    CHECK(budget_admits > 4096,
+          "the mesh budget admits a working set well past the old 2048 wall");
+    CHECK(budget_admits < default_max_variants,
+          "the byte budget, not the soft variant-slot bound, is the binding "
+          "constraint");
+    // And the indirection arena must NEVER bind before the mesh budget:
+    // budget_admits variants at the worst-case table (8192-word block = 32
+    // KiB) fit the 64 MiB default arena's typical mix — assert with the
+    // TYPICAL table instead (1024^2 atlas -> 86 entries -> 128-word block).
+    VtVariantLayout typical{};
+    CHECK(vt_build_layout(1024, 1024, typical), "typical atlas builds");
+    const size_t typical_block_bytes =
+        VtTableAllocator::class_words(
+            VtTableAllocator::size_class(typical.entry_count)) *
+        4u;
+    CHECK(budget_admits * typical_block_bytes < size_t(64) * 1024 * 1024,
+          "MATTER_VT_INDIRECTION_MB=64 outlasts the mesh budget at typical "
+          "table sizes");
 }
 
 void test_registration_gates() {
@@ -505,6 +728,9 @@ int main() {
     test_indirection_dirty();
     test_border_math();
     test_slot_pool();
+    test_slot_hysteresis();
+    test_table_allocator();
+    test_tail_activation_rule();
     test_entry_packing();
     test_registration_cost();
     test_registration_gates();

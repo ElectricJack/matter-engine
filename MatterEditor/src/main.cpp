@@ -2995,10 +2995,13 @@ int main() {
             // diagnostics, and unbuffered: a streamed-world capture that dies
             // during shutdown must not lose the one line that says how much of
             // the world actually got virtual texturing.
+            // APPEND-ONLY too: the trailing ind= field (buffer-indirection
+            // bytes, live/capacity) was appended when the image-array
+            // indirection and its 2048-layer wall were replaced.
             std::fprintf(stderr,
                         "STATSVT,%s,active=%d,variants=%u/%u,rejected=%u,"
                         "mesh=%.1f/%.1f MiB,pool=%u/%u,pinned=%u,queue=%u,"
-                        "fills=%llu,evictions=%llu\n",
+                        "fills=%llu,evictions=%llu,ind=%.2f/%.0f MiB\n",
                         stats_label.c_str(),
                         frame_stats.vt_active ? 1 : 0,
                         frame_stats.vt_variants,
@@ -3016,7 +3019,13 @@ int main() {
                         static_cast<unsigned long long>(
                             frame_stats.vt_fills_total),
                         static_cast<unsigned long long>(
-                            frame_stats.vt_evictions_total));
+                            frame_stats.vt_evictions_total),
+                        static_cast<double>(
+                            frame_stats.vt_indirection_bytes) /
+                            (1024.0 * 1024.0),
+                        static_cast<double>(
+                            frame_stats.vt_indirection_capacity_bytes) /
+                            (1024.0 * 1024.0));
             std::fflush(stderr);
             stats_label.clear();
         }

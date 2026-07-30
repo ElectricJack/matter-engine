@@ -21,12 +21,8 @@ uint64_t page_key(uint32_t layer, const VtPageKey& p) {
 }
 
 uint32_t env_u32(const char* name, uint32_t fallback, uint32_t lo, uint32_t hi) {
-    // The fallback obeys [lo, hi] too: callers pass device-derived caps as
-    // `hi` (e.g. max_variants_' indirection layer limit), and an unset env
-    // var must not smuggle a default past them. NVIDIA driver 610.74 dropped
-    // maxImageArrayLayers for the indirection's R16G16_UINT to 2048, which
-    // turned the unclamped 8192 default into a validation failure at
-    // vkCreateImage time.
+    // The fallback obeys [lo, hi] too: callers pass derived caps as `hi`, and
+    // an unset env var must not smuggle a default past them.
     if (fallback < lo) fallback = lo;
     if (fallback > hi) fallback = hi;
     const char* value = std::getenv(name);
@@ -37,6 +33,11 @@ uint32_t env_u32(const char* name, uint32_t fallback, uint32_t lo, uint32_t hi) 
     if (parsed < lo) return lo;
     if (parsed > hi) return hi;
     return static_cast<uint32_t>(parsed);
+}
+
+bool env_flag(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
 void barrier(VkCommandBuffer cmd, VkImage image, uint32_t layers,
@@ -60,6 +61,49 @@ void barrier(VkCommandBuffer cmd, VkImage image, uint32_t layers,
     vkCmdPipelineBarrier2(cmd, &dep);
 }
 
+void buffer_barrier(VkCommandBuffer cmd, VkBuffer buffer,
+                    VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+                    VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access) {
+    VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+    b.srcStageMask = src_stage;
+    b.srcAccessMask = src_access;
+    b.dstStageMask = dst_stage;
+    b.dstAccessMask = dst_access;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.buffer = buffer;
+    b.offset = 0;
+    b.size = VK_WHOLE_SIZE;
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.bufferMemoryBarrierCount = 1;
+    dep.pBufferMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &dep);
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// Generation audit failures (MATTER_VT_DEBUG_GENERATIONS=1).
+// ---------------------------------------------------------------------------
+// WHAT THE AUDIT CATCHES: any CPU-side hand-out of a table block, page slot or
+// variant record before its retirement serial — the entire stale-mapping bug
+// class, because every GPU-visible mutation is either (a) a queue-ordered copy
+// (in-flight frames execute strictly before it, so they read the bytes they
+// were submitted against) or (b) a host write to host-visible memory that is
+// only reachable through the index whose reuse these asserts guard.
+// WHAT IT CANNOT CATCH: a shader indexing the indirection with a vt_slot that
+// never came from the residency layer (corrupted draw records), or cross-queue
+// hazards (VT records/samples exclusively on the graphics queue today). Those
+// would need a GPU-side generation compare, which is disproportionate while
+// (a)/(b) above hold by construction.
+
+namespace {
+[[noreturn]] void generation_audit_fail(const char* domain, const char* what) {
+    std::fprintf(stderr, "[vt] GENERATION AUDIT FAILED (%s): %s\n", domain,
+                 what);
+    std::fflush(stderr);
+    std::abort();
+}
 }  // namespace
 
 VtResidency::VtResidency() = default;
@@ -231,23 +275,6 @@ void VtResidency::destroy_pool_image(PoolImage& image) {
     image = PoolImage{};
 }
 
-bool VtResidency::create_indirection(uint32_t layers, std::string& error) {
-    destroy_pool_image(indirection_);
-    if (!create_array_image(*vulkan_, VK_FORMAT_R16G16_UINT,
-                            kVtIndirectionWidth, kVtIndirectionHeight, layers,
-                            VK_IMAGE_USAGE_SAMPLED_BIT |
-                                VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                            indirection_.image, indirection_.view,
-                            indirection_.memory, error)) {
-        return false;
-    }
-    indirection_.format = VK_FORMAT_R16G16_UINT;
-    indirection_.layers = layers;
-    indirection_.edge = kVtIndirectionWidth;
-    indirection_.layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    return true;
-}
-
 bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     if (ready_) return true;
     vulkan_ = &vulkan;
@@ -267,66 +294,24 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
         shutdown();
         return false;
     }
-    // One indirection ARRAY LAYER per (variant, rung), so this is hard-capped
-    // by what the device can actually CREATE for the indirection image, no
-    // matter what the env asks for.
-    //
-    // That cap is NOT properties.limits.maxImageArrayLayers alone: the
-    // per-format Image Creation Limits (VUID-VkImageCreateInfo-arrayLayers-
-    // 02256) can be tighter -- current NVIDIA drivers report 2048 for
-    // R16G16_UINT while the general limit is 8192, and creating the 8192-layer
-    // indirection tripped validation. Query the format-specific limit for the
-    // exact image we create below and clamp to the smaller of the two.
-    //
-    // 8192, not 1024, as the default ask: a streamed world registers one
-    // variant per resident sector rung, and StreamMountain's 2560 m ring is
-    // ~5000 sectors. At 1024 most of the world was refused a layer and fell
-    // back to the legacy path, which renders but IGNORES the authored
-    // surfaces() classification -- the uniform tan far field with a visible
-    // boundary. The cost is 32 KiB of indirection image per layer; drop
-    // MATTER_VT_MAX_VARIANTS on a memory-tight device.
-    VkImageFormatProperties indirection_limits{};
-    uint32_t max_indirection_layers = max_layers;
-    if (vkGetPhysicalDeviceImageFormatProperties(
-            vulkan.physical_device(), VK_FORMAT_R16G16_UINT,
-            VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
-            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0,
-            &indirection_limits) == VK_SUCCESS &&
-        indirection_limits.maxArrayLayers > 0) {
-        max_indirection_layers =
-            std::min(max_indirection_layers,
-                     indirection_limits.maxArrayLayers);
-    }
-    const uint32_t requested_variants =
-        env_u32("MATTER_VT_MAX_VARIANTS", 8192u, 4u, 0xFFFFFFFFu);
-    max_variants_ = env_u32("MATTER_VT_MAX_VARIANTS", 8192u, 4u,
-                            max_indirection_layers < 8192u
-                                ? max_indirection_layers
-                                : 8192u);
-    if (requested_variants > max_variants_) {
-        // Say BOTH numbers, loudly and once. Without this the census reads
-        // "variants=2048/2048, rejected=N" and the obvious move -- raise
-        // MATTER_VT_MAX_VARIANTS -- silently does nothing, because the wall is
-        // the device's per-format array-layer limit, not the setting. Getting
-        // past it needs the indirection restructure (several variants per
-        // layer, or a buffer instead of an array image), not a bigger number.
-        std::fprintf(stderr,
-                     "[vt] variant layers CLAMPED to %u: %u were requested "
-                     "(MATTER_VT_MAX_VARIANTS) but this device allows at most "
-                     "%u array layers for the R16G16_UINT indirection image "
-                     "(maxImageArrayLayers=%u, per-format maxArrayLayers=%u). "
-                     "One layer is one (variant, rung). Registration is "
-                     "demand-driven, so this caps the on-screen WORKING SET, "
-                     "not the resident ring; only frames that WANT more than "
-                     "%u (variant, rung)s at once fall back (tape-classified "
-                     "legacy) for the excess.\n",
-                     max_variants_, requested_variants, max_indirection_layers,
-                     max_layers, indirection_limits.maxArrayLayers,
-                     max_variants_);
-        std::fflush(stderr);
-    }
+    // MATTER_VT_MAX_VARIANTS is a SOFT bookkeeping bound now, not a hardware
+    // wall. The old image-array indirection burned one array layer per
+    // (variant, rung), and NVIDIA's per-format maxArrayLayers for R16G16_UINT
+    // is 2048 — that cap is what forced the buffer-based indirection this
+    // sizes. The remaining hard ceiling is 65534: the feedback image and the
+    // draw records transport (variant slot + 1) in 16 bits. The real limits on
+    // a streamed world are the CPU mesh budget (MATTER_VT_MESH_BUDGET_MB) and
+    // the physical page pool (MATTER_VT_POOL_PAGES, one pinned tail per
+    // registration) — this knob just sizes the record table (64 B per slot).
+    max_variants_ = env_u32("MATTER_VT_MAX_VARIANTS", 32768u, 4u, 65534u);
     max_fills_per_frame_ =
         env_u32("MATTER_VT_FILLS_PER_FRAME", 8u, 1u, kMaxFillFlags);
+    // Tails get their OWN budget (see the header note): a streaming burst
+    // registers many variants per frame, each rendering legacy-flat until its
+    // single tail page fills, so tails must never wait behind feedback-driven
+    // sharpening fills. Both budgets share the kMaxFillFlags batch ceiling.
+    max_tail_fills_per_frame_ =
+        env_u32("MATTER_VT_TAIL_FILLS_PER_FRAME", 16u, 1u, kMaxFillFlags);
     // WP-H: tier-2 budget is deliberately SEPARATE from the fill budget --
     // enrichment is background refinement of already-correct pages, so it must
     // never compete with getting a page resident in the first place. 0 disables
@@ -335,14 +320,26 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     max_enrich_per_frame_ = env_u32("MATTER_VT_ENRICH_PER_FRAME", 2u, 0u, 16u);
     // CPU mesh copies (see register_variant's LIFETIME note). Sized for a
     // streamed world: a rung-0 StreamMountain terrain sector costs on the order
-    // of 100 KB of copied streams, so a full 2048-layer census lands in the low
-    // hundreds of MB. 1024 MB leaves headroom for denser rungs (a rung-2 sector
-    // has ~16x the vertices of rung 0) without letting a runaway world grow the
-    // heap without bound.
+    // of 100 KB of copied streams, so a few-thousand-variant census lands in
+    // the low hundreds of MB. 1024 MB leaves headroom for denser rungs (a
+    // rung-2 sector has ~16x the vertices of rung 0) without letting a runaway
+    // world grow the heap without bound.
     mesh_budget_bytes_ =
         static_cast<size_t>(env_u32("MATTER_VT_MESH_BUDGET_MB", 1024u, 1u,
                                     16384u)) *
         1024u * 1024u;
+    // Indirection table arena. 64 MiB = 16.7M entries: thousands of worst-case
+    // (8192^2, 5462-entry) tables, hundreds of thousands of typical ones — an
+    // order of magnitude past any working set the mesh budget admits, so the
+    // arena is never the first wall. See VtTableAllocator's growth-policy note
+    // for why it is pre-sized rather than grown live.
+    const uint32_t indirection_mb =
+        env_u32("MATTER_VT_INDIRECTION_MB", 64u, 1u, 1024u);
+    const uint32_t indirection_words =
+        static_cast<uint32_t>(std::min<uint64_t>(
+            static_cast<uint64_t>(indirection_mb) * 1024u * 1024u / 4u,
+            0xFFFFFFF0ull));
+    debug_generations_ = env_flag("MATTER_VT_DEBUG_GENERATIONS");
 
     const VkFormat formats[kVtChannelCount] = {
         VK_FORMAT_BC7_UNORM_BLOCK, VK_FORMAT_BC5_UNORM_BLOCK,
@@ -362,10 +359,40 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
             return false;
         }
     }
-    if (!create_indirection(max_variants_, error)) {
+    // The indirection: one device-local storage buffer of packed u32 entries,
+    // written exclusively through queue-ordered vkCmdCopyBuffer (host-visible
+    // would let a CPU write race an in-flight frame's reads — the exact hazard
+    // the recycling contract exists to exclude).
+    if (!create_buffer(static_cast<VkDeviceSize>(indirection_words) * 4u,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                           VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                       indirection_buffer_, error)) {
         shutdown();
         return false;
     }
+    indirection_cleared_ = false;
+
+    // Zeroed staging for the one-time pool-image clear (see the header note on
+    // pool_zero_staging_). One BC channel-layer is layer_edge^2 texels at 1
+    // byte each; the buffer is reused for every compressed channel and layer.
+    {
+        const VkDeviceSize zero_bytes =
+            static_cast<VkDeviceSize>(kVtPoolLayerEdgeTexels) *
+            kVtPoolLayerEdgeTexels;
+        if (!create_buffer(zero_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                           pool_zero_staging_, error)) {
+            shutdown();
+            return false;
+        }
+        std::memset(pool_zero_staging_.mapped, 0,
+                    static_cast<size_t>(zero_bytes));
+    }
+    pool_cleared_ = false;
+    zero_staging_retire_ = 0;
+    activation_dirty_ = false;
 
     VkSamplerCreateInfo linear{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     linear.magFilter = VK_FILTER_LINEAR;
@@ -403,24 +430,45 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     }
     std::memcpy(variant_buffer_.mapped, variant_records_.data(),
                 variant_buffer_.size);
-    // Staging for indirection uploads: one full layer per pending variant
-    // update, bounded by the fill budget plus registrations in a frame.
-    const VkDeviceSize indirection_layer_bytes =
-        static_cast<VkDeviceSize>(kVtIndirectionWidth) * kVtIndirectionHeight * 4u;
-    if (!create_buffer(indirection_layer_bytes * (max_fills_per_frame_ + 8u),
-                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                       indirection_staging_, error)) {
-        shutdown();
-        return false;
+    // Table upload staging: a RING, one buffer per frame slot, because a
+    // single buffer rewritten every frame would clobber bytes a still-
+    // executing previous frame's copy has not consumed. Each slot holds the
+    // frame's fill-dirtied tables plus a healthy registration burst at the
+    // worst-case table size; overflow just defers the upload a frame
+    // (Stats::table_uploads_deferred_total counts it).
+    const VkDeviceSize staging_bytes =
+        static_cast<VkDeviceSize>(kVtMaxTableWords) * 4u *
+        (max_fills_per_frame_ + 24u);
+    for (uint32_t i = 0; i < kFeedbackSlots; ++i) {
+        if (!create_buffer(staging_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                           indirection_staging_[i], error)) {
+            shutdown();
+            return false;
+        }
     }
 
     slots_.reset(pool_pages_);
+    slots_.set_debug(debug_generations_);
+    // Eviction hysteresis window. One frame is NOT enough in practice:
+    // temporal jitter (DLSS) shifts which feedback blocks sample which pages,
+    // so at a fixed camera a hot page is requested only every few frames; a
+    // one-frame window let an oversubscribed pool ping-pong pages forever
+    // (measured ~27 evictions/s on StreamMountain at MATTER_VT_POOL_PAGES=256)
+    // instead of settling blurry-but-stable. 16 frames (~a quarter second)
+    // comfortably covers the jitter cycle while adding negligible latency to
+    // legitimate eviction of pages that left the view.
+    slots_.set_protect_frames(
+        env_u32("MATTER_VT_EVICT_PROTECT_FRAMES", 16u, 1u, 100000u));
+    tables_.reset(indirection_words);
+    tables_.set_debug(debug_generations_);
     slot_tier_.assign(pool_pages_, 0u);
     enrich_queue_.clear();
     enrich_queued_slot_.clear();
-    variants_.assign(max_variants_, VariantRung{});
+    variants_.clear();           // grows lazily with the slot high-water mark
+    layer_graveyard_.clear();
+    debug_layer_reuse_.clear();
     free_layers_.clear();
     free_layers_.reserve(max_variants_);
     for (uint32_t i = max_variants_; i-- > 0;) free_layers_.push_back(i);
@@ -454,6 +502,8 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     stats_.max_variants = max_variants_;
     stats_.mesh_budget_bytes = mesh_budget_bytes_;
     stats_.pool_bytes = layer_texels * pool_layers * (1 + 1 + 1 + 4);
+    stats_.indirection_capacity_bytes =
+        static_cast<uint64_t>(indirection_words) * 4u;
     stats_.enrich_samples = enricher_ ? enricher_->sample_count() : 0u;
     ready_ = true;
     return true;
@@ -467,7 +517,6 @@ void VtResidency::shutdown() {
     filler_.reset();
     enricher_.reset();
     for (uint32_t c = 0; c < kVtChannelCount; ++c) destroy_pool_image(pool_[c]);
-    destroy_pool_image(indirection_);
     destroy_pool_image(feedback_);
     const VkDevice device = vulkan_->device();
     if (pool_sampler_ != VK_NULL_HANDLE)
@@ -477,11 +526,16 @@ void VtResidency::shutdown() {
     pool_sampler_ = VK_NULL_HANDLE;
     point_sampler_ = VK_NULL_HANDLE;
     destroy_buffer(variant_buffer_);
-    destroy_buffer(indirection_staging_);
+    destroy_buffer(indirection_buffer_);
+    destroy_buffer(pool_zero_staging_);
+    for (uint32_t i = 0; i < kFeedbackSlots; ++i)
+        destroy_buffer(indirection_staging_[i]);
     for (uint32_t i = 0; i < kFeedbackSlots; ++i)
         destroy_buffer(feedback_readback_[i]);
     variants_.clear();
     free_layers_.clear();
+    layer_graveyard_.clear();
+    debug_layer_reuse_.clear();
     layer_of_.clear();
     queue_.clear();
     queued_keys_.clear();
@@ -492,6 +546,7 @@ void VtResidency::shutdown() {
     variant_records_.clear();
     mesh_bytes_used_ = 0;
     warned_rejection_ = false;
+    indirection_cleared_ = false;
     feedback_w_ = feedback_h_ = 0;
     ready_ = false;
     vulkan_ = nullptr;
@@ -541,15 +596,27 @@ void VtResidency::note_rejection(const char* reason, size_t wanted_bytes) {
                  "[vt] WARNING: variant registration REJECTED (%s) -- this "
                  "part falls back to the legacy path and ignores its "
                  "surfaces() classification. variants=%u/%u, mesh=%.1f/%.1f "
-                 "MiB, wanted=%.1f KiB. Raise MATTER_VT_MAX_VARIANTS "
-                 "(indirection layers -- already clamped to the most this "
-                 "device can create, so variants==max means the CAP is the "
-                 "wall, not the setting) and/or "
-                 "MATTER_VT_MESH_BUDGET_MB. Further rejections are counted in "
-                 "the VT census (vt_rejected_variants) but not logged.\n",
+                 "MiB, indirection=%.1f/%.1f MiB, wanted=%.1f KiB. Raise "
+                 "MATTER_VT_MAX_VARIANTS / MATTER_VT_MESH_BUDGET_MB / "
+                 "MATTER_VT_INDIRECTION_MB / MATTER_VT_POOL_PAGES as named. "
+                 "Further rejections are counted in the VT census "
+                 "(vt_rejected_variants) but not logged.\n",
                  reason, stats_.variants, max_variants_, used_mb, budget_mb,
+                 static_cast<double>(tables_.used_words()) * 4.0 /
+                     (1024.0 * 1024.0),
+                 static_cast<double>(stats_.indirection_capacity_bytes) /
+                     (1024.0 * 1024.0),
                  wanted_kb);
     std::fflush(stderr);
+}
+
+void VtResidency::refresh_indirection_stats() {
+    stats_.indirection_used_bytes =
+        static_cast<uint64_t>(tables_.used_words()) * 4u;
+    stats_.tables_live = tables_.live_blocks();
+    stats_.graveyard_tables = tables_.graveyard_blocks();
+    stats_.graveyard_slots = slots_.graveyard_slots();
+    stats_.graveyard_layers = static_cast<uint32_t>(layer_graveyard_.size());
 }
 
 uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
@@ -566,7 +633,12 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
     if (!vt_build_layout(atlas.atlas_w, atlas.atlas_h, layout))
         return kVtNoSlot;
     if (free_layers_.empty()) {
-        note_rejection("no free indirection layer", 0);
+        // Either MATTER_VT_MAX_VARIANTS registrations are genuinely live, or
+        // freed slots are still ageing in the retirement graveyard (a burst of
+        // releases within the last kVtRetireHorizonFrames). Both fail closed;
+        // the demand pass retries and the graveyard drains within 8 frames.
+        note_rejection("no free variant slot (MATTER_VT_MAX_VARIANTS or "
+                       "retirement backlog)", 0);
         return kVtNoSlot;
     }
 
@@ -574,11 +646,21 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
     // per-vertex weight matrix; anything else fails closed to the TriEx path.
     const bool has_surface_tape = vt_context_has_surface_tape(context);
 
-    // Budget the CPU mesh copy BEFORE taking any slot, so a rejection leaves
+    // Budget the CPU mesh copy BEFORE taking anything, so a rejection leaves
     // no partial registration behind.
     const size_t mesh_bytes = vt_variant_mesh_bytes(atlas, context);
     if (mesh_bytes_used_ + mesh_bytes > mesh_budget_bytes_) {
         note_rejection("CPU mesh budget spent", mesh_bytes);
+        return kVtNoSlot;
+    }
+
+    // Exact-sized indirection table block (see the header's formula note).
+    uint32_t table_offset = 0, table_block = 0;
+    uint64_t table_generation = 0;
+    if (!tables_.acquire(layout.entry_count, frame_index_, table_offset,
+                         table_block, table_generation)) {
+        note_rejection("indirection table arena spent "
+                       "(raise MATTER_VT_INDIRECTION_MB)", 0);
         return kVtNoSlot;
     }
 
@@ -589,9 +671,11 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
     const VtPageKey tail_page{layout.mip_count - 1u, 0u, 0u};
     if (!slots_.acquire(key, tail_page, /*pinned=*/true, frame_index_,
                         tail_slot, evicted)) {
-        // Every page slot is a pinned tail already: the pool cannot hold one
-        // more variant. Same fail-closed-to-legacy outcome as the two budget
-        // gates above, so it is counted (and warned about) the same way.
+        // Every evictable page slot is pinned or protected by this frame's
+        // hysteresis window: the pool cannot admit one more variant right now.
+        // Roll the table block back (release_now is legal — no frame ever saw
+        // this allocation) and fail closed like the other gates.
+        tables_.release_now(table_offset, table_block);
         note_rejection("page pool exhausted by pinned tails "
                        "(raise MATTER_VT_POOL_PAGES)", 0);
         return kVtNoSlot;
@@ -608,6 +692,7 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
 
     const uint32_t layer = free_layers_.back();
     free_layers_.pop_back();
+    if (layer >= variants_.size()) variants_.resize(layer + 1u);
     VariantRung& v = variants_[layer];
     v = VariantRung{};
     v.variant_hash = variant_hash;
@@ -617,6 +702,10 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
     v.atlas = atlas;                 // owned copy: the filler borrows this
     v.context = context;
     v.context.atlas = &v.atlas;
+    v.table_offset_words = table_offset;
+    v.table_block_words = table_block;
+    v.table_generation = table_generation;
+    v.table_uploaded = false;
     // Adopt the mesh: copy everything the context points at, then repoint.
     // After this the caller's arrays may go away at any time.
     const auto adopt_f = [](const float* src, size_t count,
@@ -702,6 +791,7 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
     stats_.evictions_total = slots_.evictions();
     stats_.queue_depth = static_cast<uint32_t>(queue_.size());
     stats_.mesh_bytes = mesh_bytes_used_;
+    refresh_indirection_stats();
     return layer + 1u;
 }
 
@@ -710,12 +800,17 @@ bool VtResidency::release_variant_key(uint64_t key) {
     if (found == layer_of_.end()) return false;
     const uint32_t layer = found->second;
     VariantRung& v = variants_[layer];
-    // Release every slot this variant owns.
+    // Everything an in-flight frame's draw records could still resolve
+    // through — the variant slot (and its GPU record), the indirection table
+    // block, every page slot — ages in the graveyard until this serial. The
+    // CPU mesh copies die immediately: every recorded fill has already staged
+    // what it reads, so nothing on the GPU timeline points at them.
+    const uint64_t retire = frame_index_ + kVtRetireHorizonFrames;
     for (uint32_t slot = 0; slot < slots_.capacity(); ++slot) {
         const VtSlotPool::Owner& o = slots_.owner(slot);
         if (o.live && o.variant_key == key) {
             slot_reset_tier(slot);
-            slots_.release(slot);
+            slots_.release(slot, retire);
         }
     }
     // Drop queued fills for it.
@@ -726,13 +821,17 @@ bool VtResidency::release_variant_key(uint64_t key) {
         }
     }
     mesh_bytes_used_ -= std::min(mesh_bytes_used_, v.mesh_bytes);
+    tables_.release(v.table_offset_words, v.table_block_words, retire);
     v = VariantRung{};
     stats_.mesh_bytes = mesh_bytes_used_;
-    variant_records_[layer] = VariantRecordGpu{};
-    variant_records_dirty_ = true;
-    free_layers_.push_back(layer);
+    // The GPU record is deliberately NOT cleared here: an in-flight frame that
+    // still names this slot must keep resolving a valid (record, table, page)
+    // triple. begin_frame's collect zeroes it when the horizon passes.
+    layer_graveyard_.push_back(LayerGrave{layer, retire});
+    if (debug_generations_) debug_layer_reuse_[layer] = retire;
     layer_of_.erase(found);
     if (stats_.variants) --stats_.variants;
+    refresh_indirection_stats();
     return true;
 }
 
@@ -755,6 +854,11 @@ void VtResidency::release_variant(uint64_t variant_hash, uint32_t rung) {
 
 uint32_t VtResidency::invalidate_all_content() {
     if (!ready_) return 0;
+    // CALLER CONTRACT (see header): the device is idle here — both callers
+    // wait_idle before invalidating — which is what makes the IMMEDIATE slot
+    // release below legal: no in-flight frame exists to resolve into a
+    // recycled slot, so the graveyard would only delay the re-fills.
+    //
     // The slot pool is the authority on what is resident: every indirection
     // mapping was created by an acquire() and is unmapped again when its slot
     // is evicted or released, so sweeping live slots covers exactly the
@@ -762,13 +866,13 @@ uint32_t VtResidency::invalidate_all_content() {
     // are re-filled in place below).
     uint32_t dropped = 0;
     for (uint32_t slot = 0; slot < slots_.capacity(); ++slot) {
-        const VtSlotPool::Owner owner = slots_.owner(slot);   // copy: release() clears it
+        const VtSlotPool::Owner owner = slots_.owner(slot);   // copy: release clears it
         if (!owner.live || owner.pinned) continue;
         const auto owner_layer = layer_of_.find(owner.variant_key);
         if (owner_layer != layer_of_.end())
             variants_[owner_layer->second].indirection.unmap(
                 owner.page.mip, owner.page.px, owner.page.py);
-        slots_.release(slot);
+        slots_.release_now(slot);
         ++dropped;
     }
 
@@ -862,13 +966,32 @@ bool VtResidency::update_variant_surface(uint64_t variant_hash, uint32_t rung,
 }
 
 void VtResidency::write_variant_record(const VariantRung& v) {
+    if (debug_generations_) {
+        // A record may only be (re)written for a slot whose previous owner has
+        // fully retired — mutating it earlier is exactly the stale-mapping bug
+        // (an in-flight frame's draw records would resolve the OLD variant
+        // through the NEW variant's record).
+        const auto grave = debug_layer_reuse_.find(v.layer);
+        if (grave != debug_layer_reuse_.end()) {
+            if (frame_index_ < grave->second)
+                generation_audit_fail(
+                    "variant records",
+                    "record rewritten before its retire serial");
+            debug_layer_reuse_.erase(grave);
+        }
+    }
     VariantRecordGpu& r = variant_records_[v.layer];
     r = VariantRecordGpu{};
     r.atlas_w = v.layout.atlas_w;
     r.atlas_h = v.layout.atlas_h;
     r.mip_count = v.layout.mip_count;
     r.flags = 1u;
-    for (uint32_t m = 0; m < kVtMaxMips; ++m) r.mip_row[m] = v.layout.mip_row[m];
+    for (uint32_t m = 0; m < kVtMaxMips; ++m)
+        r.mip_offset[m] = v.layout.mip_offset[m];
+    r.table_offset = v.table_offset_words;
+    r.pages_w = v.layout.page_w[0];
+    r.pages_h = v.layout.page_h[0];
+    r.generation = static_cast<uint32_t>(v.table_generation & 0xFFFFFFFFu);
     variant_records_dirty_ = true;
 }
 
@@ -880,7 +1003,9 @@ void VtResidency::queue_page(VariantRung& v, VtPageKey page, bool force,
                              uint32_t preassigned_slot) {
     if (!v.live || !v.indirection.in_range(page.mip, page.px, page.py)) return;
     if (!force && v.indirection.is_mapped(page.mip, page.px, page.py)) {
-        // Already resident; just keep its slot warm.
+        // Already resident; keep its slot warm. The touch also arms this
+        // frame's eviction hysteresis: a page the current frame requested is
+        // never this frame's eviction victim.
         const VtEntry entry = v.indirection.resolve(page.mip, page.px, page.py);
         slots_.touch(entry.slot, frame_index_);
         return;
@@ -893,6 +1018,11 @@ void VtResidency::queue_page(VariantRung& v, VtPageKey page, bool force,
     const uint32_t priority = served.mapped_mip > page.mip
                                   ? served.mapped_mip - page.mip
                                   : 0u;
+    // The page currently serving this request is wanted by definition — keep
+    // it warm too, or the fill for a finer mip could evict the very coverage
+    // it is refining (the coarse page still serves every OTHER texel of its
+    // region until the fine page lands).
+    slots_.touch(served.slot, frame_index_);
     if (found != queued_keys_.end()) {
         PendingFill& existing = queue_[found->second];
         if (priority > existing.priority) existing.priority = priority;
@@ -1060,6 +1190,11 @@ void VtResidency::drain_feedback(uint32_t frame_slot) {
         feedback_slot_written_[frame_slot] = false;
     }
     stats_.requests_last_frame = static_cast<uint32_t>(requests.size());
+    // Feedback is 2-3 frames stale by construction. A request naming a variant
+    // slot released since is dropped by the live check; one naming a slot
+    // already recycled (impossible inside the retirement horizon, which is
+    // wider than the readback ring) would at worst queue a spurious-but-valid
+    // fill for the NEW variant.
     for (const VtFeedbackRequest& r : requests) {
         if (r.layer >= variants_.size()) continue;
         VariantRung& v = variants_[r.layer];
@@ -1076,6 +1211,35 @@ void VtResidency::begin_frame(uint64_t frame_index, uint32_t frame_slot) {
     if (!ready_) return;
     frame_index_ = frame_index;
     frame_slot_ = frame_slot % kFeedbackSlots;
+    // Collect the graveyards: a retire serial of (release frame +
+    // kVtRetireHorizonFrames) has passed once the frame counter reaches it —
+    // the caller's frame fences guarantee anything submitted that many frames
+    // ago has retired on the GPU (the same guarantee the feedback readback and
+    // the compositor's cache retirement already ride).
+    slots_.collect(frame_index_);
+    tables_.collect(frame_index_);
+    if (pool_zero_staging_.buffer != VK_NULL_HANDLE && pool_cleared_ &&
+        zero_staging_retire_ != 0 && frame_index_ >= zero_staging_retire_) {
+        // The one-time pool clear's staging has retired on the GPU.
+        destroy_buffer(pool_zero_staging_);
+    }
+    if (!layer_graveyard_.empty()) {
+        size_t keep = 0;
+        for (size_t i = 0; i < layer_graveyard_.size(); ++i) {
+            const LayerGrave& g = layer_graveyard_[i];
+            if (g.retire_serial <= frame_index_) {
+                // Now — and only now — the dead registration's GPU record may
+                // be scrubbed and its slot re-enter circulation.
+                variant_records_[g.layer] = VariantRecordGpu{};
+                variant_records_dirty_ = true;
+                free_layers_.push_back(g.layer);
+                continue;
+            }
+            layer_graveyard_[keep++] = layer_graveyard_[i];
+        }
+        layer_graveyard_.resize(keep);
+    }
+    refresh_indirection_stats();
     drain_feedback(frame_slot_);
 }
 
@@ -1184,13 +1348,69 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
             pool_[c].layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         }
     }
-    if (indirection_.layout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-        barrier(cmd, indirection_.image, indirection_.layers,
-                indirection_.layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                VK_ACCESS_2_MEMORY_READ_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                VK_ACCESS_2_TRANSFER_WRITE_BIT);
-        indirection_.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    if (!pool_cleared_ && pool_zero_staging_.buffer != VK_NULL_HANDLE) {
+        // One-time pool scrub: any tail-gate violation then samples a
+        // deterministic flat black instead of undefined memory. The BC
+        // channels cannot vkCmdClearColorImage (compressed formats), so
+        // they are cleared by copying the zeroed staging buffer over every
+        // layer; the uncompressed aux channel takes the plain clear.
+        for (uint32_t c = 0; c < kVtChannelCount; ++c) {
+            if (pool_[c].format == VK_FORMAT_R8G8B8A8_UNORM) {
+                const VkClearColorValue zero{};
+                const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,
+                                                    0, 1, 0, pool_[c].layers};
+                vkCmdClearColorImage(cmd, pool_[c].image,
+                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                     &zero, 1, &range);
+                continue;
+            }
+            for (uint32_t layer = 0; layer < pool_[c].layers; ++layer) {
+                VkBufferImageCopy copy{};
+                copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer,
+                                         1};
+                copy.imageExtent = {kVtPoolLayerEdgeTexels,
+                                    kVtPoolLayerEdgeTexels, 1};
+                vkCmdCopyBufferToImage(cmd, pool_zero_staging_.buffer,
+                                       pool_[c].image,
+                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                       1, &copy);
+            }
+        }
+        // WAW: this frame's fills rewrite subsets of the just-cleared images.
+        VkMemoryBarrier2 waw{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        waw.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        waw.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        waw.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        waw.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dep.memoryBarrierCount = 1;
+        dep.pMemoryBarriers = &waw;
+        vkCmdPipelineBarrier2(cmd, &dep);
+        pool_cleared_ = true;
+        // The staging is consumed by this frame alone; free it once the
+        // frame has retired.
+        zero_staging_retire_ = frame_index_ + kVtRetireHorizonFrames;
+    }
+    // Open the indirection buffer's transfer window. srcStage ALL_COMMANDS
+    // orders these copies after every prior submission's sampling of the
+    // buffer — the same discipline the image path used, and the reason
+    // eviction/refill never needs a graveyard: in-flight frames execute
+    // strictly before this frame's copies.
+    buffer_barrier(cmd, indirection_buffer_.buffer,
+                   VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                   VK_ACCESS_2_MEMORY_READ_BIT,
+                   VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                   VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    if (!indirection_cleared_) {
+        // One-time arena scrub: an entry never written decodes as (slot 0,
+        // mip 0) — a bounded, valid pool address — instead of undefined bytes.
+        vkCmdFillBuffer(cmd, indirection_buffer_.buffer, 0, VK_WHOLE_SIZE, 0u);
+        buffer_barrier(cmd, indirection_buffer_.buffer,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        indirection_cleared_ = true;
     }
 
     // --- drain the fill queue --------------------------------------------
@@ -1208,23 +1428,45 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
                          [](const PendingFill& a, const PendingFill& b) {
                              return a.priority > b.priority;
                          });
-        const size_t take = std::min<size_t>(queue_.size(), max_fills_per_frame_);
-        size_t consumed = 0;
-        for (size_t i = 0; i < take; ++i) {
+        // Two budgets over one pass (see the tail-gate note in the header):
+        // TAIL fills (preassigned slots — registration tails and in-place
+        // invalidation re-fills) draw from max_tail_fills_per_frame_, page
+        // fills from max_fills_per_frame_. A streaming burst's tails gate
+        // whole variants out of the VT path, so they must never wait behind
+        // feedback-driven sharpening; both classes share the kMaxFillFlags
+        // batch ceiling.
+        uint32_t tail_taken = 0, page_taken = 0;
+        bool page_admission_blocked = false;
+        std::vector<uint8_t> taken(queue_.size(), 0u);
+        for (size_t i = 0; i < queue_.size(); ++i) {
+            if (batch_.size() >= kMaxFillFlags) break;
             const PendingFill& p = queue_[i];
             VariantRung& v = variants_[p.layer];
             if (!v.live) {
-                consumed = i + 1;
+                taken[i] = 1;   // dead entry: drop without dispatch
+                continue;
+            }
+            const bool is_tail = p.preassigned_slot != 0xFFFFFFFFu;
+            if (is_tail) {
+                if (tail_taken >= max_tail_fills_per_frame_) continue;
+            } else if (page_taken >= max_fills_per_frame_ ||
+                       page_admission_blocked) {
                 continue;
             }
             uint32_t slot = p.preassigned_slot;
-            if (slot == 0xFFFFFFFFu) {
+            if (!is_tail) {
                 VtSlotPool::Owner evicted;
-                if (!slots_.acquire(variant_key(v.variant_hash, v.rung), p.page,
-                                    /*pinned=*/false, frame_index_, slot,
-                                    evicted)) {
-                    // Pool exhausted by pinned tails; retry next frame.
-                    break;
+                if (!slots_.acquire(variant_key(v.variant_hash, v.rung),
+                                    p.page, /*pinned=*/false, frame_index_,
+                                    slot, evicted)) {
+                    // Pool exhausted: everything is pinned or protected by
+                    // the request hysteresis window. Page fills retry next
+                    // frame while the indirection keeps serving the coarser
+                    // resident coverage (worst case the tail) — degrade,
+                    // never thrash. Tails keep draining: they own their
+                    // slots already.
+                    page_admission_blocked = true;
+                    continue;
                 }
                 if (evicted.live) {
                     const auto owner_layer = layer_of_.find(evicted.variant_key);
@@ -1235,7 +1477,8 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
             } else {
                 slots_.touch(slot, frame_index_);
             }
-            consumed = i + 1;
+            taken[i] = 1;
+            if (is_tail) ++tail_taken; else ++page_taken;
             VtFillRequest request;
             request.variant_hash = v.variant_hash;
             request.rung = static_cast<uint16_t>(v.rung);
@@ -1247,13 +1490,14 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
             request.part_context = &v.context;
             request.pool = &pool_binding_;
             batch_.push_back(request);
-            pending_map_.push_back(PendingMap{
-                p.layer, p.page, slot, p.preassigned_slot != 0xFFFFFFFFu});
+            pending_map_.push_back(PendingMap{p.layer, p.page, slot, is_tail});
         }
-        // Only the entries we actually dispatched (or dropped as dead) leave
-        // the queue; a pool-exhaustion break keeps the rest for next frame.
-        queue_.erase(queue_.begin(),
-                     queue_.begin() + static_cast<long>(consumed));
+        // Only dispatched (or dead-dropped) entries leave the queue; budget-
+        // or admission-skipped ones keep their order for next frame.
+        size_t keep = 0;
+        for (size_t i = 0; i < queue_.size(); ++i)
+            if (!taken[i]) queue_[keep++] = queue_[i];
+        queue_.resize(keep);
         queued_keys_.clear();
         for (size_t i = 0; i < queue_.size(); ++i)
             queued_keys_[page_key(queue_[i].layer, queue_[i].page)] = i;
@@ -1287,7 +1531,18 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
             if (fill_flags_[i]) {
                 if (!v.live) continue;
                 v.indirection.map(m.page.mip, m.page.px, m.page.py, m.slot);
-                if (m.page.mip + 1u == v.layout.mip_count) v.tail_filled = true;
+                if (m.page.mip + 1u == v.layout.mip_count) {
+                    v.tail_filled = true;
+                    // TAIL GATE: the fill is recorded in THIS frame's command
+                    // buffer, so a draw recorded from the NEXT frame on is
+                    // queue-ordered after it and reads written texels. Flip
+                    // activation then, and cue the renderer to republish its
+                    // vt_slot table.
+                    if (v.tail_ready_serial == kVtTailNotReady) {
+                        v.tail_ready_serial = frame_index_ + 1u;
+                        activation_dirty_ = true;
+                    }
+                }
                 // WP-H: the slot now holds FRESH tier-1 content, so any tier-2
                 // state it carried is void and the new content becomes an
                 // enrichment candidate. Tails go through here too (they are
@@ -1301,11 +1556,13 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
             // page must NOT become resident.
             ++stats_.fills_failed_total;
             if (!m.preassigned) {
-                // Freshly acquired: hand it straight back. The entry was never
-                // mapped, so every sample of this page keeps resolving to the
-                // variant's tail, exactly as before the request.
+                // Freshly acquired: hand it straight back — release_now is
+                // legal because the entry was never mapped, so no frame past
+                // or present can resolve into this slot. Every sample of this
+                // page keeps resolving to the variant's tail, exactly as
+                // before the request.
                 slot_reset_tier(m.slot);
-                slots_.release(m.slot);
+                slots_.release_now(m.slot);
             } else if (v.live) {
                 // A pinned tail keeps its slot (every unmapped entry resolves
                 // to it, so releasing it would break that invariant) but its
@@ -1319,26 +1576,46 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
         stats_.fills_total += mapped;
     }
 
-    // --- indirection uploads ---------------------------------------------
-    const VkDeviceSize layer_bytes =
-        static_cast<VkDeviceSize>(kVtIndirectionWidth) * kVtIndirectionHeight * 4u;
-    VkDeviceSize staging_offset = 0;
-    for (VariantRung& v : variants_) {
-        if (!v.live || !v.indirection.dirty()) continue;
-        if (staging_offset + layer_bytes > indirection_staging_.size) break;
-        const std::vector<uint32_t>& texels = v.indirection.texels();
-        std::memcpy(static_cast<uint8_t*>(indirection_staging_.mapped) +
-                        staging_offset,
-                    texels.data(), layer_bytes);
-        VkBufferImageCopy copy{};
-        copy.bufferOffset = staging_offset;
-        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, v.layer, 1};
-        copy.imageExtent = {kVtIndirectionWidth, kVtIndirectionHeight, 1};
-        vkCmdCopyBufferToImage(cmd, indirection_staging_.buffer,
-                               indirection_.image,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-        v.indirection.clear_dirty();
-        staging_offset += layer_bytes;
+    // --- indirection table uploads ----------------------------------------
+    // Staged through this frame slot's ring buffer (its previous submission
+    // has retired — the caller's frame fence). Never-uploaded tables go
+    // first: until a new registration's table has been copied once, the GPU
+    // side of its block is the arena's zero-fill, and its draws land THIS
+    // frame. Dirty re-uploads follow; either kind that misses the window
+    // stays dirty and retries next frame.
+    {
+        Buffer& staging = indirection_staging_[frame_slot_];
+        VkDeviceSize staging_offset = 0;
+        const auto upload_table = [&](VariantRung& v) -> bool {
+            const VkDeviceSize bytes =
+                static_cast<VkDeviceSize>(v.layout.entry_count) * 4u;
+            if (staging.mapped == nullptr ||
+                staging_offset + bytes > staging.size)
+                return false;
+            const std::vector<uint32_t>& texels = v.indirection.texels();
+            std::memcpy(static_cast<uint8_t*>(staging.mapped) + staging_offset,
+                        texels.data(), bytes);
+            VkBufferCopy copy{};
+            copy.srcOffset = staging_offset;
+            copy.dstOffset =
+                static_cast<VkDeviceSize>(v.table_offset_words) * 4u;
+            copy.size = bytes;
+            vkCmdCopyBuffer(cmd, staging.buffer, indirection_buffer_.buffer, 1,
+                            &copy);
+            v.indirection.clear_dirty();
+            v.table_uploaded = true;
+            staging_offset += bytes;
+            return true;
+        };
+        for (VariantRung& v : variants_) {
+            if (!v.live || v.table_uploaded) continue;
+            if (!upload_table(v)) ++stats_.table_uploads_deferred_total;
+        }
+        for (VariantRung& v : variants_) {
+            if (!v.live || !v.table_uploaded || !v.indirection.dirty())
+                continue;
+            if (!upload_table(v)) ++stats_.table_uploads_deferred_total;
+        }
     }
 
     // --- back to shader-read ---------------------------------------------
@@ -1350,12 +1627,11 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         pool_[c].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
-    barrier(cmd, indirection_.image, indirection_.layers, indirection_.layout,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-    indirection_.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    buffer_barrier(cmd, indirection_buffer_.buffer,
+                   VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                   VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                   VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                   VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
 
     if (variant_records_dirty_ && variant_buffer_.mapped) {
         std::memcpy(variant_buffer_.mapped, variant_records_.data(),
@@ -1367,6 +1643,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
     stats_.pool_pinned = slots_.pinned();
     stats_.evictions_total = slots_.evictions();
     stats_.queue_depth = static_cast<uint32_t>(queue_.size());
+    refresh_indirection_stats();
     (void)error;
     return true;
 }

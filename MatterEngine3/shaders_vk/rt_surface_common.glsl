@@ -17,12 +17,15 @@
 
 // WP-G (chart VT in the RT path): RT set 0 mirrors the raster set 1 VT
 // bindings 10/11/12 at 17/18/19 -- the same mirroring trick the tileset port
-// used for 15/16 above, and for the same reason (0-16 are taken). Binding 13
-// (the feedback storage image) is deliberately NOT mirrored: rays never
-// request pages (spec Phase 5 leaves RT-side feedback optional and off), so
-// VT_FEEDBACK_BINDING stays undefined here and vt_write_feedback() compiles
-// to nothing. Every shader that includes this file declares 17-19 even if it
-// never samples VT; the renderer writes them uniformly across the RT set.
+// used for 15/16 above, and for the same reason (0-16 are taken). 18 is the
+// shared indirection STORAGE BUFFER (raster and RT read the SAME buffer; the
+// old RT-side image mirror died with the buffer-indirection redesign).
+// Binding 13 (the feedback storage image) is deliberately NOT mirrored: rays
+// never request pages (spec Phase 5 leaves RT-side feedback optional and
+// off), so VT_FEEDBACK_BINDING stays undefined here and vt_write_feedback()
+// compiles to nothing. Every shader that includes this file declares 17-19
+// even if it never samples VT; the renderer writes them uniformly across the
+// RT set.
 #define VT_SET 0
 #define VT_POOL_BINDING 17
 #define VT_INDIRECTION_BINDING 18
