@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>   // static_upload_census() backing counters
 #include <cassert>
 #include <climits>
 #include <cmath>
@@ -7883,6 +7884,35 @@ bool VkSceneRenderer::apply_dynamic_command_layout(std::string& error) {
     return true;
 }
 
+// Static-upload census (VkSceneRenderer::static_upload_census). The kFull
+// branch recreates the cluster/vertex/index buffers and rewrites ALL of them
+// into host-visible memory -- hundreds of MB at streaming scale -- and it runs
+// inside prepare_frame (build region) or dispatch_culling (draw region). Both
+// buckets carry a max because the mean hides exactly the spike worth finding.
+namespace {
+std::atomic<uint64_t> g_su_full_count{0}, g_su_full_us{0}, g_su_full_max_us{0};
+std::atomic<uint64_t> g_su_append_count{0}, g_su_append_us{0};
+void su_note(std::atomic<uint64_t>& count, std::atomic<uint64_t>& total,
+             std::atomic<uint64_t>* mx, uint64_t us) {
+    count.fetch_add(1, std::memory_order_relaxed);
+    total.fetch_add(us, std::memory_order_relaxed);
+    if (!mx) return;
+    uint64_t prev = mx->load(std::memory_order_relaxed);
+    while (us > prev &&
+           !mx->compare_exchange_weak(prev, us, std::memory_order_relaxed)) {}
+}
+}  // namespace
+
+VkSceneRenderer::StaticUploadCensus VkSceneRenderer::static_upload_census() {
+    StaticUploadCensus c;
+    c.full_count   = g_su_full_count.load(std::memory_order_relaxed);
+    c.full_us      = g_su_full_us.load(std::memory_order_relaxed);
+    c.full_max_us  = g_su_full_max_us.load(std::memory_order_relaxed);
+    c.append_count = g_su_append_count.load(std::memory_order_relaxed);
+    c.append_us    = g_su_append_us.load(std::memory_order_relaxed);
+    return c;
+}
+
 bool VkSceneRenderer::upload_scene_buffers(
     FrameResources& frame, VkCommandBuffer material_command_buffer,
     bool reset_stats, std::string& error) {
@@ -8033,6 +8063,7 @@ bool VkSceneRenderer::upload_scene_buffers(
             record_material_upload(material_command_buffer, frame);
     }
     vk_build_profile::Scope static_scope(vk_build_profile::kPfUploadStatic);
+    const auto su_append_t0 = std::chrono::steady_clock::now();
     if (static_upload_dirty_ == StaticUpload::kAppend) {
         // Streaming fast path. Every static mutation since the last upload
         // was a register_part() ranged write — into a recycled interior range
@@ -8085,6 +8116,10 @@ bool VkSceneRenderer::upload_scene_buffers(
             uploaded_index_count_ =
                 static_cast<uint32_t>(index_staging_.size());
             static_upload_dirty_ = StaticUpload::kClean;
+            su_note(g_su_append_count, g_su_append_us, nullptr,
+                    (uint64_t)std::chrono::duration_cast<
+                        std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - su_append_t0).count());
         } else {
             // A buffer outgrew its capacity: take the recreate + full-rewrite
             // path. Capacity doubles there, so this happens O(log N) times
@@ -8092,6 +8127,7 @@ bool VkSceneRenderer::upload_scene_buffers(
             static_upload_dirty_ = StaticUpload::kFull;
         }
     }
+    const auto su_full_t0 = std::chrono::steady_clock::now();
     if (static_upload_dirty_ == StaticUpload::kFull) {
         const auto replacement_capacity = [&](VkDeviceSize current,
                                               VkDeviceSize required,
@@ -8169,6 +8205,9 @@ bool VkSceneRenderer::upload_scene_buffers(
         vertices_ = std::move(next_vertices);
         indices_ = std::move(next_indices);
         static_upload_dirty_ = StaticUpload::kClean;
+        su_note(g_su_full_count, g_su_full_us, &g_su_full_max_us,
+                (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - su_full_t0).count());
         // The full rewrite covers any pending ranged writes.
         dirty_cluster_ranges_.clear();
         dirty_vertex_ranges_.clear();

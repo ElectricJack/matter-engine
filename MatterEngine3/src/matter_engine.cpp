@@ -296,9 +296,13 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         const VtSurfaceClassifier* surface = nullptr);
 // ensure_vulkan_part split so a streaming worker can do the CPU half off the
 // render thread; see the definitions for the thread contract.
+// out_cache (optional): receives the per-rung surfaces() weights and field
+// lanes this call computes anyway, so the app thread's VT registration can use
+// them instead of classifying the same vertices a second time.
 bool build_vulkan_part(uint64_t part_hash, const viewer::LoadedPart& loaded,
                        int force_lod, const VtSurfaceClassifier* surface,
-                       viewer::VkScenePart& part);
+                       viewer::VkScenePart& part,
+                       viewer::SurfaceClassCache* out_cache = nullptr);
 bool register_vulkan_part(viewer::VkSceneRenderer& renderer, uint64_t part_hash,
                           const viewer::VkScenePart& part, bool& drawable,
                           std::string& error);
@@ -787,6 +791,40 @@ struct WorldSession::Impl {
     std::atomic<uint64_t> frame_build_us{0};
     std::atomic<uint64_t> frame_draw_us{0};
     std::atomic<uint64_t> frame_instances{0};
+    // Sub-zones of the `draw` region, which is CPU command RECORDING (plus VT
+    // registration) -- no fence wait, no submit, no present. It spikes to
+    // hundreds of ms during a fill and settles afterwards, so mean alone hides
+    // the thing worth finding: each zone carries its own max.
+    struct DrawZone {
+        std::atomic<uint64_t> total_us{0};
+        std::atomic<uint64_t> max_us{0};
+        std::atomic<uint64_t> count{0};
+        void add(uint64_t us) {
+            total_us.fetch_add(us, std::memory_order_relaxed);
+            count.fetch_add(1, std::memory_order_relaxed);
+            uint64_t prev = max_us.load(std::memory_order_relaxed);
+            while (us > prev &&
+                   !max_us.compare_exchange_weak(prev, us,
+                                                 std::memory_order_relaxed)) {}
+        }
+    };
+    DrawZone draw_vt_requests;   // service_vt_rung_requests
+    DrawZone draw_cull_render;   // record_cull_and_render
+    DrawZone draw_skin_seal;     // finish_animation_skinning_frame
+    DrawZone draw_composite;     // record_composite_to_swapchain
+    // VT demand-registration accounting (app thread, so plain counters).
+    uint64_t vt_requests_serviced = 0;
+    uint64_t vt_requests_deferred = 0;
+    // Split of service_vt_rung_requests. The audit established the classify
+    // pass is redundant (the bake worker already computed it and discarded it),
+    // but could NOT establish what fraction of the cost it is -- register_vt_rung
+    // does its own O(parts x rungs) admission scan plus a full CPU mesh adoption.
+    // Size the win before building it.
+    uint64_t vt_classify_us = 0;
+    uint64_t vt_lanes_us = 0;
+    uint64_t vt_register_us = 0;
+    uint64_t vt_cache_hits = 0;
+    uint64_t vt_cache_misses = 0;
     // stage_load internals (PartStore::StagedPart splits).
     std::atomic<uint64_t> stream_stage_read_us{0};     // artifact decode
     std::atomic<uint64_t> stream_stage_prep_us{0};     // tri/TriEx gather + AABB
@@ -3312,11 +3350,45 @@ void WorldSession::Impl::service_vt_rung_requests() {
         }
     }
 
+    // Per-frame budget. Servicing EVERY pending request measured mean 105 ms /
+    // peak 590 ms on the app thread during a StreamMountain fill -- the single
+    // largest cost in the whole draw region, and the reason the editor drops to
+    // a few FPS while a disc streams and recovers the moment it stops.
+    //
+    // Dropping the tail is self-correcting, not lossy: the demand pass re-issues
+    // a request every frame for any variant that is still unregistered
+    // (vt_last_requested dedupes only WITHIN a frame), and the drained list
+    // arrives sorted by projected size -- so a prefix is precisely the variants
+    // largest on screen, and the rest come back next frame.
+    //
+    // Like GpuJobQueue::pump, this bounds how many requests START, never how
+    // long one takes: at least one is always serviced so the VT can never
+    // stall, and a single expensive registration may still overrun.
+    // MATTER_VT_REQUEST_BUDGET_MS=0 restores the old service-everything path.
+    static const double request_budget_ms = [] {
+        if (const char* v = std::getenv("MATTER_VT_REQUEST_BUDGET_MS")) {
+            const double parsed = std::atof(v);
+            if (parsed >= 0.0) return parsed;
+        }
+        return 4.0;
+    }();
+    const auto budget_t0 = std::chrono::steady_clock::now();
+    size_t serviced = 0;
+
     std::vector<uint8_t> weights;
     std::vector<uint32_t> materials;
     std::vector<uint16_t> lanes;   // P2: per-vertex f16 field lanes (mode 3)
     for (const viewer::VtRungRequest& request : requests) {
-        const viewer::LoadedPart* loaded = store->get_or_load(request.part_hash);
+        if (request_budget_ms > 0.0 && serviced > 0 &&
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - budget_t0).count() >=
+                request_budget_ms) {
+            vt_requests_deferred += requests.size() - serviced;
+            break;
+        }
+        // find(), not get_or_load(): a miss here would decode a .part off disk
+        // on the app thread inside the draw region. The demand pass re-asks.
+        const viewer::LoadedPart* loaded = store->find(request.part_hash);
         if (!loaded) continue;   // unloaded since the request; demand re-asks
         if (request.rung >= loaded->lod_charts.size() ||
             request.rung >= loaded->lod_mesh_data.size())
@@ -3370,10 +3442,32 @@ void WorldSession::Impl::service_vt_rung_requests() {
                         refs == refs_by_hash.end() ? 0u : refs->second);
                 classifier.local_to_world[3] = sector->second.first;
                 classifier.local_to_world[11] = sector->second.second;
-                vt_classify_chart_vertices(
-                    classifier, mesh.vertices.data(),
-                    mesh.normals.empty() ? nullptr : mesh.normals.data(),
-                    static_cast<uint32_t>(mesh.vertex_count), weights);
+                // Prefer the bake worker's cache. build_vulkan_part already
+                // classified THIS rung's vertices -- same array, same
+                // classifier -- so recomputing here was 19.6 ms of app-thread
+                // time per registration against 0.3 ms for the registration
+                // itself. Falls back to classifying when the cache is absent
+                // (non-streamed part, prebuild disabled) or stale (tape edited
+                // since), so this is a speed path, never a correctness one.
+                const viewer::SurfaceClassCache& cache = loaded->surface_cache;
+                const bool cached = cache.valid_for(
+                    request.rung, world_surface_hash,
+                    static_cast<size_t>(mesh.vertex_count)) &&
+                    cache.material_count == world_surface->material_count();
+                if (cached) {
+                    weights = cache.weights[request.rung];
+                    ++vt_cache_hits;
+                } else {
+                    const auto cls_t0 = std::chrono::steady_clock::now();
+                    vt_classify_chart_vertices(
+                        classifier, mesh.vertices.data(),
+                        mesh.normals.empty() ? nullptr : mesh.normals.data(),
+                        static_cast<uint32_t>(mesh.vertex_count), weights);
+                    vt_classify_us += (uint64_t)std::chrono::duration_cast<
+                        std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - cls_t0).count();
+                    ++vt_cache_misses;
+                }
                 if (!weights.empty()) {
                     materials.reserve(world_surface->material_count());
                     for (uint32_t k = 0; k < world_surface->material_count();
@@ -3395,9 +3489,20 @@ void WorldSession::Impl::service_vt_rung_requests() {
                     std::memcpy(context.surface_local_to_world,
                                 classifier.local_to_world,
                                 sizeof(context.surface_local_to_world));
-                    const uint32_t lane_count = vt_compute_chart_lanes(
-                        classifier, mesh.vertices.data(),
-                        static_cast<uint32_t>(mesh.vertex_count), lanes);
+                    uint32_t lane_count = 0;
+                    if (cached && request.rung < cache.lanes.size() &&
+                        !cache.lanes[request.rung].empty()) {
+                        lanes = cache.lanes[request.rung];
+                        lane_count = cache.lane_count;
+                    } else {
+                        const auto lane_t0 = std::chrono::steady_clock::now();
+                        lane_count = vt_compute_chart_lanes(
+                            classifier, mesh.vertices.data(),
+                            static_cast<uint32_t>(mesh.vertex_count), lanes);
+                        vt_lanes_us += (uint64_t)std::chrono::duration_cast<
+                            std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - lane_t0).count();
+                    }
                     if (lane_count > 0) {
                         context.surface_lanes = lanes.data();
                         context.surface_lane_count = lane_count;
@@ -3405,9 +3510,15 @@ void WorldSession::Impl::service_vt_rung_requests() {
                 }
             }
         }
+        const auto reg_t0 = std::chrono::steady_clock::now();
         vk_scene->register_vt_rung(request.part_hash, request.rung, atlas,
                                    context);
+        vt_register_us += (uint64_t)std::chrono::duration_cast<
+            std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - reg_t0).count();
+        ++serviced;
     }
+    vt_requests_serviced += serviced;
 #endif
 }
 
@@ -4227,7 +4338,8 @@ void WorldSession::Impl::bake_and_stage_sector(
             }
             auto built = std::make_shared<viewer::VkScenePart>();
             if (build_vulkan_part(sector_hash, staged_load->lp,
-                                  /*force_lod=*/-1, surface_ptr, *built)) {
+                                  /*force_lod=*/-1, surface_ptr, *built,
+                                  &staged_load->lp.surface_cache)) {
                 prebuilt_part = std::move(built);
             }
         }
@@ -4723,6 +4835,53 @@ void WorldSession::Impl::execute_sector_stream_step() {
                         frame_draw_us.load(std::memory_order_relaxed) / 1000.0,
                         (unsigned long long)frame_instances.load(
                             std::memory_order_relaxed));
+                // Draw-region zones, mean and max. The max column is the point:
+                // this region spikes to hundreds of ms during a fill.
+                const auto zone = [](const DrawZone& z, const char* name,
+                                     char* out, size_t cap) {
+                    const uint64_t n = z.count.load(std::memory_order_relaxed);
+                    std::snprintf(out, cap, "%s %.1f/%.1f", name,
+                                  n ? z.total_us.load(std::memory_order_relaxed)
+                                          / 1000.0 / n : 0.0,
+                                  z.max_us.load(std::memory_order_relaxed) / 1000.0);
+                };
+                char z0[64], z1[64], z2[64], z3[64];
+                zone(draw_vt_requests, "vt_requests", z0, sizeof z0);
+                zone(draw_cull_render, "cull_render", z1, sizeof z1);
+                zone(draw_skin_seal,   "skin_seal",   z2, sizeof z2);
+                zone(draw_composite,   "composite",   z3, sizeof z3);
+                fprintf(stderr,
+                        "[stream.draw] mean/max ms: %s | %s | %s | %s"
+                        "  vt_reg serviced=%llu deferred=%llu\n",
+                        z0, z1, z2, z3,
+                        (unsigned long long)vt_requests_serviced,
+                        (unsigned long long)vt_requests_deferred);
+                fprintf(stderr,
+                        "[stream.vtreg] total ms: classify=%.0f lanes=%.0f "
+                        "register=%.0f  (per serviced: %.1f / %.1f / %.1f)\n",
+                        vt_classify_us / 1000.0, vt_lanes_us / 1000.0,
+                        vt_register_us / 1000.0,
+                        vt_requests_serviced
+                            ? vt_classify_us / 1000.0 / vt_requests_serviced : 0.0,
+                        vt_requests_serviced
+                            ? vt_lanes_us / 1000.0 / vt_requests_serviced : 0.0,
+                        vt_requests_serviced
+                            ? vt_register_us / 1000.0 / vt_requests_serviced : 0.0);
+                fprintf(stderr, "[stream.vtcache] hits=%llu misses=%llu\n",
+                        (unsigned long long)vt_cache_hits,
+                        (unsigned long long)vt_cache_misses);
+#ifdef MATTER_VULKAN_VIEWER
+                const auto su = viewer::VkSceneRenderer::static_upload_census();
+                fprintf(stderr,
+                        "[stream.upload] static full n=%llu mean=%.1f max=%.1f ms"
+                        "  append n=%llu mean=%.2f ms\n",
+                        (unsigned long long)su.full_count,
+                        su.full_count ? su.full_us / 1000.0 / su.full_count : 0.0,
+                        su.full_max_us / 1000.0,
+                        (unsigned long long)su.append_count,
+                        su.append_count
+                            ? su.append_us / 1000.0 / su.append_count : 0.0);
+#endif
                 // Inside bake_source's `build` phase: one native terrain
                 // mesher call vs the scatter loop's per-candidate field
                 // queries. Everything else in `build` is JS interpretation.
@@ -5056,6 +5215,36 @@ bool WorldSession::Impl::ensure_tracer() const {
     }
 
     tracer = std::make_unique<world_tracer::WorldTracer>();
+    // Source geometry from PartStore instead of decoding .part files. The store
+    // already holds every resident part's triangles AND the bake's BVH in its
+    // shared manager, so the artifact decode was re-reading from disk what is
+    // in RAM two pointers away -- once per part, on the app thread, on every
+    // rebuild, and every sector publish forces a rebuild.
+    //
+    // Safe because tracer.reset() accompanies EVERY state.apply() in this file,
+    // additions and removals alike, so no entry PartStore might release can
+    // outlive the tracer holding a pointer to it. find() is the non-loading
+    // lookup -- get_or_load here would reintroduce the disk read it is meant to
+    // remove (and could recurse through this very callback).
+    tracer->set_resident_source(
+        [this](uint64_t hash, world_tracer::ResidentPart& out) {
+            const viewer::LoadedPart* lp = store->find(hash);
+            if (!lp) return false;   // not resident -> let the disk path try
+            // Coarsest rung: the same level the artifact path selects, and the
+            // cheapest geometry that still bounds the part correctly.
+            if (!lp->lod_blas.empty()) {
+                if (const auto* e = store->blas().get_entry(lp->lod_blas.back()))
+                    out.entries.push_back(e);
+            }
+            // A resident part's lod_blas carries only its OWN geometry, so a
+            // compositional part still needs its children expanded -- exactly
+            // the artifact path's non-flat branch.
+            if (!lp->children.empty()) {
+                out.children = &lp->children;
+                out.expand_children = true;
+            }
+            return !out.entries.empty() || out.expand_children;
+        });
     std::string err;
     if (!tracer->build(cfg.cache_root, trace_instances, err)) {
         std::fprintf(stderr, "WorldSession: tracer build failed: %s\n", err.c_str());
@@ -5071,6 +5260,12 @@ bool WorldSession::Impl::ensure_tracer() const {
             module_by_hash[e.part_hash] = e.module;
     }
 
+    if (std::getenv("MATTER_TRACER_PROFILE")) {
+        std::fprintf(stderr,
+                     "[tracer.build] instances=%zu resident=%zu disk=%zu\n",
+                     trace_instances.size(), tracer->resident_hits(),
+                     tracer->disk_loads());
+    }
     tracer_dirty = false;
     return true;
 }
@@ -6008,7 +6203,8 @@ bool build_vulkan_part(uint64_t part_hash,
                               const viewer::LoadedPart& loaded,
                               int force_lod,
                               const VtSurfaceClassifier* surface,
-                              viewer::VkScenePart& part) {
+                              viewer::VkScenePart& part,
+                              viewer::SurfaceClassCache* out_cache) {
     if (loaded.lod_mesh_data.empty()) return false;
     const auto build_t0 = std::chrono::steady_clock::now();
     g_pub_vertexloop_ms = 0.0;
@@ -6239,6 +6435,16 @@ bool build_vulkan_part(uint64_t part_hash,
             if (classify && !part.surface_materials.empty()) {
                 const uint32_t columns =
                     static_cast<uint32_t>(part.surface_materials.size());
+                // These weights used to land in a function-local `scratch` and
+                // die with it, which forced the app thread's VT registration to
+                // classify the identical vertex array a second time. Park them
+                // on the caller's cache instead: same work, kept.
+                if (out_cache) {
+                    out_cache->tape_hash = surface->tape_hash;
+                    out_cache->material_count = columns;
+                    out_cache->weights.assign(loaded.lod_mesh_data.size(), {});
+                    out_cache->lanes.assign(loaded.lod_mesh_data.size(), {});
+                }
                 std::vector<uint8_t> scratch;
                 for (size_t mi = 0; mi < loaded.lod_mesh_data.size(); ++mi) {
                     if (mesh_offsets[mi] == UINT32_MAX) continue;
@@ -6253,15 +6459,33 @@ bool build_vulkan_part(uint64_t part_hash,
                         weights = &part.lod_chart_meshes[mi].surface_weights;
                     } else {
                         const auto cls2_t0 = std::chrono::steady_clock::now();
+                        std::vector<uint8_t>& dst =
+                            out_cache ? out_cache->weights[mi] : scratch;
                         vt_classify_chart_vertices(
                             *surface, mesh.vertices.data(),
                             mesh.normals.empty() ? nullptr
                                                  : mesh.normals.data(),
-                            static_cast<uint32_t>(mesh.vertex_count), scratch);
+                            static_cast<uint32_t>(mesh.vertex_count), dst);
                         g_pub_classify_ms +=
                             std::chrono::duration<double, std::milli>(
                                 std::chrono::steady_clock::now() - cls2_t0).count();
-                        weights = &scratch;
+                        weights = &dst;
+                    }
+                    // Lanes are NOT part of the argmax override -- they exist
+                    // only for the GPU tape -- but this is the one place that
+                    // already holds this rung's vertices on a worker thread, so
+                    // computing them here is what takes them off the app thread.
+                    if (out_cache) {
+                        const auto lane_t0 = std::chrono::steady_clock::now();
+                        const uint32_t lane_count = vt_compute_chart_lanes(
+                            *surface, mesh.vertices.data(),
+                            static_cast<uint32_t>(mesh.vertex_count),
+                            out_cache->lanes[mi]);
+                        out_cache->lane_count = lane_count;
+                        g_pub_classify_ms +=
+                            std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - lane_t0).count();
+                        if (weights == &scratch) weights = &out_cache->weights[mi];
                     }
                     if (weights->size() !=
                         static_cast<size_t>(mesh.vertex_count) * columns)
@@ -6855,15 +7079,27 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->vk_scene->set_composite_debug_view(controls.composite_debug_view);
     const auto build_end = std::chrono::steady_clock::now();
     const auto draw_start = std::chrono::steady_clock::now();
+    // Per-zone attribution for the draw region. `zone_mark` advances like the
+    // publish job's pub_split(): each call returns microseconds since the last.
+    auto zone_mark = draw_start;
+    auto zone_split = [&zone_mark]() -> uint64_t {
+        const auto now = std::chrono::steady_clock::now();
+        const uint64_t us = (uint64_t)std::chrono::duration_cast<
+            std::chrono::microseconds>(now - zone_mark).count();
+        zone_mark = now;
+        return us;
+    };
     // Demand-driven VT: register the (part, rung) variants last frame's
     // demand pass asked for, so this frame's vt_draw_slots table already
     // carries them (their tail fills record inside record_cull_and_render).
     impl_->service_vt_rung_requests();
+    impl_->draw_vt_requests.add(zone_split());
     if (!impl_->vk_scene->record_cull_and_render(
             frame, matrices, cam.position, budget, err)) {
         impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
         return false;
     }
+    impl_->draw_cull_render.add(zone_split());
     if (animation_skin_queue_pending_seal &&
         !impl_->vk_scene->finish_animation_skinning_frame(frame.frame_slot,
                                                            frame.serial)) {
@@ -6871,10 +7107,12 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         err = "animation skin frame queue failed to seal after GPU record";
         return false;
     }
+    impl_->draw_skin_seal.add(zone_split());
     if (!impl_->vk_scene->record_composite_to_swapchain(frame, err)) {
         impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
         return false;
     }
+    impl_->draw_composite.add(zone_split());
     if (impl_->vk_scene->consume_dlss_history_reset())
         impl_->vk_temporal.invalidate();
     const auto draw_end = std::chrono::steady_clock::now();

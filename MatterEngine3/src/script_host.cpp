@@ -2087,9 +2087,27 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             }
         }
         if (!has_persisted_binding) {
+            // EXPERIMENT (2026-07-30), off by default:
+            // MATTER_STREAM_SKIP_PART_WRITE=1 measures what the artifact write
+            // costs a streamed sector now that PartStore::stage_from_bake means
+            // nothing reads it back during a fill.
+            //
+            // Deliberately gated on retain_geometry, which ONLY the streaming
+            // path sets -- a normal bake still always writes, so this cannot
+            // corrupt the content-addressed cache. It is still NOT correct even
+            // for streaming: the .part is the publication ledger's retained
+            // artifact and the publish job's get_or_load fallback, so expect
+            // fallout on any path that misses the in-memory hand-off. It exists
+            // to price the write, not to ship.
+            static const bool skip_part_write =
+                std::getenv("MATTER_STREAM_SKIP_PART_WRITE") != nullptr;
+            if (skip_part_write && opts.retain_geometry) {
+                ok = true;
+            } else {
             ok = part_asset::save_v2(path, blas, tlas,
                                      kids.empty() ? nullptr : kids.data(), kids.size(),
                                      lods, emitters, r.resolved_hash);
+            }
         } else {
             const auto root = opts.parts_dir.empty() ? std::filesystem::path(".") : std::filesystem::path(opts.parts_dir);
             const auto nonce = matter::animation::generate_build_nonce();

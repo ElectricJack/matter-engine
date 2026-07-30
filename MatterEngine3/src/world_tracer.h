@@ -6,7 +6,11 @@
 // through a custom int32 instance BVH.
 // (MSL's TLAS packs instance index into 12 bits of instPrim and uses u16 node
 // links — too small for meadow scale, hence this instance layer.)
+#include "blas_manager.hpp"   // BLASManager::BLASEntry (resident-source slices)
+#include "part_asset_v2.h"    // part_asset::ChildInstance
+
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -17,6 +21,37 @@ struct TraceInstance {
     uint64_t part_hash;
     float    transform[16];   // row-major world placement
 };
+
+// One part's traceable geometry, ALREADY RESIDENT in the caller's own
+// BLASManager. See set_resident_source.
+struct ResidentPart {
+    // Entries to trace, in the caller's manager. Empty is legal for a pure
+    // assembler (geometry-less part that only places children).
+    std::vector<const BLASManager::BLASEntry*> entries;
+    // Child-instance table to expand, or null for merged/flat geometry.
+    // Borrowed: must outlive the tracer, same as `entries`.
+    const std::vector<part_asset::ChildInstance>* children = nullptr;
+    bool expand_children = false;
+};
+
+// Source resident geometry instead of decoding .part files.
+//
+// Without this, build() reads every unique part hash off disk into a private
+// BLASManager plus a TLASManager(65536) -- a second full copy of geometry the
+// caller usually already has in RAM, re-read on every rebuild, and rebuilds are
+// triggered by every sector publish. On a streaming world that is O(world) disk
+// I/O on the app thread. Returning true here skips all of it and points the
+// tracer's slices straight at the caller's entries.
+//
+// CONTRACT, and it is sharp: the returned pointers are borrowed, not owned. The
+// tracer caches them for its whole lifetime, so ANY mutation of the source
+// manager that can move or free an entry -- PartStore::release_blas erases from
+// the entries vector and rebuilds handle_to_index_, shifting every index above
+// the released one -- must destroy the tracer first. Return false for a hash you
+// cannot vouch for and the disk path handles it.
+//
+// Set before build(). A null source (the default) keeps the pure-disk behaviour.
+using ResidentSource = std::function<bool(uint64_t hash, ResidentPart& out)>;
 
 struct Hit {
     float t = -1.0f;
@@ -45,6 +80,14 @@ public:
     // scratch + "/" + cache_path_flat/_resolved). Set before build().
     void set_scratch_dir(const std::string& dir);
 
+    // See ResidentSource. Set before build().
+    void set_resident_source(ResidentSource source);
+
+    // Diagnostics for the last build(): how many unique part hashes came from
+    // the resident source vs. had to be decoded off disk.
+    size_t resident_hits() const;
+    size_t disk_loads() const;
+
     // Post-expansion instance table (children expanded by the compositional
     // fallback get their own entries). Valid after build().
     size_t expanded_instance_count() const;
@@ -54,6 +97,7 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     std::string scratch_dir_;
+    ResidentSource resident_source_;
 };
 
 } // namespace world_tracer

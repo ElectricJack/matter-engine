@@ -114,10 +114,13 @@ struct BLASSlice {
 };
 
 struct LoadedTracePart {
-    // Owning managers — kept alive for the tracer's lifetime.
+    // Owning managers — kept alive for the tracer's lifetime. BOTH NULL when
+    // the part came from the resident source: the slices then point into the
+    // caller's manager and this side owns nothing (which is the whole point —
+    // no second copy of the geometry, and no TLASManager(65536) per part).
     std::unique_ptr<BLASManager> blas_mgr;
     std::unique_ptr<TLASManager> tlas_mgr;
-    // Entries to trace (pointers into blas_mgr).
+    // Entries to trace (into blas_mgr, or into the caller's manager).
     std::vector<BLASSlice> slices;
     // Children from the compositional file (empty if loaded from flat artifact).
     std::vector<part_asset::ChildInstance> children;
@@ -177,13 +180,68 @@ struct WorldTracer::Impl {
     bool built_ = false;
     std::string cache_root_;
     std::string scratch_dir_;
+    ResidentSource resident_source_;
+    size_t resident_hits_ = 0;
+    size_t disk_loads_ = 0;
 
     // ---- Loading ----
+
+    // Finish a LoadedTracePart once its `slices` are populated, whatever the
+    // source: local AABB from the traced triangles, then publish into parts_.
+    LoadedTracePart* finish_part(uint64_t hash,
+                                 std::unique_ptr<LoadedTracePart> ltp) {
+        ltp->local_mn[0] = ltp->local_mn[1] = ltp->local_mn[2] =  1e30f;
+        ltp->local_mx[0] = ltp->local_mx[1] = ltp->local_mx[2] = -1e30f;
+        for (const BLASSlice& s : ltp->slices) {
+            if (!s.entry) continue;
+            for (const Tri& t : s.entry->triangles) {
+                const float3* vs[3] = {&t.vertex0, &t.vertex1, &t.vertex2};
+                for (const float3* v : vs) {
+                    ltp->local_mn[0] = std::fmin(ltp->local_mn[0], v->x);
+                    ltp->local_mn[1] = std::fmin(ltp->local_mn[1], v->y);
+                    ltp->local_mn[2] = std::fmin(ltp->local_mn[2], v->z);
+                    ltp->local_mx[0] = std::fmax(ltp->local_mx[0], v->x);
+                    ltp->local_mx[1] = std::fmax(ltp->local_mx[1], v->y);
+                    ltp->local_mx[2] = std::fmax(ltp->local_mx[2], v->z);
+                }
+            }
+        }
+        ltp->ok = true;
+        LoadedTracePart* raw = ltp.get();
+        parts_.emplace(hash, std::move(ltp));
+        return raw;
+    }
 
     LoadedTracePart* load_part(const std::string& cache_root,
                                uint64_t hash, std::string& err) {
         auto it = parts_.find(hash);
         if (it != parts_.end()) return it->second->ok ? it->second.get() : nullptr;
+
+        // Resident source first: the caller usually already holds this part's
+        // geometry, and decoding the artifact would just duplicate it.
+        if (resident_source_) {
+            ResidentPart rp;
+            if (resident_source_(hash, rp) &&
+                (!rp.entries.empty() || (rp.expand_children && rp.children &&
+                                         !rp.children->empty()))) {
+                auto ltp = std::make_unique<LoadedTracePart>();
+                ltp->slices.reserve(rp.entries.size());
+                for (const BLASManager::BLASEntry* e : rp.entries) {
+                    if (!e) continue;
+                    BLASSlice s;
+                    s.entry = e;
+                    ltp->slices.push_back(s);
+                }
+                // loaded_flat drives expansion: expand_children=false means the
+                // supplied entries already carry the whole subtree's geometry.
+                ltp->loaded_flat = !rp.expand_children;
+                if (rp.expand_children && rp.children)
+                    ltp->children = *rp.children;
+                ++resident_hits_;
+                return finish_part(hash, std::move(ltp));
+            }
+        }
+        ++disk_loads_;
 
         auto ltp = std::make_unique<LoadedTracePart>();
         ltp->blas_mgr = std::make_unique<BLASManager>();
@@ -249,29 +307,9 @@ struct WorldTracer::Impl {
         // Store children for compositional expansion by expand_instance()
         ltp->children = std::move(children);
 
-        // Compute local AABB
-        ltp->local_mn[0] = ltp->local_mn[1] = ltp->local_mn[2] =  1e30f;
-        ltp->local_mx[0] = ltp->local_mx[1] = ltp->local_mx[2] = -1e30f;
-        for (const BLASSlice& s : ltp->slices) {
-            for (const Tri& t : s.entry->triangles) {
-                const float3* vs[3] = {&t.vertex0, &t.vertex1, &t.vertex2};
-                for (const float3* v : vs) {
-                    ltp->local_mn[0] = std::fmin(ltp->local_mn[0], v->x);
-                    ltp->local_mn[1] = std::fmin(ltp->local_mn[1], v->y);
-                    ltp->local_mn[2] = std::fmin(ltp->local_mn[2], v->z);
-                    ltp->local_mx[0] = std::fmax(ltp->local_mx[0], v->x);
-                    ltp->local_mx[1] = std::fmax(ltp->local_mx[1], v->y);
-                    ltp->local_mx[2] = std::fmax(ltp->local_mx[2], v->z);
-                }
-            }
-        }
-
-        // If the part loaded but has no slices/triangles, make a valid degenerate:
-        // keep local AABB as empty but mark ok so we don't re-attempt.
-        ltp->ok = true;
-        LoadedTracePart* raw = ltp.get();
-        parts_.emplace(hash, std::move(ltp));
-        return raw;
+        // A part that loaded but has no slices/triangles finishes as a valid
+        // degenerate: empty local AABB, but ok so we do not re-attempt it.
+        return finish_part(hash, std::move(ltp));
     }
 
     // ---- Instance expansion (recursive, depth-capped) ----
@@ -538,6 +576,18 @@ void WorldTracer::set_scratch_dir(const std::string& dir) {
     scratch_dir_ = dir;
 }
 
+void WorldTracer::set_resident_source(ResidentSource source) {
+    resident_source_ = std::move(source);
+}
+
+size_t WorldTracer::resident_hits() const {
+    return impl_ ? impl_->resident_hits_ : 0;
+}
+
+size_t WorldTracer::disk_loads() const {
+    return impl_ ? impl_->disk_loads_ : 0;
+}
+
 bool WorldTracer::build(const std::string& cache_root,
                         const std::vector<TraceInstance>& instances,
                         std::string& err) {
@@ -545,6 +595,7 @@ bool WorldTracer::build(const std::string& cache_root,
     Impl& im = *impl_;
     im.cache_root_ = cache_root;
     im.scratch_dir_ = scratch_dir_;
+    im.resident_source_ = resident_source_;
 
     // nm_pool_ is a deque so pointers remain stable across push_back.
     im.expanded_.reserve(instances.size());

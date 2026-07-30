@@ -85,6 +85,37 @@ struct LoadedCluster {
 // A part loaded into the shared BLASManager: one BLAS handle per LOD level
 // (regenerated via lod_bake, since .part stores only LOD0), plus the LOD
 // metadata the SectorResolver needs.
+// Per-rung surfaces() tape classification, computed ONCE on the bake worker and
+// carried with the part so the app thread never recomputes it.
+//
+// build_vulkan_part's legacy-parity block already classified every rung to
+// derive the per-vertex material argmax, and then threw the weights away; the
+// VT demand-registration path on the app thread then classified the very same
+// vertex array again. Measured at 19.6 ms (classify) + 16.4 ms (lanes) per
+// registration against 0.3 ms for the registration itself -- 99% of the cost,
+// on the frame-critical thread, for work a worker had already done.
+// See docs/sector-bake-time-findings-2026-07-30.md.
+struct SurfaceClassCache {
+    // Invalidation key: the tape these weights were classified against. A live
+    // tape edit bumps the world's hash, so a stale cache is detectable rather
+    // than silently wrong.
+    uint64_t tape_hash = 0;
+    uint32_t material_count = 0;   // columns per vertex in `weights`
+    uint32_t lane_count = 0;       // f16 lanes per vertex in `lanes`
+    // Parallel to LoadedPart::lod_mesh_data. An empty entry means "not cached
+    // for this rung" -- the consumer falls back to classifying, so a partial
+    // cache is a performance question, never a correctness one.
+    std::vector<std::vector<uint8_t>>  weights;
+    std::vector<std::vector<uint16_t>> lanes;
+
+    bool valid_for(size_t rung, uint64_t hash, size_t vertex_count) const {
+        return tape_hash == hash && material_count > 0 &&
+               rung < weights.size() &&
+               weights[rung].size() ==
+                   vertex_count * static_cast<size_t>(material_count);
+    }
+};
+
 struct LoadedPart {
     std::vector<BLASHandle> lod_blas;       // lod_blas[i] -> BLAS for LOD level i
     float                   bound_radius = 0.0f;
@@ -116,6 +147,11 @@ struct LoadedPart {
     // same deduplicated handle once per independent registration (v3 flats),
     // so they cannot safely drive rollback/release on their own.
     std::vector<BLASHandle> owned_blas;
+
+    // Filled by build_vulkan_part on the bake worker; read by the VT
+    // demand-registration path on the app thread. Empty for every part whose
+    // world has no surfaces() tape.
+    SurfaceClassCache surface_cache;
 };
 
 // Walk the part tree rooted at root_hash depth-first, depth-capped at 8.

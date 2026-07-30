@@ -934,6 +934,17 @@ public:
         return poisoned() ? 0 : uploaded_raster_draw_command_count_;
     }
 
+    // Static cluster/vertex/index upload census (process-wide, monotonic).
+    // kFull recreates the buffers and rewrites all of them; kAppend writes only
+    // the dirty ranges. Which one runs, how often, and the worst single kFull
+    // is what separates "the renderer is slow" from "the renderer occasionally
+    // rewrites the whole world inside one frame".
+    struct StaticUploadCensus {
+        uint64_t full_count = 0, full_us = 0, full_max_us = 0;
+        uint64_t append_count = 0, append_us = 0;
+    };
+    static StaticUploadCensus static_upload_census();
+
 private:
     struct GpuCluster {
         float aabb_min[3];
