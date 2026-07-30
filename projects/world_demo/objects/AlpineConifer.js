@@ -3,9 +3,9 @@ import { dryPalette, vegetationParams } from 'shared-lib/vegetation';
 
 // The three crowns deliberately share only the low-level drawing idiom.  Pine
 // is a low, many-leader scramble, spruce is a descending tiered spire, and fir
-// keeps fewer, lifted shelves inside a narrow outline.  Each live shoot carries
-// one irregular, branch-aligned needle cushion.  The connected multi-ring
-// surface overlaps neighboring shoots without exposing repeated leaf solids.
+// keeps fewer, lifted shelves inside a narrow outline.  Foliage is emitted as
+// overlapping whorl sectors that span whole branches, so neighboring healthy
+// shoots share a layered crown envelope while drought opens sector-sized holes.
 class AlpineConifer extends Part {
   static params = { seed: 0, dryness: 0.35, size: 1.0, form: 0 };
 
@@ -36,99 +36,76 @@ class AlpineConifer extends Part {
       this.tint(c[0], c[1], c[2], c[3]);
       this.line(a, b, ra * S, rb * S);
     };
-    const needleCushion = (base, angle, length, state, droop, color) => {
+    const needleShelf = (center, angle, reach, arms, state, n, outerRise) => {
+      if (state === 0) return;
       const live = state === 2;
-      const sides = 5;
-      const ringCount = live ? 3 : 2;
-      const span = length * S * (live ? 1.55 : 1.08);
-      const halfWidth = length * S * (live ? 0.30 : 0.22);
-      const halfHeight = length * S * (live ? 0.26 : 0.19);
-      const slope = 0.12 - droop;
-      const axisScale = 1 / Math.sqrt(1 + slope * slope);
-      const axis = [Math.cos(angle) * axisScale, slope * axisScale,
-                    Math.sin(angle) * axisScale];
-      const side = [-Math.sin(angle), 0, Math.cos(angle)];
-      const up = [-Math.cos(angle) * slope * axisScale, axisScale,
-                  -Math.sin(angle) * slope * axisScale];
-      const axial = live ? [-0.29, 0.05, 0.38] : [-0.15, 0.17];
-      const bulge = live ? [0.68, 1.0, 0.72] : [0.82, 0.72];
-      const rings = [];
-      const phase = r.range(-0.45, 0.45);
-
-      for (let ringIndex = 0; ringIndex < ringCount; ++ringIndex) {
-        const sideShift = r.range(-0.12, 0.12) * halfWidth;
-        const upShift = r.range(-0.08, 0.12) * halfHeight;
-        const center = [
-          base[0] + axis[0] * span * axial[ringIndex] +
-            side[0] * sideShift + up[0] * upShift,
-          base[1] + axis[1] * span * axial[ringIndex] +
-            side[1] * sideShift + up[1] * upShift,
-          base[2] + axis[2] * span * axial[ringIndex] +
-            side[2] * sideShift + up[2] * upShift,
-        ];
-        const ring = [];
-        for (let point = 0; point < sides; ++point) {
-          const theta = phase + ringIndex * 0.23 + point * pi2 / sides;
-          const irregularity = r.range(0.84, 1.16) * bulge[ringIndex];
-          const across = Math.cos(theta) * halfWidth * irregularity;
-          const vertical = Math.sin(theta) * halfHeight *
-            r.range(0.88, 1.13) * bulge[ringIndex];
-          ring.push([
-            center[0] + side[0] * across + up[0] * vertical,
-            center[1] + side[1] * across + up[1] * vertical,
-            center[2] + side[2] * across + up[2] * vertical,
-          ]);
+      const color = needles(n, state);
+      const sector = pi2 / arms;
+      const centerAngle = angle + r.range(-0.045, 0.045);
+      const halfAngle = live
+        ? [sector * 0.22, sector * 0.58, sector * 0.43]
+        : [sector * 0.18, sector * 0.34, sector * 0.27];
+      const radial = live
+        ? [reach * 0.27, reach * 0.63, reach * 1.02]
+        : [reach * 0.29, reach * 0.49, reach * 0.70];
+      const thickness = reach * (live ? 0.095 : 0.065);
+      const levelOffset = r.range(-0.055, 0.055) * reach;
+      const top = [];
+      const bottom = [];
+      for (let slice = 0; slice < 3; ++slice) {
+        const topRow = [];
+        const bottomRow = [];
+        for (let band = 0; band < radial.length; ++band) {
+          const t = band / (radial.length - 1);
+          const radiusVariation = band === 2
+            ? r.range(0.88, 1.12)
+            : r.range(0.94, 1.07);
+          const radius = radial[band] * radiusVariation;
+          const theta = centerAngle + (slice - 1) * halfAngle[band] +
+            r.range(-0.025, 0.025);
+          const edgeTaper = band === 1 ? 1.0 : (band === 0 ? 0.52 : 0.36);
+          const bandThickness = thickness * edgeTaper;
+          const middleLift = band === 1 ? thickness * 0.28 : 0;
+          const shelfY = center[1] + levelOffset + outerRise * t + middleLift +
+            reach * r.range(-0.032, 0.032);
+          const x = center[0] + Math.cos(theta) * radius;
+          const z = center[2] + Math.sin(theta) * radius;
+          topRow.push([x, shelfY + bandThickness * r.range(0.38, 0.58), z]);
+          bottomRow.push([x, shelfY - bandThickness * r.range(0.42, 0.62), z]);
         }
-        rings.push(ring);
+        top.push(topRow);
+        bottom.push(bottomRow);
       }
-
-      const start = [
-        base[0] - axis[0] * span * (live ? 0.44 : 0.29) +
-          side[0] * r.range(-0.06, 0.06) * halfWidth,
-        base[1] - axis[1] * span * (live ? 0.44 : 0.29) -
-          halfHeight * r.range(0.02, 0.10),
-        base[2] - axis[2] * span * (live ? 0.44 : 0.29) +
-          side[2] * r.range(-0.06, 0.06) * halfWidth,
-      ];
-      const end = [
-        base[0] + axis[0] * span * (live ? 0.49 : 0.31) +
-          up[0] * r.range(-0.04, 0.08) * halfHeight,
-        base[1] + axis[1] * span * (live ? 0.49 : 0.31) +
-          up[1] * r.range(-0.04, 0.08) * halfHeight,
-        base[2] + axis[2] * span * (live ? 0.49 : 0.31) +
-          up[2] * r.range(-0.04, 0.08) * halfHeight,
-      ];
-
+      const quad = (a, b, c, d) => {
+        this.vertex(a[0], a[1], a[2]); this.vertex(b[0], b[1], b[2]);
+        this.vertex(c[0], c[1], c[2]);
+        this.vertex(a[0], a[1], a[2]); this.vertex(c[0], c[1], c[2]);
+        this.vertex(d[0], d[1], d[2]);
+      };
       this.fill(MAT.foliageThin);
       this.tint(color[0], color[1], color[2], color[3]);
       this.beginShape(SHAPE.triangles);
-      for (let point = 0; point < sides; ++point) {
-        const next = (point + 1) % sides;
-        this.vertex(start[0], start[1], start[2]);
-        this.vertex(rings[0][next][0], rings[0][next][1], rings[0][next][2]);
-        this.vertex(rings[0][point][0], rings[0][point][1], rings[0][point][2]);
-        for (let ringIndex = 0; ringIndex < ringCount - 1; ++ringIndex) {
-          const a = rings[ringIndex][point];
-          const b = rings[ringIndex][next];
-          const c = rings[ringIndex + 1][next];
-          const d = rings[ringIndex + 1][point];
-          this.vertex(a[0], a[1], a[2]); this.vertex(b[0], b[1], b[2]);
-          this.vertex(c[0], c[1], c[2]);
-          this.vertex(a[0], a[1], a[2]); this.vertex(c[0], c[1], c[2]);
-          this.vertex(d[0], d[1], d[2]);
+      for (let slice = 0; slice < 2; ++slice) {
+        for (let band = 0; band < 2; ++band) {
+          quad(top[slice][band], top[slice + 1][band],
+            top[slice + 1][band + 1], top[slice][band + 1]);
+          quad(bottom[slice][band + 1], bottom[slice + 1][band + 1],
+            bottom[slice + 1][band], bottom[slice][band]);
         }
-        const last = rings[ringCount - 1];
-        this.vertex(last[point][0], last[point][1], last[point][2]);
-        this.vertex(last[next][0], last[next][1], last[next][2]);
-        this.vertex(end[0], end[1], end[2]);
+      }
+      for (let edge = 0; edge < 3; edge += 2) {
+        for (let band = 0; band < 2; ++band) {
+          quad(top[edge][band + 1], bottom[edge][band + 1],
+            bottom[edge][band], top[edge][band]);
+        }
+      }
+      for (let slice = 0; slice < 2; ++slice) {
+        quad(top[slice + 1][0], top[slice][0],
+          bottom[slice][0], bottom[slice + 1][0]);
+        quad(top[slice][2], top[slice + 1][2],
+          bottom[slice + 1][2], bottom[slice][2]);
       }
       this.endShape();
-    };
-    const spray = (base, angle, length, state, n, droop) => {
-      if (state === 0) return;
-      const color = needles(n, state);
-      needleCushion(base, angle + r.range(-0.06, 0.06), length, state, droop,
-        color);
     };
 
     if (form === 0) {
@@ -158,13 +135,19 @@ class AlpineConifer extends Part {
             const tip = [base[0] + Math.cos(branchA) * reach * S,
                          base[1] + (0.18 - t * 0.08) * reach * S,
                          base[2] + Math.sin(branchA) * reach * S];
-            const dead = vitality(n) === 0;
+            const state = vitality(n);
+            const dead = state === 0;
             const finalTip = [tip[0], tip[1] - (dead ? 0.10 : 0.02) * S, tip[2]];
             drawWood(base, finalTip, 0.030 * (1 - t * 0.45), 0.007, n);
-            spray(finalTip, branchA, 0.20 * (1 - t * 0.18), vitality(n), n, 0.05);
+            needleShelf(base, branchA, reach * S, arms, state, n,
+              finalTip[1] - base[1]);
           }
         }
-        spray(top, a, 0.19, vitality(170 + stem), 170 + stem, 0.02);
+        const capState = vitality(170 + stem);
+        for (let cap = 0; cap < 3; ++cap) {
+          needleShelf(top, a + cap * pi2 / 3, 0.16 * S, 3, capState,
+            170 + stem * 3 + cap, 0.035 * S);
+        }
       }
       return;
     }
@@ -197,11 +180,15 @@ class AlpineConifer extends Part {
                        Math.sin(a) * branch * 0.52];
         drawWood([0, y, 0], elbow, 0.031 * (1 - t * 0.56), 0.016, n);
         drawWood(elbow, tip, 0.016, 0.005, n + 1);
-        // Two outer shoots keep foliage joined to each branch even on sparse firs.
-        spray(elbow, a, isSpruce ? 0.22 : 0.18, state, n + 30, isSpruce ? 0.13 : -0.02);
-        spray(tip, a, isSpruce ? 0.25 : 0.20, state, n + 50, isSpruce ? 0.17 : -0.04);
+        needleShelf([0, y, 0], a, branch, arms, state, n + 30, tip[1] - y);
       }
     }
-    spray(summit, r.range(0, pi2), 0.15, vitality(490), 490, isSpruce ? 0.02 : -0.08);
+    const summitState = vitality(490);
+    const summitCenter = [summit[0], height * 0.965, summit[2]];
+    for (let cap = 0; cap < 3; ++cap) {
+      needleShelf(summitCenter, cap * pi2 / 3 + r.range(-0.08, 0.08),
+        (isSpruce ? 0.13 : 0.11) * S, 3, summitState, 490 + cap,
+        (isSpruce ? -0.015 : 0.025) * S);
+    }
   }
 }

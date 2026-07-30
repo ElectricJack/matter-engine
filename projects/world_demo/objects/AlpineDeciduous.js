@@ -3,8 +3,8 @@ import { dryPalette, vegetationParams } from 'shared-lib/vegetation';
 
 // Broadleaf trees use explicit two-level branch hierarchies: the few heavy
 // limbs establish a species silhouette, then a bounded number of fine twigs
-// hold leaves.  This keeps close views legible and gives drought somewhere
-// botanical to act (outer shoots) without erasing the structural crown.
+// pass through a few large, overlapping canopy regions.  Drought removes or
+// contracts whole hashed regions, leaving nonuniform windows through the crown.
 class AlpineDeciduous extends Part {
   static params = { seed: 0, dryness: 0.35, size: 1.0, form: 0 };
 
@@ -37,78 +37,59 @@ class AlpineDeciduous extends Part {
       this.tint(c[0], c[1], c[2], c[3]);
       this.line(a, b, ra * S, rb * S);
     };
-    const crownMass = (base, angle, count, size, state, color) => {
+    const canopyCloud = (center, radii, state, n, baseColor) => {
+      if (state === 0) return;
       const live = state === 2;
-      const sides = live ? 6 : 5;
+      const sides = live ? 8 : 6;
       const ringCount = live ? 3 : 2;
-      const densityScale = 0.88 + Math.min(7, count) * 0.018;
-      const span = size * S * (live ? 2.55 : 1.45) * densityScale;
-      const halfWidth = size * S * (live ? 1.04 : 0.67) * densityScale;
-      const halfHeight = size * S * (live ? 0.90 : 0.57) * densityScale;
-      const slope = live ? 0.24 : 0.18;
-      const axisScale = 1 / Math.sqrt(1 + slope * slope);
-      const axis = [Math.cos(angle) * axisScale, slope * axisScale,
-                    Math.sin(angle) * axisScale];
-      const side = [-Math.sin(angle), 0, Math.cos(angle)];
-      const up = [-Math.cos(angle) * slope * axisScale, axisScale,
-                  -Math.sin(angle) * slope * axisScale];
-      const axial = live ? [-0.30, 0.02, 0.32] : [-0.12, 0.16];
-      const bulge = live ? [0.76, 1.0, 0.82] : [0.86, 0.76];
+      const stressScale = live ? 1.0 : 0.63;
+      const rx = radii[0] * stressScale;
+      const ry = radii[1] * stressScale;
+      const rz = radii[2] * stressScale;
+      const axial = live ? [-0.38, 0.02, 0.40] : [-0.24, 0.25];
+      const bulge = live ? [0.77, 1.0, 0.75] : [0.88, 0.79];
       const rings = [];
       const phase = r.range(-0.42, 0.42);
 
       for (let ringIndex = 0; ringIndex < ringCount; ++ringIndex) {
-        const sideShift = r.range(-0.20, 0.20) * halfWidth;
-        const upShift = r.range(-0.13, 0.18) * halfHeight;
-        const center = [
-          base[0] + axis[0] * span * axial[ringIndex] +
-            side[0] * sideShift + up[0] * upShift,
-          base[1] + axis[1] * span * axial[ringIndex] +
-            side[1] * sideShift + up[1] * upShift,
-          base[2] + axis[2] * span * axial[ringIndex] +
-            side[2] * sideShift + up[2] * upShift,
+        const ringCenter = [
+          center[0] + r.range(-0.12, 0.12) * rx,
+          center[1] + axial[ringIndex] * ry + r.range(-0.05, 0.06) * ry,
+          center[2] + r.range(-0.12, 0.12) * rz,
         ];
         const ring = [];
         for (let point = 0; point < sides; ++point) {
-          const theta = phase + ringIndex * 0.31 + point * pi2 / sides;
+          const theta = phase + ringIndex * 0.27 + point * pi2 / sides;
           const irregularity = r.range(0.80, 1.18) * bulge[ringIndex];
-          const across = Math.cos(theta) * halfWidth * irregularity;
-          const vertical = Math.sin(theta) * halfHeight *
-            r.range(0.86, 1.16) * bulge[ringIndex];
           ring.push([
-            center[0] + side[0] * across + up[0] * vertical,
-            center[1] + side[1] * across + up[1] * vertical,
-            center[2] + side[2] * across + up[2] * vertical,
+            ringCenter[0] + Math.cos(theta) * rx * irregularity,
+            ringCenter[1] + r.range(-0.10, 0.10) * ry,
+            ringCenter[2] + Math.sin(theta) * rz *
+              r.range(0.82, 1.17) * bulge[ringIndex],
           ]);
         }
         rings.push(ring);
       }
 
-      const start = [
-        base[0] - axis[0] * span * (live ? 0.44 : 0.28) +
-          side[0] * r.range(-0.10, 0.10) * halfWidth,
-        base[1] - axis[1] * span * (live ? 0.44 : 0.28) -
-          halfHeight * r.range(0.01, 0.12),
-        base[2] - axis[2] * span * (live ? 0.44 : 0.28) +
-          side[2] * r.range(-0.10, 0.10) * halfWidth,
+      const bottom = [
+        center[0] + r.range(-0.06, 0.06) * rx,
+        center[1] - (live ? 0.70 : 0.48) * ry,
+        center[2] + r.range(-0.06, 0.06) * rz,
       ];
-      const end = [
-        base[0] + axis[0] * span * (live ? 0.46 : 0.30) +
-          up[0] * r.range(-0.06, 0.12) * halfHeight,
-        base[1] + axis[1] * span * (live ? 0.46 : 0.30) +
-          up[1] * r.range(-0.06, 0.12) * halfHeight,
-        base[2] + axis[2] * span * (live ? 0.46 : 0.30) +
-          up[2] * r.range(-0.06, 0.12) * halfHeight,
+      const top = [
+        center[0] + r.range(-0.07, 0.07) * rx,
+        center[1] + (live ? 0.72 : 0.49) * ry,
+        center[2] + r.range(-0.07, 0.07) * rz,
       ];
-
+      const color = foliage(n, state, baseColor);
       this.fill(MAT.foliageThin);
       this.tint(color[0], color[1], color[2], color[3]);
       this.beginShape(SHAPE.triangles);
       for (let point = 0; point < sides; ++point) {
         const next = (point + 1) % sides;
-        this.vertex(start[0], start[1], start[2]);
-        this.vertex(rings[0][next][0], rings[0][next][1], rings[0][next][2]);
+        this.vertex(bottom[0], bottom[1], bottom[2]);
         this.vertex(rings[0][point][0], rings[0][point][1], rings[0][point][2]);
+        this.vertex(rings[0][next][0], rings[0][next][1], rings[0][next][2]);
         for (let ringIndex = 0; ringIndex < ringCount - 1; ++ringIndex) {
           const a = rings[ringIndex][point];
           const b = rings[ringIndex][next];
@@ -122,17 +103,11 @@ class AlpineDeciduous extends Part {
         const last = rings[ringCount - 1];
         this.vertex(last[point][0], last[point][1], last[point][2]);
         this.vertex(last[next][0], last[next][1], last[next][2]);
-        this.vertex(end[0], end[1], end[2]);
+        this.vertex(top[0], top[1], top[2]);
       }
       this.endShape();
     };
-    const leafFan = (base, a, count, size, state, n, color) => {
-      if (state === 0) return;
-      const tint = foliage(n, state, color);
-      crownMass(base, a + r.range(-0.10, 0.10), count, size, state, tint);
-    };
-    const branch = (base, a, reach, rise, n, pale, leafSize, leafColor, twigs, fanCount) => {
-      const state = vitality(n);
+    const branch = (base, a, reach, rise, n, pale, twigs) => {
       const elbow = [base[0] + Math.cos(a) * reach * S * 0.56,
                      base[1] + rise * S * 0.45,
                      base[2] + Math.sin(a) * reach * S * 0.56];
@@ -152,11 +127,7 @@ class AlpineDeciduous extends Part {
                          joint[1] + tr * S * r.range(0.16, 0.42),
                          joint[2] + Math.sin(ta) * tr * S];
         wood(joint, twigTip, 0.012, 0.004, n + 11 + twig, pale);
-        const twigState = vitality(n * 7 + twig + 500);
-        leafFan(twigTip, ta, fanCount, leafSize, Math.min(state, twigState),
-          n + 30 + twig, leafColor);
       }
-      leafFan(tip, a, fanCount, leafSize, state, n + 60, leafColor);
     };
 
     if (form === 0) {
@@ -169,7 +140,21 @@ class AlpineDeciduous extends Part {
         const y = (1.10 + (i % 3) * 0.22) * S;
         const reach = r.range(0.62, 0.88);
         branch([0, y, 0], a, reach, r.range(0.30, 0.54), 30 + i * 20,
-          false, 0.19, [0.18, 0.40, 0.13, 1], 3, 7);
+          false, 3);
+      }
+      const phase = r.range(-0.25, 0.25);
+      canopyCloud([0, 1.72 * S, 0], [0.72 * S, 0.62 * S, 0.72 * S],
+        vitality(900), 900, [0.18, 0.40, 0.13, 1]);
+      for (let region = 0; region < 5; ++region) {
+        const a = phase + region * pi2 / 5 + r.range(-0.16, 0.16);
+        const center = [Math.cos(a) * 0.47 * S,
+                        r.range(1.48, 1.68) * S,
+                        Math.sin(a) * 0.47 * S];
+        canopyCloud(center,
+          [r.range(0.55, 0.66) * S, r.range(0.46, 0.56) * S,
+           r.range(0.55, 0.66) * S],
+          vitality(910 + region * 7), 910 + region * 7,
+          [0.18, 0.40, 0.13, 1]);
       }
       return;
     }
@@ -187,8 +172,22 @@ class AlpineDeciduous extends Part {
           const y = (0.92 + i * 0.29) * S;
           branch([root[0] * (1 - y / top[1]), y, root[2] * (1 - y / top[1])], ba,
             r.range(0.42, 0.61), r.range(0.16, 0.35), 220 + stem * 100 + i * 15,
-            true, 0.145, [0.27, 0.49, 0.18, 1], 3, 5);
+            true, 3);
         }
+      }
+      const phase = r.range(-0.30, 0.30);
+      canopyCloud([0, 1.93 * S, 0], [0.43 * S, 0.63 * S, 0.43 * S],
+        vitality(965), 965, [0.27, 0.49, 0.18, 1]);
+      for (let region = 0; region < 5; ++region) {
+        const a = phase + region * 2.40 + r.range(-0.14, 0.14);
+        const center = [Math.cos(a) * r.range(0.20, 0.32) * S,
+                        (1.39 + region * 0.26) * S,
+                        Math.sin(a) * r.range(0.20, 0.32) * S];
+        canopyCloud(center,
+          [r.range(0.42, 0.50) * S, r.range(0.47, 0.55) * S,
+           r.range(0.40, 0.48) * S],
+          vitality(970 + region * 9), 970 + region * 9,
+          [0.27, 0.49, 0.18, 1]);
       }
       return;
     }
@@ -200,7 +199,21 @@ class AlpineDeciduous extends Part {
       const a = i * pi2 / 6 + r.range(-0.28, 0.28);
       const y = (0.78 + (i % 3) * 0.25) * S;
       branch([0, y, 0], a, r.range(0.77, 1.12), r.range(0.18, 0.48), 430 + i * 24,
-        false, 0.235, [0.20, 0.43, 0.14, 1], 4, 7);
+        false, 4);
+    }
+    const phase = r.range(-0.32, 0.32);
+    canopyCloud([0, 1.34 * S, 0], [0.77 * S, 0.49 * S, 0.77 * S],
+      vitality(1040), 1040, [0.20, 0.43, 0.14, 1]);
+    for (let region = 0; region < 5; ++region) {
+      const a = phase + region * pi2 / 5 + r.range(-0.20, 0.20);
+      const center = [Math.cos(a) * r.range(0.54, 0.66) * S,
+                      r.range(1.22, 1.44) * S,
+                      Math.sin(a) * r.range(0.54, 0.66) * S];
+      canopyCloud(center,
+        [r.range(0.62, 0.72) * S, r.range(0.42, 0.50) * S,
+         r.range(0.58, 0.69) * S],
+        vitality(1050 + region * 11), 1050 + region * 11,
+        [0.20, 0.43, 0.14, 1]);
     }
   }
 }
