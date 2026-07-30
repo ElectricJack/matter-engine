@@ -156,17 +156,16 @@ class StreamMountain extends World {
 
     // Emit biome controls after height so height_at() does not evaluate them.
     //
-    // These two are also the tape's only WORLD-SPACE noise channels, and they
-    // are tuned for that job: the surfaces() tape's own noise2/ridge2 sample
-    // PART-LOCAL x/z, which on a 64 m sector variant repeats identically in
-    // every sector, so anything that must vary across a massif has to arrive
-    // through the field. Both stay inside [-1, 1], far below the (deliberately
-    // unreachable) 2.0 biome thresholds above, so every sector still
-    // classifies as `foothills` for scatter exactly as before.
-    //   relief   — 4 octaves at 420/210/105/52 m: breaks the snow line into
-    //              tongues and fingers and roughens the rock/scree boundary.
-    //   moisture — 3 octaves at 260/130/65 m: separates scree fans from the
-    //              grassier aprons between them.
+    // HISTORICAL NOTE: these two noise channels used to be the tape's only
+    // world-space noise — surfaces() read them back as s.moisture / s.relief
+    // before s.noise2World existed. The tape now samples the SAME fbm (same
+    // seeds, same tuning) directly, so these are dead for appearance; they are
+    // kept BYTE-IDENTICAL anyway because any edit here re-hashes the field
+    // program and re-bakes every sector part for zero visual gain. Retire them
+    // (plain constants) the next time the field changes for real reasons.
+    // For scatter they remain inert: both stay inside [-1, 1], far below the
+    // (deliberately unreachable) 2.0 biome thresholds above, so every sector
+    // still classifies as `foothills` exactly as before.
     const relief = noise2(p.worldSeed ^ 0xA1, 1/420, 4, 0.55, 2.0);
     const moisture = noise2(p.worldSeed ^ 0xA2, 1/260, 3, 0.55, 2.0);
     return {
@@ -179,35 +178,43 @@ class StreamMountain extends World {
 
   // -------------------------------------------------------------------------
   // The classifier tape (chart-VT Phase 4). Compiled native and evaluated per
-  // chart vertex; world inputs (altitude, moisture, relief) are legal because
+  // chart vertex; world inputs (altitude, world-frame noise) are legal because
   // terrain sectors are world-anchored variants — one instance per sector.
   //
   // Weights are NORMALIZED by the runtime and the compositor keeps the top 2,
   // so what matters is each material's weight RELATIVE to its neighbours; the
-  // (1 - w) products below are what make one class actually displace another
-  // instead of averaging with it. Budget note: the tape is capped at 64 ops
-  // (terrain_field kMaxOps) and every literal costs a register, hence the
-  // hoisted ONE/ZERO pair and the `inv` helper (one `blend` op per complement
-  // instead of the four `oneMinus()` spends).
+  // oneMinus() products below are what make one class actually displace
+  // another instead of averaging with it. (Budget note: the tape is capped at
+  // 64 EMITTED ops, but the parser dedups identical consts and oneMinus is a
+  // native single op, so no hoisting tricks are needed.)
   // -------------------------------------------------------------------------
   surfaces(s) {
-    const ONE = s.value(1);
-    const ZERO = s.value(0);
-    const inv = (a) => s.blend(ONE, ZERO, a);
+    const seed = StreamMountain.params.worldSeed;
 
     const slope = s.slope;          // 1 - normal.y: 0.13 @30deg, 0.29 @45deg,
     const up = s.normalY;           //               0.50 @60deg, 0.71 @75deg
     const alt = s.altitude;         // world y (sectors are world-anchored)
-    const macro = s.relief;         // world fbm, 420 m down to 52 m
-    const patch = s.moisture;       // world fbm, 260 m down to 65 m
-    const fine = s.noise2(0x5EEDA1, 1 / 17, 2, 0.5, 2.0);   // sector-local
+    // World-frame fbm, sampled directly. macro/patch carry the exact seeds and
+    // tuning of the field()'s relief/moisture channels they used to be smuggled
+    // through, so their values are bit-identical to the pre-migration tape —
+    // but appearance edits here now touch only the tape hash (VT pages), never
+    // the field program (sector parts).
+    //   macro — 4 octaves at 420/210/105/52 m: breaks the snow line into
+    //           tongues and fingers and roughens the rock/scree boundary.
+    //   patch — 3 octaves at 260/130/65 m: separates scree fans from the
+    //           grassier aprons between them.
+    //   fine  — 17/8.5 m snow-line grain; world-frame so it no longer repeats
+    //           with the 64 m sector period the old part-local sampling had.
+    const macro = s.noise2World(seed ^ 0xA1, 1 / 420, 4, 0.55, 2.0);
+    const patch = s.noise2World(seed ^ 0xA2, 1 / 260, 3, 0.55, 2.0);
+    const fine = s.noise2World(0x5EEDA1, 1 / 17, 2, 0.5, 2.0);
 
     // --- rock: steep faces, with a ragged rather than iso-slope boundary ----
     // +/-0.055 of slope is about +/-4 deg of wobble on the wall/apron edge, so
     // the wall/talus edge follows the massif instead of tracing an iso-slope.
     const steepN = slope.add(macro.mul(0.055));
     const rock = steepN.smoothstep(0.30, 0.55);             // ~46deg..~63deg
-    const invRock = inv(rock);
+    const invRock = rock.oneMinus();
 
     // --- snow: altitude-driven, noise-broken, shed from the steep faces -----
     // The snow line is a 400-520 m fade on the RAW altitude, but the altitude
@@ -220,7 +227,7 @@ class StreamMountain extends World {
     // Retention: full on ground flatter than ~31deg, nothing past ~66deg.
     const snowKeep = up.smoothstep(0.41, 0.86);
     const snow = snowBand.mul(snowKeep);
-    const invSnow = inv(snow);
+    const invSnow = snow.oneMinus();
 
     // --- scree: talus aprons around the walls, plus stony high ground -------
     // apron: the talus slope band (~23-37 deg, the real angle of repose),
@@ -235,12 +242,15 @@ class StreamMountain extends World {
     const fans = apron.mul(invRock).mul(dryFan).mul(highs);
     // The tree line: above 300-470 m even gentle ground is stone, not turf.
     // This band does double duty. It is what makes the strip between the last
-    // grass and the snow line read as alpine rubble, and it is the tape's only
-    // rung-INDEPENDENT handle: `slope` comes from MESH normals, and a 2 m-voxel
+    // grass and the snow line read as alpine rubble, and it is a rung-
+    // INDEPENDENT handle: `slope` comes from MESH normals, and a 2 m-voxel
     // rung-0 sector reads visibly gentler than the 0.5 m-voxel rung-2 build of
     // the same face, so a purely slope-driven classifier drifts toward turf with
     // distance. Altitude does not flatten with the LOD ladder, so the far field
     // stays stone because it is HIGH even when its normals say it is gentle.
+    // (s.fieldSlope / s.fieldCurvature are the other rung-independent handles
+    // now available — swapping the classifier onto them is a retuning pass with
+    // visual acceptance, deliberately not part of this migration.)
     const altHigh = alt.smoothstep(300, 470);
     const stony = invRock.mul(invSnow).mul(altHigh);
     const scree = fans.max(stony);
@@ -251,7 +261,7 @@ class StreamMountain extends World {
     // steeper or higher belongs to rock/scree, and an all-zero sample falls back
     // to this material anyway (it is tape material 0).
     const gentle = up.smoothstep(0.82, 0.94);
-    const ground = gentle.mul(invSnow).mul(inv(altHigh));
+    const ground = gentle.mul(invSnow).mul(altHigh.oneMinus());
 
     s.weight(ALPINE_GROUND, ground);
     s.weight(ALPINE_ROCK, rock);
