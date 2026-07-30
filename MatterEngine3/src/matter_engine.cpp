@@ -5297,6 +5297,70 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         out.vertex_count, out.surface_weights);
                 }
             }
+            // Fail-closed parity for the LEGACY path: bake the tape's argmax
+            // material into the raster vertex stream. Whenever a rung draws
+            // without a VT slot (variant rejected over budget, page fill still
+            // pending, or a rung with no chart table at all), the per-vertex
+            // material_index is what the shader honours — and until now it
+            // carried the pre-tape bake output, so every fallback rendered as
+            // if the surfaces() classification did not exist (the uniform tan
+            // far field). With the argmax written here the fallback degrades
+            // to "classified, tileset-textured, no VT texel detail" and the
+            // tape stays authoritative regardless of VT budgets. Runs before
+            // the renderer derives rt_lods/record.material_ids from these
+            // vertices, so RT sees the same classification. Live tape edits
+            // do NOT re-run this (update_vt_part_surface only swaps the
+            // residency layer's weight copies); the override refreshes when
+            // the part re-registers on stream churn or world reload.
+            if (classify && !part.surface_materials.empty()) {
+                const uint32_t columns =
+                    static_cast<uint32_t>(part.surface_materials.size());
+                std::vector<uint8_t> scratch;
+                for (size_t mi = 0; mi < loaded.lod_mesh_data.size(); ++mi) {
+                    if (mesh_offsets[mi] == UINT32_MAX) continue;
+                    const auto& mesh = loaded.lod_mesh_data[mi];
+                    if (mesh.vertex_count <= 0) continue;
+                    // Reuse the chart rung's weights when they exist; a
+                    // chartless rung (permanently legacy) gets a scratch
+                    // classification just for this override.
+                    const std::vector<uint8_t>* weights = nullptr;
+                    if (mi < part.lod_chart_meshes.size() &&
+                        !part.lod_chart_meshes[mi].surface_weights.empty()) {
+                        weights = &part.lod_chart_meshes[mi].surface_weights;
+                    } else {
+                        vt_classify_chart_vertices(
+                            *surface, mesh.vertices.data(),
+                            mesh.normals.empty() ? nullptr
+                                                 : mesh.normals.data(),
+                            static_cast<uint32_t>(mesh.vertex_count), scratch);
+                        weights = &scratch;
+                    }
+                    if (weights->size() !=
+                        static_cast<size_t>(mesh.vertex_count) * columns)
+                        continue;
+                    for (int vi = 0; vi < mesh.vertex_count; ++vi) {
+                        const uint8_t* w =
+                            weights->data() + static_cast<size_t>(vi) * columns;
+                        uint32_t best = 0, best_weight = 0, total = 0;
+                        for (uint32_t k = 0; k < columns; ++k) {
+                            total += w[k];
+                            if (w[k] > best_weight) {
+                                best_weight = w[k];
+                                best = k;
+                            }
+                        }
+                        // A vertex the tape does not claim keeps its baked
+                        // material (matches the compositor, which also falls
+                        // back to material_ids on all-zero columns).
+                        if (total == 0) continue;
+                        viewer::VkRasterVertex& vertex =
+                            part.vertices[mesh_offsets[mi] +
+                                          static_cast<uint32_t>(vi)];
+                        vertex.material_index = part.surface_materials[best];
+                        vertex.surface.w = 1.0f;
+                    }
+                }
+            }
         }
     }
 
