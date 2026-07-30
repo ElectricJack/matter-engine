@@ -75,7 +75,7 @@ constexpr uint32_t kMaxMeshEntries = 512;
 // 64 * 48 B = 3 KiB; sizing covers every cached entry plus the worst-case
 // one-shot burst (kMaxBatchesInFlight batches of kMaxRequestsPerFill distinct
 // variants), so a fill is never demoted to mode 2 for arena pressure alone.
-constexpr uint32_t kTapeSlotOps = 64;
+constexpr uint32_t kTapeSlotOps = 96;   // == kMaxSurfaceOps (arena slot size)
 constexpr uint32_t kTapeArenaSlots =
     kMaxMeshEntries +
     VtCompositor::kMaxBatchesInFlight * kMaxRequestsPerFill;   // 1536

@@ -102,10 +102,10 @@ const band  = bandY.mul(1/9).fract();                  // 9 m strata period
 const strat = band.smoothstep(0.05, 0.12).mul(band.oneMinus().smoothstep(0.02, 0.08));
 ```
 
-Budget: the 64-op dedup'd cap (`FieldRuntime::kMaxOps`) is unchanged. It has
-headroom (StreamMountain's tape is 41 ops) and per-texel cost now scales with
-op count; raising it is a measured decision after Phase 2 telemetry, not a
-default.
+Budget: the dedup'd op cap (`FieldRuntime::kMaxOps`) started at 64. The P4
+authoring pass proved 64 binding (strata, speckle, and seep terms were cut to
+fit at 64/64), and P2 telemetry showed per-op cost harmless, so the cap was
+raised to 96 post-P4. Registers stay u8-addressable (< 0xFF sentinel).
 
 This phase ships alone and is immediately useful: the per-vertex path picks up
 the new ops (coarse but correct), and worlds can start authoring against them.
@@ -257,7 +257,11 @@ Rules:
 Idiomatic payoff (the gully-wetness example this was designed around):
 
 ```js
-const gully = s.fieldCurvature(4).smoothstep(0.5, 2.5);   // metres deep
+// P4 field note: on StreamMountain-scale terrain, radius 4 with 0.5–2.5 m
+// edges is a near-no-op — usable gully signal needs radius 8–12 with
+// 0.2–2.0 m edges. Tune per terrain; the original (4, 0.5–2.5) numbers are
+// kept out of the example so they don't get cargo-culted.
+const gully = s.fieldCurvature(8).smoothstep(0.25, 2.0);  // metres deep
 const drift = s.noise3World(seed^0xC4, 1/140, 3).mul(0.10).add(1.0);
 s.tint(drift, drift, drift.mul(0.98));                    // ±10 % value drift
 s.wetness(gully.mul(s.slope.oneMinus().smoothstep(0.2, 0.6)));

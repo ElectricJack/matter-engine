@@ -69,7 +69,7 @@ struct GpuSurfOp {
 #define VT_SIN_WY    6
 #define VT_SIN_WZ    7
 
-#define VT_TAPE_MAX_OPS 64
+#define VT_TAPE_MAX_OPS 96
 
 // ---- P3 appearance lanes (texel-tape spec section 5) ----------------------
 // The clamp ranges and the wetness response mirror terrain_field.h's

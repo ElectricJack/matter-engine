@@ -287,10 +287,12 @@ int main() {
         CHECK(parse_tape(big.c_str(), bp, err), err.c_str());
         CHECK(bp.ops.size() == 1, "80 identical consts dedup to one op");
         std::string over;
-        for (int i = 0; i < 65; ++i) over += "const " + std::to_string(i) + "\n";
+        for (int i = 0; i < kMaxSurfaceOps + 1; ++i)
+            over += "const " + std::to_string(i) + "\n";
         over += "material 2 r0\n";
         SurfaceProgram op_;
-        CHECK(!parse_tape(over.c_str(), op_, err), ">64 distinct ops rejected");
+        CHECK(!parse_tape(over.c_str(), op_, err),
+              "distinct ops past the cap rejected");
     }
 
     // ---- sub / abs / oneminus / pow ----
@@ -605,11 +607,13 @@ int main() {
         rt.weights_at(pos, up, nullptr, w);
         CHECK(w[0] == 1.79261982f, "remapped refs still evaluate the noise3 golden");
         std::string over;
-        for (int i = 0; i < 64; ++i) over += "const " + std::to_string(i) + "\n";
-        over += "noise3 7 0.25 3 0.5 2\nmaterial 2 r64\n";
+        for (int i = 0; i < kMaxSurfaceOps; ++i)
+            over += "const " + std::to_string(i) + "\n";
+        over += "noise3 7 0.25 3 0.5 2\nmaterial 2 r" +
+                std::to_string(kMaxSurfaceOps) + "\n";
         SurfaceProgram op_;
         CHECK(!parse_tape(over.c_str(), op_, err),
-              "a noise3 op past 64 emitted ops still trips the cap");
+              "a noise3 op past the emitted-op cap still trips it");
     }
 
     // ================= P3 appearance lanes (spec section 5) ==============

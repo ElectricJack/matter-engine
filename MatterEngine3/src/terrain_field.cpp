@@ -13,7 +13,7 @@
 // ---------------------------------------------------------------------------
 // File-scope constants shared between parse (static fn) and eval.
 // ---------------------------------------------------------------------------
-static constexpr int kMaxOps = 64;
+static constexpr int kMaxOps = 96;
 
 // ---------------------------------------------------------------------------
 // Internal noise core (file-scope anonymous namespace).
@@ -276,7 +276,7 @@ bool FieldProgram::parse(const std::string& text, FieldProgram& out, std::string
                 reg_out = r; is_imm = false; return true;
             }
             // float literal: emit implicit const op first
-            if (op_idx + 1 >= kMaxOps) { err = "too many ops (implicit const would exceed 64)"; return false; }
+            if (op_idx + 1 >= kMaxOps) { err = "too many ops (implicit const would exceed the op cap)"; return false; }
             try { imm_out = parse_float(toks[tok_idx]); }
             catch (...) { err = std::string(op) + ": invalid float"; return false; }
             is_imm = true;

@@ -468,9 +468,9 @@ class TapePlain extends World {
                   sp.materials[3].handle == snow &&
                   sp.materials[4].handle == meadow,
               "StreamMountain weights resolve in declaration order");
-        // The tape shares the 64-register budget with every literal it names;
+        // The tape shares the register budget with every literal it names;
         // leave the headroom visible so an edit that blows it fails here.
-        CHECK((int)sp.ops.size() <= 64,   // terrain_field.cpp kMaxOps
+        CHECK((int)sp.ops.size() <= terrain_field::kMaxSurfaceOps,
               "StreamMountain tape fits the op budget");
 
         terrain_field::FieldProgram fp;

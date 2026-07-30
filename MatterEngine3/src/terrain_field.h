@@ -98,7 +98,7 @@ public:
 private:
     FieldProgram prog_;
 
-    static constexpr int kMaxOps = 64;
+    static constexpr int kMaxOps = 96;
 
     // Evaluate register [0..target] into regs[], using (x, z) as world coords.
     void eval_regs(float regs[], int count, float x, float z) const;
@@ -150,8 +150,11 @@ constexpr int kSurfaceInputWorldFirst = kSurfInWorldX;
 constexpr int kMaxSurfaceMaterials = 8;
 
 // Hard cap on emitted (deduplicated) tape ops — mirrors FieldRuntime::kMaxOps
-// and the shader's VT_TAPE_MAX_OPS register file.
-constexpr int kMaxSurfaceOps = 64;
+// and the shader's VT_TAPE_MAX_OPS register file. Raised 64 -> 96 when the
+// StreamMountain P4 pass proved 64 binding (strata + speckle + seep terms were
+// cut for budget); the GPU cost is the register file and the arena slot, both
+// measured harmless at 64 with headroom.
+constexpr int kMaxSurfaceOps = 96;
 
 // ---------------------------------------------------------------------------
 // P3 appearance lanes (texel-tape spec §5). Three optional output directives

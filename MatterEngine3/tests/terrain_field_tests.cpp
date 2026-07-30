@@ -84,14 +84,15 @@ int main() {
             p, err), "forward register ref rejected");
         CHECK(!err.empty(), "forward ref error message set");
     }
-    // --- programs with >64 ops are rejected --------------------------------
+    // --- programs beyond the op cap are rejected ---------------------------
     {
-        // Generate 70 'const 1' lines — well above the kMaxOps=64 limit.
+        // Generate 100 'const 1' lines — above the kMaxOps=96 limit.
         std::string big;
-        for (int i = 0; i < 70; ++i) big += "const 1\n";
+        for (int i = 0; i < 100; ++i) big += "const 1\n";
         big += "height r0\nmoisture r1\nrelief r2\nseaLevel 0\nbiome 0.65 0.35\n";
         FieldProgram p; std::string err;
-        CHECK(!FieldProgram::parse(big, p, err), "program with >64 ops rejected");
+        CHECK(!FieldProgram::parse(big, p, err),
+              "program past the op cap rejected");
         CHECK(!err.empty(), "oversized program error message set");
     }
     // --- materials ----------------------------------------------------------
