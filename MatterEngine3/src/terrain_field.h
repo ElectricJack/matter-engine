@@ -199,6 +199,17 @@ private:
     std::string text_;
 };
 
+// P2 (texel-rate tape) accessors: evaluate one noise-family surface op at an
+// explicit sample point — EXACTLY the arithmetic weights_at uses (fbm2 /
+// fbm3_op including the optional domain-warp tail). Two consumers:
+//   * the GPU tape packer pre-resolves world noise ops to constants for
+//     non-world-anchored parts (the fallback pins them to world origin, so
+//     the op's value IS a constant — computed here with the CPU float path);
+//   * tests cross-check the GLSL noise twin against the CPU reference.
+// Pure accessors over the existing internals; no semantic changes.
+float surface_op_fbm2(const Op& op, float x, float z, bool ridged);
+float surface_op_fbm3(const Op& op, float x, float y, float z, bool ridged);
+
 // World-frame evaluation context. `field` supplies height/moisture/relief/
 // biome; `local_to_world` is a row-major float[16] (null = identity). Passing
 // no context at all (null SurfaceWorldContext*) makes every world input

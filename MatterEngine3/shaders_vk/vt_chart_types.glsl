@@ -30,11 +30,18 @@ struct GpuTri {
     vec4 p0, p1, p2;     // xyz part-local position, w = plane U
     vec4 n0, n1, n2;     // xyz part-local normal,   w = plane V
     uvec4 mat;           // x = TriEx materialId
-    // WP-F surfaces()-tape weights: 8 u8 columns per vertex, 2 u32 each.
-    // wA = {v0 cols 0-3, v0 cols 4-7, v1 cols 0-3, v1 cols 4-7};
-    // wB = {v2 cols 0-3, v2 cols 4-7, 0, 0}. Zero when the part has no tape.
+    // Per-vertex tape payload — TWO packings, selected by the request's
+    // weight mode (see vt_chart_gpu.h):
+    //   mode 2: u8 weight columns. wA = {v0 cols 0-3, v0 cols 4-7,
+    //           v1 cols 0-3, v1 cols 4-7}; wB = {v2 cols 0-3, v2 cols 4-7,
+    //           0, 0}; wC = 0.
+    //   mode 3 (P2 texel-rate tape): f16 FIELD LANES, 8 per vertex, lane l
+    //           in word l>>1 at half (l&1)*16 (unpackHalf2x16 order):
+    //           wA = v0 lanes, wB = v1 lanes, wC = v2 lanes.
+    // Zero when the part has no tape (those modes never read them).
     uvec4 wA;
     uvec4 wB;
+    uvec4 wC;
 };
 
 #endif  // VT_CHART_TYPES_GLSL

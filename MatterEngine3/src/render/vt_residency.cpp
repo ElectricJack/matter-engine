@@ -756,12 +756,45 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
         v.context.surface_weights = v.surface_weights.data();
         v.context.surface_materials = v.surface_materials.data();
         v.context.surface_material_count = context.surface_material_count;
-        v.context.surface_tape_hash = context.surface_tape_hash;
+        // P2 content-key fold: the stored hash carries the weight-seam mode
+        // (env gate) and kVtBakeVersion, so a mode flip or version bump can
+        // never alias the old identity (vt_types.h).
+        v.context.surface_tape_hash = vt_page_content_salt(
+            context.surface_tape_hash, vt_tape_gpu_enabled() ? 3u : 2u);
+        // P2: adopt the mode-3 payload (tape text + f16 field lanes). The
+        // world-anchored flag and local_to_world are VALUE fields — the
+        // struct copy above already took them.
+        if (context.surface_tape_text != nullptr) {
+            v.surface_tape_text = context.surface_tape_text;
+            v.context.surface_tape_text = v.surface_tape_text.c_str();
+        } else {
+            v.surface_tape_text.clear();
+            v.context.surface_tape_text = nullptr;
+        }
+        if (context.surface_lanes != nullptr &&
+            context.surface_lane_count > 0) {
+            v.surface_lanes.assign(
+                context.surface_lanes,
+                context.surface_lanes +
+                    static_cast<size_t>(vertices) *
+                        context.surface_lane_count);
+            v.context.surface_lanes = v.surface_lanes.data();
+            v.context.surface_lane_count = context.surface_lane_count;
+        } else {
+            v.surface_lanes.clear();
+            v.context.surface_lanes = nullptr;
+            v.context.surface_lane_count = 0;
+        }
     } else {
         v.context.surface_weights = nullptr;
         v.context.surface_materials = nullptr;
         v.context.surface_material_count = 0;
         v.context.surface_tape_hash = 0;
+        v.surface_tape_text.clear();
+        v.surface_lanes.clear();
+        v.context.surface_tape_text = nullptr;
+        v.context.surface_lanes = nullptr;
+        v.context.surface_lane_count = 0;
     }
     // WP-H: the rung's finest chart density, for the coarse-page enrichment
     // skip in queue_enrich.
@@ -924,7 +957,10 @@ bool VtResidency::update_variant_surface(uint64_t variant_hash, uint32_t rung,
                                          size_t weight_bytes,
                                          const uint32_t* materials,
                                          uint32_t material_count,
-                                         uint64_t tape_hash) {
+                                         uint64_t tape_hash,
+                                         const char* tape_text,
+                                         const uint16_t* lanes,
+                                         uint32_t lane_count) {
     if (!ready_) return false;
     const auto found = layer_of_.find(variant_key(variant_hash, rung));
     if (found == layer_of_.end()) return false;
@@ -932,32 +968,62 @@ bool VtResidency::update_variant_surface(uint64_t variant_hash, uint32_t rung,
     if (!v.live) return false;
 
     const size_t old_bytes =
-        v.surface_weights.size() + v.surface_materials.size() * sizeof(uint32_t);
+        v.surface_weights.size() + v.surface_materials.size() * sizeof(uint32_t) +
+        v.surface_tape_text.size() +
+        v.surface_lanes.size() * sizeof(uint16_t);
 
     const bool strip = material_count == 0 || weights == nullptr ||
                        materials == nullptr || material_count > 8u;
     const size_t expected =
         static_cast<size_t>(v.context.vertex_count) * material_count;
     if (!strip && weight_bytes != expected) return false;
+    if (!strip && lanes != nullptr && lane_count > 8u) return false;
 
     if (strip) {
         v.surface_weights.clear();
         v.surface_materials.clear();
+        v.surface_tape_text.clear();
+        v.surface_lanes.clear();
         v.context.surface_weights = nullptr;
         v.context.surface_materials = nullptr;
         v.context.surface_material_count = 0;
         v.context.surface_tape_hash = 0;
+        v.context.surface_tape_text = nullptr;
+        v.context.surface_lanes = nullptr;
+        v.context.surface_lane_count = 0;
     } else {
         v.surface_weights.assign(weights, weights + weight_bytes);
         v.surface_materials.assign(materials, materials + material_count);
         v.context.surface_weights = v.surface_weights.data();
         v.context.surface_materials = v.surface_materials.data();
         v.context.surface_material_count = material_count;
-        v.context.surface_tape_hash = tape_hash;
+        // Same P2 content-key fold as register_variant.
+        v.context.surface_tape_hash = vt_page_content_salt(
+            tape_hash, vt_tape_gpu_enabled() ? 3u : 2u);
+        if (tape_text != nullptr) {
+            v.surface_tape_text = tape_text;
+            v.context.surface_tape_text = v.surface_tape_text.c_str();
+        } else {
+            v.surface_tape_text.clear();
+            v.context.surface_tape_text = nullptr;
+        }
+        if (lanes != nullptr && lane_count > 0) {
+            v.surface_lanes.assign(
+                lanes, lanes + static_cast<size_t>(v.context.vertex_count) *
+                                   lane_count);
+            v.context.surface_lanes = v.surface_lanes.data();
+            v.context.surface_lane_count = lane_count;
+        } else {
+            v.surface_lanes.clear();
+            v.context.surface_lanes = nullptr;
+            v.context.surface_lane_count = 0;
+        }
     }
 
     const size_t new_bytes =
-        v.surface_weights.size() + v.surface_materials.size() * sizeof(uint32_t);
+        v.surface_weights.size() + v.surface_materials.size() * sizeof(uint32_t) +
+        v.surface_tape_text.size() +
+        v.surface_lanes.size() * sizeof(uint16_t);
     v.mesh_bytes = v.mesh_bytes - std::min(v.mesh_bytes, old_bytes) + new_bytes;
     mesh_bytes_used_ =
         mesh_bytes_used_ - std::min(mesh_bytes_used_, old_bytes) + new_bytes;

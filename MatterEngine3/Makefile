@@ -401,6 +401,9 @@ build/shaders_vk/vt_composite.comp.spv \
     build/shaders_vk/vt_enrich_ao.comp.spv: \
     shaders_vk/vt_chart_types.glsl shaders_vk/vt_chart_resolve.glsl
 
+# P2 (texel-rate tape): the GLSL noise twin + tape interpreter include.
+build/shaders_vk/vt_composite.comp.spv: shaders_vk/vt_surface_tape.glsl
+
 # WP-E (chart VT): vt_common.glsl is the shared VT sampling helper. It is an
 # include, not a stage, so it has no .spv of its own -- but every consumer must
 # rebuild when it changes. WP-G added the RT stages: rt_surface_common.glsl now

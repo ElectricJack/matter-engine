@@ -103,11 +103,19 @@ class VtCompositor final : public VtPageFiller {
     // VtPartContext carries surfaces()-tape weights (surface_material_count
     // > 0) are promoted per-request to kSurfaceTape — barycentrically
     // interpolated per-vertex weight columns, top-2 kept per texel (WP-F,
-    // contract C4). The debug ramp remains a test-only override.
+    // contract C4) — or, when the part ALSO carries the canonical tape text
+    // (surface_tape_text) and vt_tape_gpu_enabled(), to kSurfaceTapeGpu:
+    // the packed tape evaluated PER TEXEL by the GPU interpreter (P2,
+    // weight-seam mode 3; MATTER_VT_TAPE_GPU=0 is the escape hatch back to
+    // mode 2). The debug ramp remains a test-only override. NOTE: a part the
+    // compositor promoted to mode 3 packs f16 field lanes (not u8 weight
+    // columns) into its cached triangle stream, so forcing kSurfaceTape via
+    // set_weight_mode on such a part is unsupported — use the env gate.
     enum class WeightMode : uint32_t {
         kTriangleMaterial = 0,   // Phase-2 stub: TriEx materialId, weight 1
         kDebugRampBlend = 1,     // test hook: 2-material ramp along plane U
         kSurfaceTape = 2,        // WP-F: per-vertex tape weights (auto-selected)
+        kSurfaceTapeGpu = 3,     // P2: per-texel GPU tape (auto-selected)
     };
     // Per-vertex tape weights packed into the GPU triangle stream, 8 u8
     // columns per vertex — must equal terrain_field::kMaxSurfaceMaterials.
@@ -147,8 +155,17 @@ class VtCompositor final : public VtPageFiller {
         uint64_t requests_skipped = 0;
         uint64_t mesh_cache_builds = 0;
         uint64_t mesh_cache_evictions = 0;
+        // --- P2 appends (texel-rate tape) ---
+        uint64_t tape_mode3_entries = 0;   // mesh entries packed for mode 3
+        uint64_t tape_lane_overflows = 0;  // tapes past the 8-lane cap (mode-2
+                                           // fallback, warn-once logged)
+        uint64_t tape_pack_failures = 0;   // parse/pack/arena failures (mode-2
+                                           // fallback)
     };
     const Stats& stats() const { return stats_; }
+    // P2: whether this compositor instance packs mode-3 tapes (the
+    // MATTER_VT_TAPE_GPU gate as read at create time; see vt_types.h).
+    bool tape_gpu_enabled() const;
 
   private:
     struct Impl;

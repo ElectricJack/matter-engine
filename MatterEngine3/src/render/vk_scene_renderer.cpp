@@ -3896,6 +3896,25 @@ void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
                 context.surface_material_count =
                     static_cast<uint32_t>(part.surface_materials.size());
                 context.surface_tape_hash = part.surface_tape_hash;
+                // P2: the mode-3 payload (tape text, anchoring, transform,
+                // per-vertex field lanes). Empty text keeps the rung mode 2.
+                if (!part.surface_tape_text.empty()) {
+                    context.surface_tape_text =
+                        part.surface_tape_text.c_str();
+                    context.surface_world_anchored =
+                        part.surface_world_anchored;
+                    std::memcpy(context.surface_local_to_world,
+                                part.surface_local_to_world,
+                                sizeof(context.surface_local_to_world));
+                    if (!mesh.surface_lanes.empty() &&
+                        mesh.surface_lane_count > 0 &&
+                        mesh.surface_lanes.size() ==
+                            static_cast<size_t>(mesh.vertex_count) *
+                                mesh.surface_lane_count) {
+                        context.surface_lanes = mesh.surface_lanes.data();
+                        context.surface_lane_count = mesh.surface_lane_count;
+                    }
+                }
             }
         }
         const uint32_t slot = vt_->register_variant(
@@ -4122,7 +4141,10 @@ void VkSceneRenderer::begin_vt_surface_update() {
 
 bool VkSceneRenderer::update_vt_part_surface(
     uint64_t part_hash, const std::vector<std::vector<uint8_t>>& rung_weights,
-    const std::vector<uint32_t>& materials, uint64_t tape_hash) {
+    const std::vector<uint32_t>& materials, uint64_t tape_hash,
+    const char* tape_text,
+    const std::vector<std::vector<uint16_t>>* rung_lanes,
+    uint32_t lane_count) {
     if (!vt_surface_update_open_ || !vt_ || !vt_->available()) return false;
     bool updated = false;
     // Same rung sweep bound as VtResidency::release_variant.
@@ -4132,10 +4154,22 @@ bool VkSceneRenderer::update_vt_part_surface(
             rung < rung_weights.size() ? &rung_weights[rung] : nullptr;
         const bool strip =
             materials.empty() || weights == nullptr || weights->empty();
+        // P2: the mode-3 payload for this rung (tape text is per part; lanes
+        // are per rung and optional — a missing/empty entry means the tape
+        // reads no field inputs, and lane_count 0 travels with it).
+        const std::vector<uint16_t>* lanes =
+            (rung_lanes != nullptr && rung < rung_lanes->size())
+                ? &(*rung_lanes)[rung]
+                : nullptr;
+        const bool have_lanes =
+            !strip && lanes != nullptr && !lanes->empty() && lane_count > 0;
         const bool ok = vt_->update_variant_surface(
             part_hash, rung, strip ? nullptr : weights->data(),
             strip ? 0 : weights->size(), strip ? nullptr : materials.data(),
-            strip ? 0u : static_cast<uint32_t>(materials.size()), tape_hash);
+            strip ? 0u : static_cast<uint32_t>(materials.size()), tape_hash,
+            strip ? nullptr : tape_text,
+            have_lanes ? lanes->data() : nullptr,
+            have_lanes ? lane_count : 0u);
         updated = updated || ok;
     }
     if (updated) {

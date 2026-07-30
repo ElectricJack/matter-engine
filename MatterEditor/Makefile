@@ -608,6 +608,10 @@ build/shaders_vk/vt_composite.comp.spv \
     $(ME3_DIR)/shaders_vk/vt_chart_types.glsl \
     $(ME3_DIR)/shaders_vk/vt_chart_resolve.glsl
 
+# P2 (texel-rate tape): the GLSL noise twin + tape interpreter include.
+build/shaders_vk/vt_composite.comp.spv: \
+    $(ME3_DIR)/shaders_vk/vt_surface_tape.glsl
+
 # WP-E (chart VT): vt_common.glsl is the shared VT sampling helper (an include,
 # not a stage), so it has no .spv -- but its consumers must rebuild when it
 # changes. WP-G added the RT stages: rt_surface_common.glsl now includes
@@ -654,6 +658,8 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vt_stub_filler.cpp \
         $(ME3_DIR)/src/render/vt_compositor.cpp \
         $(ME3_DIR)/src/render/vt_enrich.cpp \
+        $(ME3_DIR)/src/render/vt_surface_tape.h \
+        $(ME3_DIR)/src/terrain_field.cpp \
         $(ME3_DIR)/tests/vulkan_smoke_tileset_bake_stub.cpp \
         $(ME3_DIR)/src/tileset_gtex.cpp \
         $(ME3_DIR)/src/render/vk_volumetrics.cpp \
@@ -681,6 +687,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vt_stub_filler.cpp \
 	    $(ME3_DIR)/src/render/vt_compositor.cpp \
 	    $(ME3_DIR)/src/render/vt_enrich.cpp \
+	    $(ME3_DIR)/src/terrain_field.cpp \
 	    $(ME3_DIR)/tests/vulkan_smoke_tileset_bake_stub.cpp \
 	    $(ME3_DIR)/src/tileset_gtex.cpp \
 	    $(ME3_DIR)/src/render/vk_volumetrics.cpp \
@@ -744,7 +751,10 @@ build/windows/vt_compositor_tests.exe: \
         $(ME3_DIR)/src/render/vt_compositor.cpp \
         $(ME3_DIR)/src/render/vt_compositor.h \
         $(ME3_DIR)/src/render/vt_types.h \
+        $(ME3_DIR)/src/render/vt_surface_tape.h \
         $(ME3_DIR)/src/render/chart_atlas.h \
+        $(ME3_DIR)/src/terrain_field.cpp \
+        $(ME3_DIR)/src/terrain_field.h \
         $(ME3_DIR)/src/render/vk_context.cpp \
         $(ME3_DIR)/src/render/vk_resources.cpp \
         $(ME3_DIR)/src/render/streamline_bridge.cpp \
@@ -752,6 +762,7 @@ build/windows/vt_compositor_tests.exe: \
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vt_compositor_tests.cpp \
 	    $(ME3_DIR)/src/render/vt_compositor.cpp \
+	    $(ME3_DIR)/src/terrain_field.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
 	    $(ME3_DIR)/src/render/streamline_bridge.cpp \

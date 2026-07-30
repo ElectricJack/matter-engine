@@ -15,6 +15,9 @@
 // GpuChart / GpuTri and the stream builder: shared with WP-H's enricher so the
 // two page passes can never disagree about a texel's owning triangle.
 #include "vt_chart_gpu.h"
+// P2: the tape packer (GpuSurfOp encoding + field-lane scan) — shared with
+// the producers, which compute the per-vertex lane VALUES with the same scan.
+#include "vt_surface_tape.h"
 
 namespace vt {
 
@@ -30,10 +33,19 @@ struct GpuFillRequest {
     uint32_t b[4];   // cand_offset, cand_count, weight_mode, debug materials
     float debug_params[4];
     // WP-F: tape material registry ids for weight columns 0-7 (u8 each, x =
-    // cols 0-3, y = cols 4-7), z = declared column count, w unused.
+    // cols 0-3, y = cols 4-7), z = declared column count, w = field-lane
+    // count (P2, mode 3 only).
     uint32_t tape[4];
+    // P2 (mode 3): the part's packed tape in the shared op arena — x = op
+    // offset (in ops), y = op count (0 for non-mode-3 requests), z/w = weight
+    // registers for columns 0-3 / 4-7 (u8 each).
+    uint32_t tape2[4];
+    // P2 (mode 3): local_to_world rows (row-major 4x3); identity when the
+    // part is not world-anchored (never read there — the packer pre-resolved
+    // its world ops to constants).
+    float xform[12];
 };
-static_assert(sizeof(GpuFillRequest) == 64, "GpuFillRequest layout");
+static_assert(sizeof(GpuFillRequest) == 128, "GpuFillRequest layout");
 
 struct GpuVtMaterial {
     float albedo[4];
@@ -53,6 +65,16 @@ constexpr uint32_t kMaxCandEntriesPerFill = 65536;
 constexpr uint32_t kTilesetArraySize =
     VtCompositor::kMaxDetailSlots * 4;   // slot*4 + (albedo|normal|orm|height)
 constexpr uint32_t kMaxMeshEntries = 512;
+
+// P2: the shared tape-op arena. Fixed-size slots (one per mesh entry with a
+// packed tape) — a SurfaceProgram is capped at 64 dedup'd ops, so a slot is
+// 64 * 48 B = 3 KiB; sizing covers every cached entry plus the worst-case
+// one-shot burst (kMaxBatchesInFlight batches of kMaxRequestsPerFill distinct
+// variants), so a fill is never demoted to mode 2 for arena pressure alone.
+constexpr uint32_t kTapeSlotOps = 64;
+constexpr uint32_t kTapeArenaSlots =
+    kMaxMeshEntries +
+    VtCompositor::kMaxBatchesInFlight * kMaxRequestsPerFill;   // 1536
 
 // ---------------------------------------------------------------------------
 // Raw resource helpers (this module takes plain Vk handles, so it cannot use
@@ -260,6 +282,27 @@ struct VtCompositor::Impl {
     RawBuffer materials_buf;  // host-visible, kMaxMaterials entries
     RawBuffer params_buf;     // host-visible UBO
 
+    // P2: the shared tape-op arena (fixed 64-op slots; see kTapeArenaSlots).
+    // Host-visible with device-local preference — the same residency the
+    // chart/tri streams ride. Slots are allocated with the mesh entry that
+    // owns them and freed on the same retirement paths.
+    RawBuffer tape_arena;
+    std::vector<uint32_t> tape_free_slots;
+    bool tape_gpu_enabled = true;      // MATTER_VT_TAPE_GPU, read at init
+    bool tape_overflow_warned = false; // warn-once for the lane-cap fallback
+
+    int32_t tape_slot_acquire() {
+        if (tape_free_slots.empty()) return -1;
+        const uint32_t slot = tape_free_slots.back();
+        tape_free_slots.pop_back();
+        return static_cast<int32_t>(slot);
+    }
+    void tape_slot_release(int32_t& slot) {
+        if (slot < 0) return;
+        tape_free_slots.push_back(static_cast<uint32_t>(slot));
+        slot = -1;
+    }
+
     struct Ring {
         RawBuffer requests;              // host-visible
         RawBuffer cands;                 // host-visible
@@ -282,6 +325,14 @@ struct VtCompositor::Impl {
         VkDescriptorSet set = VK_NULL_HANDLE;
         uint32_t chart_count = 0;
         uint64_t last_used_batch = 0;
+        // P2 (mode 3): the entry's packed tape. tape_slot >= 0 means the
+        // entry was promoted to mode 3 — its triangle stream carries f16
+        // field lanes instead of u8 weight columns, and its ops live at
+        // tape_slot * kTapeSlotOps in the arena. -1 = mode-2 packing.
+        int32_t tape_slot = -1;
+        uint32_t tape_op_count = 0;
+        uint32_t tape_lane_count = 0;
+        uint8_t tape_weight_reg[8]{};
     };
     std::map<std::pair<uint64_t, uint32_t>, MeshEntry> mesh_cache;
     // Monotonic fill()-batch counter, and per-ring lists of evicted or
@@ -301,6 +352,7 @@ struct VtCompositor::Impl {
                 vkFreeDescriptorSets(device, descriptor_pool, 1, &entry.set);
             destroy_raw_buffer(device, entry.charts);
             destroy_raw_buffer(device, entry.tris);
+            tape_slot_release(entry.tape_slot);
         }
         mesh_retire[ring_index].clear();
     }
@@ -330,6 +382,9 @@ struct VtCompositor::Impl {
                                  &victim->second.set);
         destroy_raw_buffer(device, victim->second.charts);
         destroy_raw_buffer(device, victim->second.tris);
+        // The arena slot follows the same proof: an entry outside the
+        // in-flight window has no unretired batch reading its ops.
+        tape_slot_release(victim->second.tape_slot);
         mesh_cache.erase(victim);
         return true;
     }
@@ -369,6 +424,7 @@ struct VtCompositor::Impl {
         }
         destroy_raw_buffer(device, materials_buf);
         destroy_raw_buffer(device, params_buf);
+        destroy_raw_buffer(device, tape_arena);
         destroy_raw_image(device, dummy_tileset);
         if (sampler) vkDestroySampler(device, sampler, nullptr);
         if (descriptor_pool)
@@ -467,7 +523,9 @@ bool VtCompositor::Impl::init(std::string& err) {
              binding(5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1),
              binding(6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1),
              binding(7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1),
-             binding(8, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1)},
+             binding(8, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1),
+             // P2: the shared tape-op arena (vt_surface_tape.glsl).
+             binding(9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1)},
             batch_layout))
         return false;
     if (!make_layout({binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1),
@@ -550,6 +608,25 @@ bool VtCompositor::Impl::init(std::string& err) {
                            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true,
                            params_buf, err))
         return false;
+    // P2: the tape-op arena + its slot free list, and the process-wide env
+    // gate (vt_types.h — read once, so a session can never mix modes).
+    if (!create_raw_buffer(device, phys,
+                           VkDeviceSize(kTapeArenaSlots) * kTapeSlotOps *
+                               sizeof(VtGpuSurfOp),
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
+                           tape_arena, err))
+        return false;
+    std::memset(tape_arena.mapped, 0, static_cast<size_t>(tape_arena.size));
+    tape_free_slots.reserve(kTapeArenaSlots);
+    for (uint32_t i = kTapeArenaSlots; i-- > 0;) tape_free_slots.push_back(i);
+    // Same rule as vt_tape_gpu_enabled() (vt_types.h) but read PER INSTANCE
+    // rather than through its process-wide cache, so a test can construct an
+    // escape-hatch compositor after flipping the env. In a real session the
+    // env is set before launch and every reader agrees.
+    {
+        const char* v = std::getenv("MATTER_VT_TAPE_GPU");
+        tape_gpu_enabled = !(v != nullptr && v[0] == '0' && v[1] == '\0');
+    }
     {
         // Neutral defaults so an unset table still composes deterministically.
         auto* mats = static_cast<GpuVtMaterial*>(materials_buf.mapped);
@@ -575,7 +652,7 @@ bool VtCompositor::Impl::init(std::string& err) {
             kMaxBatchesInFlight * kMaxRequestsPerFill;
         VkDescriptorPoolSize sizes[] = {
             {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-             (kMaxMeshEntries + oneshot_sets) * 2 + kMaxBatchesInFlight * 6},
+             (kMaxMeshEntries + oneshot_sets) * 2 + kMaxBatchesInFlight * 7},
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kMaxBatchesInFlight},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
              kMaxBatchesInFlight * kTilesetArraySize},
@@ -649,6 +726,7 @@ void VtCompositor::Impl::write_ring_descriptors(Ring& r) {
     VkDescriptorBufferInfo cands{r.cands.buffer, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo mats{materials_buf.buffer, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo params{params_buf.buffer, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo tape_ops{tape_arena.buffer, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo inter[4] = {
         {VK_NULL_HANDLE, r.inter_albedo.view, VK_IMAGE_LAYOUT_GENERAL},
         {VK_NULL_HANDLE, r.inter_normal.view, VK_IMAGE_LAYOUT_GENERAL},
@@ -688,6 +766,7 @@ void VtCompositor::Impl::write_ring_descriptors(Ring& r) {
     write_buf(r.batch_set, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &cands);
     write_buf(r.batch_set, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &mats);
     write_buf(r.batch_set, 3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &params);
+    write_buf(r.batch_set, 9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &tape_ops);
     write_img(r.batch_set, 5, &inter[0]);
     write_img(r.batch_set, 6, &inter[1]);
     write_img(r.batch_set, 7, &inter[2]);
@@ -757,17 +836,98 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
             cache_it = false;
     }
 
+    // P2: try to promote the entry to weight-seam mode 3 — the part must
+    // carry BOTH the per-vertex weight columns (the has-tape gate + mode-2
+    // fallback) and the canonical tape text, the env gate must be open, the
+    // text must parse, the pack must fit the lane cap, and the producer's
+    // lane stream must agree with our scan of the same text. Every failure
+    // is fail-soft: the entry packs mode-2 weight columns exactly as before.
+    VtSurfaceTapePack tape_pack;
+    bool mode3 = false;
+    const bool has_tape = vt_context_has_tape(*ctx);
+    if (has_tape && tape_gpu_enabled && ctx->surface_tape_text != nullptr) {
+        terrain_field::SurfaceProgram prog;
+        std::string perr;
+        if (!terrain_field::SurfaceProgram::parse(ctx->surface_tape_text,
+                                                  prog, perr)) {
+            ++stats.tape_pack_failures;
+        } else if (!vt_pack_surface_tape(
+                       prog, ctx->surface_world_anchored != 0, tape_pack)) {
+            if (tape_pack.lane_overflow) {
+                ++stats.tape_lane_overflows;
+                if (!tape_overflow_warned) {
+                    tape_overflow_warned = true;
+                    std::fprintf(
+                        stderr,
+                        "[vt] WARNING: surfaces() tape %016llx needs more "
+                        "than %u field-derived vertex lanes (overflow: "
+                        "input code %d, curv radius %.3f) -- the part stays "
+                        "on weight-seam mode 2 (per-vertex weights). "
+                        "Warning once.\n",
+                        static_cast<unsigned long long>(
+                            ctx->surface_tape_hash),
+                        kVtMaxSurfaceLanes, tape_pack.scan.overflow_code,
+                        tape_pack.scan.overflow_radius);
+                    std::fflush(stderr);
+                }
+            } else {
+                ++stats.tape_pack_failures;
+            }
+        } else if (tape_pack.weight_reg_count !=
+                       ctx->surface_material_count ||
+                   tape_pack.scan.count != ctx->surface_lane_count ||
+                   (tape_pack.scan.count > 0 &&
+                    ctx->surface_lanes == nullptr)) {
+            // Producer/packer disagreement (stale lanes after a live tape
+            // edit that missed a path, or a column-count mismatch): fail
+            // soft, count it — mode 2 renders correctly from the weights.
+            ++stats.tape_pack_failures;
+        } else {
+            mode3 = true;
+        }
+    }
+
     // Chart-grouped triangle reorder + per-vertex plane coordinates + WP-F tape
     // weight packing: vt_chart_gpu.h owns that packing (WP-H's enricher builds
-    // the identical streams from the same function).
+    // the identical streams from the same function). Mode-3 entries pack the
+    // per-vertex f16 field lanes instead of the u8 weight columns.
     std::vector<GpuChart> gcharts;
     std::vector<GpuTri> gtris;
-    if (!vt_build_chart_gpu_streams(*atlas, *ctx, gcharts, gtris)) {
+    if (!vt_build_chart_gpu_streams(*atlas, *ctx, gcharts, gtris,
+                                    mode3 ? ctx->surface_lanes : nullptr,
+                                    mode3 ? ctx->surface_lane_count : 0u)) {
         why = "chart GPU stream build failed";
         return nullptr;
     }
 
     MeshEntry entry;
+    if (mode3) {
+        entry.tape_slot = tape_slot_acquire();
+        if (entry.tape_slot < 0) {
+            // Arena exhausted (cannot happen while kTapeArenaSlots covers the
+            // cache + one-shot worst case, but fail soft anyway)... except the
+            // triangle stream above was packed with lanes. Rebuild it with
+            // weight columns so mode 2 reads real data.
+            ++stats.tape_pack_failures;
+            mode3 = false;
+            if (!vt_build_chart_gpu_streams(*atlas, *ctx, gcharts, gtris)) {
+                why = "chart GPU stream rebuild failed";
+                return nullptr;
+            }
+        } else {
+            entry.tape_op_count =
+                static_cast<uint32_t>(tape_pack.ops.size());
+            entry.tape_lane_count = tape_pack.scan.count;
+            std::memcpy(entry.tape_weight_reg, tape_pack.weight_reg,
+                        sizeof(entry.tape_weight_reg));
+            auto* arena_ops = static_cast<VtGpuSurfOp*>(tape_arena.mapped) +
+                              static_cast<size_t>(entry.tape_slot) *
+                                  kTapeSlotOps;
+            std::memcpy(arena_ops, tape_pack.ops.data(),
+                        tape_pack.ops.size() * sizeof(VtGpuSurfOp));
+            ++stats.tape_mode3_entries;
+        }
+    }
     std::string err;
     const VkDeviceSize charts_bytes = sizeof(GpuChart) * gcharts.size();
     const VkDeviceSize tris_bytes = sizeof(GpuTri) * gtris.size();
@@ -788,6 +948,7 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
         if (!try_create_buffers()) {
             destroy_raw_buffer(device, entry.charts);
             destroy_raw_buffer(device, entry.tris);
+            tape_slot_release(entry.tape_slot);
             why = "mesh buffer allocation failed";
             return nullptr;
         }
@@ -805,6 +966,7 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
     if (vkAllocateDescriptorSets(device, &alloc, &entry.set) != VK_SUCCESS) {
         destroy_raw_buffer(device, entry.charts);
         destroy_raw_buffer(device, entry.tris);
+        tape_slot_release(entry.tape_slot);
         why = "mesh descriptor set allocation failed";
         return nullptr;
     }
@@ -957,11 +1119,16 @@ void VtCompositor::invalidate_part(uint64_t variant_hash) {
                                      &it->second.set);
             destroy_raw_buffer(impl_->device, it->second.charts);
             destroy_raw_buffer(impl_->device, it->second.tris);
+            impl_->tape_slot_release(it->second.tape_slot);
             it = impl_->mesh_cache.erase(it);
         } else {
             ++it;
         }
     }
+}
+
+bool VtCompositor::tape_gpu_enabled() const {
+    return impl_->tape_gpu_enabled;
 }
 
 void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
@@ -1083,14 +1250,19 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
         // WP-F: a part carrying surfaces()-tape weights promotes the resting
         // default to the tape mode per request; the debug-ramp test override
         // still wins so the WP-D goldens keep exercising their fixed path.
+        // P2: an entry whose tape was packed for the GPU interpreter promotes
+        // straight to mode 3 (its triangle stream carries field lanes, not
+        // weight columns — the two modes travel together with the entry).
         const bool has_tape =
             ctx->surface_material_count > 0 &&
             ctx->surface_material_count <= kMaxSurfaceMaterials &&
             ctx->surface_weights != nullptr &&
             ctx->surface_materials != nullptr;
+        const bool mode3 = entry->tape_slot >= 0;
         const WeightMode mode =
             (has_tape && im.weight_mode == WeightMode::kTriangleMaterial)
-                ? WeightMode::kSurfaceTape
+                ? (mode3 ? WeightMode::kSurfaceTapeGpu
+                         : WeightMode::kSurfaceTape)
                 : im.weight_mode;
         g.b[2] = static_cast<uint32_t>(mode);
         g.b[3] = (im.debug_mat_a & 0xFFFFu) | (im.debug_mat_b << 16);
@@ -1102,11 +1274,31 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
         g.tape[1] = 0;
         g.tape[2] = 0;
         g.tape[3] = 0;
+        g.tape2[0] = 0;
+        g.tape2[1] = 0;
+        g.tape2[2] = 0;
+        g.tape2[3] = 0;
+        // Identity transform by default; overwritten for mode-3 requests.
+        static constexpr float kIdentity12[12] = {1, 0, 0, 0, 0, 1,
+                                                  0, 0, 0, 0, 1, 0};
+        std::memcpy(g.xform, kIdentity12, sizeof(g.xform));
         if (has_tape) {
             for (uint32_t k = 0; k < ctx->surface_material_count; ++k)
                 g.tape[k >> 2] |= (ctx->surface_materials[k] & 0xFFu)
                                   << ((k & 3u) * 8u);
             g.tape[2] = ctx->surface_material_count;
+        }
+        if (mode == WeightMode::kSurfaceTapeGpu && mode3) {
+            g.tape[3] = entry->tape_lane_count;
+            g.tape2[0] = static_cast<uint32_t>(entry->tape_slot) *
+                         kTapeSlotOps;
+            g.tape2[1] = entry->tape_op_count;
+            for (uint32_t k = 0; k < 8u; ++k)
+                g.tape2[2 + (k >> 2)] |=
+                    static_cast<uint32_t>(entry->tape_weight_reg[k])
+                    << ((k & 3u) * 8u);
+            std::memcpy(g.xform, ctx->surface_local_to_world,
+                        sizeof(g.xform));
         }
         recs.push_back(Rec{entry, pool, &req, rec_index, req.physical_slot});
     }

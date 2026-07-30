@@ -164,6 +164,12 @@ struct VkScenePartChartMesh {
     // CPU-evaluated by the engine's compiled tape (see vt_types.h appends).
     // Empty = no tape for this rung (TriEx materialId weights).
     std::vector<uint8_t> surface_weights;
+    // P2 (texel-rate tape): per-vertex f16 field-derived lane values for the
+    // GPU interpreter (vertex_count * surface_lane_count halves, in
+    // vt_surface_tape.h's canonical lane-scan order). Empty/0 = the tape
+    // reads no field inputs (or the part carries no tape text).
+    std::vector<uint16_t> surface_lanes;
+    uint32_t surface_lane_count = 0;
 };
 
 struct VkScenePart {
@@ -193,6 +199,14 @@ struct VkScenePart {
     // Empty = the part carries no tape classification.
     std::vector<uint32_t> surface_materials;
     uint64_t surface_tape_hash = 0;
+    // P2 (texel-rate tape): the canonical surfaces() program text (the bytes
+    // surface_tape_hash hashes), the world-anchored verdict for this part and
+    // its row-major 4x3 local->world. Threaded into vt::VtPartContext so the
+    // compositor can pack the GPU tape (weight-seam mode 3). Empty text keeps
+    // every rung on mode 2 exactly as before.
+    std::string surface_tape_text;
+    uint32_t surface_world_anchored = 0;
+    float surface_local_to_world[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
     // Demand-driven VT (the streamed-world default): bit r set = rung r has a
     // chart table, but the payload above (lod_charts / lod_chart_meshes /
     // chart_material_table) is deliberately NOT populated. register_vt_part
@@ -1423,10 +1437,16 @@ public:
     // registry ids (the weight columns); empty strips the whole part back to
     // TriEx materialId weights. Returns true when at least one registered
     // rung was updated.
+    // P2 appends (defaulted; older callers keep compiling): the canonical
+    // tape text plus per-rung f16 field lanes (rung_lanes indexed by rung,
+    // lane_count halves per vertex) for the GPU interpreter (mode 3).
     bool update_vt_part_surface(
         uint64_t part_hash,
         const std::vector<std::vector<uint8_t>>& rung_weights,
-        const std::vector<uint32_t>& materials, uint64_t tape_hash);
+        const std::vector<uint32_t>& materials, uint64_t tape_hash,
+        const char* tape_text = nullptr,
+        const std::vector<std::vector<uint16_t>>* rung_lanes = nullptr,
+        uint32_t lane_count = 0);
     void end_vt_surface_update();
 
     // --- Demand-driven VT variant registration ------------------------------

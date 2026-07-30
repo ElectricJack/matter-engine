@@ -55,6 +55,10 @@
 #include "matter/vulkan_device.h"
 #include "render/vk_resources.h"
 #include "render/vt_compositor.h"
+// P2 (texel-rate tape, weight-seam mode 3): CPU tape runtime + the shared
+// lane scan / GpuSurfOp packing the compositor uses.
+#include "render/vt_surface_tape.h"
+#include "terrain_field.h"
 
 namespace {
 
@@ -698,6 +702,9 @@ struct QuadFixture {
     // WP-F: optional surfaces()-tape classification.
     std::vector<uint8_t> tape_weights;     // vertex_count * tape_mats.size()
     std::vector<uint32_t> tape_mats;
+    // P2: optional mode-3 payload (canonical text + f16 field lanes).
+    std::string tape_text;
+    std::vector<uint16_t> tape_lanes;
 
     // Call after finalize(). weights_per_vertex is column-major per vertex.
     void apply_tape(std::vector<uint32_t> mats,
@@ -709,6 +716,26 @@ struct QuadFixture {
         ctx.surface_materials = tape_mats.data();
         ctx.surface_material_count = uint32_t(tape_mats.size());
         ctx.surface_tape_hash = tape_hash;
+    }
+
+    // P2: promote to mode 3 — call after apply_tape(). `l2w12` is the
+    // row-major 4x3 local->world (null = identity / not anchored); lanes are
+    // vertex_count * lane_count halves in vt_scan_surface_lanes order.
+    void apply_tape_text(std::string text, bool world_anchored,
+                         const float* l2w12 = nullptr,
+                         std::vector<uint16_t> lanes = {},
+                         uint32_t lane_count = 0) {
+        tape_text = std::move(text);
+        tape_lanes = std::move(lanes);
+        ctx.surface_tape_text = tape_text.c_str();
+        ctx.surface_world_anchored = world_anchored ? 1u : 0u;
+        if (l2w12 != nullptr)
+            std::memcpy(ctx.surface_local_to_world, l2w12,
+                        sizeof(ctx.surface_local_to_world));
+        if (!tape_lanes.empty() && lane_count > 0) {
+            ctx.surface_lanes = tape_lanes.data();
+            ctx.surface_lane_count = lane_count;
+        }
     }
 
     void finalize(uint64_t hash) {
@@ -750,6 +777,159 @@ struct QuadFixture {
 
 constexpr float kChartTpm = 64.0f;
 constexpr float kQuadExtent = 1.875f;   // 120 content texels / 64 tpm
+
+// ---------------------------------------------------------------------------
+// P2 mode-3 helpers: canonical-text builder + a CPU mirror of the shader's
+// top-2 selection and (slotless, height = 0.5) height blend.
+// ---------------------------------------------------------------------------
+struct TapeBuilder {
+    std::string text;
+    int n = 0;
+    int op(const std::string& line) {
+        text += line;
+        text += '\n';
+        return n++;
+    }
+    int uop(const char* o, int a) {
+        return op(std::string(o) + " r" + std::to_string(a));
+    }
+    int bop(const char* o, int a, int b) {
+        return op(std::string(o) + " r" + std::to_string(a) + " r" +
+                  std::to_string(b));
+    }
+    void mat(uint32_t handle, int reg) {
+        text += "material " + std::to_string(handle) + " r" +
+                std::to_string(reg) + "\n";
+    }
+};
+
+struct CpuTop2 {
+    uint32_t m0 = 0, m1 = 0;
+    float w0 = 1.0f, w1 = 0.0f;
+    float blend = 0.0f;   // the aux height-blend byte for SLOTLESS materials
+};
+
+// Mirrors vt_composite.comp's vt_top2_select + the height blend with both
+// heights at the slotless constant 0.5 (materials without a detail slot).
+CpuTop2 cpu_top2_flat(const float* col_w, uint32_t count, const uint32_t* ids,
+                      uint32_t tri_mat) {
+    int best = 0, next = 0;
+    float bw = -1.0f, nw = -1.0f;
+    for (uint32_t k = 0; k < count; ++k) {
+        const float w = col_w[k];
+        if (w > bw) {
+            nw = bw; next = best;
+            bw = w;  best = int(k);
+        } else if (w > nw) {
+            nw = w; next = int(k);
+        }
+    }
+    CpuTop2 r;
+    if (bw <= 0.0f) {
+        r.m0 = r.m1 = tri_mat;
+        return r;
+    }
+    r.m0 = ids[best];
+    if (nw <= 0.0f) {
+        r.m1 = r.m0;
+        return r;
+    }
+    r.m1 = ids[next];
+    const float sum = bw + nw;
+    r.w0 = bw / sum;
+    r.w1 = nw / sum;
+    const float a0 = 0.5f + r.w0, a1 = 0.5f + r.w1;
+    const float ma = std::max(a0, a1) - 0.2f;
+    const float b0 = std::max(a0 - ma, 0.0f), b1 = std::max(a1 - ma, 0.0f);
+    r.blend = b1 / (b0 + b1);
+    return r;
+}
+
+// The comprehensive mode-3 tape: exercises EVERY surface op kind at least
+// once (both 2D/3D noise families local + world, the warp tail on noise3 and
+// noise3w, every arithmetic/unary, every input, curv). Two clamped-positive
+// weight columns for material handles 3 and 4. Register ordinals are source
+// ordinals (const dedup happens at parse). fract's operand is shifted into
+// [1.25, 1.75] so the CPU/GPU comparison never straddles the x - floor(x)
+// discontinuity (a 1e-7 float difference there would read as a 1.0 jump).
+std::string build_comprehensive_tape(int& out_wA_reg, int& out_wB_reg) {
+    TapeBuilder tb;
+    // lx/lz are emitted (the interpreter evaluates every op) but only ly is
+    // folded into a weight — their consumed coverage lives in the
+    // boundary-sharpness fixture, and the 64-op cap wants the two adds back.
+    (void)tb.op("input lx");
+    const int ly = tb.op("input ly");
+    (void)tb.op("input lz");
+    const int ny = tb.op("input ny");
+    const int sl = tb.op("input slope");
+    const int wx = tb.op("input wx");
+    const int wy = tb.op("input wy");
+    const int wz = tb.op("input wz");
+    const int fh = tb.op("input height");
+    const int fm = tb.op("input moisture");
+    const int fr_ = tb.op("input relief");
+    const int fb = tb.op("input biome");
+    const int fs = tb.op("input fslope");
+    const int cv = tb.op("curv 2.0");
+    const int n2 = tb.op("noise2 11 0.9 3 0.5 2.0");
+    const int r2 = tb.op("ridge2 12 0.7 2 0.5 2.0");
+    const int n2w = tb.op("noise2w 13 0.031 3 0.5 2.0");
+    const int r2w = tb.op("ridge2w 14 0.023 2 0.5 2.0");
+    const int n3 = tb.op("noise3 15 0.8 3 0.5 2.0");
+    const int r3 = tb.op("ridge3 16 0.6 2 0.5 2.0");
+    const int n3warp = tb.op("noise3 17 0.5 2 0.5 2.0 99 0.4 1.5");
+    const int n3w = tb.op("noise3w 18 0.027 3 0.5 2.0 77 0.3 2.0");
+    const int r3w = tb.op("ridge3w 19 0.021 2 0.5 2.0");
+    const int c035 = tb.op("const 0.35");
+    const int c0002 = tb.op("const 0.002");
+    const int c025 = tb.op("const 0.25");
+    const int c150 = tb.op("const 1.5");
+    int t = tb.bop("add", n2, r2);
+    t = tb.bop("sub", t, n2w);
+    t = tb.bop("mul", t, c035);
+    t = tb.bop("min", t, r2w);
+    t = tb.bop("max", t, n3);
+    const int tc = tb.op("clamp r" + std::to_string(t) + " -1 1");
+    const int bl = tb.op("blend r" + std::to_string(r3) + " r" +
+                         std::to_string(n3warp) + " r" + std::to_string(fm));
+    const int ss = tb.op("smoothstep -0.5 0.5 r" + std::to_string(bl));
+    const int ab = tb.uop("abs", n3w);
+    const int om = tb.uop("oneminus", ss);
+    const int pw = tb.op("pow r" + std::to_string(ab) + " 1.5");
+    // fract over [1.25, 1.75]: tc*0.25 + 1.5.
+    int tq = tb.bop("mul", tc, c025);
+    tq = tb.bop("add", tq, c150);
+    const int fq = tb.uop("fract", tq);
+    // Lane + world + misc folds so every input feeds a weight (kept within
+    // the 64-op cap), scaled so the two columns land in the same band —
+    // the cross-check must see both dominants AND the fractional-blend band.
+    int wS = tb.bop("add", wx, wz);
+    wS = tb.bop("add", wS, wy);
+    wS = tb.bop("mul", wS, c0002);
+    int misc = tb.bop("add", ly, sl);
+    misc = tb.bop("add", misc, fs);
+    misc = tb.bop("add", misc, fb);
+    misc = tb.bop("add", misc, ny);
+    misc = tb.bop("add", misc, fr_);
+    misc = tb.bop("add", misc, fm);
+    misc = tb.bop("add", misc, fh);   // field lane: height
+    misc = tb.bop("add", misc, cv);   // field lane: curv 2.0
+    misc = tb.bop("mul", misc, c0002);
+    int aRaw = tb.bop("add", fq, om);
+    aRaw = tb.bop("add", aRaw, wS);
+    aRaw = tb.bop("mul", aRaw, c035);
+    const int aW = tb.op("clamp r" + std::to_string(aRaw) + " 0.05 1.2");
+    int bRaw = tb.bop("add", pw, misc);
+    bRaw = tb.bop("add", bRaw, r3w);
+    bRaw = tb.bop("mul", bRaw, c035);
+    bRaw = tb.bop("add", bRaw, c025);
+    const int bW = tb.op("clamp r" + std::to_string(bRaw) + " 0.05 1.2");
+    tb.mat(3, aW);
+    tb.mat(4, bW);
+    out_wA_reg = aW;
+    out_wB_reg = bW;
+    return tb.text;
+}
 
 chart_atlas::ChartEntry make_chart(V3 origin, V3 t, V3 b, uint32_t rx,
                                    uint32_t ry, uint32_t first_tri,
@@ -1527,6 +1707,449 @@ int main() {
                 CHECK(ms / 16.0 < 2.0,
                       "page fill stays within loose harness budget");
                 vkDestroyQueryPool(vulkan->device(), query_pool, nullptr);
+            }
+
+            // ============ (k) P2 texel-rate tape (weight-seam mode 3) =====
+            {
+                // Scalar-albedo materials 3/4 (no detail slot): the page
+                // albedo is then an exact analytic mix and the uncompressed
+                // aux blend byte is directly comparable to the CPU tape.
+                vt::VtCompositorMaterial mats5[5];
+                mats5[kMatA].detail_slot = 0;
+                mats5[kMatB].detail_slot = 1;
+                mats5[3].albedo[0] = 0.9f;
+                mats5[3].albedo[1] = 0.1f;
+                mats5[3].albedo[2] = 0.1f;
+                mats5[4].albedo[0] = 0.1f;
+                mats5[4].albedo[1] = 0.2f;
+                mats5[4].albedo[2] = 0.9f;
+                compositor->set_materials(mats5, 5);
+                CHECK(compositor->tape_gpu_enabled(),
+                      "mode 3: MATTER_VT_TAPE_GPU defaults on");
+                CHECK(vt::vt_page_content_salt(0xABCDull, 2) !=
+                          vt::vt_page_content_salt(0xABCDull, 3),
+                      "content key: weight-seam mode folds into the page "
+                      "identity");
+
+                // Shared CPU fixtures: a constant-valued terrain field (so
+                // the f16 vertex lanes are exact and barycentric lane
+                // interpolation is trivially lossless) + a translated world
+                // transform for the world-anchored ops.
+                terrain_field::FieldProgram fprog;
+                std::string ferr;
+                CHECK(terrain_field::FieldProgram::parse(
+                          "const 7.25\nconst 0.5\nconst 0.25\nheight r0\n"
+                          "moisture r1\nrelief r2\nseaLevel -10\n"
+                          "biome 0.65 0.35\n",
+                          fprog, ferr),
+                      ferr.c_str());
+                terrain_field::FieldRuntime field(fprog);
+                const float l2w16[16] = {1, 0, 0, 100, 0, 1, 0, 20,
+                                         0, 0, 1, -50, 0, 0, 0, 1};
+
+                int wA_reg = -1, wB_reg = -1;
+                const std::string k_text =
+                    build_comprehensive_tape(wA_reg, wB_reg);
+                terrain_field::SurfaceProgram sprog;
+                std::string serr;
+                CHECK(terrain_field::SurfaceProgram::parse(k_text, sprog,
+                                                           serr),
+                      serr.c_str());
+                terrain_field::SurfaceRuntime tape_rt(sprog);
+                terrain_field::SurfaceWorldContext world_ctx;
+                world_ctx.field = &field;
+                world_ctx.local_to_world = l2w16;
+
+                // ---- anchored comprehensive fixture ----
+                QuadFixture fixk;
+                fixk.add_quad(v3(0, 0, 0), v3(1, 0, 0), v3(0, 0, 1),
+                              kQuadExtent, v3(0, 1, 0), kMatA);
+                fixk.atlas = fix_a.atlas;
+                fixk.finalize(0x4001);
+                std::vector<uint8_t> kweights(4 * 2);
+                tape_rt.classify_vertices(fixk.positions.data(),
+                                          fixk.normals.data(), 4, &world_ctx,
+                                          kweights.data());
+                const vt::VtSurfaceLaneScan kscan =
+                    vt::vt_scan_surface_lanes(tape_rt.program());
+                CHECK(!kscan.overflow && kscan.count == 6,
+                      "mode 3: comprehensive tape scans to 6 field lanes");
+                std::vector<uint16_t> klanes;
+                vt::vt_compute_surface_lanes(kscan, fixk.positions.data(), 4,
+                                             &field, l2w16, klanes);
+                fixk.apply_tape({3u, 4u}, kweights, 0xBEEF0001ull);
+                fixk.apply_tape_text(k_text, /*world_anchored=*/true, l2w16,
+                                     klanes, kscan.count);
+
+                const uint64_t m3_before =
+                    compositor->stats().tape_mode3_entries;
+                vt::VtFillRequest rk = make_request(fixk, 0, 0);
+                CHECK(run_fill(&rk, 1), err.c_str());
+                CHECK(compositor->stats().tape_mode3_entries == m3_before + 1,
+                      "mode 3: tape-text part packed a GPU tape");
+                PageData pk;
+                CHECK(read_slot(0, pk), err.c_str());
+                std::vector<uint8_t> k_albedo;
+                int k_bad = 0;
+                decode_page_bc7(pk.albedo, k_albedo, k_bad);
+                CHECK(k_bad == 0, "mode 3 page decodes as BC7 mode 6");
+
+                // ---- (k1) CPU/GPU cross-check over the page interior ----
+                const uint32_t k_ids[2] = {3u, 4u};
+                auto cross_check = [&](const PageData& page,
+                                       const std::vector<uint8_t>& albedo,
+                                       const terrain_field::SurfaceWorldContext*
+                                           cpu_world,
+                                       const char* label,
+                                       bool require_both_ids) {
+                    float max_blend_err = 0, max_alb_err = 0;
+                    uint32_t id_mismatch = 0, samples = 0, ties = 0;
+                    uint32_t dom_a = 0, dom_b = 0, fractional = 0;
+                    for (uint32_t py = 12; py < kPageStore - 12; py += 5) {
+                        for (uint32_t px = 12; px < kPageStore - 12; px += 5) {
+                            const float u =
+                                (float(int(px) - 8) + 0.5f) / kChartTpm;
+                            const float w =
+                                (float(int(py) - 8) + 0.5f) / kChartTpm;
+                            const float pos[3] = {u, 0.0f, w};
+                            const float nrm[3] = {0.0f, 1.0f, 0.0f};
+                            float cw[2];
+                            tape_rt.weights_at(pos, nrm, cpu_world, cw);
+                            const CpuTop2 ref =
+                                cpu_top2_flat(cw, 2, k_ids, kMatA);
+                            const uint8_t* aux =
+                                &page.aux[(size_t(py) * kPageStore + px) * 4];
+                            ++samples;
+                            if (aux[0] == 3u) ++dom_a;
+                            if (aux[0] == 4u) ++dom_b;
+                            if (aux[2] > 10 && aux[2] < 245) ++fractional;
+                            const bool near_tie =
+                                std::fabs(ref.w0 - ref.w1) < 2e-2f;
+                            if (near_tie) {
+                                ++ties;
+                            } else {
+                                if (aux[0] != (ref.m0 & 0xFFu) ||
+                                    aux[1] != (ref.m1 & 0xFFu))
+                                    ++id_mismatch;
+                                max_blend_err = std::max(
+                                    max_blend_err,
+                                    std::fabs(aux[2] / 255.0f - ref.blend));
+                            }
+                            float ea[3];
+                            const float* a0 = (ref.m0 == 3u)
+                                                  ? mats5[3].albedo
+                                                  : mats5[4].albedo;
+                            const float* a1 = (ref.m1 == 3u)
+                                                  ? mats5[3].albedo
+                                                  : mats5[4].albedo;
+                            for (int c = 0; c < 3; ++c)
+                                ea[c] = a0[c] * (1.0f - ref.blend) +
+                                        a1[c] * ref.blend;
+                            const uint8_t* got =
+                                &albedo[(size_t(py) * kPageStore + px) * 4];
+                            for (int c = 0; c < 3; ++c)
+                                max_alb_err = std::max(
+                                    max_alb_err,
+                                    std::fabs(got[c] / 255.0f - ea[c]));
+                        }
+                    }
+                    std::printf(
+                        "%s: %u samples (%u ties), %u id mismatches, max "
+                        "blend err %.4f, max albedo err %.4f, dom A/B "
+                        "%u/%u, fractional blends %u\n",
+                        label, samples, ties, id_mismatch, max_blend_err,
+                        max_alb_err, dom_a, dom_b, fractional);
+                    CHECK((!require_both_ids || (dom_a >= 20 && dom_b >= 20)) &&
+                              fractional >= 10,
+                          "mode 3 cross-check exercises the fractional-blend "
+                          "band (and both ids where required)");
+                    CHECK(id_mismatch == 0,
+                          "mode 3: GPU top-2 ids match the CPU tape outside "
+                          "ties");
+                    CHECK(max_blend_err < 0.012f,
+                          "mode 3: GPU blend matches the CPU tape (weights "
+                          "agree within quantization + 1e-3)");
+                    // The far-apart scalar albedos make BC7 endpoints work
+                    // hard where the height-blend kinks inside one 4x4 block;
+                    // aux (uncompressed) carries the precision claim above.
+                    CHECK(max_alb_err < 0.10f,
+                          "mode 3: composited albedo matches the CPU-blended "
+                          "appearance");
+                };
+                cross_check(pk, k_albedo, &world_ctx,
+                            "mode 3 cross-check (anchored)", true);
+
+                // ---- (k3) determinism: same fill, separate submit ----
+                vt::VtFillRequest rk2 = make_request(fixk, 0, 1);
+                CHECK(run_fill(&rk2, 1), err.c_str());
+                PageData pk2;
+                CHECK(read_slot(1, pk2), err.c_str());
+                CHECK(pk.albedo == pk2.albedo && pk.normal == pk2.normal &&
+                          pk.orm == pk2.orm && pk.aux == pk2.aux,
+                      "mode 3: double fill across separate submits is "
+                      "byte-identical");
+
+                // ---- (k2) boundary sharpness: step tape vs mode 2 ----
+                {
+                    TapeBuilder tb;
+                    tb.op("input lx");
+                    tb.op("smoothstep 0.9375 0.9575 r0");
+                    tb.uop("oneminus", 1);
+                    tb.mat(3, 2);
+                    tb.mat(4, 1);
+                    terrain_field::SurfaceProgram sp2;
+                    CHECK(terrain_field::SurfaceProgram::parse(tb.text, sp2,
+                                                               serr),
+                          serr.c_str());
+                    terrain_field::SurfaceRuntime step_rt(sp2);
+                    QuadFixture fix_step, fix_step2;
+                    for (QuadFixture* f : {&fix_step, &fix_step2}) {
+                        f->add_quad(v3(0, 0, 0), v3(1, 0, 0), v3(0, 0, 1),
+                                    kQuadExtent, v3(0, 1, 0), kMatA);
+                        f->atlas = fix_a.atlas;
+                    }
+                    fix_step.finalize(0x4002);
+                    fix_step2.finalize(0x4003);
+                    std::vector<uint8_t> sweights(4 * 2);
+                    step_rt.classify_vertices(fix_step.positions.data(),
+                                              fix_step.normals.data(), 4,
+                                              nullptr, sweights.data());
+                    fix_step.apply_tape({3u, 4u}, sweights, 0xBEEF0002ull);
+                    fix_step.apply_tape_text(tb.text, false);
+                    fix_step2.apply_tape({3u, 4u}, sweights, 0xBEEF0003ull);
+                    vt::VtFillRequest r3a = make_request(fix_step, 0, 2);
+                    vt::VtFillRequest r2a = make_request(fix_step2, 0, 3);
+                    CHECK(run_fill(&r3a, 1), err.c_str());
+                    CHECK(run_fill(&r2a, 1), err.c_str());
+                    PageData p3, p2;
+                    CHECK(read_slot(2, p3) && read_slot(3, p2), err.c_str());
+                    // Mixed-texel width per row (aux m0 != m1 = both
+                    // materials weighted at that texel) + the dominant-flip
+                    // position.
+                    auto mixed_width = [&](const PageData& p, uint32_t py,
+                                           uint32_t& flip_px) {
+                        uint32_t count = 0;
+                        flip_px = 0;
+                        uint8_t prev = 0xFF;
+                        for (uint32_t px = 9; px < kPageStore - 9; ++px) {
+                            const uint8_t* aux =
+                                &p.aux[(size_t(py) * kPageStore + px) * 4];
+                            if (aux[0] != aux[1]) ++count;
+                            if (prev == 3u && aux[0] == 4u) flip_px = px;
+                            prev = aux[0];
+                        }
+                        return count;
+                    };
+                    uint32_t worst3 = 0, worst2 = 0xFFFFFFFFu;
+                    for (uint32_t py : {40u, 68u, 96u}) {
+                        uint32_t flip3 = 0, flip2 = 0;
+                        const uint32_t w3 = mixed_width(p3, py, flip3);
+                        const uint32_t w2 = mixed_width(p2, py, flip2);
+                        std::printf(
+                            "boundary sharpness row %u: mode 3 width %u "
+                            "texels (flip at %u), mode 2 width %u texels\n",
+                            py, w3, flip3, w2);
+                        worst3 = std::max(worst3, w3);
+                        worst2 = std::min(worst2, w2);
+                        CHECK(flip3 >= 66 && flip3 <= 71,
+                              "mode 3: material boundary lands on the "
+                              "authored edge");
+                    }
+                    CHECK(worst3 <= 2,
+                          "mode 3: step-function tape resolves within <= 2 "
+                          "texels");
+                    CHECK(worst2 >= 20,
+                          "mode 2: the same coarse mesh smears the boundary "
+                          "across a vertex span");
+                }
+
+                // ---- (k4) lane-cap overflow falls back to mode 2 ----
+                {
+                    TapeBuilder ob;
+                    ob.op("input height");
+                    ob.op("input moisture");
+                    ob.op("input relief");
+                    ob.op("input biome");
+                    ob.op("input fslope");
+                    ob.op("curv 1.0");
+                    ob.op("curv 2.0");
+                    ob.op("curv 3.0");
+                    ob.op("curv 4.0");   // 9 distinct lanes: over the cap
+                    int s = ob.bop("add", 0, 1);
+                    for (int r = 2; r <= 8; ++r) s = ob.bop("add", s, r);
+                    const int cl =
+                        ob.op("clamp r" + std::to_string(s) + " 0.05 1");
+                    const int half = ob.op("const 0.5");
+                    ob.mat(3, cl);
+                    ob.mat(4, half);
+                    terrain_field::SurfaceProgram spo;
+                    CHECK(terrain_field::SurfaceProgram::parse(ob.text, spo,
+                                                               serr),
+                          serr.c_str());
+                    CHECK(vt::vt_scan_surface_lanes(spo).overflow,
+                          "overflow tape scans past the 8-lane cap");
+                    terrain_field::SurfaceRuntime ovf_rt(spo);
+                    QuadFixture fix_ovf, fix_ovf2;
+                    for (QuadFixture* f : {&fix_ovf, &fix_ovf2}) {
+                        f->add_quad(v3(0, 0, 0), v3(1, 0, 0), v3(0, 0, 1),
+                                    kQuadExtent, v3(0, 1, 0), kMatA);
+                        f->atlas = fix_a.atlas;
+                    }
+                    fix_ovf.finalize(0x4004);
+                    fix_ovf2.finalize(0x4005);
+                    std::vector<uint8_t> oweights(4 * 2);
+                    ovf_rt.classify_vertices(fix_ovf.positions.data(),
+                                             fix_ovf.normals.data(), 4,
+                                             &world_ctx, oweights.data());
+                    fix_ovf.apply_tape({3u, 4u}, oweights, 0xBEEF0004ull);
+                    // Producer convention: overflow => no lanes shipped.
+                    fix_ovf.apply_tape_text(ob.text, /*anchored=*/true,
+                                            l2w16);
+                    fix_ovf2.apply_tape({3u, 4u}, oweights, 0xBEEF0005ull);
+                    const uint64_t ovf_before =
+                        compositor->stats().tape_lane_overflows;
+                    vt::VtFillRequest ro = make_request(fix_ovf, 0, 7);
+                    vt::VtFillRequest ro2 = make_request(fix_ovf2, 0, 8);
+                    CHECK(run_fill(&ro, 1), err.c_str());
+                    CHECK(run_fill(&ro2, 1), err.c_str());
+                    CHECK(compositor->stats().tape_lane_overflows ==
+                              ovf_before + 1,
+                          "lane overflow: warn-once counter fired");
+                    PageData po, po2;
+                    CHECK(read_slot(7, po) && read_slot(8, po2), err.c_str());
+                    CHECK(po.albedo == po2.albedo && po.normal == po2.normal &&
+                              po.orm == po2.orm && po.aux == po2.aux,
+                          "lane overflow: part fell back to mode 2 "
+                          "byte-exactly");
+                }
+
+                // ---- (k5) non-anchored part: world ops pre-resolved ----
+                {
+                    QuadFixture fixna;
+                    fixna.add_quad(v3(0, 0, 0), v3(1, 0, 0), v3(0, 0, 1),
+                                   kQuadExtent, v3(0, 1, 0), kMatA);
+                    fixna.atlas = fix_a.atlas;
+                    fixna.finalize(0x4006);
+                    std::vector<uint8_t> naweights(4 * 2);
+                    tape_rt.classify_vertices(fixna.positions.data(),
+                                              fixna.normals.data(), 4,
+                                              nullptr, naweights.data());
+                    fixna.apply_tape({3u, 4u}, naweights, 0xBEEF0006ull);
+                    fixna.apply_tape_text(k_text, /*world_anchored=*/false);
+                    vt::VtFillRequest rna = make_request(fixna, 0, 4);
+                    CHECK(run_fill(&rna, 1), err.c_str());
+                    PageData pna;
+                    CHECK(read_slot(4, pna), err.c_str());
+                    std::vector<uint8_t> na_albedo;
+                    int na_bad = 0;
+                    decode_page_bc7(pna.albedo, na_albedo, na_bad);
+                    CHECK(na_bad == 0, "non-anchored page decodes as BC7");
+                    // A dominates everywhere under the fallback constants —
+                    // fine: the claim here is the pre-resolve path, and the
+                    // fractional band still exercises the blend precision.
+                    cross_check(pna, na_albedo, nullptr,
+                                "mode 3 cross-check (non-anchored fallback)",
+                                false);
+                }
+
+                // ---- (k6) MATTER_VT_TAPE_GPU=0 forces mode 2 ----
+                {
+#ifdef _WIN32
+                    _putenv_s("MATTER_VT_TAPE_GPU", "0");
+#else
+                    setenv("MATTER_VT_TAPE_GPU", "0", 1);
+#endif
+                    auto compositor2 = vt::VtCompositor::create(
+                        vulkan->device(), vulkan->physical_device(),
+                        VK_NULL_HANDLE, err);
+                    CHECK(compositor2 != nullptr, err.c_str());
+                    CHECK(!compositor2->tape_gpu_enabled(),
+                          "env gate: MATTER_VT_TAPE_GPU=0 read at create");
+                    CHECK(compositor2->set_tilesets(slots, 2, err),
+                          err.c_str());
+                    compositor2->set_materials(mats5, 5);
+                    // The anchored mode-3 fixture on the gated compositor...
+                    QuadFixture fix_env, fix_ref;
+                    for (QuadFixture* f : {&fix_env, &fix_ref}) {
+                        f->add_quad(v3(0, 0, 0), v3(1, 0, 0), v3(0, 0, 1),
+                                    kQuadExtent, v3(0, 1, 0), kMatA);
+                        f->atlas = fix_a.atlas;
+                    }
+                    fix_env.finalize(0x4007);
+                    fix_ref.finalize(0x4008);
+                    fix_env.apply_tape({3u, 4u}, kweights, 0xBEEF0007ull);
+                    fix_env.apply_tape_text(k_text, true, l2w16, klanes,
+                                            kscan.count);
+                    // ...must equal the plain mode-2 fill (no text) of the
+                    // same weights on the ungated compositor.
+                    fix_ref.apply_tape({3u, 4u}, kweights, 0xBEEF0008ull);
+                    vt::VtFillRequest re = make_request(fix_env, 0, 5);
+                    CHECK(tc.begin(err), err.c_str());
+                    compositor2->fill(tc.cmd, &re, 1);
+                    CHECK(tc.submit(err), err.c_str());
+                    vt::VtFillRequest rr = make_request(fix_ref, 0, 6);
+                    CHECK(run_fill(&rr, 1), err.c_str());
+                    CHECK(compositor2->stats().tape_mode3_entries == 0,
+                          "env gate: no mode-3 entries packed");
+                    PageData pe, pr;
+                    CHECK(read_slot(5, pe) && read_slot(6, pr), err.c_str());
+                    CHECK(pe.albedo == pr.albedo && pe.normal == pr.normal &&
+                              pe.orm == pr.orm && pe.aux == pr.aux,
+                          "env gate: gated fill is byte-identical to mode 2");
+                    vulkan->wait_idle();
+                    compositor2.reset();
+#ifdef _WIN32
+                    _putenv_s("MATTER_VT_TAPE_GPU", "");
+#else
+                    unsetenv("MATTER_VT_TAPE_GPU");
+#endif
+                }
+
+                // ---- (k7) mode-3 fill-time telemetry ----
+                {
+                    VkQueryPool qp = VK_NULL_HANDLE;
+                    VkQueryPoolCreateInfo qinfo{
+                        VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+                    qinfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+                    qinfo.queryCount = 2;
+                    CHECK(vkCreateQueryPool(vulkan->device(), &qinfo, nullptr,
+                                            &qp) == VK_SUCCESS,
+                          "create mode-3 timestamp query pool");
+                    std::vector<vt::VtFillRequest> reqs;
+                    for (uint32_t i = 0; i < 16; ++i)
+                        reqs.push_back(make_request(fixk, 0, i));
+                    CHECK(tc.begin(err), err.c_str());
+                    vkCmdResetQueryPool(tc.cmd, qp, 0, 2);
+                    vkCmdWriteTimestamp(tc.cmd,
+                                        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, qp,
+                                        0);
+                    compositor->fill(tc.cmd, reqs.data(), reqs.size());
+                    vkCmdWriteTimestamp(tc.cmd,
+                                        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                        qp, 1);
+                    CHECK(tc.submit(err), err.c_str());
+                    uint64_t stamps[2] = {0, 0};
+                    CHECK(vkGetQueryPoolResults(
+                              vulkan->device(), qp, 0, 2, sizeof(stamps),
+                              stamps, sizeof(uint64_t),
+                              VK_QUERY_RESULT_64_BIT |
+                                  VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS,
+                          "read mode-3 timestamp queries");
+                    VkPhysicalDeviceProperties props{};
+                    vkGetPhysicalDeviceProperties(vulkan->physical_device(),
+                                                  &props);
+                    const double ms = double(stamps[1] - stamps[0]) *
+                                      double(props.limits.timestampPeriod) /
+                                      1e6;
+                    std::printf(
+                        "mode-3 fill time: %.3f ms for 16 pages = %.4f "
+                        "ms/page (%zu-op tape)\n",
+                        ms, ms / 16.0, sprog.ops.size());
+                    CHECK(ms / 16.0 < 2.0,
+                          "mode-3 page fill stays within loose harness "
+                          "budget");
+                    vkDestroyQueryPool(vulkan->device(), qp, nullptr);
+                }
             }
 
             std::printf("compositor stats: %llu pages, %llu skipped, %llu "

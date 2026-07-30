@@ -15,6 +15,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 
 #include <vulkan/vulkan_core.h>
 
@@ -156,7 +157,79 @@ struct VtPartContext {
     const uint32_t* surface_materials = nullptr; // surface_material_count registry ids
     uint32_t        surface_material_count = 0;
     uint64_t        surface_tape_hash = 0;
+
+    // P2 (texel-rate tape, weight-seam mode 3). The compositor now evaluates
+    // the tape PER TEXEL on the GPU when the part also carries the canonical
+    // tape text below; the per-vertex weight columns above remain the mode-2
+    // fallback and the legacy-path argmax source. All appends follow the
+    // null/zero-means-unavailable rule: an older producer that leaves them
+    // default keeps the part on mode 2 exactly as before.
+    //
+    // surface_tape_text: the canonical surfaces() program text (the same
+    // bytes surface_tape_hash hashes). Borrowed like every pointer here; the
+    // residency layer owns a copy. Null => no GPU tape, mode 2.
+    const char* surface_tape_text = nullptr;
+    // 1 when the exactly-one-instance world-anchored rule holds for this
+    // variant (terrain sectors). Non-anchored parts have their world ops
+    // PRE-RESOLVED to the CPU fallback constants at pack time, so the shader
+    // never executes a world op for them (mirrors the warn-once CPU rule).
+    uint32_t surface_world_anchored = 0;
+    // Row-major 4x3 local->world rows ([m00 m01 m02 m03], [m10..], [m20..])
+    // — the top three rows of the SurfaceWorldContext 4x4. Meaningful only
+    // when surface_world_anchored; identity otherwise (harmless: no packed op
+    // reads world inputs for non-anchored parts).
+    float surface_local_to_world[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    // Per-vertex f16 field-derived lane values (vertex_count *
+    // surface_lane_count, lane-major per vertex), computed by the producer in
+    // vt_surface_tape.h's canonical lane-scan order (vt_scan_surface_lanes —
+    // the compositor re-runs the same scan on the same text, which is what
+    // keeps producer and packer lane indices identical by construction).
+    // Null/0 when the tape reads no field-derived inputs (or is absent).
+    const uint16_t* surface_lanes = nullptr;
+    uint32_t        surface_lane_count = 0;
 };
+
+// ---------------------------------------------------------------------------
+// P2: VT page content identity.
+// ---------------------------------------------------------------------------
+// Pages/tails are pure functions of (variant content, chart table, tape hash,
+// material + tileset content, weight-seam mode, kVtBakeVersion). There is no
+// on-disk page cache — the "content key" is the per-variant surface_tape_hash
+// the residency layer stores — so folding the weight-seam mode and the bake
+// version into that stored hash is what keeps the identity honest: flipping
+// MATTER_VT_TAPE_GPU (or bumping the version) yields a different stored key,
+// never a silent mix of modes behind one hash.
+//
+// v2: GPU tape interpreter (weight-seam mode 3) — bumped so any cache keyed
+// on the old implicit v1 identity invalidates once.
+constexpr uint32_t kVtBakeVersion = 2u;
+
+// Process-wide gate for the GPU tape interpreter. MATTER_VT_TAPE_GPU=0 forces
+// weight-seam mode 2 everywhere (the escape hatch); anything else (including
+// unset) enables mode-3 promotion for tape-text-carrying parts. Read once —
+// the mode cannot flip mid-session, so resident pages never mix modes.
+inline bool vt_tape_gpu_enabled() {
+    static const bool enabled = [] {
+        const char* v = std::getenv("MATTER_VT_TAPE_GPU");
+        return !(v != nullptr && v[0] == '0' && v[1] == '\0');
+    }();
+    return enabled;
+}
+
+// Folds the weight-seam mode + kVtBakeVersion into a tape content hash
+// (FNV-1a-style fold, deterministic). The residency layer applies this to
+// every surface_tape_hash it stores; tests assert mode 2 and mode 3 salt to
+// different keys so no stale page can survive a mode flip.
+inline uint64_t vt_page_content_salt(uint64_t tape_hash,
+                                     uint32_t weight_seam_mode) {
+    constexpr uint64_t prime = 1099511628211ULL;
+    uint64_t h = tape_hash;
+    h ^= 0x9E3779B97F4A7C15ull + weight_seam_mode;
+    h *= prime;
+    h ^= kVtBakeVersion;
+    h *= prime;
+    return h;
+}
 
 // One page fill, fully resolved by the residency layer.
 struct VtFillRequest {

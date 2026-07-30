@@ -2295,6 +2295,111 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
     renderer.release_part(0x7710);
     CHECK(renderer.vt_stats().variants == 0,
           "vt-surfaces: release returns the variant");
+
+    // ---- P2 (texel-rate tape, weight-seam mode 3) --------------------------
+    // A part that ALSO carries the canonical tape text: the compositor packs
+    // the program and evaluates it per texel on the GPU. The fixture is a
+    // step tape splitting one 0.8 m quad at lx = 0 with a 5 mm edge (<1 page
+    // texel at 150 tpm). Per-texel evaluation keeps both sides PURE right up
+    // to the boundary; the per-vertex mode-2 ramp on this 2-triangle quad
+    // would height-blend visibly at the probe columns (~±0.04 m), so pure
+    // probes prove the GPU interpreter actually filled the pages. The whole
+    // mode still exits through the zero-validation-errors gate.
+    {
+        viewer::VkScenePart part3 =
+            fixed_part(0x7711, {-0.4f, -0.4f, z}, {0.4f, 0.4f, z}, 0);
+        part3.vertices.clear();
+        part3.indices.clear();
+        chart_atlas::ChartAtlasRung rung3;
+        rung3.atlas_w = 128;
+        rung3.atlas_h = 128;
+        {
+            const float u0 = 4.0f / 128.0f, u1 = 124.0f / 128.0f;
+            part3.vertices.push_back({{-0.4f, -0.4f, z}, normal, tint,
+                                      {u0, u0, 1.0f, 1.0f}, kTriMaterial, {}});
+            part3.vertices.push_back({{0.4f, -0.4f, z}, normal, tint,
+                                      {u1, u0, 1.0f, 1.0f}, kTriMaterial, {}});
+            part3.vertices.push_back({{0.4f, 0.4f, z}, normal, tint,
+                                      {u1, u1, 1.0f, 1.0f}, kTriMaterial, {}});
+            part3.vertices.push_back({{-0.4f, 0.4f, z}, normal, tint,
+                                      {u0, u1, 1.0f, 1.0f}, kTriMaterial, {}});
+            part3.indices = {0, 1, 2, 0, 2, 3};
+            chart_atlas::ChartEntry entry{};
+            entry.origin[0] = -0.4f;
+            entry.origin[1] = -0.4f;
+            entry.origin[2] = z;
+            entry.tangent[0] = 1.0f;
+            entry.bitangent[1] = 1.0f;
+            entry.rect_x = 0;
+            entry.rect_y = 0;
+            entry.rect_w = 128;
+            entry.rect_h = 128;
+            entry.texels_per_meter = tpm;
+            entry.first_tri = 0;
+            entry.tri_count = 2;
+            rung3.charts.push_back(entry);
+            rung3.tri_order = {0, 1};
+        }
+        part3.clusters[0].lods[0] = {0, 6, 0.0f, 0u};
+        part3.lod_charts = {rung3};
+        viewer::VkScenePartChartMesh mesh3;
+        mesh3.vertex_count = 4;
+        for (const viewer::VkRasterVertex& vertex : part3.vertices) {
+            mesh3.positions.push_back(vertex.position.x);
+            mesh3.positions.push_back(vertex.position.y);
+            mesh3.positions.push_back(vertex.position.z);
+            mesh3.normals.push_back(vertex.normal.x);
+            mesh3.normals.push_back(vertex.normal.y);
+            mesh3.normals.push_back(vertex.normal.z);
+            mesh3.surface_uvs.push_back(vertex.surface.x);
+            mesh3.surface_uvs.push_back(vertex.surface.y);
+            mesh3.material_ids.push_back(kTriMaterial);
+        }
+        mesh3.indices = part3.indices;
+        mesh3.dominant_material = kTriMaterial;
+        // The classifier's per-vertex columns for this tape (grass left,
+        // rock right) — the mode-2 fallback payload the gate requires.
+        mesh3.surface_weights = {255, 0, 0, 255, 0, 255, 255, 0};
+        part3.lod_chart_meshes = {std::move(mesh3)};
+        part3.surface_materials = {kMatGrass, kMatRock};
+        part3.surface_tape_hash = 0x5EAF00D100000003ull;
+        part3.surface_tape_text =
+            "input lx\n"
+            "smoothstep -0.0025 0.0025 r0\n"
+            "oneminus r1\n"
+            "material 3 r2\n"
+            "material 4 r1\n";
+        // Not world-anchored, no field lanes: the defaults are the contract.
+        CHECK(renderer.ensure_part(part3, error) >= 0,
+              error.empty() ? "vt-surfaces: ensure mode-3 quad"
+                            : error.c_str());
+        CHECK(renderer.update_instances({{0x7711, identity, 1}}, error),
+              error.empty() ? "vt-surfaces: upload mode-3 instance"
+                            : error.c_str());
+        for (int i = 0; i < 6; ++i)
+            render_once("vt-surfaces: mode-3 frame");
+        // Probe columns ~0.04 m either side of the step (quad spans screen
+        // x 64..96 with this camera; the edge is at x = 80).
+        const viewer::VkRasterPixel m3_left = pixel_at(78, 80);
+        const viewer::VkRasterPixel m3_right = pixel_at(82, 80);
+        CHECK(m3_left.material_index == kTriMaterial &&
+                  m3_right.material_index == kTriMaterial,
+              "vt-surfaces mode 3: probes land on the quad");
+        CHECK(close_albedo(m3_left, grass_albedo, 2.0e-2f),
+              "vt-surfaces mode 3: pure grass just left of the step edge "
+              "(per-texel tape, not the per-vertex ramp)");
+        CHECK(close_albedo(m3_right, rock_albedo, 2.0e-2f),
+              "vt-surfaces mode 3: pure rock just right of the step edge");
+        render_once("vt-surfaces: mode-3 determinism frame");
+        const viewer::VkRasterPixel m3_left2 = pixel_at(78, 80);
+        CHECK(m3_left2.albedo.x == m3_left.albedo.x &&
+                  m3_left2.albedo.y == m3_left.albedo.y &&
+                  m3_left2.albedo.z == m3_left.albedo.z,
+              "vt-surfaces mode 3: pages bit-identical across frames");
+        renderer.release_part(0x7711);
+        CHECK(renderer.vt_stats().variants == 0,
+              "vt-surfaces mode 3: release returns the variant");
+    }
 }
 
 // WP-H (tier-2 hemisphere AO page enrichment): MATTER_VK_SMOKE_MODE=vt-enrich

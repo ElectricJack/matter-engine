@@ -43,15 +43,28 @@ struct GpuTri {
     float p0[4], p1[4], p2[4];   // xyz part-local position, w = plane U
     float n0[4], n1[4], n2[4];   // xyz part-local normal,   w = plane V
     uint32_t mat[4];             // x = TriEx materialId
-    // WP-F: per-vertex surfaces()-tape weights, 8 u8 columns per vertex
-    // (kMaxSurfaceMaterials), 2 u32 per vertex:
-    //   wA = {v0 cols 0-3, v0 cols 4-7, v1 cols 0-3, v1 cols 4-7}
-    //   wB = {v2 cols 0-3, v2 cols 4-7, 0, 0}
-    // All zero when the part carries no tape (weight mode never reads them).
+    // Per-vertex tape payload. TWO packings share these rows; which one a
+    // part carries is decided at stream-build time and travels with the
+    // request's weight mode (the struct is internal to the page passes and
+    // versions with them):
+    //   MODE 2 (per-vertex u8 weight columns, kMaxSurfaceMaterials wide):
+    //     wA = {v0 cols 0-3, v0 cols 4-7, v1 cols 0-3, v1 cols 4-7}
+    //     wB = {v2 cols 0-3, v2 cols 4-7, 0, 0};  wC = 0
+    //   MODE 3 (P2 texel-rate tape: per-vertex f16 FIELD LANES, up to
+    //   kVtMaxSurfaceLanes = 8, two halves per u32, lane l in word l>>1 at
+    //   bit (l&1)*16):
+    //     wA = v0 lanes, wB = v1 lanes, wC = v2 lanes.
+    // All zero when the part carries no tape (those modes never read them).
+    //
+    // Spec §4.3 deviation, documented: the spec claimed the 8-f16 lane block
+    // fits the existing wA/wB region "16 B used of the 32" — that accounting
+    // covers ONE vertex slot; three vertices need 48 B, so the struct grew
+    // one 16 B row (144 -> 160) instead of silently capping lanes at 5.
     uint32_t wA[4];
     uint32_t wB[4];
+    uint32_t wC[4];
 };
-static_assert(sizeof(GpuTri) == 144, "GpuTri must match std430 layout");
+static_assert(sizeof(GpuTri) == 160, "GpuTri must match std430 layout");
 
 // Per-vertex tape weight columns packed into the triangle stream — must equal
 // terrain_field::kMaxSurfaceMaterials and the shader packing width.
@@ -68,12 +81,21 @@ inline bool vt_context_has_tape(const VtPartContext& ctx) {
 // result would be unusable (no charts, or every triangle rejected), leaving
 // `out_charts` / `out_tris` in an unspecified but valid state.
 //
+// P2: when `lanes` is non-null the per-vertex tape payload rows (wA/wB/wC)
+// carry `lane_count` f16 FIELD LANES per vertex (mode-3 packing; see the
+// GpuTri comment) instead of the mode-2 u8 weight columns. The caller (the
+// compositor) passes the part's precomputed lane stream only for parts it
+// promoted to mode 3; every other caller (the enricher included) leaves the
+// defaults and gets the historical packing byte-for-byte.
+//
 // DETERMINISM: fixed iteration order (charts ascending, then the chart's
 // tri_order range ascending). Same atlas + mesh => byte-identical streams.
 inline bool vt_build_chart_gpu_streams(const chart_atlas::ChartAtlasRung& atlas,
                                        const VtPartContext& ctx,
                                        std::vector<GpuChart>& out_charts,
-                                       std::vector<GpuTri>& out_tris) {
+                                       std::vector<GpuTri>& out_tris,
+                                       const uint16_t* lanes = nullptr,
+                                       uint32_t lane_count = 0) {
     out_charts.clear();
     out_tris.clear();
     if (atlas.charts.empty()) return false;
@@ -81,6 +103,8 @@ inline bool vt_build_chart_gpu_streams(const chart_atlas::ChartAtlasRung& atlas,
 
     const bool has_tape = vt_context_has_tape(ctx);
     const uint32_t tape_cols = has_tape ? ctx.surface_material_count : 0;
+    const bool pack_lanes = lanes != nullptr && lane_count > 0 &&
+                            lane_count <= 8u;
 
     out_charts.resize(atlas.charts.size());
     out_tris.reserve(atlas.tri_order.size());
@@ -171,7 +195,21 @@ inline bool vt_build_chart_gpu_streams(const chart_atlas::ChartAtlasRung& atlas,
                           : 0u;
             }
             g_tri.mat[0] = mat & 0xFFu;
-            if (has_tape) {
+            if (pack_lanes) {
+                // P2 mode-3 packing: per-vertex f16 field lanes, one 16 B row
+                // per vertex slot (lane l -> word l>>1, half (l&1)*16).
+                const auto pack_vertex_lanes = [&](uint32_t corner,
+                                                   uint32_t out[4]) {
+                    out[0] = out[1] = out[2] = out[3] = 0;
+                    const uint16_t* v =
+                        lanes + size_t(corner) * lane_count;
+                    for (uint32_t l = 0; l < lane_count; ++l)
+                        out[l >> 1] |= uint32_t(v[l]) << ((l & 1u) * 16u);
+                };
+                pack_vertex_lanes(corners[0], g_tri.wA);
+                pack_vertex_lanes(corners[1], g_tri.wB);
+                pack_vertex_lanes(corners[2], g_tri.wC);
+            } else if (has_tape) {
                 // Pack each corner's u8 weight columns: 2 u32 per vertex,
                 // little-endian within the u32 (column k at bit 8*(k&3)).
                 const auto pack_pair = [&](uint32_t corner, uint32_t out[2]) {

@@ -604,6 +604,16 @@ float fbm3_op(const Op& o, float x, float y, float z, bool ridged) {
 
 } // namespace
 
+// P2 accessors (see terrain_field.h): thin wrappers over the file-static
+// noise core so the GPU tape packer / tests can evaluate a single op at an
+// explicit point with the exact CPU float path.
+float surface_op_fbm2(const Op& op, float x, float z, bool ridged) {
+    return fbm2(x, z, op.seed, op.oct, op.f1, op.f2, op.f0, ridged);
+}
+float surface_op_fbm3(const Op& op, float x, float y, float z, bool ridged) {
+    return fbm3_op(op, x, y, z, ridged);
+}
+
 bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
                            std::string& err) {
     out = SurfaceProgram();

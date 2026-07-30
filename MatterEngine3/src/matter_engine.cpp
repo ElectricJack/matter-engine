@@ -51,6 +51,7 @@
 #include "render/vk_scene_renderer.h"
 #include "render/vk_lighting_controls.h"
 #include "render/matrix_math.h"
+#include "render/vt_surface_tape.h"  // P2: field-lane scan + f16 lane values
 #endif
 
 // Task 10: live-edit watcher + production seams.
@@ -242,6 +243,30 @@ static void vt_classify_chart_vertices(const VtSurfaceClassifier& classifier,
                classifier.tape->material_count());
     classifier.tape->classify_vertices(positions, normals, vertex_count, world,
                                        out.data());
+}
+
+// P2 (texel-rate tape): the per-vertex f16 FIELD LANES the GPU interpreter
+// interpolates (vt_surface_tape.h owns the scan + packing; the compositor
+// re-runs the same scan over the same canonical text, which is what keeps
+// producer and packer lane indices identical). Lanes exist only for
+// world-anchored parts whose tape reads field-derived inputs; a lane-cap
+// overflow leaves them empty, and the compositor then stays on mode 2 with
+// its own warn-once diagnostic. Returns the lane count (0 = none).
+static uint32_t vt_compute_chart_lanes(const VtSurfaceClassifier& classifier,
+                                       const float* positions,
+                                       uint32_t vertex_count,
+                                       std::vector<uint16_t>& out) {
+    out.clear();
+    if (!classifier.tape || !classifier.world_anchored || positions == nullptr ||
+        vertex_count == 0)
+        return 0;
+    const vt::VtSurfaceLaneScan scan =
+        vt::vt_scan_surface_lanes(classifier.tape->program());
+    if (scan.overflow || scan.count == 0) return 0;
+    vt::vt_compute_surface_lanes(scan, positions, vertex_count,
+                                 classifier.field, classifier.local_to_world,
+                                 out);
+    return scan.count;
 }
 
 bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
@@ -3042,6 +3067,9 @@ void WorldSession::Impl::schedule_vt_surface_reclassify() {
                 if (!loaded || loaded->lod_charts.empty()) continue;
                 std::vector<std::vector<uint8_t>> rung_weights(
                     loaded->lod_charts.size());
+                std::vector<std::vector<uint16_t>> rung_lanes(
+                    loaded->lod_charts.size());
+                uint32_t lane_count = 0;
                 std::vector<uint32_t> materials;
                 uint64_t tape_hash = 0;
                 if (world_surface) {
@@ -3075,10 +3103,19 @@ void WorldSession::Impl::schedule_vt_surface_reclassify() {
                                                  : mesh.normals.data(),
                             static_cast<uint32_t>(mesh.vertex_count),
                             rung_weights[mi]);
+                        // P2: refreshed field lanes for the edited tape.
+                        lane_count = vt_compute_chart_lanes(
+                            classifier, mesh.vertices.data(),
+                            static_cast<uint32_t>(mesh.vertex_count),
+                            rung_lanes[mi]);
                     }
                 }
                 if (vk_scene->update_vt_part_surface(
-                        entry.part_hash, rung_weights, materials, tape_hash))
+                        entry.part_hash, rung_weights, materials, tape_hash,
+                        world_surface
+                            ? world_surface->program().text().c_str()
+                            : nullptr,
+                        &rung_lanes, lane_count))
                     ++updated;
             }
             vk_scene->end_vt_surface_update();
@@ -3146,6 +3183,7 @@ void WorldSession::Impl::service_vt_rung_requests() {
 
     std::vector<uint8_t> weights;
     std::vector<uint32_t> materials;
+    std::vector<uint16_t> lanes;   // P2: per-vertex f16 field lanes (mode 3)
     for (const viewer::VtRungRequest& request : requests) {
         const viewer::LoadedPart* loaded = store->get_or_load(request.part_hash);
         if (!loaded) continue;   // unloaded since the request; demand re-asks
@@ -3187,6 +3225,7 @@ void WorldSession::Impl::service_vt_rung_requests() {
         // re-registration can never resurrect stale weights.
         weights.clear();
         materials.clear();
+        lanes.clear();
         if (world_surface && world_surface->material_count() > 0) {
             const auto sector = sector_by_hash.find(request.part_hash);
             if (sector != sector_by_hash.end()) {
@@ -3215,6 +3254,23 @@ void WorldSession::Impl::service_vt_rung_requests() {
                     context.surface_material_count =
                         static_cast<uint32_t>(materials.size());
                     context.surface_tape_hash = world_surface_hash;
+                    // P2: the mode-3 payload — canonical tape text,
+                    // anchoring verdict + transform, per-vertex field lanes.
+                    // All borrowed for the register call (copied there).
+                    context.surface_tape_text =
+                        world_surface->program().text().c_str();
+                    context.surface_world_anchored =
+                        classifier.world_anchored ? 1u : 0u;
+                    std::memcpy(context.surface_local_to_world,
+                                classifier.local_to_world,
+                                sizeof(context.surface_local_to_world));
+                    const uint32_t lane_count = vt_compute_chart_lanes(
+                        classifier, mesh.vertices.data(),
+                        static_cast<uint32_t>(mesh.vertex_count), lanes);
+                    if (lane_count > 0) {
+                        context.surface_lanes = lanes.data();
+                        context.surface_lane_count = lane_count;
+                    }
                 }
             }
         }
@@ -5478,6 +5534,14 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                 for (uint32_t k = 0; k < surface->tape->material_count(); ++k)
                     part.surface_materials.push_back(static_cast<uint32_t>(
                         surface->tape->material_handle(k)));
+                // P2: the mode-3 payload (tape text + anchoring + transform;
+                // per-rung lanes are filled with the chart meshes below).
+                part.surface_tape_text = surface->tape->program().text();
+                part.surface_world_anchored =
+                    surface->world_anchored ? 1u : 0u;
+                std::memcpy(part.surface_local_to_world,
+                            surface->local_to_world,
+                            sizeof(part.surface_local_to_world));
             }
             // Demand-driven VT (default): declare the registrable rungs and
             // ship NO payload — no chart-table copy, no per-rung mesh copies,
@@ -5539,6 +5603,10 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                             out.normals.empty() ? nullptr
                                                 : out.normals.data(),
                             out.vertex_count, out.surface_weights);
+                        // P2: per-vertex field lanes for the GPU tape.
+                        out.surface_lane_count = vt_compute_chart_lanes(
+                            *surface, out.positions.data(), out.vertex_count,
+                            out.surface_lanes);
                     }
                 }
             }

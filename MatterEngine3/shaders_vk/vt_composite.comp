@@ -14,7 +14,9 @@
 //   3. Evaluate material weights behind the vt_material_weights seam
 //      (mode 0: the triangle's TriEx materialId at weight 1; mode 1: the
 //      2-material debug ramp for tests; mode 2: WP-F's surfaces() tape —
-//      per-vertex weight columns interpolated barycentrically, top-2 kept).
+//      per-vertex weight columns interpolated barycentrically, top-2 kept;
+//      mode 3: P2's texel-rate tape — the packed surfaces() program run
+//      per texel by the vt_surface_tape.glsl interpreter, same top-2 rule).
 //   4. Sample each weighted material's Wang detail tileset TRIPLANAR in
 //      part-local space (three planar samples along the local axes weighted
 //      |n|^4), with textureLod at the page-texel footprint (mip policy: a
@@ -64,8 +66,17 @@ struct GpuFillRequest {
                          // w debug materials (mat_a | mat_b << 16)
     vec4 debug_params;   // weight_mode 1: x = blend start (plane U, meters),
                          //                y = blend width (meters)
-    uvec4 tape;          // weight_mode 2: x = tape material ids for columns
-                         // 0-3 (u8 each), y = ids for columns 4-7, z = count
+    uvec4 tape;          // weight modes 2/3: x = tape material ids for columns
+                         // 0-3 (u8 each), y = ids for columns 4-7, z = count,
+                         // w = field-lane count (mode 3)
+    // P2 (weight-seam mode 3): the part's packed tape in the shared op arena
+    // plus its world transform.
+    uvec4 tape2;         // x = op offset into tape_ops[], y = op count,
+                         // z = weight registers for columns 0-3 (u8 each),
+                         // w = weight registers for columns 4-7
+    vec4 xform0;         // local_to_world rows (row-major 4x3); identity for
+    vec4 xform1;         // non-world-anchored parts (never read there: the
+    vec4 xform2;         // packer pre-resolved their world ops to consts)
 };
 struct GpuVtMaterial {
     vec4 albedo;         // scalar fallback albedo (rgb) when no detail slot
@@ -96,6 +107,12 @@ layout(push_constant) uniform Push { uint req_index; } pc;
 
 // Shared chart resolve (needs charts[]/tris[]/cand_charts[] declared above).
 #include "vt_chart_resolve.glsl"
+
+// ---- P2: the shared tape-op arena + the GPU tape interpreter (mode 3) ------
+// GpuSurfOp, the tape_ops[] SSBO (set 1 binding 9 by default) and the
+// interpreter live in vt_surface_tape.glsl — the GLSL noise twin of
+// terrain_field.cpp's noise core.
+#include "vt_surface_tape.glsl"
 
 // ---------------------------------------------------------------------------
 // Triplanar Wang sampling of one material's detail tileset.
@@ -178,11 +195,52 @@ SurfSample sample_material(uint mat_id, vec3 pos, vec3 nrm, float footprint_m) {
 //           wA/wB) interpolated barycentrically, top-2 kept, ids resolved
 //           through the request's tape material table. Fixed ascending scan
 //           with strict '>' so ties keep the lowest column (determinism).
+//   mode 3: P2 texel-rate tape — the part's packed tape evaluated PER TEXEL
+//           by the interpreter in vt_surface_tape.glsl (field-derived inputs
+//           read from the per-vertex f16 lanes in GpuTri wA/wB/wC), then the
+//           SAME strict-'>' ascending top-2 scan, normalization and
+//           zero-coverage TriEx fallback as mode 2.
 // ---------------------------------------------------------------------------
-void vt_material_weights(uint weight_mode, uint debug_mats, vec4 debug_params,
-                         uvec4 tape, GpuTri tri, vec3 bary,
+
+// Shared top-2 selection over per-column weights (modes 2/3): fixed ascending
+// scan, strict '>' so ties keep the lowest column, top-2 renormalized, no
+// coverage -> the TriEx id (determinism contract of the seam).
+void vt_top2_select(uint count, float col_w[8], uvec4 tape, uint tri_mat,
+                    out uint m0, out float w0, out uint m1, out float w1) {
+    uint best_col = 0u;  float best_w = -1.0;
+    uint next_col = 0u;  float next_w = -1.0;
+    for (uint k = 0u; k < count; ++k) {
+        float w = col_w[k];
+        if (w > best_w) {
+            next_w = best_w; next_col = best_col;
+            best_w = w;      best_col = k;
+        } else if (w > next_w) {
+            next_w = w; next_col = k;
+        }
+    }
+    if (best_w <= 0.0) {
+        // No tape coverage at this texel: fall back to the TriEx id.
+        m0 = tri_mat; w0 = 1.0;
+        m1 = tri_mat; w1 = 0.0;
+        return;
+    }
+    uint id0 = ((best_col < 4u ? tape.x : tape.y) >> ((best_col & 3u) * 8u)) & 0xFFu;
+    if (next_w <= 0.0) {
+        m0 = id0; w0 = 1.0;
+        m1 = id0; w1 = 0.0;
+        return;
+    }
+    uint id1 = ((next_col < 4u ? tape.x : tape.y) >> ((next_col & 3u) * 8u)) & 0xFFu;
+    float sum = best_w + next_w;
+    m0 = id0; w0 = best_w / sum;
+    m1 = id1; w1 = next_w / sum;
+}
+
+void vt_material_weights(GpuFillRequest req, GpuTri tri, vec3 bary,
                          vec3 pos, vec3 nrm, vec2 plane_uv,
                          out uint m0, out float w0, out uint m1, out float w1) {
+    uint weight_mode = req.b.z;
+    uint debug_mats = req.b.w;
     uint tri_mat = tri.mat.x;
     if (weight_mode == 1u) {
         // Debug/test mode: analytic 2-material ramp along plane U so the
@@ -190,45 +248,49 @@ void vt_material_weights(uint weight_mode, uint debug_mats, vec4 debug_params,
         // testable independently of the tape.
         m0 = debug_mats & 0xFFFFu;
         m1 = (debug_mats >> 16) & 0xFFFFu;
-        w1 = clamp((plane_uv.x - debug_params.x) / max(debug_params.y, 1e-6),
+        w1 = clamp((plane_uv.x - req.debug_params.x) /
+                       max(req.debug_params.y, 1e-6),
                    0.0, 1.0);
         w0 = 1.0 - w1;
         return;
     }
     if (weight_mode == 2u) {
-        uint count = min(tape.z, 8u);
-        uint best_col = 0u;  float best_w = -1.0;
-        uint next_col = 0u;  float next_w = -1.0;
+        uint count = min(req.tape.z, 8u);
+        float col_w[8];
+        for (uint k = 0u; k < 8u; ++k) col_w[k] = -1.0;
         for (uint k = 0u; k < count; ++k) {
             uint word = k >> 2u;
             uint shift = (k & 3u) * 8u;
             float v0 = float((tri.wA[word]      >> shift) & 0xFFu);
             float v1 = float((tri.wA[2u + word] >> shift) & 0xFFu);
             float v2 = float((tri.wB[word]      >> shift) & 0xFFu);
-            float w = (bary.x * v0 + bary.y * v1 + bary.z * v2) * (1.0 / 255.0);
-            if (w > best_w) {
-                next_w = best_w; next_col = best_col;
-                best_w = w;      best_col = k;
-            } else if (w > next_w) {
-                next_w = w; next_col = k;
-            }
+            col_w[k] = (bary.x * v0 + bary.y * v1 + bary.z * v2) * (1.0 / 255.0);
         }
-        if (best_w <= 0.0) {
-            // No tape coverage at this texel: fall back to the TriEx id.
-            m0 = tri_mat; w0 = 1.0;
-            m1 = tri_mat; w1 = 0.0;
-            return;
+        vt_top2_select(count, col_w, req.tape, tri_mat, m0, w0, m1, w1);
+        return;
+    }
+    if (weight_mode == 3u) {
+        // P2: evaluate the packed tape per texel. Inputs mirror the CPU's
+        // weights_at: part-local position, y/slope from the normalized
+        // shading normal, world position via the request's transform.
+        float ny = nrm.y;
+        float slope = clamp(1.0 - ny, 0.0, 1.0);
+        vec4 ph = vec4(pos, 1.0);
+        vec3 wpos = vec3(dot(req.xform0, ph), dot(req.xform1, ph),
+                         dot(req.xform2, ph));
+        float regs[VT_TAPE_MAX_OPS];
+        vt_tape_eval(req.tape2.x, req.tape2.y, pos, ny, slope, wpos,
+                     tri, bary, regs);
+        uint count = min(req.tape.z, 8u);
+        float col_w[8];
+        for (uint k = 0u; k < 8u; ++k) col_w[k] = -1.0;
+        for (uint k = 0u; k < count; ++k) {
+            uint reg = ((k < 4u ? req.tape2.z : req.tape2.w)
+                        >> ((k & 3u) * 8u)) & 0xFFu;
+            // CPU: out_weights[k] = max(0, regs[reg]).
+            col_w[k] = max(regs[reg], 0.0);
         }
-        uint id0 = ((best_col < 4u ? tape.x : tape.y) >> ((best_col & 3u) * 8u)) & 0xFFu;
-        if (next_w <= 0.0) {
-            m0 = id0; w0 = 1.0;
-            m1 = id0; w1 = 0.0;
-            return;
-        }
-        uint id1 = ((next_col < 4u ? tape.x : tape.y) >> ((next_col & 3u) * 8u)) & 0xFFu;
-        float sum = best_w + next_w;
-        m0 = id0; w0 = best_w / sum;
-        m1 = id1; w1 = next_w / sum;
+        vt_top2_select(count, col_w, req.tape, tri_mat, m0, w0, m1, w1);
         return;
     }
     // Phase-2 stub: single material from the triangle's TriEx materialId.
@@ -266,8 +328,7 @@ void main() {
 
     // ---- material weights (seam) + top-2 height blend ----
     uint m0, m1; float w0, w1;
-    vt_material_weights(req.b.z, req.b.w, req.debug_params, req.tape,
-                        tri, sp.bary, pos, nrm, plane_uv, m0, w0, m1, w1);
+    vt_material_weights(req, tri, sp.bary, pos, nrm, plane_uv, m0, w0, m1, w1);
 
     vec3 albedo, orm, dn;
     float blend;

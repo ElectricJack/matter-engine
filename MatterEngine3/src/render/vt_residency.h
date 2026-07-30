@@ -210,13 +210,21 @@ inline size_t vt_variant_mesh_bytes(const chart_atlas::ChartAtlasRung& atlas,
                 sizeof(float) * 2 * (context.surface_uvs ? 1 : 0) +
                 sizeof(uint32_t) * (context.material_ids ? 1 : 0) +
                 4 * (context.tint_rgba ? 1 : 0) +
-                (tape ? context.surface_material_count : 0)) +
+                (tape ? context.surface_material_count : 0) +
+                // P2: per-vertex f16 field lanes (mode 3).
+                (tape && context.surface_lanes
+                     ? sizeof(uint16_t) * context.surface_lane_count
+                     : 0)) +
            static_cast<size_t>(context.triangle_count) * 3 * sizeof(uint32_t) +
            static_cast<size_t>(context.material_count) *
                context.material_stride * sizeof(float) +
            (tape ? static_cast<size_t>(context.surface_material_count) *
                        sizeof(uint32_t)
                  : 0) +
+           // P2: the canonical tape text copy (mode 3).
+           (tape && context.surface_tape_text
+                ? std::strlen(context.surface_tape_text)
+                : 0) +
            atlas.charts.size() * sizeof(chart_atlas::ChartEntry) +
            atlas.tri_order.size() * sizeof(uint32_t);
 }
@@ -876,10 +884,19 @@ class VtResidency {
     // buffers (VtCompositor::invalidate_part) plus resident page content
     // (invalidate_all_content) afterwards — this method only swaps the CPU
     // inputs.
+    // P2 appends (all defaulted so older callers keep compiling): the
+    // canonical tape text plus the per-vertex f16 field lanes for the GPU
+    // interpreter (weight-seam mode 3). Null text keeps the rung on mode 2.
+    // lanes must be vertex_count * lane_count halves when lane_count != 0.
+    // The stored surface_tape_hash is SALTED with the weight-seam mode and
+    // kVtBakeVersion (vt_page_content_salt) — the P2 content-key fold.
     bool update_variant_surface(uint64_t variant_hash, uint32_t rung,
                                 const uint8_t* weights, size_t weight_bytes,
                                 const uint32_t* materials,
-                                uint32_t material_count, uint64_t tape_hash);
+                                uint32_t material_count, uint64_t tape_hash,
+                                const char* tape_text = nullptr,
+                                const uint16_t* lanes = nullptr,
+                                uint32_t lane_count = 0);
 
     // Declares every page currently in the pool stale, because what the
     // INSTALLED FILLER bakes from has changed (a detail tileset slot was
@@ -994,6 +1011,10 @@ class VtResidency {
         // vt_types.h appends); replaced in place by update_variant_surface.
         std::vector<uint8_t> surface_weights;
         std::vector<uint32_t> surface_materials;
+        // P2: owned copies of the mode-3 payload (canonical tape text +
+        // per-vertex f16 field lanes); context repointed after adoption.
+        std::string surface_tape_text;
+        std::vector<uint16_t> surface_lanes;
         size_t mesh_bytes = 0;
         VtPartContext context{};
         uint32_t tail_slot = 0;
