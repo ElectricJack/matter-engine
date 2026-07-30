@@ -54,6 +54,19 @@ const char* kField =
     "seaLevel -10\n"
     "biome 0.65 0.35\n";
 
+// A field with actual spatial variation, for fslope / curv / world-noise
+// coverage (the constant kField has zero gradient everywhere).
+const char* kNoiseField =
+    "noise2 7 0.01 3 0.5 2\n"   // r0
+    "const 60\n"                // r1
+    "mul r0 r1\n"               // r2 = height, ~[-60, 60]
+    "const 0.5\n"               // r3
+    "height r2\n"
+    "moisture r3\n"
+    "relief r3\n"
+    "seaLevel -100\n"
+    "biome 2 2\n";
+
 bool parse_tape(const char* text, SurfaceProgram& prog, std::string& err) {
     return SurfaceProgram::parse(text, prog, err);
 }
@@ -66,7 +79,9 @@ int main() {
     // ---- parse round-trip ----
     SurfaceProgram prog;
     CHECK(parse_tape(kTape, prog, err), err.c_str());
-    CHECK(prog.ops.size() == 14, "op count");
+    // 14 source lines; the duplicate `const -1` / `const 1` pairs dedup to one
+    // emitted op each (refs are remapped), so 12 ops carry the register budget.
+    CHECK(prog.ops.size() == 12, "op count (const-dedup collapses 2 dups)");
     CHECK(prog.materials.size() == 3, "3 declared materials");
     CHECK(prog.materials[0].handle == 31 && prog.materials[1].handle == 32 &&
               prog.materials[2].handle == 33,
@@ -250,6 +265,159 @@ int main() {
         noise.weights_at(pos, nrm, nullptr, a);
         noise.weights_at(pos, nrm, &world, b);   // world ctx must not shift local noise
         CHECK(a[0] == b[0], "local noise ignores the world context");
+    }
+
+    // ---- const-dedup: duplicates cost no register budget, refs remap ----
+    {
+        SurfaceProgram dp;
+        CHECK(parse_tape("const 2\nconst 2\nadd r0 r1\nmaterial 2 r2\n", dp, err),
+              err.c_str());
+        CHECK(dp.ops.size() == 2, "duplicate const collapses to one op");
+        SurfaceRuntime rt{std::move(dp)};
+        const float pos[3] = {0, 0, 0}, up[3] = {0, 1, 0};
+        float w[kMaxSurfaceMaterials];
+        rt.weights_at(pos, up, nullptr, w);
+        CHECK(std::fabs(w[0] - 4.0f) < 1e-6f, "remapped refs evaluate correctly");
+        // 80 source lines of the same const parse fine — the 64-op cap applies
+        // to EMITTED ops — while 65 distinct consts still trip it.
+        std::string big;
+        for (int i = 0; i < 80; ++i) big += "const 1\n";
+        big += "material 2 r79\n";
+        SurfaceProgram bp;
+        CHECK(parse_tape(big.c_str(), bp, err), err.c_str());
+        CHECK(bp.ops.size() == 1, "80 identical consts dedup to one op");
+        std::string over;
+        for (int i = 0; i < 65; ++i) over += "const " + std::to_string(i) + "\n";
+        over += "material 2 r0\n";
+        SurfaceProgram op_;
+        CHECK(!parse_tape(over.c_str(), op_, err), ">64 distinct ops rejected");
+    }
+
+    // ---- sub / abs / oneminus / pow ----
+    {
+        SurfaceProgram ap;
+        CHECK(parse_tape("input wy\n"      // r0 = 70 under `world`
+                         "const 100\n"     // r1
+                         "sub r0 r1\n"     // r2 = -30
+                         "abs r2\n"        // r3 = 30
+                         "oneminus r3\n"   // r4 = -29
+                         "abs r4\n"        // r5 = 29
+                         "pow r5 2\n"      // r6 = 841
+                         "material 2 r6\n",
+                         ap, err),
+              err.c_str());
+        SurfaceRuntime rt{std::move(ap)};
+        const float pos[3] = {1, 70, 2}, up[3] = {0, 1, 0};
+        float w[kMaxSurfaceMaterials];
+        rt.weights_at(pos, up, &world, w);
+        CHECK(std::fabs(w[0] - 841.0f) < 1e-3f, "sub/abs/oneminus/pow chain");
+        // pow clamps its base to >= 0 (fractional exponents stay total).
+        SurfaceProgram pp;
+        CHECK(parse_tape("const -2\npow r0 0.5\nmaterial 2 r1\n", pp, err),
+              err.c_str());
+        SurfaceRuntime prt{std::move(pp)};
+        prt.weights_at(pos, up, nullptr, w);
+        CHECK(w[0] == 0.0f, "pow clamps negative bases to 0");
+    }
+
+    // ---- noise2w: world-frame noise is continuous across sector variants ----
+    {
+        // weight = noise2w + 2 (kept positive so the >= 0 weight clamp never
+        // masks a comparison below).
+        const char* kWorldNoiseTape =
+            "noise2w 7 0.25 3 0.5 2\nconst 2\nadd r0 r1\nmaterial 2 r2\n";
+        SurfaceProgram np;
+        CHECK(parse_tape(kWorldNoiseTape, np, err), err.c_str());
+        CHECK(np.uses_world_inputs(), "noise2w marks the tape world-dependent");
+        SurfaceRuntime wn{std::move(np)};
+        const float up[3] = {0, 1, 0};
+        float a[kMaxSurfaceMaterials], b[kMaxSurfaceMaterials];
+        // Two sector transforms 64 m apart in x (l2w is +128; B is +192).
+        float l2wB[16];
+        std::memcpy(l2wB, l2w, sizeof(l2wB));
+        l2wB[3] = 192.0f;
+        SurfaceWorldContext worldB{&field, l2wB};
+        const float pos[3] = {1.0f, 0.0f, 2.0f};
+        wn.weights_at(pos, up, &world, a);
+        wn.weights_at(pos, up, &worldB, b);
+        CHECK(a[0] != b[0], "same local position, different sector: different value");
+        // A local position compensating the 64 m delta lands on the same world
+        // point and must reproduce sector A's value exactly.
+        const float posComp[3] = {1.0f - 64.0f, 0.0f, 2.0f};
+        wn.weights_at(posComp, up, &worldB, b);
+        CHECK(a[0] == b[0], "same world position across sectors: same value");
+        // Under an identity transform world noise matches local noise (one fbm
+        // core), and a null context pins it to world (0, 0) — a constant.
+        float ident[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        SurfaceWorldContext identCtx{&field, ident};
+        SurfaceProgram lp;
+        CHECK(parse_tape("noise2 7 0.25 3 0.5 2\nconst 2\nadd r0 r1\n"
+                         "material 2 r2\n",
+                         lp, err),
+              err.c_str());
+        SurfaceRuntime ln{std::move(lp)};
+        wn.weights_at(pos, up, &identCtx, a);
+        ln.weights_at(pos, up, nullptr, b);
+        CHECK(a[0] == b[0], "identity transform: world noise == local noise");
+        wn.weights_at(pos, up, nullptr, a);
+        wn.weights_at(posComp, up, nullptr, b);
+        CHECK(a[0] == b[0], "null context pins world noise to a constant");
+    }
+
+    // ---- fslope: rung-independent slope from the terrain field ----
+    {
+        FieldProgram nfp;
+        CHECK(FieldProgram::parse(kNoiseField, nfp, err), err.c_str());
+        FieldRuntime nfield(std::move(nfp));
+        SurfaceProgram sp;
+        CHECK(parse_tape("input fslope\nmaterial 2 r0\n", sp, err), err.c_str());
+        CHECK(sp.uses_world_inputs(), "fslope is a world input");
+        SurfaceRuntime rt{std::move(sp)};
+        SurfaceWorldContext wctx{&nfield, l2w};
+        const float pos[3] = {3.0f, 10.0f, -7.0f}, up[3] = {0, 1, 0};
+        float w[kMaxSurfaceMaterials];
+        rt.weights_at(pos, up, &wctx, w);
+        // The mesh normal is straight up (mesh slope 0); fieldSlope still reads
+        // the field gradient at world (3+128, -7-64).
+        CHECK(std::fabs(w[0] - nfield.slope_at(131.0f, -71.0f)) < 1e-6f,
+              "fslope == FieldRuntime::slope_at at the sample's world (x, z)");
+        CHECK(w[0] > 0.0f, "noise field has nonzero gradient here");
+        rt.weights_at(pos, up, nullptr, w);
+        CHECK(w[0] == 0.0f, "fslope falls back to 0 without a world context");
+    }
+
+    // ---- curv: field curvature (concave collection zones vs convex crests) ----
+    {
+        FieldProgram nfp;
+        CHECK(FieldProgram::parse(kNoiseField, nfp, err), err.c_str());
+        FieldRuntime nfield(std::move(nfp));
+        // weight = curv(8) + 5: the offset keeps convex (negative) samples
+        // visible through the >= 0 weight clamp.
+        SurfaceProgram cp;
+        CHECK(parse_tape("curv 8\nconst 5\nadd r0 r1\nmaterial 2 r2\n", cp, err),
+              err.c_str());
+        CHECK(cp.uses_world_inputs(), "curv marks the tape world-dependent");
+        SurfaceRuntime rt{std::move(cp)};
+        SurfaceWorldContext wctx{&nfield, l2w};
+        const float pos[3] = {3.0f, 10.0f, -7.0f}, up[3] = {0, 1, 0};
+        float w[kMaxSurfaceMaterials];
+        rt.weights_at(pos, up, &wctx, w);
+        const float wx = 131.0f, wz = -71.0f;
+        CHECK(std::fabs(w[0] - (5.0f + nfield.curvature_at(wx, wz, 8.0f))) < 1e-4f,
+              "curv == FieldRuntime::curvature_at at the sample's world (x, z)");
+        // curvature_at is exactly the ring-average height deficit…
+        const float manual =
+            (nfield.height_at(wx + 8, wz) + nfield.height_at(wx - 8, wz) +
+             nfield.height_at(wx, wz + 8) + nfield.height_at(wx, wz - 8)) * 0.25f -
+            nfield.height_at(wx, wz);
+        CHECK(std::fabs(nfield.curvature_at(wx, wz, 8.0f) - manual) < 1e-6f,
+              "curvature_at matches the manual ring average");
+        // …zero on a constant field, and 0 without a world context.
+        CHECK(field.curvature_at(10.0f, 20.0f, 4.0f) == 0.0f,
+              "constant field has zero curvature");
+        rt.weights_at(pos, up, nullptr, w);
+        CHECK(std::fabs(w[0] - 5.0f) < 1e-6f,
+              "curv falls back to 0 without a world context");
     }
 
     return check_summary();

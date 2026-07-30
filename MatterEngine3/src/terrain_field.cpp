@@ -8,6 +8,7 @@
 #include <cstring>
 #include <sstream>
 #include <algorithm>
+#include <unordered_map>
 
 // ---------------------------------------------------------------------------
 // File-scope constants shared between parse (static fn) and eval.
@@ -264,6 +265,26 @@ bool FieldProgram::parse(const std::string& text, FieldProgram& out, std::string
             if (!require_reg(1, o.a)) return false;
             if (!require_reg(2, o.b)) return false;
         }
+        else if (op == "sub") {
+            o.kind = Op::Sub;
+            if (!require_reg(1, o.a)) return false;
+            if (!require_reg(2, o.b)) return false;
+        }
+        else if (op == "abs") {
+            o.kind = Op::Abs;
+            if (!require_reg(1, o.a)) return false;
+        }
+        else if (op == "oneminus") {
+            o.kind = Op::OneMinus;
+            if (!require_reg(1, o.a)) return false;
+        }
+        else if (op == "pow") {
+            // pow a e — e is a float-literal exponent; base is clamped to >= 0
+            // (GLSL pow is undefined there; a clamp keeps the tape total).
+            o.kind = Op::Pow;
+            if (!require_reg(1, o.a))    return false;
+            if (!require_float(2, o.f0)) return false;
+        }
         else if (op == "mul") {
             o.kind = Op::Mul;
             if (!require_reg(1, o.a)) return false;
@@ -387,6 +408,9 @@ void FieldRuntime::eval_regs(float regs[], int count, float x, float z) const {
         case Op::Add:
             regs[i] = regs[o.a] + regs[o.b];
             break;
+        case Op::Sub:
+            regs[i] = regs[o.a] - regs[o.b];
+            break;
         case Op::Mul:
             regs[i] = regs[o.a] * regs[o.b];
             break;
@@ -411,8 +435,20 @@ void FieldRuntime::eval_regs(float regs[], int count, float x, float z) const {
             regs[i] = t * t * (3.0f - 2.0f * t);
             break;
         }
+        case Op::Abs:
+            regs[i] = std::fabs(regs[o.a]);
+            break;
+        case Op::OneMinus:
+            regs[i] = 1.0f - regs[o.a];
+            break;
+        case Op::Pow:
+            regs[i] = std::pow(std::max(regs[o.a], 0.0f), o.f0);
+            break;
         case Op::Input:
-            // surfaces()-tape-only op; FieldProgram::parse never emits it.
+        case Op::Noise2World:
+        case Op::Ridge2World:
+        case Op::FieldCurv:
+            // surfaces()-tape-only ops; FieldProgram::parse never emits them.
             regs[i] = 0.0f;
             break;
         }
@@ -442,6 +478,13 @@ float FieldRuntime::slope_at(float x, float z) const {
     float gx = (hx1 - hx0) / (2.0f * eps);
     float gz = (hz1 - hz0) / (2.0f * eps);
     return std::sqrt(gx * gx + gz * gz);
+}
+
+float FieldRuntime::curvature_at(float x, float z, float radius) const {
+    const float e = std::max(radius, 0.25f);
+    const float ring = (height_at(x + e, z) + height_at(x - e, z) +
+                        height_at(x, z + e) + height_at(x, z - e)) * 0.25f;
+    return ring - height_at(x, z);   // + concave (below ring), - convex
 }
 
 float FieldRuntime::moisture_at(float x, float z) const {
@@ -477,7 +520,7 @@ namespace {
 // input-op name <-> code table (must stay in sync with SurfaceInput).
 const char* const kSurfaceInputNames[kSurfInCount] = {
     "lx", "ly", "lz", "ny", "slope",
-    "wx", "wy", "wz", "height", "moisture", "relief", "biome",
+    "wx", "wy", "wz", "height", "moisture", "relief", "biome", "fslope",
 };
 
 int surface_input_code(const std::string& name) {
@@ -503,6 +546,17 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
         }
     }
 
+    // Register refs in the text are SOURCE ordinals (one per op line, in
+    // order). Deduplicating identical `const` lines means source ordinal and
+    // emitted-op index diverge, so every ref goes through src_map.
+    std::vector<int> src_map;                       // source ordinal -> op index
+    std::unordered_map<uint32_t, int> const_pool;   // float bits -> op index
+    auto resolve_reg = [&](const std::string& tok) -> int {
+        const int r = parse_reg(tok);
+        if (r < 0 || r >= (int)src_map.size()) return -1;
+        return src_map[r];
+    };
+
     for (const auto& line : lines) {
         auto toks = tokenize(line);
         if (toks.empty()) continue;
@@ -515,10 +569,9 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
             try { slot.handle = std::stoi(toks[1]); }
             catch (...) { err = "material: invalid handle"; return false; }
             if (slot.handle < 0) { err = "material: negative handle"; return false; }
-            slot.reg = parse_reg(toks[2]);
-            if (slot.reg < 0) { err = "material: expected register ref"; return false; }
-            if (slot.reg >= (int)out.ops.size()) {
-                err = "material: forward register ref"; return false;
+            slot.reg = resolve_reg(toks[2]);
+            if (slot.reg < 0) {
+                err = "material: expected backward register ref"; return false;
             }
             for (const MaterialSlot& existing : out.materials) {
                 if (existing.handle == slot.handle) {
@@ -537,18 +590,17 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
         }
 
         // ---- op lines (same discipline as FieldProgram::parse) ----
-        int op_idx = (int)out.ops.size();
-        if (op_idx >= kMaxOps) { err = "too many ops (max 64)"; return false; }
-
         Op o{};
 
         auto require_reg = [&](int tok_idx, int& reg_out) -> bool {
             if (tok_idx >= (int)toks.size()) {
                 err = std::string(op) + ": missing operand"; return false;
             }
-            int r = parse_reg(toks[tok_idx]);
-            if (r < 0) { err = std::string(op) + ": expected register ref"; return false; }
-            if (r >= op_idx) { err = std::string(op) + ": forward register ref"; return false; }
+            int r = resolve_reg(toks[tok_idx]);
+            if (r < 0) {
+                err = std::string(op) + ": expected backward register ref";
+                return false;
+            }
             reg_out = r;
             return true;
         };
@@ -580,27 +632,66 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
             if (code < 0) { err = "input: unknown name '" + toks[1] + "'"; return false; }
             o.kind = Op::Input;
             o.oct = code;
+            out.input_mask_ |= 1u << code;
             if (code >= kSurfaceInputWorldFirst) out.uses_world_inputs_ = true;
         }
         else if (op == "const") {
             o.kind = Op::Const;
             if (!require_float(1, o.f0)) return false;
+            // Dedup: an identical earlier const owns this source ordinal.
+            uint32_t bits = 0;
+            std::memcpy(&bits, &o.f0, sizeof(bits));
+            auto it = const_pool.find(bits);
+            if (it != const_pool.end()) {
+                src_map.push_back(it->second);
+                continue;
+            }
+            const_pool.emplace(bits, (int)out.ops.size());
         }
-        else if (op == "noise2" || op == "ridge2") {
+        else if (op == "noise2" || op == "ridge2" ||
+                 op == "noise2w" || op == "ridge2w") {
             // noise2|ridge2 seed freq oct gain lac — over part-local (x, z).
-            o.kind = (op == "noise2") ? Op::Noise2 : Op::Ridge2;
+            // noise2w|ridge2w — same params over WORLD (x, z); world-anchored
+            // variants only (fallback context pins them to world (0, 0)).
+            const bool is_world = (op == "noise2w" || op == "ridge2w");
+            const bool is_ridge = (op == "ridge2" || op == "ridge2w");
+            o.kind = is_world ? (is_ridge ? Op::Ridge2World : Op::Noise2World)
+                              : (is_ridge ? Op::Ridge2 : Op::Noise2);
             if (!require_uint(1, o.seed)) return false;
             if (!require_float(2, o.f0))  return false; // freq
             if (!require_int(3, o.oct))   return false;
             if (!require_float(4, o.f1))  return false; // gain
             if (!require_float(5, o.f2))  return false; // lac
+            if (is_world) {
+                out.uses_world_inputs_ = true;
+                out.input_mask_ |= (1u << kSurfInWorldX) | (1u << kSurfInWorldZ);
+            }
         }
-        else if (op == "add" || op == "mul" || op == "min" || op == "max") {
+        else if (op == "curv") {
+            // curv radius — field curvature probe at world (x, z), metres.
+            o.kind = Op::FieldCurv;
+            if (!require_float(1, o.f0)) return false;
+            out.uses_world_inputs_ = true;
+            out.input_mask_ |= (1u << kSurfInWorldX) | (1u << kSurfInWorldZ);
+        }
+        else if (op == "add" || op == "sub" || op == "mul" ||
+                 op == "min" || op == "max") {
             o.kind = (op == "add") ? Op::Add
+                   : (op == "sub") ? Op::Sub
                    : (op == "mul") ? Op::Mul
                    : (op == "min") ? Op::Min : Op::Max;
             if (!require_reg(1, o.a)) return false;
             if (!require_reg(2, o.b)) return false;
+        }
+        else if (op == "abs" || op == "oneminus") {
+            o.kind = (op == "abs") ? Op::Abs : Op::OneMinus;
+            if (!require_reg(1, o.a)) return false;
+        }
+        else if (op == "pow") {
+            // pow a e — float-literal exponent; base clamped to >= 0 at eval.
+            o.kind = Op::Pow;
+            if (!require_reg(1, o.a))    return false;
+            if (!require_float(2, o.f0)) return false;
         }
         else if (op == "clamp") {
             o.kind = Op::Clamp;
@@ -625,6 +716,11 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
             return false;
         }
 
+        // Cap applies to EMITTED ops (dedup'd consts already continued above).
+        if ((int)out.ops.size() >= kMaxOps) {
+            err = "too many ops (max 64)"; return false;
+        }
+        src_map.push_back((int)out.ops.size());
         out.ops.push_back(o);
     }
 
@@ -672,6 +768,19 @@ void SurfaceRuntime::weights_at(const float pos[3], const float nrm[3],
     }
     in[kSurfInNormalY] = ny;
     in[kSurfInSlope] = std::max(0.0f, std::min(1.0f, 1.0f - ny));
+    // Fallback constants: deterministic, never instance-dependent (the misuse
+    // contract for world inputs on multi-instance variants). Field-query
+    // inputs the tape never reads (input_mask) keep these values too — each
+    // one is a full field-program evaluation (fslope is 4, biome is 3), so
+    // only pay for what an op consumes.
+    in[kSurfInWorldX]     = 0.0f;
+    in[kSurfInAltitude]   = 0.0f;
+    in[kSurfInWorldZ]     = 0.0f;
+    in[kSurfInHeight]     = 0.0f;
+    in[kSurfInMoisture]   = 0.5f;
+    in[kSurfInRelief]     = 0.5f;
+    in[kSurfInBiome]      = 1.0f;
+    in[kSurfInFieldSlope] = 0.0f;
     if (world) {
         float wx = pos[0], wy = pos[1], wz = pos[2];
         if (world->local_to_world) {
@@ -684,26 +793,18 @@ void SurfaceRuntime::weights_at(const float pos[3], const float nrm[3],
         in[kSurfInAltitude] = wy;
         in[kSurfInWorldZ]   = wz;
         if (world->field) {
-            in[kSurfInHeight]   = world->field->height_at(wx, wz);
-            in[kSurfInMoisture] = world->field->moisture_at(wx, wz);
-            in[kSurfInRelief]   = world->field->relief_at(wx, wz);
-            in[kSurfInBiome]    = (float)world->field->biome_at(wx, wz);
-        } else {
-            in[kSurfInHeight]   = 0.0f;
-            in[kSurfInMoisture] = 0.5f;
-            in[kSurfInRelief]   = 0.5f;
-            in[kSurfInBiome]    = 1.0f;
+            const uint32_t mask = prog_.input_mask();
+            if (mask & (1u << kSurfInHeight))
+                in[kSurfInHeight]   = world->field->height_at(wx, wz);
+            if (mask & (1u << kSurfInMoisture))
+                in[kSurfInMoisture] = world->field->moisture_at(wx, wz);
+            if (mask & (1u << kSurfInRelief))
+                in[kSurfInRelief]   = world->field->relief_at(wx, wz);
+            if (mask & (1u << kSurfInBiome))
+                in[kSurfInBiome]    = (float)world->field->biome_at(wx, wz);
+            if (mask & (1u << kSurfInFieldSlope))
+                in[kSurfInFieldSlope] = world->field->slope_at(wx, wz);
         }
-    } else {
-        // Fallback constants: deterministic, never instance-dependent (the
-        // misuse contract for world inputs on multi-instance variants).
-        in[kSurfInWorldX]   = 0.0f;
-        in[kSurfInAltitude] = 0.0f;
-        in[kSurfInWorldZ]   = 0.0f;
-        in[kSurfInHeight]   = 0.0f;
-        in[kSurfInMoisture] = 0.5f;
-        in[kSurfInRelief]   = 0.5f;
-        in[kSurfInBiome]    = 1.0f;
     }
 
     // ---- evaluate every register (bounded by kMaxOps, enforced at parse) ----
@@ -726,8 +827,27 @@ void SurfaceRuntime::weights_at(const float pos[3], const float nrm[3],
             regs[i] = fbm2(in[kSurfInLocalX], in[kSurfInLocalZ], o.seed, o.oct,
                            o.f1, o.f2, o.f0, true);
             break;
+        case Op::Noise2World:
+            // World-frame fbm: continuous across sector variants. Without a
+            // world context wx/wz hold fallback 0 — a constant, per contract.
+            regs[i] = fbm2(in[kSurfInWorldX], in[kSurfInWorldZ], o.seed, o.oct,
+                           o.f1, o.f2, o.f0, false);
+            break;
+        case Op::Ridge2World:
+            regs[i] = fbm2(in[kSurfInWorldX], in[kSurfInWorldZ], o.seed, o.oct,
+                           o.f1, o.f2, o.f0, true);
+            break;
+        case Op::FieldCurv:
+            regs[i] = (world && world->field)
+                ? world->field->curvature_at(in[kSurfInWorldX],
+                                             in[kSurfInWorldZ], o.f0)
+                : 0.0f;
+            break;
         case Op::Add:
             regs[i] = regs[o.a] + regs[o.b];
+            break;
+        case Op::Sub:
+            regs[i] = regs[o.a] - regs[o.b];
             break;
         case Op::Mul:
             regs[i] = regs[o.a] * regs[o.b];
@@ -752,6 +872,15 @@ void SurfaceRuntime::weights_at(const float pos[3], const float nrm[3],
             regs[i] = t * t * (3.0f - 2.0f * t);
             break;
         }
+        case Op::Abs:
+            regs[i] = std::fabs(regs[o.a]);
+            break;
+        case Op::OneMinus:
+            regs[i] = 1.0f - regs[o.a];
+            break;
+        case Op::Pow:
+            regs[i] = std::pow(std::max(regs[o.a], 0.0f), o.f0);
+            break;
         case Op::Warp2:
             // Not part of the surface op set (parse rejects it); keep the
             // switch exhaustive.

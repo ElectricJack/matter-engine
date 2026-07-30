@@ -141,6 +141,63 @@ class SurfWorld extends World {
     CHECK(rs2.ok && rs2.surface_program == rs.surface_program,
           "surface program deterministic across evals");
 
+    // ---- WP-F: the extended op surface records and compiles ----
+    // noise2World/ridge2World/fieldCurvature/fieldSlope on the tape side,
+    // sub/abs/pow/oneMinus on both node classes.
+    {
+        static const char* kOpsWorld = R"JS(
+class OpsWorld extends World {
+  static params = { worldSeed: 9 };
+  static world  = { sectorSize: 16, yMin: -64, yMax: 192 };
+  field(p) {
+    const n = noise2(p.worldSeed, 1/300, 3);
+    const h = n.abs().pow(2).oneMinus().sub(n).mul(20);
+    return { density: heightToDensity(h), moisture: n, relief: n, seaLevel: 0 };
+  }
+  surfaces(s) {
+    const macro  = s.noise2World(11, 1/400, 4);
+    const ridged = s.ridge2World(12, 1/900, 3);
+    const bowl   = s.fieldCurvature(6).smoothstep(0.5, 3);
+    const grad   = s.fieldSlope.smoothstep(0.4, 1.0);
+    const shape  = macro.sub(ridged).abs().pow(1.5).oneMinus();
+    s.weight(31, shape.mul(bowl).mul(s.value(1)).mul(s.value(1)));
+    s.weight(32, grad);
+  }
+}
+)JS";
+        WorldEvalResult ro = host.eval_world(kOpsWorld, "{}");
+        CHECK(ro.ok, ro.message.c_str());
+        CHECK(ro.field_program.find("abs r") != std::string::npos &&
+                  ro.field_program.find("pow r") != std::string::npos &&
+                  ro.field_program.find("oneminus r") != std::string::npos &&
+                  ro.field_program.find("sub r") != std::string::npos,
+              "FieldNode sub/abs/pow/oneMinus record their ops");
+        CHECK(ro.surface_program.find("noise2w ") != std::string::npos &&
+                  ro.surface_program.find("ridge2w ") != std::string::npos &&
+                  ro.surface_program.find("curv 6") != std::string::npos &&
+                  ro.surface_program.find("input fslope") != std::string::npos,
+              "world-noise/curvature/fieldSlope record their ops");
+        terrain_field::FieldProgram fp;
+        std::string ferr;
+        CHECK(terrain_field::FieldProgram::parse(ro.field_program, fp, ferr),
+              ferr.c_str());
+        terrain_field::SurfaceProgram sp;
+        std::string serr;
+        CHECK(terrain_field::SurfaceProgram::parse(ro.surface_program, sp, serr),
+              serr.c_str());
+        CHECK(sp.uses_world_inputs(),
+              "world noise/curvature/fieldSlope mark the tape world-dependent");
+        // Compile + evaluate under the fallback context: deterministic.
+        terrain_field::SurfaceRuntime rt{std::move(sp)};
+        float w[terrain_field::kMaxSurfaceMaterials];
+        float w2[terrain_field::kMaxSurfaceMaterials];
+        const float pos[3] = {2, 7, -3}, up[3] = {0, 1, 0};
+        rt.weights_at(pos, up, nullptr, w);
+        rt.weights_at(pos, up, nullptr, w2);
+        CHECK(w[0] == w2[0] && w[1] == w2[1],
+              "extended-op tape evaluates deterministically");
+    }
+
     // Fail-closed paths: a throwing surfaces() and one that declares nothing.
     {
         WorldEvalResult bad_throw = host.eval_world(

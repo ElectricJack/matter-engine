@@ -308,9 +308,14 @@ better at the far field, pool residency stable under the flight path.
 
 - **Authoring:** a world instance method in the `field()` idiom — helpers
   record an op tape (`__world_ops` sibling), host compiles it native. Inputs:
-  part-local position + normal + curvature always; `height/slope/moisture/
-  biome` world queries valid on world-anchored variants (see sharing rule;
-  misuse diagnosed). Output: weights over declared materials (top-2 retained
+  part-local position + normal always; `height/slope/moisture/biome` world
+  queries valid on world-anchored variants (see sharing rule; misuse
+  diagnosed), joined by rung-independent `fieldSlope` (|grad h| of the field),
+  `fieldCurvature(radius)` (ring-average height deficit — concave-positive,
+  in metres; a per-vertex mesh curvature needs adjacency the classifier does
+  not see, so curvature is a field query and world-anchored like the rest),
+  and world-frame noise `noise2World`/`ridge2World` (the part-local pair
+  repeats per sector variant; the world pair is continuous across a massif). Output: weights over declared materials (top-2 retained
   per texel, quantized into aux).
 - **Compositor integration:** tier-1 step 1 evaluates the tape; steps 2–3
   blend the top-2 materials' tilesets by weight *and* height channel

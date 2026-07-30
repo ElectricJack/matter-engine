@@ -15,9 +15,13 @@ namespace terrain_field {
 struct Op {
     enum Kind {
         Const, Noise2, Ridge2, Warp2,
-        Add, Mul, Min, Max, Clamp,
-        Blend, Smoothstep,
-        Input            // surfaces() tape only: read a per-sample input (oct = code)
+        Add, Sub, Mul, Min, Max, Clamp,
+        Blend, Smoothstep, Abs, OneMinus, Pow,
+        // ---- surfaces() tape only (FieldProgram::parse never emits these) ----
+        Input,           // read a per-sample input (oct = code)
+        Noise2World,     // fbm over WORLD (x, z) — world-anchored variants
+        Ridge2World,
+        FieldCurv        // field curvature probe at world (x, z), radius = f0
     } kind;
     int a = -1, b = -1, c = -1;        // register operands (-1 = unused)
     float f0 = 0, f1 = 0, f2 = 0, f3 = 0; // literals: value/freq/gain/lac/edges
@@ -61,6 +65,13 @@ public:
     float height_at(float x, float z) const;
     float density_at(float x, float y, float z) const;  // height_at(x,z) - y
     float slope_at(float x, float z) const;              // |grad h|, central diff eps=0.5
+
+    // Height deficit vs the 4-neighbour ring average at probe distance
+    // `radius` (metres, clamped to >= 0.25): positive = the point sits BELOW
+    // its surroundings (concave — collection zones, gully floors), negative =
+    // above them (convex — crests, ridge lines). Metres, so tape thresholds
+    // read as "N metres deep". Rung-independent (pure field query).
+    float curvature_at(float x, float z, float radius) const;
     float moisture_at(float x, float z) const;           // 0..1
     float relief_at(float x, float z) const;             // 0..1
 
@@ -114,7 +125,11 @@ enum SurfaceInput : int {
     kSurfInMoisture = 9,
     kSurfInRelief = 10,
     kSurfInBiome = 11,   // FieldRuntime::Biome as float (0..3)
-    kSurfInCount = 12,
+    kSurfInFieldSlope = 12, // FieldRuntime::slope_at(worldX, worldZ): |grad h|,
+                            // rise-over-run (1.0 = 45 deg). Unlike kSurfInSlope
+                            // (mesh-normal derived, so LOD-rung dependent) this
+                            // is stable across the whole LOD ladder.
+    kSurfInCount = 13,
 };
 constexpr int kSurfaceInputWorldFirst = kSurfInWorldX;
 
@@ -130,11 +145,16 @@ inline bool surface_variant_world_anchored(uint32_t instance_count) {
 }
 
 struct SurfaceProgram {
-    // Parse canonical text: op lines (const/noise2/ridge2/add/mul/min/max/
-    // clamp/blend/smoothstep/input) followed by `material <handle> r<reg>`
-    // directives. warp2 is NOT part of the surface op set. Returns false and
-    // sets err on any violation (including 0 or > kMaxSurfaceMaterials
-    // declared materials).
+    // Parse canonical text: op lines (const/noise2/ridge2/noise2w/ridge2w/
+    // curv/add/sub/mul/min/max/clamp/blend/smoothstep/abs/oneminus/pow/input)
+    // followed by `material <handle> r<reg>` directives. warp2 is NOT part of
+    // the surface op set. Returns false and sets err on any violation
+    // (including 0 or > kMaxSurfaceMaterials declared materials).
+    //
+    // Register refs in the text are SOURCE ordinals (the line order the JS
+    // recorder emitted). Identical `const` lines are deduplicated at parse
+    // time — refs are remapped, so duplicates cost no register budget and the
+    // kMaxOps cap applies to the DEDUPLICATED op count.
     static bool parse(const std::string& text, SurfaceProgram& out, std::string& err);
 
     // FNV-1a 64-bit hash over the canonical program text bytes. Folds into the
@@ -143,6 +163,12 @@ struct SurfaceProgram {
 
     const std::string& text() const { return text_; }
     bool uses_world_inputs() const { return uses_world_inputs_; }
+
+    // Bitmask over SurfaceInput codes the program actually reads (directly via
+    // `input`, or implied — noise2w/ridge2w/curv imply worldX/worldZ). Lets
+    // the runtime skip field queries (height/moisture/relief/biome/fslope are
+    // full program evaluations each) for inputs no op consumes.
+    uint32_t input_mask() const { return input_mask_; }
 
     struct MaterialSlot {
         int handle = -1;   // material registry index
@@ -154,6 +180,7 @@ struct SurfaceProgram {
 
 private:
     bool uses_world_inputs_ = false;
+    uint32_t input_mask_ = 0;
     std::string text_;
 };
 
