@@ -806,6 +806,13 @@ SECTORBAKE_CPP = sector_bake_tests.cpp ../src/part_graph.cpp ../src/bake_trace.c
                  $(COMMON_MSL_FULL_SRC)
 SECTORBAKE_C = $(COMMON_MSL_C)
 
+# Per-phase sector bake profiler (fold/ctx/eval/merge/build/mesh/save
+# split). Prints numbers; not a regression gate. Same TU set as
+# run-sectorbake, different top-level file.
+SECTORPROF_TARGET = build/sector_setup_profile
+SECTORPROF_CPP = sector_setup_profile.cpp $(filter-out sector_bake_tests.cpp,$(SECTORBAKE_CPP))
+SECTORPROF_C = $(COMMON_MSL_C)
+
 PARTSTORE_TARGET = build/partstore_tests
 PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp \
                 ../src/render/matrix_math.cpp \
@@ -1292,6 +1299,7 @@ sh_CPP_SRCS := $(sort \
     $(GALLERY_CPP) \
     $(TREEBAKE_CPP) \
     $(ROCKPROF_CPP) \
+    $(SECTORPROF_CPP) \
     $(AONORMPROBE_CPP) \
     $(GRASSLOD_CPP) \
     $(STRESSFOREST_CPP) \
@@ -1436,6 +1444,7 @@ TERRAINFIELD_OBJS = $(call obj_list,def,$(TERRAINFIELD_CPP))
 TERRAINMESH_OBJS  = $(call obj_list,def,$(TERRAINMESH_CPP))
 TERRAINVERB_OBJS  = $(call obj_list,sh,$(TERRAINVERB_CPP)) $(call obj_list,mslc,$(TERRAINVERB_C)) $(qjsc_C_OBJS)
 SECTORBAKE_OBJS   = $(call obj_list,sh,$(SECTORBAKE_CPP)) $(call obj_list,mslc,$(SECTORBAKE_C)) $(qjsc_C_OBJS)
+SECTORPROF_OBJS = $(call obj_list,sh,$(SECTORPROF_CPP)) $(call obj_list,mslc,$(SECTORPROF_C)) $(qjsc_C_OBJS)
 PARTSTORE_OBJS = $(call obj_list,partstore_test,$(PARTSTORE_CPP)) $(call obj_list,mslc,$(PARTSTORE_C))
 PARTSTORE_RACE_OBJS = $(call obj_list,race,$(PARTSTORE_RACE_CPP)) $(call obj_list,mslc,$(PARTSTORE_RACE_C))
 
@@ -1475,7 +1484,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sector-profile run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1810,6 +1819,14 @@ $(SECTORBAKE_TARGET): $(SECTORBAKE_OBJS)
 
 run-sectorbake: $(SECTORBAKE_TARGET)
 	./$(SECTORBAKE_TARGET)
+
+# Sector bake phase profiler. Args: [iterations] [parts-dir].
+$(SECTORPROF_TARGET): $(SECTORPROF_OBJS)
+	$(CC) $(SECTORPROF_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
+
+run-sector-profile: $(SECTORPROF_TARGET)
+	./$(SECTORPROF_TARGET)
 
 # Phase 1 typed iso-primitives + ordered CSG.
 $(ISO_TARGET): $(ISO_OBJS)
