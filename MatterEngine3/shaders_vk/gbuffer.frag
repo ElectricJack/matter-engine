@@ -110,19 +110,31 @@ void main() {
     // ground texture replaces the material's flat base color/normal/ORM.
     int tileset_slot = tileset_detail_slot(material.flags_misc);
     if (tileset_slot >= 0) {
-        vec2 dWdx = dFdx(in_world_pos.xz);
-        vec2 dWdy = dFdy(in_world_pos.xz);
-        vec3 flat_normal_ts;
+        // Full 3D world-position derivatives: the triplanar sampler needs to
+        // differentiate each axis's OWN planar coordinate (see
+        // tileset_triplanar_axis_deriv). dWdx/dWdy below keep the world-XZ
+        // pair for the POM march, which stays top-down by design; note
+        // dPdx.xz == dFdx(in_world_pos.xz) exactly, so the Y projection is
+        // unchanged from the pre-triplanar code.
+        vec3 dPdx = dFdx(in_world_pos);
+        vec3 dPdy = dFdy(in_world_pos);
+        vec2 dWdx = dPdx.xz;
+        vec2 dWdy = dPdy.xz;
         vec3 flat_orm;
-        vec3 flat_albedo = tileset_sample_ground(tileset_slot, in_world_pos.xz,
-                                                 dWdx, dWdy, flat_normal_ts,
-                                                 flat_orm);
+        vec3 flat_shading_normal;
+        // Triplanar: a world-XZ-only sample smears as 1/|n.y| and diverges on
+        // vertical terrain. Returns a world-space normal already rotated per
+        // axis, so it must NOT go through tileset_rotate_normal again. On a
+        // pixel whose normal is exactly +Y this is bit-identical to the old
+        // tileset_sample_ground + tileset_rotate_normal pair.
+        float slope_w_y;
+        vec3 flat_albedo = tileset_sample_ground_triplanar(
+            tileset_slot, in_world_pos, normalize(in_normal), dPdx, dPdy,
+            false, flat_shading_normal, flat_orm, slope_w_y);
         // Vertex tint multiplies the ground texture (not a resolveBaseColor
         // mix) so per-instance tint/paint still darkens/colors textured
         // ground, matching the plan's compositing rule.
         vec3 flat_color = flat_albedo * mix(vec3(1.0), in_tint.rgb, in_tint.a);
-        vec3 flat_shading_normal =
-            tileset_rotate_normal(flat_normal_ts, normalize(in_normal));
         float flat_roughness = clamp(flat_orm.g, 0.0, 1.0);
         float flat_metallic = clamp(flat_orm.b, 0.0, 1.0);
         // Ground POM UI "AO strength" (tileset.pom_c.y): blends the baked
@@ -178,17 +190,24 @@ void main() {
                                   in_world_pos, plane_n, dWdx, dWdy,
                                   march_steps);
 
-            vec2 mdWdx = dFdx(marched_pos.xz);
-            vec2 mdWdy = dFdy(marched_pos.xz);
-            vec3 marched_normal_ts;
+            vec3 mdPdx = dFdx(marched_pos);
+            vec3 mdPdy = dFdy(marched_pos);
+            vec2 mdWdx = mdPdx.xz;
+            vec2 mdWdy = mdPdy.xz;
             vec3 marched_orm;
-            vec3 marched_albedo =
-                tileset_sample_ground(tileset_slot, marched_pos.xz, mdWdx,
-                                     mdWdy, marched_normal_ts, marched_orm);
+            // Triplanar at the displaced point too. The march itself stays
+            // top-down (it has to -- the height field is baked from a
+            // straight-down ray), but the material read AT the point it lands
+            // on has no such constraint, and leaving it world-XZ would keep a
+            // stretched sample alive across the whole slope blend band below.
+            // Degenerates to the identical single XZ tap when plane_n is +Y.
+            vec3 marched_shading_normal;
+            float marched_w_y;
+            vec3 marched_albedo = tileset_sample_ground_triplanar(
+                tileset_slot, marched_pos, plane_n, mdPdx, mdPdy, false,
+                marched_shading_normal, marched_orm, marched_w_y);
             vec3 marched_color =
                 marched_albedo * mix(vec3(1.0), in_tint.rgb, in_tint.a);
-            vec3 marched_shading_normal =
-                tileset_rotate_normal(marched_normal_ts, plane_n);
             float marched_roughness = clamp(marched_orm.g, 0.0, 1.0);
             float marched_metallic = clamp(marched_orm.b, 0.0, 1.0);
             float marched_ao_tex_effective =
@@ -223,6 +242,22 @@ void main() {
             // fragment must not write a stale marched depth.
             float fade = 1.0 - clamp((dist - (pom_max_distance - pom_fade_band)) /
                                      pom_fade_band, 0.0, 1.0);
+            // SLOPE fade, multiplied into the same blend. POM is inherently a
+            // top-down construct -- tileset_pom_march steps in world XZ
+            // against a height decode baked from a straight-down ortho ray --
+            // so it does not generalise to a vertical face and is not made
+            // triplanar. Instead it is weighted out by the top-down triplanar
+            // weight, leaving a cliff with triplanar albedo/normal/ORM and no
+            // parallax. The same fade retires the baked horizon channels on
+            // steep ground (they are elevation in a top-down frame, the same
+            // family of assumption): with fade -> 0 the ao blend below lands
+            // on flat_ao, which carries no horizon term.
+            // Thresholds rather than raw slope_w_y: full parallax is kept
+            // until roughly 30 degrees off horizontal and gone by roughly 60,
+            // so the flat ground this effect was tuned for is untouched while
+            // the projection never contributes at an angle where its own
+            // footprint has stretched far.
+            fade *= smoothstep(0.2, 0.7, slope_w_y);
             detail_albedo = mix(flat_albedo, marched_albedo, fade);
             base_color = mix(flat_color, marched_color, fade);
             shading_normal =
@@ -272,11 +307,18 @@ void main() {
                 int ratio_slot = aux_slot >= 0 ? aux_slot : tileset_slot;
                 vec3 detail = detail_albedo;
                 if (aux_slot >= 0 && aux_slot != tileset_slot) {
-                    vec3 aux_normal_ts;
+                    // Triplanar for the same reason the primary detail sample
+                    // is: this is the near-band ratio term riding on the VT
+                    // page, and a world-XZ tap here would smear the detail
+                    // back onto a cliff even though the page under it is
+                    // correctly parameterised.
+                    vec3 aux_normal_ws;
                     vec3 aux_orm;
-                    detail = tileset_sample_ground(
-                        aux_slot, in_world_pos.xz, dFdx(in_world_pos.xz),
-                        dFdy(in_world_pos.xz), aux_normal_ts, aux_orm);
+                    float aux_w_y;
+                    detail = tileset_sample_ground_triplanar(
+                        aux_slot, in_world_pos, normalize(in_normal),
+                        dFdx(in_world_pos), dFdy(in_world_pos), false,
+                        aux_normal_ws, aux_orm, aux_w_y);
                 }
                 if (ratio_slot >= 0) {
                     // Mean-preserving ratio (spec Phase 2): the VT page is the
