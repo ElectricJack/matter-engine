@@ -9,6 +9,7 @@
 #include "ui.h"
 
 #include <cstdio>
+#include <cstring>
 
 namespace viewer {
 namespace {
@@ -316,7 +317,76 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
         .label("Volumetric view").enums(kVolDebugLabels, 4)
         .doc("Only meaningful while volumetrics are enabled."));
 
+// ---- render.gpu ----------------------------------------------------------
+//
+// LIVE, not RequiresReload — and that was the whole risk of this issue, so
+// here is what was traced to settle it (vk_scene_renderer.cpp line numbers as
+// of this commit).
+//
+// Every RT RESOURCE is created against the DEVICE capability
+// `VulkanDevice::ray_tracing_available()`, never against this flag: the ray
+// tracing pipeline (init(), :1728 `return !ray_tracing_available() ||
+// create_ray_tracing_pipeline(error)`), the RT descriptor pool and sets
+// (:2890), each part's RT vertex/index buffers (:5398, :5416), the STORAGE
+// usage bit on the visibility image (:10164) and the VT tier-2 enricher
+// (:3708). MATTER_DISABLE_VK_RT never reached VulkanDevice::create either, so
+// a session opened with RT "off" has always had the full RT apparatus built
+// and idle. Nothing is created or destroyed by this checkbox.
+//
+// `VulkanRayTracingSettings::enabled` is consumed ONLY inside per-frame
+// recording: the `native_trace_enabled` gate in record_ray_traced_shadows
+// (:8770), the stats/lighting multipliers in record_cull_and_render (:9722,
+// :9762, :9863, :9870) and the trace push constants (:9529). The off branch is
+// a complete fallback rather than a skip — it clears visibility to 1.0 (fully
+// lit) and the raw radiance targets to 0, and zeroes
+// diffuse_rt_multiplier — which is why MATTER_DISABLE_VK_RT has always
+// produced a correct raster image rather than a broken one.
+//
+// The acceleration structures cannot go stale across an off period because
+// neither is built once at session open. BLAS builds are demand-driven from
+// the CURRENT camera every traced frame (build_ray_geometry, :8830), skipping
+// only what is already `built` at the same opacity, so anything missing is
+// built on the first frame after a re-enable. The TLAS is content-addressed
+// per frame slot — reused only when the geometry epoch matches AND the
+// instance array memcmps equal (:9224), full MODE_BUILD otherwise — and
+// `rt_geometry_epoch_` is bumped by release_part (:7267) and reset (:11010),
+// both of which run regardless of this flag. `rt_instances_` itself is
+// maintained by update_instances/prepare_frame with no RT gate at all.
+//
+// Finally, the flip is already handled rather than merely tolerated:
+// set_ray_tracing_settings (:1345) raises `gi_history_reset_pending_` exactly
+// when `enabled` changes, and record_cull_and_render clears
+// `gi_filtered_valid_` on every frame native GI is not effective (:9762) — so
+// no filtered reflection from before the flip can survive across it. Those two
+// lines only have meaning for a mid-run change.
+const char* const kDlssModeLabelStorage[4] = {"Native", "Quality", "Balanced",
+                                              "Performance"};
+
+const auto s_gpu = matter::props::group<GpuPrefs>(
+    "render.gpu", "GPU Features",
+    prop(&GpuPrefs::ray_tracing, "ray_tracing")
+        .label("Ray tracing")
+        // Negated: the var is a decade-old disable switch and the checkbox is
+        // an enable. env_negated keeps ONE override path (layer 5) rather than
+        // a hand-rolled getenv beside it — see Desc::env_negate.
+        .env_negated("MATTER_DISABLE_VK_RT")
+        .doc("Hardware-traced sun shadows, GI and reflections. Off falls back "
+             "to the raster path (fully-lit visibility, no traced radiance). "
+             "Takes effect on the next frame; greyed out when the GPU has no "
+             "ray tracing."),
+    prop(&GpuPrefs::dlss_mode, "dlss_mode")
+        .label("DLSS mode")
+        .enums(kDlssModeLabelStorage, 4)
+        .env("MATTER_DLSS_MODE")
+        .doc("Native renders at output resolution; the upscaling modes render "
+             "smaller and reconstruct. Watch dlss internal/output in the HUD "
+             "to see it land."));
+
 }  // namespace
+
+const char* const kDlssModeLabels[4] = {
+    kDlssModeLabelStorage[0], kDlssModeLabelStorage[1],
+    kDlssModeLabelStorage[2], kDlssModeLabelStorage[3]};
 
 void EditorProps::init(ViewerStats& stats, CameraPrefs& camera,
                        ToolbarState& toolbar, ConsolePanelState& console,
@@ -337,6 +407,10 @@ void EditorProps::init(ViewerStats& stats, CameraPrefs& camera,
                          &matter::vt_residency_budgets(), Scope::User);
     vt_enrich_ = registry_.bind(matter::vt_enrich_settings_group(),
                                 &matter::vt_enrich_settings(), Scope::User);
+    // Same per-machine argument as the budgets above: whether this GPU should
+    // trace rays and how hard DLSS should upscale is a property of the machine
+    // sitting in front of the user, not of the project.
+    gpu_ = registry_.bind(s_gpu, &gpu_prefs_, Scope::User);
     // Same engine-owned deal, with one extra step: `workers` has no compiled
     // default worth showing (it scales with the machine), so the engine's own
     // env pass — which also seeds that default — must run BEFORE bind captures
@@ -391,6 +465,54 @@ matter::props::Binding* EditorProps::stream_runtime() {
 matter::props::Binding* EditorProps::vt_budgets() { return registry_.get(vt_); }
 matter::props::Binding* EditorProps::vt_enrich() {
     return registry_.get(vt_enrich_);
+}
+
+matter::props::Binding* EditorProps::gpu() { return registry_.get(gpu_); }
+
+bool EditorProps::set_dlss_mode(int index) {
+    matter::props::Binding* b = registry_.get(gpu_);
+    if (!b) return false;
+    const matter::props::Desc* d = prop_find_field(b->schema(), "dlss_mode");
+    if (!d) return false;
+    const uint32_t field = static_cast<uint32_t>(d - b->schema().fields);
+    // Layer 5 outranks layer 6 (S4). The panel widget already refuses an
+    // env-forced field by being drawn disabled; F8 and the FIFO command have
+    // to refuse it here, or a key press would silently beat MATTER_DLSS_MODE.
+    if (b->env_forced(field)) {
+        std::printf("DLSS: forced by %s; ignored\n", d->env ? d->env : "env");
+        return false;
+    }
+    // set_enum clamps to the label count, so an out-of-range caller lands on
+    // an existing mode rather than off the end of matter::DlssMode.
+    matter::props::set_enum(b->instance(), *d, index);
+    b->set_dirty(true);
+    return true;
+}
+
+void EditorProps::set_gpu_capabilities(bool rt_available,
+                                       const std::string& rt_reason,
+                                       bool dlss_available,
+                                       const std::string& dlss_reason) {
+    gpu_caps_.ray_tracing = rt_available;
+    gpu_caps_.ray_tracing_reason = rt_reason;
+    gpu_caps_.dlss = dlss_available;
+    gpu_caps_.dlss_reason = dlss_reason;
+    // Built once, on first push: the closure captures `this`, and reads the
+    // struct live, so it never has to be rebuilt when a reason changes.
+    if (!gpu_veto_) {
+        gpu_veto_ = [this](const matter::props::Desc& d) -> const char* {
+            if (!d.name) return nullptr;
+            if (!std::strcmp(d.name, "ray_tracing") && !gpu_caps_.ray_tracing)
+                return gpu_caps_.ray_tracing_reason.empty()
+                           ? "this GPU has no hardware ray tracing"
+                           : gpu_caps_.ray_tracing_reason.c_str();
+            if (!std::strcmp(d.name, "dlss_mode") && !gpu_caps_.dlss)
+                return gpu_caps_.dlss_reason.empty()
+                           ? "DLSS is not available in this build"
+                           : gpu_caps_.dlss_reason.c_str();
+            return nullptr;
+        };
+    }
 }
 
 matter::props::Binding* EditorProps::console() { return registry_.get(console_); }

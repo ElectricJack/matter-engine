@@ -59,11 +59,17 @@ std::string value_text(const void* inst, const Desc& d) {
 // `target` is the instance for a live group and the DRAFT for a RequiresReload
 // one — the widgets are identical either way, which is the whole point of the
 // draft being a full struct copy.
-bool draw_field(Binding& b, void* target, uint32_t index, const Desc& d) {
+bool draw_field(Binding& b, void* target, uint32_t index, const Desc& d,
+                const char* unavailable) {
     const Group& g = b.schema();
     const bool env = b.env_forced(index);
     const bool live = target == b.instance();
     const bool modified = b.baseline() && !fields_equal(target, b.baseline(), d);
+    // One decision, two consumers (badge text and the BeginDisabled bracket),
+    // both from the pure helpers in the header so the tests exercise the same
+    // rule this draw does.
+    const bool locked = prop_field_locked(env, unavailable);
+    const char* badge = prop_field_badge(env, unavailable, !live);
 
     ImGui::PushID(static_cast<int>(index));
 
@@ -73,7 +79,7 @@ bool draw_field(Binding& b, void* target, uint32_t index, const Desc& d) {
     const bool name_hovered = ImGui::IsItemHovered();
     if (ImGui::BeginPopupContextItem("##fieldctx")) {
         if (ImGui::MenuItem("Reset to world/default", nullptr, false,
-                            modified && !env && b.baseline())) {
+                            modified && !locked && b.baseline())) {
             copy_field(target, b.baseline(), d);
             if (live) b.set_dirty(true);
         }
@@ -82,18 +88,24 @@ bool draw_field(Binding& b, void* target, uint32_t index, const Desc& d) {
         ImGui::EndPopup();
     }
     if (name_hovered && d.doc && *d.doc) ImGui::SetTooltip("%s", d.doc);
-    if (env) {
+    // The badge carries the tooltip, not the widget: the widget below sits
+    // inside BeginDisabled for the env and unavailable cases, and a disabled
+    // ImGui item does not report hover, so a tooltip hung on it would never
+    // appear in exactly the two states that most need explaining.
+    if (badge) {
         ImGui::SameLine(0.0f, 6.0f);
-        ImGui::TextDisabled("env");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("forced by %s", d.env ? d.env : "?");
-    } else if (!live) {
-        ImGui::SameLine(0.0f, 6.0f);
-        ImGui::TextDisabled("reload");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(
-                "Consumed at world connect: the edit is held as a draft until "
-                "Apply & Reload.");
+        ImGui::TextDisabled("%s", badge);
+        if (ImGui::IsItemHovered()) {
+            if (env)
+                ImGui::SetTooltip("forced by %s", d.env ? d.env : "?");
+            else if (unavailable && *unavailable)
+                ImGui::SetTooltip("Unavailable on this machine: %s",
+                                  unavailable);
+            else
+                ImGui::SetTooltip(
+                    "Consumed at world connect: the edit is held as a draft "
+                    "until Apply & Reload.");
+        }
     }
 
     ImGui::SameLine(kNameColumn);
@@ -105,7 +117,7 @@ bool draw_field(Binding& b, void* target, uint32_t index, const Desc& d) {
         (d.flags & Logarithmic) ? ImGuiSliderFlags_Logarithmic : 0;
 
     bool changed = false;
-    if (env) ImGui::BeginDisabled();
+    if (locked) ImGui::BeginDisabled();
     switch (widget) {
         case PropWidget::ReadOnlyText:
             ImGui::TextDisabled("%s", value_text(target, d).c_str());
@@ -192,7 +204,7 @@ bool draw_field(Binding& b, void* target, uint32_t index, const Desc& d) {
             break;
         }
     }
-    if (env) ImGui::EndDisabled();
+    if (locked) ImGui::EndDisabled();
 
     // Only a LIVE edit is a persistable change; a draft edit becomes one when
     // Apply copies it into the instance.
@@ -210,7 +222,8 @@ void* prop_edit_target(Binding& b) {
     return draft ? draft : b.instance();
 }
 
-bool draw_group_fields(Binding& b, const char* filter) {
+bool draw_group_fields(Binding& b, const char* filter,
+                       const PropFieldVeto* veto) {
     const Group& g = b.schema();
     // Field IDs are per-group indices; scope them by group path so panels that
     // call draw_group_fields directly for several groups in one window don't
@@ -221,7 +234,8 @@ bool draw_group_fields(Binding& b, const char* filter) {
     for (uint32_t i = 0; i < g.field_count; ++i) {
         const Desc& d = g.fields[i];
         if (!prop_filter_matches_field(filter, d)) continue;
-        changed |= draw_field(b, target, i, d);
+        changed |= draw_field(b, target, i, d,
+                              veto && *veto ? (*veto)(d) : nullptr);
     }
     ImGui::PopID();
     return changed;
@@ -246,7 +260,8 @@ bool draw_draft_bar(Binding& b, const std::function<void()>& on_apply,
 }
 
 bool draw_group(Binding& b, const char* filter, bool default_open,
-                const std::function<void()>* on_apply) {
+                const std::function<void()>* on_apply,
+                const PropFieldVeto* veto) {
     const Group& g = b.schema();
     ImGui::PushID(g.path);
     char header[192];
@@ -261,7 +276,7 @@ bool draw_group(Binding& b, const char* filter, bool default_open,
                         b.dirty() ? " *" : "");
     bool changed = false;
     if (open) {
-        changed = draw_group_fields(b, filter);
+        changed = draw_group_fields(b, filter, veto);
         static const std::function<void()> kNoApply;
         draw_draft_bar(b, on_apply ? *on_apply : kNoApply);
     }

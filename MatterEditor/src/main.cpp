@@ -782,17 +782,12 @@ int main() {
         glfwTerminate();
         return 1;
     }
-    const bool disable_vulkan_rt =
-        std::getenv("MATTER_DISABLE_VK_RT") != nullptr;
-    std::printf("Vulkan RT available=%s enabled=%s reason=%s\n",
-                vulkan->ray_tracing_available() ? "true" : "false",
-                vulkan->ray_tracing_available() && !disable_vulkan_rt
-                    ? "true"
-                    : "false",
-                vulkan->ray_tracing_available()
-                    ? (disable_vulkan_rt ? "disabled by MATTER_DISABLE_VK_RT"
-                                         : "none")
-                    : vulkan->ray_tracing_unavailable_reason().c_str());
+    // The startup RT line moved down to just after EditorProps::init — RT is now
+    // the render.gpu.ray_tracing property, whose value is not known until the
+    // User scope file and MATTER_DISABLE_VK_RT have both been applied. Printing
+    // it here would have reported the compiled default and quietly stopped
+    // matching what the frame loop does. (smoke_vulkan_viewer.ps1 greps the
+    // line, not its position.)
     matter::EngineDesc engine_desc;
     // Phase 1 cache-leak fix: MATTER_CACHE_ROOT is an explicit override and
     // still wins when set, but it is canonicalized to absolute here (rather
@@ -960,6 +955,24 @@ int main() {
     editor_props.init(stats, camera_prefs, ui.toolbar_state(),
                       ui.console_state(), !replay.valid);
     camera.far_plane = camera_prefs.far_plane;
+    // render.gpu.ray_tracing has now been through every layer that can set it
+    // (compiled default -> User scope file -> MATTER_DISABLE_VK_RT via
+    // env_negated), so this line reports what the first frame will actually do.
+    // `enabled` is ANDed with the device capability here exactly as the frame
+    // loop does it: the property says what the user wants, the device says what
+    // is possible, and the renderer only ever sees the conjunction.
+    std::printf("Vulkan RT available=%s enabled=%s reason=%s\n",
+                vulkan->ray_tracing_available() ? "true" : "false",
+                vulkan->ray_tracing_available() &&
+                        editor_props.gpu_prefs().ray_tracing
+                    ? "true"
+                    : "false",
+                vulkan->ray_tracing_available()
+                    ? (editor_props.gpu_prefs().ray_tracing
+                           ? "none"
+                           : "disabled by render.gpu.ray_tracing "
+                             "(MATTER_DISABLE_VK_RT / Performance panel)")
+                    : vulkan->ray_tracing_unavailable_reason().c_str());
     editor_props.set_world(worlds[initial_world].project_dir,
                            worlds[initial_world].world_name);
     // Set at every connect seam; consumed on the first successful bake, after
@@ -1196,18 +1209,37 @@ int main() {
     bool f11_down = false;
     WindowedPlacement windowed_placement{};
     bool dlss_modes_supported = false;
-    matter::DlssMode selected_dlss_mode = matter::DlssMode::Native;
-    if (const char* initial_dlss_mode = std::getenv("MATTER_DLSS_MODE")) {
-        if (std::strcmp(initial_dlss_mode, "quality") == 0)
-            selected_dlss_mode = matter::DlssMode::Quality;
-        else if (std::strcmp(initial_dlss_mode, "balanced") == 0)
-            selected_dlss_mode = matter::DlssMode::Balanced;
-        else if (std::strcmp(initial_dlss_mode, "performance") == 0)
-            selected_dlss_mode = matter::DlssMode::Performance;
-        else if (std::strcmp(initial_dlss_mode, "native") != 0)
-            std::fprintf(stderr,
-                         "MATTER_DLSS_MODE: expected native, quality, balanced, or performance; using native\n");
-    }
+    // The session's side of "why not DLSS", mirrored out of FrameStats so the
+    // Performance panel can show it on the greyed combo. Empty until the first
+    // render reports one; the placeholder is what the tooltip says until then.
+    std::string last_dlss_reason = "not yet reported by the renderer";
+    // There is no `selected_dlss_mode` variable any more. The mode lives in
+    // exactly one place — render.gpu.dlss_mode (Scope::User, so it persists) —
+    // and MATTER_DLSS_MODE reaches it through the schema's own env layer
+    // (props::apply_env, which ran inside EditorProps::init above and also
+    // prints the "unparsable" diagnostic the hand-rolled parser used to). Every
+    // other affordance goes through EditorProps::set_dlss_mode. Two variables
+    // that could disagree was the specific failure this replaces.
+    //
+    // A MATTER_REPLAY run passes persist=false to EditorProps::init, so no user
+    // settings file is read and this stays at the compiled default (Native)
+    // regardless of what an interactive session persisted — which is exactly
+    // the guarantee issues/README.md documents, now held by construction rather
+    // than by a special case. MATTER_DLSS_MODE still overrides it, which is the
+    // documented escape hatch in the replay banner below.
+    auto dlss_mode_from_index = [](int index) {
+        static_assert(static_cast<int>(matter::DlssMode::Native) == 0 &&
+                          static_cast<int>(matter::DlssMode::Quality) == 1 &&
+                          static_cast<int>(matter::DlssMode::Balanced) == 2 &&
+                          static_cast<int>(matter::DlssMode::Performance) == 3,
+                      "viewer::kDlssModeLabels must stay index-aligned with "
+                      "matter::DlssMode");
+        if (index < 0 || index > 3) index = 0;
+        return static_cast<matter::DlssMode>(index);
+    };
+    auto selected_dlss_mode = [&] {
+        return dlss_mode_from_index(editor_props.gpu_prefs().dlss_mode);
+    };
     matter::DlssMode reported_selected_dlss_mode =
         static_cast<matter::DlssMode>(255);
     matter::DlssMode reported_active_dlss_mode =
@@ -1270,7 +1302,7 @@ int main() {
         shot.time_scale = ui.sim_time_scale();
         shot.frame_width = fb_w;
         shot.frame_height = fb_h;
-        shot.dlss_mode = matter::dlss_mode_name(selected_dlss_mode);
+        shot.dlss_mode = matter::dlss_mode_name(selected_dlss_mode());
         shot.pixel_budget = stats.pixel_budget;
         shot.resolver_choice = stats.resolver_choice;
         shot.debug_view_mode = stats.debug_view_mode;
@@ -1598,16 +1630,25 @@ int main() {
             stats.pixel_budget = std::max(0.05f, std::min(4.0f, cmd.value));
             return viewer::FifoBudget::Result::succeeded(true);
         });
+    // `dlss <mode>` is kept (it is the documented spelling and predates the
+    // property) but no longer owns any state: it resolves the word against the
+    // SAME label table the combo box draws, then writes through
+    // EditorProps::set_dlss_mode like every other affordance. `set
+    // render.gpu.dlss_mode quality` reaches the identical field via FifoSetProp
+    // below; both spellings now mean one thing.
     auto reg_fifo_dlss = registry.must_register_handler<viewer::FifoDlss>(
         matter::evt::CommandScope::App, app_lane, [&](const viewer::FifoDlss& cmd) {
-            if (cmd.mode == "native") selected_dlss_mode = matter::DlssMode::Native;
-            else if (cmd.mode == "quality") selected_dlss_mode = matter::DlssMode::Quality;
-            else if (cmd.mode == "balanced") selected_dlss_mode = matter::DlssMode::Balanced;
-            else if (cmd.mode == "performance") selected_dlss_mode = matter::DlssMode::Performance;
-            else {
+            int index = -1;
+            for (int i = 0; i < 4; ++i)
+                if (matter::props::equals_ignore_case(viewer::kDlssModeLabels[i],
+                                                      cmd.mode.c_str()))
+                    index = i;
+            if (index < 0) {
                 std::printf("dlss: expected native, quality, balanced, or performance\n");
                 return viewer::FifoDlss::Result::failed("bad dlss mode");
             }
+            if (!editor_props.set_dlss_mode(index))
+                return viewer::FifoDlss::Result::failed("env-forced");
             return viewer::FifoDlss::Result::succeeded(true);
         });
     // Generic property set/get over the editor's registry (S6.3). One handler
@@ -1846,6 +1887,18 @@ int main() {
         previous_time = now;
         // User-scope autosave debounce (S5): fires ~1 s after the last edit.
         editor_props.tick(dt);
+        // What the Performance panel greys render.gpu's two controls on, pushed
+        // here rather than at the panel because main.cpp is what holds the
+        // VulkanDevice. Before the panels draw, so the reason is never a frame
+        // stale. `dlss_modes_supported` additionally folds in the session's own
+        // per-frame dlss_reason (computed after render, below) — an unavailable
+        // reason from the device is permanent, one from the session can clear.
+        editor_props.set_gpu_capabilities(
+            vulkan->ray_tracing_available(),
+            vulkan->ray_tracing_unavailable_reason(),
+            vulkan->dlss_available() && dlss_modes_supported,
+            vulkan->dlss_available() ? last_dlss_reason
+                                     : vulkan->dlss_unavailable_reason());
         // camera.prefs -> the live camera. One-way and every frame, the same
         // shape as the RenderOptions copy block below: the property group is
         // the edit site, CameraDesc stays the thing everything else reads.
@@ -1890,26 +1943,20 @@ int main() {
             std::printf("viewer: presentation mode %s\n",
                         presenting ? "on (F11 to exit)" : "off");
         }
+        // F8 still cycles, but through the property rather than its own copy,
+        // so the Performance panel's combo follows the key press and vice
+        // versa. set_dlss_mode also refuses while MATTER_DLSS_MODE is forcing
+        // the field, which the old key path did not — a forced value that a
+        // keystroke could quietly beat was not much of a force.
         if (key_pressed(window, GLFW_KEY_F8, f8_down)) {
             if (!dlss_modes_supported) {
-                selected_dlss_mode = matter::DlssMode::Native;
+                editor_props.set_dlss_mode(
+                    static_cast<int>(matter::DlssMode::Native));
                 std::printf("DLSS: Native (%s)\n",
                             vulkan->dlss_unavailable_reason().c_str());
             } else {
-                switch (selected_dlss_mode) {
-                    case matter::DlssMode::Native:
-                        selected_dlss_mode = matter::DlssMode::Quality;
-                        break;
-                    case matter::DlssMode::Quality:
-                        selected_dlss_mode = matter::DlssMode::Balanced;
-                        break;
-                    case matter::DlssMode::Balanced:
-                        selected_dlss_mode = matter::DlssMode::Performance;
-                        break;
-                    case matter::DlssMode::Performance:
-                        selected_dlss_mode = matter::DlssMode::Native;
-                        break;
-                }
+                editor_props.set_dlss_mode(
+                    (editor_props.gpu_prefs().dlss_mode + 1) % 4);
             }
         }
 #ifndef _WIN32
@@ -2551,7 +2598,7 @@ int main() {
         options.pixel_budget = stats.pixel_budget;
         options.active_radius = active_radius;
         options.min_projected_size = min_projected_size;
-        options.dlss_mode = selected_dlss_mode;
+        options.dlss_mode = selected_dlss_mode();
         options.vulkan_lighting = stats.lighting;
         options.vulkan_lighting.composite_debug_view =
             stats.debug_view_mode == 1 ? 2.0f : 0.0f;
@@ -2573,8 +2620,15 @@ int main() {
         options.vulkan_ray_tracing.samples =
             static_cast<uint32_t>(stats.lighting.sun_shadow_samples);
         options.vulkan_tileset_pom = stats.tileset_pom;
+        // render.gpu.ray_tracing. The device capability is the hard gate and
+        // the property is the preference; the renderer only ever sees the
+        // conjunction, so ticking the box on a GPU without RT extensions
+        // cannot ask for something impossible. Per-frame, which is what makes
+        // the checkbox live — see the group definition in editor_props.cpp for
+        // the trace proving the renderer tolerates the flip.
         options.vulkan_ray_tracing.enabled =
-            vulkan->ray_tracing_available() && !disable_vulkan_rt;
+            vulkan->ray_tracing_available() &&
+            editor_props.gpu_prefs().ray_tracing;
         // Part Workbench (W2, "modal isolation" — see part_workbench.h):
         // VulkanFrame/render() always draws the whole frame extent and
         // begin_frame() yields exactly one frame per call, so only ONE
@@ -2660,6 +2714,8 @@ int main() {
         const matter::FrameStats& frame_stats = session->frame_stats();
         dlss_modes_supported = vulkan->dlss_available() &&
                                frame_stats.dlss_reason.empty();
+        if (!frame_stats.dlss_reason.empty())
+            last_dlss_reason = frame_stats.dlss_reason;
         if (reported_selected_dlss_mode != frame_stats.dlss_selected_mode ||
             reported_active_dlss_mode != frame_stats.dlss_active_mode ||
             reported_dlss_internal_width != frame_stats.dlss_internal_width ||

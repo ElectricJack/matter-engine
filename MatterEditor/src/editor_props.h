@@ -13,6 +13,9 @@
 //   6 live edit          the panels, through the Binding& setters
 
 #include "matter/props.h"
+// For PropFieldVeto. No cycle: property_editor.h only forward-declares
+// EditorProps, and it is ImGui-free.
+#include "property_editor.h"
 #include "streaming_lod_prefs.h"
 
 #include <functional>
@@ -26,6 +29,45 @@ struct CameraPrefs;
 struct ConsolePanelState;
 struct ToolbarState;
 struct ViewerStats;
+
+// ---- render.gpu (issue render-rt-and-dlss-runtime-toggles) ----------------
+//
+// The two per-machine renderer switches that used to be launch-only env vars.
+// Scope::User, for the same reason vt.residency is: a 4090 and a laptop want
+// different answers and a world script has no business pinning either.
+//
+// Owned by EditorProps rather than hung off ViewerStats because nothing in the
+// HUD reads them — main.cpp reads this struct directly when it builds
+// RenderOptions, which is the S3 "the registry is never on a read path" rule.
+struct GpuPrefs {
+    // Hardware ray tracing. LIVE, not RequiresReload: see the long note at the
+    // group definition in editor_props.cpp for what was traced to establish
+    // that the renderer tolerates a mid-run flip.
+    bool ray_tracing = true;
+    // Index into kDlssModeLabels, NOT a matter::DlssMode: props deduces
+    // Type::Enum only for 4-byte enums and DlssMode is a uint8_t, so the
+    // schema's enum storage has to be a plain int (same shape as
+    // viewer.debug's resolver_choice). main.cpp converts, with a static_assert
+    // pinning the two orderings together.
+    int dlss_mode = 0;
+};
+
+// Index-compatible with matter::DlssMode. Capitalised because they are UI text;
+// the env/FIFO parsers match labels case-insensitively, so the long-standing
+// lower-case spellings (MATTER_DLSS_MODE=quality, `dlss quality`) still work.
+extern const char* const kDlssModeLabels[4];
+
+// What this machine can actually honor, pushed in from main.cpp each frame.
+// Deliberately NOT part of the value: the value that reaches the renderer is
+// still ANDed with the device capability at the RenderOptions build site, and
+// this exists only so the Performance panel can grey a control and say WHY
+// rather than silently omitting it. See PropFieldVeto in property_editor.h.
+struct GpuCapabilities {
+    bool ray_tracing = true;
+    std::string ray_tracing_reason;
+    bool dlss = true;
+    std::string dlss_reason;
+};
 
 class EditorProps {
 public:
@@ -115,6 +157,9 @@ public:
     matter::props::Binding* stream_runtime();
     matter::props::Binding* vt_budgets();
     matter::props::Binding* vt_enrich();
+    // render.gpu — Scope::User. Drawn by draw_performance_panel through
+    // draw_group with gpu_field_veto() attached.
+    matter::props::Binding* gpu();
     // The world's script-declared group, or null when the connected world
     // declares no `static props`.
     matter::props::Binding* world_props();
@@ -174,6 +219,27 @@ public:
     // FIRST connect rather than needing an extra reload.
     const StreamingLodPrefs& streaming_prefs() const { return streaming_prefs_; }
 
+    // The live render.gpu values. main.cpp reads these when it builds
+    // RenderOptions — every frame, which is what makes both controls take
+    // effect on the next frame with no reload.
+    const GpuPrefs& gpu_prefs() const { return gpu_prefs_; }
+
+    // Writes render.gpu.dlss_mode. THE single writer of the DLSS mode outside
+    // the generic property paths (the panel widget and props::apply_env), so
+    // F8 and the `dlss` FIFO command cannot drift apart or disagree with the
+    // panel — they all end up in this one field. Refuses while the field is
+    // env-forced, exactly as the FIFO `set` path does, so "env wins" holds for
+    // a key press too. Returns false when it declined.
+    bool set_dlss_mode(int index);
+
+    // Pushed in from main.cpp each frame (it owns the VulkanDevice). Cheap:
+    // the strings only change when the reason does.
+    void set_gpu_capabilities(bool rt_available, const std::string& rt_reason,
+                              bool dlss_available, const std::string& dlss_reason);
+    const GpuCapabilities& gpu_capabilities() const { return gpu_caps_; }
+    // Per-field greying for render.gpu, ready to hand to draw_group.
+    const PropFieldVeto& gpu_field_veto() const { return gpu_veto_; }
+
 private:
     void clear_world_dirty();
     // Drops the binding on the session-owned DynamicGroup. MUST run before the
@@ -198,7 +264,11 @@ private:
     matter::props::BindingId console_ = matter::props::kInvalidBinding;
     matter::props::BindingId overlay_ = matter::props::kInvalidBinding;
     matter::props::BindingId viewer_debug_ = matter::props::kInvalidBinding;
+    matter::props::BindingId gpu_ = matter::props::kInvalidBinding;
     StreamingLodPrefs streaming_prefs_{};
+    GpuPrefs gpu_prefs_{};
+    GpuCapabilities gpu_caps_{};
+    PropFieldVeto gpu_veto_;
     // Non-owning: the session owns it (WorldSession::world_props()).
     matter::props::DynamicGroup* world_props_ = nullptr;
     // Non-owning: the session owns it (WorldSession::draw_overrides()).

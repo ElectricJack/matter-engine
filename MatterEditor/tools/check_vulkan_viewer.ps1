@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $main = Get-Content -Raw (Join-Path $root 'MatterEditor\src\main.cpp')
 $ui = Get-Content -Raw (Join-Path $root 'MatterEditor\src\ui.cpp')
+$editorProps = Get-Content -Raw (Join-Path $root 'MatterEditor\src\editor_props.cpp')
 $makefile = Get-Content -Raw (Join-Path $root 'MatterEditor\Makefile')
 $engine = Get-Content -Raw (Join-Path $root 'MatterEngine3\include\matter\engine_context.h')
 $world = Get-Content -Raw (Join-Path $root 'MatterEngine3\include\matter\world_session.h')
@@ -203,7 +204,14 @@ Require-Text $main 'CreateFile' 'Windows command file reader'
 Forbid-Text $main 'MATTER_CMD_FIFO not supported on Windows' 'ignored Windows command interface'
 Require-Text $main 'FATAL: MATTER_WORLD' 'explicit missing world failure'
 Require-Text $main 'selected world' 'selected world identity report'
-Require-Text $main 'MATTER_DLSS_MODE' 'deterministic DLSS mode selection'
+# Both env names moved out of main.cpp into the render.gpu schema (issue
+# render-rt-and-dlss-runtime-toggles): they are now `.env()` declarations on the
+# property, not getenv calls, so assert them where they actually live. Checking
+# main.cpp would still pass on the comments left behind there, which is exactly
+# the kind of rotted assertion this script exists to prevent.
+Require-Text $editorProps 'MATTER_DLSS_MODE' 'deterministic DLSS mode selection'
+Require-Text $editorProps 'MATTER_DISABLE_VK_RT' 'runtime ray-tracing toggle env override'
+Require-Text $editorProps 'render.gpu' 'Performance-panel GPU feature group'
 Require-Text $main 'dlss %255s' 'runtime DLSS command selection'
 Require-Text $runtimeSmoke 'MATTER_CACHE_ROOT' 'isolated clean cache smoke'
 Require-Text $runtimeSmoke 'selected world CornellBox hash' 'selected world hash assertion'

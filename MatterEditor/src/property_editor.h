@@ -237,6 +237,45 @@ inline bool prop_group_is_duplicate_hidden(bool hide_duplicates_enabled,
 }
 
 // ---------------------------------------------------------------------------
+// Runtime availability (issue render-rt-and-dlss-runtime-toggles)
+//
+// A third reason a field can be uneditable, alongside ReadOnly (a schema
+// property) and env-forced (a launch-time override): THIS MACHINE cannot honor
+// it right now. "Ray tracing" on a GPU without the extensions, "DLSS mode" in a
+// build compiled with MATTER_HAVE_STREAMLINE=0. The schema cannot carry it —
+// the same binary answers differently on the next machine — so it arrives as a
+// callback from the panel, which is the layer that knows about devices.
+//
+// Disable, don't hide. A missing control leaves the user unable to tell "my GPU
+// can't" from "the editor forgot"; a greyed one with the device's own reason in
+// a tooltip answers the question on hover.
+// ---------------------------------------------------------------------------
+
+// Returns why `d` cannot be edited on this machine right now, or nullptr/empty
+// when it can. Called once per field per frame, so keep it cheap.
+using PropFieldVeto = std::function<const char*(const matter::props::Desc&)>;
+
+// The small decoration next to the field name, or nullptr for none. "env" wins
+// over "n/a": when a value is forced, what is forced is what is actually in
+// effect, and saying so is more useful than reporting a capability the forced
+// value may not even need. "reload" is the draft case and only applies when the
+// field is otherwise editable.
+inline const char* prop_field_badge(bool env_forced, const char* unavailable,
+                                    bool editing_draft) {
+    if (env_forced) return "env";
+    if (unavailable && *unavailable) return "n/a";
+    if (editing_draft) return "reload";
+    return nullptr;
+}
+
+// Whether the widget itself is greyed. Both an env force and a machine veto do
+// it; a draft edit does not (the whole point of a draft is that you can type
+// into it and apply later).
+inline bool prop_field_locked(bool env_forced, const char* unavailable) {
+    return env_forced || (unavailable && *unavailable);
+}
+
+// ---------------------------------------------------------------------------
 // Renderers (need a live ImGui context)
 // ---------------------------------------------------------------------------
 
@@ -248,8 +287,10 @@ void* prop_edit_target(matter::props::Binding& binding);
 
 // Draws every field of the group inline — no Begin/End, no header. `filter`,
 // when non-null and non-empty, hides fields whose name/label does not match.
+// `veto`, when non-null, greys individual fields this machine cannot honor.
 // Returns true when any field changed this frame.
-bool draw_group_fields(matter::props::Binding& binding, const char* filter = nullptr);
+bool draw_group_fields(matter::props::Binding& binding, const char* filter = nullptr,
+                       const PropFieldVeto* veto = nullptr);
 
 // "Pending changes" bar with Apply / Discard, drawn only while the group has a
 // draft that differs from the live instance. Apply pushes the draft and then
@@ -263,7 +304,8 @@ bool draw_draft_bar(matter::props::Binding& binding,
 // the draft bar for RequiresReload groups.
 bool draw_group(matter::props::Binding& binding, const char* filter = nullptr,
                 bool default_open = true,
-                const std::function<void()>* on_apply = nullptr);
+                const std::function<void()>* on_apply = nullptr,
+                const PropFieldVeto* veto = nullptr);
 
 // Lighting window body (call inside Begin/End). Draws render.lighting —
 // including the sun/sky tints — render.volumetrics and render.fog, plus the
