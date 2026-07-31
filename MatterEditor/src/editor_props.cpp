@@ -126,6 +126,7 @@ void EditorProps::init(ViewerStats& stats, CameraPrefs& camera, bool persist) {
 }
 
 void EditorProps::shutdown() {
+    release_world_props();
     if (user_pending_) {
         user_pending_ = false;
         if (persist_)
@@ -140,6 +141,32 @@ matter::props::Binding* EditorProps::pom() { return registry_.get(pom_); }
 matter::props::Binding* EditorProps::camera() { return registry_.get(camera_); }
 matter::props::Binding* EditorProps::streaming() { return registry_.get(streaming_); }
 matter::props::Binding* EditorProps::vt_budgets() { return registry_.get(vt_); }
+
+matter::props::Binding* EditorProps::world_props() {
+    if (!world_props_) return nullptr;
+    return registry_.get(world_props_->binding());
+}
+
+void EditorProps::release_world_props() {
+    if (!world_props_) return;
+    world_props_->unbind_from(registry_);
+    world_props_ = nullptr;
+}
+
+void EditorProps::adopt_world_props(matter::props::DynamicGroup* world_props) {
+    release_world_props();
+    if (!world_props) return;
+    matter::props::Binding* b =
+        registry_.get(world_props->bind_into(registry_, Scope::World));
+    if (!b) return;
+    world_props_ = world_props;
+    // Layer 2 for a script-declared group IS its declared defaults, which is
+    // what the group was constructed holding; then the world file on top.
+    b->capture_baseline();
+    if (persist_ && !world_path_.empty())
+        matter::props::load_group_file(*b, world_path_);
+    b->set_dirty(false);
+}
 
 bool EditorProps::world_dirty() const {
     for (size_t i = 0; i < registry_.size(); ++i) {
@@ -170,6 +197,11 @@ void EditorProps::set_world(const std::string& project_dir,
     // place those edits can live, and losing them to a world switch would be
     // the surprising behavior. Explicit Save stays for the mid-session case.
     if (!world_path_.empty() && world_dirty()) save_world_now();
+    // The world-props DynamicGroup belongs to the OUTGOING session: a reload
+    // rebuilds it in place, a switch destroys the session outright. Drop the
+    // binding here — after the flush above has already written its edits, and
+    // before anything can invalidate what the Binding points at.
+    release_world_props();
     world_path_ = project_dir + "/editor/worlds/" + world_name + ".props.json";
     clear_world_dirty();
     // RequiresReload groups are consumed BY the connect, so they must be read
@@ -193,7 +225,16 @@ void EditorProps::set_world(const std::string& project_dir,
     }
 }
 
-void EditorProps::on_world_connected() {
+void EditorProps::on_world_connected(matter::props::DynamicGroup* world_props) {
+    // Bind the incoming world's script-declared group FIRST, so it rides the
+    // same baseline -> world file -> env sequence as the static World groups
+    // below rather than needing a path of its own. bind() already constructed
+    // its baseline from the declared defaults; the capture below is a no-op
+    // that keeps the rule uniform.
+    release_world_props();
+    if (world_props &&
+        world_props->bind_into(registry_, Scope::World) != matter::props::kInvalidBinding)
+        world_props_ = world_props;
     for (size_t i = 0; i < registry_.size(); ++i) {
         matter::props::Binding& b = registry_.at(i);
         if (b.scope() != Scope::World) continue;

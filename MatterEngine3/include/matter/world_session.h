@@ -22,6 +22,7 @@
 
 namespace matter::evt { class Hub; }
 namespace matter::scene { class SceneService; class SceneChangeTracker; }
+namespace matter::props { class DynamicGroup; }
 
 namespace matter {
 
@@ -280,6 +281,19 @@ public:
     // available once a world-kind connect completes. The editor adopts these
     // into its live volumetrics controls on world load.
     bool world_volumetrics(VulkanVolumetricsSettings& out) const;
+
+    // The world's script-declared runtime tunables (`static props`), as a live
+    // property group the editor can bind into its registry -- null when the
+    // world declares none (property-system spec S9).
+    //
+    // OWNED BY THE SESSION and rebuilt on every world-kind connect, including a
+    // reload of the same world. A caller that binds it into a props::Registry
+    // MUST unbind before triggering the reconnect that replaces it; the editor
+    // does exactly that at its set_world seam. The values start at the script's
+    // declared defaults; nothing in the engine reads them back today (see the
+    // Phase-6 seam note in the spec), so this is the editor's surface for
+    // showing and persisting them.
+    props::DynamicGroup* world_props();
     // Override applied at the NEXT world (re)connect — pair with a world
     // reload to take effect. Empty ring/band lists fall back to the world's
     // own values / engine defaults; the enabled flag always applies.

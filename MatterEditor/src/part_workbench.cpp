@@ -655,6 +655,20 @@ void PartWorkbench::draw_open_picker(const std::vector<WorldEntry>& worlds) {
     }
 }
 
+// This is the schema-LESS property editor: widget kinds are inferred from the
+// JSON value kinds of the resolved `static params` default object, and the
+// modified/reset decoration is a diff against that object. It predates
+// matter::props and is the second, independent property-editor implementation
+// the property-system spec (S9) wants folded away.
+//
+// The intended replacement now exists: matter::props::DynamicGroupBuilder
+// (MatterEngine3/include/matter/props.h) builds exactly this shape of group at
+// runtime — Desc per key, an engine-owned value buffer, the generic renderer in
+// property_editor.cpp for free. Deliberately NOT done here yet: params are bake
+// INPUTS (canonicalized and hashed into the part's content address), so the
+// rebuild has to preserve this panel's pin/variation semantics and its exact
+// canonical-JSON round-trip, which is a change of a different shape than
+// declaring runtime tunables. See the spec's implementation notes.
 void PartWorkbench::draw_params_panel() {
     ImGui::SeparatorText("Params & Variations");
     JsonValue def;

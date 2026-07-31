@@ -190,6 +190,55 @@ struct WorldMaterial {
     int detail_density = 0;
 };
 
+// One entry of a World class's `static props` block — a RUNTIME tunable the
+// world declares, with the schema metadata the editor needs to draw it
+// (property-system spec S9). Deliberately distinct from `static params`:
+// params are bake INPUTS and are hashed into content addresses, props are
+// not hashed anywhere and changing one must never invalidate a cache.
+//
+// The engine turns this list into a props::DynamicGroup at world connect
+// (see matter/world_props.h); this struct is the loader's plain-data hand-off
+// and carries no dependency on the property system.
+struct WorldPropSpec {
+    // Kinds the v1 authoring surface can declare. A numeric `default` is a
+    // Float unless the spec also carries `enum` labels; Int/UInt/Float3/Color3
+    // are deliberately absent — see the spec's implementation notes.
+    enum class Kind : std::uint8_t { Float, Bool, String, Enum };
+
+    std::string name;      // JS key; also the JSON key in the world props file
+    std::string label;     // optional UI text; empty -> name
+    std::string doc;       // optional tooltip
+    std::string units;     // optional "m", "rps"
+    Kind kind = Kind::Float;
+
+    double number_default = 0.0;   // Float, and the label index for Enum
+    bool bool_default = false;     // Bool
+    std::string string_default;    // String
+    std::vector<std::string> enum_labels;  // Enum, non-empty
+
+    bool has_range = false;        // true only when BOTH min and max were given
+    float min = 0.0f, max = 0.0f;
+    float step = 0.0f;             // 0 -> widget default
+};
+
+// Value equality over the whole declaration. Lets a re-install (a live-edit
+// rebake re-runs the same world script) tell "the author changed the props
+// block" from "nothing changed", so an unchanged block can keep its live
+// group — and therefore the editor's binding and the user's current values —
+// instead of being swapped out from underneath it.
+inline bool operator==(const WorldPropSpec& a, const WorldPropSpec& b) {
+    return a.name == b.name && a.label == b.label && a.doc == b.doc &&
+           a.units == b.units && a.kind == b.kind &&
+           a.number_default == b.number_default &&
+           a.bool_default == b.bool_default &&
+           a.string_default == b.string_default &&
+           a.enum_labels == b.enum_labels && a.has_range == b.has_range &&
+           a.min == b.min && a.max == b.max && a.step == b.step;
+}
+inline bool operator!=(const WorldPropSpec& a, const WorldPropSpec& b) {
+    return !(a == b);
+}
+
 struct WorldDefinition {
     std::vector<WorldRoot> roots;
     std::vector<WorldLight> lights;
@@ -197,6 +246,8 @@ struct WorldDefinition {
     // Declaration order; the loader guarantees these were defined before roots
     // were extracted, so a root's params may reference their handles.
     std::vector<WorldMaterial> materials;
+    // World.props declaration order. Empty when the world declares none.
+    std::vector<WorldPropSpec> props;
     WorldSettings settings{};
 };
 

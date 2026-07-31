@@ -295,9 +295,13 @@ JSValue append_entity(JSContext* context,
 // that mutates the registry's dynamic tail, and load_world_definition() resets
 // that tail on entry so repeated loads are idempotent.
 
-// Collector installed as the context opaque for the duration of a load.
-struct MaterialCollector {
+// Collector installed as the context opaque for the duration of a load. It
+// carries everything a C-function binding needs to reach back into the
+// in-progress WorldDefinition: the material list defineMaterial appends to,
+// and the already-extracted `static props` specs getProp reads.
+struct LoadCollector {
     std::vector<WorldMaterial>* materials = nullptr;
+    const std::vector<WorldPropSpec>* props = nullptr;
 };
 
 std::uint32_t fnv1a32(const std::string& text) {
@@ -361,8 +365,11 @@ const char* const kMaterialSpecKeys[] = {
 
 // A typo in a spec key would otherwise shade with a silently-defaulted value,
 // which is exactly the class of bug this authoring surface exists to remove.
-bool reject_unknown_spec_keys(JSContext* context, JSValueConst spec,
-                              std::string& unknown) {
+// `keys` is the allow-list; the caller names it so the material spec and the
+// `static props` spec share one strictness rule without sharing a vocabulary.
+bool reject_unknown_keys(JSContext* context, JSValueConst spec,
+                         const char* const* keys, std::size_t key_count,
+                         std::string& unknown) {
     JSPropertyEnum* properties = nullptr;
     std::uint32_t count = 0;
     if (JS_GetOwnPropertyNames(context, &properties, &count, spec,
@@ -373,8 +380,8 @@ bool reject_unknown_spec_keys(JSContext* context, JSValueConst spec,
         const char* text = JS_AtomToCString(context, properties[index].atom);
         if (!text) { ok = false; break; }
         bool known = false;
-        for (const char* key : kMaterialSpecKeys)
-            if (std::strcmp(key, text) == 0) { known = true; break; }
+        for (std::size_t key = 0; key < key_count; ++key)
+            if (std::strcmp(keys[key], text) == 0) { known = true; break; }
         if (!known) { unknown = text; ok = false; }
         JS_FreeCString(context, text);
     }
@@ -382,12 +389,19 @@ bool reject_unknown_spec_keys(JSContext* context, JSValueConst spec,
     return ok;
 }
 
+bool reject_unknown_spec_keys(JSContext* context, JSValueConst spec,
+                              std::string& unknown) {
+    return reject_unknown_keys(context, spec, kMaterialSpecKeys,
+                               sizeof(kMaterialSpecKeys) / sizeof(kMaterialSpecKeys[0]),
+                               unknown);
+}
+
 JSValue define_material(JSContext* context,
                         JSValueConst,
                         int argument_count,
                         JSValueConst* arguments) {
-    MaterialCollector* collector =
-        static_cast<MaterialCollector*>(JS_GetContextOpaque(context));
+    LoadCollector* collector =
+        static_cast<LoadCollector*>(JS_GetContextOpaque(context));
     if (!collector || !collector->materials)
         return JS_ThrowInternalError(context, "material collector unavailable");
 
@@ -1093,6 +1107,291 @@ bool extract_volumetrics(JSContext* context,
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// World.props static — script-declared RUNTIME tunables (spec S9).
+//
+//   static props = {
+//     spinSpeed: { default: 1.2, min: 0, max: 10, step: 0.1, doc: "..." },
+//     creaky:    { default: true },
+//     banner:    { default: "windmill" },
+//     season:    { default: 1, enum: ["spring", "summer", "winter"] },
+//   };
+//
+// Kind comes from the `default` literal: number -> Float, boolean -> Bool,
+// string -> String, and a number alongside `enum` labels -> Enum (the default
+// is then the label INDEX). Int/UInt/Float3/Color3 are not authorable in v1;
+// adding them is a matter of extending this switch and WorldPropSpec::Kind.
+//
+// These are NOT bake inputs. Nothing here reaches a content address or a cache
+// key — that is the whole point of the params/props split, and the reason the
+// values live in a sidecar props file rather than in the world's hash.
+const char* const kPropSpecKeys[] = {
+    "default", "min", "max", "step", "doc", "label", "units", "enum",
+};
+
+bool prop_spec_string(JSContext* context, JSValueConst spec, const char* key,
+                      std::string& output, bool& present) {
+    JSValue value = JS_GetPropertyStr(context, spec, key);
+    present = !JS_IsUndefined(value);
+    const bool ok = !present || string_value(context, value, output);
+    JS_FreeValue(context, value);
+    return ok;
+}
+
+bool prop_spec_finite(JSContext* context, JSValueConst spec, const char* key,
+                      float& output, bool& present) {
+    JSValue value = JS_GetPropertyStr(context, spec, key);
+    present = !JS_IsUndefined(value);
+    bool ok = true;
+    if (present)
+        ok = number_value(context, value, output) && std::isfinite(output);
+    JS_FreeValue(context, value);
+    return ok;
+}
+
+bool extract_prop_spec(JSContext* context,
+                       JSValueConst spec,
+                       const std::string& path,
+                       const WorldLoadDesc& desc,
+                       WorldPropSpec& out,
+                       WorldLoadError& error) {
+    std::string unknown;
+    if (!reject_unknown_keys(context, spec, kPropSpecKeys,
+                             sizeof(kPropSpecKeys) / sizeof(kPropSpecKeys[0]),
+                             unknown)) {
+        return fail(desc, error, path,
+                    unknown.empty()
+                        ? std::string("property spec keys could not be read")
+                        : "unknown property spec field '" + unknown + "'");
+    }
+
+    // enum first: it decides how a numeric default is read.
+    JSValue labels = JS_GetPropertyStr(context, spec, "enum");
+    const bool has_enum = !JS_IsUndefined(labels);
+    if (has_enum) {
+        std::uint32_t count = 0;
+        if (!array_length(context, labels, count) || count == 0) {
+            JS_FreeValue(context, labels);
+            return fail(desc, error, path + ".enum",
+                        "enum must be a non-empty array of label strings");
+        }
+        for (std::uint32_t index = 0; index < count; ++index) {
+            JSValue entry = JS_GetPropertyUint32(context, labels, index);
+            std::string label;
+            const bool ok = string_value(context, entry, label) && !label.empty();
+            JS_FreeValue(context, entry);
+            if (!ok) {
+                JS_FreeValue(context, labels);
+                return fail(desc, error,
+                            path + ".enum[" + std::to_string(index) + "]",
+                            "enum labels must be non-empty strings");
+            }
+            out.enum_labels.push_back(std::move(label));
+        }
+    }
+    JS_FreeValue(context, labels);
+
+    JSValue fallback = JS_GetPropertyStr(context, spec, "default");
+    if (JS_IsUndefined(fallback)) {
+        JS_FreeValue(context, fallback);
+        return fail(desc, error, path + ".default",
+                    "every property must declare a default value");
+    }
+    bool ok = true;
+    if (JS_IsBool(fallback)) {
+        if (has_enum) ok = false;
+        out.kind = WorldPropSpec::Kind::Bool;
+        out.bool_default = JS_ToBool(context, fallback) != 0;
+    } else if (JS_IsString(fallback)) {
+        if (has_enum) ok = false;
+        out.kind = WorldPropSpec::Kind::String;
+        ok = ok && string_value(context, fallback, out.string_default);
+    } else if (JS_IsNumber(fallback)) {
+        double number = 0.0;
+        ok = JS_ToFloat64(context, &number, fallback) == 0 && std::isfinite(number);
+        out.kind = has_enum ? WorldPropSpec::Kind::Enum : WorldPropSpec::Kind::Float;
+        if (ok && has_enum) {
+            const double index = std::floor(number);
+            if (index != number || index < 0.0 ||
+                index >= static_cast<double>(out.enum_labels.size())) {
+                JS_FreeValue(context, fallback);
+                return fail(desc, error, path + ".default",
+                            "an enum default must be an integer index into its "
+                            "enum labels");
+            }
+        }
+        out.number_default = number;
+    } else {
+        ok = false;
+    }
+    JS_FreeValue(context, fallback);
+    if (!ok) {
+        return fail(desc, error, path + ".default",
+                    has_enum ? "an enum property's default must be a numeric "
+                               "label index"
+                             : "default must be a finite number, a boolean or a "
+                               "string");
+    }
+
+    bool present = false;
+    if (!prop_spec_string(context, spec, "label", out.label, present) ||
+        !prop_spec_string(context, spec, "doc", out.doc, present) ||
+        !prop_spec_string(context, spec, "units", out.units, present)) {
+        return fail(desc, error, path,
+                    "label, doc and units must be strings when present");
+    }
+
+    bool has_min = false, has_max = false, has_step = false;
+    if (!prop_spec_finite(context, spec, "min", out.min, has_min) ||
+        !prop_spec_finite(context, spec, "max", out.max, has_max) ||
+        !prop_spec_finite(context, spec, "step", out.step, has_step)) {
+        return fail(desc, error, path, "min, max and step must be finite numbers");
+    }
+    if (has_min != has_max) {
+        return fail(desc, error, path,
+                    "min and max must be declared together (a half-open range "
+                    "has no slider)");
+    }
+    if (has_min && out.min > out.max)
+        return fail(desc, error, path, "min must not exceed max");
+    out.has_range = has_min;
+    // A range only means anything for the numeric kinds; keeping it on a Bool
+    // or a String would clamp nothing and mislead the panel.
+    if (out.kind != WorldPropSpec::Kind::Float) {
+        out.has_range = false;
+        out.step = 0.0f;
+    }
+    if (out.has_range &&
+        (out.number_default < out.min || out.number_default > out.max)) {
+        return fail(desc, error, path + ".default",
+                    "default lies outside the declared min/max range");
+    }
+    return true;
+}
+
+bool extract_props(JSContext* context,
+                   JSValueConst world_class,
+                   const WorldLoadDesc& desc,
+                   WorldDefinition& definition,
+                   WorldLoadError& error) {
+    JSValue props = JS_GetPropertyStr(context, world_class, "props");
+    if (JS_IsUndefined(props)) {
+        JS_FreeValue(context, props);
+        return true;
+    }
+    if (!JS_IsObject(props) || JS_IsArray(props)) {
+        JS_FreeValue(context, props);
+        return fail(desc, error, "props",
+                    "World.props must be an object of name -> property spec");
+    }
+
+    JSPropertyEnum* names = nullptr;
+    std::uint32_t count = 0;
+    if (JS_GetOwnPropertyNames(context, &names, &count, props,
+                               JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) != 0) {
+        JS_FreeValue(context, props);
+        return fail(desc, error, "props", "World.props keys could not be read");
+    }
+
+    bool ok = true;
+    for (std::uint32_t index = 0; index < count && ok; ++index) {
+        const char* text = JS_AtomToCString(context, names[index].atom);
+        if (!text) {
+            ok = fail(desc, error, "props", "World.props key is not a string");
+            break;
+        }
+        WorldPropSpec spec;
+        spec.name = text;
+        JS_FreeCString(context, text);
+        const std::string path = "props." + spec.name;
+
+        for (const WorldPropSpec& existing : definition.props) {
+            if (existing.name == spec.name) {
+                ok = fail(desc, error, path, "duplicate property name");
+                break;
+            }
+        }
+        if (!ok) break;
+
+        JSValue entry = JS_GetProperty(context, props, names[index].atom);
+        if (!JS_IsObject(entry) || JS_IsArray(entry)) {
+            JS_FreeValue(context, entry);
+            ok = fail(desc, error, path,
+                      "a property spec must be an object, e.g. { default: 1 }");
+            break;
+        }
+        ok = extract_prop_spec(context, entry, path, desc, spec, error);
+        JS_FreeValue(context, entry);
+        if (ok) definition.props.push_back(std::move(spec));
+    }
+
+    JS_FreePropertyEnum(context, names, count);
+    JS_FreeValue(context, props);
+    if (!ok) definition.props.clear();
+    return ok;
+}
+
+// getProp(name) — the world script's read side of its own `static props`.
+//
+// DEFINITION-TIME ONLY, and it returns the DECLARED DEFAULT. There is no
+// long-lived JS context in this engine (every runtime is created and freed
+// inside one load/bake call), so there is nothing for a live value to flow
+// into; and wiring the editor's override in here would make the world's
+// GEOMETRY depend on a value that is deliberately not in any cache key, which
+// is how you get a stale bake that nothing invalidates. See the Phase-6 seam
+// note in the property-system spec.
+JSValue get_prop(JSContext* context,
+                 JSValueConst,
+                 int argument_count,
+                 JSValueConst* arguments) {
+    LoadCollector* collector =
+        static_cast<LoadCollector*>(JS_GetContextOpaque(context));
+    if (!collector || !collector->props)
+        return JS_ThrowInternalError(context, "property collector unavailable");
+    std::string name;
+    if (argument_count < 1 || !string_value(context, arguments[0], name) ||
+        name.empty()) {
+        return JS_ThrowTypeError(context,
+                                 "getProp(name): name must be a non-empty string");
+    }
+    for (const WorldPropSpec& spec : *collector->props) {
+        if (spec.name != name) continue;
+        switch (spec.kind) {
+            case WorldPropSpec::Kind::Bool:
+                return JS_NewBool(context, spec.bool_default ? 1 : 0);
+            case WorldPropSpec::Kind::String:
+                return JS_NewStringLen(context, spec.string_default.c_str(),
+                                       spec.string_default.size());
+            case WorldPropSpec::Kind::Enum: {
+                // The LABEL, not the index: a script branches on the name it
+                // authored, and parse_and_set accepts either form on the way
+                // back in.
+                const std::size_t index =
+                    static_cast<std::size_t>(spec.number_default);
+                if (index >= spec.enum_labels.size())
+                    return JS_ThrowInternalError(context,
+                                                 "getProp('%s'): enum index out of range",
+                                                 name.c_str());
+                const std::string& label = spec.enum_labels[index];
+                return JS_NewStringLen(context, label.c_str(), label.size());
+            }
+            case WorldPropSpec::Kind::Float:
+                return JS_NewFloat64(context, spec.number_default);
+        }
+    }
+    return JS_ThrowReferenceError(
+        context, "getProp('%s'): no such entry in this World's static props",
+        name.c_str());
+}
+
+JSValue get_prop_too_early(JSContext* context, JSValueConst, int, JSValueConst*) {
+    return JS_ThrowTypeError(
+        context,
+        "getProp is not available while the class statics evaluate — the "
+        "`static props` block is itself one of them. Call it from "
+        "buildEntities()");
+}
+
 bool extract_settings(JSContext* context,
                       JSValueConst world_class,
                       const WorldLoadDesc& desc,
@@ -1283,11 +1582,16 @@ class World {}
     // declared at module scope / in class statics, and roots may reference the
     // returned handles. The collector lives on the stack for this whole call and
     // rides the context opaque (this context has no other opaque owner).
-    MaterialCollector material_collector;
-    material_collector.materials = &definition.materials;
-    JS_SetContextOpaque(context, &material_collector);
+    LoadCollector load_collector;
+    load_collector.materials = &definition.materials;
+    load_collector.props = &definition.props;
+    JS_SetContextOpaque(context, &load_collector);
     JS_SetPropertyStr(context, global, "defineMaterial",
                       JS_NewCFunction(context, define_material, "defineMaterial", 2));
+    // getProp exists from the start so a misuse names itself; it only becomes
+    // readable once `static props` has been extracted, below.
+    JS_SetPropertyStr(context, global, "getProp",
+                      JS_NewCFunction(context, get_prop_too_early, "getProp", 1));
     JS_FreeValue(context, global);
 
     const std::string wrapped = source +
@@ -1355,6 +1659,7 @@ class World {}
               extract_streaming(context, world_class, desc, definition, error) &&
               extract_volumetrics(context, world_class, desc, definition,
                                   error) &&
+              extract_props(context, world_class, desc, definition, error) &&
               append_static_entities(context, world_class, desc, error);
     if (!ok) {
         definition = WorldDefinition{};
@@ -1372,6 +1677,10 @@ class World {}
         JS_SetPropertyStr(
             context, globals, "defineMaterial",
             JS_NewCFunction(context, define_material_too_late, "defineMaterial", 2));
+        // The mirror image: `static props` is now parsed, so buildEntities()
+        // can read its declared defaults.
+        JS_SetPropertyStr(context, globals, "getProp",
+                          JS_NewCFunction(context, get_prop, "getProp", 1));
         JS_FreeValue(context, globals);
     }
 

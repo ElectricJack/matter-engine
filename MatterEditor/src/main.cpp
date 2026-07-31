@@ -2443,7 +2443,10 @@ int main() {
                 // apply the world override file and the env layer. Must stay
                 // AFTER the authored-value adopters above.
                 if (bake_ready && apply_world_props_after_bake) {
-                    editor_props.on_world_connected();
+                    // The world's `static props` group is built by the connect
+                    // and owned by the session; EditorProps binds it here and
+                    // releases it again at the next set_world.
+                    editor_props.on_world_connected(session->world_props());
                     apply_world_props_after_bake = false;
                 }
                 console_log.push(
@@ -3098,6 +3101,10 @@ int main() {
                 // would be written to the file of a world we never opened.
                 editor_props.set_world(worlds[stats.world_current].project_dir,
                                        worlds[stats.world_current].world_name);
+                // set_world released the (still perfectly valid) props group of
+                // the session we never left, and no connect is coming to
+                // restore it — rebind it by hand.
+                editor_props.adopt_world_props(session->world_props());
                 viewer::complete_world_switch(stats, false);
             } else {
                 apply_world_props_after_bake = true;

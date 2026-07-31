@@ -593,6 +593,222 @@ void test_vulkan_volumetrics_settings_defaults() {
 }
 
 // ---------------------------------------------------------------------------
+// World.props — script-declared runtime tunables (property system S9)
+// ---------------------------------------------------------------------------
+
+// The fixture world every props test below loads: one field of each kind the
+// v1 authoring surface accepts, plus a buildEntities() that reads them back
+// through getProp so the definition-time read path is covered too.
+constexpr const char* kPropsWorldSource = R"JS(
+class PropsWorld extends World {
+  static props = {
+    spinSpeed: { default: 1.2, min: 0, max: 10, step: 0.1,
+                 doc: 'Rotations per second', label: 'Spin speed', units: 'rps' },
+    creaky:    { default: true },
+    banner:    { default: 'windmill' },
+    season:    { default: 1, enum: ['spring', 'summer', 'winter'] },
+  };
+  buildEntities() {
+    this.entity({
+      id: 'readback',
+      components: {
+        Probe: {
+          spin: getProp('spinSpeed'),
+          creaky: getProp('creaky'),
+          banner: getProp('banner'),
+          season: getProp('season'),
+        },
+      },
+    });
+  }
+}
+)JS";
+
+// Loads a one-property world and returns the error for the failure cases.
+bool load_props_world(Fixture& fixture, const std::string& body,
+                      matter::WorldDefinition& definition,
+                      matter::WorldLoadError& error) {
+    const fs::path path = fixture.write(
+        "PropsWorld.js",
+        "class PropsWorld extends World {\n  static props = " + body + ";\n}\n");
+    return matter::load_world_definition(fixture.desc(path), definition, error);
+}
+
+void test_props_extraction() {
+    Fixture fixture;
+    const fs::path path = fixture.write("PropsWorld.js", kPropsWorldSource);
+
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+
+    CHECK(definition.props.size() == 4, "every declared property is recorded");
+    // Declaration order, which is the order the panel draws them in.
+    CHECK(definition.props[0].name == "spinSpeed" &&
+              definition.props[1].name == "creaky" &&
+              definition.props[2].name == "banner" &&
+              definition.props[3].name == "season",
+          "props preserve declaration order");
+
+    const matter::WorldPropSpec& spin = definition.props[0];
+    CHECK(spin.kind == matter::WorldPropSpec::Kind::Float,
+          "a numeric default without enum labels is a Float");
+    CHECK(nearly_equal(static_cast<float>(spin.number_default), 1.2f),
+          "float default");
+    CHECK(spin.has_range && nearly_equal(spin.min, 0.0f) &&
+              nearly_equal(spin.max, 10.0f),
+          "min/max declared together become a range");
+    CHECK(nearly_equal(spin.step, 0.1f), "step carried through");
+    CHECK(spin.label == "Spin speed" && spin.doc == "Rotations per second" &&
+              spin.units == "rps",
+          "label/doc/units carried through");
+
+    CHECK(definition.props[1].kind == matter::WorldPropSpec::Kind::Bool &&
+              definition.props[1].bool_default,
+          "a boolean default is a Bool");
+    CHECK(definition.props[2].kind == matter::WorldPropSpec::Kind::String &&
+              definition.props[2].string_default == "windmill",
+          "a string default is a String");
+
+    const matter::WorldPropSpec& season = definition.props[3];
+    CHECK(season.kind == matter::WorldPropSpec::Kind::Enum,
+          "enum labels turn a numeric default into an Enum");
+    CHECK(season.enum_labels.size() == 3 && season.enum_labels[0] == "spring" &&
+              season.enum_labels[2] == "winter",
+          "enum labels recorded in order");
+    CHECK(static_cast<int>(season.number_default) == 1,
+          "an enum default is the label index");
+    CHECK(!season.has_range, "a non-float property carries no range");
+
+    // getProp, from buildEntities: declared defaults, and the enum as its LABEL.
+    CHECK(definition.entities.size() == 1, "buildEntities ran");
+    const std::string& components = definition.entities[0].components_json;
+    CHECK(components.find("\"spin\":1.2") != std::string::npos,
+          "getProp returns the declared float default");
+    CHECK(components.find("\"creaky\":true") != std::string::npos,
+          "getProp returns the declared bool default");
+    CHECK(components.find("\"banner\":\"windmill\"") != std::string::npos,
+          "getProp returns the declared string default");
+    CHECK(components.find("\"season\":\"summer\"") != std::string::npos,
+          "getProp returns an enum as its label, not its index");
+}
+
+void test_props_absent_and_empty() {
+    Fixture fixture;
+    const fs::path path = fixture.write("Plain.js", R"JS(
+class Plain extends World {
+  static roots = [{ module: 'Terrain' }];
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.props.empty(), "a world without props declares none");
+
+    matter::WorldDefinition empty_def;
+    matter::WorldLoadError empty_error;
+    CHECK(load_props_world(fixture, "{}", empty_def, empty_error),
+          "an empty props block is legal");
+    CHECK(empty_def.props.empty(), "an empty props block yields no specs");
+}
+
+// Each rejection names the offending property in WorldLoadError::property_path,
+// the same contract the rest of the loader's validation follows.
+void test_props_validation_paths() {
+    struct Case {
+        const char* body;
+        const char* property_path;
+        const char* what;
+    };
+    const Case cases[] = {
+        {"[1, 2]", "props", "props must be an object, not an array"},
+        {"{ spin: 1.2 }", "props.spin", "a bare value is not a spec object"},
+        {"{ spin: { min: 0, max: 1 } }", "props.spin.default",
+         "a missing default is rejected"},
+        {"{ spin: { default: 1, wobble: 3 } }", "props.spin",
+         "an unknown spec key is rejected"},
+        {"{ spin: { default: [1, 2] } }", "props.spin.default",
+         "an array default has no kind"},
+        {"{ spin: { default: null } }", "props.spin.default",
+         "a null default has no kind"},
+        {"{ spin: { default: 1, min: 0 } }", "props.spin",
+         "min without max is rejected"},
+        {"{ spin: { default: 1, max: 4 } }", "props.spin",
+         "max without min is rejected"},
+        {"{ spin: { default: 1, min: 4, max: 0 } }", "props.spin",
+         "an inverted range is rejected"},
+        {"{ spin: { default: 9, min: 0, max: 4 } }", "props.spin.default",
+         "a default outside the range is rejected"},
+        {"{ spin: { default: 1, doc: 7 } }", "props.spin",
+         "a non-string doc is rejected"},
+        {"{ mode: { default: 0, enum: [] } }", "props.mode.enum",
+         "an empty enum label list is rejected"},
+        {"{ mode: { default: 0, enum: 'spring' } }", "props.mode.enum",
+         "a non-array enum is rejected"},
+        {"{ mode: { default: 0, enum: ['a', 7] } }", "props.mode.enum[1]",
+         "a non-string enum label is rejected"},
+        {"{ mode: { default: 5, enum: ['a', 'b'] } }", "props.mode.default",
+         "an out-of-range enum index is rejected"},
+        {"{ mode: { default: 0.5, enum: ['a', 'b'] } }", "props.mode.default",
+         "a fractional enum index is rejected"},
+        {"{ mode: { default: 'a', enum: ['a', 'b'] } }", "props.mode.default",
+         "an enum default must be an index, not a label"},
+        {"{ mode: { default: true, enum: ['a', 'b'] } }", "props.mode.default",
+         "a boolean enum default is rejected"},
+    };
+
+    for (const Case& item : cases) {
+        Fixture fixture;
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        const bool loaded = load_props_world(fixture, item.body, definition, error);
+        CHECK(!loaded, item.what);
+        CHECK(error.property_path == item.property_path,
+              (std::string(item.what) + " -> property_path '" +
+               item.property_path + "' (got '" + error.property_path + "')")
+                  .c_str());
+        CHECK(!error.message.empty(), "a rejection carries a message");
+        CHECK(definition.props.empty(),
+              "a rejected props block leaves no partial specs behind");
+    }
+}
+
+void test_props_getprop_diagnostics() {
+    Fixture fixture;
+    // Unknown name from buildEntities.
+    fs::path path = fixture.write("Unknown.js", R"JS(
+class Unknown extends World {
+  static props = { spin: { default: 1 } };
+  buildEntities() { getProp('nope'); }
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+          "getProp on an undeclared name fails the load");
+    CHECK(error.property_path == "buildEntities",
+          "an unknown getProp is reported against buildEntities");
+    CHECK(error.message.find("static props") != std::string::npos,
+          "the message names the props block");
+
+    // Called while the class statics evaluate — the props block is itself one.
+    path = fixture.write("TooEarly.js", R"JS(
+class TooEarly extends World {
+  static props = { spin: { default: 1 } };
+  static roots = [{ module: 'Terrain', params: { s: getProp('spin') } }];
+}
+)JS");
+    matter::WorldDefinition early_def;
+    matter::WorldLoadError early_error;
+    CHECK(!matter::load_world_definition(fixture.desc(path), early_def, early_error),
+          "getProp during class-static evaluation fails the load");
+    CHECK(early_error.message.find("buildEntities") != std::string::npos,
+          "the too-early message points at buildEntities");
+}
+
+// ---------------------------------------------------------------------------
 // defineMaterial + automated detail bakes + slot allocator (chart-VT Phase 3)
 // ---------------------------------------------------------------------------
 
@@ -914,6 +1130,10 @@ int main() {
     test_fog_defaults_when_absent();
     test_streaming_ring_extraction();
     test_vulkan_volumetrics_settings_defaults();
+    test_props_extraction();
+    test_props_absent_and_empty();
+    test_props_validation_paths();
+    test_props_getprop_diagnostics();
     test_define_material_round_trip();
     test_define_material_reset_between_worlds();
     test_define_material_name_collision_rules();

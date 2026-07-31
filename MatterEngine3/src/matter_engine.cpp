@@ -8,6 +8,7 @@
 
 #include "matter/engine_context.h"
 #include "matter/world_session.h"
+#include "matter/world_props.h"
 
 // E3 event system: per-session evt::Hub carrying typed bake/stream events;
 // the legacy poll_event() API is a compat shim over lane::legacy_poll.
@@ -1029,6 +1030,12 @@ struct WorldSession::Impl {
     // to adopt (guarded by streaming_lod_mutex alongside the LOD profile).
     VulkanVolumetricsSettings world_volumetrics_defaults{};
     bool has_world_volumetrics = false;
+    // World.props -> a live property group (property-system S9). Rebuilt by
+    // install_world on every world-kind connect; null when the world declares
+    // no props. The editor binds it into its registry between connects and
+    // unbinds at its set_world seam, which is what makes this rebuild safe.
+    std::unique_ptr<props::DynamicGroup> world_props;
+    std::vector<WorldPropSpec> world_prop_specs;
 
     // Biomes JSON forwarded to every sector bake.
     std::string world_biomes_json;
@@ -3203,6 +3210,19 @@ bool WorldSession::Impl::install_world(
         has_active_streaming_lod = true;
         world_volumetrics_defaults = provider->world_settings().volumetrics;
         has_world_volumetrics = true;
+        // Not a bake input and not hashed anywhere: this is the schema half of
+        // `static props`, materialized as a value buffer sitting at the
+        // script's declared defaults.
+        //
+        // Rebuilt only when the DECLARATION changed. A live-edit rebake
+        // re-enters install_world with the same script, and swapping the group
+        // there would drop the editor's binding (and the values the user is
+        // mid-tune on) for no reason.
+        const std::vector<WorldPropSpec>& specs = provider->world_prop_specs();
+        if (world_prop_specs != specs || (!specs.empty() && !world_props)) {
+            world_prop_specs = specs;
+            world_props = build_world_props_group(world_prop_specs);
+        }
     }
     streaming_profile_activation.stage(profile);
     return true;
@@ -7593,6 +7613,11 @@ bool WorldSession::world_volumetrics(VulkanVolumetricsSettings& out) const {
     if (!impl_->has_world_volumetrics) return false;
     out = impl_->world_volumetrics_defaults;
     return true;
+}
+
+props::DynamicGroup* WorldSession::world_props() {
+    std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
+    return impl_->world_props.get();
 }
 
 void WorldSession::pump_gpu_jobs(float ms_budget) {

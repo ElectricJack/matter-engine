@@ -32,7 +32,9 @@ public:
     // written, for the same reason the replay path clears imgui.ini — a replay
     // must not inherit an interactive tuning session, nor overwrite one.
     void init(ViewerStats& stats, CameraPrefs& camera, bool persist);
-    // Flushes a pending User autosave. Safe to call without init().
+    // Flushes a pending User autosave and releases the world-props binding.
+    // Safe to call without init(); main.cpp calls it BEFORE the session is
+    // destroyed, because the world-props group belongs to the session.
     void shutdown();
 
     // What a RequiresReload group's "Apply & Reload" invokes. main.cpp wires
@@ -61,7 +63,16 @@ public:
     // make the override equal its own baseline, and the next sparse save would
     // silently erase the setting from the file. Their baseline therefore stays
     // the compiled default, exactly like a User-scope group.
-    void on_world_connected();
+    // `world_props` is WorldSession::world_props() for the world that just
+    // connected, or null when it declares none. It is bound (World scope,
+    // after the static groups) BEFORE the baseline pass below, so the script's
+    // declared defaults become its layer-2 baseline and the world file's
+    // overrides land on top exactly like every other World group.
+    void on_world_connected(matter::props::DynamicGroup* world_props = nullptr);
+
+    // Re-bind the SAME session's props group after an aborted world switch:
+    // set_world already released it, and no connect is coming to restore it.
+    void adopt_world_props(matter::props::DynamicGroup* world_props);
 
     // Per-frame: drives the User-scope autosave debounce.
     void tick(float dt);
@@ -81,6 +92,9 @@ public:
     matter::props::Binding* camera();
     matter::props::Binding* streaming();
     matter::props::Binding* vt_budgets();
+    // The world's script-declared group, or null when the connected world
+    // declares no `static props`.
+    matter::props::Binding* world_props();
 
     // The live (applied, not draft) streaming override. main.cpp reads this
     // right after engine->open_world and hands it to
@@ -91,6 +105,10 @@ public:
 
 private:
     void clear_world_dirty();
+    // Drops the binding on the session-owned DynamicGroup. MUST run before the
+    // session that owns it is reloaded or replaced: the Binding holds bare
+    // pointers into the group's Desc array, its strings and its value buffer.
+    void release_world_props();
 
     matter::props::Registry registry_;
     matter::props::BindingId budget_ = matter::props::kInvalidBinding;
@@ -101,6 +119,8 @@ private:
     matter::props::BindingId streaming_ = matter::props::kInvalidBinding;
     matter::props::BindingId vt_ = matter::props::kInvalidBinding;
     StreamingLodPrefs streaming_prefs_{};
+    // Non-owning: the session owns it (WorldSession::world_props()).
+    matter::props::DynamicGroup* world_props_ = nullptr;
     std::function<void()> reload_request_;
     std::string user_path_;
     std::string world_path_;

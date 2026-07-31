@@ -275,6 +275,11 @@ bool LocalProvider::load_authored_world(std::string& err) {
     // world script evaluated (chart-VT contract C3); what we keep here is the
     // scheduling half — which materials want an automated detail-tileset bake.
     world_materials_ = definition.materials;
+    // Script-declared runtime tunables. A top-level WorldDefinition member has
+    // to be copied out explicitly — `definition` is a stack local that dies at
+    // the end of this function, and only `settings` rides along through
+    // adapt_world_definition.
+    world_prop_specs_ = definition.props;
 
     // Field worlds retain the existing eval_world/streaming path. The statics
     // loader intentionally does not execute field(), so identify the authored

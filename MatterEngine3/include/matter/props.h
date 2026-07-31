@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -69,7 +70,28 @@ struct Group {
     // carries std::vector ring lists that hand-written widgets edit inside the
     // draft. Only the draft mechanism uses this.
     void      (*copy_assign)(void* dst, const void* src) = nullptr;
+
+    // Optional context for a group whose value layout is decided at RUNTIME
+    // (DynamicGroup below — a world script's `static props` block). Such a
+    // group has no C++ type to instantiate a template on, so its construct /
+    // destruct / copy have to be told WHICH schema they are walking. When
+    // `ctx` is non-null these take precedence over the three slots above and
+    // receive it as their first argument; everything else about the Group is
+    // unchanged, which is what lets a dynamic group bind, baseline, draft and
+    // serialize exactly like a static one.
+    void* ctx = nullptr;
+    void (*ctx_construct)(void* ctx, void* p) = nullptr;
+    void (*ctx_destruct)(void* ctx, void* p) = nullptr;
+    void (*ctx_copy_assign)(void* ctx, void* dst, const void* src) = nullptr;
 };
+
+// The four operations above, with the ctx / plain dispatch applied once.
+// Everything inside props.cpp goes through these rather than touching the
+// function-pointer slots directly.
+bool group_can_instantiate(const Group& g);
+void group_construct(const Group& g, void* p);
+void group_destruct(const Group& g, void* p);
+bool group_copy_assign(const Group& g, void* dst, const void* src);
 
 // ---------------------------------------------------------------------------
 // Schema builder. Keyed on pointer-to-member so type and offset are deduced
@@ -450,6 +472,165 @@ void dump_modified(const Registry& r, jsondoc::Value& out);
 bool save_scope_file(const Registry& r, Scope scope, const std::string& path);
 bool load_scope_file(Registry& r, Scope scope, const std::string& path);
 bool load_group_file(Binding& b, const std::string& path);
+
+// ---------------------------------------------------------------------------
+// Dynamic groups (spec S9 — script-defined properties)
+//
+// A DynamicGroup is a Group whose fields come from DATA (a world script's
+// `static props` block) instead of from a C++ struct, and which owns the
+// buffer those values live in. It is bindable into a Registry exactly like a
+// static group: the registry, the editor's generic renderer, sparse
+// persistence, drafts, the FIFO `set` path and dump_modified all go through
+// Desc offsets and the typed accessors, none of which care where the schema
+// came from.
+//
+// VALUE BUFFER LAYOUT (the "struct" the Group describes):
+//   field i lives at offset i * kValueLane. One uniform lane per field keeps
+//   the offset arithmetic to a single constant, and makes a String lane big
+//   enough to hold a real std::string object — which is what get_string /
+//   set_string / copy_field require, since they reinterpret the bytes at the
+//   offset AS a std::string. Lane contents by Desc::type:
+//     Float                -> float
+//     Int, Enum            -> int32_t
+//     UInt                 -> uint32_t
+//     Bool                 -> bool
+//     Float3, Color3       -> float[3]
+//     String               -> std::string (placement-new'd, destroyed by
+//                             ctx_destruct)
+//   The unused tail of every lane is zero padding. kValueLane is
+//   sizeof(std::string) rounded up to the lane alignment (32 bytes with
+//   libstdc++ x86-64), so it costs a few dozen bytes per world — dynamic
+//   groups hold a handful of tunables, not arrays.
+//
+// LIFETIME: the DynamicGroup owns the Desc array, every string the Desc
+// pointers reference (names, labels, docs, units, enum label array) and the
+// live value buffer. A Registry binding refers to all of that by bare pointer,
+// so the binding MUST be removed before the DynamicGroup dies — use
+// bind_into / unbind_from, which track it and make the destructor complain
+// (stderr + abort in a debug build) rather than leave a dangling Binding.
+// ---------------------------------------------------------------------------
+
+// One declared field, in the builder's owning form.
+struct DynamicField {
+    std::string name;    // required, unique within the group
+    std::string label;   // empty -> name
+    std::string doc;
+    std::string units;
+    Type type = Type::Float;
+    bool  has_range = false;
+    float min = 0.0f, max = 0.0f, step = 0.0f;
+    uint32_t flags = 0;
+    // The declared default, read according to `type`.
+    double      number_default = 0.0;   // Float / Int / UInt / Enum
+    bool        bool_default = false;   // Bool
+    std::string string_default;         // String
+    float       float3_default[3] = {0.0f, 0.0f, 0.0f};  // Float3 / Color3
+    std::vector<std::string> enum_labels;  // required (non-empty) for Enum
+};
+
+class DynamicGroupBuilder;
+
+class DynamicGroup {
+public:
+    ~DynamicGroup();
+    DynamicGroup(const DynamicGroup&) = delete;
+    DynamicGroup& operator=(const DynamicGroup&) = delete;
+
+    const Group& group() const { return group_; }
+    operator const Group&() const { return group_; }
+    const char* path() const { return path_.c_str(); }
+    const char* label() const { return label_.c_str(); }
+
+    uint32_t field_count() const { return static_cast<uint32_t>(descs_.size()); }
+    const Desc& field(uint32_t index) const { return descs_[index]; }
+    // -1 when no field carries that name.
+    int32_t index_of(const char* name) const;
+
+    // The live value buffer — what bind_into hands the Registry.
+    void* instance() { return values_; }
+    const void* instance() const { return values_; }
+
+    // By-index typed access onto the live buffer, for the host (the script
+    // getProp path, engine consumers). These are the free accessors above
+    // applied to field(index); out-of-range indices are inert.
+    float       get_float(uint32_t index) const;
+    int32_t     get_int(uint32_t index) const;
+    uint32_t    get_uint(uint32_t index) const;
+    bool        get_bool(uint32_t index) const;
+    int32_t     get_enum(uint32_t index) const;
+    void        get_float3(uint32_t index, float out[3]) const;
+    std::string get_string(uint32_t index) const;
+
+    bool set_float(uint32_t index, float v);
+    bool set_int(uint32_t index, int32_t v);
+    bool set_uint(uint32_t index, uint32_t v);
+    bool set_bool(uint32_t index, bool v);
+    bool set_enum(uint32_t index, int32_t v);
+    bool set_float3(uint32_t index, const float v[3]);
+    bool set_string(uint32_t index, const std::string& v);
+
+    // format_value / parse_and_set on field(index) — the same text contract
+    // the FIFO `set` command uses.
+    std::string format(uint32_t index) const;
+
+    // Binding discipline: exactly one registry binding at a time, released
+    // before this object dies.
+    BindingId bind_into(Registry& r, Scope scope);
+    void unbind_from(Registry& r);
+    BindingId binding() const { return binding_; }
+
+private:
+    friend class DynamicGroupBuilder;
+    DynamicGroup() = default;
+
+    static void construct_thunk(void* ctx, void* p);
+    static void destruct_thunk(void* ctx, void* p);
+    static void copy_thunk(void* ctx, void* dst, const void* src);
+
+    void construct_values(void* p) const;
+    void destruct_values(void* p) const;
+    void copy_values(void* dst, const void* src) const;
+
+    std::string path_;
+    std::string label_;
+    // Stable storage for every const char* a Desc points at. A deque never
+    // moves an element it has already handed out, unlike a vector.
+    std::deque<std::string> strings_;
+    // One contiguous const char* array per enum field, each pointing into
+    // strings_. Built once and never resized afterwards.
+    std::deque<std::vector<const char*>> enum_arrays_;
+    std::vector<Desc> descs_;   // built once; Group::fields points at descs_.data()
+    std::vector<DynamicField> specs_;  // declared defaults, for construct_values
+    Group group_{};
+    void* values_ = nullptr;
+    Registry* bound_registry_ = nullptr;
+    BindingId binding_ = kInvalidBinding;
+};
+
+class DynamicGroupBuilder {
+public:
+    DynamicGroupBuilder(std::string path, std::string label);
+
+    // Rejects an empty or duplicate name, and an Enum without labels. `error`
+    // (when non-null) receives the reason. A rejected field poisons the
+    // builder: build() then returns null.
+    bool add(DynamicField field, std::string* error = nullptr);
+
+    bool ok() const { return ok_; }
+    const std::string& error() const { return error_; }
+    size_t field_count() const { return fields_.size(); }
+
+    // Null when a field was rejected, when no field was added, or when the
+    // path is empty. One-shot: the builder is empty afterwards.
+    std::unique_ptr<DynamicGroup> build();
+
+private:
+    std::string path_;
+    std::string label_;
+    std::vector<DynamicField> fields_;
+    std::string error_;
+    bool ok_ = true;
+};
 
 }  // namespace props
 }  // namespace matter

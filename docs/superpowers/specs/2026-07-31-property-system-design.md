@@ -397,3 +397,197 @@ the edited fields; a world with no edits produces no file.
 4. **Session-scope groups in the Tunables panel.** Debug toggles (`debug_view_mode`,
    overlay checkboxes) could register as `Session` scope for the free UI without
    persistence — worth doing opportunistically during migration.
+
+---
+
+## Implementation notes (2026-07-31)
+
+Written after the five implementation stages landed. Where this section and the
+design text above disagree, this section is what the code does.
+
+### What landed, per stage
+
+1. **Stage 1** (`fc416aec`) — `JsonValue` lifted out of `part_workbench.cpp` into
+   `matter::jsondoc`; `matter/props.h` core (Desc/Group, member-pointer builder,
+   Registry/Binding, typed clamped accessors, baseline capture, sparse tolerant
+   JSON round-trip, atomic file save); `run-props` suite.
+2. **Stage 2** (`ce9ed499`) — the generic ImGui renderer (`property_editor.{h,cpp}`),
+   the Tunables panel, dirty/save UX; `ViewerStats` tunables migrated
+   (`viewer.budget`, `render.lighting`, `render.volumetrics`, `render.pom`) and the
+   hand-written sliders deleted; `run-property-editor` suite.
+3. **Stage 3** (`07464acc`) — `RequiresReload` draft flow; `stream.lod` (World scope)
+   replacing the bespoke `LodSettingsState` plumbing; `camera.prefs` (User); generic
+   FIFO `set`/`get` on the shared `parse_and_set`; issue reports carry
+   `dump_modified`; env layer with `vt.residency` as the first migrated block.
+4. **Stage 4** (`40ed3af5`) — ECS field access unified: `scene::FieldDescriptor`
+   gained offset/size/flags/enum labels, `main.cpp`'s strcmp field ladders collapsed
+   to generic offset-based accessors (427 -> 208 lines), `enum_options_for` deleted.
+5. **Stage 5** (this one) — script-defined properties, S9. Details below.
+
+### Stage 5 — what "script-defined properties" means today
+
+- `matter::props::DynamicGroup` / `DynamicGroupBuilder`: a heap-built Group that
+  owns its Desc array, every string those Descs point at, and the value buffer.
+  Bindable into a Registry exactly like a static group.
+- `World.props` parsing in `world_definition_loader.cpp`, into
+  `WorldDefinition::props` (`std::vector<WorldPropSpec>`).
+- `LocalProvider::world_prop_specs()` -> `WorldSession::world_props()` builds the
+  live group at world connect; `matter/world_props.h` is the (header-only) bridge.
+- `EditorProps` binds it as `world.props` (World scope) at `on_world_connected`
+  and releases it at `set_world`. The Tunables panel picks it up for free.
+- `getProp(name)` in the world script — **definition-time reads of the declared
+  defaults only**, see the Phase-6 seam below.
+
+**Part-level `static props` was NOT implemented.** Everything above it is
+world-shaped: the group path is a fixed `world.props`, the owner is the session,
+and the persistence key is the world props file. Parts are many, instanced, and
+baked on streaming workers with no editor-visible identity to hang a per-instance
+value buffer on; that needs its own design pass, not a copy of this one. The
+generic half — `DynamicGroup` — is already part-agnostic and is what a part-level
+implementation would build on.
+
+### Draft semantics (chosen in Stage 3, unchanged)
+
+A draft is **UI-transient**. `save_scope` / `dump_modified` / baselines all read
+the LIVE instance and never see a draft; `apply_draft` copies draft -> instance
+(whole struct, via `Group::copy_assign`) and marks the binding dirty so the next
+save writes the applied values. Rationale: the file records what the world was
+last *configured* with. Writing an unapplied draft produces a file that disagrees
+with the running world, and on the next launch those values would silently become
+"applied" without the user ever pressing Apply.
+
+### The RequiresReload baseline rule
+
+`EditorProps::on_world_connected` re-captures the baseline of every World-scope
+group **except** the `RequiresReload` ones, whose baseline stays the compiled
+default (exactly like a User-scope group).
+
+A normal World group's value is an OUTPUT of the connect — world JS wrote it, so
+the post-connect value *is* layer 2. A `RequiresReload` group's value is an INPUT
+the connect consumed: re-capturing it would make the override equal its own
+baseline, and the very next sparse save would silently erase the setting from the
+file. This is why `set_world` (which runs *before* the reconnect) is the thing
+that loads those groups, and `on_world_connected` skips them.
+
+### DynamicGroup buffer layout
+
+One uniform **lane** per declared field; field *i* lives at offset `i * kValueLane`.
+`kValueLane` is `sizeof(std::string)` rounded up to the lane alignment — 32 bytes
+on libstdc++ x86-64. Lane contents by `Desc::type`:
+
+| type | stored as |
+|---|---|
+| `Float` | `float` |
+| `Int`, `Enum` | `int32_t` |
+| `UInt` | `uint32_t` |
+| `Bool` | `bool` |
+| `Float3`, `Color3` | `float[3]` |
+| `String` | a real `std::string`, placement-new'd |
+
+The unused tail of every lane is zero padding. The lane must be wide enough for a
+`std::string` because `get_string` / `set_string` / `copy_field` reinterpret the
+bytes *at the offset* as one — the same reason `Group` needs `destruct_default`
+at all. A dynamic group has no undescribed members, so its `copy_assign` is
+field-by-field (never a `memcpy`, which would shred the String lanes).
+
+`Group` grew four optional slots for this — `ctx` plus `ctx_construct` /
+`ctx_destruct` / `ctx_copy_assign`. A plain `void(*)(void*)` cannot construct a
+buffer whose schema is only known at runtime; when `ctx` is set, props.cpp routes
+through the ctx form (`group_construct` / `group_destruct` / `group_copy_assign`).
+Static groups are byte-for-byte unaffected.
+
+**Lifetime.** The DynamicGroup owns everything a Binding points at, so the
+binding must be dropped first. `bind_into` / `unbind_from` track the one binding;
+the destructor drops a still-live binding and complains on stderr rather than
+leaving it dangling. The session rebuilds its group on connect *only when the
+declaration actually changed*, so a live-edit rebake does not swap the group out
+from under a mid-tune editor binding.
+
+### The Phase-6 seam: runtime script access
+
+**There is no runtime script execution in this engine today, and Stage 5 did not
+invent one.** Every `JSRuntime` is created and freed inside a single call —
+`load_world_definition` (world_definition_loader.cpp), `ScriptHost::bake_source`,
+`eval_world`, `eval_tileset`, and so on. There is no persistent context, no tick,
+and no gameplay callback surface; the JS base classes expose no lifecycle hooks.
+The closest thing to "live" JS is the per-sector `bake_source` that streaming
+workers run, which is deliberately entropy-free so its output is a pure function
+of its inputs.
+
+So `getProp(name)` does the only coherent thing available:
+
+- It returns the **declared default** from the same `static props` block, never
+  the editor's override.
+- It is available from `buildEntities()` and throws a naming error if called
+  while the class statics evaluate (the props block is itself one of them) — the
+  same shape as `defineMaterial`'s too-late stub.
+- `Enum` reads back as its **label string**, not its index.
+
+Returning the *editor's* value here would be actively wrong, not merely
+incomplete: it would make world geometry depend on a value that is deliberately
+absent from every cache key, producing stale bakes that nothing invalidates.
+
+What Phase 6 needs to add, when gameplay scripting firms up: a long-lived
+context, and a binding that reads the `DynamicGroup` value buffer through
+`WorldSession::world_props()` (by-index typed accessors already exist for exactly
+this). The parse, the schema, the live buffer, the editor UI and the persistence
+are all in place and are the stable half.
+
+### Cache keys
+
+`static props` are **not hashed anywhere**. Confirmed against every cache key in
+the engine: `resolve_cache::compute_key`, `part_asset_v2::compute_resolved_hash`,
+`ScriptHost::resolve_hash`, the sector bake key, `gtex_content_hash` and
+`gtex_script_identity_hash` all build from named scalars or file bytes, and none
+reads a `WorldDefinition`/`WorldSettings` struct. `WorldDefinition::props` is a
+new top-level member and adds no new hash input. (Pre-existing and expected: the
+resolve cache folds the raw bytes of `worlds/<name>.js`, so *editing the script*
+to declare a prop invalidates that world — editing the prop's **value** in the
+editor does not, which is the whole point of the params/props split.)
+
+### Deviations from the S9 sketch
+
+- **`this.props.spinSpeed`** (a per-instance getter) is not what shipped;
+  `getProp('spinSpeed')` is. There is no World instance alive when the values
+  would be read — the loader deliberately bypasses the constructor and only
+  staples `params`/`worldSeed`/`entity` onto a bare prototype object.
+- **"the world file's persisted overrides apply before first tick"** — there is
+  no tick, and the overrides deliberately do not reach the script at all.
+- **Declarable kinds are Float / Bool / String / Enum.** `Int`, `UInt`, `Float3`
+  and `Color3` exist in `props::Type` and work in a `DynamicGroup`, but the JS
+  surface has no way to ask for them: a numeric `default` is a Float unless
+  `enum` labels are present. Adding `Int` means extending `WorldPropSpec::Kind`
+  and one switch in `extract_prop_spec` — deferred until a world wants one,
+  rather than guessing at a discriminator (`int: true`? a `step` of 1?).
+- **`min`/`max` must be declared together** and only mean anything for `Float`;
+  a range on a Bool or String is dropped, since it would clamp nothing and
+  mislead the panel.
+- **The part_workbench JSON diff editor was NOT rebuilt on `DynamicGroup`.** The
+  seam is marked with a comment at `PartWorkbench::draw_params_panel`. It is a
+  bigger change than it looks: params are bake *inputs*, so the rebuild has to
+  preserve that panel's pin/variation semantics and its exact canonical-JSON
+  round-trip.
+
+### Authoring reference
+
+```js
+class Windmill extends World {
+  static props = {
+    spinSpeed: { default: 1.2, min: 0, max: 10, step: 0.1,
+                 label: 'Spin speed', doc: 'Rotations per second', units: 'rps' },
+    creaky:    { default: true },
+    banner:    { default: 'windmill' },
+    season:    { default: 1, enum: ['spring', 'summer', 'winter'] },
+  };
+  buildEntities() {
+    // Declared defaults only, at definition time.
+    if (getProp('season') === 'winter') { /* ... */ }
+  }
+}
+```
+
+Every spec key is validated; an unknown one, a missing `default`, a half-declared
+range, an inverted range, a default outside its range, a non-string enum label
+and an out-of-range enum index each fail the load with a `WorldLoadError` whose
+`property_path` is `props.<name>` (or `props.<name>.default` /
+`props.<name>.enum[i]`).

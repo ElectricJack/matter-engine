@@ -189,6 +189,70 @@ void test_lod_ring_round_trip() {
           "stream.lod: an untouched override writes no group");
 }
 
+// A script-declared group has to reach the SAME renderer decisions as a
+// hand-written one — that is the whole reason the panel needs no dynamic-group
+// special case (property-system S9).
+void test_dynamic_group_renders_generically() {
+    props::DynamicGroupBuilder builder("world.props", "World Props");
+    props::DynamicField spin;
+    spin.name = "spinSpeed";
+    spin.label = "Spin speed";
+    spin.units = "rps";
+    spin.type = Type::Float;
+    spin.number_default = 1.25;
+    spin.min = 0.0f;
+    spin.max = 10.0f;
+    spin.has_range = true;
+    builder.add(spin);
+    props::DynamicField creak;
+    creak.name = "creaky";
+    creak.type = Type::Bool;
+    builder.add(creak);
+    props::DynamicField banner;
+    banner.name = "banner";
+    banner.type = Type::String;
+    builder.add(banner);
+    props::DynamicField season;
+    season.name = "season";
+    season.type = Type::Enum;
+    season.enum_labels = {"spring", "summer", "winter"};
+    builder.add(season);
+    auto dg = builder.build();
+    CHECK(dg != nullptr, "dynamic panel: group builds");
+
+    const props::Group& g = dg->group();
+    CHECK(viewer::prop_widget_for(g.fields[0]) == PropWidget::FloatSlider,
+          "dynamic panel: a ranged float is a slider");
+    CHECK(viewer::prop_widget_for(g.fields[1]) == PropWidget::Checkbox,
+          "dynamic panel: bool is a checkbox");
+    CHECK(viewer::prop_widget_for(g.fields[2]) == PropWidget::TextInput,
+          "dynamic panel: string is a text input");
+    CHECK(viewer::prop_widget_for(g.fields[3]) == PropWidget::EnumCombo,
+          "dynamic panel: enum is a combo");
+    CHECK(g.fields[3].enum_labels && g.fields[3].enum_count == 3,
+          "dynamic panel: the combo has an owned label array to draw from");
+
+    CHECK(viewer::prop_format_for(g.fields[0]) == "%.2f rps",
+          "dynamic panel: units fold into the format");
+    CHECK(!std::strcmp(viewer::prop_display_label(g.fields[0]), "Spin speed"),
+          "dynamic panel: authored label wins");
+    CHECK(!std::strcmp(viewer::prop_display_label(g.fields[1]), "creaky"),
+          "dynamic panel: an unlabelled field falls back to its name");
+    CHECK(viewer::prop_field_path(g, g.fields[0]) == "world.props.spinSpeed",
+          "dynamic panel: copy-path / FIFO path");
+    CHECK(viewer::prop_filter_matches_group("spin", g),
+          "dynamic panel: the Tunables filter reaches dynamic field names");
+    CHECK(!viewer::prop_filter_matches_group("nomatch", g),
+          "dynamic panel: a non-matching filter hides the group");
+
+    // The panel enumerates the registry, so binding is all it takes to appear.
+    props::Registry reg;
+    dg->bind_into(reg, props::Scope::World);
+    CHECK(reg.size() == 1 && reg.find("world.props") != nullptr,
+          "dynamic panel: a bound dynamic group is enumerable like any other");
+    dg->unbind_from(reg);
+}
+
 }  // namespace
 
 int main() {
@@ -198,5 +262,6 @@ int main() {
     test_filter();
     test_find_field();
     test_lod_ring_round_trip();
+    test_dynamic_group_renders_generically();
     return check_summary();
 }

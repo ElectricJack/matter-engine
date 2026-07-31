@@ -8,6 +8,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -632,6 +633,280 @@ void test_load_group() {
     CHECK(t.steps == 30, "load_group: other bindings in the scope are untouched");
 }
 
+// ---------------------------------------------------------------------------
+// Stage 5 — dynamic groups (script-defined properties, spec S9)
+// ---------------------------------------------------------------------------
+
+props::DynamicField dyn_float(const char* name, double def, float lo, float hi) {
+    props::DynamicField f;
+    f.name = name;
+    f.type = Type::Float;
+    f.number_default = def;
+    f.min = lo;
+    f.max = hi;
+    f.has_range = true;
+    return f;
+}
+
+// float / bool / enum / string, the four kinds a `static props` block can
+// declare, plus a doc/label to prove the owned-string plumbing.
+std::unique_ptr<props::DynamicGroup> build_demo_group() {
+    props::DynamicGroupBuilder builder("world.props", "World Props");
+
+    props::DynamicField spin = dyn_float("spinSpeed", 1.25, 0.0f, 10.0f);
+    spin.label = "Spin speed";
+    spin.doc = "Rotations per second";
+    spin.units = "rps";
+    CHECK(builder.add(spin), "dynamic: float field accepted");
+
+    props::DynamicField creak;
+    creak.name = "creaky";
+    creak.type = Type::Bool;
+    creak.bool_default = true;
+    CHECK(builder.add(creak), "dynamic: bool field accepted");
+
+    props::DynamicField season;
+    season.name = "season";
+    season.type = Type::Enum;
+    season.enum_labels = {"spring", "summer", "winter"};
+    season.number_default = 2;
+    CHECK(builder.add(season), "dynamic: enum field accepted");
+
+    props::DynamicField banner;
+    banner.name = "banner";
+    banner.type = Type::String;
+    banner.string_default = "hello";
+    CHECK(builder.add(banner), "dynamic: string field accepted");
+
+    return builder.build();
+}
+
+void test_dynamic_group_build() {
+    auto dg = build_demo_group();
+    CHECK(dg != nullptr, "dynamic: build succeeds");
+    const props::Group& g = dg->group();
+    CHECK(!strcmp(g.path, "world.props"), "dynamic: group path");
+    CHECK(!strcmp(g.label, "World Props"), "dynamic: group label");
+    CHECK(g.field_count == 4, "dynamic: field count");
+    CHECK(g.ctx == dg.get() && g.ctx_construct && g.ctx_destruct && g.ctx_copy_assign,
+          "dynamic: the ctx hooks carry the schema");
+    CHECK(props::group_can_instantiate(g),
+          "dynamic: instantiable through the ctx hooks alone");
+
+    // Uniform lane layout: strictly increasing, one lane apart, big enough for
+    // a std::string, and the buffer covers the last lane.
+    CHECK(g.fields[0].offset == 0, "dynamic: first field at offset 0");
+    const uint32_t lane = g.fields[1].offset - g.fields[0].offset;
+    CHECK(lane >= sizeof(std::string), "dynamic: a lane holds a std::string");
+    for (uint32_t i = 1; i < g.field_count; ++i)
+        CHECK(g.fields[i].offset == i * lane, "dynamic: uniform lane stride");
+    CHECK(g.struct_size == g.field_count * lane, "dynamic: buffer covers every lane");
+    CHECK(g.struct_align >= alignof(std::string), "dynamic: buffer alignment");
+
+    // Owned strings, not the caller's temporaries.
+    CHECK(!strcmp(g.fields[0].name, "spinSpeed"), "dynamic: name copied");
+    CHECK(!strcmp(g.fields[0].label, "Spin speed"), "dynamic: label copied");
+    CHECK(!strcmp(g.fields[0].doc, "Rotations per second"), "dynamic: doc copied");
+    CHECK(!strcmp(g.fields[0].units, "rps"), "dynamic: units copied");
+    CHECK(g.fields[1].label == nullptr,
+          "dynamic: an unlabelled field leaves label null (Desc falls back to name)");
+    CHECK(g.fields[2].enum_count == 3 &&
+              !strcmp(g.fields[2].enum_labels[0], "spring") &&
+              !strcmp(g.fields[2].enum_labels[2], "winter"),
+          "dynamic: enum labels are an owned const char* const* array");
+    CHECK(g.fields[0].env == nullptr, "dynamic: script fields carry no env var");
+
+    // Declared defaults landed in the buffer.
+    CHECK(dg->index_of("season") == 2, "dynamic: index_of");
+    CHECK(dg->index_of("nope") == -1, "dynamic: index_of misses");
+    CHECK(dg->get_float(0) == 1.25f, "dynamic: float default");
+    CHECK(dg->get_bool(1), "dynamic: bool default");
+    CHECK(dg->get_enum(2) == 2, "dynamic: enum default");
+    CHECK(dg->get_string(3) == "hello", "dynamic: string default");
+    CHECK(dg->format(2) == "winter", "dynamic: format renders the enum label");
+    // Out-of-range indices are inert rather than UB.
+    CHECK(dg->get_float(99) == 0.0f && !dg->set_float(99, 1.0f),
+          "dynamic: out-of-range index is inert");
+}
+
+void test_dynamic_group_rejections() {
+    props::DynamicGroupBuilder empty_path("", "X");
+    props::DynamicField f = dyn_float("a", 1.0, 0.0f, 2.0f);
+    empty_path.add(f);
+    CHECK(empty_path.build() == nullptr, "dynamic: an empty path builds nothing");
+
+    props::DynamicGroupBuilder no_fields("world.props", "X");
+    CHECK(no_fields.build() == nullptr, "dynamic: a group with no fields builds nothing");
+
+    props::DynamicGroupBuilder dupes("world.props", "X");
+    CHECK(dupes.add(f), "dynamic: first field accepted");
+    std::string why;
+    CHECK(!dupes.add(f, &why), "dynamic: duplicate name rejected");
+    CHECK(why.find("duplicate") != std::string::npos, "dynamic: duplicate reason");
+    CHECK(dupes.build() == nullptr, "dynamic: a rejected field poisons the builder");
+
+    props::DynamicGroupBuilder unnamed("world.props", "X");
+    props::DynamicField blank = dyn_float("", 0.0, 0.0f, 1.0f);
+    CHECK(!unnamed.add(blank, &why), "dynamic: empty name rejected");
+
+    props::DynamicGroupBuilder bad_enum("world.props", "X");
+    props::DynamicField e;
+    e.name = "mode";
+    e.type = Type::Enum;
+    CHECK(!bad_enum.add(e, &why), "dynamic: enum without labels rejected");
+    CHECK(why.find("labels") != std::string::npos, "dynamic: enum reason");
+
+    // An out-of-range enum default is clamped into the label array rather than
+    // left to index past it in the combo.
+    props::DynamicGroupBuilder clamped("world.props", "X");
+    props::DynamicField over;
+    over.name = "mode";
+    over.type = Type::Enum;
+    over.enum_labels = {"a", "b"};
+    over.number_default = 9;
+    CHECK(clamped.add(over), "dynamic: enum with labels accepted");
+    auto cg = clamped.build();
+    CHECK(cg && cg->get_enum(0) == 1, "dynamic: enum default clamped to the last label");
+}
+
+void test_dynamic_group_registry() {
+    auto dg = build_demo_group();
+    Registry reg;
+    const BindingId id = dg->bind_into(reg, Scope::World);
+    CHECK(id != props::kInvalidBinding, "dynamic: bind_into returns a binding");
+    CHECK(dg->bind_into(reg, Scope::World) == id, "dynamic: bind_into is idempotent");
+
+    Binding* b = reg.get(id);
+    CHECK(b && b->instance() == dg->instance(),
+          "dynamic: the binding points at the group's own value buffer");
+    CHECK(reg.find("world.props") == b, "dynamic: findable by path");
+    // bind() allocated + constructed a baseline through the ctx hooks, so it
+    // already holds the declared defaults.
+    CHECK(b->baseline() != nullptr, "dynamic: baseline allocated");
+    CHECK(props::is_group_default(*b), "dynamic: fresh group is at its baseline");
+
+    b->capture_baseline();  // the on_world_connected step
+    CHECK(props::is_group_default(*b), "dynamic: baseline capture is a no-op here");
+
+    // Edits through the generic accessors, exactly as the editor panel does.
+    const Desc& spin = b->schema().fields[0];
+    const Desc& banner = b->schema().fields[3];
+    CHECK(props::set_float(*b, spin, 4.5f), "dynamic: float edit");
+    CHECK(props::set_string(*b, banner, "edited"), "dynamic: string edit");
+    CHECK(b->dirty(), "dynamic: an edit marks the binding dirty");
+    CHECK(!props::is_field_default(*b, spin), "dynamic: edited field is off baseline");
+    CHECK(!props::is_field_default(*b, banner), "dynamic: edited string is off baseline");
+    CHECK(props::is_field_default(*b, b->schema().fields[1]),
+          "dynamic: untouched field stays at baseline");
+    CHECK(dg->get_float(0) == 4.5f && dg->get_string(3) == "edited",
+          "dynamic: by-index reads see the registry edit");
+
+    // Range clamping rides on the same Desc as a static group's.
+    props::set_float(*b, spin, 99.0f);
+    CHECK(dg->get_float(0) == 10.0f, "dynamic: declared max clamps");
+
+    // Sparse save: only the off-baseline fields, and the String encodes as one.
+    jsondoc::Value doc;
+    props::save_scope(reg, Scope::World, doc);
+    CHECK(doc_to_string(doc) ==
+              "{\"version\":1,\"groups\":{\"world.props\":"
+              "{\"spinSpeed\":10,\"banner\":\"edited\"}}}",
+          "dynamic: sparse save writes only the edited fields");
+
+    // Round-trip into a second, independently built group.
+    auto other = build_demo_group();
+    Registry other_reg;
+    other->bind_into(other_reg, Scope::World);
+    props::load_scope(other_reg, Scope::World, doc);
+    CHECK(other->get_float(0) == 10.0f && other->get_string(3) == "edited",
+          "dynamic: load restores float + string");
+    CHECK(other->get_bool(1) && other->get_enum(2) == 2,
+          "dynamic: absent keys keep the declared defaults");
+
+    props::reset_group(*b);
+    CHECK(props::is_group_default(*b) && dg->get_string(3) == "hello",
+          "dynamic: reset_group restores the declared defaults, strings included");
+
+    dg->unbind_from(reg);
+    CHECK(reg.size() == 0 && dg->binding() == props::kInvalidBinding,
+          "dynamic: unbind_from drops the binding");
+    other->unbind_from(other_reg);
+}
+
+void test_dynamic_group_draft() {
+    // RequiresReload on a dynamic group: the draft is a full second value
+    // buffer built through the ctx hooks, including its String lanes.
+    props::DynamicGroupBuilder builder("world.props", "World Props");
+    props::DynamicField f = dyn_float("spinSpeed", 1.0, 0.0f, 10.0f);
+    f.flags = props::RequiresReload;
+    builder.add(f);
+    props::DynamicField name;
+    name.name = "banner";
+    name.type = Type::String;
+    name.string_default = "before";
+    name.flags = props::RequiresReload;
+    builder.add(name);
+    auto dg = builder.build();
+    CHECK(dg != nullptr, "dynamic draft: build");
+
+    Registry reg;
+    Binding* b = reg.get(dg->bind_into(reg, Scope::World));
+    CHECK(props::group_requires_reload(b->schema()),
+          "dynamic draft: flags reach group_requires_reload");
+
+    void* draft = props::ensure_draft(*b);
+    CHECK(draft != nullptr && draft != dg->instance(),
+          "dynamic draft: a separate buffer");
+    CHECK(!props::has_pending_draft(*b), "dynamic draft: a fresh copy is not pending");
+
+    props::set_float(draft, b->schema().fields[0], 7.0f);
+    props::set_string(draft, b->schema().fields[1], "after");
+    CHECK(props::has_pending_draft(*b), "dynamic draft: pending after an edit");
+    CHECK(dg->get_float(0) == 1.0f && dg->get_string(1) == "before",
+          "dynamic draft: the live buffer is untouched while pending");
+
+    CHECK(props::apply_draft(*b), "dynamic draft: apply reports a change");
+    CHECK(dg->get_float(0) == 7.0f && dg->get_string(1) == "after",
+          "dynamic draft: apply copies every lane, strings included");
+    CHECK(props::draft_of(*b) == nullptr, "dynamic draft: apply clears the draft");
+    CHECK(b->dirty(), "dynamic draft: apply marks dirty");
+
+    // Discard leaves the live buffer alone.
+    props::set_float(props::ensure_draft(*b), b->schema().fields[0], 2.0f);
+    props::discard_draft(*b);
+    CHECK(dg->get_float(0) == 7.0f, "dynamic draft: discard drops the edit");
+
+    dg->unbind_from(reg);
+}
+
+void test_dynamic_group_teardown() {
+    // Destruction order: the group outlives nothing, and every String lane in
+    // the live buffer, the baseline and the draft has to be destroyed exactly
+    // once. There is no valgrind here — this exercises all three paths so an
+    // ASAN/UBSAN run of the suite has something to catch.
+    {
+        Registry reg;
+        auto dg = build_demo_group();
+        Binding* b = reg.get(dg->bind_into(reg, Scope::World));
+        props::set_string(*b, b->schema().fields[3], std::string(200, 'x'));
+        props::ensure_draft(*b);  // a third buffer with its own String lanes
+        dg->unbind_from(reg);     // binding (baseline + draft) dies first
+        // dg dies here, releasing the live buffer.
+    }
+    {
+        // Reverse order: the DynamicGroup goes first. It must not leave a
+        // dangling Binding behind — it drops it on the way out (and complains).
+        Registry reg;
+        {
+            auto dg = build_demo_group();
+            dg->bind_into(reg, Scope::World);
+            CHECK(reg.size() == 1, "dynamic teardown: bound");
+        }
+        CHECK(reg.size() == 0,
+              "dynamic teardown: a group destroyed while bound drops its binding");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -649,5 +924,10 @@ int main() {
     test_resolve_field();
     test_dump_modified();
     test_load_group();
+    test_dynamic_group_build();
+    test_dynamic_group_rejections();
+    test_dynamic_group_registry();
+    test_dynamic_group_draft();
+    test_dynamic_group_teardown();
     return check_summary();
 }

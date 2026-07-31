@@ -307,24 +307,47 @@ bool resolve_field(Registry& r, const char* full_path, Binding*& binding,
 // Binding
 // ---------------------------------------------------------------------------
 
+// The construct/destruct/copy dispatch, ctx form first. A DynamicGroup has no
+// C++ type to template on, so its hooks are told which schema to walk through
+// Group::ctx; every other group keeps the plain void(*)(void*) slots.
+bool group_can_instantiate(const Group& g) {
+    return g.struct_size != 0 && (g.ctx_construct || g.construct_default);
+}
+
+void group_construct(const Group& g, void* p) {
+    if (g.ctx_construct) g.ctx_construct(g.ctx, p);
+    else if (g.construct_default) g.construct_default(p);
+}
+
+void group_destruct(const Group& g, void* p) {
+    if (g.ctx_destruct) g.ctx_destruct(g.ctx, p);
+    else if (g.destruct_default) g.destruct_default(p);
+}
+
+bool group_copy_assign(const Group& g, void* dst, const void* src) {
+    if (g.ctx_copy_assign) { g.ctx_copy_assign(g.ctx, dst, src); return true; }
+    if (g.copy_assign) { g.copy_assign(dst, src); return true; }
+    return false;
+}
+
+namespace {
+std::align_val_t group_align(const Group& g) {
+    return std::align_val_t{g.struct_align ? static_cast<size_t>(g.struct_align)
+                                           : alignof(std::max_align_t)};
+}
+}  // namespace
+
 void* Binding::alloc_instance() const {
-    if (!schema_ || schema_->struct_size == 0 || !schema_->construct_default)
-        return nullptr;
-    const std::align_val_t align{
-        schema_->struct_align ? static_cast<size_t>(schema_->struct_align)
-                              : alignof(std::max_align_t)};
-    void* p = ::operator new(schema_->struct_size, align);
-    schema_->construct_default(p);
+    if (!schema_ || !group_can_instantiate(*schema_)) return nullptr;
+    void* p = ::operator new(schema_->struct_size, group_align(*schema_));
+    group_construct(*schema_, p);
     return p;
 }
 
 void Binding::free_instance(void* p) const {
     if (!p) return;
-    if (schema_->destruct_default) schema_->destruct_default(p);
-    const std::align_val_t align{
-        schema_->struct_align ? static_cast<size_t>(schema_->struct_align)
-                              : alignof(std::max_align_t)};
-    ::operator delete(p, align);
+    group_destruct(*schema_, p);
+    ::operator delete(p, group_align(*schema_));
 }
 
 Binding::Binding(BindingId id, const Group& schema, void* instance, Scope scope)
@@ -340,9 +363,10 @@ Binding::~Binding() {
 
 void* Binding::ensure_draft() {
     if (draft_) return draft_;
-    if (!instance_ || !schema_ || !schema_->copy_assign) return nullptr;
+    if (!instance_ || !schema_) return nullptr;
+    if (!schema_->ctx_copy_assign && !schema_->copy_assign) return nullptr;
     draft_ = alloc_instance();
-    if (draft_) schema_->copy_assign(draft_, instance_);
+    if (draft_) group_copy_assign(*schema_, draft_, instance_);
     return draft_;
 }
 
@@ -611,7 +635,7 @@ bool apply_draft(Binding& b) {
     const bool changed = has_pending_draft(b);
     // Whole-struct assignment: undescribed members (ring lists) are part of the
     // user's intent even though only the described fields are diffed/persisted.
-    if (b.schema().copy_assign) b.schema().copy_assign(b.instance(), d);
+    group_copy_assign(b.schema(), b.instance(), d);
     b.discard_draft();
     if (changed) b.set_dirty(true);
     return changed;
@@ -753,6 +777,270 @@ void dump_modified(const Registry& r, Value& out) {
             obj->set(d.name, encode_field(b.instance(), d));
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic groups (spec S9)
+//
+// Value buffer layout: one uniform lane per declared field, field i at
+// offset i * kValueLane. See the header for the per-type lane contents and the
+// reasoning (a String lane must be able to hold a real std::string, because
+// get_string/set_string/copy_field reinterpret the bytes at the offset AS one).
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr size_t kLaneAlign =
+    alignof(std::string) > alignof(double) ? alignof(std::string) : alignof(double);
+constexpr size_t kValueLane =
+    ((sizeof(std::string) + kLaneAlign - 1) / kLaneAlign) * kLaneAlign;
+
+// Copies `text` into `store` and returns a pointer that stays valid for the
+// life of the store — a deque never relocates an element it already handed out.
+// An empty string yields nullptr, which is what every optional Desc slot uses
+// to mean "absent".
+const char* intern(std::deque<std::string>& store, const std::string& text) {
+    if (text.empty()) return nullptr;
+    store.push_back(text);
+    return store.back().c_str();
+}
+
+}  // namespace
+
+void DynamicGroup::construct_thunk(void* ctx, void* p) {
+    static_cast<const DynamicGroup*>(ctx)->construct_values(p);
+}
+void DynamicGroup::destruct_thunk(void* ctx, void* p) {
+    static_cast<const DynamicGroup*>(ctx)->destruct_values(p);
+}
+void DynamicGroup::copy_thunk(void* ctx, void* dst, const void* src) {
+    static_cast<const DynamicGroup*>(ctx)->copy_values(dst, src);
+}
+
+void DynamicGroup::construct_values(void* p) const {
+    // Zero first so every lane's padding tail is deterministic; a memcmp of two
+    // buffers is then meaningful even though nothing here relies on it.
+    memset(p, 0, group_.struct_size);
+    for (size_t i = 0; i < descs_.size(); ++i) {
+        void* lane = static_cast<char*>(p) + descs_[i].offset;
+        const DynamicField& f = specs_[i];
+        switch (descs_[i].type) {
+            case Type::Float:
+                *static_cast<float*>(lane) = static_cast<float>(f.number_default);
+                break;
+            case Type::Int:
+            case Type::Enum:
+                *static_cast<int32_t*>(lane) = static_cast<int32_t>(f.number_default);
+                break;
+            case Type::UInt:
+                *static_cast<uint32_t*>(lane) =
+                    f.number_default < 0.0 ? 0u
+                                           : static_cast<uint32_t>(f.number_default);
+                break;
+            case Type::Bool:
+                *static_cast<bool*>(lane) = f.bool_default;
+                break;
+            case Type::Float3:
+            case Type::Color3: {
+                float* v = static_cast<float*>(lane);
+                v[0] = f.float3_default[0];
+                v[1] = f.float3_default[1];
+                v[2] = f.float3_default[2];
+                break;
+            }
+            case Type::String:
+                new (lane) std::string(f.string_default);
+                break;
+        }
+    }
+}
+
+void DynamicGroup::destruct_values(void* p) const {
+    for (size_t i = 0; i < descs_.size(); ++i) {
+        if (descs_[i].type != Type::String) continue;
+        void* lane = static_cast<char*>(p) + descs_[i].offset;
+        using StringLane = std::string;
+        static_cast<std::string*>(lane)->~StringLane();
+    }
+}
+
+void DynamicGroup::copy_values(void* dst, const void* src) const {
+    // A dynamic group has no undescribed members, so field-by-field IS the
+    // whole struct — no memcpy, which would shred the String lanes.
+    for (const Desc& d : descs_) copy_field(dst, src, d);
+}
+
+DynamicGroup::~DynamicGroup() {
+    if (binding_ != kInvalidBinding) {
+        // The Binding holds bare pointers into this object (Desc array, every
+        // Desc string, the value buffer). Salvage rather than abort: dropping
+        // the binding here is strictly better than leaving it dangling, but the
+        // owner got the lifetime wrong and should hear about it.
+        fprintf(stderr,
+                "[props] DynamicGroup '%s' destroyed while still bound "
+                "(binding %u) — unbind_from() before releasing it\n",
+                path_.c_str(), binding_);
+        if (bound_registry_) bound_registry_->unbind(binding_);
+        binding_ = kInvalidBinding;
+        bound_registry_ = nullptr;
+    }
+    if (values_) {
+        destruct_values(values_);
+        ::operator delete(values_, group_align(group_));
+        values_ = nullptr;
+    }
+}
+
+int32_t DynamicGroup::index_of(const char* name) const {
+    if (!name) return -1;
+    for (size_t i = 0; i < descs_.size(); ++i)
+        if (descs_[i].name && !strcmp(descs_[i].name, name))
+            return static_cast<int32_t>(i);
+    return -1;
+}
+
+#define MATTER_PROPS_DYN_GET(fn, type, fallback)                       \
+    type DynamicGroup::fn(uint32_t index) const {                      \
+        if (index >= descs_.size() || !values_) return fallback;       \
+        return props::fn(values_, descs_[index]);                      \
+    }
+
+MATTER_PROPS_DYN_GET(get_float, float, 0.0f)
+MATTER_PROPS_DYN_GET(get_int, int32_t, 0)
+MATTER_PROPS_DYN_GET(get_uint, uint32_t, 0u)
+MATTER_PROPS_DYN_GET(get_bool, bool, false)
+MATTER_PROPS_DYN_GET(get_enum, int32_t, 0)
+MATTER_PROPS_DYN_GET(get_string, std::string, std::string())
+
+#undef MATTER_PROPS_DYN_GET
+
+void DynamicGroup::get_float3(uint32_t index, float out[3]) const {
+    if (index >= descs_.size() || !values_) {
+        out[0] = out[1] = out[2] = 0.0f;
+        return;
+    }
+    props::get_float3(values_, descs_[index], out);
+}
+
+#define MATTER_PROPS_DYN_SET(fn, argtype)                              \
+    bool DynamicGroup::fn(uint32_t index, argtype v) {                 \
+        if (index >= descs_.size() || !values_) return false;          \
+        return props::fn(values_, descs_[index], v);                   \
+    }
+
+MATTER_PROPS_DYN_SET(set_float, float)
+MATTER_PROPS_DYN_SET(set_int, int32_t)
+MATTER_PROPS_DYN_SET(set_uint, uint32_t)
+MATTER_PROPS_DYN_SET(set_bool, bool)
+MATTER_PROPS_DYN_SET(set_enum, int32_t)
+MATTER_PROPS_DYN_SET(set_float3, const float*)
+MATTER_PROPS_DYN_SET(set_string, const std::string&)
+
+#undef MATTER_PROPS_DYN_SET
+
+std::string DynamicGroup::format(uint32_t index) const {
+    if (index >= descs_.size() || !values_) return {};
+    return format_value(values_, descs_[index]);
+}
+
+BindingId DynamicGroup::bind_into(Registry& r, Scope scope) {
+    if (binding_ != kInvalidBinding) return binding_;
+    const BindingId id = r.bind(group_, values_, scope);
+    if (id != kInvalidBinding) {
+        binding_ = id;
+        bound_registry_ = &r;
+    }
+    return id;
+}
+
+void DynamicGroup::unbind_from(Registry& r) {
+    if (binding_ == kInvalidBinding) return;
+    r.unbind(binding_);
+    binding_ = kInvalidBinding;
+    bound_registry_ = nullptr;
+}
+
+DynamicGroupBuilder::DynamicGroupBuilder(std::string path, std::string label)
+    : path_(std::move(path)), label_(std::move(label)) {}
+
+bool DynamicGroupBuilder::add(DynamicField field, std::string* error) {
+    auto reject = [&](const std::string& why) {
+        ok_ = false;
+        error_ = why;
+        if (error) *error = why;
+        return false;
+    };
+    if (field.name.empty()) return reject("property name must not be empty");
+    for (const DynamicField& existing : fields_)
+        if (existing.name == field.name)
+            return reject("duplicate property name '" + field.name + "'");
+    if (field.type == Type::Enum && field.enum_labels.empty())
+        return reject("enum property '" + field.name + "' declares no labels");
+    fields_.push_back(std::move(field));
+    return true;
+}
+
+std::unique_ptr<DynamicGroup> DynamicGroupBuilder::build() {
+    if (!ok_ || path_.empty() || fields_.empty()) return nullptr;
+
+    std::unique_ptr<DynamicGroup> g(new DynamicGroup());
+    g->path_ = path_;
+    g->label_ = label_.empty() ? path_ : label_;
+    g->specs_ = std::move(fields_);
+    fields_.clear();
+
+    const size_t count = g->specs_.size();
+    g->descs_.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        DynamicField& f = g->specs_[i];
+        Desc d;
+        g->strings_.push_back(f.name);
+        d.name = g->strings_.back().c_str();
+        d.label = intern(g->strings_, f.label);
+        d.doc = intern(g->strings_, f.doc);
+        d.units = intern(g->strings_, f.units);
+        d.type = f.type;
+        d.offset = static_cast<uint32_t>(i * kValueLane);
+        d.min = f.min;
+        d.max = f.max;
+        d.has_range = f.has_range;
+        d.step = f.step;
+        d.flags = f.flags;
+        // Script-declared fields have no env var: a world's tunables are named
+        // by the world, and MATTER_* is a fixed engine-side namespace.
+        d.env = nullptr;
+        if (f.type == Type::Enum) {
+            g->enum_arrays_.emplace_back();
+            std::vector<const char*>& labels = g->enum_arrays_.back();
+            labels.reserve(f.enum_labels.size());
+            for (const std::string& text : f.enum_labels) {
+                g->strings_.push_back(text);
+                labels.push_back(g->strings_.back().c_str());
+            }
+            d.enum_labels = labels.data();
+            d.enum_count = static_cast<uint32_t>(labels.size());
+            // Keep the declared default addressable: an out-of-range index
+            // would make the combo read past the label array.
+            const double hi = static_cast<double>(labels.size()) - 1.0;
+            if (f.number_default < 0.0) f.number_default = 0.0;
+            if (f.number_default > hi) f.number_default = hi;
+        }
+        g->descs_.push_back(d);
+    }
+
+    g->group_.path = g->path_.c_str();
+    g->group_.label = g->label_.c_str();
+    g->group_.fields = g->descs_.data();
+    g->group_.field_count = static_cast<uint32_t>(count);
+    g->group_.struct_size = static_cast<uint32_t>(count * kValueLane);
+    g->group_.struct_align = static_cast<uint32_t>(kLaneAlign);
+    g->group_.ctx = g.get();
+    g->group_.ctx_construct = &DynamicGroup::construct_thunk;
+    g->group_.ctx_destruct = &DynamicGroup::destruct_thunk;
+    g->group_.ctx_copy_assign = &DynamicGroup::copy_thunk;
+
+    g->values_ = ::operator new(g->group_.struct_size, group_align(g->group_));
+    g->construct_values(g->values_);
+    return g;
 }
 
 }  // namespace props
