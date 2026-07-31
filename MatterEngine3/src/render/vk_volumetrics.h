@@ -192,11 +192,6 @@ private:
     float fog_min_height_ = 0.0f;
     float fog_max_height_ = 0.0f;
     float fog_noise_scale_ = 0.0018f;
-    float fog_density_mul_ = 1.0f;
-    float fog_floor_offset_ = 0.0f;
-    float fog_falloff_mul_ = 1.0f;
-    float fog_color_mul_[3] = {1.0f, 1.0f, 1.0f};
-    float fog_wind_mul_[3] = {1.0f, 1.0f, 1.0f};
 
     // Lighting state (set externally before record).
     float sun_direction_[3] = {-0.45f, -0.80f, -0.35f};

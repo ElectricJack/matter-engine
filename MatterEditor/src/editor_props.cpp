@@ -5,10 +5,13 @@
 #include "console_panel.h"
 #include "matter/stream_settings.h"
 #include "matter/vt_budgets.h"
+#include "part_asset_v2.h"  // part_asset::replace_file_atomic_detailed
 #include "toolbar_panel.h"
 #include "ui.h"
 
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 
 namespace viewer {
 namespace {
@@ -25,8 +28,6 @@ using matter::props::Scope;
 //     VulkanVolumetricsSettings::vol_debug_view — main.cpp overwrites both
 //     every frame from ViewerStats::debug_view_mode / vol_debug_view, so a
 //     persisted value would be a lie.
-//   * fog_color_mul stays a Float3, not a Color3: it is a multiplier that may
-//     legitimately exceed 1, and ColorEdit3 clamps to [0,1].
 
 const auto s_budget = matter::props::group<ViewerStats>(
     "viewer.budget", "Viewer Budget",
@@ -102,6 +103,18 @@ const auto s_lighting = matter::props::group<matter::VulkanLightingOverrides>(
              "resolves into a penumbra with several rays. Costs GPU time "
              "linearly."));
 
+// render.volumetrics — how the froxel volume is MARCHED. What is IN it is
+// render.fog's business and nothing here duplicates it.
+//
+// This group used to carry five more rows — Fog density / Fog falloff / Fog
+// floor offset / Fog color mul / Fog wind mul — each a pure multiplier on a
+// render.fog field of the same name, drawn directly above the field it scaled
+// (issue 80c66789). They are gone. The multiplier form is strictly weaker: it
+// can only scale what the world authored, while the direct field can set it,
+// so keeping both meant two ways to say one thing and no way to tell which
+// one a given picture came from. Nothing in the engine consumed the
+// multiplier form for its own sake — vk_volumetrics.cpp multiplied and
+// forgot — so there was no consumer to keep one for.
 const auto s_volumetrics = matter::props::group<matter::VulkanVolumetricsSettings>(
     "render.volumetrics", "Volumetrics",
     prop(&matter::VulkanVolumetricsSettings::enabled, "enabled").label("Enable"),
@@ -109,17 +122,7 @@ const auto s_volumetrics = matter::props::group<matter::VulkanVolumetricsSetting
         .label("Phase g").range(0.0f, 0.99f)
         .doc("Henyey-Greenstein anisotropy."),
     prop(&matter::VulkanVolumetricsSettings::temporal_blend, "temporal_blend")
-        .label("Temporal blend").range(0.0f, 0.99f),
-    prop(&matter::VulkanVolumetricsSettings::fog_density_mul, "fog_density_mul")
-        .label("Fog density").range(0.0f, 4.0f),
-    prop(&matter::VulkanVolumetricsSettings::fog_falloff_mul, "fog_falloff_mul")
-        .label("Fog falloff").range(0.1f, 4.0f),
-    prop(&matter::VulkanVolumetricsSettings::fog_floor_offset, "fog_floor_offset")
-        .label("Fog floor offset").range(-200.0f, 200.0f).units("m"),
-    prop(&matter::VulkanVolumetricsSettings::fog_color_mul, "fog_color_mul")
-        .label("Fog color mul"),
-    prop(&matter::VulkanVolumetricsSettings::fog_wind_mul, "fog_wind_mul")
-        .label("Fog wind mul"));
+        .label("Temporal blend").range(0.0f, 0.99f));
 
 const auto s_pom = matter::props::group<matter::TilesetPomSettings>(
     "render.pom", "Ground POM",
@@ -158,17 +161,19 @@ const auto s_pom = matter::props::group<matter::TilesetPomSettings>(
 // only the production session's render sets, so nothing else in the process
 // sees the override.
 //
-// fog.color IS a Color3: unlike VulkanVolumetricsSettings::fog_color_mul (a
-// multiplier that may legitimately exceed 1, hence Float3 there), this is the
-// authored fog COLOUR — world_definition_loader reads it as an RGB triple and
-// the default {0.9, 0.92, 0.95} is squarely in the [0,1] domain ColorEdit3
-// clamps to. `wind` stays a Float3: it is a velocity in m/s, signed.
+// fog.color IS a Color3: it is the authored fog COLOUR —
+// world_definition_loader reads it as an RGB triple and the default
+// {0.9, 0.92, 0.95} is squarely in the [0,1] domain ColorEdit3 clamps to.
+// `wind` stays a Float3: it is a velocity in m/s, signed.
+//
+// As of issue 80c66789 these five fields are the ONLY place fog density,
+// floor, falloff, colour and wind can be set. render.volumetrics used to
+// carry a multiplier for each; see the comment on s_volumetrics above.
 const auto s_fog = matter::props::group<matter::FogSettings>(
     "render.fog", "Fog",
     prop(&matter::FogSettings::density, "density")
         .label("Density").range(0.0f, 1.0f).log()
-        .doc("Extinction at the fog floor. 0 disables distance fog; the "
-             "volumetrics Fog density multiplier scales this."),
+        .doc("Extinction at the fog floor. 0 disables distance fog."),
     prop(&matter::FogSettings::floor, "floor")
         .label("Floor").range(-500.0f, 2000.0f).units("m")
         .doc("Height at which density is full."),
@@ -315,6 +320,199 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
     prop(&ViewerStats::vol_debug_view, "vol_debug_view")
         .label("Volumetric view").enums(kVolDebugLabels, 4)
         .doc("Only meaningful while volumetrics are enabled."));
+
+// ---------------------------------------------------------------------------
+// One-shot world-file migration: render.volumetrics' fog multipliers
+// (issue 80c66789)
+//
+// The five multipliers were deleted from VulkanVolumetricsSettings. The
+// property loader tolerates unknown keys, so a persisted override of one would
+// simply STOP APPLYING — the world would quietly look different on the next
+// launch with nothing said. That is the outcome this exists to prevent.
+//
+// It runs on the parsed document, folds each multiplier into the render.fog
+// field it used to scale, erases the consumed key, and rewrites the file. The
+// erase is what makes it idempotent: a second connect finds nothing to do.
+//
+// The base each multiplier folds against is the file's OWN render.fog override
+// when it has one, and the world-authored value otherwise — the same value the
+// old renderer would have multiplied, since load_scope lands the file's
+// override on top of the authored baseline before anything reads it.
+//
+// This is dated and deletable. Once no .props.json in the wild carries these
+// keys, delete the whole block.
+struct LegacyFogFold {
+    const char* vol_key;   // key under groups["render.volumetrics"]
+    const char* fog_key;   // key under groups["render.fog"] it folds into
+    bool additive;         // true: fog += vol.  false: fog *= vol.
+    int  components;       // 1 for a scalar, 3 for a Float3/Color3
+    float identity;        // the value that means "no change"
+};
+
+const LegacyFogFold kLegacyFogFolds[] = {
+    {"fog_density_mul",  "density", false, 1, 1.0f},
+    {"fog_falloff_mul",  "falloff", false, 1, 1.0f},
+    {"fog_floor_offset", "floor",   true,  1, 0.0f},
+    {"fog_color_mul",    "color",   false, 3, 1.0f},
+    {"fog_wind_mul",     "wind",    false, 3, 1.0f},
+};
+
+// The authored (layer-2) fog value for one fold, read straight off the live
+// FogSettings baseline the connect just captured.
+void authored_fog_value(const matter::FogSettings& fog, const char* fog_key,
+                        float out[3], int components) {
+    out[0] = out[1] = out[2] = 0.0f;
+    if (std::strcmp(fog_key, "density") == 0) out[0] = fog.density;
+    else if (std::strcmp(fog_key, "floor") == 0) out[0] = fog.floor;
+    else if (std::strcmp(fog_key, "falloff") == 0) out[0] = fog.falloff;
+    else if (std::strcmp(fog_key, "color") == 0)
+        for (int i = 0; i < 3; ++i) out[i] = fog.color[i];
+    else if (std::strcmp(fog_key, "wind") == 0)
+        for (int i = 0; i < 3; ++i) out[i] = fog.wind[i];
+    (void)components;
+}
+
+bool read_doc_number(const matter::jsondoc::Value& v, float out[3],
+                     int components) {
+    if (components == 1) {
+        if (v.kind != matter::jsondoc::Value::Kind::Number) return false;
+        out[0] = static_cast<float>(v.num);
+        return true;
+    }
+    if (v.kind != matter::jsondoc::Value::Kind::Array || v.arr.size() != 3)
+        return false;
+    for (int i = 0; i < 3; ++i) {
+        if (v.arr[i].kind != matter::jsondoc::Value::Kind::Number) return false;
+        out[i] = static_cast<float>(v.arr[i].num);
+    }
+    return true;
+}
+
+matter::jsondoc::Value make_doc_number(const float v[3], int components) {
+    matter::jsondoc::Value out;
+    if (components == 1) {
+        out.kind = matter::jsondoc::Value::Kind::Number;
+        out.num = v[0];
+        return out;
+    }
+    out.kind = matter::jsondoc::Value::Kind::Array;
+    for (int i = 0; i < 3; ++i) {
+        matter::jsondoc::Value c;
+        c.kind = matter::jsondoc::Value::Kind::Number;
+        c.num = v[i];
+        out.arr.push_back(std::move(c));
+    }
+    return out;
+}
+
+// Returns the number of keys folded. 0 means the file was absent, unparsable,
+// or already clean — in all three cases nothing is written.
+size_t migrate_legacy_fog_keys(const std::string& path,
+                               const matter::FogSettings& authored) {
+    std::string text;
+    {
+        std::ifstream f(path, std::ios::binary);
+        if (!f.good()) return 0;
+        std::ostringstream ss;
+        ss << f.rdbuf();
+        text = ss.str();
+    }
+    matter::jsondoc::Value doc;
+    if (!matter::jsondoc::parse_json(text, doc)) return 0;
+    matter::jsondoc::Value* groups = doc.find("groups");
+    if (!groups) return 0;
+    matter::jsondoc::Value* vol = groups->find("render.volumetrics");
+    if (!vol) return 0;
+
+    size_t folded = 0;
+    for (const LegacyFogFold& f : kLegacyFogFolds) {
+        const matter::jsondoc::Value* raw = vol->find(f.vol_key);
+        if (!raw) continue;
+        float mul[3] = {f.identity, f.identity, f.identity};
+        const bool parsed = read_doc_number(*raw, mul, f.components);
+        // Consume the key either way: a garbage value cannot be folded, but
+        // leaving it behind would make this migration run again every connect.
+        vol->erase(f.vol_key);
+        if (!parsed) {
+            std::fprintf(stderr,
+                         "[props] %s: dropped unreadable legacy key "
+                         "render.volumetrics.%s\n",
+                         path.c_str(), f.vol_key);
+            ++folded;
+            continue;
+        }
+        bool identity = true;
+        for (int i = 0; i < f.components; ++i)
+            if (mul[i] != f.identity) identity = false;
+        if (identity) {
+            ++folded;
+            continue;  // erased above; nothing to fold
+        }
+
+        // Base: the file's own render.fog override if it has one, else what
+        // the world authored.
+        matter::jsondoc::Value* fog_group = groups->find("render.fog");
+        float base[3] = {0.0f, 0.0f, 0.0f};
+        const matter::jsondoc::Value* existing =
+            fog_group ? fog_group->find(f.fog_key) : nullptr;
+        if (!existing || !read_doc_number(*existing, base, f.components))
+            authored_fog_value(authored, f.fog_key, base, f.components);
+
+        float result[3] = {0.0f, 0.0f, 0.0f};
+        for (int i = 0; i < f.components; ++i)
+            result[i] = f.additive ? base[i] + mul[i] : base[i] * mul[i];
+
+        if (!fog_group) {
+            matter::jsondoc::Value empty;
+            empty.kind = matter::jsondoc::Value::Kind::Object;
+            fog_group = &groups->set("render.fog", std::move(empty));
+        }
+        fog_group->set(f.fog_key, make_doc_number(result, f.components));
+
+        if (f.components == 1) {
+            std::fprintf(stderr,
+                         "[props] %s: folded render.volumetrics.%s (%g) into "
+                         "render.fog.%s: %g -> %g\n",
+                         path.c_str(), f.vol_key, mul[0], f.fog_key, base[0],
+                         result[0]);
+        } else {
+            std::fprintf(stderr,
+                         "[props] %s: folded render.volumetrics.%s "
+                         "(%g, %g, %g) into render.fog.%s: "
+                         "(%g, %g, %g) -> (%g, %g, %g)\n",
+                         path.c_str(), f.vol_key, mul[0], mul[1], mul[2],
+                         f.fog_key, base[0], base[1], base[2], result[0],
+                         result[1], result[2]);
+        }
+        ++folded;
+    }
+    if (folded == 0) return 0;
+
+    // An emptied render.volumetrics entry is noise; drop it so the file does
+    // not keep an empty object forever.
+    if (vol->obj.empty()) groups->erase("render.volumetrics");
+
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f.good()) {
+            std::fprintf(stderr,
+                         "[props] %s: fog migration could not write %s - the "
+                         "legacy keys are still in the file and still inert\n",
+                         path.c_str(), tmp.c_str());
+            return folded;
+        }
+        f << matter::jsondoc::write_json(doc);
+    }
+    if (part_asset::replace_file_atomic_detailed(tmp, path) ==
+        part_asset::FileReplaceOutcome::NotReplaced) {
+        std::fprintf(stderr,
+                     "[props] %s: fog migration could not replace the file - "
+                     "the legacy keys are still in it and still inert\n",
+                     path.c_str());
+    }
+    return folded;
+}
 
 }  // namespace
 
@@ -575,8 +773,20 @@ void EditorProps::on_world_connected(
         b.capture_baseline();
         b.set_dirty(false);
     }
-    if (persist_ && !world_path_.empty())
+    if (persist_ && !world_path_.empty()) {
+        // Fold any surviving render.volumetrics fog multiplier into the
+        // render.fog field it used to scale, BEFORE the load — otherwise the
+        // now-unknown key is silently ignored and the user's tuning quietly
+        // stops applying (issue 80c66789). The baseline captured just above is
+        // the world-authored fog, which is the base the fold needs.
+        if (const matter::props::Binding* fb = registry_.get(fog_)) {
+            if (const void* base = fb->baseline())
+                migrate_legacy_fog_keys(
+                    world_path_,
+                    *static_cast<const matter::FogSettings*>(base));
+        }
         matter::props::load_scope_file(registry_, Scope::World, world_path_);
+    }
     matter::props::apply_env(registry_);
     clear_world_dirty();
 }

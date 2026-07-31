@@ -440,9 +440,11 @@ void draw_lighting_contents(EditorProps& props) {
         props.note_panel_home(b->schema().path, "Lighting");
         draw_group(*b, nullptr, true, &on_apply);
     }
-    // render.fog sits directly after the volumetrics multipliers that modulate
-    // it: fog_density_mul scales density, fog_falloff_mul scales falloff, and
-    // fog_floor_offset shifts floor, so the two groups are read together.
+    // render.fog sits directly after render.volumetrics because the two are
+    // read together: volumetrics says whether the froxel volume is marched at
+    // all and how, fog says what is in it. They no longer SHARE any concept —
+    // the five multipliers that used to shadow five fog fields are gone
+    // (issue 80c66789), so each row below appears exactly once in this panel.
     if (Binding* b = props.fog()) {
         props.note_panel_home(b->schema().path, "Lighting");
         draw_group(*b, nullptr, true, &on_apply);

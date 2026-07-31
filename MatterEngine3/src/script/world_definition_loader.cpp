@@ -8,6 +8,7 @@ extern "C" {
 }
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -1108,6 +1109,70 @@ bool extract_streaming(JSContext* context,
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Legacy fog-multiplier fold (issue 80c66789)
+//
+// `volumetrics.fogDensityMul / fogFalloffMul / fogFloorOffset` used to be
+// applied to the authored FogSettings once per frame in VkVolumetrics::record.
+// That made the Lighting panel show every fog concept twice, so the
+// multipliers were deleted and this folds the world's authored values through
+// the SAME arithmetic the renderer used to do, once, at load.
+//
+// The two branches below mirror that arithmetic exactly:
+//   height layer off -> floor += offset;  falloff *= falloff_mul
+//   height layer on  -> min_height += offset;
+//                       max_height  = new_min + (old_max - old_min) * falloff_mul
+// (the old renderer repurposed fog_floor/fog_falloff as the layer's min/max
+// when height_layer was set, which is why the second branch looks nothing like
+// the first).
+//
+// It logs whenever it changes anything. A world author who reads the line can
+// paste the printed values back into the script and drop the deprecated keys;
+// a world author who does not still gets the picture they had.
+void fold_legacy_fog_multipliers(const WorldLoadDesc& desc, FogSettings& fog,
+                                 float density_mul, float falloff_mul,
+                                 float floor_offset) {
+    const bool touched = density_mul != 1.0f || falloff_mul != 1.0f ||
+                         floor_offset != 0.0f;
+    if (!touched) return;
+
+    const float old_density = fog.density;
+    fog.density *= density_mul;
+
+    float old_a = 0.0f, old_b = 0.0f, new_a = 0.0f, new_b = 0.0f;
+    const char* name_a = nullptr;
+    const char* name_b = nullptr;
+    if (fog.height_layer) {
+        old_a = fog.min_height;
+        old_b = fog.max_height;
+        const float depth = (fog.max_height - fog.min_height) * falloff_mul;
+        fog.min_height += floor_offset;
+        fog.max_height = fog.min_height + depth;
+        new_a = fog.min_height;
+        new_b = fog.max_height;
+        name_a = "minHeight";
+        name_b = "maxHeight";
+    } else {
+        old_a = fog.floor;
+        old_b = fog.falloff;
+        fog.floor += floor_offset;
+        fog.falloff *= falloff_mul;
+        new_a = fog.floor;
+        new_b = fog.falloff;
+        name_a = "floor";
+        name_b = "falloff";
+    }
+
+    std::fprintf(stderr,
+                 "[fog] %s: volumetrics.fogDensityMul/fogFalloffMul/"
+                 "fogFloorOffset are deprecated and were folded into "
+                 "World.fog: density %g -> %g, %s %g -> %g, %s %g -> %g. "
+                 "Paste those values into World.fog and delete the "
+                 "volumetrics keys.\n",
+                 desc.world_path.c_str(), old_density, fog.density, name_a,
+                 old_a, new_a, name_b, old_b, new_b);
+}
+
 // World.volumetrics static: editor volumetrics defaults for this world.
 // Optional; every field optional with the struct default.
 bool extract_volumetrics(JSContext* context,
@@ -1129,12 +1194,23 @@ bool extract_volumetrics(JSContext* context,
     JSValue enabled = JS_GetPropertyStr(context, vol, "enabled");
     if (!JS_IsUndefined(enabled)) out.enabled = JS_ToBool(context, enabled);
     JS_FreeValue(context, enabled);
+    // The three legacy multipliers are read into locals, not into the settings
+    // struct — they no longer HAVE a home there (issue 80c66789). Anything a
+    // world still authors is folded into the FogSettings field it used to
+    // scale, once, at load, with a line on stderr naming both values. A silent
+    // change here would be worse than the duplication it replaces: the world
+    // would keep looking the same in one build and different in the next with
+    // nothing said. extract_fog() runs BEFORE this, so definition.settings.fog
+    // already holds the authored values these fold into.
+    float legacy_density_mul = 1.0f;
+    float legacy_falloff_mul = 1.0f;
+    float legacy_floor_offset = 0.0f;
     const struct { const char* name; float* target; } fields[] = {
         {"phaseG", &out.phase_g},
         {"temporalBlend", &out.temporal_blend},
-        {"fogDensityMul", &out.fog_density_mul},
-        {"fogFalloffMul", &out.fog_falloff_mul},
-        {"fogFloorOffset", &out.fog_floor_offset},
+        {"fogDensityMul", &legacy_density_mul},
+        {"fogFalloffMul", &legacy_falloff_mul},
+        {"fogFloorOffset", &legacy_floor_offset},
     };
     for (const auto& field : fields) {
         JSValue value = JS_GetPropertyStr(context, vol, field.name);
@@ -1153,6 +1229,10 @@ bool extract_volumetrics(JSContext* context,
         JS_FreeValue(context, value);
     }
     JS_FreeValue(context, vol);
+
+    fold_legacy_fog_multipliers(desc, definition.settings.fog,
+                                legacy_density_mul, legacy_falloff_mul,
+                                legacy_floor_offset);
     return true;
 }
 

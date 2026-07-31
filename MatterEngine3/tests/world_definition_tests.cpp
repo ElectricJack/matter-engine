@@ -707,18 +707,75 @@ void test_vulkan_volumetrics_settings_defaults() {
     CHECK(vol.enabled == false, "volumetrics disabled by default");
     CHECK(nearly_equal(vol.temporal_blend, 0.85f), "temporal_blend defaults to 0.85");
     CHECK(nearly_equal(vol.phase_g, 0.3f), "phase_g defaults to 0.3");
-    CHECK(nearly_equal(vol.fog_density_mul, 1.0f), "fog_density_mul defaults to 1.0");
-    CHECK(nearly_equal(vol.fog_floor_offset, 0.0f), "fog_floor_offset defaults to 0.0");
-    CHECK(nearly_equal(vol.fog_falloff_mul, 1.0f), "fog_falloff_mul defaults to 1.0");
-    CHECK(nearly_equal(vol.fog_color_mul[0], 1.0f) &&
-              nearly_equal(vol.fog_color_mul[1], 1.0f) &&
-              nearly_equal(vol.fog_color_mul[2], 1.0f),
-          "fog_color_mul defaults to white");
-    CHECK(nearly_equal(vol.fog_wind_mul[0], 1.0f) &&
-              nearly_equal(vol.fog_wind_mul[1], 1.0f) &&
-              nearly_equal(vol.fog_wind_mul[2], 1.0f),
-          "fog_wind_mul defaults to identity");
     CHECK(nearly_equal(vol.vol_debug_view, 0.0f), "vol_debug_view defaults to 0.0");
+}
+
+// issue 80c66789: the five fog multipliers were deleted from
+// VulkanVolumetricsSettings. A world that still authors the three JS-facing
+// ones must keep the picture it had, by folding them into the FogSettings
+// fields they used to scale — the arithmetic the renderer used to redo every
+// frame, done once at load.
+void test_legacy_fog_multipliers_fold_into_authored_fog() {
+    Fixture fixture;
+    const fs::path path = fixture.write("LegacyMulWorld.js", R"JS(
+class LegacyMulWorld extends World {
+  static roots = [{ module: 'Root' }];
+  static fog = { density: 0.2, floor: 4.0, falloff: 50.0 };
+  static volumetrics = {
+    enabled: true,
+    fogDensityMul: 0.5,
+    fogFalloffMul: 3.0,
+    fogFloorOffset: 6.0,
+  };
+}
+)JS");
+
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+
+    const matter::FogSettings& fog = definition.settings.fog;
+    CHECK(nearly_equal(fog.density, 0.1f), "fogDensityMul folded into density");
+    CHECK(nearly_equal(fog.floor, 10.0f), "fogFloorOffset folded into floor");
+    CHECK(nearly_equal(fog.falloff, 150.0f), "fogFalloffMul folded into falloff");
+    CHECK(definition.settings.volumetrics.enabled,
+          "the surviving volumetrics fields still load");
+}
+
+// The height-layer branch of the same fold. The old renderer repurposed
+// fog_floor/fog_falloff as the layer's min/max when height_layer was set, so
+// fogFloorOffset shifted the BOTTOM and fogFalloffMul scaled the layer's
+// THICKNESS — nothing like the ground-fog branch above. This is the case
+// StreamMountain shipped for a year.
+void test_legacy_fog_multipliers_fold_into_height_layer() {
+    Fixture fixture;
+    const fs::path path = fixture.write("LegacyLayerWorld.js", R"JS(
+class LegacyLayerWorld extends World {
+  static roots = [{ module: 'Root' }];
+  static fog = {
+    density: 0.180,
+    minHeight: 140.0,
+    maxHeight: 165.0,
+    noiseScale: 0.00022,
+  };
+  static volumetrics = { fogDensityMul: 0.03, fogFalloffMul: 3.44 };
+}
+)JS");
+
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+
+    const matter::FogSettings& fog = definition.settings.fog;
+    CHECK(fog.height_layer, "height layer still enabled after the fold");
+    CHECK(nearly_equal(fog.density, 0.0054f), "layer density folded");
+    CHECK(nearly_equal(fog.min_height, 140.0f),
+          "zero fogFloorOffset leaves min_height alone");
+    // 140 + (165 - 140) * 3.44 = 226
+    CHECK(nearly_equal(fog.max_height, 226.0f),
+          "fogFalloffMul scaled the layer thickness into max_height");
 }
 
 // ---------------------------------------------------------------------------
@@ -1264,6 +1321,8 @@ int main() {
     test_fog_defaults_when_absent();
     test_streaming_ring_extraction();
     test_vulkan_volumetrics_settings_defaults();
+    test_legacy_fog_multipliers_fold_into_authored_fog();
+    test_legacy_fog_multipliers_fold_into_height_layer();
     test_props_extraction();
     test_props_absent_and_empty();
     test_props_validation_paths();

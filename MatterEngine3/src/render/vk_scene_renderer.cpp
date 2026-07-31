@@ -7141,9 +7141,10 @@ void VkSceneRenderer::set_volumetrics_settings(
     volumetrics_enabled_ = s.enabled;
     volumetrics_debug_view_ = s.vol_debug_view;
     volumetrics_height_layer_ = fog.height_layer;
-    volumetrics_cloud_top_ =
-        fog.min_height + s.fog_floor_offset +
-        (fog.max_height - fog.min_height) * s.fog_falloff_mul;
+    // The authored top of the deck, with nothing between it and the shader —
+    // the offset/multiplier that used to sit here folded into the authored
+    // values themselves (issue 80c66789).
+    volumetrics_cloud_top_ = fog.max_height;
     if (volumetrics_)
         volumetrics_->update_settings(s, fog);
 }

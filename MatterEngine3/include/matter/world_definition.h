@@ -58,15 +58,23 @@ struct WorldCameraSettings {
     Float3 target{};
 };
 
+// How the froxel volume is MARCHED. Everything about what is IN the volume
+// lives in FogSettings above.
+//
+// This struct used to also carry fog_density_mul / fog_floor_offset /
+// fog_falloff_mul / fog_color_mul / fog_wind_mul — five pure multipliers on
+// five FogSettings fields of the same name. They predate render.fog being
+// directly editable, and once it was, the Lighting panel showed every fog
+// concept twice (issue 80c66789). They are gone: a multiplier can only SCALE
+// what the world authored, while the direct field can SET it, so the authored
+// field is strictly more expressive and the multiplier is redundant. Worlds
+// and property files that still carry the old keys are folded into the
+// authored values once, loudly — see fold_legacy_fog_multipliers() in
+// world_definition_loader.cpp and migrate_legacy_fog_keys() in props.cpp.
 struct VulkanVolumetricsSettings {
     bool  enabled        = false;
     float temporal_blend = 0.85f;
     float phase_g        = 0.3f;
-    float fog_density_mul  = 1.0f;
-    float fog_floor_offset = 0.0f;
-    float fog_falloff_mul  = 1.0f;
-    float fog_color_mul[3] = {1.0f, 1.0f, 1.0f};
-    float fog_wind_mul[3]  = {1.0f, 1.0f, 1.0f};
     float vol_debug_view   = 0.0f;
 };
 

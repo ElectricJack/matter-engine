@@ -760,13 +760,6 @@ void VkVolumetrics::update_settings(
     enabled_ = vol.enabled;
     temporal_blend_ = vol.temporal_blend;
     phase_g_ = vol.phase_g;
-    fog_density_mul_ = vol.fog_density_mul;
-    fog_floor_offset_ = vol.fog_floor_offset;
-    fog_falloff_mul_ = vol.fog_falloff_mul;
-    for (int i = 0; i < 3; ++i) {
-        fog_color_mul_[i] = vol.fog_color_mul[i];
-        fog_wind_mul_[i] = vol.fog_wind_mul[i];
-    }
 
     fog_density_ = fog.density;
     fog_floor_ = fog.floor;
@@ -910,16 +903,17 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
         }
     }
     density_pc.frame_time = frame_time;
-    density_pc.fog_density = fog_density_ * fog_density_mul_;
+    density_pc.fog_density = fog_density_;
     if (fog_height_layer_) {
-        const float layer_min = fog_min_height_ + fog_floor_offset_;
-        const float layer_depth =
-            (fog_max_height_ - fog_min_height_) * fog_falloff_mul_;
-        density_pc.fog_floor = layer_min;
-        density_pc.fog_falloff = layer_min + layer_depth;
+        // The bounded cloud layer repurposes the two height push constants as
+        // the layer's [min, max] bounds. Nothing scales them any more: the
+        // multipliers that used to sit between the authored values and these
+        // lines were folded back into the authored values (issue 80c66789).
+        density_pc.fog_floor = fog_min_height_;
+        density_pc.fog_falloff = fog_max_height_;
     } else {
-        density_pc.fog_floor = fog_floor_ + fog_floor_offset_;
-        density_pc.fog_falloff = fog_falloff_ * fog_falloff_mul_;
+        density_pc.fog_floor = fog_floor_;
+        density_pc.fog_falloff = fog_falloff_;
     }
     // Reversed-ZO projection: m[10] = n/(f-n), m[11] = f*n/(f-n), so the
     // recovery identities are m[11]/m[10] = far and m[11]/(m[10]+1) = near
@@ -927,8 +921,8 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     density_pc.camera_near = matrices.view_to_clip.m[11] /
                              (matrices.view_to_clip.m[10] + 1.0f);
     for (int i = 0; i < 3; ++i) {
-        density_pc.fog_color[i] = fog_color_[i] * fog_color_mul_[i];
-        density_pc.fog_wind[i] = fog_wind_[i] * fog_wind_mul_[i];
+        density_pc.fog_color[i] = fog_color_[i];
+        density_pc.fog_wind[i] = fog_wind_[i];
     }
     density_pc.camera_far = matrices.view_to_clip.m[11] /
                             matrices.view_to_clip.m[10];
