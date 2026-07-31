@@ -2330,6 +2330,23 @@ int main() {
             if (mouse_clicked && ui_frame_ready && ui.camera_input_allowed()) {
                 double cursor_x = 0.0, cursor_y = 0.0;
                 glfwGetCursorPos(window, &cursor_x, &cursor_y);
+                if (camera_capture) {
+                    // Free-fly: the cursor is GLFW_CURSOR_DISABLED, so
+                    // glfwGetCursorPos reports an unbounded VIRTUAL position
+                    // that has nothing to do with anything on screen. It used
+                    // to land near the window centre only because
+                    // CameraController::update warped it there every frame;
+                    // removing that warp (issue a4203d22 part 3) would
+                    // otherwise turn click-to-select while flying into a pick
+                    // at a random, ever-drifting coordinate. Pin it to the
+                    // window centre explicitly, which is what the warp
+                    // effectively produced — this keeps free-fly clicking
+                    // behaving exactly as before.
+                    int win_w = 0, win_h = 0;
+                    glfwGetWindowSize(window, &win_w, &win_h);
+                    cursor_x = win_w * 0.5;
+                    cursor_y = win_h * 0.5;
+                }
                 int fb_width = 0, fb_height = 0;
                 glfwGetFramebufferSize(window, &fb_width, &fb_height);
                 const auto& vp = ui.viewport_rect();
