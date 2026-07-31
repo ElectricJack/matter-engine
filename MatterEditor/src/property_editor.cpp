@@ -281,17 +281,20 @@ void draw_lighting_contents(EditorProps& props) {
     if (ImGui::Button("Reset to World")) {
         if (Binding* b = props.lighting()) reset_group(*b);
         if (Binding* b = props.volumetrics()) reset_group(*b);
-        // WORKSTREAM-2 SEAM: add props.fog() here alongside the two above.
+        if (Binding* b = props.fog()) reset_group(*b);
     }
     ImGui::SetItemTooltip(
-        "Restores render.lighting and render.volumetrics to the values the "
-        "world script authored at connect.");
+        "Restores render.lighting, render.volumetrics and render.fog to the "
+        "values the world script authored at connect.");
     ImGui::Separator();
 
     if (Binding* b = props.lighting()) draw_group(*b, nullptr, true, &on_apply);
     if (Binding* b = props.volumetrics())
         draw_group(*b, nullptr, true, &on_apply);
-    // WORKSTREAM-2 SEAM: render.fog draws here, same one-liner as above.
+    // render.fog sits directly after the volumetrics multipliers that modulate
+    // it: fog_density_mul scales density, fog_falloff_mul scales falloff, and
+    // fog_floor_offset shifts floor, so the two groups are read together.
+    if (Binding* b = props.fog()) draw_group(*b, nullptr, true, &on_apply);
 }
 
 void draw_tunables_contents(TunablesPanelState& state, EditorProps& props) {

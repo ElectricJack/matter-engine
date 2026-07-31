@@ -20,7 +20,10 @@
 
 namespace viewer {
 
+struct AnimationDebugOverlayOptions;
 struct CameraPrefs;
+struct ConsolePanelState;
+struct ToolbarState;
 struct ViewerStats;
 
 class EditorProps {
@@ -28,10 +31,17 @@ public:
     // Debounce for Scope::User autosave, seconds after the last edit.
     static constexpr float kUserAutosaveDelay = 1.0f;
 
+    // Everything the registry binds lives in one of these; the editor owns
+    // them all and keeps reading them as plain structs (S3 — the registry is
+    // never on a read path). `toolbar` and `console` are Ui's own panel-state
+    // members, handed over by reference so the toolbar slider and the console
+    // checkboxes stay the same widgets over the same fields.
+    //
     // `persist` is false during MATTER_REPLAY runs: no scope file is read OR
     // written, for the same reason the replay path clears imgui.ini — a replay
     // must not inherit an interactive tuning session, nor overwrite one.
-    void init(ViewerStats& stats, CameraPrefs& camera, bool persist);
+    void init(ViewerStats& stats, CameraPrefs& camera, ToolbarState& toolbar,
+              ConsolePanelState& console, bool persist);
     // Flushes a pending User autosave and releases the world-props binding.
     // Safe to call without init(); main.cpp calls it BEFORE the session is
     // destroyed, because the world-props group belongs to the session.
@@ -88,10 +98,15 @@ public:
     matter::props::Binding* budget();
     matter::props::Binding* lighting();
     matter::props::Binding* volumetrics();
+    // World-authored fog, live (WS2). See the group definition in the .cpp for
+    // why this is live and not RequiresReload.
+    matter::props::Binding* fog();
     matter::props::Binding* pom();
     matter::props::Binding* camera();
     matter::props::Binding* streaming();
+    matter::props::Binding* stream_runtime();
     matter::props::Binding* vt_budgets();
+    matter::props::Binding* vt_enrich();
     // The world's script-declared group, or null when the connected world
     // declares no `static props`.
     matter::props::Binding* world_props();
@@ -114,10 +129,17 @@ private:
     matter::props::BindingId budget_ = matter::props::kInvalidBinding;
     matter::props::BindingId lighting_ = matter::props::kInvalidBinding;
     matter::props::BindingId volumetrics_ = matter::props::kInvalidBinding;
+    matter::props::BindingId fog_ = matter::props::kInvalidBinding;
     matter::props::BindingId pom_ = matter::props::kInvalidBinding;
     matter::props::BindingId camera_ = matter::props::kInvalidBinding;
     matter::props::BindingId streaming_ = matter::props::kInvalidBinding;
+    matter::props::BindingId stream_runtime_ = matter::props::kInvalidBinding;
     matter::props::BindingId vt_ = matter::props::kInvalidBinding;
+    matter::props::BindingId vt_enrich_ = matter::props::kInvalidBinding;
+    matter::props::BindingId sim_ = matter::props::kInvalidBinding;
+    matter::props::BindingId console_ = matter::props::kInvalidBinding;
+    matter::props::BindingId overlay_ = matter::props::kInvalidBinding;
+    matter::props::BindingId viewer_debug_ = matter::props::kInvalidBinding;
     StreamingLodPrefs streaming_prefs_{};
     // Non-owning: the session owns it (WorldSession::world_props()).
     matter::props::DynamicGroup* world_props_ = nullptr;

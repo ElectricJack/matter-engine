@@ -98,6 +98,18 @@ struct RenderOptions {
     VulkanLightingOverrides vulkan_lighting{};
     VulkanVolumetricsSettings vulkan_volumetrics{};
     TilesetPomSettings vulkan_tileset_pom{};
+    // Live fog override (property-system "render.fog"). The world-authored
+    // FogSettings the connect captured is consumed PER FRAME — WorldSession::
+    // render hands it to VkSceneRenderer::set_volumetrics_settings on every
+    // call — so an editor copy of it can simply ride the per-frame options the
+    // way vulkan_lighting/vulkan_volumetrics already do.
+    //
+    // Opt-in rather than unconditional: every non-editor caller (headless
+    // tests, the replay harness, the Part Workbench's isolation session) leaves
+    // this false and keeps consuming the session's own authored fog, so the
+    // default RenderOptions is bit-identical to the pre-override behavior.
+    bool use_fog_override = false;
+    FogSettings fog_override{};
 
     // Bake Lab W4 (part-workbench.md SS-I.5): LOD Inspector debug overrides.
     // Lab-only — production render paths are byte-identical to pre-W4
@@ -289,6 +301,15 @@ public:
         // set_streaming_lod_overrides): the world's sector size, for UI
         // spacing hints.
         float sector_size = 64.0f;
+        // Streamer pacing (matter_stream::Config's own knobs). Unlike the ring
+        // lists above these have no "empty means keep the world's" encoding —
+        // the world script cannot author them — so the defaults here ARE the
+        // engine defaults and applying them unconditionally is a no-op.
+        // MATTER_STREAM_HYSTERESIS / _INFLIGHT / _FAIL_COOLDOWN still apply in
+        // make_streaming_profile for runs with no editor.
+        float hysteresis = 16.0f;
+        int   max_inflight = 64;
+        int   fail_cooldown_updates = 64;
     };
     // The ACTIVE resolved profile of the current world (world JS + env +
     // overrides + engine defaults). False before a world-kind connect.
@@ -297,6 +318,11 @@ public:
     // available once a world-kind connect completes. The editor adopts these
     // into its live volumetrics controls on world load.
     bool world_volumetrics(VulkanVolumetricsSettings& out) const;
+    // World-authored fog (World.fog static), captured at every install /
+    // compose / cone-rebake. False until the first successful connect. The
+    // editor seeds its live render.fog override from this so the group's
+    // layer-2 baseline is what the world script authored.
+    bool world_fog(FogSettings& out) const;
 
     // The world's script-declared runtime tunables (`static props`), as a live
     // property group the editor can bind into its registry -- null when the

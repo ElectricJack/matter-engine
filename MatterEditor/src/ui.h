@@ -10,6 +10,7 @@
 
 #include "matter/camera.h"
 #include "matter/world_session.h"
+#include "camera_controller.h"   // CameraPrefs (the camera.prefs group)
 #include "streaming_anchor_controller.h"
 #include "editor_model.h"
 #include "scene_tree_panel.h"
@@ -114,6 +115,12 @@ struct ViewerStats {
     int      world_current = 0;
     matter::VulkanLightingOverrides lighting{};
     matter::VulkanVolumetricsSettings volumetrics{};
+    // Live override of the world-authored fog (property group "render.fog",
+    // Scope::World). Seeded from WorldSession::world_fog at every connect —
+    // which is what makes the group's layer-2 baseline the authored values —
+    // and pushed back through RenderOptions::fog_override every frame. The
+    // volumetrics multipliers above modulate whatever lands here.
+    matter::FogSettings fog{};
     int vol_debug_view = 0;
     matter::TilesetPomSettings tileset_pom{};
     // GPU-side per-pass timings (ms), smoothed EMA. Values are 0 when the
@@ -251,7 +258,10 @@ public:
                                   const ViewerCommands& commands);
     // MSL-style orbit/zoom controls: navigate the view without locking the cursor
     // or using WASD (works over remote desktop). Mutates the camera in place.
-    void draw_camera_panel(matter::CameraDesc& cam);
+    // `prefs` supplies the orbit step and zoom step (camera.prefs); the orbit
+    // DISTANCE is deliberately not a pref — it is derived from the live
+    // camera's position/target every frame, so there is nothing to persist.
+    void draw_camera_panel(matter::CameraDesc& cam, const CameraPrefs& prefs);
     // Standalone panel listing available worlds as buttons. Clicking a non-current
     // world issues ViewerCommands::switch_world (viewer.switch_world command).
     void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats,
@@ -261,6 +271,13 @@ public:
     // even when the UI is hidden, so a headless capture can run in slow motion.
     float sim_time_scale() const { return toolbar_state_.time_scale; }
     void set_sim_time_scale(float value) { toolbar_state_.time_scale = value; }
+    // The two panel-state structs EditorProps binds as property groups
+    // ("sim.time" and "console.filters"). Exposed rather than duplicated: the
+    // toolbar slider and the console checkboxes keep editing these exact
+    // fields, and the groups add Tunables visibility, the FIFO `set` path and
+    // (for the console) User-scope persistence on top of them.
+    ToolbarState& toolbar_state() { return toolbar_state_; }
+    ConsolePanelState& console_state() { return console_state_; }
     void prepare_viewport_rect();
     void draw_viewport_window();
     const ViewportRect& viewport_rect() const { return viewport_rect_; }

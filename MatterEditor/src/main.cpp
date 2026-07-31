@@ -957,7 +957,8 @@ int main() {
     viewer::CameraPrefs camera_prefs;
     camera_prefs.far_plane = camera.far_plane;
     viewer::EditorProps editor_props;
-    editor_props.init(stats, camera_prefs, !replay.valid);
+    editor_props.init(stats, camera_prefs, ui.toolbar_state(),
+                      ui.console_state(), !replay.valid);
     camera.far_plane = camera_prefs.far_plane;
     editor_props.set_world(worlds[initial_world].project_dir,
                            worlds[initial_world].world_name);
@@ -1337,6 +1338,20 @@ int main() {
     // World-authored volumetrics defaults adopt on every world load (initial
     // and switches); replays keep their recorded settings.
     bool apply_world_volumetrics_after_bake = !replay.valid;
+    // render.fog's own one-shot, deliberately NOT folded into the volumetrics
+    // flag beside it: the two are published by different engine paths (a
+    // closed-world connect publishes fog but never volumetrics, and a
+    // resolve-cache hit publishes fog without re-running the world-kind
+    // install), so sharing a flag would silently change when volumetrics
+    // adopts.
+    bool apply_world_fog_after_bake = !replay.valid;
+    // Does ViewerStats::fog hold this world's authored fog yet? Only then may
+    // RenderOptions::use_fog_override be set. Before the adoption below,
+    // stats.fog is the compiled default and the session's own authored_fog_ is
+    // the truth — and in a REPLAY the adoption never runs at all (same reason
+    // volumetrics is not adopted there), so a replay keeps rendering the
+    // engine's authored fog and stays pixel-identical to a pre-WS2 build.
+    bool fog_override_ready = false;
     const bool test_resize = std::getenv("MATTER_TEST_RESIZE") != nullptr;
     if (replay.valid) {
         // The toggles that change pixels. DLSS is deliberately NOT restored: it
@@ -2164,7 +2179,7 @@ int main() {
                 ui.draw_asset_browser_panel(asset_browser, worlds, stats, shared_lib,
                                            viewer_commands);
                 ui.draw_worlds_panel(worlds, stats, viewer_commands);
-                ui.draw_camera_panel(camera);
+                ui.draw_camera_panel(camera, camera_prefs);
                 ui.draw_performance_panel(session.get(), editor_props,
                                           viewer_commands, camera);
                 // Issue reporter (F9 region / F10 viewport). Drawn last so the
@@ -2432,6 +2447,18 @@ int main() {
                     }
                     apply_world_camera_after_bake = false;
                 }
+                // Layer 2 for render.fog, adopted BEFORE on_world_connected
+                // snapshots the baseline below — that ordering is what makes
+                // "Reset to World" restore what the world script authored
+                // rather than a compiled default.
+                if (bake_ready && apply_world_fog_after_bake) {
+                    matter::FogSettings world_fog;
+                    if (session->world_fog(world_fog)) {
+                        stats.fog = world_fog;
+                        fog_override_ready = true;
+                        apply_world_fog_after_bake = false;
+                    }
+                }
                 if (bake_ready && apply_world_volumetrics_after_bake) {
                     matter::VulkanVolumetricsSettings world_vol;
                     if (session->world_volumetrics(world_vol)) {
@@ -2488,6 +2515,13 @@ int main() {
         options.vulkan_volumetrics = stats.volumetrics;
         options.vulkan_volumetrics.vol_debug_view =
             static_cast<float>(stats.vol_debug_view);
+        // render.fog. Only once stats.fog actually holds this world's authored
+        // fog (see fog_override_ready); until then — and for the whole of a
+        // replay — the session keeps consuming its own authored_fog_. Cleared
+        // again below for the Workbench's isolation session, which has its own
+        // world and its own authored fog.
+        options.use_fog_override = fog_override_ready;
+        options.fog_override = stats.fog;
         options.vulkan_tileset_pom = stats.tileset_pom;
         options.vulkan_ray_tracing.enabled =
             vulkan->ray_tracing_available() && !disable_vulkan_rt;
@@ -2510,7 +2544,14 @@ int main() {
         // production HUD's controls) stays untouched, and force_lod defaults
         // to -1 / hide_child_instances to false whenever the Inspector hasn't
         // been interacted with, so this is a no-op until the user acts.
-        if (show_isolation) bake_lab.workbench().apply_lod_inspector_options(options);
+        if (show_isolation) {
+            bake_lab.workbench().apply_lod_inspector_options(options);
+            // The production HUD's render.fog override belongs to the
+            // production world; the isolation session keeps its own authored
+            // fog, same reasoning as force_lod above but in the other
+            // direction.
+            options.use_fog_override = false;
+        }
         // Bake Lab/Workbench per-frame work plus the session event drain.
         phase.lab = phase_split();
         if (!render_session->render(render_camera, render_frame, options, error)) {
@@ -2736,8 +2777,7 @@ int main() {
                 if ((camera_input_order.camera_update_allowed() ||
                      camera_capture) &&
                     !viewer::issue_reporter_wants_mouse(issue_state)) {
-                    camera_controller.update(window, dt, camera,
-                                             camera_prefs.move_speed);
+                    camera_controller.update(window, dt, camera, camera_prefs);
                 }
             }
             if (capture && issue_capture) {
@@ -3073,6 +3113,11 @@ int main() {
             apply_world_camera_after_bake =
                 !replay.valid && initial_camera_env == nullptr;
             apply_world_volumetrics_after_bake = !replay.valid;
+            // prepare_world_reload below drops stats.fog to the compiled
+            // default; until the reconnect re-seeds it, the session's own
+            // authored fog is the only truthful source.
+            apply_world_fog_after_bake = !replay.valid;
+            fog_override_ready = false;
             // set_world BEFORE the reset: it flushes this world's edits by
             // diffing against the baseline, which the reset is about to erase.
             editor_props.set_world(worlds[stats.world_current].project_dir,
@@ -3118,6 +3163,10 @@ int main() {
                 screenshot_settle = 0;
                 apply_world_camera_after_bake = true;
                 apply_world_volumetrics_after_bake = true;
+                // complete_world_switch reset stats.fog; same reasoning as the
+                // reload seam above.
+                apply_world_fog_after_bake = true;
+                fog_override_ready = false;
                 apply_world_resolver_defaults(worlds[selected].world_name, active_radius,
                                               min_projected_size, stats);
             }

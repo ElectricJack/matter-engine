@@ -5,6 +5,8 @@
 
 #include "matter/json_doc.h"
 #include "matter/props.h"
+#include "matter/stream_settings.h"
+#include "matter/vt_budgets.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -939,6 +941,164 @@ void test_non_finite() {
     CHECK(jsondoc::parse_json(out, reparsed), "nonfinite: saved doc reparses");
 }
 
+// ---------------------------------------------------------------------------
+// Engine-owned settings structs with an apply-env-at-first-use latch
+// (matter/vt_budgets.h, matter/stream_settings.h). These exist so a headless or
+// tools run that never binds a registry keeps EXACTLY the old getenv behavior,
+// while the editor binds the same struct and runs its own (idempotent)
+// apply_env over it.
+//
+// The contract has two halves and both matter:
+//   * the FIRST call applies the environment;
+//   * every LATER call is a no-op — the value is latched, so a mid-run setenv
+//     cannot retune a subsystem that has already been sized from it.
+// The second half is what the vulkan smoke suite relies on: it sets MATTER_VT_*
+// before constructing a renderer and runs one mode per process, and a latch
+// that re-read the environment would make ordering observable.
+// ---------------------------------------------------------------------------
+void test_env_at_first_use_latch() {
+    set_env("MATTER_VT_ENRICH_SAMPLES", "48");
+    set_env("MATTER_VT_ENRICH_STRENGTH", "0.5");
+    set_env("MATTER_VT_ENRICH_AS_CACHE", "3");
+    matter::ensure_vt_enrich_env_applied();
+    const matter::VtEnrichSettings& enrich = matter::vt_enrich_settings();
+    CHECK(enrich.samples == 48u, "vt.enrich: first use applies the env layer");
+    CHECK(enrich.strength == 0.5f, "vt.enrich: float env applied");
+    CHECK(enrich.as_cache == 3u, "vt.enrich: uint env applied");
+    CHECK(enrich.min_ao == 0.15f, "vt.enrich: an unset var leaves the default");
+
+    set_env("MATTER_VT_ENRICH_SAMPLES", "8");
+    matter::ensure_vt_enrich_env_applied();
+    CHECK(enrich.samples == 48u,
+          "vt.enrich: the latch makes later calls no-ops");
+    // An EXPLICIT apply_env (what the editor's registry pass does) is still
+    // free to run, and agrees with the latched pass on the same environment.
+    set_env("MATTER_VT_ENRICH_SAMPLES", "48");
+    props::apply_env(&matter::vt_enrich_settings(),
+                     matter::vt_enrich_settings_group());
+    CHECK(enrich.samples == 48u,
+          "vt.enrich: an explicit apply_env agrees with the latched one");
+
+    // Ranges apply to env values exactly as they do to UI edits.
+    set_env("MATTER_VT_ENRICH_SAMPLES", "9999");
+    props::apply_env(&matter::vt_enrich_settings(),
+                     matter::vt_enrich_settings_group());
+    CHECK(enrich.samples == 64u, "vt.enrich: env values clamp to the range");
+    set_env("MATTER_VT_ENRICH_SAMPLES", "");
+    set_env("MATTER_VT_ENRICH_STRENGTH", "");
+    set_env("MATTER_VT_ENRICH_AS_CACHE", "");
+
+    // stream.runtime carries one extra responsibility: `workers` has no useful
+    // compiled default (it scales with the machine), so the latch SEEDS it
+    // before applying the environment. A run with the var unset must still see
+    // the real thread count, never the 0 sentinel.
+    set_env("MATTER_STREAM_WORKERS", "");
+    matter::ensure_stream_runtime_env_applied();
+    const matter::StreamRuntimeSettings& stream =
+        matter::stream_runtime_settings();
+    CHECK(stream.workers == matter::stream_default_workers(),
+          "stream.runtime: an unset var leaves the machine-scaled default");
+    CHECK(stream.workers >= 1u, "stream.runtime: the default is at least 1");
+    CHECK(stream.prebuild, "stream.runtime: prebuild defaults on");
+
+    set_env("MATTER_STREAM_WORKERS", "7");
+    matter::ensure_stream_runtime_env_applied();
+    CHECK(stream.workers == matter::stream_default_workers(),
+          "stream.runtime: the latch makes later calls no-ops");
+    props::apply_env(&matter::stream_runtime_settings(),
+                     matter::stream_runtime_group());
+    CHECK(stream.workers == 7u, "stream.runtime: explicit apply_env reads it");
+    set_env("MATTER_STREAM_PREBUILD", "0");
+    props::apply_env(&matter::stream_runtime_settings(),
+                     matter::stream_runtime_group());
+    CHECK(!stream.prebuild, "stream.runtime: MATTER_STREAM_PREBUILD=0 parses");
+    set_env("MATTER_STREAM_WORKERS", "");
+    set_env("MATTER_STREAM_PREBUILD", "");
+}
+
+// Both engine-owned groups are bound into the editor's User scope. A ReadOnly
+// field must never reach a file no matter what the user did: its value is a
+// report of what the process was launched with, not an editable setting.
+void test_engine_group_persistence_rules() {
+    Registry reg;
+    matter::VtResidencyBudgets budgets;
+    Binding* b = reg.get(reg.bind(matter::vt_residency_budgets_group(),
+                                  &budgets, Scope::User));
+    CHECK(b != nullptr, "vt.residency: binds");
+    const props::Group& g = b->schema();
+
+    auto find = [&g](const char* name) -> const Desc* {
+        for (uint32_t i = 0; i < g.field_count; ++i)
+            if (!std::strcmp(g.fields[i].name, name)) return &g.fields[i];
+        return nullptr;
+    };
+    auto is_read_only = [&find](const char* name) {
+        const Desc* d = find(name);
+        return d != nullptr && (d->flags & props::ReadOnly) != 0;
+    };
+
+    // Live vs ReadOnly is the discipline this group documents; assert the split
+    // rather than trusting the comment.
+    CHECK(is_read_only("max_variants"),
+          "vt.residency: the init-sized record table is ReadOnly");
+    CHECK(is_read_only("indirection_mb"),
+          "vt.residency: the init-sized arena is ReadOnly");
+    CHECK(is_read_only("pool_pages"),
+          "vt.residency: the page pool is allocated at init, so ReadOnly");
+    CHECK(!is_read_only("evict_protect_frames"),
+          "vt.residency: refresh_budgets re-reads the protect window per frame");
+    CHECK(!is_read_only("linger_frames"),
+          "vt.residency: the demand pass re-reads linger every frame");
+    CHECK(!is_read_only("request_budget_ms"),
+          "vt.residency: the request budget is re-read every frame");
+
+    // Every field keeps its env var: that is what shows the source in the panel
+    // AND what keeps every pre-migration launch flag working.
+    for (uint32_t i = 0; i < g.field_count; ++i)
+        CHECK(g.fields[i].env != nullptr &&
+                  !std::strncmp(g.fields[i].env, "MATTER_", 7),
+              "vt.residency: every field keeps a MATTER_* env name");
+
+    // A ReadOnly field is never written, whatever the instance holds.
+    const Desc* pool = find("pool_pages");
+    CHECK(pool != nullptr, "vt.residency: pool_pages is described");
+    // Direct write, the way the engine's own env pass reaches it — ReadOnly is
+    // a persistence-and-UI rule, not a write barrier on the struct.
+    budgets.pool_pages = 256u;
+    jsondoc::Value doc;
+    props::save_scope(reg, Scope::User, doc);
+    CHECK(doc_to_string(doc).find("pool_pages") == std::string::npos,
+          "vt.residency: a ReadOnly field is never persisted");
+
+    // A live one round-trips normally.
+    const Desc* linger = find("linger_frames");
+    CHECK(linger != nullptr, "vt.residency: linger_frames is described");
+    CHECK(props::set_uint(*b, *linger, 480u), "vt.residency: live field writes");
+    jsondoc::Value doc2;
+    props::save_scope(reg, Scope::User, doc2);
+    CHECK(doc_to_string(doc2).find("\"linger_frames\":480") != std::string::npos,
+          "vt.residency: a live field persists sparsely");
+
+    matter::VtEnrichSettings enrich;
+    Binding* eb = reg.get(reg.bind(matter::vt_enrich_settings_group(), &enrich,
+                                   Scope::User));
+    CHECK(eb != nullptr, "vt.enrich: binds");
+    const Desc* as_cache = nullptr;
+    for (uint32_t i = 0; i < eb->schema().field_count; ++i)
+        if (!std::strcmp(eb->schema().fields[i].name, "as_cache"))
+            as_cache = &eb->schema().fields[i];
+    CHECK(as_cache && (as_cache->flags & props::ReadOnly),
+          "vt.enrich: the descriptor-pool sizing knob is ReadOnly");
+
+    matter::StreamRuntimeSettings runtime;
+    Binding* rb = reg.get(reg.bind(matter::stream_runtime_group(), &runtime,
+                                   Scope::User));
+    CHECK(rb != nullptr, "stream.runtime: binds");
+    for (uint32_t i = 0; i < rb->schema().field_count; ++i)
+        CHECK(rb->schema().fields[i].flags & props::ReadOnly,
+              "stream.runtime: every field is process-lifetime, so ReadOnly");
+}
+
 int main() {
     test_builder_layout();
     test_defaults_and_reset();
@@ -960,5 +1120,7 @@ int main() {
     test_dynamic_group_registry();
     test_dynamic_group_draft();
     test_dynamic_group_teardown();
+    test_env_at_first_use_latch();
+    test_engine_group_persistence_rules();
     return check_summary();
 }

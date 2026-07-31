@@ -21,25 +21,15 @@ uint64_t page_key(uint32_t layer, const VtPageKey& p) {
            (static_cast<uint64_t>(p.py) << 16) | p.px;
 }
 
-// Only MATTER_VT_POOL_PAGES still comes through a local env read: its ceiling
-// derives from the device's maxImageArrayLayers, which no schema range can
-// express. The six budget vars moved to matter::VtResidencyBudgets
-// (matter/vt_budgets.h) and are read from that struct below.
-uint32_t env_u32(const char* name, uint32_t fallback, uint32_t lo, uint32_t hi) {
-    // The fallback obeys [lo, hi] too: callers pass derived caps as `hi`, and
-    // an unset env var must not smuggle a default past them.
-    if (fallback < lo) fallback = lo;
-    if (fallback > hi) fallback = hi;
-    const char* value = std::getenv(name);
-    if (!value || value[0] == '\0') return fallback;
-    char* end = nullptr;
-    const unsigned long parsed = std::strtoul(value, &end, 10);
-    if (end == value) return fallback;
-    if (parsed < lo) return lo;
-    if (parsed > hi) return hi;
-    return static_cast<uint32_t>(parsed);
-}
-
+// No local env reads remain: every tunable this file consumes now lives in
+// matter::VtResidencyBudgets (matter/vt_budgets.h) and is read from that struct
+// below. MATTER_VT_POOL_PAGES was the last holdout — its DEVICE-derived ceiling
+// (maxImageArrayLayers) is genuinely inexpressible in a schema range, but that
+// check is a separate init failure below, not the value's own bounds, which are
+// the static [64, 16384] the schema now carries.
+//
+// MATTER_VT_DEBUG_GENERATIONS stays a raw getenv on purpose: it arms an
+// abort-on-failure audit, not a setting.
 uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
@@ -292,8 +282,14 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     vkGetPhysicalDeviceProperties(vulkan.physical_device(), &properties);
     const uint32_t max_layers = properties.limits.maxImageArrayLayers;
 
-    pool_pages_ = env_u32("MATTER_VT_POOL_PAGES", 8192u, kVtPagesPerLayer,
-                          kVtPagesPerLayer * 256u);
+    // Layer 5 for standalone engine runs (headless tests, tools) that never
+    // bind a registry; the editor binds the SAME struct and runs its own
+    // apply_env — both are idempotent and read the same environment. Hoisted
+    // above the pool sizing because pool_pages is now one of these.
+    matter::ensure_vt_residency_env_applied();
+    const matter::VtResidencyBudgets& budgets = matter::vt_residency_budgets();
+    pool_pages_ = clamp_u32(budgets.pool_pages, kVtPagesPerLayer,
+                            kVtPagesPerLayer * 256u);
     // Round up to whole layers.
     const uint32_t pool_layers =
         (pool_pages_ + kVtPagesPerLayer - 1u) / kVtPagesPerLayer;
@@ -313,12 +309,8 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     // the physical page pool (MATTER_VT_POOL_PAGES, one pinned tail per
     // registration) — this knob just sizes the record table (64 B per slot).
     //
-    // The six budgets below now live in matter::VtResidencyBudgets. Layer 5 is
-    // applied here for standalone engine runs (headless tests, tools) that
-    // never bind a registry; the editor binds the SAME struct and runs its own
-    // apply_env — both are idempotent and read the same environment.
-    matter::ensure_vt_residency_env_applied();
-    const matter::VtResidencyBudgets& budgets = matter::vt_residency_budgets();
+    // The budgets all live in matter::VtResidencyBudgets; the env pass that
+    // seeds them ran above, before pool_pages was read.
     max_variants_ = clamp_u32(budgets.max_variants, 4u, 65534u);
     // The four live budgets (fills / tail fills / enrich / mesh) come from
     // refresh_budgets, which also runs every begin_frame so an editor edit
@@ -455,8 +447,10 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     // instead of settling blurry-but-stable. 16 frames (~a quarter second)
     // comfortably covers the jitter cycle while adding negligible latency to
     // legitimate eviction of pages that left the view.
+    // Pushed here so the window is right from the first frame, and again from
+    // refresh_budgets every begin_frame so an editor edit is live.
     slots_.set_protect_frames(
-        env_u32("MATTER_VT_EVICT_PROTECT_FRAMES", 16u, 1u, 100000u));
+        clamp_u32(budgets.evict_protect_frames, 1u, 100000u));
     tables_.reset(indirection_words);
     tables_.set_debug(debug_generations_);
     slot_tier_.assign(pool_pages_, 0u);
@@ -1284,6 +1278,7 @@ void VtResidency::refresh_budgets() {
         static_cast<size_t>(clamp_u32(b.mesh_budget_mb, 1u, 16384u)) * 1024u *
         1024u;
     stats_.mesh_budget_bytes = mesh_budget_bytes_;
+    slots_.set_protect_frames(clamp_u32(b.evict_protect_frames, 1u, 100000u));
 }
 
 void VtResidency::begin_frame(uint64_t frame_index, uint32_t frame_slot) {

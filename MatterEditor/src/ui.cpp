@@ -614,6 +614,9 @@ matter::WorldSession::StreamingLodConfig streaming_config_from(
         out.scatter_rings.push_back({r.radius, r.value});
     for (const LodRing& r : parse_lod_rings(prefs.terrain_bands))
         out.terrain_bands.push_back({r.radius, r.value});
+    out.hysteresis = prefs.hysteresis;
+    out.max_inflight = prefs.max_inflight;
+    out.fail_cooldown_updates = prefs.fail_cooldown_updates;
     return out;
 }
 
@@ -665,6 +668,13 @@ void Ui::draw_performance_panel(matter::WorldSession* session,
     if (matter::props::Binding* b = props.budget()) draw_group(*b);
     if (matter::props::Binding* b = props.pom()) draw_group(*b, nullptr, false);
     if (matter::props::Binding* b = props.vt_budgets())
+        draw_group(*b, nullptr, false);
+    // WS2: the tier-2 enrichment parameters sit next to the residency budgets
+    // they are drained under, and the process-lifetime streaming knobs
+    // (workers / prebuild, both ReadOnly) next to the streaming section below.
+    if (matter::props::Binding* b = props.vt_enrich())
+        draw_group(*b, nullptr, false);
+    if (matter::props::Binding* b = props.stream_runtime())
         draw_group(*b, nullptr, false);
 
     draw_streaming_lod_section(session, props, commands, camera);
@@ -1132,7 +1142,7 @@ void Ui::draw_asset_browser_panel(AssetBrowser& browser,
     ImGui::End();
 }
 
-void Ui::draw_camera_panel(matter::CameraDesc& cam) {
+void Ui::draw_camera_panel(matter::CameraDesc& cam, const CameraPrefs& prefs) {
     ImGui::Begin("Camera");
 
     ImGui::DragFloat3("Position", &cam.position.x, 0.1f);
@@ -1146,7 +1156,10 @@ void Ui::draw_camera_panel(matter::CameraDesc& cam) {
     float yaw = atan2f(dz, dx);
     float pitch = asinf(dy / dist);
     bool changed = false;
-    const float orbit_step = 0.04f; // radians per repeat tick
+    // CameraPrefs::orbit_step / orbit_zoom_step (camera.prefs, Scope::User).
+    // Defaults reproduce the former literals exactly: 0.04 rad, and
+    // 1 -/+ 0.04 = 0.96 / 1.04 on the distance.
+    const float orbit_step = prefs.orbit_step;
 
     ImGui::PushButtonRepeat(true);
     ImGui::Text("Orbit:");
@@ -1158,9 +1171,15 @@ void Ui::draw_camera_panel(matter::CameraDesc& cam) {
     ImGui::SameLine();
     if (ImGui::Button("Down"))  { pitch -= orbit_step; changed = true; }
 
-    if (ImGui::Button("Zoom In"))  { dist *= 0.96f; changed = true; }
+    if (ImGui::Button("Zoom In")) {
+        dist *= 1.0f - prefs.orbit_zoom_step;
+        changed = true;
+    }
     ImGui::SameLine();
-    if (ImGui::Button("Zoom Out")) { dist *= 1.04f; changed = true; }
+    if (ImGui::Button("Zoom Out")) {
+        dist *= 1.0f + prefs.orbit_zoom_step;
+        changed = true;
+    }
     ImGui::PopButtonRepeat();
 
     if (ImGui::SliderFloat("Distance", &dist, 1.0f, 150.0f)) changed = true;

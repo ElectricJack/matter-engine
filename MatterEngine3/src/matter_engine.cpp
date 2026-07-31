@@ -9,6 +9,8 @@
 #include "matter/engine_context.h"
 #include "matter/world_session.h"
 #include "matter/world_props.h"
+#include "matter/stream_settings.h"
+#include "matter/vt_budgets.h"
 
 // E3 event system: per-session evt::Hub carrying typed bake/stream events;
 // the legacy poll_event() API is a compat shim over lane::legacy_poll.
@@ -378,6 +380,20 @@ matter_stream::Config make_streaming_profile(
         const int parsed = std::atoi(inflight_env);
         if (parsed > 0) profile.max_inflight = parsed;
     }
+    // Extra distance a sector must fall behind its ring before it is demoted
+    // or evicted. Too small and a camera parked on a ring boundary churns.
+    // No env read existed for this one; MATTER_STREAM_HYSTERESIS is added
+    // alongside the editor's stream.lod override so a headless A/B can set it
+    // the same way MATTER_STREAM_INFLIGHT already could.
+    if (const char* hysteresis_env = std::getenv("MATTER_STREAM_HYSTERESIS")) {
+        const double parsed = std::atof(hysteresis_env);
+        if (parsed >= 0.0) profile.hysteresis = static_cast<float>(parsed);
+    }
+    // Streamer updates a failed sector waits before it may be requested again.
+    if (const char* cooldown_env = std::getenv("MATTER_STREAM_FAIL_COOLDOWN")) {
+        const int parsed = std::atoi(cooldown_env);
+        if (parsed >= 0) profile.fail_cooldown_updates = parsed;
+    }
     // Heightfield terrain LOD ladder (alpine design): streamed sectors carry
     // a terrain LOD + coarser-neighbor edge mask; WorldSector picks the
     // heightfield generator for LODs 0-4 and the voxel mesher for LOD 5.
@@ -522,6 +538,13 @@ struct WorldSession::Impl {
     viewer::WorldManifest manifest;
     viewer::WorldState    state;
     matter::FogSettings   authored_fog_{};
+    // Publish the authored fog to BOTH consumers in one place: authored_fog_
+    // is what the render thread hands the renderer every frame (unchanged), and
+    // the world_fog_defaults mirror below is what WorldSession::world_fog hands
+    // the editor at the connect seam. The mirror is guarded by the same mutex
+    // as world_volumetrics_defaults because that read happens on the app thread
+    // while this write happens on the worker.
+    void set_authored_fog(const matter::FogSettings& fog);
 
     // Compositor objects.
     std::unique_ptr<viewer::PartStore>      store;
@@ -1030,6 +1053,10 @@ struct WorldSession::Impl {
     // to adopt (guarded by streaming_lod_mutex alongside the LOD profile).
     VulkanVolumetricsSettings world_volumetrics_defaults{};
     bool has_world_volumetrics = false;
+    // Same contract for the world-authored fog. Set through set_authored_fog
+    // (declared above), which every authored_fog_ publication goes through.
+    FogSettings world_fog_defaults{};
+    bool has_world_fog = false;
     // World.props -> a live property group (property-system S9). Rebuilt by
     // install_world on every world-kind connect; null when the world declares
     // no props. The editor binds it into its registry between connects and
@@ -1207,6 +1234,13 @@ bool WorldSession::Impl::poll_legacy_event(Event& out) {
     return true;
 }
 
+void WorldSession::Impl::set_authored_fog(const matter::FogSettings& fog) {
+    authored_fog_ = fog;
+    std::lock_guard<std::mutex> lk(streaming_lod_mutex);
+    world_fog_defaults = fog;
+    has_world_fog = true;
+}
+
 void WorldSession::Impl::ensure_worker_started() {
     if (worker.joinable()) return;
     worker_exited.store(false, std::memory_order_release);
@@ -1233,17 +1267,21 @@ void WorldSession::Impl::ensure_bake_pool_started() {
     // with an empty queue while per-task cost inflated 46% from memory-
     // bandwidth contention in the LOD ladder. Executors share no mutable state
     // (see bake_and_stage_sector); MATTER_STREAM_WORKERS overrides either way.
-    const unsigned hw = std::thread::hardware_concurrency();
-    const int default_workers =
-        std::max(1, std::min(12, int(hw > 0 ? hw / 2 : 1)));
-    const char* env = std::getenv("MATTER_STREAM_WORKERS");
-    int requested = env ? std::atoi(env) : default_workers;
+    //
+    // The count now comes from matter::StreamRuntimeSettings (a ReadOnly
+    // property group, matter/stream_settings.h) rather than a raw getenv, so it
+    // is visible in the editor's Tunables panel with MATTER_STREAM_WORKERS
+    // named as its source. The schema's [1, 32] range does the clamping the two
+    // lines below used to: the ceiling exists to catch typos, not to express a
+    // safe limit -- it used to be 16, which silently clamped
+    // MATTER_STREAM_WORKERS=20 to 16 and made a scaling sweep read as "20
+    // threads bought nothing". Executors hold no shared state (see
+    // bake_and_stage_sector), so the real limits upstream are max_inflight and
+    // the publication completion pool.
+    matter::ensure_stream_runtime_env_applied();
+    int requested =
+        static_cast<int>(matter::stream_runtime_settings().workers);
     if (requested < 1) requested = 1;
-    // Ceiling exists to catch typos, not to express a safe limit -- it used to
-    // be 16, which silently clamped MATTER_STREAM_WORKERS=20 to 16 and made a
-    // scaling sweep read as "20 threads bought nothing". Executors hold no
-    // shared state (see bake_and_stage_sector), so the real limits upstream are
-    // max_inflight and the publication completion pool.
     if (requested > 32) requested = 32;
     stream_worker_count = requested;
     if (requested <= 1) return;
@@ -1735,7 +1773,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                     cached_manifest.instances = std::move(rc_payload.instances);
                     cached_manifest.lights    = rc_payload.lights;
 
-                    authored_fog_ = provider->world_settings().fog;
+                    set_authored_fog(provider->world_settings().fog);
 
                     {
                         fprintf(stderr, "resolve cache: hit %016llx\n",
@@ -1846,7 +1884,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         // The world-kind branch returns before the closed-world fog publication
         // below. Publish the authored fog here so streamed worlds do not retain
         // the default zero-density settings for their entire session.
-        authored_fog_ = provider->world_settings().fog;
+        set_authored_fog(provider->world_settings().fog);
 
         // World-kind sessions use an empty manifest; sectors are streamed.
         viewer::WorldManifest empty_manifest;
@@ -1907,7 +1945,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         clk_t::now() - t_compose_start).count();
     if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "compose", "cancelled"); return; }
 
-    authored_fog_ = provider->world_settings().fog;
+    set_authored_fog(provider->world_settings().fog);
 
     // Phase C Task 17: save resolve cache after a successful full install+compose.
     // Write to temp + rename (atomic). Non-fatal on failure (no cache next warm launch).
@@ -3204,6 +3242,16 @@ bool WorldSession::Impl::install_world(
                     profile.terrain_bands.push_back({b.radius, b.value});
             }
             profile.terrain_lod_enabled = o.terrain_lod_enabled;
+            // Pacing knobs. Unlike the ring lists there is no "empty means
+            // keep the world's" encoding to honour — no world script authors
+            // them — so the override's own defaults ARE the engine defaults
+            // and applying them unconditionally changes nothing until the user
+            // moves a slider. Clamped here rather than trusted: the override
+            // arrives from a hand-editable props file.
+            if (o.hysteresis >= 0.0f) profile.hysteresis = o.hysteresis;
+            if (o.max_inflight > 0) profile.max_inflight = o.max_inflight;
+            if (o.fail_cooldown_updates >= 0)
+                profile.fail_cooldown_updates = o.fail_cooldown_updates;
         }
         matter_stream::resolve_terrain_defaults(profile);
         active_streaming_lod = profile;
@@ -3385,13 +3433,12 @@ void WorldSession::Impl::service_vt_rung_requests() {
     // long one takes: at least one is always serviced so the VT can never
     // stall, and a single expensive registration may still overrun.
     // MATTER_VT_REQUEST_BUDGET_MS=0 restores the old service-everything path.
-    static const double request_budget_ms = [] {
-        if (const char* v = std::getenv("MATTER_VT_REQUEST_BUDGET_MS")) {
-            const double parsed = std::atof(v);
-            if (parsed >= 0.0) return parsed;
-        }
-        return 4.0;
-    }();
+    // Re-read every call (this runs once per frame) rather than latched into a
+    // static: the value lives in matter::VtResidencyBudgets now, so an editor
+    // edit takes effect on the next frame.
+    matter::ensure_vt_residency_env_applied();
+    const double request_budget_ms = static_cast<double>(std::max(
+        0.0f, matter::vt_residency_budgets().request_budget_ms));
     const auto budget_t0 = std::chrono::steady_clock::now();
     size_t serviced = 0;
 
@@ -4337,10 +4384,14 @@ void WorldSession::Impl::bake_and_stage_sector(
         static const bool diagnostic_material_override =
             std::getenv("MATTER_VK_DIAGNOSTIC_GROUND_TILESET_MATERIAL") != nullptr;
         // MATTER_STREAM_PREBUILD=0 forces the old build-inside-the-job path,
-        // so the two can be diffed pixel-for-pixel from one binary.
+        // so the two can be diffed pixel-for-pixel from one binary. The value
+        // now comes from matter::StreamRuntimeSettings (ReadOnly, so nothing
+        // writes it after the single-threaded env pass) instead of a local
+        // getenv; the function-local static keeps the per-sector cost at one
+        // relaxed load on several executor threads.
         static const bool prebuild_enabled = [] {
-            const char* v = std::getenv("MATTER_STREAM_PREBUILD");
-            return !(v && std::strcmp(v, "0") == 0);
+            matter::ensure_stream_runtime_env_applied();
+            return matter::stream_runtime_settings().prebuild;
         }();
         const auto prebuild_t0 = std::chrono::steady_clock::now();
         if (staged_load->ok && prebuild_enabled && !diagnostic_material_override) {
@@ -5200,7 +5251,7 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
         }
     }
 
-    authored_fog_ = provider->world_settings().fog;
+    set_authored_fog(provider->world_settings().fog);
 
     if (is_cancelled()) {
         emit_error(BakeErrorCode::Cancelled, "cone", "cancelled");
@@ -6703,8 +6754,13 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->vk_scene->set_dlss_mode(opts.dlss_mode);
     impl_->vk_scene->set_ray_tracing_settings(opts.vulkan_ray_tracing);
     impl_->vk_scene->set_gi_settings(opts.vulkan_gi);
-    impl_->vk_scene->set_volumetrics_settings(opts.vulkan_volumetrics,
-                                               impl_->authored_fog_);
+    // render.fog is a LIVE group precisely because this runs every frame: the
+    // authored fog is not baked into anything, it is re-handed to the renderer
+    // here on each call. An editor override therefore lands on the next frame
+    // with no reload, exactly like the volumetrics multipliers beside it.
+    impl_->vk_scene->set_volumetrics_settings(
+        opts.vulkan_volumetrics,
+        opts.use_fog_override ? opts.fog_override : impl_->authored_fog_);
     impl_->vk_scene->set_tileset_pom_settings(opts.vulkan_tileset_pom);
     const int material_count = MaterialRegistryCount();
     std::vector<MaterialGpuRecord> material_records(
@@ -7598,6 +7654,9 @@ bool WorldSession::streaming_lod_config(StreamingLodConfig& out) const {
         out.terrain_bands.push_back({band.radius, band.rung});
     out.terrain_lod_enabled = profile.terrain_lod_enabled;
     out.sector_size = profile.sector_size;
+    out.hysteresis = profile.hysteresis;
+    out.max_inflight = profile.max_inflight;
+    out.fail_cooldown_updates = profile.fail_cooldown_updates;
     return true;
 }
 
@@ -7617,6 +7676,13 @@ bool WorldSession::world_volumetrics(VulkanVolumetricsSettings& out) const {
     std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
     if (!impl_->has_world_volumetrics) return false;
     out = impl_->world_volumetrics_defaults;
+    return true;
+}
+
+bool WorldSession::world_fog(FogSettings& out) const {
+    std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
+    if (!impl_->has_world_fog) return false;
+    out = impl_->world_fog_defaults;
     return true;
 }
 

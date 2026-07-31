@@ -424,6 +424,110 @@ design text above disagree, this section is what the code does.
    to generic offset-based accessors (427 -> 208 lines), `enum_options_for` deleted.
 5. **Stage 5** (this one) — script-defined properties, S9. Details below.
 
+### Workstream 2 — the parameter migration sweep
+
+Stages 1-5 built the machinery and migrated one block of settings each; WS2 is the
+breadth pass over what was left. Six groups were added and two were extended. The
+recurring decision in every one of them was **where the value is consumed**, because
+that is what picks live / `RequiresReload` / `ReadOnly` — the flag has to describe
+the code, not the wish.
+
+- **`render.fog` (World, LIVE).** `FogSettings` is authored per world and captured
+  at connect into `WorldSession::Impl::authored_fog_` — but nothing bakes it: every
+  frame, `WorldSession::render` hands that struct to
+  `VkSceneRenderer::set_volumetrics_settings` beside the volumetrics multipliers
+  that modulate it. The consumption point is therefore the render call, so the group
+  is live, not `RequiresReload`. The editor owns a `FogSettings` in `ViewerStats`,
+  seeded from the new `WorldSession::world_fog()` at each `BakeFinished` (before
+  `on_world_connected` captures the baseline, so "Reset to World" restores authored
+  values) and pushed back through `RenderOptions::use_fog_override` /
+  `fog_override`. That override is **opt-in**: every non-editor caller — headless
+  tests, replay, the Workbench isolation session — leaves it false and keeps
+  consuming the session's own authored fog, so default `RenderOptions` is
+  bit-identical to before. `reset_world_scope_controls` drops the struct at the
+  reload/switch seam like the other World groups. `color` is a `Color3` (an authored
+  [0,1] RGB triple) while `wind` stays a `Float3` (a signed velocity) — the same
+  distinction `fog_color_mul` documents in the other direction.
+- **`stream.lod` extended (World, RequiresReload).** `hysteresis`, `max_inflight`
+  and `fail_cooldown_updates` joined the ring strings. They ride the same draft and
+  the same `set_streaming_lod_overrides` channel, applied in `install_world` right
+  after the ring lists. Unlike the rings there is no "empty means keep the world's"
+  encoding — no world script authors them — so their compiled defaults ARE
+  `matter_stream::Config`'s defaults and applying them unconditionally is a no-op.
+  `MATTER_STREAM_HYSTERESIS` and `MATTER_STREAM_FAIL_COOLDOWN` are new (only
+  `MATTER_STREAM_INFLIGHT` existed); `make_streaming_profile` reads all three so a
+  run with no editor behaves the same.
+- **`stream.runtime` (User, ReadOnly, `matter/stream_settings.h`).**
+  `MATTER_STREAM_WORKERS` and `MATTER_STREAM_PREBUILD` are consumed once per
+  PROCESS, not per connect: `ensure_bake_pool_started` spawns the executor pool once
+  and a world reload only quiesces it, and `prebuild` latches into a function-local
+  static at the first sector bake. `RequiresReload` would have been a lie, so they
+  follow the `vt.residency` ReadOnly discipline — visible with their env source,
+  changed by relaunching. ReadOnly is also what keeps the per-sector `prebuild` read
+  race-free across executor threads: nothing writes the struct after the
+  single-threaded env pass. `workers` has no useful compiled default (it scales with
+  the machine), so `ensure_stream_runtime_env_applied` seeds it *before* applying
+  the env layer and `EditorProps::init` calls that before binding.
+- **`vt.residency` extended (User).** `pool_pages` (ReadOnly — allocated at init;
+  its device-derived `maxImageArrayLayers` ceiling is a separate init failure, not
+  the value's own bounds, which are the static range the schema now carries),
+  `evict_protect_frames`, `linger_frames`, `requests_per_frame` and
+  `request_budget_ms` (all live — `refresh_budgets` runs every `begin_frame`, the
+  demand pass every frame, and the request servicing once per frame; each of those
+  re-reads the struct now instead of latching a static).
+- **`vt.enrich` (User, `matter/vt_budgets.h`).** The six `MATTER_VT_ENRICH_*` vars,
+  off `vt_enrich.cpp`'s private `env_u32`/`env_f32` pair. Five are push-constant
+  inputs read per `enrich()` batch and so are genuinely live; `as_cache` sizes a
+  descriptor pool at init and is ReadOnly. Kept a separate struct/group from the
+  residency budgets because the enricher may not exist at all (no hardware ray
+  tracing), so its env pass should not run in a process that never creates one.
+- **`sim.time` (Session).** Bound over `ToolbarState`, which the toolbar slider
+  already edits — the group adds Tunables visibility and the FIFO `set` path over
+  the same field, nothing more. `TickDesc::fixed_delta_seconds` / `max_fixed_steps`
+  were deliberately left out: `main.cpp` fills a fresh `TickDesc` per frame from
+  compiled constants, and `fixed_delta` is a determinism parameter (changing it
+  changes simulation *behaviour*, not its rate), not a tunable.
+- **`console.filters` (User)** over the existing `ConsolePanelState`. `text_filter`
+  is a `char[256]`, which the schema has no type for, and `was_at_bottom` is scroll
+  bookkeeping; the four described fields are exactly what the console's checkboxes
+  toggle.
+- **`overlay.animation` (Session)** over the existing `AnimationDebugOverlayOptions`.
+  Session rather than User on purpose: `enabled` defaults false, and a persisted
+  "bones + joint axes on" would silently draw over every world on the next launch
+  with the cause several panels away from the symptom. The overlay panel's own
+  checkboxes stay — they edit this same struct.
+- **`viewer.debug` (Session)** — `resolver_choice`, `debug_view_mode`,
+  `vol_debug_view`. These are the *sources* the Viewer Debug combos edit;
+  `VulkanLightingOverrides::composite_debug_view` and
+  `VulkanVolumetricsSettings::vol_debug_view` are the per-frame *copies* `main.cpp`
+  writes from them, which is why those two remain undescribed.
+- **`camera.prefs` extended (User).** `boost_multiplier` (the bare `4.0f` Shift
+  boost in `camera_controller.cpp`), `look_sensitivity` (the `0.002f` at the
+  `apply_camera_input` call), `orbit_step` and `orbit_zoom_step` (the `0.04f` and
+  `0.96`/`1.04` literals in `draw_camera_panel`). Every default reproduces the
+  former literal exactly. Orbit *distance* is not a pref: it is derived from the
+  live camera's position/target every frame, so there is nothing to persist.
+
+Panel placement follows the WS1 rule that a panel chooses *where* a group appears
+and never owns the widgets: `render.fog` in the Lighting panel after
+`render.volumetrics`, `stream.runtime` and `vt.enrich` in Performance beside their
+siblings, and `sim.time` / `console.filters` / `overlay.animation` / `viewer.debug`
+in Tunables only. Every group appears in Tunables automatically under its own
+category header.
+
+**Left env-only, deliberately.** These are profiling counters, A/B path switches and
+debug audits — things that select *which code runs* or *what gets printed*, not
+settings anyone tunes from a panel:
+`MATTER_STREAM_FILL_PROFILE`, `MATTER_STREAM_PUBLISH_PROFILE`,
+`MATTER_STREAM_BAKE_PROFILE`, `MATTER_STREAM_RINGS` (superseded by the
+`scatter_rings` field, kept as the headless escape hatch),
+`MATTER_STREAM_STAGE_FROM_MEMORY`, `MATTER_STREAM_STAGE_VERIFY`,
+`MATTER_STREAM_PREBUILD_VERIFY`, `MATTER_STREAM_FIRST_RUNG`,
+`MATTER_STREAM_NO_EVICT`, `MATTER_STREAM_SKIP_PART_WRITE`,
+`MATTER_TERRAIN_LOD` (the `terrain_lod_enabled` field's A/B kill switch),
+`MATTER_VT_DISABLE`, `MATTER_VT_DEBUG_GENERATIONS`, `MATTER_VT_TAPE_GPU`,
+`MATTER_VT_EAGER`.
+
 ### Stage 5 — what "script-defined properties" means today
 
 - `matter::props::DynamicGroup` / `DynamicGroupBuilder`: a heap-built Group that

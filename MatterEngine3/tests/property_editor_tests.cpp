@@ -7,6 +7,8 @@
 
 #include "../../MatterEditor/src/property_editor.h"
 #include "../../MatterEditor/src/streaming_lod_prefs.h"
+#include "matter/json_doc.h"
+#include "matter/world_definition.h"   // FogSettings — the render.fog group
 
 #include <cstring>
 #include <string>
@@ -249,6 +251,143 @@ void test_lod_ring_round_trip() {
           "stream.lod: an untouched override writes no group");
 }
 
+// The streamer pacing knobs added to stream.lod in WS2. They ride the SAME
+// RequiresReload draft as the ring strings — the SectorStreamer is constructed
+// from the resolved profile at connect and never reconfigured — and their
+// compiled defaults are matter_stream::Config's own, which is what keeps a
+// default-constructed prefs a no-op override (asserted above).
+void test_streaming_pacing_fields() {
+    const props::Group& g = viewer::streaming_lod_group();
+    struct Expect { const char* name; Type type; const char* env; };
+    const Expect expected[] = {
+        {"hysteresis", Type::Float, "MATTER_STREAM_HYSTERESIS"},
+        {"max_inflight", Type::Int, "MATTER_STREAM_INFLIGHT"},
+        {"fail_cooldown_updates", Type::Int, "MATTER_STREAM_FAIL_COOLDOWN"},
+    };
+    for (const Expect& e : expected) {
+        const Desc* d = viewer::prop_find_field(g, e.name);
+        CHECK(d != nullptr, "stream.lod: pacing field is described");
+        if (!d) continue;
+        CHECK(d->type == e.type, "stream.lod: pacing field type");
+        CHECK(d->flags & props::RequiresReload,
+              "stream.lod: pacing edits are drafted, not applied live");
+        CHECK(d->env && !std::strcmp(d->env, e.env),
+              "stream.lod: the pre-migration env var still names the field");
+        CHECK(d->has_range, "stream.lod: pacing fields are ranged sliders");
+    }
+
+    // Defaults mirror the engine's, so binding changes nothing until edited.
+    viewer::StreamingLodPrefs prefs;
+    CHECK(prefs.hysteresis == 16.0f, "stream.lod: hysteresis default");
+    CHECK(prefs.max_inflight == 64, "stream.lod: max_inflight default");
+    CHECK(prefs.fail_cooldown_updates == 64,
+          "stream.lod: fail cooldown default");
+
+    // An edit lands in the DRAFT, which the panel and the schema fields share;
+    // the live instance (what streaming_config_from reads at connect) only
+    // moves on apply_draft.
+    props::Registry reg;
+    props::Binding* b =
+        reg.get(reg.bind(g, &prefs, props::Scope::World));
+    const Desc* inflight = viewer::prop_find_field(g, "max_inflight");
+    void* draft = props::ensure_draft(*b);
+    CHECK(draft != nullptr && draft != b->instance(),
+          "stream.lod: a RequiresReload group edits into a draft");
+    CHECK(props::set_int(draft, *inflight, 16), "stream.lod: draft write");
+    CHECK(prefs.max_inflight == 64,
+          "stream.lod: the live override is untouched before Apply");
+    CHECK(props::has_pending_draft(*b), "stream.lod: the Apply bar shows");
+    CHECK(props::apply_draft(*b), "stream.lod: Apply pushes the draft");
+    CHECK(prefs.max_inflight == 16, "stream.lod: Apply reaches the instance");
+}
+
+// render.fog is the WS2 flagship LIVE World group: fog is re-handed to the
+// renderer on every WorldSession::render call, so an override needs no reload.
+// The group is defined in editor_props.cpp (which pulls in ImGui-adjacent
+// headers), so what is asserted here is the SHAPE the editor relies on —
+// FogSettings is describable, colour is a Color3 while wind stays a Float3, and
+// the connect-time baseline flow behaves the way "Reset to World" needs.
+void test_fog_group_baseline_flow() {
+    using matter::FogSettings;
+    static const auto fog_def = props::group<FogSettings>(
+        "render.fog", "Fog",
+        props::prop(&FogSettings::density, "density").range(0.0f, 1.0f).log(),
+        props::prop(&FogSettings::floor, "floor").range(-500.0f, 2000.0f),
+        props::prop(&FogSettings::falloff, "falloff").range(1.0f, 2000.0f),
+        props::prop(&FogSettings::color, "color").color(),
+        props::prop(&FogSettings::wind, "wind"),
+        props::prop(&FogSettings::height_layer, "height_layer"),
+        props::prop(&FogSettings::min_height, "min_height").range(-500.0f, 4000.0f),
+        props::prop(&FogSettings::max_height, "max_height").range(-500.0f, 4000.0f),
+        props::prop(&FogSettings::noise_scale, "noise_scale").range(0.0001f, 0.05f));
+    const props::Group& g = fog_def;
+
+    // The authored colour is a [0,1] RGB triple, so ColorEdit3's clamp is the
+    // right domain; wind is a signed velocity and must NOT be clamped there.
+    CHECK(viewer::prop_widget_for(*viewer::prop_find_field(g, "color")) ==
+              PropWidget::ColorEdit3,
+          "render.fog: the authored colour is a colour editor");
+    CHECK(viewer::prop_widget_for(*viewer::prop_find_field(g, "wind")) ==
+              PropWidget::Float3Drag,
+          "render.fog: wind is a plain Float3, not a colour");
+    CHECK(viewer::prop_widget_for(*viewer::prop_find_field(g, "height_layer")) ==
+              PropWidget::Checkbox,
+          "render.fog: the cloud-layer toggle is a checkbox");
+    // Live, not reload-gated: every field is consumed per frame.
+    CHECK(!props::group_requires_reload(g),
+          "render.fog: fog reaches the renderer every frame, so edits are live");
+
+    // ---- the connect seam ------------------------------------------------
+    // Layer 1: the compiled default is what bind() captures as baseline.
+    FogSettings live;
+    props::Registry reg;
+    props::Binding* b = reg.get(reg.bind(g, &live, props::Scope::World));
+    CHECK(props::is_group_default(*b), "render.fog: bind captures layer 1");
+
+    // Layer 2: the world's authored fog lands in the struct (main.cpp seeds it
+    // from WorldSession::world_fog), and only THEN is the baseline captured.
+    live.density = 0.02f;
+    live.falloff = 120.0f;
+    live.color[0] = 0.4f;
+    b->capture_baseline();
+    b->set_dirty(false);
+    CHECK(props::is_group_default(*b),
+          "render.fog: after capture, the authored values ARE the baseline");
+
+    // Layer 6: a live edit is a diff against the authored values...
+    const Desc* density = viewer::prop_find_field(g, "density");
+    CHECK(props::set_float(*b, *density, 0.5f), "render.fog: live edit");
+    CHECK(!props::is_field_default(*b, *density), "render.fog: edit shows modified");
+    CHECK(b->dirty(), "render.fog: a live edit marks the group dirty");
+
+    // ...so the sparse save writes that one field and nothing else.
+    matter::jsondoc::Value doc;
+    props::save_scope(reg, props::Scope::World, doc);
+    const std::string out = matter::jsondoc::write_json(doc);
+    CHECK(out.find("\"density\"") != std::string::npos,
+          "render.fog: the edited field persists");
+    CHECK(out.find("falloff") == std::string::npos,
+          "render.fog: an authored-but-unedited field is not persisted");
+
+    // "Reset to World" restores the AUTHORED values, not the compiled ones.
+    props::reset_group(*b);
+    CHECK(live.density == 0.02f, "render.fog: reset restores what the world authored");
+    CHECK(live.falloff == 120.0f, "render.fog: reset leaves siblings authored");
+    CHECK(props::is_group_default(*b), "render.fog: reset clears every diff");
+
+    // And the FIFO `set render.fog.<field> <text>` path reaches it.
+    props::Binding* found = nullptr;
+    const Desc* desc = nullptr;
+    CHECK(props::resolve_field(reg, "render.fog.color", found, desc),
+          "render.fog: resolve_field splits group and field");
+    CHECK(found == b && desc == viewer::prop_find_field(g, "color"),
+          "render.fog: resolve_field lands on the colour");
+    CHECK(props::parse_and_set(*b, *desc, "0.1, 0.2, 0.3"),
+          "render.fog: a Color3 parses from text");
+    CHECK(live.color[0] == 0.1f && live.color[2] == 0.3f,
+          "render.fog: the parsed colour reached the struct");
+}
+
 // A script-declared group has to reach the SAME renderer decisions as a
 // hand-written one — that is the whole reason the panel needs no dynamic-group
 // special case (property-system S9).
@@ -323,6 +462,8 @@ int main() {
     test_tunables_categories();
     test_find_field();
     test_lod_ring_round_trip();
+    test_streaming_pacing_fields();
+    test_fog_group_baseline_flow();
     test_dynamic_group_renders_generically();
     return check_summary();
 }

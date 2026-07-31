@@ -1633,10 +1633,12 @@ private:
     uint64_t vt_demand_frame_ = 0;
     uint32_t vt_deferred_parts_ = 0;
     std::vector<VtRungRequest> vt_rung_requests_;
-    // Env-tunable working-set knobs, read once on first demand pass:
-    // MATTER_VT_LINGER_FRAMES (how long a variant survives unwanted before
-    // its layer is reclaimed) and MATTER_VT_REQUESTS_PER_FRAME (registration
-    // requests surfaced to the engine per frame).
+    // Working-set knobs, refreshed from matter::VtResidencyBudgets on every
+    // demand pass: linger_frames (how long a variant survives unwanted before
+    // its layer is reclaimed, MATTER_VT_LINGER_FRAMES) and requests_per_frame
+    // (registration requests surfaced to the engine per frame,
+    // MATTER_VT_REQUESTS_PER_FRAME). Re-read rather than latched so an editor
+    // edit takes effect on the next frame.
     uint32_t vt_linger_frames_ = 0;
     uint32_t vt_max_requests_ = 0;
     struct GiHistorySet {

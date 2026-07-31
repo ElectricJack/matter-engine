@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "matter/vt_budgets.h"
 #include "matter/vulkan_device.h"
 #include "shaders_gen/embedded_spirv.h"
 #include "vk_resources.h"
@@ -42,26 +43,30 @@ constexpr float kEnrichFadeSpan = 4.0f;
 // a handful of frames are in flight, so 8 is comfortably past retirement.
 constexpr uint64_t kRetireFrames = 8;
 
-uint32_t env_u32(const char* name, uint32_t fallback, uint32_t lo, uint32_t hi) {
-    const char* value = std::getenv(name);
-    if (!value || value[0] == '\0') return fallback;
-    char* end = nullptr;
-    const unsigned long parsed = std::strtoul(value, &end, 10);
-    if (end == value) return fallback;
-    if (parsed < lo) return lo;
-    if (parsed > hi) return hi;
-    return static_cast<uint32_t>(parsed);
+// The private env_u32 / env_f32 pair this file used to carry is gone: the six
+// MATTER_VT_ENRICH_* vars now live in matter::VtEnrichSettings
+// (matter/vt_budgets.h) and reach this file through props::apply_env, so the
+// clamps below are the schema's ranges restated for the no-registry case.
+uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
 }
 
-float env_f32(const char* name, float fallback, float lo, float hi) {
-    const char* value = std::getenv(name);
-    if (!value || value[0] == '\0') return fallback;
-    char* end = nullptr;
-    const double parsed = std::strtod(value, &end);
-    if (end == value) return fallback;
-    if (parsed < lo) return lo;
-    if (parsed > hi) return hi;
-    return static_cast<float>(parsed);
+float clamp_f32(float v, float lo, float hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+// The live enrichment parameters, clamped, as of THIS call. Read per batch:
+// every field feeds a push constant, so an editor edit lands on the next
+// enriched page with no reload.
+matter::VtEnrichSettings live_enrich_settings() {
+    matter::ensure_vt_enrich_env_applied();
+    matter::VtEnrichSettings s = matter::vt_enrich_settings();
+    s.samples = clamp_u32(s.samples, 8u, 64u);
+    s.strength = clamp_f32(s.strength, 0.0f, 1.0f);
+    s.cap_texels = clamp_f32(s.cap_texels, 0.25f, 64.0f);
+    s.cap_meters = clamp_f32(s.cap_meters, 0.02f, 64.0f);
+    s.min_ao = clamp_f32(s.min_ao, 0.0f, 1.0f);
+    return s;
 }
 
 // matter::create_image only supports a single mip level and array layer, so the
@@ -205,16 +210,18 @@ struct VtEnricher::Impl {
     VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
     VkSampler point_sampler = VK_NULL_HANDLE;
 
-    uint32_t sample_count = 32;
-    float strength = 1.0f;
-    float cap_texels = 4.0f;
-    // Absolute contact-scale ceiling on the ray length, and the floor on the
-    // applied factor. See the vt_enrich_ao.comp header for why both exist.
-    float cap_meters = 0.5f;
-    float min_ao = 0.15f;
+    // sample_count / strength / cap_texels / cap_meters / min_ao moved to
+    // matter::VtEnrichSettings (matter/vt_budgets.h): every one of them is a
+    // push-constant input read per enrich() batch, so reading them from the
+    // settings struct at the use site makes them genuinely live-editable
+    // instead of latched at init. See live_enrich_settings() above.
+    //
     // Fixed constant, NOT derived from time or frame: the whole determinism
     // property rests on this.
     uint32_t seed = 0x5D7C9A31u;
+    // as_cache_cap is the one that stays a member: it sizes the descriptor
+    // pool at init (variant_sets = as_cache_cap + 32), so a later change would
+    // desync the cap from the pool it was allocated against. ReadOnly.
     uint32_t as_cache_cap = 8;
 
     struct Ring {
@@ -343,12 +350,11 @@ bool VtEnricher::Impl::create_pipeline(const char* spirv_name,
 }
 
 bool VtEnricher::Impl::init(std::string& err) {
-    sample_count = env_u32("MATTER_VT_ENRICH_SAMPLES", 32u, 8u, 64u);
-    strength = env_f32("MATTER_VT_ENRICH_STRENGTH", 1.0f, 0.0f, 1.0f);
-    cap_texels = env_f32("MATTER_VT_ENRICH_CAP_TEXELS", 4.0f, 0.25f, 64.0f);
-    cap_meters = env_f32("MATTER_VT_ENRICH_CAP_METERS", 0.5f, 0.02f, 64.0f);
-    min_ao = env_f32("MATTER_VT_ENRICH_MIN_AO", 0.15f, 0.0f, 1.0f);
-    as_cache_cap = env_u32("MATTER_VT_ENRICH_AS_CACHE", 8u, 1u, 64u);
+    // Layer 5 for standalone engine runs (headless tests, tools) that never
+    // bind a registry; the editor binds the SAME struct and runs its own
+    // apply_env — both idempotent, both reading the same environment.
+    matter::ensure_vt_enrich_env_applied();
+    as_cache_cap = clamp_u32(matter::vt_enrich_settings().as_cache, 1u, 64u);
 
     get_sizes = reinterpret_cast<PFN_vkGetAccelerationStructureBuildSizesKHR>(
         vkGetDeviceProcAddr(device, "vkGetAccelerationStructureBuildSizesKHR"));
@@ -941,10 +947,15 @@ std::unique_ptr<VtEnricher> VtEnricher::create(matter::VulkanDevice& vulkan,
     return std::unique_ptr<VtEnricher>(new VtEnricher(std::move(impl)));
 }
 
-uint32_t VtEnricher::sample_count() const { return impl_->sample_count; }
+// Both are queried by the residency layer per frame (the coarse-page skip
+// reads max_footprint_meters()), so both read the live settings rather than an
+// init-time copy.
+uint32_t VtEnricher::sample_count() const {
+    return live_enrich_settings().samples;
+}
 
 float VtEnricher::max_footprint_meters() const {
-    return kEnrichFadeSpan * impl_->cap_meters;
+    return kEnrichFadeSpan * live_enrich_settings().cap_meters;
 }
 
 void VtEnricher::invalidate_part(uint64_t variant_hash) {
@@ -967,6 +978,11 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
 
     const uint64_t frame_index = batch[0].frame_index;
     im.retire(frame_index);
+
+    // One read for the whole batch: every request in it must be enriched with
+    // the same parameters, and a mid-batch change would make the recorded push
+    // constants disagree with the candidate gather below.
+    const matter::VtEnrichSettings settings = live_enrich_settings();
 
     Impl::Ring& ring = im.rings[im.ring_cursor];
     im.ring_cursor = (im.ring_cursor + 1) % kMaxBatchesInFlight;
@@ -1042,16 +1058,16 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
         g.a[3] = rec_index;
         g.b[0] = cand_offset;
         g.b[1] = static_cast<uint32_t>(im.scratch_cands.size());
-        g.b[2] = im.sample_count;
+        g.b[2] = settings.samples;
         g.b[3] = im.seed;
         g.c[0] = sx;
         g.c[1] = sy;
         g.c[2] = layer;
         g.c[3] = 0;
-        g.d[0] = im.strength;
-        g.d[1] = im.cap_texels;
-        g.d[2] = im.cap_meters;
-        g.d[3] = im.min_ao;
+        g.d[0] = settings.strength;
+        g.d[1] = settings.cap_texels;
+        g.d[2] = settings.cap_meters;
+        g.d[3] = settings.min_ao;
         orm_image = pool->image[kVtChannelOrm];
         orm_layers = pool->layer_count ? pool->layer_count : 1u;
         im.bind_pool_orm(pool->sampled_view[kVtChannelOrm]);

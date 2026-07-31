@@ -84,6 +84,16 @@ struct StreamingLodPrefs {
     // Both empty by default = "use the world's own rings".
     std::string scatter_rings;
     std::string terrain_bands;
+    // ---- Streamer pacing (WS2) --------------------------------------------
+    // These three have NO "keep the world's own value" encoding, because no
+    // world script authors them: the defaults below are matter_stream::Config's
+    // own defaults, so applying them unconditionally at connect is a no-op and
+    // the sparse save still writes nothing for an untouched world. Same
+    // RequiresReload discipline as everything else here — the SectorStreamer is
+    // constructed from the resolved profile at connect and never reconfigured.
+    float hysteresis = 16.0f;
+    int32_t max_inflight = 64;
+    int32_t fail_cooldown_updates = 64;
 };
 
 inline const matter::props::Group& streaming_lod_group() {
@@ -104,6 +114,26 @@ inline const matter::props::Group& streaming_lod_group() {
             .label("Terrain LOD bands")
             .doc("radius:lod pairs, innermost first (5 = native voxel). "
                  "Empty keeps the world's own bands.")
+            .requires_reload(),
+        prop(&StreamingLodPrefs::hysteresis, "hysteresis")
+            .label("Ring hysteresis").range(0.0f, 512.0f).units("m")
+            .env("MATTER_STREAM_HYSTERESIS")
+            .doc("Extra distance a sector must fall behind its ring before it "
+                 "is demoted or evicted. Too small and a camera parked on a "
+                 "ring boundary churns.")
+            .requires_reload(),
+        prop(&StreamingLodPrefs::max_inflight, "max_inflight")
+            .label("Max in-flight").range(1.0f, 256.0f)
+            .env("MATTER_STREAM_INFLIGHT")
+            .doc("Sectors that may be dispatched but not yet ACKNOWLEDGED. By "
+                 "Little's law this bounds fill rate at max_inflight / "
+                 "publish-latency no matter how fast sectors bake.")
+            .requires_reload(),
+        prop(&StreamingLodPrefs::fail_cooldown_updates, "fail_cooldown_updates")
+            .label("Fail cooldown").range(0.0f, 1024.0f).units("updates")
+            .env("MATTER_STREAM_FAIL_COOLDOWN")
+            .doc("Streamer updates a failed sector waits before it may be "
+                 "requested again.")
             .requires_reload());
     return def.group();
 }

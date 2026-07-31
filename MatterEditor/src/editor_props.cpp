@@ -1,7 +1,11 @@
 #include "editor_props.h"
 
+#include "animation_debug_overlay.h"
 #include "camera_controller.h"
+#include "console_panel.h"
+#include "matter/stream_settings.h"
 #include "matter/vt_budgets.h"
+#include "toolbar_panel.h"
 #include "ui.h"
 
 #include <cstdio>
@@ -97,6 +101,54 @@ const auto s_pom = matter::props::group<matter::TilesetPomSettings>(
         .doc("Blends the baked per-direction horizon occlusion toward 0. No "
              "effect on slots loaded from a v1 .gtex."));
 
+// render.fog — the world-authored FogSettings, LIVE.
+//
+// WHY LIVE AND NOT RequiresReload. The connect captures the world's fog into
+// WorldSession::Impl::authored_fog_, but nothing bakes it: every frame,
+// WorldSession::render hands that struct straight to
+// VkSceneRenderer::set_volumetrics_settings alongside the volumetrics
+// multipliers. So the consumption point is the render call, once per frame —
+// exactly like render.lighting — and an edit lands on the next frame. The
+// editor's copy (ViewerStats::fog) rides RenderOptions::fog_override, which
+// only the production session's render sets, so nothing else in the process
+// sees the override.
+//
+// fog.color IS a Color3: unlike VulkanVolumetricsSettings::fog_color_mul (a
+// multiplier that may legitimately exceed 1, hence Float3 there), this is the
+// authored fog COLOUR — world_definition_loader reads it as an RGB triple and
+// the default {0.9, 0.92, 0.95} is squarely in the [0,1] domain ColorEdit3
+// clamps to. `wind` stays a Float3: it is a velocity in m/s, signed.
+const auto s_fog = matter::props::group<matter::FogSettings>(
+    "render.fog", "Fog",
+    prop(&matter::FogSettings::density, "density")
+        .label("Density").range(0.0f, 1.0f).log()
+        .doc("Extinction at the fog floor. 0 disables distance fog; the "
+             "volumetrics Fog density multiplier scales this."),
+    prop(&matter::FogSettings::floor, "floor")
+        .label("Floor").range(-500.0f, 2000.0f).units("m")
+        .doc("Height at which density is full."),
+    prop(&matter::FogSettings::falloff, "falloff")
+        .label("Falloff").range(1.0f, 2000.0f).units("m").log()
+        .doc("Height scale over which density decays above the floor."),
+    prop(&matter::FogSettings::color, "color")
+        .label("Color").color(),
+    prop(&matter::FogSettings::wind, "wind")
+        .label("Wind").units("m/s")
+        .doc("Advection of the height-layer noise. No effect unless the "
+             "bounded cloud layer is enabled."),
+    prop(&matter::FogSettings::height_layer, "height_layer")
+        .label("Height layer")
+        .doc("Bounded cloud layer: density is full below Min height, reaches "
+             "zero at Max height, and is carved by low-frequency 3D noise. "
+             "Off keeps the legacy floor/falloff fog."),
+    prop(&matter::FogSettings::min_height, "min_height")
+        .label("Min height").range(-500.0f, 4000.0f).units("m"),
+    prop(&matter::FogSettings::max_height, "max_height")
+        .label("Max height").range(-500.0f, 4000.0f).units("m"),
+    prop(&matter::FogSettings::noise_scale, "noise_scale")
+        .label("Noise scale").range(0.0001f, 0.05f).log()
+        .doc("Spatial frequency of the cloud-layer carve, in 1/m."));
+
 const auto s_camera = matter::props::group<CameraPrefs>(
     "camera.prefs", "Camera",
     prop(&CameraPrefs::far_plane, "far_plane")
@@ -104,11 +156,126 @@ const auto s_camera = matter::props::group<CameraPrefs>(
         .doc("Editor camera draw distance."),
     prop(&CameraPrefs::move_speed, "move_speed")
         .label("Fly speed").range(0.5f, 200.0f).units("m/s").log()
-        .doc("WASD speed while the viewport has cursor capture; Shift is 4x."));
+        .doc("WASD speed while the viewport has cursor capture."),
+    prop(&CameraPrefs::boost_multiplier, "boost_multiplier")
+        .label("Shift boost").range(1.0f, 32.0f).log()
+        .doc("Multiplier on the fly speed while Shift is held."),
+    prop(&CameraPrefs::look_sensitivity, "look_sensitivity")
+        .label("Look sensitivity").range(0.0002f, 0.02f).log()
+        .units("rad/px")
+        .doc("Free-fly mouse look, radians of rotation per pixel of cursor "
+             "motion."),
+    prop(&CameraPrefs::orbit_step, "orbit_step")
+        .label("Orbit step").range(0.002f, 0.5f).units("rad").log()
+        .doc("Camera panel orbit buttons: rotation per repeat tick."),
+    prop(&CameraPrefs::orbit_zoom_step, "orbit_zoom_step")
+        .label("Orbit zoom step").range(0.005f, 0.5f).log()
+        .doc("Camera panel Zoom In/Out: fraction of the current distance one "
+             "tick adds or removes."));
+
+// sim.time — Scope::Session. The toolbar's slider edits ToolbarState::time_scale
+// directly and keeps doing so; this group only adds Tunables visibility and the
+// FIFO `set sim.time.time_scale 0.25` path over the same field.
+//
+// TickDesc::fixed_delta_seconds / max_fixed_steps are deliberately NOT here.
+// They are not editor-owned state at all: main.cpp fills a fresh TickDesc per
+// frame from compiled constants, and the accumulator semantics documented on
+// TickDesc make fixed_delta a determinism parameter (changing it changes
+// simulation behaviour, not its rate) rather than a tunable. time_scale is the
+// one value the editor actually owns and scales the frame delta with.
+//
+// Session, not User: a persisted 0.05x would make the next launch look frozen.
+const auto s_sim = matter::props::group<ToolbarState>(
+    "sim.time", "Simulation Time",
+    prop(&ToolbarState::time_scale, "time_scale")
+        .label("Time scale")
+        .range(kToolbarMinTimeScale, kToolbarMaxTimeScale)
+        .doc("Scales the frame delta fed to the tick accumulator. The fixed "
+             "timestep itself stays 1/60, so physics and fixed-cadence "
+             "animation keep their step size and simply occur less often."));
+
+// console.filters — Scope::User. ConsolePanelState::text_filter is a char[256],
+// which the schema has no type for (String means std::string), and
+// was_at_bottom is scroll bookkeeping, not a setting; the four described fields
+// are exactly the ones the console's own checkboxes toggle.
+const auto s_console = matter::props::group<ConsolePanelState>(
+    "console.filters", "Console Filters",
+    prop(&ConsolePanelState::show_info, "show_info").label("Show info"),
+    prop(&ConsolePanelState::show_warning, "show_warning").label("Show warnings"),
+    prop(&ConsolePanelState::show_error, "show_error").label("Show errors"),
+    prop(&ConsolePanelState::auto_scroll, "auto_scroll")
+        .label("Auto-scroll")
+        .doc("Follow the tail while the view is already at the bottom."));
+
+// overlay.animation — Scope::SESSION, deliberately.
+//
+// These are diagnostic draw toggles, and `enabled` defaults to false. Persisted
+// as User, a session that ended with bones + joint axes on would silently draw
+// them over every world on the next launch, with the cause several panels away
+// from the symptom. They are also one click each to re-enable in the overlay
+// panel that still owns them (draw_animation_debug_overlay_controls, which is
+// untouched and edits this same struct). Visibility + FIFO `set` is what this
+// binding is for; persistence is not.
+const auto s_overlay = matter::props::group<AnimationDebugOverlayOptions>(
+    "overlay.animation", "Animation Debug Overlay",
+    prop(&AnimationDebugOverlayOptions::enabled, "enabled").label("Enable"),
+    prop(&AnimationDebugOverlayOptions::bones, "bones").label("Bones"),
+    prop(&AnimationDebugOverlayOptions::joint_axes, "joint_axes")
+        .label("Joint axes"),
+    prop(&AnimationDebugOverlayOptions::radius_envelopes, "radius_envelopes")
+        .label("Radius envelopes"),
+    prop(&AnimationDebugOverlayOptions::sockets, "sockets").label("Sockets"),
+    prop(&AnimationDebugOverlayOptions::targets_and_ik, "targets_and_ik")
+        .label("Targets and IK"),
+    prop(&AnimationDebugOverlayOptions::conservative_bounds,
+         "conservative_bounds").label("Conservative bounds"),
+    prop(&AnimationDebugOverlayOptions::skin_weights, "skin_weights")
+        .label("Skin weights"),
+    prop(&AnimationDebugOverlayOptions::weight_joint, "weight_joint")
+        .label("Weight joint").range(0.0f, 255.0f)
+        .doc("Which joint's weights the skin-weight colouring shows."),
+    prop(&AnimationDebugOverlayOptions::dominant_joint, "dominant_joint")
+        .label("Dominant joint")
+        .doc("Colour each sampled vertex by its HIGHEST-weight joint instead "
+             "of by one joint's weight."),
+    prop(&AnimationDebugOverlayOptions::cpu_reference, "cpu_reference")
+        .label("CPU reference")
+        .doc("Draw the CPU-computed vertex positions for the same immutable "
+             "pose the GPU was handed. Divergence is a GPU skinning fault."));
+
+// viewer.debug — Scope::Session.
+//
+// These three ARE user-owned, which is exactly what the excluded debug-view
+// fields at the top of this file are not: main.cpp reads
+// ViewerStats::debug_view_mode / vol_debug_view and WRITES them into
+// VulkanLightingOverrides::composite_debug_view /
+// VulkanVolumetricsSettings::vol_debug_view every frame. The struct members are
+// the overwritten copies; these ints are the source the combos edit, so binding
+// them is honest where binding the copies would not be. resolver_choice is the
+// same shape — written only by the combo, read by main.cpp to pick the resolver.
+//
+// Session: a debug visualization that survived a relaunch would be a bug report
+// waiting to happen, and the combos are right there in Viewer Debug.
+const char* const kResolverLabels[] = {"PassThrough", "SectorLod"};
+const char* const kDebugViewLabels[] = {"None", "Normals"};
+const char* const kVolDebugLabels[] = {"Off", "Density", "Scatter",
+                                       "Integrated"};
+
+const auto s_viewer_debug = matter::props::group<ViewerStats>(
+    "viewer.debug", "Viewer Debug Views",
+    prop(&ViewerStats::resolver_choice, "resolver_choice")
+        .label("Resolver").enums(kResolverLabels, 2),
+    prop(&ViewerStats::debug_view_mode, "debug_view_mode")
+        .label("Debug view").enums(kDebugViewLabels, 2),
+    prop(&ViewerStats::vol_debug_view, "vol_debug_view")
+        .label("Volumetric view").enums(kVolDebugLabels, 4)
+        .doc("Only meaningful while volumetrics are enabled."));
 
 }  // namespace
 
-void EditorProps::init(ViewerStats& stats, CameraPrefs& camera, bool persist) {
+void EditorProps::init(ViewerStats& stats, CameraPrefs& camera,
+                       ToolbarState& toolbar, ConsolePanelState& console,
+                       bool persist) {
     persist_ = persist;
     // Same convention as imgui.ini: relative to the cwd, and the editor is
     // always launched from MatterEditor/.
@@ -116,17 +283,38 @@ void EditorProps::init(ViewerStats& stats, CameraPrefs& camera, bool persist) {
 
     budget_ = registry_.bind(s_budget, &stats, Scope::User);
     camera_ = registry_.bind(s_camera, &camera, Scope::User);
+    console_ = registry_.bind(s_console, &console, Scope::User);
     // GPU-memory budgets are per-machine taste (a 4090 and a laptop want
     // different numbers), not project data — hence User, not World. The struct
     // is ENGINE-owned: the engine reads it directly and applies its own env
     // layer for headless runs, and this bind just gives it UI + persistence.
     vt_ = registry_.bind(matter::vt_residency_budgets_group(),
                          &matter::vt_residency_budgets(), Scope::User);
+    vt_enrich_ = registry_.bind(matter::vt_enrich_settings_group(),
+                                &matter::vt_enrich_settings(), Scope::User);
+    // Same engine-owned deal, with one extra step: `workers` has no compiled
+    // default worth showing (it scales with the machine), so the engine's own
+    // env pass — which also seeds that default — must run BEFORE bind captures
+    // the baseline. Running it here rather than relying on the registry's
+    // apply_env below is the whole difference between the panel showing the
+    // real thread count and showing a 0 sentinel.
+    matter::ensure_stream_runtime_env_applied();
+    stream_runtime_ = registry_.bind(matter::stream_runtime_group(),
+                                     &matter::stream_runtime_settings(),
+                                     Scope::User);
     lighting_ = registry_.bind(s_lighting, &stats.lighting, Scope::World);
     volumetrics_ = registry_.bind(s_volumetrics, &stats.volumetrics, Scope::World);
+    fog_ = registry_.bind(s_fog, &stats.fog, Scope::World);
     pom_ = registry_.bind(s_pom, &stats.tileset_pom, Scope::World);
     streaming_ = registry_.bind(streaming_lod_group(), &streaming_prefs_,
                                 Scope::World);
+    // Session groups: live-editable, enumerated by Tunables, reachable from the
+    // FIFO `set` path, and never written to any file — save_scope filters by
+    // scope and nothing ever calls it with Scope::Session.
+    sim_ = registry_.bind(s_sim, &toolbar, Scope::Session);
+    overlay_ = registry_.bind(s_overlay, &stats.animation_overlay,
+                              Scope::Session);
+    viewer_debug_ = registry_.bind(s_viewer_debug, &stats, Scope::Session);
 
     // User groups have no world-JS layer (S4): their baseline IS the compiled
     // default, which is what bind() already captured.
@@ -147,10 +335,17 @@ void EditorProps::shutdown() {
 matter::props::Binding* EditorProps::budget() { return registry_.get(budget_); }
 matter::props::Binding* EditorProps::lighting() { return registry_.get(lighting_); }
 matter::props::Binding* EditorProps::volumetrics() { return registry_.get(volumetrics_); }
+matter::props::Binding* EditorProps::fog() { return registry_.get(fog_); }
 matter::props::Binding* EditorProps::pom() { return registry_.get(pom_); }
 matter::props::Binding* EditorProps::camera() { return registry_.get(camera_); }
 matter::props::Binding* EditorProps::streaming() { return registry_.get(streaming_); }
+matter::props::Binding* EditorProps::stream_runtime() {
+    return registry_.get(stream_runtime_);
+}
 matter::props::Binding* EditorProps::vt_budgets() { return registry_.get(vt_); }
+matter::props::Binding* EditorProps::vt_enrich() {
+    return registry_.get(vt_enrich_);
+}
 
 matter::props::Binding* EditorProps::world_props() {
     if (!world_props_) return nullptr;
@@ -242,6 +437,14 @@ void EditorProps::set_world(const std::string& project_dir,
         // the outgoing world's overrides must not leak into a world whose file
         // says nothing about them (load_group only writes keys it finds).
         matter::props::load_group_file(b, world_path_);
+        // Layer 5 again, because the reset above dropped it. A RequiresReload
+        // group's whole layer stack is rebuilt here rather than at
+        // on_world_connected (it is an INPUT to the connect), so env has to be
+        // re-applied here too — otherwise MATTER_STREAM_INFLIGHT would survive
+        // startup, be erased by the first set_world, and then be OVERWRITTEN in
+        // make_streaming_profile by the compiled default this group now hands
+        // the session unconditionally.
+        matter::props::apply_env(b);
         b.set_dirty(false);
     }
 }

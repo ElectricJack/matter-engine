@@ -21,6 +21,7 @@
 #include "matrix_math.h"
 #include "vk_build_profile.h"
 #include "matter/vulkan_device.h"
+#include "matter/vt_budgets.h"
 #include "matter/world_definition.h"
 #include "matter/world_session.h"
 #include "shaders_gen/embedded_spirv.h"
@@ -4038,19 +4039,19 @@ bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
 void VkSceneRenderer::update_vt_demand(matter::Float3 camera_eye,
                                        float pixel_budget) {
     if (vt_deferred_parts_ == 0) return;
-    if (vt_linger_frames_ == 0) {
-        const auto env_u32 = [](const char* name, uint32_t fallback,
-                                uint32_t lo, uint32_t hi) {
-            const char* raw = std::getenv(name);
-            if (!raw || !*raw) return fallback;
-            char* end = nullptr;
-            const unsigned long value = std::strtoul(raw, &end, 10);
-            if (end == raw) return fallback;
-            return static_cast<uint32_t>(
-                std::min<unsigned long>(hi, std::max<unsigned long>(lo, value)));
+    // Re-read every pass rather than latched on the first one: both knobs live
+    // in matter::VtResidencyBudgets now, and the demand pass is exactly the
+    // per-frame consumer that makes them live-editable from Tunables. The
+    // clamps are the schema's own ranges, repeated here because the engine also
+    // runs with no registry bound at all.
+    matter::ensure_vt_residency_env_applied();
+    {
+        const matter::VtResidencyBudgets& b = matter::vt_residency_budgets();
+        const auto clamp_u32 = [](uint32_t v, uint32_t lo, uint32_t hi) {
+            return v < lo ? lo : (v > hi ? hi : v);
         };
-        vt_linger_frames_ = env_u32("MATTER_VT_LINGER_FRAMES", 240u, 2u, 100000u);
-        vt_max_requests_ = env_u32("MATTER_VT_REQUESTS_PER_FRAME", 16u, 1u, 256u);
+        vt_linger_frames_ = clamp_u32(b.linger_frames, 2u, 100000u);
+        vt_max_requests_ = clamp_u32(b.requests_per_frame, 1u, 256u);
     }
     ++vt_demand_frame_;
 

@@ -226,13 +226,10 @@ bool draw_group(matter::props::Binding& binding, const char* filter = nullptr,
                 const std::function<void()>* on_apply = nullptr);
 
 // Lighting window body (call inside Begin/End). Draws render.lighting —
-// including the sun/sky tints — and render.volumetrics, plus the
+// including the sun/sky tints — render.volumetrics and render.fog, plus the
 // "Reset to World" baseline restore that used to sit under the lighting
-// sliders in Viewer Debug.
-//
-// WORKSTREAM-2 SEAM: `render.fog`, once that group exists, belongs here
-// directly after render.volumetrics (and in the reset button's group list
-// below). Nothing else needs to change — see the marked spot in the body.
+// sliders in Viewer Debug. All three are Scope::World and share one layer-2
+// baseline captured at connect, which is what makes one reset button correct.
 void draw_lighting_contents(EditorProps& props);
 
 struct TunablesPanelState {

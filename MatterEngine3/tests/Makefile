@@ -1224,7 +1224,15 @@ GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
               ../src/animation/animation_systems.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
               ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
               ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
-              ../src/streaming/sector_streaming_coordinator.cpp
+              ../src/streaming/sector_streaming_coordinator.cpp \
+              ../src/props/props.cpp ../src/util/json_doc.cpp
+
+# props.cpp + json_doc.cpp are NOT optional here: matter_engine.cpp (in
+# GPU_PIPELINE_CPP) builds the world's `static props` DynamicGroup and applies
+# the env layer to the engine-owned settings structs, so every gpu-flavor binary
+# that links matter_engine.o needs their definitions. Without them the whole
+# gpu flavor — world-stream-tests, api-tests, tileset-provider-tests, ... —
+# fails at link with undefined DynamicGroupBuilder / apply_env references.
 
 # ---------------------------------------------------------------------------
 # Bake-host closure fan-out.
