@@ -182,10 +182,13 @@ bool draw_field(Binding& b, void* target, uint32_t index, const Desc& d) {
             break;
         }
         case PropWidget::TextInput: {
-            char buf[256];
-            std::snprintf(buf, sizeof(buf), "%s", get_string(target, d).c_str());
-            if (ImGui::InputText("##v", buf, sizeof(buf)))
-                changed = set_string(target, d, std::string(buf));
+            // Sized past the current value so long strings are never truncated
+            // by the edit buffer; headroom grows with the value as it is typed.
+            const std::string cur = get_string(target, d);
+            std::vector<char> buf(cur.size() + 256 < 512 ? 512 : cur.size() + 256);
+            std::snprintf(buf.data(), buf.size(), "%s", cur.c_str());
+            if (ImGui::InputText("##v", buf.data(), buf.size()))
+                changed = set_string(target, d, std::string(buf.data()));
             break;
         }
     }
@@ -209,6 +212,10 @@ void* prop_edit_target(Binding& b) {
 
 bool draw_group_fields(Binding& b, const char* filter) {
     const Group& g = b.schema();
+    // Field IDs are per-group indices; scope them by group path so panels that
+    // call draw_group_fields directly for several groups in one window don't
+    // collide (draw_group's own PushID nests harmlessly above this one).
+    ImGui::PushID(g.path);
     void* target = prop_edit_target(b);
     bool changed = false;
     for (uint32_t i = 0; i < g.field_count; ++i) {
@@ -216,6 +223,7 @@ bool draw_group_fields(Binding& b, const char* filter) {
         if (!prop_filter_matches_field(filter, d)) continue;
         changed |= draw_field(b, target, i, d);
     }
+    ImGui::PopID();
     return changed;
 }
 

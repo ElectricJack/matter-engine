@@ -6,8 +6,10 @@
 #include "matter/json_doc.h"
 #include "matter/props.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -909,10 +911,39 @@ void test_dynamic_group_teardown() {
 
 }  // namespace
 
+void test_non_finite() {
+    Registry reg;
+    Tunables inst;
+    Binding* b = reg.get(reg.bind(tunables_schema(), &inst, Scope::World));
+
+    // Setters refuse NaN/inf outright (json_doc cannot re-parse them).
+    const float nan_v = std::nanf("");
+    const float inf_v = std::numeric_limits<float>::infinity();
+    CHECK(!props::set_float(*b, field("density"), nan_v), "nonfinite: NaN refused");
+    CHECK(inst.density == 0.25f, "nonfinite: NaN left value untouched");
+    const float bad3[3] = {1.0f, inf_v, 1.0f};
+    CHECK(!props::set_float3(*b, field("wind"), bad3), "nonfinite: inf float3 refused");
+    CHECK(inst.wind.x == 1.0f && inst.wind.y == 2.0f && inst.wind.z == 3.0f,
+          "nonfinite: float3 all-or-nothing");
+
+    // Direct struct writes bypass setters; the save path must skip such
+    // fields rather than emit a token the parser rejects on next launch.
+    inst.density = inf_v;
+    inst.title = "edited";
+    jsondoc::Value doc;
+    props::save_scope(reg, Scope::World, doc);
+    const std::string out = doc_to_string(doc);
+    CHECK(out.find("density") == std::string::npos, "nonfinite: field not persisted");
+    CHECK(out.find("edited") != std::string::npos, "nonfinite: finite siblings persist");
+    jsondoc::Value reparsed;
+    CHECK(jsondoc::parse_json(out, reparsed), "nonfinite: saved doc reparses");
+}
+
 int main() {
     test_builder_layout();
     test_defaults_and_reset();
     test_range_clamping();
+    test_non_finite();
     test_sparse_save();
     test_round_trip();
     test_tolerant_load();

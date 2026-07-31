@@ -1,6 +1,7 @@
 #include "matter/props.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -72,6 +73,26 @@ Value number(double n) {
     v.kind = Value::Kind::Number;
     v.num = n;
     return v;
+}
+
+// Setters refuse NaN/inf, but engine code writes described structs directly,
+// so a non-finite value can still reach a save. json_doc would emit it as a
+// bare `nan`/`inf` token its own parser rejects, corrupting the whole scope
+// file on the next load — such fields must never be encoded.
+bool field_finite(const void* instance, const Desc& d) {
+    switch (d.type) {
+        case Type::Float:
+            return std::isfinite(get_float(instance, d));
+        case Type::Float3:
+        case Type::Color3: {
+            float xyz[3];
+            get_float3(instance, d, xyz);
+            return std::isfinite(xyz[0]) && std::isfinite(xyz[1]) &&
+                   std::isfinite(xyz[2]);
+        }
+        default:
+            return true;
+    }
 }
 
 Value encode_field(const void* instance, const Desc& d) {
@@ -448,6 +469,9 @@ std::string get_string(const void* instance, const Desc& d) {
 }
 
 bool set_float(void* instance, const Desc& d, float v) {
+    // NaN/inf are refused outright: json_doc can emit but not re-parse them,
+    // so one poisoned value would corrupt the whole scope file on save.
+    if (!std::isfinite(v)) return false;
     float& dst = as<float>(instance, d);
     const float nv = clampf(v, d);
     if (dst == nv) return false;
@@ -501,6 +525,9 @@ bool set_enum(void* instance, const Desc& d, int32_t v) {
 }
 
 bool set_float3(void* instance, const Desc& d, const float v[3]) {
+    // All-or-nothing, same non-finite rule as set_float.
+    if (!std::isfinite(v[0]) || !std::isfinite(v[1]) || !std::isfinite(v[2]))
+        return false;
     float* dst = static_cast<float*>(field_ptr(instance, d));
     bool changed = false;
     for (int i = 0; i < 3; ++i) {
@@ -717,6 +744,13 @@ void save_scope(const Registry& r, Scope scope, Value& doc) {
             if (!persistable(d)) continue;
             if (b.env_forced(i)) continue;  // env is layer 5, not a user edit
             if (!fields_equal(b.instance(), b.baseline(), d)) {
+                if (!field_finite(b.instance(), d)) {
+                    // Keep whatever the file already holds for this field.
+                    std::fprintf(stderr,
+                                 "[props] %s.%s is not finite - not persisting it\n",
+                                 g.path, d.name);
+                    continue;
+                }
                 if (!obj) {
                     Value empty;
                     empty.kind = Value::Kind::Object;
@@ -769,6 +803,7 @@ void dump_modified(const Registry& r, Value& out) {
         for (uint32_t i = 0; i < g.field_count; ++i) {
             const Desc& d = g.fields[i];
             if (fields_equal(b.instance(), b.baseline(), d)) continue;
+            if (!field_finite(b.instance(), d)) continue;
             if (!obj) {
                 Value empty;
                 empty.kind = Value::Kind::Object;

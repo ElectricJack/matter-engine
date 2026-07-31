@@ -161,8 +161,10 @@ void EditorProps::adopt_world_props(matter::props::DynamicGroup* world_props) {
     if (!b) return;
     world_props_ = world_props;
     // Layer 2 for a script-declared group IS its declared defaults, which is
-    // what the group was constructed holding; then the world file on top.
-    b->capture_baseline();
+    // what bind_into's baseline already holds. Do NOT re-capture here: on this
+    // (aborted-switch) path the buffer still carries the user's edits, and
+    // capturing them as baseline would make the next sparse save erase them
+    // from the world file.
     if (persist_ && !world_path_.empty())
         matter::props::load_group_file(*b, world_path_);
     b->set_dirty(false);
@@ -196,7 +198,16 @@ void EditorProps::set_world(const std::string& project_dir,
     // Silent flush rather than a prompt: the outgoing world's file is the only
     // place those edits can live, and losing them to a world switch would be
     // the surprising behavior. Explicit Save stays for the mid-session case.
-    if (!world_path_.empty() && world_dirty()) save_world_now();
+    // A failed flush still clears dirty below (stale flags must not leak the
+    // outgoing world's values into the incoming world's file), so be loud.
+    if (persist_ && !world_path_.empty() && world_dirty()) {
+        if (!save_world_now() && !save_world_now()) {
+            std::fprintf(stderr,
+                         "[props] failed to save world overrides to %s - edits "
+                         "from the outgoing world were dropped\n",
+                         world_path_.c_str());
+        }
+    }
     // The world-props DynamicGroup belongs to the OUTGOING session: a reload
     // rebuilds it in place, a switch destroys the session outright. Drop the
     // binding here — after the flush above has already written its edits, and
@@ -228,9 +239,7 @@ void EditorProps::set_world(const std::string& project_dir,
 void EditorProps::on_world_connected(matter::props::DynamicGroup* world_props) {
     // Bind the incoming world's script-declared group FIRST, so it rides the
     // same baseline -> world file -> env sequence as the static World groups
-    // below rather than needing a path of its own. bind() already constructed
-    // its baseline from the declared defaults; the capture below is a no-op
-    // that keeps the rule uniform.
+    // below rather than needing a path of its own.
     release_world_props();
     if (world_props &&
         world_props->bind_into(registry_, Scope::World) != matter::props::kInvalidBinding)
@@ -241,6 +250,12 @@ void EditorProps::on_world_connected(matter::props::DynamicGroup* world_props) {
         // See the header note: an input to the connect keeps its compiled
         // default as baseline, or the sparse save would erase it.
         if (matter::props::group_requires_reload(b.schema())) continue;
+        // The world-props baseline is its declared defaults, set by bind_into.
+        // Never re-capture it: install_world PRESERVES the DynamicGroup (with
+        // the user's edited values still in the buffer) across a reload whose
+        // declaration didn't change, and capturing those edits as baseline
+        // would make the next sparse save silently erase them from the file.
+        if (world_props_ && b.id() == world_props_->binding()) continue;
         b.capture_baseline();
         b.set_dirty(false);
     }
