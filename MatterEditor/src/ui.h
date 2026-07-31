@@ -34,7 +34,8 @@ namespace viewer {
 struct ViewportRect { float x = 0, y = 0, w = 0, h = 0; };
 
 // One available world for the runtime picker. Populated by scan_worlds at
-// startup; consumed by draw_worlds_panel and the main-loop switch handler.
+// startup; consumed by the Assets panel's per-world Load button
+// (asset_browser.cpp) and the main-loop switch handler.
 struct WorldEntry {
     std::string label;        // display name (world .js filename stem)
     std::string project_dir;  // project containing objects/ and worlds/
@@ -262,10 +263,6 @@ public:
     // DISTANCE is deliberately not a pref — it is derived from the live
     // camera's position/target every frame, so there is nothing to persist.
     void draw_camera_panel(matter::CameraDesc& cam, const CameraPrefs& prefs);
-    // Standalone panel listing available worlds as buttons. Clicking a non-current
-    // world issues ViewerCommands::switch_world (viewer.switch_world command).
-    void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats,
-                           const ViewerCommands& commands);
     ToolbarActions draw_toolbar(matter::scene::SimulationMode mode);
     // Simulation rate, owned by the toolbar slider. Readable (and seedable)
     // even when the UI is hidden, so a headless capture can run in slow motion.

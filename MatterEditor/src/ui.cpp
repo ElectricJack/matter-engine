@@ -1219,24 +1219,6 @@ void Ui::draw_camera_panel(matter::CameraDesc& cam, const CameraPrefs& prefs) {
     ImGui::End();
 }
 
-void Ui::draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats,
-                           const ViewerCommands& commands) {
-    ImGui::SetNextWindowPos(ImVec2(20.0f, 20.0f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(200, 0), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Worlds");
-
-    for (int i = 0; i < (int)worlds.size(); ++i) {
-        const bool is_current = (i == stats.world_current);
-        if (is_current) ImGui::BeginDisabled(true);
-        if (ImGui::Button(worlds[i].label.c_str()) && commands.switch_world) {
-            commands.switch_world(i);
-        }
-        if (is_current) ImGui::EndDisabled();
-    }
-
-    ImGui::End();
-}
-
 void Ui::draw_gizmo(const SelectionSet& selection, const FieldCommands& fields,
                     const matter::CameraDesc& camera,
                     matter::scene::SimulationMode mode, float viewport_x,
