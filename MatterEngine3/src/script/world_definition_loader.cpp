@@ -849,6 +849,122 @@ bool extract_lights(JSContext* context,
     return true;
 }
 
+// `fog.clouds`: an array of up to kMaxCloudLayers bounded decks.
+//
+//   static fog = {
+//     density: 0.004, floor: 0, falloff: 90,
+//     clouds: [
+//       { minHeight: 140, maxHeight: 210, maxDensity: 0.03,
+//         falloffMin: 12, falloffMax: 40, noiseScale: 0.0016,
+//         octaves: 2, lacunarity: 2.03, gain: 0.5, coverage: 0.55,
+//         wind: [1.2, 0, 0.3] },
+//       ...
+//     ],
+//   };
+//
+// Every key is optional except the two heights, which have no sane default —
+// a deck has to be told where it is. Ranges are clamped by
+// sanitize_cloud_layer rather than rejected, EXCEPT max <= min, which is
+// rejected: that is a typo, not a taste, and silently disabling the layer
+// would leave the author staring at a clear sky wondering why.
+bool extract_cloud_layers(JSContext* context, JSValueConst fog_val,
+                          const WorldLoadDesc& desc, FogSettings& fog,
+                          WorldLoadError& error) {
+    JSValue clouds = JS_GetPropertyStr(context, fog_val, "clouds");
+    if (JS_IsUndefined(clouds)) {
+        JS_FreeValue(context, clouds);
+        return true;  // legacy alias handled later — see apply_legacy_height_layer
+    }
+    if (!JS_IsArray(clouds)) {
+        JS_FreeValue(context, clouds);
+        return fail(desc, error, "fog.clouds", "fog.clouds must be an array");
+    }
+
+    std::uint32_t count = 0;
+    if (!array_length(context, clouds, count)) {
+        JS_FreeValue(context, clouds);
+        return fail(desc, error, "fog.clouds", "fog.clouds must be an array");
+    }
+    if (count > static_cast<std::uint32_t>(kMaxCloudLayers)) {
+        JS_FreeValue(context, clouds);
+        return fail(desc, error, "fog.clouds",
+                    "at most " + std::to_string(kMaxCloudLayers) +
+                        " cloud layers are supported");
+    }
+
+    int32_t written = 0;
+    for (std::uint32_t i = 0; i < count; ++i) {
+        JSValue entry = JS_GetPropertyUint32(context, clouds, i);
+        if (!JS_IsObject(entry)) {
+            JS_FreeValue(context, entry);
+            JS_FreeValue(context, clouds);
+            return fail(desc, error,
+                        "fog.clouds[" + std::to_string(i) + "]",
+                        "each cloud layer must be an object");
+        }
+        CloudLayer layer{};
+        layer.enabled = true;
+        const struct { const char* name; float* target; } numbers[] = {
+            {"minHeight", &layer.min_height},
+            {"maxHeight", &layer.max_height},
+            {"maxDensity", &layer.max_density},
+            {"falloffMin", &layer.falloff_min},
+            {"falloffMax", &layer.falloff_max},
+            {"noiseScale", &layer.noise_scale},
+            {"lacunarity", &layer.lacunarity},
+            {"gain", &layer.gain},
+            {"coverage", &layer.coverage},
+        };
+        bool ok = true;
+        std::string bad_key;
+        for (const auto& n : numbers) {
+            if (!optional_number(context, entry, n.name, *n.target) ||
+                !std::isfinite(*n.target)) {
+                ok = false;
+                bad_key = n.name;
+                break;
+            }
+        }
+        float octaves = static_cast<float>(layer.octaves);
+        if (ok && (!optional_number(context, entry, "octaves", octaves) ||
+                   !std::isfinite(octaves))) {
+            ok = false;
+            bad_key = "octaves";
+        }
+        layer.octaves = static_cast<int32_t>(octaves);
+        JSValue wind = JS_GetPropertyStr(context, entry, "wind");
+        if (ok && !JS_IsUndefined(wind) &&
+            !float3_array_value(context, wind, layer.wind)) {
+            ok = false;
+            bad_key = "wind";
+        }
+        JS_FreeValue(context, wind);
+        JS_FreeValue(context, entry);
+        if (!ok) {
+            JS_FreeValue(context, clouds);
+            return fail(desc, error,
+                        "fog.clouds[" + std::to_string(i) + "]." + bad_key,
+                        "must be a finite number (wind: three of them)");
+        }
+        if (!(layer.max_height > layer.min_height)) {
+            JS_FreeValue(context, clouds);
+            return fail(desc, error,
+                        "fog.clouds[" + std::to_string(i) + "]",
+                        "maxHeight must be greater than minHeight");
+        }
+        sanitize_cloud_layer(layer);
+        fog.clouds[written++] = layer;
+    }
+    JS_FreeValue(context, clouds);
+    fog.cloud_count = written;
+    // An explicit array supersedes the legacy alias entirely, including its
+    // "density is the cloud's" convention — a world spelling both gets the
+    // ground fog its `density` now unambiguously means.
+    fog.height_layer = false;
+    compact_clouds(fog);
+    return true;
+}
+
 bool extract_fog(JSContext* context,
                  JSValueConst world_class,
                  const WorldLoadDesc& desc,
@@ -897,6 +1013,14 @@ bool extract_fog(JSContext* context,
                 "positive noiseScale");
         }
         fog.height_layer = true;
+    }
+
+    // `fog.clouds` — the current spelling, an array of bounded decks. Parsed
+    // AFTER the legacy keys so a world carrying both wins with the explicit
+    // form rather than the alias.
+    if (!extract_cloud_layers(context, fog_val, desc, fog, error)) {
+        JS_FreeValue(context, fog_val);
+        return false;
     }
 
     JSValue color = JS_GetPropertyStr(context, fog_val, "color");
@@ -1171,6 +1295,56 @@ void fold_legacy_fog_multipliers(const WorldLoadDesc& desc, FogSettings& fog,
                  "volumetrics keys.\n",
                  desc.world_path.c_str(), old_density, fog.density, name_a,
                  old_a, new_a, name_b, old_b, new_b);
+}
+
+// Map the legacy single bounded layer (fog.minHeight / maxHeight /
+// noiseScale) onto clouds[0], so there is exactly ONE cloud path through the
+// renderer and the old spelling is an authoring alias rather than a second
+// implementation.
+//
+// Runs AFTER fold_legacy_fog_multipliers, because that fold rewrites the very
+// fields this reads: with the height layer on, the old renderer applied
+// fogFloorOffset to minHeight and fogFalloffMul to the layer thickness. Doing
+// the mapping first would capture the pre-fold geometry and quietly move the
+// deck.
+//
+// THE PROFILE CHANGES HERE, ON PURPOSE. The old shader gave this layer full
+// density everywhere BELOW minHeight and faded it out at maxHeight; a deck now
+// exists only between the two (issue 80c66789 part 3). The unbounded column
+// beneath the deck cannot be expressed in the new profile and is not meant to
+// be — it is what made a second, higher deck impossible. Everything else is
+// carried over from the shader code being replaced: density was multiplied by
+// 2.4, the fbm ran 3 octaves at lacunarity 2.03 and gain ~0.5, and the
+// coverage threshold sat at 0.46..0.57 of a field centred on 0.5, which is
+// about 0.55 of the sky filled.
+void apply_legacy_height_layer(FogSettings& fog) {
+    if (!fog.height_layer) return;
+    if (fog.cloud_count > 0) return;  // an explicit fog.clouds array won
+
+    CloudLayer& layer = fog.clouds[0];
+    layer = CloudLayer{};
+    layer.enabled = true;
+    layer.min_height = fog.min_height;
+    layer.max_height = fog.max_height;
+    layer.max_density = fog.density * 2.4f;
+    // The old vertical mask was 1 at the bottom falling to 0 at the top
+    // (squared) — all shoulder on the way down and none on the way up. A
+    // falloff_max spanning the whole layer reproduces that shape; the base
+    // stays hard, as it was.
+    layer.falloff_min = 0.0f;
+    layer.falloff_max = fog.max_height - fog.min_height;
+    layer.noise_scale = fog.noise_scale;
+    layer.octaves = 3;
+    layer.lacunarity = 2.03f;
+    layer.gain = 0.5f;
+    layer.coverage = 0.55f;
+    for (int i = 0; i < 3; ++i) layer.wind[i] = fog.wind[i];
+    sanitize_cloud_layer(layer);
+    fog.cloud_count = 1;
+    // The legacy layer CONSUMED fog.density as the cloud's density and
+    // suppressed the exponential ground term entirely. Zero it, or a world
+    // that never had ground fog would grow some.
+    fog.density = 0.0f;
 }
 
 // World.volumetrics static: editor volumetrics defaults for this world.
@@ -1790,6 +1964,13 @@ class World {}
                                   error) &&
               extract_props(context, world_class, desc, definition, error) &&
               append_static_entities(context, world_class, desc, error);
+    // The legacy bounded layer becomes clouds[0] here, not inside
+    // extract_fog: it has to run after extract_volumetrics' multiplier fold
+    // has finished rewriting minHeight/maxHeight/density, and extract_fog
+    // runs before that. Unconditional rather than folded into the chain above
+    // because a world can author `fog.minHeight` with no `volumetrics` block
+    // at all, and that world still needs its deck.
+    if (ok) apply_legacy_height_layer(definition.settings.fog);
     if (!ok) {
         definition = WorldDefinition{};
         JS_FreeValue(context, canonicalizer);

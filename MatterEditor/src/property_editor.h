@@ -324,6 +324,20 @@ inline std::vector<DrawOverrideRow> draw_override_rows(
 bool draw_draw_overrides_section(matter::props::Binding& binding,
                                  const char* filter = nullptr);
 
+// render.clouds, drawn as one collapsible block per deck instead of the flat
+// 48-row list draw_group_fields would produce.
+//
+// The group's fields are a fixed repeating run — kMaxCloudLayers layers of
+// (field_count / kMaxCloudLayers) fields each, in declaration order — so the
+// panel slices them by index rather than by parsing names. That is the one
+// thing this shares with draw.overrides' table: the schema stays a flat Desc
+// array and the STRUCTURE lives in the renderer, so persistence, baselines,
+// drafts, `set` and the Tunables list all keep working unchanged.
+//
+// Returns true when any field changed.
+bool draw_cloud_layers_section(matter::props::Binding& binding,
+                               const char* filter = nullptr);
+
 struct TunablesPanelState {
     char filter[128] = {};
     // The de-duplication checkbox's own preference, on by default: most of

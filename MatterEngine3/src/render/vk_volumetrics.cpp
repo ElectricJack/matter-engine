@@ -126,6 +126,7 @@ bool VkVolumetrics::init(matter::VulkanDevice& vulkan, std::string& error) {
     if (!create_noise_texture(vulkan, error)) return false;
     if (!create_volume_images(vulkan, error)) return false;
     if (!create_emitter_buffer(vulkan, error)) return false;
+    if (!create_cloud_buffer(vulkan, error)) return false;
     if (!create_samplers(vulkan, error)) return false;
     if (!create_density_pipeline(vulkan, error)) return false;
     if (!create_scatter_pipeline(vulkan, error)) return false;
@@ -301,6 +302,33 @@ bool VkVolumetrics::create_emitter_buffer(matter::VulkanDevice& vulkan,
 }
 
 // ---------------------------------------------------------------------------
+// Cloud-layer SSBO
+//
+// Always kMaxCloudLayers entries, always bound, even when no world uses a
+// single one: a descriptor set layout cannot be specialized the way the loop
+// bound can, and 256 bytes of unread host-visible memory is not worth a
+// second layout. The CLOUD_LAYERS specialization is what makes the unused
+// entries free, not the buffer's size.
+// ---------------------------------------------------------------------------
+bool VkVolumetrics::create_cloud_buffer(matter::VulkanDevice& vulkan,
+                                        std::string& error) {
+    const VkDeviceSize size =
+        sizeof(matter::GpuCloudLayer) * matter::kMaxCloudLayers;
+    if (!matter::create_buffer(
+            vulkan, size,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            cloud_ssbo_, error)) {
+        return false;
+    }
+    if (!matter::map_buffer(cloud_ssbo_, error)) return false;
+    std::memset(cloud_ssbo_.mapped, 0, static_cast<size_t>(size));
+    return matter::flush_buffer(cloud_ssbo_, 0, size, error);
+}
+
+// ---------------------------------------------------------------------------
 // Samplers
 // ---------------------------------------------------------------------------
 
@@ -355,6 +383,7 @@ bool VkVolumetrics::create_density_pipeline(matter::VulkanDevice& vulkan,
     //   0 = storage image (vol_media, writeonly)
     //   1 = combined image sampler (noise_tex)
     //   2 = storage buffer (emitter SSBO)
+    //   3 = storage buffer (cloud-layer SSBO)
     const VkDescriptorSetLayoutBinding bindings[] = {
         make_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                      VK_SHADER_STAGE_COMPUTE_BIT),
@@ -362,11 +391,13 @@ bool VkVolumetrics::create_density_pipeline(matter::VulkanDevice& vulkan,
                      VK_SHADER_STAGE_COMPUTE_BIT),
         make_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                      VK_SHADER_STAGE_COMPUTE_BIT),
+        make_binding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                     VK_SHADER_STAGE_COMPUTE_BIT),
     };
 
     VkDescriptorSetLayoutCreateInfo set_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    set_info.bindingCount = 3;
+    set_info.bindingCount = 4;
     set_info.pBindings = bindings;
     VkResult result = vkCreateDescriptorSetLayout(device_, &set_info, nullptr,
                                                   &density_set_layout_);
@@ -390,32 +421,73 @@ bool VkVolumetrics::create_density_pipeline(matter::VulkanDevice& vulkan,
     if (result != VK_SUCCESS)
         return vk_fail("vkCreatePipelineLayout(density)", result, error);
 
-    // Shader module.
+    // Shader module — ONE module, kMaxCloudLayers + 1 pipelines.
+    //
+    // vol_density.comp declares `layout(constant_id = 0) const int
+    // CLOUD_LAYERS`, and every pipeline below bakes a different value of it.
+    // At 0 the driver strips the whole cloud loop, its SSBO read and the fbm
+    // it calls, which is what keeps a world with no clouds paying nothing for
+    // the feature across 1.84M froxels a frame.
+    //
+    // All of them are built here rather than lazily on first use: five
+    // compute pipelines from one already-loaded module is a few milliseconds
+    // at startup, and building them on demand would put a driver compile in
+    // the frame where the user ticks a layer on. It also means every
+    // specialization is exercised by every run, so a permutation that fails
+    // to compile fails at init with a name rather than the first time some
+    // world happens to use four decks.
     VkShaderModule shader = VK_NULL_HANDLE;
     if (!create_shader_module_from_spirv(device_, "vol_density.comp.spv",
                                          shader, error)) {
         return false;
     }
-    VkPipelineShaderStageCreateInfo stage{
-        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = shader;
-    stage.pName = "main";
-    VkComputePipelineCreateInfo create{
-        VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    create.stage = stage;
-    create.layout = density_pipeline_layout_;
-    result = vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &create,
-                                      nullptr, &density_pipeline_);
-    vkDestroyShaderModule(device_, shader, nullptr);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkCreateComputePipelines(density)", result, error);
+    {
+        VkSpecializationMapEntry entry{};
+        entry.constantID = 0;
+        entry.offset = 0;
+        entry.size = sizeof(int32_t);
+
+        bool ok = true;
+        for (int count = 0; count <= matter::kMaxCloudLayers; ++count) {
+            const int32_t value = count;
+            VkSpecializationInfo spec{};
+            spec.mapEntryCount = 1;
+            spec.pMapEntries = &entry;
+            spec.dataSize = sizeof(int32_t);
+            spec.pData = &value;
+
+            VkPipelineShaderStageCreateInfo stage{
+                VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+            stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            stage.module = shader;
+            stage.pName = "main";
+            stage.pSpecializationInfo = &spec;
+
+            VkComputePipelineCreateInfo create{
+                VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+            create.stage = stage;
+            create.layout = density_pipeline_layout_;
+            result = vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1,
+                                              &create, nullptr,
+                                              &density_pipelines_[count]);
+            if (result != VK_SUCCESS) {
+                const std::string op =
+                    "vkCreateComputePipelines(density, CLOUD_LAYERS=" +
+                    std::to_string(count) + ")";
+                vk_fail(op.c_str(), result, error);
+                ok = false;
+                break;
+            }
+        }
+        vkDestroyShaderModule(device_, shader, nullptr);
+        if (!ok) return false;
+    }
 
     // Descriptor pool + set.
     const VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
     };
     VkDescriptorPoolCreateInfo pool_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -457,7 +529,12 @@ bool VkVolumetrics::create_density_pipeline(matter::VulkanDevice& vulkan,
     emitter_info.offset = 0;
     emitter_info.range = emitter_ssbo_.size;
 
-    VkWriteDescriptorSet writes[3]{};
+    VkDescriptorBufferInfo cloud_info{};
+    cloud_info.buffer = cloud_ssbo_.buffer;
+    cloud_info.offset = 0;
+    cloud_info.range = cloud_ssbo_.size;
+
+    VkWriteDescriptorSet writes[4]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = density_set_;
     writes[0].dstBinding = 0;
@@ -479,7 +556,14 @@ bool VkVolumetrics::create_density_pipeline(matter::VulkanDevice& vulkan,
     writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[2].pBufferInfo = &emitter_info;
 
-    vkUpdateDescriptorSets(device_, 3, writes, 0, nullptr);
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = density_set_;
+    writes[3].dstBinding = 3;
+    writes[3].descriptorCount = 1;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[3].pBufferInfo = &cloud_info;
+
+    vkUpdateDescriptorSets(device_, 4, writes, 0, nullptr);
     return true;
 }
 
@@ -764,14 +848,33 @@ void VkVolumetrics::update_settings(
     fog_density_ = fog.density;
     fog_floor_ = fog.floor;
     fog_falloff_ = fog.falloff;
-    fog_height_layer_ = fog.height_layer;
-    fog_min_height_ = fog.min_height;
-    fog_max_height_ = fog.max_height;
-    fog_noise_scale_ = fog.noise_scale;
     for (int i = 0; i < 3; ++i) {
         fog_color_[i] = fog.color[i];
         fog_wind_[i] = fog.wind[i];
     }
+
+    // Cloud decks. The count is a PREFIX count (active_cloud_count stops at
+    // the first gap), because it selects the specialization the next dispatch
+    // binds — a shader compiled for 2 layers reads entries 0 and 1 and nothing
+    // else, so a hole at index 0 would silently render layer 1's parameters
+    // as layer 0's. Callers that can create a hole call compact_clouds first;
+    // this is the belt to that braces.
+    const int32_t requested =
+        fog.cloud_count < 0 ? 0
+                            : (fog.cloud_count > matter::kMaxCloudLayers
+                                   ? matter::kMaxCloudLayers
+                                   : fog.cloud_count);
+    if (fog.cloud_count > matter::kMaxCloudLayers && !cloud_overflow_warned_) {
+        cloud_overflow_warned_ = true;
+        std::fprintf(stderr,
+                     "[volumetrics] world asked for %d cloud layers; the "
+                     "shader is specialized for at most %d, so the extra "
+                     "layers are ignored\n",
+                     static_cast<int>(fog.cloud_count), matter::kMaxCloudLayers);
+    }
+    (void)requested;
+    cloud_count_ = matter::active_cloud_count(fog);
+    for (int i = 0; i < matter::kMaxCloudLayers; ++i) cloud_layers_[i] = fog.clouds[i];
 }
 
 // ---------------------------------------------------------------------------
@@ -904,17 +1007,12 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     }
     density_pc.frame_time = frame_time;
     density_pc.fog_density = fog_density_;
-    if (fog_height_layer_) {
-        // The bounded cloud layer repurposes the two height push constants as
-        // the layer's [min, max] bounds. Nothing scales them any more: the
-        // multipliers that used to sit between the authored values and these
-        // lines were folded back into the authored values (issue 80c66789).
-        density_pc.fog_floor = fog_min_height_;
-        density_pc.fog_falloff = fog_max_height_;
-    } else {
-        density_pc.fog_floor = fog_floor_;
-        density_pc.fog_falloff = fog_falloff_;
-    }
+    // Always the ground-fog meaning now. The bounded-cloud mode that used to
+    // REPURPOSE these two as a layer's [min, max] is gone: decks are the
+    // cloud-layer SSBO, and the ground fog underneath them keeps its own
+    // floor and falloff.
+    density_pc.fog_floor = fog_floor_;
+    density_pc.fog_falloff = fog_falloff_;
     // Reversed-ZO projection: m[10] = n/(f-n), m[11] = f*n/(f-n), so the
     // recovery identities are m[11]/m[10] = far and m[11]/(m[10]+1) = near
     // (the standard-ZO identities with roles swapped).
@@ -926,11 +1024,30 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     }
     density_pc.camera_far = matrices.view_to_clip.m[11] /
                             matrices.view_to_clip.m[10];
-    // Preserve the 128-byte push-constant ABI: positive pad2 opts into the
-    // bounded cloud layer and carries its world-to-noise coordinate scale.
-    density_pc.pad2 = fog_height_layer_ ? fog_noise_scale_ : 0.0f;
+    // pad2 is padding again. It used to smuggle the bounded layer's noise
+    // scale through the 128-byte ABI (positive = layer on); cloud parameters
+    // now live in their own SSBO where there is room to name them.
+    density_pc.pad2 = 0.0f;
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, density_pipeline_);
+    // Upload the live decks and pick the matching specialization. Both are
+    // driven by cloud_count_, so a shader compiled for N layers can only ever
+    // read the N entries this loop just wrote.
+    if (cloud_ssbo_.mapped != nullptr) {
+        matter::GpuCloudLayer packed[matter::kMaxCloudLayers]{};
+        for (int i = 0; i < cloud_count_; ++i)
+            matter::pack_cloud_layer(cloud_layers_[i], i, packed[i]);
+        std::memcpy(cloud_ssbo_.mapped, packed, sizeof(packed));
+        std::string flush_error;
+        matter::flush_buffer(cloud_ssbo_, 0, sizeof(packed), flush_error);
+    }
+    const int pipeline_index =
+        cloud_count_ < 0 ? 0
+                         : (cloud_count_ > matter::kMaxCloudLayers
+                                ? matter::kMaxCloudLayers
+                                : cloud_count_);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      density_pipelines_[pipeline_index]);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                             density_pipeline_layout_, 0, 1, &density_set_,
                             0, nullptr);
@@ -1100,9 +1217,11 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
 void VkVolumetrics::destroy() {
     if (device_ == VK_NULL_HANDLE) return;
 
-    // Pipelines.
-    if (density_pipeline_ != VK_NULL_HANDLE)
-        vkDestroyPipeline(device_, density_pipeline_, nullptr);
+    // Pipelines. One density pipeline per cloud-layer specialization.
+    for (VkPipeline& p : density_pipelines_) {
+        if (p != VK_NULL_HANDLE) vkDestroyPipeline(device_, p, nullptr);
+        p = VK_NULL_HANDLE;
+    }
     if (scatter_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, scatter_pipeline_, nullptr);
     if (integrate_pipeline_ != VK_NULL_HANDLE)
@@ -1148,9 +1267,9 @@ void VkVolumetrics::destroy() {
     vol_integrated_.reset();
     noise_texture_.reset();
     emitter_ssbo_.reset();
+    cloud_ssbo_.reset();
 
     // Zero out all handles.
-    density_pipeline_ = VK_NULL_HANDLE;
     scatter_pipeline_ = VK_NULL_HANDLE;
     integrate_pipeline_ = VK_NULL_HANDLE;
     density_pipeline_layout_ = VK_NULL_HANDLE;

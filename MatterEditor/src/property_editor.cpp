@@ -1,6 +1,7 @@
 #include "property_editor.h"
 
 #include "editor_props.h"
+#include "matter/world_definition.h"  // FogSettings, compact_clouds
 
 #include <algorithm>
 #include <cctype>
@@ -410,6 +411,96 @@ bool draw_draw_overrides_section(Binding& b, const char* filter) {
     return changed;
 }
 
+bool draw_cloud_layers_section(Binding& b, const char* filter) {
+    const Group& g = b.schema();
+    const uint32_t layers = static_cast<uint32_t>(matter::kMaxCloudLayers);
+    if (layers == 0 || g.field_count % layers != 0) {
+        ImGui::TextDisabled("Cloud schema is not a whole number of layers.");
+        return false;
+    }
+    const uint32_t per_layer = g.field_count / layers;
+    // Index 0 within a layer is `enabled` — see CLOUD_LAYER_FIELDS in
+    // editor_props.cpp. Asserted rather than searched by name because the
+    // whole point of slicing by index is not to parse names.
+    void* target = prop_edit_target(b);
+
+    ImGui::PushID(g.path);
+    bool changed = false;
+
+    uint32_t live = 0;
+    for (uint32_t l = 0; l < layers; ++l)
+        if (get_bool(target, g.fields[l * per_layer])) ++live;
+
+    if (live == 0) {
+        ImGui::TextDisabled("No cloud decks - ground fog only.");
+    } else {
+        ImGui::Text("%u deck%s", live, live == 1 ? "" : "s");
+        ImGui::SameLine();
+        if (ImGui::Button("Clear all")) {
+            reset_group(b);
+            changed = true;
+        }
+    }
+    ImGui::SetItemTooltip(
+        "Each deck exists ONLY between its Min and Max height. Overlapping "
+        "decks add their extinction. The enabled decks are compiled into the "
+        "density shader as a specialization, so switching one on rebinds a "
+        "different pipeline rather than costing a branch per froxel.");
+
+    for (uint32_t l = 0; l < layers; ++l) {
+        const uint32_t base = l * per_layer;
+        const Desc& enabled_desc = g.fields[base];
+        const bool on = get_bool(target, enabled_desc);
+
+        // Any field in this layer differing from the world's baseline colours
+        // the header, so a collapsed deck still advertises that it was edited.
+        bool layer_modified = false;
+        if (b.baseline()) {
+            for (uint32_t f = 0; f < per_layer; ++f)
+                if (!fields_equal(target, b.baseline(), g.fields[base + f]))
+                    layer_modified = true;
+        }
+
+        ImGui::PushID(static_cast<int>(l));
+        char header[96];
+        std::snprintf(header, sizeof(header), "Layer %u%s###cloudlayer%u",
+                      l, on ? "" : " (off)", l);
+        if (layer_modified) ImGui::PushStyleColor(ImGuiCol_Text, kModifiedColor);
+        const bool open = ImGui::CollapsingHeader(
+            header, on ? ImGuiTreeNodeFlags_DefaultOpen : 0);
+        if (layer_modified) ImGui::PopStyleColor();
+
+        if (open) {
+            ImGui::Indent();
+            for (uint32_t f = 0; f < per_layer; ++f) {
+                const uint32_t index = base + f;
+                const Desc& d = g.fields[index];
+                if (!prop_filter_matches_field(filter, d)) continue;
+                // Everything but the enable toggle is disabled while the deck
+                // is off: the values are still visible (so a deck can be read
+                // without switching it on) but cannot be edited into a state
+                // nothing renders.
+                const bool row_disabled = f != 0 && !on;
+                if (row_disabled) ImGui::BeginDisabled();
+                changed |= draw_field(b, target, index, d);
+                if (row_disabled) ImGui::EndDisabled();
+            }
+            ImGui::Unindent();
+        }
+        ImGui::PopID();
+    }
+
+    // Compaction has to happen the instant a middle deck is switched off: the
+    // density pipeline is chosen by a PREFIX count, so a hole would make the
+    // shader render the deck behind it with the wrong index — or drop it. Only
+    // on a real change, so this never fights a drag in progress.
+    if (changed && target == b.instance())
+        matter::compact_clouds(*static_cast<matter::FogSettings*>(target));
+
+    ImGui::PopID();
+    return changed;
+}
+
 void draw_lighting_contents(EditorProps& props) {
     // Neither group is RequiresReload, so the closure is inert today; passing
     // it anyway means a future reload-gated lighting field just works.
@@ -423,10 +514,11 @@ void draw_lighting_contents(EditorProps& props) {
         if (Binding* b = props.lighting()) reset_group(*b);
         if (Binding* b = props.volumetrics()) reset_group(*b);
         if (Binding* b = props.fog()) reset_group(*b);
+        if (Binding* b = props.clouds()) reset_group(*b);
     }
     ImGui::SetItemTooltip(
-        "Restores render.lighting, render.volumetrics and render.fog to the "
-        "values the world script authored at connect.");
+        "Restores render.lighting, render.volumetrics, render.fog and "
+        "render.clouds to the values the world script authored at connect.");
     ImGui::Separator();
 
     // note_panel_home: declared right at the draw call for each group, per
@@ -448,6 +540,24 @@ void draw_lighting_contents(EditorProps& props) {
     if (Binding* b = props.fog()) {
         props.note_panel_home(b->schema().path, "Lighting");
         draw_group(*b, nullptr, true, &on_apply);
+    }
+    // render.clouds last, and with its own renderer: it is 48 fields, and the
+    // flat list draw_group would produce is unreadable. It follows render.fog
+    // because a deck sits on top of the ground fog both literally and in the
+    // arithmetic — extinction sums.
+    if (Binding* b = props.clouds()) {
+        props.note_panel_home(b->schema().path, "Lighting");
+        ImGui::PushID(b->schema().path);
+        char header[96];
+        std::snprintf(header, sizeof(header), "%s###%s", b->schema().label,
+                      b->schema().path);
+        const bool open =
+            ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen);
+        ImGui::SameLine();
+        ImGui::TextDisabled("[%s]%s", prop_scope_name(b->scope()),
+                            b->dirty() ? " *" : "");
+        if (open) draw_cloud_layers_section(*b, nullptr);
+        ImGui::PopID();
     }
 }
 

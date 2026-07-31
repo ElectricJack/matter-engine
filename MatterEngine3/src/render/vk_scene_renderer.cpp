@@ -7140,11 +7140,28 @@ void VkSceneRenderer::set_volumetrics_settings(
     const matter::FogSettings& fog) {
     volumetrics_enabled_ = s.enabled;
     volumetrics_debug_view_ = s.vol_debug_view;
-    volumetrics_height_layer_ = fog.height_layer;
-    // The authored top of the deck, with nothing between it and the shader —
-    // the offset/multiplier that used to sit here folded into the authored
-    // values themselves (issue 80c66789).
-    volumetrics_cloud_top_ = fog.max_height;
+    // The composite pass skips froxel integration entirely for a ray whose
+    // camera AND terrain hit are both above the clouds — a straight ray with
+    // both endpoints above a horizontal deck cannot pass through it, and
+    // without this, coarse distant slices leak valley density over mountain
+    // summits.
+    //
+    // Two things had to change for layered clouds. The ceiling is now the
+    // highest enabled deck rather than the one layer's top; and the early-out
+    // is only VALID when there is no ground fog, because ground fog has no
+    // upper bound and so does fill the space above every deck. The old code
+    // got away without that second test because the bounded-layer mode
+    // suppressed ground fog by construction.
+    float ceiling = 0.0f;
+    int enabled = 0;
+    const int32_t live = matter::active_cloud_count(fog);
+    for (int32_t i = 0; i < live; ++i) {
+        if (enabled == 0 || fog.clouds[i].max_height > ceiling)
+            ceiling = fog.clouds[i].max_height;
+        ++enabled;
+    }
+    volumetrics_height_layer_ = enabled > 0 && fog.density <= 0.0f;
+    volumetrics_cloud_top_ = ceiling;
     if (volumetrics_)
         volumetrics_->update_settings(s, fog);
 }

@@ -14,12 +14,13 @@
 class FogLab extends World {
   static params = { worldSeed: 20260731 };
 
-  // Camera low and looking slightly up, so the frame is mostly the fog
-  // column between the ground plane and the sky — the part of the image the
-  // density shader owns.
+  // Just above the ground and aimed a few degrees above the horizon: the
+  // lower third of the frame is lit ground receding into aerial perspective
+  // and the upper two thirds is the open sky a cloud deck would occupy. Both
+  // halves of the density shader's output are therefore on screen at once.
   static camera = {
-    position: [0.0, 24.0, 300.0],
-    target:   [0.0, 120.0, 0.0],
+    position: [0.0, 60.0, 600.0],
+    target:   [0.0, 90.0, 0.0],
   };
 
   static fog = {
@@ -42,18 +43,19 @@ class FogLab extends World {
   };
 
   // A 40x40 m stone quad scaled to 1200x1200 m, so the fog has ground to sit
-  // on out to the far plane, plus three crates near the origin for a depth
-  // cue that makes an extinction change visible rather than merely present.
+  // on all the way to the horizon, plus a receding line of boxes: extinction
+  // is only legible against something whose distance you can read, and three
+  // identical crates at 60/180/420 m give the eye that ruler.
   static roots = [
     {
       module: "PlaygroundFloor",
       transform: [30, 0, 0, 0,  0, 1, 0, 0,  0, 0, 30, 0,  0, 0, 0, 1],
     },
     { module: "Crate",
-      transform: [6, 0, 0, 0,  0, 6, 0, 0,  0, 0, 6, 0,  -30, 0, 40, 1] },
+      transform: [8, 0, 0, 0,  0, 8, 0, 0,  0, 0, 8, 0,  -40, 12, 540, 1] },
     { module: "Crate",
-      transform: [6, 0, 0, 0,  0, 6, 0, 0,  0, 0, 6, 0,   20, 0, -60, 1] },
+      transform: [8, 0, 0, 0,  0, 8, 0, 0,  0, 0, 8, 0,   30, 12, 420, 1] },
     { module: "Crate",
-      transform: [6, 0, 0, 0,  0, 6, 0, 0,  0, 0, 6, 0,   60, 0, -180, 1] },
+      transform: [8, 0, 0, 0,  0, 8, 0, 0,  0, 0, 8, 0,  -20, 12, 180, 1] },
   ];
 }
