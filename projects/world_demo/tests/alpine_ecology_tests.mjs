@@ -4,6 +4,7 @@ import {
   FAMILY_SLOPE_MAX, isAlpineProfile, alpineAssetVariants,
   selectVegetationCatalog, environmentalDryness, sampleHabitat,
   selectDrynessState, selectAlpineAsset, familiesForRung,
+  isWithinVegetationCeiling,
 } from '../shared-lib/alpine_ecology.js';
 
 assert.equal(ALPINE_PROFILE, 'alpine-lush');
@@ -123,6 +124,8 @@ const bestHabitatFor = {
   grass: habitat({ altitude: 180, moisture: 0.7, exposure: 0.25, forest: 0.1, meadowPatch: 1 }),
 };
 assert.equal(selectAlpineAsset('tree', { ...lushTreeHabitat, altitude: 455.01 }, 0.5), null);
+assert.equal(isWithinVegetationCeiling(520), true);
+assert.equal(isWithinVegetationCeiling(520.01), false);
 for (const family of ['tree', 'shrub', 'groundCover', 'flower', 'grass']) {
   assert.equal(selectAlpineAsset(family,
     { ...bestHabitatFor[family], altitude: 520.01 }, 0.5), null);

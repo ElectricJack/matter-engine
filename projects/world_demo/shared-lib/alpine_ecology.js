@@ -60,6 +60,10 @@ const inRange = (value, start, peakStart, peakEnd, end) =>
 const finite = value => Number.isFinite(value);
 const fract = value => value - Math.floor(value);
 
+export function isWithinVegetationCeiling(altitude) {
+  return finite(altitude) && altitude <= 520;
+}
+
 function hash2(x, z, seed) {
   return fract(Math.sin(x * 127.1 + z * 311.7 + seed * 74.7) * 43758.5453123);
 }
@@ -242,7 +246,7 @@ export function selectAlpineAsset(family, habitat, identity) {
   const [module, form, seed, size, sinkY] = row;
   const { altitude, slope, dryness } = habitat;
   // These final gates cannot be overridden by otherwise strong habitat fields.
-  if (!finite(altitude) || !finite(slope) || altitude > 520 ||
+  if (!isWithinVegetationCeiling(altitude) || !finite(slope) ||
     (family === 'tree' && altitude > 455) || slope > FAMILY_SLOPE_MAX[family])
     return null;
   const scaleBase = { tree: 0.88, shrub: 0.82, groundCover: 0.86, flower: 0.88, grass: 0.90 }[family];
