@@ -54,7 +54,9 @@
 #include <fstream>
 #include <iomanip>
 #include <memory>
+#include <new>
 #include <string>
+#include <type_traits>
 #include <unordered_set>
 #include <vector>
 
@@ -70,11 +72,20 @@
 namespace {
 
 // ---------------------------------------------------------------------------
-// Properties panel field access (Phase 5 Task 7). There is no generic
-// reflection API for ECS components, so field get/set is hardcoded per
-// ComponentKind here, dispatching on the component/field name strings that
-// PropertiesRegistry hands back (which mirror ecs/scene_registry.h's
-// ComponentDescriptor/FieldDescriptor tables).
+// Properties panel field access (Phase 5 Task 7, generalized by the property
+// system's Phase 3 — see docs/superpowers/specs/2026-07-31-property-system-
+// design.md S7).
+//
+// Field *routing* is schema-driven: ecs/scene_registry.h's FieldDescriptor
+// carries a byte offset, so the strcmp ladders that used to live here are gone.
+// What stays hardcoded per ComponentKind is only the ECS boundary — "copy this
+// component out of the entity" and "set it back" — because flecs get/set are
+// typed on the C++ component type.
+//
+// The get/set asymmetry is deliberate and preserved: a setter mutates a stack
+// COPY of the whole component and re-sets it, so the edit lands as one
+// transactional component write (one observer fire, one physics reconcile),
+// never as a poke into live storage.
 // ---------------------------------------------------------------------------
 
 // flecs' entity_view::get<T>() returns `const T&` (asserts if absent), not a
@@ -93,432 +104,215 @@ flecs::entity find_scene_entity(flecs::world& world, matter::scene::SceneEntityI
     return found;
 }
 
-bool collider_prop_get_float(const matter::physics::ColliderProperties& p,
-                             const char* field, float& out) {
-    if (!std::strcmp(field, "density")) { out = p.density; return true; }
-    if (!std::strcmp(field, "friction")) { out = p.friction; return true; }
-    if (!std::strcmp(field, "restitution")) { out = p.restitution; return true; }
+// A stack buffer able to hold a copy of any registered ECS component.
+struct ComponentBuffer {
+    alignas(matter::scene::kMaxComponentStructAlign)
+        unsigned char bytes[matter::scene::kMaxComponentStructSize];
+    void* data() { return bytes; }
+};
+
+template <typename T>
+bool fetch_component_copy(flecs::entity e, void* out) {
+    static_assert(std::is_trivially_copyable<T>::value,
+                  "component copies are raw-byte buffers; needs a trivially copyable type");
+    static_assert(sizeof(T) <= matter::scene::kMaxComponentStructSize, "ComponentBuffer too small");
+    const T* p = get_ptr<T>(e);
+    if (!p) return false;
+    new (out) T(*p);
+    return true;
+}
+
+template <typename T>
+bool store_component_copy(flecs::entity e, const void* in) {
+    e.set<T>(*static_cast<const T*>(in));
+    return true;
+}
+
+// The ECS boundary: the only per-ComponentKind code left in the field path.
+bool component_fetch(flecs::entity e, matter::scene::ComponentKind kind, void* out) {
+    using matter::scene::ComponentKind;
+    switch (kind) {
+        case ComponentKind::Transform:
+            return fetch_component_copy<matter::ecs::LocalTransform>(e, out);
+        case ComponentKind::RigidBody:
+            return fetch_component_copy<matter::physics::RigidBody>(e, out);
+        case ComponentKind::Velocity:
+            return fetch_component_copy<matter::physics::PhysicsVelocity>(e, out);
+        case ComponentKind::SphereCollider:
+            return fetch_component_copy<matter::physics::SphereCollider>(e, out);
+        case ComponentKind::CapsuleCollider:
+            return fetch_component_copy<matter::physics::CapsuleCollider>(e, out);
+        case ComponentKind::BoxCollider:
+            return fetch_component_copy<matter::physics::BoxCollider>(e, out);
+        case ComponentKind::ConvexHullCollider:
+            return fetch_component_copy<matter::physics::ConvexHullCollider>(e, out);
+        case ComponentKind::PartInstance:
+            return fetch_component_copy<matter::scene::PartInstance>(e, out);
+        case ComponentKind::SectorStreaming:
+            return false;  // tag component, no fields
+    }
     return false;
 }
-bool collider_prop_set_float(matter::physics::ColliderProperties& p,
-                             const char* field, float value) {
-    if (!std::strcmp(field, "density")) { p.density = value; return true; }
-    if (!std::strcmp(field, "friction")) { p.friction = value; return true; }
-    if (!std::strcmp(field, "restitution")) { p.restitution = value; return true; }
+
+bool component_store(flecs::entity e, matter::scene::ComponentKind kind, const void* in) {
+    using matter::scene::ComponentKind;
+    switch (kind) {
+        case ComponentKind::Transform:
+            return store_component_copy<matter::ecs::LocalTransform>(e, in);
+        case ComponentKind::RigidBody:
+            return store_component_copy<matter::physics::RigidBody>(e, in);
+        case ComponentKind::Velocity:
+            return store_component_copy<matter::physics::PhysicsVelocity>(e, in);
+        case ComponentKind::SphereCollider:
+            return store_component_copy<matter::physics::SphereCollider>(e, in);
+        case ComponentKind::CapsuleCollider:
+            return store_component_copy<matter::physics::CapsuleCollider>(e, in);
+        case ComponentKind::BoxCollider:
+            return store_component_copy<matter::physics::BoxCollider>(e, in);
+        case ComponentKind::ConvexHullCollider:
+            return store_component_copy<matter::physics::ConvexHullCollider>(e, in);
+        case ComponentKind::PartInstance:
+            return store_component_copy<matter::scene::PartInstance>(e, in);
+        case ComponentKind::SectorStreaming:
+            return false;
+    }
     return false;
+}
+
+// Resolved (entity, component kind, field descriptor) for one field access,
+// with the component already copied into the caller's buffer.
+struct ResolvedField {
+    flecs::entity entity;
+    matter::scene::ComponentKind kind{};
+    const matter::scene::FieldDescriptor* field = nullptr;
+};
+
+bool resolve_entity_field(matter::WorldSession* session, matter::scene::SceneEntityId id,
+                          const char* component, const char* field,
+                          ResolvedField& out, ComponentBuffer& buf) {
+    if (!session || !component || !field) return false;
+    const matter::scene::ComponentDescriptor* cd = matter::scene::find_component(component);
+    if (!cd) return false;
+    const matter::scene::FieldDescriptor* fd = matter::scene::find_field(*cd, field);
+    if (!fd) return false;
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return false;
+    if (!component_fetch(e, cd->kind, buf.data())) return false;
+    out.entity = e;
+    out.kind = cd->kind;
+    out.field = fd;
+    return true;
 }
 
 bool field_get_float(matter::WorldSession* session, matter::scene::SceneEntityId id,
                      const char* component, const char* field, float& out) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-
-    if (!std::strcmp(component, "RigidBody")) {
-        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
-        if (!rb) return false;
-        if (!std::strcmp(field, "linear_damping")) { out = rb->linear_damping; return true; }
-        if (!std::strcmp(field, "angular_damping")) { out = rb->angular_damping; return true; }
-        if (!std::strcmp(field, "gravity_scale")) { out = rb->gravity_scale; return true; }
-        if (!std::strcmp(field, "sleep_threshold")) { out = rb->sleep_threshold; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "SphereCollider")) {
-        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
-        if (!c) return false;
-        if (!std::strcmp(field, "radius")) { out = c->radius; return true; }
-        return collider_prop_get_float(c->properties, field, out);
-    }
-    if (!std::strcmp(component, "CapsuleCollider")) {
-        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
-        if (!c) return false;
-        if (!std::strcmp(field, "radius")) { out = c->radius; return true; }
-        return collider_prop_get_float(c->properties, field, out);
-    }
-    if (!std::strcmp(component, "BoxCollider")) {
-        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
-        if (!c) return false;
-        return collider_prop_get_float(c->properties, field, out);
-    }
-    if (!std::strcmp(component, "ConvexHullCollider")) {
-        const auto* c = get_ptr<matter::physics::ConvexHullCollider>(e);
-        if (!c) return false;
-        return collider_prop_get_float(c->properties, field, out);
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    return matter::scene::field_get_float(buf.data(), *r.field, out);
 }
 
 bool field_set_float(matter::WorldSession* session, matter::scene::SceneEntityId id,
                      const char* component, const char* field, float value) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-
-    if (!std::strcmp(component, "RigidBody")) {
-        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
-        if (!rb) return false;
-        matter::physics::RigidBody copy = *rb;
-        bool ok = true;
-        if (!std::strcmp(field, "linear_damping")) copy.linear_damping = value;
-        else if (!std::strcmp(field, "angular_damping")) copy.angular_damping = value;
-        else if (!std::strcmp(field, "gravity_scale")) copy.gravity_scale = value;
-        else if (!std::strcmp(field, "sleep_threshold")) copy.sleep_threshold = value;
-        else ok = false;
-        if (ok) e.set<matter::physics::RigidBody>(copy);
-        return ok;
-    }
-    if (!std::strcmp(component, "SphereCollider")) {
-        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
-        if (!c) return false;
-        matter::physics::SphereCollider copy = *c;
-        bool ok = true;
-        if (!std::strcmp(field, "radius")) copy.radius = value;
-        else ok = collider_prop_set_float(copy.properties, field, value);
-        if (ok) e.set<matter::physics::SphereCollider>(copy);
-        return ok;
-    }
-    if (!std::strcmp(component, "CapsuleCollider")) {
-        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
-        if (!c) return false;
-        matter::physics::CapsuleCollider copy = *c;
-        bool ok = true;
-        if (!std::strcmp(field, "radius")) copy.radius = value;
-        else ok = collider_prop_set_float(copy.properties, field, value);
-        if (ok) e.set<matter::physics::CapsuleCollider>(copy);
-        return ok;
-    }
-    if (!std::strcmp(component, "BoxCollider")) {
-        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
-        if (!c) return false;
-        matter::physics::BoxCollider copy = *c;
-        const bool ok = collider_prop_set_float(copy.properties, field, value);
-        if (ok) e.set<matter::physics::BoxCollider>(copy);
-        return ok;
-    }
-    if (!std::strcmp(component, "ConvexHullCollider")) {
-        const auto* c = get_ptr<matter::physics::ConvexHullCollider>(e);
-        if (!c) return false;
-        matter::physics::ConvexHullCollider copy = *c;
-        const bool ok = collider_prop_set_float(copy.properties, field, value);
-        if (ok) e.set<matter::physics::ConvexHullCollider>(copy);
-        return ok;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    if (!matter::scene::field_set_float(buf.data(), *r.field, value)) return false;
+    return component_store(r.entity, r.kind, buf.data());
 }
 
 bool field_get_int(matter::WorldSession* session, matter::scene::SceneEntityId id,
                    const char* component, const char* field, int& out) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "RigidBody") && !std::strcmp(field, "type")) {
-        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
-        if (!rb) return false;
-        out = static_cast<int>(rb->type);
-        return true;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    int32_t v = 0;
+    if (!matter::scene::field_get_int(buf.data(), *r.field, v)) return false;
+    out = static_cast<int>(v);
+    return true;
 }
 
 bool field_set_int(matter::WorldSession* session, matter::scene::SceneEntityId id,
                    const char* component, const char* field, int value) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "RigidBody") && !std::strcmp(field, "type")) {
-        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
-        if (!rb) return false;
-        matter::physics::RigidBody copy = *rb;
-        copy.type = static_cast<matter::physics::RigidBodyType>(
-            std::max(0, std::min(2, value)));
-        e.set<matter::physics::RigidBody>(copy);
-        return true;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    if (!matter::scene::field_set_int(buf.data(), *r.field, static_cast<int32_t>(value)))
+        return false;
+    return component_store(r.entity, r.kind, buf.data());
 }
 
 bool field_get_uint(matter::WorldSession* session, matter::scene::SceneEntityId id,
                     const char* component, const char* field, uint32_t& out) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "PartInstance") && !std::strcmp(field, "part_hash")) {
-        const auto* pi = get_ptr<matter::scene::PartInstance>(e);
-        if (!pi) return false;
-        out = static_cast<uint32_t>(pi->part_hash);
-        return true;
-    }
-    if (!std::strcmp(component, "ConvexHullCollider") && !std::strcmp(field, "point_count")) {
-        const auto* c = get_ptr<matter::physics::ConvexHullCollider>(e);
-        if (!c) return false;
-        out = c->point_count;
-        return true;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    return matter::scene::field_get_uint(buf.data(), *r.field, out);
 }
 
+// PartInstance.part_hash and ConvexHullCollider.point_count are FieldReadOnly
+// in the schema, so this rejects them exactly as the hand-written setter did
+// (a 64-bit hash cannot survive a 32-bit write; a point_count without its
+// points[] would describe a garbage hull). Assignment goes through the
+// specialized part picker instead.
 bool field_set_uint(matter::WorldSession* session, matter::scene::SceneEntityId id,
                     const char* component, const char* field, uint32_t value) {
-    if (!session) return false;
-    // PartInstance.part_hash is uint64_t — the generic uint32 write path would
-    // silently truncate the upper 32 bits. Part assignment is routed through
-    // the specialized picker (assign_part callback) which uses the full 64-bit
-    // hash. Reject writes here to prevent silent corruption.
-    if (!std::strcmp(component, "PartInstance") && !std::strcmp(field, "part_hash"))
-        return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    (void)value;
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    if (!matter::scene::field_set_uint(buf.data(), *r.field, value)) return false;
+    return component_store(r.entity, r.kind, buf.data());
 }
 
 bool field_get_bool(matter::WorldSession* session, matter::scene::SceneEntityId id,
                     const char* component, const char* field, bool& out) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "RigidBody")) {
-        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
-        if (!rb) return false;
-        if (!std::strcmp(field, "enable_sleep")) { out = rb->enable_sleep; return true; }
-        if (!std::strcmp(field, "continuous")) { out = rb->continuous; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "SphereCollider")) {
-        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
-        if (c && !std::strcmp(field, "sensor")) { out = c->properties.sensor; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "CapsuleCollider")) {
-        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
-        if (c && !std::strcmp(field, "sensor")) { out = c->properties.sensor; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "BoxCollider")) {
-        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
-        if (c && !std::strcmp(field, "sensor")) { out = c->properties.sensor; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "ConvexHullCollider")) {
-        const auto* c = get_ptr<matter::physics::ConvexHullCollider>(e);
-        if (c && !std::strcmp(field, "sensor")) { out = c->properties.sensor; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "PartInstance")) {
-        const auto* pi = get_ptr<matter::scene::PartInstance>(e);
-        if (!pi) return false;
-        if (!std::strcmp(field, "visible")) { out = pi->visible; return true; }
-        if (!std::strcmp(field, "casts_shadow")) { out = pi->casts_shadow; return true; }
-        return false;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    return matter::scene::field_get_bool(buf.data(), *r.field, out);
 }
 
 bool field_set_bool(matter::WorldSession* session, matter::scene::SceneEntityId id,
                     const char* component, const char* field, bool value) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "RigidBody")) {
-        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
-        if (!rb) return false;
-        matter::physics::RigidBody copy = *rb;
-        bool ok = true;
-        if (!std::strcmp(field, "enable_sleep")) copy.enable_sleep = value;
-        else if (!std::strcmp(field, "continuous")) copy.continuous = value;
-        else ok = false;
-        if (ok) e.set<matter::physics::RigidBody>(copy);
-        return ok;
-    }
-    if (!std::strcmp(component, "SphereCollider")) {
-        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
-        if (!c || std::strcmp(field, "sensor")) return false;
-        matter::physics::SphereCollider copy = *c;
-        copy.properties.sensor = value;
-        e.set<matter::physics::SphereCollider>(copy);
-        return true;
-    }
-    if (!std::strcmp(component, "CapsuleCollider")) {
-        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
-        if (!c || std::strcmp(field, "sensor")) return false;
-        matter::physics::CapsuleCollider copy = *c;
-        copy.properties.sensor = value;
-        e.set<matter::physics::CapsuleCollider>(copy);
-        return true;
-    }
-    if (!std::strcmp(component, "BoxCollider")) {
-        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
-        if (!c || std::strcmp(field, "sensor")) return false;
-        matter::physics::BoxCollider copy = *c;
-        copy.properties.sensor = value;
-        e.set<matter::physics::BoxCollider>(copy);
-        return true;
-    }
-    if (!std::strcmp(component, "ConvexHullCollider")) {
-        const auto* c = get_ptr<matter::physics::ConvexHullCollider>(e);
-        if (!c || std::strcmp(field, "sensor")) return false;
-        matter::physics::ConvexHullCollider copy = *c;
-        copy.properties.sensor = value;
-        e.set<matter::physics::ConvexHullCollider>(copy);
-        return true;
-    }
-    if (!std::strcmp(component, "PartInstance")) {
-        const auto* pi = get_ptr<matter::scene::PartInstance>(e);
-        if (!pi) return false;
-        matter::scene::PartInstance copy = *pi;
-        bool ok = true;
-        if (!std::strcmp(field, "visible")) copy.visible = value;
-        else if (!std::strcmp(field, "casts_shadow")) copy.casts_shadow = value;
-        else ok = false;
-        if (ok) e.set<matter::scene::PartInstance>(copy);
-        return ok;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    if (!matter::scene::field_set_bool(buf.data(), *r.field, value)) return false;
+    return component_store(r.entity, r.kind, buf.data());
 }
 
 bool field_get_float3(matter::WorldSession* session, matter::scene::SceneEntityId id,
                       const char* component, const char* field, matter::Float3& out) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "LocalTransform")) {
-        const auto* t = get_ptr<matter::ecs::LocalTransform>(e);
-        if (!t) return false;
-        if (!std::strcmp(field, "translation")) { out = t->translation; return true; }
-        if (!std::strcmp(field, "scale")) { out = t->scale; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "PhysicsVelocity")) {
-        const auto* v = get_ptr<matter::physics::PhysicsVelocity>(e);
-        if (!v) return false;
-        if (!std::strcmp(field, "linear")) { out = v->linear; return true; }
-        if (!std::strcmp(field, "angular")) { out = v->angular; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "SphereCollider")) {
-        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
-        if (c && !std::strcmp(field, "center")) { out = c->center; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "CapsuleCollider")) {
-        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
-        if (!c) return false;
-        if (!std::strcmp(field, "point_a")) { out = c->point_a; return true; }
-        if (!std::strcmp(field, "point_b")) { out = c->point_b; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "BoxCollider")) {
-        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
-        if (!c) return false;
-        if (!std::strcmp(field, "center")) { out = c->center; return true; }
-        if (!std::strcmp(field, "half_extents")) { out = c->half_extents; return true; }
-        return false;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    return matter::scene::field_get_float3(buf.data(), *r.field, out);
 }
 
 bool field_set_float3(matter::WorldSession* session, matter::scene::SceneEntityId id,
                       const char* component, const char* field, matter::Float3 value) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "LocalTransform")) {
-        const auto* t = get_ptr<matter::ecs::LocalTransform>(e);
-        if (!t) return false;
-        matter::ecs::LocalTransform copy = *t;
-        bool ok = true;
-        if (!std::strcmp(field, "translation")) copy.translation = value;
-        else if (!std::strcmp(field, "scale")) copy.scale = value;
-        else ok = false;
-        if (ok) e.set<matter::ecs::LocalTransform>(copy);
-        return ok;
-    }
-    if (!std::strcmp(component, "PhysicsVelocity")) {
-        const auto* v = get_ptr<matter::physics::PhysicsVelocity>(e);
-        if (!v) return false;
-        matter::physics::PhysicsVelocity copy = *v;
-        bool ok = true;
-        if (!std::strcmp(field, "linear")) copy.linear = value;
-        else if (!std::strcmp(field, "angular")) copy.angular = value;
-        else ok = false;
-        if (ok) e.set<matter::physics::PhysicsVelocity>(copy);
-        return ok;
-    }
-    if (!std::strcmp(component, "SphereCollider")) {
-        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
-        if (!c || std::strcmp(field, "center")) return false;
-        matter::physics::SphereCollider copy = *c;
-        copy.center = value;
-        e.set<matter::physics::SphereCollider>(copy);
-        return true;
-    }
-    if (!std::strcmp(component, "CapsuleCollider")) {
-        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
-        if (!c) return false;
-        matter::physics::CapsuleCollider copy = *c;
-        bool ok = true;
-        if (!std::strcmp(field, "point_a")) copy.point_a = value;
-        else if (!std::strcmp(field, "point_b")) copy.point_b = value;
-        else ok = false;
-        if (ok) e.set<matter::physics::CapsuleCollider>(copy);
-        return ok;
-    }
-    if (!std::strcmp(component, "BoxCollider")) {
-        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
-        if (!c) return false;
-        matter::physics::BoxCollider copy = *c;
-        bool ok = true;
-        if (!std::strcmp(field, "center")) copy.center = value;
-        else if (!std::strcmp(field, "half_extents")) copy.half_extents = value;
-        else ok = false;
-        if (ok) e.set<matter::physics::BoxCollider>(copy);
-        return ok;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    if (!matter::scene::field_set_float3(buf.data(), *r.field, value)) return false;
+    return component_store(r.entity, r.kind, buf.data());
 }
 
 bool field_get_quat(matter::WorldSession* session, matter::scene::SceneEntityId id,
                     const char* component, const char* field, matter::Quaternion& out) {
-    if (!session || std::strcmp(field, "rotation")) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "LocalTransform")) {
-        const auto* t = get_ptr<matter::ecs::LocalTransform>(e);
-        if (!t) return false;
-        out = t->rotation;
-        return true;
-    }
-    if (!std::strcmp(component, "BoxCollider")) {
-        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
-        if (!c) return false;
-        out = c->rotation;
-        return true;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    return matter::scene::field_get_quat(buf.data(), *r.field, out);
 }
 
 bool field_set_quat(matter::WorldSession* session, matter::scene::SceneEntityId id,
                     const char* component, const char* field, matter::Quaternion value) {
-    if (!session || std::strcmp(field, "rotation")) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "LocalTransform")) {
-        const auto* t = get_ptr<matter::ecs::LocalTransform>(e);
-        if (!t) return false;
-        matter::ecs::LocalTransform copy = *t;
-        copy.rotation = value;
-        e.set<matter::ecs::LocalTransform>(copy);
-        return true;
-    }
-    if (!std::strcmp(component, "BoxCollider")) {
-        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
-        if (!c) return false;
-        matter::physics::BoxCollider copy = *c;
-        copy.rotation = value;
-        e.set<matter::physics::BoxCollider>(copy);
-        return true;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    if (!matter::scene::field_set_quat(buf.data(), *r.field, value)) return false;
+    return component_store(r.entity, r.kind, buf.data());
 }
 
 // Adds a default-constructed component instance to a scene entity by name.

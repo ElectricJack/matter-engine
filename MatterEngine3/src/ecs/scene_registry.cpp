@@ -4,8 +4,10 @@
 #include "matter/streaming.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -19,70 +21,136 @@ namespace matter::scene {
 
 // ---------------------------------------------------------------------------
 // Field descriptors for each component kind.
+//
+// Every offset comes from offsetof on the real struct, so a renamed or
+// reordered member is a compile error rather than silent drift; the field
+// *type* is the part a table can still get wrong, which is what
+// scene_registry_tests' offset/type round-trip checks cover.
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// offsetof of a member, and of a member of the shared ColliderProperties
+// sub-struct every collider embeds as `properties`.
+#define ME_FIELD_OFF(S, m) static_cast<uint32_t>(offsetof(S, m))
+#define ME_COLLIDER_PROP_OFF(S, m)                                  \
+    (static_cast<uint32_t>(offsetof(S, properties)) +               \
+     static_cast<uint32_t>(offsetof(physics::ColliderProperties, m)))
+
+constexpr FieldDescriptor fd(const char* name, FieldType type, uint32_t offset) {
+    FieldDescriptor d{};
+    d.name = name;
+    d.type = type;
+    d.offset = offset;
+    return d;
+}
+
+constexpr FieldDescriptor fd_float(const char* name, uint32_t offset, float lo, float hi) {
+    FieldDescriptor d = fd(name, FieldType::Float, offset);
+    d.range_min = lo;
+    d.range_max = hi;
+    d.has_range = true;
+    return d;
+}
+
+// Enum labels are the schema's now (they used to live in the editor's
+// enum_options_for table). The implicit range is the label index span, which
+// is what clamps a write.
+constexpr FieldDescriptor fd_enum(const char* name, uint32_t offset, uint8_t storage,
+                                  const char* const* labels, uint32_t label_count) {
+    FieldDescriptor d = fd(name, FieldType::Enum, offset);
+    d.storage_size = storage;
+    d.enum_labels = labels;
+    d.enum_count = label_count;
+    d.range_min = 0.0f;
+    d.range_max = label_count > 0 ? static_cast<float>(label_count - 1) : 0.0f;
+    d.has_range = true;
+    return d;
+}
+
+constexpr FieldDescriptor fd_uint(const char* name, uint32_t offset, uint8_t storage,
+                                  uint32_t flags) {
+    FieldDescriptor d = fd(name, FieldType::UInt, offset);
+    d.storage_size = storage;
+    d.flags = flags;
+    return d;
+}
+
+const char* const s_rigid_body_type_labels[] = {"Static", "Kinematic", "Dynamic"};
+
+}  // namespace
+
 static const FieldDescriptor s_transform_fields[] = {
-    {"translation", FieldType::Float3, 0, 0, false},
-    {"rotation", FieldType::Quaternion, 0, 0, false},
-    {"scale", FieldType::Float3, 0, 0, false},
+    fd("translation", FieldType::Float3, ME_FIELD_OFF(ecs::LocalTransform, translation)),
+    fd("rotation", FieldType::Quaternion, ME_FIELD_OFF(ecs::LocalTransform, rotation)),
+    fd("scale", FieldType::Float3, ME_FIELD_OFF(ecs::LocalTransform, scale)),
 };
 
 static const FieldDescriptor s_rigid_body_fields[] = {
-    {"type", FieldType::Enum, 0, 2, true},
-    {"linear_damping", FieldType::Float, 0.0f, 100.0f, true},
-    {"angular_damping", FieldType::Float, 0.0f, 100.0f, true},
-    {"gravity_scale", FieldType::Float, -10.0f, 10.0f, true},
-    {"sleep_threshold", FieldType::Float, 0.0f, 10.0f, true},
-    {"enable_sleep", FieldType::Bool, 0, 0, false},
-    {"continuous", FieldType::Bool, 0, 0, false},
+    fd_enum("type", ME_FIELD_OFF(physics::RigidBody, type),
+            sizeof(physics::RigidBodyType), s_rigid_body_type_labels, 3),
+    fd_float("linear_damping", ME_FIELD_OFF(physics::RigidBody, linear_damping), 0.0f, 100.0f),
+    fd_float("angular_damping", ME_FIELD_OFF(physics::RigidBody, angular_damping), 0.0f, 100.0f),
+    fd_float("gravity_scale", ME_FIELD_OFF(physics::RigidBody, gravity_scale), -10.0f, 10.0f),
+    fd_float("sleep_threshold", ME_FIELD_OFF(physics::RigidBody, sleep_threshold), 0.0f, 10.0f),
+    fd("enable_sleep", FieldType::Bool, ME_FIELD_OFF(physics::RigidBody, enable_sleep)),
+    fd("continuous", FieldType::Bool, ME_FIELD_OFF(physics::RigidBody, continuous)),
 };
 
 static const FieldDescriptor s_velocity_fields[] = {
-    {"linear", FieldType::Float3, 0, 0, false},
-    {"angular", FieldType::Float3, 0, 0, false},
+    fd("linear", FieldType::Float3, ME_FIELD_OFF(physics::PhysicsVelocity, linear)),
+    fd("angular", FieldType::Float3, ME_FIELD_OFF(physics::PhysicsVelocity, angular)),
 };
 
 static const FieldDescriptor s_sphere_collider_fields[] = {
-    {"center", FieldType::Float3, 0, 0, false},
-    {"radius", FieldType::Float, 0.001f, 1000.0f, true},
-    {"density", FieldType::Float, 0.0f, 100.0f, true},
-    {"friction", FieldType::Float, 0.0f, 1.0f, true},
-    {"restitution", FieldType::Float, 0.0f, 1.0f, true},
-    {"sensor", FieldType::Bool, 0, 0, false},
+    fd("center", FieldType::Float3, ME_FIELD_OFF(physics::SphereCollider, center)),
+    fd_float("radius", ME_FIELD_OFF(physics::SphereCollider, radius), 0.001f, 1000.0f),
+    fd_float("density", ME_COLLIDER_PROP_OFF(physics::SphereCollider, density), 0.0f, 100.0f),
+    fd_float("friction", ME_COLLIDER_PROP_OFF(physics::SphereCollider, friction), 0.0f, 1.0f),
+    fd_float("restitution", ME_COLLIDER_PROP_OFF(physics::SphereCollider, restitution), 0.0f, 1.0f),
+    fd("sensor", FieldType::Bool, ME_COLLIDER_PROP_OFF(physics::SphereCollider, sensor)),
 };
 
 static const FieldDescriptor s_capsule_collider_fields[] = {
-    {"point_a", FieldType::Float3, 0, 0, false},
-    {"point_b", FieldType::Float3, 0, 0, false},
-    {"radius", FieldType::Float, 0.001f, 1000.0f, true},
-    {"density", FieldType::Float, 0.0f, 100.0f, true},
-    {"friction", FieldType::Float, 0.0f, 1.0f, true},
-    {"restitution", FieldType::Float, 0.0f, 1.0f, true},
-    {"sensor", FieldType::Bool, 0, 0, false},
+    fd("point_a", FieldType::Float3, ME_FIELD_OFF(physics::CapsuleCollider, point_a)),
+    fd("point_b", FieldType::Float3, ME_FIELD_OFF(physics::CapsuleCollider, point_b)),
+    fd_float("radius", ME_FIELD_OFF(physics::CapsuleCollider, radius), 0.001f, 1000.0f),
+    fd_float("density", ME_COLLIDER_PROP_OFF(physics::CapsuleCollider, density), 0.0f, 100.0f),
+    fd_float("friction", ME_COLLIDER_PROP_OFF(physics::CapsuleCollider, friction), 0.0f, 1.0f),
+    fd_float("restitution", ME_COLLIDER_PROP_OFF(physics::CapsuleCollider, restitution), 0.0f, 1.0f),
+    fd("sensor", FieldType::Bool, ME_COLLIDER_PROP_OFF(physics::CapsuleCollider, sensor)),
 };
 
 static const FieldDescriptor s_box_collider_fields[] = {
-    {"center", FieldType::Float3, 0, 0, false},
-    {"rotation", FieldType::Quaternion, 0, 0, false},
-    {"half_extents", FieldType::Float3, 0, 0, false},
-    {"density", FieldType::Float, 0.0f, 100.0f, true},
-    {"friction", FieldType::Float, 0.0f, 1.0f, true},
-    {"restitution", FieldType::Float, 0.0f, 1.0f, true},
-    {"sensor", FieldType::Bool, 0, 0, false},
+    fd("center", FieldType::Float3, ME_FIELD_OFF(physics::BoxCollider, center)),
+    fd("rotation", FieldType::Quaternion, ME_FIELD_OFF(physics::BoxCollider, rotation)),
+    fd("half_extents", FieldType::Float3, ME_FIELD_OFF(physics::BoxCollider, half_extents)),
+    fd_float("density", ME_COLLIDER_PROP_OFF(physics::BoxCollider, density), 0.0f, 100.0f),
+    fd_float("friction", ME_COLLIDER_PROP_OFF(physics::BoxCollider, friction), 0.0f, 1.0f),
+    fd_float("restitution", ME_COLLIDER_PROP_OFF(physics::BoxCollider, restitution), 0.0f, 1.0f),
+    fd("sensor", FieldType::Bool, ME_COLLIDER_PROP_OFF(physics::BoxCollider, sensor)),
 };
 
 static const FieldDescriptor s_convex_hull_fields[] = {
-    {"point_count", FieldType::UInt, 3, 32, true},
-    {"density", FieldType::Float, 0.0f, 100.0f, true},
-    {"friction", FieldType::Float, 0.0f, 1.0f, true},
-    {"restitution", FieldType::Float, 0.0f, 1.0f, true},
-    {"sensor", FieldType::Bool, 0, 0, false},
+    // Read-only: point_count only means anything alongside the points[] array
+    // the schema has no type for, so writing it alone would leave the hull
+    // describing garbage. (The editor already rejected this write.)
+    fd_uint("point_count", ME_FIELD_OFF(physics::ConvexHullCollider, point_count),
+            sizeof(uint32_t), FieldReadOnly),
+    fd_float("density", ME_COLLIDER_PROP_OFF(physics::ConvexHullCollider, density), 0.0f, 100.0f),
+    fd_float("friction", ME_COLLIDER_PROP_OFF(physics::ConvexHullCollider, friction), 0.0f, 1.0f),
+    fd_float("restitution", ME_COLLIDER_PROP_OFF(physics::ConvexHullCollider, restitution), 0.0f, 1.0f),
+    fd("sensor", FieldType::Bool, ME_COLLIDER_PROP_OFF(physics::ConvexHullCollider, sensor)),
 };
 
 static const FieldDescriptor s_part_instance_fields[] = {
-    {"part_hash", FieldType::UInt, 0, 0, false},
-    {"visible", FieldType::Bool, 0, 0, false},
-    {"casts_shadow", FieldType::Bool, 0, 0, false},
+    // Read-only: part_hash is 64-bit, and the UInt accessors are 32-bit, so a
+    // generic write would silently truncate. Part assignment goes through the
+    // editor's part picker, which carries the full hash.
+    fd_uint("part_hash", ME_FIELD_OFF(PartInstance, part_hash),
+            sizeof(uint64_t), FieldReadOnly),
+    fd("visible", FieldType::Bool, ME_FIELD_OFF(PartInstance, visible)),
+    fd("casts_shadow", FieldType::Bool, ME_FIELD_OFF(PartInstance, casts_shadow)),
 };
 
 static const FieldDescriptor s_sector_streaming_fields[] = {};
@@ -92,18 +160,38 @@ static const FieldDescriptor s_sector_streaming_fields[] = {};
 // ---------------------------------------------------------------------------
 
 static const ComponentDescriptor s_descriptors[] = {
-    {ComponentKind::Transform, "LocalTransform", s_transform_fields, 3, false},
-    {ComponentKind::RigidBody, "RigidBody", s_rigid_body_fields, 7, false},
-    {ComponentKind::Velocity, "PhysicsVelocity", s_velocity_fields, 2, false},
-    {ComponentKind::SphereCollider, "SphereCollider", s_sphere_collider_fields, 6, false},
-    {ComponentKind::CapsuleCollider, "CapsuleCollider", s_capsule_collider_fields, 7, false},
-    {ComponentKind::BoxCollider, "BoxCollider", s_box_collider_fields, 7, false},
-    {ComponentKind::ConvexHullCollider, "ConvexHullCollider", s_convex_hull_fields, 5, false},
-    {ComponentKind::PartInstance, "PartInstance", s_part_instance_fields, 3, false},
-    {ComponentKind::SectorStreaming, "SectorStreaming", s_sector_streaming_fields, 0, false},
+    {ComponentKind::Transform, "LocalTransform", s_transform_fields, 3, false,
+     sizeof(ecs::LocalTransform), alignof(ecs::LocalTransform)},
+    {ComponentKind::RigidBody, "RigidBody", s_rigid_body_fields, 7, false,
+     sizeof(physics::RigidBody), alignof(physics::RigidBody)},
+    {ComponentKind::Velocity, "PhysicsVelocity", s_velocity_fields, 2, false,
+     sizeof(physics::PhysicsVelocity), alignof(physics::PhysicsVelocity)},
+    {ComponentKind::SphereCollider, "SphereCollider", s_sphere_collider_fields, 6, false,
+     sizeof(physics::SphereCollider), alignof(physics::SphereCollider)},
+    {ComponentKind::CapsuleCollider, "CapsuleCollider", s_capsule_collider_fields, 7, false,
+     sizeof(physics::CapsuleCollider), alignof(physics::CapsuleCollider)},
+    {ComponentKind::BoxCollider, "BoxCollider", s_box_collider_fields, 7, false,
+     sizeof(physics::BoxCollider), alignof(physics::BoxCollider)},
+    {ComponentKind::ConvexHullCollider, "ConvexHullCollider", s_convex_hull_fields, 5, false,
+     sizeof(physics::ConvexHullCollider), alignof(physics::ConvexHullCollider)},
+    {ComponentKind::PartInstance, "PartInstance", s_part_instance_fields, 3, false,
+     sizeof(PartInstance), alignof(PartInstance)},
+    {ComponentKind::SectorStreaming, "SectorStreaming", s_sector_streaming_fields, 0, false,
+     sizeof(streaming::SectorStreaming), alignof(streaming::SectorStreaming)},
 };
 
 static constexpr uint32_t s_descriptor_count = sizeof(s_descriptors) / sizeof(s_descriptors[0]);
+
+// The generic accessors copy a component into a caller-provided stack buffer
+// sized by these bounds; keep them honest.
+static_assert(sizeof(physics::ConvexHullCollider) <= kMaxComponentStructSize,
+              "kMaxComponentStructSize too small for ConvexHullCollider");
+static_assert(sizeof(physics::BoxCollider) <= kMaxComponentStructSize,
+              "kMaxComponentStructSize too small for BoxCollider");
+static_assert(alignof(physics::ConvexHullCollider) <= kMaxComponentStructAlign,
+              "kMaxComponentStructAlign too small");
+static_assert(alignof(ecs::LocalTransform) <= kMaxComponentStructAlign,
+              "kMaxComponentStructAlign too small");
 
 const ComponentDescriptor* find_component(const char* name) {
     for (uint32_t i = 0; i < s_descriptor_count; ++i) {
@@ -117,6 +205,186 @@ uint32_t component_count() { return s_descriptor_count; }
 
 const ComponentDescriptor* component_at(uint32_t index) {
     return index < s_descriptor_count ? &s_descriptors[index] : nullptr;
+}
+
+const FieldDescriptor* find_field(const ComponentDescriptor& component, const char* field) {
+    if (!field) return nullptr;
+    for (uint32_t i = 0; i < component.field_count; ++i) {
+        if (component.fields[i].name && std::strcmp(component.fields[i].name, field) == 0)
+            return &component.fields[i];
+    }
+    return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Generic offset-based field access.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+template <class T>
+const T& field_as(const void* component, const FieldDescriptor& f) {
+    return *reinterpret_cast<const T*>(static_cast<const char*>(component) + f.offset);
+}
+template <class T>
+T& field_as(void* component, const FieldDescriptor& f) {
+    return *reinterpret_cast<T*>(static_cast<char*>(component) + f.offset);
+}
+
+bool writable(const FieldDescriptor& f) { return (f.flags & FieldReadOnly) == 0; }
+
+// Reads an integral field of storage_size bytes as an unsigned 64-bit value.
+bool read_integral(const void* component, const FieldDescriptor& f, uint64_t& out) {
+    switch (f.storage_size) {
+        case 1: out = field_as<uint8_t>(component, f); return true;
+        case 2: out = field_as<uint16_t>(component, f); return true;
+        case 4: out = field_as<uint32_t>(component, f); return true;
+        case 8: out = field_as<uint64_t>(component, f); return true;
+        default: return false;
+    }
+}
+
+bool write_integral(void* component, const FieldDescriptor& f, uint64_t value) {
+    switch (f.storage_size) {
+        case 1: field_as<uint8_t>(component, f) = static_cast<uint8_t>(value); return true;
+        case 2: field_as<uint16_t>(component, f) = static_cast<uint16_t>(value); return true;
+        case 4: field_as<uint32_t>(component, f) = static_cast<uint32_t>(value); return true;
+        case 8: field_as<uint64_t>(component, f) = value; return true;
+        default: return false;
+    }
+}
+
+int32_t clamp_to_range(const FieldDescriptor& f, int32_t v) {
+    if (!f.has_range) return v;
+    const int32_t lo = static_cast<int32_t>(f.range_min);
+    const int32_t hi = static_cast<int32_t>(f.range_max);
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+}  // namespace
+
+bool field_get_float(const void* component, const FieldDescriptor& f, float& out) {
+    if (!component || f.type != FieldType::Float) return false;
+    out = field_as<float>(component, f);
+    return true;
+}
+
+bool field_set_float(void* component, const FieldDescriptor& f, float value) {
+    if (!component || f.type != FieldType::Float || !writable(f)) return false;
+    field_as<float>(component, f) = value;
+    return true;
+}
+
+bool field_get_int(const void* component, const FieldDescriptor& f, int32_t& out) {
+    if (!component) return false;
+    if (f.type == FieldType::Int) {
+        out = field_as<int32_t>(component, f);
+        return true;
+    }
+    if (f.type != FieldType::Enum) return false;
+    uint64_t raw = 0;
+    if (!read_integral(component, f, raw)) return false;
+    out = static_cast<int32_t>(raw);
+    return true;
+}
+
+bool field_set_int(void* component, const FieldDescriptor& f, int32_t value) {
+    if (!component || !writable(f)) return false;
+    if (f.type == FieldType::Int) {
+        field_as<int32_t>(component, f) = clamp_to_range(f, value);
+        return true;
+    }
+    if (f.type != FieldType::Enum) return false;
+    const int32_t clamped = clamp_to_range(f, value);
+    return write_integral(component, f, static_cast<uint64_t>(clamped < 0 ? 0 : clamped));
+}
+
+bool field_get_uint(const void* component, const FieldDescriptor& f, uint32_t& out) {
+    if (!component || f.type != FieldType::UInt) return false;
+    uint64_t raw = 0;
+    if (!read_integral(component, f, raw)) return false;
+    // Wider storage (PartInstance::part_hash) truncates to the low 32 bits,
+    // which is what the editor's hand-written getter did.
+    out = static_cast<uint32_t>(raw);
+    return true;
+}
+
+bool field_set_uint(void* component, const FieldDescriptor& f, uint32_t value) {
+    if (!component || f.type != FieldType::UInt || !writable(f)) return false;
+    uint32_t v = value;
+    if (f.has_range) {
+        const uint32_t lo = f.range_min <= 0.0f ? 0u : static_cast<uint32_t>(f.range_min);
+        const uint32_t hi = f.range_max <= 0.0f ? 0u : static_cast<uint32_t>(f.range_max);
+        v = v < lo ? lo : (v > hi ? hi : v);
+    }
+    return write_integral(component, f, v);
+}
+
+bool field_get_bool(const void* component, const FieldDescriptor& f, bool& out) {
+    if (!component || f.type != FieldType::Bool) return false;
+    out = field_as<bool>(component, f);
+    return true;
+}
+
+bool field_set_bool(void* component, const FieldDescriptor& f, bool value) {
+    if (!component || f.type != FieldType::Bool || !writable(f)) return false;
+    field_as<bool>(component, f) = value;
+    return true;
+}
+
+bool field_get_float3(const void* component, const FieldDescriptor& f, Float3& out) {
+    if (!component || f.type != FieldType::Float3) return false;
+    out = field_as<Float3>(component, f);
+    return true;
+}
+
+bool field_set_float3(void* component, const FieldDescriptor& f, const Float3& value) {
+    if (!component || f.type != FieldType::Float3 || !writable(f)) return false;
+    field_as<Float3>(component, f) = value;
+    return true;
+}
+
+bool field_get_quat(const void* component, const FieldDescriptor& f, Quaternion& out) {
+    if (!component || f.type != FieldType::Quaternion) return false;
+    out = field_as<Quaternion>(component, f);
+    return true;
+}
+
+bool field_set_quat(void* component, const FieldDescriptor& f, const Quaternion& value) {
+    if (!component || f.type != FieldType::Quaternion || !writable(f)) return false;
+    field_as<Quaternion>(component, f) = value;
+    return true;
+}
+
+bool to_props_desc(const FieldDescriptor& f, matter::props::Desc& out) {
+    matter::props::Desc d;
+    switch (f.type) {
+        case FieldType::Float:  d.type = matter::props::Type::Float; break;
+        case FieldType::Int:    d.type = matter::props::Type::Int; break;
+        case FieldType::UInt:   d.type = matter::props::Type::UInt; break;
+        case FieldType::Bool:   d.type = matter::props::Type::Bool; break;
+        case FieldType::Enum:   d.type = matter::props::Type::Enum; break;
+        case FieldType::Float3: d.type = matter::props::Type::Float3; break;
+        // Quaternion stays ECS-only (spec S7): props has no such type, and the
+        // Euler-edit widget that consumes it is ECS-specific.
+        case FieldType::Quaternion: return false;
+    }
+    const bool integral = f.type == FieldType::Int || f.type == FieldType::UInt ||
+                          f.type == FieldType::Enum;
+    // props' typed accessors address Int/UInt/Enum as int32_t/uint32_t.
+    if (integral && f.storage_size != 4) return false;
+
+    d.name = f.name;
+    d.offset = f.offset;
+    d.min = f.range_min;
+    d.max = f.range_max;
+    d.has_range = f.has_range;
+    d.doc = f.doc;
+    d.enum_labels = f.enum_labels;
+    d.enum_count = f.enum_count;
+    if (f.flags & FieldReadOnly) d.flags |= matter::props::ReadOnly;
+    out = d;
+    return true;
 }
 
 // ---------------------------------------------------------------------------

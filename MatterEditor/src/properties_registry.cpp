@@ -54,6 +54,9 @@ PropertiesRegistry::PropertiesRegistry() {
             widget.range_min = fd.range_min;
             widget.range_max = fd.range_max;
             widget.has_range = fd.has_range;
+            widget.enum_labels = fd.enum_labels;
+            widget.enum_count = fd.enum_count;
+            widget.doc = fd.doc;
             entry.fields.push_back(widget);
         }
 

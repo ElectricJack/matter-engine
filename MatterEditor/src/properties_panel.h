@@ -27,9 +27,12 @@ namespace viewer {
 // component name + field name (names match ComponentDescriptor/
 // FieldDescriptor from ecs/scene_registry.h). Getters/setters return false
 // when the entity, component, or field cannot be resolved (e.g. the
-// component isn't present on that entity). There is no generic reflection
-// API for ECS components yet, so the engine side (main.cpp) hardcodes field
-// access per ComponentKind.
+// component isn't present on that entity, the field's type doesn't match the
+// accessor, or the descriptor marks it FieldReadOnly).
+//
+// Since the property system's Phase 3 the implementation is schema-driven:
+// FieldDescriptor carries a byte offset, so main.cpp only fetches a component
+// copy and stores it back — see the header comment there.
 struct FieldCommands {
     std::function<bool(matter::scene::SceneEntityId, const char*, const char*, float&)> get_float;
     std::function<bool(matter::scene::SceneEntityId, const char*, const char*, float)> set_float;

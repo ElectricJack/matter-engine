@@ -29,6 +29,15 @@ struct FieldWidget {
     float range_min = 0.0f;
     float range_max = 0.0f;
     bool has_range = false;
+    // Enum option labels, copied straight off the ECS FieldDescriptor
+    // (property-system spec S7 — they used to live in a hardcoded table in
+    // properties_panel.cpp). Null/0 for non-enum fields, and for an enum the
+    // schema has not labelled: the panel then falls back to a numeric drag.
+    // Points into the descriptor's static string table, which outlives the
+    // registry.
+    const char* const* enum_labels = nullptr;
+    uint32_t enum_count = 0;
+    const char* doc = nullptr;  // tooltip text (null when undocumented)
 };
 
 struct ComponentEntry {
