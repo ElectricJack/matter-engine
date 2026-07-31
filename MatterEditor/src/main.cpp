@@ -724,6 +724,15 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"loop_present_ms\":" << loop_stats.loop_present_ms
            << ",\"loop_peak_pump_ms\":" << loop_stats.loop_peak_pump_ms
            << ",\"loop_peak_acquire_ms\":" << loop_stats.loop_peak_acquire_ms
+           // GPU pass timers, as of the last sampled frame. These are the
+           // only way to cost a compute pass that is small next to the frame:
+           // at 220 fps the froxel passes are well under the run-to-run
+           // spread of median_frame_ms, so a sweep over them reads as pure
+           // noise in the end-to-end number and as a clean signal here.
+           // Added for the cloud-layer work (issue 80c66789), which had
+           // exactly that problem.
+           << ",\"gpu_total_ms\":" << frame_stats.gpu_total_ms
+           << ",\"gpu_volumetrics_ms\":" << frame_stats.gpu_vol_ms
            << ",\"validation_errors\":" << validation_errors << "}\n";
     if (!output) {
         error = "failed while writing MATTER_PERF_OUTPUT '" + config.output_path + "'";
