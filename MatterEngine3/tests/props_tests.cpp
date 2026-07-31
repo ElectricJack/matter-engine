@@ -377,6 +377,88 @@ void test_env_layer() {
     CHECK(!b->env_forced(0), "env: unset var clears the env-forced flag");
 }
 
+// ---------------------------------------------------------------------------
+// env_negated + case-insensitive enum labels
+// (issue render-rt-and-dlss-runtime-toggles)
+//
+// Its own fixture group rather than more fields on Tunables: half the checks in
+// test_env_layer are written against field INDICES, and appending to the shared
+// schema would have shifted them.
+// ---------------------------------------------------------------------------
+struct GpuLike {
+    bool ray_tracing = true;
+    int32_t dlss_mode = 0;
+};
+
+const char* const kGpuLikeModeLabels[] = {"Native", "Quality", "Balanced",
+                                          "Performance"};
+
+const auto& gpu_like_schema() {
+    static const auto def = props::group<GpuLike>(
+        "test.gpu", "Gpu",
+        props::prop(&GpuLike::ray_tracing, "ray_tracing")
+            .env_negated("MATTER_PROPS_TEST_DISABLE_RT"),
+        props::prop(&GpuLike::dlss_mode, "dlss_mode")
+            .enums(kGpuLikeModeLabels, 4).env("MATTER_PROPS_TEST_DLSS"));
+    return def;
+}
+
+void test_env_negation_and_enum_case() {
+    Registry reg;
+    GpuLike inst;
+    Binding* b = reg.get(reg.bind(gpu_like_schema(), &inst, Scope::User));
+    const props::Group& g = b->schema();
+    CHECK(g.fields[0].env_negate && !g.fields[1].env_negate,
+          "env_negated: only the field that asked for it carries the flag");
+
+    // A disable-shaped var driving an enable-shaped field. This is the whole
+    // point: MATTER_DISABLE_VK_RT=1 must clear render.gpu.ray_tracing.
+    set_env("MATTER_PROPS_TEST_DISABLE_RT", "1");
+    props::apply_env(*b);
+    CHECK(!inst.ray_tracing, "env_negated: =1 clears the field");
+    CHECK(b->env_forced(0), "env_negated: still marks the field env-forced");
+
+    set_env("MATTER_PROPS_TEST_DISABLE_RT", "false");
+    props::apply_env(*b);
+    CHECK(inst.ray_tracing, "env_negated: =false SETS the field");
+
+    // The negation belongs to the env layer only. `set <path> false` through
+    // the shared parser has to keep meaning false, or the FIFO command and the
+    // panel checkbox would disagree about which way the field points.
+    CHECK(props::parse_and_set(&inst, g.fields[0], "false") && !inst.ray_tracing,
+          "env_negated: parse_and_set is NOT negated");
+    inst.ray_tracing = true;
+
+    // The instance-only overload negates too — vt_residency-style engine
+    // groups apply env without a Binding.
+    GpuLike bare;
+    set_env("MATTER_PROPS_TEST_DISABLE_RT", "yes");
+    props::apply_env(&bare, g);
+    CHECK(!bare.ray_tracing, "env_negated: the Binding-free overload negates too");
+
+    set_env("MATTER_PROPS_TEST_DISABLE_RT", "");
+    props::apply_env(*b);
+    CHECK(!b->env_forced(0), "env_negated: unset clears env-forced as usual");
+
+    // Enum labels are UI text ("Quality") but every env/CLI spelling in the
+    // editor is lower case. Both must land.
+    set_env("MATTER_PROPS_TEST_DLSS", "quality");
+    props::apply_env(*b);
+    CHECK(inst.dlss_mode == 1, "enum env: lower-case label matches Title-case");
+    set_env("MATTER_PROPS_TEST_DLSS", "BALANCED");
+    props::apply_env(*b);
+    CHECK(inst.dlss_mode == 2, "enum env: upper-case label matches too");
+    set_env("MATTER_PROPS_TEST_DLSS", "3");
+    props::apply_env(*b);
+    CHECK(inst.dlss_mode == 3, "enum env: index still works");
+    set_env("MATTER_PROPS_TEST_DLSS", "");
+
+    CHECK(props::equals_ignore_case("Native", "native") &&
+              !props::equals_ignore_case("Native", "nativex") &&
+              !props::equals_ignore_case("Native", ""),
+          "equals_ignore_case: exported comparison is whole-string");
+}
+
 void test_json_doc() {
     // Key order is insertion order and integral numbers print without ".0".
     const char* kSrc =
@@ -537,6 +619,9 @@ void test_parse_and_set() {
           "parse: bool digit");
     CHECK(props::parse_and_set(&t, field("mode"), "high") && t.mode == 2,
           "parse: enum by label");
+    t.mode = 0;
+    CHECK(props::parse_and_set(&t, field("mode"), "HIGH") && t.mode == 2,
+          "parse: enum label match ignores case");
     CHECK(props::parse_and_set(&t, field("mode"), "0") && t.mode == 0,
           "parse: enum by index");
     CHECK(props::parse_and_set(&t, field("wind"), "4 5 6") && t.wind.x == 4.0f &&
@@ -1109,6 +1194,7 @@ int main() {
     test_tolerant_load();
     test_unknown_content_preserved();
     test_env_layer();
+    test_env_negation_and_enum_case();
     test_json_doc();
     test_draft_lifecycle();
     test_parse_and_set();

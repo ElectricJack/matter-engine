@@ -299,6 +299,38 @@ void test_find_field() {
           "prop_find_field: null name");
 }
 
+// Runtime availability (issue render-rt-and-dlss-runtime-toggles). draw_field
+// reads both of these once and uses them for the badge and the BeginDisabled
+// bracket, so asserting them here is asserting what the panel does.
+void test_field_availability() {
+    // Precedence. A forced value is what is actually in effect, so "env" beats
+    // a capability the forced value may not even need.
+    CHECK(std::strcmp(viewer::prop_field_badge(true, "no RT here", false),
+                      "env") == 0,
+          "badge: env outranks unavailable");
+    CHECK(std::strcmp(viewer::prop_field_badge(false, "no RT here", false),
+                      "n/a") == 0,
+          "badge: unavailable when not env-forced");
+    CHECK(std::strcmp(viewer::prop_field_badge(false, nullptr, true),
+                      "reload") == 0,
+          "badge: draft edit when otherwise editable");
+    CHECK(std::strcmp(viewer::prop_field_badge(false, "no RT here", true),
+                      "n/a") == 0,
+          "badge: unavailable outranks reload — a draft you cannot apply is "
+          "not the useful thing to say");
+    CHECK(viewer::prop_field_badge(false, nullptr, false) == nullptr,
+          "badge: none for a plain editable field");
+    // An EMPTY reason is not a reason. A veto that returns "" for an available
+    // field must not grey it.
+    CHECK(viewer::prop_field_badge(false, "", false) == nullptr,
+          "badge: empty reason means available");
+
+    CHECK(viewer::prop_field_locked(true, nullptr), "locked: env-forced");
+    CHECK(viewer::prop_field_locked(false, "no RT here"), "locked: unavailable");
+    CHECK(!viewer::prop_field_locked(false, ""), "locked: empty reason is not");
+    CHECK(!viewer::prop_field_locked(false, nullptr), "locked: plain field is not");
+}
+
 // The streaming-LOD group persists each ring list as ONE String field, so this
 // round-trip is what stands between a saved override and a silently dropped
 // one (streaming_lod_prefs.h).
@@ -655,6 +687,7 @@ int main() {
     test_tunables_categories();
     test_tunables_hide_duplicates();
     test_find_field();
+    test_field_availability();
     test_lod_ring_round_trip();
     test_streaming_pacing_fields();
     test_fog_group_baseline_flow();

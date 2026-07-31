@@ -52,6 +52,15 @@ struct Desc {
     const char* const* enum_labels = nullptr;
     uint32_t    enum_count = 0;
     const char* env = nullptr;    // optional "MATTER_*" override var
+    // The env var states the OPPOSITE of this field. Bool only. Exists because
+    // some long-established vars are spelled as disables (MATTER_DISABLE_VK_RT)
+    // while the field they gate reads better as an enable ("Ray tracing" is a
+    // checkbox you tick to get ray tracing, not one you tick to lose it).
+    // Without this the choice is a backwards UI label or a second, hand-rolled
+    // override path beside apply_env — and the whole point of layer 5 is that
+    // there is exactly one. Applied in apply_env ONLY: `set <path> false` must
+    // keep meaning false, so parse_and_set never sees this flag.
+    bool        env_negate = false;
     uint32_t    flags = 0;
 };
 
@@ -160,6 +169,13 @@ public:
     PropBuilder& doc(const char* v) { d_.doc = v; return *this; }
     PropBuilder& units(const char* v) { d_.units = v; return *this; }
     PropBuilder& env(const char* v) { d_.env = v; return *this; }
+    // `MATTER_DISABLE_VK_RT=1` -> field false. See Desc::env_negate. Bool only;
+    // on any other type the negation is ignored and the var behaves normally.
+    PropBuilder& env_negated(const char* v) {
+        d_.env = v;
+        d_.env_negate = true;
+        return *this;
+    }
     PropBuilder& log() { d_.flags |= Logarithmic; return *this; }
     PropBuilder& read_only() { d_.flags |= ReadOnly; return *this; }
     PropBuilder& requires_reload() { d_.flags |= RequiresReload; return *this; }
@@ -410,12 +426,19 @@ void discard_draft(Binding& b);
 // ---------------------------------------------------------------------------
 // Text parsing (layer 5 and the FIFO `set` command share ONE parser).
 // parse_and_set accepts, per Desc::type: a decimal/float literal for the
-// numeric types; 1/0/true/false/yes/no/on/off for Bool; an enum label or an
-// index for Enum; three numbers separated by any non-numeric run for
-// Float3/Color3; the raw text for String. Clamps through the typed setters.
-// Returns false (leaving the field untouched) when the text does not parse.
+// numeric types; 1/0/true/false/yes/no/on/off for Bool; an enum label
+// (case-insensitively) or an index for Enum; three numbers separated by any
+// non-numeric run for Float3/Color3; the raw text for String. Clamps through
+// the typed setters. Returns false (leaving the field untouched) when the text
+// does not parse.
 // ---------------------------------------------------------------------------
 bool parse_and_set(void* instance, const Desc& d, const char* text);
+
+// ASCII case-insensitive whole-string compare. Exported because it IS the enum
+// label rule above: a caller that resolves a word to an enum index itself (the
+// editor's `dlss <mode>` command) must agree with what `set <path> <mode>`
+// accepts, and the only way to guarantee that is to share the comparison.
+bool equals_ignore_case(const char* a, const char* b);
 bool parse_and_set(Binding& b, const Desc& d, const char* text);
 // Human/FIFO-readable rendering of the current value ("0.75", "true", "high",
 // "1, 2, 3").

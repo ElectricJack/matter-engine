@@ -695,6 +695,8 @@ void Ui::draw_performance_panel(matter::WorldSession* session,
         props.note_panel_home(b->schema().path, "Performance");
     if (matter::props::Binding* b = props.draw_overrides())
         props.note_panel_home(b->schema().path, "Performance");
+    if (matter::props::Binding* b = props.gpu())
+        props.note_panel_home(b->schema().path, "Performance");
     // camera.prefs and stream.lod are drawn by draw_streaming_lod_section
     // below, but claimed HERE rather than there for the same reason as
     // everything else on this list: that section runs after the Begin() gate
@@ -718,6 +720,13 @@ void Ui::draw_performance_panel(matter::WorldSession* session,
     // One binding each; ownership was already declared above. A panel
     // chooses WHERE a group appears, it does not own the widgets.
     if (matter::props::Binding* b = props.budget()) draw_group(*b);
+    // render.gpu first among the collapsed groups: ray tracing and DLSS are the
+    // two biggest frame-time levers on the panel. The veto greys either control
+    // (with the device's own reason on hover) rather than hiding it, so "this
+    // GPU can't" and "the editor forgot" stay distinguishable — the group is
+    // ALWAYS drawn.
+    if (matter::props::Binding* b = props.gpu())
+        draw_group(*b, nullptr, true, nullptr, &props.gpu_field_veto());
     if (matter::props::Binding* b = props.pom()) draw_group(*b, nullptr, false);
     if (matter::props::Binding* b = props.vt_budgets())
         draw_group(*b, nullptr, false);

@@ -1,6 +1,7 @@
 #include "matter/props.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -204,6 +205,16 @@ bool parse_env_float3(const char* s, float out[3]) {
 
 }  // namespace
 
+bool equals_ignore_case(const char* a, const char* b) {
+    if (!a || !b) return false;
+    for (; *a && *b; ++a, ++b) {
+        if (tolower(static_cast<unsigned char>(*a)) !=
+            tolower(static_cast<unsigned char>(*b)))
+            return false;
+    }
+    return *a == *b;
+}
+
 // One shared text->field parser: the env layer (layer 5), the FIFO `set`
 // command and any future script/CLI setter all go through this.
 bool parse_and_set(void* instance, const Desc& d, const char* raw) {
@@ -228,9 +239,16 @@ bool parse_and_set(void* instance, const Desc& d, const char* raw) {
             return true;
         }
         case Type::Enum: {
-            // Accept an index or one of the declared labels.
+            // Accept an index or one of the declared labels. The label match is
+            // case-INSENSITIVE: the labels are UI text ("Quality") while every
+            // command line and env var in this codebase spells the same value
+            // lowercase (MATTER_DLSS_MODE=quality, `dlss quality`), and making
+            // the user match the combo's capitalisation would fail silently
+            // into the numeric branch below. No group has two labels differing
+            // only in case, so nothing becomes ambiguous.
             for (uint32_t i = 0; i < d.enum_count; ++i) {
-                if (d.enum_labels && d.enum_labels[i] && !strcmp(d.enum_labels[i], raw)) {
+                if (d.enum_labels && d.enum_labels[i] &&
+                    equals_ignore_case(d.enum_labels[i], raw)) {
                     set_enum(instance, d, static_cast<int32_t>(i));
                     return true;
                 }
@@ -674,6 +692,17 @@ void discard_draft(Binding& b) { b.discard_draft(); }
 // Env layer
 // ---------------------------------------------------------------------------
 
+namespace {
+// Desc::env_negate is applied HERE rather than inside parse_and_set, because
+// parse_and_set is also the FIFO `set` path and there the written text must
+// mean itself. Flipping after the shared parser has run keeps one parser and
+// one polarity rule, both in one place.
+void apply_env_negation(void* instance, const Desc& d) {
+    if (!d.env_negate || d.type != Type::Bool) return;
+    set_bool(instance, d, !get_bool(instance, d));
+}
+}  // namespace
+
 void apply_env(void* instance, const Group& g) {
     if (!instance) return;
     for (uint32_t i = 0; i < g.field_count; ++i) {
@@ -685,6 +714,8 @@ void apply_env(void* instance, const Group& g) {
             fprintf(stderr, "[props] %s: unparsable %s value \"%s\" for %s.%s — ignored\n",
                     d.env, type_name(d.type), raw, g.path ? g.path : "?",
                     d.name ? d.name : "?");
+        else
+            apply_env_negation(instance, d);
     }
 }
 
@@ -701,6 +732,7 @@ void apply_env(Binding& b) {
             b.set_env_forced(i, false);
             continue;
         }
+        apply_env_negation(b.instance(), d);
         b.set_env_forced(i, true);
     }
 }
