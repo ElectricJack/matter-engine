@@ -336,6 +336,38 @@ public:
     // Phase-6 seam note in the spec), so this is the editor's surface for
     // showing and persisting them.
     props::DynamicGroup* world_props();
+
+    // ---- Per-module draw overrides (view-time filter) ---------------------
+    // The modules whose instances this world can draw, sorted and deduplicated
+    // — the row list of the editor's Draw Overrides section. Filled at connect
+    // from the provider's bake plan (closed worlds) and the streaming asset
+    // install (world-kind sessions). False before the first connect.
+    //
+    // Deliberately NOT included: the per-sector `WorldSector` container itself.
+    // Its geometry is the terrain heightfield/volume the sector script emits
+    // directly, and its content hash is per sector rather than per module, so
+    // it has no stable module identity to hang an override on. Terrain is
+    // therefore outside this control (see draw_overrides() below).
+    bool world_modules(std::vector<std::string>& out) const;
+
+    // The per-module draw-override group (hide / max_draw_distance / lod_bias
+    // per module), as a live property group the editor binds into its registry
+    // exactly like world_props(). Null when the world has no modules.
+    //
+    // OWNED BY THE SESSION, and — like world_props() — rebuilt at a world-kind
+    // connect ONLY when the module set actually changed, so a reload or a
+    // live-edit rebake never swaps the group out from under a mid-tune editor
+    // binding. A caller that binds it MUST unbind before triggering the
+    // reconnect that could replace it.
+    //
+    // Unlike world_props(), the ENGINE reads this group back: render() samples
+    // its value buffer once per frame and, when it changed, re-resolves the
+    // module-keyed overrides onto part hashes. All-default values (the state
+    // every headless/replay/test run stays in, since nothing binds or edits
+    // the group there) are a bit-exact no-op: no instance is skipped and the
+    // GPU cull lane stays at its neutral one-entry table.
+    props::DynamicGroup* draw_overrides();
+
     // Override applied at the NEXT world (re)connect — pair with a world
     // reload to take effect. Empty ring/band lists fall back to the world's
     // own values / engine defaults; the enabled flag always applies.

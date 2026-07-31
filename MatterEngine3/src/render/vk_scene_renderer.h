@@ -17,6 +17,7 @@
 
 #include "chart_atlas.h"   // WP-E: per-rung chart tables travel with a part
 #include "frame_matrices.h"
+#include "matter/draw_overrides.h"  // per-module draw overrides (GPU lane)
 #include "gpu_matrix_pack.h"
 #include "matter/lod_contract.h"
 #include "matter/math_types.h"
@@ -689,6 +690,21 @@ public:
     bool render_gbuffer_and_composite(uint32_t width, uint32_t height,
                                       std::string& error);
 #endif
+    // Per-module draw overrides, already resolved to part CONTENT HASHES by
+    // DrawOverrideResolver (matter/draw_overrides.h). The renderer's own job is
+    // the last hop: hash -> dense part_slot, which is the only part identity
+    // cull.comp has. `entries` must be sorted ascending by part_hash.
+    //
+    // An EMPTY vector is the default and restores the neutral one-entry table,
+    // which the shader treats as a no-op — so a process that never calls this
+    // (headless tests, replay, the Part Workbench isolation session) produces
+    // byte-identical culling to the pre-override renderer.
+    //
+    // `hide` is NOT part of this lane: it is enforced upstream, where the
+    // instance list is expanded, so a hidden module leaves the ray-tracing TLAS
+    // as well as the raster instance buffer.
+    void set_part_draw_overrides(
+        const std::vector<matter::PartDrawOverrideEntry>& entries);
     void set_lighting(const VkSceneLighting& lighting);
     void set_display_exposure(float exposure_ev);
     void set_composite_debug_view(float mode) { composite_debug_override_ = mode; }
@@ -1212,6 +1228,9 @@ private:
         matter::VkBufferResource skin_previous_output;
         // WP-E: per-(part_slot, lod) transported vt slots, read by cull.comp.
         matter::VkBufferResource vt_draw_slots;
+        // Per-part_slot draw overrides (max distance / LOD bias), read by
+        // cull.comp. One neutral entry unless a module carries an override.
+        matter::VkBufferResource part_draw_overrides;
         std::vector<VkSkinRasterDraw> ready_skin_raster_draws;
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
@@ -1400,6 +1419,11 @@ private:
                              uint32_t lod_index) const;
     // Rebuilds the per-(part, lod) vt slot table cull.comp reads.
     void rebuild_vt_draw_slots();
+    // Rebuilds the per-part_slot draw-override table cull.comp reads. Sized
+    // parts_.size() while any override is set, and exactly ONE neutral entry
+    // otherwise (a zero-length storage buffer is not bindable, and a neutral
+    // slot-0 entry costs the shader nothing).
+    void rebuild_part_draw_overrides();
     // Feeds the tier-1 compositor the two inputs only the renderer knows: the
     // bound detail tileset slots and the materialId -> (detail slot, fallback
     // albedo/ORM) table. vt_compositor.h requires the device to be idle with
@@ -1599,6 +1623,17 @@ private:
     // Per-(part_slot, lod) transported slots; rebuilt on part registration.
     std::vector<uint32_t> vt_draw_slot_table_;
     bool vt_draw_slots_dirty_ = true;
+    // Per-module draw overrides resolved to part hashes (the host's half) and
+    // then to part slots (this table, what cull.comp reads). Both are empty in
+    // the default state and the table then holds one neutral entry.
+    // Sorted by part_hash, exactly as handed over: set_part_draw_overrides is
+    // safe to call EVERY FRAME because the equality check against this vector
+    // allocates nothing and short-circuits on size in the (empty) default
+    // state. Calling it unconditionally is what makes the lane survive a
+    // renderer reset without the host having to notice.
+    std::vector<matter::PartDrawOverrideEntry> part_draw_override_entries_;
+    std::vector<matter::PartDrawOverrideGpu> part_draw_override_table_;
+    bool part_draw_overrides_dirty_ = true;
     // Borrowed: the residency layer owns the filler. Null when the compositor
     // could not be created and the WP-E stub filler is standing in.
     vt::VtCompositor* vt_compositor_ = nullptr;

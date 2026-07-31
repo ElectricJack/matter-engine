@@ -2474,7 +2474,8 @@ int main() {
                     // The world's `static props` group is built by the connect
                     // and owned by the session; EditorProps binds it here and
                     // releases it again at the next set_world.
-                    editor_props.on_world_connected(session->world_props());
+                    editor_props.on_world_connected(
+                        session->world_props(), session->draw_overrides());
                     apply_world_props_after_bake = false;
                 }
                 console_log.push(
@@ -3151,6 +3152,7 @@ int main() {
                 // the session we never left, and no connect is coming to
                 // restore it — rebind it by hand.
                 editor_props.adopt_world_props(session->world_props());
+                editor_props.adopt_draw_overrides(session->draw_overrides());
                 viewer::complete_world_switch(stats, false);
             } else {
                 apply_world_props_after_bake = true;

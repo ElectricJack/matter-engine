@@ -8,6 +8,7 @@
 // decisions are pure functions of the Desc and are unit-testable without an
 // ImGui context. Only the draw_* entry points need a live context.
 
+#include "matter/draw_overrides.h"
 #include "matter/props.h"
 
 #include <cctype>
@@ -15,6 +16,7 @@
 #include <cstring>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace viewer {
 
@@ -231,6 +233,58 @@ bool draw_group(matter::props::Binding& binding, const char* filter = nullptr,
 // sliders in Viewer Debug. All three are Scope::World and share one layer-2
 // baseline captured at connect, which is what makes one reset button correct.
 void draw_lighting_contents(EditorProps& props);
+
+// ---------------------------------------------------------------------------
+// Draw Overrides (per-module view-time filter, matter/draw_overrides.h)
+//
+// The group is a DynamicGroup with THREE fields per module, so the generic
+// renderer would draw three full-width rows per module. This section folds a
+// module's three fields into one row instead. It still edits through the same
+// Binding setters, so dirty tracking, sparse persistence, baselines, the
+// Tunables panel and the FIFO `set` path are unchanged — only the layout is
+// bespoke.
+// ---------------------------------------------------------------------------
+
+// One module's three field indices inside the group. -1 for a field the group
+// does not carry (never happens for a group built by
+// matter::build_draw_override_group, but the renderer must not assume it).
+struct DrawOverrideRow {
+    std::string module;
+    int hide = -1;
+    int max_dist = -1;
+    int lod_bias = -1;
+};
+
+// Fold a draw-override group's fields into per-module rows, in field order
+// (which is module order). ImGui-free so the grouping is unit-testable.
+// Fields whose name carries no module separator are ignored.
+inline std::vector<DrawOverrideRow> draw_override_rows(
+    const matter::props::Group& g) {
+    std::vector<DrawOverrideRow> rows;
+    for (uint32_t i = 0; i < g.field_count; ++i) {
+        std::string module, field;
+        if (!matter::split_draw_override_field(g.fields[i].name, module, field))
+            continue;
+        if (rows.empty() || rows.back().module != module) {
+            DrawOverrideRow row;
+            row.module = module;
+            rows.push_back(std::move(row));
+        }
+        DrawOverrideRow& row = rows.back();
+        if (field == matter::kDrawOverrideHideField)
+            row.hide = static_cast<int>(i);
+        else if (field == matter::kDrawOverrideMaxDistField)
+            row.max_dist = static_cast<int>(i);
+        else if (field == matter::kDrawOverrideLodBiasField)
+            row.lod_bias = static_cast<int>(i);
+    }
+    return rows;
+}
+
+// The compact per-module table. Returns true when any field changed. `filter`,
+// when non-empty, hides rows whose MODULE name does not match.
+bool draw_draw_overrides_section(matter::props::Binding& binding,
+                                 const char* filter = nullptr);
 
 struct TunablesPanelState {
     char filter[128] = {};

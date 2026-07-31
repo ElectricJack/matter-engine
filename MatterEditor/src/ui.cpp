@@ -677,6 +677,17 @@ void Ui::draw_performance_panel(matter::WorldSession* session,
     if (matter::props::Binding* b = props.stream_runtime())
         draw_group(*b, nullptr, false);
 
+    // ---- Per-module draw overrides (view-time filter) --------------------
+    // Sits with the other frame-time dials rather than in the streaming
+    // section below: these apply immediately and never require a reload.
+    if (matter::props::Binding* b = props.draw_overrides()) {
+        if (ImGui::CollapsingHeader("Draw Overrides###draw.overrides")) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("[World]%s", b->dirty() ? " *" : "");
+            draw_draw_overrides_section(*b);
+        }
+    }
+
     draw_streaming_lod_section(session, props, commands, camera);
     ImGui::End();
 }

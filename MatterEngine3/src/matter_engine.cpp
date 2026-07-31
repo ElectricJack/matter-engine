@@ -9,6 +9,7 @@
 #include "matter/engine_context.h"
 #include "matter/world_session.h"
 #include "matter/world_props.h"
+#include "matter/draw_overrides.h"
 #include "matter/stream_settings.h"
 #include "matter/vt_budgets.h"
 
@@ -1064,6 +1065,37 @@ struct WorldSession::Impl {
     std::unique_ptr<props::DynamicGroup> world_props;
     std::vector<WorldPropSpec> world_prop_specs;
 
+    // ---- Per-module draw overrides (matter/draw_overrides.h) --------------
+    // Two halves, on two threads:
+    //
+    //   * STAGED (worker thread, under draw_override_mutex): the hash->module
+    //     catalog the connect discovers, plus the DynamicGroup built from its
+    //     module list. Rebuilt only when the module SET changes, exactly like
+    //     world_props above, so a reload never swaps the group out from under
+    //     the editor's binding.
+    //   * RESOLVED (app thread, no lock): the resolver, its memo and the
+    //     per-hash GPU lane. render() adopts the staged catalog when its
+    //     version moves and otherwise touches nothing shared.
+    //
+    // Everything here is inert until a module carries a non-default override,
+    // which is what keeps the default render path unchanged.
+    mutable std::mutex draw_override_mutex;
+    std::map<uint64_t, std::string> draw_catalog_staged;
+    std::vector<std::string> draw_catalog_modules;   // what the group was built from
+    uint64_t draw_catalog_version = 0;
+    std::unique_ptr<props::DynamicGroup> draw_overrides_group;
+    // App-thread only.
+    matter::DrawOverrideResolver draw_overrides_resolver;
+    std::vector<uint8_t> draw_override_shadow;   // last-seen group value buffer
+    uint64_t draw_catalog_applied = 0;
+    // Merge `catalog` into the staged catalog and, when that changes the module
+    // SET, rebuild the group. Worker thread; takes draw_override_mutex.
+    void stage_draw_catalog(const std::map<uint64_t, std::string>& catalog);
+    // Once per render, app thread: adopt a newer staged catalog, diff the
+    // group's value buffer, and re-resolve when either moved. Returns true when
+    // the HIDDEN set changed, i.e. when memoised instance expansions are stale.
+    bool sync_draw_overrides();
+
     // Biomes JSON forwarded to every sector bake.
     std::string world_biomes_json;
 
@@ -1232,6 +1264,87 @@ bool WorldSession::Impl::poll_legacy_event(Event& out) {
     out = std::move(legacy_pending_.front());
     legacy_pending_.pop_front();
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Per-module draw overrides (matter/draw_overrides.h)
+// ---------------------------------------------------------------------------
+
+void WorldSession::Impl::stage_draw_catalog(
+    const std::map<uint64_t, std::string>& catalog) {
+    if (catalog.empty()) return;
+    std::lock_guard<std::mutex> lk(draw_override_mutex);
+    bool grew = false;
+    for (const auto& kv : catalog) {
+        if (kv.first == 0 || kv.second.empty()) continue;
+        auto it = draw_catalog_staged.find(kv.first);
+        if (it == draw_catalog_staged.end()) {
+            draw_catalog_staged.emplace(kv.first, kv.second);
+            grew = true;
+        } else if (it->second != kv.second) {
+            it->second = kv.second;
+            grew = true;
+        }
+    }
+    if (!grew) return;
+    ++draw_catalog_version;
+    std::vector<std::string> modules;
+    modules.reserve(draw_catalog_staged.size());
+    for (const auto& kv : draw_catalog_staged) modules.push_back(kv.second);
+    std::sort(modules.begin(), modules.end());
+    modules.erase(std::unique(modules.begin(), modules.end()), modules.end());
+    // Same rule as world_props: rebuild ONLY when the declaration (here, the
+    // module set) actually changed. A live-edit rebake or a cone rebake
+    // re-enters this with the same modules, and swapping the group there would
+    // drop the editor's binding and the values the user is mid-tune on.
+    if (modules == draw_catalog_modules && draw_overrides_group) return;
+    draw_catalog_modules = std::move(modules);
+    draw_overrides_group =
+        matter::build_draw_override_group(draw_catalog_modules);
+}
+
+bool WorldSession::Impl::sync_draw_overrides() {
+    matter::DrawOverrideTable table;
+    bool table_read = false;
+    bool catalog_changed = false;
+    {
+        std::lock_guard<std::mutex> lk(draw_override_mutex);
+        if (draw_catalog_applied != draw_catalog_version) {
+            draw_overrides_resolver.clear_catalog();
+            for (const auto& kv : draw_catalog_staged)
+                draw_overrides_resolver.add_module(kv.first, kv.second);
+            draw_catalog_applied = draw_catalog_version;
+            catalog_changed = true;
+        }
+        // The value buffer is compared, not a revision counter: DynamicGroup
+        // has no change stamp, the buffer is a few hundred bytes (3 lanes per
+        // module), and construct_values zero-fills every lane's padding, so
+        // the compare is exact. Held under the lock because the worker may
+        // replace the group at a connect.
+        if (draw_overrides_group) {
+            const uint8_t* buf =
+                static_cast<const uint8_t*>(draw_overrides_group->instance());
+            const size_t bytes = draw_overrides_group->group().struct_size;
+            if (buf && (draw_override_shadow.size() != bytes ||
+                        std::memcmp(draw_override_shadow.data(), buf, bytes) != 0)) {
+                draw_override_shadow.assign(buf, buf + bytes);
+                matter::read_draw_override_group(*draw_overrides_group, table);
+                table_read = true;
+            }
+        } else if (!draw_override_shadow.empty()) {
+            draw_override_shadow.clear();
+            table_read = true;   // an empty table: the group went away
+        }
+    }
+    if (!table_read && !catalog_changed) return false;
+    if (!table_read) table = draw_overrides_resolver.table();
+    bool hidden_changed = draw_overrides_resolver.set_table(std::move(table));
+    // A grown catalog can change which HASHES a still-unchanged hidden module
+    // set covers (a newly installed variant of a hidden module), and the
+    // instance-expansion memo has no way to know that. Cheap and rare.
+    if (catalog_changed && draw_overrides_resolver.any_hidden())
+        hidden_changed = true;
+    return hidden_changed;
 }
 
 void WorldSession::Impl::set_authored_fog(const matter::FogSettings& fog) {
@@ -2633,13 +2746,22 @@ void WorldSession::Impl::publish_pipeline(
         const auto& bake_plan = p.provider_ref->install_result().bake_plan;
         std::vector<matter_refine::GraphNode> gnodes;
         gnodes.reserve(bake_plan.size());
+        // Per-module draw overrides: the bake plan is the COMPLETE hash ->
+        // module map for a closed world (one entry per distinct resolved_hash,
+        // so every parametric variant of a module is covered), which is
+        // exactly what a per-hash override lookup needs. graph_snapshot_.nodes
+        // would not do: it keeps one entry per module name.
+        std::map<uint64_t, std::string> draw_catalog;
         for (const auto& kv : bake_plan) {
             matter_refine::GraphNode gn;
             gn.module        = kv.second.module;
             gn.params_json   = part_graph::params_to_json(kv.second.params);
             gn.resolved_hash = kv.first;   // key IS the resolved_hash
+            if (!gn.module.empty() && kv.first != 0)
+                draw_catalog[kv.first] = gn.module;
             gnodes.push_back(std::move(gn));
         }
+        stage_draw_catalog(draw_catalog);
 
         // Build instance refs from manifest.instances (row-major: tx=[3], ty=[7], tz=[11]).
         std::vector<matter_refine::InstanceRef> irefs;
@@ -3094,6 +3216,12 @@ bool WorldSession::Impl::install_world(
     sector_child_params.reserve(children.size());
 
     std::unordered_map<std::string, uint64_t> installed;   // module\x1f params -> hash
+    // Per-module draw overrides: the hash -> module catalog for this world's
+    // sector asset set. Recorded for EVERY installed variant, not just the
+    // top-level ones, because a sector's expansion nodes reference the whole
+    // subtree (Tree -> TreeBranch -> Twig -> Leaf) by content hash and each of
+    // those is separately hideable/biasable.
+    std::map<uint64_t, std::string> draw_catalog;
     std::vector<std::string> visiting;                     // DFS stack for cycle guard
     bool install_cancelled = false;
 
@@ -3182,6 +3310,7 @@ bool WorldSession::Impl::install_world(
         }
 
         installed[key] = hash;
+        draw_catalog[hash] = module;
         out_hash = hash;
         return true;
     };
@@ -3272,6 +3401,10 @@ bool WorldSession::Impl::install_world(
             world_props = build_world_props_group(world_prop_specs);
         }
     }
+    // Per-module draw overrides: publish this world's asset catalog. Outside
+    // the lock above -- stage_draw_catalog takes its own mutex, and the two
+    // protect unrelated state.
+    stage_draw_catalog(draw_catalog);
     streaming_profile_activation.stage(profile);
     return true;
 }
@@ -6874,7 +7007,29 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->vk_force_lod_applied_ = opts.force_lod;
     impl_->vk_hide_children_applied_ = opts.hide_child_instances;
 
+    // Per-module draw overrides (matter/draw_overrides.h). Sampled ONCE per
+    // frame, before anything decides whether the instance set is stale:
+    //   * `hide` changes the set of nodes the expansion below emits, so a
+    //     change to the HIDDEN set retires the memo exactly like the two debug
+    //     overrides above do.
+    //   * max_draw_distance / lod_bias never reach this loop -- they ride the
+    //     per-part GPU lane pushed below and are re-evaluated by cull.comp
+    //     against the live camera every frame, which is the only point that
+    //     stays correct while this instance buffer is retained.
+    // Both are no-ops in the default state: sync_draw_overrides returns false
+    // without touching the resolver when nothing changed, and the resolver's
+    // any_hidden() fast path makes draw_hidden a single bool test.
+    const bool draw_hidden_changed = impl_->sync_draw_overrides();
+    // Unconditional: the renderer's own equality check is a size compare in
+    // the default (empty) state, and pushing every frame is what re-arms the
+    // lane after a renderer reset without the session having to observe one.
+    impl_->vk_scene->set_part_draw_overrides(
+        impl_->draw_overrides_resolver.gpu_entries());
+    const matter::DrawOverrideResolver& draw_overrides =
+        impl_->draw_overrides_resolver;
+
     const bool instances_dirty = force_lod_changed || hide_children_changed ||
+                                 draw_hidden_changed ||
                                  !impl_->vk_instance_cache.matches(resolved);
     if (instances_dirty) {
         // Perf: a streaming world publishes sectors continuously, and each
@@ -6893,7 +7048,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         // filter's node set on the next rebuild. The expansions produced during
         // this rebuild are correct for the new configuration and are memoised
         // normally.
-        if (force_lod_changed || hide_children_changed)
+        if (force_lod_changed || hide_children_changed || draw_hidden_changed)
             impl_->vk_instance_cache.invalidate_sources();
         std::vector<viewer::VkSceneInstance> rebuilt;
         rebuilt.reserve(impl_->vk_instance_cache.instances().size() +
@@ -6904,6 +7059,12 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 err = "resolved Vulkan instance is missing stable identity";
                 return false;
             }
+            // A hidden ROOT drops its whole subtree. Not memoised: a hidden
+            // source must not leave a stale (empty) expansion behind for the
+            // frame the user unhides it -- invalidate_sources above already
+            // retired the memo, and skipping store_source here keeps the memo
+            // free of entries that only make sense under one filter setting.
+            if (draw_overrides.hidden(source.part_hash)) continue;
             const std::vector<viewer::VkSceneInstance>* memo =
                 impl_->vk_instance_cache.find_source(source);
             if (memo) {
@@ -6928,6 +7089,11 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                     // W4: "show root only" debug filter — skip descendant
                     // child-instance subtrees (depth > 0).
                     if (opts.hide_child_instances && node.depth > 0) continue;
+                    // Per-module hide. This is the point that removes the
+                    // instance from BOTH the raster instance buffer and the
+                    // ray-tracing TLAS -- a GPU-cull-only hide would leave the
+                    // module visible in reflections.
+                    if (draw_overrides.hidden(node.part_hash)) continue;
                     const viewer::LoadedPart* loaded =
                         impl_->store->get_or_load(node.part_hash);
                     if (!loaded) { complete = false; continue; }
@@ -7689,6 +7855,17 @@ bool WorldSession::world_fog(FogSettings& out) const {
 props::DynamicGroup* WorldSession::world_props() {
     std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
     return impl_->world_props.get();
+}
+
+bool WorldSession::world_modules(std::vector<std::string>& out) const {
+    std::lock_guard<std::mutex> lk(impl_->draw_override_mutex);
+    out = impl_->draw_catalog_modules;
+    return !out.empty();
+}
+
+props::DynamicGroup* WorldSession::draw_overrides() {
+    std::lock_guard<std::mutex> lk(impl_->draw_override_mutex);
+    return impl_->draw_overrides_group.get();
 }
 
 void WorldSession::pump_gpu_jobs(float ms_budget) {

@@ -1457,6 +1457,9 @@ void VkSceneRenderer::destroy_pipeline() {
     vt_dummies_ready_ = false;
     vt_draw_slot_table_.clear();
     vt_draw_slots_dirty_ = true;
+    part_draw_override_entries_.clear();
+    part_draw_override_table_.clear();
+    part_draw_overrides_dirty_ = true;
     if (display_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, display_pipeline_, nullptr);
     if (display_pipeline_layout_ != VK_NULL_HANDLE)
@@ -1569,7 +1572,10 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     //      array; the buffer indirection removed the 2048-layer format cap)
     //   12 vt_variants    storage buffer,          FRAGMENT
     //   13 vt_feedback    storage image,           FRAGMENT
-    std::array<VkDescriptorSetLayoutBinding, 14> scene_bindings{};
+    // Binding 14 (per-module draw overrides): a per-part_slot
+    // {max_draw_distance, lod_bias} table, COMPUTE-only (cull.comp). Always
+    // bound; a one-entry neutral table in the default state.
+    std::array<VkDescriptorSetLayoutBinding, 15> scene_bindings{};
     for (uint32_t i = 0; i < 6; ++i)
         scene_bindings[i] =
             descriptor_binding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1601,6 +1607,8 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
         12, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
     scene_bindings[13] = descriptor_binding(
         13, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_FRAGMENT_BIT);
+    scene_bindings[14] = descriptor_binding(
+        14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayoutCreateInfo scene_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     scene_layout.bindingCount =
@@ -2707,7 +2715,9 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     // signal chain -- the counts below already fold those in.
     const VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count * 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 27},
+        // 27 for the scene/VT buffers above, +1 for the per-module
+        // draw-override table at binding 14.
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 28},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count *
              (113 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
@@ -2844,7 +2854,11 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.vt_draw_slots, sizeof(uint32_t),
-                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(
+                frame.part_draw_overrides,
+                sizeof(matter::PartDrawOverrideGpu),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
             vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
             return false;
         }
@@ -2964,6 +2978,9 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.skin_previous_output);
     update_descriptor(frame.descriptor_sets[1], 9,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.vt_draw_slots);
+    update_descriptor(frame.descriptor_sets[1], 14,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                      frame.part_draw_overrides);
     write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
     write_vt_descriptors_for_frame(frame);
 }
@@ -4290,6 +4307,54 @@ void VkSceneRenderer::rebuild_vt_draw_slots() {
     vt_draw_slots_dirty_ = false;
 }
 
+void VkSceneRenderer::set_part_draw_overrides(
+    const std::vector<matter::PartDrawOverrideEntry>& entries) {
+    if (entries.size() == part_draw_override_entries_.size() &&
+        std::equal(entries.begin(), entries.end(),
+                   part_draw_override_entries_.begin(),
+                   [](const matter::PartDrawOverrideEntry& a,
+                      const matter::PartDrawOverrideEntry& b) {
+                       return a.part_hash == b.part_hash &&
+                              a.value.max_draw_distance ==
+                                  b.value.max_draw_distance &&
+                              a.value.lod_bias == b.value.lod_bias;
+                   }))
+        return;
+    part_draw_override_entries_ = entries;
+    part_draw_overrides_dirty_ = true;
+}
+
+void VkSceneRenderer::rebuild_part_draw_overrides() {
+    part_draw_overrides_dirty_ = false;
+    if (part_draw_override_entries_.empty()) {
+        // Default state: one neutral entry. cull.comp reads slot 0, finds
+        // {0, 1}, takes neither branch, and every other slot fails the
+        // length() bound -- byte-identical selection to the pre-override
+        // shader, with no per-part memory traffic.
+        part_draw_override_table_.assign(1, matter::PartDrawOverrideGpu{});
+        return;
+    }
+    part_draw_override_table_.assign(parts_.size(),
+                                     matter::PartDrawOverrideGpu{});
+    for (size_t slot = 0; slot < parts_.size(); ++slot) {
+        const PartRecord& record = parts_[slot];
+        if (!record.live || record.hash == 0) continue;
+        auto it = std::lower_bound(
+            part_draw_override_entries_.begin(),
+            part_draw_override_entries_.end(), record.hash,
+            [](const matter::PartDrawOverrideEntry& e, uint64_t h) {
+                return e.part_hash < h;
+            });
+        if (it == part_draw_override_entries_.end() ||
+            it->part_hash != record.hash)
+            continue;
+        part_draw_override_table_[slot] = it->value;
+    }
+    // A world with zero registered parts still needs a bindable buffer.
+    if (part_draw_override_table_.empty())
+        part_draw_override_table_.assign(1, matter::PartDrawOverrideGpu{});
+}
+
 void VkSceneRenderer::write_vt_descriptors_for_frame(FrameResources& frame) {
     if (frame.descriptor_sets[1] == VK_NULL_HANDLE || !vt_dummies_ready_)
         return;
@@ -5477,6 +5542,9 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     // which is exactly the legacy path.
     register_vt_part(slot, part);
     vt_draw_slots_dirty_ = true;
+    // A new slot lengthens the per-slot override table (and may itself carry
+    // an override); no-op work when nothing is overridden.
+    part_draw_overrides_dirty_ = true;
     // Record the written ranges (interior when a freed range was reused, tail
     // otherwise) for the ranged upload path.
     if (record.cluster_count != 0)
@@ -7224,6 +7292,7 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
         vt_pending_invalidate_.emplace_back(part_hash,
                                             vt_invalidate_retire_serial());
     vt_draw_slots_dirty_ = true;
+    part_draw_overrides_dirty_ = true;
     if (record.vt_rung_mask != 0u && vt_deferred_parts_ != 0u)
         --vt_deferred_parts_;
     // The slot itself is never reused (cluster.part_slot values and rt_lods
@@ -8262,9 +8331,25 @@ bool VkSceneRenderer::upload_scene_buffers(
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced))
         return poison(error);
     descriptors_changed |= replaced;
+    // Per-module draw overrides, one entry per part slot. Same shape as the vt
+    // slot table above and the same reason for an unconditional upload: the
+    // table is tiny (parts x 8 B, or a single neutral entry when nothing is
+    // overridden) and a stale one would cull or bias the wrong parts.
+    if (part_draw_overrides_dirty_) rebuild_part_draw_overrides();
+    const VkDeviceSize part_override_bytes =
+        static_cast<VkDeviceSize>(part_draw_override_table_.size()) *
+        sizeof(matter::PartDrawOverrideGpu);
+    if (!ensure_buffer(frame.part_draw_overrides, part_override_bytes,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced))
+        return poison(error);
+    descriptors_changed |= replaced;
     if (descriptors_changed) update_frame_descriptors(frame);
     if (vt_slot_bytes != 0 &&
         !upload(frame.vt_draw_slots, vt_draw_slot_table_.data(), vt_slot_bytes))
+        return false;
+    if (part_override_bytes != 0 &&
+        !upload(frame.part_draw_overrides, part_draw_override_table_.data(),
+                part_override_bytes))
         return false;
     vt_slots_scope.stop();
 

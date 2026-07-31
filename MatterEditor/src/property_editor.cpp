@@ -269,6 +269,147 @@ bool draw_group(Binding& b, const char* filter, bool default_open,
     return changed;
 }
 
+bool draw_draw_overrides_section(Binding& b, const char* filter) {
+    const Group& g = b.schema();
+    // Never a RequiresReload group: every one of these takes effect within a
+    // frame or two (hide invalidates the instance expansion, distance and bias
+    // ride a per-part GPU lane the cull dispatch re-reads every frame), so the
+    // live instance IS the edit target.
+    void* target = b.instance();
+    const std::vector<DrawOverrideRow> rows = draw_override_rows(g);
+    if (rows.empty()) {
+        ImGui::TextDisabled("No modules in this world.");
+        return false;
+    }
+
+    auto field_modified = [&](int index) {
+        return index >= 0 && b.baseline() &&
+               !fields_equal(target, b.baseline(), g.fields[index]);
+    };
+
+    ImGui::PushID(g.path);
+    bool changed = false;
+
+    size_t overridden = 0;
+    for (const DrawOverrideRow& row : rows)
+        if (field_modified(row.hide) || field_modified(row.max_dist) ||
+            field_modified(row.lod_bias))
+            ++overridden;
+    if (overridden != 0) {
+        ImGui::TextColored(kModifiedColor, "%zu module%s overridden",
+                           overridden, overridden == 1 ? "" : "s");
+        ImGui::SameLine();
+        if (ImGui::Button("Reset all")) {
+            reset_group(b);
+            changed = true;
+        }
+    } else {
+        ImGui::TextDisabled("No overrides - drawing everything as baked.");
+    }
+    ImGui::SetItemTooltip(
+        "A view-time filter only: baked artifacts, content hashes and cache "
+        "keys are untouched, so nothing here triggers a rebake.");
+
+    const ImGuiTableFlags flags = ImGuiTableFlags_SizingStretchProp |
+                                  ImGuiTableFlags_RowBg |
+                                  ImGuiTableFlags_BordersInnerV |
+                                  ImGuiTableFlags_ScrollY;
+    // Bounded height so a 30-module world does not push the streaming section
+    // off the panel; the table scrolls internally instead.
+    const float row_h = ImGui::GetFrameHeightWithSpacing();
+    const float body_h = std::min(rows.size() + 1.0f, 12.0f) * row_h;
+    if (!ImGui::BeginTable("##drawoverrides", 4, flags, ImVec2(0.0f, body_h))) {
+        ImGui::PopID();
+        return changed;
+    }
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Module", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableSetupColumn("Hide", ImGuiTableColumnFlags_WidthFixed,
+                            ImGui::GetFrameHeight() + 4.0f);
+    ImGui::TableSetupColumn("Max dist", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableSetupColumn("LOD bias", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableHeadersRow();
+
+    for (size_t r = 0; r < rows.size(); ++r) {
+        const DrawOverrideRow& row = rows[r];
+        if (filter && *filter && !prop_filter_matches(filter, row.module.c_str()))
+            continue;
+        const bool row_modified = field_modified(row.hide) ||
+                                  field_modified(row.max_dist) ||
+                                  field_modified(row.lod_bias);
+        ImGui::PushID(static_cast<int>(r));
+        ImGui::TableNextRow();
+
+        ImGui::TableSetColumnIndex(0);
+        if (row_modified) ImGui::PushStyleColor(ImGuiCol_Text, kModifiedColor);
+        ImGui::TextUnformatted(row.module.c_str());
+        if (row_modified) ImGui::PopStyleColor();
+        if (ImGui::BeginPopupContextItem("##rowctx")) {
+            if (ImGui::MenuItem("Reset module", nullptr, false, row_modified)) {
+                if (row.hide >= 0) reset_field(b, g.fields[row.hide]);
+                if (row.max_dist >= 0) reset_field(b, g.fields[row.max_dist]);
+                if (row.lod_bias >= 0) reset_field(b, g.fields[row.lod_bias]);
+                changed = true;
+            }
+            if (ImGui::MenuItem("Copy path") && row.hide >= 0)
+                ImGui::SetClipboardText(
+                    prop_field_path(g, g.fields[row.hide]).c_str());
+            ImGui::EndPopup();
+        }
+
+        ImGui::TableSetColumnIndex(1);
+        if (row.hide >= 0) {
+            bool hide = get_bool(target, g.fields[row.hide]);
+            if (ImGui::Checkbox("##hide", &hide)) {
+                if (set_bool(target, g.fields[row.hide], hide)) {
+                    b.set_dirty(true);
+                    changed = true;
+                }
+            }
+            ImGui::SetItemTooltip("%s", g.fields[row.hide].doc);
+        }
+
+        ImGui::TableSetColumnIndex(2);
+        if (row.max_dist >= 0) {
+            const Desc& d = g.fields[row.max_dist];
+            float v = get_float(target, d);
+            ImGui::SetNextItemWidth(-1.0f);
+            // Unranged drag, not a slider: 0 means "unlimited" and has to stay
+            // one click away, which a logarithmic slider out to the far plane
+            // cannot offer.
+            if (ImGui::DragFloat("##dist", &v, 5.0f, 0.0f,
+                                 matter::kDrawOverrideMaxDistance,
+                                 v <= 0.0f ? "unlimited" : "%.0f m")) {
+                if (v < 0.0f) v = 0.0f;
+                if (set_float(target, d, v)) {
+                    b.set_dirty(true);
+                    changed = true;
+                }
+            }
+            ImGui::SetItemTooltip("%s", d.doc);
+        }
+
+        ImGui::TableSetColumnIndex(3);
+        if (row.lod_bias >= 0) {
+            const Desc& d = g.fields[row.lod_bias];
+            float v = get_float(target, d);
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::SliderFloat("##bias", &v, d.min, d.max, "%.2fx",
+                                   ImGuiSliderFlags_Logarithmic)) {
+                if (set_float(target, d, v)) {
+                    b.set_dirty(true);
+                    changed = true;
+                }
+            }
+            ImGui::SetItemTooltip("%s", d.doc);
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndTable();
+    ImGui::PopID();
+    return changed;
+}
+
 void draw_lighting_contents(EditorProps& props) {
     // Neither group is RequiresReload, so the closure is inert today; passing
     // it anyway means a future reload-gated lighting field just works.
@@ -354,6 +495,22 @@ void draw_tunables_contents(TunablesPanelState& state, EditorProps& props) {
         // only through a field name shows just the matching fields.
         const bool whole_group = !filter || prop_filter_matches(filter, g.path) ||
                                  prop_filter_matches(filter, g.label);
+        // draw.overrides carries three fields per module; the generic renderer
+        // would emit ~90 full-width rows for an alpine world. It gets the same
+        // compact per-module table the Performance panel shows, under a normal
+        // collapsing header so the panel still behaves like every other group.
+        if (g.path && !std::strcmp(g.path, matter::kDrawOverridesPath)) {
+            char header[192];
+            std::snprintf(header, sizeof(header), "%s###%s",
+                          g.label ? g.label : g.path, g.path);
+            if (ImGui::CollapsingHeader(header)) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("[%s]%s", prop_scope_name(b->scope()),
+                                    b->dirty() ? " *" : "");
+                draw_draw_overrides_section(*b, whole_group ? nullptr : filter);
+            }
+            continue;
+        }
         draw_group(*b, whole_group ? nullptr : filter, true, &on_apply);
     }
     if (sorted.empty())

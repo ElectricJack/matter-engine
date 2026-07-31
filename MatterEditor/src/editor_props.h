@@ -78,11 +78,18 @@ public:
     // after the static groups) BEFORE the baseline pass below, so the script's
     // declared defaults become its layer-2 baseline and the world file's
     // overrides land on top exactly like every other World group.
-    void on_world_connected(matter::props::DynamicGroup* world_props = nullptr);
+    // `draw_overrides` is WorldSession::draw_overrides() for the same connect
+    // — the per-module view-time filter group. It rides the exact same rules as
+    // `world_props`: session-owned, bound World scope, released at set_world,
+    // and NEVER baseline-recaptured (see below).
+    void on_world_connected(matter::props::DynamicGroup* world_props = nullptr,
+                            matter::props::DynamicGroup* draw_overrides = nullptr);
 
-    // Re-bind the SAME session's props group after an aborted world switch:
-    // set_world already released it, and no connect is coming to restore it.
+    // Re-bind the SAME session's dynamic groups after an aborted world switch:
+    // set_world already released them, and no connect is coming to restore
+    // them.
     void adopt_world_props(matter::props::DynamicGroup* world_props);
+    void adopt_draw_overrides(matter::props::DynamicGroup* draw_overrides);
 
     // Per-frame: drives the User-scope autosave debounce.
     void tick(float dt);
@@ -110,6 +117,9 @@ public:
     // The world's script-declared group, or null when the connected world
     // declares no `static props`.
     matter::props::Binding* world_props();
+    // The per-module draw-override group (draw.overrides), or null before the
+    // first connect / for a world with no modules.
+    matter::props::Binding* draw_overrides();
 
     // The live (applied, not draft) streaming override. main.cpp reads this
     // right after engine->open_world and hands it to
@@ -124,6 +134,8 @@ private:
     // session that owns it is reloaded or replaced: the Binding holds bare
     // pointers into the group's Desc array, its strings and its value buffer.
     void release_world_props();
+    // Same discipline for the session-owned draw-override group.
+    void release_draw_overrides();
 
     matter::props::Registry registry_;
     matter::props::BindingId budget_ = matter::props::kInvalidBinding;
@@ -143,6 +155,8 @@ private:
     StreamingLodPrefs streaming_prefs_{};
     // Non-owning: the session owns it (WorldSession::world_props()).
     matter::props::DynamicGroup* world_props_ = nullptr;
+    // Non-owning: the session owns it (WorldSession::draw_overrides()).
+    matter::props::DynamicGroup* draw_overrides_ = nullptr;
     std::function<void()> reload_request_;
     std::string user_path_;
     std::string world_path_;

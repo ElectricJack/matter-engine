@@ -280,6 +280,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/util/json_doc.cpp \
               $(ME3_DIR)/src/props/props.cpp \
               $(ME3_DIR)/src/props/props_file.cpp \
+              $(ME3_DIR)/src/props/draw_overrides.cpp \
               $(ME3_DIR)/src/scene/scene_service.cpp \
               $(ME3_DIR)/src/scene/scene_change_tracker.cpp \
               $(ME3_DIR)/src/bake_trace.cpp \

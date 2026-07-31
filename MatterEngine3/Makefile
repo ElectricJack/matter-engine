@@ -169,7 +169,8 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/event/dispatch_context.cpp src/event/subscription.cpp src/event/event_hub.cpp src/event/command.cpp \
           src/event/property.cpp \
           src/util/json_doc.cpp \
-          src/props/props.cpp src/props/props_file.cpp
+          src/props/props.cpp src/props/props_file.cpp \
+          src/props/draw_overrides.cpp
 
 # MatterSurfaceLib C++ backend sources compiled into the archive so MatterEditor
 # need not compile them directly (no libmsl.a). Same set as the old viewer's MSL_CPP
@@ -241,7 +242,7 @@ ME3_OBJ = $(addprefix $(OBJDIR)/,script_host.o dsl_state.o dsl_bindings.o dsl_an
           dispatch_context.o subscription.o event_hub.o command.o \
           property.o \
           json_doc.o \
-          props.o props_file.o)
+          props.o props_file.o draw_overrides.o)
 
 # Vendored BC encoder objects. Explicit rules (below) rather than vpath: these
 # are third-party sources that must never be picked up by the generic %.cpp

@@ -612,10 +612,21 @@ PROPS_HEADERS = check.h ../include/matter/props.h ../include/matter/json_doc.h
 # closure; property_editor.cpp itself is link-checked by the editor build.
 PROPERTY_EDITOR_TARGET = build/property_editor_tests
 PROPERTY_EDITOR_CPP    = property_editor_tests.cpp ../src/props/props.cpp \
+                         ../src/props/draw_overrides.cpp \
                          ../src/util/json_doc.cpp
 PROPERTY_EDITOR_HEADERS = check.h ../include/matter/props.h \
+                          ../include/matter/draw_overrides.h \
                           ../../MatterEditor/src/property_editor.h \
                           ../../MatterEditor/src/streaming_lod_prefs.h
+
+# Per-module draw overrides (WS3) — the module table, its resolution onto part
+# hashes, the property-system bridge, and a CPU mirror of cull.comp's LOD/
+# distance arithmetic. Same empty link closure as the props suites.
+DRAWOVERRIDES_TARGET = build/draw_overrides_tests
+DRAWOVERRIDES_CPP    = draw_overrides_tests.cpp ../src/props/draw_overrides.cpp \
+                       ../src/props/props.cpp ../src/util/json_doc.cpp
+DRAWOVERRIDES_HEADERS = check.h ../include/matter/draw_overrides.h \
+                        ../include/matter/props.h
 
 TILESETGTEX_TARGET = build/tileset_gtex_tests
 TILESETGTEX_CPP    = tileset_gtex_tests.cpp ../src/tileset_gtex.cpp
@@ -1225,14 +1236,17 @@ GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
               ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
               ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
               ../src/streaming/sector_streaming_coordinator.cpp \
-              ../src/props/props.cpp ../src/util/json_doc.cpp
+              ../src/props/props.cpp ../src/props/draw_overrides.cpp \
+              ../src/util/json_doc.cpp
 
-# props.cpp + json_doc.cpp are NOT optional here: matter_engine.cpp (in
-# GPU_PIPELINE_CPP) builds the world's `static props` DynamicGroup and applies
-# the env layer to the engine-owned settings structs, so every gpu-flavor binary
-# that links matter_engine.o needs their definitions. Without them the whole
-# gpu flavor — world-stream-tests, api-tests, tileset-provider-tests, ... —
-# fails at link with undefined DynamicGroupBuilder / apply_env references.
+# props.cpp + draw_overrides.cpp + json_doc.cpp are NOT optional here:
+# matter_engine.cpp (in GPU_PIPELINE_CPP) builds the world's `static props`
+# DynamicGroup, applies the env layer to the engine-owned settings structs, and
+# builds/resolves the per-module draw-override group, so every gpu-flavor
+# binary that links matter_engine.o needs their definitions. Without them the
+# whole gpu flavor — world-stream-tests, api-tests, tileset-provider-tests, ...
+# — fails at link with undefined DynamicGroupBuilder / apply_env /
+# DrawOverrideResolver references.
 
 # ---------------------------------------------------------------------------
 # Bake-host closure fan-out.
@@ -1293,6 +1307,7 @@ def_CPP_SRCS := $(sort \
     $(BAKETRACE_CPP) \
     $(PROPS_CPP) \
     $(PROPERTY_EDITOR_CPP) \
+    $(DRAWOVERRIDES_CPP) \
     $(TILESETGTEX_CPP) \
     $(TILESETVKREPACK_CPP) \
     $(TILESETVKAO_CPP) \
@@ -1465,6 +1480,7 @@ ASYNCQ_OBJS = $(call obj_list,def,$(ASYNCQ_CPP))
 BAKETRACE_OBJS = $(call obj_list,def,$(BAKETRACE_CPP))
 PROPS_OBJS = $(call obj_list,def,$(PROPS_CPP))
 PROPERTY_EDITOR_OBJS = $(call obj_list,def,$(PROPERTY_EDITOR_CPP))
+DRAWOVERRIDES_OBJS = $(call obj_list,def,$(DRAWOVERRIDES_CPP))
 TILESETGTEX_OBJS = $(call obj_list,def,$(TILESETGTEX_CPP))
 TILESETVKREPACK_OBJS = $(call obj_list,def,$(TILESETVKREPACK_CPP))
 TILESETVKAO_OBJS = $(call obj_list,def,$(TILESETVKAO_CPP))
@@ -1520,7 +1536,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sector-profile run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sector-profile run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -2203,6 +2219,13 @@ $(PROPERTY_EDITOR_TARGET): $(PROPERTY_EDITOR_OBJS)
 
 run-property-editor: $(PROPERTY_EDITOR_TARGET)
 	./$(PROPERTY_EDITOR_TARGET)
+
+# Per-module draw overrides (WS3). No raylib/GL/Vulkan in the closure.
+$(DRAWOVERRIDES_TARGET): $(DRAWOVERRIDES_OBJS)
+	$(CC) $(DRAWOVERRIDES_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
+
+run-draw-overrides: $(DRAWOVERRIDES_TARGET)
+	./$(DRAWOVERRIDES_TARGET)
 
 # Phase C Task 4 — RefineController tile pairing + priority/eviction (pure CPU, def flavor).
 $(REFINECTL_TARGET): $(REFINECTL_OBJS)

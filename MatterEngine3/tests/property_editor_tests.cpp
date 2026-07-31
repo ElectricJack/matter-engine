@@ -11,7 +11,9 @@
 #include "matter/world_definition.h"   // FogSettings — the render.fog group
 
 #include <cstring>
+#include <memory>
 #include <string>
+#include <vector>
 
 using namespace matter;
 using props::Desc;
@@ -452,6 +454,99 @@ void test_dynamic_group_renders_generically() {
     dg->unbind_from(reg);
 }
 
+// ---------------------------------------------------------------------------
+// draw.overrides — the per-module view-time filter (WS3).
+//
+// The section renderer folds three fields per module into one row, so the
+// grouping is the piece worth pinning here. The baseline discipline is pinned
+// too: it is the same "never re-capture" rule world.props has, and getting it
+// wrong silently erases every override from the world file on the next save.
+// ---------------------------------------------------------------------------
+void test_draw_override_rows() {
+    std::unique_ptr<props::DynamicGroup> dg =
+        matter::build_draw_override_group({"AlpineGrass", "Tree"});
+    CHECK(dg != nullptr, "draw.overrides: built");
+    const props::Group& g = dg->group();
+
+    const std::vector<viewer::DrawOverrideRow> rows =
+        viewer::draw_override_rows(g);
+    CHECK(rows.size() == 2, "draw.overrides: one row per module, not per field");
+    CHECK(rows[0].module == "AlpineGrass" && rows[1].module == "Tree",
+          "draw.overrides: rows keep field (module) order");
+    for (const viewer::DrawOverrideRow& r : rows)
+        CHECK(r.hide >= 0 && r.max_dist >= 0 && r.lod_bias >= 0,
+              "draw.overrides: every row resolves all three fields");
+    CHECK(std::string(g.fields[rows[1].hide].name) == "Tree/hide",
+          "draw.overrides: the row indexes point at the right fields");
+
+    // Widget choices the section relies on.
+    CHECK(viewer::prop_widget_for(g.fields[rows[0].hide]) == PropWidget::Checkbox,
+          "draw.overrides: hide is a checkbox");
+    CHECK(viewer::prop_widget_for(g.fields[rows[0].max_dist]) ==
+              PropWidget::FloatDrag,
+          "draw.overrides: max_dist is an unranged drag so 0 = unlimited");
+    CHECK(viewer::prop_widget_for(g.fields[rows[0].lod_bias]) ==
+              PropWidget::FloatSlider,
+          "draw.overrides: lod_bias is a ranged slider");
+    CHECK(!props::group_requires_reload(g),
+          "draw.overrides: every field takes effect live, never on reload");
+
+    // A group whose fields are not module/field named must not produce rows.
+    props::DynamicGroupBuilder plain("world.props", "World Props");
+    props::DynamicField f;
+    f.name = "spinSpeed";
+    f.type = props::Type::Float;
+    plain.add(std::move(f));
+    std::unique_ptr<props::DynamicGroup> other = plain.build();
+    CHECK(viewer::draw_override_rows(other->group()).empty(),
+          "draw.overrides: an unrelated dynamic group folds to no rows");
+
+    dg.reset();
+}
+
+void test_draw_override_baseline_rule() {
+    // The session PRESERVES this group across a reload whose module set did not
+    // change, so the buffer arriving at the next connect still holds the user's
+    // overrides. EditorProps therefore skips the baseline re-capture for it —
+    // this test is what that rule protects against.
+    std::unique_ptr<props::DynamicGroup> dg =
+        matter::build_draw_override_group({"Grass", "Tree"});
+    props::Registry reg;
+    props::Binding* b = reg.get(dg->bind_into(reg, props::Scope::World));
+    const int32_t hide = dg->index_of("Grass/hide");
+    CHECK(hide >= 0, "draw.overrides: field lookup");
+
+    dg->set_bool(static_cast<uint32_t>(hide), true);
+    b->set_dirty(true);
+    matter::jsondoc::Value doc;
+    props::save_scope(reg, props::Scope::World, doc);
+    CHECK(matter::jsondoc::write_json(doc).find("Grass/hide") != std::string::npos,
+          "draw.overrides: the override persists while the baseline is neutral");
+
+    // What on_world_connected must NOT do.
+    b->capture_baseline();
+    matter::jsondoc::Value after;
+    props::save_scope(reg, props::Scope::World, after);
+    CHECK(matter::jsondoc::write_json(after).find("Grass/hide") == std::string::npos,
+          "draw.overrides: a baseline re-capture WOULD erase the override "
+          "(hence the skip in on_world_connected)");
+
+    dg->unbind_from(reg);
+
+    // Rebuild rule: the same module set yields the same schema, so the session
+    // has no reason to swap the group — and a CHANGED set yields a different
+    // one, which is exactly when it must.
+    std::unique_ptr<props::DynamicGroup> again =
+        matter::build_draw_override_group({"Grass", "Tree"});
+    CHECK(again->field_count() == 6 &&
+              std::string(again->group().fields[0].name) == "Grass/hide",
+          "draw.overrides: an unchanged module set reproduces the schema");
+    std::unique_ptr<props::DynamicGroup> grown =
+        matter::build_draw_override_group({"Grass", "Rock", "Tree"});
+    CHECK(grown->field_count() == 9,
+          "draw.overrides: a grown module set is a different schema");
+}
+
 }  // namespace
 
 int main() {
@@ -465,5 +560,7 @@ int main() {
     test_streaming_pacing_fields();
     test_fog_group_baseline_flow();
     test_dynamic_group_renders_generically();
+    test_draw_override_rows();
+    test_draw_override_baseline_rule();
     return check_summary();
 }

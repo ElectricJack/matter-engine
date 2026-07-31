@@ -528,6 +528,112 @@ settings anyone tunes from a panel:
 `MATTER_VT_DISABLE`, `MATTER_VT_DEBUG_GENERATIONS`, `MATTER_VT_TAPE_GPU`,
 `MATTER_VT_EAGER`.
 
+### Workstream 3 — per-module draw overrides
+
+A second per-world dynamic group, `draw.overrides`, built by the SESSION from
+the modules the connect discovered. Three fields per module —
+`<Module>/hide`, `<Module>/max_dist`, `<Module>/lod_bias`. New files:
+`matter/draw_overrides.h`, `src/props/draw_overrides.cpp`, `run-draw-overrides`.
+
+**It is a view-time filter, not an edit.** Nothing here is hashed, so no bake
+is invalidated and no artifact changes. What it changes is which instances the
+renderer submits and which rung it picks for them.
+
+**Where each override is enforced, and why that point is per-frame correct.**
+The instance buffer is RETAINED across frames (`VulkanInstanceCache` +
+`VkSceneRenderer::instance_staging_`, re-uploaded only on
+`instance_generation_`), so a camera-dependent filter applied where that buffer
+is built freezes at the camera position of the frame that built it. The three
+controls therefore split:
+
+- **`hide` — CPU, `matter_engine.cpp` `WorldSession::render`**, in the
+  instance-expansion loop (the source skip and the `root->expansion` node
+  skip). Camera-independent, so a build-time decision is exact; and it is the
+  one point that removes the instance from the ray-tracing TLAS as well as the
+  raster instance buffer, which a GPU-cull-only hide would not. A change to the
+  HIDDEN SET (only) sets `instances_dirty` and calls
+  `vk_instance_cache.invalidate_sources()` — the same mechanism
+  `RenderOptions::hide_child_instances` already uses, so an edit lands on the
+  next frame.
+- **`max_draw_distance` and `lod_bias` — GPU, `shaders_vk/cull.comp`**, right
+  where `distance_to_eye` and `projected_size` are computed from
+  `FrameConstants::camera_eye`. That dispatch runs every frame over every
+  (instance, cluster) pair, so it is per-frame correct by construction with the
+  instance buffer left alone. `lod_bias` multiplies the projected size at
+  exactly the point the global pixel budget does, so the selection loop is
+  untouched; a distance reject increments `frustum_culled` (there is no
+  separate stat — `hiz_culled` is unrelated and unused).
+
+**Hash -> module.** The render path carries only a content hash (and, on the
+GPU, only a dense `part_slot`). The catalog is built at connect from the two
+places that already know both: `install_result().bake_plan` for closed worlds
+(one entry per distinct resolved_hash, so every parametric variant is covered —
+`graph_snapshot_.nodes` would NOT do, it keeps one entry per module name), and
+`install_world`'s `install_variant` recursion for world-kind sessions (every
+installed variant, so `Tree -> TreeBranch -> Twig -> Leaf` are each separately
+controllable). `DrawOverrideResolver` memoises hash -> hidden and precomputes a
+sorted hash -> {max_dist, bias} lane; the renderer does the last hop
+(hash -> part_slot) once per part registration. No string work per instance,
+no allocation per frame.
+
+**GPU buffer / shader change.** One new storage buffer at set 1 binding 14,
+`PartDrawOverride { float max_draw_distance; float lod_bias; }` indexed by
+`cluster.part_slot`; pool storage-buffer count 27 -> 28. With no overrides the
+renderer binds a ONE-ENTRY NEUTRAL table `{0, 1}`, so slot 0 takes neither
+branch and every other slot fails the `length()` bound. Both shader guards are
+exact-equality tests against the neutral value, so the default state emits no
+multiply and takes no branch — bit-identical selection to the pre-override
+shader. `draw_overrides_tests.cpp` pins that with a CPU mirror of the
+expression.
+
+**DynamicGroup, not a custom table.** The field count is 3xmodules (tens, not
+thousands) and the group buys sparse per-world persistence, baselines,
+"Reset to default", the FIFO `set` path, `dump_modified` in issue reports and
+Tunables enumeration with no new code. The one thing it forced is the field
+separator: `props::resolve_field` splits a full path on its LAST '.', so the
+module/field join is `/` (`set draw.overrides.Tree/hide 1`), not '.'.
+
+**Rebuild rules.** Identical to `world.props`: the session rebuilds the group
+only when the MODULE SET actually changed, so a reload or a live-edit rebake
+never swaps it out from under a mid-tune editor binding. `EditorProps` binds it
+World-scope at `on_world_connected`, releases it at `set_world`, re-adopts it
+via `adopt_draw_overrides` on the aborted-switch path, and — critically —
+NEVER re-captures its baseline (the group survives reloads with the user's
+values still in the buffer; capturing them would make each override equal its
+own baseline and the next sparse save would erase every one of them). The
+baseline stays the neutral declared defaults, which is exactly what "only
+non-default overrides persist" means.
+
+**UI.** A "Draw Overrides" collapsing section in the Performance panel (and the
+same compact table in Tunables, in place of the generic 3-rows-per-module
+render): one row per module with a hide checkbox, an unranged distance drag
+(0 shows as "unlimited"), and a logarithmic bias slider, amber when the module
+differs from neutral, right-click to reset the module, plus a "Reset all".
+Every widget writes through the Binding setters, so dirty tracking and
+persistence are unchanged.
+
+**Replay / headless.** `persist_ == false` means no scope file is read, nothing
+binds or edits the group, and its buffer stays at the neutral declared
+defaults — `sync_draw_overrides` reads an empty table, the resolver reports
+`any_hidden() == false`, the GPU lane stays empty and the shader table stays
+the neutral single entry.
+
+**Limitations.**
+- Per MODULE, not per instance. Hiding `AlpineGrass` hides every placement.
+- The streaming sector container (`WorldSector`) is deliberately not a row: its
+  geometry is the terrain heightfield/volume the sector script emits directly
+  and its content hash is per SECTOR, not per module, so terrain has no stable
+  module identity to hang an override on. Ground tilesets are likewise outside
+  this control (they are a material/texturing path, not an instanced part).
+- Dynamic ECS-bound instances (`update_dynamic_instances`) bypass the
+  expansion loop, so `hide` does not reach them; the GPU lane still does, since
+  they carry a `part_slot`.
+- `max_draw_distance` / `lod_bias` are raster-cull controls; the RT path builds
+  its TLAS from the same (hidden-filtered) instance list but does not consult
+  the per-part distance/bias lane.
+- The retired OpenGL render path is not covered (it no longer exists in the
+  shipped Vulkan-only build).
+
 ### Stage 5 — what "script-defined properties" means today
 
 - `matter::props::DynamicGroup` / `DynamicGroupBuilder`: a heap-built Group that

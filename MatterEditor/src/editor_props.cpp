@@ -325,6 +325,7 @@ void EditorProps::init(ViewerStats& stats, CameraPrefs& camera,
 
 void EditorProps::shutdown() {
     release_world_props();
+    release_draw_overrides();
     if (user_pending_) {
         user_pending_ = false;
         if (persist_)
@@ -352,10 +353,21 @@ matter::props::Binding* EditorProps::world_props() {
     return registry_.get(world_props_->binding());
 }
 
+matter::props::Binding* EditorProps::draw_overrides() {
+    if (!draw_overrides_) return nullptr;
+    return registry_.get(draw_overrides_->binding());
+}
+
 void EditorProps::release_world_props() {
     if (!world_props_) return;
     world_props_->unbind_from(registry_);
     world_props_ = nullptr;
+}
+
+void EditorProps::release_draw_overrides() {
+    if (!draw_overrides_) return;
+    draw_overrides_->unbind_from(registry_);
+    draw_overrides_ = nullptr;
 }
 
 void EditorProps::adopt_world_props(matter::props::DynamicGroup* world_props) {
@@ -370,6 +382,24 @@ void EditorProps::adopt_world_props(matter::props::DynamicGroup* world_props) {
     // (aborted-switch) path the buffer still carries the user's edits, and
     // capturing them as baseline would make the next sparse save erase them
     // from the world file.
+    if (persist_ && !world_path_.empty())
+        matter::props::load_group_file(*b, world_path_);
+    b->set_dirty(false);
+}
+
+void EditorProps::adopt_draw_overrides(
+    matter::props::DynamicGroup* draw_overrides) {
+    release_draw_overrides();
+    if (!draw_overrides) return;
+    matter::props::Binding* b =
+        registry_.get(draw_overrides->bind_into(registry_, Scope::World));
+    if (!b) return;
+    draw_overrides_ = draw_overrides;
+    // Same rule as adopt_world_props: layer 2 for this group IS its neutral
+    // declared defaults, which bind_into already captured. Do NOT re-capture —
+    // on this (aborted-switch) path the buffer still carries the user's
+    // overrides, and capturing them as the baseline would make the next sparse
+    // save erase them from the world file.
     if (persist_ && !world_path_.empty())
         matter::props::load_group_file(*b, world_path_);
     b->set_dirty(false);
@@ -418,6 +448,10 @@ void EditorProps::set_world(const std::string& project_dir,
     // binding here — after the flush above has already written its edits, and
     // before anything can invalidate what the Binding points at.
     release_world_props();
+    // The draw-override group has the same owner and the same hazard: a
+    // connect can rebuild it when the module set changes, and the Binding
+    // holds bare pointers into its Descs, strings and value buffer.
+    release_draw_overrides();
     world_path_ = project_dir + "/editor/worlds/" + world_name + ".props.json";
     clear_world_dirty();
     // RequiresReload groups are consumed BY the connect, so they must be read
@@ -449,7 +483,9 @@ void EditorProps::set_world(const std::string& project_dir,
     }
 }
 
-void EditorProps::on_world_connected(matter::props::DynamicGroup* world_props) {
+void EditorProps::on_world_connected(
+    matter::props::DynamicGroup* world_props,
+    matter::props::DynamicGroup* draw_overrides) {
     // Bind the incoming world's script-declared group FIRST, so it rides the
     // same baseline -> world file -> env sequence as the static World groups
     // below rather than needing a path of its own.
@@ -457,6 +493,11 @@ void EditorProps::on_world_connected(matter::props::DynamicGroup* world_props) {
     if (world_props &&
         world_props->bind_into(registry_, Scope::World) != matter::props::kInvalidBinding)
         world_props_ = world_props;
+    release_draw_overrides();
+    if (draw_overrides &&
+        draw_overrides->bind_into(registry_, Scope::World) !=
+            matter::props::kInvalidBinding)
+        draw_overrides_ = draw_overrides;
     for (size_t i = 0; i < registry_.size(); ++i) {
         matter::props::Binding& b = registry_.at(i);
         if (b.scope() != Scope::World) continue;
@@ -469,6 +510,15 @@ void EditorProps::on_world_connected(matter::props::DynamicGroup* world_props) {
         // declaration didn't change, and capturing those edits as baseline
         // would make the next sparse save silently erase them from the file.
         if (world_props_ && b.id() == world_props_->binding()) continue;
+        // Identical reasoning for the draw-override group, and it matters more
+        // here: the session PRESERVES the group across every reload whose
+        // module set did not change, so the buffer arriving at this connect
+        // usually still holds the user's overrides. Capturing those as the
+        // baseline would make them equal their own baseline and the next
+        // sparse save would erase every override from the world file. The
+        // baseline stays the neutral declared defaults, which is exactly what
+        // "only non-default overrides persist" requires.
+        if (draw_overrides_ && b.id() == draw_overrides_->binding()) continue;
         b.capture_baseline();
         b.set_dirty(false);
     }
