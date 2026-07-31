@@ -348,6 +348,14 @@ matter::props::Binding* EditorProps::vt_enrich() {
     return registry_.get(vt_enrich_);
 }
 
+matter::props::Binding* EditorProps::console() { return registry_.get(console_); }
+matter::props::Binding* EditorProps::animation_overlay() {
+    return registry_.get(overlay_);
+}
+matter::props::Binding* EditorProps::viewer_debug() {
+    return registry_.get(viewer_debug_);
+}
+
 matter::props::Binding* EditorProps::world_props() {
     if (!world_props_) return nullptr;
     return registry_.get(world_props_->binding());
@@ -528,7 +536,40 @@ void EditorProps::on_world_connected(
     clear_world_dirty();
 }
 
+void EditorProps::note_panel_home(const char* group_path, const char* panel_name) {
+    if (!group_path || !*group_path) return;
+    // Writes go to the slot Tunables is NOT reading this frame — see the
+    // header comment on panel_home() for why this is a double buffer rather
+    // than a plain set.
+    panel_home_buf_[1 - panel_home_read_][group_path] = panel_name ? panel_name : "";
+}
+
+const char* EditorProps::panel_home(const char* group_path) const {
+    if (!group_path) return nullptr;
+    const auto& read_buf = panel_home_buf_[panel_home_read_];
+    const auto it = read_buf.find(group_path);
+    return it == read_buf.end() ? nullptr : it->second.c_str();
+}
+
 void EditorProps::tick(float dt) {
+    // Advance the panel-home double buffer. This MUST run before the
+    // persist_ early-return below: a MATTER_REPLAY run (persist_ == false)
+    // still draws panels and still needs Tunables' de-duplication to work,
+    // and this is the one place in the frame guaranteed to run exactly once,
+    // before any panel's draw call (see main.cpp's main loop — tick() is
+    // called immediately after computing dt, well above the
+    // ui.draw_*_panel() sequence).
+    //
+    // The slot panel_home_read_ currently points at is what Tunables read
+    // LAST frame; it is stale now; clear it so it becomes THIS frame's write
+    // target, then flip to the slot every panel finished writing last frame
+    // (which becomes THIS frame's read target). One frame after startup,
+    // before any panel has run once, both slots are empty and nothing is
+    // hidden — that first-frame flicker is the same "invisible latency" the
+    // ordering comment above panel_home() describes.
+    panel_home_buf_[panel_home_read_].clear();
+    panel_home_read_ = 1 - panel_home_read_;
+
     if (!persist_) return;
     bool touched = false;
     for (size_t i = 0; i < registry_.size(); ++i) {

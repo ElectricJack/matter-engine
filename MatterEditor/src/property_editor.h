@@ -199,6 +199,44 @@ inline bool prop_starts_new_category(const char* prev_path, const char* path) {
 }
 
 // ---------------------------------------------------------------------------
+// Tunables de-duplication (issue dd98763c-2ea2-9a1c-fc93-e755f94ee938).
+//
+// Every dedicated panel (Performance, Lighting, Console, Viewer Debug) draws
+// a subset of the SAME registry Tunables enumerates, so without this every
+// group those panels own is listed twice. The checkbox at the top of
+// Tunables hides a group that another panel claimed — see
+// EditorProps::note_panel_home/panel_home for how "claimed" is decided (a
+// panel calling it AT ITS OWN DRAW SITE, this frame, not a static table).
+//
+// Both rules below are one-line, but are named and tested here — like every
+// other Tunables listing rule in this header — so the ImGui loop in
+// draw_tunables_contents and the tests exercise the identical decision
+// rather than two hand-copies of the same boolean expression drifting apart.
+// ---------------------------------------------------------------------------
+
+// Search always wins: typing a filter is looking for one specific field, and
+// making the user first untick a checkbox to find it (because it happens to
+// live in Performance) defeats the point of a search box. So the checkbox's
+// OWN stored value only takes effect while the filter box is empty; while
+// filtering it is forced off (and, in the ImGui half, shown disabled) without
+// ever being WRITTEN — which is what makes "clearing the filter restores the
+// previous checkbox state" free: the state was never touched.
+inline bool prop_effective_hide_duplicates(bool checkbox_value, bool filtering) {
+    return checkbox_value && !filtering;
+}
+
+// A group is hidden from the Tunables listing when the (effective) checkbox
+// is on AND some other panel claimed it this frame. Note this is evaluated
+// per-row AFTER the text filter already matched — a filter hit on a claimed
+// group only reaches this when hide_duplicates_enabled is already false
+// (search forces it off), so "filtering un-hides a claimed group" falls out
+// of composing these two functions rather than needing its own rule.
+inline bool prop_group_is_duplicate_hidden(bool hide_duplicates_enabled,
+                                           bool claimed_by_other_panel) {
+    return hide_duplicates_enabled && claimed_by_other_panel;
+}
+
+// ---------------------------------------------------------------------------
 // Renderers (need a live ImGui context)
 // ---------------------------------------------------------------------------
 
@@ -288,6 +326,18 @@ bool draw_draw_overrides_section(matter::props::Binding& binding,
 
 struct TunablesPanelState {
     char filter[128] = {};
+    // The de-duplication checkbox's own preference, on by default: most of
+    // the registry duplicates a dedicated panel (Performance, Lighting,
+    // Console, Viewer Debug), and hiding those is what the checkbox is for.
+    // NOT persisted (a plain member here, not a bound Scope::User property):
+    // the issue's Recommendation allowed either, and a per-session toggle for
+    // "am I currently untangling a duplicate-vs-dedicated-panel question"
+    // matches how the equivalent case (the filter box itself) already
+    // behaves — reset per launch, not carried across worlds/sessions.
+    // draw_tunables_contents never writes this while the filter box is
+    // non-empty (see prop_effective_hide_duplicates) — the checkbox is drawn
+    // disabled instead, so the stored value survives a search untouched.
+    bool hide_duplicates = true;
 };
 
 // Tunables window body (call inside Begin/End) — the catch-all panel every

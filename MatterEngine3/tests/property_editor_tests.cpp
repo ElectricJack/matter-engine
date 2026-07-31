@@ -192,6 +192,104 @@ void test_tunables_categories() {
           "one header per distinct category, none repeated");
 }
 
+// Tunables de-duplication (issue dd98763c-2ea2-9a1c-fc93-e755f94ee938): the
+// checkbox at the top of Tunables hides a group another panel already draws.
+// draw_tunables_contents itself needs a live ImGui context and an EditorProps
+// registry to exercise, so — same discipline as prop_starts_new_category
+// above — the two decisions it is built from are pure functions tested here,
+// and this test drives them through the SAME kind of "walk a sorted listing"
+// loop draw_tunables_contents runs, so the category-header interaction is
+// covered without needing ImGui at all.
+void test_tunables_hide_duplicates() {
+    // ---- prop_effective_hide_duplicates: search always wins ---------------
+    CHECK(viewer::prop_effective_hide_duplicates(true, false),
+          "checkbox on, no filter: de-dup is active");
+    CHECK(!viewer::prop_effective_hide_duplicates(true, true),
+          "typing a filter disables the checkbox regardless of its stored value");
+    CHECK(!viewer::prop_effective_hide_duplicates(false, false),
+          "checkbox off, no filter: de-dup is inactive");
+    CHECK(!viewer::prop_effective_hide_duplicates(false, true),
+          "checkbox off AND filtering: still inactive (filtering doesn't need to add anything)");
+
+    // ---- prop_group_is_duplicate_hidden: the per-row rule ------------------
+    CHECK(!viewer::prop_group_is_duplicate_hidden(false, true),
+          "checkbox effectively off: a claimed group still shows");
+    CHECK(!viewer::prop_group_is_duplicate_hidden(true, false),
+          "checkbox on: an UNclaimed group still shows (nothing to de-dup)");
+    CHECK(viewer::prop_group_is_duplicate_hidden(true, true),
+          "checkbox on: a claimed group is hidden");
+
+    // ---- the interaction with category headers -----------------------------
+    // A realistic sorted listing, as draw_tunables_contents's registry walk
+    // produces it: some groups claimed by a dedicated panel this frame
+    // (EditorProps::panel_home would return non-null), some not.
+    //   camera.prefs, render.pom, stream.lod, viewer.budget, vt.residency
+    //     -> Performance (claimed)
+    //   render.lighting -> Lighting (claimed)
+    //   render.volumetrics -> deliberately left UNclaimed here, so the
+    //     "render" category has both a hidden AND a surviving row — the case
+    //     that actually exercises the no-dangling-header rule, rather than
+    //     every row in a category sharing one fate.
+    //   world.props -> nobody else draws a world's own script-declared
+    //     group, so it is never claimed.
+    struct Row { const char* path; bool claimed; };
+    const Row rows[] = {
+        {"camera.prefs",       true},
+        {"render.lighting",    true},
+        {"render.pom",         true},
+        {"render.volumetrics", false},
+        {"stream.lod",         true},
+        {"viewer.budget",      true},
+        {"vt.residency",       true},
+        {"world.props",        false},
+    };
+    for (size_t i = 1; i < sizeof(rows) / sizeof(rows[0]); ++i)
+        CHECK(std::strcmp(rows[i - 1].path, rows[i].path) < 0,
+              "hide-duplicates fixture is in the panel's sort order");
+
+    struct Walk { int headers = 0; int drawn = 0; bool any_hidden = false; };
+    auto walk = [&](bool hide_duplicates) {
+        Walk w;
+        const char* prev = nullptr;
+        for (const Row& row : rows) {
+            // Mirrors draw_tunables_contents's loop exactly: the duplicate
+            // check runs (and, on a hit, `continue`s) BEFORE the category
+            // header is considered, so a hidden row can never open one.
+            if (viewer::prop_group_is_duplicate_hidden(hide_duplicates, row.claimed)) {
+                w.any_hidden = true;
+                continue;
+            }
+            if (viewer::prop_starts_new_category(prev, row.path)) ++w.headers;
+            prev = row.path;
+            ++w.drawn;
+        }
+        return w;
+    };
+
+    const Walk hidden = walk(/*hide_duplicates=*/true);
+    CHECK(hidden.drawn == 2,
+          "hide-duplicates on: only the two unclaimed groups remain "
+          "(render.volumetrics, world.props)");
+    CHECK(hidden.any_hidden, "hide-duplicates on: something was actually hidden");
+    // camera/stream/viewer/vt are single-row categories that are ENTIRELY
+    // claimed — each must contribute ZERO headers, not a header over nothing.
+    // render keeps its header because render.volumetrics survives; world
+    // keeps its header because world.props was never claimed. 2 headers for
+    // 2 surviving rows is exactly the "one header per surviving category,
+    // none dangling" invariant test_tunables_categories already pins for the
+    // plain filter — this is the same rule under the OTHER hiding path.
+    CHECK(hidden.headers == 2,
+          "hide-duplicates on: no dangling header over an all-hidden category");
+
+    const Walk shown = walk(/*hide_duplicates=*/false);  // checkbox off, or filtering
+    CHECK(shown.drawn == 8, "hide-duplicates off: every group reappears, claimed or not");
+    CHECK(!shown.any_hidden, "hide-duplicates off: nothing is hidden");
+    CHECK(shown.headers == 6,
+          "hide-duplicates off: back to one header per category (camera, "
+          "render, stream, viewer, vt, world) — the claimed groups that "
+          "disappeared above reappear without duplicating a header");
+}
+
 void test_find_field() {
     CHECK(viewer::prop_find_field(schema(), "steps") == &field("steps"),
           "prop_find_field returns the described field");
@@ -555,6 +653,7 @@ int main() {
     test_paths_and_labels();
     test_filter();
     test_tunables_categories();
+    test_tunables_hide_duplicates();
     test_find_field();
     test_lod_ring_round_trip();
     test_streaming_pacing_fields();

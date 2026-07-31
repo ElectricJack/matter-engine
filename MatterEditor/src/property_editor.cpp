@@ -429,19 +429,46 @@ void draw_lighting_contents(EditorProps& props) {
         "values the world script authored at connect.");
     ImGui::Separator();
 
-    if (Binding* b = props.lighting()) draw_group(*b, nullptr, true, &on_apply);
-    if (Binding* b = props.volumetrics())
+    // note_panel_home: declared right at the draw call for each group, per
+    // group, so a group added to (or dropped from) this panel automatically
+    // updates what Tunables hides — see EditorProps::panel_home.
+    if (Binding* b = props.lighting()) {
+        props.note_panel_home(b->schema().path, "Lighting");
         draw_group(*b, nullptr, true, &on_apply);
+    }
+    if (Binding* b = props.volumetrics()) {
+        props.note_panel_home(b->schema().path, "Lighting");
+        draw_group(*b, nullptr, true, &on_apply);
+    }
     // render.fog sits directly after the volumetrics multipliers that modulate
     // it: fog_density_mul scales density, fog_falloff_mul scales falloff, and
     // fog_floor_offset shifts floor, so the two groups are read together.
-    if (Binding* b = props.fog()) draw_group(*b, nullptr, true, &on_apply);
+    if (Binding* b = props.fog()) {
+        props.note_panel_home(b->schema().path, "Lighting");
+        draw_group(*b, nullptr, true, &on_apply);
+    }
 }
 
 void draw_tunables_contents(TunablesPanelState& state, EditorProps& props) {
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputTextWithHint("##filter", "Filter groups and fields...",
                              state.filter, sizeof(state.filter));
+
+    const bool filtering = state.filter[0] != '\0';
+    // Disabled (not skipped): the checkbox still shows its stored value while
+    // filtering, it just cannot be clicked — ImGui::Checkbox does not write
+    // through a disabled widget, so state.hide_duplicates survives a search
+    // untouched and is exactly what re-applies once the filter is cleared.
+    ImGui::BeginDisabled(filtering);
+    ImGui::Checkbox("Hide properties shown in other panels",
+                    &state.hide_duplicates);
+    ImGui::EndDisabled();
+    if (filtering && ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Search looks at every registered property regardless of this "
+            "setting. Clear the filter to restore it.");
+    const bool hide_duplicates =
+        prop_effective_hide_duplicates(state.hide_duplicates, filtering);
 
     const bool dirty = props.world_dirty();
     if (dirty) ImGui::PushStyleColor(ImGuiCol_Text, kModifiedColor);
@@ -479,12 +506,22 @@ void draw_tunables_contents(TunablesPanelState& state, EditorProps& props) {
     // Category headers: the sort above already put same-category groups
     // together, so the header is emitted whenever the first path segment
     // changes AMONG THE ROWS THAT SURVIVED THE FILTER — a category whose every
-    // group was filtered out must not leave a dangling header behind.
+    // group was filtered out must not leave a dangling header behind. A group
+    // hidden by the de-duplication checkbox is skipped the SAME way (the
+    // `continue` below runs before prev_path/any_drawn are touched), so a
+    // category made up entirely of Performance/Lighting/Console/Viewer-Debug
+    // groups produces no header either — see prop_group_is_duplicate_hidden.
     const char* prev_path = nullptr;
     bool any_drawn = false;
+    bool any_hidden_as_duplicate = false;
     for (Binding* b : sorted) {
         const Group& g = b->schema();
         if (!prop_filter_matches_group(filter, g)) continue;
+        if (prop_group_is_duplicate_hidden(hide_duplicates,
+                                           props.panel_home(g.path) != nullptr)) {
+            any_hidden_as_duplicate = true;
+            continue;
+        }
         if (prop_starts_new_category(prev_path, g.path)) {
             ImGui::SeparatorText(
                 prop_category_label(prop_path_category(g.path)).c_str());
@@ -513,10 +550,21 @@ void draw_tunables_contents(TunablesPanelState& state, EditorProps& props) {
         }
         draw_group(*b, whole_group ? nullptr : filter, true, &on_apply);
     }
-    if (sorted.empty())
+    if (sorted.empty()) {
         ImGui::TextDisabled("No property groups registered.");
-    else if (!any_drawn)
-        ImGui::TextDisabled("No group or field matches the filter.");
+    } else if (!any_drawn) {
+        // Distinguish "your filter matched nothing" from "your filter matched
+        // things, but every one of them lives in another panel" — the second
+        // is the empty state the de-duplication checkbox itself can produce,
+        // and "no group or field matches" would send the user hunting for a
+        // typo that is not there.
+        if (any_hidden_as_duplicate)
+            ImGui::TextDisabled(
+                "Everything here is shown in another panel - untick \"Hide "
+                "properties shown in other panels\" to see it.");
+        else
+            ImGui::TextDisabled("No group or field matches the filter.");
+    }
 }
 
 }  // namespace viewer
