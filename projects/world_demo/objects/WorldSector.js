@@ -200,7 +200,7 @@ class WorldSector extends Part {
       for (const placement of planAlpineSector({
         rung: p.rung, worldSeed: seed, ox, oz, sectorSize: SECTOR,
         heightAt: this.heightAt.bind(this), slopeAt: this.slopeAt.bind(this),
-        candidatesInRect,
+        candidatesInRect, biomeAt: this.biomeAt.bind(this),
       })) putPlanned(placement);
       return;
     }

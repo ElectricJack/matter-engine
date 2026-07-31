@@ -274,7 +274,7 @@ function placementIdentity(worldSeed, kind, x, z, purpose) {
 
 export function planAlpineSector({
   rung, worldSeed, ox, oz, sectorSize,
-  heightAt, slopeAt, candidatesInRect,
+  heightAt, slopeAt, candidatesInRect, biomeAt,
 }) {
   if (![worldSeed, ox, oz, sectorSize].every(finite) ||
     typeof heightAt !== 'function' || typeof slopeAt !== 'function' ||
@@ -288,6 +288,8 @@ export function planAlpineSector({
       worldSeed, kind, minDistance, ox, oz, sectorSize, sectorSize,
     )) {
       if (placed >= FAMILY_CAPS[family]) break;
+      if (typeof biomeAt === 'function' && biomeAt(candidate.x, candidate.z) === 'ocean')
+        continue;
       const altitude = heightAt(candidate.x, candidate.z);
       const slope = slopeAt(candidate.x, candidate.z);
       const habitat = sampleHabitat({

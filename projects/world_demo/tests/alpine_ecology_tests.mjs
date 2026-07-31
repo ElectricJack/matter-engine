@@ -146,6 +146,9 @@ const mid = planAlpineSector({ ...sectorArgs, rung: 1 });
 const near = planAlpineSector({ ...sectorArgs, rung: 2 });
 
 assert.ok(near.length > 0, 'flat, gentle terrain produces alpine vegetation');
+assert.equal(planAlpineSector({ ...sectorArgs, rung: 2,
+  biomeAt: () => 'ocean' }).length, 0,
+'ocean candidates emit no alpine vegetation');
 assert.ok(far.every(p => p.family === 'tree'));
 assert.ok(mid.every(p => ['tree', 'shrub'].includes(p.family)));
 assert.ok(near.every(p =>
