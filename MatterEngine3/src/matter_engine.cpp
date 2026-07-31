@@ -4208,9 +4208,14 @@ void WorldSession::Impl::bake_and_stage_sector(
         const auto stage_t0 = std::chrono::steady_clock::now();
         std::shared_ptr<viewer::PartStore::StagedPart> staged_load;
         if (stage_from_memory && br.geometry) {
+            // terrain_sector=true: this is the streamed sector part, which is
+            // what the error-bounded terrain ladder exists for. Asserted here
+            // rather than sniffed from the mesh -- the skirt fringe that used
+            // to give it away is gone (terrain_mesher.cpp, 2026-07-30).
             auto from_memory = std::make_shared<viewer::PartStore::StagedPart>(
                 store->stage_from_bake(sector_hash, *br.geometry,
-                                       sector_first_rung));
+                                       sector_first_rung,
+                                       /*terrain_sector=*/true));
             // ok=false means stage_from_bake could not vouch for equivalence
             // with the artifact; fall through to the decode rather than
             // publishing something it is unsure about.
@@ -4223,7 +4228,8 @@ void WorldSession::Impl::bake_and_stage_sector(
         const bool staged_from_memory = static_cast<bool>(staged_load);
         if (!staged_load) {
             staged_load = std::make_shared<viewer::PartStore::StagedPart>(
-                store->stage_load(sector_hash, sector_first_rung));
+                store->stage_load(sector_hash, sector_first_rung,
+                                  /*terrain_sector=*/true));
         }
         stream_task_stage_us.fetch_add(
             (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
@@ -4244,12 +4250,14 @@ void WorldSession::Impl::bake_and_stage_sector(
         // their own private BLASManager and touch no shared state, so running
         // them back to back on an executor is as safe as running one.
         if (stage_verify && staged_from_memory) {
-            // Same first_rung as the path under test: this gate exists to prove
-            // in-memory staging equals artifact staging, and handing the
-            // reference a different ladder would report the rung policy as a
-            // geometry mismatch on every sector outside the inner ring.
+            // Same first_rung AND same terrain_sector as the path under test:
+            // this gate exists to prove in-memory staging equals artifact
+            // staging, and handing the reference a different ladder would
+            // report the rung policy (or the ladder choice) as a geometry
+            // mismatch on every sector outside the inner ring.
             const viewer::PartStore::StagedPart reference =
-                store->stage_load(sector_hash, sector_first_rung);
+                store->stage_load(sector_hash, sector_first_rung,
+                                  /*terrain_sector=*/true);
             std::string difference;
             const bool same = viewer::staged_parts_equal(
                 *staged_load, reference, &difference);

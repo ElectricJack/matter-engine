@@ -38,7 +38,9 @@ int main() {
         CHECK(!r.error.ok, "terrainVolume without world binding must fail");
         CHECK(r.error.message.find("terrainVolume") != std::string::npos, "names the verb");
     }
-    // Bound -> bakes; artifact holds 128 surface + 64 skirt = 192 tris total
+    // Bound -> bakes; artifact holds 128 surface tris. Was 192 (128 surface +
+    // 64 border skirt) until skirts were removed on 2026-07-30; see
+    // terrain_mesher.cpp.
     {
         BakeOptions opts; opts.parts_dir = "/tmp/terrain_verb_parts";
         opts.world.field = &field;   // sector_size / y bounds = defaults (16, -64, 192)
@@ -53,8 +55,8 @@ int main() {
         bool loaded = part_asset::load_v2(r.written_path, r.resolved_hash, blas, tlas, children, lods);
         CHECK(loaded, "load artifact");
         int total_tris = blas.get_total_triangle_count();
-        printf("  terrainVolume total triangles: %d (expect 192)\n", total_tris);
-        CHECK(total_tris == 192, "192 triangles (128 surface + 64 skirt)");
+        printf("  terrainVolume total triangles: %d (expect 128)\n", total_tris);
+        CHECK(total_tris == 128, "128 triangles (surface only, no skirts)");
         CHECK(blas.get_unique_blas_count() >= 1, "at least 1 material bucket");
     }
     return check_summary();

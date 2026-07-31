@@ -225,7 +225,17 @@ public:
     // it below that rung's projected-size threshold -- passes a higher value
     // to skip that rung's decimation and TriEx reprojection entirely. Honoured
     // only by the terrain ladder; see lod_bake::TerrainBakeTargets::first_rung.
-    StagedPart stage_load(uint64_t part_hash, size_t first_rung = 0);
+    //
+    // terrain_sector (default false): the caller asserting that this part is a
+    // streamed terrain sector, which selects the error-bounded terrain ladder
+    // over the generic ratio ladder. This used to be INFERRED from the mesh --
+    // terrain tiles were the only geometry fringed with the mesher's vertical
+    // skirt curtains -- but skirts were removed on 2026-07-30, so the fact has
+    // to be passed rather than sniffed. The old inference is still applied as a
+    // fallback for .part artifacts baked before that change; see the detection
+    // in stage_from_snapshot.
+    StagedPart stage_load(uint64_t part_hash, size_t first_rung = 0,
+                          bool terrain_sector = false);
 
     // Same result as stage_load(part_hash), assembled from the geometry the
     // bake that produced `part_hash` still holds in memory instead of from the
@@ -249,7 +259,8 @@ public:
     // from it and from disk and compare the two.
     StagedPart stage_from_bake(uint64_t part_hash,
                                const script_host::BakedGeometry& baked,
-                               size_t first_rung = 0);
+                               size_t first_rung = 0,
+                               bool terrain_sector = false);
 
     // Publish a staged part: adopt its BLAS entries into the shared manager,
     // remap its handles, insert it, and build its expansion. Bounded --
@@ -372,7 +383,8 @@ private:
     // accepts; get_or_load passes the asset it already resolved.
     StagedPart stage_from_snapshot(uint64_t part_hash, CoherentSnapshot& snapshot,
                                    const matter::animation::AnimAsset* animation_asset,
-                                   size_t first_rung = 0);
+                                   size_t first_rung = 0,
+                                   bool terrain_sector = false);
 
     std::string                       cache_root_;
     std::string                       scratch_dir_;     // Task 2: transient scratch dir

@@ -808,7 +808,7 @@ bool PartStore::read_coherent_snapshot(uint64_t part_hash,
 PartStore::StagedPart PartStore::stage_from_snapshot(
         uint64_t part_hash, CoherentSnapshot& snapshot,
         const matter::animation::AnimAsset* animation_asset,
-        size_t first_rung) {
+        size_t first_rung, bool terrain_sector) {
     StagedPart staged;
     staged.part_hash = part_hash;
     staged.staging   = std::make_unique<BLASManager>();
@@ -892,16 +892,33 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
     // generic 10%/1% ratio ladder shattered distant tiles into giant facets
     // framed by their frozen full-res rims (visible as seams on every distant
     // mountain), and kept every invisible border-skirt triangle at all rungs.
-    // Detection: only terrain tiles are both large in mesh-local space
-    // (>= half a sector) and fringed with the mesher's exactly-vertical skirt
-    // curtains; closed scatter meshes have no vertical-edge fringe, and box
-    // walls (which do) would dominate their triangle count, so require skirts
-    // to be a minority of the mesh.
+    //
+    // Detection is now TOLD, not inferred. It used to key off the mesher's
+    // exactly-vertical skirt curtains, which only terrain tiles carried; skirts
+    // were removed on 2026-07-30 (see terrain_mesher.cpp), so a fresh sector
+    // has no vertical-edge fringe and the old test would silently answer
+    // "not terrain" and drop every streamed sector onto the ratio ladder --
+    // reintroducing exactly the seam grid described above. The streaming
+    // caller knows what it is staging and passes `terrain_sector`.
+    //
+    // The skirt heuristic is KEPT as a fallback, not out of caution but because
+    // the disc cache is full of .part artifacts baked before this change that
+    // really do still contain skirts. Those must keep taking the terrain ladder
+    // AND keep getting their skirts stripped from the coarse rungs, until they
+    // are re-baked. count_terrain_skirt_tris stays for the same reason: on a
+    // post-change bake it returns 0 and an all-zero mask, which bake_terrain_lods
+    // handles as "nothing to drop".
     std::vector<uint8_t> skirt_mask;
     const size_t skirt_count =
         lod_bake::count_terrain_skirt_tris(tris, &skirt_mask);
-    const bool terrain_tile = radius >= 32.0f && skirt_count >= 8 &&
-                              skirt_count * 2 <= tris.size();
+    const bool legacy_skirted_tile =
+        skirt_count >= 8 && skirt_count * 2 <= tris.size();
+    // The size guard is common to both: a terrain sector is large in mesh-local
+    // space (>= half a sector), and it is the one condition worth keeping even
+    // against an explicit caller assertion, since the ladder's error bound is
+    // scaled by exactly this radius.
+    const bool terrain_tile =
+        radius >= 32.0f && (terrain_sector || legacy_skirted_tile);
     // WP-A (chart-space VT): every staged part gets per-rung chart tables and
     // chart UVs in its TriEx (flowing to the render vertex surface.xy through
     // build_raster_mesh_data below). Density policy: props 16 t/m at every
@@ -1015,7 +1032,8 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
 }
 
 PartStore::StagedPart PartStore::stage_load(uint64_t part_hash,
-                                            size_t first_rung) {
+                                            size_t first_rung,
+                                            bool terrain_sector) {
     StagedPart staged;
     staged.part_hash = part_hash;
     CoherentSnapshot snapshot;
@@ -1029,7 +1047,8 @@ PartStore::StagedPart PartStore::stage_load(uint64_t part_hash,
     // stageable; the caller loads them on the owning thread.
     if (snapshot.animation_link) { staged.read_ms = read_ms; return staged; }
     StagedPart out =
-        stage_from_snapshot(part_hash, snapshot, nullptr, first_rung);
+        stage_from_snapshot(part_hash, snapshot, nullptr, first_rung,
+                            terrain_sector);
     out.read_ms = read_ms;
     return out;
 }
@@ -1120,7 +1139,7 @@ bool PartStore::snapshot_from_baked(const script_host::BakedGeometry& baked,
 
 PartStore::StagedPart PartStore::stage_from_bake(
         uint64_t part_hash, const script_host::BakedGeometry& baked,
-        size_t first_rung) {
+        size_t first_rung, bool terrain_sector) {
     StagedPart staged;
     staged.part_hash = part_hash;
     CoherentSnapshot snapshot;
@@ -1133,7 +1152,8 @@ PartStore::StagedPart PartStore::stage_from_bake(
         std::chrono::steady_clock::now() - read_t0).count();
     if (!built) { staged.read_ms = read_ms; return staged; }
     StagedPart out =
-        stage_from_snapshot(part_hash, snapshot, nullptr, first_rung);
+        stage_from_snapshot(part_hash, snapshot, nullptr, first_rung,
+                            terrain_sector);
     out.read_ms = read_ms;
     return out;
 }

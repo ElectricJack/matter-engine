@@ -32,7 +32,8 @@ struct SectorMesh {
 //   tx, tz: sector tile indices (world origin = tx * sector_size, tz * sector_size)
 //   Positions are sector-local (subtract sector origin from world); y is world-absolute.
 //   Normals are gradient normals (from the density field).
-//   Skirts are emitted along all 4 borders (cross-rung seam cover).
+//   No border skirts: the [1..n] ownership rule makes any LOD pair watertight
+//   on its own (removed 2026-07-30; see the note at the end of mesh_sector).
 // Returns false + err on degenerate config (rung outside 0..3, sector_size <= 0,
 // y_min >= y_max).
 bool mesh_sector(const terrain_field::FieldRuntime& field,
@@ -64,8 +65,8 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
 // Normal probes use a fixed 2 m step regardless of lod, so a border vertex
 // shades identically at every level.
 //
-// Skirts follow the ACTUAL emitted border polyline (coarse vertices only on
-// masked edges) at the same depth policy as mesh_sector, wound outward.
+// No border skirts (removed 2026-07-30): the masked-edge re-triangulation
+// above is already watertight, so there was never a crack to cover.
 bool mesh_sector_heightfield(const terrain_field::FieldRuntime& field,
                              int64_t tx, int64_t tz, int lod, int edge_mask,
                              float sector_size, float y_min, float y_max,

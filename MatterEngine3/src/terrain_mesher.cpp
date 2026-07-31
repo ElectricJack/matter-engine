@@ -211,42 +211,23 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
                 }
             }
 
-    // The old full-height slab implicitly produced border walls. Emit the
-    // intended shallow skirts directly so local slab clipping does not change
-    // the sector seam contract or drag geometry down to the global y_min.
-    const float skirt_depth = std::max(8.0f, 4.0f * voxel);
-    auto emit_skirt_segment = [&](float ax, float az, float bx, float bz,
-                                  V3 normal) {
-        const float awx = float(ox) + ax, awz = float(oz) + az;
-        const float bwx = float(ox) + bx, bwz = float(oz) + bz;
-        const float ah = field.height_at(awx, awz);
-        const float bh = field.height_at(bwx, bwz);
-        CellVert a{V3{ax, ah, az}, normal};
-        CellVert b{V3{bx, bh, bz}, normal};
-        CellVert ba{V3{ax, ah - skirt_depth, az}, normal};
-        CellVert bb{V3{bx, bh - skirt_depth, bz}, normal};
-        MaterialBucket& bucket = bucket_for(
-            out,
-            uint32_t(field.material_at(
-                0.5f * (awx + bwx), 0.5f * (awz + bwz))));
-        // Wind to match the surface convention (counter-clockwise seen from
-        // outside the sector, geometric normal agreeing with the authored
-        // outward `normal`) so backface culling keeps the curtain visible
-        // from outside. The previous (a, bb, b)/(a, ba, bb) order faced the
-        // geometric normal INTO the sector: with culling enabled the skirts
-        // vanished from outside views — exactly the case they exist for.
-        push_tri(bucket, a, b, bb);
-        push_tri(bucket, a, bb, ba);
-    };
-    for (int s = 0; s < n; ++s) {
-        const float a = float(s) * voxel;
-        const float b = float(s + 1) * voxel;
-        emit_skirt_segment(0.0f, b, 0.0f, a, V3{-1, 0, 0});
-        emit_skirt_segment(sector_size, a, sector_size, b, V3{1, 0, 0});
-        emit_skirt_segment(a, 0.0f, b, 0.0f, V3{0, 0, -1});
-        emit_skirt_segment(b, sector_size, a, sector_size, V3{0, 0, 1});
-    }
-
+    // Border skirts REMOVED 2026-07-30. This path used to hang a vertical
+    // curtain (>= 8 m, wound outward) under all four sector edges, inherited
+    // from the old full-height slab's implicit border walls.
+    //
+    // They were cross-rung seam cover, and nothing needs covering any more:
+    // the ownership rule above ([1..n], see the comment at the top of this
+    // function) already makes any LOD pair watertight without skirts or
+    // overlap geometry, and the heightfield path's edge masks do the same by
+    // construction. What was left was a curtain that only ever showed when
+    // something else was already wrong -- and with Ground POM on by default,
+    // the parallax displaces the surface below the datum at the sector rim
+    // and exposes the curtain edge-on, printing a dark band along every
+    // seam. Nothing was hiding a hole; the cover itself was the artifact.
+    //
+    // The transient case they also covered -- a neighbour not yet resident --
+    // now shows through as background rather than as a wall. That is the
+    // intended trade: a streaming hole is momentary, a seam grid is not.
     return true;
 }
 
@@ -529,39 +510,11 @@ bool mesh_sector_heightfield(const terrain_field::FieldRuntime& field,
         // further to emit.
     }
 
-    // Skirts under the ACTUAL border polyline (coarse-only vertices on
-    // masked edges), outward wound, same depth policy as the voxel path.
-    const float skirt_depth = std::max(8.0f, 2.0f * cell);
-    auto emit_skirt = [&](const HfVert& a, const HfVert& b, V3 normal) {
-        if (a.p.x == b.p.x && a.p.z == b.p.z) return;
-        MaterialBucket& bucket = bucket_at(0.5f * (a.p.x + b.p.x),
-                                           0.5f * (a.p.z + b.p.z));
-        CellVert ca{a.p, normal};
-        CellVert cb{b.p, normal};
-        CellVert cad{V3{a.p.x, a.p.y - skirt_depth, a.p.z}, normal};
-        CellVert cbd{V3{b.p.x, b.p.y - skirt_depth, b.p.z}, normal};
-        // Same outward winding as the voxel skirts: (a, b, b_down) and
-        // (a, b_down, a_down) with a->b running counter-clockwise around the
-        // sector seen from above.
-        push_tri(bucket, ca, cb, cbd);
-        push_tri(bucket, ca, cbd, cad);
-    };
-    auto skirt_edge = [&](bool masked, auto&& border_vert, V3 normal) {
-        const int step = masked ? 2 : 1;
-        for (int u = 0; u < N; u += step)
-            emit_skirt(border_vert(u), border_vert(u + step), normal);
-    };
-    // a->b counter-clockwise around the sector seen from above:
-    // -z edge runs +x, +x edge runs +z, +z edge runs -x, -x edge runs -z.
-    skirt_edge(mask_nz, [&](int u) -> const HfVert& { return vert(u, 0); },
-               V3{0, 0, -1});
-    skirt_edge(mask_px, [&](int u) -> const HfVert& { return vert(N, u); },
-               V3{1, 0, 0});
-    skirt_edge(mask_pz, [&](int u) -> const HfVert& { return vert(N - u, N); },
-               V3{0, 0, 1});
-    skirt_edge(mask_nx, [&](int u) -> const HfVert& { return vert(0, N - u); },
-               V3{-1, 0, 0});
-
+    // Border skirts REMOVED 2026-07-30, with the voxel path's (see there for
+    // the full rationale). This path never needed them at all: the edge-mask
+    // re-triangulation above already emits a border polyline bitwise-identical
+    // to the coarse neighbour's own edge, so a masked seam is watertight with
+    // no T-vertices and there is no crack for a curtain to hide.
     return true;
 }
 

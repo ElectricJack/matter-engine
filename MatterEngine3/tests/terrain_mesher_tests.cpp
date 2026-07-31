@@ -3,6 +3,7 @@
 #include "../src/terrain_field.h"
 #include "../src/terrain_mesher.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 
@@ -38,9 +39,15 @@ int main() {
         SectorMesh m; std::string err;
         CHECK(mesh_sector(f, 0, 0, 0, 16.0f, -64.0f, 192.0f, m, err), err.c_str());
         size_t up    = count_tris(m, [](float, float ny, float){ return ny >  0.9f; });
-        size_t skirt = count_tris(m, [](float, float ny, float){ return std::fabs(ny) < 0.3f; });
+        // Border skirts were removed on 2026-07-30 (see terrain_mesher.cpp): a
+        // flat sector is surface and nothing else. This was 64 -- 4 sides x 8
+        // segments x 2 tris -- and is now the regression gate that they stay
+        // gone, since a returning curtain shows up as a dark band along every
+        // seam once Ground POM displaces the rim below the datum.
+        size_t vertical = count_tris(m,
+            [](float, float ny, float){ return std::fabs(ny) < 0.3f; });
         CHECK(up == 128, "flat rung0: 8x8 cells -> 128 surface tris");
-        CHECK(skirt == 64, "flat rung0: 4 sides x 8 segs x 2 = 64 skirt tris");
+        CHECK(vertical == 0, "flat rung0: no skirt curtains, surface only");
         bool y_ok = true, xz_ok = true;
         for (const auto& b : m.buckets)
             for (size_t t = 0; t * 9 < b.positions.size(); ++t) {
@@ -77,47 +84,61 @@ int main() {
             if (a.buckets[i].positions != b.buckets[i].positions) same = false;
         CHECK(same, "byte-identical positions");
     }
-    // --- same-rung seam: sector (0,0) +x skirt == sector (1,0) -x skirt ------
-    // Surface-nets with ownership-based face emission leaves a one-voxel gap at the
-    // shared border (A owns faces for x in [0,S), B owns faces for its own [0,S)).
-    // Skirts fill this gap. Verify that A's +x skirt and B's -x skirt are
-    // world-compatible: skirt top-vertex heights must match (same height_at queries).
-    // Collect all skirt segments from each side (|ny| < 0.3 = horizontal normal).
+    // --- same-rung seam closes on SURFACE geometry alone ---------------------
+    // This test used to assert that A's +x skirt and B's -x skirt agreed, on
+    // the premise (stated in its own comment) that ownership-based face
+    // emission "leaves a one-voxel gap at the shared border" which "skirts
+    // fill". That premise was wrong, and the flat-field case above always
+    // disproved it: its verts span local -2.1..18.1 on a 16 m sector, i.e. the
+    // surface OVERSHOOTS the border by about a voxel on each side. Neighbours
+    // therefore OVERLAP at the seam; they never gapped. Skirts were covering
+    // nothing here, which is why they could be removed.
+    //
+    // So the property worth gating is the real one: each sector's surface must
+    // reach at least to the shared border from its own side, with no reliance
+    // on any vertical geometry. If a future ownership change pulls the mesh
+    // back inside the border, this fails and the seam is a genuine hole.
     {
         FieldRuntime f = make(kNoise);
         SectorMesh a, b; std::string err;
         CHECK(mesh_sector(f, 0, 0, 1, 16.0f, -64, 192, a, err), "a");
         CHECK(mesh_sector(f, 1, 0, 1, 16.0f, -64, 192, b, err), "b");
-        // A's +x skirt verts have local x = 16.0 and nx > 0.
-        // B's -x skirt verts have local x = 0.0  and nx < 0 (world x = 16.0).
-        auto collect_border = [](const SectorMesh& m, float border_x,
-                                 bool pos_normal) -> std::vector<float> {
-            std::vector<float> ys;
+        // Neither sector's surface stops AT the border: the shared border cell
+        // row (world x in [15,16] at rung 1) is emitted by BOTH sectors, from
+        // the same world samples. Measured: A spans local x -0.5000..15.6741
+        // (world 15.6741) and B spans -0.5955..15.9985 (world x from 15.4045),
+        // so their coverage OVERLAPS by 0.27 m rather than meeting at 16.
+        //
+        // Note the two sides are NOT stitched vertex-for-vertex: their border
+        // columns sit at different x (surface-nets places each sector's vertex
+        // from its own owned cells), so this is an OVERLAP, not a shared edge.
+        // An overlap is all the seam needs -- there is no line of sight to the
+        // background through it -- and it is why the skirts could go.
+        auto world_x_range = [](const SectorMesh& m, float origin_x,
+                                float& lo, float& hi) {
+            lo = 1e30f; hi = -1e30f;
             for (const auto& bkt : m.buckets)
-                for (size_t t = 0; t * 9 < bkt.positions.size(); ++t) {
-                    float nx = bkt.normals[t*9+0], ny = bkt.normals[t*9+1];
-                    if (std::fabs(ny) > 0.3f) continue; // not a skirt tri
-                    for (int v = 0; v < 3; ++v) {
-                        float px = bkt.positions[t*9+v*3+0];
-                        float py = bkt.positions[t*9+v*3+1];
-                        if (std::fabs(px - border_x) < 0.01f)
-                            ys.push_back(py);
-                    }
+                for (size_t i = 0; i + 2 < bkt.positions.size(); i += 3) {
+                    const float wx = origin_x + bkt.positions[i];
+                    lo = std::min(lo, wx);
+                    hi = std::max(hi, wx);
                 }
-            std::sort(ys.begin(), ys.end());
-            ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
-            return ys;
         };
-        auto ys_a = collect_border(a, 16.0f, true);  // A's +x border, local x=16
-        auto ys_b = collect_border(b,  0.0f, false); // B's -x border, local x=0
-        CHECK(!ys_a.empty(), "+x skirt verts in A");
-        CHECK(!ys_b.empty(), "-x skirt verts in B");
-        // Both sectors query height_at the same world x=16 positions — heights must match.
-        CHECK(ys_a.size() == ys_b.size(), "same number of skirt vert heights at x=16");
-        bool match = true;
-        for (size_t i = 0; i < ys_a.size() && i < ys_b.size(); ++i)
-            if (std::fabs(ys_a[i] - ys_b[i]) > 0.01f) { match = false; break; }
-        CHECK(match, "border skirt heights match between neighbors");
+        float a_lo = 0, a_hi = 0, b_lo = 0, b_hi = 0;
+        world_x_range(a,  0.0f, a_lo, a_hi);
+        world_x_range(b, 16.0f, b_lo, b_hi);
+        // Measured at rung 1: A reaches world 15.674, B starts at world 15.405,
+        // so the two surfaces overlap by ~0.27 m across the world-16 border.
+        CHECK(b_lo <= a_hi,
+              "same-rung seam: neighbour surfaces overlap across the border, "
+              "so no skirt is needed to keep it opaque");
+        // And no border curtains remain on either side.
+        auto vertical_tris = [](const SectorMesh& m) {
+            return count_tris(m,
+                [](float, float ny, float){ return ny == 0.0f; });
+        };
+        CHECK(vertical_tris(a) == 0 && vertical_tris(b) == 0,
+              "no skirt curtains on either side of the seam");
     }
     // --- degenerate config fails loudly -------------------------------------
     {
@@ -175,8 +196,12 @@ int main() {
             const int N = 1 << lod;
             CHECK(surface_tris(m) == expect_surface[lod],
                   "heightfield surface tri count per design table");
-            CHECK(skirt_tris(m) == size_t(4 * N * 2),
-                  "heightfield skirt count 4*N*2");
+            // Was 4*N*2 border-skirt tris; removed 2026-07-30. The coverage
+            // assertions immediately below are what made them removable here:
+            // the surface alone measures exactly 64x64 with no gaps.
+            (void)N;
+            CHECK(skirt_tris(m) == 0,
+                  "heightfield emits no skirts, surface only");
             double sgn = 0, abs = 0;
             surface_area(m, sgn, abs);
             CHECK(std::fabs(abs - 64.0*64.0) < 1e-2, "full coverage, no gaps");
@@ -261,9 +286,24 @@ int main() {
         auto bf = border(fine, 64.0f);
         auto bc = border(coarse, 0.0f);
         CHECK(bf.size() == size_t(5), "masked border keeps only even verts");
-        // XZ lattice positions coincide bitwise; heights differ only by the
-        // delta between the two sectors' uniform filter scales (cell/2 vs
-        // cell), which stays small and is covered by the depth-scaled skirts.
+        // XZ lattice positions coincide bitwise, but the HEIGHTS do not: the
+        // two sectors evaluate the same world XZ through different uniform
+        // filter scales (cell/2 vs cell), so a cross-LOD border vertex lands
+        // at a different y on each side.
+        //
+        // This is the one place skirts were load-bearing, and removing them
+        // (2026-07-30) leaves this delta as an OPEN VERTICAL CRACK at every
+        // terrain-band boundary -- the >= 8 m curtain used to swallow it. The
+        // bound below is unchanged in value but has changed meaning entirely:
+        // it was "the crack stays smaller than the cover", it is now "this is
+        // how big the uncovered crack is". Kept as a characterization gate so
+        // a filter change that widened it cannot land silently.
+        //
+        // The real fix is to make both sides agree on the border height --
+        // evaluate masked border vertices at the COARSE side's filter scale on
+        // both sides, the same way the XZ lattice is already forced to agree.
+        // Until then, cross-LOD seams are visible where band radii fall inside
+        // the streamed area.
         bool xz_match = bf.size() == bc.size();
         float max_dy = 0.0f;
         for (size_t i = 0; xz_match && i < bf.size(); ++i) {
@@ -271,7 +311,9 @@ int main() {
             max_dy = std::max(max_dy, std::fabs(bf[i].second - bc[i].second));
         }
         CHECK(xz_match, "masked border lattice positions bitwise-match");
-        CHECK(max_dy < 6.0f, "masked border filter delta stays skirt-covered");
+        CHECK(max_dy < 6.0f,
+              "cross-LOD border height delta (now an uncovered crack) "
+              "stays within its characterized bound");
     }
     // --- LOD1 with all four neighbors coarser (centre fan) ------------------
     {
