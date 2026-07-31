@@ -1,5 +1,8 @@
 import { rng } from 'shared-lib/rng';
 import { candidatesInRect } from 'shared-lib/scatter_grid';
+import {
+  isAlpineProfile, planAlpineSector, selectVegetationCatalog,
+} from 'shared-lib/alpine_ecology';
 
 // One streamed column of the infinite world. Terrain comes from the native
 // world field (terrainVolume); scatter reads the biomes table passed down
@@ -79,13 +82,17 @@ function assetVariants(biomesJson) {
   //for (let s = 0; s < PEBBLE_VARIANTS; ++s)
   //  req.push({ module: 'Pebble', params: { seed: s } });
 
+  const vegetation = [];
   for (let s = 0; s < GRASS_VARIANTS; ++s)
-      req.push({ module: 'Grass', params: { seed: s } });
+    vegetation.push({ module: 'Grass', params: { seed: s } });
 
   if (anyBiomeWantsTrees(biomesJson))
     for (let s = 0; s < TREE_VARIANTS; ++s)
-      req.push({ module: 'Tree', params: { seed: s } });
+      vegetation.push({ module: 'Tree', params: { seed: s } });
 
+  let table = null;
+  try { table = biomesJson ? JSON.parse(biomesJson) : null; } catch (e) {}
+  req.push(...selectVegetationCatalog(table, vegetation));
   return req;
 }
 
@@ -152,7 +159,51 @@ class WorldSector extends Part {
       this.placeChild(module, params);
       this.popMatrix();
     };
+    const putPlanned = ({ x, z, rotation, scale, sinkY, module, params }) => {
+      this.pushMatrix();
+      this.translate(x - ox, this.heightAt(x, z) - sinkY, z - oz);
+      this.rotateY(rotation);
+      this.scale(scale, scale, scale);
+      this.placeChild(module, params);
+      this.popMatrix();
+    };
     const inSector = () => [ox + r.range(0, SECTOR), oz + r.range(0, SECTOR)];
+
+    // ---- every tier: landmark boulders --------------------------------------
+    for (const c of candidatesInRect(seed, 2, BOULDER_MIN_DIST, ox, oz, SECTOR, SECTOR)) {
+      if (this.biomeAt(c.x, c.z) === 'ocean') continue;
+      const sz = BOULDER_SIZES[(c.u * BOULDER_SIZES.length) | 0];
+      const s = (0.8 + 0.4 * c.v) * BOULDER_SCALE;
+      this.pushMatrix();
+      this.translate(c.x - ox, this.heightAt(c.x, c.z) - 0.15 * sz * s, c.z - oz);
+      this.rotateY(c.rot);
+      this.scale(s, s, s);
+      this.placeChild('Rock', { seed: (c.u * 16 | 0) % BOULDER_SEEDS, size: sz });
+      this.popMatrix();
+    }
+
+    const scatterRocks = () => {
+      // ---- tier >= 1: rocks (scree fields) and pebbles ----------------------
+      // Baseline sparse rocks everywhere; full density inside scree patches.
+      for (let i = 0, n = (counts.rocks | 0) * 3; i < n; ++i) {
+        const [wx, wz] = inSector();
+        if (this.biomeAt(wx, wz) === 'ocean') continue;
+        const inField = patch(wx, wz, SCREE, 1 / 70) > 0.2;
+        if (!inField && r.random() > 0.18) continue;
+        const s = r.range(0.6, 1.8);
+        put('Rock', { seed: r.int(ROCK_VARIANTS) }, wx, wz, s, 0.15 * s);
+      }
+    };
+
+    if (isAlpineProfile(table)) {
+      if (p.rung >= 1) scatterRocks();
+      for (const placement of planAlpineSector({
+        rung: p.rung, worldSeed: seed, ox, oz, sectorSize: SECTOR,
+        heightAt: this.heightAt.bind(this), slopeAt: this.slopeAt.bind(this),
+        candidatesInRect,
+      })) putPlanned(placement);
+      return;
+    }
 
     // ---- every tier: tree groves (cross-sector deterministic) --------------
     // Candidate grid gives even in-grove spacing; the grove channel gates
@@ -175,31 +226,9 @@ class WorldSector extends Part {
       this.popMatrix();
     }
 
-    // ---- every tier: landmark boulders --------------------------------------
-    for (const c of candidatesInRect(seed, 2, BOULDER_MIN_DIST, ox, oz, SECTOR, SECTOR)) {
-      if (this.biomeAt(c.x, c.z) === 'ocean') continue;
-      const sz = BOULDER_SIZES[(c.u * BOULDER_SIZES.length) | 0];
-      const s = (0.8 + 0.4 * c.v) * BOULDER_SCALE;
-      this.pushMatrix();
-      this.translate(c.x - ox, this.heightAt(c.x, c.z) - 0.15 * sz * s, c.z - oz);
-      this.rotateY(c.rot);
-      this.scale(s, s, s);
-      this.placeChild('Rock', { seed: (c.u * 16 | 0) % BOULDER_SEEDS, size: sz });
-      this.popMatrix();
-    }
-
     if (p.rung < 1) return;
 
-    // ---- tier >= 1: rocks (scree fields) and pebbles ------------------------
-    // Baseline sparse rocks everywhere; full density inside scree patches.
-    for (let i = 0, n = (counts.rocks | 0) * 3; i < n; ++i) {
-      const [wx, wz] = inSector();
-      if (this.biomeAt(wx, wz) === 'ocean') continue;
-      const inField = patch(wx, wz, SCREE, 1 / 70) > 0.2;
-      if (!inField && r.random() > 0.18) continue;
-      const s = r.range(0.6, 1.8);
-      put('Rock', { seed: r.int(ROCK_VARIANTS) }, wx, wz, s, 0.15 * s);
-    }
+    scatterRocks();
     // Pebble variants are intentionally omitted from assetVariants(), so do
     // not emit pebble children here either. Keeping placement enabled without
     // declared variants rejects every sector that contains a pebble.

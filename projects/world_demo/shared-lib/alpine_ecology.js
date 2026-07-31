@@ -258,3 +258,56 @@ export function selectAlpineAsset(family, habitat, identity) {
     sinkY,
   };
 }
+
+const FAMILY_SCATTER = Object.freeze({
+  tree: Object.freeze({ kind: 31, minDistance: 9 }),
+  shrub: Object.freeze({ kind: 37, minDistance: 5 }),
+  groundCover: Object.freeze({ kind: 41, minDistance: 4 }),
+  flower: Object.freeze({ kind: 43, minDistance: 4 }),
+  grass: Object.freeze({ kind: 47, minDistance: 2 }),
+});
+
+function placementIdentity(worldSeed, kind, x, z, purpose) {
+  return hash2(x * (kind + 1), z * (purpose + 1),
+    worldSeed + kind * 4099 + purpose * 131);
+}
+
+export function planAlpineSector({
+  rung, worldSeed, ox, oz, sectorSize,
+  heightAt, slopeAt, candidatesInRect,
+}) {
+  if (![worldSeed, ox, oz, sectorSize].every(finite) ||
+    typeof heightAt !== 'function' || typeof slopeAt !== 'function' ||
+    typeof candidatesInRect !== 'function') return [];
+
+  const placements = [];
+  for (const family of familiesForRung(rung)) {
+    const { kind, minDistance } = FAMILY_SCATTER[family];
+    let placed = 0;
+    for (const candidate of candidatesInRect(
+      worldSeed, kind, minDistance, ox, oz, sectorSize, sectorSize,
+    )) {
+      if (placed >= FAMILY_CAPS[family]) break;
+      const altitude = heightAt(candidate.x, candidate.z);
+      const slope = slopeAt(candidate.x, candidate.z);
+      const habitat = sampleHabitat({
+        x: candidate.x, z: candidate.z, altitude, slope, worldSeed,
+      });
+      const asset = selectAlpineAsset(family, { ...habitat, altitude, slope },
+        placementIdentity(worldSeed, kind, candidate.x, candidate.z, 1));
+      if (!asset) continue;
+      placements.push({
+        family,
+        x: candidate.x,
+        z: candidate.z,
+        rotation: placementIdentity(worldSeed, kind, candidate.x, candidate.z, 2) * Math.PI * 2,
+        scale: asset.scale,
+        sinkY: asset.sinkY,
+        module: asset.module,
+        params: asset.params,
+      });
+      ++placed;
+    }
+  }
+  return placements;
+}

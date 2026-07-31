@@ -4,8 +4,10 @@ import {
   FAMILY_SLOPE_MAX, isAlpineProfile, alpineAssetVariants,
   selectVegetationCatalog, environmentalDryness, sampleHabitat,
   selectDrynessState, selectAlpineAsset, familiesForRung,
-  isWithinVegetationCeiling,
+  isWithinVegetationCeiling, planAlpineSector,
 } from '../shared-lib/alpine_ecology.js';
+import { candidatesInRect } from
+  '../../../MatterEngine3/shared-lib/scatter_grid.js';
 
 assert.equal(ALPINE_PROFILE, 'alpine-lush');
 assert.deepEqual(DRYNESS_STATES, [0, 0.35, 0.7, 1]);
@@ -132,3 +134,76 @@ for (const family of ['tree', 'shrub', 'groundCover', 'flower', 'grass']) {
   assert.equal(selectAlpineAsset(family,
     { ...bestHabitatFor[family], slope: FAMILY_SLOPE_MAX[family] + 0.001 }, 0.5), null);
 }
+
+const flatHeight = () => 180;
+const gentleSlope = () => 0.1;
+const sectorArgs = {
+  worldSeed: 20260722, ox: 0, oz: 0, sectorSize: 64,
+  heightAt: flatHeight, slopeAt: gentleSlope, candidatesInRect,
+};
+const far = planAlpineSector({ ...sectorArgs, rung: 0 });
+const mid = planAlpineSector({ ...sectorArgs, rung: 1 });
+const near = planAlpineSector({ ...sectorArgs, rung: 2 });
+
+assert.ok(near.length > 0, 'flat, gentle terrain produces alpine vegetation');
+assert.ok(far.every(p => p.family === 'tree'));
+assert.ok(mid.every(p => ['tree', 'shrub'].includes(p.family)));
+assert.ok(near.every(p =>
+  ['tree', 'shrub', 'groundCover', 'flower', 'grass'].includes(p.family)));
+
+const placementKey = p => JSON.stringify(
+  [p.family, p.x, p.z, p.rotation, p.scale, p.module, p.params]);
+assert.deepEqual(far.map(placementKey).sort(),
+  near.filter(p => p.family === 'tree').map(placementKey).sort());
+assert.deepEqual(mid.map(placementKey).sort(),
+  near.filter(p => p.family === 'tree' || p.family === 'shrub')
+    .map(placementKey).sort());
+
+assert.equal(planAlpineSector({ ...sectorArgs, rung: 2,
+  heightAt: () => 456 }).filter(p => p.family === 'tree').length, 0);
+assert.equal(planAlpineSector({ ...sectorArgs, rung: 2,
+  heightAt: () => 521 }).length, 0);
+assert.equal(planAlpineSector({ ...sectorArgs, rung: 2,
+  slopeAt: () => 1 }).length, 0);
+
+for (const family of Object.keys(FAMILY_CAPS))
+  assert.ok(near.filter(p => p.family === family).length <= FAMILY_CAPS[family]);
+
+const sectors = [
+  [0, 0], [64, 0], [0, 64], [64, 64],
+];
+const planSector = ([ox, oz]) => planAlpineSector({
+  ...sectorArgs, rung: 2, ox, oz,
+});
+const sectorPlans = sectors.map(planSector);
+const allPlacements = sectorPlans.flat();
+assert.ok(allPlacements.every(p => sectors.filter(([ox, oz]) =>
+  p.x >= ox && p.x < ox + 64 && p.z >= oz && p.z < oz + 64).length === 1));
+assert.equal(new Set(allPlacements.map(placementKey)).size, allPlacements.length);
+assert.deepEqual(allPlacements.map(placementKey).sort(),
+  [...sectors].reverse().flatMap(planSector).map(placementKey).sort());
+
+const allowed = new Set(alpineAssetVariants().map(v =>
+  `${v.module}:${JSON.stringify(v.params)}`));
+for (const p of near)
+  assert.ok(allowed.has(`${p.module}:${JSON.stringify(p.params)}`));
+
+const sharedRequirements = [
+  ...Array.from({ length: 8 }, (_, seed) => ({ module: 'Rock', params: { seed } })),
+  ...[2.5, 4].flatMap(size => Array.from({ length: 4 }, (_, seed) =>
+    ({ module: 'Rock', params: { seed, size } }))),
+];
+const legacyVegetation = [
+  ...Array.from({ length: 5 }, (_, seed) => ({ module: 'Grass', params: { seed } })),
+  ...Array.from({ length: 3 }, (_, seed) => ({ module: 'Tree', params: { seed } })),
+];
+const alpineRequirements = sharedRequirements.concat(selectVegetationCatalog(
+  { __vegetation: { profile: ALPINE_PROFILE } }, legacyVegetation));
+assert.equal(alpineRequirements.length, 92);
+assert.equal(alpineRequirements.filter(v => v.module === 'Rock').length, 16);
+assert.equal(alpineRequirements.filter(v => v.module === 'Tree' || v.module === 'Grass').length, 0);
+assert.equal(alpineRequirements.filter(v => v.module.startsWith('Alpine')).length, 76);
+const legacyRequirements = sharedRequirements.concat(selectVegetationCatalog(
+  { meadow: { grass: 1400, trees: 5 } }, legacyVegetation));
+assert.deepEqual(legacyRequirements, sharedRequirements.concat(legacyVegetation));
+assert.equal(legacyRequirements.some(v => v.module.startsWith('Alpine')), false);

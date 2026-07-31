@@ -647,8 +647,9 @@ class StreamMountain extends World {
   biomes() {
     return {
       __terrain: { material: "dirt" },
-      foothills: { grass: 1400, pebbles: 90, rocks: 16 /*, trees: 5 */ },
-      meadow:    { grass: 1400, pebbles: 90, rocks: 16 /*, trees: 5 */ },
+      __vegetation: { profile: "alpine-lush" },
+      foothills: { pebbles: 90, rocks: 16 /*, trees: 5 */ },
+      meadow:    { pebbles: 90, rocks: 16 /*, trees: 5 */ },
       mountains: { rocks: 4 },
       ocean:     {},
     };
