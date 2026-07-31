@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import {
   ALPINE_PROFILE, DRYNESS_STATES, FAMILY_CAPS, FAMILY_SCALE_RANGE,
-  TREE_CANOPY_CLEARANCE, TREE_NEIGHBOR_PADDING,
+  TREE_CANOPY_CLEARANCE, TREE_EXCLUSION_RADIUS_SCALE,
+  TREE_NEIGHBOR_PADDING,
   FAMILY_SLOPE_MAX, isAlpineProfile, alpineAssetVariants,
   selectVegetationCatalog, environmentalDryness, sampleHabitat,
   selectDrynessState, selectAlpineAsset, familiesForRung,
   isWithinVegetationCeiling, treeAltitudeGrowth, treeHeightMultiplier,
-  treeCanopyRadius,
+  treeCanopyRadius, treeExclusionRadius,
   planAlpineSector,
 } from '../shared-lib/alpine_ecology.js';
 import { candidatesInRect } from
@@ -17,7 +18,7 @@ assert.deepEqual(DRYNESS_STATES, [0, 0.35, 0.7, 1]);
 assert.deepEqual(FAMILY_CAPS,
   { tree: 1080, shrub: 960, groundCover: 720, flower: 960, grass: 9000 });
 assert.deepEqual(FAMILY_SCALE_RANGE, {
-  tree: [4, 10], shrub: [0.6, 3], groundCover: [0.6, 3],
+  tree: [2, 5], shrub: [0.6, 3], groundCover: [0.6, 3],
   flower: [0.6, 3], grass: [0.6, 3],
 });
 assert.deepEqual(FAMILY_SLOPE_MAX, {
@@ -145,11 +146,11 @@ const sampledScales = family => Array.from({ length: 2048 }, (_, index) =>
   .filter(Boolean)
   .map(asset => asset.scale);
 const treeScales = sampledScales('tree');
-assert.ok(Math.min(...treeScales) >= 9.24);
-assert.ok(Math.max(...treeScales) <= 19.01);
+assert.ok(Math.min(...treeScales) >= 4.62);
+assert.ok(Math.max(...treeScales) <= 9.51);
 assert.ok(Math.max(...treeScales) / Math.min(...treeScales) > 1.9);
-assert.ok([...treeScales].sort((a, b) => a - b)[treeScales.length >> 1] < 11,
-  'most lowland trees stay near 5x while rare trees reach 10x');
+assert.ok([...treeScales].sort((a, b) => a - b)[treeScales.length >> 1] < 5.5,
+  'most lowland trees stay near 2.5x while rare trees reach 5x');
 const highTreeScales = Array.from({ length: 2048 }, (_, index) =>
   selectAlpineAsset('tree',
     { ...bestHabitatFor.tree, altitude: 440, dryness: 0.7, exposure: 0.7 },
@@ -178,9 +179,13 @@ assert.equal(treeCanopyRadius({
 assert.equal(treeCanopyRadius({
   module: 'AlpineDeciduous', params: { form: 2 }, scale: 10,
 }), 16.5);
+assert.equal(TREE_EXCLUSION_RADIUS_SCALE, 0.45);
+assert.ok(Math.abs(treeExclusionRadius({
+  module: 'AlpineDeciduous', params: { form: 2 }, scale: 10,
+}) - 7.425) < 1e-9);
 assert.ok(TREE_NEIGHBOR_PADDING >=
-  2 * treeCanopyRadius({
-    module: 'AlpineDeciduous', params: { form: 2 }, scale: 19,
+  2 * treeExclusionRadius({
+    module: 'AlpineDeciduous', params: { form: 2 }, scale: 9.5,
   }) + TREE_CANOPY_CLEARANCE);
 for (const family of ['shrub', 'groundCover', 'flower', 'grass']) {
   const scales = sampledScales(family);
@@ -279,9 +284,9 @@ for (let first = 0; first < allTrees.length; ++first)
     const a = allTrees[first], b = allTrees[second];
     const dx = a.x - b.x, dz = a.z - b.z;
     const minimumDistance =
-      a.canopyRadius + b.canopyRadius + TREE_CANOPY_CLEARANCE;
+      a.exclusionRadius + b.exclusionRadius + TREE_CANOPY_CLEARANCE;
     assert.ok(dx * dx + dz * dz >= minimumDistance * minimumDistance - 1e-8,
-      'tree canopies do not overlap across sector boundaries');
+      'tree exclusion zones do not overlap across sector boundaries');
   }
 
 const allowed = new Set(alpineAssetVariants().map(v =>

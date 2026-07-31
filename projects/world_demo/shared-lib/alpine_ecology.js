@@ -4,13 +4,14 @@ export const FAMILY_CAPS = Object.freeze({
   tree: 1080, shrub: 960, groundCover: 720, flower: 960, grass: 9000,
 });
 export const FAMILY_SCALE_RANGE = Object.freeze({
-  tree: Object.freeze([4, 10]),
+  tree: Object.freeze([2, 5]),
   shrub: Object.freeze([0.6, 3]),
   groundCover: Object.freeze([0.6, 3]),
   flower: Object.freeze([0.6, 3]),
   grass: Object.freeze([0.6, 3]),
 });
 export const TREE_CANOPY_CLEARANCE = 0.15;
+export const TREE_EXCLUSION_RADIUS_SCALE = 0.45;
 export const FAMILY_SLOPE_MAX = Object.freeze({
   tree: 0.625, shrub: 0.675, groundCover: 0.781,
   flower: 0.675, grass: 0.781,
@@ -94,6 +95,10 @@ export function treeCanopyRadius(asset) {
     ? radii[form]
     : 1.4;
   return baseRadius * (finite(asset?.scale) ? Math.max(0, asset.scale) : 0);
+}
+
+export function treeExclusionRadius(asset) {
+  return treeCanopyRadius(asset) * TREE_EXCLUSION_RADIUS_SCALE;
 }
 
 export function isWithinVegetationCeiling(altitude) {
@@ -338,12 +343,13 @@ export function selectAlpineAsset(family, habitat, identity) {
   const [scaleMinimum, scaleMaximum] = FAMILY_SCALE_RANGE[family];
   const scaleIdentity = identityChannel(identity, 3);
   // A power curve keeps most plants plausible while still allowing rare,
-  // unmistakable giants. Mature forest cores can reach the full 10x tree
-  // multiplier; edge trees top out a little smaller.
+  // unmistakable giants. Mature forest cores can reach the full 5x tree
+  // base multiplier; the separate height multiplier adds vertical variety.
   let scaleMultiplier;
   if (family === 'tree') {
     const altitudeGrowth = treeAltitudeGrowth(altitude);
-    const altitudeFloor = scaleMinimum + altitudeGrowth;
+    const altitudeFloor =
+      scaleMinimum + scaleMinimum * 0.25 * altitudeGrowth;
     const altitudeCeiling =
       scaleMinimum + (scaleMaximum - scaleMinimum) * altitudeGrowth;
     const scaleCurve = Math.pow(scaleIdentity, 5) *
@@ -385,7 +391,7 @@ function placementIdentity(worldSeed, kind, x, z, purpose) {
     worldSeed + kind * 4099 + purpose * 131);
 }
 
-export const TREE_NEIGHBOR_PADDING = 64;
+export const TREE_NEIGHBOR_PADDING = 16;
 
 function plannedCandidate({
   family, candidate, worldSeed, kind, heightAt, slopeAt, biomeAt,
@@ -441,7 +447,7 @@ function planTrees({
     if (!placement) continue;
     viable.push({
       ...placement,
-      canopyRadius: treeCanopyRadius(placement),
+      exclusionRadius: treeExclusionRadius(placement),
       priority: placementIdentity(
         worldSeed, kind, candidate.x, candidate.z, 7),
     });
@@ -457,7 +463,7 @@ function planTrees({
       const dx = tree.x - other.x;
       const dz = tree.z - other.z;
       const minimumDistance =
-        tree.canopyRadius + other.canopyRadius + TREE_CANOPY_CLEARANCE;
+        tree.exclusionRadius + other.exclusionRadius + TREE_CANOPY_CLEARANCE;
       if (dx * dx + dz * dz < minimumDistance * minimumDistance) {
         blocked = true;
         break;
