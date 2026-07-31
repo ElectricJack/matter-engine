@@ -144,6 +144,16 @@ viewer::IssueShot make_shot(const char* file, const char* caption, float ex) {
     return shot;
 }
 
+// Stands in for EditorProps' viewer.budget group; the writer only ever sees a
+// Registry, so the test does not need the editor's real schema TU.
+const matter::props::Group& test_budget_group() {
+    static const auto def = matter::props::group<viewer::ViewerStats>(
+        "viewer.budget", "Viewer Budget",
+        matter::props::prop(&viewer::ViewerStats::pixel_budget, "pixel_budget")
+            .range(0.05f, 4.0f));
+    return def.group();
+}
+
 void test_write_report(const std::filesystem::path& root) {
     viewer::IssueReporterState state;
     std::snprintf(state.note, sizeof(state.note),
@@ -167,6 +177,16 @@ void test_write_report(const std::filesystem::path& root) {
     frame_stats.instances_drawn = 1234;
     viewer::ConsoleLog log;
     log.push(viewer::LogSeverity::Warning, "TLAS draw capacity exceeded");
+
+    // Property capture (design S6.3): every registered group's non-baseline
+    // fields land in state.json, so a repro carries the tuning it was made
+    // under. Bound here the way EditorProps binds the real groups.
+    matter::props::Registry props;
+    matter::props::Binding* budget =
+        props.get(props.bind(test_budget_group(), &stats,
+                             matter::props::Scope::User));
+    matter::props::set_float(*budget, test_budget_group().fields[0], 3.5f);
+    context.props = &props;
 
     const std::string dir =
         viewer::write_issue_report(state, context, stats, frame_stats, log);
@@ -221,6 +241,8 @@ void test_write_report(const std::filesystem::path& root) {
     check(contains(json, "\"rect\": {\"x\": 10, \"y\": 20, \"w\": 300, \"h\": 200}"),
           "state.json records the crop rect");
     check(contains(json, "\"at_file_time\""), "state.json has file-time state");
+    check(contains(json, "\"props\": {\"viewer.budget\":{\"pixel_budget\":3.5}}"),
+          "state.json dumps non-baseline properties by group path");
 
     const std::string tail =
         read_file(std::filesystem::path(dir) / "log-tail.txt");

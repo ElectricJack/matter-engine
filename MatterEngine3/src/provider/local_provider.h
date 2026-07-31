@@ -385,6 +385,11 @@ public:
     const matter::WorldSettings& world_settings() const {
         return world_settings_;
     }
+    // World.props declarations (property-system S9). Empty when the world
+    // declares none. Runtime tunables only — nothing here reaches a bake key.
+    const std::vector<matter::WorldPropSpec>& world_prop_specs() const {
+        return world_prop_specs_;
+    }
 
     // Phase C Task 4: name of the module tagged `world` in world.manifest (empty
     // if no world-kind entry). Populated after install_graph(). Task 9 consumes it.
@@ -496,6 +501,7 @@ private:
     std::string world_module_;
     world_lights::WorldLights authored_lights_;
     matter::WorldSettings world_settings_;
+    std::vector<matter::WorldPropSpec> world_prop_specs_;
 
     bool prepare_paths(std::string& err);
     bool load_authored_world(std::string& err);

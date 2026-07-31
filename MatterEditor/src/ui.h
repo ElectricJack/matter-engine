@@ -10,6 +10,7 @@
 
 #include "matter/camera.h"
 #include "matter/world_session.h"
+#include "camera_controller.h"   // CameraPrefs (the camera.prefs group)
 #include "streaming_anchor_controller.h"
 #include "editor_model.h"
 #include "scene_tree_panel.h"
@@ -22,6 +23,8 @@
 #include "animation_debug_overlay.h"
 #include "bake_lab.h"
 #include "asset_browser.h"
+#include "property_editor.h"
+#include "streaming_lod_prefs.h"
 
 struct GLFWwindow;
 namespace matter { class VulkanDevice; struct VulkanFrame; namespace evt { class Hub; } }
@@ -112,6 +115,12 @@ struct ViewerStats {
     int      world_current = 0;
     matter::VulkanLightingOverrides lighting{};
     matter::VulkanVolumetricsSettings volumetrics{};
+    // Live override of the world-authored fog (property group "render.fog",
+    // Scope::World). Seeded from WorldSession::world_fog at every connect —
+    // which is what makes the group's layer-2 baseline the authored values —
+    // and pushed back through RenderOptions::fog_override every frame. The
+    // volumetrics multipliers above modulate whatever lands here.
+    matter::FogSettings fog{};
     int vol_debug_view = 0;
     matter::TilesetPomSettings tileset_pom{};
     // GPU-side per-pass timings (ms), smoothed EMA. Values are 0 when the
@@ -167,7 +176,18 @@ struct ViewerStats {
     uint64_t vt_mesh_budget_bytes = 0;
 };
 
+// StreamingLodPrefs (the persisted, schema-described override) -> the engine
+// struct set_streaming_lod_overrides consumes. Empty ring strings decode to
+// empty lists, which the engine documents as "keep the world's own values", so
+// a default-constructed prefs is a no-op override.
+matter::WorldSession::StreamingLodConfig streaming_config_from(
+    const StreamingLodPrefs& prefs);
+
 void reset_lighting_controls(ViewerStats& stats);
+// Every Scope::World property group's backing struct dropped to its compiled
+// default (layer 1), so the incoming world's authored values are the only
+// layer 2 the baseline capture can see. Called at the reload / switch seams.
+void reset_world_scope_controls(ViewerStats& stats);
 void prepare_world_reload(ViewerStats& stats);
 void complete_world_switch(ViewerStats& stats, bool succeeded);
 
@@ -178,16 +198,35 @@ public:
     void shutdown();
     bool begin_frame(const matter::VulkanFrame& frame, std::string& error);
     bool end_frame(const matter::VulkanFrame& frame, std::string& error);
-    void draw_debug_panel(ViewerStats& stats, const ViewerCommands& commands);
+    // `props` supplies the registered lighting / volumetrics / POM /
+    // pixel-budget groups; the hand-written sliders for those were deleted in
+    // favor of the generic renderer (property-system design S6.2).
+    void draw_debug_panel(ViewerStats& stats, const ViewerCommands& commands,
+                          EditorProps& props);
+    // Tunables window: the catch-all panel every registered property group
+    // appears in. Same Begin/End split as draw_console_panel.
+    void draw_tunables_panel(EditorProps& props);
 
-    // LOD Settings window: everything level-of-detail / draw-distance in one
-    // place, split into live controls (pixel budget, camera far plane) and
-    // reload-required streaming config (scatter rings, terrain LOD bands,
-    // heightfield ladder toggle) with an Apply & Reload button.
-    void draw_lod_settings_panel(matter::WorldSession* session,
-                                 ViewerStats& stats,
-                                 const ViewerCommands& commands,
-                                 matter::CameraDesc& camera);
+    // Lighting window: render.lighting (incl. the sun/sky tints) and
+    // render.volumetrics, plus their shared "Reset to World". Docked with
+    // Properties/Tunables. Body lives in property_editor.cpp
+    // (draw_lighting_contents) — it is pure group drawing with no panel state.
+    void draw_lighting_panel(EditorProps& props);
+
+    // Performance window (replaces the former "LOD Settings"): every knob that
+    // trades quality for frame time, in one place —
+    //   viewer.budget, render.pom, vt.residency  (live)
+    //   camera.prefs                             (live: far plane, fly speed)
+    //   stream.lod                               (RequiresReload draft: scatter
+    //                                             rings, terrain LOD bands,
+    //                                             heightfield ladder)
+    // plus the hand-written LOD transition bars, which edit the SAME props
+    // draft the schema fields do and are committed by the generic Apply &
+    // Reload bar. `camera` supplies only the transition bars' axis scale.
+    void draw_performance_panel(matter::WorldSession* session,
+                                EditorProps& props,
+                                const ViewerCommands& commands,
+                                const matter::CameraDesc& camera);
     // Viewport banner shown while vt_rejected_variants != 0. Drawn on the
     // foreground draw list (like the simulation border tint) so it is visible
     // even when the Viewer Debug window is collapsed or buried — a rejected
@@ -219,7 +258,10 @@ public:
                                   const ViewerCommands& commands);
     // MSL-style orbit/zoom controls: navigate the view without locking the cursor
     // or using WASD (works over remote desktop). Mutates the camera in place.
-    void draw_camera_panel(matter::CameraDesc& cam);
+    // `prefs` supplies the orbit step and zoom step (camera.prefs); the orbit
+    // DISTANCE is deliberately not a pref — it is derived from the live
+    // camera's position/target every frame, so there is nothing to persist.
+    void draw_camera_panel(matter::CameraDesc& cam, const CameraPrefs& prefs);
     // Standalone panel listing available worlds as buttons. Clicking a non-current
     // world issues ViewerCommands::switch_world (viewer.switch_world command).
     void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats,
@@ -229,6 +271,13 @@ public:
     // even when the UI is hidden, so a headless capture can run in slow motion.
     float sim_time_scale() const { return toolbar_state_.time_scale; }
     void set_sim_time_scale(float value) { toolbar_state_.time_scale = value; }
+    // The two panel-state structs EditorProps binds as property groups
+    // ("sim.time" and "console.filters"). Exposed rather than duplicated: the
+    // toolbar slider and the console checkboxes keep editing these exact
+    // fields, and the groups add Tunables visibility, the FIFO `set` path and
+    // (for the console) User-scope persistence on top of them.
+    ToolbarState& toolbar_state() { return toolbar_state_; }
+    ConsolePanelState& console_state() { return console_state_; }
     void prepare_viewport_rect();
     void draw_viewport_window();
     const ViewportRect& viewport_rect() const { return viewport_rect_; }
@@ -297,18 +346,28 @@ public:
     void select_baked_root(uint64_t resolved_hash);
 
 private:
-    // LOD Settings panel state: a live mirror of the session's active
-    // streaming profile until the user edits (dirty), then a held draft
-    // until Apply & Reload or Reset.
+    // Streaming-LOD section state (Performance panel). The DRAFT
+    // (matter::props) is now the source of
+    // truth for the override; this is only the decoded ring view the
+    // hand-written widgets manipulate — rebuilt from the draft (or, where the
+    // draft holds no override, from the session's active profile) each frame,
+    // and re-encoded into the draft whenever a widget changes it.
     struct LodSettingsState {
         matter::WorldSession::StreamingLodConfig edit;
         bool have = false;
-        bool dirty = false;
         // Active drag handle per transition bar (-1 = none).
         int drag_scatter = -1;
         int drag_bands = -1;
     };
     LodSettingsState lod_settings_;
+
+    // The streaming half of the Performance panel: camera.prefs + stream.lod +
+    // the transition bars. Split out only so the panel's early-outs ("no
+    // session yet") do not have to unwind an ImGui::Begin.
+    void draw_streaming_lod_section(matter::WorldSession* session,
+                                    EditorProps& props,
+                                    const ViewerCommands& commands,
+                                    const matter::CameraDesc& camera);
 
     void build_dockspace();
     bool ensure_viewport_target(uint32_t width, uint32_t height,
@@ -354,6 +413,7 @@ private:
     ToolbarState toolbar_state_;
     ConsolePanelState console_state_;
     PropertiesPanelState properties_state_;
+    TunablesPanelState tunables_state_;
 };
 
 } // namespace viewer

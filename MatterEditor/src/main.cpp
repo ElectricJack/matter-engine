@@ -15,6 +15,7 @@
 #include "camera_controller.h"
 #include "camera_focus.h"
 #include "editor_model.h"
+#include "editor_props.h"
 #include "image_preview.h"
 #include "issue_reporter.h"
 #include "shot_replay.h"
@@ -53,7 +54,9 @@
 #include <fstream>
 #include <iomanip>
 #include <memory>
+#include <new>
 #include <string>
+#include <type_traits>
 #include <unordered_set>
 #include <vector>
 
@@ -69,11 +72,20 @@
 namespace {
 
 // ---------------------------------------------------------------------------
-// Properties panel field access (Phase 5 Task 7). There is no generic
-// reflection API for ECS components, so field get/set is hardcoded per
-// ComponentKind here, dispatching on the component/field name strings that
-// PropertiesRegistry hands back (which mirror ecs/scene_registry.h's
-// ComponentDescriptor/FieldDescriptor tables).
+// Properties panel field access (Phase 5 Task 7, generalized by the property
+// system's Phase 3 — see docs/superpowers/specs/2026-07-31-property-system-
+// design.md S7).
+//
+// Field *routing* is schema-driven: ecs/scene_registry.h's FieldDescriptor
+// carries a byte offset, so the strcmp ladders that used to live here are gone.
+// What stays hardcoded per ComponentKind is only the ECS boundary — "copy this
+// component out of the entity" and "set it back" — because flecs get/set are
+// typed on the C++ component type.
+//
+// The get/set asymmetry is deliberate and preserved: a setter mutates a stack
+// COPY of the whole component and re-sets it, so the edit lands as one
+// transactional component write (one observer fire, one physics reconcile),
+// never as a poke into live storage.
 // ---------------------------------------------------------------------------
 
 // flecs' entity_view::get<T>() returns `const T&` (asserts if absent), not a
@@ -92,432 +104,215 @@ flecs::entity find_scene_entity(flecs::world& world, matter::scene::SceneEntityI
     return found;
 }
 
-bool collider_prop_get_float(const matter::physics::ColliderProperties& p,
-                             const char* field, float& out) {
-    if (!std::strcmp(field, "density")) { out = p.density; return true; }
-    if (!std::strcmp(field, "friction")) { out = p.friction; return true; }
-    if (!std::strcmp(field, "restitution")) { out = p.restitution; return true; }
+// A stack buffer able to hold a copy of any registered ECS component.
+struct ComponentBuffer {
+    alignas(matter::scene::kMaxComponentStructAlign)
+        unsigned char bytes[matter::scene::kMaxComponentStructSize];
+    void* data() { return bytes; }
+};
+
+template <typename T>
+bool fetch_component_copy(flecs::entity e, void* out) {
+    static_assert(std::is_trivially_copyable<T>::value,
+                  "component copies are raw-byte buffers; needs a trivially copyable type");
+    static_assert(sizeof(T) <= matter::scene::kMaxComponentStructSize, "ComponentBuffer too small");
+    const T* p = get_ptr<T>(e);
+    if (!p) return false;
+    new (out) T(*p);
+    return true;
+}
+
+template <typename T>
+bool store_component_copy(flecs::entity e, const void* in) {
+    e.set<T>(*static_cast<const T*>(in));
+    return true;
+}
+
+// The ECS boundary: the only per-ComponentKind code left in the field path.
+bool component_fetch(flecs::entity e, matter::scene::ComponentKind kind, void* out) {
+    using matter::scene::ComponentKind;
+    switch (kind) {
+        case ComponentKind::Transform:
+            return fetch_component_copy<matter::ecs::LocalTransform>(e, out);
+        case ComponentKind::RigidBody:
+            return fetch_component_copy<matter::physics::RigidBody>(e, out);
+        case ComponentKind::Velocity:
+            return fetch_component_copy<matter::physics::PhysicsVelocity>(e, out);
+        case ComponentKind::SphereCollider:
+            return fetch_component_copy<matter::physics::SphereCollider>(e, out);
+        case ComponentKind::CapsuleCollider:
+            return fetch_component_copy<matter::physics::CapsuleCollider>(e, out);
+        case ComponentKind::BoxCollider:
+            return fetch_component_copy<matter::physics::BoxCollider>(e, out);
+        case ComponentKind::ConvexHullCollider:
+            return fetch_component_copy<matter::physics::ConvexHullCollider>(e, out);
+        case ComponentKind::PartInstance:
+            return fetch_component_copy<matter::scene::PartInstance>(e, out);
+        case ComponentKind::SectorStreaming:
+            return false;  // tag component, no fields
+    }
     return false;
 }
-bool collider_prop_set_float(matter::physics::ColliderProperties& p,
-                             const char* field, float value) {
-    if (!std::strcmp(field, "density")) { p.density = value; return true; }
-    if (!std::strcmp(field, "friction")) { p.friction = value; return true; }
-    if (!std::strcmp(field, "restitution")) { p.restitution = value; return true; }
+
+bool component_store(flecs::entity e, matter::scene::ComponentKind kind, const void* in) {
+    using matter::scene::ComponentKind;
+    switch (kind) {
+        case ComponentKind::Transform:
+            return store_component_copy<matter::ecs::LocalTransform>(e, in);
+        case ComponentKind::RigidBody:
+            return store_component_copy<matter::physics::RigidBody>(e, in);
+        case ComponentKind::Velocity:
+            return store_component_copy<matter::physics::PhysicsVelocity>(e, in);
+        case ComponentKind::SphereCollider:
+            return store_component_copy<matter::physics::SphereCollider>(e, in);
+        case ComponentKind::CapsuleCollider:
+            return store_component_copy<matter::physics::CapsuleCollider>(e, in);
+        case ComponentKind::BoxCollider:
+            return store_component_copy<matter::physics::BoxCollider>(e, in);
+        case ComponentKind::ConvexHullCollider:
+            return store_component_copy<matter::physics::ConvexHullCollider>(e, in);
+        case ComponentKind::PartInstance:
+            return store_component_copy<matter::scene::PartInstance>(e, in);
+        case ComponentKind::SectorStreaming:
+            return false;
+    }
     return false;
+}
+
+// Resolved (entity, component kind, field descriptor) for one field access,
+// with the component already copied into the caller's buffer.
+struct ResolvedField {
+    flecs::entity entity;
+    matter::scene::ComponentKind kind{};
+    const matter::scene::FieldDescriptor* field = nullptr;
+};
+
+bool resolve_entity_field(matter::WorldSession* session, matter::scene::SceneEntityId id,
+                          const char* component, const char* field,
+                          ResolvedField& out, ComponentBuffer& buf) {
+    if (!session || !component || !field) return false;
+    const matter::scene::ComponentDescriptor* cd = matter::scene::find_component(component);
+    if (!cd) return false;
+    const matter::scene::FieldDescriptor* fd = matter::scene::find_field(*cd, field);
+    if (!fd) return false;
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return false;
+    if (!component_fetch(e, cd->kind, buf.data())) return false;
+    out.entity = e;
+    out.kind = cd->kind;
+    out.field = fd;
+    return true;
 }
 
 bool field_get_float(matter::WorldSession* session, matter::scene::SceneEntityId id,
                      const char* component, const char* field, float& out) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-
-    if (!std::strcmp(component, "RigidBody")) {
-        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
-        if (!rb) return false;
-        if (!std::strcmp(field, "linear_damping")) { out = rb->linear_damping; return true; }
-        if (!std::strcmp(field, "angular_damping")) { out = rb->angular_damping; return true; }
-        if (!std::strcmp(field, "gravity_scale")) { out = rb->gravity_scale; return true; }
-        if (!std::strcmp(field, "sleep_threshold")) { out = rb->sleep_threshold; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "SphereCollider")) {
-        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
-        if (!c) return false;
-        if (!std::strcmp(field, "radius")) { out = c->radius; return true; }
-        return collider_prop_get_float(c->properties, field, out);
-    }
-    if (!std::strcmp(component, "CapsuleCollider")) {
-        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
-        if (!c) return false;
-        if (!std::strcmp(field, "radius")) { out = c->radius; return true; }
-        return collider_prop_get_float(c->properties, field, out);
-    }
-    if (!std::strcmp(component, "BoxCollider")) {
-        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
-        if (!c) return false;
-        return collider_prop_get_float(c->properties, field, out);
-    }
-    if (!std::strcmp(component, "ConvexHullCollider")) {
-        const auto* c = get_ptr<matter::physics::ConvexHullCollider>(e);
-        if (!c) return false;
-        return collider_prop_get_float(c->properties, field, out);
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    return matter::scene::field_get_float(buf.data(), *r.field, out);
 }
 
 bool field_set_float(matter::WorldSession* session, matter::scene::SceneEntityId id,
                      const char* component, const char* field, float value) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-
-    if (!std::strcmp(component, "RigidBody")) {
-        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
-        if (!rb) return false;
-        matter::physics::RigidBody copy = *rb;
-        bool ok = true;
-        if (!std::strcmp(field, "linear_damping")) copy.linear_damping = value;
-        else if (!std::strcmp(field, "angular_damping")) copy.angular_damping = value;
-        else if (!std::strcmp(field, "gravity_scale")) copy.gravity_scale = value;
-        else if (!std::strcmp(field, "sleep_threshold")) copy.sleep_threshold = value;
-        else ok = false;
-        if (ok) e.set<matter::physics::RigidBody>(copy);
-        return ok;
-    }
-    if (!std::strcmp(component, "SphereCollider")) {
-        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
-        if (!c) return false;
-        matter::physics::SphereCollider copy = *c;
-        bool ok = true;
-        if (!std::strcmp(field, "radius")) copy.radius = value;
-        else ok = collider_prop_set_float(copy.properties, field, value);
-        if (ok) e.set<matter::physics::SphereCollider>(copy);
-        return ok;
-    }
-    if (!std::strcmp(component, "CapsuleCollider")) {
-        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
-        if (!c) return false;
-        matter::physics::CapsuleCollider copy = *c;
-        bool ok = true;
-        if (!std::strcmp(field, "radius")) copy.radius = value;
-        else ok = collider_prop_set_float(copy.properties, field, value);
-        if (ok) e.set<matter::physics::CapsuleCollider>(copy);
-        return ok;
-    }
-    if (!std::strcmp(component, "BoxCollider")) {
-        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
-        if (!c) return false;
-        matter::physics::BoxCollider copy = *c;
-        const bool ok = collider_prop_set_float(copy.properties, field, value);
-        if (ok) e.set<matter::physics::BoxCollider>(copy);
-        return ok;
-    }
-    if (!std::strcmp(component, "ConvexHullCollider")) {
-        const auto* c = get_ptr<matter::physics::ConvexHullCollider>(e);
-        if (!c) return false;
-        matter::physics::ConvexHullCollider copy = *c;
-        const bool ok = collider_prop_set_float(copy.properties, field, value);
-        if (ok) e.set<matter::physics::ConvexHullCollider>(copy);
-        return ok;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    if (!matter::scene::field_set_float(buf.data(), *r.field, value)) return false;
+    return component_store(r.entity, r.kind, buf.data());
 }
 
 bool field_get_int(matter::WorldSession* session, matter::scene::SceneEntityId id,
                    const char* component, const char* field, int& out) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "RigidBody") && !std::strcmp(field, "type")) {
-        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
-        if (!rb) return false;
-        out = static_cast<int>(rb->type);
-        return true;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    int32_t v = 0;
+    if (!matter::scene::field_get_int(buf.data(), *r.field, v)) return false;
+    out = static_cast<int>(v);
+    return true;
 }
 
 bool field_set_int(matter::WorldSession* session, matter::scene::SceneEntityId id,
                    const char* component, const char* field, int value) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "RigidBody") && !std::strcmp(field, "type")) {
-        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
-        if (!rb) return false;
-        matter::physics::RigidBody copy = *rb;
-        copy.type = static_cast<matter::physics::RigidBodyType>(
-            std::max(0, std::min(2, value)));
-        e.set<matter::physics::RigidBody>(copy);
-        return true;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    if (!matter::scene::field_set_int(buf.data(), *r.field, static_cast<int32_t>(value)))
+        return false;
+    return component_store(r.entity, r.kind, buf.data());
 }
 
 bool field_get_uint(matter::WorldSession* session, matter::scene::SceneEntityId id,
                     const char* component, const char* field, uint32_t& out) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "PartInstance") && !std::strcmp(field, "part_hash")) {
-        const auto* pi = get_ptr<matter::scene::PartInstance>(e);
-        if (!pi) return false;
-        out = static_cast<uint32_t>(pi->part_hash);
-        return true;
-    }
-    if (!std::strcmp(component, "ConvexHullCollider") && !std::strcmp(field, "point_count")) {
-        const auto* c = get_ptr<matter::physics::ConvexHullCollider>(e);
-        if (!c) return false;
-        out = c->point_count;
-        return true;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    return matter::scene::field_get_uint(buf.data(), *r.field, out);
 }
 
+// PartInstance.part_hash and ConvexHullCollider.point_count are FieldReadOnly
+// in the schema, so this rejects them exactly as the hand-written setter did
+// (a 64-bit hash cannot survive a 32-bit write; a point_count without its
+// points[] would describe a garbage hull). Assignment goes through the
+// specialized part picker instead.
 bool field_set_uint(matter::WorldSession* session, matter::scene::SceneEntityId id,
                     const char* component, const char* field, uint32_t value) {
-    if (!session) return false;
-    // PartInstance.part_hash is uint64_t — the generic uint32 write path would
-    // silently truncate the upper 32 bits. Part assignment is routed through
-    // the specialized picker (assign_part callback) which uses the full 64-bit
-    // hash. Reject writes here to prevent silent corruption.
-    if (!std::strcmp(component, "PartInstance") && !std::strcmp(field, "part_hash"))
-        return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    (void)value;
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    if (!matter::scene::field_set_uint(buf.data(), *r.field, value)) return false;
+    return component_store(r.entity, r.kind, buf.data());
 }
 
 bool field_get_bool(matter::WorldSession* session, matter::scene::SceneEntityId id,
                     const char* component, const char* field, bool& out) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "RigidBody")) {
-        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
-        if (!rb) return false;
-        if (!std::strcmp(field, "enable_sleep")) { out = rb->enable_sleep; return true; }
-        if (!std::strcmp(field, "continuous")) { out = rb->continuous; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "SphereCollider")) {
-        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
-        if (c && !std::strcmp(field, "sensor")) { out = c->properties.sensor; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "CapsuleCollider")) {
-        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
-        if (c && !std::strcmp(field, "sensor")) { out = c->properties.sensor; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "BoxCollider")) {
-        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
-        if (c && !std::strcmp(field, "sensor")) { out = c->properties.sensor; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "ConvexHullCollider")) {
-        const auto* c = get_ptr<matter::physics::ConvexHullCollider>(e);
-        if (c && !std::strcmp(field, "sensor")) { out = c->properties.sensor; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "PartInstance")) {
-        const auto* pi = get_ptr<matter::scene::PartInstance>(e);
-        if (!pi) return false;
-        if (!std::strcmp(field, "visible")) { out = pi->visible; return true; }
-        if (!std::strcmp(field, "casts_shadow")) { out = pi->casts_shadow; return true; }
-        return false;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    return matter::scene::field_get_bool(buf.data(), *r.field, out);
 }
 
 bool field_set_bool(matter::WorldSession* session, matter::scene::SceneEntityId id,
                     const char* component, const char* field, bool value) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "RigidBody")) {
-        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
-        if (!rb) return false;
-        matter::physics::RigidBody copy = *rb;
-        bool ok = true;
-        if (!std::strcmp(field, "enable_sleep")) copy.enable_sleep = value;
-        else if (!std::strcmp(field, "continuous")) copy.continuous = value;
-        else ok = false;
-        if (ok) e.set<matter::physics::RigidBody>(copy);
-        return ok;
-    }
-    if (!std::strcmp(component, "SphereCollider")) {
-        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
-        if (!c || std::strcmp(field, "sensor")) return false;
-        matter::physics::SphereCollider copy = *c;
-        copy.properties.sensor = value;
-        e.set<matter::physics::SphereCollider>(copy);
-        return true;
-    }
-    if (!std::strcmp(component, "CapsuleCollider")) {
-        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
-        if (!c || std::strcmp(field, "sensor")) return false;
-        matter::physics::CapsuleCollider copy = *c;
-        copy.properties.sensor = value;
-        e.set<matter::physics::CapsuleCollider>(copy);
-        return true;
-    }
-    if (!std::strcmp(component, "BoxCollider")) {
-        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
-        if (!c || std::strcmp(field, "sensor")) return false;
-        matter::physics::BoxCollider copy = *c;
-        copy.properties.sensor = value;
-        e.set<matter::physics::BoxCollider>(copy);
-        return true;
-    }
-    if (!std::strcmp(component, "ConvexHullCollider")) {
-        const auto* c = get_ptr<matter::physics::ConvexHullCollider>(e);
-        if (!c || std::strcmp(field, "sensor")) return false;
-        matter::physics::ConvexHullCollider copy = *c;
-        copy.properties.sensor = value;
-        e.set<matter::physics::ConvexHullCollider>(copy);
-        return true;
-    }
-    if (!std::strcmp(component, "PartInstance")) {
-        const auto* pi = get_ptr<matter::scene::PartInstance>(e);
-        if (!pi) return false;
-        matter::scene::PartInstance copy = *pi;
-        bool ok = true;
-        if (!std::strcmp(field, "visible")) copy.visible = value;
-        else if (!std::strcmp(field, "casts_shadow")) copy.casts_shadow = value;
-        else ok = false;
-        if (ok) e.set<matter::scene::PartInstance>(copy);
-        return ok;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    if (!matter::scene::field_set_bool(buf.data(), *r.field, value)) return false;
+    return component_store(r.entity, r.kind, buf.data());
 }
 
 bool field_get_float3(matter::WorldSession* session, matter::scene::SceneEntityId id,
                       const char* component, const char* field, matter::Float3& out) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "LocalTransform")) {
-        const auto* t = get_ptr<matter::ecs::LocalTransform>(e);
-        if (!t) return false;
-        if (!std::strcmp(field, "translation")) { out = t->translation; return true; }
-        if (!std::strcmp(field, "scale")) { out = t->scale; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "PhysicsVelocity")) {
-        const auto* v = get_ptr<matter::physics::PhysicsVelocity>(e);
-        if (!v) return false;
-        if (!std::strcmp(field, "linear")) { out = v->linear; return true; }
-        if (!std::strcmp(field, "angular")) { out = v->angular; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "SphereCollider")) {
-        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
-        if (c && !std::strcmp(field, "center")) { out = c->center; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "CapsuleCollider")) {
-        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
-        if (!c) return false;
-        if (!std::strcmp(field, "point_a")) { out = c->point_a; return true; }
-        if (!std::strcmp(field, "point_b")) { out = c->point_b; return true; }
-        return false;
-    }
-    if (!std::strcmp(component, "BoxCollider")) {
-        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
-        if (!c) return false;
-        if (!std::strcmp(field, "center")) { out = c->center; return true; }
-        if (!std::strcmp(field, "half_extents")) { out = c->half_extents; return true; }
-        return false;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    return matter::scene::field_get_float3(buf.data(), *r.field, out);
 }
 
 bool field_set_float3(matter::WorldSession* session, matter::scene::SceneEntityId id,
                       const char* component, const char* field, matter::Float3 value) {
-    if (!session) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "LocalTransform")) {
-        const auto* t = get_ptr<matter::ecs::LocalTransform>(e);
-        if (!t) return false;
-        matter::ecs::LocalTransform copy = *t;
-        bool ok = true;
-        if (!std::strcmp(field, "translation")) copy.translation = value;
-        else if (!std::strcmp(field, "scale")) copy.scale = value;
-        else ok = false;
-        if (ok) e.set<matter::ecs::LocalTransform>(copy);
-        return ok;
-    }
-    if (!std::strcmp(component, "PhysicsVelocity")) {
-        const auto* v = get_ptr<matter::physics::PhysicsVelocity>(e);
-        if (!v) return false;
-        matter::physics::PhysicsVelocity copy = *v;
-        bool ok = true;
-        if (!std::strcmp(field, "linear")) copy.linear = value;
-        else if (!std::strcmp(field, "angular")) copy.angular = value;
-        else ok = false;
-        if (ok) e.set<matter::physics::PhysicsVelocity>(copy);
-        return ok;
-    }
-    if (!std::strcmp(component, "SphereCollider")) {
-        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
-        if (!c || std::strcmp(field, "center")) return false;
-        matter::physics::SphereCollider copy = *c;
-        copy.center = value;
-        e.set<matter::physics::SphereCollider>(copy);
-        return true;
-    }
-    if (!std::strcmp(component, "CapsuleCollider")) {
-        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
-        if (!c) return false;
-        matter::physics::CapsuleCollider copy = *c;
-        bool ok = true;
-        if (!std::strcmp(field, "point_a")) copy.point_a = value;
-        else if (!std::strcmp(field, "point_b")) copy.point_b = value;
-        else ok = false;
-        if (ok) e.set<matter::physics::CapsuleCollider>(copy);
-        return ok;
-    }
-    if (!std::strcmp(component, "BoxCollider")) {
-        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
-        if (!c) return false;
-        matter::physics::BoxCollider copy = *c;
-        bool ok = true;
-        if (!std::strcmp(field, "center")) copy.center = value;
-        else if (!std::strcmp(field, "half_extents")) copy.half_extents = value;
-        else ok = false;
-        if (ok) e.set<matter::physics::BoxCollider>(copy);
-        return ok;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    if (!matter::scene::field_set_float3(buf.data(), *r.field, value)) return false;
+    return component_store(r.entity, r.kind, buf.data());
 }
 
 bool field_get_quat(matter::WorldSession* session, matter::scene::SceneEntityId id,
                     const char* component, const char* field, matter::Quaternion& out) {
-    if (!session || std::strcmp(field, "rotation")) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "LocalTransform")) {
-        const auto* t = get_ptr<matter::ecs::LocalTransform>(e);
-        if (!t) return false;
-        out = t->rotation;
-        return true;
-    }
-    if (!std::strcmp(component, "BoxCollider")) {
-        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
-        if (!c) return false;
-        out = c->rotation;
-        return true;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    return matter::scene::field_get_quat(buf.data(), *r.field, out);
 }
 
 bool field_set_quat(matter::WorldSession* session, matter::scene::SceneEntityId id,
                     const char* component, const char* field, matter::Quaternion value) {
-    if (!session || std::strcmp(field, "rotation")) return false;
-    flecs::entity e = find_scene_entity(session->ecs(), id);
-    if (!e.is_valid()) return false;
-    if (!std::strcmp(component, "LocalTransform")) {
-        const auto* t = get_ptr<matter::ecs::LocalTransform>(e);
-        if (!t) return false;
-        matter::ecs::LocalTransform copy = *t;
-        copy.rotation = value;
-        e.set<matter::ecs::LocalTransform>(copy);
-        return true;
-    }
-    if (!std::strcmp(component, "BoxCollider")) {
-        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
-        if (!c) return false;
-        matter::physics::BoxCollider copy = *c;
-        copy.rotation = value;
-        e.set<matter::physics::BoxCollider>(copy);
-        return true;
-    }
-    return false;
+    ComponentBuffer buf;
+    ResolvedField r;
+    if (!resolve_entity_field(session, id, component, field, r, buf)) return false;
+    if (!matter::scene::field_set_quat(buf.data(), *r.field, value)) return false;
+    return component_store(r.entity, r.kind, buf.data());
 }
 
 // Adds a default-constructed component instance to a scene entity by name.
@@ -1148,6 +943,29 @@ int main() {
                                   active_radius, min_projected_size, stats);
     bool wireframe = false;
 
+    // Property registry (property-system design S3/S4). Bound BEFORE anything
+    // writes the tunable structs, so bind() captures the compiled defaults;
+    // the World-scope baseline is re-captured at the connect seam below, once
+    // the world's authored values have landed.
+    //
+    // Persistence is disabled for a replay for the same reason IniFilename is
+    // cleared above: a replay must reproduce the recorded state, not inherit
+    // (or overwrite) an interactive tuning session's files.
+    // camera.prefs (Scope::User): the far plane and the fly speed. far_plane
+    // seeds from whatever the authored/replay camera already carried, so the
+    // group's compiled default is the one the code has always used.
+    viewer::CameraPrefs camera_prefs;
+    camera_prefs.far_plane = camera.far_plane;
+    viewer::EditorProps editor_props;
+    editor_props.init(stats, camera_prefs, ui.toolbar_state(),
+                      ui.console_state(), !replay.valid);
+    camera.far_plane = camera_prefs.far_plane;
+    editor_props.set_world(worlds[initial_world].project_dir,
+                           worlds[initial_world].world_name);
+    // Set at every connect seam; consumed on the first successful bake, after
+    // the world-authored values above it have been adopted.
+    bool apply_world_props_after_bake = true;
+
     const std::string shared_lib = shared_lib_root();
     auto open_world = [&](const viewer::WorldEntry& entry) {
         matter::WorldDesc desc;
@@ -1161,6 +979,13 @@ int main() {
             std::fprintf(stderr, "open_world: %s\n", world_error.c_str());
             return result;
         }
+        // Persisted streaming-LOD overrides (stream.lod, World scope) reach the
+        // session HERE — after the session exists, before SessionBinding
+        // requests the first bake — which is why a saved override applies on
+        // the FIRST connect instead of needing an extra reload. EditorProps
+        // loaded them in set_world(), which every caller runs before this.
+        result->set_streaming_lod_overrides(
+            viewer::streaming_config_from(editor_props.streaming_prefs()));
         // NOTE (E4b): the bake is NOT requested here. SessionBinding owns bake
         // ordering (event-system.md S I.13): it builds the app<->session bridge
         // and opens the command epoch FIRST, then requests the initial bake, so
@@ -1513,6 +1338,20 @@ int main() {
     // World-authored volumetrics defaults adopt on every world load (initial
     // and switches); replays keep their recorded settings.
     bool apply_world_volumetrics_after_bake = !replay.valid;
+    // render.fog's own one-shot, deliberately NOT folded into the volumetrics
+    // flag beside it: the two are published by different engine paths (a
+    // closed-world connect publishes fog but never volumetrics, and a
+    // resolve-cache hit publishes fog without re-running the world-kind
+    // install), so sharing a flag would silently change when volumetrics
+    // adopts.
+    bool apply_world_fog_after_bake = !replay.valid;
+    // Does ViewerStats::fog hold this world's authored fog yet? Only then may
+    // RenderOptions::use_fog_override be set. Before the adoption below,
+    // stats.fog is the compiled default and the session's own authored_fog_ is
+    // the truth — and in a REPLAY the adoption never runs at all (same reason
+    // volumetrics is not adopted there), so a replay keeps rendering the
+    // engine's authored fog and stays pixel-identical to a pre-WS2 build.
+    bool fog_override_ready = false;
     const bool test_resize = std::getenv("MATTER_TEST_RESIZE") != nullptr;
     if (replay.valid) {
         // The toggles that change pixels. DLSS is deliberately NOT restored: it
@@ -1749,6 +1588,59 @@ int main() {
             }
             return viewer::FifoDlss::Result::succeeded(true);
         });
+    // Generic property set/get over the editor's registry (S6.3). One handler
+    // replaces what would otherwise be a bespoke FIFO command per tunable.
+    auto reg_fifo_set_prop = registry.must_register_handler<viewer::FifoSetProp>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::FifoSetProp& cmd) {
+            matter::props::Binding* binding = nullptr;
+            const matter::props::Desc* desc = nullptr;
+            if (!matter::props::resolve_field(editor_props.registry(),
+                                              cmd.path.c_str(), binding, desc)) {
+                std::printf("set: unknown property '%s'\n", cmd.path.c_str());
+                return viewer::FifoSetProp::Result::failed("unknown property");
+            }
+            const uint32_t index = static_cast<uint32_t>(
+                desc - binding->schema().fields);
+            if (binding->env_forced(index)) {
+                std::printf("set: %s is forced by %s; ignored\n",
+                            cmd.path.c_str(), desc->env ? desc->env : "env");
+                return viewer::FifoSetProp::Result::failed("env-forced");
+            }
+            // A RequiresReload field is written into the DRAFT for the same
+            // reason the UI does: nothing would consume a live write. The FIFO
+            // then needs an explicit `reload` to commit it, which is the same
+            // two-step the Apply button performs.
+            void* target = matter::props::group_requires_reload(binding->schema())
+                               ? matter::props::ensure_draft(*binding)
+                               : binding->instance();
+            if (!target ||
+                !matter::props::parse_and_set(target, *desc, cmd.value.c_str())) {
+                std::printf("set: cannot parse '%s' for %s\n", cmd.value.c_str(),
+                            cmd.path.c_str());
+                return viewer::FifoSetProp::Result::failed("unparsable value");
+            }
+            if (target == binding->instance()) binding->set_dirty(true);
+            std::printf("set: %s = %s%s\n", cmd.path.c_str(),
+                        matter::props::format_value(target, *desc).c_str(),
+                        target == binding->instance() ? "" : "  (draft; `reload` to apply)");
+            return viewer::FifoSetProp::Result::succeeded(true);
+        });
+    auto reg_fifo_get_prop = registry.must_register_handler<viewer::FifoGetProp>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::FifoGetProp& cmd) {
+            matter::props::Binding* binding = nullptr;
+            const matter::props::Desc* desc = nullptr;
+            if (!matter::props::resolve_field(editor_props.registry(),
+                                              cmd.path.c_str(), binding, desc)) {
+                std::printf("get: unknown property '%s'\n", cmd.path.c_str());
+                return viewer::FifoGetProp::Result::failed("unknown property");
+            }
+            std::printf("get: %s = %s\n", cmd.path.c_str(),
+                        matter::props::format_value(binding->instance(), *desc)
+                            .c_str());
+            return viewer::FifoGetProp::Result::succeeded(true);
+        });
     auto reg_fifo_quit = registry.must_register_handler<viewer::FifoQuit>(
         matter::evt::CommandScope::App, app_lane, [&](const viewer::FifoQuit&) {
             quit_requested = true;
@@ -1888,6 +1780,18 @@ int main() {
         registry.execute(cmd);
     };
 
+    // What a RequiresReload property group's "Apply & Reload" runs, from EITHER
+    // the Performance panel or the generic Tunables panel. The ordering is the
+    // whole point: the applied override must reach the session BEFORE the
+    // reload, because set_streaming_lod_overrides is consumed at the next
+    // connect. Panels never have to know that.
+    editor_props.set_reload_request([&]() {
+        if (session)
+            session->set_streaming_lod_overrides(
+                viewer::streaming_config_from(editor_props.streaming_prefs()));
+        registry.execute(viewer::ViewerReload{});
+    });
+
     while (!glfwWindowShouldClose(window) && !quit_requested && !fatal_error) {
         // This starts before event polling and begin_frame(), whose fence wait and
         // swapchain acquire are part of the user-visible frame cadence.
@@ -1918,6 +1822,12 @@ int main() {
         const auto now = std::chrono::steady_clock::now();
         const float dt = std::chrono::duration<float>(now - previous_time).count();
         previous_time = now;
+        // User-scope autosave debounce (S5): fires ~1 s after the last edit.
+        editor_props.tick(dt);
+        // camera.prefs -> the live camera. One-way and every frame, the same
+        // shape as the RenderOptions copy block below: the property group is
+        // the edit site, CameraDesc stays the thing everything else reads.
+        camera.far_plane = camera_prefs.far_plane;
         if (key_pressed(window, GLFW_KEY_TAB, tab_down)) {
             camera_capture = !camera_capture;
             camera_controller.set_capture(window, camera_capture);
@@ -2032,6 +1942,26 @@ int main() {
                     registry.dispatch(cmd);
                 } else if (std::sscanf(line.c_str(), "budget %f", &c[0]) == 1) {
                     viewer::FifoBudget cmd; cmd.value = c[0];
+                    registry.dispatch(cmd);
+                } else if (line.compare(0, 4, "set ") == 0) {
+                    // `set <group.path>.<field> <value>` — the value is the
+                    // whole rest of the line (unquoted), so a String field can
+                    // carry spaces and commas ("128:2, 384:1").
+                    const size_t name_start = 4;
+                    const size_t name_end = line.find(' ', name_start);
+                    if (name_end == std::string::npos) {
+                        std::printf("set: expected `set <group.field> <value>`\n");
+                    } else {
+                        viewer::FifoSetProp cmd;
+                        cmd.path = line.substr(name_start, name_end - name_start);
+                        size_t value_start = name_end;
+                        while (value_start < line.size() && line[value_start] == ' ')
+                            ++value_start;
+                        cmd.value = line.substr(value_start);
+                        registry.dispatch(cmd);
+                    }
+                } else if (std::sscanf(line.c_str(), "get %255s", word) == 1) {
+                    viewer::FifoGetProp cmd; cmd.path = word;
                     registry.dispatch(cmd);
                 } else if (std::sscanf(line.c_str(), "hiz %255s", word) == 1) {
                     std::printf("hiz: not available in Vulkan milestone\n");
@@ -2241,15 +2171,17 @@ int main() {
                                         &cached_snapshot, specialized_editors, camera.position);
                 ui.draw_viewport_window();
                 ui.draw_console_panel(console_log);
-                ui.draw_debug_panel(stats, viewer_commands);
+                ui.draw_debug_panel(stats, viewer_commands, editor_props);
+                ui.draw_tunables_panel(editor_props);
+                ui.draw_lighting_panel(editor_props);
                 ui.draw_vt_warning_banner(stats);
                 ui.draw_bake_lab_panel(bake_lab, &app_hub, session.get(), worlds, stats);
                 ui.draw_asset_browser_panel(asset_browser, worlds, stats, shared_lib,
                                            viewer_commands);
                 ui.draw_worlds_panel(worlds, stats, viewer_commands);
-                ui.draw_camera_panel(camera);
-                ui.draw_lod_settings_panel(session.get(), stats,
-                                           viewer_commands, camera);
+                ui.draw_camera_panel(camera, camera_prefs);
+                ui.draw_performance_panel(session.get(), editor_props,
+                                          viewer_commands, camera);
                 // Issue reporter (F9 region / F10 viewport). Drawn last so the
                 // selection overlay and the window sit above the panels they
                 // might be reporting on.
@@ -2335,6 +2267,7 @@ int main() {
                     context.time_scale = ui.sim_time_scale();
                     context.frame_width = frame.extent.width;
                     context.frame_height = frame.extent.height;
+                    context.props = &editor_props.registry();
                     const std::string filed = viewer::write_issue_report(
                         issue_state, context, stats, session->frame_stats(),
                         console_log);
@@ -2514,12 +2447,36 @@ int main() {
                     }
                     apply_world_camera_after_bake = false;
                 }
+                // Layer 2 for render.fog, adopted BEFORE on_world_connected
+                // snapshots the baseline below — that ordering is what makes
+                // "Reset to World" restore what the world script authored
+                // rather than a compiled default.
+                if (bake_ready && apply_world_fog_after_bake) {
+                    matter::FogSettings world_fog;
+                    if (session->world_fog(world_fog)) {
+                        stats.fog = world_fog;
+                        fog_override_ready = true;
+                        apply_world_fog_after_bake = false;
+                    }
+                }
                 if (bake_ready && apply_world_volumetrics_after_bake) {
                     matter::VulkanVolumetricsSettings world_vol;
                     if (session->world_volumetrics(world_vol)) {
                         stats.volumetrics = world_vol;
                         apply_world_volumetrics_after_bake = false;
                     }
+                }
+                // Property connect seam (S4): layer 2 has now landed in the
+                // bound structs, so snapshot it as the baseline and only then
+                // apply the world override file and the env layer. Must stay
+                // AFTER the authored-value adopters above.
+                if (bake_ready && apply_world_props_after_bake) {
+                    // The world's `static props` group is built by the connect
+                    // and owned by the session; EditorProps binds it here and
+                    // releases it again at the next set_world.
+                    editor_props.on_world_connected(
+                        session->world_props(), session->draw_overrides());
+                    apply_world_props_after_bake = false;
                 }
                 console_log.push(
                     event.errors == 0 ? viewer::LogSeverity::Info
@@ -2559,6 +2516,13 @@ int main() {
         options.vulkan_volumetrics = stats.volumetrics;
         options.vulkan_volumetrics.vol_debug_view =
             static_cast<float>(stats.vol_debug_view);
+        // render.fog. Only once stats.fog actually holds this world's authored
+        // fog (see fog_override_ready); until then — and for the whole of a
+        // replay — the session keeps consuming its own authored_fog_. Cleared
+        // again below for the Workbench's isolation session, which has its own
+        // world and its own authored fog.
+        options.use_fog_override = fog_override_ready;
+        options.fog_override = stats.fog;
         options.vulkan_tileset_pom = stats.tileset_pom;
         options.vulkan_ray_tracing.enabled =
             vulkan->ray_tracing_available() && !disable_vulkan_rt;
@@ -2581,7 +2545,14 @@ int main() {
         // production HUD's controls) stays untouched, and force_lod defaults
         // to -1 / hide_child_instances to false whenever the Inspector hasn't
         // been interacted with, so this is a no-op until the user acts.
-        if (show_isolation) bake_lab.workbench().apply_lod_inspector_options(options);
+        if (show_isolation) {
+            bake_lab.workbench().apply_lod_inspector_options(options);
+            // The production HUD's render.fog override belongs to the
+            // production world; the isolation session keeps its own authored
+            // fog, same reasoning as force_lod above but in the other
+            // direction.
+            options.use_fog_override = false;
+        }
         // Bake Lab/Workbench per-frame work plus the session event drain.
         phase.lab = phase_split();
         if (!render_session->render(render_camera, render_frame, options, error)) {
@@ -2807,7 +2778,7 @@ int main() {
                 if ((camera_input_order.camera_update_allowed() ||
                      camera_capture) &&
                     !viewer::issue_reporter_wants_mouse(issue_state)) {
-                    camera_controller.update(window, dt, camera);
+                    camera_controller.update(window, dt, camera, camera_prefs);
                 }
             }
             if (capture && issue_capture) {
@@ -3143,6 +3114,16 @@ int main() {
             apply_world_camera_after_bake =
                 !replay.valid && initial_camera_env == nullptr;
             apply_world_volumetrics_after_bake = !replay.valid;
+            // prepare_world_reload below drops stats.fog to the compiled
+            // default; until the reconnect re-seeds it, the session's own
+            // authored fog is the only truthful source.
+            apply_world_fog_after_bake = !replay.valid;
+            fog_override_ready = false;
+            // set_world BEFORE the reset: it flushes this world's edits by
+            // diffing against the baseline, which the reset is about to erase.
+            editor_props.set_world(worlds[stats.world_current].project_dir,
+                                   worlds[stats.world_current].world_name);
+            apply_world_props_after_bake = true;
             viewer::prepare_world_reload(stats);
             binding.reload();  // clears app models + session->reload()
         }
@@ -3150,13 +3131,31 @@ int main() {
         if (pending_switch >= 0 && pending_switch < static_cast<int>(worlds.size())) {
             binding.clear_pending_switch();
             const int selected = pending_switch;
+            // BEFORE replace(), not after: set_world flushes the outgoing
+            // world's edits (while its baseline is still intact) AND loads the
+            // incoming world's RequiresReload groups, which open_world — called
+            // from inside replace() — hands to the new session before its first
+            // bake. Only the paths and those groups move here; the World-scope
+            // structs are still reset by complete_world_switch below.
+            editor_props.set_world(worlds[selected].project_dir,
+                                   worlds[selected].world_name);
             // SessionBinding::replace runs the S I.13 close/quiesce/replace/
             // rebind/open/request epoch sequence; a failed open leaves the old
             // session + epoch fully intact.
             const bool ok = binding.replace([&]() { return open_world(worlds[selected]); });
             if (!ok) {
+                // Point back at the world we are still in, or its later edits
+                // would be written to the file of a world we never opened.
+                editor_props.set_world(worlds[stats.world_current].project_dir,
+                                       worlds[stats.world_current].world_name);
+                // set_world released the (still perfectly valid) props group of
+                // the session we never left, and no connect is coming to
+                // restore it — rebind it by hand.
+                editor_props.adopt_world_props(session->world_props());
+                editor_props.adopt_draw_overrides(session->draw_overrides());
                 viewer::complete_world_switch(stats, false);
             } else {
+                apply_world_props_after_bake = true;
                 viewer::complete_world_switch(stats, true);
                 stats.world_current = selected;
                 selected_world_reported = false;
@@ -3166,6 +3165,10 @@ int main() {
                 screenshot_settle = 0;
                 apply_world_camera_after_bake = true;
                 apply_world_volumetrics_after_bake = true;
+                // complete_world_switch reset stats.fog; same reasoning as the
+                // reload seam above.
+                apply_world_fog_after_bake = true;
+                fog_override_ready = false;
                 apply_world_resolver_defaults(worlds[selected].world_name, active_radius,
                                               min_projected_size, stats);
             }
@@ -3177,6 +3180,10 @@ int main() {
     if (fifo_path) unlink(fifo_path);
 #endif
     if (camera_capture) camera_controller.set_capture(window, false);
+    // Flush a debounced User-scope autosave that the last frames did not reach.
+    // World scope stays explicit-save (plus the automatic flush at every
+    // world-change seam) — a save-on-exit prompt is Stage 3.
+    editor_props.shutdown();
 #ifndef _WIN32
     if (cmd_fd >= 0) close(cmd_fd);
 #else

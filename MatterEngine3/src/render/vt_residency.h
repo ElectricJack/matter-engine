@@ -1046,6 +1046,9 @@ class VtResidency {
     bool create_pool_image(uint32_t channel, VkFormat format, uint32_t layers,
                            std::string& error);
     void destroy_pool_image(PoolImage& image);
+    // Re-reads the live half of matter::vt_residency_budgets(). Called at init
+    // and once per begin_frame.
+    void refresh_budgets();
     void write_variant_record(const VariantRung& v);
     // Counts a fail-closed-to-legacy registration and warns ONCE, naming the
     // env knobs. `wanted_bytes` is the mesh copy the rejected registration

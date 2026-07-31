@@ -13,6 +13,7 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 #include "matter/vulkan_device.h"
+#include "editor_props.h"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -298,6 +299,18 @@ void Ui::build_dockspace() {
         ImGui::DockBuilderDockWindow("Viewport", center);
         ImGui::DockBuilderDockWindow("Viewer Debug", right);
         ImGui::DockBuilderDockWindow("Camera", right);
+        // Tabbed with Properties: all three are property editors — one over
+        // the selection, one over the registered tunable groups, and the two
+        // curated cuts of that registry (lighting/volumetrics, and everything
+        // that trades quality for frame time).
+        ImGui::DockBuilderDockWindow("Tunables", right);
+        ImGui::DockBuilderDockWindow("Lighting", right);
+        // "Performance" replaced the former "LOD Settings" window, which was
+        // never docked here at all (it opened floating). Docking it now only
+        // affects layouts built from scratch; an imgui.ini written before the
+        // rename keeps whatever position it had for the old name and opens
+        // this one floating.
+        ImGui::DockBuilderDockWindow("Performance", right);
         ImGui::DockBuilderDockWindow("Bake Lab", bottom);
         // Promoted out of Bake Lab's former "Assets" tab (now a standalone
         // pane usable outside Bake Lab too). Docked into the same left node
@@ -573,6 +586,18 @@ void Ui::draw_console_panel(ConsoleLog& log) {
     ImGui::End();
 }
 
+void Ui::draw_tunables_panel(EditorProps& props) {
+    ImGui::Begin("Tunables");
+    draw_tunables_contents(tunables_state_, props);
+    ImGui::End();
+}
+
+void Ui::draw_lighting_panel(EditorProps& props) {
+    ImGui::Begin("Lighting");
+    draw_lighting_contents(props);
+    ImGui::End();
+}
+
 void Ui::reset_scene_tree_cache() {
     reset_scene_tree_graph_cache(scene_tree_state_);
 }
@@ -581,66 +606,151 @@ void Ui::select_baked_root(uint64_t resolved_hash) {
     scene_tree_state_.selected_root_hash = resolved_hash;
 }
 
-void Ui::draw_lod_settings_panel(matter::WorldSession* session,
-                                 ViewerStats& s,
-                                 const ViewerCommands& commands,
-                                 matter::CameraDesc& camera) {
-    if (!ImGui::Begin("LOD Settings")) {
+matter::WorldSession::StreamingLodConfig streaming_config_from(
+    const StreamingLodPrefs& prefs) {
+    matter::WorldSession::StreamingLodConfig out;
+    out.terrain_lod_enabled = prefs.terrain_lod_enabled;
+    for (const LodRing& r : parse_lod_rings(prefs.scatter_rings))
+        out.scatter_rings.push_back({r.radius, r.value});
+    for (const LodRing& r : parse_lod_rings(prefs.terrain_bands))
+        out.terrain_bands.push_back({r.radius, r.value});
+    out.hysteresis = prefs.hysteresis;
+    out.max_inflight = prefs.max_inflight;
+    out.fail_cooldown_updates = prefs.fail_cooldown_updates;
+    return out;
+}
+
+namespace {
+
+// Ring lists are persisted as ONE string field each (see
+// streaming_lod_prefs.h): sanitize (drop non-positive radii, sort ascending)
+// on the way out so a dragged-past-its-neighbour handle can never produce a
+// file the streamer would reject.
+std::string encode_rings(
+    std::vector<matter::WorldSession::StreamingLodRing> rows) {
+    rows.erase(std::remove_if(rows.begin(), rows.end(),
+                              [](const auto& r) { return !(r.radius > 0.0f); }),
+               rows.end());
+    std::stable_sort(rows.begin(), rows.end(),
+                     [](const auto& a, const auto& b) { return a.radius < b.radius; });
+    std::vector<LodRing> plain;
+    plain.reserve(rows.size());
+    for (const auto& r : rows) plain.push_back({r.radius, r.value});
+    return format_lod_rings(plain);
+}
+
+std::vector<matter::WorldSession::StreamingLodRing> decode_rings(
+    const std::string& text) {
+    std::vector<matter::WorldSession::StreamingLodRing> out;
+    for (const LodRing& r : parse_lod_rings(text)) out.push_back({r.radius, r.value});
+    return out;
+}
+
+}  // namespace
+
+void Ui::draw_performance_panel(matter::WorldSession* session,
+                                EditorProps& props,
+                                const ViewerCommands& commands,
+                                const matter::CameraDesc& camera) {
+    // Renamed from "LOD Settings": an existing imgui.ini keyed on the old name
+    // no longer matches, so this window opens floating for pre-existing
+    // layouts and docked (right node, tabbed with Properties/Tunables) for
+    // fresh ones. Group open/closed state is unaffected — that is keyed on
+    // each group's ###path, which did not change.
+    if (!ImGui::Begin("Performance")) {
         ImGui::End();
         return;
     }
 
+    // ---- Live quality/throughput dials -----------------------------------
+    // One binding each; the Tunables panel shows the same bindings. A panel
+    // chooses WHERE a group appears, it does not own the widgets.
+    if (matter::props::Binding* b = props.budget()) draw_group(*b);
+    if (matter::props::Binding* b = props.pom()) draw_group(*b, nullptr, false);
+    if (matter::props::Binding* b = props.vt_budgets())
+        draw_group(*b, nullptr, false);
+    // WS2: the tier-2 enrichment parameters sit next to the residency budgets
+    // they are drained under, and the process-lifetime streaming knobs
+    // (workers / prebuild, both ReadOnly) next to the streaming section below.
+    if (matter::props::Binding* b = props.vt_enrich())
+        draw_group(*b, nullptr, false);
+    if (matter::props::Binding* b = props.stream_runtime())
+        draw_group(*b, nullptr, false);
+
+    // ---- Per-module draw overrides (view-time filter) --------------------
+    // Sits with the other frame-time dials rather than in the streaming
+    // section below: these apply immediately and never require a reload.
+    if (matter::props::Binding* b = props.draw_overrides()) {
+        if (ImGui::CollapsingHeader("Draw Overrides###draw.overrides")) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("[World]%s", b->dirty() ? " *" : "");
+            draw_draw_overrides_section(*b);
+        }
+    }
+
+    draw_streaming_lod_section(session, props, commands, camera);
+    ImGui::End();
+}
+
+void Ui::draw_streaming_lod_section(matter::WorldSession* session,
+                                    EditorProps& props,
+                                    const ViewerCommands& commands,
+                                    const matter::CameraDesc& camera) {
     // ---- Live controls: applied every frame, no reload -------------------
+    // The pixel-budget and Ground POM distance sliders that used to be
+    // duplicated here are now registered property groups (viewer.budget /
+    // render.pom) drawn above. The camera far-plane hand slider went the same
+    // way, into the User-scope camera.prefs group below — it lives here rather
+    // than in the Camera panel because draw distance is a frame-time dial
+    // first and a viewpoint setting second, and because it is the axis scale
+    // the transition bars below are drawn against.
     ImGui::SeparatorText("Dynamic (applies immediately)");
-    ImGui::SliderFloat("Pixel budget", &s.pixel_budget, 0.05f, 4.0f, "%.2f");
-    ImGui::SetItemTooltip(
-        "Scales projected size in LOD selection: <1 picks coarser rungs "
-        "sooner, >1 holds detail farther. Same value as Viewer Debug.");
-    ImGui::SliderFloat("Camera far plane (m)", &camera.far_plane, 500.0f,
-                       20000.0f, "%.0f",
-                       ImGuiSliderFlags_Logarithmic);
-    ImGui::SetItemTooltip("Editor camera draw distance.");
-    // Ground POM reach lives here with the other draw-distance controls; the
-    // rest of the POM tuning stays under Viewer Debug > Ground POM. Max
-    // distance may run all the way out to the draw distance.
-    ImGui::SliderFloat("Ground POM max distance (m)",
-                       &s.tileset_pom.max_distance_m, 5.0f,
-                       std::max(camera.far_plane, 5.0f), "%.0f",
-                       ImGuiSliderFlags_Logarithmic);
-    ImGui::SliderFloat("Ground POM fade band (m)", &s.tileset_pom.fade_band_m,
-                       1.0f, 200.0f, "%.1f");
+    if (matter::props::Binding* cam = props.camera())
+        draw_group_fields(*cam);
 
     // ---- Streaming profile: consumed once at world connect ---------------
     ImGui::SeparatorText("Streaming (requires world reload)");
-    if (!session) {
+    matter::props::Binding* sb = props.streaming();
+    if (!session || !sb) {
         ImGui::TextDisabled("No world session");
-        ImGui::End();
         return;
     }
     auto& st = lod_settings_;
-    {
-        // Live-mirror the active profile until the user edits; a dirty draft
-        // is held until Apply & Reload or Reset so a mid-edit reconnect
-        // cannot stomp it.
-        matter::WorldSession::StreamingLodConfig active;
-        if (session->streaming_lod_config(active)) {
-            if (!st.dirty) st.edit = active;
-            st.have = true;
-        } else if (!st.dirty) {
-            st.have = false;
-        }
-    }
-    if (!st.have) {
+    // Every edit below — schema field or hand-written ring widget — lands in
+    // the props DRAFT, never in the live instance. prop_edit_target is what
+    // guarantees the two halves write to the same place.
+    StreamingLodPrefs* draft =
+        static_cast<StreamingLodPrefs*>(prop_edit_target(*sb));
+    matter::WorldSession::StreamingLodConfig active;
+    const bool have_active = session->streaming_lod_config(active);
+    st.have = have_active;
+    if (!draft || !st.have) {
         ImGui::TextDisabled("Waiting for a streaming world connect...");
-        ImGui::End();
         return;
     }
 
-    st.dirty |= ImGui::Checkbox("Heightfield terrain LOD ladder",
-                                &st.edit.terrain_lod_enabled);
-    ImGui::SetItemTooltip(
-        "Off: every sector bakes the full-detail voxel mesh (the "
-        "pre-ladder behavior; far more memory and bake time).");
+    // Rebuild the ring view: the draft's own override where it has one, the
+    // world's ACTIVE profile where it does not (an empty override string means
+    // exactly "keep the world's own rings"). Skipped mid-drag so a handle
+    // being dragged is never yanked back by the re-decode.
+    const bool dragging = st.drag_scatter >= 0 || st.drag_bands >= 0;
+    if (!dragging) {
+        st.edit.scatter_rings = draft->scatter_rings.empty()
+                                    ? active.scatter_rings
+                                    : decode_rings(draft->scatter_rings);
+        st.edit.terrain_bands = draft->terrain_bands.empty()
+                                    ? active.terrain_bands
+                                    : decode_rings(draft->terrain_bands);
+    }
+    st.edit.sector_size = active.sector_size;
+
+    // Schema fields (the ladder toggle plus the two ring strings, which show
+    // exactly what will be written to the world props file).
+    draw_group_fields(*sb);
+    // Read AFTER the widgets so a toggle takes effect on the band section
+    // below this frame, not next.
+    st.edit.terrain_lod_enabled = draft->terrain_lod_enabled;
+    bool rings_changed = false;
     ImGui::Spacing();
 
     // Multi-handle transition bar: one rail scaled 0..camera-far-plane with
@@ -752,13 +862,13 @@ void Ui::draw_lod_settings_panel(matter::WorldSession* session,
     };
 
     ImGui::TextUnformatted("Scatter detail (tier 2 near ... 0 far)");
-    st.dirty |= transition_bar("##scatter_bar", st.edit.scatter_rings,
+    rings_changed |= transition_bar("##scatter_bar", st.edit.scatter_rings,
                                st.drag_scatter);
     ImGui::Spacing();
     if (st.edit.terrain_lod_enabled) {
         ImGui::TextUnformatted(
             "Terrain LOD (5 native voxel ... 0 one quad)");
-        st.dirty |= transition_bar("##bands_bar", st.edit.terrain_bands,
+        rings_changed |= transition_bar("##bands_bar", st.edit.terrain_bands,
                                    st.drag_bands);
         // 2:1 spacing hint against the world's sector size.
         bool tight = false;
@@ -789,7 +899,7 @@ void Ui::draw_lod_settings_panel(matter::WorldSession* session,
     // Numeric fallback for precise values, level edits, and add/remove.
     if (ImGui::TreeNode("Numeric editing")) {
         auto ring_table =
-            [&st](const char* label, const char* value_label,
+            [&st, &rings_changed](const char* label, const char* value_label,
                   std::vector<matter::WorldSession::StreamingLodRing>& rows,
                   int value_min, int value_max) {
                 ImGui::PushID(label);
@@ -798,12 +908,12 @@ void Ui::draw_lod_settings_panel(matter::WorldSession* session,
                 for (int i = 0; i < (int)rows.size(); ++i) {
                     ImGui::PushID(i);
                     ImGui::SetNextItemWidth(120.0f);
-                    st.dirty |= ImGui::DragFloat("##radius", &rows[i].radius,
+                    rings_changed |= ImGui::DragFloat("##radius", &rows[i].radius,
                                                  8.0f, 16.0f, 20000.0f,
                                                  "%.0f m");
                     ImGui::SameLine();
                     ImGui::SetNextItemWidth(110.0f);
-                    st.dirty |= ImGui::SliderInt(value_label, &rows[i].value,
+                    rings_changed |= ImGui::SliderInt(value_label, &rows[i].value,
                                                  value_min, value_max);
                     ImGui::SameLine();
                     if (ImGui::SmallButton("X")) remove_index = i;
@@ -811,7 +921,7 @@ void Ui::draw_lod_settings_panel(matter::WorldSession* session,
                 }
                 if (remove_index >= 0 && rows.size() > 1) {
                     rows.erase(rows.begin() + remove_index);
-                    st.dirty = true;
+                    rings_changed = true;
                 }
                 if (rows.size() < 8 && ImGui::SmallButton("+ Add")) {
                     matter::WorldSession::StreamingLodRing next =
@@ -820,7 +930,7 @@ void Ui::draw_lod_settings_panel(matter::WorldSession* session,
                             : rows.back();
                     next.radius += 256.0f;
                     rows.push_back(next);
-                    st.dirty = true;
+                    rings_changed = true;
                 }
                 ImGui::PopID();
             };
@@ -832,40 +942,41 @@ void Ui::draw_lod_settings_panel(matter::WorldSession* session,
         ImGui::TreePop();
     }
 
-    if (st.dirty)
-        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f),
-                           "Pending changes - reload to apply");
-    const bool apply = ImGui::Button("Apply & Reload World");
-    ImGui::SameLine();
-    const bool reset = ImGui::Button("Reset to World Defaults");
-    if (apply) {
-        auto sanitize =
-            [](std::vector<matter::WorldSession::StreamingLodRing>& rows) {
-                rows.erase(std::remove_if(rows.begin(), rows.end(),
-                                          [](const auto& r) {
-                                              return !(r.radius > 0.0f);
-                                          }),
-                           rows.end());
-                std::stable_sort(rows.begin(), rows.end(),
-                                 [](const auto& a, const auto& b) {
-                                     return a.radius < b.radius;
-                                 });
-            };
-        sanitize(st.edit.scatter_rings);
-        sanitize(st.edit.terrain_bands);
-        session->set_streaming_lod_overrides(st.edit);
-        if (commands.reload) commands.reload();
-        st.dirty = false;   // resume live-mirroring the (new) active profile
-    } else if (reset) {
-        session->clear_streaming_lod_overrides();
-        if (commands.reload) commands.reload();
-        st.dirty = false;
+    // Fold the hand-written widgets' result back into the SAME draft the
+    // schema fields edit, so the generic Apply bar below commits both halves.
+    if (rings_changed) {
+        if (const matter::props::Desc* d =
+                prop_find_field(sb->schema(), "scatter_rings"))
+            matter::props::set_string(draft, *d,
+                                      encode_rings(st.edit.scatter_rings));
+        if (const matter::props::Desc* d =
+                prop_find_field(sb->schema(), "terrain_bands"))
+            matter::props::set_string(draft, *d,
+                                      encode_rings(st.edit.terrain_bands));
     }
 
-    ImGui::End();
+    // The generic pending-changes bar replaces the bespoke "Apply & Reload
+    // World" button: it pushes the draft into the live instance, then runs
+    // EditorProps' reload request — the SAME closure the Tunables panel uses,
+    // which is what hands the applied override to the session before issuing
+    // the reload. Neither panel needs to know that ordering.
+    draw_draft_bar(*sb, props.reload_request(), "Apply & Reload World");
+
+    if (ImGui::Button("Reset to World Defaults")) {
+        matter::props::discard_draft(*sb);
+        matter::props::reset_group(*sb);   // back to "no override at all"
+        session->clear_streaming_lod_overrides();
+        if (commands.reload) commands.reload();
+    }
+    ImGui::SetItemTooltip(
+        "Drops the editor's streaming override and reloads, so the world's own "
+        "authored profile applies again.");
+    ImGui::TextDisabled(
+        "Saved per world; re-applied before the first bake on the next load.");
 }
 
-void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
+void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
+                          EditorProps& props) {
     ImGui::Begin("Viewer Debug");
 
     ImGui::Text("FPS: %.1f  (%.2f ms)", s.fps, s.frame_ms);
@@ -952,54 +1063,27 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
     }
     ImGui::Separator();
 
-    ImGui::SliderFloat("Pixel budget", &s.pixel_budget, 0.05f, 4.0f, "%.2f");
+    // This panel is stats + debug views now. The tunable groups it used to
+    // draw moved out, one binding untouched in each case (a panel chooses
+    // WHERE a group appears; it never owned the widgets):
+    //   render.lighting, render.volumetrics -> the Lighting panel
+    //   viewer.budget, render.pom           -> the Performance panel
+    // All of them still appear in Tunables, which enumerates the registry.
     const char* resolvers[] = { "PassThrough", "SectorLod" };
     ImGui::Combo("Resolver", &s.resolver_choice, resolvers, 2);
     if (ImGui::Button("Reload world") && commands.reload) commands.reload();
 
-    ImGui::SeparatorText("Lighting");
-    ImGui::SliderFloat("Exposure (EV)", &s.lighting.exposure_ev, -6.0f, 6.0f,
-                       "%.2f");
-    ImGui::SliderFloat("Sun", &s.lighting.sun_multiplier, 0.0f, 4.0f,
-                       "%.2f");
-    ImGui::SliderFloat("Sky", &s.lighting.sky_multiplier, 0.0f, 4.0f,
-                       "%.2f");
-    ImGui::SliderFloat("Emission", &s.lighting.emission_multiplier, 0.0f,
-                       4.0f, "%.2f");
-    if (ImGui::Button("Reset to World")) reset_lighting_controls(s);
-
-    ImGui::SeparatorText("Volumetrics");
-    ImGui::Checkbox("Enable##vol", &s.volumetrics.enabled);
-    if (s.volumetrics.enabled) {
-        ImGui::SliderFloat("Phase g", &s.volumetrics.phase_g, 0.0f, 0.99f, "%.2f");
-        ImGui::SliderFloat("Temporal blend", &s.volumetrics.temporal_blend, 0.0f, 0.99f, "%.2f");
-        ImGui::SliderFloat("Fog density", &s.volumetrics.fog_density_mul, 0.0f, 4.0f, "%.2f");
-        ImGui::SliderFloat("Fog falloff", &s.volumetrics.fog_falloff_mul, 0.1f, 4.0f, "%.2f");
-        const char* vol_views[] = { "Off", "Density", "Scatter", "Integrated" };
-        ImGui::Combo("Vol debug##vd", &s.vol_debug_view, vol_views, 4);
-    }
-
-    if (ImGui::CollapsingHeader("Ground POM")) {
-        matter::TilesetPomSettings& pom = s.tileset_pom;
-        ImGui::Checkbox("POM enable##pom", &pom.enabled);
-        ImGui::SliderFloat("Relief cap (m)", &pom.relief_cap_m, 0.0f, 0.5f, "%.3f");
-        ImGui::SliderFloat("Datum bias (m)", &pom.datum_bias_m, 0.0f, 0.3f, "%.3f");
-        ImGui::SliderFloat("Max march (m)", &pom.max_march_m, 0.1f, 2.0f, "%.2f");
-        ImGui::SliderInt("Steps", &pom.steps, 4, 64);
-        ImGui::TextDisabled(
-            "Max distance / fade band moved to the LOD Settings window.");
-        ImGui::SliderFloat("AO strength", &pom.ao_strength, 0.0f, 1.0f, "%.2f");
-        ImGui::SliderFloat("Shadow strength", &pom.shadow_strength, 0.0f, 2.0f, "%.2f");
-        // Phase 2 (horizon-map lighting): blends the baked per-direction
-        // horizon occlusion toward 0 (fully visible) instead of always
-        // applying it at full strength. No effect on slots loaded from a
-        // v1 .gtex (no horizon data baked).
-        ImGui::SliderFloat("Horizon occlusion", &pom.horizon_strength, 0.0f, 1.0f, "%.2f");
-    }
-
     ImGui::SeparatorText("Debug View");
     const char* debug_views[] = { "None", "Normals" };
     ImGui::Combo("View", &s.debug_view_mode, debug_views, 2);
+    // Not a registered property: main.cpp overwrites the volumetrics struct's
+    // vol_debug_view from this every frame, so it has nowhere to persist to.
+    // Kept with the other debug views rather than following render.volumetrics
+    // into the Lighting panel — it selects a visualization, not a tunable.
+    if (s.volumetrics.enabled) {
+        const char* vol_views[] = { "Off", "Density", "Scatter", "Integrated" };
+        ImGui::Combo("Vol debug##vd", &s.vol_debug_view, vol_views, 4);
+    }
     draw_animation_debug_overlay_controls(s.animation_overlay);
     if (s.animation_overlay.enabled) {
         if (!s.animation_debug_query_ok)
@@ -1069,7 +1153,7 @@ void Ui::draw_asset_browser_panel(AssetBrowser& browser,
     ImGui::End();
 }
 
-void Ui::draw_camera_panel(matter::CameraDesc& cam) {
+void Ui::draw_camera_panel(matter::CameraDesc& cam, const CameraPrefs& prefs) {
     ImGui::Begin("Camera");
 
     ImGui::DragFloat3("Position", &cam.position.x, 0.1f);
@@ -1083,7 +1167,10 @@ void Ui::draw_camera_panel(matter::CameraDesc& cam) {
     float yaw = atan2f(dz, dx);
     float pitch = asinf(dy / dist);
     bool changed = false;
-    const float orbit_step = 0.04f; // radians per repeat tick
+    // CameraPrefs::orbit_step / orbit_zoom_step (camera.prefs, Scope::User).
+    // Defaults reproduce the former literals exactly: 0.04 rad, and
+    // 1 -/+ 0.04 = 0.96 / 1.04 on the distance.
+    const float orbit_step = prefs.orbit_step;
 
     ImGui::PushButtonRepeat(true);
     ImGui::Text("Orbit:");
@@ -1095,9 +1182,15 @@ void Ui::draw_camera_panel(matter::CameraDesc& cam) {
     ImGui::SameLine();
     if (ImGui::Button("Down"))  { pitch -= orbit_step; changed = true; }
 
-    if (ImGui::Button("Zoom In"))  { dist *= 0.96f; changed = true; }
+    if (ImGui::Button("Zoom In")) {
+        dist *= 1.0f - prefs.orbit_zoom_step;
+        changed = true;
+    }
     ImGui::SameLine();
-    if (ImGui::Button("Zoom Out")) { dist *= 1.04f; changed = true; }
+    if (ImGui::Button("Zoom Out")) {
+        dist *= 1.0f + prefs.orbit_zoom_step;
+        changed = true;
+    }
     ImGui::PopButtonRepeat();
 
     if (ImGui::SliderFloat("Distance", &dist, 1.0f, 150.0f)) changed = true;

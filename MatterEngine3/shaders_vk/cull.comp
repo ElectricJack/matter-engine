@@ -108,6 +108,25 @@ layout(set = 1, binding = 9, std430) readonly buffer VtDrawSlots {
     uint vt_draw_slots[];
 };
 
+// Per-module draw overrides (matter/draw_overrides.h), resolved on the CPU to
+// one entry per registered PART SLOT -- the only part identity this dispatch
+// has. Always bound; when no module carries an override the renderer binds a
+// ONE-ENTRY NEUTRAL table {0, 1}, so slot 0 reads a no-op and every other slot
+// fails the length() bound. Both guards below are exact-equality tests against
+// the neutral value, which is what keeps the default state bit-identical to
+// the pre-override shader (no multiply is emitted, no branch is taken).
+//
+// This is the per-frame enforcement point on purpose: `distance_to_eye` and
+// `projected_size` are recomputed here from FrameConstants::camera_eye every
+// frame, while the instance buffer upstream is retained across frames.
+struct PartDrawOverride {
+    float max_draw_distance;   // 0 = unlimited
+    float lod_bias;            // 1 = neutral
+};
+layout(set = 1, binding = 14, std430) readonly buffer PartDrawOverrides {
+    PartDrawOverride part_draw_overrides[];
+};
+
 // Dynamic records are keyed by (instance slot, serialized cluster index, LOD).
 // The initial pass unions all available LOD records, which makes the early
 // frustum decision conservative even when the chosen LOD has not yet been
@@ -255,9 +274,24 @@ void main() {
     const float local_radius = dynamic_bound
         ? length(local_aabb_max - local_aabb_min) * 0.5
         : cluster.aabb_min_radius.w;
-    const float projected_size = local_radius * scale /
-                                 distance_to_eye *
-                                 frame.camera_eye_pixel_budget.w;
+    // Per-module draw overrides. max_draw_distance rejects before any LOD work
+    // (it is a visibility decision, counted with the other culled clusters);
+    // lod_bias scales the projected size exactly where the global pixel budget
+    // does, so the selection loop below is untouched.
+    float override_lod_bias = 1.0;
+    if (cluster.part_slot < part_draw_overrides.length()) {
+        const PartDrawOverride ov = part_draw_overrides[cluster.part_slot];
+        if (ov.max_draw_distance > 0.0 &&
+            distance_to_eye > ov.max_draw_distance) {
+            atomicAdd(frustum_culled, 1u);
+            return;
+        }
+        override_lod_bias = ov.lod_bias;
+    }
+    float projected_size = local_radius * scale /
+                           distance_to_eye *
+                           frame.camera_eye_pixel_budget.w;
+    if (override_lod_bias != 1.0) projected_size *= override_lod_bias;
     uint lod = cluster.lod_count - 1u;
     for (uint i = 0u; i < cluster.lod_count; ++i) {
         if (projected_size >= cluster.thresholds[i]) {

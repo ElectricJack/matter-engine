@@ -183,7 +183,7 @@ ar-core:
 # this repository's normal dev environment -- see MatterEditor/README.md for
 # what `linux` has and has not been checked against (no Linux machine
 # available where it was written).
-APP_SRC = src/main.cpp src/ui.cpp src/ui_lighting_controls.cpp src/animation_debug_overlay.cpp src/animation_panel.cpp src/animation_panel_model.cpp src/session_binding.cpp src/scene_model_adapter.cpp src/bake_lab.cpp src/bake_lab_timeline.cpp src/event_inspector.cpp src/asset_browser.cpp src/part_workbench.cpp src/part_workbench_iso.cpp src/reveal_part.cpp src/lod_inspector.cpp src/camera_controller.cpp src/camera_focus.cpp src/streaming_anchor_controller.cpp src/selection_set.cpp src/editor_model.cpp src/scene_tree_panel.cpp src/selection_bounds.cpp src/viewport_pick.cpp src/selection_outline.cpp src/toolbar_panel.cpp src/console_panel.cpp src/console_log.cpp src/image_preview.cpp src/issue_reporter.cpp src/issue_reporter_panel.cpp src/shot_replay.cpp src/properties_registry.cpp src/properties_panel.cpp src/specialized_editors.cpp src/gizmo.cpp src/os_open.cpp
+APP_SRC = src/main.cpp src/ui.cpp src/ui_lighting_controls.cpp src/animation_debug_overlay.cpp src/animation_panel.cpp src/animation_panel_model.cpp src/session_binding.cpp src/scene_model_adapter.cpp src/bake_lab.cpp src/bake_lab_timeline.cpp src/event_inspector.cpp src/asset_browser.cpp src/part_workbench.cpp src/part_workbench_iso.cpp src/reveal_part.cpp src/lod_inspector.cpp src/camera_controller.cpp src/camera_focus.cpp src/streaming_anchor_controller.cpp src/selection_set.cpp src/editor_model.cpp src/scene_tree_panel.cpp src/selection_bounds.cpp src/viewport_pick.cpp src/selection_outline.cpp src/toolbar_panel.cpp src/console_panel.cpp src/console_log.cpp src/image_preview.cpp src/issue_reporter.cpp src/issue_reporter_panel.cpp src/shot_replay.cpp src/properties_registry.cpp src/properties_panel.cpp src/specialized_editors.cpp src/property_editor.cpp src/editor_props.cpp src/gizmo.cpp src/os_open.cpp
 
 # Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
 # These are ONLY used by the Windows target; the Linux target links libmatter_engine3.a.
@@ -277,6 +277,10 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/event/dispatch_context.cpp \
               $(ME3_DIR)/src/event/command.cpp \
               $(ME3_DIR)/src/event/property.cpp \
+              $(ME3_DIR)/src/util/json_doc.cpp \
+              $(ME3_DIR)/src/props/props.cpp \
+              $(ME3_DIR)/src/props/props_file.cpp \
+              $(ME3_DIR)/src/props/draw_overrides.cpp \
               $(ME3_DIR)/src/scene/scene_service.cpp \
               $(ME3_DIR)/src/scene/scene_change_tracker.cpp \
               $(ME3_DIR)/src/bake_trace.cpp \
@@ -344,7 +348,7 @@ FLECS_NAME = $(notdir $(FLECS_C))
 
 vpath %.cpp src $(ME3_DIR)/src $(ME3_DIR)/src/animation $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs \
              $(ME3_DIR)/src/streaming $(ME3_DIR)/src/script $(ME3_DIR)/src/event \
-             $(ME3_DIR)/src/scene \
+             $(ME3_DIR)/src/scene $(ME3_DIR)/src/util $(ME3_DIR)/src/props \
              $(MSL_DIR)/src $(SQL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
              $(IMGUIZMO_PATH) \
              ../libs/ParticleFlowLib/src \
@@ -655,6 +659,9 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/tileset_slicer.cpp \
         $(ME3_DIR)/src/render/bc_encode.cpp \
         $(ME3_DIR)/src/render/vt_residency.cpp \
+        $(ME3_DIR)/include/matter/vt_budgets.h \
+        $(ME3_DIR)/src/props/props.cpp \
+        $(ME3_DIR)/src/util/json_doc.cpp \
         $(ME3_DIR)/src/render/vt_stub_filler.cpp \
         $(ME3_DIR)/src/render/vt_compositor.cpp \
         $(ME3_DIR)/src/render/vt_enrich.cpp \
@@ -684,6 +691,8 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/tileset_slicer.cpp \
 	    $(ME3_DIR)/src/render/bc_encode.cpp \
 	    $(ME3_DIR)/src/render/vt_residency.cpp \
+	    $(ME3_DIR)/src/props/props.cpp \
+	    $(ME3_DIR)/src/util/json_doc.cpp \
 	    $(ME3_DIR)/src/render/vt_stub_filler.cpp \
 	    $(ME3_DIR)/src/render/vt_compositor.cpp \
 	    $(ME3_DIR)/src/render/vt_enrich.cpp \
@@ -1225,10 +1234,14 @@ run-test-console-log: build/test_console_log.exe
 # deliberately avoids matter::dlss_mode_name so this does not have to link
 # streamline_bridge.o and, through it, the whole Vulkan loader.
 build/test_issue_reporter.exe: tests/test_issue_reporter.cpp src/issue_reporter.cpp \
-                               src/console_log.cpp src/issue_reporter.h build/windows/obj/flecs.o
+                               src/console_log.cpp src/issue_reporter.h \
+                               $(ME3_DIR)/src/props/props.cpp \
+                               $(ME3_DIR)/src/util/json_doc.cpp \
+                               build/windows/obj/flecs.o
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) tests/test_issue_reporter.cpp src/issue_reporter.cpp \
-	    src/console_log.cpp build/windows/obj/flecs.o -o $@ \
+	    src/console_log.cpp $(ME3_DIR)/src/props/props.cpp \
+	    $(ME3_DIR)/src/util/json_doc.cpp build/windows/obj/flecs.o -o $@ \
 	    -std=c++17 -Wall -Isrc -I../MatterEngine3/include -I../MatterEngine3/src \
 	    -I../libs/MatterSurfaceLib/include -I../libs/SpatialQueryLib/include \
 	    -I../libs/MemoryLib/include -I../libs/MathLib/include \

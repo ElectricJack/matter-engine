@@ -1,0 +1,522 @@
+#include "property_editor.h"
+
+#include "editor_props.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <vector>
+
+#include "imgui.h"
+
+namespace viewer {
+namespace {
+
+using namespace matter::props;
+
+// Column the widget starts at, so the name column can carry the
+// modified/env decoration without fighting the widget's own label.
+constexpr float kNameColumn = 178.0f;
+// The Part Workbench params panel's "differs from default" amber
+// (part_workbench.cpp draw_params_panel) — same visual language.
+const ImVec4 kModifiedColor(1.0f, 0.85f, 0.35f, 1.0f);
+
+std::string value_text(const void* inst, const Desc& d) {
+    char buf[128];
+    const std::string fmt = prop_format_for(d);
+    switch (d.type) {
+        case Type::Float:
+            std::snprintf(buf, sizeof(buf), fmt.c_str(), get_float(inst, d));
+            break;
+        case Type::Int:
+            std::snprintf(buf, sizeof(buf), fmt.c_str(), get_int(inst, d));
+            break;
+        case Type::UInt:
+            std::snprintf(buf, sizeof(buf), fmt.c_str(), get_uint(inst, d));
+            break;
+        case Type::Enum: {
+            const int32_t v = get_enum(inst, d);
+            if (d.enum_labels && v >= 0 && static_cast<uint32_t>(v) < d.enum_count)
+                return d.enum_labels[v];
+            std::snprintf(buf, sizeof(buf), "%d", v);
+            break;
+        }
+        case Type::Bool:
+            return get_bool(inst, d) ? "true" : "false";
+        case Type::Float3:
+        case Type::Color3: {
+            float v[3];
+            get_float3(inst, d, v);
+            std::snprintf(buf, sizeof(buf), "%.3f, %.3f, %.3f", v[0], v[1], v[2]);
+            break;
+        }
+        case Type::String:
+            return get_string(inst, d);
+    }
+    return buf;
+}
+
+// `target` is the instance for a live group and the DRAFT for a RequiresReload
+// one — the widgets are identical either way, which is the whole point of the
+// draft being a full struct copy.
+bool draw_field(Binding& b, void* target, uint32_t index, const Desc& d) {
+    const Group& g = b.schema();
+    const bool env = b.env_forced(index);
+    const bool live = target == b.instance();
+    const bool modified = b.baseline() && !fields_equal(target, b.baseline(), d);
+
+    ImGui::PushID(static_cast<int>(index));
+
+    if (modified) ImGui::PushStyleColor(ImGuiCol_Text, kModifiedColor);
+    ImGui::TextUnformatted(prop_display_label(d));
+    if (modified) ImGui::PopStyleColor();
+    const bool name_hovered = ImGui::IsItemHovered();
+    if (ImGui::BeginPopupContextItem("##fieldctx")) {
+        if (ImGui::MenuItem("Reset to world/default", nullptr, false,
+                            modified && !env && b.baseline())) {
+            copy_field(target, b.baseline(), d);
+            if (live) b.set_dirty(true);
+        }
+        if (ImGui::MenuItem("Copy path"))
+            ImGui::SetClipboardText(prop_field_path(g, d).c_str());
+        ImGui::EndPopup();
+    }
+    if (name_hovered && d.doc && *d.doc) ImGui::SetTooltip("%s", d.doc);
+    if (env) {
+        ImGui::SameLine(0.0f, 6.0f);
+        ImGui::TextDisabled("env");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("forced by %s", d.env ? d.env : "?");
+    } else if (!live) {
+        ImGui::SameLine(0.0f, 6.0f);
+        ImGui::TextDisabled("reload");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Consumed at world connect: the edit is held as a draft until "
+                "Apply & Reload.");
+    }
+
+    ImGui::SameLine(kNameColumn);
+    ImGui::SetNextItemWidth(-1.0f);
+
+    const PropWidget widget = prop_widget_for(d);
+    const std::string fmt = prop_format_for(d);
+    const ImGuiSliderFlags slider_flags =
+        (d.flags & Logarithmic) ? ImGuiSliderFlags_Logarithmic : 0;
+
+    bool changed = false;
+    if (env) ImGui::BeginDisabled();
+    switch (widget) {
+        case PropWidget::ReadOnlyText:
+            ImGui::TextDisabled("%s", value_text(target, d).c_str());
+            break;
+        case PropWidget::FloatSlider: {
+            float v = get_float(target, d);
+            if (ImGui::SliderFloat("##v", &v, d.min, d.max, fmt.c_str(), slider_flags))
+                changed = set_float(target, d, v);
+            break;
+        }
+        case PropWidget::FloatDrag: {
+            float v = get_float(target, d);
+            if (ImGui::DragFloat("##v", &v, d.step > 0.0f ? d.step : 0.01f,
+                                 0.0f, 0.0f, fmt.c_str()))
+                changed = set_float(target, d, v);
+            break;
+        }
+        case PropWidget::IntSlider: {
+            int v = get_int(target, d);
+            if (ImGui::SliderInt("##v", &v, static_cast<int>(d.min),
+                                 static_cast<int>(d.max), fmt.c_str(), slider_flags))
+                changed = set_int(target, d, v);
+            break;
+        }
+        case PropWidget::IntDrag: {
+            int v = get_int(target, d);
+            if (ImGui::DragInt("##v", &v, d.step > 0.0f ? d.step : 1.0f, 0, 0,
+                               fmt.c_str()))
+                changed = set_int(target, d, v);
+            break;
+        }
+        case PropWidget::UIntSlider: {
+            uint32_t v = get_uint(target, d);
+            const uint32_t lo = d.min <= 0.0f ? 0u : static_cast<uint32_t>(d.min);
+            const uint32_t hi = d.max <= 0.0f ? 0u : static_cast<uint32_t>(d.max);
+            if (ImGui::SliderScalar("##v", ImGuiDataType_U32, &v, &lo, &hi,
+                                    fmt.c_str(), slider_flags))
+                changed = set_uint(target, d, v);
+            break;
+        }
+        case PropWidget::UIntDrag: {
+            uint32_t v = get_uint(target, d);
+            if (ImGui::DragScalar("##v", ImGuiDataType_U32, &v,
+                                  d.step > 0.0f ? d.step : 1.0f, nullptr, nullptr,
+                                  fmt.c_str()))
+                changed = set_uint(target, d, v);
+            break;
+        }
+        case PropWidget::Checkbox: {
+            bool v = get_bool(target, d);
+            if (ImGui::Checkbox("##v", &v)) changed = set_bool(target, d, v);
+            break;
+        }
+        case PropWidget::EnumCombo: {
+            int v = get_enum(target, d);
+            if (d.enum_labels && d.enum_count > 0 &&
+                ImGui::Combo("##v", &v, d.enum_labels, static_cast<int>(d.enum_count)))
+                changed = set_enum(target, d, v);
+            break;
+        }
+        case PropWidget::ColorEdit3: {
+            float v[3];
+            get_float3(target, d, v);
+            if (ImGui::ColorEdit3("##v", v)) changed = set_float3(target, d, v);
+            break;
+        }
+        case PropWidget::Float3Drag: {
+            float v[3];
+            get_float3(target, d, v);
+            if (ImGui::DragFloat3("##v", v, d.step > 0.0f ? d.step : 0.01f,
+                                  d.has_range ? d.min : 0.0f,
+                                  d.has_range ? d.max : 0.0f, fmt.c_str()))
+                changed = set_float3(target, d, v);
+            break;
+        }
+        case PropWidget::TextInput: {
+            // Sized past the current value so long strings are never truncated
+            // by the edit buffer; headroom grows with the value as it is typed.
+            const std::string cur = get_string(target, d);
+            std::vector<char> buf(cur.size() + 256 < 512 ? 512 : cur.size() + 256);
+            std::snprintf(buf.data(), buf.size(), "%s", cur.c_str());
+            if (ImGui::InputText("##v", buf.data(), buf.size()))
+                changed = set_string(target, d, std::string(buf.data()));
+            break;
+        }
+    }
+    if (env) ImGui::EndDisabled();
+
+    // Only a LIVE edit is a persistable change; a draft edit becomes one when
+    // Apply copies it into the instance.
+    if (changed && live) b.set_dirty(true);
+
+    ImGui::PopID();
+    return changed;
+}
+
+}  // namespace
+
+void* prop_edit_target(Binding& b) {
+    if (!group_requires_reload(b.schema())) return b.instance();
+    void* draft = ensure_draft(b);
+    return draft ? draft : b.instance();
+}
+
+bool draw_group_fields(Binding& b, const char* filter) {
+    const Group& g = b.schema();
+    // Field IDs are per-group indices; scope them by group path so panels that
+    // call draw_group_fields directly for several groups in one window don't
+    // collide (draw_group's own PushID nests harmlessly above this one).
+    ImGui::PushID(g.path);
+    void* target = prop_edit_target(b);
+    bool changed = false;
+    for (uint32_t i = 0; i < g.field_count; ++i) {
+        const Desc& d = g.fields[i];
+        if (!prop_filter_matches_field(filter, d)) continue;
+        changed |= draw_field(b, target, i, d);
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+bool draw_draft_bar(Binding& b, const std::function<void()>& on_apply,
+                    const char* apply_label) {
+    if (!has_pending_draft(b)) return false;
+    ImGui::PushID(b.schema().path);
+    ImGui::TextColored(kModifiedColor, "Pending changes - not applied yet");
+    bool applied = false;
+    if (ImGui::Button(apply_label && *apply_label ? apply_label
+                                                  : "Apply & Reload")) {
+        apply_draft(b);
+        applied = true;
+        if (on_apply) on_apply();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Discard")) discard_draft(b);
+    ImGui::PopID();
+    return applied;
+}
+
+bool draw_group(Binding& b, const char* filter, bool default_open,
+                const std::function<void()>* on_apply) {
+    const Group& g = b.schema();
+    ImGui::PushID(g.path);
+    char header[192];
+    // ###path: the visible label can change without resetting the open state.
+    std::snprintf(header, sizeof(header), "%s###%s",
+                  g.label && *g.label ? g.label : (g.path ? g.path : "?"),
+                  g.path ? g.path : "?");
+    const bool open = ImGui::CollapsingHeader(
+        header, default_open ? ImGuiTreeNodeFlags_DefaultOpen : 0);
+    ImGui::SameLine();
+    ImGui::TextDisabled("[%s]%s", prop_scope_name(b.scope()),
+                        b.dirty() ? " *" : "");
+    bool changed = false;
+    if (open) {
+        changed = draw_group_fields(b, filter);
+        static const std::function<void()> kNoApply;
+        draw_draft_bar(b, on_apply ? *on_apply : kNoApply);
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+bool draw_draw_overrides_section(Binding& b, const char* filter) {
+    const Group& g = b.schema();
+    // Never a RequiresReload group: every one of these takes effect within a
+    // frame or two (hide invalidates the instance expansion, distance and bias
+    // ride a per-part GPU lane the cull dispatch re-reads every frame), so the
+    // live instance IS the edit target.
+    void* target = b.instance();
+    const std::vector<DrawOverrideRow> rows = draw_override_rows(g);
+    if (rows.empty()) {
+        ImGui::TextDisabled("No modules in this world.");
+        return false;
+    }
+
+    auto field_modified = [&](int index) {
+        return index >= 0 && b.baseline() &&
+               !fields_equal(target, b.baseline(), g.fields[index]);
+    };
+
+    ImGui::PushID(g.path);
+    bool changed = false;
+
+    size_t overridden = 0;
+    for (const DrawOverrideRow& row : rows)
+        if (field_modified(row.hide) || field_modified(row.max_dist) ||
+            field_modified(row.lod_bias))
+            ++overridden;
+    if (overridden != 0) {
+        ImGui::TextColored(kModifiedColor, "%zu module%s overridden",
+                           overridden, overridden == 1 ? "" : "s");
+        ImGui::SameLine();
+        if (ImGui::Button("Reset all")) {
+            reset_group(b);
+            changed = true;
+        }
+    } else {
+        ImGui::TextDisabled("No overrides - drawing everything as baked.");
+    }
+    ImGui::SetItemTooltip(
+        "A view-time filter only: baked artifacts, content hashes and cache "
+        "keys are untouched, so nothing here triggers a rebake.");
+
+    const ImGuiTableFlags flags = ImGuiTableFlags_SizingStretchProp |
+                                  ImGuiTableFlags_RowBg |
+                                  ImGuiTableFlags_BordersInnerV |
+                                  ImGuiTableFlags_ScrollY;
+    // Bounded height so a 30-module world does not push the streaming section
+    // off the panel; the table scrolls internally instead.
+    const float row_h = ImGui::GetFrameHeightWithSpacing();
+    const float body_h = std::min(rows.size() + 1.0f, 12.0f) * row_h;
+    if (!ImGui::BeginTable("##drawoverrides", 4, flags, ImVec2(0.0f, body_h))) {
+        ImGui::PopID();
+        return changed;
+    }
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Module", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableSetupColumn("Hide", ImGuiTableColumnFlags_WidthFixed,
+                            ImGui::GetFrameHeight() + 4.0f);
+    ImGui::TableSetupColumn("Max dist", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableSetupColumn("LOD bias", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+    ImGui::TableHeadersRow();
+
+    for (size_t r = 0; r < rows.size(); ++r) {
+        const DrawOverrideRow& row = rows[r];
+        if (filter && *filter && !prop_filter_matches(filter, row.module.c_str()))
+            continue;
+        const bool row_modified = field_modified(row.hide) ||
+                                  field_modified(row.max_dist) ||
+                                  field_modified(row.lod_bias);
+        ImGui::PushID(static_cast<int>(r));
+        ImGui::TableNextRow();
+
+        ImGui::TableSetColumnIndex(0);
+        if (row_modified) ImGui::PushStyleColor(ImGuiCol_Text, kModifiedColor);
+        ImGui::TextUnformatted(row.module.c_str());
+        if (row_modified) ImGui::PopStyleColor();
+        if (ImGui::BeginPopupContextItem("##rowctx")) {
+            if (ImGui::MenuItem("Reset module", nullptr, false, row_modified)) {
+                if (row.hide >= 0) reset_field(b, g.fields[row.hide]);
+                if (row.max_dist >= 0) reset_field(b, g.fields[row.max_dist]);
+                if (row.lod_bias >= 0) reset_field(b, g.fields[row.lod_bias]);
+                changed = true;
+            }
+            if (ImGui::MenuItem("Copy path") && row.hide >= 0)
+                ImGui::SetClipboardText(
+                    prop_field_path(g, g.fields[row.hide]).c_str());
+            ImGui::EndPopup();
+        }
+
+        ImGui::TableSetColumnIndex(1);
+        if (row.hide >= 0) {
+            bool hide = get_bool(target, g.fields[row.hide]);
+            if (ImGui::Checkbox("##hide", &hide)) {
+                if (set_bool(target, g.fields[row.hide], hide)) {
+                    b.set_dirty(true);
+                    changed = true;
+                }
+            }
+            ImGui::SetItemTooltip("%s", g.fields[row.hide].doc);
+        }
+
+        ImGui::TableSetColumnIndex(2);
+        if (row.max_dist >= 0) {
+            const Desc& d = g.fields[row.max_dist];
+            float v = get_float(target, d);
+            ImGui::SetNextItemWidth(-1.0f);
+            // Unranged drag, not a slider: 0 means "unlimited" and has to stay
+            // one click away, which a logarithmic slider out to the far plane
+            // cannot offer.
+            if (ImGui::DragFloat("##dist", &v, 5.0f, 0.0f,
+                                 matter::kDrawOverrideMaxDistance,
+                                 v <= 0.0f ? "unlimited" : "%.0f m")) {
+                if (v < 0.0f) v = 0.0f;
+                if (set_float(target, d, v)) {
+                    b.set_dirty(true);
+                    changed = true;
+                }
+            }
+            ImGui::SetItemTooltip("%s", d.doc);
+        }
+
+        ImGui::TableSetColumnIndex(3);
+        if (row.lod_bias >= 0) {
+            const Desc& d = g.fields[row.lod_bias];
+            float v = get_float(target, d);
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::SliderFloat("##bias", &v, d.min, d.max, "%.2fx",
+                                   ImGuiSliderFlags_Logarithmic)) {
+                if (set_float(target, d, v)) {
+                    b.set_dirty(true);
+                    changed = true;
+                }
+            }
+            ImGui::SetItemTooltip("%s", d.doc);
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndTable();
+    ImGui::PopID();
+    return changed;
+}
+
+void draw_lighting_contents(EditorProps& props) {
+    // Neither group is RequiresReload, so the closure is inert today; passing
+    // it anyway means a future reload-gated lighting field just works.
+    const std::function<void()>& on_apply = props.reload_request();
+
+    // One reset for the whole panel rather than the old per-group button under
+    // the lighting sliders: every group here is Scope::World, and their
+    // baselines are the same layer-2 snapshot captured at connect (S4), so
+    // "back to what the world authored" is one concept, not three.
+    if (ImGui::Button("Reset to World")) {
+        if (Binding* b = props.lighting()) reset_group(*b);
+        if (Binding* b = props.volumetrics()) reset_group(*b);
+        if (Binding* b = props.fog()) reset_group(*b);
+    }
+    ImGui::SetItemTooltip(
+        "Restores render.lighting, render.volumetrics and render.fog to the "
+        "values the world script authored at connect.");
+    ImGui::Separator();
+
+    if (Binding* b = props.lighting()) draw_group(*b, nullptr, true, &on_apply);
+    if (Binding* b = props.volumetrics())
+        draw_group(*b, nullptr, true, &on_apply);
+    // render.fog sits directly after the volumetrics multipliers that modulate
+    // it: fog_density_mul scales density, fog_falloff_mul scales falloff, and
+    // fog_floor_offset shifts floor, so the two groups are read together.
+    if (Binding* b = props.fog()) draw_group(*b, nullptr, true, &on_apply);
+}
+
+void draw_tunables_contents(TunablesPanelState& state, EditorProps& props) {
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##filter", "Filter groups and fields...",
+                             state.filter, sizeof(state.filter));
+
+    const bool dirty = props.world_dirty();
+    if (dirty) ImGui::PushStyleColor(ImGuiCol_Text, kModifiedColor);
+    ImGui::Text("World%s", dirty ? " *" : "");
+    if (dirty) ImGui::PopStyleColor();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!props.persisting() || props.world_path().empty());
+    if (ImGui::Button("Save World")) props.save_world_now();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", props.persisting()
+                                  ? "User scope autosaves"
+                                  : "replay: persistence disabled");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("World: %s\nUser:  %s",
+                          props.world_path().empty() ? "(none)"
+                                                     : props.world_path().c_str(),
+                          props.user_path().c_str());
+    }
+    ImGui::Separator();
+
+    Registry& registry = props.registry();
+    std::vector<Binding*> sorted;
+    sorted.reserve(registry.size());
+    for (size_t i = 0; i < registry.size(); ++i) sorted.push_back(&registry.at(i));
+    std::sort(sorted.begin(), sorted.end(), [](const Binding* a, const Binding* c) {
+        return prop_group_order_before(a->schema(), c->schema());
+    });
+
+    // What a RequiresReload group's Apply invokes. The panel does not know how
+    // a reload is issued; EditorProps carries the closure main.cpp wired.
+    const std::function<void()>& on_apply = props.reload_request();
+
+    const char* filter = state.filter[0] ? state.filter : nullptr;
+    // Category headers: the sort above already put same-category groups
+    // together, so the header is emitted whenever the first path segment
+    // changes AMONG THE ROWS THAT SURVIVED THE FILTER — a category whose every
+    // group was filtered out must not leave a dangling header behind.
+    const char* prev_path = nullptr;
+    bool any_drawn = false;
+    for (Binding* b : sorted) {
+        const Group& g = b->schema();
+        if (!prop_filter_matches_group(filter, g)) continue;
+        if (prop_starts_new_category(prev_path, g.path)) {
+            ImGui::SeparatorText(
+                prop_category_label(prop_path_category(g.path)).c_str());
+        }
+        prev_path = g.path;
+        any_drawn = true;
+        // A group matched by its own path/label shows every field; one matched
+        // only through a field name shows just the matching fields.
+        const bool whole_group = !filter || prop_filter_matches(filter, g.path) ||
+                                 prop_filter_matches(filter, g.label);
+        // draw.overrides carries three fields per module; the generic renderer
+        // would emit ~90 full-width rows for an alpine world. It gets the same
+        // compact per-module table the Performance panel shows, under a normal
+        // collapsing header so the panel still behaves like every other group.
+        if (g.path && !std::strcmp(g.path, matter::kDrawOverridesPath)) {
+            char header[192];
+            std::snprintf(header, sizeof(header), "%s###%s",
+                          g.label ? g.label : g.path, g.path);
+            if (ImGui::CollapsingHeader(header)) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("[%s]%s", prop_scope_name(b->scope()),
+                                    b->dirty() ? " *" : "");
+                draw_draw_overrides_section(*b, whole_group ? nullptr : filter);
+            }
+            continue;
+        }
+        draw_group(*b, whole_group ? nullptr : filter, true, &on_apply);
+    }
+    if (sorted.empty())
+        ImGui::TextDisabled("No property groups registered.");
+    else if (!any_drawn)
+        ImGui::TextDisabled("No group or field matches the filter.");
+}
+
+}  // namespace viewer

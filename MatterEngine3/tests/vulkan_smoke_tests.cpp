@@ -63,6 +63,10 @@ static void test_viewer_lighting_controls() {
     // below is the one place the values themselves are pinned.
     const matter::VulkanLightingOverrides world{};
     auto matches_world = [&world](const matter::VulkanLightingOverrides& v) {
+        for (int i = 0; i < 3; ++i) {
+            if (v.sun_tint[i] != world.sun_tint[i]) return false;
+            if (v.sky_tint[i] != world.sky_tint[i]) return false;
+        }
         return v.sun_multiplier == world.sun_multiplier &&
                v.sky_multiplier == world.sky_multiplier &&
                v.emission_multiplier == world.emission_multiplier &&
@@ -74,7 +78,11 @@ static void test_viewer_lighting_controls() {
     stats.lighting.sky_multiplier = 0.5f;
     stats.lighting.emission_multiplier = 0.75f;
     stats.lighting.exposure_ev = 3.0f;
+    stats.lighting.sun_tint[0] = 0.2f;
+    stats.lighting.sky_tint[2] = 0.4f;
     viewer::reset_lighting_controls(stats);
+    CHECK(matches_world(stats.lighting),
+          "world reset restores the sun/sky tints along with the multipliers");
     CHECK(stats.lighting.sun_multiplier == world.sun_multiplier,
           "world reset restores authored sun multiplier");
     CHECK(stats.lighting.sky_multiplier == world.sky_multiplier,
@@ -89,12 +97,16 @@ static void test_viewer_lighting_controls() {
     CHECK(matches_world(stats.lighting),
           "reload seam resets all Viewer lighting controls");
 
+    // Positional aggregate init still names only the first four members; the
+    // tints ride their NSDMIs, which is exactly why they were appended.
     stats.lighting = {0.25f, 0.5f, 0.75f, 3.0f};
+    stats.lighting.sun_tint[1] = 0.3f;
     viewer::complete_world_switch(stats, false);
     CHECK(stats.lighting.sun_multiplier == 0.25f &&
               stats.lighting.sky_multiplier == 0.5f &&
               stats.lighting.emission_multiplier == 0.75f &&
-              stats.lighting.exposure_ev == 3.0f,
+              stats.lighting.exposure_ev == 3.0f &&
+              stats.lighting.sun_tint[1] == 0.3f,
           "failed world-switch seam preserves Viewer lighting controls");
     viewer::complete_world_switch(stats, true);
     CHECK(matches_world(stats.lighting),
@@ -134,6 +146,50 @@ static void test_vulkan_lighting_override_contract() {
     source_change.emission_multiplier = 0.5f;
     CHECK(viewer::vulkan_source_lighting_changed(defaults, source_change),
           "emission change invalidates lighting history");
+
+    // ---- Sun/sky tints ---------------------------------------------------
+    // White by default, which must be a BIT-EXACT no-op: the tint multiplies
+    // the same authored colour the scalar multiplier does (matter_engine.cpp),
+    // and every consumer — composite, GI constants, volumetric scatter —
+    // reads that one pair of colours.
+    CHECK(defaults.sun_tint[0] == 1.0f && defaults.sun_tint[1] == 1.0f &&
+              defaults.sun_tint[2] == 1.0f,
+          "sun tint defaults to white");
+    CHECK(defaults.sky_tint[0] == 1.0f && defaults.sky_tint[1] == 1.0f &&
+              defaults.sky_tint[2] == 1.0f,
+          "sky tint defaults to white");
+    {
+        // The exact expression matter_engine.cpp evaluates, on a colour with
+        // no representable slack left.
+        const float authored = 0.1234567f;
+        const float mul = 1.67f;
+        CHECK(authored * mul * 1.0f == authored * mul,
+              "a white tint is bit-exact on the assembled sun colour");
+    }
+
+    matter::VulkanLightingOverrides bad_tint{};
+    bad_tint.sun_tint[0] = -1.0f;
+    bad_tint.sun_tint[1] = 9.0f;
+    bad_tint.sun_tint[2] = std::numeric_limits<float>::quiet_NaN();
+    bad_tint.sky_tint[0] = std::numeric_limits<float>::infinity();
+    const auto clean_tint = viewer::sanitize_vulkan_lighting_overrides(bad_tint);
+    CHECK(clean_tint.sun_tint[0] == 0.0f, "sun tint clamps low");
+    CHECK(clean_tint.sun_tint[1] == 4.0f, "sun tint clamps high");
+    CHECK(clean_tint.sun_tint[2] == 1.0f,
+          "a non-finite tint channel falls back to white, not black");
+    CHECK(clean_tint.sky_tint[0] == 1.0f,
+          "an infinite sky tint channel falls back to white");
+    CHECK(clean_tint.sky_tint[1] == 1.0f && clean_tint.sky_tint[2] == 1.0f,
+          "untouched tint channels survive sanitizing");
+
+    auto tint_change = defaults;
+    tint_change.sun_tint[2] = 0.6f;
+    CHECK(viewer::vulkan_source_lighting_changed(defaults, tint_change),
+          "a sun tint change invalidates lighting history");
+    auto sky_tint_change = defaults;
+    sky_tint_change.sky_tint[0] = 0.9f;
+    CHECK(viewer::vulkan_source_lighting_changed(defaults, sky_tint_change),
+          "a sky tint change invalidates lighting history");
 }
 
 void run_vulkan_gi_math_tests() {

@@ -312,7 +312,23 @@ bool write_state_json(const std::filesystem::path& path,
         << ", \"static_append\": " << frame_stats.vk_static_append_uploads
         << ", \"immediate_submits\": " << frame_stats.vk_immediate_submits
         << "}\n";
-    out << "  }\n";
+    out << "  }";
+
+    // Every registered property that differs from its baseline, grouped by
+    // path. The hand-captured "view"/"render" fields above stay for
+    // compatibility with existing report readers; this section is the one that
+    // grows for free as groups are registered. Written through jsondoc rather
+    // than by hand so a String value gets escaped like every other one.
+    //
+    // Absent (not empty) when no registry was supplied, so "props": {} keeps
+    // its literal meaning: "nothing was tuned".
+    if (context.props) {
+        matter::jsondoc::Value dump;
+        matter::props::dump_modified(*context.props, dump);
+        out << ",\n  \"props\": " << matter::jsondoc::write_json(dump) << '\n';
+    } else {
+        out << '\n';
+    }
     out << "}\n";
     return static_cast<bool>(out);
 }

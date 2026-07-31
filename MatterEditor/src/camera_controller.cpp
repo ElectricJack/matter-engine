@@ -47,7 +47,8 @@ matter::Float3 rotate_around_axis(matter::Float3 v, matter::Float3 axis, float a
 } // namespace
 
 void apply_camera_input(matter::CameraDesc& camera, const CameraInput& input,
-                        float dt, float speed, float radians_per_pixel) {
+                        float dt, float speed, float radians_per_pixel,
+                        float boost_multiplier) {
     matter::Float3 view = sub(camera.target, camera.position);
     const float view_length = std::sqrt(dot(view, view));
     matter::Float3 forward = normalized(view, {0.0f, 0.0f, -1.0f});
@@ -70,7 +71,10 @@ void apply_camera_input(matter::CameraDesc& camera, const CameraInput& input,
 
     camera.target = add(camera.position, mul(forward, view_length > 1e-6f ? view_length : 1.0f));
 
-    const float distance = speed * dt * (input.speed_boost ? 4.0f : 1.0f);
+    // CameraPrefs::boost_multiplier (default 4.0) — a described property now,
+    // not a literal.
+    const float distance =
+        speed * dt * (input.speed_boost ? boost_multiplier : 1.0f);
     const matter::Float3 movement = normalized(
         add(add(mul(forward, input.forward), mul(right, input.right)),
             mul(world_up, input.up)),
@@ -80,7 +84,9 @@ void apply_camera_input(matter::CameraDesc& camera, const CameraInput& input,
     camera.target = add(camera.target, delta);
 }
 
-void CameraController::update(GLFWwindow* window, float dt, matter::CameraDesc& camera) {
+void CameraController::update(GLFWwindow* window, float dt,
+                              matter::CameraDesc& camera,
+                              const CameraPrefs& prefs) {
     if (!window || !captured_) return;
 
     CameraInput input{};
@@ -112,7 +118,8 @@ void CameraController::update(GLFWwindow* window, float dt, matter::CameraDesc& 
         last_y_ = cy;
     }
 
-    apply_camera_input(camera, input, dt, 8.0f, 0.002f);
+    apply_camera_input(camera, input, dt, prefs.move_speed,
+                       prefs.look_sensitivity, prefs.boost_multiplier);
 }
 
 void CameraController::set_capture(GLFWwindow* window, bool capture) {

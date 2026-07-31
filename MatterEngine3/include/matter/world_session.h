@@ -22,6 +22,7 @@
 
 namespace matter::evt { class Hub; }
 namespace matter::scene { class SceneService; class SceneChangeTracker; }
+namespace matter::props { class DynamicGroup; }
 
 namespace matter {
 
@@ -62,6 +63,22 @@ struct VulkanLightingOverrides {
     float emission_multiplier = 1.0f;
     float exposure_ev = -2.0f;
     float composite_debug_view = 0.0f;
+    // Per-channel tint on the AUTHORED sun/sky colour, applied component-wise
+    // at exactly the same point as the scalar multiplier above (see
+    // matter_engine.cpp, where VkSceneLighting::sun_color / sky_color are
+    // assembled from the manifest). Everything downstream — the composite
+    // push constant, the RT/GI constants and the volumetric scatter pass —
+    // reads those two colours, so a tint reaches direct light, GI and
+    // in-scattering together and cannot desync them.
+    //
+    // White is a BIT-EXACT no-op (x * 1.0f == x), which is what lets these
+    // exist without perturbing any golden/reference rendering.
+    //
+    // Appended after composite_debug_view on purpose: several call sites
+    // aggregate-initialize the first four members positionally
+    // ({sun, sky, emission, exposure}); the NSDMIs below keep those valid.
+    float sun_tint[3] = {1.0f, 1.0f, 1.0f};
+    float sky_tint[3] = {1.0f, 1.0f, 1.0f};
 };
 
 struct RenderOptions {
@@ -81,6 +98,18 @@ struct RenderOptions {
     VulkanLightingOverrides vulkan_lighting{};
     VulkanVolumetricsSettings vulkan_volumetrics{};
     TilesetPomSettings vulkan_tileset_pom{};
+    // Live fog override (property-system "render.fog"). The world-authored
+    // FogSettings the connect captured is consumed PER FRAME — WorldSession::
+    // render hands it to VkSceneRenderer::set_volumetrics_settings on every
+    // call — so an editor copy of it can simply ride the per-frame options the
+    // way vulkan_lighting/vulkan_volumetrics already do.
+    //
+    // Opt-in rather than unconditional: every non-editor caller (headless
+    // tests, the replay harness, the Part Workbench's isolation session) leaves
+    // this false and keeps consuming the session's own authored fog, so the
+    // default RenderOptions is bit-identical to the pre-override behavior.
+    bool use_fog_override = false;
+    FogSettings fog_override{};
 
     // Bake Lab W4 (part-workbench.md SS-I.5): LOD Inspector debug overrides.
     // Lab-only — production render paths are byte-identical to pre-W4
@@ -272,6 +301,15 @@ public:
         // set_streaming_lod_overrides): the world's sector size, for UI
         // spacing hints.
         float sector_size = 64.0f;
+        // Streamer pacing (matter_stream::Config's own knobs). Unlike the ring
+        // lists above these have no "empty means keep the world's" encoding —
+        // the world script cannot author them — so the defaults here ARE the
+        // engine defaults and applying them unconditionally is a no-op.
+        // MATTER_STREAM_HYSTERESIS / _INFLIGHT / _FAIL_COOLDOWN still apply in
+        // make_streaming_profile for runs with no editor.
+        float hysteresis = 16.0f;
+        int   max_inflight = 64;
+        int   fail_cooldown_updates = 64;
     };
     // The ACTIVE resolved profile of the current world (world JS + env +
     // overrides + engine defaults). False before a world-kind connect.
@@ -280,6 +318,56 @@ public:
     // available once a world-kind connect completes. The editor adopts these
     // into its live volumetrics controls on world load.
     bool world_volumetrics(VulkanVolumetricsSettings& out) const;
+    // World-authored fog (World.fog static), captured at every install /
+    // compose / cone-rebake. False until the first successful connect. The
+    // editor seeds its live render.fog override from this so the group's
+    // layer-2 baseline is what the world script authored.
+    bool world_fog(FogSettings& out) const;
+
+    // The world's script-declared runtime tunables (`static props`), as a live
+    // property group the editor can bind into its registry -- null when the
+    // world declares none (property-system spec S9).
+    //
+    // OWNED BY THE SESSION and rebuilt on every world-kind connect, including a
+    // reload of the same world. A caller that binds it into a props::Registry
+    // MUST unbind before triggering the reconnect that replaces it; the editor
+    // does exactly that at its set_world seam. The values start at the script's
+    // declared defaults; nothing in the engine reads them back today (see the
+    // Phase-6 seam note in the spec), so this is the editor's surface for
+    // showing and persisting them.
+    props::DynamicGroup* world_props();
+
+    // ---- Per-module draw overrides (view-time filter) ---------------------
+    // The modules whose instances this world can draw, sorted and deduplicated
+    // — the row list of the editor's Draw Overrides section. Filled at connect
+    // from the provider's bake plan (closed worlds) and the streaming asset
+    // install (world-kind sessions). False before the first connect.
+    //
+    // Deliberately NOT included: the per-sector `WorldSector` container itself.
+    // Its geometry is the terrain heightfield/volume the sector script emits
+    // directly, and its content hash is per sector rather than per module, so
+    // it has no stable module identity to hang an override on. Terrain is
+    // therefore outside this control (see draw_overrides() below).
+    bool world_modules(std::vector<std::string>& out) const;
+
+    // The per-module draw-override group (hide / max_draw_distance / lod_bias
+    // per module), as a live property group the editor binds into its registry
+    // exactly like world_props(). Null when the world has no modules.
+    //
+    // OWNED BY THE SESSION, and — like world_props() — rebuilt at a world-kind
+    // connect ONLY when the module set actually changed, so a reload or a
+    // live-edit rebake never swaps the group out from under a mid-tune editor
+    // binding. A caller that binds it MUST unbind before triggering the
+    // reconnect that could replace it.
+    //
+    // Unlike world_props(), the ENGINE reads this group back: render() samples
+    // its value buffer once per frame and, when it changed, re-resolves the
+    // module-keyed overrides onto part hashes. All-default values (the state
+    // every headless/replay/test run stays in, since nothing binds or edits
+    // the group there) are a bit-exact no-op: no instance is skipped and the
+    // GPU cull lane stays at its neutral one-entry table.
+    props::DynamicGroup* draw_overrides();
+
     // Override applied at the NEXT world (re)connect — pair with a world
     // reload to take effect. Empty ring/band lists fall back to the world's
     // own values / engine defaults; the enabled flag always applies.

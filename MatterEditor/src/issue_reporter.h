@@ -47,6 +47,7 @@
 #include <vector>
 
 #include "matter/camera.h"
+#include "matter/props.h"
 #include "matter/scene.h"
 
 namespace matter { struct FrameStats; }
@@ -210,6 +211,11 @@ struct IssueContext {
     float time_scale = 1.0f;
     uint32_t frame_width = 0;
     uint32_t frame_height = 0;
+    // Nullable. When set, state.json gains a "props" object holding every
+    // registered property that differs from its baseline (design S6.3): the
+    // tuning state a repro needs, instead of the two tunables the writer used
+    // to capture by hand.
+    const matter::props::Registry* props = nullptr;
 };
 
 // Records a shot main.cpp has just written to disk.

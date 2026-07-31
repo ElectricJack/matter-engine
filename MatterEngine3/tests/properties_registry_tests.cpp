@@ -89,6 +89,39 @@ void test_addable_excludes_present() {
     CHECK(!found_rigidbody, "addable_excludes_present: RigidBody should not be in addable list");
 }
 
+// Property-system spec S7: enum option labels reach the panel through the
+// FieldWidget instead of the hardcoded enum_options_for table that used to
+// live in properties_panel.cpp.
+void test_enum_labels_flow_from_descriptor() {
+    PropertiesRegistry registry;
+    const ComponentEntry* entry = registry.find("RigidBody");
+    CHECK(entry != nullptr, "enum_labels_flow: expected RigidBody entry");
+    if (!entry) return;
+
+    const viewer::FieldWidget* type_widget = nullptr;
+    for (const auto& fw : entry->fields) {
+        if (fw.name && std::string(fw.name) == "type") type_widget = &fw;
+    }
+    CHECK(type_widget != nullptr, "enum_labels_flow: expected a 'type' field widget");
+    if (!type_widget) return;
+
+    CHECK(type_widget->kind == WidgetKind::EnumDropdown,
+          "enum_labels_flow: RigidBody.type should be an EnumDropdown");
+    CHECK(type_widget->enum_count == 3, "enum_labels_flow: expected 3 labels");
+    CHECK(type_widget->enum_labels != nullptr, "enum_labels_flow: expected non-null labels");
+    if (type_widget->enum_labels && type_widget->enum_count == 3) {
+        CHECK(std::string(type_widget->enum_labels[0]) == "Static", "label 0 should be Static");
+        CHECK(std::string(type_widget->enum_labels[1]) == "Kinematic", "label 1 should be Kinematic");
+        CHECK(std::string(type_widget->enum_labels[2]) == "Dynamic", "label 2 should be Dynamic");
+    }
+
+    // Non-enum fields carry no labels, so the panel keeps its numeric widgets.
+    for (const auto& fw : entry->fields) {
+        if (fw.kind != WidgetKind::EnumDropdown)
+            CHECK(fw.enum_labels == nullptr, "enum_labels_flow: non-enum field carries labels");
+    }
+}
+
 void test_find_unknown_returns_null() {
     PropertiesRegistry registry;
     CHECK(registry.find("NonExistent") == nullptr,
@@ -108,6 +141,7 @@ int main() {
     test_widget_for_quaternion();
     test_transform_not_addable();
     test_addable_excludes_present();
+    test_enum_labels_flow_from_descriptor();
     test_find_unknown_returns_null();
 
     return check_summary();

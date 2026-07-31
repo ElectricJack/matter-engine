@@ -11,7 +11,6 @@
 
 #include <cmath>
 #include <cstdio>
-#include <cstring>
 #include <string>
 #include <vector>
 
@@ -85,18 +84,6 @@ std::string make_cache_key(const char* component, const char* field, uint64_t pr
     key += '@';
     key += std::to_string(primary_id);
     return key;
-}
-
-// Known enum field -> option label table. Only RigidBody.type exists today;
-// anything else falls back to a numeric drag box in draw_enum_field.
-bool enum_options_for(const char* component, const char* field,
-                      std::vector<const char*>& out) {
-    if (component && field && std::strcmp(component, "RigidBody") == 0 &&
-        std::strcmp(field, "type") == 0) {
-        out = {"Static", "Kinematic", "Dynamic"};
-        return true;
-    }
-    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,10 +188,11 @@ void draw_enum_field(PropertiesPanelState& state, const FieldCommands& fields,
     char label[160];
     std::snprintf(label, sizeof(label), cache.mixed ? "%s (mixed)" : "%s", fw.name);
     int value = cache.i;
-    std::vector<const char*> options;
+    // Option labels come from the ECS FieldDescriptor (spec S7). An enum the
+    // schema has not labelled still gets a numeric drag box.
     bool changed;
-    if (enum_options_for(component, fw.name, options)) {
-        changed = ImGui::Combo(label, &value, options.data(), static_cast<int>(options.size()));
+    if (fw.enum_labels && fw.enum_count > 0) {
+        changed = ImGui::Combo(label, &value, fw.enum_labels, static_cast<int>(fw.enum_count));
     } else {
         changed = ImGui::DragInt(label, &value, 1.0f,
                                  static_cast<int>(fw.range_min), static_cast<int>(fw.range_max));
