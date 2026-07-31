@@ -5,6 +5,7 @@ import { rng } from 'shared-lib/rng';
 // decide exactly how its seeded variation is consumed.
 const finite = (value, fallback) =>
   typeof value === 'number' && isFinite(value) ? value : fallback;
+const DRYNESS_STATES = Object.freeze([0.0, 0.35, 0.7, 1.0]);
 
 export function clamp01(value) {
   return Math.max(0, Math.min(1, finite(value, 0)));
@@ -14,9 +15,15 @@ export function vegetationParams(p, formCount) {
   const source = p || {};
   const count = Math.max(1, Math.floor(finite(formCount, 1)));
   const form = source.form;
+  const drynessIndex = source.drynessIndex;
+  const indexedDryness = typeof drynessIndex === 'number' &&
+    isFinite(drynessIndex) && Math.floor(drynessIndex) === drynessIndex &&
+    drynessIndex >= 0 && drynessIndex < DRYNESS_STATES.length
+    ? DRYNESS_STATES[drynessIndex]
+    : undefined;
   return {
     seed: Math.floor(finite(source.seed, 0)),
-    dryness: clamp01(finite(source.dryness, 0.35)),
+    dryness: clamp01(finite(indexedDryness, finite(source.dryness, 0.35))),
     size: Math.max(0.1, Math.min(8, finite(source.size, 1))),
     form: typeof form === 'number' && isFinite(form) &&
       Math.floor(form) === form && form >= 0 && form < count ? form : 0,

@@ -6,7 +6,7 @@ import { dryPalette, emitLeaf, vegetationParams } from 'shared-lib/vegetation';
 // seeded stem can lose its foliage while its bark remains, giving drought a
 // patchy, botanical failure pattern.
 class AlpineShrub extends Part {
-  static params = { seed: 0, dryness: 0.35, size: 1.0, form: 0 };
+  static params = { seed: 0, dryness: 0.35, drynessIndex: -1, size: 1.0, form: 0 };
 
   build(p) {
     const q = vegetationParams(p, 4);

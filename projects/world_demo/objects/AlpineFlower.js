@@ -5,7 +5,7 @@ import { dryPalette, emitBlade, emitLeaf, emitPetal, vegetationParams } from 'sh
 // several slightly unequal stems share a buried crown, with drought removing
 // bloom faces first and leaving bent stems and faded seed discs behind.
 class AlpineFlower extends Part {
-  static params = { seed: 0, dryness: 0.35, size: 1.0, form: 0 };
+  static params = { seed: 0, dryness: 0.35, drynessIndex: -1, size: 1.0, form: 0 };
 
   build(p) {
     const q = vegetationParams(p, 3);

@@ -6,7 +6,7 @@ import { dryPalette, emitLeaf, emitPetal, vegetationParams } from 'shared-lib/ve
 // shortens only the living section of each path while retaining its brown
 // runner, so the mat never vanishes as one uniform sheet.
 class AlpineGroundCover extends Part {
-  static params = { seed: 0, dryness: 0.35, size: 1.0, form: 0 };
+  static params = { seed: 0, dryness: 0.35, drynessIndex: -1, size: 1.0, form: 0 };
 
   build(p) {
     const q = vegetationParams(p, 2);

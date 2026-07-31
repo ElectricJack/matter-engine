@@ -7,7 +7,7 @@ import { dryPalette, vegetationParams } from 'shared-lib/vegetation';
 // overlapping whorl sectors that span whole branches, so neighboring healthy
 // shoots share a layered crown envelope while drought opens sector-sized holes.
 class AlpineConifer extends Part {
-  static params = { seed: 0, dryness: 0.35, size: 1.0, form: 0 };
+  static params = { seed: 0, dryness: 0.35, drynessIndex: -1, size: 1.0, form: 0 };
 
   build(p) {
     const q = vegetationParams(p, 3);

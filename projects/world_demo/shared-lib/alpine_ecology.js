@@ -35,10 +35,14 @@ export function isAlpineProfile(table) {
 }
 
 export function alpineAssetVariants() {
-  return FORM_TABLE.flatMap(([module, form, seed, size]) =>
-    DRYNESS_STATES.map(dryness => ({
+  // Streamed child lookup keys are compared byte-for-byte after the runtime
+  // normalizes numbers with 17-digit precision. Keep that identity entirely
+  // integral; the asset maps drynessIndex back to the authored dryness value,
+  // while the desired display size is applied by the instance transform.
+  return FORM_TABLE.flatMap(([module, form, seed]) =>
+    DRYNESS_STATES.map((_, drynessIndex) => ({
       module,
-      params: { seed, dryness, size, form },
+      params: { seed, drynessIndex, size: 1, form },
     })));
 }
 
@@ -251,10 +255,16 @@ export function selectAlpineAsset(family, habitat, identity) {
     return null;
   const scaleBase = { tree: 0.88, shrub: 0.82, groundCover: 0.86, flower: 0.88, grass: 0.90 }[family];
   const scaleRange = { tree: 0.24, shrub: 0.26, groundCover: 0.20, flower: 0.18, grass: 0.20 }[family];
+  const drynessState = selectDrynessState(dryness, identity);
   return {
     module,
-    params: { seed, dryness: selectDrynessState(dryness, identity), size, form },
-    scale: scaleBase + scaleRange * identityChannel(identity, 3),
+    params: {
+      seed,
+      drynessIndex: DRYNESS_STATES.indexOf(drynessState),
+      size: 1,
+      form,
+    },
+    scale: size * (scaleBase + scaleRange * identityChannel(identity, 3)),
     sinkY,
   };
 }

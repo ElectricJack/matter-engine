@@ -5,7 +5,7 @@ import { dryPalette, emitBlade, emitLeaf, vegetationParams } from 'shared-lib/ve
 // below-ground crown, then spends its deterministic variation on silhouette
 // rather than a perfectly radial, computer-generated rosette.
 class AlpineGrass extends Part {
-  static params = { seed: 0, dryness: 0.35, size: 1.0, form: 0 };
+  static params = { seed: 0, dryness: 0.35, drynessIndex: -1, size: 1.0, form: 0 };
 
   build(p) {
     const q = vegetationParams(p, 4);

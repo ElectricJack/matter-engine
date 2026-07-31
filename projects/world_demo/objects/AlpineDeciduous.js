@@ -6,7 +6,7 @@ import { dryPalette, vegetationParams } from 'shared-lib/vegetation';
 // pass through a few large, overlapping canopy regions.  Drought removes or
 // contracts whole hashed regions, leaving nonuniform windows through the crown.
 class AlpineDeciduous extends Part {
-  static params = { seed: 0, dryness: 0.35, size: 1.0, form: 0 };
+  static params = { seed: 0, dryness: 0.35, drynessIndex: -1, size: 1.0, form: 0 };
 
   build(p) {
     const q = vegetationParams(p, 3);
