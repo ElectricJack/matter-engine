@@ -61,6 +61,25 @@ const char* result_name(VkResult result) {
     }
 }
 
+const char* fault_address_type_name(VkDeviceFaultAddressTypeEXT type) {
+    switch (type) {
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_NONE_EXT: return "none";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_READ_INVALID_EXT:
+            return "invalid read";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_WRITE_INVALID_EXT:
+            return "invalid write";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_EXECUTE_INVALID_EXT:
+            return "invalid execute";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_UNKNOWN_EXT:
+            return "instruction pointer unknown";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_INVALID_EXT:
+            return "instruction pointer invalid";
+        case VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_FAULT_EXT:
+            return "instruction pointer fault";
+        default: return "unknown fault address type";
+    }
+}
+
 bool vk_ok(VkResult result, const char* operation, std::string& error) {
     if (result == VK_SUCCESS) return true;
     std::ostringstream out;
@@ -338,6 +357,8 @@ struct VulkanDevice::Impl {
     VkDevice device = VK_NULL_HANDLE;
     std::shared_ptr<detail::DeviceAccessToken> device_lifetime;
     PFN_vkReleaseSwapchainImagesEXT release_swapchain_images = nullptr;
+    PFN_vkGetDeviceFaultInfoEXT get_device_fault_info = nullptr;
+    bool device_fault_logged = false;
     VkQueue graphics_queue = VK_NULL_HANDLE;
     std::vector<VkQueue> streamline_graphics_queues;
     std::vector<VkQueue> streamline_compute_queues;
@@ -387,6 +408,57 @@ struct VulkanDevice::Impl {
         readback_format = VK_FORMAT_UNDEFINED;
     }
 
+    // vkGetDeviceFaultInfoEXT is only valid once the device is actually in
+    // the lost state (VUID-vkGetDeviceFaultInfoEXT-device-07336), so this is
+    // called solely from paths that observed VK_ERROR_DEVICE_LOST.
+    void log_device_fault() {
+        if (!get_device_fault_info || device_fault_logged ||
+            device == VK_NULL_HANDLE)
+            return;
+        device_fault_logged = true;
+        VkDeviceFaultCountsEXT counts{
+            VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
+        VkResult result = get_device_fault_info(device, &counts, nullptr);
+        if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
+            std::fprintf(stderr,
+                         "vkGetDeviceFaultInfoEXT(counts) failed: %s\n",
+                         result_name(result));
+            return;
+        }
+        std::vector<VkDeviceFaultAddressInfoEXT> addresses(
+            counts.addressInfoCount);
+        std::vector<VkDeviceFaultVendorInfoEXT> vendors(
+            counts.vendorInfoCount);
+        counts.vendorBinarySize = 0;
+        VkDeviceFaultInfoEXT info{VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT};
+        info.pAddressInfos = addresses.empty() ? nullptr : addresses.data();
+        info.pVendorInfos = vendors.empty() ? nullptr : vendors.data();
+        result = get_device_fault_info(device, &counts, &info);
+        if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
+            std::fprintf(stderr, "vkGetDeviceFaultInfoEXT failed: %s\n",
+                         result_name(result));
+            return;
+        }
+        std::fprintf(stderr, "Vulkan device fault: %s\n", info.description);
+        for (uint32_t i = 0; i < counts.addressInfoCount; ++i) {
+            const VkDeviceFaultAddressInfoEXT& address = addresses[i];
+            std::fprintf(
+                stderr,
+                "  fault address %u: %s at 0x%llx (precision 0x%llx)\n", i,
+                fault_address_type_name(address.addressType),
+                static_cast<unsigned long long>(address.reportedAddress),
+                static_cast<unsigned long long>(address.addressPrecision));
+        }
+        for (uint32_t i = 0; i < counts.vendorInfoCount; ++i) {
+            const VkDeviceFaultVendorInfoEXT& vendor = vendors[i];
+            std::fprintf(
+                stderr, "  vendor fault %u: %s (code 0x%llx, data 0x%llx)\n",
+                i, vendor.description,
+                static_cast<unsigned long long>(vendor.vendorFaultCode),
+                static_cast<unsigned long long>(vendor.vendorFaultData));
+        }
+    }
+
     bool poison_device(std::string& error, const char* reason) {
         if (!device_poisoned) {
             poison_error = "Vulkan device disabled: ";
@@ -396,6 +468,8 @@ struct VulkanDevice::Impl {
             frame_active = false;
             acquired_suboptimal = false;
             swapchain_recreate_required = true;
+            if (poison_error.find("VK_ERROR_DEVICE_LOST") != std::string::npos)
+                log_device_fault();
         }
         error = poison_error;
         return false;
@@ -971,12 +1045,15 @@ struct VulkanDevice::Impl {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
         VkPhysicalDeviceVulkan12Features rt_features12{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceFaultFeaturesEXT fault_query{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
         VkPhysicalDeviceFeatures2 rt_features2{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         rt_features2.pNext = &rt_features12;
         rt_features12.pNext = &rt_as_features;
         rt_as_features.pNext = &rt_pipeline_features;
         rt_pipeline_features.pNext = &rt_query_features;
+        rt_query_features.pNext = &fault_query;
         vkGetPhysicalDeviceFeatures2(physical_device, &rt_features2);
         rt_capabilities.buffer_device_address = rt_features12.bufferDeviceAddress;
         rt_capabilities.acceleration_structure = rt_as_features.accelerationStructure;
@@ -1057,6 +1134,22 @@ struct VulkanDevice::Impl {
             enabled_as.accelerationStructure = VK_TRUE;
             enabled_pipeline.rayTracingPipeline = VK_TRUE;
             enabled_query.rayQuery = VK_TRUE;
+        }
+        // Device-fault reporting turns a bare VK_ERROR_DEVICE_LOST into the
+        // faulting GPU address / vendor fault code (see log_device_fault).
+        const bool device_fault_available =
+            available_extensions.count(VK_EXT_DEVICE_FAULT_EXTENSION_NAME) !=
+                0 &&
+            fault_query.deviceFault == VK_TRUE;
+        VkPhysicalDeviceFaultFeaturesEXT enabled_fault{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+        if (device_fault_available) {
+            enabled_fault.deviceFault = VK_TRUE;
+            if (ray_tracing_enabled)
+                enabled_query.pNext = &enabled_fault;
+            else
+                maintenance1.pNext = &enabled_fault;
+            extensions.push_back(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
         }
         features12.timelineSemaphore = VK_TRUE;
         features12.descriptorIndexing = VK_TRUE;
@@ -1160,6 +1253,11 @@ struct VulkanDevice::Impl {
         if (!release_swapchain_images) {
             error = "Missing Vulkan function vkReleaseSwapchainImagesEXT";
             return false;
+        }
+        if (device_fault_available) {
+            get_device_fault_info =
+                reinterpret_cast<PFN_vkGetDeviceFaultInfoEXT>(
+                    vkGetDeviceProcAddr(device, "vkGetDeviceFaultInfoEXT"));
         }
         return true;
     }
@@ -2038,6 +2136,7 @@ struct VulkanDevice::Impl {
                 idle = streamline.device_wait_idle(device);
             }
             bool device_lost = idle == VK_ERROR_DEVICE_LOST;
+            if (device_lost) log_device_fault();
             if (!destruction_safe_after_wait(idle)) {
                 std::fprintf(stderr,
                              "Vulkan cleanup intentionally preserving the "
