@@ -154,3 +154,4 @@ cache/
 # Built in place by build-all.sh; not vendored (unlike box3d, negated above).
 /third_party/autoremesher_core/libautoremesher_core.a
 MatterEditor/log_vt_demand.txt
+issues
