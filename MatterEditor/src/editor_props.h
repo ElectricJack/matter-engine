@@ -13,11 +13,14 @@
 //   6 live edit          the panels, through the Binding& setters
 
 #include "matter/props.h"
+#include "streaming_lod_prefs.h"
 
+#include <functional>
 #include <string>
 
 namespace viewer {
 
+struct CameraPrefs;
 struct ViewerStats;
 
 class EditorProps {
@@ -28,20 +31,36 @@ public:
     // `persist` is false during MATTER_REPLAY runs: no scope file is read OR
     // written, for the same reason the replay path clears imgui.ini — a replay
     // must not inherit an interactive tuning session, nor overwrite one.
-    void init(ViewerStats& stats, bool persist);
+    void init(ViewerStats& stats, CameraPrefs& camera, bool persist);
     // Flushes a pending User autosave. Safe to call without init().
     void shutdown();
+
+    // What a RequiresReload group's "Apply & Reload" invokes. main.cpp wires
+    // it to ViewerCommands::reload; panels pass it to draw_group/draw_draft_bar
+    // so no panel needs to know how a reload is issued.
+    void set_reload_request(std::function<void()> fn) { reload_request_ = std::move(fn); }
+    const std::function<void()>& reload_request() const { return reload_request_; }
 
     matter::props::Registry& registry() { return registry_; }
     const matter::props::Registry& registry() const { return registry_; }
 
     // Called at the world-switch / reload seam, BEFORE the world-scope structs
-    // are reset: flushes the outgoing world's edits to its own file, then
-    // repoints at the incoming world's file.
+    // are reset AND before the incoming session is opened: flushes the
+    // outgoing world's edits to its own file, repoints at the incoming world's
+    // file, and eagerly loads the RequiresReload groups out of it (those are
+    // INPUTS to the connect — see on_world_connected).
     void set_world(const std::string& project_dir, const std::string& world_name);
 
     // Called once the world's authored values have landed in the bound structs
     // (the BakeFinished seam): baseline -> world file -> env.
+    //
+    // RequiresReload groups are exempt from the baseline re-capture. A normal
+    // World group's value is an OUTPUT of the connect (world JS wrote it), so
+    // its layer-2 baseline is what the connect produced. A RequiresReload
+    // group's value is an INPUT the connect consumed — re-capturing it would
+    // make the override equal its own baseline, and the next sparse save would
+    // silently erase the setting from the file. Their baseline therefore stays
+    // the compiled default, exactly like a User-scope group.
     void on_world_connected();
 
     // Per-frame: drives the User-scope autosave debounce.
@@ -59,6 +78,16 @@ public:
     matter::props::Binding* lighting();
     matter::props::Binding* volumetrics();
     matter::props::Binding* pom();
+    matter::props::Binding* camera();
+    matter::props::Binding* streaming();
+    matter::props::Binding* vt_budgets();
+
+    // The live (applied, not draft) streaming override. main.cpp reads this
+    // right after engine->open_world and hands it to
+    // WorldSession::set_streaming_lod_overrides BEFORE SessionBinding requests
+    // the first bake — which is what makes a persisted override apply on the
+    // FIRST connect rather than needing an extra reload.
+    const StreamingLodPrefs& streaming_prefs() const { return streaming_prefs_; }
 
 private:
     void clear_world_dirty();
@@ -68,6 +97,11 @@ private:
     matter::props::BindingId lighting_ = matter::props::kInvalidBinding;
     matter::props::BindingId volumetrics_ = matter::props::kInvalidBinding;
     matter::props::BindingId pom_ = matter::props::kInvalidBinding;
+    matter::props::BindingId camera_ = matter::props::kInvalidBinding;
+    matter::props::BindingId streaming_ = matter::props::kInvalidBinding;
+    matter::props::BindingId vt_ = matter::props::kInvalidBinding;
+    StreamingLodPrefs streaming_prefs_{};
+    std::function<void()> reload_request_;
     std::string user_path_;
     std::string world_path_;
     bool persist_ = false;

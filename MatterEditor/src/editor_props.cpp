@@ -1,5 +1,7 @@
 #include "editor_props.h"
 
+#include "camera_controller.h"
+#include "matter/vt_budgets.h"
 #include "ui.h"
 
 #include <cstdio>
@@ -85,24 +87,42 @@ const auto s_pom = matter::props::group<matter::TilesetPomSettings>(
         .doc("Blends the baked per-direction horizon occlusion toward 0. No "
              "effect on slots loaded from a v1 .gtex."));
 
+const auto s_camera = matter::props::group<CameraPrefs>(
+    "camera.prefs", "Camera",
+    prop(&CameraPrefs::far_plane, "far_plane")
+        .label("Far plane").range(500.0f, 20000.0f).units("m").log()
+        .doc("Editor camera draw distance."),
+    prop(&CameraPrefs::move_speed, "move_speed")
+        .label("Fly speed").range(0.5f, 200.0f).units("m/s").log()
+        .doc("WASD speed while the viewport has cursor capture; Shift is 4x."));
+
 }  // namespace
 
-void EditorProps::init(ViewerStats& stats, bool persist) {
+void EditorProps::init(ViewerStats& stats, CameraPrefs& camera, bool persist) {
     persist_ = persist;
     // Same convention as imgui.ini: relative to the cwd, and the editor is
     // always launched from MatterEditor/.
     user_path_ = "editor_settings.json";
 
     budget_ = registry_.bind(s_budget, &stats, Scope::User);
+    camera_ = registry_.bind(s_camera, &camera, Scope::User);
+    // GPU-memory budgets are per-machine taste (a 4090 and a laptop want
+    // different numbers), not project data — hence User, not World. The struct
+    // is ENGINE-owned: the engine reads it directly and applies its own env
+    // layer for headless runs, and this bind just gives it UI + persistence.
+    vt_ = registry_.bind(matter::vt_residency_budgets_group(),
+                         &matter::vt_residency_budgets(), Scope::User);
     lighting_ = registry_.bind(s_lighting, &stats.lighting, Scope::World);
     volumetrics_ = registry_.bind(s_volumetrics, &stats.volumetrics, Scope::World);
     pom_ = registry_.bind(s_pom, &stats.tileset_pom, Scope::World);
+    streaming_ = registry_.bind(streaming_lod_group(), &streaming_prefs_,
+                                Scope::World);
 
     // User groups have no world-JS layer (S4): their baseline IS the compiled
     // default, which is what bind() already captured.
     if (persist_) matter::props::load_scope_file(registry_, Scope::User, user_path_);
     matter::props::apply_env(registry_);
-    if (matter::props::Binding* b = budget()) b->set_dirty(false);
+    for (size_t i = 0; i < registry_.size(); ++i) registry_.at(i).set_dirty(false);
 }
 
 void EditorProps::shutdown() {
@@ -117,6 +137,9 @@ matter::props::Binding* EditorProps::budget() { return registry_.get(budget_); }
 matter::props::Binding* EditorProps::lighting() { return registry_.get(lighting_); }
 matter::props::Binding* EditorProps::volumetrics() { return registry_.get(volumetrics_); }
 matter::props::Binding* EditorProps::pom() { return registry_.get(pom_); }
+matter::props::Binding* EditorProps::camera() { return registry_.get(camera_); }
+matter::props::Binding* EditorProps::streaming() { return registry_.get(streaming_); }
+matter::props::Binding* EditorProps::vt_budgets() { return registry_.get(vt_); }
 
 bool EditorProps::world_dirty() const {
     for (size_t i = 0; i < registry_.size(); ++i) {
@@ -149,12 +172,34 @@ void EditorProps::set_world(const std::string& project_dir,
     if (!world_path_.empty() && world_dirty()) save_world_now();
     world_path_ = project_dir + "/editor/worlds/" + world_name + ".props.json";
     clear_world_dirty();
+    // RequiresReload groups are consumed BY the connect, so they must be read
+    // before it. Everything else waits for on_world_connected, which needs the
+    // authored values to have landed first.
+    //
+    // Skipped entirely without persistence (a MATTER_REPLAY run): with no file
+    // to reload from, the reset below would simply discard whatever the user
+    // just applied at the reload seam that called us.
+    if (!persist_) return;
+    for (size_t i = 0; i < registry_.size(); ++i) {
+        matter::props::Binding& b = registry_.at(i);
+        if (b.scope() != Scope::World) continue;
+        if (!matter::props::group_requires_reload(b.schema())) continue;
+        matter::props::discard_draft(b);
+        matter::props::reset_group(b);  // back to the compiled default first:
+        // the outgoing world's overrides must not leak into a world whose file
+        // says nothing about them (load_group only writes keys it finds).
+        matter::props::load_group_file(b, world_path_);
+        b.set_dirty(false);
+    }
 }
 
 void EditorProps::on_world_connected() {
     for (size_t i = 0; i < registry_.size(); ++i) {
         matter::props::Binding& b = registry_.at(i);
         if (b.scope() != Scope::World) continue;
+        // See the header note: an input to the connect keeps its compiled
+        // default as baseline, or the sparse save would erase it.
+        if (matter::props::group_requires_reload(b.schema())) continue;
         b.capture_baseline();
         b.set_dirty(false);
     }

@@ -23,6 +23,7 @@
 #include "bake_lab.h"
 #include "asset_browser.h"
 #include "property_editor.h"
+#include "streaming_lod_prefs.h"
 
 struct GLFWwindow;
 namespace matter { class VulkanDevice; struct VulkanFrame; namespace evt { class Hub; } }
@@ -168,6 +169,13 @@ struct ViewerStats {
     uint64_t vt_mesh_budget_bytes = 0;
 };
 
+// StreamingLodPrefs (the persisted, schema-described override) -> the engine
+// struct set_streaming_lod_overrides consumes. Empty ring strings decode to
+// empty lists, which the engine documents as "keep the world's own values", so
+// a default-constructed prefs is a no-op override.
+matter::WorldSession::StreamingLodConfig streaming_config_from(
+    const StreamingLodPrefs& prefs);
+
 void reset_lighting_controls(ViewerStats& stats);
 // Every Scope::World property group's backing struct dropped to its compiled
 // default (layer 1), so the incoming world's authored values are the only
@@ -183,23 +191,25 @@ public:
     void shutdown();
     bool begin_frame(const matter::VulkanFrame& frame, std::string& error);
     bool end_frame(const matter::VulkanFrame& frame, std::string& error);
-    // `props` (nullable) supplies the registered lighting / volumetrics / POM /
+    // `props` supplies the registered lighting / volumetrics / POM /
     // pixel-budget groups; the hand-written sliders for those were deleted in
     // favor of the generic renderer (property-system design S6.2).
     void draw_debug_panel(ViewerStats& stats, const ViewerCommands& commands,
-                          EditorProps* props);
+                          EditorProps& props);
     // Tunables window: the catch-all panel every registered property group
     // appears in. Same Begin/End split as draw_console_panel.
     void draw_tunables_panel(EditorProps& props);
 
     // LOD Settings window: everything level-of-detail / draw-distance in one
-    // place, split into live controls (pixel budget, camera far plane) and
-    // reload-required streaming config (scatter rings, terrain LOD bands,
-    // heightfield ladder toggle) with an Apply & Reload button.
+    // place, split into live controls (the camera.prefs group) and the
+    // reload-required stream.lod group (scatter rings, terrain LOD bands,
+    // heightfield ladder toggle), whose edits land in the generic props DRAFT
+    // and are committed by the generic Apply & Reload bar. `camera` supplies
+    // only the transition bars' axis scale now.
     void draw_lod_settings_panel(matter::WorldSession* session,
-                                 ViewerStats& stats,
+                                 EditorProps& props,
                                  const ViewerCommands& commands,
-                                 matter::CameraDesc& camera);
+                                 const matter::CameraDesc& camera);
     // Viewport banner shown while vt_rejected_variants != 0. Drawn on the
     // foreground draw list (like the simulation border tint) so it is visible
     // even when the Viewer Debug window is collapsed or buried — a rejected
@@ -309,13 +319,14 @@ public:
     void select_baked_root(uint64_t resolved_hash);
 
 private:
-    // LOD Settings panel state: a live mirror of the session's active
-    // streaming profile until the user edits (dirty), then a held draft
-    // until Apply & Reload or Reset.
+    // LOD Settings panel state. The DRAFT (matter::props) is now the source of
+    // truth for the override; this is only the decoded ring view the
+    // hand-written widgets manipulate — rebuilt from the draft (or, where the
+    // draft holds no override, from the session's active profile) each frame,
+    // and re-encoded into the draft whenever a widget changes it.
     struct LodSettingsState {
         matter::WorldSession::StreamingLodConfig edit;
         bool have = false;
-        bool dirty = false;
         // Active drag handle per transition bar (-1 = none).
         int drag_scatter = -1;
         int drag_bands = -1;

@@ -84,5 +84,17 @@ bool load_scope_file(Registry& r, Scope scope, const std::string& path) {
     return true;
 }
 
+bool load_group_file(Binding& b, const std::string& path) {
+    std::string text;
+    if (!read_text(path, text)) return false;
+    jsondoc::Value doc;
+    if (!jsondoc::parse_json(text, doc)) {
+        fprintf(stderr, "[props] %s: unparsable, ignored\n", path.c_str());
+        return false;
+    }
+    load_group(b, doc);
+    return true;
+}
+
 }  // namespace props
 }  // namespace matter

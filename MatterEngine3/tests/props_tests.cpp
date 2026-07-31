@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 using namespace matter;
 using props::Binding;
@@ -422,6 +423,215 @@ void test_json_doc() {
           "json: trailing garbage tolerated");
 }
 
+// ---------------------------------------------------------------------------
+// Stage 3
+// ---------------------------------------------------------------------------
+
+// A RequiresReload group over a struct with an UNDESCRIBED member, so the
+// draft's whole-struct copy (Group::copy_assign) is actually exercised: the
+// streaming-LOD group carries ring vectors exactly this way.
+struct Reloadable {
+    bool             enabled = true;
+    int32_t          rungs = 3;
+    std::vector<int> undescribed{1, 2};
+};
+
+const auto& reloadable_schema() {
+    static const auto def = props::group<Reloadable>(
+        "test.reload", "Reloadable",
+        props::prop(&Reloadable::enabled, "enabled").requires_reload(),
+        props::prop(&Reloadable::rungs, "rungs").range(0.0f, 8.0f).requires_reload());
+    return def;
+}
+
+const Desc& reload_field(const char* name) {
+    const props::Group& g = reloadable_schema().group();
+    for (uint32_t i = 0; i < g.field_count; ++i)
+        if (!strcmp(g.fields[i].name, name)) return g.fields[i];
+    static Desc missing;
+    return missing;
+}
+
+void test_draft_lifecycle() {
+    CHECK(props::group_requires_reload(reloadable_schema().group()),
+          "draft: group_requires_reload");
+    CHECK(!props::group_requires_reload(tunables_schema().group()),
+          "draft: a live group does not require reload");
+
+    Registry reg;
+    Reloadable inst;
+    Binding* b = reg.get(reg.bind(reloadable_schema(), &inst, Scope::World));
+    CHECK(!props::has_pending_draft(*b), "draft: none before ensure_draft");
+    CHECK(props::draft_of(*b) == nullptr, "draft: draft_of null before ensure");
+
+    Reloadable* draft = static_cast<Reloadable*>(props::ensure_draft(*b));
+    CHECK(draft != nullptr && draft != &inst, "draft: allocated separately");
+    CHECK(props::ensure_draft(*b) == draft, "draft: ensure_draft is idempotent");
+    CHECK(draft->undescribed == inst.undescribed,
+          "draft: undescribed members ride along via copy_assign");
+    CHECK(!props::has_pending_draft(*b),
+          "draft: a fresh copy is not pending");
+
+    // Edits land in the draft only.
+    props::set_int(draft, reload_field("rungs"), 6);
+    props::set_bool(draft, reload_field("enabled"), false);
+    draft->undescribed.push_back(3);
+    CHECK(props::has_pending_draft(*b), "draft: pending after an edit");
+    CHECK(inst.rungs == 3 && inst.enabled, "draft: instance untouched while pending");
+    CHECK(!b->dirty(), "draft: a draft edit does not dirty the binding");
+
+    // Persistence reads the LIVE instance, never the draft.
+    jsondoc::Value doc;
+    props::save_scope(reg, Scope::World, doc);
+    CHECK(doc_to_string(doc) == "{\"version\":1,\"groups\":{}}",
+          "draft: a pending draft is not persisted");
+
+    CHECK(props::apply_draft(*b), "draft: apply reports a change");
+    CHECK(inst.rungs == 6 && !inst.enabled, "draft: apply copies into the instance");
+    CHECK(inst.undescribed.size() == 3,
+          "draft: apply copies undescribed members too");
+    CHECK(b->dirty(), "draft: apply marks the binding dirty");
+    CHECK(props::draft_of(*b) == nullptr, "draft: apply clears the draft");
+
+    jsondoc::Value after;
+    props::save_scope(reg, Scope::World, after);
+    CHECK(doc_to_string(after) ==
+              "{\"version\":1,\"groups\":{\"test.reload\":{\"enabled\":false,\"rungs\":6}}}",
+          "draft: applied values persist");
+
+    // Discard drops an edit without touching the instance.
+    Reloadable* second = static_cast<Reloadable*>(props::ensure_draft(*b));
+    props::set_int(second, reload_field("rungs"), 1);
+    CHECK(props::has_pending_draft(*b), "draft: second draft pending");
+    props::discard_draft(*b);
+    CHECK(props::draft_of(*b) == nullptr, "draft: discard clears it");
+    CHECK(inst.rungs == 6, "draft: discard leaves the instance alone");
+
+    // Applying an untouched draft is a no-op, not a spurious dirty.
+    b->set_dirty(false);
+    props::ensure_draft(*b);
+    CHECK(!props::apply_draft(*b), "draft: applying an unchanged draft reports false");
+    CHECK(!b->dirty(), "draft: an unchanged apply does not dirty");
+}
+
+void test_parse_and_set() {
+    Tunables t;
+    CHECK(props::parse_and_set(&t, field("density"), "0.5") && t.density == 0.5f,
+          "parse: float");
+    CHECK(props::parse_and_set(&t, field("density"), "9") && t.density == 1.0f,
+          "parse: float clamped to range");
+    CHECK(props::parse_and_set(&t, field("steps"), "12") && t.steps == 12,
+          "parse: int");
+    CHECK(props::parse_and_set(&t, field("budget"), "77") && t.budget == 77u,
+          "parse: uint");
+    CHECK(props::parse_and_set(&t, field("budget"), "-3") && t.budget == 0u,
+          "parse: negative uint floors at 0");
+    CHECK(props::parse_and_set(&t, field("enabled"), "off") && !t.enabled,
+          "parse: bool word");
+    CHECK(props::parse_and_set(&t, field("enabled"), "1") && t.enabled,
+          "parse: bool digit");
+    CHECK(props::parse_and_set(&t, field("mode"), "high") && t.mode == 2,
+          "parse: enum by label");
+    CHECK(props::parse_and_set(&t, field("mode"), "0") && t.mode == 0,
+          "parse: enum by index");
+    CHECK(props::parse_and_set(&t, field("wind"), "4 5 6") && t.wind.x == 4.0f &&
+              t.wind.y == 5.0f && t.wind.z == 6.0f,
+          "parse: float3 space separated");
+    CHECK(props::parse_and_set(&t, field("color"), "0.1,0.2,0.3"),
+          "parse: color3 comma separated");
+    CHECK(props::parse_and_set(&t, field("title"), "hello world") &&
+              t.title == "hello world",
+          "parse: string takes the raw text");
+
+    // Bad input leaves the field alone.
+    const float density = t.density;
+    CHECK(!props::parse_and_set(&t, field("density"), "abc") && t.density == density,
+          "parse: unparsable float rejected");
+    CHECK(!props::parse_and_set(&t, field("steps"), "") && t.steps == 12,
+          "parse: empty int rejected");
+    CHECK(!props::parse_and_set(&t, field("enabled"), "maybe") && t.enabled,
+          "parse: unparsable bool rejected");
+    CHECK(!props::parse_and_set(&t, field("wind"), "1,2"),
+          "parse: short float3 rejected");
+    CHECK(!props::parse_and_set(&t, field("density"), nullptr),
+          "parse: null text rejected");
+
+    // The Binding form marks dirty only on a successful parse.
+    Registry reg;
+    Binding* b = reg.get(reg.bind(tunables_schema(), &t, Scope::User));
+    b->set_dirty(false);
+    CHECK(!props::parse_and_set(*b, field("steps"), "nope") && !b->dirty(),
+          "parse: a failed set does not dirty the binding");
+    CHECK(props::parse_and_set(*b, field("steps"), "5") && b->dirty(),
+          "parse: a successful set dirties the binding");
+
+    CHECK(props::format_value(&t, field("steps")) == "5", "format: int");
+    CHECK(props::format_value(&t, field("enabled")) == "true", "format: bool");
+    CHECK(props::format_value(&t, field("mode")) == "off", "format: enum label");
+    CHECK(props::format_value(&t, field("title")) == "hello world", "format: string");
+    CHECK(props::format_value(&t, field("wind")) == "4, 5, 6", "format: float3");
+}
+
+void test_resolve_field() {
+    Registry reg;
+    Tunables t;
+    reg.bind(tunables_schema(), &t, Scope::User);
+
+    Binding* b = nullptr;
+    const Desc* d = nullptr;
+    CHECK(props::resolve_field(reg, "test.tunables.density", b, d) && b && d &&
+              !strcmp(d->name, "density"),
+          "resolve: splits on the LAST dot");
+    CHECK(!props::resolve_field(reg, "test.tunables.nope", b, d),
+          "resolve: unknown field");
+    CHECK(!props::resolve_field(reg, "no.such.group.density", b, d),
+          "resolve: unknown group");
+    CHECK(!props::resolve_field(reg, "density", b, d), "resolve: no dot at all");
+    CHECK(!props::resolve_field(reg, "test.tunables.", b, d),
+          "resolve: trailing dot");
+    CHECK(!props::resolve_field(reg, nullptr, b, d), "resolve: null path");
+}
+
+void test_dump_modified() {
+    Registry reg;
+    Tunables t;
+    Reloadable r;
+    Binding* tb = reg.get(reg.bind(tunables_schema(), &t, Scope::World));
+    reg.bind(reloadable_schema(), &r, Scope::User);
+
+    jsondoc::Value empty;
+    props::dump_modified(reg, empty);
+    CHECK(doc_to_string(empty) == "{}", "dump: nothing modified -> empty object");
+
+    props::set_float(*tb, field("density"), 0.5f);
+    // A diagnostic snapshot keeps what persistence drops: NoSerialize fields.
+    props::set_float(&t, field("hidden"), 1.0f);
+    props::set_int(&r, reload_field("rungs"), 7);
+
+    jsondoc::Value doc;
+    props::dump_modified(reg, doc);
+    // Flat "<group.path>": {...}, every scope, no "version"/"groups" wrapper.
+    CHECK(doc_to_string(doc) ==
+              "{\"test.tunables\":{\"density\":0.5,\"hidden\":1},"
+              "\"test.reload\":{\"rungs\":7}}",
+          "dump: shape is group path -> changed fields, across scopes");
+}
+
+void test_load_group() {
+    Registry reg;
+    Tunables t;
+    Reloadable r;
+    reg.bind(tunables_schema(), &t, Scope::World);
+    Binding* rb = reg.get(reg.bind(reloadable_schema(), &r, Scope::World));
+
+    const jsondoc::Value doc = doc_from_string(
+        "{\"version\":1,\"groups\":{\"test.tunables\":{\"steps\":9},"
+        "\"test.reload\":{\"rungs\":5}}}");
+    props::load_group(*rb, doc);
+    CHECK(r.rungs == 5, "load_group: the named group is applied");
+    CHECK(t.steps == 30, "load_group: other bindings in the scope are untouched");
+}
+
 }  // namespace
 
 int main() {
@@ -434,5 +644,10 @@ int main() {
     test_unknown_content_preserved();
     test_env_layer();
     test_json_doc();
+    test_draft_lifecycle();
+    test_parse_and_set();
+    test_resolve_field();
+    test_dump_modified();
+    test_load_group();
     return check_summary();
 }

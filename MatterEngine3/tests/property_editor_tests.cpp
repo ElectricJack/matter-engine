@@ -6,6 +6,7 @@
 #include "check.h"
 
 #include "../../MatterEditor/src/property_editor.h"
+#include "../../MatterEditor/src/streaming_lod_prefs.h"
 
 #include <cstring>
 #include <string>
@@ -127,6 +128,67 @@ void test_filter() {
           "field filtering rejects other fields");
 }
 
+void test_find_field() {
+    CHECK(viewer::prop_find_field(schema(), "steps") == &field("steps"),
+          "prop_find_field returns the described field");
+    CHECK(viewer::prop_find_field(schema(), "nope") == nullptr,
+          "prop_find_field: unknown name");
+    CHECK(viewer::prop_find_field(schema(), nullptr) == nullptr,
+          "prop_find_field: null name");
+}
+
+// The streaming-LOD group persists each ring list as ONE String field, so this
+// round-trip is what stands between a saved override and a silently dropped
+// one (streaming_lod_prefs.h).
+void test_lod_ring_round_trip() {
+    const std::vector<viewer::LodRing> rings = viewer::parse_lod_rings("128:2,384:1,900:0");
+    CHECK(rings.size() == 3, "rings: three pairs parsed");
+    CHECK(rings[0].radius == 128.0f && rings[0].value == 2, "rings: first pair");
+    CHECK(rings[2].radius == 900.0f && rings[2].value == 0, "rings: last pair");
+    CHECK(viewer::format_lod_rings(rings) == "128:2,384:1,900:0",
+          "rings: format is the parse's inverse");
+
+    CHECK(viewer::parse_lod_rings("").empty(),
+          "rings: empty text means 'keep the world's own rings'");
+    CHECK(viewer::format_lod_rings({}).empty(), "rings: empty list formats empty");
+
+    // Lenient separators: whitespace, semicolons, '=' — a hand-edited file or
+    // a FIFO line should not need to be byte-exact.
+    const std::vector<viewer::LodRing> loose = viewer::parse_lod_rings(" 64=5; 128 : 4 ");
+    CHECK(loose.size() == 2 && loose[0].value == 5 && loose[1].radius == 128.0f,
+          "rings: lenient separators");
+
+    // Tolerant reader (S5): a malformed tail yields what was read, not garbage.
+    const std::vector<viewer::LodRing> partial = viewer::parse_lod_rings("100:1,broken");
+    CHECK(partial.size() == 1 && partial[0].radius == 100.0f,
+          "rings: a malformed pair ends the parse");
+    CHECK(viewer::parse_lod_rings("100").empty(),
+          "rings: a radius with no value is not a ring");
+
+    // Radii print without decimals: the panel drags whole metres.
+    CHECK(viewer::format_lod_rings({{127.6f, 3}}) == "128:3",
+          "rings: radii round to whole metres");
+
+    // The group itself is a RequiresReload group over the prefs struct.
+    CHECK(props::group_requires_reload(viewer::streaming_lod_group()),
+          "stream.lod is a RequiresReload group");
+    CHECK(viewer::prop_find_field(viewer::streaming_lod_group(), "scatter_rings") &&
+              viewer::prop_find_field(viewer::streaming_lod_group(),
+                                      "scatter_rings")->type == Type::String,
+          "stream.lod: rings are a String field");
+
+    // A default-constructed prefs is a no-op override: nothing to persist.
+    viewer::StreamingLodPrefs prefs;
+    props::Registry reg;
+    props::Binding* b =
+        reg.get(reg.bind(viewer::streaming_lod_group(), &prefs, props::Scope::World));
+    CHECK(props::is_group_default(*b), "stream.lod: default prefs is a no-op override");
+    matter::jsondoc::Value doc;
+    props::save_scope(reg, props::Scope::World, doc);
+    CHECK(matter::jsondoc::write_json(doc) == "{\"version\":1,\"groups\":{}}",
+          "stream.lod: an untouched override writes no group");
+}
+
 }  // namespace
 
 int main() {
@@ -134,5 +196,7 @@ int main() {
     test_format();
     test_paths_and_labels();
     test_filter();
+    test_find_field();
+    test_lod_ring_round_trip();
     return check_summary();
 }

@@ -614,7 +614,8 @@ PROPERTY_EDITOR_TARGET = build/property_editor_tests
 PROPERTY_EDITOR_CPP    = property_editor_tests.cpp ../src/props/props.cpp \
                          ../src/util/json_doc.cpp
 PROPERTY_EDITOR_HEADERS = check.h ../include/matter/props.h \
-                          ../../MatterEditor/src/property_editor.h
+                          ../../MatterEditor/src/property_editor.h \
+                          ../../MatterEditor/src/streaming_lod_prefs.h
 
 TILESETGTEX_TARGET = build/tileset_gtex_tests
 TILESETGTEX_CPP    = tileset_gtex_tests.cpp ../src/tileset_gtex.cpp

@@ -1157,8 +1157,14 @@ int main() {
     // Persistence is disabled for a replay for the same reason IniFilename is
     // cleared above: a replay must reproduce the recorded state, not inherit
     // (or overwrite) an interactive tuning session's files.
+    // camera.prefs (Scope::User): the far plane and the fly speed. far_plane
+    // seeds from whatever the authored/replay camera already carried, so the
+    // group's compiled default is the one the code has always used.
+    viewer::CameraPrefs camera_prefs;
+    camera_prefs.far_plane = camera.far_plane;
     viewer::EditorProps editor_props;
-    editor_props.init(stats, !replay.valid);
+    editor_props.init(stats, camera_prefs, !replay.valid);
+    camera.far_plane = camera_prefs.far_plane;
     editor_props.set_world(worlds[initial_world].project_dir,
                            worlds[initial_world].world_name);
     // Set at every connect seam; consumed on the first successful bake, after
@@ -1178,6 +1184,13 @@ int main() {
             std::fprintf(stderr, "open_world: %s\n", world_error.c_str());
             return result;
         }
+        // Persisted streaming-LOD overrides (stream.lod, World scope) reach the
+        // session HERE — after the session exists, before SessionBinding
+        // requests the first bake — which is why a saved override applies on
+        // the FIRST connect instead of needing an extra reload. EditorProps
+        // loaded them in set_world(), which every caller runs before this.
+        result->set_streaming_lod_overrides(
+            viewer::streaming_config_from(editor_props.streaming_prefs()));
         // NOTE (E4b): the bake is NOT requested here. SessionBinding owns bake
         // ordering (event-system.md S I.13): it builds the app<->session bridge
         // and opens the command epoch FIRST, then requests the initial bake, so
@@ -1766,6 +1779,59 @@ int main() {
             }
             return viewer::FifoDlss::Result::succeeded(true);
         });
+    // Generic property set/get over the editor's registry (S6.3). One handler
+    // replaces what would otherwise be a bespoke FIFO command per tunable.
+    auto reg_fifo_set_prop = registry.must_register_handler<viewer::FifoSetProp>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::FifoSetProp& cmd) {
+            matter::props::Binding* binding = nullptr;
+            const matter::props::Desc* desc = nullptr;
+            if (!matter::props::resolve_field(editor_props.registry(),
+                                              cmd.path.c_str(), binding, desc)) {
+                std::printf("set: unknown property '%s'\n", cmd.path.c_str());
+                return viewer::FifoSetProp::Result::failed("unknown property");
+            }
+            const uint32_t index = static_cast<uint32_t>(
+                desc - binding->schema().fields);
+            if (binding->env_forced(index)) {
+                std::printf("set: %s is forced by %s; ignored\n",
+                            cmd.path.c_str(), desc->env ? desc->env : "env");
+                return viewer::FifoSetProp::Result::failed("env-forced");
+            }
+            // A RequiresReload field is written into the DRAFT for the same
+            // reason the UI does: nothing would consume a live write. The FIFO
+            // then needs an explicit `reload` to commit it, which is the same
+            // two-step the Apply button performs.
+            void* target = matter::props::group_requires_reload(binding->schema())
+                               ? matter::props::ensure_draft(*binding)
+                               : binding->instance();
+            if (!target ||
+                !matter::props::parse_and_set(target, *desc, cmd.value.c_str())) {
+                std::printf("set: cannot parse '%s' for %s\n", cmd.value.c_str(),
+                            cmd.path.c_str());
+                return viewer::FifoSetProp::Result::failed("unparsable value");
+            }
+            if (target == binding->instance()) binding->set_dirty(true);
+            std::printf("set: %s = %s%s\n", cmd.path.c_str(),
+                        matter::props::format_value(target, *desc).c_str(),
+                        target == binding->instance() ? "" : "  (draft; `reload` to apply)");
+            return viewer::FifoSetProp::Result::succeeded(true);
+        });
+    auto reg_fifo_get_prop = registry.must_register_handler<viewer::FifoGetProp>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::FifoGetProp& cmd) {
+            matter::props::Binding* binding = nullptr;
+            const matter::props::Desc* desc = nullptr;
+            if (!matter::props::resolve_field(editor_props.registry(),
+                                              cmd.path.c_str(), binding, desc)) {
+                std::printf("get: unknown property '%s'\n", cmd.path.c_str());
+                return viewer::FifoGetProp::Result::failed("unknown property");
+            }
+            std::printf("get: %s = %s\n", cmd.path.c_str(),
+                        matter::props::format_value(binding->instance(), *desc)
+                            .c_str());
+            return viewer::FifoGetProp::Result::succeeded(true);
+        });
     auto reg_fifo_quit = registry.must_register_handler<viewer::FifoQuit>(
         matter::evt::CommandScope::App, app_lane, [&](const viewer::FifoQuit&) {
             quit_requested = true;
@@ -1905,6 +1971,18 @@ int main() {
         registry.execute(cmd);
     };
 
+    // What a RequiresReload property group's "Apply & Reload" runs, from EITHER
+    // the LOD Settings panel or the generic Tunables panel. The ordering is the
+    // whole point: the applied override must reach the session BEFORE the
+    // reload, because set_streaming_lod_overrides is consumed at the next
+    // connect. Panels never have to know that.
+    editor_props.set_reload_request([&]() {
+        if (session)
+            session->set_streaming_lod_overrides(
+                viewer::streaming_config_from(editor_props.streaming_prefs()));
+        registry.execute(viewer::ViewerReload{});
+    });
+
     while (!glfwWindowShouldClose(window) && !quit_requested && !fatal_error) {
         // This starts before event polling and begin_frame(), whose fence wait and
         // swapchain acquire are part of the user-visible frame cadence.
@@ -1937,6 +2015,10 @@ int main() {
         previous_time = now;
         // User-scope autosave debounce (S5): fires ~1 s after the last edit.
         editor_props.tick(dt);
+        // camera.prefs -> the live camera. One-way and every frame, the same
+        // shape as the RenderOptions copy block below: the property group is
+        // the edit site, CameraDesc stays the thing everything else reads.
+        camera.far_plane = camera_prefs.far_plane;
         if (key_pressed(window, GLFW_KEY_TAB, tab_down)) {
             camera_capture = !camera_capture;
             camera_controller.set_capture(window, camera_capture);
@@ -2051,6 +2133,26 @@ int main() {
                     registry.dispatch(cmd);
                 } else if (std::sscanf(line.c_str(), "budget %f", &c[0]) == 1) {
                     viewer::FifoBudget cmd; cmd.value = c[0];
+                    registry.dispatch(cmd);
+                } else if (line.compare(0, 4, "set ") == 0) {
+                    // `set <group.path>.<field> <value>` — the value is the
+                    // whole rest of the line (unquoted), so a String field can
+                    // carry spaces and commas ("128:2, 384:1").
+                    const size_t name_start = 4;
+                    const size_t name_end = line.find(' ', name_start);
+                    if (name_end == std::string::npos) {
+                        std::printf("set: expected `set <group.field> <value>`\n");
+                    } else {
+                        viewer::FifoSetProp cmd;
+                        cmd.path = line.substr(name_start, name_end - name_start);
+                        size_t value_start = name_end;
+                        while (value_start < line.size() && line[value_start] == ' ')
+                            ++value_start;
+                        cmd.value = line.substr(value_start);
+                        registry.dispatch(cmd);
+                    }
+                } else if (std::sscanf(line.c_str(), "get %255s", word) == 1) {
+                    viewer::FifoGetProp cmd; cmd.path = word;
                     registry.dispatch(cmd);
                 } else if (std::sscanf(line.c_str(), "hiz %255s", word) == 1) {
                     std::printf("hiz: not available in Vulkan milestone\n");
@@ -2260,7 +2362,7 @@ int main() {
                                         &cached_snapshot, specialized_editors, camera.position);
                 ui.draw_viewport_window();
                 ui.draw_console_panel(console_log);
-                ui.draw_debug_panel(stats, viewer_commands, &editor_props);
+                ui.draw_debug_panel(stats, viewer_commands, editor_props);
                 ui.draw_tunables_panel(editor_props);
                 ui.draw_vt_warning_banner(stats);
                 ui.draw_bake_lab_panel(bake_lab, &app_hub, session.get(), worlds, stats);
@@ -2268,7 +2370,7 @@ int main() {
                                            viewer_commands);
                 ui.draw_worlds_panel(worlds, stats, viewer_commands);
                 ui.draw_camera_panel(camera);
-                ui.draw_lod_settings_panel(session.get(), stats,
+                ui.draw_lod_settings_panel(session.get(), editor_props,
                                            viewer_commands, camera);
                 // Issue reporter (F9 region / F10 viewport). Drawn last so the
                 // selection overlay and the window sit above the panels they
@@ -2355,6 +2457,7 @@ int main() {
                     context.time_scale = ui.sim_time_scale();
                     context.frame_width = frame.extent.width;
                     context.frame_height = frame.extent.height;
+                    context.props = &editor_props.registry();
                     const std::string filed = viewer::write_issue_report(
                         issue_state, context, stats, session->frame_stats(),
                         console_log);
@@ -2835,7 +2938,8 @@ int main() {
                 if ((camera_input_order.camera_update_allowed() ||
                      camera_capture) &&
                     !viewer::issue_reporter_wants_mouse(issue_state)) {
-                    camera_controller.update(window, dt, camera);
+                    camera_controller.update(window, dt, camera,
+                                             camera_prefs.move_speed);
                 }
             }
             if (capture && issue_capture) {
@@ -3183,17 +3287,25 @@ int main() {
         if (pending_switch >= 0 && pending_switch < static_cast<int>(worlds.size())) {
             binding.clear_pending_switch();
             const int selected = pending_switch;
+            // BEFORE replace(), not after: set_world flushes the outgoing
+            // world's edits (while its baseline is still intact) AND loads the
+            // incoming world's RequiresReload groups, which open_world — called
+            // from inside replace() — hands to the new session before its first
+            // bake. Only the paths and those groups move here; the World-scope
+            // structs are still reset by complete_world_switch below.
+            editor_props.set_world(worlds[selected].project_dir,
+                                   worlds[selected].world_name);
             // SessionBinding::replace runs the S I.13 close/quiesce/replace/
             // rebind/open/request epoch sequence; a failed open leaves the old
             // session + epoch fully intact.
             const bool ok = binding.replace([&]() { return open_world(worlds[selected]); });
             if (!ok) {
+                // Point back at the world we are still in, or its later edits
+                // would be written to the file of a world we never opened.
+                editor_props.set_world(worlds[stats.world_current].project_dir,
+                                       worlds[stats.world_current].world_name);
                 viewer::complete_world_switch(stats, false);
             } else {
-                // Same ordering rule as the reload seam: flush + repoint the
-                // world file before the structs lose their edits.
-                editor_props.set_world(worlds[selected].project_dir,
-                                       worlds[selected].world_name);
                 apply_world_props_after_bake = true;
                 viewer::complete_world_switch(stats, true);
                 stats.world_current = selected;

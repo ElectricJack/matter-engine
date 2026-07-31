@@ -6,6 +6,17 @@ struct GLFWwindow;
 
 namespace viewer {
 
+// Editor camera preferences (Scope::User property group "camera.prefs"). These
+// are per-machine taste, not project data: a 20 km far plane is a choice about
+// this GPU, and fly speed is a choice about this mouse. main.cpp owns one
+// instance, pushes far_plane into the live CameraDesc each frame, and hands
+// move_speed to CameraController::update — the two values used to be a hand
+// slider in the LOD panel and a literal at the update call site.
+struct CameraPrefs {
+    float far_plane = 10241.0f;
+    float move_speed = 8.0f;
+};
+
 struct CameraInput {
     float forward = 0.0f;
     float right = 0.0f;
@@ -20,7 +31,8 @@ void apply_camera_input(matter::CameraDesc& camera, const CameraInput& input,
 
 class CameraController {
 public:
-    void update(GLFWwindow* window, float dt, matter::CameraDesc& camera);
+    void update(GLFWwindow* window, float dt, matter::CameraDesc& camera,
+                float move_speed = 8.0f);
     void set_capture(GLFWwindow* window, bool capture);
 
 private:

@@ -80,7 +80,8 @@ void apply_camera_input(matter::CameraDesc& camera, const CameraInput& input,
     camera.target = add(camera.target, delta);
 }
 
-void CameraController::update(GLFWwindow* window, float dt, matter::CameraDesc& camera) {
+void CameraController::update(GLFWwindow* window, float dt, matter::CameraDesc& camera,
+                              float move_speed) {
     if (!window || !captured_) return;
 
     CameraInput input{};
@@ -112,7 +113,7 @@ void CameraController::update(GLFWwindow* window, float dt, matter::CameraDesc& 
         last_y_ = cy;
     }
 
-    apply_camera_input(camera, input, dt, 8.0f, 0.002f);
+    apply_camera_input(camera, input, dt, move_speed, 0.002f);
 }
 
 void CameraController::set_capture(GLFWwindow* window, bool capture) {

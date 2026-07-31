@@ -63,6 +63,12 @@ struct Group {
     uint32_t    struct_align = 0;
     void      (*construct_default)(void*) = nullptr;  // placement-new a default instance
     void      (*destruct_default)(void*) = nullptr;   // matching destructor call
+    // Whole-struct assignment (dst = src). Baselines and diffs go field-by-field
+    // through the schema, but a DRAFT must be a faithful copy of the instance
+    // including members the schema does not describe — the streaming-LOD group
+    // carries std::vector ring lists that hand-written widgets edit inside the
+    // draft. Only the draft mechanism uses this.
+    void      (*copy_assign)(void* dst, const void* src) = nullptr;
 };
 
 // ---------------------------------------------------------------------------
@@ -111,6 +117,10 @@ template <class S>
 void construct_default_impl(void* p) { new (p) S(); }
 template <class S>
 void destruct_default_impl(void* p) { static_cast<S*>(p)->~S(); }
+template <class S>
+void copy_assign_impl(void* dst, const void* src) {
+    *static_cast<S*>(dst) = *static_cast<const S*>(src);
+}
 
 }  // namespace detail
 
@@ -175,6 +185,7 @@ public:
         g_.struct_align = static_cast<uint32_t>(alignof(S));
         g_.construct_default = &detail::construct_default_impl<S>;
         g_.destruct_default = &detail::destruct_default_impl<S>;
+        g_.copy_assign = &detail::copy_assign_impl<S>;
     }
 
     GroupDef(const GroupDef&) = delete;
@@ -237,14 +248,26 @@ public:
         if (field_index < env_forced_.size()) env_forced_[field_index] = v ? 1 : 0;
     }
 
+    // ---- RequiresReload draft (see the free functions below) --------------
+    void* draft() { return draft_; }
+    const void* draft() const { return draft_; }
+    // Allocates (once) a full copy of the instance and returns it. Null only
+    // when the schema cannot construct/copy a struct.
+    void* ensure_draft();
+    void discard_draft();
+
 private:
     BindingId id_ = kInvalidBinding;
     const Group* schema_ = nullptr;
     void* instance_ = nullptr;
     void* baseline_ = nullptr;
+    void* draft_ = nullptr;
     Scope scope_ = Scope::Session;
     bool dirty_ = false;
     std::vector<uint8_t> env_forced_;
+
+    void* alloc_instance() const;
+    void free_instance(void* p) const;
 };
 
 class Registry {
@@ -323,12 +346,74 @@ void reset_field(Binding& b, const Desc& d);
 void reset_group(Binding& b);
 
 // ---------------------------------------------------------------------------
+// RequiresReload drafts (spec S6.1). A group whose fields are consumed once,
+// at world connect, cannot be edited live: the edit would sit in the struct
+// looking applied while nothing consumed it. Such a group is edited into a
+// DRAFT — a full copy of the instance — and an explicit Apply pushes the draft
+// back and triggers the reload.
+//
+// SEMANTICS (chosen; the alternative was persisting drafts):
+//   * A draft is UI-transient. Persistence — save_scope / dump_modified /
+//     baselines — reads the LIVE INSTANCE and never sees the draft.
+//   * apply_draft copies draft -> instance (whole struct, via
+//     Group::copy_assign) and marks the binding dirty, so the very next save
+//     writes the applied values.
+//   * discard_draft drops it; so does a scope reload of the group.
+// Rationale: the file is a record of what the world was last CONFIGURED with.
+// Writing an un-applied draft would produce a file that disagrees with the
+// running world, and on the next launch those values would silently become
+// "applied" without the user ever pressing Apply.
+//
+// Undescribed members (the streaming-LOD ring vectors) ride along in the draft
+// via Group::copy_assign, so hand-written widgets can edit them in the same
+// draft the schema fields live in. They are not persisted — the schema has no
+// list type yet.
+// ---------------------------------------------------------------------------
+
+// True when any described field carries the RequiresReload flag.
+bool group_requires_reload(const Group& g);
+
+// Allocates the draft on first call (a copy of the instance) and returns it.
+void* ensure_draft(Binding& b);
+// The draft or nullptr; never allocates.
+void* draft_of(Binding& b);
+const void* draft_of(const Binding& b);
+// A draft exists AND at least one described field differs from the instance.
+bool has_pending_draft(const Binding& b);
+// draft -> instance (whole struct), clear the draft, mark dirty. Returns true
+// when a described field actually changed.
+bool apply_draft(Binding& b);
+void discard_draft(Binding& b);
+
+// ---------------------------------------------------------------------------
+// Text parsing (layer 5 and the FIFO `set` command share ONE parser).
+// parse_and_set accepts, per Desc::type: a decimal/float literal for the
+// numeric types; 1/0/true/false/yes/no/on/off for Bool; an enum label or an
+// index for Enum; three numbers separated by any non-numeric run for
+// Float3/Color3; the raw text for String. Clamps through the typed setters.
+// Returns false (leaving the field untouched) when the text does not parse.
+// ---------------------------------------------------------------------------
+bool parse_and_set(void* instance, const Desc& d, const char* text);
+bool parse_and_set(Binding& b, const Desc& d, const char* text);
+// Human/FIFO-readable rendering of the current value ("0.75", "true", "high",
+// "1, 2, 3").
+std::string format_value(const void* instance, const Desc& d);
+
+// Splits "<group.path>.<field>" on the LAST '.' and looks both halves up.
+// Returns false (with both outputs untouched) when either half is unknown.
+bool resolve_field(Registry& r, const char* full_path, Binding*& binding,
+                   const Desc*& desc);
+
+// ---------------------------------------------------------------------------
 // Env layer (layer 5). Fields whose Desc carries `env` are overwritten from the
 // process environment and flagged so the UI can disable them and so a later
 // file load does not silently fight the override.
 // ---------------------------------------------------------------------------
 void apply_env(Binding& b);
 void apply_env(Registry& r);
+// Unbound form, for engine-side structs that have a schema but no registry
+// (headless/test runs where no editor ever binds them). Idempotent.
+void apply_env(void* instance, const Group& g);
 
 // ---------------------------------------------------------------------------
 // Persistence (spec S5): { "version": 1, "groups": { "<path>": {...} } }
@@ -344,6 +429,19 @@ void apply_env(Registry& r);
 void save_scope(const Registry& r, Scope scope, jsondoc::Value& doc);
 void load_scope(Registry& r, Scope scope, const jsondoc::Value& doc);
 
+// One binding's entry out of the same document shape. Used for groups whose
+// values must reach the engine BEFORE the connect that would otherwise trigger
+// the whole-scope load (the streaming-LOD overrides).
+void load_group(Binding& b, const jsondoc::Value& doc);
+
+// Every non-baseline field of EVERY scope, as { "<group.path>": {...} }.
+// Unlike save_scope this is a plain diagnostic snapshot, so none of the
+// persistence exclusions apply: NoSerialize live toggles, ReadOnly init-time
+// values and env-forced overrides are all exactly what a bug report needs.
+// Only fields equal to their baseline are omitted, and a group entirely at its
+// baseline produces no key. Feeds the issue report's "props" section.
+void dump_modified(const Registry& r, jsondoc::Value& out);
+
 // File helpers. save_scope_file reads any existing file first (so unknown
 // content survives), writes a temp sibling, then atomically replaces the
 // target via part_asset::replace_file_atomic_detailed. When the scope has no
@@ -351,6 +449,7 @@ void load_scope(Registry& r, Scope scope, const jsondoc::Value& doc);
 // still reports success.
 bool save_scope_file(const Registry& r, Scope scope, const std::string& path);
 bool load_scope_file(Registry& r, Scope scope, const std::string& path);
+bool load_group_file(Binding& b, const std::string& path);
 
 }  // namespace props
 }  // namespace matter

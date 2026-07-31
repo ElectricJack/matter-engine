@@ -148,6 +148,32 @@ struct FifoBudget {
     float value = 1.0f;
 };
 
+// The generic property setter/getter (property-system design S6.3), over the
+// editor's matter::props::Registry:
+//
+//   set <group.path>.<field> <value>     set render.pom.steps 24
+//   get <group.path>.<field>             get render.volumetrics.phase_g
+//
+// `path` is split on its LAST '.' — everything before is the group path (which
+// itself contains dots), everything after is the field name. The value is
+// parsed by the field's declared Type through matter::props::parse_and_set,
+// the SAME parser the env layer uses, and clamped by the typed setter. Unknown
+// paths, unparsable values and env-forced fields all report to the console
+// instead of failing silently. The older bespoke `budget <f>` command stays as
+// a shorthand for `set viewer.budget.pixel_budget <f>`.
+struct FifoSetProp {
+    MT_COMMAND_NAME("fifo.set_prop");
+    using Result = matter::evt::CommandResult<bool>;
+    std::string path;
+    std::string value;
+};
+
+struct FifoGetProp {
+    MT_COMMAND_NAME("fifo.get_prop");
+    using Result = matter::evt::CommandResult<bool>;
+    std::string path;
+};
+
 struct FifoDlss {
     MT_COMMAND_NAME("fifo.dlss");
     using Result = matter::evt::CommandResult<bool>;

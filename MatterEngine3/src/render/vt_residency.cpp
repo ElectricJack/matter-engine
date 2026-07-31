@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "matter/vt_budgets.h"
 #include "matter/vulkan_device.h"
 #include "vk_resources.h"
 
@@ -20,6 +21,10 @@ uint64_t page_key(uint32_t layer, const VtPageKey& p) {
            (static_cast<uint64_t>(p.py) << 16) | p.px;
 }
 
+// Only MATTER_VT_POOL_PAGES still comes through a local env read: its ceiling
+// derives from the device's maxImageArrayLayers, which no schema range can
+// express. The six budget vars moved to matter::VtResidencyBudgets
+// (matter/vt_budgets.h) and are read from that struct below.
 uint32_t env_u32(const char* name, uint32_t fallback, uint32_t lo, uint32_t hi) {
     // The fallback obeys [lo, hi] too: callers pass derived caps as `hi`, and
     // an unset env var must not smuggle a default past them.
@@ -33,6 +38,10 @@ uint32_t env_u32(const char* name, uint32_t fallback, uint32_t lo, uint32_t hi) 
     if (parsed < lo) return lo;
     if (parsed > hi) return hi;
     return static_cast<uint32_t>(parsed);
+}
+
+uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
 }
 
 bool env_flag(const char* name) {
@@ -303,38 +312,25 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     // a streamed world are the CPU mesh budget (MATTER_VT_MESH_BUDGET_MB) and
     // the physical page pool (MATTER_VT_POOL_PAGES, one pinned tail per
     // registration) — this knob just sizes the record table (64 B per slot).
-    max_variants_ = env_u32("MATTER_VT_MAX_VARIANTS", 32768u, 4u, 65534u);
-    max_fills_per_frame_ =
-        env_u32("MATTER_VT_FILLS_PER_FRAME", 8u, 1u, kMaxFillFlags);
-    // Tails get their OWN budget (see the header note): a streaming burst
-    // registers many variants per frame, each rendering legacy-flat until its
-    // single tail page fills, so tails must never wait behind feedback-driven
-    // sharpening fills. Both budgets share the kMaxFillFlags batch ceiling.
-    max_tail_fills_per_frame_ =
-        env_u32("MATTER_VT_TAIL_FILLS_PER_FRAME", 16u, 1u, kMaxFillFlags);
-    // WP-H: tier-2 budget is deliberately SEPARATE from the fill budget --
-    // enrichment is background refinement of already-correct pages, so it must
-    // never compete with getting a page resident in the first place. 0 disables
-    // the tier without unloading the enricher. The upper bound is the
-    // enricher's own per-batch capacity (VtEnricher::kMaxRequestsPerBatch).
-    max_enrich_per_frame_ = env_u32("MATTER_VT_ENRICH_PER_FRAME", 2u, 0u, 16u);
-    // CPU mesh copies (see register_variant's LIFETIME note). Sized for a
-    // streamed world: a rung-0 StreamMountain terrain sector costs on the order
-    // of 100 KB of copied streams, so a few-thousand-variant census lands in
-    // the low hundreds of MB. 1024 MB leaves headroom for denser rungs (a
-    // rung-2 sector has ~16x the vertices of rung 0) without letting a runaway
-    // world grow the heap without bound.
-    mesh_budget_bytes_ =
-        static_cast<size_t>(env_u32("MATTER_VT_MESH_BUDGET_MB", 1024u, 1u,
-                                    16384u)) *
-        1024u * 1024u;
+    //
+    // The six budgets below now live in matter::VtResidencyBudgets. Layer 5 is
+    // applied here for standalone engine runs (headless tests, tools) that
+    // never bind a registry; the editor binds the SAME struct and runs its own
+    // apply_env — both are idempotent and read the same environment.
+    matter::ensure_vt_residency_env_applied();
+    const matter::VtResidencyBudgets& budgets = matter::vt_residency_budgets();
+    max_variants_ = clamp_u32(budgets.max_variants, 4u, 65534u);
+    // The four live budgets (fills / tail fills / enrich / mesh) come from
+    // refresh_budgets, which also runs every begin_frame so an editor edit
+    // takes effect on the next frame.
+    refresh_budgets();
     // Indirection table arena. 64 MiB = 16.7M entries: thousands of worst-case
     // (8192^2, 5462-entry) tables, hundreds of thousands of typical ones — an
     // order of magnitude past any working set the mesh budget admits, so the
     // arena is never the first wall. See VtTableAllocator's growth-policy note
-    // for why it is pre-sized rather than grown live.
-    const uint32_t indirection_mb =
-        env_u32("MATTER_VT_INDIRECTION_MB", 64u, 1u, 1024u);
+    // for why it is pre-sized rather than grown live. Like max_variants it
+    // sizes a buffer at init, so it is not live-editable.
+    const uint32_t indirection_mb = clamp_u32(budgets.indirection_mb, 1u, 1024u);
     const uint32_t indirection_words =
         static_cast<uint32_t>(std::min<uint64_t>(
             static_cast<uint64_t>(indirection_mb) * 1024u * 1024u / 4u,
@@ -1273,8 +1269,26 @@ void VtResidency::drain_feedback(uint32_t frame_slot) {
 // Per-frame
 // ---------------------------------------------------------------------------
 
+// The four LIVE budgets, re-read from matter::vt_residency_budgets() every
+// frame so an editor slider (or a FIFO `set vt.residency.fills_per_frame 24`)
+// takes effect on the next frame. max_variants_ and the indirection arena are
+// deliberately absent: both sized a buffer at init, which no world reload
+// re-runs. Clamps are the ones the env helper used to apply.
+void VtResidency::refresh_budgets() {
+    const matter::VtResidencyBudgets& b = matter::vt_residency_budgets();
+    max_fills_per_frame_ = clamp_u32(b.fills_per_frame, 1u, kMaxFillFlags);
+    max_tail_fills_per_frame_ =
+        clamp_u32(b.tail_fills_per_frame, 1u, kMaxFillFlags);
+    max_enrich_per_frame_ = clamp_u32(b.enrich_per_frame, 0u, 16u);
+    mesh_budget_bytes_ =
+        static_cast<size_t>(clamp_u32(b.mesh_budget_mb, 1u, 16384u)) * 1024u *
+        1024u;
+    stats_.mesh_budget_bytes = mesh_budget_bytes_;
+}
+
 void VtResidency::begin_frame(uint64_t frame_index, uint32_t frame_slot) {
     if (!ready_) return;
+    refresh_budgets();
     frame_index_ = frame_index;
     frame_slot_ = frame_slot % kFeedbackSlots;
     // Collect the graveyards: a retire serial of (release frame +

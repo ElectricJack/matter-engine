@@ -181,7 +181,12 @@ bool parse_env_float3(const char* s, float out[3]) {
     return true;
 }
 
-bool apply_env_field(void* instance, const Desc& d, const char* raw) {
+}  // namespace
+
+// One shared text->field parser: the env layer (layer 5), the FIFO `set`
+// command and any future script/CLI setter all go through this.
+bool parse_and_set(void* instance, const Desc& d, const char* raw) {
+    if (!instance || !raw) return false;
     switch (d.type) {
         case Type::Float: {
             double n;
@@ -234,31 +239,116 @@ bool apply_env_field(void* instance, const Desc& d, const char* raw) {
     return false;
 }
 
-}  // namespace
+bool parse_and_set(Binding& b, const Desc& d, const char* raw) {
+    if (!parse_and_set(b.instance(), d, raw)) return false;
+    b.set_dirty(true);
+    return true;
+}
+
+std::string format_value(const void* instance, const Desc& d) {
+    if (!instance) return {};
+    char buf[128];
+    switch (d.type) {
+        case Type::Float:
+            snprintf(buf, sizeof(buf), "%.6g",
+                     static_cast<double>(get_float(instance, d)));
+            return buf;
+        case Type::Int:
+            snprintf(buf, sizeof(buf), "%d", get_int(instance, d));
+            return buf;
+        case Type::UInt:
+            snprintf(buf, sizeof(buf), "%u", get_uint(instance, d));
+            return buf;
+        case Type::Bool:
+            return get_bool(instance, d) ? "true" : "false";
+        case Type::Enum: {
+            const int32_t v = get_enum(instance, d);
+            if (d.enum_labels && v >= 0 && static_cast<uint32_t>(v) < d.enum_count &&
+                d.enum_labels[v])
+                return d.enum_labels[v];
+            snprintf(buf, sizeof(buf), "%d", v);
+            return buf;
+        }
+        case Type::Float3:
+        case Type::Color3: {
+            float xyz[3];
+            get_float3(instance, d, xyz);
+            snprintf(buf, sizeof(buf), "%.6g, %.6g, %.6g",
+                     static_cast<double>(xyz[0]), static_cast<double>(xyz[1]),
+                     static_cast<double>(xyz[2]));
+            return buf;
+        }
+        case Type::String:
+            return get_string(instance, d);
+    }
+    return {};
+}
+
+bool resolve_field(Registry& r, const char* full_path, Binding*& binding,
+                   const Desc*& desc) {
+    if (!full_path) return false;
+    const char* dot = strrchr(full_path, '.');
+    if (!dot || dot == full_path || !dot[1]) return false;
+    const std::string group_path(full_path, static_cast<size_t>(dot - full_path));
+    Binding* b = r.find(group_path.c_str());
+    if (!b) return false;
+    const Group& g = b->schema();
+    for (uint32_t i = 0; i < g.field_count; ++i) {
+        if (g.fields[i].name && !strcmp(g.fields[i].name, dot + 1)) {
+            binding = b;
+            desc = &g.fields[i];
+            return true;
+        }
+    }
+    return false;
+}
 
 // ---------------------------------------------------------------------------
 // Binding
 // ---------------------------------------------------------------------------
 
-Binding::Binding(BindingId id, const Group& schema, void* instance, Scope scope)
-    : id_(id), schema_(&schema), instance_(instance), scope_(scope) {
-    env_forced_.assign(schema.field_count, 0);
-    if (schema.struct_size > 0 && schema.construct_default) {
-        const std::align_val_t align{
-            schema.struct_align ? static_cast<size_t>(schema.struct_align)
-                                : alignof(std::max_align_t)};
-        baseline_ = ::operator new(schema.struct_size, align);
-        schema.construct_default(baseline_);
-    }
-}
-
-Binding::~Binding() {
-    if (!baseline_) return;
-    if (schema_->destruct_default) schema_->destruct_default(baseline_);
+void* Binding::alloc_instance() const {
+    if (!schema_ || schema_->struct_size == 0 || !schema_->construct_default)
+        return nullptr;
     const std::align_val_t align{
         schema_->struct_align ? static_cast<size_t>(schema_->struct_align)
                               : alignof(std::max_align_t)};
-    ::operator delete(baseline_, align);
+    void* p = ::operator new(schema_->struct_size, align);
+    schema_->construct_default(p);
+    return p;
+}
+
+void Binding::free_instance(void* p) const {
+    if (!p) return;
+    if (schema_->destruct_default) schema_->destruct_default(p);
+    const std::align_val_t align{
+        schema_->struct_align ? static_cast<size_t>(schema_->struct_align)
+                              : alignof(std::max_align_t)};
+    ::operator delete(p, align);
+}
+
+Binding::Binding(BindingId id, const Group& schema, void* instance, Scope scope)
+    : id_(id), schema_(&schema), instance_(instance), scope_(scope) {
+    env_forced_.assign(schema.field_count, 0);
+    baseline_ = alloc_instance();
+}
+
+Binding::~Binding() {
+    free_instance(draft_);
+    free_instance(baseline_);
+}
+
+void* Binding::ensure_draft() {
+    if (draft_) return draft_;
+    if (!instance_ || !schema_ || !schema_->copy_assign) return nullptr;
+    draft_ = alloc_instance();
+    if (draft_) schema_->copy_assign(draft_, instance_);
+    return draft_;
+}
+
+void Binding::discard_draft() {
+    free_instance(draft_);
+    draft_ = nullptr;
 }
 
 void Binding::capture_baseline() {
@@ -493,8 +583,59 @@ void reset_group(Binding& b) {
 }
 
 // ---------------------------------------------------------------------------
+// RequiresReload drafts
+// ---------------------------------------------------------------------------
+
+bool group_requires_reload(const Group& g) {
+    for (uint32_t i = 0; i < g.field_count; ++i)
+        if (g.fields[i].flags & RequiresReload) return true;
+    return false;
+}
+
+void* ensure_draft(Binding& b) { return b.ensure_draft(); }
+void* draft_of(Binding& b) { return b.draft(); }
+const void* draft_of(const Binding& b) { return b.draft(); }
+
+bool has_pending_draft(const Binding& b) {
+    const void* d = b.draft();
+    if (!d || !b.instance()) return false;
+    const Group& g = b.schema();
+    for (uint32_t i = 0; i < g.field_count; ++i)
+        if (!fields_equal(d, b.instance(), g.fields[i])) return true;
+    return false;
+}
+
+bool apply_draft(Binding& b) {
+    void* d = b.draft();
+    if (!d || !b.instance()) return false;
+    const bool changed = has_pending_draft(b);
+    // Whole-struct assignment: undescribed members (ring lists) are part of the
+    // user's intent even though only the described fields are diffed/persisted.
+    if (b.schema().copy_assign) b.schema().copy_assign(b.instance(), d);
+    b.discard_draft();
+    if (changed) b.set_dirty(true);
+    return changed;
+}
+
+void discard_draft(Binding& b) { b.discard_draft(); }
+
+// ---------------------------------------------------------------------------
 // Env layer
 // ---------------------------------------------------------------------------
+
+void apply_env(void* instance, const Group& g) {
+    if (!instance) return;
+    for (uint32_t i = 0; i < g.field_count; ++i) {
+        const Desc& d = g.fields[i];
+        if (!d.env) continue;
+        const char* raw = getenv(d.env);
+        if (!raw || !*raw) continue;
+        if (!parse_and_set(instance, d, raw))
+            fprintf(stderr, "[props] %s: unparsable %s value \"%s\" for %s.%s — ignored\n",
+                    d.env, type_name(d.type), raw, g.path ? g.path : "?",
+                    d.name ? d.name : "?");
+    }
+}
 
 void apply_env(Binding& b) {
     const Group& g = b.schema();
@@ -503,7 +644,7 @@ void apply_env(Binding& b) {
         if (!d.env) continue;
         const char* raw = getenv(d.env);
         if (!raw || !*raw) { b.set_env_forced(i, false); continue; }
-        if (!apply_env_field(b.instance(), d, raw)) {
+        if (!parse_and_set(b.instance(), d, raw)) {
             fprintf(stderr, "[props] %s: unparsable %s value \"%s\" for %s.%s — ignored\n",
                     d.env, type_name(d.type), raw, g.path ? g.path : "?", d.name ? d.name : "?");
             b.set_env_forced(i, false);
@@ -567,25 +708,49 @@ void save_scope(const Registry& r, Scope scope, Value& doc) {
     }
 }
 
-void load_scope(Registry& r, Scope scope, const Value& doc) {
+void load_group(Binding& b, const Value& doc) {
     if (doc.kind != Value::Kind::Object) return;
     const Value* groups = doc.find("groups");
     if (!groups || groups->kind != Value::Kind::Object) return;
+    const Group& g = b.schema();
+    const Value* obj = groups->find(g.path);
+    if (!obj || obj->kind != Value::Kind::Object) return;
 
+    for (uint32_t i = 0; i < g.field_count; ++i) {
+        const Desc& d = g.fields[i];
+        if (!persistable(d)) continue;
+        if (b.env_forced(i)) continue;
+        const Value* v = obj->find(d.name);
+        if (!v) continue;  // missing → keep current value
+        if (!decode_field(b.instance(), d, *v)) warn_type(g.path, d, *v);
+    }
+}
+
+void load_scope(Registry& r, Scope scope, const Value& doc) {
     for (size_t bi = 0; bi < r.size(); ++bi) {
         Binding& b = r.at(bi);
         if (b.scope() != scope) continue;
-        const Group& g = b.schema();
-        const Value* obj = groups->find(g.path);
-        if (!obj || obj->kind != Value::Kind::Object) continue;
+        load_group(b, doc);
+    }
+}
 
+void dump_modified(const Registry& r, Value& out) {
+    out = Value();
+    out.kind = Value::Kind::Object;
+    for (size_t bi = 0; bi < r.size(); ++bi) {
+        const Binding& b = r.at(bi);
+        const Group& g = b.schema();
+        if (!b.instance() || !b.baseline()) continue;
+        Value* obj = nullptr;
         for (uint32_t i = 0; i < g.field_count; ++i) {
             const Desc& d = g.fields[i];
-            if (!persistable(d)) continue;
-            if (b.env_forced(i)) continue;
-            const Value* v = obj->find(d.name);
-            if (!v) continue;  // missing → keep current value
-            if (!decode_field(b.instance(), d, *v)) warn_type(g.path, d, *v);
+            if (fields_equal(b.instance(), b.baseline(), d)) continue;
+            if (!obj) {
+                Value empty;
+                empty.kind = Value::Kind::Object;
+                obj = &out.set(g.path, empty);
+            }
+            obj->set(d.name, encode_field(b.instance(), d));
         }
     }
 }

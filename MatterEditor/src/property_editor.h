@@ -13,6 +13,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <string>
 
 namespace viewer {
@@ -89,6 +90,17 @@ inline std::string prop_field_path(const matter::props::Group& g,
     return out;
 }
 
+// Field lookup by name, for panels that mix hand-written widgets with schema
+// fields on the same struct (the LOD panel's ring strings). Null when unknown.
+inline const matter::props::Desc* prop_find_field(const matter::props::Group& g,
+                                                  const char* name) {
+    if (!name) return nullptr;
+    for (uint32_t i = 0; i < g.field_count; ++i)
+        if (g.fields[i].name && !std::strcmp(g.fields[i].name, name))
+            return &g.fields[i];
+    return nullptr;
+}
+
 inline const char* prop_scope_name(matter::props::Scope s) {
     switch (s) {
         case matter::props::Scope::User:    return "User";
@@ -139,14 +151,30 @@ inline bool prop_filter_matches_group(const char* needle, const matter::props::G
 // Renderers (need a live ImGui context)
 // ---------------------------------------------------------------------------
 
+// Where a panel's widgets must write: the live instance for a normal group,
+// the (lazily allocated) draft for a RequiresReload one. Hand-written widgets
+// that edit undescribed members of the same struct MUST go through this too,
+// or an Apply would overwrite them from a stale draft.
+void* prop_edit_target(matter::props::Binding& binding);
+
 // Draws every field of the group inline — no Begin/End, no header. `filter`,
 // when non-null and non-empty, hides fields whose name/label does not match.
 // Returns true when any field changed this frame.
 bool draw_group_fields(matter::props::Binding& binding, const char* filter = nullptr);
 
-// CollapsingHeader (label + scope tag + dirty marker) wrapping the fields.
+// "Pending changes" bar with Apply / Discard, drawn only while the group has a
+// draft that differs from the live instance. Apply pushes the draft and then
+// calls `on_apply` — the caller wires that to the reload command. Returns true
+// on the frame Apply was pressed.
+bool draw_draft_bar(matter::props::Binding& binding,
+                    const std::function<void()>& on_apply,
+                    const char* apply_label = "Apply & Reload");
+
+// CollapsingHeader (label + scope tag + dirty marker) wrapping the fields, plus
+// the draft bar for RequiresReload groups.
 bool draw_group(matter::props::Binding& binding, const char* filter = nullptr,
-                bool default_open = true);
+                bool default_open = true,
+                const std::function<void()>* on_apply = nullptr);
 
 struct TunablesPanelState {
     char filter[128] = {};

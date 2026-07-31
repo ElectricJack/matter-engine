@@ -658,6 +658,9 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/tileset_slicer.cpp \
         $(ME3_DIR)/src/render/bc_encode.cpp \
         $(ME3_DIR)/src/render/vt_residency.cpp \
+        $(ME3_DIR)/include/matter/vt_budgets.h \
+        $(ME3_DIR)/src/props/props.cpp \
+        $(ME3_DIR)/src/util/json_doc.cpp \
         $(ME3_DIR)/src/render/vt_stub_filler.cpp \
         $(ME3_DIR)/src/render/vt_compositor.cpp \
         $(ME3_DIR)/src/render/vt_enrich.cpp \
@@ -687,6 +690,8 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/tileset_slicer.cpp \
 	    $(ME3_DIR)/src/render/bc_encode.cpp \
 	    $(ME3_DIR)/src/render/vt_residency.cpp \
+	    $(ME3_DIR)/src/props/props.cpp \
+	    $(ME3_DIR)/src/util/json_doc.cpp \
 	    $(ME3_DIR)/src/render/vt_stub_filler.cpp \
 	    $(ME3_DIR)/src/render/vt_compositor.cpp \
 	    $(ME3_DIR)/src/render/vt_enrich.cpp \
@@ -1228,10 +1233,14 @@ run-test-console-log: build/test_console_log.exe
 # deliberately avoids matter::dlss_mode_name so this does not have to link
 # streamline_bridge.o and, through it, the whole Vulkan loader.
 build/test_issue_reporter.exe: tests/test_issue_reporter.cpp src/issue_reporter.cpp \
-                               src/console_log.cpp src/issue_reporter.h build/windows/obj/flecs.o
+                               src/console_log.cpp src/issue_reporter.h \
+                               $(ME3_DIR)/src/props/props.cpp \
+                               $(ME3_DIR)/src/util/json_doc.cpp \
+                               build/windows/obj/flecs.o
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) tests/test_issue_reporter.cpp src/issue_reporter.cpp \
-	    src/console_log.cpp build/windows/obj/flecs.o -o $@ \
+	    src/console_log.cpp $(ME3_DIR)/src/props/props.cpp \
+	    $(ME3_DIR)/src/util/json_doc.cpp build/windows/obj/flecs.o -o $@ \
 	    -std=c++17 -Wall -Isrc -I../MatterEngine3/include -I../MatterEngine3/src \
 	    -I../libs/MatterSurfaceLib/include -I../libs/SpatialQueryLib/include \
 	    -I../libs/MemoryLib/include -I../libs/MathLib/include \
