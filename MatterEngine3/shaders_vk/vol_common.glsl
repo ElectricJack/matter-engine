@@ -33,6 +33,37 @@ float hg_phase(float cos_theta, float g) {
     return (1.0 - g2) / (4.0 * 3.14159265 * denom * sqrt(denom));
 }
 
+// Must match C++ GpuCloudLayer in matter/cloud_layers.h (64 bytes std430).
+// All-float, like GpuVolumeEmitter below and for the same reason: the struct
+// alignment stays 4 and the std430 array stride is exactly sizeof, so the C++
+// array and this one agree without invoking any padding rule.
+//
+// `octaves` and `seed` are integral values carried as floats; the shader
+// converts with int()/uint(). Both are small and exactly representable.
+struct GpuCloudLayer {
+    float min_height;
+    float max_height;
+    float falloff_min;
+    float falloff_max;
+
+    float max_density;
+    float noise_scale;
+    float coverage;
+    float lacunarity;
+
+    float gain;
+    float octaves;
+    float seed;
+    float pad0;
+
+    float wind[3];
+    float pad1;
+};
+
+// Half-width of the coverage threshold's soft shoulder, in units of the
+// normalized noise field. Mirrors kCloudCoverageEdge in cloud_layers.h.
+const float CLOUD_COVERAGE_EDGE = 0.12;
+
 // Must match C++ GpuVolumeEmitter in vk_emitter_gather.h (64 bytes std430).
 // Note: the C++ field `length` is named `axial_len` here because GLSL
 // reserves `.length` for the built-in length() method on member access.

@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "matter/cloud_layers.h"
 #include "matter/math_types.h"
 #include "vk_resources.h"
 
@@ -127,6 +128,7 @@ private:
     bool create_noise_texture(matter::VulkanDevice& vulkan, std::string& error);
     bool create_volume_images(matter::VulkanDevice& vulkan, std::string& error);
     bool create_emitter_buffer(matter::VulkanDevice& vulkan, std::string& error);
+    bool create_cloud_buffer(matter::VulkanDevice& vulkan, std::string& error);
     bool create_samplers(matter::VulkanDevice& vulkan, std::string& error);
     bool create_density_pipeline(matter::VulkanDevice& vulkan, std::string& error);
     bool create_scatter_pipeline(matter::VulkanDevice& vulkan, std::string& error);
@@ -142,6 +144,11 @@ private:
     // starting at offset 16 (std430 alignment).
     matter::VkBufferResource emitter_ssbo_;
 
+    // Cloud-layer SSBO: GpuCloudLayer[kMaxCloudLayers], always bound. The
+    // enabled count is a specialization constant, not a field in here — see
+    // density_pipelines_ below.
+    matter::VkBufferResource cloud_ssbo_;
+
     // Samplers.
     VkSampler linear_clamp_sampler_ = VK_NULL_HANDLE;
     VkSampler linear_border_sampler_ = VK_NULL_HANDLE;
@@ -150,7 +157,13 @@ private:
     // Density pass resources.
     VkDescriptorSetLayout density_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout density_pipeline_layout_ = VK_NULL_HANDLE;
-    VkPipeline density_pipeline_ = VK_NULL_HANDLE;
+    // One pipeline per enabled-cloud-layer count, all from the same SPIR-V
+    // module with a different value baked into vol_density.comp's
+    // `constant_id = 0`. Index IS the layer count, so record() indexes
+    // straight by it. Built up front in create_density_pipeline: five compute
+    // compiles at startup beats a driver compile in the frame a layer is
+    // switched on, and it means every permutation is validated on every run.
+    VkPipeline density_pipelines_[matter::kMaxCloudLayers + 1] = {};
     VkDescriptorPool density_pool_ = VK_NULL_HANDLE;
     VkDescriptorSet density_set_ = VK_NULL_HANDLE;
 
@@ -188,15 +201,12 @@ private:
     float fog_falloff_ = 30.0f;
     float fog_color_[3] = {0.9f, 0.92f, 0.95f};
     float fog_wind_[3] = {0.0f, 0.0f, 0.0f};
-    bool fog_height_layer_ = false;
-    float fog_min_height_ = 0.0f;
-    float fog_max_height_ = 0.0f;
-    float fog_noise_scale_ = 0.0018f;
-    float fog_density_mul_ = 1.0f;
-    float fog_floor_offset_ = 0.0f;
-    float fog_falloff_mul_ = 1.0f;
-    float fog_color_mul_[3] = {1.0f, 1.0f, 1.0f};
-    float fog_wind_mul_[3] = {1.0f, 1.0f, 1.0f};
+    // Live cloud decks. cloud_count_ is the number of leading entries that
+    // are enabled AND well formed — the same number that selects the density
+    // pipeline, so the shader can never read past what was uploaded.
+    matter::CloudLayer cloud_layers_[matter::kMaxCloudLayers]{};
+    int cloud_count_ = 0;
+    bool cloud_overflow_warned_ = false;
 
     // Lighting state (set externally before record).
     float sun_direction_[3] = {-0.45f, -0.80f, -0.35f};

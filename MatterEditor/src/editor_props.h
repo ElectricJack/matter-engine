@@ -151,6 +151,10 @@ public:
     // World-authored fog, live (WS2). See the group definition in the .cpp for
     // why this is live and not RequiresReload.
     matter::props::Binding* fog();
+    // render.clouds — the bounded cloud decks. Bound to the SAME FogSettings
+    // instance as fog(), over a disjoint set of fields; see the group
+    // definition in the .cpp.
+    matter::props::Binding* clouds();
     matter::props::Binding* pom();
     matter::props::Binding* camera();
     matter::props::Binding* streaming();
@@ -254,6 +258,7 @@ private:
     matter::props::BindingId lighting_ = matter::props::kInvalidBinding;
     matter::props::BindingId volumetrics_ = matter::props::kInvalidBinding;
     matter::props::BindingId fog_ = matter::props::kInvalidBinding;
+    matter::props::BindingId clouds_ = matter::props::kInvalidBinding;
     matter::props::BindingId pom_ = matter::props::kInvalidBinding;
     matter::props::BindingId camera_ = matter::props::kInvalidBinding;
     matter::props::BindingId streaming_ = matter::props::kInvalidBinding;

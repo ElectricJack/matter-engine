@@ -86,10 +86,18 @@ class StreamMountain extends World {
     target:   [0.0, 420.0, 0.0],
   };
 
+  // 2026-07-31 (issue 80c66789): the volumetrics fog multipliers were deleted
+  // and folded into these authored values, so the numbers here are now the
+  // ones the shader actually sees. What changed and why it looks the same:
+  //   density    0.180  * fogDensityMul 0.03  = 0.0054
+  //   maxHeight  140 + (165 - 140) * fogFalloffMul 3.44 = 226
+  // (fogFloorOffset was 0). The deck was never 25 m thick — the 3.44
+  // multiplier made it 86 m and nothing in the file said so, which is exactly
+  // the confusion the de-duplication removes.
   static fog = {
-    density:    0.180,
+    density:    0.0054,
     minHeight:  140.0,
-    maxHeight:  165.0,
+    maxHeight:  226.0,
     noiseScale: 0.00022,
     color:     [0.90, 0.92, 0.95],
     wind:      [0.12, 0.0, 0.04],
@@ -132,21 +140,19 @@ class StreamMountain extends World {
   };
 
   // Editor volumetrics defaults for this world (adopted into the live
-  // volumetrics controls on world load). Thin fog multiplier + strong
-  // falloff keep the long alpine sightlines readable.
+  // volumetrics controls on world load) — how the froxel volume is MARCHED.
+  // What is in it is `static fog` above.
   //
   // ON by default as of 2026-07-30, reversing the 2026-07-29 opt-in default:
   // the aerial perspective is what gives the range its depth, so the world
   // should load looking like this rather than needing a checkbox first.
-  // Density halved with it (0.06 -> 0.03) — always-on fog wants to be half as
-  // thick as fog you switch on to look at — and phaseG nudged 0.30 -> 0.34 for
-  // slightly tighter forward scattering around the sun.
+  // phaseG nudged 0.30 -> 0.34 for slightly tighter forward scattering around
+  // the sun. The fogDensityMul/fogFalloffMul that used to live here folded
+  // into `static fog` on 2026-07-31 — see the note there.
   static volumetrics = {
     enabled: true,
     phaseG: 0.34,
     temporalBlend: 0.85,
-    fogDensityMul: 0.03,
-    fogFalloffMul: 3.44,
   };
 
   static biomeThresholds = { mountRelief: 2.0, rockyMoisture: 2.0 };

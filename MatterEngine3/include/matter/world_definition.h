@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cloud_layers.h"
 #include "math_types.h"
 #include "sun_angles.h"
 
@@ -32,20 +33,82 @@ struct WorldLight {
     float outer_cone_degrees = 180.0f;
 };
 
+// Everything IN the froxel volume. Two independent things live here:
+//
+//   1. Ground fog — density / floor / falloff / color / wind. An exponential
+//      falling off upward from `floor` with no upper bound. This is what most
+//      worlds mean by "fog" and it is always evaluated.
+//
+//   2. Cloud decks — `clouds`, up to kMaxCloudLayers of them, each bounded
+//      between its own min and max height. These ADD extinction on top of the
+//      ground fog; a world with no enabled layer costs nothing for them
+//      (vol_density.comp is specialized on the enabled count and the loop is
+//      compiled away at zero).
+//
+// The two are deliberately not unified. Ground fog has no top, clouds are
+// defined by having one, and every existing world depends on the first shape.
 struct FogSettings {
     float density  = 0.0f;
     float floor    = 0.0f;
     float falloff  = 30.0f;
     float color[3] = {0.9f, 0.92f, 0.95f};
     float wind[3]  = {0.0f, 0.0f, 0.0f};
-    // Optional bounded cloud layer. When enabled, density is full below
-    // min_height, smoothly reaches zero at max_height, and is carved by
-    // low-frequency 3D noise. Legacy floor/falloff fog remains the default.
+
+    // Fixed-size, not a vector: this struct is copied whole through
+    // RenderOptions::fog_override every frame, is the target of a props
+    // Group whose Descs are byte offsets into it, and is the thing a world
+    // reload memcpy-assigns. A ceiling of 4 costs 4 * sizeof(CloudLayer)
+    // (~200 bytes) and buys all of that staying trivially copyable.
+    // `cloud_count` bounds the meaningful prefix; entries past it are
+    // untouched defaults.
+    CloudLayer clouds[kMaxCloudLayers]{};
+    int32_t cloud_count = 0;
+
+    // Legacy single bounded layer (pre-2026-07-31). Kept ONLY as an authoring
+    // alias: world_definition_loader maps minHeight/maxHeight/noiseScale onto
+    // clouds[0] and sets this so the composite pass's above-the-deck early-out
+    // still knows a deck exists. Nothing reads min_height/max_height for
+    // shading any more — vol_density.comp sees the CloudLayer.
     bool height_layer = false;
     float min_height = 0.0f;
     float max_height = 0.0f;
     float noise_scale = 0.0018f;
 };
+
+// The number of leading `clouds` entries that are enabled AND well formed.
+// This is the value vol_density.comp is specialized on, so it must be a
+// PREFIX count: a disabled layer 0 with an enabled layer 1 would otherwise
+// compile a 2-layer permutation that evaluates a dead entry. compact_clouds()
+// below is what guarantees the prefix property.
+inline int32_t active_cloud_count(const FogSettings& fog) {
+    int32_t n = 0;
+    const int32_t limit = fog.cloud_count < kMaxCloudLayers ? fog.cloud_count
+                                                           : kMaxCloudLayers;
+    for (int32_t i = 0; i < limit; ++i) {
+        if (!fog.clouds[i].enabled) break;
+        if (!(fog.clouds[i].max_height > fog.clouds[i].min_height)) break;
+        ++n;
+    }
+    return n;
+}
+
+// Slides every enabled layer down to the front, so `clouds[0 .. count)` is
+// exactly the live set. Call after any edit that can disable a middle layer —
+// the editor toggling `clouds[0].enabled` off with `clouds[1]` still on is
+// the ordinary case, and without this that world would render layer 1's
+// parameters as if they were layer 0's, or nothing at all.
+inline void compact_clouds(FogSettings& fog) {
+    int32_t out = 0;
+    for (int32_t i = 0; i < kMaxCloudLayers; ++i) {
+        if (!fog.clouds[i].enabled) continue;
+        if (!(fog.clouds[i].max_height > fog.clouds[i].min_height)) continue;
+        if (out != i) fog.clouds[out] = fog.clouds[i];
+        ++out;
+    }
+    for (int32_t i = out; i < kMaxCloudLayers; ++i)
+        fog.clouds[i] = CloudLayer{};
+    fog.cloud_count = out;
+}
 
 struct WorldStreamingRing {
     float radius = 0.0f;
@@ -58,15 +121,23 @@ struct WorldCameraSettings {
     Float3 target{};
 };
 
+// How the froxel volume is MARCHED. Everything about what is IN the volume
+// lives in FogSettings above.
+//
+// This struct used to also carry fog_density_mul / fog_floor_offset /
+// fog_falloff_mul / fog_color_mul / fog_wind_mul — five pure multipliers on
+// five FogSettings fields of the same name. They predate render.fog being
+// directly editable, and once it was, the Lighting panel showed every fog
+// concept twice (issue 80c66789). They are gone: a multiplier can only SCALE
+// what the world authored, while the direct field can SET it, so the authored
+// field is strictly more expressive and the multiplier is redundant. Worlds
+// and property files that still carry the old keys are folded into the
+// authored values once, loudly — see fold_legacy_fog_multipliers() in
+// world_definition_loader.cpp and migrate_legacy_fog_keys() in props.cpp.
 struct VulkanVolumetricsSettings {
     bool  enabled        = false;
     float temporal_blend = 0.85f;
     float phase_g        = 0.3f;
-    float fog_density_mul  = 1.0f;
-    float fog_floor_offset = 0.0f;
-    float fog_falloff_mul  = 1.0f;
-    float fog_color_mul[3] = {1.0f, 1.0f, 1.0f};
-    float fog_wind_mul[3]  = {1.0f, 1.0f, 1.0f};
     float vol_debug_view   = 0.0f;
 };
 

@@ -625,7 +625,6 @@ class FogWorld extends World {
           error.message.c_str());
 
     const matter::FogSettings& fog = definition.settings.fog;
-    CHECK(nearly_equal(fog.density, 0.05f), "fog density extracted");
     CHECK(nearly_equal(fog.floor, -10.0f), "fog floor extracted");
     CHECK(nearly_equal(fog.falloff, 50.0f), "fog falloff extracted");
     CHECK(fog.height_layer &&
@@ -633,6 +632,15 @@ class FogWorld extends World {
               nearly_equal(fog.max_height, 64.0f) &&
               nearly_equal(fog.noise_scale, 0.002f),
           "fog bounded height layer extracted");
+    // The legacy layer CONSUMES density as the cloud's own (the old shader
+    // used it for nothing else and suppressed ground fog entirely), so the
+    // authored 0.05 lands on clouds[0].max_density * 2.4 and fog.density is
+    // left at zero. See apply_legacy_height_layer.
+    CHECK(nearly_equal(fog.density, 0.0f),
+          "the legacy layer moved density out of the ground-fog term");
+    CHECK(fog.cloud_count == 1 &&
+              nearly_equal(fog.clouds[0].max_density, 0.05f * 2.4f),
+          "fog density extracted onto the mapped cloud layer");
     CHECK(nearly_equal(fog.color[0], 0.8f) &&
               nearly_equal(fog.color[1], 0.85f) &&
               nearly_equal(fog.color[2], 0.9f),
@@ -673,6 +681,197 @@ class NoFogWorld extends World {
           "fog wind defaults to zero");
 }
 
+// `fog.clouds` — the current spelling. Two decks with deliberately different
+// noise scale, octaves and shoulders, which is the configuration the issue
+// asks a world script to be able to express.
+void test_cloud_layer_extraction() {
+    Fixture fixture;
+    const fs::path path = fixture.write("CloudWorld.js", R"JS(
+class CloudWorld extends World {
+  static roots = [{ module: 'Root' }];
+  static fog = {
+    density: 0.004, floor: 0.0, falloff: 90.0,
+    clouds: [
+      { minHeight: 140, maxHeight: 210, maxDensity: 0.030,
+        falloffMin: 12, falloffMax: 40, noiseScale: 0.0016,
+        octaves: 2, lacunarity: 2.03, gain: 0.5, coverage: 0.55,
+        wind: [1.2, 0.0, 0.3] },
+      { minHeight: 340, maxHeight: 460, maxDensity: 0.012,
+        falloffMin: 50, falloffMax: 50, noiseScale: 0.00045,
+        octaves: 4, lacunarity: 2.4, gain: 0.62, coverage: 0.42,
+        wind: [-0.6, 0.0, 0.2] },
+    ],
+  };
+}
+)JS");
+
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+
+    const matter::FogSettings& fog = definition.settings.fog;
+    CHECK(fog.cloud_count == 2, "two cloud layers extracted");
+    CHECK(matter::active_cloud_count(fog) == 2, "both are live");
+    CHECK(!fog.height_layer,
+          "an explicit clouds array does not set the legacy alias flag");
+    // Ground fog survives alongside the decks: they add, they do not replace.
+    CHECK(nearly_equal(fog.density, 0.004f),
+          "ground fog density is untouched by the cloud layers");
+
+    const matter::CloudLayer& a = fog.clouds[0];
+    CHECK(a.enabled && nearly_equal(a.min_height, 140.0f) &&
+              nearly_equal(a.max_height, 210.0f) &&
+              nearly_equal(a.max_density, 0.030f),
+          "layer 0 bounds and density");
+    CHECK(nearly_equal(a.falloff_min, 12.0f) &&
+              nearly_equal(a.falloff_max, 40.0f),
+          "layer 0 keeps its two DIFFERENT shoulder widths");
+    CHECK(nearly_equal(a.noise_scale, 0.0016f) && a.octaves == 2 &&
+              nearly_equal(a.coverage, 0.55f),
+          "layer 0 noise properties");
+    CHECK(nearly_equal(a.wind[0], 1.2f) && nearly_equal(a.wind[2], 0.3f),
+          "layer 0 has its own wind");
+
+    const matter::CloudLayer& b = fog.clouds[1];
+    CHECK(b.enabled && nearly_equal(b.min_height, 340.0f) &&
+              nearly_equal(b.max_height, 460.0f),
+          "layer 1 sits above layer 1 with clear air between");
+    CHECK(nearly_equal(b.noise_scale, 0.00045f) && b.octaves == 4 &&
+              nearly_equal(b.lacunarity, 2.4f) && nearly_equal(b.gain, 0.62f),
+          "layer 1 has a completely different harmonic series");
+    CHECK(nearly_equal(b.wind[0], -0.6f),
+          "layer 1 drifts the other way");
+}
+
+// The legacy single layer is an authoring ALIAS: it lands in clouds[0] so the
+// renderer has one cloud path, not two.
+void test_legacy_height_layer_maps_to_one_cloud_layer() {
+    Fixture fixture;
+    const fs::path path = fixture.write("LegacyLayerAlias.js", R"JS(
+class LegacyLayerAlias extends World {
+  static roots = [{ module: 'Root' }];
+  static fog = {
+    density: 0.05,
+    minHeight: 120.0,
+    maxHeight: 220.0,
+    noiseScale: 0.0016,
+    wind: [0.5, 0.0, 0.15],
+  };
+}
+)JS");
+
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+
+    const matter::FogSettings& fog = definition.settings.fog;
+    CHECK(fog.height_layer, "the legacy flag is still set (composite reads it)");
+    CHECK(fog.cloud_count == 1, "the legacy layer became exactly one deck");
+    const matter::CloudLayer& c = fog.clouds[0];
+    CHECK(c.enabled && nearly_equal(c.min_height, 120.0f) &&
+              nearly_equal(c.max_height, 220.0f),
+          "the deck keeps the authored bounds");
+    // The old shader multiplied fog.density by 2.4 inside the layer.
+    CHECK(nearly_equal(c.max_density, 0.05f * 2.4f),
+          "density carries the old shader's 2.4 factor");
+    CHECK(nearly_equal(c.falloff_min, 0.0f) &&
+              nearly_equal(c.falloff_max, 100.0f),
+          "hard base, shoulder spanning the whole layer - the old mask shape");
+    CHECK(nearly_equal(c.noise_scale, 0.0016f) && c.octaves == 3,
+          "the old three-octave carve");
+    CHECK(nearly_equal(c.wind[0], 0.5f) && nearly_equal(c.wind[2], 0.15f),
+          "fog.wind became the deck's wind");
+    // The legacy layer CONSUMED fog.density; ground fog must not appear.
+    CHECK(nearly_equal(fog.density, 0.0f),
+          "ground fog stays off - the legacy layer used density for itself");
+}
+
+// An explicit array wins over the legacy alias when a world spells both.
+void test_explicit_clouds_supersede_the_legacy_alias() {
+    Fixture fixture;
+    const fs::path path = fixture.write("BothSpellings.js", R"JS(
+class BothSpellings extends World {
+  static roots = [{ module: 'Root' }];
+  static fog = {
+    density: 0.02,
+    minHeight: 10.0, maxHeight: 20.0, noiseScale: 0.01,
+    clouds: [{ minHeight: 500, maxHeight: 700, maxDensity: 0.01 }],
+  };
+}
+)JS");
+
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+
+    const matter::FogSettings& fog = definition.settings.fog;
+    CHECK(fog.cloud_count == 1, "one deck, from the explicit array");
+    CHECK(nearly_equal(fog.clouds[0].min_height, 500.0f),
+          "the explicit array's bounds, not the legacy keys'");
+    CHECK(nearly_equal(fog.density, 0.02f),
+          "density means ground fog again once clouds are spelled explicitly");
+}
+
+void test_cloud_layer_validation_paths() {
+    {
+        Fixture fixture;
+        const fs::path path = fixture.write("TooMany.js", R"JS(
+class TooMany extends World {
+  static roots = [{ module: 'Root' }];
+  static fog = { clouds: [
+    { minHeight: 1, maxHeight: 2 }, { minHeight: 3, maxHeight: 4 },
+    { minHeight: 5, maxHeight: 6 }, { minHeight: 7, maxHeight: 8 },
+    { minHeight: 9, maxHeight: 10 },
+  ] };
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "a fifth cloud layer is rejected, not silently dropped");
+        CHECK(error.property_path.find("fog.clouds") != std::string::npos,
+              "the failure names fog.clouds");
+    }
+    {
+        Fixture fixture;
+        const fs::path path = fixture.write("Inverted.js", R"JS(
+class Inverted extends World {
+  static roots = [{ module: 'Root' }];
+  static fog = { clouds: [{ minHeight: 300, maxHeight: 100 }] };
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "maxHeight below minHeight is a typo and is rejected");
+    }
+    {
+        // Out-of-range dials are CLAMPED, not rejected: they are taste, and a
+        // world that asks for 64 octaves gets the four it can afford.
+        Fixture fixture;
+        const fs::path path = fixture.write("Extreme.js", R"JS(
+class Extreme extends World {
+  static roots = [{ module: 'Root' }];
+  static fog = { clouds: [
+    { minHeight: 100, maxHeight: 200, octaves: 64, coverage: 9.0 },
+  ] };
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(definition.settings.fog.clouds[0].octaves ==
+                  matter::kMaxCloudOctaves,
+              "octaves clamped to the ceiling rather than failing the load");
+        CHECK(nearly_equal(definition.settings.fog.clouds[0].coverage, 1.0f),
+              "coverage clamped to 1");
+    }
+}
+
 void test_streaming_ring_extraction() {
     Fixture fixture;
     const fs::path path = fixture.write("StreamingWorld.js", R"JS(
@@ -707,18 +906,85 @@ void test_vulkan_volumetrics_settings_defaults() {
     CHECK(vol.enabled == false, "volumetrics disabled by default");
     CHECK(nearly_equal(vol.temporal_blend, 0.85f), "temporal_blend defaults to 0.85");
     CHECK(nearly_equal(vol.phase_g, 0.3f), "phase_g defaults to 0.3");
-    CHECK(nearly_equal(vol.fog_density_mul, 1.0f), "fog_density_mul defaults to 1.0");
-    CHECK(nearly_equal(vol.fog_floor_offset, 0.0f), "fog_floor_offset defaults to 0.0");
-    CHECK(nearly_equal(vol.fog_falloff_mul, 1.0f), "fog_falloff_mul defaults to 1.0");
-    CHECK(nearly_equal(vol.fog_color_mul[0], 1.0f) &&
-              nearly_equal(vol.fog_color_mul[1], 1.0f) &&
-              nearly_equal(vol.fog_color_mul[2], 1.0f),
-          "fog_color_mul defaults to white");
-    CHECK(nearly_equal(vol.fog_wind_mul[0], 1.0f) &&
-              nearly_equal(vol.fog_wind_mul[1], 1.0f) &&
-              nearly_equal(vol.fog_wind_mul[2], 1.0f),
-          "fog_wind_mul defaults to identity");
     CHECK(nearly_equal(vol.vol_debug_view, 0.0f), "vol_debug_view defaults to 0.0");
+}
+
+// issue 80c66789: the five fog multipliers were deleted from
+// VulkanVolumetricsSettings. A world that still authors the three JS-facing
+// ones must keep the picture it had, by folding them into the FogSettings
+// fields they used to scale — the arithmetic the renderer used to redo every
+// frame, done once at load.
+void test_legacy_fog_multipliers_fold_into_authored_fog() {
+    Fixture fixture;
+    const fs::path path = fixture.write("LegacyMulWorld.js", R"JS(
+class LegacyMulWorld extends World {
+  static roots = [{ module: 'Root' }];
+  static fog = { density: 0.2, floor: 4.0, falloff: 50.0 };
+  static volumetrics = {
+    enabled: true,
+    fogDensityMul: 0.5,
+    fogFalloffMul: 3.0,
+    fogFloorOffset: 6.0,
+  };
+}
+)JS");
+
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+
+    const matter::FogSettings& fog = definition.settings.fog;
+    CHECK(nearly_equal(fog.density, 0.1f), "fogDensityMul folded into density");
+    CHECK(nearly_equal(fog.floor, 10.0f), "fogFloorOffset folded into floor");
+    CHECK(nearly_equal(fog.falloff, 150.0f), "fogFalloffMul folded into falloff");
+    CHECK(definition.settings.volumetrics.enabled,
+          "the surviving volumetrics fields still load");
+}
+
+// The height-layer branch of the same fold. The old renderer repurposed
+// fog_floor/fog_falloff as the layer's min/max when height_layer was set, so
+// fogFloorOffset shifted the BOTTOM and fogFalloffMul scaled the layer's
+// THICKNESS — nothing like the ground-fog branch above. This is the case
+// StreamMountain shipped for a year.
+void test_legacy_fog_multipliers_fold_into_height_layer() {
+    Fixture fixture;
+    const fs::path path = fixture.write("LegacyLayerWorld.js", R"JS(
+class LegacyLayerWorld extends World {
+  static roots = [{ module: 'Root' }];
+  static fog = {
+    density: 0.180,
+    minHeight: 140.0,
+    maxHeight: 165.0,
+    noiseScale: 0.00022,
+  };
+  static volumetrics = { fogDensityMul: 0.03, fogFalloffMul: 3.44 };
+}
+)JS");
+
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+
+    const matter::FogSettings& fog = definition.settings.fog;
+    CHECK(fog.height_layer, "height layer still enabled after the fold");
+    CHECK(nearly_equal(fog.min_height, 140.0f),
+          "zero fogFloorOffset leaves min_height alone");
+    // 140 + (165 - 140) * 3.44 = 226
+    CHECK(nearly_equal(fog.max_height, 226.0f),
+          "fogFalloffMul scaled the layer thickness into max_height");
+    // ORDERING: the multiplier fold runs BEFORE the legacy layer is mapped
+    // onto clouds[0], so the deck this world ends up with carries the FOLDED
+    // density (0.180 * 0.03 = 0.0054, times the old shader's 2.4) and the
+    // FOLDED bounds. Getting these two steps the other way round would move
+    // the deck and darken it, silently.
+    CHECK(fog.cloud_count == 1, "the folded legacy layer became one deck");
+    CHECK(nearly_equal(fog.clouds[0].max_density, 0.0054f * 2.4f),
+          "layer density folded, then mapped onto the deck");
+    CHECK(nearly_equal(fog.clouds[0].min_height, 140.0f) &&
+              nearly_equal(fog.clouds[0].max_height, 226.0f),
+          "the deck uses the folded bounds, not the pre-fold ones");
 }
 
 // ---------------------------------------------------------------------------
@@ -1264,6 +1530,12 @@ int main() {
     test_fog_defaults_when_absent();
     test_streaming_ring_extraction();
     test_vulkan_volumetrics_settings_defaults();
+    test_legacy_fog_multipliers_fold_into_authored_fog();
+    test_legacy_fog_multipliers_fold_into_height_layer();
+    test_cloud_layer_extraction();
+    test_legacy_height_layer_maps_to_one_cloud_layer();
+    test_explicit_clouds_supersede_the_legacy_alias();
+    test_cloud_layer_validation_paths();
     test_props_extraction();
     test_props_absent_and_empty();
     test_props_validation_paths();

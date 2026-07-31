@@ -2,8 +2,28 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "vol_common.glsl"
+#include "vt_noise.glsl"   // vt_fbm3 — the engine's one value-noise core
 
 layout(local_size_x = 4, local_size_y = 4, local_size_z = 1) in;
+
+// How many cloud decks this pipeline evaluates, 0..kMaxCloudLayers.
+//
+// A SPECIALIZATION CONSTANT, not a uniform, and that is the whole design.
+// This shader runs once per froxel — 160 * 90 * 128 = 1.84M of them every
+// frame — and every octave of every layer is evaluated inside that loop. A
+// uniform loop bound would leave the loop, its bounds check and its SSBO
+// indexing in the binary for a world with no clouds at all, which is most of
+// them. As a specialization constant the driver compiles CLOUD_LAYERS = 0
+// down to nothing: no loop, no buffer read, no cost. VkVolumetrics::init
+// builds one pipeline per count from one SPIR-V module (see
+// create_density_pipelines), so this costs pipeline objects, not shader
+// permutation sources.
+//
+// The per-layer OCTAVE count is deliberately NOT specialized. It would
+// multiply the permutation count by five for an inner loop whose trip count
+// the compiler can already hoist per layer, and pipelines are the thing worth
+// being frugal with here.
+layout(constant_id = 0) const int CLOUD_LAYERS = 0;
 
 layout(rgba16f, set = 0, binding = 0) uniform writeonly image3D vol_media;
 layout(set = 0, binding = 1) uniform sampler3D noise_tex;
@@ -11,6 +31,13 @@ layout(set = 0, binding = 1) uniform sampler3D noise_tex;
 layout(std430, set = 0, binding = 2) readonly buffer EmitterSSBO {
     uint emitter_count;
     GpuVolumeEmitter emitters[];
+};
+
+// Always bound and always kMaxCloudLayers entries long, even when
+// CLOUD_LAYERS is 0 — a descriptor set layout cannot be specialized, and an
+// unread binding costs nothing.
+layout(std430, set = 0, binding = 3) readonly buffer CloudSSBO {
+    GpuCloudLayer cloud_layers[];
 };
 
 layout(push_constant) uniform DensityConstants {
@@ -26,6 +53,56 @@ layout(push_constant) uniform DensityConstants {
     vec3 fog_wind;
     float pad2;
 } pc;
+
+// ---------------------------------------------------------------------------
+// Cloud layers
+//
+// GLSL twin of cloud_height_profile() in matter/cloud_layers.h. Keep the two
+// in lockstep — cloud_layer_tests.cpp pins the CPU side and this is what
+// actually shades. The shapes are: zero outside (min, max), a soft shoulder
+// of falloff_min metres up from the bottom, a soft shoulder of falloff_max
+// metres down from the top, and a true plateau at 1.0 between them.
+// ---------------------------------------------------------------------------
+float cloud_height_profile(GpuCloudLayer L, float y) {
+    float lo = L.min_height;
+    float hi = L.max_height;
+    if (!(hi > lo)) return 0.0;
+    if (y <= lo || y >= hi) return 0.0;
+
+    float thickness = hi - lo;
+    float f_lo = clamp(L.falloff_min, 0.0, thickness);
+    float f_hi = clamp(L.falloff_max, 0.0, thickness);
+
+    float rise = f_lo > 0.0 ? smoothstep(lo, lo + f_lo, y) : 1.0;
+    float fall = f_hi > 0.0 ? 1.0 - smoothstep(hi - f_hi, hi, y) : 1.0;
+    // min(), not the product: only min() holds a true plateau at 1.0 between
+    // the shoulders, which is what makes max_density a density the deck
+    // actually reaches rather than one it merely approaches.
+    return min(rise, fall);
+}
+
+// The horizontal shape: an fbm field thresholded by `coverage`.
+//
+// Full 3D noise, with no vertical-coherence trick. The old single-layer path
+// squashed the third texture coordinate to stop view-ray integration
+// averaging the noise back into uniform haze, but that hack existed because
+// the noise was sampled from a 32^3 texture at a fixed frequency. Here the
+// layer's own noise_scale does the job: a 100 m deck at 0.0016 spans 0.16 of
+// a lattice cell vertically, so the field is already near-constant through
+// the deck's thickness and the banks stay coherent along a view ray.
+float cloud_shape(GpuCloudLayer L, vec3 world_pos, float time) {
+    vec3 wind = vec3(L.wind[0], L.wind[1], L.wind[2]);
+    vec3 p = (world_pos + wind * time) * L.noise_scale;
+    float n = vt_fbm3(p.x, p.y, p.z, uint(L.seed), int(L.octaves),
+                      L.gain, L.lacunarity, 1.0, false);
+    n = n * 0.5 + 0.5;                       // vt_fbm3 is ~-1..1 -> 0..1
+    // coverage c keeps the field above (1 - c). c = 1 is solid, c = 0 clear,
+    // and the shoulder either side keeps the bank edges billowing rather than
+    // cut out.
+    float threshold = 1.0 - L.coverage;
+    return smoothstep(threshold - CLOUD_COVERAGE_EDGE,
+                      threshold + CLOUD_COVERAGE_EDGE, n);
+}
 
 void main() {
     ivec3 voxel = ivec3(gl_GlobalInvocationID.xyz);
@@ -51,49 +128,18 @@ void main() {
         vec4 world_h = pc.clip_to_world * clip_pos;
         vec3 world_pos = world_h.xyz / world_h.w;
 
-        // --- Height fog / bounded valley cloud layer ---
+        // --- Ground fog: exponential decay upward from the floor ---
+        //
+        // Always evaluated, and byte-for-byte the arithmetic it has always
+        // been. The bounded-cloud branch that used to live alongside it is
+        // gone; decks are the CLOUD_LAYERS loop below and they ADD to this
+        // rather than replacing it, so a world with `density` set and no
+        // layers renders exactly as before.
         float y = world_pos.y;
-        float height_fog;
-        if (pc.pad2 > 0.0) {
-            // Full density below min height, followed by a deliberately sharp
-            // smooth fade to zero at max height. Squaring the mask keeps the
-            // cloud deck from becoming a tall, uniform column of haze.
-            float height_mask =
-                1.0 - smoothstep(pc.fog_floor, pc.fog_falloff, y);
-            height_mask *= height_mask;
-
-            // Keep the cloud field vertically coherent so view-ray integration
-            // does not average fully 3D noise back into uniform haze. X/Z
-            // carries the broad bank shapes; only a small fraction of the
-            // layer height enters the third texture coordinate.
-            float layer_depth = max(pc.fog_falloff - pc.fog_floor, 0.01);
-            float layer_t =
-                clamp((y - pc.fog_floor) / layer_depth, 0.0, 1.0);
-            vec2 cloud_xz =
-                (world_pos.xz + pc.fog_wind.xz * pc.frame_time) * pc.pad2;
-            vec3 noise_coord = vec3(
-                cloud_xz,
-                0.19 + layer_t * 0.12 +
-                    pc.fog_wind.y * pc.frame_time * pc.pad2);
-            float n0 = texture(noise_tex, noise_coord).r;
-            float n1 = texture(
-                noise_tex, noise_coord * 2.03 + vec3(0.31, 0.17, 0.53)).g;
-            float n2 = texture(
-                noise_tex, noise_coord * 4.11 + vec3(0.73, 0.47, 0.19)).b;
-            float cloud_fbm = n0 * 0.57 + n1 * 0.29 + n2 * 0.14;
-            float cloud_shape = smoothstep(0.46, 0.57, cloud_fbm);
-            cloud_shape *= cloud_shape;
-            // Valley cloud decks must remain opaque between their billowing
-            // banks. Keep a dense floor beneath the noise so no clear hole can
-            // reveal the valley, while retaining stronger cloud-shaped cores.
-            cloud_shape = mix(0.18, 1.0, cloud_shape);
-            height_fog = pc.fog_density * height_mask *
-                         cloud_shape * 2.4;
-        } else {
-            // Legacy exponential height fog.
-            height_fog = pc.fog_density *
-                exp(-max(y - pc.fog_floor, 0.0) /
-                    max(pc.fog_falloff, 0.01));
+        float height_fog = pc.fog_density *
+            exp(-max(y - pc.fog_floor, 0.0) /
+                max(pc.fog_falloff, 0.01));
+        {
             vec3 noise_coord =
                 (world_pos + pc.fog_wind * pc.frame_time) * 0.02;
             float noise_val = texture(noise_tex, noise_coord).r;
@@ -102,6 +148,27 @@ void main() {
 
         vec3 fog_albedo = pc.fog_color;
         float extinction = height_fog;
+
+        // --- Cloud decks ---
+        //
+        // Compiled away entirely at CLOUD_LAYERS = 0 (see the constant's
+        // declaration). Layers SUM their extinction: extinction is a physical
+        // density, so two overlapping decks are denser than either, and max()
+        // would make a thin veil vanish inside a thick base instead of
+        // thickening it.
+        //
+        // The height profile is evaluated FIRST and the fbm is skipped when it
+        // is zero. That test is the difference between paying for the noise in
+        // every froxel and paying for it only in the froxels a deck actually
+        // occupies, which for a deck a hundred metres thick in a three-
+        // kilometre frustum is a small minority of the 1.84M.
+        for (int li = 0; li < CLOUD_LAYERS; ++li) {
+            GpuCloudLayer L = cloud_layers[li];
+            float profile = cloud_height_profile(L, y);
+            if (profile <= 0.0) continue;
+            float shape = cloud_shape(L, world_pos, pc.frame_time);
+            extinction += L.max_density * profile * shape;
+        }
 
         // --- Emitter contributions ---
         for (uint i = 0; i < emitter_count; ++i) {
