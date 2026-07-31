@@ -141,6 +141,176 @@ vec3 tileset_rotate_normal(vec3 normal_ts, vec3 geo_normal) {
     return normalize(t * normal_ts.x + b * normal_ts.y + n * normal_ts.z);
 }
 
+// ---------------------------------------------------------------------------
+// Triplanar ground sampling.
+// ---------------------------------------------------------------------------
+//
+// WHY: tileset_sample_ground above addresses the tileset by world XZ — a single
+// top-down planar projection. Its footprint on a surface tilted away from
+// horizontal scales as 1/|n.y|, so it DIVERGES as the surface goes vertical:
+// a cliff face gets one row of texels smeared the whole height of the wall.
+// That is the "vertical smear on steep terrain" defect. The macro (VT page)
+// path never had it, because vt_composite.comp has always composited pages
+// triplanar; only the raster near-field detail and the RT hit override rode
+// the top-down projection, which is why the smear appeared exactly where the
+// live detail is strongest.
+//
+// This is the same construction as vt_composite.comp's sample_material()
+// (|n|^4 weights, three fixed per-axis planar frames), lifted here so the
+// raster/RT detail path and the page compositor agree by sharing a convention
+// rather than by coincidence. Two deliberate differences from that function,
+// both because this one runs per-pixel rather than per-page-texel:
+//   * mip comes from real screen-space derivatives (textureGrad) instead of an
+//     explicit LOD derived from a page footprint — see the derivative note on
+//     tileset_triplanar_axis_deriv below;
+//   * near-flat pixels are forced down to a single tap (kTriplanarCutoff), so
+//     the overwhelmingly common flat-ground case costs exactly what it did
+//     before this function existed.
+//
+// PROJECTION CONVENTION (the thing to read before touching this):
+//
+//   axis   sample coords    U dir    V dir    tangent T    bitangent B
+//   -----  ---------------  -------  -------  -----------  -----------
+//   X      pos.zy           +Z       +Y       +Z           -Y
+//   Y      pos.xz           +X       +Z       +X           -Z
+//   Z      pos.xy           +X       +Y       +X           -Y
+//
+// B is the NEGATED V axis on all three, which looks wrong and is deliberate.
+// The Y row is not a free choice: it must reproduce tileset_rotate_normal
+// bit-for-bit, because that function is what every ground pixel in every world
+// has been shaded through, and it builds B = cross(N, T) = cross(+Y, +X) = -Z
+// while sampling at V = +Z. In other words the pre-existing ground path
+// already decodes the normal map's green channel inverted relative to its own
+// V axis. Rather than silently flip green on every flat-ground pixel in the
+// repo (a global appearance change, and not this fix's job), the flip is
+// carried across all three axes so the convention is at least uniform: X and Z
+// both take B = -Y, so a +X-facing wall and a +Z-facing wall light their bumps
+// the same way instead of mirroring each other. If green on ground ever gets
+// corrected, correct it in all four places at once (here, tileset_rotate_normal,
+// vt_composite.comp's axisB[], and the bake).
+//
+// The frames are sign-independent, so content on a -X face is mirrored w.r.t.
+// a +X face. That is the accepted tier-1 tradeoff vt_composite.comp already
+// documents; for stochastic rock/scree detail it is invisible.
+const vec3 kTriplanarT[3] =
+    vec3[3](vec3(0, 0, 1), vec3(1, 0, 0), vec3(1, 0, 0));
+const vec3 kTriplanarB[3] =
+    vec3[3](vec3(0, -1, 0), vec3(0, 0, -1), vec3(0, -1, 0));
+const vec3 kTriplanarN[3] =
+    vec3[3](vec3(1, 0, 0), vec3(0, 1, 0), vec3(0, 0, 1));
+
+// Weight below which an axis is dropped and the remainder renormalized.
+// vt_composite.comp uses 1e-5, which is the right call there (it bakes once,
+// off the critical path, and wants no visible seam at any angle). Per-pixel we
+// want flat ground — most of the screen, most of the time — to stay a strict
+// one-tap path, and with |n|^4 weights 1e-3 corresponds to roughly 10 degrees
+// off horizontal before a second axis switches on. The discontinuity that
+// buys is at most 0.1% of the sampled value, i.e. under one 8-bit code, while
+// the saving is 2/3 of the ground shader's texture traffic on flat terrain.
+const float kTriplanarCutoff = 1e-3;
+
+// Per-axis 2D derivative of that axis's own planar coordinate.
+//
+// THIS IS THE TRAP. Feeding dFdx(world_pos.xz) — the Y axis's derivative — to
+// the X and Z taps is the natural-looking mistake, and it is worse than the
+// bug being fixed: on a vertical face the Y-axis derivative goes to zero
+// (world XZ stops changing across the quad), so every tap would select mip 0
+// and the cliff would trade a smear for a shimmering aliased mess. Each axis
+// must differentiate the coordinate it actually samples, which is just the
+// matching swizzle of the 3D world-position derivative.
+vec2 tileset_triplanar_axis_deriv(int ax, vec3 dP) {
+    return ax == 0 ? dP.zy : (ax == 1 ? dP.xz : dP.xy);
+}
+
+// Triplanar ground sample: albedo out, WORLD-space shading normal + ORM via
+// out-params, plus the Y (top-down) blend weight the caller needs to fade out
+// the top-down-only terms.
+//
+// Unlike tileset_sample_ground this returns a world-space normal, not a
+// tangent-space one: there is no single tangent frame once three projections
+// are in play, so the rotation happens per axis inside and the caller must NOT
+// pass the result through tileset_rotate_normal.
+//
+// `use_iso_footprint` selects how the mip is chosen:
+//   false — dPdx/dPdy are real screen-space derivatives of world position
+//           (raster; gbuffer.frag passes dFdx/dFdy(in_world_pos)).
+//   true  — no derivatives exist (RT hit path); dPdx.x is read as an isotropic
+//           world-space footprint width and each axis is given the square
+//           (f,0)/(0,f) gradient pair. Passing a single vec3 footprint through
+//           the swizzles instead does NOT work: axis X wants dP.z = f while
+//           axis Y wants dP.z = 0, so no one derivative triple satisfies both.
+//
+// w_y is the top-down weight in [0,1]: 1 on flat ground, 0 on a vertical face.
+// Callers use it to fade the constructs that are inherently top-down and do
+// not generalise — the POM march (which steps in world XZ against a top-down
+// height decode) and the baked horizon channels (elevation in a top-down
+// frame). Reinterpreting those on a vertical face would be meaningless; a
+// cliff is meant to get triplanar albedo/normal/ORM and no parallax.
+vec3 tileset_sample_ground_triplanar(int slot, vec3 world_pos, vec3 geo_normal,
+                                     vec3 dPdx, vec3 dPdy,
+                                     bool use_iso_footprint,
+                                     out vec3 normal_ws, out vec3 orm,
+                                     out float w_y) {
+    vec3 n = normalize(geo_normal);
+
+    // |n|^4 weights, normalized — same shaping vt_composite.comp uses. The
+    // fourth power keeps the blend band narrow enough that a 45-degree slope
+    // still reads as mostly one projection instead of a mush of two.
+    vec3 w = n * n; w *= w;
+    float wsum = w.x + w.y + w.z;
+    w = (wsum > 1e-8) ? w / wsum : vec3(0.0, 1.0, 0.0);
+    // Drop-and-renormalize (not just drop): skipping a small axis without
+    // restoring the total would darken albedo/ORM by that axis's weight.
+    w = mix(vec3(0.0), w, greaterThan(w, vec3(kTriplanarCutoff)));
+    wsum = w.x + w.y + w.z;
+    w = (wsum > 1e-8) ? w / wsum : vec3(0.0, 1.0, 0.0);
+    w_y = w.y;
+
+    vec3 albedo = vec3(0.0);
+    orm = vec3(0.0);
+    vec3 nrm_ws = vec3(0.0);
+    for (int ax = 0; ax < 3; ++ax) {
+        float wa = w[ax];
+        if (wa <= 0.0) continue;
+        vec2 uv = ax == 0 ? world_pos.zy
+                          : (ax == 1 ? world_pos.xz : world_pos.xy);
+        vec2 dWdx, dWdy;
+        if (use_iso_footprint) {
+            dWdx = vec2(dPdx.x, 0.0);
+            dWdy = vec2(0.0, dPdx.x);
+        } else {
+            dWdx = tileset_triplanar_axis_deriv(ax, dPdx);
+            dWdy = tileset_triplanar_axis_deriv(ax, dPdy);
+        }
+        vec4 alb = tileset_sample(slot, TILESET_CH_ALBEDO, uv, dWdx, dWdy);
+        vec4 nr  = tileset_sample(slot, TILESET_CH_NORMAL, uv, dWdx, dWdy);
+        vec4 om  = tileset_sample(slot, TILESET_CH_ORM,    uv, dWdx, dWdy);
+        vec2 rg = nr.rg * 2.0 - 1.0;
+        float rz = sqrt(max(0.0, 1.0 - dot(rg, rg)));
+        albedo += wa * alb.rgb;
+        orm    += wa * om.rgb;
+
+        // The Y axis rotates through tileset_rotate_normal against the REAL
+        // geometric normal, not the cardinal +Y frame, so that a pixel whose
+        // normal is exactly +Y (flat ground: w == (0,1,0), the other two taps
+        // skipped) comes out of this function bit-identical to what
+        // tileset_sample_ground + tileset_rotate_normal produced before. That
+        // exactness is the whole reason flat ground does not move in the
+        // before/after diff. X and Z use their fixed cardinal frames, which is
+        // the only sane choice there — tileset_rotate_normal's own comment
+        // notes it degenerates as the normal approaches +-X.
+        if (ax == 1) {
+            nrm_ws += wa * tileset_rotate_normal(vec3(rg, rz), n);
+        } else {
+            nrm_ws += wa * (kTriplanarT[ax] * rg.x +
+                            kTriplanarB[ax] * rg.y +
+                            kTriplanarN[ax] * rz);
+        }
+    }
+    normal_ws = normalize(nrm_ws);
+    return albedo;
+}
+
 // Material slot decode (MaterialGpu.flags_misc.y): low byte detail+1, next macro+1.
 int tileset_detail_slot(uvec4 flags_misc) { return int(flags_misc.y & 0xFFu) - 1; }
 int tileset_macro_slot(uvec4 flags_misc)  { return int((flags_misc.y >> 8) & 0xFFu) - 1; }

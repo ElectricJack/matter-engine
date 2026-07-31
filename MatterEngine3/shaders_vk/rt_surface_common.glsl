@@ -166,16 +166,33 @@ RtTilesetSample rt_tileset_sample(RtMaterialGpu material, RtSurface surface) {
     float footprint = max(surface.cone_width, 1e-4);
     vec2 dWdx = vec2(footprint, 0.0);
     vec2 dWdy = vec2(0.0, footprint);
-    vec3 normal_ts, orm;
-    vec3 albedo = tileset_sample_ground(slot, surface.position.xz, dWdx, dWdy,
-                                        normal_ts, orm);
+    vec3 orm;
+    // Triplanar, matching gbuffer.frag's ground branch. This has to track the
+    // raster path or a reflection disagrees with the surface it reflects.
+    // tileset_rotate_normal's comment already claimed that both pipelines
+    // rotate identically; moving only the raster side to triplanar would have
+    // quietly broken that claim, so the RT side moves with it.
+    // No derivatives exist in an RT stage, so the cone footprint is handed
+    // over as an isotropic square (use_iso_footprint = true); a world-space
+    // width IS the tileset's UV derivative, since the tileset is addressed in
+    // metres on every axis.
+    vec3 normal_ws;
+    float slope_w_y;
+    vec3 albedo = tileset_sample_ground_triplanar(
+        slot, surface.position, surface.normal, vec3(footprint),
+        vec3(footprint), true, normal_ws, orm, slope_w_y);
     float tint_blend = clamp(surface.tint.a, 0.0, 1.0);
     result.applied = true;
     result.albedo = albedo * mix(vec3(1.0), surface.tint.rgb, tint_blend);
-    result.normal = tileset_rotate_normal(normal_ts, surface.normal);
+    result.normal = normal_ws;
     result.roughness = clamp(orm.g, 0.0, 1.0);
+    // Horizon data is baked elevation in a top-down frame, so it is weighted
+    // out on steep ground exactly as the raster path retires it through the
+    // POM slope fade -- otherwise a cliff would take ambient occlusion
+    // computed for a floor.
     result.mean_occlusion = tileset_horizon_mean_occlusion(
-        slot, surface.position.xz, dWdx, dWdy);
+                                slot, surface.position.xz, dWdx, dWdy) *
+                            smoothstep(0.2, 0.7, slope_w_y);
     return result;
 }
 
