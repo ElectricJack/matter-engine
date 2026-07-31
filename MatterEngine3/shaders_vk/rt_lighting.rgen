@@ -53,9 +53,15 @@ layout(push_constant) uniform GiConstants {
     float diffuse_multiplier;
     float reflection_multiplier;
     float emission_multiplier;
-    float pad0;
-    float pad1;
-    float pad2;
+    // Sun angular size, pushed in what used to be pad0/pad1/pad2 (the block
+    // did not grow). cos_edge/cos_core are the disc thresholds the composite
+    // pass gets too, computed once on the CPU from
+    // VulkanLightingOverrides::sun_angular_diameter_deg -- see
+    // matter/sun_angles.h. size_scale is that diameter as a multiple of the
+    // shipped default, EXACTLY 1.0 at the default.
+    float sun_disc_cos_edge;
+    float sun_disc_cos_core;
+    float sun_size_scale;
 } constants;
 
 layout(location = 1) rayPayloadEXT RtSurfacePayload hit;
@@ -167,17 +173,26 @@ vec3 sky_environment(vec3 direction) {
 vec3 environment(vec3 direction) {
     return sky_with_sun(direction, constants.sky_color,
                         normalize(constants.to_sun), constants.sun_color,
-                        constants.sun_intensity);
+                        constants.sun_intensity,
+                        constants.sun_disc_cos_edge,
+                        constants.sun_disc_cos_core);
 }
 
 vec3 reflection_environment(vec3 direction, float roughness) {
-    const float sun_solid_angle = 9.42e-4;
+    // 9.42e-4 sr is a 0.99 deg half-angle -- yet another stylization of "the
+    // sun" that used to disagree with the disc drawn two functions up. It is
+    // now the solid angle AT THE DEFAULT SIZE, scaled by the square of the
+    // size ratio because solid angle goes as radius squared. At the default
+    // the multiply is by exactly 1.0 and this is the old constant.
+    float sun_solid_angle =
+        9.42e-4 * constants.sun_size_scale * constants.sun_size_scale;
     float alpha = roughness * roughness;
     float lobe_solid_angle = 3.14159265 * alpha * alpha;
     float prefilter =
         sun_solid_angle / max(lobe_solid_angle, sun_solid_angle);
-    float sun_disk = smoothstep(0.99975, 0.99995,
-                                dot(direction, normalize(constants.to_sun)));
+    float sun_disk = sun_disc(direction, constants.to_sun,
+                              constants.sun_disc_cos_edge,
+                              constants.sun_disc_cos_core);
     return procedural_sky(direction, constants.sky_color) + constants.sun_color *
            constants.sun_intensity * sun_disk * prefilter;
 }

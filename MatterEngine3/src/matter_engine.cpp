@@ -546,6 +546,10 @@ struct WorldSession::Impl {
     // as world_volumetrics_defaults because that read happens on the app thread
     // while this write happens on the worker.
     void set_authored_fog(const matter::FogSettings& fog);
+    // The sun half of the same publication, called beside every
+    // set_authored_fog. Separate function rather than one that takes the whole
+    // WorldSettings so the fog call sites keep their exact meaning.
+    void set_authored_sun(const matter::WorldSettings& settings);
 
     // Compositor objects.
     std::unique_ptr<viewer::PartStore>      store;
@@ -1058,6 +1062,22 @@ struct WorldSession::Impl {
     // (declared above), which every authored_fog_ publication goes through.
     FogSettings world_fog_defaults{};
     bool has_world_fog = false;
+    // ...and for the world-authored sun. Only the angular DIAMETER genuinely
+    // needs a mirror — the direction already reaches the render thread through
+    // manifest.lights.sun_dir — but the editor needs both together as the
+    // angles it seeds render.lighting from, and mirroring the direction here
+    // too means world_sun() never has to touch the manifest from the app
+    // thread. Both come from the same WorldSettings the manifest was built out
+    // of (local_provider.h copies sun_direction into the manifest verbatim).
+    SunAngles world_sun_defaults{};
+    bool has_world_sun = false;
+    // The render thread's copy of the authored angular diameter. Atomic rather
+    // than another read of the mutex-guarded mirror above, because render()
+    // wants it EVERY FRAME and that mutex is held across a whole connect's
+    // profile/props rebuild — a frame that blocked on it would be a stall
+    // introduced by a lighting constant. The direction needs no equivalent:
+    // render() already has it, in manifest.lights.sun_dir.
+    std::atomic<float> authored_sun_diameter_deg{kSunAngularDiameterDefaultDeg};
     // World.props -> a live property group (property-system S9). Rebuilt by
     // install_world on every world-kind connect; null when the world declares
     // no props. The editor binds it into its registry between connects and
@@ -1352,6 +1372,30 @@ void WorldSession::Impl::set_authored_fog(const matter::FogSettings& fog) {
     std::lock_guard<std::mutex> lk(streaming_lod_mutex);
     world_fog_defaults = fog;
     has_world_fog = true;
+}
+
+void WorldSession::Impl::set_authored_sun(const matter::WorldSettings& settings) {
+    // The direction is stored as ANGLES here, not as the Float3, because the
+    // angles are what the editor seeds and what render() compares against to
+    // decide "untouched". Deriving them once, on the publishing side, means the
+    // two sides cannot disagree about which conversion was used.
+    //
+    // render() derives its half from manifest.lights.sun_dir rather than from
+    // here, and the two agree because local_provider copies
+    // WorldSettings::sun_direction into the manifest VERBATIM (local_provider
+    // .h). The one way they could part company is a resolve-cache hit whose
+    // cached manifest predates a script edit — and in that case the equality
+    // test simply fails and the editor's (freshly parsed) angles win, which is
+    // the answer a user would expect anyway.
+    SunAngles sun;
+    sun_angles_from_direction(settings.sun_direction, sun.azimuth_deg,
+                              sun.elevation_deg);
+    sun.angular_diameter_deg = settings.sun_angular_diameter_deg;
+    authored_sun_diameter_deg.store(settings.sun_angular_diameter_deg,
+                                    std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lk(streaming_lod_mutex);
+    world_sun_defaults = sun;
+    has_world_sun = true;
 }
 
 void WorldSession::Impl::ensure_worker_started() {
@@ -1887,6 +1931,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                     cached_manifest.lights    = rc_payload.lights;
 
                     set_authored_fog(provider->world_settings().fog);
+                    set_authored_sun(provider->world_settings());
 
                     {
                         fprintf(stderr, "resolve cache: hit %016llx\n",
@@ -1998,6 +2043,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         // below. Publish the authored fog here so streamed worlds do not retain
         // the default zero-density settings for their entire session.
         set_authored_fog(provider->world_settings().fog);
+        set_authored_sun(provider->world_settings());
 
         // World-kind sessions use an empty manifest; sectors are streamed.
         viewer::WorldManifest empty_manifest;
@@ -2059,6 +2105,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "compose", "cancelled"); return; }
 
     set_authored_fog(provider->world_settings().fog);
+    set_authored_sun(provider->world_settings());
 
     // Phase C Task 17: save resolve cache after a successful full install+compose.
     // Write to temp + rename (atomic). Non-fatal on failure (no cache next warm launch).
@@ -5385,6 +5432,7 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
     }
 
     set_authored_fog(provider->world_settings().fog);
+    set_authored_sun(provider->world_settings());
 
     if (is_cancelled()) {
         emit_error(BakeErrorCode::Cancelled, "cone", "cancelled");
@@ -7309,9 +7357,45 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     viewer::VkSceneLighting lighting{};
     const auto controls =
         viewer::sanitize_vulkan_lighting_overrides(opts.vulkan_lighting);
+    // --- Sun orientation and size ------------------------------------------
+    // Layer 2 is the authored light vector, copied through verbatim. The live
+    // override (RenderOptions::use_sun_override, set only by an editor that has
+    // already SEEDED the angles from world_sun()) may replace it — but only
+    // once the angles differ from the authored ones.
+    //
+    // That equality test is not an optimization. Converting angles back to a
+    // vector renormalizes and rounds; the authored default {-0.45,-0.80,-0.35}
+    // is not unit length, so a round trip would return {-0.4581,-0.8144,
+    // -0.3563} and shift every lit pixel by a hair. Comparing first means an
+    // untouched Lighting panel renders BIT-IDENTICALLY to a build with no
+    // override at all, which is exactly the property the acceptance replay
+    // checks. Both sides derive their angles through the same header from the
+    // same float triple (set_authored_sun explains why the manifest's copy and
+    // the provider's are the same numbers), so "untouched" really is float
+    // equality.
     lighting.sun_direction = {impl_->manifest.lights.sun_dir[0],
                               impl_->manifest.lights.sun_dir[1],
                               impl_->manifest.lights.sun_dir[2]};
+    float sun_angular_diameter_deg =
+        impl_->authored_sun_diameter_deg.load(std::memory_order_relaxed);
+    if (opts.use_sun_override) {
+        // The authored angles are derived from the SAME vector this frame is
+        // about to render, through the same header the editor seeded from —
+        // so an untouched panel compares equal and the vector below is never
+        // rebuilt. No lock, no mirror, nothing to fall out of step.
+        float authored_azimuth = 0.0f, authored_elevation = 0.0f;
+        sun_angles_from_direction(lighting.sun_direction, authored_azimuth,
+                                  authored_elevation);
+        if (controls.sun_azimuth_deg != authored_azimuth ||
+            controls.sun_elevation_deg != authored_elevation) {
+            lighting.sun_direction = sun_direction_from_angles(
+                controls.sun_azimuth_deg, controls.sun_elevation_deg);
+        }
+        sun_angular_diameter_deg = controls.sun_angular_diameter_deg;
+    }
+    // set_lighting derives the disc cosines from this (see VkSceneLighting) —
+    // one place computes them, on the CPU, for every consumer.
+    lighting.sun_angular_diameter_deg = sun_angular_diameter_deg;
     lighting.sun_intensity = 1.0f;
     // The per-channel tint rides the scalar multiplier: ONE place assembles the
     // sun/sky colours, and every consumer (composite push constant, GI
@@ -7849,6 +7933,13 @@ bool WorldSession::world_fog(FogSettings& out) const {
     std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
     if (!impl_->has_world_fog) return false;
     out = impl_->world_fog_defaults;
+    return true;
+}
+
+bool WorldSession::world_sun(SunAngles& out) const {
+    std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
+    if (!impl_->has_world_sun) return false;
+    out = impl_->world_sun_defaults;
     return true;
 }
 

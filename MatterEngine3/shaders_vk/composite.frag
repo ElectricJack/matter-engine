@@ -58,7 +58,13 @@ layout(push_constant) uniform SceneLighting {
     float camera_y;
     float vol_cloud_top;
     float vol_height_layer;
-    float vol_pad;
+    // Sun angular size. sun_angular_diameter_deg is carried for completeness
+    // (nothing here reads it); the two cosines are what the disc is drawn
+    // from, computed on the CPU — see VkSceneLighting in vk_scene_renderer.h
+    // and matter/sun_angles.h.
+    float sun_angular_diameter_deg;
+    float sun_disc_cos_edge;
+    float sun_disc_cos_core;
 } lighting;
 
 #include "sky_common.glsl"
@@ -101,7 +107,9 @@ void main() {
         vec3 to_sun = normalize(-lighting.sun_direction);
         vec3 sky = sky_with_sun(ray, lighting.sky_color,
                                 to_sun, lighting.sun_color,
-                                lighting.sun_intensity);
+                                lighting.sun_intensity,
+                                lighting.sun_disc_cos_edge,
+                                lighting.sun_disc_cos_core);
         if (lighting.vol_enabled > 0.5) {
             vec3 far_uvw = vec3(in_uv, 1.0 - 0.5 / float(VOL_D));
             vec4 integrated = texture(vol_integrated_texture, far_uvw);
@@ -251,11 +259,15 @@ void main() {
                 fallback_absorption = vec3(1.0);
             transmission.rgb = sky_with_sun(through_dir, lighting.sky_color,
                                             to_sun, lighting.sun_color,
-                                            lighting.sun_intensity * 0.5)
+                                            lighting.sun_intensity * 0.5,
+                                            lighting.sun_disc_cos_edge,
+                                            lighting.sun_disc_cos_core)
                              * fallback_absorption;
             glass_reflection = sky_with_sun(reflect_dir, lighting.sky_color,
                                             to_sun, lighting.sun_color,
-                                            lighting.sun_intensity)
+                                            lighting.sun_intensity,
+                                            lighting.sun_disc_cos_edge,
+                                            lighting.sun_disc_cos_core)
                              * fresnel * mat_trans;
         }
     }

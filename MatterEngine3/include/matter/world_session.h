@@ -10,6 +10,7 @@
 #include "matter/ecs.h"
 #include "matter/world_definition.h"
 #include "matter/streaming.h"
+#include "matter/sun_angles.h"  // kSunAngularDiameterDefaultDeg + the convention
 #include "matter/vulkan_device.h"
 #include "render/vk_gi_contract.h"
 #include "part_graph_snapshot.h"
@@ -79,6 +80,39 @@ struct VulkanLightingOverrides {
     // ({sun, sky, emission, exposure}); the NSDMIs below keep those valid.
     float sun_tint[3] = {1.0f, 1.0f, 1.0f};
     float sky_tint[3] = {1.0f, 1.0f, 1.0f};
+
+    // --- Sun orientation and size ------------------------------------------
+    // WHERE the sun is, as the two angles a person actually thinks in, rather
+    // than as the Float3 that is duplicated down five layers. matter/sun_angles
+    // .h owns the conversion AND the convention (light vector points FROM the
+    // sun TOWARD the scene, so elevation +90 is (0,-1,0)) — read it before
+    // touching either number.
+    //
+    // These are only consulted when RenderOptions::use_sun_override is set,
+    // which the editor turns on once it has SEEDED them from what the world
+    // authored. Every other caller (headless tests, the replay harness, the
+    // Part Workbench's isolation session) leaves the flag false and keeps
+    // getting the world's authored sun_direction byte-for-byte, which is what
+    // keeps a default render pixel-identical to a pre-override build.
+    //
+    // The defaults below are the angles of the engine-default light vector
+    // {-0.45,-0.80,-0.35}; sun_angles_tests.cpp pins them against the
+    // conversion so the two cannot drift apart.
+    float sun_azimuth_deg = 127.874985f;
+    float sun_elevation_deg = 54.525963f;
+    // Angular DIAMETER of the sun, degrees. Drives the sky disc, the RT
+    // reflection prefilter and the shadow-ray cone together (sun_angles.h
+    // explains the calibration that makes 0.53 reproduce the three magic
+    // constants those three used to carry). Also world-authorable —
+    // WorldSettings::sun_angular_diameter_deg.
+    float sun_angular_diameter_deg = kSunAngularDiameterDefaultDeg;
+    // Shadow rays per pixel. Lives here rather than in VulkanRayTracingSettings
+    // because it is inseparable from the field above: rt_shadow.rgen collapses
+    // the cone to a single hard ray when this is 1 (the shipped default and the
+    // reason today's shadows are crisp), so enlarging the sun does nothing
+    // visible to shadows until this is raised. One knob would have been nicer;
+    // one knob that silently multiplies GPU cost would have been worse.
+    int32_t sun_shadow_samples = 1;
 };
 
 struct RenderOptions {
@@ -110,6 +144,15 @@ struct RenderOptions {
     // default RenderOptions is bit-identical to the pre-override behavior.
     bool use_fog_override = false;
     FogSettings fog_override{};
+
+    // Live sun orientation/size override (property-system "render.lighting").
+    // Exactly the opt-in shape use_fog_override above has, and for the same
+    // reason: VulkanLightingOverrides::sun_azimuth_deg / _elevation_deg /
+    // _angular_diameter_deg are only meaningful once someone has SEEDED them
+    // from the connected world (the editor does, at BakeFinished). A caller
+    // that leaves this false gets the world's authored sun_direction copied
+    // through untouched — no trig, no renormalization, no pixel drift.
+    bool use_sun_override = false;
 
     // Bake Lab W4 (part-workbench.md SS-I.5): LOD Inspector debug overrides.
     // Lab-only — production render paths are byte-identical to pre-W4
@@ -323,6 +366,18 @@ public:
     // editor seeds its live render.fog override from this so the group's
     // layer-2 baseline is what the world script authored.
     bool world_fog(FogSettings& out) const;
+
+    // World-authored sun, as the angles the Lighting panel edits: the inverse
+    // of WorldSettings::sun_direction plus WorldSettings::
+    // sun_angular_diameter_deg. Captured at the same seams world_fog is, and
+    // false until the first successful connect.
+    //
+    // The editor MUST seed VulkanLightingOverrides from this before the
+    // property registry captures the render.lighting baseline; that is what
+    // makes layer 2 equal what the world script authored. It is also what lets
+    // the engine recognise an untouched override and pass the authored
+    // direction through unconverted — see RenderOptions::use_sun_override.
+    bool world_sun(SunAngles& out) const;
 
     // The world's script-declared runtime tunables (`static props`), as a live
     // property group the editor can bind into its registry -- null when the

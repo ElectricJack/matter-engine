@@ -7105,10 +7105,24 @@ void VkSceneRenderer::set_lighting(const VkSceneLighting& lighting) {
         lighting.sky_color.x != lighting_.sky_color.x ||
         lighting.sky_color.y != lighting_.sky_color.y ||
         lighting.sky_color.z != lighting_.sky_color.z ||
-        lighting.emission_multiplier != lighting_.emission_multiplier;
+        lighting.emission_multiplier != lighting_.emission_multiplier ||
+        // A wider sun redistributes both direct light (softer shadow cone) and
+        // the reflection prefilter, so it invalidates GI history exactly like a
+        // sun move does.
+        lighting.sun_angular_diameter_deg != lighting_.sun_angular_diameter_deg;
     if (lighting_initialized_ && source_changed)
         gi_history_reset_pending_ = true;
     lighting_ = lighting;
+    // The two disc cosines are DERIVED, not passed in: computing them here is
+    // what guarantees every consumer (composite sky, RT environment, RT
+    // reflection prefilter) sees the same thresholds for the same diameter,
+    // and that they are CPU floats rather than a GPU cos() that is only good
+    // to a few ULP. Overwriting whatever the caller put in these two fields is
+    // deliberate — see the comment on them in the header.
+    lighting_.sun_disc_cos_edge =
+        matter::sun_disc_cos_edge(lighting_.sun_angular_diameter_deg);
+    lighting_.sun_disc_cos_core =
+        matter::sun_disc_cos_core(lighting_.sun_angular_diameter_deg);
     lighting_initialized_ = true;
     // Task 11: mirror the fresh sun direction/intensity into the tileset UBO
     // every frame -- write_tileset_params_buffer() no-ops until
@@ -9497,6 +9511,12 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         // tuning UI's relief-cap slider keeps working (see
         // write_tileset_params_buffer's identical pom_max_relief_m source).
         float pom_lift;
+        // Sun angular size as a multiple of the shipped default, scaling the
+        // radius of the cone the shadow rays are jittered inside. EXACTLY
+        // 1.0f at the default diameter (a float divided by itself), so the
+        // shader's `0.002 * sun_cone_scale` is bit-identical to the 0.002 it
+        // used to hardcode. See matter/sun_angles.h.
+        float sun_cone_scale;
     } constants{};
     constants.clip_to_world = pack_glsl_mat4(matrices.clip_to_world);
     const float x = -lighting_.sun_direction.x;
@@ -9516,6 +9536,8 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     constants.pom_lift = tileset_pom_settings_.enabled
                              ? tileset_pom_settings_.relief_cap_m + 0.02f
                              : 0.02f;
+    constants.sun_cone_scale =
+        matter::sun_size_scale(lighting_.sun_angular_diameter_deg);
     last_rt_samples_ = constants.samples;
     last_rt_debug_view_ = constants.debug_view != 0;
     vkCmdBindPipeline(frame.command_buffer,
@@ -9560,9 +9582,14 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
             float diffuse_multiplier;
             float reflection_multiplier;
             float emission_multiplier;
-            float pad0;
-            float pad1;
-            float pad2;
+            // Sun size, in the three forms rt_lighting.rgen needs it. These
+            // occupy what were pad0/pad1/pad2, so the block did not grow.
+            // cos_edge/cos_core are the same CPU-computed disc thresholds
+            // composite.frag gets (see VkSceneLighting); size_scale squares
+            // into the reflection prefilter's solid angle.
+            float sun_disc_cos_edge;
+            float sun_disc_cos_core;
+            float sun_size_scale;
         } gi{};
         gi.clip_to_world = pack_glsl_mat4(matrices.clip_to_world);
         gi.to_sun_intensity[0] = constants.to_sun_max_distance[0];
@@ -9584,6 +9611,10 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         gi.diffuse_multiplier = gi_settings_.diffuse_multiplier;
         gi.reflection_multiplier = gi_settings_.reflection_multiplier;
         gi.emission_multiplier = lighting_.emission_multiplier;
+        gi.sun_disc_cos_edge = lighting_.sun_disc_cos_edge;
+        gi.sun_disc_cos_core = lighting_.sun_disc_cos_core;
+        gi.sun_size_scale =
+            matter::sun_size_scale(lighting_.sun_angular_diameter_deg);
         vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi), &gi);
         const VkStridedDeviceAddressRegionKHR gi_raygen{
