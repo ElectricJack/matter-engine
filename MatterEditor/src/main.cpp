@@ -15,6 +15,7 @@
 #include "camera_controller.h"
 #include "camera_focus.h"
 #include "editor_model.h"
+#include "editor_props.h"
 #include "image_preview.h"
 #include "issue_reporter.h"
 #include "shot_replay.h"
@@ -1148,6 +1149,22 @@ int main() {
                                   active_radius, min_projected_size, stats);
     bool wireframe = false;
 
+    // Property registry (property-system design S3/S4). Bound BEFORE anything
+    // writes the tunable structs, so bind() captures the compiled defaults;
+    // the World-scope baseline is re-captured at the connect seam below, once
+    // the world's authored values have landed.
+    //
+    // Persistence is disabled for a replay for the same reason IniFilename is
+    // cleared above: a replay must reproduce the recorded state, not inherit
+    // (or overwrite) an interactive tuning session's files.
+    viewer::EditorProps editor_props;
+    editor_props.init(stats, !replay.valid);
+    editor_props.set_world(worlds[initial_world].project_dir,
+                           worlds[initial_world].world_name);
+    // Set at every connect seam; consumed on the first successful bake, after
+    // the world-authored values above it have been adopted.
+    bool apply_world_props_after_bake = true;
+
     const std::string shared_lib = shared_lib_root();
     auto open_world = [&](const viewer::WorldEntry& entry) {
         matter::WorldDesc desc;
@@ -1918,6 +1935,8 @@ int main() {
         const auto now = std::chrono::steady_clock::now();
         const float dt = std::chrono::duration<float>(now - previous_time).count();
         previous_time = now;
+        // User-scope autosave debounce (S5): fires ~1 s after the last edit.
+        editor_props.tick(dt);
         if (key_pressed(window, GLFW_KEY_TAB, tab_down)) {
             camera_capture = !camera_capture;
             camera_controller.set_capture(window, camera_capture);
@@ -2241,7 +2260,8 @@ int main() {
                                         &cached_snapshot, specialized_editors, camera.position);
                 ui.draw_viewport_window();
                 ui.draw_console_panel(console_log);
-                ui.draw_debug_panel(stats, viewer_commands);
+                ui.draw_debug_panel(stats, viewer_commands, &editor_props);
+                ui.draw_tunables_panel(editor_props);
                 ui.draw_vt_warning_banner(stats);
                 ui.draw_bake_lab_panel(bake_lab, &app_hub, session.get(), worlds, stats);
                 ui.draw_asset_browser_panel(asset_browser, worlds, stats, shared_lib,
@@ -2520,6 +2540,14 @@ int main() {
                         stats.volumetrics = world_vol;
                         apply_world_volumetrics_after_bake = false;
                     }
+                }
+                // Property connect seam (S4): layer 2 has now landed in the
+                // bound structs, so snapshot it as the baseline and only then
+                // apply the world override file and the env layer. Must stay
+                // AFTER the authored-value adopters above.
+                if (bake_ready && apply_world_props_after_bake) {
+                    editor_props.on_world_connected();
+                    apply_world_props_after_bake = false;
                 }
                 console_log.push(
                     event.errors == 0 ? viewer::LogSeverity::Info
@@ -3143,6 +3171,11 @@ int main() {
             apply_world_camera_after_bake =
                 !replay.valid && initial_camera_env == nullptr;
             apply_world_volumetrics_after_bake = !replay.valid;
+            // set_world BEFORE the reset: it flushes this world's edits by
+            // diffing against the baseline, which the reset is about to erase.
+            editor_props.set_world(worlds[stats.world_current].project_dir,
+                                   worlds[stats.world_current].world_name);
+            apply_world_props_after_bake = true;
             viewer::prepare_world_reload(stats);
             binding.reload();  // clears app models + session->reload()
         }
@@ -3157,6 +3190,11 @@ int main() {
             if (!ok) {
                 viewer::complete_world_switch(stats, false);
             } else {
+                // Same ordering rule as the reload seam: flush + repoint the
+                // world file before the structs lose their edits.
+                editor_props.set_world(worlds[selected].project_dir,
+                                       worlds[selected].world_name);
+                apply_world_props_after_bake = true;
                 viewer::complete_world_switch(stats, true);
                 stats.world_current = selected;
                 selected_world_reported = false;
@@ -3177,6 +3215,10 @@ int main() {
     if (fifo_path) unlink(fifo_path);
 #endif
     if (camera_capture) camera_controller.set_capture(window, false);
+    // Flush a debounced User-scope autosave that the last frames did not reach.
+    // World scope stays explicit-save (plus the automatic flush at every
+    // world-change seam) — a save-on-exit prompt is Stage 3.
+    editor_props.shutdown();
 #ifndef _WIN32
     if (cmd_fd >= 0) close(cmd_fd);
 #else

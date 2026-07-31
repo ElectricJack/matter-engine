@@ -22,6 +22,7 @@
 #include "animation_debug_overlay.h"
 #include "bake_lab.h"
 #include "asset_browser.h"
+#include "property_editor.h"
 
 struct GLFWwindow;
 namespace matter { class VulkanDevice; struct VulkanFrame; namespace evt { class Hub; } }
@@ -168,6 +169,10 @@ struct ViewerStats {
 };
 
 void reset_lighting_controls(ViewerStats& stats);
+// Every Scope::World property group's backing struct dropped to its compiled
+// default (layer 1), so the incoming world's authored values are the only
+// layer 2 the baseline capture can see. Called at the reload / switch seams.
+void reset_world_scope_controls(ViewerStats& stats);
 void prepare_world_reload(ViewerStats& stats);
 void complete_world_switch(ViewerStats& stats, bool succeeded);
 
@@ -178,7 +183,14 @@ public:
     void shutdown();
     bool begin_frame(const matter::VulkanFrame& frame, std::string& error);
     bool end_frame(const matter::VulkanFrame& frame, std::string& error);
-    void draw_debug_panel(ViewerStats& stats, const ViewerCommands& commands);
+    // `props` (nullable) supplies the registered lighting / volumetrics / POM /
+    // pixel-budget groups; the hand-written sliders for those were deleted in
+    // favor of the generic renderer (property-system design S6.2).
+    void draw_debug_panel(ViewerStats& stats, const ViewerCommands& commands,
+                          EditorProps* props);
+    // Tunables window: the catch-all panel every registered property group
+    // appears in. Same Begin/End split as draw_console_panel.
+    void draw_tunables_panel(EditorProps& props);
 
     // LOD Settings window: everything level-of-detail / draw-distance in one
     // place, split into live controls (pixel budget, camera far plane) and
@@ -354,6 +366,7 @@ private:
     ToolbarState toolbar_state_;
     ConsolePanelState console_state_;
     PropertiesPanelState properties_state_;
+    TunablesPanelState tunables_state_;
 };
 
 } // namespace viewer

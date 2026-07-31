@@ -1,0 +1,159 @@
+#pragma once
+
+// Generic ImGui renderer over matter::props bindings (property-system design
+// S6.1). One switch on Desc::type produces the widget; no panel ever hand-wires
+// a slider to a settings-struct member again.
+//
+// This header is deliberately ImGui-free: the widget-kind / format / path
+// decisions are pure functions of the Desc and are unit-testable without an
+// ImGui context. Only the draw_* entry points need a live context.
+
+#include "matter/props.h"
+
+#include <cctype>
+#include <cstdio>
+#include <cstring>
+#include <string>
+
+namespace viewer {
+
+class EditorProps;
+
+enum class PropWidget : uint8_t {
+    ReadOnlyText,
+    FloatSlider,
+    FloatDrag,
+    IntSlider,
+    IntDrag,
+    UIntSlider,
+    UIntDrag,
+    Checkbox,
+    EnumCombo,
+    ColorEdit3,
+    Float3Drag,
+    TextInput,
+};
+
+// has_range -> Slider, else Drag (properties_registry.cpp's widget_for_field
+// policy). ReadOnly short-circuits everything: the value is printed, not edited.
+inline PropWidget prop_widget_for(const matter::props::Desc& d) {
+    using matter::props::Type;
+    if (d.flags & matter::props::ReadOnly) return PropWidget::ReadOnlyText;
+    switch (d.type) {
+        case Type::Float:  return d.has_range ? PropWidget::FloatSlider : PropWidget::FloatDrag;
+        case Type::Int:    return d.has_range ? PropWidget::IntSlider : PropWidget::IntDrag;
+        case Type::UInt:   return d.has_range ? PropWidget::UIntSlider : PropWidget::UIntDrag;
+        case Type::Bool:   return PropWidget::Checkbox;
+        case Type::Enum:   return PropWidget::EnumCombo;
+        case Type::Color3: return PropWidget::ColorEdit3;
+        case Type::Float3: return PropWidget::Float3Drag;
+        case Type::String: return PropWidget::TextInput;
+    }
+    return PropWidget::ReadOnlyText;
+}
+
+// Decimals follow the RANGE, not the value: a 0..0.5 relief cap needs three of
+// them, a 5..10241 metre reach needs none. Unranged floats get three.
+inline const char* prop_float_precision(const matter::props::Desc& d) {
+    if (!d.has_range) return "%.3f";
+    const float span = d.max - d.min;
+    if (span >= 200.0f) return "%.0f";
+    if (span >= 2.0f) return "%.2f";
+    return "%.3f";
+}
+
+// "%.2f EV" — Desc::units folded into the printf format the widget uses.
+inline std::string prop_format_for(const matter::props::Desc& d) {
+    const bool integral = d.type == matter::props::Type::Int ||
+                          d.type == matter::props::Type::UInt;
+    std::string fmt = integral ? "%d" : prop_float_precision(d);
+    if (d.type == matter::props::Type::UInt) fmt = "%u";
+    if (d.units && *d.units) {
+        fmt += ' ';
+        fmt += d.units;
+    }
+    return fmt;
+}
+
+inline const char* prop_display_label(const matter::props::Desc& d) {
+    return d.label && *d.label ? d.label : (d.name ? d.name : "?");
+}
+
+// "render.pom.steps" — what the context menu's "Copy path" yields and what a
+// later generic FIFO `set` will accept.
+inline std::string prop_field_path(const matter::props::Group& g,
+                                   const matter::props::Desc& d) {
+    std::string out = g.path ? g.path : "";
+    out += '.';
+    out += d.name ? d.name : "";
+    return out;
+}
+
+inline const char* prop_scope_name(matter::props::Scope s) {
+    switch (s) {
+        case matter::props::Scope::User:    return "User";
+        case matter::props::Scope::Project: return "Project";
+        case matter::props::Scope::World:   return "World";
+        case matter::props::Scope::Session: return "Session";
+    }
+    return "?";
+}
+
+// Case-insensitive substring test used by the Tunables filter box. Kept here
+// (rather than ImGuiTextFilter) so this header stays ImGui-free and the filter
+// semantics are testable. An empty/null needle matches everything.
+inline bool prop_filter_matches(const char* needle, const char* haystack) {
+    if (!needle || !*needle) return true;
+    if (!haystack) return false;
+    const size_t nlen = std::strlen(needle);
+    const size_t hlen = std::strlen(haystack);
+    if (nlen > hlen) return false;
+    for (size_t i = 0; i + nlen <= hlen; ++i) {
+        size_t k = 0;
+        for (; k < nlen; ++k) {
+            const unsigned char a = static_cast<unsigned char>(haystack[i + k]);
+            const unsigned char n = static_cast<unsigned char>(needle[k]);
+            if (std::tolower(a) != std::tolower(n)) break;
+        }
+        if (k == nlen) return true;
+    }
+    return false;
+}
+
+inline bool prop_filter_matches_field(const char* needle, const matter::props::Desc& d) {
+    if (!needle || !*needle) return true;
+    return prop_filter_matches(needle, d.name) || prop_filter_matches(needle, d.label);
+}
+
+// True when the group path/label matches, or any field name/label does.
+inline bool prop_filter_matches_group(const char* needle, const matter::props::Group& g) {
+    if (!needle || !*needle) return true;
+    if (prop_filter_matches(needle, g.path)) return true;
+    if (prop_filter_matches(needle, g.label)) return true;
+    for (uint32_t i = 0; i < g.field_count; ++i)
+        if (prop_filter_matches_field(needle, g.fields[i])) return true;
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Renderers (need a live ImGui context)
+// ---------------------------------------------------------------------------
+
+// Draws every field of the group inline — no Begin/End, no header. `filter`,
+// when non-null and non-empty, hides fields whose name/label does not match.
+// Returns true when any field changed this frame.
+bool draw_group_fields(matter::props::Binding& binding, const char* filter = nullptr);
+
+// CollapsingHeader (label + scope tag + dirty marker) wrapping the fields.
+bool draw_group(matter::props::Binding& binding, const char* filter = nullptr,
+                bool default_open = true);
+
+struct TunablesPanelState {
+    char filter[128] = {};
+};
+
+// Tunables window body (call inside Begin/End) — the catch-all panel every
+// registered group appears in, sorted by path.
+void draw_tunables_contents(TunablesPanelState& state, EditorProps& props);
+
+}  // namespace viewer

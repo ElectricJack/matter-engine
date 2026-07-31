@@ -36,6 +36,11 @@ SurfaceLib/test_config
 # without it reproduces the window size and still frames the shot differently.
 !/issues/**/*.layout.ini
 
+# User-scope property overrides (property-system design S5): per-machine
+# editor prefs, autosaved. projects/*/editor/*.json (Project/World scope) ARE
+# committed — tuning is shareable project data.
+/MatterEditor/editor_settings.json
+
 # Editor / OS
 .DS_Store
 .vscode/

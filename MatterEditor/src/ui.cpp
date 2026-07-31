@@ -13,6 +13,7 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 #include "matter/vulkan_device.h"
+#include "editor_props.h"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -298,6 +299,9 @@ void Ui::build_dockspace() {
         ImGui::DockBuilderDockWindow("Viewport", center);
         ImGui::DockBuilderDockWindow("Viewer Debug", right);
         ImGui::DockBuilderDockWindow("Camera", right);
+        // Tabbed with Properties: both are property editors, one over the
+        // selection, one over the registered tunable groups.
+        ImGui::DockBuilderDockWindow("Tunables", right);
         ImGui::DockBuilderDockWindow("Bake Lab", bottom);
         // Promoted out of Bake Lab's former "Assets" tab (now a standalone
         // pane usable outside Bake Lab too). Docked into the same left node
@@ -573,6 +577,12 @@ void Ui::draw_console_panel(ConsoleLog& log) {
     ImGui::End();
 }
 
+void Ui::draw_tunables_panel(EditorProps& props) {
+    ImGui::Begin("Tunables");
+    draw_tunables_contents(tunables_state_, props);
+    ImGui::End();
+}
+
 void Ui::reset_scene_tree_cache() {
     reset_scene_tree_graph_cache(scene_tree_state_);
 }
@@ -591,24 +601,15 @@ void Ui::draw_lod_settings_panel(matter::WorldSession* session,
     }
 
     // ---- Live controls: applied every frame, no reload -------------------
+    // The pixel-budget and Ground POM distance sliders that used to be
+    // duplicated here are now registered property groups (viewer.budget /
+    // render.pom); they live in Viewer Debug and Tunables, with one binding
+    // each instead of two edit sites.
     ImGui::SeparatorText("Dynamic (applies immediately)");
-    ImGui::SliderFloat("Pixel budget", &s.pixel_budget, 0.05f, 4.0f, "%.2f");
-    ImGui::SetItemTooltip(
-        "Scales projected size in LOD selection: <1 picks coarser rungs "
-        "sooner, >1 holds detail farther. Same value as Viewer Debug.");
     ImGui::SliderFloat("Camera far plane (m)", &camera.far_plane, 500.0f,
                        20000.0f, "%.0f",
                        ImGuiSliderFlags_Logarithmic);
     ImGui::SetItemTooltip("Editor camera draw distance.");
-    // Ground POM reach lives here with the other draw-distance controls; the
-    // rest of the POM tuning stays under Viewer Debug > Ground POM. Max
-    // distance may run all the way out to the draw distance.
-    ImGui::SliderFloat("Ground POM max distance (m)",
-                       &s.tileset_pom.max_distance_m, 5.0f,
-                       std::max(camera.far_plane, 5.0f), "%.0f",
-                       ImGuiSliderFlags_Logarithmic);
-    ImGui::SliderFloat("Ground POM fade band (m)", &s.tileset_pom.fade_band_m,
-                       1.0f, 200.0f, "%.1f");
 
     // ---- Streaming profile: consumed once at world connect ---------------
     ImGui::SeparatorText("Streaming (requires world reload)");
@@ -865,7 +866,8 @@ void Ui::draw_lod_settings_panel(matter::WorldSession* session,
     ImGui::End();
 }
 
-void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
+void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
+                          EditorProps* props) {
     ImGui::Begin("Viewer Debug");
 
     ImGui::Text("FPS: %.1f  (%.2f ms)", s.fps, s.frame_ms);
@@ -952,49 +954,38 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
     }
     ImGui::Separator();
 
-    ImGui::SliderFloat("Pixel budget", &s.pixel_budget, 0.05f, 4.0f, "%.2f");
+    // Pixel budget / lighting / volumetrics / Ground POM are registered
+    // property groups now (viewer.budget, render.lighting, render.volumetrics,
+    // render.pom) — the generic renderer draws them here, and the Tunables
+    // panel shows the same bindings. A panel chooses WHERE a group appears; it
+    // no longer owns the widgets.
+    if (props) {
+        if (matter::props::Binding* b = props->budget()) draw_group(*b);
+    } else {
+        ImGui::SliderFloat("Pixel budget", &s.pixel_budget, 0.05f, 4.0f, "%.2f");
+    }
     const char* resolvers[] = { "PassThrough", "SectorLod" };
     ImGui::Combo("Resolver", &s.resolver_choice, resolvers, 2);
     if (ImGui::Button("Reload world") && commands.reload) commands.reload();
 
-    ImGui::SeparatorText("Lighting");
-    ImGui::SliderFloat("Exposure (EV)", &s.lighting.exposure_ev, -6.0f, 6.0f,
-                       "%.2f");
-    ImGui::SliderFloat("Sun", &s.lighting.sun_multiplier, 0.0f, 4.0f,
-                       "%.2f");
-    ImGui::SliderFloat("Sky", &s.lighting.sky_multiplier, 0.0f, 4.0f,
-                       "%.2f");
-    ImGui::SliderFloat("Emission", &s.lighting.emission_multiplier, 0.0f,
-                       4.0f, "%.2f");
-    if (ImGui::Button("Reset to World")) reset_lighting_controls(s);
-
-    ImGui::SeparatorText("Volumetrics");
-    ImGui::Checkbox("Enable##vol", &s.volumetrics.enabled);
+    if (props) {
+        if (matter::props::Binding* b = props->lighting()) {
+            draw_group(*b);
+            // "Reset to World" is now literally a baseline copy: the baseline
+            // holds the world-JS authored values captured at connect (S4).
+            if (ImGui::Button("Reset to World")) matter::props::reset_group(*b);
+        }
+        if (matter::props::Binding* b = props->volumetrics()) draw_group(*b);
+    }
+    // Not a registered property: main.cpp overwrites the struct's
+    // vol_debug_view from this every frame, so it has nowhere to persist to.
     if (s.volumetrics.enabled) {
-        ImGui::SliderFloat("Phase g", &s.volumetrics.phase_g, 0.0f, 0.99f, "%.2f");
-        ImGui::SliderFloat("Temporal blend", &s.volumetrics.temporal_blend, 0.0f, 0.99f, "%.2f");
-        ImGui::SliderFloat("Fog density", &s.volumetrics.fog_density_mul, 0.0f, 4.0f, "%.2f");
-        ImGui::SliderFloat("Fog falloff", &s.volumetrics.fog_falloff_mul, 0.1f, 4.0f, "%.2f");
         const char* vol_views[] = { "Off", "Density", "Scatter", "Integrated" };
         ImGui::Combo("Vol debug##vd", &s.vol_debug_view, vol_views, 4);
     }
 
-    if (ImGui::CollapsingHeader("Ground POM")) {
-        matter::TilesetPomSettings& pom = s.tileset_pom;
-        ImGui::Checkbox("POM enable##pom", &pom.enabled);
-        ImGui::SliderFloat("Relief cap (m)", &pom.relief_cap_m, 0.0f, 0.5f, "%.3f");
-        ImGui::SliderFloat("Datum bias (m)", &pom.datum_bias_m, 0.0f, 0.3f, "%.3f");
-        ImGui::SliderFloat("Max march (m)", &pom.max_march_m, 0.1f, 2.0f, "%.2f");
-        ImGui::SliderInt("Steps", &pom.steps, 4, 64);
-        ImGui::TextDisabled(
-            "Max distance / fade band moved to the LOD Settings window.");
-        ImGui::SliderFloat("AO strength", &pom.ao_strength, 0.0f, 1.0f, "%.2f");
-        ImGui::SliderFloat("Shadow strength", &pom.shadow_strength, 0.0f, 2.0f, "%.2f");
-        // Phase 2 (horizon-map lighting): blends the baked per-direction
-        // horizon occlusion toward 0 (fully visible) instead of always
-        // applying it at full strength. No effect on slots loaded from a
-        // v1 .gtex (no horizon data baked).
-        ImGui::SliderFloat("Horizon occlusion", &pom.horizon_strength, 0.0f, 1.0f, "%.2f");
+    if (props) {
+        if (matter::props::Binding* b = props->pom()) draw_group(*b, nullptr, false);
     }
 
     ImGui::SeparatorText("Debug View");
