@@ -1766,7 +1766,7 @@ int main() {
     };
 
     // What a RequiresReload property group's "Apply & Reload" runs, from EITHER
-    // the LOD Settings panel or the generic Tunables panel. The ordering is the
+    // the Performance panel or the generic Tunables panel. The ordering is the
     // whole point: the applied override must reach the session BEFORE the
     // reload, because set_streaming_lod_overrides is consumed at the next
     // connect. Panels never have to know that.
@@ -2158,14 +2158,15 @@ int main() {
                 ui.draw_console_panel(console_log);
                 ui.draw_debug_panel(stats, viewer_commands, editor_props);
                 ui.draw_tunables_panel(editor_props);
+                ui.draw_lighting_panel(editor_props);
                 ui.draw_vt_warning_banner(stats);
                 ui.draw_bake_lab_panel(bake_lab, &app_hub, session.get(), worlds, stats);
                 ui.draw_asset_browser_panel(asset_browser, worlds, stats, shared_lib,
                                            viewer_commands);
                 ui.draw_worlds_panel(worlds, stats, viewer_commands);
                 ui.draw_camera_panel(camera);
-                ui.draw_lod_settings_panel(session.get(), editor_props,
-                                           viewer_commands, camera);
+                ui.draw_performance_panel(session.get(), editor_props,
+                                          viewer_commands, camera);
                 // Issue reporter (F9 region / F10 viewport). Drawn last so the
                 // selection overlay and the window sit above the panels they
                 // might be reporting on.

@@ -299,9 +299,18 @@ void Ui::build_dockspace() {
         ImGui::DockBuilderDockWindow("Viewport", center);
         ImGui::DockBuilderDockWindow("Viewer Debug", right);
         ImGui::DockBuilderDockWindow("Camera", right);
-        // Tabbed with Properties: both are property editors, one over the
-        // selection, one over the registered tunable groups.
+        // Tabbed with Properties: all three are property editors — one over
+        // the selection, one over the registered tunable groups, and the two
+        // curated cuts of that registry (lighting/volumetrics, and everything
+        // that trades quality for frame time).
         ImGui::DockBuilderDockWindow("Tunables", right);
+        ImGui::DockBuilderDockWindow("Lighting", right);
+        // "Performance" replaced the former "LOD Settings" window, which was
+        // never docked here at all (it opened floating). Docking it now only
+        // affects layouts built from scratch; an imgui.ini written before the
+        // rename keeps whatever position it had for the old name and opens
+        // this one floating.
+        ImGui::DockBuilderDockWindow("Performance", right);
         ImGui::DockBuilderDockWindow("Bake Lab", bottom);
         // Promoted out of Bake Lab's former "Assets" tab (now a standalone
         // pane usable outside Bake Lab too). Docked into the same left node
@@ -583,6 +592,12 @@ void Ui::draw_tunables_panel(EditorProps& props) {
     ImGui::End();
 }
 
+void Ui::draw_lighting_panel(EditorProps& props) {
+    ImGui::Begin("Lighting");
+    draw_lighting_contents(props);
+    ImGui::End();
+}
+
 void Ui::reset_scene_tree_cache() {
     reset_scene_tree_graph_cache(scene_tree_state_);
 }
@@ -630,21 +645,44 @@ std::vector<matter::WorldSession::StreamingLodRing> decode_rings(
 
 }  // namespace
 
-void Ui::draw_lod_settings_panel(matter::WorldSession* session,
-                                 EditorProps& props,
-                                 const ViewerCommands& commands,
-                                 const matter::CameraDesc& camera) {
-    if (!ImGui::Begin("LOD Settings")) {
+void Ui::draw_performance_panel(matter::WorldSession* session,
+                                EditorProps& props,
+                                const ViewerCommands& commands,
+                                const matter::CameraDesc& camera) {
+    // Renamed from "LOD Settings": an existing imgui.ini keyed on the old name
+    // no longer matches, so this window opens floating for pre-existing
+    // layouts and docked (right node, tabbed with Properties/Tunables) for
+    // fresh ones. Group open/closed state is unaffected — that is keyed on
+    // each group's ###path, which did not change.
+    if (!ImGui::Begin("Performance")) {
         ImGui::End();
         return;
     }
 
+    // ---- Live quality/throughput dials -----------------------------------
+    // One binding each; the Tunables panel shows the same bindings. A panel
+    // chooses WHERE a group appears, it does not own the widgets.
+    if (matter::props::Binding* b = props.budget()) draw_group(*b);
+    if (matter::props::Binding* b = props.pom()) draw_group(*b, nullptr, false);
+    if (matter::props::Binding* b = props.vt_budgets())
+        draw_group(*b, nullptr, false);
+
+    draw_streaming_lod_section(session, props, commands, camera);
+    ImGui::End();
+}
+
+void Ui::draw_streaming_lod_section(matter::WorldSession* session,
+                                    EditorProps& props,
+                                    const ViewerCommands& commands,
+                                    const matter::CameraDesc& camera) {
     // ---- Live controls: applied every frame, no reload -------------------
     // The pixel-budget and Ground POM distance sliders that used to be
     // duplicated here are now registered property groups (viewer.budget /
-    // render.pom); they live in Viewer Debug and Tunables, with one binding
-    // each instead of two edit sites. The camera far-plane hand slider went
-    // the same way, into the User-scope camera.prefs group below.
+    // render.pom) drawn above. The camera far-plane hand slider went the same
+    // way, into the User-scope camera.prefs group below — it lives here rather
+    // than in the Camera panel because draw distance is a frame-time dial
+    // first and a viewpoint setting second, and because it is the axis scale
+    // the transition bars below are drawn against.
     ImGui::SeparatorText("Dynamic (applies immediately)");
     if (matter::props::Binding* cam = props.camera())
         draw_group_fields(*cam);
@@ -654,7 +692,6 @@ void Ui::draw_lod_settings_panel(matter::WorldSession* session,
     matter::props::Binding* sb = props.streaming();
     if (!session || !sb) {
         ImGui::TextDisabled("No world session");
-        ImGui::End();
         return;
     }
     auto& st = lod_settings_;
@@ -668,7 +705,6 @@ void Ui::draw_lod_settings_panel(matter::WorldSession* session,
     st.have = have_active;
     if (!draft || !st.have) {
         ImGui::TextDisabled("Waiting for a streaming world connect...");
-        ImGui::End();
         return;
     }
 
@@ -916,8 +952,6 @@ void Ui::draw_lod_settings_panel(matter::WorldSession* session,
         "authored profile applies again.");
     ImGui::TextDisabled(
         "Saved per world; re-applied before the first bake on the next load.");
-
-    ImGui::End();
 }
 
 void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
@@ -1008,35 +1042,27 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
     }
     ImGui::Separator();
 
-    // Pixel budget / lighting / volumetrics / Ground POM are registered
-    // property groups now (viewer.budget, render.lighting, render.volumetrics,
-    // render.pom) — the generic renderer draws them here, and the Tunables
-    // panel shows the same bindings. A panel chooses WHERE a group appears; it
-    // no longer owns the widgets.
-    if (matter::props::Binding* b = props.budget()) draw_group(*b);
+    // This panel is stats + debug views now. The tunable groups it used to
+    // draw moved out, one binding untouched in each case (a panel chooses
+    // WHERE a group appears; it never owned the widgets):
+    //   render.lighting, render.volumetrics -> the Lighting panel
+    //   viewer.budget, render.pom           -> the Performance panel
+    // All of them still appear in Tunables, which enumerates the registry.
     const char* resolvers[] = { "PassThrough", "SectorLod" };
     ImGui::Combo("Resolver", &s.resolver_choice, resolvers, 2);
     if (ImGui::Button("Reload world") && commands.reload) commands.reload();
 
-    if (matter::props::Binding* b = props.lighting()) {
-        draw_group(*b);
-        // "Reset to World" is now literally a baseline copy: the baseline
-        // holds the world-JS authored values captured at connect (S4).
-        if (ImGui::Button("Reset to World")) matter::props::reset_group(*b);
-    }
-    if (matter::props::Binding* b = props.volumetrics()) draw_group(*b);
-    // Not a registered property: main.cpp overwrites the struct's
+    ImGui::SeparatorText("Debug View");
+    const char* debug_views[] = { "None", "Normals" };
+    ImGui::Combo("View", &s.debug_view_mode, debug_views, 2);
+    // Not a registered property: main.cpp overwrites the volumetrics struct's
     // vol_debug_view from this every frame, so it has nowhere to persist to.
+    // Kept with the other debug views rather than following render.volumetrics
+    // into the Lighting panel — it selects a visualization, not a tunable.
     if (s.volumetrics.enabled) {
         const char* vol_views[] = { "Off", "Density", "Scatter", "Integrated" };
         ImGui::Combo("Vol debug##vd", &s.vol_debug_view, vol_views, 4);
     }
-
-    if (matter::props::Binding* b = props.pom()) draw_group(*b, nullptr, false);
-
-    ImGui::SeparatorText("Debug View");
-    const char* debug_views[] = { "None", "Normals" };
-    ImGui::Combo("View", &s.debug_view_mode, debug_views, 2);
     draw_animation_debug_overlay_controls(s.animation_overlay);
     if (s.animation_overlay.enabled) {
         if (!s.animation_debug_query_ok)

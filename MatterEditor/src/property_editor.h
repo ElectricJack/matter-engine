@@ -148,6 +148,55 @@ inline bool prop_filter_matches_group(const char* needle, const matter::props::G
 }
 
 // ---------------------------------------------------------------------------
+// Tunables categories. Groups are listed sorted by path, which already makes
+// every group sharing a first path segment ("render.lighting",
+// "render.volumetrics", ...) contiguous — so a category header is purely a
+// question of "did the first segment change since the previous row". Kept
+// ImGui-free, and next to the other pure Desc/Group decisions, for the same
+// reason prop_filter_matches is.
+// ---------------------------------------------------------------------------
+
+// "render.lighting" -> "render". A path with no '.' IS its own category;
+// null/empty yields an empty category (which still groups consistently).
+inline std::string prop_path_category(const char* path) {
+    if (!path) return std::string();
+    const char* dot = std::strchr(path, '.');
+    return dot ? std::string(path, static_cast<size_t>(dot - path))
+               : std::string(path);
+}
+
+// Display text for a category segment. Two-letter segments are acronyms in
+// this codebase ("vt" -> "VT"); anything longer is title-cased on its first
+// character only, so "render" -> "Render" and a hand-cased segment keeps its
+// own interior capitals.
+inline std::string prop_category_label(const std::string& segment) {
+    if (segment.empty()) return std::string("Other");
+    std::string out = segment;
+    if (out.size() <= 2) {
+        for (char& c : out)
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        return out;
+    }
+    out[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(out[0])));
+    return out;
+}
+
+// The Tunables listing order: by group path. Categories fall out of it for
+// free, which is why the panel needs no separate bucketing pass.
+inline bool prop_group_order_before(const matter::props::Group& a,
+                                    const matter::props::Group& b) {
+    return std::strcmp(a.path ? a.path : "", b.path ? b.path : "") < 0;
+}
+
+// True when `path` opens a new category relative to the previously drawn
+// `prev_path`. A null `prev_path` means "nothing drawn yet", which always
+// opens one.
+inline bool prop_starts_new_category(const char* prev_path, const char* path) {
+    if (!prev_path) return true;
+    return prop_path_category(prev_path) != prop_path_category(path);
+}
+
+// ---------------------------------------------------------------------------
 // Renderers (need a live ImGui context)
 // ---------------------------------------------------------------------------
 
@@ -175,6 +224,16 @@ bool draw_draft_bar(matter::props::Binding& binding,
 bool draw_group(matter::props::Binding& binding, const char* filter = nullptr,
                 bool default_open = true,
                 const std::function<void()>* on_apply = nullptr);
+
+// Lighting window body (call inside Begin/End). Draws render.lighting —
+// including the sun/sky tints — and render.volumetrics, plus the
+// "Reset to World" baseline restore that used to sit under the lighting
+// sliders in Viewer Debug.
+//
+// WORKSTREAM-2 SEAM: `render.fog`, once that group exists, belongs here
+// directly after render.volumetrics (and in the reset button's group list
+// below). Nothing else needs to change — see the marked spot in the body.
+void draw_lighting_contents(EditorProps& props);
 
 struct TunablesPanelState {
     char filter[128] = {};

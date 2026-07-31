@@ -13,7 +13,8 @@ using matter::props::prop;
 using matter::props::Scope;
 
 // Ranges, log flags and docs are lifted verbatim from the hand-written sliders
-// these groups replaced (ui.cpp draw_debug_panel / draw_lod_settings_panel).
+// these groups replaced (ui.cpp draw_debug_panel / the former
+// draw_lod_settings_panel, now draw_performance_panel).
 //
 // Deliberately NOT described:
 //   * VulkanLightingOverrides::composite_debug_view and
@@ -41,7 +42,16 @@ const auto s_lighting = matter::props::group<matter::VulkanLightingOverrides>(
     prop(&matter::VulkanLightingOverrides::sky_multiplier, "sky_multiplier")
         .label("Sky").range(0.0f, 4.0f),
     prop(&matter::VulkanLightingOverrides::emission_multiplier, "emission_multiplier")
-        .label("Emission").range(0.0f, 4.0f));
+        .label("Emission").range(0.0f, 4.0f),
+    // Color3, not Float3: these are colours, and ColorEdit3's [0,1] clamp is
+    // the right domain for a tint (the scalar multipliers above carry the
+    // brightness). White is a bit-exact no-op — see world_session.h.
+    prop(&matter::VulkanLightingOverrides::sun_tint, "sun_tint")
+        .label("Sun tint").color()
+        .doc("Per-channel tint on the authored sun colour. White = unchanged."),
+    prop(&matter::VulkanLightingOverrides::sky_tint, "sky_tint")
+        .label("Sky tint").color()
+        .doc("Per-channel tint on the authored sky colour. White = unchanged."));
 
 const auto s_volumetrics = matter::props::group<matter::VulkanVolumetricsSettings>(
     "render.volumetrics", "Volumetrics",

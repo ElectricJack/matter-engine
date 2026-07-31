@@ -63,6 +63,22 @@ struct VulkanLightingOverrides {
     float emission_multiplier = 1.0f;
     float exposure_ev = -2.0f;
     float composite_debug_view = 0.0f;
+    // Per-channel tint on the AUTHORED sun/sky colour, applied component-wise
+    // at exactly the same point as the scalar multiplier above (see
+    // matter_engine.cpp, where VkSceneLighting::sun_color / sky_color are
+    // assembled from the manifest). Everything downstream — the composite
+    // push constant, the RT/GI constants and the volumetric scatter pass —
+    // reads those two colours, so a tint reaches direct light, GI and
+    // in-scattering together and cannot desync them.
+    //
+    // White is a BIT-EXACT no-op (x * 1.0f == x), which is what lets these
+    // exist without perturbing any golden/reference rendering.
+    //
+    // Appended after composite_debug_view on purpose: several call sites
+    // aggregate-initialize the first four members positionally
+    // ({sun, sky, emission, exposure}); the NSDMIs below keep those valid.
+    float sun_tint[3] = {1.0f, 1.0f, 1.0f};
+    float sky_tint[3] = {1.0f, 1.0f, 1.0f};
 };
 
 struct RenderOptions {

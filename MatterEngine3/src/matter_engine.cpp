@@ -7091,14 +7091,19 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                               impl_->manifest.lights.sun_dir[1],
                               impl_->manifest.lights.sun_dir[2]};
     lighting.sun_intensity = 1.0f;
+    // The per-channel tint rides the scalar multiplier: ONE place assembles the
+    // sun/sky colours, and every consumer (composite push constant, GI
+    // constants, the volumetric scatter pass via frame_lighting) reads them
+    // from here, so tinted direct light and tinted in-scattering cannot
+    // disagree. A white tint is bit-exact (x * 1.0f == x).
     lighting.sun_color = {
-        impl_->manifest.lights.sun_color[0] * controls.sun_multiplier,
-        impl_->manifest.lights.sun_color[1] * controls.sun_multiplier,
-        impl_->manifest.lights.sun_color[2] * controls.sun_multiplier};
+        impl_->manifest.lights.sun_color[0] * controls.sun_multiplier * controls.sun_tint[0],
+        impl_->manifest.lights.sun_color[1] * controls.sun_multiplier * controls.sun_tint[1],
+        impl_->manifest.lights.sun_color[2] * controls.sun_multiplier * controls.sun_tint[2]};
     lighting.sky_color = {
-        impl_->manifest.lights.sky_color[0] * controls.sky_multiplier,
-        impl_->manifest.lights.sky_color[1] * controls.sky_multiplier,
-        impl_->manifest.lights.sky_color[2] * controls.sky_multiplier};
+        impl_->manifest.lights.sky_color[0] * controls.sky_multiplier * controls.sky_tint[0],
+        impl_->manifest.lights.sky_color[1] * controls.sky_multiplier * controls.sky_tint[1],
+        impl_->manifest.lights.sky_color[2] * controls.sky_multiplier * controls.sky_tint[2]};
     lighting.emission_multiplier = controls.emission_multiplier;
     lighting.vol_enabled = opts.vulkan_volumetrics.enabled ? 1.0f : 0.0f;
     lighting.vol_debug_view = opts.vulkan_volumetrics.vol_debug_view;

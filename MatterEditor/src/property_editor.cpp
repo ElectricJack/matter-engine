@@ -269,6 +269,31 @@ bool draw_group(Binding& b, const char* filter, bool default_open,
     return changed;
 }
 
+void draw_lighting_contents(EditorProps& props) {
+    // Neither group is RequiresReload, so the closure is inert today; passing
+    // it anyway means a future reload-gated lighting field just works.
+    const std::function<void()>& on_apply = props.reload_request();
+
+    // One reset for the whole panel rather than the old per-group button under
+    // the lighting sliders: every group here is Scope::World, and their
+    // baselines are the same layer-2 snapshot captured at connect (S4), so
+    // "back to what the world authored" is one concept, not three.
+    if (ImGui::Button("Reset to World")) {
+        if (Binding* b = props.lighting()) reset_group(*b);
+        if (Binding* b = props.volumetrics()) reset_group(*b);
+        // WORKSTREAM-2 SEAM: add props.fog() here alongside the two above.
+    }
+    ImGui::SetItemTooltip(
+        "Restores render.lighting and render.volumetrics to the values the "
+        "world script authored at connect.");
+    ImGui::Separator();
+
+    if (Binding* b = props.lighting()) draw_group(*b, nullptr, true, &on_apply);
+    if (Binding* b = props.volumetrics())
+        draw_group(*b, nullptr, true, &on_apply);
+    // WORKSTREAM-2 SEAM: render.fog draws here, same one-liner as above.
+}
+
 void draw_tunables_contents(TunablesPanelState& state, EditorProps& props) {
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputTextWithHint("##filter", "Filter groups and fields...",
@@ -299,9 +324,7 @@ void draw_tunables_contents(TunablesPanelState& state, EditorProps& props) {
     sorted.reserve(registry.size());
     for (size_t i = 0; i < registry.size(); ++i) sorted.push_back(&registry.at(i));
     std::sort(sorted.begin(), sorted.end(), [](const Binding* a, const Binding* c) {
-        const char* pa = a->schema().path ? a->schema().path : "";
-        const char* pc = c->schema().path ? c->schema().path : "";
-        return std::strcmp(pa, pc) < 0;
+        return prop_group_order_before(a->schema(), c->schema());
     });
 
     // What a RequiresReload group's Apply invokes. The panel does not know how
@@ -309,16 +332,31 @@ void draw_tunables_contents(TunablesPanelState& state, EditorProps& props) {
     const std::function<void()>& on_apply = props.reload_request();
 
     const char* filter = state.filter[0] ? state.filter : nullptr;
+    // Category headers: the sort above already put same-category groups
+    // together, so the header is emitted whenever the first path segment
+    // changes AMONG THE ROWS THAT SURVIVED THE FILTER — a category whose every
+    // group was filtered out must not leave a dangling header behind.
+    const char* prev_path = nullptr;
+    bool any_drawn = false;
     for (Binding* b : sorted) {
         const Group& g = b->schema();
         if (!prop_filter_matches_group(filter, g)) continue;
+        if (prop_starts_new_category(prev_path, g.path)) {
+            ImGui::SeparatorText(
+                prop_category_label(prop_path_category(g.path)).c_str());
+        }
+        prev_path = g.path;
+        any_drawn = true;
         // A group matched by its own path/label shows every field; one matched
         // only through a field name shows just the matching fields.
         const bool whole_group = !filter || prop_filter_matches(filter, g.path) ||
                                  prop_filter_matches(filter, g.label);
         draw_group(*b, whole_group ? nullptr : filter, true, &on_apply);
     }
-    if (sorted.empty()) ImGui::TextDisabled("No property groups registered.");
+    if (sorted.empty())
+        ImGui::TextDisabled("No property groups registered.");
+    else if (!any_drawn)
+        ImGui::TextDisabled("No group or field matches the filter.");
 }
 
 }  // namespace viewer

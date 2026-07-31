@@ -200,16 +200,26 @@ public:
     // appears in. Same Begin/End split as draw_console_panel.
     void draw_tunables_panel(EditorProps& props);
 
-    // LOD Settings window: everything level-of-detail / draw-distance in one
-    // place, split into live controls (the camera.prefs group) and the
-    // reload-required stream.lod group (scatter rings, terrain LOD bands,
-    // heightfield ladder toggle), whose edits land in the generic props DRAFT
-    // and are committed by the generic Apply & Reload bar. `camera` supplies
-    // only the transition bars' axis scale now.
-    void draw_lod_settings_panel(matter::WorldSession* session,
-                                 EditorProps& props,
-                                 const ViewerCommands& commands,
-                                 const matter::CameraDesc& camera);
+    // Lighting window: render.lighting (incl. the sun/sky tints) and
+    // render.volumetrics, plus their shared "Reset to World". Docked with
+    // Properties/Tunables. Body lives in property_editor.cpp
+    // (draw_lighting_contents) — it is pure group drawing with no panel state.
+    void draw_lighting_panel(EditorProps& props);
+
+    // Performance window (replaces the former "LOD Settings"): every knob that
+    // trades quality for frame time, in one place —
+    //   viewer.budget, render.pom, vt.residency  (live)
+    //   camera.prefs                             (live: far plane, fly speed)
+    //   stream.lod                               (RequiresReload draft: scatter
+    //                                             rings, terrain LOD bands,
+    //                                             heightfield ladder)
+    // plus the hand-written LOD transition bars, which edit the SAME props
+    // draft the schema fields do and are committed by the generic Apply &
+    // Reload bar. `camera` supplies only the transition bars' axis scale.
+    void draw_performance_panel(matter::WorldSession* session,
+                                EditorProps& props,
+                                const ViewerCommands& commands,
+                                const matter::CameraDesc& camera);
     // Viewport banner shown while vt_rejected_variants != 0. Drawn on the
     // foreground draw list (like the simulation border tint) so it is visible
     // even when the Viewer Debug window is collapsed or buried — a rejected
@@ -319,7 +329,8 @@ public:
     void select_baked_root(uint64_t resolved_hash);
 
 private:
-    // LOD Settings panel state. The DRAFT (matter::props) is now the source of
+    // Streaming-LOD section state (Performance panel). The DRAFT
+    // (matter::props) is now the source of
     // truth for the override; this is only the decoded ring view the
     // hand-written widgets manipulate — rebuilt from the draft (or, where the
     // draft holds no override, from the session's active profile) each frame,
@@ -332,6 +343,14 @@ private:
         int drag_bands = -1;
     };
     LodSettingsState lod_settings_;
+
+    // The streaming half of the Performance panel: camera.prefs + stream.lod +
+    // the transition bars. Split out only so the panel's early-outs ("no
+    // session yet") do not have to unwind an ImGui::Begin.
+    void draw_streaming_lod_section(matter::WorldSession* session,
+                                    EditorProps& props,
+                                    const ViewerCommands& commands,
+                                    const matter::CameraDesc& camera);
 
     void build_dockspace();
     bool ensure_viewport_target(uint32_t width, uint32_t height,

@@ -128,6 +128,66 @@ void test_filter() {
           "field filtering rejects other fields");
 }
 
+// The Tunables panel groups the sorted bindings under a per-category header.
+// Both halves of that — the category a path falls in, and the order that makes
+// categories contiguous — are pure functions here so the panel needs no
+// bucketing pass and this needs no ImGui context.
+void test_tunables_categories() {
+    CHECK(viewer::prop_path_category("render.lighting") == "render",
+          "category is the first path segment");
+    CHECK(viewer::prop_path_category("stream.lod") == "stream",
+          "category: another segment");
+    CHECK(viewer::prop_path_category("render.pom.extra") == "render",
+          "category splits on the FIRST dot, not the last");
+    CHECK(viewer::prop_path_category("standalone") == "standalone",
+          "a dotless path is its own category");
+    CHECK(viewer::prop_path_category(nullptr).empty(),
+          "a null path has no category");
+    CHECK(viewer::prop_path_category("").empty(),
+          "an empty path has no category");
+
+    CHECK(viewer::prop_category_label("render") == "Render",
+          "category label title-cases the segment");
+    CHECK(viewer::prop_category_label("vt") == "VT",
+          "a two-letter segment is an acronym");
+    CHECK(viewer::prop_category_label("world") == "World", "category label: world");
+    CHECK(viewer::prop_category_label("") == "Other",
+          "an empty category still gets a header");
+
+    // Ordering: strcmp on path, which is what makes "did the category change"
+    // a single comparison against the previous row.
+    CHECK(viewer::prop_group_order_before(schema(), viewer::streaming_lod_group()),
+          "groups order by path (render < stream)");
+    CHECK(!viewer::prop_group_order_before(viewer::streaming_lod_group(), schema()),
+          "group ordering is antisymmetric");
+
+    CHECK(viewer::prop_starts_new_category(nullptr, "render.lighting"),
+          "the first row always opens a category");
+    CHECK(!viewer::prop_starts_new_category("render.lighting", "render.volumetrics"),
+          "a same-category row does not repeat the header");
+    CHECK(viewer::prop_starts_new_category("render.volumetrics", "stream.lod"),
+          "a category change opens a new header");
+
+    // Walk a realistic sorted listing and count the headers it produces.
+    const char* paths[] = {"camera.prefs",     "render.lighting",
+                           "render.pom",       "render.volumetrics",
+                           "stream.lod",       "viewer.budget",
+                           "vt.residency",     "world.props"};
+    for (size_t i = 1; i < sizeof(paths) / sizeof(paths[0]); ++i)
+        CHECK(std::strcmp(paths[i - 1], paths[i]) < 0,
+              "listing fixture is in the panel's sort order");
+    int headers = 0;
+    const char* prev = nullptr;
+    for (const char* p : paths) {
+        if (viewer::prop_starts_new_category(prev, p)) ++headers;
+        prev = p;
+    }
+    // camera, render, stream, viewer, vt, world — eight groups, six headers,
+    // because render.lighting/pom/volumetrics share one.
+    CHECK(headers == 6,
+          "one header per distinct category, none repeated");
+}
+
 void test_find_field() {
     CHECK(viewer::prop_find_field(schema(), "steps") == &field("steps"),
           "prop_find_field returns the described field");
@@ -260,6 +320,7 @@ int main() {
     test_format();
     test_paths_and_labels();
     test_filter();
+    test_tunables_categories();
     test_find_field();
     test_lod_ring_round_trip();
     test_dynamic_group_renders_generically();
