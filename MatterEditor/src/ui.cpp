@@ -202,6 +202,7 @@ bool Ui::prepare_vulkan_backend(const matter::VulkanFrame& frame,
 bool Ui::begin_frame(const matter::VulkanFrame& frame, std::string& error) {
     if (!prepare_vulkan_backend(frame, error)) return false;
     gizmo_submitted_ = false;
+    rendered_to_viewport_target_ = false;
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
@@ -222,7 +223,20 @@ bool Ui::end_frame(const matter::VulkanFrame& frame, std::string& error) {
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     attachment.imageView = frame.swapchain_image_view;
     attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    attachment.loadOp = has_viewport_target()
+    // CLEAR only when the 3D went OFFSCREEN this frame -- then the swapchain
+    // holds nothing worth keeping and ImGui repaints it, viewport image and
+    // all. When the 3D rendered straight to the swapchain (UI hidden, or the
+    // viewport target failed to allocate) it must LOAD, or ImGui's pass wipes
+    // the frame that was just drawn.
+    //
+    // This used to key on has_viewport_target(), which asks whether the target
+    // OBJECT exists rather than whether it was USED. The two only agreed
+    // because the UI-hidden path was reachable only via MATTER_HIDE_UI at
+    // startup, where no target had ever been created. F11 toggles it at
+    // runtime, leaving a live rt_image_ from before the toggle: the 3D went to
+    // the swapchain, the stale target still said CLEAR, and presentation mode
+    // rendered black.
+    attachment.loadOp = rendered_to_viewport_target_
                             ? VK_ATTACHMENT_LOAD_OP_CLEAR
                             : VK_ATTACHMENT_LOAD_OP_LOAD;
     attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -479,11 +493,23 @@ matter::VulkanFrame Ui::viewport_render_frame(const matter::VulkanFrame& frame,
     vp_frame.swapchain_image = rt_image_;
     vp_frame.swapchain_image_view = rt_view_;
     vp_frame.extent = {rt_width_, rt_height_};
+    // Only this path actually redirects the 3D pass offscreen. Both early
+    // returns above hand back the swapchain frame, and end_frame has to be
+    // able to tell the difference.
+    rendered_to_viewport_target_ = true;
     return vp_frame;
 }
 
 void Ui::transition_viewport_for_sampling(VkCommandBuffer cmd) {
     if (rt_image_ == VK_NULL_HANDLE) return;
+    // The barrier below declares oldLayout = COLOR_ATTACHMENT_OPTIMAL, which is
+    // only true if the 3D pass actually rendered into this target this frame.
+    // In presentation mode (F11) a stale target survives the toggle while the
+    // 3D goes straight to the swapchain, so the image is still
+    // SHADER_READ_ONLY_OPTIMAL from the last UI frame and transitioning it
+    // would be a layout mismatch. main calls this unconditionally every frame,
+    // so the guard belongs here.
+    if (!rendered_to_viewport_target_) return;
     VkImageMemoryBarrier2 to_read{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     to_read.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     to_read.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;

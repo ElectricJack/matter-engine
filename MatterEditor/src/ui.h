@@ -328,6 +328,13 @@ private:
     bool gizmo_submitted_ = false;
     bool viewport_hovered_ = false;
     bool hide_ui_ = false;
+    // Did the 3D pass render into the offscreen viewport target THIS frame?
+    // Distinct from has_viewport_target(), which only says the target object
+    // exists: viewport_render_frame hands back the swapchain frame unchanged
+    // when the UI is hidden or when ensure_viewport_target fails, and in both
+    // cases a stale rt_image_ from an earlier frame can still be alive. This
+    // is the flag end_frame's load-op must key on -- see the note there.
+    bool rendered_to_viewport_target_ = false;
     ViewportRect viewport_rect_{};
     VkImage rt_image_ = VK_NULL_HANDLE;
     VkImageView rt_view_ = VK_NULL_HANDLE;
