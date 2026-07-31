@@ -113,6 +113,12 @@ void CameraController::update(GLFWwindow* window, float dt,
     // pre-warp position — the same displacement is differenced against the
     // centre again and again and the view accelerates without the user
     // moving the mouse.
+    // Pick up a Raw mouse motion toggle without needing a capture cycle: the
+    // whole reason it is a preference is so its effect on feel can be A/B'd,
+    // and an A/B that requires two TAB presses between samples is not one.
+    if (raw_motion_applied_ != prefs.raw_mouse_motion)
+        apply_raw_motion(window, prefs.raw_mouse_motion);
+
     double x = 0.0, y = 0.0;
     glfwGetCursorPos(window, &x, &y);
     if (first_mouse_) {
@@ -149,22 +155,30 @@ void CameraController::update(GLFWwindow* window, float dt,
                        prefs.look_sensitivity, prefs.boost_multiplier);
 }
 
-void CameraController::set_capture(GLFWwindow* window, bool capture) {
+void CameraController::apply_raw_motion(GLFWwindow* window, bool enable) {
+    // Raw motion takes the device's own deltas and skips the desktop pointer
+    // pipeline (acceleration curves, the RDP pointer channel, per-monitor
+    // scaling), so free-fly look stops depending on how faithfully an indirect
+    // display reproduces cursor positions. Unsupported on some
+    // platforms/backends; glfwRawMouseMotionSupported reports that, and there
+    // we simply never turn it on.
+    if (!window || !glfwRawMouseMotionSupported()) return;
+    glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION,
+                     enable ? GLFW_TRUE : GLFW_FALSE);
+    raw_motion_applied_ = enable;
+}
+
+void CameraController::set_capture(GLFWwindow* window, bool capture,
+                                   bool raw_motion) {
     captured_ = capture;
     first_mouse_ = true;
     if (!window) return;
     glfwSetInputMode(window, GLFW_CURSOR,
                      capture ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
-    // Raw motion must be set AFTER the cursor is disabled — GLFW only honours
-    // GLFW_RAW_MOUSE_MOTION while the cursor is in disabled mode. Raw motion
-    // takes the device's own deltas and skips the desktop pointer pipeline
-    // (acceleration curves, the RDP pointer channel, per-monitor scaling), so
-    // free-fly look no longer depends on how faithfully an indirect display
-    // reproduces cursor positions. Unsupported on some platforms/backends;
-    // glfwRawMouseMotionSupported reports that and we simply leave it off.
-    if (glfwRawMouseMotionSupported())
-        glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION,
-                         capture ? GLFW_TRUE : GLFW_FALSE);
+    // ORDER IS LOAD-BEARING: raw motion is applied AFTER the cursor mode,
+    // because GLFW only honours GLFW_RAW_MOUSE_MOTION while the cursor is
+    // disabled. On release we always clear it, whatever the preference says.
+    apply_raw_motion(window, capture && raw_motion);
 }
 
 } // namespace viewer

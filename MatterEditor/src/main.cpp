@@ -1853,7 +1853,8 @@ int main() {
         camera.far_plane = camera_prefs.far_plane;
         if (key_pressed(window, GLFW_KEY_TAB, tab_down)) {
             camera_capture = !camera_capture;
-            camera_controller.set_capture(window, camera_capture);
+            camera_controller.set_capture(window, camera_capture,
+                                          camera_prefs.raw_mouse_motion);
         }
         // Issue capture hotkeys. Handled HERE, at the GLFW level, rather than
         // beside the ImGui hotkeys below: ui.cpp enables
@@ -3317,7 +3318,7 @@ int main() {
     if (cmd_fd >= 0) close(cmd_fd);
     if (fifo_path) unlink(fifo_path);
 #endif
-    if (camera_capture) camera_controller.set_capture(window, false);
+    if (camera_capture) camera_controller.set_capture(window, false, false);
     // Flush a debounced User-scope autosave that the last frames did not reach.
     // World scope stays explicit-save (plus the automatic flush at every
     // world-change seam) — a save-on-exit prompt is Stage 3.

@@ -210,6 +210,12 @@ const auto s_camera = matter::props::group<CameraPrefs>(
         .units("rad/px")
         .doc("Free-fly mouse look, radians of rotation per pixel of cursor "
              "motion."),
+    prop(&CameraPrefs::raw_mouse_motion, "raw_mouse_motion")
+        .label("Raw mouse motion")
+        .doc("Read free-fly look from raw device deltas instead of the desktop "
+             "pointer. Steadier over Remote Desktop, and skips Windows pointer "
+             "acceleration - turn it off to get the accelerated response back. "
+             "Applies live, mid-flight."),
     prop(&CameraPrefs::orbit_step, "orbit_step")
         .label("Orbit step").range(0.002f, 0.5f).units("rad").log()
         .doc("Camera panel orbit buttons: rotation per repeat tick."),
