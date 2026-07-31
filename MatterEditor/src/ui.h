@@ -304,7 +304,10 @@ public:
                                const part_graph_snapshot::Snapshot* snapshot,
                                SpecializedEditors& specialized,
                                const matter::Float3& camera_position);
-    void draw_console_panel(ConsoleLog& log);
+    // `props` is only used to note_panel_home("console.filters", "Console")
+    // for Tunables' de-duplication checkbox — console.filters is edited
+    // directly through console_state_, never through a Binding.
+    void draw_console_panel(ConsoleLog& log, EditorProps& props);
     // Draws the ImGuizmo transform gizmo for the primary selection (Task 10).
     // No-op outside Edit/Pause or when nothing selectable is chosen. Sets
     // gizmo_submitted_ so camera_input_allowed() can suppress camera input

@@ -580,8 +580,14 @@ void Ui::draw_properties_panel(const SelectionSet& selection, EditorModel& edito
     ImGui::End();
 }
 
-void Ui::draw_console_panel(ConsoleLog& log) {
+void Ui::draw_console_panel(ConsoleLog& log, EditorProps& props) {
     ImGui::Begin("Console");
+    // console.filters is edited directly through the ConsolePanelState&
+    // reference (draw_console_contents), never through draw_group — but it
+    // is the exact same bound struct, so Tunables must still treat this as
+    // the group's home. See EditorProps::panel_home.
+    if (matter::props::Binding* b = props.console())
+        props.note_panel_home(b->schema().path, "Console");
     draw_console_contents(console_state_, log);
     ImGui::End();
 }
@@ -652,6 +658,51 @@ void Ui::draw_performance_panel(matter::WorldSession* session,
                                 EditorProps& props,
                                 const ViewerCommands& commands,
                                 const matter::CameraDesc& camera) {
+    // ---- Ownership declarations: UNCONDITIONAL, before Begin() ------------
+    //
+    // Every group this panel owns, claimed up front — deliberately BEFORE the
+    // `if (!ImGui::Begin(...))` gate below, not interleaved with the
+    // draw_group() calls the way a first attempt at this put them.
+    //
+    // Why it has to be up here: Performance is docked in the SAME tab group
+    // as Tunables (Properties/Viewer Debug/Performance/Lighting/Tunables all
+    // share one dock node — see the layout comment below). ImGui::Begin()
+    // returns FALSE for a docked window that is not the currently SELECTED
+    // tab in its node, which is exactly the case whenever the user is
+    // actually looking at Tunables — the scenario this whole issue is about.
+    // A note_panel_home call gated behind that Begin() would then never fire
+    // while Tunables is the visible tab, so the checkbox would silently stop
+    // hiding Performance's groups the moment it was needed, which was caught
+    // by replaying issue dd98763c's own shot with the Tunables tab forced
+    // into focus: every Performance-owned group reappeared even though the
+    // checkbox was on. Declaring ownership here instead means it runs every
+    // frame main.cpp calls this function — which is every frame, regardless
+    // of which docked tab ImGui is currently showing — so the claim tracks
+    // "does this panel exist and own this group" rather than "did this exact
+    // pixel get painted this frame". draw_lighting_contents and
+    // draw_debug_panel happen not to gate on Begin() at all, so they were
+    // already immune to this; Performance is the one panel here that does.
+    if (matter::props::Binding* b = props.budget())
+        props.note_panel_home(b->schema().path, "Performance");
+    if (matter::props::Binding* b = props.pom())
+        props.note_panel_home(b->schema().path, "Performance");
+    if (matter::props::Binding* b = props.vt_budgets())
+        props.note_panel_home(b->schema().path, "Performance");
+    if (matter::props::Binding* b = props.vt_enrich())
+        props.note_panel_home(b->schema().path, "Performance");
+    if (matter::props::Binding* b = props.stream_runtime())
+        props.note_panel_home(b->schema().path, "Performance");
+    if (matter::props::Binding* b = props.draw_overrides())
+        props.note_panel_home(b->schema().path, "Performance");
+    // camera.prefs and stream.lod are drawn by draw_streaming_lod_section
+    // below, but claimed HERE rather than there for the same reason as
+    // everything else on this list: that section runs after the Begin() gate
+    // too.
+    if (matter::props::Binding* b = props.camera())
+        props.note_panel_home(b->schema().path, "Performance");
+    if (matter::props::Binding* b = props.streaming())
+        props.note_panel_home(b->schema().path, "Performance");
+
     // Renamed from "LOD Settings": an existing imgui.ini keyed on the old name
     // no longer matches, so this window opens floating for pre-existing
     // layouts and docked (right node, tabbed with Properties/Tunables) for
@@ -663,7 +714,7 @@ void Ui::draw_performance_panel(matter::WorldSession* session,
     }
 
     // ---- Live quality/throughput dials -----------------------------------
-    // One binding each; the Tunables panel shows the same bindings. A panel
+    // One binding each; ownership was already declared above. A panel
     // chooses WHERE a group appears, it does not own the widgets.
     if (matter::props::Binding* b = props.budget()) draw_group(*b);
     if (matter::props::Binding* b = props.pom()) draw_group(*b, nullptr, false);
@@ -680,8 +731,13 @@ void Ui::draw_performance_panel(matter::WorldSession* session,
     // ---- Per-module draw overrides (view-time filter) --------------------
     // Sits with the other frame-time dials rather than in the streaming
     // section below: these apply immediately and never require a reload.
+    // Header defaults OPEN now (issue editor-draw-overrides-panel-home,
+    // absorbed into dd98763c): Tunables no longer shows Draw Overrides by
+    // default, so a closed header here would have made the group
+    // unreachable at a glance rather than merely one extra click away.
     if (matter::props::Binding* b = props.draw_overrides()) {
-        if (ImGui::CollapsingHeader("Draw Overrides###draw.overrides")) {
+        if (ImGui::CollapsingHeader("Draw Overrides###draw.overrides",
+                                    ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::SameLine();
             ImGui::TextDisabled("[World]%s", b->dirty() ? " *" : "");
             draw_draw_overrides_section(*b);
@@ -705,8 +761,9 @@ void Ui::draw_streaming_lod_section(matter::WorldSession* session,
     // first and a viewpoint setting second, and because it is the axis scale
     // the transition bars below are drawn against.
     ImGui::SeparatorText("Dynamic (applies immediately)");
-    if (matter::props::Binding* cam = props.camera())
-        draw_group_fields(*cam);
+    // camera.prefs' note_panel_home lives in draw_performance_panel's
+    // unconditional preamble, not here — see that comment for why.
+    if (matter::props::Binding* cam = props.camera()) draw_group_fields(*cam);
 
     // ---- Streaming profile: consumed once at world connect ---------------
     ImGui::SeparatorText("Streaming (requires world reload)");
@@ -1068,7 +1125,21 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
     // WHERE a group appears; it never owned the widgets):
     //   render.lighting, render.volumetrics -> the Lighting panel
     //   viewer.budget, render.pom           -> the Performance panel
-    // All of them still appear in Tunables, which enumerates the registry.
+    // Tunables no longer repeats them by default (issue dd98763c): each
+    // group is hidden there once ITS panel notes ownership at its own draw
+    // call, which is what the note_panel_home calls below (and the ones in
+    // draw_performance_panel / draw_lighting_contents / draw_console_panel)
+    // do. This replaces the static "moved to X" comment that used to live
+    // here — that mapping had already drifted once, which is why it is a
+    // fact panels declare now instead of a list maintained by hand.
+    //
+    // resolver_choice / debug_view_mode / vol_debug_view below are the THREE
+    // fields viewer.debug describes, edited here as raw Combos (not through
+    // draw_group — main.cpp copies debug_view_mode/vol_debug_view onward into
+    // the render structs every frame, so the registered struct member IS the
+    // widget's backing value, just not through the generic renderer).
+    if (matter::props::Binding* b = props.viewer_debug())
+        props.note_panel_home(b->schema().path, "Viewer Debug");
     const char* resolvers[] = { "PassThrough", "SectorLod" };
     ImGui::Combo("Resolver", &s.resolver_choice, resolvers, 2);
     if (ImGui::Button("Reload world") && commands.reload) commands.reload();
@@ -1084,6 +1155,13 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
         const char* vol_views[] = { "Off", "Density", "Scatter", "Integrated" };
         ImGui::Combo("Vol debug##vd", &s.vol_debug_view, vol_views, 4);
     }
+    // overlay.animation: also edited (same struct, hand-written widgets, not
+    // draw_group) by the Animation panel and Bake Lab. Claiming it HERE too
+    // is harmless — note_panel_home just overwrites the same "claimed" fact
+    // with a different panel name, and Tunables only cares whether panel_home
+    // returns non-null, not which panel it names last.
+    if (matter::props::Binding* b = props.animation_overlay())
+        props.note_panel_home(b->schema().path, "Viewer Debug");
     draw_animation_debug_overlay_controls(s.animation_overlay);
     if (s.animation_overlay.enabled) {
         if (!s.animation_debug_query_ok)

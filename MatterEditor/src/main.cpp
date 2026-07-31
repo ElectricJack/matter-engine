@@ -2170,7 +2170,7 @@ int main() {
                                         field_commands, component_commands, sim_control.mode(),
                                         &cached_snapshot, specialized_editors, camera.position);
                 ui.draw_viewport_window();
-                ui.draw_console_panel(console_log);
+                ui.draw_console_panel(console_log, editor_props);
                 ui.draw_debug_panel(stats, viewer_commands, editor_props);
                 ui.draw_tunables_panel(editor_props);
                 ui.draw_lighting_panel(editor_props);

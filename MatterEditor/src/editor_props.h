@@ -17,6 +17,7 @@
 
 #include <functional>
 #include <string>
+#include <unordered_map>
 
 namespace viewer {
 
@@ -120,6 +121,51 @@ public:
     // The per-module draw-override group (draw.overrides), or null before the
     // first connect / for a world with no modules.
     matter::props::Binding* draw_overrides();
+    // console.filters — Scope::User. Not otherwise exposed because the
+    // console panel edits ConsolePanelState by reference directly (S3); this
+    // accessor exists only so draw_console_panel can note_panel_home() below.
+    matter::props::Binding* console();
+    // overlay.animation — Scope::Session. Edited by hand-written widgets
+    // (draw_animation_debug_overlay_controls) in Viewer Debug, the Animation
+    // panel and Bake Lab, never through draw_group. Same reason as console().
+    matter::props::Binding* animation_overlay();
+    // viewer.debug — Scope::Session. resolver_choice / debug_view_mode /
+    // vol_debug_view, edited by the raw Combo widgets in Viewer Debug. Same
+    // reason as console().
+    matter::props::Binding* viewer_debug();
+
+    // ---- Tunables de-duplication (issue dd98763c) --------------------------
+    //
+    // Which OTHER window already shows a given group, as of the frame that
+    // just finished drawing. This is the "cheapest honest mechanism" the
+    // triage asked for: rather than a static table mapping group paths to
+    // panel names (which has already rotted once — see the comments this
+    // replaces at ui.cpp's old draw_debug_panel note and
+    // property_editor.cpp:435-438), every panel that actually draws a group
+    // calls note_panel_home() at its own draw call site. A group is "claimed"
+    // because a panel drew it THIS FRAME, not because some list says it
+    // should be — so a panel deleted, renamed, or collapsed away
+    // automatically stops claiming its groups, and Tunables un-hides them
+    // again on its own.
+    //
+    // ORDERING: main.cpp's panel draw sequence is
+    //   Console, Viewer Debug, TUNABLES, Lighting, ..., Performance
+    // — Tunables runs BEFORE Lighting and Performance claim anything this
+    // frame. Reordering those calls was rejected (the recommendation warns it
+    // can perturb ImGui's default dock/tab ordering for a fresh imgui.ini,
+    // and there is no reason to risk that for a cosmetic de-dup checkbox).
+    // Instead this is a one-frame-lagged double buffer: note_panel_home()
+    // always writes into the "next" buffer that panels are filling THIS
+    // frame, and panel_home() always reads the "current" buffer that was
+    // fully populated by every panel LAST frame. tick() (called once per
+    // frame, before any panel draws — see main.cpp) swaps them. The result is
+    // one frame of latency on a newly-added claim, invisible in practice
+    // (the panel layout is static; this only matters for the first frame or
+    // two after startup), in exchange for zero risk to draw order.
+    void note_panel_home(const char* group_path, const char* panel_name);
+    // The panel name that claimed `group_path` as of the last completed
+    // frame, or nullptr when no panel has (Tunables is then its only home).
+    const char* panel_home(const char* group_path) const;
 
     // The live (applied, not draft) streaming override. main.cpp reads this
     // right after engine->open_world and hands it to
@@ -157,6 +203,12 @@ private:
     matter::props::DynamicGroup* world_props_ = nullptr;
     // Non-owning: the session owns it (WorldSession::draw_overrides()).
     matter::props::DynamicGroup* draw_overrides_ = nullptr;
+    // Double buffer for note_panel_home/panel_home — see the header comment
+    // above panel_home(). panel_home_read_ selects which slot is the
+    // "current" (fully-populated, last frame's) read side; the other slot is
+    // what THIS frame's panels are writing into.
+    std::unordered_map<std::string, std::string> panel_home_buf_[2];
+    int panel_home_read_ = 0;
     std::function<void()> reload_request_;
     std::string user_path_;
     std::string world_path_;
