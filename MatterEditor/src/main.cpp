@@ -1345,6 +1345,23 @@ int main() {
     // install), so sharing a flag would silently change when volumetrics
     // adopts.
     bool apply_world_fog_after_bake = !replay.valid;
+    // Sun orientation/size gets its own one-shot for the same reason fog does,
+    // and it must land BEFORE EditorProps::on_world_connected snapshots the
+    // render.lighting baseline -- otherwise "Reset to World" would restore the
+    // compiled default angles instead of the sun this world authored.
+    //
+    // NOT skipped in a replay, which is where this parts company with fog and
+    // volumetrics above. Seeding is a no-op by construction here: the seeded
+    // angles EQUAL the authored ones, so the engine's equality test passes and
+    // it copies the authored sun_direction through untouched -- a replay stays
+    // pixel-identical to a build with no sun controls at all. Fog has no such
+    // test, which is why it has to abstain instead.
+    //
+    // Seeding in replays is also what makes the feature verifiable: with no
+    // scriptable input on Windows, MATTER_SUN_ELEVATION_DEG et al (the props
+    // env layer, applied after the seed) are the only way to capture a shot at
+    // a different sun, and they need a seeded override to land on.
+    bool apply_world_sun_after_bake = true;
     // Does ViewerStats::fog hold this world's authored fog yet? Only then may
     // RenderOptions::use_fog_override be set. Before the adoption below,
     // stats.fog is the compiled default and the session's own authored_fog_ is
@@ -1352,6 +1369,11 @@ int main() {
     // volumetrics is not adopted there), so a replay keeps rendering the
     // engine's authored fog and stays pixel-identical to a pre-WS2 build.
     bool fog_override_ready = false;
+    // Does ViewerStats::lighting hold this world's authored sun angles yet?
+    // Same contract as fog_override_ready above: until it does, the angles in
+    // the struct describe some other world (or nothing at all) and must not be
+    // allowed to aim this one.
+    bool sun_override_ready = false;
     const bool test_resize = std::getenv("MATTER_TEST_RESIZE") != nullptr;
     if (replay.valid) {
         // The toggles that change pixels. DLSS is deliberately NOT restored: it
@@ -2465,6 +2487,27 @@ int main() {
                         apply_world_volumetrics_after_bake = false;
                     }
                 }
+                // Layer 2 for the sun half of render.lighting. Same ordering
+                // rule as fog: strictly before on_world_connected below.
+                //
+                // The engine derived these angles from the same WorldSettings
+                // it built the manifest from, so seeding them here leaves the
+                // override EQUAL to the authored sun -- and the engine's
+                // equality test then passes the authored Float3 through
+                // without a round trip through trig. Dragging either slider
+                // breaks the equality and the conversion takes over.
+                if (bake_ready && apply_world_sun_after_bake) {
+                    matter::SunAngles world_sun;
+                    if (session->world_sun(world_sun)) {
+                        stats.lighting.sun_azimuth_deg = world_sun.azimuth_deg;
+                        stats.lighting.sun_elevation_deg =
+                            world_sun.elevation_deg;
+                        stats.lighting.sun_angular_diameter_deg =
+                            world_sun.angular_diameter_deg;
+                        sun_override_ready = true;
+                        apply_world_sun_after_bake = false;
+                    }
+                }
                 // Property connect seam (S4): layer 2 has now landed in the
                 // bound structs, so snapshot it as the baseline and only then
                 // apply the world override file and the env layer. Must stay
@@ -2522,6 +2565,13 @@ int main() {
         // world and its own authored fog.
         options.use_fog_override = fog_override_ready;
         options.fog_override = stats.fog;
+        // Sun aim/size. Only once the angles actually describe THIS world --
+        // see sun_override_ready. The shadow-ray count rides along because it
+        // is the knob that makes an enlarged sun visible in shadows at all
+        // (rt_shadow.rgen collapses the cone to a hard ray at 1 sample).
+        options.use_sun_override = sun_override_ready;
+        options.vulkan_ray_tracing.samples =
+            static_cast<uint32_t>(stats.lighting.sun_shadow_samples);
         options.vulkan_tileset_pom = stats.tileset_pom;
         options.vulkan_ray_tracing.enabled =
             vulkan->ray_tracing_available() && !disable_vulkan_rt;
@@ -2551,6 +2601,10 @@ int main() {
             // fog, same reasoning as force_lod above but in the other
             // direction.
             options.use_fog_override = false;
+            // Identical reasoning for the sun: the angles in stats.lighting
+            // were seeded from the PRODUCTION world, and the isolation session
+            // has its own world with its own authored sun_direction.
+            options.use_sun_override = false;
         }
         // Bake Lab/Workbench per-frame work plus the session event drain.
         phase.lab = phase_split();
@@ -3118,6 +3172,10 @@ int main() {
             // authored fog is the only truthful source.
             apply_world_fog_after_bake = !replay.valid;
             fog_override_ready = false;
+            // prepare_world_reload drops stats.lighting to the compiled
+            // default too, so the same rule applies to the sun angles.
+            apply_world_sun_after_bake = !replay.valid;
+            sun_override_ready = false;
             // set_world BEFORE the reset: it flushes this world's edits by
             // diffing against the baseline, which the reset is about to erase.
             editor_props.set_world(worlds[stats.world_current].project_dir,
@@ -3168,6 +3226,8 @@ int main() {
                 // reload seam above.
                 apply_world_fog_after_bake = true;
                 fog_override_ready = false;
+                apply_world_sun_after_bake = true;
+                sun_override_ready = false;
                 apply_world_resolver_defaults(worlds[selected].world_name, active_radius,
                                               min_projected_size, stats);
             }

@@ -448,9 +448,23 @@ struct VkSceneLighting {
     float camera_y = 0.0f;
     float vol_cloud_top = 0.0f;
     float vol_height_layer = 0.0f;
-    float vol_pad = 0.0f;
+    // Angular DIAMETER of the sun in degrees — the one authored/edited number
+    // behind the sky disc, the RT reflection prefilter and the shadow cone.
+    // matter/sun_angles.h owns the calibration; the default reproduces the
+    // magic constants those three used to carry, exactly.
+    float sun_angular_diameter_deg = matter::kSunAngularDiameterDefaultDeg;
+    // DERIVED from the field above by set_lighting — do not assign by hand.
+    // cos of the disc's outer (fully faded) and inner (full brightness) radii,
+    // in the order smoothstep wants: smoothstep(cos_edge, cos_core, dot()).
+    // Computed on the CPU because a GPU cos() is only good to a few ULP and a
+    // few ULP at 0.9997 moves the visible edge of the disc.
+    float sun_disc_cos_edge = 0.99975f;
+    float sun_disc_cos_core = 0.99995f;
 };
-static_assert(sizeof(VkSceneLighting) == 112);
+// Two floats longer than the 112 this was (vol_pad became a real field and two
+// more followed): the composite push constant grew with the sun-size fields
+// above. composite.frag's SceneLighting block must match member for member.
+static_assert(sizeof(VkSceneLighting) == 120);
 
 struct VkSceneUploadCounters {
     uint64_t vertex_uploads = 0;

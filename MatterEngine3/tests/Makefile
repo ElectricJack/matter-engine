@@ -602,6 +602,12 @@ BAKETRACE_CPP    = bake_trace_tests.cpp ../src/bake_trace.cpp
 # Deliberately excludes ../src/props/props_file.cpp: the file helpers pull in
 # part_asset_v2.cpp and its whole BLAS/TLAS closure (and hence raylib), which
 # this suite has no use for. The editor build is what link-checks that TU.
+# Sun direction convention + angular size (matter/sun_angles.h). Header-only
+# subject: this suite compiles ONE .cpp and links nothing else.
+SUNANGLES_TARGET = build/sun_angles_tests
+SUNANGLES_CPP    = sun_angles_tests.cpp
+SUNANGLES_HEADERS = check.h ../include/matter/sun_angles.h
+
 PROPS_TARGET = build/props_tests
 PROPS_CPP    = props_tests.cpp ../src/props/props.cpp ../src/util/json_doc.cpp
 PROPS_HEADERS = check.h ../include/matter/props.h ../include/matter/json_doc.h
@@ -1305,7 +1311,7 @@ def_CPP_SRCS := $(sort \
     $(SHADER_SOURCE_CPP) \
     $(ASYNCQ_CPP) \
     $(BAKETRACE_CPP) \
-    $(PROPS_CPP) \
+    $(SUNANGLES_CPP)     $(PROPS_CPP) \
     $(PROPERTY_EDITOR_CPP) \
     $(DRAWOVERRIDES_CPP) \
     $(TILESETGTEX_CPP) \
@@ -1478,6 +1484,7 @@ POLYTRI_OBJS = $(call obj_list,def,$(POLYTRI_CPP))
 SHADER_SOURCE_OBJS = $(call obj_list,def,$(SHADER_SOURCE_CPP))
 ASYNCQ_OBJS = $(call obj_list,def,$(ASYNCQ_CPP))
 BAKETRACE_OBJS = $(call obj_list,def,$(BAKETRACE_CPP))
+SUNANGLES_OBJS = $(call obj_list,def,$(SUNANGLES_CPP))
 PROPS_OBJS = $(call obj_list,def,$(PROPS_CPP))
 PROPERTY_EDITOR_OBJS = $(call obj_list,def,$(PROPERTY_EDITOR_CPP))
 DRAWOVERRIDES_OBJS = $(call obj_list,def,$(DRAWOVERRIDES_CPP))
@@ -1536,7 +1543,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sector-profile run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sector-profile run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -2205,6 +2212,13 @@ $(BAKETRACE_TARGET): $(BAKETRACE_OBJS)
 
 run-baketrace: $(BAKETRACE_TARGET)
 	./$(BAKETRACE_TARGET)
+
+# Sun angles. Pure math over a header; empty link closure.
+$(SUNANGLES_TARGET): $(SUNANGLES_OBJS)
+	$(CC) $(SUNANGLES_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
+
+run-sun-angles: $(SUNANGLES_TARGET)
+	./$(SUNANGLES_TARGET)
 
 # Property system (Stage 1). No raylib/GL/Vulkan in the closure, so no LDFLAGS.
 $(PROPS_TARGET): $(PROPS_OBJS)

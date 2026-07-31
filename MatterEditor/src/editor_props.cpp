@@ -55,7 +55,52 @@ const auto s_lighting = matter::props::group<matter::VulkanLightingOverrides>(
         .doc("Per-channel tint on the authored sun colour. White = unchanged."),
     prop(&matter::VulkanLightingOverrides::sky_tint, "sky_tint")
         .label("Sky tint").color()
-        .doc("Per-channel tint on the authored sky colour. White = unchanged."));
+        .doc("Per-channel tint on the authored sky colour. White = unchanged."),
+    // The four below carry MATTER_SUN_* env names (layer 5) for a reason
+    // beyond convenience: the editor has no scriptable input on Windows (the
+    // FIFO command path is POSIX-only), so an env override is the ONLY way to
+    // drive a headless MATTER_REPLAY capture at a different sun. Every
+    // before/after image proving these controls work was taken that way.
+    //
+    // Where the sun is. LIVE, like everything else in this group: the engine
+    // consumes RenderOptions::vulkan_lighting once per frame, so a drag lands
+    // on the next one -- no reload path, no bake.
+    //
+    // These two are seeded at every connect from what the world authored
+    // (main.cpp, at BakeFinished, before on_world_connected captures the
+    // baseline). That ordering is the whole reason "Reset to World" restores
+    // the world's own sun rather than the compiled default -- and it is also
+    // what lets the engine recognise an untouched pair and skip the
+    // angles->vector conversion entirely.
+    prop(&matter::VulkanLightingOverrides::sun_azimuth_deg, "sun_azimuth_deg")
+        .label("Sun azimuth").range(-180.0f, 180.0f).units("deg")
+        .env("MATTER_SUN_AZIMUTH_DEG")
+        .doc("Compass bearing OF THE SUN in the XZ plane: 0 = toward -Z, "
+             "+90 = toward +X, +/-180 = toward +Z."),
+    prop(&matter::VulkanLightingOverrides::sun_elevation_deg, "sun_elevation_deg")
+        .label("Sun elevation").range(-90.0f, 90.0f).units("deg")
+        .env("MATTER_SUN_ELEVATION_DEG")
+        .doc("Height of the sun above the horizon. +90 is directly overhead "
+             "(light straight down); negative puts it below the horizon."),
+    prop(&matter::VulkanLightingOverrides::sun_angular_diameter_deg,
+         "sun_angular_diameter_deg")
+        .label("Sun size")
+        .range(matter::kSunAngularDiameterMinDeg,
+               matter::kSunAngularDiameterMaxDeg)
+        .units("deg").log()
+        .env("MATTER_SUN_SIZE_DEG")
+        .doc("Angular diameter of the sun. 0.53 is the real sun and is the "
+             "size the sky disc, the reflection prefilter and the shadow cone "
+             "were all originally tuned at. Bigger = a bigger disc and softer "
+             "shadow edges (raise Shadow samples to see the penumbra)."),
+    prop(&matter::VulkanLightingOverrides::sun_shadow_samples,
+         "sun_shadow_samples")
+        .label("Shadow samples").range(1.0f, 16.0f)
+        .env("MATTER_SUN_SHADOW_SAMPLES")
+        .doc("Sun shadow rays per pixel. At 1 (the default) the ray is hard "
+             "and Sun size has no effect on shadows at all; the cone only "
+             "resolves into a penumbra with several rays. Costs GPU time "
+             "linearly."));
 
 const auto s_volumetrics = matter::props::group<matter::VulkanVolumetricsSettings>(
     "render.volumetrics", "Volumetrics",

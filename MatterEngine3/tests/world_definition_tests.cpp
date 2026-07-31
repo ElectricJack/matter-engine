@@ -472,6 +472,135 @@ class ThrowingWorld extends World {
 // Fog extraction tests (Task 4: volumetrics)
 // ---------------------------------------------------------------------------
 
+// --- Sun authoring ---------------------------------------------------------
+// `lights.sun.dir` is the original spelling and MUST keep working byte for
+// byte; `azimuth`/`elevation`/`size` are the additions. See
+// matter/sun_angles.h for the convention these assert.
+void test_sun_dir_authoring_is_unchanged() {
+    Fixture fixture;
+    const fs::path path = fixture.write("SunDirWorld.js", R"JS(
+class SunDirWorld extends World {
+  static roots = [{ module: 'Root' }];
+  static lights = {
+    sun: { dir: [-0.2, -0.9, -0.3], color: [1.0, 2.0, 3.0] },
+  };
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    const matter::WorldSettings& s = definition.settings;
+    // Exact, not nearly: an authored dir is copied, never renormalized. The
+    // renderer depends on that (it is what lets the live override recognise an
+    // untouched sun and pass the authored vector through).
+    CHECK(s.sun_direction.x == -0.2f && s.sun_direction.y == -0.9f &&
+              s.sun_direction.z == -0.3f,
+          "authored sun.dir is copied verbatim, not normalized");
+    CHECK(nearly_equal(s.sun_color.x, 1.0f) && nearly_equal(s.sun_color.y, 2.0f) &&
+              nearly_equal(s.sun_color.z, 3.0f),
+          "authored sun.color still extracted");
+    CHECK(nearly_equal(s.sun_angular_diameter_deg,
+                       matter::kSunAngularDiameterDefaultDeg),
+          "a world that says nothing about sun size gets the default");
+}
+
+void test_sun_azimuth_elevation_authoring() {
+    Fixture fixture;
+    const fs::path path = fixture.write("SunAngleWorld.js", R"JS(
+class SunAngleWorld extends World {
+  static roots = [{ module: 'Root' }];
+  static lights = {
+    sun: { azimuth: 90.0, elevation: 0.0, color: [1.0, 1.0, 1.0] },
+  };
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    // Sun in the east, on the horizon -> light travels toward -X.
+    const matter::Float3& d = definition.settings.sun_direction;
+    CHECK(nearly_equal(d.x, -1.0f) && nearly_equal(d.y, 0.0f) &&
+              nearly_equal(d.z, 0.0f),
+          "azimuth 90 / elevation 0 authors sun_direction (-1,0,0)");
+    // color alone is legal now (it used to require dir alongside it).
+    CHECK(nearly_equal(definition.settings.sun_color.x, 1.0f),
+          "sun.color without sun.dir is accepted");
+}
+
+void test_sun_elevation_alone_keeps_authored_bearing() {
+    Fixture fixture;
+    const fs::path path = fixture.write("SunTimeOfDay.js", R"JS(
+class SunTimeOfDay extends World {
+  static roots = [{ module: 'Root' }];
+  static lights = {
+    sun: { dir: [-0.45, -0.80, -0.35], elevation: 5.0 },
+  };
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    float azimuth = 0.0f, elevation = 0.0f;
+    matter::sun_angles_from_direction(definition.settings.sun_direction,
+                                      azimuth, elevation);
+    CHECK(nearly_equal(elevation, 5.0f),
+          "an authored elevation overrides the elevation of the authored dir");
+    CHECK(std::fabs(azimuth - 127.874985f) < 1e-2f,
+          "...while keeping that dir's azimuth");
+}
+
+void test_sun_angular_size_authoring() {
+    Fixture fixture;
+    const fs::path path = fixture.write("BigSun.js", R"JS(
+class BigSun extends World {
+  static roots = [{ module: 'Root' }];
+  static lights = { sun: { dir: [0, -1, 0], size: 4.5 } };
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(nearly_equal(definition.settings.sun_angular_diameter_deg, 4.5f),
+          "sun.size authors the angular diameter");
+
+    Fixture explicit_fixture;
+    const fs::path explicit_path =
+        explicit_fixture.write("BigSun2.js", R"JS(
+class BigSun2 extends World {
+  static roots = [{ module: 'Root' }];
+  static lights = { sun: { dir: [0, -1, 0], angularDiameter: 2.25 } };
+}
+)JS");
+    matter::WorldDefinition explicit_definition;
+    matter::WorldLoadError explicit_error;
+    CHECK(matter::load_world_definition(explicit_fixture.desc(explicit_path),
+                                        explicit_definition, explicit_error),
+          explicit_error.message.c_str());
+    CHECK(nearly_equal(explicit_definition.settings.sun_angular_diameter_deg,
+                       2.25f),
+          "sun.angularDiameter is the long spelling of the same field");
+}
+
+void test_sun_rejects_non_numeric_angles() {
+    Fixture fixture;
+    const fs::path path = fixture.write("BadSun.js", R"JS(
+class BadSun extends World {
+  static roots = [{ module: 'Root' }];
+  static lights = { sun: { azimuth: 'south' } };
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+          "a non-numeric sun.azimuth must fail the load");
+    CHECK(error.property_path.find("lights.sun") != std::string::npos,
+          "the failure names lights.sun");
+}
+
 void test_fog_extraction_with_authored_values() {
     Fixture fixture;
     const fs::path path = fixture.write("FogWorld.js", R"JS(
@@ -1126,6 +1255,11 @@ int main() {
     test_authored_entity_override_cannot_intercept_collection();
     test_rejects_undefined_or_non_json_owned_values();
     test_build_entities_failures_clear_partial_definition();
+    test_sun_dir_authoring_is_unchanged();
+    test_sun_azimuth_elevation_authoring();
+    test_sun_elevation_alone_keeps_authored_bearing();
+    test_sun_angular_size_authoring();
+    test_sun_rejects_non_numeric_angles();
     test_fog_extraction_with_authored_values();
     test_fog_defaults_when_absent();
     test_streaming_ring_extraction();

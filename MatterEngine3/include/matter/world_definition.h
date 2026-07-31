@@ -1,6 +1,7 @@
 #pragma once
 
 #include "math_types.h"
+#include "sun_angles.h"
 
 #include <cstdint>
 #include <string>
@@ -130,9 +131,19 @@ struct WorldSettings {
     float y_max = 192.0f;
 
     // Defaults match the established world_lights::WorldLights contract.
+    // sun_direction points FROM the sun TOWARD the scene — see
+    // matter/sun_angles.h, which owns that convention and the azimuth /
+    // elevation spellings a script may use instead.
     Float3 sun_direction{-0.45f, -0.80f, -0.35f};
     Float3 sun_color{2.2f, 2.05f, 1.8f};
     Float3 sky_color{0.38f, 0.43f, 0.52f};
+    // Angular diameter of the sun in degrees: sky disc, RT reflection
+    // prefilter and shadow-ray cone all scale off it. Deliberately NOT part of
+    // world_lights::WorldLights — that struct is serialized into the resolve
+    // cache (resolve_cache.cpp's fixed record layout), and adding a field there
+    // would invalidate every baked world's cache for a value that is not a bake
+    // input. It rides the same authored-settings path as fog instead.
+    float sun_angular_diameter_deg = kSunAngularDiameterDefaultDeg;
 
     FogSettings fog{};
     WorldCameraSettings camera{};

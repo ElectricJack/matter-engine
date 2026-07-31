@@ -60,6 +60,13 @@ layout(push_constant) uniform ShadowConstants {
     // cap (VkSceneRenderer::tileset_pom_settings_.relief_cap_m + 0.02), so
     // the tuning UI's slider keeps working here too.
     float pom_lift;
+    // Sun angular size as a multiple of the shipped default (0.53 deg), from
+    // VulkanLightingOverrides::sun_angular_diameter_deg via
+    // matter/sun_angles.h. Scales the cone the shadow rays are jittered
+    // inside, which is what makes a bigger sun cast softer penumbrae. EXACTLY
+    // 1.0 at the default, so `0.002 * sun_cone_scale` below is bit-identical
+    // to the 0.002 this shader used to hardcode.
+    float sun_cone_scale;
 } constants;
 
 struct VisibilityPayload {
@@ -122,8 +129,20 @@ void main() {
                     sample_index * 26699u + 911u;
         seed = (seed << 13u) ^ seed;
         float a = float(seed & 0xffffu) / 65535.0 * 6.28318530718;
+        // ONE sample means a hard ray, still. That is not an oversight: it
+        // is the shipped default (VulkanRayTracingSettings::samples == 1), a
+        // single jittered ray would be noise rather than a penumbra, and
+        // keeping it exact is what lets a default render stay pixel-identical
+        // to a build without sun sizing. Raise
+        // VulkanLightingOverrides::sun_shadow_samples to actually resolve the
+        // cone; the radius then scales linearly with the sun's angular size.
+        //
+        // The sqrt(i + 0.5) spiral is pre-existing and makes the effective
+        // cone widen slightly with the sample count. Left as it was, because
+        // changing it would move every multi-sample shadow already tuned.
         float radius = sample_count == 1u ? 0.0 :
-                       0.002 * sqrt(float(sample_index) + 0.5);
+                       0.002 * constants.sun_cone_scale *
+                       sqrt(float(sample_index) + 0.5);
         vec3 direction = normalize(sun + radius *
             (cos(a) * tangent + sin(a) * bitangent));
         payload.visibility = vec3(1.0);

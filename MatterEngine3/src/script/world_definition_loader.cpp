@@ -722,17 +722,66 @@ bool extract_lights(JSContext* context,
     }
     JSValue sun = JS_GetPropertyStr(context, lights, "sun");
     if (!JS_IsUndefined(sun)) {
-        JSValue direction = JS_GetPropertyStr(context, sun, "dir");
-        JSValue color = JS_GetPropertyStr(context, sun, "color");
-        const bool ok = float3_value(context, direction, definition.settings.sun_direction) &&
-                        float3_value(context, color, definition.settings.sun_color);
-        JS_FreeValue(context, direction);
-        JS_FreeValue(context, color);
+        // Two spellings for the same thing. `dir` is the original and stays
+        // exactly as it was — a Float3 pointing FROM the sun TOWARD the scene.
+        // `azimuth`/`elevation` are the human ones (matter/sun_angles.h owns
+        // the convention and the conversion); when either is present it WINS,
+        // because a script that says elevation: 15 means it.
+        //
+        // Both remain optional now. They were both mandatory only because
+        // float3_value rejects undefined, which made `sun: { azimuth: 15 }`
+        // impossible to write; every world that used to parse still parses.
+        const bool has_dir = has_property(context, sun, "dir");
+        const bool has_azimuth = has_property(context, sun, "azimuth");
+        const bool has_elevation = has_property(context, sun, "elevation");
+        bool ok = true;
+        if (has_dir) {
+            JSValue direction = JS_GetPropertyStr(context, sun, "dir");
+            ok = float3_value(context, direction, definition.settings.sun_direction);
+            JS_FreeValue(context, direction);
+        }
+        if (ok && has_property(context, sun, "color")) {
+            JSValue color = JS_GetPropertyStr(context, sun, "color");
+            ok = float3_value(context, color, definition.settings.sun_color);
+            JS_FreeValue(context, color);
+        }
+        if (ok && (has_azimuth || has_elevation)) {
+            // Seed from whatever direction is in force (authored `dir` above,
+            // or the compiled default) so a script may set just one angle.
+            float azimuth = 0.0f, elevation = 0.0f;
+            sun_angles_from_direction(definition.settings.sun_direction,
+                                      azimuth, elevation);
+            ok = optional_number(context, sun, "azimuth", azimuth) &&
+                 optional_number(context, sun, "elevation", elevation);
+            // JS_ToFloat64 SUCCEEDS on a string and hands back NaN, so
+            // optional_number alone would let `azimuth: 'south'` through and
+            // put a NaN light vector in the manifest, where nothing downstream
+            // recovers from it. Check finiteness here rather than in
+            // number_value: every other optional_number caller has lived with
+            // that behaviour for a long time and this is not the change to
+            // alter it under them.
+            ok = ok && std::isfinite(azimuth) && std::isfinite(elevation);
+            if (ok)
+                definition.settings.sun_direction =
+                    sun_direction_from_angles(azimuth, elevation);
+        }
+        if (ok) {
+            // Angular diameter in degrees. `size` is the short spelling;
+            // `angularDiameter` matches the struct field for scripts that
+            // prefer being explicit.
+            ok = optional_number(context, sun, "size",
+                                 definition.settings.sun_angular_diameter_deg) &&
+                 optional_number(context, sun, "angularDiameter",
+                                 definition.settings.sun_angular_diameter_deg) &&
+                 std::isfinite(definition.settings.sun_angular_diameter_deg);
+        }
         if (!ok) {
             JS_FreeValue(context, sun);
             JS_FreeValue(context, lights);
             return fail(desc, error, "lights.sun",
-                        "sun.dir and sun.color must contain 3 numbers");
+                        "sun.dir and sun.color must contain 3 numbers; "
+                        "sun.azimuth, sun.elevation and sun.size must be "
+                        "numbers");
         }
     }
     JS_FreeValue(context, sun);

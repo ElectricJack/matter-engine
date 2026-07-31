@@ -25,11 +25,30 @@ vec3 procedural_sky(vec3 direction, vec3 sky_color) {
     return color;
 }
 
+// The sun's disc, as a 0..1 coverage term.
+//
+// cos_edge / cos_core are the cosines of the disc's outer (fully faded) and
+// inner (full brightness) angular radii. They used to be the literals 0.99975
+// and 0.99995 baked in right here, which meant the sun had no size: there was
+// nothing to turn. They are now computed ON THE CPU from
+// VulkanLightingOverrides::sun_angular_diameter_deg (matter/sun_angles.h) and
+// pushed in, for two reasons — a GPU cos() is only accurate to a few ULP and a
+// few ULP at 0.9997 visibly moves the edge, and computing them once means the
+// composite sky, the RT environment and the RT reflection prefilter cannot
+// disagree about how big the sun is.
+//
+// The smoothstep is over a RANGE, not a hard edge, and the two radii keep the
+// ratio the old constants had (edge = 2.236x core), so a bigger sun grows its
+// soft rim proportionally instead of turning into a hard-edged plate.
+float sun_disc(vec3 direction, vec3 to_sun, float cos_edge, float cos_core) {
+    return smoothstep(cos_edge, cos_core, dot(direction, normalize(to_sun)));
+}
+
 vec3 sky_with_sun(vec3 direction, vec3 sky_color,
-                  vec3 to_sun, vec3 sun_color, float sun_intensity) {
+                  vec3 to_sun, vec3 sun_color, float sun_intensity,
+                  float cos_edge, float cos_core) {
     vec3 sky = procedural_sky(direction, sky_color);
-    float sun_disk = smoothstep(0.99975, 0.99995,
-                                dot(direction, normalize(to_sun)));
+    float sun_disk = sun_disc(direction, to_sun, cos_edge, cos_core);
     return sky + sun_color * sun_intensity * sun_disk;
 }
 
