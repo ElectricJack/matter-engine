@@ -2178,7 +2178,6 @@ int main() {
                 ui.draw_bake_lab_panel(bake_lab, &app_hub, session.get(), worlds, stats);
                 ui.draw_asset_browser_panel(asset_browser, worlds, stats, shared_lib,
                                            viewer_commands);
-                ui.draw_worlds_panel(worlds, stats, viewer_commands);
                 ui.draw_camera_panel(camera, camera_prefs);
                 ui.draw_performance_panel(session.get(), editor_props,
                                           viewer_commands, camera);

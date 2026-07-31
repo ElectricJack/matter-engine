@@ -37,9 +37,8 @@ struct ViewerCommands;
 class AssetBrowser {
 public:
     // worlds/stats: the exact vector+struct main.cpp already builds/owns.
-    // Reused so "Load" can issue ViewerCommands::switch_world exactly like
-    // Ui::draw_worlds_panel does — routed through the app command registry in
-    // main.cpp (viewer.switch_world).
+    // Reused so "Load" can issue ViewerCommands::switch_world — routed
+    // through the app command registry in main.cpp (viewer.switch_world).
     //
     // shared_lib_root: the engine-wide shared-lib dir — the SAME string
     // main.cpp passes as WorldDesc::engine_shared_lib_dir when it opens a
