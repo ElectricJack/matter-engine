@@ -257,12 +257,22 @@ public:
                                   const std::vector<WorldEntry>& worlds, ViewerStats& stats,
                                   const std::string& shared_lib_root,
                                   const ViewerCommands& commands);
-    // MSL-style orbit/zoom controls: navigate the view without locking the cursor
-    // or using WASD (works over remote desktop). Mutates the camera in place.
-    // `prefs` supplies the orbit step and zoom step (camera.prefs); the orbit
-    // DISTANCE is deliberately not a pref — it is derived from the live
-    // camera's position/target every frame, so there is nothing to persist.
-    void draw_camera_panel(matter::CameraDesc& cam, const CameraPrefs& prefs);
+    // MSL-style move/turn/orbit/zoom controls: navigate the view without locking
+    // the cursor or using WASD (works over remote desktop). Mutates the camera
+    // in place. `prefs` supplies the move/turn/orbit/zoom steps and the "Orbit
+    // selection" toggle (camera.prefs); the orbit DISTANCE is deliberately not a
+    // pref — it is derived from the live camera's position/target every frame,
+    // so there is nothing to persist. `prefs` is non-const because the panel's
+    // own toggle writes back into it.
+    //
+    // `pivot_valid`/`pivot` are the current selection's focus point, computed by
+    // the caller (main.cpp already owns the selection, the field accessors and
+    // the session-backed baked-bounds provider). Passing the answer in rather
+    // than the three inputs keeps Ui free of session plumbing, and lets the same
+    // point drive the viewport drag-orbit in main.cpp without computing it twice.
+    void draw_camera_panel(matter::CameraDesc& cam, CameraPrefs& prefs,
+                           EditorProps& props, bool pivot_valid,
+                           const matter::Float3& pivot);
     ToolbarActions draw_toolbar(matter::scene::SimulationMode mode);
     // Simulation rate, owned by the toolbar slider. Readable (and seedable)
     // even when the UI is hidden, so a headless capture can run in slow motion.

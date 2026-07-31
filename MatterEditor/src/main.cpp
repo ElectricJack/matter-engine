@@ -14,6 +14,7 @@
 #include "scene/scene_service.h"  // E5c: session->scene_service() (world_session.h fwd-decls it)
 #include "camera_controller.h"
 #include "camera_focus.h"
+#include "camera_orbit.h"
 #include "editor_model.h"
 #include "editor_props.h"
 #include "image_preview.h"
@@ -1852,7 +1853,8 @@ int main() {
         camera.far_plane = camera_prefs.far_plane;
         if (key_pressed(window, GLFW_KEY_TAB, tab_down)) {
             camera_capture = !camera_capture;
-            camera_controller.set_capture(window, camera_capture);
+            camera_controller.set_capture(window, camera_capture,
+                                          camera_prefs.raw_mouse_motion);
         }
         // Issue capture hotkeys. Handled HERE, at the GLFW level, rather than
         // beside the ImGui hotkeys below: ui.cpp enables
@@ -2080,6 +2082,31 @@ int main() {
 
         phase.acquire = phase_split();   // fence wait + swapchain acquire
         matter_viewer::CurrentFrameInputOrder camera_input_order{};
+
+        // The "Orbit selection" pivot (issue a4203d22 part 1). Computed ONCE
+        // per frame, here rather than at either use site, because two
+        // consumers need the same answer — the Camera panel's orbit buttons
+        // (inside the UI block below) and the viewport drag/wheel orbit (after
+        // it, alongside the pick, so it inherits the same gizmo/ImGui
+        // priority) — and because resolving a BakedRoot's bounds walks the
+        // part's geometry clusters, which is not something to do twice.
+        //
+        // selection_focus_point is the same merged AABB the F-key focus
+        // frames on, so the orbit pivot and Focus can never disagree.
+        matter::Float3 selection_pivot{};
+        bool selection_pivot_valid = false;
+        if (session) {
+            float pivot_radius = 0.0f;
+            selection_pivot_valid = viewer::selection_focus_point(
+                selection_set, field_commands,
+                [&](uint64_t part_hash, viewer::SelectionBounds& out) {
+                    viewer::SelectedObject obj{viewer::SelectedObject::BakedRoot,
+                                               part_hash};
+                    return viewer::bounds_for_object(obj, *session, out);
+                },
+                selection_pivot, pivot_radius);
+        }
+
         const bool ui_frame_ready = ui.begin_frame(frame, error);
         matter::VulkanFrame render_frame = frame;
         // Reset before the Bake Lab tab bar draws so wants_viewport() below
@@ -2200,7 +2227,8 @@ int main() {
                 ui.draw_bake_lab_panel(bake_lab, &app_hub, session.get(), worlds, stats);
                 ui.draw_asset_browser_panel(asset_browser, worlds, stats, shared_lib,
                                            viewer_commands);
-                ui.draw_camera_panel(camera, camera_prefs);
+                ui.draw_camera_panel(camera, camera_prefs, editor_props,
+                                     selection_pivot_valid, selection_pivot);
                 ui.draw_performance_panel(session.get(), editor_props,
                                           viewer_commands, camera);
                 // Issue reporter (F9 region / F10 viewport). Drawn last so the
@@ -2330,6 +2358,23 @@ int main() {
             if (mouse_clicked && ui_frame_ready && ui.camera_input_allowed()) {
                 double cursor_x = 0.0, cursor_y = 0.0;
                 glfwGetCursorPos(window, &cursor_x, &cursor_y);
+                if (camera_capture) {
+                    // Free-fly: the cursor is GLFW_CURSOR_DISABLED, so
+                    // glfwGetCursorPos reports an unbounded VIRTUAL position
+                    // that has nothing to do with anything on screen. It used
+                    // to land near the window centre only because
+                    // CameraController::update warped it there every frame;
+                    // removing that warp (issue a4203d22 part 3) would
+                    // otherwise turn click-to-select while flying into a pick
+                    // at a random, ever-drifting coordinate. Pin it to the
+                    // window centre explicitly, which is what the warp
+                    // effectively produced — this keeps free-fly clicking
+                    // behaving exactly as before.
+                    int win_w = 0, win_h = 0;
+                    glfwGetWindowSize(window, &win_w, &win_h);
+                    cursor_x = win_w * 0.5;
+                    cursor_y = win_h * 0.5;
+                }
                 int fb_width = 0, fb_height = 0;
                 glfwGetFramebufferSize(window, &fb_width, &fb_height);
                 const auto& vp = ui.viewport_rect();
@@ -2358,6 +2403,41 @@ int main() {
                 } else {
                     selection_set.clear();
                     editor_model.clear_selection();
+                }
+            }
+
+            // Viewport drag/wheel orbit about the selection (issue a4203d22
+            // part 1: "then mouse orbits and zooms"). Deliberately in the same
+            // block as the pick, AFTER the gizmo has been submitted, so it
+            // inherits ui.camera_input_allowed() unchanged — an orbit that
+            // fights ImGuizmo or steals a drag from a panel is a regression,
+            // and camera_input_allowed is the one place that arbitrates it.
+            //
+            // Additional gates beyond that: free-fly owns the mouse when the
+            // cursor is captured; the issue reporter's region drag reads the
+            // mouse straight off the IO outside any ImGui window; and the
+            // cursor has to be inside the viewport rect (camera_input_allowed
+            // only knows that ImGui does not want the mouse, not where it is).
+            // IsMouseDragging's threshold is what keeps a click-to-select from
+            // also nudging the camera.
+            if (ui_frame_ready && camera_prefs.orbit_selection &&
+                selection_pivot_valid && !camera_capture &&
+                !viewer::issue_reporter_wants_mouse(issue_state) &&
+                ui.camera_input_allowed()) {
+                const ImGuiIO& io = ImGui::GetIO();
+                const auto& vp = ui.viewport_rect();
+                const bool over_viewport =
+                    io.MousePos.x >= vp.x && io.MousePos.x < vp.x + vp.w &&
+                    io.MousePos.y >= vp.y && io.MousePos.y < vp.y + vp.h;
+                if (over_viewport) {
+                    const bool dragging = ImGui::IsMouseDragging(
+                        ImGuiMouseButton_Left, /*lock_threshold=*/4.0f);
+                    viewer::orbit_camera_by_mouse(
+                        camera, selection_pivot,
+                        dragging ? io.MouseDelta.x : 0.0f,
+                        dragging ? io.MouseDelta.y : 0.0f, io.MouseWheel,
+                        camera_prefs.look_sensitivity,
+                        camera_prefs.orbit_zoom_step);
                 }
             }
         }
@@ -3238,7 +3318,7 @@ int main() {
     if (cmd_fd >= 0) close(cmd_fd);
     if (fifo_path) unlink(fifo_path);
 #endif
-    if (camera_capture) camera_controller.set_capture(window, false);
+    if (camera_capture) camera_controller.set_capture(window, false, false);
     // Flush a debounced User-scope autosave that the last frames did not reach.
     // World scope stays explicit-save (plus the automatic flush at every
     // world-change seam) — a save-on-exit prompt is Stage 3.

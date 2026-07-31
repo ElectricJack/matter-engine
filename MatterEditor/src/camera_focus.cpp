@@ -62,11 +62,11 @@ constexpr float kDefaultHalfExtent = 0.5f;  // 1m default cube for part-less ent
 
 } // namespace
 
-void focus_camera_on_selection(matter::CameraDesc& camera,
-                               const SelectionSet& selection,
-                               const FieldCommands& fields,
-                               const BakedRootBoundsFn& baked_bounds) {
-    if (selection.empty()) return;
+bool selection_focus_point(const SelectionSet& selection,
+                           const FieldCommands& fields,
+                           const BakedRootBoundsFn& baked_bounds,
+                           matter::Float3& out_center, float& out_radius) {
+    if (selection.empty()) return false;
 
     Aabb box{};
     for (const SelectedObject& obj : selection.items()) {
@@ -82,9 +82,9 @@ void focus_camera_on_selection(matter::CameraDesc& camera,
             continue;
         expand(box, translation, kDefaultHalfExtent);
     }
-    if (!box.valid) return;  // nothing focusable resolved to bounds
+    if (!box.valid) return false;  // nothing focusable resolved to bounds
 
-    const matter::Float3 center{
+    out_center = {
         (box.min.x + box.max.x) * 0.5f,
         (box.min.y + box.max.y) * 0.5f,
         (box.min.z + box.max.z) * 0.5f,
@@ -94,9 +94,20 @@ void focus_camera_on_selection(matter::CameraDesc& camera,
         box.max.y - box.min.y,
         box.max.z - box.min.z,
     };
-    float radius = 0.5f * std::sqrt(extent.x * extent.x + extent.y * extent.y +
-                                    extent.z * extent.z);
-    radius = std::max(radius, kDefaultHalfExtent);
+    out_radius = 0.5f * std::sqrt(extent.x * extent.x + extent.y * extent.y +
+                                  extent.z * extent.z);
+    out_radius = std::max(out_radius, kDefaultHalfExtent);
+    return true;
+}
+
+void focus_camera_on_selection(matter::CameraDesc& camera,
+                               const SelectionSet& selection,
+                               const FieldCommands& fields,
+                               const BakedRootBoundsFn& baked_bounds) {
+    matter::Float3 center{};
+    float radius = 0.0f;
+    if (!selection_focus_point(selection, fields, baked_bounds, center, radius))
+        return;
 
     // Preserve the current view direction (position - target); only the
     // distance changes.
