@@ -1,15 +1,16 @@
 export const ALPINE_PROFILE = 'alpine-lush';
 export const DRYNESS_STATES = Object.freeze([0.0, 0.35, 0.7, 1.0]);
 export const FAMILY_CAPS = Object.freeze({
-  tree: 180, shrub: 960, groundCover: 720, flower: 960, grass: 9000,
+  tree: 1080, shrub: 960, groundCover: 720, flower: 960, grass: 9000,
 });
 export const FAMILY_SCALE_RANGE = Object.freeze({
-  tree: Object.freeze([1, 10]),
+  tree: Object.freeze([4, 10]),
   shrub: Object.freeze([0.6, 3]),
   groundCover: Object.freeze([0.6, 3]),
   flower: Object.freeze([0.6, 3]),
   grass: Object.freeze([0.6, 3]),
 });
+export const TREE_CANOPY_CLEARANCE = 0.15;
 export const FAMILY_SLOPE_MAX = Object.freeze({
   tree: 0.625, shrub: 0.675, groundCover: 0.781,
   flower: 0.675, grass: 0.781,
@@ -70,6 +71,30 @@ const inRange = (value, start, peakStart, peakEnd, end) =>
   higherThan(value, start, peakStart) * lowerThan(value, peakEnd, end);
 const finite = value => Number.isFinite(value);
 const fract = value => value - Math.floor(value);
+
+export function treeAltitudeGrowth(altitude) {
+  return finite(altitude) ? lowerThan(altitude, 220, 450) : 0;
+}
+
+export function treeHeightMultiplier(altitude, identity) {
+  const t = finite(identity) ? saturate(identity) : 0;
+  return 1 + 3 * treeAltitudeGrowth(altitude) * Math.pow(t, 2.4);
+}
+
+const TREE_CANOPY_RADII = Object.freeze({
+  // Conservative authored maxima, including seeded center/radius jitter.
+  AlpineConifer: Object.freeze([0.90, 1.15, 0.78]),
+  AlpineDeciduous: Object.freeze([1.38, 1.02, 1.65]),
+});
+
+export function treeCanopyRadius(asset) {
+  const radii = TREE_CANOPY_RADII[asset?.module];
+  const form = asset?.params?.form;
+  const baseRadius = radii && Number.isInteger(form) && radii[form] !== undefined
+    ? radii[form]
+    : 1.4;
+  return baseRadius * (finite(asset?.scale) ? Math.max(0, asset.scale) : 0);
+}
 
 export function isWithinVegetationCeiling(altitude) {
   return finite(altitude) && altitude <= 520;
@@ -132,7 +157,8 @@ export function sampleHabitat({ x, z, altitude, slope, worldSeed }) {
   if (![x, z, altitude, slope, worldSeed].every(finite)) {
     return {
       valid: false, moisture: 0, exposure: 0, dryness: 1, forest: 0,
-      forestEdge: 0, shrubPatch: 0, meadowPatch: 0, flowerPatch: 0,
+      forestEdge: 0, shrubPatch: 0, treeCluster: 0,
+      meadowPatch: 0, flowerPatch: 0,
       groundCoverPatch: 0,
     };
   }
@@ -149,6 +175,11 @@ export function sampleHabitat({ x, z, altitude, slope, worldSeed }) {
   const forest = smoothstep(0.40, 0.61, forestSignal);
   const forestEdge = 1 - smoothstep(
     0.045, 0.145, Math.abs(forestSignal - 0.505));
+  const groveSignal =
+    0.68 * fbm(x, z, worldSeed + 83, 1 / 95, 3) +
+    0.32 * fbm(x, z, worldSeed + 89, 1 / 34, 2);
+  const treeCluster = smoothstep(
+    0.42, 0.60, 0.55 * forestSignal + 0.45 * groveSignal);
 
   const shrubSignal =
     0.62 * fbm(x, z, worldSeed + 41, 1 / 190) +
@@ -174,6 +205,7 @@ export function sampleHabitat({ x, z, altitude, slope, worldSeed }) {
     forest,
     forestEdge,
     shrubPatch,
+    treeCluster,
     meadowPatch,
     flowerPatch,
     groundCoverPatch,
@@ -210,20 +242,23 @@ const FAMILY_FORMS = Object.freeze({
 });
 
 function formSuitabilities(family, habitat) {
-  const { altitude, moisture, exposure, dryness, forest, forestEdge,
+  const { altitude, moisture, exposure, dryness, forest, forestEdge, treeCluster,
     shrubPatch, meadowPatch, flowerPatch, groundCoverPatch } = habitat;
   switch (family) {
-    case 'tree':
+    case 'tree': {
+      const cluster = saturate(finite(treeCluster) ? treeCluster : forest);
+      const treeMass = forest * cluster;
       return [
-        // Silver fir, Norway spruce, mountain pine.
-        forest * moisture * inRange(altitude, 80, 150, 245, 315) * lowerThan(exposure, 0.25, 0.70),
-        forest * (0.35 + 0.65 * moisture) * inRange(altitude, 130, 205, 335, 430) * lowerThan(exposure, 0.45, 0.95),
-        forest * inRange(altitude, 260, 330, 445, 470) * (0.35 + 0.65 * dryness) * (0.35 + 0.65 * exposure),
-        // European beech, sycamore maple, birch/aspen.
-        forest * moisture * lowerThan(altitude, 190, 295) * lowerThan(exposure, 0.18, 0.62) * lowerThan(forestEdge, 0.35, 0.85),
-        moisture * lowerThan(altitude, 180, 305) * (0.35 + 0.65 * forestEdge),
-        forestEdge * inRange(altitude, 120, 190, 335, 370) * (0.45 + 0.55 * exposure),
+        // Mountain pine, Norway spruce, silver fir.
+        treeMass * inRange(altitude, 260, 330, 445, 470) * (0.35 + 0.65 * dryness) * (0.35 + 0.65 * exposure),
+        treeMass * (0.35 + 0.65 * moisture) * inRange(altitude, 130, 205, 335, 430) * lowerThan(exposure, 0.45, 0.95),
+        treeMass * moisture * inRange(altitude, 80, 150, 245, 315) * lowerThan(exposure, 0.25, 0.70),
+        // European beech, birch/aspen, sycamore maple.
+        treeMass * moisture * lowerThan(altitude, 190, 295) * lowerThan(exposure, 0.18, 0.62) * lowerThan(forestEdge, 0.35, 0.85),
+        cluster * forestEdge * inRange(altitude, 120, 190, 335, 370) * (0.45 + 0.55 * exposure),
+        cluster * moisture * lowerThan(altitude, 180, 305) * (0.35 + 0.65 * forestEdge),
       ];
+    }
     case 'shrub':
       return [
         meadowPatch * shrubPatch * higherThan(altitude, 360, 440) * (0.4 + 0.6 * exposure) * (0.35 + 0.65 * dryness),
@@ -260,17 +295,35 @@ function selectedForm(family, habitat, identity) {
   const scores = formSuitabilities(family, habitat);
   let bestIndex = -1;
   let bestScore = 0;
+  let totalWeight = 0;
+  const weights = [];
   for (let index = 0; index < scores.length; ++index) {
-    const score = scores[index] * (0.95 + 0.10 * identityChannel(identity, index + 4));
+    const score =
+      scores[index] * (0.88 + 0.24 * identityChannel(identity, index + 4));
     if (score > bestScore) {
       bestScore = score;
       bestIndex = index;
     }
+    const weight = family === 'tree' && score >= 0.04
+      ? Math.pow(score, 1.35)
+      : 0;
+    weights.push(weight);
+    totalWeight += weight;
   }
   const acceptance = 1 - (1 - bestScore) ** 3;
-  return bestScore > 0.08 && identityChannel(identity, 2) <= acceptance
-    ? rows[bestIndex]
-    : null;
+  if (bestScore <= 0.08 || identityChannel(identity, 2) > acceptance)
+    return null;
+  if (family !== 'tree' || totalWeight <= 0) return rows[bestIndex];
+
+  // Lowland forests are mixtures rather than monocultures. Suitability still
+  // dominates, but deterministic weighted sampling gives every plausible
+  // species room to appear within a grove.
+  let choice = identityChannel(identity, 19) * totalWeight;
+  for (let index = 0; index < weights.length; ++index) {
+    choice -= weights[index];
+    if (choice <= 0 && weights[index] > 0) return rows[index];
+  }
+  return rows[bestIndex];
 }
 
 export function selectAlpineAsset(family, habitat, identity) {
@@ -287,12 +340,21 @@ export function selectAlpineAsset(family, habitat, identity) {
   // A power curve keeps most plants plausible while still allowing rare,
   // unmistakable giants. Mature forest cores can reach the full 10x tree
   // multiplier; edge trees top out a little smaller.
-  const scaleCurve = family === 'tree'
-    ? Math.pow(scaleIdentity, 2.25) *
-      (0.72 + 0.28 * saturate(habitat.forest))
-    : Math.pow(scaleIdentity, 1.6);
-  const scaleMultiplier =
-    scaleMinimum + (scaleMaximum - scaleMinimum) * scaleCurve;
+  let scaleMultiplier;
+  if (family === 'tree') {
+    const altitudeGrowth = treeAltitudeGrowth(altitude);
+    const altitudeFloor = scaleMinimum + altitudeGrowth;
+    const altitudeCeiling =
+      scaleMinimum + (scaleMaximum - scaleMinimum) * altitudeGrowth;
+    const scaleCurve = Math.pow(scaleIdentity, 5) *
+      (0.72 + 0.28 * saturate(habitat.forest));
+    scaleMultiplier =
+      altitudeFloor + (altitudeCeiling - altitudeFloor) * scaleCurve;
+  } else {
+    const scaleCurve = Math.pow(scaleIdentity, 1.6);
+    scaleMultiplier =
+      scaleMinimum + (scaleMaximum - scaleMinimum) * scaleCurve;
+  }
   const drynessState = selectDrynessState(dryness, identity);
   return {
     module,
@@ -308,9 +370,10 @@ export function selectAlpineAsset(family, habitat, identity) {
 }
 
 const FAMILY_SCATTER = Object.freeze({
-  // Trees use roughly five times the former candidate density; understory
-  // families use roughly ten times. Density scales with inverse spacing^2.
-  tree: Object.freeze({ kind: 31, minDistance: 4.03 }),
+  // Trees use thirty times their original candidate density (three times the
+  // previous tuning); other families remain at roughly ten times.
+  // Density scales with inverse spacing^2.
+  tree: Object.freeze({ kind: 31, minDistance: 1.65 }),
   shrub: Object.freeze({ kind: 37, minDistance: 1.58 }),
   groundCover: Object.freeze({ kind: 41, minDistance: 1.26 }),
   flower: Object.freeze({ kind: 43, minDistance: 1.26 }),
@@ -320,6 +383,92 @@ const FAMILY_SCATTER = Object.freeze({
 function placementIdentity(worldSeed, kind, x, z, purpose) {
   return hash2(x * (kind + 1), z * (purpose + 1),
     worldSeed + kind * 4099 + purpose * 131);
+}
+
+export const TREE_NEIGHBOR_PADDING = 64;
+
+function plannedCandidate({
+  family, candidate, worldSeed, kind, heightAt, slopeAt, biomeAt,
+}) {
+  if (typeof biomeAt === 'function' &&
+    biomeAt(candidate.x, candidate.z) === 'ocean') return null;
+  const altitude = heightAt(candidate.x, candidate.z);
+  const slope = slopeAt(candidate.x, candidate.z);
+  const habitat = sampleHabitat({
+    x: candidate.x, z: candidate.z, altitude, slope, worldSeed,
+  });
+  const asset = selectAlpineAsset(family, { ...habitat, altitude, slope },
+    placementIdentity(worldSeed, kind, candidate.x, candidate.z, 1));
+  if (!asset) return null;
+  return {
+    family,
+    x: candidate.x,
+    z: candidate.z,
+    rotation: placementIdentity(
+      worldSeed, kind, candidate.x, candidate.z, 2) * Math.PI * 2,
+    scale: asset.scale,
+    heightScale: family === 'tree'
+      ? treeHeightMultiplier(altitude, placementIdentity(
+        worldSeed, kind, candidate.x, candidate.z, 8))
+      : 1,
+    sinkY: asset.sinkY,
+    module: asset.module,
+    params: asset.params,
+  };
+}
+
+function higherTreePriority(a, b) {
+  if (a.priority !== b.priority) return a.priority > b.priority;
+  if (a.z !== b.z) return a.z < b.z;
+  return a.x < b.x;
+}
+
+function planTrees({
+  worldSeed, ox, oz, sectorSize, heightAt, slopeAt, candidatesInRect, biomeAt,
+}) {
+  const { kind, minDistance } = FAMILY_SCATTER.tree;
+  const candidates = candidatesInRect(
+    worldSeed, kind, minDistance,
+    ox - TREE_NEIGHBOR_PADDING, oz - TREE_NEIGHBOR_PADDING,
+    sectorSize + TREE_NEIGHBOR_PADDING * 2,
+    sectorSize + TREE_NEIGHBOR_PADDING * 2,
+  );
+  const viable = [];
+  for (const candidate of candidates) {
+    const placement = plannedCandidate({
+      family: 'tree', candidate, worldSeed, kind, heightAt, slopeAt, biomeAt,
+    });
+    if (!placement) continue;
+    viable.push({
+      ...placement,
+      canopyRadius: treeCanopyRadius(placement),
+      priority: placementIdentity(
+        worldSeed, kind, candidate.x, candidate.z, 7),
+    });
+  }
+
+  const accepted = [];
+  for (const tree of viable) {
+    if (tree.x < ox || tree.x >= ox + sectorSize ||
+      tree.z < oz || tree.z >= oz + sectorSize) continue;
+    let blocked = false;
+    for (const other of viable) {
+      if (tree === other || !higherTreePriority(other, tree)) continue;
+      const dx = tree.x - other.x;
+      const dz = tree.z - other.z;
+      const minimumDistance =
+        tree.canopyRadius + other.canopyRadius + TREE_CANOPY_CLEARANCE;
+      if (dx * dx + dz * dz < minimumDistance * minimumDistance) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) continue;
+    const { priority, ...placement } = tree;
+    accepted.push(placement);
+    if (accepted.length >= FAMILY_CAPS.tree) break;
+  }
+  return accepted;
 }
 
 export function planAlpineSector({
@@ -332,32 +481,24 @@ export function planAlpineSector({
 
   const placements = [];
   for (const family of familiesForRung(rung)) {
+    if (family === 'tree') {
+      placements.push(...planTrees({
+        worldSeed, ox, oz, sectorSize, heightAt, slopeAt,
+        candidatesInRect, biomeAt,
+      }));
+      continue;
+    }
     const { kind, minDistance } = FAMILY_SCATTER[family];
     let placed = 0;
     for (const candidate of candidatesInRect(
       worldSeed, kind, minDistance, ox, oz, sectorSize, sectorSize,
     )) {
       if (placed >= FAMILY_CAPS[family]) break;
-      if (typeof biomeAt === 'function' && biomeAt(candidate.x, candidate.z) === 'ocean')
-        continue;
-      const altitude = heightAt(candidate.x, candidate.z);
-      const slope = slopeAt(candidate.x, candidate.z);
-      const habitat = sampleHabitat({
-        x: candidate.x, z: candidate.z, altitude, slope, worldSeed,
+      const placement = plannedCandidate({
+        family, candidate, worldSeed, kind, heightAt, slopeAt, biomeAt,
       });
-      const asset = selectAlpineAsset(family, { ...habitat, altitude, slope },
-        placementIdentity(worldSeed, kind, candidate.x, candidate.z, 1));
-      if (!asset) continue;
-      placements.push({
-        family,
-        x: candidate.x,
-        z: candidate.z,
-        rotation: placementIdentity(worldSeed, kind, candidate.x, candidate.z, 2) * Math.PI * 2,
-        scale: asset.scale,
-        sinkY: asset.sinkY,
-        module: asset.module,
-        params: asset.params,
-      });
+      if (!placement) continue;
+      placements.push(placement);
       ++placed;
     }
   }

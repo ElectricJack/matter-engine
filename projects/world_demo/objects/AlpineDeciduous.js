@@ -98,15 +98,17 @@ class AlpineDeciduous extends Part {
           const b = rings[ringIndex][next];
           const c = rings[ringIndex + 1][next];
           const d = rings[ringIndex + 1][point];
-          this.vertex(a[0], a[1], a[2]); this.vertex(b[0], b[1], b[2]);
-          this.vertex(c[0], c[1], c[2]);
+          // Ring order increases counter-clockwise. Reverse the side quads so
+          // their derived face normals point out of the canopy, not inward.
           this.vertex(a[0], a[1], a[2]); this.vertex(c[0], c[1], c[2]);
-          this.vertex(d[0], d[1], d[2]);
+          this.vertex(b[0], b[1], b[2]);
+          this.vertex(a[0], a[1], a[2]); this.vertex(d[0], d[1], d[2]);
+          this.vertex(c[0], c[1], c[2]);
         }
         const last = rings[ringCount - 1];
         this.vertex(last[point][0], last[point][1], last[point][2]);
-        this.vertex(last[next][0], last[next][1], last[next][2]);
         this.vertex(top[0], top[1], top[2]);
+        this.vertex(last[next][0], last[next][1], last[next][2]);
       }
       this.endShape();
     };

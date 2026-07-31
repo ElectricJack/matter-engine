@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import {
   ALPINE_PROFILE, DRYNESS_STATES, FAMILY_CAPS, FAMILY_SCALE_RANGE,
+  TREE_CANOPY_CLEARANCE, TREE_NEIGHBOR_PADDING,
   FAMILY_SLOPE_MAX, isAlpineProfile, alpineAssetVariants,
   selectVegetationCatalog, environmentalDryness, sampleHabitat,
   selectDrynessState, selectAlpineAsset, familiesForRung,
-  isWithinVegetationCeiling, planAlpineSector,
+  isWithinVegetationCeiling, treeAltitudeGrowth, treeHeightMultiplier,
+  treeCanopyRadius,
+  planAlpineSector,
 } from '../shared-lib/alpine_ecology.js';
 import { candidatesInRect } from
   '../../../MatterEngine3/shared-lib/scatter_grid.js';
@@ -12,9 +15,9 @@ import { candidatesInRect } from
 assert.equal(ALPINE_PROFILE, 'alpine-lush');
 assert.deepEqual(DRYNESS_STATES, [0, 0.35, 0.7, 1]);
 assert.deepEqual(FAMILY_CAPS,
-  { tree: 180, shrub: 960, groundCover: 720, flower: 960, grass: 9000 });
+  { tree: 1080, shrub: 960, groundCover: 720, flower: 960, grass: 9000 });
 assert.deepEqual(FAMILY_SCALE_RANGE, {
-  tree: [1, 10], shrub: [0.6, 3], groundCover: [0.6, 3],
+  tree: [4, 10], shrub: [0.6, 3], groundCover: [0.6, 3],
   flower: [0.6, 3], grass: [0.6, 3],
 });
 assert.deepEqual(FAMILY_SLOPE_MAX, {
@@ -53,12 +56,20 @@ assert.deepEqual(sampleHabitat(base), sampleHabitat(base));
 const sampled = sampleHabitat(base);
 for (const field of [
   'moisture', 'exposure', 'dryness', 'forest', 'forestEdge', 'shrubPatch',
-  'meadowPatch', 'flowerPatch', 'groundCoverPatch',
+  'treeCluster', 'meadowPatch', 'flowerPatch', 'groundCoverPatch',
 ]) {
   assert.ok(Number.isFinite(sampled[field]));
   assert.ok(sampled[field] >= 0 && sampled[field] <= 1);
 }
 assert.equal(sampleHabitat({ x: NaN, z: 0, altitude: 100, slope: 0.1, worldSeed: 1 }).valid, false);
+const clusterSamples = [];
+for (let z = -600; z <= 600; z += 40)
+  for (let x = -600; x <= 600; x += 40)
+    clusterSamples.push(sampleHabitat({
+      x, z, altitude: 180, slope: 0.1, worldSeed: 77,
+    }).treeCluster);
+assert.ok(Math.min(...clusterSamples) < 0.05);
+assert.ok(Math.max(...clusterSamples) > 0.95);
 
 assert.ok(environmentalDryness(
   { moisture: 0.2, exposure: 0.5, altitude: 200, slope: 0.2 }) >
@@ -134,9 +145,43 @@ const sampledScales = family => Array.from({ length: 2048 }, (_, index) =>
   .filter(Boolean)
   .map(asset => asset.scale);
 const treeScales = sampledScales('tree');
-assert.ok(Math.min(...treeScales) >= 1.8);
+assert.ok(Math.min(...treeScales) >= 9.24);
 assert.ok(Math.max(...treeScales) <= 19.01);
-assert.ok(Math.max(...treeScales) / Math.min(...treeScales) > 5);
+assert.ok(Math.max(...treeScales) / Math.min(...treeScales) > 1.9);
+assert.ok([...treeScales].sort((a, b) => a - b)[treeScales.length >> 1] < 11,
+  'most lowland trees stay near 5x while rare trees reach 10x');
+const highTreeScales = Array.from({ length: 2048 }, (_, index) =>
+  selectAlpineAsset('tree',
+    { ...bestHabitatFor.tree, altitude: 440, dryness: 0.7, exposure: 0.7 },
+    index / 2048))
+  .filter(Boolean)
+  .map(asset => asset.scale);
+assert.ok(highTreeScales.length > 0);
+assert.ok(Math.max(...highTreeScales) < Math.min(...treeScales),
+  'upper-elevation trees are shorter than lowland trees');
+assert.equal(treeAltitudeGrowth(220), 1);
+assert.ok(treeAltitudeGrowth(330) < treeAltitudeGrowth(260));
+assert.ok(treeAltitudeGrowth(410) < treeAltitudeGrowth(330));
+assert.equal(treeAltitudeGrowth(455), 0);
+assert.equal(treeHeightMultiplier(180, 0), 1);
+assert.equal(treeHeightMultiplier(180, 1), 4);
+assert.ok(treeHeightMultiplier(330, 1) < 4);
+assert.equal(treeHeightMultiplier(455, 1), 1);
+assert.ok(treeCanopyRadius({
+  module: 'AlpineConifer', params: { form: 1 }, scale: 10,
+}) > treeCanopyRadius({
+  module: 'AlpineConifer', params: { form: 1 }, scale: 2,
+}) * 4.9);
+assert.equal(treeCanopyRadius({
+  module: 'AlpineConifer', params: { form: 1 }, scale: 10,
+}), 11.5);
+assert.equal(treeCanopyRadius({
+  module: 'AlpineDeciduous', params: { form: 2 }, scale: 10,
+}), 16.5);
+assert.ok(TREE_NEIGHBOR_PADDING >=
+  2 * treeCanopyRadius({
+    module: 'AlpineDeciduous', params: { form: 2 }, scale: 19,
+  }) + TREE_CANOPY_CLEARANCE);
 for (const family of ['shrub', 'groundCover', 'flower', 'grass']) {
   const scales = sampledScales(family);
   assert.ok(Math.min(...scales) >= 0.89, `${family} scale minimum`);
@@ -170,14 +215,14 @@ planAlpineSector({
   },
 });
 assert.deepEqual(scatterCalls, [
-  [31, 4.03], [37, 1.58], [41, 1.26], [43, 1.26], [47, 0.63],
+  [31, 1.65], [37, 1.58], [41, 1.26], [43, 1.26], [47, 0.63],
 ]);
 const formerSpacing = [9, 5, 4, 4, 2];
 for (let index = 0; index < scatterCalls.length; ++index) {
   const densityRatio =
     (formerSpacing[index] / scatterCalls[index][1]) ** 2;
-  const expectedRatio = index === 0 ? 5 : 10;
-  assert.ok(Math.abs(densityRatio - expectedRatio) < 0.1,
+  const expectedRatio = index === 0 ? 30 : 10;
+  assert.ok(Math.abs(densityRatio - expectedRatio) < 0.4,
     `scatter family ${index} has ${expectedRatio}x candidate density`);
 }
 const far = planAlpineSector({ ...sectorArgs, rung: 0 });
@@ -194,7 +239,7 @@ assert.ok(near.every(p =>
   ['tree', 'shrub', 'groundCover', 'flower', 'grass'].includes(p.family)));
 
 const placementKey = p => JSON.stringify(
-  [p.family, p.x, p.z, p.rotation, p.scale, p.module, p.params]);
+  [p.family, p.x, p.z, p.rotation, p.scale, p.heightScale, p.module, p.params]);
 assert.deepEqual(far.map(placementKey).sort(),
   near.filter(p => p.family === 'tree').map(placementKey).sort());
 assert.deepEqual(mid.map(placementKey).sort(),
@@ -224,11 +269,34 @@ assert.ok(allPlacements.every(p => sectors.filter(([ox, oz]) =>
 assert.equal(new Set(allPlacements.map(placementKey)).size, allPlacements.length);
 assert.deepEqual(allPlacements.map(placementKey).sort(),
   [...sectors].reverse().flatMap(planSector).map(placementKey).sort());
+const allTrees = allPlacements.filter(placement => placement.family === 'tree');
+assert.ok(allTrees.every(tree =>
+  tree.heightScale >= 1 && tree.heightScale <= 4));
+assert.ok(Math.max(...allTrees.map(tree => tree.heightScale)) > 3.5,
+  'rare lowland trees approach four times the normal height');
+for (let first = 0; first < allTrees.length; ++first)
+  for (let second = first + 1; second < allTrees.length; ++second) {
+    const a = allTrees[first], b = allTrees[second];
+    const dx = a.x - b.x, dz = a.z - b.z;
+    const minimumDistance =
+      a.canopyRadius + b.canopyRadius + TREE_CANOPY_CLEARANCE;
+    assert.ok(dx * dx + dz * dz >= minimumDistance * minimumDistance - 1e-8,
+      'tree canopies do not overlap across sector boundaries');
+  }
 
 const allowed = new Set(alpineAssetVariants().map(v =>
   `${v.module}:${JSON.stringify(v.params)}`));
 for (const p of near)
   assert.ok(allowed.has(`${p.module}:${JSON.stringify(p.params)}`));
+
+const lowlandKinds = new Set(Array.from({ length: 4096 }, (_, index) =>
+  selectAlpineAsset('tree', {
+    ...lushTreeHabitat, altitude: 180, treeCluster: 1,
+  }, index / 4096))
+  .filter(Boolean)
+  .map(asset => `${asset.module}:${asset.params.form}`));
+assert.ok(lowlandKinds.size >= 4,
+  `lowland forests include a varied species mix (${[...lowlandKinds]})`);
 
 const sharedRequirements = [
   ...Array.from({ length: 8 }, (_, seed) => ({ module: 'Rock', params: { seed } })),

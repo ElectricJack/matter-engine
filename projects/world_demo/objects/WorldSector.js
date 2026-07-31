@@ -159,11 +159,13 @@ class WorldSector extends Part {
       this.placeChild(module, params);
       this.popMatrix();
     };
-    const putPlanned = ({ x, z, rotation, scale, sinkY, module, params }) => {
+    const putPlanned = ({
+      x, z, rotation, scale, heightScale = 1, sinkY, module, params,
+    }) => {
       this.pushMatrix();
       this.translate(x - ox, this.heightAt(x, z) - sinkY, z - oz);
       this.rotateY(rotation);
-      this.scale(scale, scale, scale);
+      this.scale(scale, scale * heightScale, scale);
       this.placeChild(module, params);
       this.popMatrix();
     };
