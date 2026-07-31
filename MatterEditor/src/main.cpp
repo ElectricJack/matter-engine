@@ -600,6 +600,79 @@ void apply_world_resolver_defaults(const std::string& world_name,
     }
 }
 
+// The windowed placement saved on the way into presentation mode, so leaving
+// it puts the window back exactly where it was rather than at some default.
+struct WindowedPlacement {
+    int x = 0, y = 0, w = 0, h = 0;
+    bool valid = false;
+};
+
+// GLFW has no "which monitor is this window on" query, so pick the monitor
+// whose video-mode rect overlaps the window rect most. On one screen that is
+// just the primary; on a multi-head desk it is the screen the viewer is
+// actually sitting on, which is the one the user means by "fullscreen".
+GLFWmonitor* monitor_for_window(GLFWwindow* window) {
+    int wx = 0, wy = 0, ww = 0, wh = 0;
+    glfwGetWindowPos(window, &wx, &wy);
+    glfwGetWindowSize(window, &ww, &wh);
+    int count = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&count);
+    GLFWmonitor* best = glfwGetPrimaryMonitor();
+    int best_overlap = 0;
+    for (int i = 0; i < count; ++i) {
+        int mx = 0, my = 0;
+        glfwGetMonitorPos(monitors[i], &mx, &my);
+        const GLFWvidmode* mode = glfwGetVideoMode(monitors[i]);
+        if (!mode) continue;
+        const int ox = std::max(0, std::min(wx + ww, mx + mode->width) -
+                                       std::max(wx, mx));
+        const int oy = std::max(0, std::min(wy + wh, my + mode->height) -
+                                       std::max(wy, my));
+        if (ox * oy > best_overlap) {
+            best_overlap = ox * oy;
+            best = monitors[i];
+        }
+    }
+    return best;
+}
+
+// Presentation mode (F11): fullscreen on the current monitor AND every panel
+// hidden, as ONE toggle. Two separate keys would be the wrong shape — a
+// fullscreen window still framed by docked panels is not what anyone means by
+// "fullscreen" — and the UI-hidden path already exists and is exactly right
+// for this: Ui::hide_ui_ skips the dockspace, spans viewport_rect_ across the
+// display, and makes viewport_render_frame hand back the swapchain frame
+// directly, so the 3D view renders straight to the screen with no intermediate
+// viewport target.
+//
+// Returns true if the viewer is now in presentation mode. The swapchain needs
+// no special handling here: the resize path this goes through is the same one
+// glfwSetWindowSize uses (see MATTER_TEST_RESIZE below), and begin_frame
+// rebuilds on out-of-date.
+bool toggle_presentation_mode(GLFWwindow* window, WindowedPlacement& saved) {
+    if (glfwGetWindowMonitor(window)) {
+        // Leaving: restore the saved rect. The fallback only fires if we
+        // somehow entered fullscreen without saving one, which would otherwise
+        // strand the window at 0,0 with no title bar to drag.
+        if (!saved.valid) saved = WindowedPlacement{100, 100, 1280, 720, true};
+        glfwSetWindowMonitor(window, nullptr, saved.x, saved.y, saved.w,
+                             saved.h, GLFW_DONT_CARE);
+        return false;
+    }
+    GLFWmonitor* monitor = monitor_for_window(window);
+    const GLFWvidmode* mode = monitor ? glfwGetVideoMode(monitor) : nullptr;
+    // No monitor or no video mode: stay windowed rather than guess a size.
+    // Reporting "still windowed" keeps the caller's hide_ui in step with what
+    // actually happened.
+    if (!mode) return false;
+    glfwGetWindowPos(window, &saved.x, &saved.y);
+    glfwGetWindowSize(window, &saved.w, &saved.h);
+    saved.valid = true;
+    glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height,
+                         mode->refreshRate);
+    return true;
+}
+
 bool key_pressed(GLFWwindow* window, int key, bool& previous) {
     const bool down = glfwGetKey(window, key) == GLFW_PRESS;
     const bool pressed = down && !previous;
@@ -1295,6 +1368,8 @@ int main() {
     bool f9_down = false;
     bool f10_down = false;
     bool f8_down = false;
+    bool f11_down = false;
+    WindowedPlacement windowed_placement{};
     bool dlss_modes_supported = false;
     matter::DlssMode selected_dlss_mode = matter::DlssMode::Native;
     if (const char* initial_dlss_mode = std::getenv("MATTER_DLSS_MODE")) {
@@ -1344,8 +1419,15 @@ int main() {
     std::printf("issues: reports go to %s\n", viewer::issues_dir().c_str());
     // Declared here rather than beside the other capture env vars below because
     // stamp_replay_state records it per shot.
-    const bool hide_ui = std::getenv("MATTER_HIDE_UI") != nullptr ||
-                         (replay.valid && !replay.ui_visible);
+    //
+    // Two values, not one: `hide_ui_forced` is what the environment/replay asked
+    // for and never changes, `hide_ui` is what this frame actually does. F11's
+    // presentation mode ORs into the live one, so leaving presentation mode
+    // restores the forced state instead of revealing a UI that MATTER_HIDE_UI
+    // said to hide.
+    const bool hide_ui_forced = std::getenv("MATTER_HIDE_UI") != nullptr ||
+                                (replay.valid && !replay.ui_visible);
+    bool hide_ui = hide_ui_forced;
     // Drops every preview texture and the draft. Used on file, on Discard, and
     // whenever the panel asks by dropping back to Idle.
     auto reset_issue_state = [&]() {
@@ -1860,6 +1942,21 @@ int main() {
         if (key_pressed(window, GLFW_KEY_F10, f10_down) && issue_capture_idle) {
             viewer::begin_viewport_capture(issue_state);
             std::printf("issue capture: viewport\n");
+        }
+        // F11: presentation mode -- fullscreen on the current monitor with every
+        // panel hidden (see toggle_presentation_mode). Deliberately NOT gated on
+        // issue_capture_idle: a region capture freezes the screen to select on,
+        // and changing the window size out from under it would invalidate the
+        // rect being dragged -- but F11 during a capture is far more likely to be
+        // someone trying to get out of a mode than someone resizing mid-drag, so
+        // the escape hatch wins. Camera capture (TAB) is unaffected either way.
+        if (key_pressed(window, GLFW_KEY_F11, f11_down)) {
+            const bool presenting =
+                toggle_presentation_mode(window, windowed_placement);
+            hide_ui = presenting || hide_ui_forced;
+            ui.set_hide_ui(hide_ui);
+            std::printf("viewer: presentation mode %s\n",
+                        presenting ? "on (F11 to exit)" : "off");
         }
         if (key_pressed(window, GLFW_KEY_F8, f8_down)) {
             if (!dlss_modes_supported) {
