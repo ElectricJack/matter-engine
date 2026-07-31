@@ -3,15 +3,109 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <limits>
+#include <mutex>
+#include <sstream>
+#include <unordered_map>
 #include <utility>
 
 #include "matter/vulkan_device.h"
 #include "vk_device_internal.h"
 
 namespace matter {
+
+// Device-address registry for VK_ERROR_DEVICE_LOST forensics: every
+// device-addressable range (buffers created with SHADER_DEVICE_ADDRESS and
+// acceleration structures) is recorded at creation and moved to a bounded
+// freed-history ring when its allocation is actually destroyed (which happens
+// only after per-frame retention releases it). debug_describe_device_address
+// matches a faulting GPU VA from VK_EXT_device_fault against both sets.
+namespace {
+
+struct DeviceAddressRange {
+    uint64_t base = 0;
+    uint64_t size = 0;
+    const char* kind = "";
+    std::chrono::steady_clock::time_point created{};
+    std::chrono::steady_clock::time_point freed{};
+};
+
+std::mutex g_device_address_mutex;
+std::unordered_map<uint64_t, DeviceAddressRange> g_live_device_addresses;
+std::deque<DeviceAddressRange> g_freed_device_addresses;
+constexpr size_t kMaxFreedDeviceAddressRecords = 8192;
+
+void register_device_address(uint64_t base, uint64_t size, const char* kind) {
+    if (base == 0 || size == 0) return;
+    DeviceAddressRange range;
+    range.base = base;
+    range.size = size;
+    range.kind = kind;
+    range.created = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(g_device_address_mutex);
+    g_live_device_addresses[base] = range;
+}
+
+void release_device_address(uint64_t base) {
+    if (base == 0) return;
+    std::lock_guard<std::mutex> lock(g_device_address_mutex);
+    const auto found = g_live_device_addresses.find(base);
+    if (found == g_live_device_addresses.end()) return;
+    DeviceAddressRange freed = found->second;
+    freed.freed = std::chrono::steady_clock::now();
+    g_live_device_addresses.erase(found);
+    g_freed_device_addresses.push_back(freed);
+    if (g_freed_device_addresses.size() > kMaxFreedDeviceAddressRecords)
+        g_freed_device_addresses.pop_front();
+}
+
+}  // namespace
+
+std::string debug_describe_device_address(uint64_t address) {
+    const auto now = std::chrono::steady_clock::now();
+    const auto age_ms = [&](std::chrono::steady_clock::time_point then) {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(now -
+                                                                     then)
+            .count();
+    };
+    const auto in_range = [address](const DeviceAddressRange& range) {
+        return address >= range.base && address - range.base < range.size;
+    };
+    std::ostringstream out;
+    out << std::hex;
+    size_t matches = 0;
+    std::lock_guard<std::mutex> lock(g_device_address_mutex);
+    for (const auto& entry : g_live_device_addresses) {
+        const DeviceAddressRange& range = entry.second;
+        if (!in_range(range)) continue;
+        out << "live " << range.kind << " [0x" << range.base << " +0x"
+            << range.size << "), created " << std::dec << age_ms(range.created)
+            << " ms ago" << std::hex << "; ";
+        ++matches;
+    }
+    // Newest-first: with VA reuse the most recent tenant of the range is the
+    // interesting one.
+    for (auto it = g_freed_device_addresses.rbegin();
+         it != g_freed_device_addresses.rend() && matches < 8; ++it) {
+        if (!in_range(*it)) continue;
+        out << "FREED " << it->kind << " [0x" << it->base << " +0x" << it->size
+            << "), destroyed " << std::dec << age_ms(it->freed)
+            << " ms ago (lived "
+            << std::chrono::duration_cast<std::chrono::milliseconds>(
+                   it->freed - it->created)
+                   .count()
+            << " ms)" << std::hex << "; ";
+        ++matches;
+    }
+    if (matches == 0)
+        return "no tracked device-address range covers this address";
+    return out.str();
+}
+
 namespace detail {
 
 struct VkBufferAllocation final : DeviceLifetimeControl {
@@ -21,6 +115,7 @@ struct VkBufferAllocation final : DeviceLifetimeControl {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     void* mapped = nullptr;
+    uint64_t device_address = 0;
 
     ~VkBufferAllocation() override { release_device_objects(); }
 
@@ -33,6 +128,8 @@ protected:
             vkDestroyBuffer(device, buffer, nullptr);
         if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE)
             vkFreeMemory(device, memory, nullptr);
+        release_device_address(device_address);
+        device_address = 0;
         buffer = VK_NULL_HANDLE;
         memory = VK_NULL_HANDLE;
         mapped = nullptr;
@@ -70,6 +167,7 @@ struct VkAccelerationStructureAllocation final : DeviceLifetimeControl {
         : DeviceLifetimeControl(std::move(device_access)) {}
     VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
     std::shared_ptr<void> storage;
+    uint64_t device_address = 0;
     ~VkAccelerationStructureAllocation() override { release_device_objects(); }
 protected:
     void release_device_objects() noexcept override {
@@ -79,6 +177,8 @@ protected:
                 vkGetDeviceProcAddr(device, "vkDestroyAccelerationStructureKHR"));
             if (destroy) destroy(device, handle, nullptr);
         }
+        release_device_address(device_address);
+        device_address = 0;
         handle = VK_NULL_HANDLE;
         storage.reset();
     }
@@ -347,6 +447,8 @@ bool create_acceleration_structure(
         error = "vkGetAccelerationStructureDeviceAddressKHR returned zero";
         return false;
     }
+    candidate.lifetime->device_address = candidate.address;
+    register_device_address(candidate.address, size, "acceleration structure");
     output = std::move(candidate);
     return true;
 }
@@ -453,6 +555,11 @@ bool create_buffer(VulkanDevice& vulkan, VkDeviceSize size,
     candidate.lifetime->buffer = candidate.buffer;
     candidate.lifetime->memory = candidate.memory;
     candidate.lifetime->mapped = candidate.mapped;
+    if (candidate.address != 0) {
+        candidate.lifetime->device_address = candidate.address;
+        register_device_address(candidate.address, candidate.allocation_size,
+                                "buffer");
+    }
     output = std::move(candidate);
     return true;
 }

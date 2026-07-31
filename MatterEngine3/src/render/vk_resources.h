@@ -18,6 +18,12 @@ struct VkImageAllocation;
 struct VkAccelerationStructureAllocation;
 }  // namespace detail
 
+// Device-fault forensics: matches a faulting GPU VA (from VK_EXT_device_fault)
+// against every tracked device-addressable range — buffers created with
+// SHADER_DEVICE_ADDRESS usage and acceleration structures — both live and
+// recently destroyed. Returns a human-readable summary of the matches.
+std::string debug_describe_device_address(uint64_t address);
+
 struct VkBufferResource {
     VkDevice device = VK_NULL_HANDLE;
     VkBuffer buffer = VK_NULL_HANDLE;

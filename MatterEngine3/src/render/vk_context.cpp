@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -24,6 +25,7 @@
 #include <vector>
 
 #include "vk_device_internal.h"
+#include "vk_resources.h"
 #include "streamline_bridge.h"
 
 namespace matter {
@@ -412,17 +414,23 @@ struct VulkanDevice::Impl {
     // the lost state (VUID-vkGetDeviceFaultInfoEXT-device-07336), so this is
     // called solely from paths that observed VK_ERROR_DEVICE_LOST.
     void log_device_fault() {
-        if (!get_device_fault_info || device_fault_logged ||
-            device == VK_NULL_HANDLE)
-            return;
+        if (device_fault_logged || device == VK_NULL_HANDLE) return;
         device_fault_logged = true;
+        std::ostringstream report;
+        if (!poison_error.empty()) report << poison_error << "\n";
+        if (!get_device_fault_info) {
+            report << "Vulkan device fault details unavailable: "
+                      "VK_EXT_device_fault is not enabled on this device\n";
+            emit_device_fault_report(report.str());
+            return;
+        }
         VkDeviceFaultCountsEXT counts{
             VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
         VkResult result = get_device_fault_info(device, &counts, nullptr);
         if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
-            std::fprintf(stderr,
-                         "vkGetDeviceFaultInfoEXT(counts) failed: %s\n",
-                         result_name(result));
+            report << "vkGetDeviceFaultInfoEXT(counts) failed: "
+                   << result_name(result) << "\n";
+            emit_device_fault_report(report.str());
             return;
         }
         std::vector<VkDeviceFaultAddressInfoEXT> addresses(
@@ -435,28 +443,54 @@ struct VulkanDevice::Impl {
         info.pVendorInfos = vendors.empty() ? nullptr : vendors.data();
         result = get_device_fault_info(device, &counts, &info);
         if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
-            std::fprintf(stderr, "vkGetDeviceFaultInfoEXT failed: %s\n",
-                         result_name(result));
+            report << "vkGetDeviceFaultInfoEXT failed: "
+                   << result_name(result) << "\n";
+            emit_device_fault_report(report.str());
             return;
         }
-        std::fprintf(stderr, "Vulkan device fault: %s\n", info.description);
+        report << "Vulkan device fault: " << info.description << "\n";
+        char line[192];
         for (uint32_t i = 0; i < counts.addressInfoCount; ++i) {
             const VkDeviceFaultAddressInfoEXT& address = addresses[i];
-            std::fprintf(
-                stderr,
+            std::snprintf(
+                line, sizeof(line),
                 "  fault address %u: %s at 0x%llx (precision 0x%llx)\n", i,
                 fault_address_type_name(address.addressType),
                 static_cast<unsigned long long>(address.reportedAddress),
                 static_cast<unsigned long long>(address.addressPrecision));
+            report << line;
+            report << "    -> "
+                   << debug_describe_device_address(address.reportedAddress)
+                   << "\n";
         }
         for (uint32_t i = 0; i < counts.vendorInfoCount; ++i) {
             const VkDeviceFaultVendorInfoEXT& vendor = vendors[i];
-            std::fprintf(
-                stderr, "  vendor fault %u: %s (code 0x%llx, data 0x%llx)\n",
-                i, vendor.description,
+            std::snprintf(
+                line, sizeof(line),
+                "  vendor fault %u: %s (code 0x%llx, data 0x%llx)\n", i,
+                vendor.description,
                 static_cast<unsigned long long>(vendor.vendorFaultCode),
                 static_cast<unsigned long long>(vendor.vendorFaultData));
+            report << line;
         }
+        emit_device_fault_report(report.str());
+    }
+
+    // stderr is gone the moment the process exits when the editor was not
+    // launched from a console, and device-lost repros take hours — so the
+    // report is also appended to a file beside the working directory.
+    void emit_device_fault_report(const std::string& report) {
+        std::fprintf(stderr, "%s", report.c_str());
+        std::FILE* file = std::fopen("vulkan_device_fault.log", "a");
+        if (!file) return;
+        char stamp[32] = "unknown time";
+        const std::time_t now = std::time(nullptr);
+        if (const std::tm* local = std::localtime(&now))
+            std::strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", local);
+        std::fprintf(file, "==== %s ====\n%s", stamp, report.c_str());
+        std::fclose(file);
+        std::fprintf(stderr,
+                     "Device fault report appended to vulkan_device_fault.log\n");
     }
 
     bool poison_device(std::string& error, const char* reason) {
