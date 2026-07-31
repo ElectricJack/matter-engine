@@ -817,6 +817,18 @@ $(W_FLECS_OBJ): $(W_OBJ_DIR)/%.o: $(FLECS_DIR)/%.c | $(W_OBJ_DIR)
 # regeneration must not force object rebuilds (embedded-shaders is phony).
 $(W_CPP_OBJ): | embedded-shaders
 
+# MATTER_HAVE_STREAMLINE is a compile-time gate, but make only tracks source
+# timestamps, so flipping HAVE_STREAMLINE between invocations used to reuse the
+# stale streamline_bridge.o and silently ship the wrong branch. The stamp below
+# records the last-built value and is rewritten (bumping its mtime) only when
+# the value differs, forcing exactly the TU that reads the define to recompile.
+W_STREAMLINE_STAMP = $(W_OBJ_DIR)/.streamline_flag
+.PHONY: FORCE
+FORCE:
+$(W_STREAMLINE_STAMP): FORCE | $(W_OBJ_DIR)
+	@[ "$$(cat $@ 2>/dev/null)" = "$(HAVE_STREAMLINE)" ] || echo "$(HAVE_STREAMLINE)" > $@
+$(W_OBJ_DIR)/streamline_bridge.o: $(W_STREAMLINE_STAMP)
+
 windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) win-shaders-gpu $(AR_CORE_DEP) $(W_ALL_OBJ)
 	$(WIN_CXX) $(W_ALL_OBJ) -o $(W_DIR)/editor.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(AR_CORE_LDFLAGS) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
 	@if [ "$(HAVE_STREAMLINE)" = "1" ]; then cp -f "$(STREAMLINE_DLL_DIR)"/*.dll $(W_DIR)/; fi
