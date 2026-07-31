@@ -222,7 +222,15 @@ const auto s_camera = matter::props::group<CameraPrefs>(
         .doc("Orbit and zoom about the selected object's focus point instead "
              "of the view target. The Camera panel's checkbox is the same "
              "field; it falls back to the view target whenever the selection "
-             "resolves to no bounds."));
+             "resolves to no bounds."),
+    prop(&CameraPrefs::turn_step, "turn_step")
+        .label("Turn step").range(0.0175f, 1.5708f).units("rad")
+        .doc("Camera panel Turn buttons: rotation per press. Coarse on "
+             "purpose — these exist to drive the view without a mouse."),
+    prop(&CameraPrefs::move_step, "move_step")
+        .label("Move step").range(0.05f, 100.0f).units("m").log()
+        .doc("Camera panel Move buttons: distance one press translates the "
+             "camera and its target along the view basis."));
 
 // sim.time — Scope::Session. The toolbar's slider edits ToolbarState::time_scale
 // directly and keeps doing so; this group only adds Tunables visibility and the

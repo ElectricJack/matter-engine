@@ -32,6 +32,13 @@ struct CameraPrefs {
     // A persisted preference, not session state: it is a way of driving the
     // camera, and a user who works this way wants it back next launch.
     bool orbit_selection = false;
+    // Discrete move/turn buttons (part 2). Deliberately coarse compared with
+    // orbit_step: these exist so the viewpoint can be driven WITHOUT the mouse
+    // (the panel is the workaround for the remote-desktop spin), so one press
+    // has to travel a useful amount. 15 degrees and 2 m are roughly "one
+    // noticeable step" at editor scale.
+    float turn_step = 0.2618f;  // 15 degrees in radians
+    float move_step = 2.0f;     // metres per press
 };
 
 struct CameraInput {

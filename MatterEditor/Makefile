@@ -1167,14 +1167,20 @@ build/test_selection_set.exe: tests/test_selection_set.cpp src/selection_set.cpp
 run-test-selection-set: build/test_selection_set.exe
 	./build/test_selection_set.exe
 
-# Camera orbit-about-a-pivot math (issue a4203d22 part 1). Pure CPU: no ImGui
-# context, no window, no session -- camera_orbit.cpp exists precisely so this
-# math is reachable without any of them.
+# Camera orbit / move / turn math (issue a4203d22 parts 1-2). Pure CPU: no
+# ImGui context, no window, no session -- camera_orbit.cpp exists precisely
+# so this math is reachable without any of them. camera_controller.cpp comes
+# along for apply_camera_input (what the Move/Turn buttons call); it drags in
+# GLFW only because CameraController::update shares its TU, hence the
+# $(GLFW_WIN_LIB) on the link line -- nothing here touches a window.
 build/test_camera_orbit.exe: tests/test_camera_orbit.cpp \
-        src/camera_orbit.cpp src/camera_orbit.h
+        src/camera_orbit.cpp src/camera_orbit.h \
+        src/camera_controller.cpp src/camera_controller.h $(GLFW_WIN_LIB)
 	@mkdir -p $(dir $@)
-	$(WIN_CXX) tests/test_camera_orbit.cpp src/camera_orbit.cpp -o $@ \
-	    -std=c++17 -Wall -Wextra -Isrc -I$(ME3_DIR)/include
+	$(WIN_CXX) tests/test_camera_orbit.cpp src/camera_orbit.cpp \
+	    src/camera_controller.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Isrc -I$(ME3_DIR)/include \
+	    $(GLFW_WIN_LIB) -lgdi32 -luser32 -lshell32
 
 .PHONY: run-test-camera-orbit
 run-test-camera-orbit: build/test_camera_orbit.exe

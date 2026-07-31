@@ -1248,6 +1248,64 @@ void Ui::draw_camera_panel(matter::CameraDesc& cam, CameraPrefs& prefs,
     ImGui::DragFloat3("Position", &cam.position.x, 0.1f);
     ImGui::DragFloat3("Target", &cam.target.x, 0.1f);
 
+    // ---- Move (part 2) -----------------------------------------------------
+    //
+    // Both position AND target translate, along the camera basis — which is
+    // exactly what apply_camera_input already does for WASD, so these buttons
+    // synthesize a CameraInput rather than repeating the vector math. The
+    // dt/speed pair is chosen so one press travels exactly move_step metres:
+    // apply_camera_input normalizes the movement vector, so a single axis at
+    // dt=1 and speed=move_step is a move_step-metre step regardless of frame
+    // rate. speed_boost stays false — Shift is a free-fly concept.
+    ImGui::SeparatorText("Move");
+    auto step_move = [&](float forward, float right, float up) {
+        CameraInput input{};
+        input.forward = forward;
+        input.right = right;
+        input.up = up;
+        apply_camera_input(cam, input, 1.0f, prefs.move_step,
+                           prefs.look_sensitivity, prefs.boost_multiplier);
+    };
+    // Hold-to-repeat on every discrete button, matching the orbit buttons that
+    // already did this: a single 2 m press is not how anyone crosses a scene.
+    ImGui::PushButtonRepeat(true);
+    if (ImGui::Button("Fwd##mv"))   step_move(1.0f, 0.0f, 0.0f);
+    ImGui::SameLine();
+    if (ImGui::Button("Back##mv"))  step_move(-1.0f, 0.0f, 0.0f);
+    ImGui::SameLine();
+    if (ImGui::Button("Left##mv"))  step_move(0.0f, -1.0f, 0.0f);
+    ImGui::SameLine();
+    if (ImGui::Button("Right##mv")) step_move(0.0f, 1.0f, 0.0f);
+    ImGui::SameLine();
+    if (ImGui::Button("Up##mv"))    step_move(0.0f, 0.0f, 1.0f);
+    ImGui::SameLine();
+    if (ImGui::Button("Down##mv"))  step_move(0.0f, 0.0f, -1.0f);
+
+    // ---- Turn (part 2) -----------------------------------------------------
+    //
+    // Rotate the look direction in place: position fixed, target swings.
+    // apply_camera_input does this too — it rebuilds target from position plus
+    // the rotated forward at the same view length, and leaves position
+    // untouched when no translation axis is set. Passing yaw_pixels=+/-1 with
+    // radians_per_pixel=turn_step turns by exactly turn_step radians, so the
+    // "pixels" naming is a unit carrier here, not a claim about the mouse.
+    ImGui::SeparatorText("Turn");
+    auto step_turn = [&](float yaw, float pitch) {
+        CameraInput input{};
+        input.yaw_pixels = yaw;
+        input.pitch_pixels = pitch;
+        apply_camera_input(cam, input, 1.0f, 0.0f, prefs.turn_step,
+                           prefs.boost_multiplier);
+    };
+    if (ImGui::Button("Left##turn"))  step_turn(-1.0f, 0.0f);
+    ImGui::SameLine();
+    if (ImGui::Button("Right##turn")) step_turn(1.0f, 0.0f);
+    ImGui::SameLine();
+    if (ImGui::Button("Up##turn"))    step_turn(0.0f, -1.0f);
+    ImGui::SameLine();
+    if (ImGui::Button("Down##turn"))  step_turn(0.0f, 1.0f);
+    ImGui::PopButtonRepeat();
+
     // ---- Orbit (part 1) ----------------------------------------------------
     ImGui::SeparatorText("Orbit");
 
@@ -1325,6 +1383,18 @@ void Ui::draw_camera_panel(matter::CameraDesc& cam, CameraPrefs& prefs,
 
     ImGui::Separator();
     ImGui::TextColored(ImVec4(1, 1, 0, 1), "TAB: free-fly (WASD + mouse)");
+    // Step sizes live in camera.prefs and are edited in Performance (or
+    // Tunables); say so instead of duplicating three sliders here. Kept short
+    // deliberately: TextDisabled does not wrap, and the panel is narrow enough
+    // in the shipped layout that a longer line is simply clipped.
+    ImGui::TextDisabled("Steps: %.2g m / %.0f deg / %.3g rad",
+                        static_cast<double>(prefs.move_step),
+                        static_cast<double>(prefs.turn_step) * 180.0 /
+                            3.14159265358979323846,
+                        static_cast<double>(prefs.orbit_step));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Move / Turn / Orbit step sizes (camera.prefs). "
+                          "Edit them in Performance > Camera.");
 
     ImGui::End();
 }

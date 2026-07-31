@@ -1,14 +1,18 @@
-// Camera panel orbit-about-a-pivot math (issue a4203d22 part 1).
+// Camera panel orbit / move / turn math (issue a4203d22 parts 1 and 2).
 //
 // Everything here is window-free on purpose: camera_orbit.cpp pulls in no
-// GLFW, no ImGui and no session. The invariant the issue's acceptance list
-// names -- a pivot-substituted orbit preserves distance to the pivot -- gets a
-// test of its own below.
+// GLFW, no ImGui and no session, and apply_camera_input is a pure function
+// over CameraDesc. The two invariants the issue's acceptance list names get a
+// test each -- a pivot-substituted orbit preserves distance to the pivot, and
+// the turn buttons preserve cam.position EXACTLY (bitwise, not within an
+// epsilon: a turn that translates the camera by a rounding error is a turn
+// that drifts over a hundred presses).
 //
 // What is NOT covered here, and cannot be: CameraController::update's mouse
 // path (part 3) needs a live GLFWwindow, and the ImGui button wiring needs a
 // window and an ImGui context.
 
+#include "../src/camera_controller.h"
 #include "../src/camera_orbit.h"
 
 #include <cassert>
@@ -17,6 +21,7 @@
 
 using matter::CameraDesc;
 using matter::Float3;
+using viewer::CameraInput;
 using viewer::OrbitFrame;
 
 namespace {
@@ -41,6 +46,8 @@ bool close3(Float3 a, Float3 b, float eps) {
 bool identical3(Float3 a, Float3 b) {
     return a.x == b.x && a.y == b.y && a.z == b.z;
 }
+
+// ---- Part 1: orbit about a substituted pivot -----------------------------
 
 // The acceptance invariant. The pivot is deliberately nowhere near cam.target,
 // which is the whole point of the feature: before the substitution the orbit
@@ -138,6 +145,83 @@ void test_clamps_and_degenerate_pivot() {
     std::printf("  pole / degenerate pivot clamps: OK\n");
 }
 
+// ---- Part 2: discrete move and turn --------------------------------------
+
+// The acceptance invariant: a turn rotates the look direction and leaves the
+// eye where it was, to the bit.
+void test_turn_preserves_position_exactly() {
+    CameraDesc cam = make_camera({20, 16, 34}, {0, 9, 0});
+    const Float3 eye = cam.position;
+    const float view_length = distance3(cam.position, cam.target);
+
+    // Exactly what the Turn buttons do: one "pixel" of yaw at
+    // radians_per_pixel = turn_step, zero move speed.
+    constexpr float kTurnStep = 0.2618f;  // 15 degrees
+    for (int i = 0; i < 24; ++i) {
+        CameraInput input{};
+        input.yaw_pixels = 1.0f;
+        viewer::apply_camera_input(cam, input, 1.0f, 0.0f, kTurnStep);
+    }
+    assert(identical3(cam.position, eye));
+    // 24 * 15 degrees = 360: the look direction is back where it started, and
+    // the view length never changed.
+    assert(std::fabs(distance3(cam.position, cam.target) - view_length) < 1e-3f);
+    std::printf("  turn preserves position exactly: OK\n");
+}
+
+// One press must turn by exactly turn_step radians, otherwise "15 degrees" in
+// the schema is a lie.
+void test_turn_step_is_the_requested_angle() {
+    CameraDesc cam = make_camera({0, 0, 0}, {0, 0, -5});
+    constexpr float kTurnStep = 0.2618f;
+    CameraInput input{};
+    input.yaw_pixels = 1.0f;
+    viewer::apply_camera_input(cam, input, 1.0f, 0.0f, kTurnStep);
+
+    // forward went from (0,0,-1) to (sin, 0, -cos) of the turn angle.
+    const float angle = std::atan2(std::fabs(cam.target.x),
+                                   std::fabs(cam.target.z));
+    assert(std::fabs(angle - kTurnStep) < 1e-4f);
+    std::printf("  one turn press == turn_step radians: OK\n");
+}
+
+// A move press translates BOTH position and target by exactly move_step along
+// the camera basis -- the framing does not change, the viewpoint does.
+void test_move_step_translates_by_exactly_move_step() {
+    CameraDesc cam = make_camera({0, 0, 5}, {0, 0, 0});
+    const Float3 eye = cam.position;
+    const Float3 look = cam.target;
+    constexpr float kMoveStep = 2.0f;
+
+    CameraInput input{};
+    input.forward = 1.0f;
+    viewer::apply_camera_input(cam, input, 1.0f, kMoveStep, 0.002f);
+    assert(close3(cam.position, {0, 0, 3}, 1e-5f));
+    assert(close3(cam.target, {0, 0, -2}, 1e-5f));
+    assert(std::fabs(distance3(cam.position, eye) - kMoveStep) < 1e-5f);
+    assert(std::fabs(distance3(cam.target, look) - kMoveStep) < 1e-5f);
+
+    // Strafe right is the same magnitude on the perpendicular axis.
+    CameraDesc side = make_camera({0, 0, 5}, {0, 0, 0});
+    CameraInput strafe{};
+    strafe.right = 1.0f;
+    viewer::apply_camera_input(side, strafe, 1.0f, kMoveStep, 0.002f);
+    assert(std::fabs(distance3(side.position, {0, 0, 5}) - kMoveStep) < 1e-5f);
+    assert(std::fabs(side.position.z - 5.0f) < 1e-5f);
+    std::printf("  move press == move_step metres: OK\n");
+}
+
+// The default steps the schema ships. If someone retunes these, the schema doc
+// strings ("15 degrees", "2 m") must be retuned with them.
+void test_defaults_match_the_documented_steps() {
+    const viewer::CameraPrefs prefs;
+    assert(std::fabs(prefs.turn_step - 15.0f * 3.14159265358979323846f / 180.0f) <
+           1e-4f);
+    assert(prefs.move_step == 2.0f);
+    assert(prefs.orbit_selection == false);
+    std::printf("  camera.prefs defaults: OK\n");
+}
+
 }  // namespace
 
 int main() {
@@ -147,6 +231,10 @@ int main() {
     test_wheel_zoom_matches_one_zoom_button();
     test_idle_mouse_does_not_move_the_camera();
     test_clamps_and_degenerate_pivot();
+    test_turn_preserves_position_exactly();
+    test_turn_step_is_the_requested_angle();
+    test_move_step_translates_by_exactly_move_step();
+    test_defaults_match_the_documented_steps();
     std::printf("test_camera_orbit: all OK\n");
     return 0;
 }
