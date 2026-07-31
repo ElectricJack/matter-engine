@@ -167,7 +167,9 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/render/animation_rigid_bridge.cpp src/render/animation_skin_bridge.cpp src/render/vk_animation_skinning.cpp src/render/vk_animation_bounds.cpp \
           src/streaming/sector_streaming_coordinator.cpp \
           src/event/dispatch_context.cpp src/event/subscription.cpp src/event/event_hub.cpp src/event/command.cpp \
-          src/event/property.cpp
+          src/event/property.cpp \
+          src/util/json_doc.cpp \
+          src/props/props.cpp src/props/props_file.cpp
 
 # MatterSurfaceLib C++ backend sources compiled into the archive so MatterEditor
 # need not compile them directly (no libmsl.a). Same set as the old viewer's MSL_CPP
@@ -237,7 +239,9 @@ ME3_OBJ = $(addprefix $(OBJDIR)/,script_host.o dsl_state.o dsl_bindings.o dsl_an
           animation_rigid_bridge.o animation_skin_bridge.o vk_animation_skinning.o vk_animation_bounds.o \
           sector_streaming_coordinator.o \
           dispatch_context.o subscription.o event_hub.o command.o \
-          property.o)
+          property.o \
+          json_doc.o \
+          props.o props_file.o)
 
 # Vendored BC encoder objects. Explicit rules (below) rather than vpath: these
 # are third-party sources that must never be picked up by the generic %.cpp
@@ -422,7 +426,7 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/animation src/render src/provider src/script src/ecs src/scene src/streaming src/event $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src
+vpath %.cpp src src/animation src/render src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).

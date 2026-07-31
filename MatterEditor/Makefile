@@ -277,6 +277,9 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/event/dispatch_context.cpp \
               $(ME3_DIR)/src/event/command.cpp \
               $(ME3_DIR)/src/event/property.cpp \
+              $(ME3_DIR)/src/util/json_doc.cpp \
+              $(ME3_DIR)/src/props/props.cpp \
+              $(ME3_DIR)/src/props/props_file.cpp \
               $(ME3_DIR)/src/scene/scene_service.cpp \
               $(ME3_DIR)/src/scene/scene_change_tracker.cpp \
               $(ME3_DIR)/src/bake_trace.cpp \
@@ -344,7 +347,7 @@ FLECS_NAME = $(notdir $(FLECS_C))
 
 vpath %.cpp src $(ME3_DIR)/src $(ME3_DIR)/src/animation $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs \
              $(ME3_DIR)/src/streaming $(ME3_DIR)/src/script $(ME3_DIR)/src/event \
-             $(ME3_DIR)/src/scene \
+             $(ME3_DIR)/src/scene $(ME3_DIR)/src/util $(ME3_DIR)/src/props \
              $(MSL_DIR)/src $(SQL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
              $(IMGUIZMO_PATH) \
              ../libs/ParticleFlowLib/src \
