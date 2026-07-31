@@ -14,6 +14,7 @@
 #include "imgui_impl_vulkan.h"
 #include "matter/vulkan_device.h"
 #include "editor_props.h"
+#include "camera_orbit.h"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -1231,19 +1232,57 @@ void Ui::draw_asset_browser_panel(AssetBrowser& browser,
     ImGui::End();
 }
 
-void Ui::draw_camera_panel(matter::CameraDesc& cam, const CameraPrefs& prefs) {
+void Ui::draw_camera_panel(matter::CameraDesc& cam, CameraPrefs& prefs,
+                           EditorProps& props, bool pivot_valid,
+                           const matter::Float3& pivot) {
     ImGui::Begin("Camera");
+
+    // camera.prefs is claimed by draw_performance_panel's unconditional
+    // preamble, which is also where the whole group is DRAWN (draw_group_fields
+    // in the Streaming/LOD section). This panel only hand-edits one of its
+    // fields (the Orbit selection checkbox below) plus a few read-only steps,
+    // so it deliberately does NOT note_panel_home here: claiming it would only
+    // rename the same claim and make Tunables' "shown in <panel>" tooltip point
+    // at the window that shows one checkbox instead of the whole group.
 
     ImGui::DragFloat3("Position", &cam.position.x, 0.1f);
     ImGui::DragFloat3("Target", &cam.target.x, 0.1f);
 
-    float dx = cam.position.x - cam.target.x;
-    float dy = cam.position.y - cam.target.y;
-    float dz = cam.position.z - cam.target.z;
-    float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-    if (dist < 0.0001f) dist = 0.0001f;
-    float yaw = atan2f(dz, dx);
-    float pitch = asinf(dy / dist);
+    // ---- Orbit (part 1) ----------------------------------------------------
+    ImGui::SeparatorText("Orbit");
+
+    // The toggle is a camera.prefs field edited by hand, not through
+    // draw_group, so the User-scope autosave debounce has to be armed
+    // explicitly — same discipline as main.cpp's hand-edited world-props
+    // write. Without the set_dirty the checkbox would revert every launch.
+    const bool can_orbit_selection = pivot_valid;
+    ImGui::BeginDisabled(!can_orbit_selection);
+    bool orbit_selection = prefs.orbit_selection;
+    if (ImGui::Checkbox("Orbit selection", &orbit_selection)) {
+        prefs.orbit_selection = orbit_selection;
+        if (matter::props::Binding* b = props.camera()) b->set_dirty(true);
+    }
+    ImGui::EndDisabled();
+    // Disabled + explained, rather than a silent fall back to cam.target that
+    // leaves the user wondering why "orbit selection" orbits thin air.
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip(can_orbit_selection
+                              ? "Orbit and zoom about the selection's focus "
+                                "point. Also applies to viewport drag/wheel."
+                              : "Select an object with bounds first — nothing "
+                                "in the current selection resolves to a focus "
+                                "point.");
+    }
+
+    // The pivot substitution the whole feature comes down to: everything below
+    // is the original cam.target orbit with `pivot` swapped in. When it is the
+    // selection we also retarget the camera at it (look_at_pivot), because an
+    // orbit that keeps looking somewhere else does not keep the object in
+    // frame — which is the actual request.
+    const bool use_selection_pivot = prefs.orbit_selection && pivot_valid;
+    const matter::Float3 orbit_pivot = use_selection_pivot ? pivot : cam.target;
+
+    OrbitFrame frame = orbit_frame_from(cam, orbit_pivot);
     bool changed = false;
     // CameraPrefs::orbit_step / orbit_zoom_step (camera.prefs, Scope::User).
     // Defaults reproduce the former literals exactly: 0.04 rad, and
@@ -1251,39 +1290,32 @@ void Ui::draw_camera_panel(matter::CameraDesc& cam, const CameraPrefs& prefs) {
     const float orbit_step = prefs.orbit_step;
 
     ImGui::PushButtonRepeat(true);
-    ImGui::Text("Orbit:");
-    if (ImGui::Button("Left"))  { yaw -= orbit_step; changed = true; }
+    if (ImGui::Button("Left##orb"))  { frame.yaw -= orbit_step; changed = true; }
     ImGui::SameLine();
-    if (ImGui::Button("Right")) { yaw += orbit_step; changed = true; }
+    if (ImGui::Button("Right##orb")) { frame.yaw += orbit_step; changed = true; }
     ImGui::SameLine();
-    if (ImGui::Button("Up"))    { pitch += orbit_step; changed = true; }
+    if (ImGui::Button("Up##orb"))    { frame.pitch += orbit_step; changed = true; }
     ImGui::SameLine();
-    if (ImGui::Button("Down"))  { pitch -= orbit_step; changed = true; }
+    if (ImGui::Button("Down##orb"))  { frame.pitch -= orbit_step; changed = true; }
 
     if (ImGui::Button("Zoom In")) {
-        dist *= 1.0f - prefs.orbit_zoom_step;
+        frame.distance *= 1.0f - prefs.orbit_zoom_step;
         changed = true;
     }
     ImGui::SameLine();
     if (ImGui::Button("Zoom Out")) {
-        dist *= 1.0f + prefs.orbit_zoom_step;
+        frame.distance *= 1.0f + prefs.orbit_zoom_step;
         changed = true;
     }
     ImGui::PopButtonRepeat();
 
-    if (ImGui::SliderFloat("Distance", &dist, 1.0f, 150.0f)) changed = true;
+    if (ImGui::SliderFloat("Distance", &frame.distance, 1.0f, 150.0f))
+        changed = true;
 
-    // Clamp pitch just shy of the poles so the orbit never flips/gimbal-locks.
-    const float pitch_limit = 1.5533f; // ~89 degrees
-    if (pitch > pitch_limit) pitch = pitch_limit;
-    if (pitch < -pitch_limit) pitch = -pitch_limit;
-    if (dist < 1.0f) dist = 1.0f;
-
-    if (changed) {
-        cam.position.x = cam.target.x + dist * cosf(pitch) * cosf(yaw);
-        cam.position.y = cam.target.y + dist * sinf(pitch);
-        cam.position.z = cam.target.z + dist * cosf(pitch) * sinf(yaw);
-    }
+    // Clamp before applying AND before the slider reads it back next frame, so
+    // the displayed distance is the one that took effect.
+    frame = clamp_orbit_frame(frame);
+    if (changed) apply_orbit_frame(cam, orbit_pivot, frame, use_selection_pivot);
 
     if (ImGui::Button("Reset View")) {
         cam.position = {20.0f, 16.0f, 34.0f};

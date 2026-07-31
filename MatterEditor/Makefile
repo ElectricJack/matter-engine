@@ -183,7 +183,7 @@ ar-core:
 # this repository's normal dev environment -- see MatterEditor/README.md for
 # what `linux` has and has not been checked against (no Linux machine
 # available where it was written).
-APP_SRC = src/main.cpp src/ui.cpp src/ui_lighting_controls.cpp src/animation_debug_overlay.cpp src/animation_panel.cpp src/animation_panel_model.cpp src/session_binding.cpp src/scene_model_adapter.cpp src/bake_lab.cpp src/bake_lab_timeline.cpp src/event_inspector.cpp src/asset_browser.cpp src/part_workbench.cpp src/part_workbench_iso.cpp src/reveal_part.cpp src/lod_inspector.cpp src/camera_controller.cpp src/camera_focus.cpp src/streaming_anchor_controller.cpp src/selection_set.cpp src/editor_model.cpp src/scene_tree_panel.cpp src/selection_bounds.cpp src/viewport_pick.cpp src/selection_outline.cpp src/toolbar_panel.cpp src/console_panel.cpp src/console_log.cpp src/image_preview.cpp src/issue_reporter.cpp src/issue_reporter_panel.cpp src/shot_replay.cpp src/properties_registry.cpp src/properties_panel.cpp src/specialized_editors.cpp src/property_editor.cpp src/editor_props.cpp src/gizmo.cpp src/os_open.cpp
+APP_SRC = src/main.cpp src/ui.cpp src/ui_lighting_controls.cpp src/animation_debug_overlay.cpp src/animation_panel.cpp src/animation_panel_model.cpp src/session_binding.cpp src/scene_model_adapter.cpp src/bake_lab.cpp src/bake_lab_timeline.cpp src/event_inspector.cpp src/asset_browser.cpp src/part_workbench.cpp src/part_workbench_iso.cpp src/reveal_part.cpp src/lod_inspector.cpp src/camera_controller.cpp src/camera_focus.cpp src/camera_orbit.cpp src/streaming_anchor_controller.cpp src/selection_set.cpp src/editor_model.cpp src/scene_tree_panel.cpp src/selection_bounds.cpp src/viewport_pick.cpp src/selection_outline.cpp src/toolbar_panel.cpp src/console_panel.cpp src/console_log.cpp src/image_preview.cpp src/issue_reporter.cpp src/issue_reporter_panel.cpp src/shot_replay.cpp src/properties_registry.cpp src/properties_panel.cpp src/specialized_editors.cpp src/property_editor.cpp src/editor_props.cpp src/gizmo.cpp src/os_open.cpp
 
 # Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
 # These are ONLY used by the Windows target; the Linux target links libmatter_engine3.a.
@@ -1166,6 +1166,19 @@ build/test_selection_set.exe: tests/test_selection_set.cpp src/selection_set.cpp
 .PHONY: run-test-selection-set
 run-test-selection-set: build/test_selection_set.exe
 	./build/test_selection_set.exe
+
+# Camera orbit-about-a-pivot math (issue a4203d22 part 1). Pure CPU: no ImGui
+# context, no window, no session -- camera_orbit.cpp exists precisely so this
+# math is reachable without any of them.
+build/test_camera_orbit.exe: tests/test_camera_orbit.cpp \
+        src/camera_orbit.cpp src/camera_orbit.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_camera_orbit.cpp src/camera_orbit.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Isrc -I$(ME3_DIR)/include
+
+.PHONY: run-test-camera-orbit
+run-test-camera-orbit: build/test_camera_orbit.exe
+	./build/test_camera_orbit.exe
 
 # Asset-browser action headless test (issue editor-workbench-actions-noop):
 # Reveal's module->baked-root selection, camera focus over baked-root bounds,

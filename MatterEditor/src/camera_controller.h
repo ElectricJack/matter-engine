@@ -26,6 +26,12 @@ struct CameraPrefs {
     // literals in draw_camera_panel (0.04, and 0.96/1.04 which is 1 -/+ 0.04).
     float orbit_step = 0.04f;
     float orbit_zoom_step = 0.04f;
+    // "Orbit selection" (issue a4203d22 part 1). When on AND the selection
+    // resolves to bounds, the Camera panel's orbit/zoom — and viewport
+    // drag/wheel — pivot on the selection's focus point instead of cam.target.
+    // A persisted preference, not session state: it is a way of driving the
+    // camera, and a user who works this way wants it back next launch.
+    bool orbit_selection = false;
 };
 
 struct CameraInput {

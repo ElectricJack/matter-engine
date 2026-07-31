@@ -34,4 +34,19 @@ void focus_camera_on_selection(matter::CameraDesc& camera,
                                const FieldCommands& fields,
                                const BakedRootBoundsFn& baked_bounds = {});
 
+// The centre of that same merged AABB, plus the radius of its bounding sphere.
+// Returns false when the selection is empty or nothing in it resolves to
+// bounds (exactly the cases where focus_camera_on_selection leaves the camera
+// alone).
+//
+// focus_camera_on_selection is now a thin wrapper over this, which is the
+// point: the "Orbit selection" pivot (issue a4203d22 part 1) and the F-key
+// focus must never disagree about where the selection is, and the only way to
+// guarantee that is for both to read the same merge rather than for the orbit
+// to recompute a centroid of its own.
+bool selection_focus_point(const SelectionSet& selection,
+                           const FieldCommands& fields,
+                           const BakedRootBoundsFn& baked_bounds,
+                           matter::Float3& out_center, float& out_radius);
+
 } // namespace viewer

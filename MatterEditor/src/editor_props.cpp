@@ -216,7 +216,13 @@ const auto s_camera = matter::props::group<CameraPrefs>(
     prop(&CameraPrefs::orbit_zoom_step, "orbit_zoom_step")
         .label("Orbit zoom step").range(0.005f, 0.5f).log()
         .doc("Camera panel Zoom In/Out: fraction of the current distance one "
-             "tick adds or removes."));
+             "tick adds or removes."),
+    prop(&CameraPrefs::orbit_selection, "orbit_selection")
+        .label("Orbit selection")
+        .doc("Orbit and zoom about the selected object's focus point instead "
+             "of the view target. The Camera panel's checkbox is the same "
+             "field; it falls back to the view target whenever the selection "
+             "resolves to no bounds."));
 
 // sim.time — Scope::Session. The toolbar's slider edits ToolbarState::time_scale
 // directly and keeps doing so; this group only adds Tunables visibility and the
