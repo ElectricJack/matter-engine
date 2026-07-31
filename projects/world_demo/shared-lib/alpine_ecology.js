@@ -1,7 +1,14 @@
 export const ALPINE_PROFILE = 'alpine-lush';
 export const DRYNESS_STATES = Object.freeze([0.0, 0.35, 0.7, 1.0]);
 export const FAMILY_CAPS = Object.freeze({
-  tree: 36, shrub: 96, groundCover: 72, flower: 96, grass: 900,
+  tree: 180, shrub: 960, groundCover: 720, flower: 960, grass: 9000,
+});
+export const FAMILY_SCALE_RANGE = Object.freeze({
+  tree: Object.freeze([1, 10]),
+  shrub: Object.freeze([0.6, 3]),
+  groundCover: Object.freeze([0.6, 3]),
+  flower: Object.freeze([0.6, 3]),
+  grass: Object.freeze([0.6, 3]),
 });
 export const FAMILY_SLOPE_MAX = Object.freeze({
   tree: 0.625, shrub: 0.675, groundCover: 0.781,
@@ -132,18 +139,40 @@ export function sampleHabitat({ x, z, altitude, slope, worldSeed }) {
   const moisture = saturate(0.18 + 0.62 * fbm(x, z, worldSeed + 11, 1 / 300) +
     0.20 * fbm(x, z, worldSeed + 17, 1 / 55));
   const exposure = saturate(0.10 + 0.80 * fbm(x, z, worldSeed + 23, 1 / 340));
-  const forest = saturate(fbm(x, z, worldSeed + 31, 1 / 280));
-  const shrubPatch = saturate(fbm(x, z, worldSeed + 41, 1 / 115));
-  const meadowPatch = saturate(fbm(x, z, worldSeed + 53, 1 / 155));
-  const flowerPatch = saturate(fbm(x, z, worldSeed + 67, 1 / 72));
-  const groundCoverPatch = saturate(fbm(x, z, worldSeed + 79, 1 / 58));
+  // Broad signals establish whole forest/meadow regions; finer signals break
+  // their edges and create natural clearings. Thresholding the blend gives
+  // contiguous interiors instead of evenly thinned vegetation everywhere.
+  const forestSignal =
+    0.72 * fbm(x, z, worldSeed + 31, 1 / 520, 4) +
+    0.23 * fbm(x, z, worldSeed + 37, 1 / 140) +
+    0.05 * fbm(x, z, worldSeed + 39, 1 / 55, 2);
+  const forest = smoothstep(0.40, 0.61, forestSignal);
+  const forestEdge = 1 - smoothstep(
+    0.045, 0.145, Math.abs(forestSignal - 0.505));
+
+  const shrubSignal =
+    0.62 * fbm(x, z, worldSeed + 41, 1 / 190) +
+    0.38 * fbm(x, z, worldSeed + 47, 1 / 62);
+  const meadowSignal =
+    0.76 * fbm(x, z, worldSeed + 53, 1 / 240, 4) +
+    0.24 * fbm(x, z, worldSeed + 59, 1 / 75);
+  const flowerSignal =
+    0.68 * meadowSignal +
+    0.32 * fbm(x, z, worldSeed + 67, 1 / 52);
+  const groundCoverSignal =
+    0.58 * forestSignal +
+    0.42 * fbm(x, z, worldSeed + 79, 1 / 48);
+  const shrubPatch = smoothstep(0.38, 0.67, shrubSignal);
+  const meadowPatch = smoothstep(0.37, 0.64, meadowSignal);
+  const flowerPatch = smoothstep(0.45, 0.70, flowerSignal);
+  const groundCoverPatch = smoothstep(0.39, 0.67, groundCoverSignal);
   return {
     valid: true,
     moisture,
     exposure,
     dryness: environmentalDryness({ moisture, exposure, altitude, slope }),
     forest,
-    forestEdge: saturate(1 - Math.abs(forest - 0.55) / 0.15),
+    forestEdge,
     shrubPatch,
     meadowPatch,
     flowerPatch,
@@ -253,8 +282,17 @@ export function selectAlpineAsset(family, habitat, identity) {
   if (!isWithinVegetationCeiling(altitude) || !finite(slope) ||
     (family === 'tree' && altitude > 455) || slope > FAMILY_SLOPE_MAX[family])
     return null;
-  const scaleBase = { tree: 0.88, shrub: 0.82, groundCover: 0.86, flower: 0.88, grass: 0.90 }[family];
-  const scaleRange = { tree: 0.24, shrub: 0.26, groundCover: 0.20, flower: 0.18, grass: 0.20 }[family];
+  const [scaleMinimum, scaleMaximum] = FAMILY_SCALE_RANGE[family];
+  const scaleIdentity = identityChannel(identity, 3);
+  // A power curve keeps most plants plausible while still allowing rare,
+  // unmistakable giants. Mature forest cores can reach the full 10x tree
+  // multiplier; edge trees top out a little smaller.
+  const scaleCurve = family === 'tree'
+    ? Math.pow(scaleIdentity, 2.25) *
+      (0.72 + 0.28 * saturate(habitat.forest))
+    : Math.pow(scaleIdentity, 1.6);
+  const scaleMultiplier =
+    scaleMinimum + (scaleMaximum - scaleMinimum) * scaleCurve;
   const drynessState = selectDrynessState(dryness, identity);
   return {
     module,
@@ -264,17 +302,19 @@ export function selectAlpineAsset(family, habitat, identity) {
       size: 1,
       form,
     },
-    scale: size * (scaleBase + scaleRange * identityChannel(identity, 3)),
+    scale: size * scaleMultiplier,
     sinkY,
   };
 }
 
 const FAMILY_SCATTER = Object.freeze({
-  tree: Object.freeze({ kind: 31, minDistance: 9 }),
-  shrub: Object.freeze({ kind: 37, minDistance: 5 }),
-  groundCover: Object.freeze({ kind: 41, minDistance: 4 }),
-  flower: Object.freeze({ kind: 43, minDistance: 4 }),
-  grass: Object.freeze({ kind: 47, minDistance: 2 }),
+  // Trees use roughly five times the former candidate density; understory
+  // families use roughly ten times. Density scales with inverse spacing^2.
+  tree: Object.freeze({ kind: 31, minDistance: 4.03 }),
+  shrub: Object.freeze({ kind: 37, minDistance: 1.58 }),
+  groundCover: Object.freeze({ kind: 41, minDistance: 1.26 }),
+  flower: Object.freeze({ kind: 43, minDistance: 1.26 }),
+  grass: Object.freeze({ kind: 47, minDistance: 0.63 }),
 });
 
 function placementIdentity(worldSeed, kind, x, z, purpose) {

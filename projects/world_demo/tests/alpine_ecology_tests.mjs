@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {
-  ALPINE_PROFILE, DRYNESS_STATES, FAMILY_CAPS,
+  ALPINE_PROFILE, DRYNESS_STATES, FAMILY_CAPS, FAMILY_SCALE_RANGE,
   FAMILY_SLOPE_MAX, isAlpineProfile, alpineAssetVariants,
   selectVegetationCatalog, environmentalDryness, sampleHabitat,
   selectDrynessState, selectAlpineAsset, familiesForRung,
@@ -12,7 +12,11 @@ import { candidatesInRect } from
 assert.equal(ALPINE_PROFILE, 'alpine-lush');
 assert.deepEqual(DRYNESS_STATES, [0, 0.35, 0.7, 1]);
 assert.deepEqual(FAMILY_CAPS,
-  { tree: 36, shrub: 96, groundCover: 72, flower: 96, grass: 900 });
+  { tree: 180, shrub: 960, groundCover: 720, flower: 960, grass: 9000 });
+assert.deepEqual(FAMILY_SCALE_RANGE, {
+  tree: [1, 10], shrub: [0.6, 3], groundCover: [0.6, 3],
+  flower: [0.6, 3], grass: [0.6, 3],
+});
 assert.deepEqual(FAMILY_SLOPE_MAX, {
   tree: 0.625, shrub: 0.675, groundCover: 0.781,
   flower: 0.675, grass: 0.781,
@@ -24,9 +28,9 @@ assert.equal(isAlpineProfile(null), false);
 const variants = alpineAssetVariants();
 assert.equal(variants.length, 76);
 assert.equal(new Set(variants.map(v =>
-  `${v.module}:${v.params.form}:${v.params.dryness}`)).size, 76);
-assert.deepEqual([...new Set(variants.map(v => v.params.dryness))],
-  [0, 0.35, 0.7, 1]);
+  `${v.module}:${v.params.form}:${v.params.drynessIndex}`)).size, 76);
+assert.deepEqual([...new Set(variants.map(v => v.params.drynessIndex))],
+  [0, 1, 2, 3]);
 const legacy = [{ module: 'Grass', params: { seed: 0 } }];
 assert.deepEqual(selectVegetationCatalog({}, legacy), legacy);
 assert.equal(selectVegetationCatalog(
@@ -125,6 +129,21 @@ const bestHabitatFor = {
   flower: habitat({ altitude: 180, moisture: 0.8, exposure: 0.2, forest: 0.1, meadowPatch: 1, flowerPatch: 1 }),
   grass: habitat({ altitude: 180, moisture: 0.7, exposure: 0.25, forest: 0.1, meadowPatch: 1 }),
 };
+const sampledScales = family => Array.from({ length: 2048 }, (_, index) =>
+  selectAlpineAsset(family, bestHabitatFor[family], index / 2048))
+  .filter(Boolean)
+  .map(asset => asset.scale);
+const treeScales = sampledScales('tree');
+assert.ok(Math.min(...treeScales) >= 1.8);
+assert.ok(Math.max(...treeScales) <= 19.01);
+assert.ok(Math.max(...treeScales) / Math.min(...treeScales) > 5);
+for (const family of ['shrub', 'groundCover', 'flower', 'grass']) {
+  const scales = sampledScales(family);
+  assert.ok(Math.min(...scales) >= 0.89, `${family} scale minimum`);
+  assert.ok(Math.max(...scales) <= 5.41, `${family} scale maximum`);
+  assert.ok(Math.max(...scales) / Math.min(...scales) > 2,
+    `${family} has dramatic scale variation`);
+}
 assert.equal(selectAlpineAsset('tree', { ...lushTreeHabitat, altitude: 455.01 }, 0.5), null);
 assert.equal(isWithinVegetationCeiling(520), true);
 assert.equal(isWithinVegetationCeiling(520.01), false);
@@ -141,6 +160,26 @@ const sectorArgs = {
   worldSeed: 20260722, ox: 0, oz: 0, sectorSize: 64,
   heightAt: flatHeight, slopeAt: gentleSlope, candidatesInRect,
 };
+const scatterCalls = [];
+planAlpineSector({
+  ...sectorArgs,
+  rung: 2,
+  candidatesInRect: (seed, kind, minDistance) => {
+    scatterCalls.push([kind, minDistance]);
+    return [];
+  },
+});
+assert.deepEqual(scatterCalls, [
+  [31, 4.03], [37, 1.58], [41, 1.26], [43, 1.26], [47, 0.63],
+]);
+const formerSpacing = [9, 5, 4, 4, 2];
+for (let index = 0; index < scatterCalls.length; ++index) {
+  const densityRatio =
+    (formerSpacing[index] / scatterCalls[index][1]) ** 2;
+  const expectedRatio = index === 0 ? 5 : 10;
+  assert.ok(Math.abs(densityRatio - expectedRatio) < 0.1,
+    `scatter family ${index} has ${expectedRatio}x candidate density`);
+}
 const far = planAlpineSector({ ...sectorArgs, rung: 0 });
 const mid = planAlpineSector({ ...sectorArgs, rung: 1 });
 const near = planAlpineSector({ ...sectorArgs, rung: 2 });
