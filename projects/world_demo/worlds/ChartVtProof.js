@@ -5,8 +5,8 @@
 // surfaces() classifier that assigns them by slope and altitude:
 //   - proofGrass on gentle low ground (detail: the ForestFloor tileset, so
 //     the height-blend has a real height channel to work with),
-//   - proofRock on steep faces at any altitude (scalar albedo),
-//   - proofSnow on gentle ground above the snow line (scalar albedo).
+//   - proofRock on steep faces at any altitude (the AlpineRockDetail tileset),
+//   - proofSnow on gentle ground above the snow line (AlpineSnowDetail).
 // Transitions come from the tape's smoothstep weight fields plus the
 // compositor's top-2 height blend: grass fills the rock's height-channel
 // crevices across the grass/rock band instead of a linear crossfade.
@@ -20,13 +20,21 @@ const PROOF_GRASS = defineMaterial("proofGrass", {
   roughness: 0.92,
   detail: "ForestFloor",
 });
+// Step 0 of issue 676ec01c: proofRock and proofSnow used to carry SCALAR
+// albedo only, so two of the three classifier bands rendered as flat plastic.
+// "Textures blend very poorly" was in significant part that there was nothing
+// to blend TO — the grass carpet met untextured grey at a hard boundary. The
+// detail scenes for exactly these surfaces already exist (texel-tape work), so
+// this costs one line each and two more .gtex bakes on world load.
 const PROOF_ROCK = defineMaterial("proofRock", {
   albedo: [0.37, 0.34, 0.31],
   roughness: 0.83,
+  detail: "AlpineRockDetail",
 });
 const PROOF_SNOW = defineMaterial("proofSnow", {
   albedo: [0.91, 0.93, 0.96],
   roughness: 0.35,
+  detail: "AlpineSnowDetail",
 });
 
 class ChartVtProof extends World {
