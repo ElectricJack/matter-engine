@@ -251,10 +251,104 @@ void test_compact_clouds_closes_holes() {
           "the survivor slid down into slot 0 intact");
     CHECK(nearly_equal(fog.clouds[1].min_height, 500.0f),
           "and the one behind it followed");
-    CHECK(!fog.clouds[2].enabled && !fog.clouds[3].enabled,
-          "vacated slots are cleared, not left stale");
+    // STABLE PARTITION, not a wipe (editor-cloud-deck-cannot-be-enabled):
+    // the disabled layer moves to the tail with its parameters intact rather
+    // than being reset to CloudLayer{}. Slot 3 was never touched and was
+    // already a CloudLayer{} default, so it stays that way — this is not
+    // "still zeroed", it is "never had anything to preserve".
+    CHECK(!fog.clouds[2].enabled, "the disabled layer moved to the tail");
+    CHECK(nearly_equal(fog.clouds[2].min_height, 100.0f) &&
+              nearly_equal(fog.clouds[2].max_height, 200.0f) &&
+              nearly_equal(fog.clouds[2].max_density, 0.1f),
+          "its parameters survive the move intact, not zeroed");
+    CHECK(!fog.clouds[3].enabled, "the never-authored slot stays off");
     CHECK(matter::active_cloud_count(fog) == 2,
           "the compacted array satisfies the prefix invariant");
+}
+
+// Fault B (editor-cloud-deck-cannot-be-enabled): switching a deck off must
+// PARK it, not destroy it. A round trip off -> compact -> back on must
+// reproduce the original authored deck exactly, not a degenerate default.
+void test_disabled_layer_survives_compaction_and_reenable() {
+    matter::FogSettings fog;
+    fog.cloud_count = 2;
+    fog.clouds[0] = make_layer(130.0f, 210.0f, 0.02f, 6.0f, 45.0f);
+    fog.clouds[1] = make_layer(420.0f, 520.0f, 0.009f, 30.0f, 30.0f);
+
+    // Switch deck 0 off - the ordinary editor gesture (property_editor.cpp
+    // calls compact_clouds on every edit).
+    fog.clouds[0].enabled = false;
+    matter::compact_clouds(fog);
+
+    CHECK(fog.cloud_count == 1, "only the still-enabled deck is live");
+    CHECK(nearly_equal(fog.clouds[0].min_height, 420.0f),
+          "the survivor slid to the front");
+
+    // The parked deck's authored values must still be sitting in the tail,
+    // not wiped - this is the whole fix for the data-loss half of the bug.
+    CHECK(!fog.clouds[1].enabled, "the parked slot reads as off");
+    CHECK(nearly_equal(fog.clouds[1].min_height, 130.0f) &&
+              nearly_equal(fog.clouds[1].max_height, 210.0f) &&
+              nearly_equal(fog.clouds[1].max_density, 0.02f) &&
+              nearly_equal(fog.clouds[1].falloff_min, 6.0f) &&
+              nearly_equal(fog.clouds[1].falloff_max, 45.0f),
+          "the disabled deck's parameters are parked intact");
+
+    // Switching it back on must bring those authored values with it.
+    fog.clouds[1].enabled = true;
+    matter::compact_clouds(fog);
+
+    CHECK(fog.cloud_count == 2, "both decks are live again");
+    bool found_original = false;
+    for (int i = 0; i < 2; ++i) {
+        if (nearly_equal(fog.clouds[i].min_height, 130.0f) &&
+            nearly_equal(fog.clouds[i].max_height, 210.0f) &&
+            nearly_equal(fog.clouds[i].max_density, 0.02f))
+            found_original = true;
+    }
+    CHECK(found_original,
+          "the re-enabled deck's original authored values are back, not a "
+          "degenerate CloudLayer{} default");
+}
+
+// Fault A (editor-cloud-deck-cannot-be-enabled): a fresh/degenerate layer -
+// CloudLayer{} defaults, exactly what a world authoring no clouds hands the
+// editor - must become live the instant it is seeded and enabled, which is
+// the panel's actual sequence: tick enabled -> seed_default_cloud_layer ->
+// compact_clouds.
+void test_seed_default_cloud_layer_makes_a_degenerate_layer_live() {
+    matter::FogSettings fog;
+    // All four slots are CloudLayer{} defaults here.
+    fog.clouds[0].enabled = true;  // the panel checkbox click
+    CHECK(matter::active_cloud_count(fog) == 0,
+          "still degenerate before seeding - the bounce the issue reports");
+
+    matter::seed_default_cloud_layer(fog.clouds[0]);
+    matter::compact_clouds(fog);
+
+    CHECK(matter::active_cloud_count(fog) == 1,
+          "the seeded layer is now counted as live");
+    CHECK(fog.clouds[0].enabled, "seeding does not touch enabled itself");
+    CHECK(fog.clouds[0].max_height > fog.clouds[0].min_height,
+          "seeding fixes the degenerate height pair");
+    CHECK(fog.clouds[0].max_density > 0.0f,
+          "seeding fixes max_density too - a well-formed but zero-density "
+          "deck would still render nothing");
+    // Altitude must sit inside the froxel volume (VOL_FROXEL_FAR in
+    // vol_common.glsl, 3000 m of view-space depth from the camera) or the
+    // seeded deck is invisible and looks exactly like this bug again.
+    CHECK(fog.clouds[0].max_height < 3000.0f,
+          "the seeded deck sits inside the froxel volume's far range");
+
+    // A no-op on an already well-formed layer - the helper must not stomp an
+    // authored deck just because it happened to be re-enabled.
+    matter::CloudLayer authored =
+        make_layer(420.0f, 520.0f, 0.009f, 30.0f, 30.0f);
+    matter::seed_default_cloud_layer(authored);
+    CHECK(nearly_equal(authored.min_height, 420.0f) &&
+              nearly_equal(authored.max_height, 520.0f) &&
+              nearly_equal(authored.max_density, 0.009f),
+          "seeding a well-formed layer is a no-op");
 }
 
 // The GPU mirror must stay exactly 64 bytes and must carry every authored
@@ -334,6 +428,8 @@ int main() {
     test_two_separated_layers_leave_clear_air();
     test_active_cloud_count_stops_at_the_first_hole();
     test_compact_clouds_closes_holes();
+    test_disabled_layer_survives_compaction_and_reenable();
+    test_seed_default_cloud_layer_makes_a_degenerate_layer_live();
     test_gpu_packing_round_trip();
     test_sanitize_clamps_the_cost_dials();
     return check_summary();

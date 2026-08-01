@@ -97,16 +97,36 @@ inline int32_t active_cloud_count(const FogSettings& fog) {
 // the editor toggling `clouds[0].enabled` off with `clouds[1]` still on is
 // the ordinary case, and without this that world would render layer 1's
 // parameters as if they were layer 0's, or nothing at all.
+//
+// A STABLE PARTITION, not a wipe: non-surviving layers (disabled, or
+// degenerate with max_height <= min_height) are moved to the tail WITH their
+// parameters intact, in their original relative order, rather than being
+// reset to CloudLayer{}. The prefix property everything above depends on
+// only constrains `[0, cloud_count)` — what sits behind that point is free to
+// be anything, including a parked deck's untouched values. Zeroing it was
+// gratuitous, and destructive: switching a deck off ran through here on
+// every edit (property_editor.cpp), so the old behaviour deleted a deck's
+// authored parameters the instant it was switched off, with no way to
+// recover them by switching it back on (see the
+// editor-cloud-deck-cannot-be-enabled issue).
 inline void compact_clouds(FogSettings& fog) {
+    CloudLayer snapshot[kMaxCloudLayers];
+    for (int32_t i = 0; i < kMaxCloudLayers; ++i) snapshot[i] = fog.clouds[i];
+
+    CloudLayer parked[kMaxCloudLayers];
     int32_t out = 0;
+    int32_t parked_n = 0;
     for (int32_t i = 0; i < kMaxCloudLayers; ++i) {
-        if (!fog.clouds[i].enabled) continue;
-        if (!(fog.clouds[i].max_height > fog.clouds[i].min_height)) continue;
-        if (out != i) fog.clouds[out] = fog.clouds[i];
-        ++out;
+        const CloudLayer& layer = snapshot[i];
+        const bool live =
+            layer.enabled && layer.max_height > layer.min_height;
+        if (live) {
+            fog.clouds[out++] = layer;
+        } else {
+            parked[parked_n++] = layer;
+        }
     }
-    for (int32_t i = out; i < kMaxCloudLayers; ++i)
-        fog.clouds[i] = CloudLayer{};
+    for (int32_t i = 0; i < parked_n; ++i) fog.clouds[out + i] = parked[i];
     fog.cloud_count = out;
 }
 

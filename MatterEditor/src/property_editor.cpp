@@ -491,11 +491,18 @@ bool draw_cloud_layers_section(Binding& b, const char* filter) {
                 const uint32_t index = base + f;
                 const Desc& d = g.fields[index];
                 if (!prop_filter_matches_field(filter, d)) continue;
-                // Everything but the enable toggle is disabled while the deck
-                // is off: the values are still visible (so a deck can be read
-                // without switching it on) but cannot be edited into a state
-                // nothing renders.
-                const bool row_disabled = f != 0 && !on;
+                // Min height (f==1) and Max height (f==2) stay enabled while
+                // the deck is off: they are the ONLY fields that can turn a
+                // degenerate max_height<=min_height layer into one that CAN
+                // be switched on, and disabling them was the deadlock in the
+                // editor-cloud-deck-cannot-be-enabled issue — a fresh 0/0
+                // layer had no field left to fix before the enable toggle
+                // just bounced back off. Everything else here is cosmetic
+                // while off (coverage, falloff shape, noise, wind) and stays
+                // behind the disabled bracket: the values are still visible
+                // (so a deck can be read without switching it on) but cannot
+                // be edited into a state nothing renders.
+                const bool row_disabled = !on && f != 0 && f != 1 && f != 2;
                 if (row_disabled) ImGui::BeginDisabled();
                 // No veto: PropFieldVeto carries a per-field "this machine
                 // cannot" reason (render.gpu's RT/DLSS capability checks). A
@@ -506,6 +513,28 @@ bool draw_cloud_layers_section(Binding& b, const char* filter) {
                 if (row_disabled) ImGui::EndDisabled();
             }
             ImGui::Unindent();
+
+            // A layer whose `enabled` just flipped false -> true this frame
+            // may still be degenerate (a fresh CloudLayer{} default, or the
+            // user only got as far as fixing one of Min/Max height before
+            // ticking the box) — seed it so it is immediately visible rather
+            // than bouncing back off next frame (fault A) or sitting there
+            // enabled and invisible because max_density is still 0. Checked
+            // BEFORE compact_clouds runs below so the freshly seeded values
+            // are what compaction sees. A no-op on an already well-formed
+            // layer, so this never stomps an authored deck.
+            //
+            // UI-toggle only: MATTER_CLOUD_LAYER<i> and the generic FIFO
+            // `set render.clouds.layerN_enabled true` path both write
+            // straight through the generic props setter and do not call
+            // seed_default_cloud_layer, so enabling a degenerate layer
+            // through either of those still leaves it degenerate.
+            const bool on_now = get_bool(target, enabled_desc);
+            if (!on && on_now && target == b.instance()) {
+                matter::seed_default_cloud_layer(
+                    static_cast<matter::FogSettings*>(target)->clouds[l]);
+                b.set_dirty(true);
+            }
         }
         ImGui::PopID();
     }
