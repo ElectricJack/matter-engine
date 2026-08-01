@@ -150,6 +150,44 @@ inline float cloud_height_profile(const CloudLayer& layer, float y) {
     return rise < fall ? rise : fall;
 }
 
+// Fill in a plausible, immediately visible deck for a layer that is
+// degenerate — `max_height <= min_height`, which is exactly what a
+// default-constructed `CloudLayer{}` is. Call this whenever a layer's
+// `enabled` flips false -> true; it is a no-op if the layer is already
+// well-formed, so it is safe to call unconditionally on every such
+// transition rather than gating the call site on degeneracy first.
+//
+// Height alone is not enough: `max_density` also defaults to 0, so a
+// well-formed-but-unseeded deck would pass `active_cloud_count`'s prefix
+// test yet render nothing — the user would just file this bug again as
+// "enabling a cloud layer does nothing". Both are seeded here.
+//
+// ALTITUDE, CHECKED AGAINST THE FROXEL VOLUME. The volume vk_volumetrics.cpp
+// marches is bounded by VOL_FROXEL_FAR (shaders_vk/vol_common.glsl), 3000 m
+// of VIEW-SPACE DEPTH from the camera — not an absolute world Y coordinate.
+// A deck seeded above what any plausible camera can reach within that depth
+// would be invisible and would look, to whoever just enabled it, exactly
+// like the bug this function fixes. 150-250 m is comfortably inside that
+// budget for any camera that looks even shallowly upward, AND it is the same
+// altitude band every authored deck in this repo already uses (CloudLab's
+// lowest deck sits at 130-210 m, CloudLegacy and StreamMountain's single
+// deck at 120-226 m) — so it is a known-good choice for a small world like
+// LightingGarden as much as a large one like StreamMountain, since the bound
+// is on camera-relative depth, not on how big the surrounding terrain is.
+//
+// This function only fixes the UI-toggle call path (property_editor.cpp).
+// `MATTER_CLOUD_LAYER<i>` (props env override) and the generic FIFO
+// `set render.clouds.layerN_enabled true` path both go through the generic
+// props setter (props.cpp: apply_env / parse_and_set), which knows nothing
+// about CloudLayer semantics and does not call this helper — enabling a
+// degenerate layer through either of those still leaves it degenerate.
+inline void seed_default_cloud_layer(CloudLayer& layer) {
+    if (layer.max_height > layer.min_height) return;
+    layer.min_height = 150.0f;
+    layer.max_height = 250.0f;
+    if (!(layer.max_density > 0.0f)) layer.max_density = 0.02f;
+}
+
 // Clamp an authored layer into the ranges the shader and the UI agree on.
 // Applied wherever a layer enters the engine (script load, editor edit) so
 // neither has to trust the other.
