@@ -233,6 +233,47 @@ void test_active_cloud_count_stops_at_the_first_hole() {
           "the count is clamped to kMaxCloudLayers even when cloud_count lies");
 }
 
+// Persistence across a restart (editor-cloud-deck-cannot-be-enabled).
+//
+// Every write path that sets a layer WITHOUT running compaction leaves
+// `cloud_count` stale: the World-scope property file loaded in
+// EditorProps::on_world_connected, MATTER_CLOUD_LAYER<i>, and the FIFO
+// `set render.clouds.layerN_enabled`. None of them compact. While
+// active_cloud_count clamped its scan to that field, a deck enabled through
+// any of them rendered nothing.
+//
+// The 0-deck case below is the one the user actually hit: LightingGarden's
+// script authors no clouds, so the loader compacts to cloud_count == 0. A deck
+// enabled in the panel worked, autosaved to the world file, and was then
+// invisible on the next launch — until some unrelated cloud field was nudged
+// and tripped the panel's compaction, which made it reappear. Intermittent
+// resurrection is a far worse bug to chase than the original bounce.
+void test_active_cloud_count_ignores_a_stale_cloud_count() {
+    matter::FogSettings fog;
+    // Exactly the post-load state for a world whose script authors no decks
+    // and whose property override file enables one.
+    fog.cloud_count = 0;
+    fog.clouds[0] = make_layer(150.0f, 250.0f, 0.02f, 0.0f, 0.0f);
+    CHECK(matter::active_cloud_count(fog) == 1,
+          "a layer enabled by an override file is live even though the world "
+          "script left cloud_count at 0 and nothing has compacted since");
+
+    // The same hazard one deck up: a world authoring one deck, an override
+    // file adding a second.
+    fog.cloud_count = 1;
+    fog.clouds[1] = make_layer(400.0f, 600.0f, 0.03f, 0.0f, 0.0f);
+    CHECK(matter::active_cloud_count(fog) == 2,
+          "an override may add a deck beyond the count the world compacted to");
+
+    // And the field must not be able to over-report either: a stale count
+    // ahead of the layers is still bounded by the prefix scan, so a lying
+    // cloud_count cannot make the shader read a dead entry.
+    matter::FogSettings empty;
+    empty.cloud_count = 4;
+    CHECK(matter::active_cloud_count(empty) == 0,
+          "a cloud_count ahead of the layers still yields no live decks");
+}
+
 void test_compact_clouds_closes_holes() {
     matter::FogSettings fog;
     fog.cloud_count = 3;
@@ -427,6 +468,7 @@ int main() {
     test_two_overlapping_layers_sum();
     test_two_separated_layers_leave_clear_air();
     test_active_cloud_count_stops_at_the_first_hole();
+    test_active_cloud_count_ignores_a_stale_cloud_count();
     test_compact_clouds_closes_holes();
     test_disabled_layer_survives_compaction_and_reenable();
     test_seed_default_cloud_layer_makes_a_degenerate_layer_live();
