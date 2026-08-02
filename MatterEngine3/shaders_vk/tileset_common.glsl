@@ -52,6 +52,14 @@ layout(set = TILESET_SET, binding = TILESET_PARAMS_BINDING, std140)
     // tileset_has_horizon below and VkSceneRenderer::write_tileset_params_buffer.
     // One vec4 per slot already, so this one indexes directly.
     vec4 mean_albedo[TILESET_MAX_SLOTS];
+    // Phase 0 (near-band modulate-not-replace): whole-atlas mean of the slot's
+    // ORM channel (occlusion, roughness, metallic; .w unused). The near band
+    // divides the live detail's occlusion/roughness by these to get a
+    // mean-preserving ratio, so the VT page keeps its own macro level and the
+    // live tap contributes only its deviation -- the ORM counterpart of the
+    // albedo ratio that already rides mean_albedo above. One vec4 per slot,
+    // indexes directly.
+    vec4 mean_orm[TILESET_MAX_SLOTS];
     vec4 pom_a;                  // steps, refine_steps, max_distance_m, fade_band_m
     vec4 pom_b;                  // detail_fade_center_m, detail_fade_width_m, pom_max_relief_m, pom_max_march_m
     // Task 11: direction-to-sun (normalized, world space; xyz) + sun_intensity
@@ -72,6 +80,13 @@ layout(set = TILESET_SET, binding = TILESET_PARAMS_BINDING, std140)
     // instead of always applying it at full strength; see
     // tileset_horizon_occlusion below.
     vec4 pom_c;
+    // Phase 0 chart-VT near band (matter::VtNearBandSettings, property group
+    // "render.vt"): x = near_band_m, y = near_fade_m, z/w unused. The band is
+    // FULL out to x and fades to zero over the next y metres. It used to be
+    // derived from pom_a.z/.w, which pinned it at full strength across
+    // 1544 m with the shipped POM defaults; POM's reach is a cost boundary
+    // and the near band is a quality boundary, so they are separate knobs.
+    vec4 vt_near;
 } tileset;
 
 // Per-slot scalar accessor: unpacks the vec4-of-4-slots packing described in
@@ -139,6 +154,61 @@ vec3 tileset_rotate_normal(vec3 normal_ts, vec3 geo_normal) {
     t *= inversesqrt(t_len2);
     vec3 b = normalize(cross(n, t));
     return normalize(t * normal_ts.x + b * normal_ts.y + n * normal_ts.z);
+}
+
+// Phase 0: the exact inverse of tileset_rotate_normal — the same (T, B, N)
+// basis, read out instead of assembled. Because the basis is orthonormal the
+// inverse IS the transpose, so this round-trips bit-for-bit on the flat-ground
+// path (where tileset_sample_ground_triplanar's Y tap is literally
+// tileset_rotate_normal of the sampled tangent normal) and returns a
+// well-defined perturbation for a triplanar-blended world normal on a slope.
+//
+// A world normal EQUAL to the geometric normal comes back as exactly
+// (0, 0, 1) — the neutral tangent normal — which is what makes it usable as
+// the "deviation from the mean" half of a mean-preserving normal composite.
+// The degenerate |n.x| ~ 1 case matches tileset_rotate_normal's own fallback
+// (which returns n untouched) by returning neutral.
+vec3 tileset_unrotate_normal(vec3 normal_ws, vec3 geo_normal) {
+    vec3 n = normalize(geo_normal);
+    vec3 t = vec3(1.0, 0.0, 0.0) - n * n.x;
+    float t_len2 = dot(t, t);
+    if (t_len2 < 1e-6) return vec3(0.0, 0.0, 1.0);
+    t *= inversesqrt(t_len2);
+    vec3 b = normalize(cross(n, t));
+    vec3 w = normalize(normal_ws);
+    return normalize(vec3(dot(w, t), dot(w, b), dot(w, n)));
+}
+
+// Phase 0: compose a DETAIL tangent-space normal onto a BASE tangent-space
+// normal — reoriented normal mapping (Barré-Brisebois & Hill). Both are in the
+// same frame (the geometric-normal frame tileset_rotate_normal builds).
+//
+// WHY THIS AND NOT A mix(). A normal is not a colour, so the albedo path's
+// mean-preserving RATIO has no meaning here — a normal has unit length, its
+// "mean" is the neutral (0,0,1), and the quantity it actually encodes is the
+// SLOPE of a height field. Two height fields compose by adding their slopes,
+// and the bounded, unit-length form of that is to rotate the detail's frame so
+// its neutral direction lands on the base normal. That gives the two identities
+// a composite has to have:
+//   * detail == (0,0,1)  ->  the base, EXACTLY. This is the mean-preserving
+//     property: with the detail faded out the page normal survives untouched,
+//     so the far side of the near band lands on pure VT with no seam, which is
+//     also exactly what the RT path does at every distance.
+//   * base   == (0,0,1)  ->  the detail, EXACTLY. A page carrying the neutral
+//     normal (the stub, or a flat chart) costs the live detail nothing.
+// mix() has neither: it drags the detail toward the base at every texel, which
+// both flattens the detail's relief and lets the base's tilt leak into it.
+// Plain slope addition has the first identity but is unbounded — it can push
+// the composite past horizontal where the two agree — and gives DOUBLED relief
+// wherever the page and the detail carry the same band, which after Phase 3
+// (the page height lane) they will.
+vec3 tileset_blend_normal_detail(vec3 base_ts, vec3 detail_ts) {
+    vec3 t = base_ts + vec3(0.0, 0.0, 1.0);
+    vec3 u = detail_ts * vec3(-1.0, -1.0, 1.0);
+    // base_ts.z == -1 (a base normal pointing straight back into the surface)
+    // is not producible by vt_decode_normal, but the divide has to be safe
+    // anyway: floor t.z rather than branch.
+    return normalize(t * (dot(t, u) / max(t.z, 1e-4)) - u);
 }
 
 // ---------------------------------------------------------------------------

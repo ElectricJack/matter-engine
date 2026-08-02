@@ -3456,6 +3456,12 @@ void VkSceneRenderer::write_tileset_params_buffer() {
         // horizon data. See TilesetParamsGpu's file comment.
         params.slot_mean_albedo[slot][3] =
             !s.loaded ? 0.0f : (s.has_horizon ? 2.0f : 1.0f);
+        // Phase 0: whole-atlas ORM mean, the denominator of the near band's
+        // mean-preserving occlusion/roughness ratio. .w is unused; an
+        // unloaded slot leaves zeros, and gbuffer.frag floors the divisor.
+        params.slot_mean_orm[slot][0] = s.mean_orm[0];
+        params.slot_mean_orm[slot][1] = s.mean_orm[1];
+        params.slot_mean_orm[slot][2] = s.mean_orm[2];
     }
     // Ground POM UI knobs (matter::TilesetPomSettings, see
     // set_tileset_pom_settings). "enabled == false" uploads pom_steps == 0,
@@ -3474,6 +3480,11 @@ void VkSceneRenderer::write_tileset_params_buffer() {
     params.pom_datum_bias_ao_shadow[1] = tileset_pom_settings_.ao_strength;
     params.pom_datum_bias_ao_shadow[2] = tileset_pom_settings_.shadow_strength;
     params.pom_datum_bias_ao_shadow[3] = tileset_pom_settings_.horizon_strength;
+    // Phase 0 near band (matter::VtNearBandSettings). Deliberately NOT
+    // derived from the POM distance pair above any more -- see the struct's
+    // comment for why the two were decoupled.
+    params.vt_near_band[0] = vt_near_band_settings_.near_band_m;
+    params.vt_near_band[1] = vt_near_band_settings_.near_fade_m;
     // Task 11: direction-to-sun, same convention as the RT shadow push
     // constants (record_ray_trace_dispatch): normalize(-sun_direction),
     // since VkSceneLighting::sun_direction points FROM the sun toward the
@@ -4914,6 +4925,12 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
     target.height_max = header.height_max;
     tileset::mean_rgb(albedo_rgb8.data(), atlas_dim, atlas_dim, 3,
                       target.mean_albedo);
+    // Phase 0: the same mean over the ORM atlas. gbuffer.frag's near band
+    // divides the live detail's occlusion/roughness by these so the VT page
+    // keeps its own level and the detail only contributes its deviation --
+    // the ORM counterpart of the albedo ratio that shipped with WP-E.
+    tileset::mean_rgb(orm_rgb8.data(), atlas_dim, atlas_dim, 3,
+                      target.mean_orm);
     target.loaded = true;
 
     write_tileset_params_buffer();
@@ -7175,6 +7192,13 @@ void VkSceneRenderer::set_tileset_pom_settings(
     // set_lighting -- calling it here keeps the UBO in lockstep with the
     // settings the instant they change rather than waiting for the next
     // lighting update.
+    write_tileset_params_buffer();
+}
+
+void VkSceneRenderer::set_vt_near_band_settings(
+    const matter::VtNearBandSettings& s) {
+    vt_near_band_settings_ = s;
+    // Same UBO, same lockstep rationale as set_tileset_pom_settings above.
     write_tileset_params_buffer();
 }
 

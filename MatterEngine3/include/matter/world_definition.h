@@ -233,6 +233,38 @@ struct TilesetPomSettings {
     float horizon_strength   = 0.47f;
 };
 
+// Chart-VT near band (viewer "Chart VT Near Band" UI). Same flow as
+// TilesetPomSettings above: ui.cpp/main.cpp -> RenderOptions ->
+// WorldSession::render -> VkSceneRenderer::set_vt_near_band_settings ->
+// TilesetParamsGpu::vt_near_band -> tileset_common.glsl's `tileset.vt_near`,
+// read by gbuffer.frag.
+//
+// WHY THIS EXISTS AS ITS OWN STRUCT. The near band is the distance over which
+// the raster G-buffer lets the live Wang detail modulate the VT page. Until
+// now it had no knobs of its own: gbuffer.frag derived it from the POM
+// distance pair, so with the shipped defaults (max_distance_m 1564,
+// fade_band_m 20) the band sat at full strength across 1544 m -- effectively
+// the whole visible world -- while the chart-VT design describes it as
+// "~50 m". Those are two different jobs. POM's reach is about how far a
+// parallax march is worth paying for; the near band is about where live
+// detail still resolves above a page texel (a 16 t/m page texel is 6.25 cm,
+// sub-pixel at 50 m). Deriving one from the other tied a quality boundary to
+// a cost boundary, so the two are decoupled here. POM's own knobs are
+// unchanged.
+//
+// The band is FULL strength out to near_band_m, then fades to zero over the
+// next near_fade_m metres; beyond that the page is used pure, which is what
+// the RT path already does at every distance
+// (rt_surface_common.glsl's "secondary rays use PURE VT at every distance").
+struct VtNearBandSettings {
+    // Distance (m) out to which the live detail modulates the page at full
+    // strength.
+    float near_band_m = 50.0f;
+    // Width (m) of the fade from full modulation to pure page, starting at
+    // near_band_m.
+    float near_fade_m = 10.0f;
+};
+
 struct WorldSettings {
     float sector_size = 16.0f;
     float y_min = -64.0f;

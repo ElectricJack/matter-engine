@@ -15,6 +15,7 @@ void reset_world_scope_controls(ViewerStats& stats) {
     stats.lighting = matter::VulkanLightingOverrides{};
     stats.volumetrics = matter::VulkanVolumetricsSettings{};
     stats.tileset_pom = matter::TilesetPomSettings{};
+    stats.vt_near_band = matter::VtNearBandSettings{};
     // render.fog. Reseeded from the INCOMING world's authored fog at the next
     // BakeFinished (main.cpp), before on_world_connected captures the baseline
     // — dropping it to the compiled default here is what guarantees the

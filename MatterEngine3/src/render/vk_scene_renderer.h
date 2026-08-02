@@ -739,6 +739,10 @@ public:
     // mean albedo, tile sizes) stay renderer-owned and are re-derived from
     // tileset_slots_ on every call, same as the sun_dir_intensity mirror.
     void set_tileset_pom_settings(const matter::TilesetPomSettings& s);
+    // Chart-VT near band (Phase 0). Same shape and same UBO as the POM
+    // setter above -- separate call because the two are now separate
+    // policies; see matter::VtNearBandSettings for why they were split.
+    void set_vt_near_band_settings(const matter::VtNearBandSettings& s);
     // Blit the real HDR world composite into the currently acquired swapchain
     // image, leaving it ready for UI dynamic rendering.
     bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
@@ -1122,6 +1126,15 @@ private:
         float height_min = 0.0f;
         float height_max = 0.0f;
         float mean_albedo[3] = {0.0f, 0.0f, 0.0f};
+        // Phase 0 (near-band modulate-not-replace): the same whole-atlas mean
+        // as mean_albedo, over the ORM channel (occlusion, roughness,
+        // metallic). gbuffer.frag divides the live detail's occlusion and
+        // roughness by these to get a mean-preserving ratio, exactly as the
+        // albedo path already does -- without them the near band can only
+        // hard-replace the page's ORM, which is the defect Phase 0 fixes.
+        // Computed at load from the decoded ORM atlas, same call as the
+        // albedo mean.
+        float mean_orm[3] = {0.0f, 0.0f, 0.0f};
     };
 
     // std140 UBO — MUST match the plan's Task 6 struct field-for-field
@@ -1129,14 +1142,16 @@ private:
     // mirrors this: vec4 tile_size_m/texels_per_meter/height_min/height_max
     // each [kMaxTilesetSlots/4] (four slots per vec4 — the shader unpacks via
     // TILESET_SLOT_SCALAR),
-    // vec4 mean_albedo[kMaxTilesetSlots], vec4 pom_a{steps,refine,max_distance,fade_band},
+    // vec4 mean_albedo[kMaxTilesetSlots], vec4 mean_orm[kMaxTilesetSlots],
+    // vec4 pom_a{steps,refine,max_distance,fade_band},
     // vec4 pom_b{fade_center,fade_width,max_relief_m,max_march_m},
     // vec4 sun_dir_intensity{dir.xyz,intensity} (Phase 2 Task 11),
     // vec4 pom_c{datum_bias_m,ao_strength,shadow_strength,horizon_strength}
     // (Ground POM UI knobs; .w repurposed from "reserved" for the horizon-map
-    // lighting feature -- see TilesetPomSettings::horizon_strength)). Every
-    // group below is exactly 16 bytes so the natural C++ layout matches
-    // std140 with no manual padding.
+    // lighting feature -- see TilesetPomSettings::horizon_strength),
+    // vec4 vt_near{near_band_m, near_fade_m, 0, 0} (Phase 0; see
+    // matter::VtNearBandSettings). Every group below is exactly 16 bytes so
+    // the natural C++ layout matches std140 with no manual padding.
     //
     // Horizon-map has_horizon flag: rather than adding a field,
     // slot_mean_albedo[slot][3] -- previously a plain 0/1 "slot loaded" bool
@@ -1158,6 +1173,11 @@ private:
         // rgb + valid/has_horizon flag in [.][3]: 0 = not loaded, 1 = loaded
         // (no horizon), 2 = loaded (with horizon). See file comment above.
         float slot_mean_albedo[tileset::kMaxTilesetSlots][4]{};
+        // Phase 0: whole-atlas mean of the slot's ORM channel, rgb + unused
+        // .w. The near-band composite in gbuffer.frag divides the live
+        // detail's occlusion/roughness by these so the page keeps its own
+        // (macro) level and the detail contributes only its deviation.
+        float slot_mean_orm[tileset::kMaxTilesetSlots][4]{};
         float pom_steps = 50.0f;
         float pom_refine_steps = 4.0f;
         float pom_max_distance_m = 50.4f;
@@ -1196,6 +1216,12 @@ private:
         // toward 0 (fully visible) instead of always applying it at full
         // strength; see tileset_common.glsl's tileset_horizon_occlusion.
         float pom_datum_bias_ao_shadow[4] = {0.105f, 0.63f, 0.68f, 1.0f};
+        // Phase 0 (matter::VtNearBandSettings): x = near_band_m (full-strength
+        // reach of the live-detail modulation), y = near_fade_m (fade width
+        // beyond it), z/w unused. Defaults match the struct's compiled
+        // defaults so a renderer whose setter is never called still runs the
+        // intended band rather than the old POM-derived one.
+        float vt_near_band[4] = {50.0f, 10.0f, 0.0f, 0.0f};
     };
     // The GLSL side declares TILESET_MAX_SLOTS 8; keep the two in step. The
     // /4 packing of the scalar arrays only works for a multiple of four.
@@ -1208,9 +1234,11 @@ private:
                   "material_registry.h's slot-override validation bound must "
                   "match the renderer's descriptor-array slot count");
     // 4 scalar arrays x 8 floats (= 4 x two vec4) + 8 mean_albedo vec4
-    // + 4 trailing vec4 (pom_a, pom_b, sun_dir_intensity, pom_c).
-    static_assert(sizeof(TilesetParamsGpu) == 320,
-                  "TilesetParamsGpu must remain twenty vec4 records (std140)");
+    // + 8 mean_orm vec4 + 5 trailing vec4 (pom_a, pom_b, sun_dir_intensity,
+    // pom_c, vt_near).
+    static_assert(sizeof(TilesetParamsGpu) == 464,
+                  "TilesetParamsGpu must remain twenty-nine vec4 records "
+                  "(std140)");
 
     struct FrameResources {
         matter::VkBufferResource frame_constants;
@@ -1844,6 +1872,7 @@ private:
     bool volumetrics_height_layer_ = false;
     float volumetrics_cloud_top_ = 0.0f;
     matter::TilesetPomSettings tileset_pom_settings_{};
+    matter::VtNearBandSettings vt_near_band_settings_{};
     uint32_t last_rt_samples_ = 1;
     bool last_rt_debug_view_ = false;
     bool last_rt_available_ = false;

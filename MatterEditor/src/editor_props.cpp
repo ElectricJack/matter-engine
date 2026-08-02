@@ -163,6 +163,31 @@ const auto s_pom = matter::props::group<matter::TilesetPomSettings>(
         .doc("Blends the baked per-direction horizon occlusion toward 0. No "
              "effect on slots loaded from a v1 .gtex."));
 
+// render.vt — the chart-VT near band (Phase 0 of the decal/ground-compositing
+// design). Two rows, and they exist because until now there were none: the
+// band was DERIVED from render.pom's Max distance / Fade band, so the shipped
+// 1564 / 20 m POM pairing pinned it at full strength across 1544 m while the
+// chart-VT design describes it as "~50 m". POM's reach is a cost boundary
+// (how far a parallax march earns its steps); the near band is a quality
+// boundary (how far live 512 t/m detail still resolves above a 16 t/m page
+// texel — 6.25 cm, comfortably sub-pixel by 50 m). One knob cannot be both,
+// so they are separate now and render.pom is untouched.
+//
+// World scope, beside render.pom: which band a world wants depends on its
+// content scale, and it is exactly the kind of tuning that belongs in the
+// project rather than in per-machine prefs.
+const auto s_vt = matter::props::group<matter::VtNearBandSettings>(
+    "render.vt", "Chart VT Near Band",
+    prop(&matter::VtNearBandSettings::near_band_m, "near_band_m")
+        .label("Near band").range(0.0f, 2000.0f).units("m").log()
+        .doc("Distance out to which the live Wang detail modulates the VT "
+             "page's albedo/normal/ORM. 0 uses the page pure everywhere, "
+             "which is what the RT path already does at every distance."),
+    prop(&matter::VtNearBandSettings::near_fade_m, "near_fade_m")
+        .label("Near fade").range(0.1f, 500.0f).units("m").log()
+        .doc("Width of the fade from full modulation to pure page, starting "
+             "at Near band."));
+
 // render.fog — the world-authored FogSettings, LIVE.
 //
 // WHY LIVE AND NOT RequiresReload. The connect captures the world's fog into
@@ -779,6 +804,7 @@ void EditorProps::init(ViewerStats& stats, CameraPrefs& camera,
     // one.
     clouds_ = registry_.bind(s_clouds, &stats.fog, Scope::World);
     pom_ = registry_.bind(s_pom, &stats.tileset_pom, Scope::World);
+    vt_near_band_ = registry_.bind(s_vt, &stats.vt_near_band, Scope::World);
     streaming_ = registry_.bind(streaming_lod_group(), &streaming_prefs_,
                                 Scope::World);
     // Session groups: live-editable, enumerated by Tunables, reachable from the
@@ -812,6 +838,9 @@ matter::props::Binding* EditorProps::volumetrics() { return registry_.get(volume
 matter::props::Binding* EditorProps::fog() { return registry_.get(fog_); }
 matter::props::Binding* EditorProps::clouds() { return registry_.get(clouds_); }
 matter::props::Binding* EditorProps::pom() { return registry_.get(pom_); }
+matter::props::Binding* EditorProps::vt_near_band() {
+    return registry_.get(vt_near_band_);
+}
 matter::props::Binding* EditorProps::camera() { return registry_.get(camera_); }
 matter::props::Binding* EditorProps::streaming() { return registry_.get(streaming_); }
 matter::props::Binding* EditorProps::stream_runtime() {
