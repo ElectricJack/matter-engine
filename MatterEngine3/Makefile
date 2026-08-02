@@ -208,6 +208,7 @@ ME3_OBJ = $(addprefix $(OBJDIR)/,script_host.o dsl_state.o dsl_bindings.o dsl_an
           part_asset_v2.o part_graph.o part_graph_snapshot.o \
           live_edit.o live_edit_prod.o inotify_watcher.o \
           lod_bake.o world_flatten.o part_flatten.o \
+          warp_field.o \
           retopo_blacklist.o \
           modifier_apply.o \
           sector_grid.o lod_select.o \

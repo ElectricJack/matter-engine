@@ -5,6 +5,7 @@
 
 #include "part_asset_v2.h"     // load_v2, cache_path_resolved, ChildInstance, LodLevels
 #include "lod_bake.h"          // lod_bake::bake_lods, BakeTargets
+#include "warp_field.h"        // VT Phase 2: warped ground coordinate solve
 #include "tlas_manager.hpp"    // TLASManager (load_v2 signature needs one)
 #include "part_flatten.h"      // part_flatten::transform_uniform_scale
 
@@ -808,7 +809,7 @@ bool PartStore::read_coherent_snapshot(uint64_t part_hash,
 PartStore::StagedPart PartStore::stage_from_snapshot(
         uint64_t part_hash, CoherentSnapshot& snapshot,
         const matter::animation::AnimAsset* animation_asset,
-        size_t first_rung, bool terrain_sector) {
+        size_t first_rung, bool terrain_sector, const WarpAnchor& warp) {
     StagedPart staged;
     staged.part_hash = part_hash;
     staged.staging   = std::make_unique<BLASManager>();
@@ -1027,13 +1028,51 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
     // (partstore_race_tests' golden phase folds fine_cluster_count).
     staged.lp.fine_cluster_count = (uint32_t)staged.lp.clusters.size();
     staged.tail_ms = stage_split();
+
+    // Warp field (VT Phase 2): solve the sector's warped ground coordinate on
+    // the full-res surface (skirts excluded) and evaluate it at every rung
+    // mesh's welded vertices — rung 0 hits the solve vertices bitwise, the
+    // decimated rungs reproject via nearest solve triangle (warp_field.h).
+    // Only terrain sectors with a known world anchor get a field; everything
+    // else ships zeroed warp data and the shader's world-XZ fallback.
+    if (terrain_tile && warp.valid && !tris.empty()) {
+        warp_field::SolveOptions wopts;
+        wopts.anchor_x = warp.x;
+        wopts.anchor_z = warp.z;
+        wopts.sector_size = warp.sector_size;
+        warp_field::Field field;
+        if (warp_field::solve(tris.data(), tris.size(),
+                              skirt_mask.empty() ? nullptr : skirt_mask.data(),
+                              wopts, field)) {
+            const auto eval_t0 = std::chrono::steady_clock::now();
+            for (auto& mesh : staged.lp.lod_mesh_data) {
+                if (mesh.vertex_count <= 0 ||
+                    mesh.normals.size() <
+                        static_cast<size_t>(mesh.vertex_count) * 3)
+                    continue;
+                mesh.warp_uvs.assign(size_t(mesh.vertex_count) * 2, 0.0f);
+                mesh.warp_frames.assign(size_t(mesh.vertex_count) * 2, 0u);
+                warp_field::evaluate(field, mesh.vertices.data(),
+                                     mesh.normals.data(),
+                                     size_t(mesh.vertex_count),
+                                     mesh.warp_uvs.data(),
+                                     mesh.warp_frames.data());
+            }
+            warp_field::warp_census_add_evaluate_us(
+                (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - eval_t0)
+                    .count());
+        }
+    }
+    staged.warp_ms = stage_split();
     staged.ok = true;
     return staged;
 }
 
 PartStore::StagedPart PartStore::stage_load(uint64_t part_hash,
                                             size_t first_rung,
-                                            bool terrain_sector) {
+                                            bool terrain_sector,
+                                            const WarpAnchor& warp) {
     StagedPart staged;
     staged.part_hash = part_hash;
     CoherentSnapshot snapshot;
@@ -1048,7 +1087,7 @@ PartStore::StagedPart PartStore::stage_load(uint64_t part_hash,
     if (snapshot.animation_link) { staged.read_ms = read_ms; return staged; }
     StagedPart out =
         stage_from_snapshot(part_hash, snapshot, nullptr, first_rung,
-                            terrain_sector);
+                            terrain_sector, warp);
     out.read_ms = read_ms;
     return out;
 }
@@ -1139,7 +1178,7 @@ bool PartStore::snapshot_from_baked(const script_host::BakedGeometry& baked,
 
 PartStore::StagedPart PartStore::stage_from_bake(
         uint64_t part_hash, const script_host::BakedGeometry& baked,
-        size_t first_rung, bool terrain_sector) {
+        size_t first_rung, bool terrain_sector, const WarpAnchor& warp) {
     StagedPart staged;
     staged.part_hash = part_hash;
     CoherentSnapshot snapshot;
@@ -1153,7 +1192,7 @@ PartStore::StagedPart PartStore::stage_from_bake(
     if (!built) { staged.read_ms = read_ms; return staged; }
     StagedPart out =
         stage_from_snapshot(part_hash, snapshot, nullptr, first_rung,
-                            terrain_sector);
+                            terrain_sector, warp);
     out.read_ms = read_ms;
     return out;
 }
@@ -1186,7 +1225,9 @@ bool mesh_data_equal(const RasterMeshData& a, const RasterMeshData& b) {
            bitwise_equal(a.surface_uvs, b.surface_uvs) &&
            bitwise_equal(a.material_ids, b.material_ids) &&
            bitwise_equal(a.baked_ao, b.baked_ao) &&
-           bitwise_equal(a.indices, b.indices);
+           bitwise_equal(a.indices, b.indices) &&
+           bitwise_equal(a.warp_uvs, b.warp_uvs) &&
+           bitwise_equal(a.warp_frames, b.warp_frames);
 }
 
 bool chart_rung_equal(const chart_atlas::ChartAtlasRung& a,

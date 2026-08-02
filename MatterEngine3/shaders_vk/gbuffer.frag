@@ -46,6 +46,12 @@ layout(location = 7) in vec3 in_world_pos;
 // chart table, so every VT branch below is skipped and the legacy path runs
 // byte-for-byte as before.
 layout(location = 8) flat in uint in_vt_slot;
+// Warp field (VT Phase 2): xy = warped ground uv (world-anchored metres),
+// z = su, w = sv. su == 0 means the draw has no warp field (props, skinned
+// parts, sectors staged without an anchor) — the march then falls back to
+// the shipped world-XZ addressing.
+layout(location = 9) in vec4 in_warp_uv_scales;
+layout(location = 10) in vec3 in_warp_tangent;
 
 layout(location = 0) out vec4 out_albedo;
 layout(location = 1) out vec4 out_normal;
