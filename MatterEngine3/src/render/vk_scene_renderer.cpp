@@ -2470,7 +2470,9 @@ bool VkSceneRenderer::create_display_pipeline(std::string& error) {
 
     VkPushConstantRange exposure_range{};
     exposure_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    exposure_range.size = sizeof(float);
+    // { exposure_ev, passthrough, srgb_output } -- see DisplaySettings in
+    // display_transform.frag and kDisplayPush below.
+    exposure_range.size = sizeof(float) * 3;
     VkPipelineLayoutCreateInfo layout_create{
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     layout_create.setLayoutCount = 1;
@@ -10740,9 +10742,24 @@ bool VkSceneRenderer::record_composite_to_swapchain(
                             VK_PIPELINE_BIND_POINT_GRAPHICS,
                             display_pipeline_layout_, 0, 1,
                             &frame_slot.display_descriptor_set, 0, nullptr);
+    // composite.frag's debug_view 3.0 packs linear depth across R/G/B; it has
+    // to reach the swapchain byte-for-byte, so the display pass runs in
+    // passthrough for that view alone (every other view, including the normal
+    // buffer, keeps its exposure + ACES exactly as before). srgb_output
+    // cancels the hardware OETF when the swapchain is an _SRGB format --
+    // choose_surface_format prefers B8G8R8A8_SRGB, and the readback hands the
+    // raw swapchain bytes back with only a BGR swap.
+    const float display_push[3] = {
+        display_exposure_ev_,
+        composite_debug_override_ > 2.5f ? 1.0f : 0.0f,
+        (display_pipeline_format_ == VK_FORMAT_B8G8R8A8_SRGB ||
+         display_pipeline_format_ == VK_FORMAT_R8G8B8A8_SRGB)
+            ? 1.0f
+            : 0.0f,
+    };
     vkCmdPushConstants(frame.command_buffer, display_pipeline_layout_,
-                       VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float),
-                       &display_exposure_ev_);
+                       VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(display_push),
+                       display_push);
     vkCmdDraw(frame.command_buffer, 3, 1, 0, 0);
     vkCmdEndRendering(frame.command_buffer);
     write_gpu_timestamp(frame.command_buffer, kGpuZoneComposite, true,

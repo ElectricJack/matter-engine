@@ -486,7 +486,7 @@ const auto s_overlay = matter::props::group<AnimationDebugOverlayOptions>(
 // Session: a debug visualization that survived a relaunch would be a bug report
 // waiting to happen, and the combos are right there in Viewer Debug.
 const char* const kResolverLabels[] = {"PassThrough", "SectorLod"};
-const char* const kDebugViewLabels[] = {"None", "Normals"};
+const char* const kDebugViewLabels[] = {"None", "Normals", "Depth"};
 const char* const kVolDebugLabels[] = {"Off", "Density", "Scatter",
                                        "Integrated"};
 
@@ -495,7 +495,7 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
     prop(&ViewerStats::resolver_choice, "resolver_choice")
         .label("Resolver").enums(kResolverLabels, 2),
     prop(&ViewerStats::debug_view_mode, "debug_view_mode")
-        .label("Debug view").enums(kDebugViewLabels, 2),
+        .label("Debug view").enums(kDebugViewLabels, 3),
     prop(&ViewerStats::vol_debug_view, "vol_debug_view")
         .label("Volumetric view").enums(kVolDebugLabels, 4)
         .doc("Only meaningful while volumetrics are enabled."));
