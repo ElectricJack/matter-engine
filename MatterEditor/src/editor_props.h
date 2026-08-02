@@ -156,6 +156,10 @@ public:
     // definition in the .cpp.
     matter::props::Binding* clouds();
     matter::props::Binding* pom();
+    // render.vt — the chart-VT near band (Phase 0). Separate group from
+    // pom() above: see the definition in the .cpp for why the band no
+    // longer derives from the POM distances.
+    matter::props::Binding* vt_near_band();
     matter::props::Binding* camera();
     matter::props::Binding* streaming();
     matter::props::Binding* stream_runtime();
@@ -260,6 +264,7 @@ private:
     matter::props::BindingId fog_ = matter::props::kInvalidBinding;
     matter::props::BindingId clouds_ = matter::props::kInvalidBinding;
     matter::props::BindingId pom_ = matter::props::kInvalidBinding;
+    matter::props::BindingId vt_near_band_ = matter::props::kInvalidBinding;
     matter::props::BindingId camera_ = matter::props::kInvalidBinding;
     matter::props::BindingId streaming_ = matter::props::kInvalidBinding;
     matter::props::BindingId stream_runtime_ = matter::props::kInvalidBinding;

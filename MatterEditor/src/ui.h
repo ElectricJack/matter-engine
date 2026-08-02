@@ -124,6 +124,10 @@ struct ViewerStats {
     matter::FogSettings fog{};
     int vol_debug_view = 0;
     matter::TilesetPomSettings tileset_pom{};
+    // Phase 0 (property group "render.vt", Scope::World). Used to be derived
+    // from tileset_pom's distance pair inside gbuffer.frag; see
+    // matter::VtNearBandSettings.
+    matter::VtNearBandSettings vt_near_band{};
     // GPU-side per-pass timings (ms), smoothed EMA. Values are 0 when the
     // zone did not execute or GPU timers are unsupported.
     float gpu_total_ms          = 0.0f;

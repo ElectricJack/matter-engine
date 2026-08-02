@@ -2709,6 +2709,7 @@ int main() {
         options.vulkan_ray_tracing.samples =
             static_cast<uint32_t>(stats.lighting.sun_shadow_samples);
         options.vulkan_tileset_pom = stats.tileset_pom;
+        options.vulkan_vt_near_band = stats.vt_near_band;
         // render.gpu.ray_tracing. The device capability is the hard gate and
         // the property is the preference; the renderer only ever sees the
         // conjunction, so ticking the box on a GPU without RT extensions

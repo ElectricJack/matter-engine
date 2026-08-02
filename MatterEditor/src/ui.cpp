@@ -687,6 +687,8 @@ void Ui::draw_performance_panel(matter::WorldSession* session,
         props.note_panel_home(b->schema().path, "Performance");
     if (matter::props::Binding* b = props.pom())
         props.note_panel_home(b->schema().path, "Performance");
+    if (matter::props::Binding* b = props.vt_near_band())
+        props.note_panel_home(b->schema().path, "Performance");
     if (matter::props::Binding* b = props.vt_budgets())
         props.note_panel_home(b->schema().path, "Performance");
     if (matter::props::Binding* b = props.vt_enrich())
@@ -728,6 +730,11 @@ void Ui::draw_performance_panel(matter::WorldSession* session,
     if (matter::props::Binding* b = props.gpu())
         draw_group(*b, nullptr, true, nullptr, &props.gpu_field_veto());
     if (matter::props::Binding* b = props.pom()) draw_group(*b, nullptr, false);
+    // Directly under Ground POM: the near band used to BE the POM band, and
+    // the first question anyone reading one has about the other is how far
+    // each reaches.
+    if (matter::props::Binding* b = props.vt_near_band())
+        draw_group(*b, nullptr, false);
     if (matter::props::Binding* b = props.vt_budgets())
         draw_group(*b, nullptr, false);
     // WS2: the tier-2 enrichment parameters sit next to the residency budgets

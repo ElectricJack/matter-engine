@@ -96,13 +96,33 @@ void main() {
     // the non-tileset branch is covered too.
     float frag_depth = gl_FragCoord.z;
 
-    // WP-E near-band handoff state. `detail_albedo` keeps the live Wang
-    // detail sample BEFORE vertex tint (the ratio form below needs the raw
-    // detail vs. the slicer's mean_albedo), and `near_band` is 1 inside the
-    // POM band, fading to 0 across the same fade the POM march uses. Both
-    // stay at their defaults whenever the tileset branch does not run, and
-    // nothing reads them unless in_vt_slot != 0.
+    // World-position derivatives, computed ONCE at quad-uniform scope.
+    //
+    // They used to be computed twice: here-ish (inside the tileset branch,
+    // which is quad-safe — in_material_index is `flat`) and again inside the
+    // VT near-band's aux-slot branch below. That second site was UNDEFINED
+    // BEHAVIOUR: it sat under `if (near_band > 0.0)` (near_band is a function
+    // of per-fragment distance), under `if (vt.valid)` (a texel read through
+    // the indirection table) and under `if (aux_slot != tileset_slot)` (a
+    // decode of vt_aux.r, a page TEXEL) — none of which is quad-uniform, so a
+    // quad whose four fragments disagreed on any of them evaluated dFdx with
+    // some lanes inactive. Hoisting to main() scope is the whole fix: the
+    // values are identical, and there is now exactly one place they come from.
+    vec3 dPdx = dFdx(in_world_pos);
+    vec3 dPdy = dFdy(in_world_pos);
+
+    // WP-E near-band handoff state. `detail_albedo` / `detail_orm` keep the
+    // live Wang detail sample BEFORE vertex tint (the mean-preserving ratio
+    // forms below need the raw detail against the slicer's mean_albedo /
+    // mean_orm), and `near_band` is 1 inside the near band, fading to 0 across
+    // render.vt's fade. `horizon_visibility` carries the POM branch's baked
+    // horizon term forward so the near-band AO composite can re-apply it
+    // WITHOUT re-applying the detail AO it was multiplied into. All stay at
+    // their defaults whenever the tileset branch does not run, and nothing
+    // reads them unless in_vt_slot != 0.
     vec3 detail_albedo = vec3(1.0);
+    vec3 detail_orm = vec3(1.0);
+    float horizon_visibility = 1.0;
     float near_band = 0.0;
 
     // Ground tileset branch (Task 7): MaterialGpu.flags_misc.y low byte
@@ -110,14 +130,13 @@ void main() {
     // ground texture replaces the material's flat base color/normal/ORM.
     int tileset_slot = tileset_detail_slot(material.flags_misc);
     if (tileset_slot >= 0) {
-        // Full 3D world-position derivatives: the triplanar sampler needs to
-        // differentiate each axis's OWN planar coordinate (see
-        // tileset_triplanar_axis_deriv). dWdx/dWdy below keep the world-XZ
-        // pair for the POM march, which stays top-down by design; note
-        // dPdx.xz == dFdx(in_world_pos.xz) exactly, so the Y projection is
-        // unchanged from the pre-triplanar code.
-        vec3 dPdx = dFdx(in_world_pos);
-        vec3 dPdy = dFdy(in_world_pos);
+        // Full 3D world-position derivatives (dPdx/dPdy, hoisted to main()
+        // scope above): the triplanar sampler needs to differentiate each
+        // axis's OWN planar coordinate (see tileset_triplanar_axis_deriv).
+        // dWdx/dWdy below keep the world-XZ pair for the POM march, which
+        // stays top-down by design; note dPdx.xz == dFdx(in_world_pos.xz)
+        // exactly, so the Y projection is unchanged from the pre-triplanar
+        // code.
         vec2 dWdx = dPdx.xz;
         vec2 dWdy = dPdy.xz;
         vec3 flat_orm;
@@ -153,6 +172,7 @@ void main() {
         metallic = flat_metallic;
         ao = flat_ao;
         detail_albedo = flat_albedo;
+        detail_orm = flat_orm;
 
         // Phase 2 (Task 10): world-space POM, gated by distance from camera.
         // Ground POM UI "POM enable" checkbox: off drives tileset.pom_a.x
@@ -164,12 +184,21 @@ void main() {
         float dist = length(in_world_pos - camera_eye);
         float pom_max_distance = tileset.pom_a.z;
         float pom_fade_band = max(tileset.pom_a.w, 1e-4);
-        // WP-E: the VT near band IS the POM band. Inside it the live Wang
-        // detail modulates the VT base (mean-preserving ratio, spec Phase 2);
-        // past it VT is used pure. Computed here (not inside the POM branch)
-        // so the handoff is defined even when POM itself is disabled.
-        near_band = 1.0 - clamp((dist - (pom_max_distance - pom_fade_band)) /
-                                pom_fade_band, 0.0, 1.0);
+        // Phase 0: the VT near band is NO LONGER the POM band. It has its own
+        // pair of knobs (render.vt.near_band_m / near_fade_m, 50/10 m by
+        // default) because the two answer different questions — POM's reach is
+        // how far a parallax march is worth its steps, the near band is how
+        // far live 512 t/m detail still resolves above a 16 t/m page texel.
+        // Deriving one from the other pinned the band at FULL strength across
+        // 1544 m with the shipped POM defaults (max_distance 1564, fade 20),
+        // i.e. everywhere a player looks, which is what made the page's normal
+        // and ORM unreachable. Inside the band the live Wang detail MODULATES
+        // the VT base; past it VT is used pure, which is what the RT path does
+        // at every distance (rt_surface_common.glsl). Computed here (not
+        // inside the POM branch) so the handoff is defined when POM is off.
+        float near_band_m = max(tileset.vt_near.x, 0.0);
+        float near_fade_m = max(tileset.vt_near.y, 1e-4);
+        near_band = 1.0 - clamp((dist - near_band_m) / near_fade_m, 0.0, 1.0);
         int full_steps = int(tileset.pom_a.x);
         if (full_steps > 0 && dist < pom_max_distance + pom_fade_band) {
             vec3 plane_n = normalize(in_normal);
@@ -232,6 +261,12 @@ void main() {
                 // slider semantics the old self-shadow march used.
                 float shadow_effective = mix(1.0, visibility, tileset.pom_c.z);
                 marched_ao *= shadow_effective;
+                // Phase 0: kept separately so the near-band AO composite can
+                // re-apply the horizon term on top of the PAGE's occlusion.
+                // Folding it into `ao` and dividing back out there would drag
+                // the detail AO along with it, and the detail AO now goes
+                // through the mean-preserving ratio instead.
+                horizon_visibility = shadow_effective;
             }
 
             // Fade band: full parallax result up to
@@ -259,6 +294,11 @@ void main() {
             // footprint has stretched far.
             fade *= smoothstep(0.2, 0.7, slope_w_y);
             detail_albedo = mix(flat_albedo, marched_albedo, fade);
+            detail_orm = mix(flat_orm, marched_orm, fade);
+            // The horizon term rides the same fade as everything else it was
+            // computed alongside; at fade == 0 the flat sample wins and the
+            // flat sample carries no horizon term.
+            horizon_visibility = mix(1.0, horizon_visibility, fade);
             base_color = mix(flat_color, marched_color, fade);
             shading_normal =
                 normalize(mix(flat_shading_normal, marched_shading_normal,
@@ -297,7 +337,26 @@ void main() {
             // that slot is the one the draw already sampled, the live sample
             // above is reused verbatim; otherwise it is resampled flat (no
             // second POM march — POM stays exactly as it was).
+            //
+            // Phase 0: the page is now the BASE for every channel and the live
+            // detail only MODULATES it. Before this, albedo modulated (through
+            // the mean-preserving ratio below) but normal and ORM were
+            // hard-replaced by mix(..., near_band) — and since near_band was
+            // pinned at 1 out to 1544 m, the page's normal and ORM were
+            // discarded everywhere a player looks. Nothing written into the
+            // page's normal channel could reach the screen.
+            //
+            // The geometric normal is the frame BOTH sides are expressed in:
+            // the compositor encodes the page normal relative to it (in
+            // tileset_rotate_normal's own basis) and the live detail can be
+            // read back into it with tileset_unrotate_normal.
+            vec3 geo_n = normalize(in_normal);
             vec3 near_albedo = vt_albedo;
+            // Neutral until proven otherwise: (0,0,1) composes to "the page,
+            // untouched", and ratios of 1 leave the page's ORM alone.
+            vec3 detail_ts = vec3(0.0, 0.0, 1.0);
+            float occ_ratio = 1.0;
+            float rough_ratio = 1.0;
             if (near_band > 0.0) {
                 int aux_material = int(vt_aux.r * 255.0 + 0.5);
                 int aux_slot =
@@ -306,19 +365,34 @@ void main() {
                         : -1;
                 int ratio_slot = aux_slot >= 0 ? aux_slot : tileset_slot;
                 vec3 detail = detail_albedo;
+                vec3 detail_orm_here = detail_orm;
+                // shading_normal at this point is the live detail's world-space
+                // normal (the tileset branch above wrote it), or the geometric
+                // normal when there was no tileset — which unrotates to exactly
+                // neutral, so the no-tileset case costs the page nothing.
+                vec3 detail_normal_ws = shading_normal;
                 if (aux_slot >= 0 && aux_slot != tileset_slot) {
                     // Triplanar for the same reason the primary detail sample
                     // is: this is the near-band ratio term riding on the VT
                     // page, and a world-XZ tap here would smear the detail
                     // back onto a cliff even though the page under it is
                     // correctly parameterised.
+                    //
+                    // dPdx/dPdy come from main() scope now — computing them
+                    // here was the undefined-behaviour derivative call this
+                    // phase removes (see the note at their declaration).
+                    // aux_normal_ws / aux_orm used to be computed and thrown
+                    // away; with the composite below they are the aux slot's
+                    // normal and ORM, which is what the page under this
+                    // fragment is actually made of.
                     vec3 aux_normal_ws;
                     vec3 aux_orm;
                     float aux_w_y;
                     detail = tileset_sample_ground_triplanar(
-                        aux_slot, in_world_pos, normalize(in_normal),
-                        dFdx(in_world_pos), dFdy(in_world_pos), false,
+                        aux_slot, in_world_pos, geo_n, dPdx, dPdy, false,
                         aux_normal_ws, aux_orm, aux_w_y);
+                    detail_orm_here = aux_orm;
+                    detail_normal_ws = aux_normal_ws;
                 }
                 if (ratio_slot >= 0) {
                     // Mean-preserving ratio (spec Phase 2): the VT page is the
@@ -328,7 +402,23 @@ void main() {
                                     vec3(0.02));
                     near_albedo = vt_albedo * clamp(detail / mean, vec3(0.25),
                                                     vec3(4.0));
+                    // Occlusion and roughness take the SAME ratio form against
+                    // the slot's mean ORM. Both are positive scalars whose
+                    // tileset content reads as a proportion, and the page
+                    // already carries their macro level (vt_composite samples
+                    // the same ORM channel at page LOD, then the tape's
+                    // roughness/wetness lanes bias it, then tier-2 hemisphere
+                    // AO multiplies into occlusion) — so a ratio keeps all of
+                    // that and adds only the detail's own variation. Same
+                    // [0.25, 4] clamp as albedo, for the same reason: a
+                    // near-zero mean must not turn into an unbounded gain.
+                    vec3 mean_orm = max(tileset.mean_orm[ratio_slot].rgb,
+                                        vec3(0.02));
+                    occ_ratio = clamp(detail_orm_here.r / mean_orm.r, 0.25, 4.0);
+                    rough_ratio =
+                        clamp(detail_orm_here.g / mean_orm.g, 0.25, 4.0);
                 }
+                detail_ts = tileset_unrotate_normal(detail_normal_ws, geo_n);
             }
             base_color = mix(vt_albedo, near_albedo, near_band) *
                          mix(vec3(1.0), in_tint.rgb, in_tint.a);
@@ -336,15 +426,45 @@ void main() {
             // normal, encoded by the compositor in tileset_rotate_normal's
             // own frame; the stub writes the neutral (0,0,1), i.e. the
             // geometric normal.
-            vec3 vt_normal =
-                tileset_rotate_normal(vt_normal_ts, normalize(in_normal));
-            shading_normal =
-                normalize(mix(vt_normal, shading_normal, near_band));
-            roughness = mix(clamp(vt_orm.g, 0.0, 1.0), roughness, near_band);
-            metallic = mix(clamp(vt_orm.b, 0.0, 1.0), metallic, near_band);
+            //
+            // Fade the DETAIL toward neutral, then compose onto the page.
+            // Fading the detail (rather than mixing the two results) is what
+            // makes the band edge exact: at near_band == 0 the detail IS
+            // (0,0,1) and tileset_blend_normal_detail returns the page normal
+            // bit-for-bit, so the handoff to pure VT — the same thing RT does
+            // at every distance — has no seam of its own.
+            vec3 detail_ts_faded =
+                normalize(mix(vec3(0.0, 0.0, 1.0), detail_ts, near_band));
+            shading_normal = tileset_rotate_normal(
+                tileset_blend_normal_detail(vt_normal_ts, detail_ts_faded),
+                geo_n);
+            // ORM: page value modulated by the mean-preserving ratios, faded
+            // to 1 (page untouched) at the band edge.
+            roughness = clamp(clamp(vt_orm.g, 0.0, 1.0) *
+                                  mix(1.0, rough_ratio, near_band),
+                              0.0, 1.0);
+            // Metallic is NOT modulated. It is a material classification, not
+            // a continuously varying signal: it is authored by the page's
+            // material stack and the tape's metallic lane, and the live Wang
+            // tap carries no metallic information the page does not already
+            // have. A ratio here would also be the one channel where the mean
+            // is legitimately ~0, so the [0.25, 4] clamp would scale the
+            // page's metal down by 4x rather than leave it alone. The page
+            // wins outright.
+            metallic = clamp(vt_orm.b, 0.0, 1.0);
             float vertex_ao = in_surface.w > 0.5 ? clamp(in_surface.z, 0.0, 1.0)
                                                  : 1.0;
-            ao = mix(vertex_ao * clamp(vt_orm.r, 0.0, 1.0), ao, near_band);
+            // Occlusion: vertex AO x the page's occlusion (which carries
+            // tier-2 hemisphere AO — un-hidden by this phase) x the detail's
+            // mean-preserving ratio, blended by the AO-strength knob exactly
+            // as the legacy path blended the raw detail texel, x the POM
+            // branch's baked horizon term. Every one of those was previously
+            // dropped or replaced inside the band.
+            float occ_effective = mix(1.0, occ_ratio, tileset.pom_c.y);
+            ao = clamp(vertex_ao * clamp(vt_orm.r, 0.0, 1.0) *
+                           mix(1.0, occ_effective, near_band) *
+                           mix(1.0, horizon_visibility, near_band),
+                       0.0, 1.0);
         }
     }
 

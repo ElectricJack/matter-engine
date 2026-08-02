@@ -132,6 +132,11 @@ struct RenderOptions {
     VulkanLightingOverrides vulkan_lighting{};
     VulkanVolumetricsSettings vulkan_volumetrics{};
     TilesetPomSettings vulkan_tileset_pom{};
+    // Phase 0: the chart-VT near band, decoupled from the POM distances
+    // beside it. Compiled defaults (50/10 m) are what a caller that never
+    // sets it gets, so headless tests and the replay harness run the same
+    // band the editor does.
+    VtNearBandSettings vulkan_vt_near_band{};
     // Live fog override (property-system "render.fog"). The world-authored
     // FogSettings the connect captured is consumed PER FRAME — WorldSession::
     // render hands it to VkSceneRenderer::set_volumetrics_settings on every
