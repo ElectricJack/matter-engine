@@ -54,12 +54,16 @@ struct SolveOptions {
 
     // Local/global ARAP iteration counts. Fixed (never adaptive) for
     // determinism and timing stability.
-    int arap_iterations = 6;
-    // Conjugate-gradient budget for each global least-squares solve (and the
-    // harmonic init). Fixed cap; the tolerance below may stop earlier, which
-    // is still deterministic for identical input.
-    int cg_iterations = 120;
-    float cg_tolerance = 1e-7f;
+    int arap_iterations = 8;
+    // Conjugate-gradient budgets. The INIT solve carries the large
+    // low-frequency motion (an extreme wall must spread ~5x over a ~150-cell
+    // graph diameter, which costs ~sqrt(kappa) ~ hundreds of CG iterations);
+    // the per-ARAP global solves are warm-started and need far less. Both
+    // are caps; the tolerance may stop earlier, which is still deterministic
+    // for identical input.
+    int init_cg_iterations = 800;
+    int cg_iterations = 200;
+    float cg_tolerance = 1e-6f;
     // Fold-relax post-pass cap (local Laplacian relaxation applied only to
     // folded triangles' free vertices; accepted only while the fold count
     // strictly decreases).

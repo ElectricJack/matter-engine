@@ -26,6 +26,9 @@
 #include "part_asset_v2.h"
 #include "warp_field.h"
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "external/stb_image_write.h"  // raylib's vendored copy (PNG dump)
+
 #include <algorithm>
 #include <cinttypes>
 #include <cmath>
@@ -426,6 +429,43 @@ static bool gate_fixture(const char* name, bool apply_gates, float stretch_gate,
     if (!solved) return false;
     print_stats("warp", field.stats);
 
+    // Diagnostic: where do the folds live? (corner knots vs distributed)
+    {
+        const size_t nt = field.indices.size() / 3;
+        std::vector<float2> uv(field.verts.size());
+        for (size_t v = 0; v < field.verts.size(); ++v)
+            uv[v] = field.verts[v].uv;
+        double pos_area = 0.0, neg_area = 0.0;
+        std::vector<float> areas(nt);
+        for (size_t t = 0; t < nt; ++t) {
+            const uint32_t* i = &field.indices[t * 3];
+            const float2 A = uv[i[0]], B = uv[i[1]], C = uv[i[2]];
+            const float a2 =
+                (B.x - A.x) * (C.y - A.y) - (B.y - A.y) * (C.x - A.x);
+            areas[t] = a2;
+            if (a2 > 0) pos_area += 1;
+            else neg_area += 1;
+        }
+        const float orient = pos_area >= neg_area ? 1.0f : -1.0f;
+        int fold_border = 0, fold_corner = 0, fold_interior = 0;
+        for (size_t t = 0; t < nt; ++t) {
+            if (areas[t] * orient > 0.0f) continue;
+            const uint32_t* i = &field.indices[t * 3];
+            float cx = 0, cz = 0;
+            for (int c = 0; c < 3; ++c) {
+                cx += field.positions[i[c]].x / 3.0f;
+                cz += field.positions[i[c]].z / 3.0f;
+            }
+            const float dx = std::min(cx - (-2.0f), 64.0f - cx);
+            const float dz = std::min(cz - (-2.0f), 64.0f - cz);
+            if (dx < 6.0f && dz < 6.0f) ++fold_corner;
+            else if (dx < 6.0f || dz < 6.0f) ++fold_border;
+            else ++fold_interior;
+        }
+        std::printf("  folds: corner=%d border=%d interior=%d\n", fold_corner,
+                    fold_border, fold_interior);
+    }
+
     if (apply_gates) {
         char msg[160];
         std::snprintf(msg, sizeof msg, "%s: stretch p95 %.2f <= %.2f", name,
@@ -541,7 +581,92 @@ static void gate_border_pair() {
     CHECK(shared > 0 && exact == shared, msg);
 }
 
+// --dump-uv <fixture.wfx> <out.png>: render the solved uv layout for eyes-on
+// debugging. uv-space triangles (gray = ok, red = folded), pins in blue.
+static int dump_uv(const char* fixture_path, const char* out_png) {
+    Fixture f;
+    if (!load_wfx(fixture_path, f)) {
+        std::printf("dump-uv: cannot load %s\n", fixture_path);
+        return 2;
+    }
+    warp_field::SolveOptions opts;
+    opts.anchor_x = f.anchor_x;
+    opts.anchor_z = f.anchor_z;
+    warp_field::Field field;
+    if (!warp_field::solve(f.tris.data(), f.tris.size(), f.skirt.data(), opts,
+                           field)) {
+        std::printf("dump-uv: solve failed\n");
+        return 2;
+    }
+    const int W = 1200, H = 1200;
+    std::vector<unsigned char> img(size_t(W) * H * 3, 255);
+    float mnu = 1e30f, mxu = -1e30f, mnv = 1e30f, mxv = -1e30f;
+    for (const auto& v : field.verts) {
+        mnu = std::min(mnu, v.uv.x); mxu = std::max(mxu, v.uv.x);
+        mnv = std::min(mnv, v.uv.y); mxv = std::max(mxv, v.uv.y);
+    }
+    const float span = std::max(mxu - mnu, mxv - mnv) * 1.05f + 1e-6f;
+    auto px = [&](const float2& uv, int& x, int& y) {
+        x = int((uv.x - mnu + span * 0.02f) / span * W);
+        y = int((uv.y - mnv + span * 0.02f) / span * H);
+    };
+    // Fold mask via majority orientation.
+    const size_t nt = field.indices.size() / 3;
+    std::vector<float> area2(nt);
+    double pos = 0, neg = 0;
+    for (size_t t = 0; t < nt; ++t) {
+        const uint32_t* i = &field.indices[t * 3];
+        const float2 A = field.verts[i[0]].uv, B = field.verts[i[1]].uv,
+                     C = field.verts[i[2]].uv;
+        area2[t] = (B.x - A.x) * (C.y - A.y) - (B.y - A.y) * (C.x - A.x);
+        (area2[t] > 0 ? pos : neg) += 1;
+    }
+    const float orient = pos >= neg ? 1.0f : -1.0f;
+    auto put = [&](int x, int y, unsigned char r, unsigned char g,
+                   unsigned char b) {
+        if (x < 0 || y < 0 || x >= W || y >= H) return;
+        unsigned char* p = &img[(size_t(y) * W + x) * 3];
+        p[0] = r; p[1] = g; p[2] = b;
+    };
+    auto line = [&](int x0, int y0, int x1, int y1, unsigned char r,
+                    unsigned char g, unsigned char b) {
+        const int steps = std::max(std::abs(x1 - x0), std::abs(y1 - y0)) + 1;
+        for (int s = 0; s <= steps; ++s) {
+            put(x0 + (x1 - x0) * s / steps, y0 + (y1 - y0) * s / steps, r, g,
+                b);
+        }
+    };
+    for (size_t t = 0; t < nt; ++t) {
+        const uint32_t* i = &field.indices[t * 3];
+        int x[3], y[3];
+        for (int c = 0; c < 3; ++c) px(field.verts[i[c]].uv, x[c], y[c]);
+        const bool folded = area2[t] * orient <= 0.0f;
+        const unsigned char r = folded ? 255 : 170,
+                            g = folded ? 40 : 170,
+                            b = folded ? 40 : 170;
+        for (int e = 0; e < 3; ++e)
+            line(x[e], y[e], x[(e + 1) % 3], y[(e + 1) % 3], r, g, b);
+    }
+    // Pins (border chains) in blue, on top.
+    std::vector<float3> ppos;
+    std::vector<warp_field::BorderPin> pins;
+    warp_field::border_pins(f.tris.data(), f.tris.size(), f.skirt.data(), opts,
+                            ppos, pins);
+    for (const auto& p : pins) {
+        int x, y;
+        px(p.uv, x, y);
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) put(x + dx, y + dy, 20, 60, 255);
+    }
+    stbi_write_png(out_png, W, H, 3, img.data(), W * 3);
+    std::printf("dump-uv: %s (uv range %.1f..%.1f x %.1f..%.1f, %zu pins)\n",
+                out_png, mnu, mxu, mnv, mxv, pins.size());
+    return 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc == 4 && std::strcmp(argv[1], "--dump-uv") == 0)
+        return dump_uv(argv[2], argv[3]);
     if (argc == 3 && std::strcmp(argv[1], "--scan-transient") == 0) {
         std::vector<SectorInfo> sectors;
         return scan_transient(argv[2], sectors, true);

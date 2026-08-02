@@ -202,7 +202,17 @@ void compute_border_pins(const SolveMesh& mesh, const SolveOptions& opts,
         return wa.z < wb.z;
     };
 
-    for (int side = 0; side < 4; ++side) {
+    // Processing order gives X-side chains PRIORITY at corner vertices: a
+    // corner vertex belongs to one x-chain and one z-chain, whose traces
+    // disagree there on steep terrain. Z sides are written first, X sides
+    // overwrite — deterministically, and identically from every sector that
+    // shares the x-chain. The two sectors sharing a Z border therefore agree
+    // on every pinned vertex EXCEPT the two chain-end corner vertices (each
+    // overridden by its owner's own x-chain) — the spec's accepted
+    // corner-knot residual, localized to single vertices.
+    const int side_order[4] = {2, 3, 0, 1};
+    for (int side_i = 0; side_i < 4; ++side_i) {
+        const int side = side_order[side_i];
         auto& edges = side_edges[side];
         if (edges.empty()) continue;
         // Vertex adjacency within this side (indices into `edges`).
@@ -276,16 +286,58 @@ void compute_border_pins(const SolveMesh& mesh, const SolveOptions& opts,
             if (lex_less(chain.back(), chain.front()))
                 std::reverse(chain.begin(), chain.end());
             const size_t n = chain.size();
-            // Segment lengths (true 3D) and raw XZ directions, in double.
-            std::vector<double> seg_len(n - 1);
+            // Chain-smoothed GEOMETRY: box-filter the chain's world points
+            // over a +-2 m arc window before measuring anything. A voxel
+            // rim zigzags at cell scale (especially descending a cliff), and
+            // tracing the raw polyline accumulates every wiggle as spread —
+            // measured as jagged pins that fold the first interior ring all
+            // along the border. The macro shape (the 300 m descent) survives
+            // the filter; the 2-4 m noise does not.
+            std::vector<double> px(n), py(n), pz(n), raw_t(n, 0.0);
+            for (size_t i = 0; i < n; ++i) {
+                const float3 w = world(chain[i]);
+                px[i] = w.x;
+                py[i] = w.y;
+                pz[i] = w.z;
+                if (i)
+                    raw_t[i] =
+                        raw_t[i - 1] +
+                        std::sqrt((px[i] - px[i - 1]) * (px[i] - px[i - 1]) +
+                                  (py[i] - py[i - 1]) * (py[i] - py[i - 1]) +
+                                  (pz[i] - pz[i - 1]) * (pz[i] - pz[i - 1]));
+            }
+            const double kGeomWindow = 2.0;
+            std::vector<double> qx(n), qy(n), qz(n);
+            for (size_t i = 0; i < n; ++i) {
+                double sx = 0, sy = 0, sz = 0, cnt = 0;
+                for (size_t j = i;; --j) {
+                    if (raw_t[i] - raw_t[j] > kGeomWindow) break;
+                    sx += px[j];
+                    sy += py[j];
+                    sz += pz[j];
+                    cnt += 1;
+                    if (j == 0) break;
+                }
+                for (size_t j = i + 1; j < n; ++j) {
+                    if (raw_t[j] - raw_t[i] > kGeomWindow) break;
+                    sx += px[j];
+                    sy += py[j];
+                    sz += pz[j];
+                    cnt += 1;
+                }
+                qx[i] = sx / cnt;
+                qy[i] = sy / cnt;
+                qz[i] = sz / cnt;
+            }
+            // Segment lengths (smoothed 3D and XZ) and XZ directions.
+            std::vector<double> seg_len(n - 1), seg_xz(n - 1);
             std::vector<double2> seg_dir(n - 1);
             for (size_t i = 0; i + 1 < n; ++i) {
-                const float3 pa = world(chain[i]);
-                const float3 pb = world(chain[i + 1]);
-                const double dx = double(pb.x) - double(pa.x);
-                const double dy = double(pb.y) - double(pa.y);
-                const double dz = double(pb.z) - double(pa.z);
+                const double dx = qx[i + 1] - qx[i];
+                const double dy = qy[i + 1] - qy[i];
+                const double dz = qz[i + 1] - qz[i];
                 seg_len[i] = std::sqrt(dx * dx + dy * dy + dz * dz);
+                seg_xz[i] = std::sqrt(dx * dx + dz * dz);
                 seg_dir[i] = double2{dx, dz};
             }
             // Chain-smoothed XZ directions: arc-length box window (+-2 m)
@@ -324,35 +376,77 @@ void compute_border_pins(const SolveMesh& mesh, const SolveOptions& opts,
                     dir[i] = (side < 2) ? double2{0.0, 1.0} : double2{1.0, 0.0};
                 }
             }
-            // Raw trace anchored at the chain's first (lex-smallest) vertex,
-            // pinned to its world XZ — which is also every other sector's
-            // canonical value for that vertex, so sector corners agree.
-            const float3 w0 = world(chain[0]);
-            std::vector<double2> uv(n);
-            uv[0] = double2{double(w0.x), double(w0.z)};
+            // Directional cumulative trace in canonical order, then anchor:
+            // uv = trace shifted so the chain's lexicographically-smallest
+            // vertex lands exactly on its world XZ. NO endpoint
+            // canonicalization: a chain crossing a cliff wall spreads to its
+            // true 3D arc length — that spread is the whole point (§4.2) —
+            // and pulling its endpoints back to world-XZ corners would crush
+            // the spread back out (measured: the wall then cannot beat the
+            // world-XZ baseline at all). The price is that chains MEETING at
+            // a sector corner can disagree there; see the priority note
+            // below ("corner knots", the spec's accepted residual (a)).
+            const bool is_loop = chain.front() == chain.back() && n > 2;
+            // Per-segment geometric-mean spread: each segment advances by
+            // sqrt(len3d * lenxz) — the LOCAL conformal compromise between
+            // spreading a cliff crossing to its full 3D arc (which
+            // concentrates an untenable conflict where the chain meets an
+            // unspread cross-slope chain at a corner; measured ~19% folds)
+            // and no spread at all (the world-XZ compression this field
+            // exists to remove). Exactly len3d == lenxz on flat ground, and
+            // it adapts along a chain whose slope varies, which one global
+            // per-chain factor cannot. Floored so a near-vertical stretch
+            // still advances (a zero-length uv stretch would be an infinite
+            // border stretch of its own).
+            std::vector<double2> tr(n);
             std::vector<double> t(n, 0.0);
+            tr[0] = double2{0.0, 0.0};
             for (size_t i = 0; i + 1 < n; ++i) {
-                uv[i + 1] = double2{uv[i].x + seg_len[i] * dir[i].x,
-                                    uv[i].y + seg_len[i] * dir[i].y};
+                const double step =
+                    seg_len[i] > 1e-12
+                        ? std::max(std::sqrt(seg_len[i] * seg_xz[i]),
+                                   0.25 * seg_len[i])
+                        : 0.0;
+                tr[i + 1] = double2{tr[i].x + step * dir[i].x,
+                                    tr[i].y + step * dir[i].y};
                 t[i + 1] = t[i] + seg_len[i];
             }
-            // Closure: the far endpoint's canonical value is ITS world XZ;
-            // distribute the error linearly along the trace.
-            const float3 w1 = world(chain[n - 1]);
-            const double ex = double(w1.x) - uv[n - 1].x;
-            const double ez = double(w1.z) - uv[n - 1].y;
-            const double total = t[n - 1] > 1e-9 ? t[n - 1] : 1.0;
-            for (size_t i = 0; i < n; ++i) {
-                const double s = t[i] / total;
-                uv[i].x += ex * s;
-                uv[i].y += ez * s;
+            if (is_loop) {
+                // A closed loop must close: distribute the trace's closure
+                // error linearly over arc length.
+                const double ex = tr[0].x - tr[n - 1].x;
+                const double ez = tr[0].y - tr[n - 1].y;
+                const double total = t[n - 1] > 1e-9 ? t[n - 1] : 1.0;
+                for (size_t i = 0; i < n; ++i) {
+                    tr[i].x += ex * (t[i] / total);
+                    tr[i].y += ez * (t[i] / total);
+                }
             }
+            // Anchor at the ARC-MIDPOINT vertex's world XZ. The spec's
+            // as-written anchor (the lex-smallest vertex) parks the whole
+            // residual spread-vs-corner conflict at ONE end of the chain;
+            // midpoint anchoring splits it across both ends, halving each
+            // knot. Deterministic and chain-local, so both sectors of a
+            // shared border still compute identical pins.
+            size_t anchor = 0;
+            {
+                const double half = t[n - 1] * 0.5;
+                double bd = 1e300;
+                for (size_t i = 0; i < n - (is_loop ? 1 : 0); ++i) {
+                    const double d = std::fabs(t[i] - half);
+                    if (d < bd) {
+                        bd = d;
+                        anchor = i;
+                    }
+                }
+            }
+            const float3 wa = world(chain[anchor]);
+            const double bx = double(wa.x) - tr[anchor].x;
+            const double bz = double(wa.z) - tr[anchor].y;
             for (size_t i = 0; i < n; ++i) {
                 const uint32_t v = chain[i];
-                // A corner vertex can be the endpoint of two chains; both pin
-                // it to its world XZ, so last-writer-wins is well defined.
                 pins.pinned[v] = 1;
-                pins.uv[v] = uv[i];
+                pins.uv[v] = double2{tr[i].x + bx, tr[i].y + bz};
             }
         }
     }
@@ -376,7 +470,16 @@ struct Csr {
     std::vector<float> w;
 };
 
-void build_reference(const SolveMesh& mesh, std::vector<TriRef>& refs) {
+// `orientation` (+1/-1): the sign the uv-plane triangle areas take under the
+// field's convention. The engine's meshes wind counter-clockwise seen from
+// OUTSIDE, and with uv anchored to world XZ an up-facing triangle's (u, v)
+// signed area is NEGATIVE (terrain_mesher's push_hf_tri documents the same
+// xz-plane sign). The reference triangles must be built with the SAME
+// orientation as the uv image, or the local step's det+1 rotation fit fights
+// a reflection on every triangle and the solve shreds. The caller measures
+// the majority sign of the init uv and passes it here.
+void build_reference(const SolveMesh& mesh, float orientation,
+                     std::vector<TriRef>& refs) {
     const size_t nt = mesh.tri_count();
     refs.resize(nt);
     for (size_t t = 0; t < nt; ++t) {
@@ -390,10 +493,11 @@ void build_reference(const SolveMesh& mesh, std::vector<TriRef>& refs) {
         TriRef r;
         r.x1x = l1;
         r.x2x = l1 > 0.0f ? dot(e1, e2) / l1 : 0.0f;
-        r.x2y = l1 > 0.0f ? area2 / l1 : 0.0f;
+        r.x2y = l1 > 0.0f ? orientation * area2 / l1 : 0.0f;
         // Cotan weights: edge (i, i+1) is opposite vertex i+2. cot = cos/sin
         // over the reference triangle; clamped positive for the Tutte-like
-        // init structure (documented distortion trade).
+        // init structure (documented distortion trade). Mirroring preserves
+        // angle magnitudes, so the weights are orientation-independent.
         const float2 x[3] = {make_float2(0.0f, 0.0f), make_float2(r.x1x, 0.0f),
                              make_float2(r.x2x, r.x2y)};
         for (int e = 0; e < 3; ++e) {
@@ -552,8 +656,12 @@ void cg_solve(const Csr& L, const PinSet& pins,
     }
 }
 
+// A fold is a triangle whose uv orientation OPPOSES the field's convention
+// (`orientation`, the majority sign — see build_reference). A folded
+// triangle renders locally mirrored stochastic content, which §4.3 expects
+// to be invisible at the gated rate; what matters is counting them honestly.
 inline int fold_count(const SolveMesh& mesh, const std::vector<float2>& uv,
-                      std::vector<uint8_t>* mask) {
+                      float orientation, std::vector<uint8_t>* mask) {
     const size_t nt = mesh.tri_count();
     if (mask) mask->assign(nt, 0);
     int folds = 0;
@@ -562,12 +670,28 @@ inline int fold_count(const SolveMesh& mesh, const std::vector<float2>& uv,
         const float2 a = uv[i[0]], b = uv[i[1]], c = uv[i[2]];
         const float area2 =
             (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-        if (area2 <= 0.0f) {
+        if (area2 * orientation <= 0.0f) {
             ++folds;
             if (mask) (*mask)[t] = 1;
         }
     }
     return folds;
+}
+
+// Majority uv-orientation sign over the mesh (+1 or -1, never 0).
+inline float majority_orientation(const SolveMesh& mesh,
+                                  const std::vector<float2>& uv) {
+    const size_t nt = mesh.tri_count();
+    double pos = 0.0, neg = 0.0;
+    for (size_t t = 0; t < nt; ++t) {
+        const uint32_t* i = &mesh.indices[t * 3];
+        const float2 a = uv[i[0]], b = uv[i[1]], c = uv[i[2]];
+        const float area2 =
+            (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        if (area2 > 0.0f) pos += mesh.tri_area[t];
+        else if (area2 < 0.0f) neg += mesh.tri_area[t];
+    }
+    return pos >= neg ? 1.0f : -1.0f;
 }
 
 // Per-triangle forward Jacobian rows (world -> uv), via the closed form
@@ -641,11 +765,17 @@ void compute_stats(const SolveMesh& mesh, const std::vector<float2>& uv,
         stretch.push_back({s1, w});
         compress.push_back({1.0f / std::max(s2, 1e-6f), w});
         aniso.push_back({s1 / std::max(s2, 1e-6f), w});
-        // Fold: uv winding against reference orientation.
-        const float2 A = uv[i[0]], B = uv[i[1]], C = uv[i[2]];
-        const float area2 =
-            (B.x - A.x) * (C.y - A.y) - (B.y - A.y) * (C.x - A.x);
-        if (area2 <= 0.0f) ++folds;
+    }
+    // Folds: minority-orientation triangles (see fold_count).
+    {
+        const float orient = majority_orientation(mesh, uv);
+        for (size_t t = 0; t < nt; ++t) {
+            const uint32_t* i = &mesh.indices[t * 3];
+            const float2 A = uv[i[0]], B = uv[i[1]], C = uv[i[2]];
+            const float area2 =
+                (B.x - A.x) * (C.y - A.y) - (B.y - A.y) * (C.x - A.x);
+            if (area2 * orient <= 0.0f) ++folds;
+        }
     }
     // Adjacent-triangle delta-J across interior manifold edges.
     std::unordered_map<uint64_t, uint32_t> first_tri;
@@ -808,11 +938,6 @@ bool solve(const Tri* tris, size_t tri_count, const uint8_t* skirt_mask,
                     opts.anchor_z + double(mesh.positions[best].z)};
     }
 
-    std::vector<TriRef> refs;
-    build_reference(mesh, refs);
-    Csr L;
-    build_laplacian(mesh, refs, L);
-
     const size_t nv = mesh.vert_count();
     const size_t nt = mesh.tri_count();
 
@@ -823,7 +948,18 @@ bool solve(const Tri* tris, size_t tri_count, const uint8_t* skirt_mask,
         uv[v] = make_float2(float(opts.anchor_x + double(p.x)),
                             float(opts.anchor_z + double(p.z)));
     }
-    cg_solve(L, pins, {}, opts.cg_iterations, opts.cg_tolerance, uv);
+    // The field's uv orientation convention comes from the init (for the
+    // engine's CCW-from-outside terrain and XZ-anchored uv this is -1); the
+    // reference triangles are built with the SAME orientation so the local
+    // step's rotations are rotations, not reflections.
+    const float orient = majority_orientation(mesh, uv);
+
+    std::vector<TriRef> refs;
+    build_reference(mesh, orient, refs);
+    Csr L;
+    build_laplacian(mesh, refs, L);
+
+    cg_solve(L, pins, {}, opts.init_cg_iterations, opts.cg_tolerance, uv);
 
     // Local/global ARAP.
     std::vector<float2> rhs(nv);
@@ -835,9 +971,16 @@ bool solve(const Tri* tris, size_t tri_count, const uint8_t* skirt_mask,
             const float2 x[3] = {make_float2(0.0f, 0.0f),
                                  make_float2(r.x1x, 0.0f),
                                  make_float2(r.x2x, r.x2y)};
-            // Best-fit rotation R maximizing trace(R^T S), with
-            // S = sum_e w_e (uv_i - uv_j)(x_i - x_j)^T. Closed form for 2x2:
-            // (cos, sin) ~ (S00 + S11, S10 - S01); det(R) = +1 always.
+            // Local fit: ARAP's best rotation, det +1 by construction:
+            // (cos, sin) ~ (S00 + S11, S10 - S01), the closed 2x2 form.
+            // A similarity (rotation + scale) local step was tried and
+            // rejected: it drives the whole wall interior toward a uniform
+            // conformal shrink that the flat-along-the-chain contour pins —
+            // which can never know the wall's dip from chain-local data —
+            // cannot follow, and the mismatch tears the borders (measured
+            // ~19% folds). Rigidity instead absorbs the un-spreadable
+            // direction as SMOOTH anisotropy, which §2.4 measures as the
+            // invisible kind of error on stochastic content.
             float s00 = 0, s01 = 0, s10 = 0, s11 = 0;
             for (int e = 0; e < 3; ++e) {
                 const int i = e, j = (e + 1) % 3;
@@ -874,7 +1017,7 @@ bool solve(const Tri* tris, size_t tri_count, const uint8_t* skirt_mask,
     // Fold-relax: bounded local Tutte relaxation of folded triangles' free
     // vertices, accepted only while the fold count strictly decreases.
     std::vector<uint8_t> fold_mask;
-    int folds = fold_count(mesh, uv, &fold_mask);
+    int folds = fold_count(mesh, uv, orient, &fold_mask);
     for (int pass = 0; pass < opts.fold_relax_passes && folds > 0; ++pass) {
         std::vector<uint8_t> touch(nv, 0);
         for (size_t t = 0; t < nt; ++t) {
@@ -896,12 +1039,12 @@ bool solve(const Tri* tris, size_t tri_count, const uint8_t* skirt_mask,
                 next[v] = make_float2(0.5f * uv[v].x + 0.5f * sx / sw,
                                       0.5f * uv[v].y + 0.5f * sy / sw);
         }
-        const int new_folds = fold_count(mesh, next, &fold_mask);
+        const int new_folds = fold_count(mesh, next, orient, &fold_mask);
         if (new_folds < folds) {
             uv = std::move(next);
             folds = new_folds;
         } else {
-            fold_count(mesh, uv, &fold_mask);  // restore mask for stats
+            fold_count(mesh, uv, orient, &fold_mask);  // restore for stats
             break;
         }
     }
