@@ -46,6 +46,38 @@ function warp2(src, seed, freq, strength) {
 function blend(a, b, t) {
   return new FieldNode(__emit('blend r' + __reg(a) + ' r' + __reg(b) + ' r' + __reg(t)));
 }
+// World coordinates, in metres, as field nodes. Every other field op is
+// translation-covariant noise, which can only produce statistically-uniform
+// terrain — an AUTHORED shape at an AUTHORED place (a dome at (cx, cz), a
+// road, a crater) is not expressible without these. Memoised so a world that
+// reads worldX() in five expressions still costs one op of the 96-op budget.
+let __wxNode = null, __wzNode = null;
+function worldX() { return (__wxNode ||= new FieldNode(__emit('input wx'))); }
+function worldZ() { return (__wzNode ||= new FieldNode(__emit('input wz'))); }
+// Radial dome / spherical cap centred at (cx, cz): an exact hemisphere of
+// radius `radius` when `height` is omitted, otherwise that hemisphere scaled
+// vertically to `height` at the crown. Zero outside the footprint, so it
+// composes with `.max(ground)`.
+//
+//   y(d) = height * sqrt(max(0, 1 - (d/radius)^2)),  d = |(x,z) - (cx,cz)|
+//
+// which is the ONE closed form that presents every surface angle from 0 deg at
+// the crown to 90 deg at the rim, continuously, on a single object. That
+// property is the entire reason this exists: it makes an angle-dependent
+// shading defect (grazing-angle POM, in particular) show up as a band at a
+// measurable radius instead of hiding in the confound between two materials.
+//
+// 14 ops per dome plus the two shared coordinate reads (FieldProgram::parse,
+// unlike the surfaces() tape, does not deduplicate `const` lines).
+function dome(cx, cz, radius, height) {
+  if (height === undefined) height = radius;
+  const dx = worldX().sub(cx), dz = worldZ().sub(cz);
+  const d2 = dx.mul(dx).add(dz.mul(dz));
+  // pow clamps its base to >= 0 natively, but clamp(0,1) is still required:
+  // it is what makes the field exactly 0 outside the footprint rather than
+  // negative, so .max(ground) leaves the ground untouched there.
+  return d2.mul(1 / (radius * radius)).oneMinus().clamp(0, 1).pow(0.5).mul(height);
+}
 function heightToDensity(h) { return h; }   // v1 identity marker: density == height field
 // ---------------------------------------------------------------------------
 // surfaces() classifier tape (chart-VT spec Phase 4, contract C4).

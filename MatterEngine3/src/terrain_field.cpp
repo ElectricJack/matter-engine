@@ -283,7 +283,32 @@ bool FieldProgram::parse(const std::string& text, FieldProgram& out, std::string
             return true;
         };
 
-        if (op == "const") {
+        if (op == "input") {
+            // World-coordinate access. The field is a pure function of (x, z),
+            // so those are the only two inputs that exist here — `input wx` and
+            // `input wz` and nothing else. The surfaces() tape's other input
+            // names (ly/ny/slope/height/...) are either undefined in this
+            // context or would make the field self-referential, so they are
+            // rejected by name rather than silently reading 0.
+            //
+            // Why the field needs coordinates at all: every other op is
+            // translation-covariant noise, which can only ever produce
+            // statistically-uniform terrain. An AUTHORED shape at an authored
+            // place — a dome at (cx, cz), a road, a crater — is not expressible
+            // without them. Op::Input already existed for the surfaces() tape;
+            // this only opens two of its codes to FieldProgram, and eval_regs
+            // already has x and z in hand.
+            if (toks.size() < 2) { err = "input: missing name"; return false; }
+            if      (toks[1] == "wx") o.oct = kSurfInWorldX;
+            else if (toks[1] == "wz") o.oct = kSurfInWorldZ;
+            else {
+                err = "input: the field program accepts only 'wx' and 'wz', got '"
+                    + toks[1] + "'";
+                return false;
+            }
+            o.kind = Op::Input;
+        }
+        else if (op == "const") {
             o.kind = Op::Const;
             if (!require_float(1, o.f0)) return false;
         }
@@ -498,6 +523,10 @@ void FieldRuntime::eval_regs(float regs[], int count, float x, float z) const {
             regs[i] = std::pow(std::max(regs[o.a], 0.0f), o.f0);
             break;
         case Op::Input:
+            // FieldProgram::parse admits only wx and wz here, so the else IS
+            // wz and there is no unreachable third case to guard.
+            regs[i] = (o.oct == kSurfInWorldX) ? x : z;
+            break;
         case Op::Noise2World:
         case Op::Ridge2World:
         case Op::FieldCurv:
