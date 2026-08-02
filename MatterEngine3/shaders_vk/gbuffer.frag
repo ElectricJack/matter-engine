@@ -116,6 +116,14 @@ void main() {
     // values are identical, and there is now exactly one place they come from.
     vec3 dPdx = dFdx(in_world_pos);
     vec3 dPdy = dFdy(in_world_pos);
+    // Warp field (VT Phase 2 spike): screen derivatives of the warped ground
+    // coordinate, hoisted to quad-uniform scope for the same reason as
+    // dPdx/dPdy above. They are the correct mip footprint for warp-addressed
+    // height fetches; the march's spatial frame comes from the vertex
+    // attributes instead (view-independent, well-conditioned at grazing
+    // angles where derivative reconstruction is not — §4.1).
+    vec2 dUVdx = dFdx(in_warp_uv_scales.xy);
+    vec2 dUVdy = dFdy(in_warp_uv_scales.xy);
 
     // WP-E near-band handoff state. `detail_albedo` / `detail_orm` keep the
     // live Wang detail sample BEFORE vertex tint (the mean-preserving ratio
@@ -210,6 +218,34 @@ void main() {
             vec3 plane_n = normalize(in_normal);
             vec3 ray_dir = normalize(in_world_pos - camera_eye);
 
+            // Warp field (VT Phase 2 spike): the march's frozen affine frame.
+            // With a valid warp (terrain sectors; su > 0) the height field is
+            // addressed by the warped ground coordinate — triangle space, any
+            // surface angle. Without one (props, chartless parts,
+            // MATTER_VT_WARP=0 via vt_near.z) the IDENTITY frame reproduces
+            // the shipped world-XZ addressing through the same code path.
+            vec2 march_uv0 = in_world_pos.xz;
+            vec3 march_gu = vec3(1.0, 0.0, 0.0);
+            vec3 march_gv = vec3(0.0, 0.0, 1.0);
+            vec2 march_duvdx = dWdx;
+            vec2 march_duvdy = dWdy;
+            float warp_su = in_warp_uv_scales.z;
+            if (warp_su > 0.0 && tileset.vt_near.z > 0.5) {
+                // Re-orthogonalize the interpolated tangent against the
+                // interpolated normal; B = N x T closes the frame.
+                vec3 t_raw =
+                    in_warp_tangent - plane_n * dot(plane_n, in_warp_tangent);
+                float t_len = length(t_raw);
+                if (t_len > 1e-5) {
+                    vec3 T = t_raw / t_len;
+                    march_uv0 = in_warp_uv_scales.xy;
+                    march_gu = T * warp_su;
+                    march_gv = cross(plane_n, T) * in_warp_uv_scales.w;
+                    march_duvdx = dUVdx;
+                    march_duvdy = dUVdy;
+                }
+            }
+
             // Distance optimization (Task 10 Step 4): fade the linear step
             // count down from the full tileset.pom_a.x near the camera to
             // ~8 steps at pom_max_distance; beyond max_distance + fade_band
@@ -222,8 +258,9 @@ void main() {
 
             vec3 marched_pos =
                 tileset_pom_march(tileset_slot, camera_eye, ray_dir,
-                                  in_world_pos, plane_n, dWdx, dWdy,
-                                  march_steps);
+                                  in_world_pos, plane_n, march_uv0,
+                                  march_gu, march_gv,
+                                  march_duvdx, march_duvdy, march_steps);
 
             vec3 mdPdx = dFdx(marched_pos);
             vec3 mdPdy = dFdy(marched_pos);
@@ -283,22 +320,19 @@ void main() {
             // fragment must not write a stale marched depth.
             float fade = 1.0 - clamp((dist - (pom_max_distance - pom_fade_band)) /
                                      pom_fade_band, 0.0, 1.0);
-            // SLOPE fade, multiplied into the same blend. POM is inherently a
-            // top-down construct -- tileset_pom_march steps in world XZ
-            // against a height decode baked from a straight-down ortho ray --
-            // so it does not generalise to a vertical face and is not made
-            // triplanar. Instead it is weighted out by the top-down triplanar
-            // weight, leaving a cliff with triplanar albedo/normal/ORM and no
-            // parallax. The same fade retires the baked horizon channels on
-            // steep ground (they are elevation in a top-down frame, the same
-            // family of assumption): with fade -> 0 the ao blend below lands
-            // on flat_ao, which carries no horizon term.
-            // Thresholds rather than raw slope_w_y: full parallax is kept
-            // until roughly 30 degrees off horizontal and gone by roughly 60,
-            // so the flat ground this effect was tuned for is untouched while
-            // the projection never contributes at an angle where its own
-            // footprint has stretched far.
-            fade *= smoothstep(0.2, 0.7, slope_w_y);
+            // The SLOPE fade that used to multiply into this blend is
+            // DELETED (VT Phase 2 spike). It existed because the march
+            // stepped in world XZ against a top-down height decode, which
+            // does not generalise to a vertical face; with the march
+            // addressed by the warped ground field the projection is the
+            // surface's own frame at any angle, so there is no angle at
+            // which the effect must switch off (§1: "no slope fade, no
+            // angle where the effect switches off"). Note the horizon-map
+            // term above no longer rides a slope fade either — it is
+            // top-down data and the spec keeps a slope weight for it in the
+            // full march phase ("the fade split", §11 row 6); under the
+            // spike it applies wherever the sun test passes, which review
+            // should watch on cliffs.
             detail_albedo = mix(flat_albedo, marched_albedo, fade);
             detail_orm = mix(flat_orm, marched_orm, fade);
             // The horizon term rides the same fade as everything else it was

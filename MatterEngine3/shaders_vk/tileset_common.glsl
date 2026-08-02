@@ -435,7 +435,12 @@ int tileset_macro_slot(uvec4 flags_misc)  { return int((flags_misc.y >> 8) & 0xF
 // canyons. Parallax needs ~10 cm to sell relief; deeper detail is real
 // geometry's job. `relief` = min(h_range, tileset.pom_b.z), passed in so
 // call sites share one clamp.
-float tileset_relief_h(int slot, float h_range, float relief, vec2 xz,
+// Warp field (VT Phase 2 spike): the lookup coordinate is now a GENERAL
+// ground coordinate `uv` — the warped ground field where the caller has one
+// (terrain sectors), or world XZ where it does not (the identity frame
+// reproduces the shipped addressing exactly). This is tileset_relief_h's
+// only change under the spike: its lookup (spec §5.1 term 1).
+float tileset_relief_h(int slot, float h_range, float relief, vec2 uv,
                        vec2 dWdx, vec2 dWdy) {
     // Absolute baked height: texel 0 -> height_min, texel 1 -> height_max,
     // in TILE-DATUM coordinates (the bake's y = 0, where the authored dirt
@@ -457,19 +462,34 @@ float tileset_relief_h(int slot, float h_range, float relief, vec2 xz,
     // to stand proud of the now-recessed floor. relief still bounds the
     // total depth this can carve.
     float raw = TILESET_SLOT_SCALAR(height_min, slot) +
-                tileset_sample(slot, TILESET_CH_HEIGHT, xz, dWdx, dWdy).r *
+                tileset_sample(slot, TILESET_CH_HEIGHT, uv, dWdx, dWdy).r *
                     h_range -
                 tileset.pom_c.x;
     return clamp(raw, -relief, 0.0);
 }
 
+// Warp field (VT Phase 2 spike): the march happens in TRIANGLE SPACE. The
+// ray still steps in world coordinates along ray_dir with ray_h measured
+// against the fragment's plane exactly as before (grazing clamp and
+// max_march_m cap unchanged), but the height-field lookup coordinate is now
+//   uv(p) = uv0 + (grad_u . (p - plane_point), grad_v . (p - plane_point))
+// — the per-fragment FROZEN affine map of the warped ground field (§4.1).
+// The world-XZ addressing that shipped is the IDENTITY frame of the same
+// code path: uv0 = plane_point.xz, grad_u = (1,0,0), grad_v = (0,0,1)
+// reproduces p.xz (to fp associativity), so chartless parts and
+// MATTER_VT_WARP=0 march exactly as before. With a real warp frame the
+// field is sampled at any surface angle — a vertical cliff parallaxes the
+// same way flat ground does, displacement along the fragment's own normal.
 vec3 tileset_pom_march(int slot, vec3 ray_origin, vec3 ray_dir,
                        vec3 plane_point, vec3 plane_n,
+                       vec2 uv0, vec3 grad_u, vec3 grad_v,
                        vec2 dWdx, vec2 dWdy, int steps) {
     float h_range = TILESET_SLOT_SCALAR(height_max, slot) -
                     TILESET_SLOT_SCALAR(height_min, slot);
     if (h_range <= 0.0 || steps <= 0) return plane_point;
     float relief = min(h_range, max(tileset.pom_b.z, 1e-4));
+#define TILESET_MARCH_UV(p) \
+    (uv0 + vec2(dot(grad_u, (p) - plane_point), dot(grad_v, (p) - plane_point)))
 
     // Grazing clamp: never let the effective per-step travel distance blow
     // up as the view ray approaches tangent to the surface. On top of the
@@ -494,14 +514,15 @@ vec3 tileset_pom_march(int slot, vec3 ray_origin, vec3 ray_dir,
     // Sampling here (rather than assuming 0) keeps the entry-point-exactness
     // guarantee correct even when the fragment isn't exactly at the datum's
     // own footprint peak (sloped meshes, interpolated normals).
-    float entry_tex_h = tileset_relief_h(slot, h_range, relief, p.xz,
-                                         dWdx, dWdy);
+    float entry_tex_h = tileset_relief_h(slot, h_range, relief,
+                                         TILESET_MARCH_UV(p), dWdx, dWdy);
     float prev_diff = -entry_tex_h;
 
     for (int i = 0; i < steps; ++i) {
         p += step_v;
         float ray_h = dot(p - plane_point, plane_n);           // <= 0, descending
-        float tex_h = tileset_relief_h(slot, h_range, relief, p.xz,
+        float tex_h = tileset_relief_h(slot, h_range, relief,
+                                       TILESET_MARCH_UV(p),
                                        dWdx, dWdy);  // datum=0, capped
         float diff = ray_h - tex_h;                            // <0 => below relief
 
@@ -519,7 +540,8 @@ vec3 tileset_pom_march(int slot, vec3 ray_origin, vec3 ray_dir,
             for (int r = 0; r < refine_steps; ++r) {
                 float hit_ray_h = dot(hit - plane_point, plane_n);
                 float hit_tex_h = tileset_relief_h(slot, h_range, relief,
-                                                   hit.xz, dWdx, dWdy);
+                                                   TILESET_MARCH_UV(hit),
+                                                   dWdx, dWdy);
                 float hit_diff = hit_ray_h - hit_tex_h;
                 if (hit_diff < 0.0) { hi = hit; hi_diff = hit_diff; }
                 else                 { lo = hit; lo_diff = hit_diff; }
@@ -532,6 +554,7 @@ vec3 tileset_pom_march(int slot, vec3 ray_origin, vec3 ray_dir,
         prev_p = p;
     }
     return p;
+#undef TILESET_MARCH_UV
 }
 
 // ---------------------------------------------------------------------------
