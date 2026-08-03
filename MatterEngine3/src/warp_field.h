@@ -71,6 +71,36 @@ struct SolveOptions {
     // folded triangles' free vertices; accepted only while the fold count
     // strictly decreases).
     int fold_relax_passes = 20;
+
+    // Border-gradient (Neumann) strength: how hard the first free ring is
+    // asked to approach the border with the shared chain frame's gradient,
+    // as a ratio against the cotan weight with which the same pinned
+    // neighbour already contributes its uv VALUE. 0 disables it and restores
+    // the pre-2026-08-03 Dirichlet-only border.
+    //
+    // The pins alone make uv C0 across a border and leave the two sectors'
+    // interiors free to arrive with different gradients — a KINK in the brick
+    // courses, which no gate saw before gate_seam_smoothness(). This is the
+    // constraint that makes both sectors arrive with the same one. See
+    // build_chain_frame_rows()/build_border_gradient() in warp_field.cpp.
+    //
+    // 4.0 is a measured pick, not a guess. Swept on the committed fixtures
+    // (seam kink max / typical stretch p95, gate 1.60 / typical aniso p95,
+    // gate 2.00; fold counts on typical and extreme_wall did not move at ANY
+    // weight):
+    //     0    24.62 deg   1.34   1.49      (Dirichlet only)
+    //     1    17.29 deg   1.37   1.52
+    //     2    12.67 deg   1.38   1.55
+    //     4     7.58 deg   1.43   1.60      <- shipped
+    //     8     3.53 deg   1.47   1.62
+    //    16     2.18 deg   1.51   1.64
+    // Most of the distortion is paid by weight 4 and most of the seam is
+    // bought by it; past 8 the typical-stretch headroom (1.60 gate) gets thin
+    // enough that a rougher terrain than the fixture could cross it, and the
+    // target being an ASSUMPTION (conformality across the chain) is a reason
+    // not to trust it to the last decimal. Raise it with evidence, not by
+    // taste — gate_seam_smoothness() is the instrument.
+    float border_gradient_weight = 4.0f;
 };
 
 // Per-welded-vertex output. gu/gv are the rows of the 3D->uv Jacobian

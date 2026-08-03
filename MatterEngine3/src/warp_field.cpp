@@ -9,6 +9,12 @@
 //     so neighbouring sectors agree bitwise at their shared border — both the
 //     uv VALUE (compute_border_pins) and the uv DERIVATIVE, i.e. the per-vertex
 //     frame (apply_chain_frames), which a one-sided incident fan cannot see;
+//   * the same shared derivative fed BACK INTO the solve as a Neumann-style
+//     target on the first free ring (build_chain_frame_rows +
+//     build_border_gradient), so the two interiors approach the border with
+//     one common gradient. Pinning the value alone leaves uv C0 but not C1
+//     across a border, which reads as a KINK in the brick courses rather than
+//     a tear; gate_seam_smoothness() in the tests is what measures it;
 //   * clamped cotangent weights (positive => the harmonic init has the
 //     convex-combination structure that keeps folds rare);
 //   * a harmonic init from the anchored world-XZ guess;
@@ -137,6 +143,12 @@ struct PinSet {
     // border compute them identically — see apply_chain_frames().
     std::vector<float3> tangent;   // valid where pinned
     std::vector<float2> rate;      // valid where pinned
+    // The same chain frame as a pair of world-space Jacobian ROWS, built once
+    // before the solve so the solve itself can be told what gradient to
+    // approach the border with (see build_border_gradient()). Empty/0 where
+    // the chain was too degenerate to differentiate.
+    std::vector<uint8_t> frame_ok;
+    std::vector<float3> fgu, fgv;
 };
 
 void compute_border_pins(const SolveMesh& mesh, const SolveOptions& opts,
@@ -147,6 +159,9 @@ void compute_border_pins(const SolveMesh& mesh, const SolveOptions& opts,
     pins.uv.assign(nv, double2{});
     pins.tangent.assign(nv, float3{});
     pins.rate.assign(nv, float2{});
+    pins.frame_ok.assign(nv, 0);
+    pins.fgu.assign(nv, float3{});
+    pins.fgv.assign(nv, float3{});
 
     // Boundary edges: exactly one incident triangle.
     std::unordered_map<uint64_t, uint32_t> edge_count;
@@ -617,6 +632,75 @@ void compute_border_pins(const SolveMesh& mesh, const SolveOptions& opts,
 }
 
 // ---------------------------------------------------------------------------
+// The chain frame as Jacobian ROWS, built BEFORE the solve (§4.2, the C1 half
+// of the border rule).
+//
+// compute_border_pins() fixes the uv VALUE on the border. That makes the two
+// sectors' maps agree AT the border and says nothing about how they arrive:
+// each interior is an independent Dirichlet problem that sees only the pinned
+// values, so the last triangle on either side is free to carry its own uv
+// gradient. uv is then C0 but not C1 — the brick courses run through the
+// border at an angle to each other. Measured on the committed border pair
+// before this: the two sectors' one-sided vertex Jacobians disagreed by up to
+// 25.3 degrees, and the triangles that actually meet at the border kinked by
+// 23.8 deg (p95) / 24.6 deg (max) on ground whose surface dihedral there is
+// 0.0 deg — none of it geometry, all of it the map.
+//
+// The gradient the two sectors should share is the chain frame that
+// apply_chain_frames() already builds for the OUTPUT: along the chain it is
+// the exact derivative of the shared pinned trace (`rate`, `tangent`), and
+// across the chain it is completed by conformality because no sector can see
+// past its own border. Here that same frame is handed to the SOLVE as a
+// Neumann-style target (build_border_gradient), so both interiors bend toward
+// one common gradient instead of two private ones.
+//
+// The completion is an assumption, and a measurable one: it lands 6.8 deg from
+// the mean of the two one-sided estimates, not the 1e-3 the earlier note
+// claimed (that figure predates the corner pins, which moved every border
+// solve). But "shared and 6.8 deg off centre" is what closes a seam;
+// "unshared and 25 deg apart" is what opens one. Both interiors take the
+// correction symmetrically, and a symmetric error spread over a sector is the
+// smooth low-frequency kind §2.4 measures as invisible.
+//
+// N is the vertex's own geometric (area-weighted) normal rather than the
+// post-solve Jacobian one apply_chain_frames() uses, because the solve has not
+// run yet. It is signed by the field's own uv-orientation convention
+// (`orient`) rather than trusted from the winding, so a mesh wound the other
+// way cannot mirror the frame: on flat world-aligned ground this yields
+// grad_u = +X, grad_v = +Z either way.
+void build_chain_frame_rows(const SolveMesh& mesh, float orient, PinSet& pins) {
+    const size_t nv = mesh.vert_count();
+    const size_t nt = mesh.tri_count();
+    // Area-weighted vertex normals (index order; no hash iteration).
+    std::vector<float3> vn(nv, f3(0, 0, 0));
+    for (size_t t = 0; t < nt; ++t) {
+        const uint32_t* i = &mesh.indices[t * 3];
+        const float3 n = cross(mesh.positions[i[1]] - mesh.positions[i[0]],
+                               mesh.positions[i[2]] - mesh.positions[i[0]]);
+        for (int c = 0; c < 3; ++c) vn[i[c]] = vn[i[c]] + n;
+    }
+    for (size_t v = 0; v < nv; ++v) {
+        if (!pins.pinned[v]) continue;
+        const float3 e_raw = pins.tangent[v];
+        const float2 w = pins.rate[v];
+        if (dot(e_raw, e_raw) < 0.5f) continue;         // no chain direction
+        if (w.x * w.x + w.y * w.y < 1e-12f) continue;   // zero-rate pin
+        float3 nrm = vn[v] * -orient;
+        const float nl = std::sqrt(dot(nrm, nrm));
+        if (!(nl > 1e-12f)) continue;
+        nrm = nrm * (1.0f / nl);
+        float3 e = e_raw - nrm * dot(nrm, e_raw);
+        const float el = std::sqrt(dot(e, e));
+        if (!(el > 1e-6f)) continue;  // chain runs along the normal
+        e = e * (1.0f / el);
+        const float3 f = cross(nrm, e);
+        pins.fgu[v] = e * w.x + f * w.y;
+        pins.fgv[v] = e * w.y - f * w.x;
+        pins.frame_ok[v] = 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ARAP machinery.
 // ---------------------------------------------------------------------------
 struct TriRef {
@@ -726,23 +810,73 @@ void build_laplacian(const SolveMesh& mesh, const std::vector<TriRef>& refs,
     L.offsets = std::move(new_offsets);
 }
 
+// Border-gradient (Neumann) target, the solve-time half of the chain frame.
+//
+// For every FREE vertex w adjacent to a pinned border vertex v that carries a
+// chain frame, add the least-squares term
+//     lambda * | uv[w] - ( uv_pin[v] + J_v . (p_w - p_v) ) |^2
+// which in the normal equations is a diagonal bump and an rhs contribution.
+// J_v = [fgu; fgv] has N in its null space by construction, so the target
+// uses only the in-surface part of the edge — no projection needed.
+//
+// lambda is `strength * L.w[k]`, the SAME cotan weight with which that pinned
+// neighbour already contributes its uv VALUE to w's stencil. So strength is a
+// pure ratio: at 1.0 the pinned neighbour says "be at my value" and "be at my
+// value plus my gradient step" with equal authority. Scale-free, so it does
+// not need retuning per voxel size, and bounded by diag[w] so it cannot
+// dominate the Laplacian.
+//
+// This is not an apron: it does not measure the neighbour, it constrains both
+// sectors to the one gradient they can both derive from data they share. The
+// arrays are built in vertex index order over the CSR rows, so the result is
+// a byte-identical function of the sector's own mesh, exactly as before.
+void build_border_gradient(const SolveMesh& mesh, const PinSet& pins,
+                           const Csr& L, float strength,
+                           std::vector<float>& nd, std::vector<float2>& nb) {
+    const size_t nv = mesh.vert_count();
+    nd.assign(nv, 0.0f);
+    nb.assign(nv, make_float2(0.0f, 0.0f));
+    if (!(strength > 0.0f)) return;
+    for (size_t w = 0; w < nv; ++w) {
+        if (pins.pinned[w]) continue;
+        for (uint32_t k = L.offsets[w]; k < L.offsets[w + 1]; ++k) {
+            const uint32_t j = L.nbr[k];
+            if (!pins.pinned[j] || !pins.frame_ok[j]) continue;
+            const float lam = strength * L.w[k];
+            if (!(lam > 0.0f)) continue;
+            const float3 d = mesh.positions[w] - mesh.positions[j];
+            const float tx = float(pins.uv[j].x) + dot(pins.fgu[j], d);
+            const float ty = float(pins.uv[j].y) + dot(pins.fgv[j], d);
+            nd[w] += lam;
+            nb[w] = make_float2(nb[w].x + lam * tx, nb[w].y + lam * ty);
+        }
+    }
+}
+
 // Jacobi-preconditioned CG on the pinned Laplacian system, both uv
 // components at once. Solves L x = b over free vertices with x fixed at pins.
 // b_extra is the ARAP rotation rhs (empty => harmonic solve, rhs 0).
+// nd/nb are the border-gradient normal-equation terms (empty => none).
 void cg_solve(const Csr& L, const PinSet& pins,
-              const std::vector<float2>& b_extra, int max_iters, float tol,
+              const std::vector<float2>& b_extra, const std::vector<float>& nd,
+              const std::vector<float2>& nb, int max_iters, float tol,
               std::vector<float2>& x) {
     const size_t nv = L.diag.size();
+    auto dg = [&](size_t v) {
+        return nd.empty() ? L.diag[v] : L.diag[v] + nd[v];
+    };
     auto apply = [&](const std::vector<float2>& in, std::vector<float2>& out) {
-        // out = A * in over free verts (A = L with pinned columns dropped;
-        // pinned rows identity, handled by skipping them).
+        // out = A * in over free verts (A = L with pinned columns dropped,
+        // plus the border-gradient diagonal; pinned rows identity, handled by
+        // skipping them).
         for (size_t v = 0; v < nv; ++v) {
             if (pins.pinned[v]) {
                 out[v] = make_float2(0.0f, 0.0f);
                 continue;
             }
-            float ox = L.diag[v] * in[v].x;
-            float oy = L.diag[v] * in[v].y;
+            const float d = dg(v);
+            float ox = d * in[v].x;
+            float oy = d * in[v].y;
             for (uint32_t k = L.offsets[v]; k < L.offsets[v + 1]; ++k) {
                 const uint32_t j = L.nbr[k];
                 if (pins.pinned[j]) continue;
@@ -764,6 +898,10 @@ void cg_solve(const Csr& L, const PinSet& pins,
             bx += L.w[k] * float(pins.uv[j].x);
             by += L.w[k] * float(pins.uv[j].y);
         }
+        if (!nb.empty()) {
+            bx += nb[v].x;
+            by += nb[v].y;
+        }
         b[v] = make_float2(bx, by);
     }
     // Pin values into x (exact).
@@ -778,7 +916,8 @@ void cg_solve(const Csr& L, const PinSet& pins,
                               : make_float2(b[v].x - Ap[v].x, b[v].y - Ap[v].y);
     auto precond = [&](const std::vector<float2>& in, std::vector<float2>& out) {
         for (size_t v = 0; v < nv; ++v) {
-            const float d = L.diag[v] > 1e-12f ? 1.0f / L.diag[v] : 0.0f;
+            const float dv = dg(v);
+            const float d = dv > 1e-12f ? 1.0f / dv : 0.0f;
             out[v] = make_float2(in[v].x * d, in[v].y * d);
         }
     };
@@ -1196,7 +1335,17 @@ bool solve(const Tri* tris, size_t tri_count, const uint8_t* skirt_mask,
     Csr L;
     build_laplacian(mesh, refs, L);
 
-    cg_solve(L, pins, {}, opts.init_cg_iterations, opts.cg_tolerance, uv);
+    // Border-gradient targets: the C1 half of the border rule, handed to the
+    // solve rather than only to the output frame. See build_chain_frame_rows()
+    // for why the across-chain direction is the assumed part, and
+    // build_border_gradient() for how it is weighted.
+    build_chain_frame_rows(mesh, orient, pins);
+    std::vector<float> nd;
+    std::vector<float2> nb;
+    build_border_gradient(mesh, pins, L, opts.border_gradient_weight, nd, nb);
+
+    cg_solve(L, pins, {}, nd, nb, opts.init_cg_iterations, opts.cg_tolerance,
+             uv);
 
     // Local/global ARAP.
     std::vector<float2> rhs(nv);
@@ -1248,7 +1397,8 @@ bool solve(const Tri* tris, size_t tri_count, const uint8_t* skirt_mask,
                 rhs[idx[j]].y -= w * ry;
             }
         }
-        cg_solve(L, pins, rhs, opts.cg_iterations, opts.cg_tolerance, uv);
+        cg_solve(L, pins, rhs, nd, nb, opts.cg_iterations, opts.cg_tolerance,
+                 uv);
     }
 
     // Fold-relax: bounded local Tutte relaxation of folded triangles' free

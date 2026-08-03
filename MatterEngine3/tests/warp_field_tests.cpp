@@ -657,6 +657,395 @@ static void gate_frame_pair() {
     CHECK(n > 0 && max_dgv <= 0.02, msg);
 }
 
+// ---------------------------------------------------------------------------
+// Seam smoothness: the C1 half of a border join.
+//
+// gate_border_pair() proves the uv VALUE agrees across a border bitwise, and
+// gate_frame_pair() proves the stored per-vertex FRAME agrees. Neither sees
+// the quantity the eye actually reads off a brick lattice.
+//
+// The shader addresses ground content at `march_uv0 = in_warp_uv_scales.xy`
+// (gbuffer.frag), which is the rasteriser's barycentric interpolation of the
+// per-vertex uv — so inside a triangle the course direction is set by THAT
+// TRIANGLE's Jacobian, not by the stored frame (the frame only steers the POM
+// march offset off that base). Two triangles meeting at a sector border share
+// their two border vertices, hence agree on d(uv) ALONG the border exactly,
+// and are free to disagree ACROSS it: each sector's interior solve is an
+// independent Dirichlet problem that only sees the pinned VALUES. The result
+// is C0 but not C1 — courses run through the border at a slight angle to each
+// other. A kink, not a tear, and invisible to every gate that existed before.
+//
+// Measured here as: for each border edge shared by the committed pair, take
+// the two incident triangles (one per sector), parallel-transport sector B's
+// Jacobian rows into sector A's triangle plane by the minimal rotation
+// carrying n_B onto n_A — so a genuine crease in the SURFACE is not charged to
+// the map — and report the angle between grad-u and between grad-v. The same
+// statistic over interior manifold edges is the baseline: whatever a sector's
+// own triangles do to each other is the smoothness the border should match.
+// ---------------------------------------------------------------------------
+namespace seam {
+
+struct WKey {
+    float x, y, z;
+    bool operator<(const WKey& o) const {
+        if (x != o.x) return x < o.x;
+        if (y != o.y) return y < o.y;
+        return z < o.z;
+    }
+};
+
+struct TriFrame {
+    float3 gu{}, gv{}, n{};
+    float3 centroid{};
+    bool ok = false;
+};
+
+static inline float3 sub3(const float3& a, const float3& b) {
+    return make_float3(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+static inline float dot3(const float3& a, const float3& b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+static inline float3 cross3(const float3& a, const float3& b) {
+    return make_float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z,
+                       a.x * b.y - a.y * b.x);
+}
+static inline float len3(const float3& a) { return std::sqrt(dot3(a, a)); }
+static inline float3 scale3(const float3& a, float s) {
+    return make_float3(a.x * s, a.y * s, a.z * s);
+}
+
+// Forward Jacobian rows (world -> uv) of one triangle; same closed form as
+// warp_field.cpp's tri_jacobian.
+static TriFrame tri_frame(const float3& p0, const float3& p1, const float3& p2,
+                          const float2& uv0, const float2& uv1,
+                          const float2& uv2) {
+    TriFrame f;
+    const float3 e1 = sub3(p1, p0), e2 = sub3(p2, p0);
+    const float3 n = cross3(e1, e2);
+    const float n2 = dot3(n, n);
+    if (!(n2 > 1e-20f)) return f;
+    const float3 c2 = cross3(e2, n), c1 = cross3(e1, n);
+    const float inv = 1.0f / n2;
+    f.gu = scale3(sub3(scale3(c2, uv1.x - uv0.x), scale3(c1, uv2.x - uv0.x)),
+                  inv);
+    f.gv = scale3(sub3(scale3(c2, uv1.y - uv0.y), scale3(c1, uv2.y - uv0.y)),
+                  inv);
+    f.n = scale3(n, 1.0f / std::sqrt(n2));
+    f.centroid = make_float3((p0.x + p1.x + p2.x) / 3.0f,
+                             (p0.y + p1.y + p2.y) / 3.0f,
+                             (p0.z + p1.z + p2.z) / 3.0f);
+    f.ok = true;
+    return f;
+}
+
+// Rodrigues rotation of v by the minimal rotation carrying `from` onto `to`
+// (both unit). Antiparallel inputs are rejected by the caller.
+static float3 transport(const float3& v, const float3& from, const float3& to) {
+    const float3 axis = cross3(from, to);
+    const float s = len3(axis);
+    const float c = dot3(from, to);
+    if (s < 1e-7f) return v;  // already aligned
+    const float3 k = scale3(axis, 1.0f / s);
+    const float3 kxv = cross3(k, v);
+    const float kv = dot3(k, v);
+    return make_float3(v.x * c + kxv.x * s + k.x * kv * (1.0f - c),
+                       v.y * c + kxv.y * s + k.y * kv * (1.0f - c),
+                       v.z * c + kxv.z * s + k.z * kv * (1.0f - c));
+}
+
+static double angle_deg(const float3& a, const float3& b) {
+    const float la = len3(a), lb = len3(b);
+    if (!(la > 1e-9f) || !(lb > 1e-9f)) return 0.0;
+    double c = double(dot3(a, b)) / (double(la) * double(lb));
+    c = std::max(-1.0, std::min(1.0, c));
+    return std::acos(c) * 57.29577951308232;
+}
+
+// One measured join between two triangles.
+struct Join {
+    double kink = 0.0;      // max(angle(grad-u), angle(grad-v)) after transport
+    double dj = 0.0;        // |J1 - J2|_F after transport
+    double dihedral = 0.0;  // surface crease at the edge, for context
+};
+
+static Join measure_join(const TriFrame& a, const TriFrame& b) {
+    Join j;
+    const float3 gu2 = transport(b.gu, b.n, a.n);
+    const float3 gv2 = transport(b.gv, b.n, a.n);
+    j.kink = std::max(angle_deg(a.gu, gu2), angle_deg(a.gv, gv2));
+    const float3 du = sub3(a.gu, gu2), dv = sub3(a.gv, gv2);
+    j.dj = std::sqrt(double(dot3(du, du)) + double(dot3(dv, dv)));
+    j.dihedral = angle_deg(a.n, b.n);
+    return j;
+}
+
+static double pct(std::vector<double> v, double p) {
+    if (v.empty()) return 0.0;
+    std::sort(v.begin(), v.end());
+    size_t i = size_t(p * double(v.size() - 1) + 0.5);
+    return v[std::min(i, v.size() - 1)];
+}
+
+struct Summary {
+    size_t n = 0;
+    double p50 = 0, p95 = 0, max = 0, mean = 0;
+};
+
+static Summary summarize(const std::vector<double>& v) {
+    Summary s;
+    s.n = v.size();
+    if (v.empty()) return s;
+    s.p50 = pct(v, 0.50);
+    s.p95 = pct(v, 0.95);
+    for (double x : v) {
+        s.max = std::max(s.max, x);
+        s.mean += x;
+    }
+    s.mean /= double(v.size());
+    return s;
+}
+
+// World-space view of one solved sector, with a shared vertex numbering so
+// edges from the two sectors can be compared by key.
+struct SectorView {
+    std::vector<float3> pos;   // world
+    std::vector<float2> uv;
+    std::vector<uint32_t> idx;
+    std::vector<uint32_t> gid;  // per local vertex -> global id
+    std::vector<TriFrame> tf;
+};
+
+static void build_view(const warp_field::Field& f, double ax, double az,
+                       std::map<WKey, uint32_t>& gids, SectorView& v) {
+    v.pos.resize(f.positions.size());
+    v.uv.resize(f.verts.size());
+    v.gid.resize(f.positions.size());
+    for (size_t i = 0; i < f.positions.size(); ++i) {
+        const float3& l = f.positions[i];
+        v.pos[i] = make_float3(float(ax + double(l.x)), l.y,
+                               float(az + double(l.z)));
+        v.uv[i] = f.verts[i].uv;
+        const WKey k{v.pos[i].x, v.pos[i].y, v.pos[i].z};
+        auto it = gids.find(k);
+        if (it == gids.end())
+            it = gids.emplace(k, uint32_t(gids.size())).first;
+        v.gid[i] = it->second;
+    }
+    v.idx = f.indices;
+    const size_t nt = v.idx.size() / 3;
+    v.tf.resize(nt);
+    for (size_t t = 0; t < nt; ++t) {
+        const uint32_t* i = &v.idx[t * 3];
+        v.tf[t] = tri_frame(v.pos[i[0]], v.pos[i[1]], v.pos[i[2]], v.uv[i[0]],
+                            v.uv[i[1]], v.uv[i[2]]);
+    }
+}
+
+static inline uint64_t gkey(uint32_t a, uint32_t b) {
+    if (a > b) std::swap(a, b);
+    return (uint64_t(a) << 32) | uint64_t(b);
+}
+
+// Per-vertex area-weighted average of the incident triangles' Jacobian rows —
+// exactly what solve() computes before apply_chain_frames() overwrites the
+// border ring, so this recovers the ONE-SIDED estimate each sector would have
+// shipped on its own.
+static void one_sided_frames(const SectorView& v, std::vector<float3>& gu,
+                             std::vector<float3>& gv) {
+    gu.assign(v.pos.size(), make_float3(0, 0, 0));
+    gv.assign(v.pos.size(), make_float3(0, 0, 0));
+    std::vector<float> wsum(v.pos.size(), 0.0f);
+    const size_t nt = v.idx.size() / 3;
+    for (size_t t = 0; t < nt; ++t) {
+        if (!v.tf[t].ok) continue;
+        const uint32_t* i = &v.idx[t * 3];
+        const float3 e1 = sub3(v.pos[i[1]], v.pos[i[0]]);
+        const float3 e2 = sub3(v.pos[i[2]], v.pos[i[0]]);
+        const float w = 0.5f * len3(cross3(e1, e2));
+        for (int c = 0; c < 3; ++c) {
+            gu[i[c]] = make_float3(gu[i[c]].x + v.tf[t].gu.x * w,
+                                   gu[i[c]].y + v.tf[t].gu.y * w,
+                                   gu[i[c]].z + v.tf[t].gu.z * w);
+            gv[i[c]] = make_float3(gv[i[c]].x + v.tf[t].gv.x * w,
+                                   gv[i[c]].y + v.tf[t].gv.y * w,
+                                   gv[i[c]].z + v.tf[t].gv.z * w);
+            wsum[i[c]] += w;
+        }
+    }
+    for (size_t i = 0; i < v.pos.size(); ++i) {
+        if (wsum[i] > 1e-12f) {
+            gu[i] = scale3(gu[i], 1.0f / wsum[i]);
+            gv[i] = scale3(gv[i], 1.0f / wsum[i]);
+        }
+    }
+}
+
+}  // namespace seam
+
+// Gate: the uv-gradient join across a real sector border, against the same
+// statistic inside the sectors. `kink_p95_gate` / `kink_max_gate` are degrees.
+static void gate_seam_smoothness(double kink_p95_gate, double kink_max_gate) {
+    using namespace seam;
+    Fixture a, b;
+    if (!load_wfx(fixture_dir() + "/border_a.wfx", a) ||
+        !load_wfx(fixture_dir() + "/border_b.wfx", b)) {
+        CHECK(false, "seam smoothness: border pair fixtures load");
+        return;
+    }
+    warp_field::SolveOptions oa, ob;
+    oa.anchor_x = a.anchor_x; oa.anchor_z = a.anchor_z;
+    oa.sector_size = a.sector_size; oa.voxel = a.voxel;
+    ob.anchor_x = b.anchor_x; ob.anchor_z = b.anchor_z;
+    ob.sector_size = b.sector_size; ob.voxel = b.voxel;
+    warp_field::Field fa, fb;
+    if (!warp_field::solve(a.tris.data(), a.tris.size(), a.skirt.data(), oa,
+                           fa) ||
+        !warp_field::solve(b.tris.data(), b.tris.size(), b.skirt.data(), ob,
+                           fb)) {
+        CHECK(false, "seam smoothness: both sectors solve");
+        return;
+    }
+
+    std::map<WKey, uint32_t> gids;
+    SectorView va, vb;
+    build_view(fa, oa.anchor_x, oa.anchor_z, gids, va);
+    build_view(fb, ob.anchor_x, ob.anchor_z, gids, vb);
+
+    // Edge -> incident triangles, per sector, in the shared numbering.
+    auto edge_map = [](const SectorView& v) {
+        std::map<uint64_t, std::vector<uint32_t>> m;
+        const size_t nt = v.idx.size() / 3;
+        for (size_t t = 0; t < nt; ++t) {
+            const uint32_t* i = &v.idx[t * 3];
+            for (int e = 0; e < 3; ++e)
+                m[gkey(v.gid[i[e]], v.gid[i[(e + 1) % 3]])].push_back(
+                    uint32_t(t));
+        }
+        return m;
+    };
+    const auto ea = edge_map(va), eb = edge_map(vb);
+
+    // Seam joins: an edge that is a BOUNDARY edge of A and of B alike, i.e.
+    // the two sectors' meshes butt against each other there.
+    std::vector<double> seam_kink, seam_dj, seam_dihedral;
+    size_t flipped = 0;
+    for (const auto& [k, ta] : ea) {
+        if (ta.size() != 1) continue;
+        auto it = eb.find(k);
+        if (it == eb.end() || it->second.size() != 1) continue;
+        const TriFrame& fa_t = va.tf[ta[0]];
+        const TriFrame& fb_t = vb.tf[it->second[0]];
+        if (!fa_t.ok || !fb_t.ok) continue;
+        if (dot3(fa_t.n, fb_t.n) <= 0.0f) {  // opposed winding: not a join
+            ++flipped;
+            continue;
+        }
+        const Join j = measure_join(fa_t, fb_t);
+        seam_kink.push_back(j.kink);
+        seam_dj.push_back(j.dj);
+        seam_dihedral.push_back(j.dihedral);
+    }
+
+    // Interior baseline over BOTH sectors, and the near-border subset (both
+    // triangles within 4 m of the shared border plane) as the like-for-like
+    // comparison — same terrain, same triangle sizes, same solver, no border.
+    std::vector<double> in_kink, near_kink;
+    double border_coord = 0.0;
+    int border_axis = 0;  // 0 = x, 2 = z
+    {
+        // The pair is cut so B sits at +x or +z of A; the shared plane is at
+        // A's far edge in whichever axis the anchors differ.
+        if (std::fabs(ob.anchor_x - oa.anchor_x) > 1e-9) {
+            border_axis = 0;
+            border_coord = oa.anchor_x + double(a.sector_size);
+        } else {
+            border_axis = 2;
+            border_coord = oa.anchor_z + double(a.sector_size);
+        }
+    }
+    auto interior_scan = [&](const SectorView& v,
+                             const std::map<uint64_t, std::vector<uint32_t>>& m) {
+        for (const auto& [k, ts] : m) {
+            if (ts.size() != 2) continue;
+            const TriFrame& t0 = v.tf[ts[0]];
+            const TriFrame& t1 = v.tf[ts[1]];
+            if (!t0.ok || !t1.ok) continue;
+            if (dot3(t0.n, t1.n) <= 0.0f) continue;
+            const double kink = measure_join(t0, t1).kink;
+            in_kink.push_back(kink);
+            const double c0 = border_axis == 0 ? t0.centroid.x : t0.centroid.z;
+            const double c1 = border_axis == 0 ? t1.centroid.x : t1.centroid.z;
+            if (std::fabs(c0 - border_coord) < 4.0 &&
+                std::fabs(c1 - border_coord) < 4.0)
+                near_kink.push_back(kink);
+        }
+    };
+    interior_scan(va, ea);
+    interior_scan(vb, eb);
+
+    const Summary sk = summarize(seam_kink);
+    const Summary sd = summarize(seam_dj);
+    const Summary sh = summarize(seam_dihedral);
+    const Summary ik = summarize(in_kink);
+    const Summary nk = summarize(near_kink);
+    std::printf("[seam] joins=%zu (skipped %zu opposed)  kink deg "
+                "p50/p95/max %.2f/%.2f/%.2f  dJ p50/p95/max %.3f/%.3f/%.3f  "
+                "surface dihedral p95/max %.1f/%.1f\n",
+                sk.n, flipped, sk.p50, sk.p95, sk.max, sd.p50, sd.p95, sd.max,
+                sh.p95, sh.max);
+    std::printf("[seam] interior baseline: all edges n=%zu kink p50/p95/max "
+                "%.2f/%.2f/%.2f | within 4 m of the border n=%zu "
+                "%.2f/%.2f/%.2f\n",
+                ik.n, ik.p50, ik.p95, ik.max, nk.n, nk.p50, nk.p95, nk.max);
+
+    // Where does the frame's conformal completion actually land? The
+    // apply_chain_frames() note claims it sits at the MEAN of the two
+    // one-sided estimates; this measures that claim on real data, and
+    // measures how far apart the one-sided estimates were to begin with.
+    {
+        std::vector<float3> gua, gva, gub, gvb;
+        one_sided_frames(va, gua, gva);
+        one_sided_frames(vb, gub, gvb);
+        std::map<uint32_t, uint32_t> b_by_gid;
+        for (uint32_t i = 0; i < vb.gid.size(); ++i)
+            b_by_gid.emplace(vb.gid[i], i);
+        size_t n = 0;
+        double max_one_sided = 0, max_vs_mean = 0, max_vs_mean_ang = 0;
+        for (uint32_t i = 0; i < va.gid.size(); ++i) {
+            auto it = b_by_gid.find(va.gid[i]);
+            if (it == b_by_gid.end()) continue;
+            const uint32_t jb = it->second;
+            ++n;
+            max_one_sided =
+                std::max(max_one_sided, double(angle_deg(gua[i], gub[jb])));
+            const float3 mean_gu =
+                make_float3(0.5f * (gua[i].x + gub[jb].x),
+                            0.5f * (gua[i].y + gub[jb].y),
+                            0.5f * (gua[i].z + gub[jb].z));
+            const float3 chain = fa.verts[i].gu;  // post-overwrite = shared
+            max_vs_mean = std::max(max_vs_mean, double(len3(sub3(chain, mean_gu))));
+            max_vs_mean_ang =
+                std::max(max_vs_mean_ang, double(angle_deg(chain, mean_gu)));
+        }
+        std::printf("[seam] chain frame vs one-sided averages on %zu shared "
+                    "verts: one-sided disagreement max %.2f deg; chain vs "
+                    "their mean max |d| %.4g (%.2f deg)\n",
+                    n, max_one_sided, max_vs_mean, max_vs_mean_ang);
+    }
+
+    CHECK(sk.n >= 16, "seam smoothness: shared border joins found (>= 16)");
+    char msg[192];
+    std::snprintf(msg, sizeof msg,
+                  "seam smoothness: uv-gradient kink p95 %.2f deg <= %.2f",
+                  sk.p95, kink_p95_gate);
+    CHECK(sk.n > 0 && sk.p95 <= kink_p95_gate, msg);
+    std::snprintf(msg, sizeof msg,
+                  "seam smoothness: uv-gradient kink max %.2f deg <= %.2f",
+                  sk.max, kink_max_gate);
+    CHECK(sk.n > 0 && sk.max <= kink_max_gate, msg);
+}
+
 // --dump-uv <fixture.wfx> <out.png>: render the solved uv layout for eyes-on
 // debugging. uv-space triangles (gray = ok, red = folded), pins in blue.
 static int dump_uv(const char* fixture_path, const char* out_png) {
@@ -757,6 +1146,15 @@ int main(int argc, char** argv) {
     gate_fixture("extreme_wall", true, 2.5f, 3.0f, 0.3f, 1.0f);
     gate_border_pair();
     gate_frame_pair();
+    // Seam smoothness. Gates in DEGREES of uv-gradient kink across the
+    // committed pair's shared border. Reference points, all measured on this
+    // fixture with the surface dihedral there at 0.0 deg (so every degree is
+    // the map, not the geometry):
+    //   Dirichlet-only border (border_gradient_weight = 0): p95 23.81, max 24.62
+    //   shipped weight 4.0:                                 p95  7.11, max  7.58
+    // The gate sits at ~1.4x the shipped value and ~0.4x the pre-fix value, so
+    // it fails long before the border relapses to a value-only pin.
+    gate_seam_smoothness(10.0, 12.0);
 
     std::printf("warp_field_tests: %d failure(s)\n", g_failures);
     return g_failures == 0 ? 0 : 1;
