@@ -138,6 +138,14 @@ const auto s_volumetrics = matter::props::group<matter::VulkanVolumetricsSetting
     prop(&matter::VulkanVolumetricsSettings::temporal_blend, "temporal_blend")
         .label("Temporal blend").range(0.0f, 0.99f));
 
+// Ground-POM horizon diagnostic (TilesetPomSettings::horizon_debug). Order
+// matters: the shader switches on the index, and 2 is the REFERENCE the other
+// modes are read against.
+const char* const kHorizonDebugLabels[] = {
+    "Off", "Map (addressed frame)", "March (reference)",
+    "Map (rt_shadow world XZ)", "|Map - March|", "|RT form - March|",
+    "Map (world XZ, no lift)"};
+
 const auto s_pom = matter::props::group<matter::TilesetPomSettings>(
     "render.pom", "Ground POM",
     prop(&matter::TilesetPomSettings::enabled, "enabled").label("Enable"),
@@ -161,7 +169,15 @@ const auto s_pom = matter::props::group<matter::TilesetPomSettings>(
     prop(&matter::TilesetPomSettings::horizon_strength, "horizon_strength")
         .label("Horizon occlusion").range(0.0f, 1.0f)
         .doc("Blends the baked per-direction horizon occlusion toward 0. No "
-             "effect on slots loaded from a v1 .gtex."));
+             "effect on slots loaded from a v1 .gtex."),
+    prop(&matter::TilesetPomSettings::horizon_debug, "horizon_debug")
+        .label("Horizon debug").enums(kHorizonDebugLabels, 7).no_serialize()
+        .doc("Draws the horizon term over the parallaxed ground in place of "
+             "its albedo. Read it with Viewer Debug > Debug view > Raw "
+             "albedo; anything lit is unreadable as a field. The march is "
+             "the reference -- it steps the same height field the parallax "
+             "displaced along, so wherever it and the map disagree, the map "
+             "is misregistered."));
 
 // render.vt — the chart-VT near band (Phase 0 of the decal/ground-compositing
 // design). Two rows, and they exist because until now there were none: the
@@ -486,7 +502,19 @@ const auto s_overlay = matter::props::group<AnimationDebugOverlayOptions>(
 // Session: a debug visualization that survived a relaunch would be a bug report
 // waiting to happen, and the combos are right there in Viewer Debug.
 const char* const kResolverLabels[] = {"PassThrough", "SectorLod"};
-const char* const kDebugViewLabels[] = {"None", "Normals", "Depth"};
+// NOT composite.frag's mode numbering -- main.cpp remaps these indices onto
+// VulkanLightingOverrides::composite_debug_view (1 -> 2.0 normals, 2 -> 3.0
+// linear depth), so the shader's mode 1.0 (the RT sun-visibility image) had no
+// index here at all and could not be selected from either the combo or `set
+// viewer.debug.debug_view_mode`. It is index 3 now, and 4 is the raw GBuffer
+// albedo the horizon diagnostic (render.pom.horizon_debug) is read through.
+//
+// APPENDED, not reordered: shot descriptors and issue state.json record this
+// as a bare int (issue_reporter.cpp, shot_replay.cpp), so 0/1/2 have to keep
+// meaning what every capture on disk says they mean. Keep main.cpp's remap in
+// step with this array.
+const char* const kDebugViewLabels[] = {"None", "Normals", "Depth",
+                                        "Sun visibility", "Raw albedo"};
 const char* const kVolDebugLabels[] = {"Off", "Density", "Scatter",
                                        "Integrated"};
 
@@ -495,7 +523,7 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
     prop(&ViewerStats::resolver_choice, "resolver_choice")
         .label("Resolver").enums(kResolverLabels, 2),
     prop(&ViewerStats::debug_view_mode, "debug_view_mode")
-        .label("Debug view").enums(kDebugViewLabels, 3),
+        .label("Debug view").enums(kDebugViewLabels, 5),
     prop(&ViewerStats::vol_debug_view, "vol_debug_view")
         .label("Volumetric view").enums(kVolDebugLabels, 4)
         .doc("Only meaningful while volumetrics are enabled."));

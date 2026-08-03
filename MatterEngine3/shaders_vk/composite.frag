@@ -140,6 +140,21 @@ void main() {
     // Ahead of the sky early-out below, so the depth view covers the whole
     // frame (sky reads hw depth 0 -> camera_far -> t = 1) rather than being
     // punched through by sky_with_sun wherever the gbuffer normal is empty.
+    // debug_view 4.0: the GBuffer albedo, untouched by lighting. It exists for
+    // the shaders that write a diagnostic FIELD into albedo rather than a
+    // colour -- today gbuffer.frag's render.pom.horizon_debug, which draws the
+    // baked horizon term and the reference march as greyscale over the
+    // parallaxed ground. Anything lit is unreadable as a field: ambient scales
+    // it by sky_irradiance(normal), which sweeps across a curved surface, so a
+    // field that varied and a surface that curved would look the same.
+    //
+    // Ahead of the depth view for the same reason that one is ahead of the sky
+    // early-out: these are ordered highest-mode-first, and `> 2.5` would
+    // otherwise swallow mode 4.
+    if (lighting.debug_view > 3.5) {
+        out_hdr = vec4(texture(albedo_texture, in_uv).rgb, 1.0);
+        return;
+    }
     if (lighting.debug_view > 2.5) {
         out_hdr = vec4(encode_debug_depth(
             composite_linear_depth(texture(depth_texture, in_uv).r)), 1.0);

@@ -648,8 +648,20 @@ vec3 tileset_pom_march(int slot, vec3 ray_origin, vec3 ray_dir,
 // (tileset.sun_dir_intensity.y <= 0.0) or has no intensity
 // (tileset.sun_dir_intensity.w <= 0.0); to_sun_dir is expected pre-normalized
 // (tileset.sun_dir_intensity.xyz, already unit length from the CPU side).
+//
+// ON THE WARP FRAME, like the primary march. This used to look the height
+// field up at `p.xz`, which was correct only while tileset_pom_march was also
+// world-XZ addressed; since the Phase 2 spike carved relief at
+// tileset_warp_uv(uv0, grad_u, grad_v, ...) a world-XZ shadow march samples a
+// DIFFERENT field from the one it is shadowing, on any surface the warp
+// re-parameterises. The uv0/grad_u/grad_v triple is the same frozen affine map
+// the primary march took, passed through unchanged, so the two agree by
+// construction: this marches the very field POM displaced along, which is what
+// makes it usable as the reference the baked horizon map is checked against
+// (render.pom.horizon_debug in gbuffer.frag).
 float tileset_self_shadow(int slot, vec3 hit_point, vec3 plane_point,
                           vec3 plane_n, vec3 to_sun_dir,
+                          vec2 uv0, vec3 grad_u, vec3 grad_v,
                           vec2 dWdx, vec2 dWdy) {
     float h_range = TILESET_SLOT_SCALAR(height_max, slot) -
                     TILESET_SLOT_SCALAR(height_min, slot);
@@ -679,7 +691,9 @@ float tileset_self_shadow(int slot, vec3 hit_point, vec3 plane_point,
     for (int i = 0; i < kShadowSteps; ++i) {
         p += step_v;
         float ray_h = dot(p - plane_point, plane_n);
-        float tex_h = tileset_relief_h(slot, h_range, relief, p.xz,
+        float tex_h = tileset_relief_h(slot, h_range, relief,
+                                       tileset_warp_uv(uv0, grad_u, grad_v,
+                                                       plane_point, p),
                                        dWdx, dWdy);
         float clearance = ray_h - tex_h;   // >= 0 clear of the relief, < 0 occluded
         min_clearance = min(min_clearance, clearance);
@@ -691,15 +705,24 @@ float tileset_self_shadow(int slot, vec3 hit_point, vec3 plane_point,
     float softness = max(0.5 * relief / float(kShadowSteps), 1e-4);
     return clamp(min_clearance / softness, 0.0, 1.0);
 }
-// RETIRED (Phase 2 horizon-map lighting): tileset_self_shadow's only call
-// site (gbuffer.frag's Task 11 self-shadow branch) was replaced by
-// tileset_horizon_occlusion below -- baked per-direction horizon data is a
-// strict upgrade over this short in-shader march (covers occluders outside
-// the march's ~0.3 m cap, e.g. neighboring litter/rocks, not just the
-// immediate relief under the fragment). Left in place rather than deleted:
-// no other call sites exist today, but removing a shared header's function
-// is a larger diff than this task's scope warrants and the march remains a
-// working, independently-testable reference implementation.
+// NOT the shipped shading path -- tileset_horizon_occlusion below is -- but no
+// longer dead either: gbuffer.frag calls this under render.pom.horizon_debug as
+// the REFERENCE the baked map is measured against.
+//
+// The retirement note that used to sit here claimed the map "covers occluders
+// outside the march's ~0.3 m cap". That is false and was never true:
+// kShadowCapM here is 0.3 m and gtex_bake_horizon_cpu's kHorizonScanRadiusM is
+// 0.30 m, so the two see EXACTLY the same neighbourhood. They are directly
+// comparable, and that is the point -- the march reads the same height field
+// the primary march displaced along, in the same frame, so it is right by
+// construction wherever the parallax is. Any disagreement between the two is
+// the map's registration error, measured rather than argued.
+//
+// The two are not identical instruments even when both are correct: the march
+// is a hard 8-sample test against the live relief clamp (datum bias, relief
+// cap), the map is a mip-filtered 24-sample scan of the raw baked field with a
+// footprint-widened soft edge. Expect the map to be softer and slightly
+// shorter; expect them to agree on WHERE.
 
 // ---------------------------------------------------------------------------
 // Phase 2: horizon-map lighting.

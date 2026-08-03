@@ -137,7 +137,29 @@ void main() {
     vec3 detail_albedo = vec3(1.0);
     vec3 detail_orm = vec3(1.0);
     float horizon_visibility = 1.0;
+    // The SUN's share of the same term, exported through out_orm.a for
+    // rt_shadow.rgen (see the write at the bottom of main). Deliberately a
+    // second variable rather than a reuse of horizon_visibility: that one is
+    // scaled by shadow_strength (tileset.pom_c.z) because its consumer is the
+    // AMBIENT channel and that knob is what the UI offers for it. The sun gate
+    // must not inherit an extrapolating blend factor -- pom_c.z ships at 1.40,
+    // and mix(1.0, v, 1.40) = 1.4v - 0.4 goes NEGATIVE below v = 0.286.
+    //
+    // 1.0 everywhere the POM branch does not run, which is what makes this
+    // channel free: every non-tileset fragment, every chartless part and every
+    // pixel past the POM fade writes "no horizon occlusion" and rt_shadow's
+    // multiply is the identity there, exactly as before this channel existed.
+    float horizon_sun_visibility = 1.0;
     float near_band = 0.0;
+    // render.pom.horizon_debug's sampled field, or < 0 for "not a debug
+    // fragment". Declared out here and APPLIED AT THE VERY END of main, past
+    // the VT near band, because the near band is the last writer of
+    // base_color: writing the field inside the POM branch put it under a
+    // composite that replaces it with the page albedo, and on BrickProof --
+    // whose albedo is a single flat colour by design -- that failure looks
+    // exactly like a debug view that renders a flat colour, which is a
+    // remarkably good disguise.
+    float horizon_debug_value = -1.0;
 
     // The interpolated geometric normal, computed once. Every site below that
     // needs the surface frame (the warp frame, both ground samplers, the VT
@@ -514,6 +536,77 @@ void main() {
                 // the detail AO along with it, and the detail AO now goes
                 // through the mean-preserving ratio instead.
                 horizon_visibility = shadow_effective;
+                // THE SUN'S COPY, exported for rt_shadow.rgen. Unscaled by
+                // pom_c.z (see the declaration) and unclamped-but-bounded:
+                // tileset_horizon_relief_occlusion_frame already clamps its
+                // occlusion to [0,1] before the strength multiply, and
+                // horizon_strength is clamped >= 0 there, so the only way
+                // `visibility` leaves [0,1] is a horizon_strength above 1 --
+                // which the write at the bottom of main clamps.
+                horizon_sun_visibility = visibility;
+
+                // ---- render.pom.horizon_debug (tileset.vt_near.w) ---------
+                //
+                // The instrument that decides whether the map is registered
+                // against the relief, drawn AS a greyscale field over the
+                // parallaxed ground so map and relief are in the same picture.
+                // View it with viewer.debug.debug_view_mode = "Raw albedo",
+                // which passes out_albedo through composite untouched.
+                //
+                //   1  MAP, in the frame the ground is addressed in -- the
+                //      question this shader asks (marched_uv, warp azimuth,
+                //      elevation against plane_n).
+                //   2  MARCH -- tileset_self_shadow from the same marched
+                //      point along the same to-sun ray, stepping the same
+                //      height field the parallax displaced along. Right by
+                //      construction; the reference, not a rival.
+                //   3  MAP, in the frame rt_shadow.rgen asks it: world XZ at
+                //      the ROOF-ESCAPE-LIFTED position, world azimuth, world
+                //      elevation. This is what is actually multiplying the
+                //      sun in a shipped RT frame, drawn where the relief can
+                //      be seen underneath it.
+                //   4  |1 - 2|, the disagreement, which is the registration
+                //      error made visible.
+                //   5  |3 - 2|, the same against the shipped RT query.
+                //   6  Mode 3 WITHOUT the roof-escape lift -- world XZ and a
+                //      world azimuth/elevation at the actual shading point.
+                //      3 against 6 is the lift on its own; 6 against 1 is the
+                //      frame on its own. Two faults in one expression are one
+                //      fault too many to report as a number.
+                //
+                // Mode 3 reproduces rt_shadow.rgen's arithmetic exactly,
+                // including the lift, so that the picture indicts the shipped
+                // path rather than a paraphrase of it. pom_lift there is
+                // relief_cap + 0.02 (pom_b.z + 0.02) and the guard on sun.y
+                // is the same 0.05.
+                int hdbg = int(tileset.vt_near.w + 0.5);
+                if (hdbg > 0) {
+                    float dbg_map = occlusion;
+                    // The identity frame (no warp) makes tileset_warp_uv
+                    // inside the march return p.xz exactly, so this is the
+                    // world-XZ march it always was on chartless ground.
+                    float dbg_march = 1.0 - tileset_self_shadow(
+                        tileset_slot, marched_pos, in_world_pos, plane_n,
+                        to_sun_dir, march_uv0, march_gu, march_gv,
+                        warp_valid ? marched_duvdx : mdWdx,
+                        warp_valid ? marched_duvdy : mdWdy);
+                    vec3 lifted = marched_pos +
+                                  to_sun_dir * ((tileset.pom_b.z + 0.02) /
+                                                max(to_sun_dir.y, 0.05));
+                    float dbg_rt = tileset_horizon_occlusion(
+                        tileset_slot, lifted.xz, to_sun_dir, vec2(0.0),
+                        vec2(0.0));
+                    float dbg_rt_nolift = tileset_horizon_occlusion(
+                        tileset_slot, marched_pos.xz, to_sun_dir, vec2(0.0),
+                        vec2(0.0));
+                    float v = hdbg == 1 ? dbg_map
+                            : hdbg == 2 ? dbg_march
+                            : hdbg == 3 ? dbg_rt
+                            : hdbg == 4 ? abs(dbg_map - dbg_march)
+                            : hdbg == 5 ? abs(dbg_rt - dbg_march)
+                                        : dbg_rt_nolift;
+                    horizon_debug_value = clamp(v, 0.0, 1.0);
+                }
             }
 
             // Fade band: full parallax result up to
@@ -543,6 +636,7 @@ void main() {
             // computed alongside; at fade == 0 the flat sample wins and the
             // flat sample carries no horizon term.
             horizon_visibility = mix(1.0, horizon_visibility, fade);
+            horizon_sun_visibility = mix(1.0, horizon_sun_visibility, fade);
             base_color = mix(flat_color, marched_color, fade);
             shading_normal =
                 normalize(mix(flat_shading_normal, marched_shading_normal,
@@ -733,12 +827,28 @@ void main() {
 
     gl_FragDepth = frag_depth;
 
+    // render.pom.horizon_debug: the last word on base_color, deliberately.
+    // Read it through viewer.debug.debug_view_mode = "Raw albedo", which
+    // returns this untouched and runs the display pass in passthrough, so the
+    // swapchain byte IS round(value * 255).
+    if (horizon_debug_value >= 0.0) base_color = vec3(horizon_debug_value);
+
     out_albedo = vec4(base_color, opacity);
     // out_normal feeds the RT passes too (rt_lighting.rgen); keep it unit
     // length whether or not the tileset branch perturbed it.
     out_normal = vec4(normalize(shading_normal), encoded_emission);
-    // ORM alpha is reserved/opaque (1.0); emission lives in normal alpha.
-    out_orm = vec4(roughness, metallic, ao, 1.0);
+    // ORM alpha carries the ground's baked-horizon SUN visibility (emission
+    // lives in normal alpha). It was a reserved constant 1.0; rt_shadow.rgen
+    // now multiplies its traced sun visibility by it instead of re-deriving
+    // the horizon term from world XZ, which it could never do correctly --
+    // a raygen shader has no warp frame, no tangent and no surface normal, so
+    // the only place the question CAN be asked in the frame the ground is
+    // addressed in is here. One computation, one frame, two consumers.
+    //
+    // Everything that is not parallaxed ground writes 1.0 (see the
+    // declaration), so this is the identity for every other pixel.
+    out_orm = vec4(roughness, metallic, ao,
+                   clamp(horizon_sun_visibility, 0.0, 1.0));
     out_velocity = in_velocity_valid.z > 0.5
                        ? in_velocity_valid.xy
                        : vec2(0.0);

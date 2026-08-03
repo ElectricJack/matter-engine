@@ -231,6 +231,18 @@ struct TilesetPomSettings {
     // TilesetParamsGpu.pom_c.w (see vk_scene_renderer.h/.cpp) and by
     // tileset_common.glsl's tileset_horizon_occlusion.
     float horizon_strength   = 0.47f;
+    // Diagnostic overlay for the horizon term, 0 = off (shipped). Draws a
+    // greyscale field over the parallaxed ground in place of its albedo, read
+    // through viewer.debug.debug_view_mode = "Raw albedo":
+    //   1 map (the frame the ground is addressed in), 2 the reference march
+    //   (tileset_self_shadow on the same field), 3 the map as rt_shadow.rgen
+    //   used to ask it (world XZ at the roof-escape-lifted point),
+    //   4 |map - march|, 5 |rt-form - march|, 6 the rt form without the
+    //   roof-escape lift (3 vs 6 isolates the lift, 6 vs 1 the frame).
+    // Consumed by TilesetParamsGpu::vt_near_band[3]; see gbuffer.frag's
+    // render.pom.horizon_debug block. Session-scoped in the property registry
+    // so it cannot survive a relaunch.
+    int   horizon_debug      = 0;
 };
 
 // Chart-VT near band (viewer "Chart VT Near Band" UI). Same flow as
