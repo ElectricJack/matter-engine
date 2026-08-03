@@ -1162,8 +1162,12 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
     if (ImGui::Button("Reload world") && commands.reload) commands.reload();
 
     ImGui::SeparatorText("Debug View");
-    const char* debug_views[] = { "None", "Normals" };
-    ImGui::Combo("View", &s.debug_view_mode, debug_views, 2);
+    // "Depth" is an ENCODING, not a picture: composite.frag packs eye-space
+    // linear depth into R/G/B (log-depth coarse + quadrature fine) and the
+    // display pass drops to passthrough for it, so a screenshot decodes back
+    // to metres. It looks like banded noise on screen; that is correct.
+    const char* debug_views[] = { "None", "Normals", "Depth" };
+    ImGui::Combo("View", &s.debug_view_mode, debug_views, 3);
     // Not a registered property: main.cpp overwrites the volumetrics struct's
     // vol_debug_view from this every frame, so it has nowhere to persist to.
     // Kept with the other debug views rather than following render.volumetrics

@@ -83,6 +83,49 @@ vec3 compute_view_ray(vec2 uv) {
         up    * ndc.y * lighting.tan_half_fov);
 }
 
+// ---- debug_view 3.0: linear depth ------------------------------------------
+//
+// Reversed-ZO inverse, same expression as the two inline copies below (the
+// vol_debug_view branch and the main lighting path); kept as a function here
+// so the depth view cannot drift from them.
+float composite_linear_depth(float hw_depth) {
+    return lighting.camera_near * lighting.camera_far /
+        max(hw_depth * (lighting.camera_far - lighting.camera_near) +
+            lighting.camera_near, 1e-6);
+}
+
+// Encode eye-space linear depth so it survives an 8-bit PNG with enough
+// precision to do metric work (screen period -> world period, depth ratios
+// between crops). All three channels are linear in LOG depth over
+// [kDebugDepthNear, kDebugDepthFar]:
+//
+//   t = log(d / near) / log(far / near)      in [0,1]
+//   R = t                        coarse; one code step is 1/255 of the log
+//                                range, i.e. ~3.6% in depth
+//   G = fract(t * CYCLES)        fine; one code step is ~0.11% in depth
+//   B = fract(t * CYCLES + 0.5)  the same fine ramp in quadrature, so a
+//                                decoder always has one fine channel at least
+//                                a quarter cycle away from its wrap
+//
+// Decode: cycle index from R (its 3.6% resolution is far inside the 32.5%
+// depth span of one cycle, so the index is unambiguous), fraction from
+// whichever of G/B is furthest from a wrap.
+//
+// This only reads back correctly if the display pass is in passthrough — the
+// ACES curve in display_transform.frag is not invertible at 8 bits. See
+// `passthrough` there; vk_scene_renderer sets it for exactly this view.
+const float kDebugDepthNear   = 1.0;
+const float kDebugDepthFar    = 8192.0;
+const float kDebugDepthCycles = 32.0;
+
+vec3 encode_debug_depth(float linear_depth) {
+    float t = log(clamp(linear_depth, kDebugDepthNear, kDebugDepthFar) /
+                  kDebugDepthNear) / log(kDebugDepthFar / kDebugDepthNear);
+    return vec3(t,
+                fract(t * kDebugDepthCycles),
+                fract(t * kDebugDepthCycles + 0.5));
+}
+
 float integrated_slice_at_depth(float depth) {
     // vol_integrate stores each texel after integrating through that froxel's
     // far edge. Shift the lookup back by half a texel so a terrain hit samples
@@ -94,6 +137,14 @@ float integrated_slice_at_depth(float depth) {
 }
 
 void main() {
+    // Ahead of the sky early-out below, so the depth view covers the whole
+    // frame (sky reads hw depth 0 -> camera_far -> t = 1) rather than being
+    // punched through by sky_with_sun wherever the gbuffer normal is empty.
+    if (lighting.debug_view > 2.5) {
+        out_hdr = vec4(encode_debug_depth(
+            composite_linear_depth(texture(depth_texture, in_uv).r)), 1.0);
+        return;
+    }
     vec4 albedo = texture(albedo_texture, in_uv);
     vec4 normal_payload = texture(normal_texture, in_uv);
     vec3 normal_sample = normal_payload.xyz;
