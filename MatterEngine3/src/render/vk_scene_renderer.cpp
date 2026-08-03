@@ -78,7 +78,11 @@ static_assert(sizeof(FrameConstants) == 288,
               "FrameConstants must match the std140 shader block");
 static_assert(sizeof(VkCullStats) == 24,
               "VkCullStats must match the std430 stats block");
-static_assert(sizeof(VkRasterVertex) == 72,
+// 88 = the historical 72-byte layout + the VT Phase 2 warp block (warp_uv
+// 8 B, warp_tangent 4 B, warp_scales 4 B) appended so every pre-existing
+// word offset survives. rt_surface_common.glsl's stride guard and manual
+// word-offset decode pair with this — change one, change both.
+static_assert(sizeof(VkRasterVertex) == 88,
               "VkRasterVertex must match raster vertex bindings");
 
 struct GpuRtCounters {
@@ -2171,12 +2175,18 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
          static_cast<uint32_t>(offsetof(VkRasterVertex, surface))},
         {4, 0, VK_FORMAT_R32_UINT,
-         static_cast<uint32_t>(offsetof(VkRasterVertex, material_index))}};
+         static_cast<uint32_t>(offsetof(VkRasterVertex, material_index))},
+        // Warp field (VT Phase 2). Locations 6/7 (5 is reserved for the
+        // skinned specialization's previous-position attribute).
+        {6, 0, VK_FORMAT_R32G32_SFLOAT,
+         static_cast<uint32_t>(offsetof(VkRasterVertex, warp_uv))},
+        {7, 0, VK_FORMAT_R32G32_UINT,
+         static_cast<uint32_t>(offsetof(VkRasterVertex, warp_tangent))}};
     VkPipelineVertexInputStateCreateInfo vertex_input{
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     vertex_input.vertexBindingDescriptionCount = 1;
     vertex_input.pVertexBindingDescriptions = &vertex_binding;
-    vertex_input.vertexAttributeDescriptionCount = 5;
+    vertex_input.vertexAttributeDescriptionCount = 7;
     vertex_input.pVertexAttributeDescriptions = attributes;
     VkPipelineInputAssemblyStateCreateInfo input_assembly{
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -3485,6 +3495,16 @@ void VkSceneRenderer::write_tileset_params_buffer() {
     // comment for why the two were decoupled.
     params.vt_near_band[0] = vt_near_band_settings_.near_band_m;
     params.vt_near_band[1] = vt_near_band_settings_.near_fade_m;
+    // Warp field (VT Phase 2): vt_near.z is the warp-march enable. Default
+    // on; MATTER_VT_WARP=0 reverts the march addressing to the shipped
+    // world-XZ form (diagnostic escape hatch, spec §9 — not an end state).
+    {
+        static const bool warp_enabled = [] {
+            const char* env = std::getenv("MATTER_VT_WARP");
+            return !(env && std::strcmp(env, "0") == 0);
+        }();
+        params.vt_near_band[2] = warp_enabled ? 1.0f : 0.0f;
+    }
     // Task 11: direction-to-sun, same convention as the RT shadow push
     // constants (record_ray_trace_dispatch): normalize(-sun_direction),
     // since VkSceneLighting::sun_direction points FROM the sun toward the

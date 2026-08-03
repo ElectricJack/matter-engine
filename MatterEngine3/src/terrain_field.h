@@ -17,8 +17,13 @@ struct Op {
         Const, Noise2, Ridge2, Warp2,
         Add, Sub, Mul, Min, Max, Clamp,
         Blend, Smoothstep, Abs, OneMinus, Pow,
+        // Read a per-sample input (oct = a SurfaceInput code). Shared by both
+        // tapes, but with different admissible codes: the surfaces() tape takes
+        // any of them, while FieldProgram::parse takes ONLY kSurfInWorldX and
+        // kSurfInWorldZ — a terrain field is a function of (x, z) and nothing
+        // else is defined there.
+        Input,
         // ---- surfaces() tape only (FieldProgram::parse never emits these) ----
-        Input,           // read a per-sample input (oct = code)
         Noise2World,     // fbm over WORLD (x, z) — world-anchored variants
         Ridge2World,
         FieldCurv,       // field curvature probe at world (x, z), radius = f0

@@ -65,6 +65,7 @@
 namespace viewer { struct VkScenePart; }
 
 #include "lod_bake.h"      // ladder_census() for the [stream.ladder] line
+#include "warp_field.h"    // warp_census() for the [stream.warp] line (VT P2)
 #include "dsl_bindings.h"  // terrain_verb_census() for the [stream.build] line
 
 // Task 10: live-edit watcher + production seams.
@@ -859,6 +860,7 @@ struct WorldSession::Impl {
     std::atomic<uint64_t> stream_stage_prep_us{0};     // tri/TriEx gather + AABB
     std::atomic<uint64_t> stream_stage_ladder_us{0};   // LOD ladder re-bake
     std::atomic<uint64_t> stream_stage_tail_us{0};     // raster mesh + clusters
+    std::atomic<uint64_t> stream_stage_warp_us{0};     // warp field solve+eval
     // Bake one sector, stage its part, and post the GL publish job. Shared by
     // the serial path and the pool executors; the request/completion pair is
     // always reserved by the worker thread beforehand.
@@ -4453,6 +4455,15 @@ void WorldSession::Impl::bake_and_stage_sector(
             (first_rung_policy && matter_stream::variant_scatter(req.rung) < 2)
                 ? 1u : 0u;
         const auto stage_t0 = std::chrono::steady_clock::now();
+        // Warp field (VT Phase 2): the streaming caller is the one place the
+        // sector's world placement is known, so it supplies the anchor the
+        // border-pin rule needs (sector-local + anchor = world, bitwise
+        // shared with every neighbour).
+        viewer::PartStore::WarpAnchor warp_anchor;
+        warp_anchor.valid = true;
+        warp_anchor.x = double(req.tx) * double(world_sector_size);
+        warp_anchor.z = double(req.tz) * double(world_sector_size);
+        warp_anchor.sector_size = world_sector_size;
         std::shared_ptr<viewer::PartStore::StagedPart> staged_load;
         if (stage_from_memory && br.geometry) {
             // terrain_sector=true: this is the streamed sector part, which is
@@ -4462,7 +4473,7 @@ void WorldSession::Impl::bake_and_stage_sector(
             auto from_memory = std::make_shared<viewer::PartStore::StagedPart>(
                 store->stage_from_bake(sector_hash, *br.geometry,
                                        sector_first_rung,
-                                       /*terrain_sector=*/true));
+                                       /*terrain_sector=*/true, warp_anchor));
             // ok=false means stage_from_bake could not vouch for equivalence
             // with the artifact; fall through to the decode rather than
             // publishing something it is unsure about.
@@ -4476,7 +4487,7 @@ void WorldSession::Impl::bake_and_stage_sector(
         if (!staged_load) {
             staged_load = std::make_shared<viewer::PartStore::StagedPart>(
                 store->stage_load(sector_hash, sector_first_rung,
-                                  /*terrain_sector=*/true));
+                                  /*terrain_sector=*/true, warp_anchor));
         }
         stream_task_stage_us.fetch_add(
             (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
@@ -4490,6 +4501,8 @@ void WorldSession::Impl::bake_and_stage_sector(
             (uint64_t)(staged_load->ladder_ms * 1000.0), std::memory_order_relaxed);
         stream_stage_tail_us.fetch_add(
             (uint64_t)(staged_load->tail_ms * 1000.0), std::memory_order_relaxed);
+        stream_stage_warp_us.fetch_add(
+            (uint64_t)(staged_load->warp_ms * 1000.0), std::memory_order_relaxed);
 
         // The verification gate for the elision. Deliberately AFTER the
         // accumulators so a verify run's extra decode does not pollute the
@@ -4504,7 +4517,7 @@ void WorldSession::Impl::bake_and_stage_sector(
             // mismatch on every sector outside the inner ring.
             const viewer::PartStore::StagedPart reference =
                 store->stage_load(sector_hash, sector_first_rung,
-                                  /*terrain_sector=*/true);
+                                  /*terrain_sector=*/true, warp_anchor);
             std::string difference;
             const bool same = viewer::staged_parts_equal(
                 *staged_load, reference, &difference);
@@ -5074,7 +5087,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
                         stream_worker_count);
                 fprintf(stderr,
                         "[stream.stage] read=%.1f prep=%.1f ladder=%.1f "
-                        "tail=%.1f ms\n",
+                        "tail=%.1f warp=%.1f ms\n",
                         stream_stage_read_us.load(std::memory_order_relaxed)
                             / 1000.0 / tasks,
                         stream_stage_prep_us.load(std::memory_order_relaxed)
@@ -5082,6 +5095,8 @@ void WorldSession::Impl::execute_sector_stream_step() {
                         stream_stage_ladder_us.load(std::memory_order_relaxed)
                             / 1000.0 / tasks,
                         stream_stage_tail_us.load(std::memory_order_relaxed)
+                            / 1000.0 / tasks,
+                        stream_stage_warp_us.load(std::memory_order_relaxed)
                             / 1000.0 / tasks);
                 // Inside the ladder: what the 100 ms is actually made of.
                 // Per RUNG, not per sector -- a terrain sector bakes
@@ -5156,6 +5171,27 @@ void WorldSession::Impl::execute_sector_stream_step() {
                         (unsigned long long)(vc.height_calls / tasks),
                         vc.biome_us / 1000.0 / tasks,
                         (unsigned long long)(vc.biome_calls / tasks));
+                // Warp field (VT Phase 2): solve/evaluate cost beside the
+                // ladder census it runs next to (spec §4.2: "timed in the
+                // stage census beside chart_us").
+                {
+                    const warp_field::WarpCensus wc = warp_field::warp_census();
+                    if (wc.sectors) {
+                        fprintf(stderr,
+                                "[stream.warp] sectors=%llu solved=%llu "
+                                "solve=%.1f eval=%.1f ms/sector  tris=%llu "
+                                "folds=%llu\n",
+                                (unsigned long long)wc.sectors,
+                                (unsigned long long)wc.solved,
+                                wc.solved ? wc.solve_us / 1000.0 / wc.solved
+                                          : 0.0,
+                                wc.solved ? wc.evaluate_us / 1000.0 / wc.solved
+                                          : 0.0,
+                                (unsigned long long)(wc.solved
+                                    ? wc.tris / wc.solved : 0),
+                                (unsigned long long)wc.folds);
+                    }
+                }
                 const lod_bake::LadderCensus lc = lod_bake::ladder_census();
                 for (size_t r = 0; r < lod_bake::kMaxCensusRungs; ++r) {
                     if (lc.rungs[r] == 0) continue;
@@ -6542,6 +6578,15 @@ bool build_vulkan_part(uint64_t part_hash,
                 mesh.surface_uvs.size() > uv + 1 ? mesh.surface_uvs[uv + 1]
                                                  : 0.0f,
                 ao, material_id != UINT32_MAX ? 1.0f : 0.0f};
+            // Warp field (VT Phase 2): warped ground coordinate + frozen
+            // frame, present only on staged terrain-sector meshes. Zeros
+            // (the default) decode as su == 0, which the shader reads as
+            // "no warp" and falls back to world-XZ addressing.
+            if (mesh.warp_uvs.size() > uv + 1) {
+                vertex.warp_uv = {mesh.warp_uvs[uv], mesh.warp_uvs[uv + 1]};
+                vertex.warp_tangent = mesh.warp_frames[uv];
+                vertex.warp_scales = mesh.warp_frames[uv + 1];
+            }
             vertex.material_index = material_id;
             const MaterialDef* material = MaterialRegistryGet(
                 material_id < static_cast<uint32_t>(material_count)

@@ -145,6 +145,17 @@ struct VkRasterVertex {
     matter::Float4 surface{};
     uint32_t material_index = UINT32_MAX;
     uint32_t pad[3]{};
+    // Warp field (VT Phase 2), appended AFTER the historical 72-byte layout
+    // so every pre-existing word offset (RT's manual decode reads material
+    // at word 14) is unchanged; only the stride grew 72 -> 88. warp_uv is
+    // the warped ground coordinate in world-anchored metres; warp_tangent
+    // is the octahedral-encoded frame tangent (2 x f16); warp_scales packs
+    // (su, sv) as 2 x f16 — grad u = su * T, grad v = sv * (N x T). All
+    // zero (su == 0) means "no warp": the fragment shader falls back to the
+    // shipped world-XZ march addressing.
+    matter::Float2 warp_uv{};
+    uint32_t warp_tangent = 0;
+    uint32_t warp_scales = 0;
 };
 
 // WP-E (chart-space VT): the CPU-side rung mesh a VT page filler reads.

@@ -154,5 +154,60 @@ int main() {
         CHECK(std::fabs(n.curvature_at(x, z, e) - manual) < 1e-6f,
               "curvature_at is the ring-average height deficit");
     }
+    // --- input wx / wz: world coordinates in the FIELD tape -----------------
+    // The field op set is otherwise translation-covariant noise, which can only
+    // make statistically uniform terrain. These two inputs are what let a world
+    // author a shape AT A PLACE, and PomProof's dome() is built from them.
+    {
+        FieldRuntime f = make(
+            "input wx\ninput wz\nadd r0 r1\nconst 0.5\n"
+            "height r2\nmoisture r3\nrelief r3\nseaLevel 0\nbiome 0.65 0.35\n");
+        CHECK(std::fabs(f.height_at(3, 7) - 10.0f) < 1e-5f, "input wx + wz");
+        CHECK(std::fabs(f.height_at(-2.5f, 0.5f) - (-2.0f)) < 1e-5f,
+              "input wx/wz carry sign and fraction");
+        // Not translation-invariant — the whole point.
+        CHECK(f.height_at(0, 0) != f.height_at(100, 0), "field varies with world x");
+    }
+    {
+        // The exact hemisphere PomProof's dome() emits, at R = 10 about (4, -6):
+        //   y = R * sqrt(clamp(1 - d^2/R^2, 0, 1))
+        FieldRuntime f = make(
+            "input wx\nconst 4\nsub r0 r1\n"
+            "input wz\nconst -6\nsub r3 r4\n"
+            "mul r2 r2\nmul r5 r5\nadd r6 r7\n"
+            "const 0.01\nmul r8 r9\noneminus r10\nclamp r11 0 1\npow r12 0.5\n"
+            "const 10\nmul r13 r14\nconst 0.5\n"
+            "height r15\nmoisture r16\nrelief r16\nseaLevel 0\nbiome 0.65 0.35\n");
+        CHECK(std::fabs(f.height_at(4, -6) - 10.0f) < 1e-4f, "dome crown = R");
+        CHECK(std::fabs(f.height_at(4 + 10.0f / 1.41421356f, -6) - 7.0710678f) < 1e-3f,
+              "dome at d = R/sqrt2 is R/sqrt2 tall (45 deg point)");
+        CHECK(f.height_at(4 + 20, -6) == 0.0f, "dome is exactly zero outside its footprint");
+        CHECK(f.height_at(4, -6 - 30) == 0.0f, "dome footprint is radial, not axis-aligned");
+        // Steepness is the property the test world needs, and it has to be
+        // measured at the scale it exists at. slope_at's central difference is
+        // fixed at eps = 0.5 m, so at the rim one of its probes lands OUTSIDE
+        // the footprint (height 0) and it reports ~3 (72 deg) for a face that
+        // is analytically 87 deg. Measure the rise over 1 cm instead, which is
+        // both the true property and the resolution the surface exists at.
+        {
+            const float a = f.height_at(4 + 9.990f, -6);
+            const float b = f.height_at(4 + 9.999f, -6);
+            CHECK((a - b) / 0.009f > 10.0f,
+                  "dome flank exceeds 84 deg within 1 cm of the rim");
+            CHECK(f.slope_at(4 + 9.99f, -6) > 3.0f,
+                  "slope_at still reads the rim as steep, just blunted by its 0.5 m probe");
+        }
+    }
+    // --- the field tape rejects every other input name ----------------------
+    {
+        FieldProgram p; std::string err;
+        CHECK(!FieldProgram::parse(
+                  "input slope\nconst 0.5\n"
+                  "height r0\nmoisture r1\nrelief r1\nseaLevel 0\nbiome 0.65 0.35\n",
+                  p, err),
+              "field program rejects surfaces()-only input names");
+        CHECK(err.find("wx") != std::string::npos,
+              "the rejection names the two inputs that ARE allowed");
+    }
     return check_summary();
 }

@@ -176,6 +176,19 @@ void build_expansion(uint64_t root_hash,
 
 // Owns one BLASManager shared across all loaded parts. Content-addressed and
 // durable: a .part baked on a prior run is found on disk under cache_root/parts/.
+// Warp field (VT Phase 2): the sector's world anchor for the warped ground
+// coordinate solve — {valid, tx * sector_size, tz * sector_size,
+// sector_size}. Only streaming callers can supply it (the part itself does
+// not know its placement), and only terrain sectors get a field. An invalid
+// anchor (every non-streaming caller) solves nothing: the staged meshes
+// carry no warp data, the vertex stream stays zeroed, and the shader falls
+// back to world-XZ addressing (fail-soft).
+struct WarpAnchor {
+    bool valid = false;
+    double x = 0.0, z = 0.0;
+    float sector_size = 64.0f;
+};
+
 class PartStore {
 public:
     explicit PartStore(std::string cache_root);
@@ -204,6 +217,7 @@ public:
         double prep_ms   = 0.0;  // triangle/TriEx gather, AABB, skirt detect
         double ladder_ms = 0.0;  // bake_terrain_lods / bake_lods
         double tail_ms   = 0.0;  // raster mesh data + cluster/chart tables
+        double warp_ms   = 0.0;  // warp_field solve + per-rung evaluate
     };
 
     // Decode `part_hash` and bake its ladder WITHOUT touching any shared state.
@@ -234,8 +248,13 @@ public:
     // to be passed rather than sniffed. The old inference is still applied as a
     // fallback for .part artifacts baked before that change; see the detection
     // in stage_from_snapshot.
+    // Warp anchor type (defined at namespace scope above the class so its
+    // member defaults are complete when used as a default argument here).
+    using WarpAnchor = viewer::WarpAnchor;
+
     StagedPart stage_load(uint64_t part_hash, size_t first_rung = 0,
-                          bool terrain_sector = false);
+                          bool terrain_sector = false,
+                          const WarpAnchor& warp = WarpAnchor{});
 
     // Same result as stage_load(part_hash), assembled from the geometry the
     // bake that produced `part_hash` still holds in memory instead of from the
@@ -260,7 +279,8 @@ public:
     StagedPart stage_from_bake(uint64_t part_hash,
                                const script_host::BakedGeometry& baked,
                                size_t first_rung = 0,
-                               bool terrain_sector = false);
+                               bool terrain_sector = false,
+                               const WarpAnchor& warp = WarpAnchor{});
 
     // Publish a staged part: adopt its BLAS entries into the shared manager,
     // remap its handles, insert it, and build its expansion. Bounded --
@@ -384,7 +404,8 @@ private:
     StagedPart stage_from_snapshot(uint64_t part_hash, CoherentSnapshot& snapshot,
                                    const matter::animation::AnimAsset* animation_asset,
                                    size_t first_rung = 0,
-                                   bool terrain_sector = false);
+                                   bool terrain_sector = false,
+                                   const WarpAnchor& warp = WarpAnchor{});
 
     std::string                       cache_root_;
     std::string                       scratch_dir_;     // Task 2: transient scratch dir

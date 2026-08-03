@@ -515,7 +515,7 @@ CHARTATLAS_TARGET = build/chart_atlas_tests
 CHARTATLAS_CPP = chart_atlas_tests.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
                  ../src/part_asset_v2.cpp \
                  ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp \
-                 ../src/render/part_store.cpp ../src/render/matrix_math.cpp \
+                 ../src/render/part_store.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
                  ../src/lod_select.cpp ../src/sector_grid.cpp \
                  ../src/animation/animation_asset_store.cpp ../src/animation/anim_asset.cpp \
                  ../src/animation/anim_bundle.cpp ../src/animation/animation_binding_bake.cpp \
@@ -543,6 +543,15 @@ TILESETTORUSBVH_CPP    = tileset_torus_bvh_tests.cpp ../src/tileset_torus_bvh.cp
                          ../src/part_asset_v2.cpp \
                          $(COMMON_MSL_BLAS_SRC)
 TILESETTORUSBVH_C      = $(MSL)/material_registry.c
+
+# Warp field (VT Phase 2): §4.3 solver quality gates on committed real-mesh
+# fixtures, plus the transient-dataset scan/cut tooling. part_asset_v2 (v2
+# .part decode for the tooling modes) pulls the BLAS backend.
+WARPFIELD_TARGET = build/warp_field_tests
+WARPFIELD_CPP    = warp_field_tests.cpp ../src/warp_field.cpp \
+                   ../src/part_asset_v2.cpp \
+                   $(COMMON_MSL_BLAS_SRC)
+WARPFIELD_C      = $(MSL)/material_registry.c
 
 TILESETMEADOWMANIFEST_TARGET = build/tileset_meadow_manifest_tests
 # Needs load_world_definition (script/world_definition_loader.cpp), which in
@@ -858,7 +867,7 @@ SECTORPROF_CPP = sector_setup_profile.cpp $(filter-out sector_bake_tests.cpp,$(S
 SECTORPROF_C = $(COMMON_MSL_C)
 
 PARTSTORE_TARGET = build/partstore_tests
-PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp \
+PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp ../src/warp_field.cpp \
                 ../src/render/matrix_math.cpp \
                 ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
@@ -922,7 +931,7 @@ GRAPH_INT_TARGET = build/part_graph_integration_tests
 # carries the animation-authoring closure this suite now needs. The extra
 # render/LOD sources below are the A8 additions (part_store.h consumers).
 GRAPH_INT_CPP = part_graph_integration_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP)) \
-                ../src/render/part_store.cpp ../src/render/matrix_math.cpp \
+                ../src/render/part_store.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
                 ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/animation/animation_asset_store.cpp
 GRAPH_INT_C   = $(COMMON_MSL_C)
@@ -1123,7 +1132,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
               ../src/render/world_state.cpp \
               ../src/provider/resolvers.cpp \
-              ../src/render/part_store.cpp \
+              ../src/render/part_store.cpp ../src/warp_field.cpp \
               ../src/provider/local_provider.cpp \
               ../src/render/world_composer.cpp \
               ../src/render/raster_mesh.cpp \
@@ -1179,7 +1188,7 @@ GPU_RENDER_CPP = \
     ../src/render/vk_animation_skinning.cpp \
     ../src/bake_trace.cpp \
     ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
-    ../src/render/raster_mesh.cpp ../src/render/part_store.cpp \
+    ../src/render/raster_mesh.cpp ../src/render/part_store.cpp ../src/warp_field.cpp \
     ../src/render/world_composer.cpp ../src/render/world_state.cpp \
     ../src/render/tileset_provider.cpp \
     ../src/provider/local_provider.cpp ../src/provider/resolvers.cpp \
@@ -1312,6 +1321,7 @@ def_CPP_SRCS := $(sort \
     $(CHARTATLAS_CPP) \
     $(FLATTEN_CPP) \
     $(TILESETTORUSBVH_CPP) \
+    $(WARPFIELD_CPP) \
     $(ISO_CPP) \
     $(DSLDET_CPP) \
     $(DEV_SOURCES) \
@@ -1484,6 +1494,7 @@ COMP_OBJS   = $(call obj_list,def,$(COMP_CPP)) $(call obj_list,mslc,$(COMP_C))
 CHARTATLAS_OBJS = $(call obj_list,def,$(CHARTATLAS_CPP)) $(call obj_list,mslc,$(CHARTATLAS_C))
 FLATTEN_OBJS = $(call obj_list,def,$(FLATTEN_CPP)) $(call obj_list,mslc,$(FLATTEN_C))
 TILESETTORUSBVH_OBJS = $(call obj_list,def,$(TILESETTORUSBVH_CPP)) $(call obj_list,mslc,$(TILESETTORUSBVH_C))
+WARPFIELD_OBJS = $(call obj_list,def,$(WARPFIELD_CPP)) $(call obj_list,mslc,$(WARPFIELD_C))
 TILESETMEADOWMANIFEST_OBJS = $(call obj_list,qjs,$(TILESETMEADOWMANIFEST_CPP)) $(call obj_list,mslc,$(TILESETMEADOWMANIFEST_C)) $(qjsc_C_OBJS)
 ISO_OBJS = $(call obj_list,def,$(ISO_CPP)) $(call obj_list,mslc,$(ISO_C))
 DSLDET_OBJS = $(call obj_list,def,$(DSLDET_CPP)) $(call obj_list,mslc,$(DSLDET_C))
@@ -1552,7 +1563,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sector-profile run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-warp-field run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sector-profile run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -2193,6 +2204,13 @@ $(TILESETTORUSBVH_TARGET): $(TILESETTORUSBVH_OBJS)
 
 run-tilesettorusbvh: $(TILESETTORUSBVH_TARGET)
 	./$(TILESETTORUSBVH_TARGET)
+
+# Warp field (VT Phase 2) solver gates.
+$(WARPFIELD_TARGET): $(WARPFIELD_OBJS)
+	$(CC) $(WARPFIELD_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-warp-field: $(WARPFIELD_TARGET)
+	./$(WARPFIELD_TARGET)
 
 # Meadow world-definition tileset-flag test.
 $(TILESETMEADOWMANIFEST_TARGET): $(TILESETMEADOWMANIFEST_OBJS)

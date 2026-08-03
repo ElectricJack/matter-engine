@@ -314,7 +314,7 @@ RtSurface load_rt_surface(vec2 hit_barycentrics) {
     GpuRtPartRecord part = rt_parts[part_slot];
     if (part.valid == 0u || all(equal(part.vertex_address, uvec2(0u))) ||
         all(equal(part.index_address, uvec2(0u))) ||
-        part.vertex_stride != 72u || gl_PrimitiveID >= part.primitive_count) {
+        part.vertex_stride != 88u || gl_PrimitiveID >= part.primitive_count) {
         atomicAdd(invalid_part_records, 1u);
         return invalid_rt_surface();
     }
@@ -355,8 +355,12 @@ RtSurface load_rt_surface(vec2 hit_barycentrics) {
                     (front_face ? RT_SURFACE_FRONT_FACE : 0u);
 
     // WP-G: VT addressing state. surface.uv above is already the chart-atlas
-    // UV (the same surface.xy the raster path forwards) -- no vertex format
-    // change was needed, and the 72-byte stride guard above still holds.
+    // UV (the same surface.xy the raster path forwards). The stride guard
+    // above is 88 since VT Phase 2 appended the warp block to VkRasterVertex;
+    // the word offsets this loader reads (position 0, normal 3, tint 6,
+    // surface 10, material 14) are unchanged, and RT deliberately ignores
+    // the warp words — RT has no march (spec §8), so it has no use for the
+    // march's coordinate.
     surface.vt_slot = part.vt_slot;
     surface.uv_density = 0.0;
     surface.cone_width = 0.0;
