@@ -256,8 +256,15 @@ vec3 tileset_blend_normal_detail(vec3 base_ts, vec3 detail_ts) {
 // carried across all three axes so the convention is at least uniform: X and Z
 // both take B = -Y, so a +X-facing wall and a +Z-facing wall light their bumps
 // the same way instead of mirroring each other. If green on ground ever gets
-// corrected, correct it in all four places at once (here, tileset_rotate_normal,
-// vt_composite.comp's axisB[], and the bake).
+// corrected, correct it in all FIVE places at once (here, tileset_rotate_normal,
+// tileset_sample_ground_warp below, vt_composite.comp's axisB[], and the bake).
+//
+// The fifth site joined the list with the warp-frame material read (issue
+// b005ca2e). It states the SAME rule for a non-cardinal frame -- B is the
+// negated direction of increasing v, whatever direction that happens to be --
+// so the correction there is the same single sign flip as everywhere else and
+// `issues/render-ground-normal-green-inverted` stays a five-line change
+// instead of gaining a special case.
 //
 // The frames are sign-independent, so content on a -X face is mirrored w.r.t.
 // a +X face. That is the accepted tier-1 tradeoff vt_composite.comp already
@@ -381,6 +388,58 @@ vec3 tileset_sample_ground_triplanar(int slot, vec3 world_pos, vec3 geo_normal,
     return albedo;
 }
 
+// ---------------------------------------------------------------------------
+// Warp-frame ground sampling (the surface's OWN parameterisation).
+// ---------------------------------------------------------------------------
+//
+// WHY THIS EXISTS. Triplanar above answers "the tileset is addressed by world
+// position, what do I do on a wall?" — three world-axis projections blended by
+// the normal. The warped ground field (warp_field.h) answers a different
+// question: it hands every terrain fragment a genuine 2D surface coordinate in
+// world-anchored METRES, continuous across the sector and across sector
+// borders, valid at any surface angle. Where that coordinate exists there is
+// nothing to blend and no axis to choose — ONE tap in (u, v) is both cheaper
+// and better conditioned than three world-axis taps.
+//
+// It also has to exist for correctness, which is the reason this function was
+// added (issue b005ca2e). tileset_pom_march carves relief by sampling the
+// HEIGHT channel at tileset_warp_uv(); if the albedo/normal/ORM that draw that
+// relief are then read through a DIFFERENT parameterisation, the grooves and
+// the shading of the grooves slide relative to each other. On a regular
+// lattice (the BrickProof atlas) that reads as two superimposed brick patterns
+// at different offsets. Callers must sample this at exactly the uv the march
+// used, through the same frame.
+//
+// FRAME. dir_u / dir_v are the unit directions of increasing u and v — for the
+// gbuffer frame that is normalize(grad_u) and normalize(grad_v), both already
+// tangent to the surface and mutually perpendicular by construction (grad_u =
+// su*T, grad_v = sv*(N x T); the sv SIGN matters and normalize carries it).
+// geo_normal completes the basis.
+//
+// The tangent basis is (dir_u, -dir_v, geo_normal): B is the NEGATED v
+// direction, which is the repo-wide ground convention documented at length
+// above kTriplanarB — see the FIVE-places note there before touching the sign.
+// On flat ground carrying a world-XZ-aligned field (dir_u = +X, dir_v = +Z,
+// geo_normal = +Y) this is exactly tileset_rotate_normal's (T, B, N) =
+// (+X, -Z, +Y), so the warp path and the shipped path agree wherever the field
+// happens to be the identity.
+//
+// Returns albedo; WORLD-space shading normal and ORM via out-params. Like the
+// triplanar sampler (and unlike tileset_sample_ground) the normal comes back
+// already rotated, so it must NOT be passed through tileset_rotate_normal.
+vec3 tileset_sample_ground_warp(int slot, vec2 uv, vec2 dUVdx, vec2 dUVdy,
+                                vec3 dir_u, vec3 dir_v, vec3 geo_normal,
+                                out vec3 normal_ws, out vec3 orm) {
+    vec4 alb = tileset_sample(slot, TILESET_CH_ALBEDO, uv, dUVdx, dUVdy);
+    vec4 nr  = tileset_sample(slot, TILESET_CH_NORMAL, uv, dUVdx, dUVdy);
+    vec4 om  = tileset_sample(slot, TILESET_CH_ORM,    uv, dUVdx, dUVdy);
+    vec2 rg = nr.rg * 2.0 - 1.0;
+    float rz = sqrt(max(0.0, 1.0 - dot(rg, rg)));
+    orm = om.rgb;
+    normal_ws = normalize(dir_u * rg.x - dir_v * rg.y + geo_normal * rz);
+    return alb.rgb;
+}
+
 // Material slot decode (MaterialGpu.flags_misc.y): low byte detail+1, next macro+1.
 int tileset_detail_slot(uvec4 flags_misc) { return int(flags_misc.y & 0xFFu) - 1; }
 int tileset_macro_slot(uvec4 flags_misc)  { return int((flags_misc.y >> 8) & 0xFFu) - 1; }
@@ -440,6 +499,22 @@ int tileset_macro_slot(uvec4 flags_misc)  { return int((flags_misc.y >> 8) & 0xF
 // (terrain sectors), or world XZ where it does not (the identity frame
 // reproduces the shipped addressing exactly). This is tileset_relief_h's
 // only change under the spike: its lookup (spec §5.1 term 1).
+//
+// The frozen affine map from a world point to that ground coordinate:
+//   uv(p) = uv0 + (grad_u . (p - plane_point), grad_v . (p - plane_point))
+// ONE definition, deliberately. It is shared by the march below and by
+// gbuffer.frag's material read, because those two MUST address the same
+// point: the march decides WHERE the relief is by reading the height channel
+// at uv(p), and the shading decides what that relief LOOKS like by reading
+// albedo/normal/ORM at uv(p). Two copies of this formula that drift apart
+// produce exactly issue b005ca2e — relief and texture sliding against each
+// other — so there is only one copy to drift.
+vec2 tileset_warp_uv(vec2 uv0, vec3 grad_u, vec3 grad_v, vec3 plane_point,
+                     vec3 p) {
+    return uv0 +
+           vec2(dot(grad_u, p - plane_point), dot(grad_v, p - plane_point));
+}
+
 float tileset_relief_h(int slot, float h_range, float relief, vec2 uv,
                        vec2 dWdx, vec2 dWdy) {
     // Absolute baked height: texel 0 -> height_min, texel 1 -> height_max,
@@ -488,8 +563,6 @@ vec3 tileset_pom_march(int slot, vec3 ray_origin, vec3 ray_dir,
                     TILESET_SLOT_SCALAR(height_min, slot);
     if (h_range <= 0.0 || steps <= 0) return plane_point;
     float relief = min(h_range, max(tileset.pom_b.z, 1e-4));
-#define TILESET_MARCH_UV(p) \
-    (uv0 + vec2(dot(grad_u, (p) - plane_point), dot(grad_v, (p) - plane_point)))
 
     // Grazing clamp: never let the effective per-step travel distance blow
     // up as the view ray approaches tangent to the surface. On top of the
@@ -515,14 +588,16 @@ vec3 tileset_pom_march(int slot, vec3 ray_origin, vec3 ray_dir,
     // guarantee correct even when the fragment isn't exactly at the datum's
     // own footprint peak (sloped meshes, interpolated normals).
     float entry_tex_h = tileset_relief_h(slot, h_range, relief,
-                                         TILESET_MARCH_UV(p), dWdx, dWdy);
+                                         tileset_warp_uv(uv0, grad_u, grad_v,
+                                                        plane_point, p), dWdx, dWdy);
     float prev_diff = -entry_tex_h;
 
     for (int i = 0; i < steps; ++i) {
         p += step_v;
         float ray_h = dot(p - plane_point, plane_n);           // <= 0, descending
         float tex_h = tileset_relief_h(slot, h_range, relief,
-                                       TILESET_MARCH_UV(p),
+                                       tileset_warp_uv(uv0, grad_u, grad_v,
+                                                        plane_point, p),
                                        dWdx, dWdy);  // datum=0, capped
         float diff = ray_h - tex_h;                            // <0 => below relief
 
@@ -540,7 +615,8 @@ vec3 tileset_pom_march(int slot, vec3 ray_origin, vec3 ray_dir,
             for (int r = 0; r < refine_steps; ++r) {
                 float hit_ray_h = dot(hit - plane_point, plane_n);
                 float hit_tex_h = tileset_relief_h(slot, h_range, relief,
-                                                   TILESET_MARCH_UV(hit),
+                                                   tileset_warp_uv(uv0, grad_u, grad_v,
+                                                                   plane_point, hit),
                                                    dWdx, dWdy);
                 float hit_diff = hit_ray_h - hit_tex_h;
                 if (hit_diff < 0.0) { hi = hit; hi_diff = hit_diff; }
@@ -554,7 +630,6 @@ vec3 tileset_pom_march(int slot, vec3 ray_origin, vec3 ray_dir,
         prev_p = p;
     }
     return p;
-#undef TILESET_MARCH_UV
 }
 
 // ---------------------------------------------------------------------------

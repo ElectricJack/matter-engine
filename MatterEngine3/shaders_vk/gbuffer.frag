@@ -139,31 +139,129 @@ void main() {
     float horizon_visibility = 1.0;
     float near_band = 0.0;
 
+    // The interpolated geometric normal, computed once. Every site below that
+    // needs the surface frame (the warp frame, both ground samplers, the VT
+    // near-band composite) takes THIS value, so "the frame the march used" and
+    // "the frame the shading used" cannot be different expressions.
+    vec3 geo_n = normalize(in_normal);
+
+    // ---- The ground parameterisation, chosen ONCE per fragment -------------
+    //
+    // This block used to live inside the POM branch, where it served only the
+    // march. It is hoisted here because the march is not the only consumer any
+    // more: the material read has to be taken in the SAME parameterisation the
+    // march carved relief in (issue b005ca2e), and so does the VT near band's
+    // aux-slot tap further down. One frame, three consumers, no drift.
+    //
+    // With a valid warp (terrain sectors; su > 0) the ground is addressed by
+    // the warped ground field — a real surface coordinate in world-anchored
+    // metres, triangle space, valid at any surface angle. Without one (props,
+    // chartless parts, MATTER_VT_WARP=0 via vt_near.z) `warp_valid` stays
+    // false: the march takes the IDENTITY frame below, which reproduces the
+    // shipped world-XZ addressing exactly, and the material read stays
+    // triplanar. That pairing is the no-warp regression gate — those two are
+    // what the shipped build did, so a no-warp fragment is bit-identical.
+    bool warp_valid = false;
+    vec2 march_uv0 = in_world_pos.xz;
+    vec3 march_gu = vec3(1.0, 0.0, 0.0);
+    vec3 march_gv = vec3(0.0, 0.0, 1.0);
+    vec2 march_duvdx = dPdx.xz;
+    vec2 march_duvdy = dPdy.xz;
+    // Unit directions of increasing u / v, i.e. normalize(march_gu) and
+    // normalize(march_gv) — the tangent axes the relief actually runs along,
+    // and therefore the axes tileset_sample_ground_warp must rotate its
+    // tangent-space normal through. Only read when warp_valid.
+    //
+    // KNOWN UPSTREAM DEFECT, measured while landing issue b005ca2e — read this
+    // before blaming the shading for a seam. The warped ground field's uv is
+    // continuous across sector borders, but the per-vertex FRAME it ships
+    // alongside (in_warp_tangent / su / sv, packed by warp_field.cpp's
+    // evaluate()) is NOT: on PomProofBrick the tangent's z component steps
+    // discontinuously across a world-locked line at a sector border, over a
+    // single pixel, while the uv either side shows no step at all. Measured by
+    // painting dir_u into albedo: the step is in dir_u.z only, dir_u.x is
+    // continuous through it.
+    //
+    // The march barely notices, which is why this went unseen: uv(p) = uv0 +
+    // (gu.dp, gv.dp) is dominated by the interpolated uv0, and the frame only
+    // scales a displacement of at most a few centimetres. A normal BASIS uses
+    // the frame at full strength, so the same defect becomes a hard shading
+    // seam. That is a warp_field.cpp problem — the stored frame disagreeing
+    // with the stored uv — not a reason to rotate the normal through some
+    // other frame here, which would only trade a visible seam for a silently
+    // wrong tangent direction everywhere.
+    vec3 warp_dir_u = vec3(1.0, 0.0, 0.0);
+    vec3 warp_dir_v = vec3(0.0, 0.0, 1.0);
+    {
+        float warp_su = in_warp_uv_scales.z;
+        if (warp_su > 0.0 && tileset.vt_near.z > 0.5) {
+            // Re-orthogonalize the interpolated tangent against the
+            // interpolated normal; B = N x T closes the frame.
+            vec3 t_raw = in_warp_tangent - geo_n * dot(geo_n, in_warp_tangent);
+            float t_len = length(t_raw);
+            if (t_len > 1e-5) {
+                vec3 T = t_raw / t_len;
+                float warp_sv = in_warp_uv_scales.w;
+                march_uv0 = in_warp_uv_scales.xy;
+                march_gu = T * warp_su;
+                march_gv = cross(geo_n, T) * warp_sv;
+                march_duvdx = dUVdx;
+                march_duvdy = dUVdy;
+                // su > 0 is the branch condition, so normalize(march_gu) is
+                // exactly T. sv is SIGNED (warp_field.cpp packs it as
+                // dot(grad_v, N x T), and a world-XZ-aligned field on flat
+                // ground yields sv = -1), so the v DIRECTION carries that
+                // sign — dropping it would mirror every relief normal's green
+                // channel. Written as a sign multiply rather than
+                // normalize(march_gv) so a degenerate sv == 0 field yields a
+                // finite unit vector instead of a NaN.
+                warp_dir_u = T;
+                warp_dir_v = cross(geo_n, T) * (warp_sv < 0.0 ? -1.0 : 1.0);
+                warp_valid = true;
+            }
+        }
+    }
+
     // Ground tileset branch (Task 7): MaterialGpu.flags_misc.y low byte
     // carries detailSlot+1 (0 = no tileset). When present, the Wang-sampled
     // ground texture replaces the material's flat base color/normal/ORM.
     int tileset_slot = tileset_detail_slot(material.flags_misc);
     if (tileset_slot >= 0) {
-        // Full 3D world-position derivatives (dPdx/dPdy, hoisted to main()
-        // scope above): the triplanar sampler needs to differentiate each
-        // axis's OWN planar coordinate (see tileset_triplanar_axis_deriv).
-        // dWdx/dWdy below keep the world-XZ pair for the POM march, which
-        // stays top-down by design; note dPdx.xz == dFdx(in_world_pos.xz)
-        // exactly, so the Y projection is unchanged from the pre-triplanar
-        // code.
-        vec2 dWdx = dPdx.xz;
-        vec2 dWdy = dPdy.xz;
+        vec3 plane_n = geo_n;
         vec3 flat_orm;
         vec3 flat_shading_normal;
-        // Triplanar: a world-XZ-only sample smears as 1/|n.y| and diverges on
-        // vertical terrain. Returns a world-space normal already rotated per
-        // axis, so it must NOT go through tileset_rotate_normal again. On a
-        // pixel whose normal is exactly +Y this is bit-identical to the old
-        // tileset_sample_ground + tileset_rotate_normal pair.
-        float slope_w_y;
-        vec3 flat_albedo = tileset_sample_ground_triplanar(
-            tileset_slot, in_world_pos, normalize(in_normal), dPdx, dPdy,
-            false, flat_shading_normal, flat_orm, slope_w_y);
+        vec3 flat_albedo;
+        // The FLAT (pre-march) sample moves onto the warp frame with the
+        // marched one, and it has to. Three reasons, in increasing order of
+        // how badly leaving it behind would show:
+        //   * `fade` below blends flat -> marched. Two parameterisations in
+        //     one mix() is not a blend, it is a cross-dissolve between two
+        //     different textures — on a regular lattice, a ghosted double
+        //     image across the whole fade band.
+        //   * POM enable/disable (full_steps == 0) selects between them. The
+        //     ground must not JUMP to a different texture placement when a
+        //     checkbox is toggled or the camera crosses pom_max_distance.
+        //   * detail_albedo / detail_orm / shading_normal feed the VT
+        //     near-band ratio below, which pairs them against the aux tap;
+        //     that tap moves too, so all three agree.
+        // Where there is no warp this is the untouched triplanar call, with
+        // `plane_n` spelling the same normalize(in_normal) it always did.
+        if (warp_valid) {
+            flat_albedo = tileset_sample_ground_warp(
+                tileset_slot, march_uv0, march_duvdx, march_duvdy,
+                warp_dir_u, warp_dir_v, plane_n,
+                flat_shading_normal, flat_orm);
+        } else {
+            // Triplanar: a world-XZ-only sample smears as 1/|n.y| and diverges
+            // on vertical terrain. Returns a world-space normal already rotated
+            // per axis, so it must NOT go through tileset_rotate_normal again.
+            // On a pixel whose normal is exactly +Y this is bit-identical to
+            // the old tileset_sample_ground + tileset_rotate_normal pair.
+            float slope_w_y;
+            flat_albedo = tileset_sample_ground_triplanar(
+                tileset_slot, in_world_pos, plane_n, dPdx, dPdy,
+                false, flat_shading_normal, flat_orm, slope_w_y);
+        }
         // Vertex tint multiplies the ground texture (not a resolveBaseColor
         // mix) so per-instance tint/paint still darkens/colors textured
         // ground, matching the plan's compositing rule.
@@ -215,36 +313,7 @@ void main() {
         near_band = 1.0 - clamp((dist - near_band_m) / near_fade_m, 0.0, 1.0);
         int full_steps = int(tileset.pom_a.x);
         if (full_steps > 0 && dist < pom_max_distance + pom_fade_band) {
-            vec3 plane_n = normalize(in_normal);
             vec3 ray_dir = normalize(in_world_pos - camera_eye);
-
-            // Warp field (VT Phase 2 spike): the march's frozen affine frame.
-            // With a valid warp (terrain sectors; su > 0) the height field is
-            // addressed by the warped ground coordinate — triangle space, any
-            // surface angle. Without one (props, chartless parts,
-            // MATTER_VT_WARP=0 via vt_near.z) the IDENTITY frame reproduces
-            // the shipped world-XZ addressing through the same code path.
-            vec2 march_uv0 = in_world_pos.xz;
-            vec3 march_gu = vec3(1.0, 0.0, 0.0);
-            vec3 march_gv = vec3(0.0, 0.0, 1.0);
-            vec2 march_duvdx = dWdx;
-            vec2 march_duvdy = dWdy;
-            float warp_su = in_warp_uv_scales.z;
-            if (warp_su > 0.0 && tileset.vt_near.z > 0.5) {
-                // Re-orthogonalize the interpolated tangent against the
-                // interpolated normal; B = N x T closes the frame.
-                vec3 t_raw =
-                    in_warp_tangent - plane_n * dot(plane_n, in_warp_tangent);
-                float t_len = length(t_raw);
-                if (t_len > 1e-5) {
-                    vec3 T = t_raw / t_len;
-                    march_uv0 = in_warp_uv_scales.xy;
-                    march_gu = T * warp_su;
-                    march_gv = cross(plane_n, T) * in_warp_uv_scales.w;
-                    march_duvdx = dUVdx;
-                    march_duvdy = dUVdy;
-                }
-            }
 
             // Distance optimization (Task 10 Step 4): fade the linear step
             // count down from the full tileset.pom_a.x near the camera to
@@ -267,17 +336,56 @@ void main() {
             vec2 mdWdx = mdPdx.xz;
             vec2 mdWdy = mdPdy.xz;
             vec3 marched_orm;
-            // Triplanar at the displaced point too. The march itself stays
-            // top-down (it has to -- the height field is baked from a
-            // straight-down ray), but the material read AT the point it lands
-            // on has no such constraint, and leaving it world-XZ would keep a
-            // stretched sample alive across the whole slope blend band below.
-            // Degenerates to the identical single XZ tap when plane_n is +Y.
             vec3 marched_shading_normal;
-            float marched_w_y;
-            vec3 marched_albedo = tileset_sample_ground_triplanar(
-                tileset_slot, marched_pos, plane_n, mdPdx, mdPdy, false,
-                marched_shading_normal, marched_orm, marched_w_y);
+            vec3 marched_albedo;
+            // THE MATERIAL READ HAPPENS WHERE THE MARCH LANDED, IN THE FRAME
+            // THE MARCH USED. This is issue b005ca2e and it is worth stating
+            // plainly, because the comment that used to sit here argued the
+            // opposite and was reasoning from a premise the Phase 2 spike
+            // deleted:
+            //
+            //   "the march itself stays top-down (it has to -- the height
+            //    field is baked from a straight-down ray), but the material
+            //    read AT the point it lands on has no such constraint"
+            //
+            // The march has not been top-down since the spike. It walks the
+            // ray in world space and looks the height field up at
+            // tileset_warp_uv(march_uv0, march_gu, march_gv, ...) — the
+            // surface's own coordinate. So the second half of that argument
+            // inverts: it is precisely BECAUSE the march is no longer top-down
+            // that the material read is constrained. The march decides where a
+            // groove is by reading the HEIGHT channel at uv(marched_pos); the
+            // shading has to read albedo/normal/ORM at that same uv or the
+            // groove and the brick that is supposed to contain it are drawn
+            // from two different places in the atlas. A world-axis triplanar
+            // read here was that second parameterisation.
+            //
+            // The derivatives are the frozen frame applied to the marched
+            // position's screen derivatives — d/dx uv(p) = (gu . dp/dx,
+            // gv . dp/dx) — which needs no dFdx of its own, and in the
+            // identity frame is exactly the mdWdx/mdWdy pair the triplanar Y
+            // tap would have used.
+            //
+            // Without a warp this is the unchanged triplanar call, on mdPdx /
+            // mdPdy as before. mdWdx/mdWdy now have exactly one consumer left,
+            // the horizon term below, which is still world-XZ on purpose.
+            if (warp_valid) {
+                vec2 marched_uv = tileset_warp_uv(march_uv0, march_gu, march_gv,
+                                                  in_world_pos, marched_pos);
+                marched_albedo = tileset_sample_ground_warp(
+                    tileset_slot, marched_uv,
+                    vec2(dot(march_gu, mdPdx), dot(march_gv, mdPdx)),
+                    vec2(dot(march_gu, mdPdy), dot(march_gv, mdPdy)),
+                    warp_dir_u, warp_dir_v, plane_n,
+                    marched_shading_normal, marched_orm);
+            } else {
+                // Triplanar at the displaced point. Degenerates to the
+                // identical single XZ tap when plane_n is +Y.
+                float marched_w_y;
+                marched_albedo = tileset_sample_ground_triplanar(
+                    tileset_slot, marched_pos, plane_n, mdPdx, mdPdy, false,
+                    marched_shading_normal, marched_orm, marched_w_y);
+            }
             vec3 marched_color =
                 marched_albedo * mix(vec3(1.0), in_tint.rgb, in_tint.a);
             float marched_roughness = clamp(marched_orm.g, 0.0, 1.0);
@@ -292,6 +400,22 @@ void main() {
             // tileset_common.glsl). Skipped when the sun is below the
             // horizon or has no intensity -- both make the test physically
             // meaningless, not just cheap to skip.
+            //
+            // DELIBERATELY STILL WORLD-XZ, and therefore still the one term in
+            // this branch that does not share the march's parameterisation.
+            // It is not the same fix as the material read above and must not
+            // be done by half: the horizon channels bake sin(elevation)
+            // against a WORLD azimuth (0 = +X rotating toward +Z, see
+            // tileset_horizon_sin), so moving only the lookup POSITION to the
+            // warp uv would land on the right texel while still asking it a
+            // question in the wrong frame. The complete fix is both halves at
+            // once -- sample at tileset_warp_uv(marched_pos) AND express
+            // to_sun_dir in the frame as (dot(s, warp_dir_u),
+            // dot(s, warp_dir_v)) for the azimuth with dot(s, plane_n) for the
+            // elevation -- which is a separate change with its own
+            // verification. Left as-is here; the term's live strength knob
+            // (tileset.pom_c.w, "Horizon occlusion") is 0 in the capture that
+            // motivated this fix, so it is not what the report is about.
             vec3 to_sun_dir = tileset.sun_dir_intensity.xyz;
             float sun_intensity = tileset.sun_dir_intensity.w;
             if (to_sun_dir.y > 0.0 && sun_intensity > 0.0) {
@@ -386,11 +510,18 @@ void main() {
             // discarded everywhere a player looks. Nothing written into the
             // page's normal channel could reach the screen.
             //
-            // The geometric normal is the frame BOTH sides are expressed in:
-            // the compositor encodes the page normal relative to it (in
-            // tileset_rotate_normal's own basis) and the live detail can be
-            // read back into it with tileset_unrotate_normal.
-            vec3 geo_n = normalize(in_normal);
+            // The geometric normal (geo_n, hoisted to main() scope) is the
+            // frame BOTH sides are expressed in: the compositor encodes the
+            // page normal relative to it (in tileset_rotate_normal's own
+            // basis) and the live detail can be read back into it with
+            // tileset_unrotate_normal. That still holds with the detail now
+            // sampled through the warp frame — tileset_unrotate_normal takes a
+            // WORLD-space normal and re-expresses it, so which frame the
+            // detail was assembled in does not matter, only that it is a
+            // perturbation of the same geometric normal. Both identities the
+            // composite depends on survive: a detail normal equal to geo_n
+            // still unrotates to exactly (0,0,1) (the warp frame's own N is
+            // geo_n), so a neutral detail still costs the page nothing.
             vec3 near_albedo = vt_albedo;
             // Neutral until proven otherwise: (0,0,1) composes to "the page,
             // untouched", and ratios of 1 leave the page's ORM alone.
@@ -412,11 +543,16 @@ void main() {
                 // neutral, so the no-tileset case costs the page nothing.
                 vec3 detail_normal_ws = shading_normal;
                 if (aux_slot >= 0 && aux_slot != tileset_slot) {
-                    // Triplanar for the same reason the primary detail sample
-                    // is: this is the near-band ratio term riding on the VT
-                    // page, and a world-XZ tap here would smear the detail
-                    // back onto a cliff even though the page under it is
-                    // correctly parameterised.
+                    // Same parameterisation as the primary detail sample
+                    // above, on the same warp_valid gate — warp frame where
+                    // the surface has one, triplanar where it does not.
+                    // Matching it is not cosmetic: aux_material is decoded
+                    // from a PAGE TEXEL, so whether this branch runs varies
+                    // texel-to-texel inside one near band. If the two samplers
+                    // disagreed about how the ground is addressed, that texel
+                    // boundary would become a visible discontinuity in the
+                    // detail — the same misalignment as issue b005ca2e, just
+                    // switching on and off across a page.
                     //
                     // dPdx/dPdy come from main() scope now — computing them
                     // here was the undefined-behaviour derivative call this
@@ -427,10 +563,17 @@ void main() {
                     // fragment is actually made of.
                     vec3 aux_normal_ws;
                     vec3 aux_orm;
-                    float aux_w_y;
-                    detail = tileset_sample_ground_triplanar(
-                        aux_slot, in_world_pos, geo_n, dPdx, dPdy, false,
-                        aux_normal_ws, aux_orm, aux_w_y);
+                    if (warp_valid) {
+                        detail = tileset_sample_ground_warp(
+                            aux_slot, march_uv0, march_duvdx, march_duvdy,
+                            warp_dir_u, warp_dir_v, geo_n,
+                            aux_normal_ws, aux_orm);
+                    } else {
+                        float aux_w_y;
+                        detail = tileset_sample_ground_triplanar(
+                            aux_slot, in_world_pos, geo_n, dPdx, dPdy, false,
+                            aux_normal_ws, aux_orm, aux_w_y);
+                    }
                     detail_orm_here = aux_orm;
                     detail_normal_ws = aux_normal_ws;
                 }
