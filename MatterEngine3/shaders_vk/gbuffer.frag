@@ -449,20 +449,20 @@ void main() {
             // The daylight guard below stays a WORLD test (is the sun up at
             // all), which is the question it was always asking.
             //
-            // A consequence worth knowing before reading a capture: a fragment
-            // whose plane_n turns away from the sun now has dot(s, plane_n)
-            // <= 0, so the smoothstep reports the sun fully below that
-            // fragment's own horizon, and this term (which multiplies
-            // marched_ao) darkens it. That is the physically true answer and
-            // it is smooth through the terminator -- a guard on
-            // dot(s, plane_n) would put a hard edge there instead. It is also
-            // strictly inside the region where N.L already zeroes the direct
-            // sun, so what it removes is AMBIENT: measured on the PomProofBrick
-            // dome flank at Horizon occlusion 0.981 / Shadow strength 1.40,
-            // the shaded half loses up to 31/255. Making the horizon term stop
-            // scaling AO once it is a pure sun-visibility term is a separate
-            // question about the Ground POM knobs, not about which frame the
-            // question is asked in.
+            // That "separate question about the Ground POM knobs" the frame
+            // fix deferred here -- a fragment whose plane_n turns away from the
+            // sun reads dot(s, plane_n) <= 0, the smoothstep calls the sun
+            // fully below that fragment's own horizon, and the term darkens
+            // AMBIENT across the whole far side -- was NOT separate. It was
+            // the defect the user filed next (751df159, "Horizon not
+            // aligned"): on a dome plane_n sweeps, so that baseline paints
+            // metre-scale swaths following the surface normal and nothing in
+            // the relief. Isolated by ablation at horizon_strength 0.98 --
+            // freezing the azimuth reproduced the swaths unchanged (mean |d|
+            // 9.87/255 vs 9.81 for the live term), freezing the elevation
+            // removed them entirely and left the term tracking the brick
+            // courses across the whole dome. The elevation baseline is now
+            // subtracted; see tileset_horizon_relief_occlusion_frame.
             //
             // No warp (props, chartless parts, MATTER_VT_WARP=0): the
             // unchanged world-XZ call on marched_pos.xz / mdWdx / mdWdy, which
@@ -471,17 +471,36 @@ void main() {
             vec3 to_sun_dir = tileset.sun_dir_intensity.xyz;
             float sun_intensity = tileset.sun_dir_intensity.w;
             if (to_sun_dir.y > 0.0 && sun_intensity > 0.0) {
+                // THE RELIEF-ONLY FORM, because this term's consumer is AO,
+                // and AO multiplies the ambient sky term only (composite.frag:
+                // `ambient = diffuse * sky_irradiance(normal) * ao`; the sun
+                // does not read it). The plain horizon question reports a flat
+                // patch as fully occluded whenever the sun drops below its own
+                // plane -- true, and the right answer for the RT sun/GI
+                // callers, but on a curved surface it writes the terminator
+                // into the AO channel as broad smooth swaths that follow the
+                // normal and nothing in the relief. That is issue 751df159.
+                // See tileset_horizon_relief_occlusion_frame for the ablation
+                // that pinned it to the elevation half of the query.
+                vec2 q_dir_uv = warp_valid
+                    ? vec2(dot(to_sun_dir, warp_dir_u),
+                           dot(to_sun_dir, warp_dir_v))
+                    : to_sun_dir.xz;
+                float q_sin = warp_valid ? dot(to_sun_dir, plane_n)
+                                         : to_sun_dir.y;
+                // Footprint pair = the PRE-march uv derivatives (march_duvdx /
+                // march_duvdy, or the world-XZ dPdx/dPdy without a warp): the
+                // smooth "how much surface does this pixel cover" measure the
+                // edge width needs. The marched pair still drives the fetch.
                 float occlusion =
                     warp_valid
-                        ? tileset_horizon_occlusion_frame(
-                              tileset_slot, marched_uv,
-                              vec2(dot(to_sun_dir, warp_dir_u),
-                                   dot(to_sun_dir, warp_dir_v)),
-                              dot(to_sun_dir, plane_n),
-                              marched_duvdx, marched_duvdy)
-                        : tileset_horizon_occlusion(
-                              tileset_slot, marched_pos.xz, to_sun_dir,
-                              mdWdx, mdWdy);
+                        ? tileset_horizon_relief_occlusion_frame(
+                              tileset_slot, marched_uv, q_dir_uv, q_sin,
+                              marched_duvdx, marched_duvdy,
+                              march_duvdx, march_duvdy)
+                        : tileset_horizon_relief_occlusion_frame(
+                              tileset_slot, marched_pos.xz, q_dir_uv, q_sin,
+                              mdWdx, mdWdy, dPdx.xz, dPdy.xz);
                 float visibility = 1.0 - occlusion;
                 // Ground POM UI "shadow strength" (tileset.pom_c.z): blends
                 // the horizon-occlusion visibility toward 1.0 (unoccluded)
