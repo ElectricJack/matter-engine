@@ -362,15 +362,25 @@ void main() {
             // tap would have used.
             //
             // Without a warp this is the unchanged triplanar call, on mdPdx /
-            // mdPdy as before. mdWdx/mdWdy now have exactly one consumer left,
-            // the horizon term below, which is still world-XZ on purpose.
+            // mdPdy as before, and mdWdx/mdWdy stay the world-XZ derivatives
+            // the no-warp horizon term below still uses.
+            //
+            // marched_uv and its derivatives are hoisted out of the branch:
+            // the horizon term below reads the SAME texture set at the SAME
+            // point and must not compute its own copy of them. That is the
+            // drift this comment is about, one call further on.
+            vec2 marched_uv = vec2(0.0);
+            vec2 marched_duvdx = vec2(0.0);
+            vec2 marched_duvdy = vec2(0.0);
             if (warp_valid) {
-                vec2 marched_uv = tileset_warp_uv(march_uv0, march_gu, march_gv,
-                                                  in_world_pos, marched_pos);
+                marched_uv = tileset_warp_uv(march_uv0, march_gu, march_gv,
+                                             in_world_pos, marched_pos);
+                marched_duvdx =
+                    vec2(dot(march_gu, mdPdx), dot(march_gv, mdPdx));
+                marched_duvdy =
+                    vec2(dot(march_gu, mdPdy), dot(march_gv, mdPdy));
                 marched_albedo = tileset_sample_ground_warp(
-                    tileset_slot, marched_uv,
-                    vec2(dot(march_gu, mdPdx), dot(march_gv, mdPdx)),
-                    vec2(dot(march_gu, mdPdy), dot(march_gv, mdPdy)),
+                    tileset_slot, marched_uv, marched_duvdx, marched_duvdy,
                     warp_dir_u, warp_dir_v, plane_n,
                     marched_shading_normal, marched_orm);
             } else {
@@ -396,26 +406,82 @@ void main() {
             // horizon or has no intensity -- both make the test physically
             // meaningless, not just cheap to skip.
             //
-            // DELIBERATELY STILL WORLD-XZ, and therefore still the one term in
-            // this branch that does not share the march's parameterisation.
-            // It is not the same fix as the material read above and must not
-            // be done by half: the horizon channels bake sin(elevation)
-            // against a WORLD azimuth (0 = +X rotating toward +Z, see
-            // tileset_horizon_sin), so moving only the lookup POSITION to the
-            // warp uv would land on the right texel while still asking it a
-            // question in the wrong frame. The complete fix is both halves at
-            // once -- sample at tileset_warp_uv(marched_pos) AND express
-            // to_sun_dir in the frame as (dot(s, warp_dir_u),
-            // dot(s, warp_dir_v)) for the azimuth with dot(s, plane_n) for the
-            // elevation -- which is a separate change with its own
-            // verification. Left as-is here; the term's live strength knob
-            // (tileset.pom_c.w, "Horizon occlusion") is 0 in the capture that
-            // motivated this fix, so it is not what the report is about.
+            // ASKED IN THE FRAME IT IS ADDRESSED IN (issue 74b09902, "the
+            // horizon is not properly aligned"). This term reads the same
+            // texture set as the material read above, at the same point, so it
+            // moves with it -- but it takes a DIRECTION as well as a position,
+            // and both halves have to move together or the fix is worse than
+            // the defect. The horizon channels are baked in the tile's own
+            // frame: the bake steps (cos, sin) of the azimuth along the tile's
+            // +u / +v texel axes and measures elevation against the tile's
+            // datum plane (gtex_bake_horizon_cpu, tileset_bake_vk.h).
+            // "Azimuth 0 = world +X" was never a property of the data -- it is
+            // what +u resolves to under world-XZ addressing. Under warp
+            // addressing +u is warp_dir_u, so all three move at once:
+            //
+            //   position  -> marched_uv                  (was marched_pos.xz)
+            //   azimuth   -> (s . dir_u, s . dir_v)      (was s.xz)
+            //   elevation -> s . plane_n                 (was s.y)
+            //
+            // What this fixes: with a world azimuth AND a world elevation,
+            // every fragment of a dome asked the map the SAME (azimuth,
+            // elevation) question -- only the texel moved -- so the answer
+            // banded across the dome along whatever the map happened to hold
+            // instead of following the brick courses.
+            //
+            // Note dir_v, NOT the -dir_v of the sampler's tangent basis: that
+            // negation is the normal-map green convention (see the five-places
+            // note above kTriplanarB), not the addressing direction, and using
+            // it here would mirror the azimuth.
+            //
+            // The UNIT frame directions, deliberately, not march_gu/march_gv.
+            // The gradients would additionally carry the field's local stretch
+            // into the answer -- strictly more faithful to the tile's texel
+            // axes, and it degenerates identically where the field is the
+            // identity -- but the warp field is near-conformal by construction
+            // (su ~ |sv|), so the correction is second order where it is sound
+            // and unbounded where it is not: on a stretched sector (the §4.3
+            // extreme_wall fixture reaches stretch p95 19) |duv| would grow
+            // without limit, drive sin(elevation) toward 0, and bury the whole
+            // sector under horizon shadow. Robustness wins over the second
+            // order here.
+            //
+            // The daylight guard below stays a WORLD test (is the sun up at
+            // all), which is the question it was always asking.
+            //
+            // A consequence worth knowing before reading a capture: a fragment
+            // whose plane_n turns away from the sun now has dot(s, plane_n)
+            // <= 0, so the smoothstep reports the sun fully below that
+            // fragment's own horizon, and this term (which multiplies
+            // marched_ao) darkens it. That is the physically true answer and
+            // it is smooth through the terminator -- a guard on
+            // dot(s, plane_n) would put a hard edge there instead. It is also
+            // strictly inside the region where N.L already zeroes the direct
+            // sun, so what it removes is AMBIENT: measured on the PomProofBrick
+            // dome flank at Horizon occlusion 0.981 / Shadow strength 1.40,
+            // the shaded half loses up to 31/255. Making the horizon term stop
+            // scaling AO once it is a pure sun-visibility term is a separate
+            // question about the Ground POM knobs, not about which frame the
+            // question is asked in.
+            //
+            // No warp (props, chartless parts, MATTER_VT_WARP=0): the
+            // unchanged world-XZ call on marched_pos.xz / mdWdx / mdWdy, which
+            // is the right frame there -- the material read is triplanar and
+            // the datum is world XZ.
             vec3 to_sun_dir = tileset.sun_dir_intensity.xyz;
             float sun_intensity = tileset.sun_dir_intensity.w;
             if (to_sun_dir.y > 0.0 && sun_intensity > 0.0) {
-                float occlusion = tileset_horizon_occlusion(
-                    tileset_slot, marched_pos.xz, to_sun_dir, mdWdx, mdWdy);
+                float occlusion =
+                    warp_valid
+                        ? tileset_horizon_occlusion_frame(
+                              tileset_slot, marched_uv,
+                              vec2(dot(to_sun_dir, warp_dir_u),
+                                   dot(to_sun_dir, warp_dir_v)),
+                              dot(to_sun_dir, plane_n),
+                              marched_duvdx, marched_duvdy)
+                        : tileset_horizon_occlusion(
+                              tileset_slot, marched_pos.xz, to_sun_dir,
+                              mdWdx, mdWdy);
                 float visibility = 1.0 - occlusion;
                 // Ground POM UI "shadow strength" (tileset.pom_c.z): blends
                 // the horizon-occlusion visibility toward 1.0 (unoccluded)

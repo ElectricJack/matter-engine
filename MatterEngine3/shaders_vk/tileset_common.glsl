@@ -759,16 +759,43 @@ float tileset_horizon_sin(int slot, vec2 worldXZ, vec2 dir_xz,
 // visibility), already scaled by the live horizon_strength UI knob
 // (tileset.pom_c.w) and by whether this slot actually has horizon data --
 // callers do not need to re-check tileset_has_horizon themselves.
-float tileset_horizon_occlusion(int slot, vec2 worldXZ, vec3 dir_world,
-                                vec2 dWdx, vec2 dWdy) {
+// THE FRAME FORM, and the honest one. The horizon map knows nothing about
+// world axes: the bake scans the tile's OWN texel grid, stepping (cos, sin) of
+// the azimuth along +texel-x / +texel-y, and measures elevation as
+// dh / sqrt(dh^2 + d^2) against the tile's own datum plane
+// (gtex_bake_horizon_cpu, tileset_bake_vk.h). Azimuth 0 is the tile's +u;
+// azimuth 90 is the tile's +v; "up" is the tile's normal.
+//
+// "Azimuth 0 = world +X rotating toward +Z" is therefore not a property of the
+// DATA, it is what those axes resolve to under world-XZ addressing, where
+// wang_resolve maps planar metres straight onto (u, v) with no flip and the
+// datum plane is world XZ. Address the same texture through a different ground
+// coordinate and the question has to move with it, which is what this overload
+// is for: `dir_uv` is the query direction resolved onto the ADDRESSING frame's
+// (u, v) axes and `sin_elev` its component along that frame's normal.
+//
+// Everything else -- the 45-degree interpolation, the A/B split, the soft
+// edge, the strength knob -- is basis-independent and lives here once.
+float tileset_horizon_occlusion_frame(int slot, vec2 uv, vec2 dir_uv,
+                                      float sin_elev, vec2 dWdx, vec2 dWdy) {
     if (!tileset_has_horizon(slot)) return 0.0;
-    vec2 dir_xz = dir_world.xz;
     // Straight up/down: azimuth is undefined and no ground obstruction is
     // physically meaningful along this direction anyway -- unoccluded.
-    if (dot(dir_xz, dir_xz) < 1e-8) return 0.0;
-    float h = tileset_horizon_sin(slot, worldXZ, dir_xz, dWdx, dWdy);
-    float visibility = smoothstep(h - 0.05, h + 0.05, dir_world.y);
+    if (dot(dir_uv, dir_uv) < 1e-8) return 0.0;
+    float h = tileset_horizon_sin(slot, uv, dir_uv, dWdx, dWdy);
+    float visibility = smoothstep(h - 0.05, h + 0.05, sin_elev);
     return (1.0 - visibility) * max(tileset.pom_c.w, 0.0);
+}
+
+// World-XZ form: the frame form with (u, v) = world (x, z) and the datum plane
+// = world XZ, i.e. exactly what every world-addressed caller means -- the RT
+// hit paths (rt_lighting.rgen, rt_shadow.rgen), and the raster ground wherever
+// no warp field exists, where the material read is triplanar and the datum IS
+// world XZ. Delegation only: same arithmetic, same order, renamed arguments.
+float tileset_horizon_occlusion(int slot, vec2 worldXZ, vec3 dir_world,
+                                vec2 dWdx, vec2 dWdy) {
+    return tileset_horizon_occlusion_frame(slot, worldXZ, dir_world.xz,
+                                           dir_world.y, dWdx, dWdy);
 }
 
 // Mean of the 8 baked sin(elevation) values (both A/B taps averaged),
