@@ -798,6 +798,114 @@ float tileset_horizon_occlusion(int slot, vec2 worldXZ, vec3 dir_world,
                                            dir_world.y, dWdx, dWdy);
 }
 
+// RELIEF-ONLY form, for consumers that modulate AMBIENT rather than the sun.
+//
+// tileset_horizon_occlusion_frame answers "is the sun below this texel's baked
+// horizon". That answer INCLUDES the part the surface's own orientation
+// already accounts for: a perfectly flat patch (baked horizon 0) tilted away
+// from the sun reports FULLY OCCLUDED purely because sin_elev < 0, with no
+// relief involved at all. Gating the SUN on that is right — N.L is about to
+// zero it anyway, and the RT shadow/GI callers want exactly that. Gating
+// AMBIENT on it is not: ambient arrives from the whole sky, not from the sun,
+// so removing it wherever the sun happens to be below the local plane is not a
+// relief effect, it is the terminator written into the AO channel.
+//
+// On flat ground the error is invisible — plane_n never moves, so the baseline
+// is the same everywhere and only the relief varies. On a curved surface
+// plane_n sweeps, and the SAME term paints broad smooth swaths that track the
+// surface normal and nothing in the relief: issue 751df159, "Horizon not
+// aligned", metres wide on the PomProofBrick dome. Measured by ablation —
+// freezing the azimuth left the swaths untouched, freezing the elevation
+// removed them completely and left the term following the brick courses.
+//
+// Subtracting the flat-patch baseline leaves only what the RELIEF occludes:
+//   * sun well above the local plane -> baseline 1, result identical to before
+//   * sun below the local plane      -> baseline 0, result 0 (N.L owns it)
+// so the two agree wherever the shipped term was meaningful, and differ only
+// where it was double-counting the surface's own orientation.
+//
+// Deliberately NOT folded into tileset_horizon_occlusion_frame: rt_shadow.rgen
+// and rt_lighting.rgen gate the sun and GI bounce rays with that function, and
+// a bounce direction below the surface plane must keep reading as occluded
+// there. Two consumers, two questions, two functions.
+// THE SOFT EDGE HAS TO MATCH THE FILTERING, which is the second half of why
+// this term never looked like it followed the relief.
+//
+// tileset_horizon_sin returns a MIP-FILTERED mean of sin(horizon) over the
+// pixel's footprint, but the visibility test consuming it is a threshold with
+// a fixed 0.05 edge. Averaging a threshold's INPUT is not averaging its
+// OUTPUT: once the footprint spans a mixture of groove and brick-top texels
+// the mean horizon drops below the sun and the whole footprint reads FULLY
+// LIT, even though a large fraction of it is in groove shadow.
+//
+// Measured on the BrickProof dump at the world's own sun (azimuth 67.4 deg),
+// per footprint block, true mean-of-visibility vs visibility-of-mean:
+//
+//     footprint    true    mip tap    mean |err|
+//      4 texels    0.53      0.51        0.038
+//      8 texels    0.57      0.53        0.135
+//     16 texels    0.60      0.63        0.253      <- one groove width
+//     32 texels    0.60      0.95        0.357
+//
+// so by the time one pixel covers a groove the tap saturates toward "lit" and
+// the relief signal is gone. At the reporter's camera that is the whole story:
+// with the elevation baseline subtracted the term went to mean 0.14/255 across
+// the dome, because the only thing the fixed edge could still express WAS the
+// baseline. Both halves had to move for the term to be usable.
+//
+// Widening the edge with the footprint restores it: the wider transition
+// stands in for the SPREAD of horizon values the mip averaged together, so a
+// mixed footprint returns a partial occlusion instead of a binary answer.
+// Same sweep, mean |err| 0.038/0.135/0.253/0.357 -> 0.024/0.061/0.041/0.042.
+// 0.45 is the measured knee: 0.30 leaves the 32-texel case at 0.10, 0.60 buys
+// under 0.01 more and starts softening the near field where the tap is sharp
+// and correct.
+//
+// Callers passing ZERO derivatives (the RT raygen paths, which have none) get
+// lod 0 and the original 0.05 edge, unchanged.
+float tileset_horizon_edge(int slot, vec2 dWdx, vec2 dWdy) {
+    float inv = 1.0 / TILESET_SLOT_SCALAR(tile_size_m, slot);
+    // Per-TILE texel dims: the horizon channel is a 2D array, one layer per
+    // Wang tile, and tileset_sample addresses it with wang_resolve's [0,1]
+    // per-tile uv -- so textureSize().xy is exactly the scale that turns a
+    // per-tile uv derivative into a footprint in horizon texels.
+    vec2 texels = vec2(textureSize(
+        tilesetTex[nonuniformEXT(slot * TILESET_CHANNELS +
+                                 TILESET_CH_HORIZON_A)], 0).xy);
+    float fp = max(length(dWdx * inv * texels), length(dWdy * inv * texels));
+    float lod = log2(max(fp, 1.0));
+    return mix(0.05, 0.45, clamp(lod * 0.25, 0.0, 1.0));
+}
+
+// fpDx/fpDy are the FOOTPRINT derivatives and are deliberately a separate pair
+// from dWdx/dWdy. dWdx/dWdy are the marched derivatives -- correct for the
+// texture fetch, because that is where the material is read -- but they are
+// derivatives of the MARCHED position, so they spike wherever the march lands
+// on different relief across a pixel. Driving the edge width from them put
+// hard triangle-shaped facets across the dome and a black blot where the march
+// smears. Callers pass the smooth pre-march uv derivatives here instead; the
+// footprint is a property of how much SURFACE the pixel covers, which is what
+// the mip chain is filtering over, and that varies smoothly.
+//
+// The BASELINE keeps the tight 0.05 edge. It stands for the geometric
+// terminator, which is a sharp fact about the surface, not a filtered
+// quantity: widening it made smoothstep(-w, w, sin_elev) non-zero for sin_elev
+// well below 0 and put occlusion back on the far side of the dome -- the very
+// artefact this function exists to remove.
+float tileset_horizon_relief_occlusion_frame(int slot, vec2 uv, vec2 dir_uv,
+                                             float sin_elev,
+                                             vec2 dWdx, vec2 dWdy,
+                                             vec2 fpDx, vec2 fpDy) {
+    if (!tileset_has_horizon(slot)) return 0.0;
+    if (dot(dir_uv, dir_uv) < 1e-8) return 0.0;
+    float h = tileset_horizon_sin(slot, uv, dir_uv, dWdx, dWdy);
+    float w = tileset_horizon_edge(slot, fpDx, fpDy);
+    float visibility      = smoothstep(h - w, h + w, sin_elev);
+    float flat_visibility = smoothstep(-0.05, 0.05, sin_elev);
+    return clamp(flat_visibility - visibility, 0.0, 1.0) *
+           max(tileset.pom_c.w, 0.0);
+}
+
 // Mean of the 8 baked sin(elevation) values (both A/B taps averaged),
 // expressed as a mean OCCLUSION (1 - mean_sin) for ambient/sky-irradiance
 // -style scaling where no single ray direction applies. Deliberately does
