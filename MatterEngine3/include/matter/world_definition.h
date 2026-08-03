@@ -223,13 +223,41 @@ struct TilesetPomSettings {
     float max_distance_m     = 1564.0f; // pom_max_distance_m
     float fade_band_m        = 20.0f;   // pom_fade_band_m
     float ao_strength        = 0.91f;   // baked-AO texel blend factor
-    float shadow_strength    = 1.40f;   // self-shadow blend factor
+    // How strongly the baked horizon darkens AMBIENT sky irradiance.
+    //
+    // REPLACES `shadow_strength` (removed 2026-08-03). That knob blended the
+    // DIRECTIONAL toward-the-sun horizon visibility into `ao` -- and `ao`
+    // multiplies ambient sky irradiance only (composite.frag: `ambient =
+    // diffuse * sky_irradiance(normal) * ao`). "Is the sun visible along this
+    // one azimuth" is the wrong question to ask of an omnidirectional
+    // channel; the same class of mistake as the terminator bug fixed in
+    // 8039bcdc, which corrected that term's baseline but left its semantics
+    // intact. It was also a mix() factor shipping at 1.40, and
+    // mix(1.0, v, 1.40) = 1.4v - 0.4 goes negative below v = 0.286.
+    //
+    // The replacement asks the direction-free question instead:
+    // tileset_horizon_mean_occlusion (the mean of the 8 baked azimuth bins),
+    // which is what rt_surface_common.glsl / rt_lighting.rgen already use to
+    // scale sky irradiance at a traced hit. Raster now matches RT rather than
+    // inventing its own form.
+    //
+    // DEFAULT 0.7 is RT's existing hardcoded cap, not a carry-over of 1.40:
+    // rt_lighting.rgen scaled sky irradiance by horizon_strength *
+    // mean_occlusion * 0.7, and that 0.7 now reads THIS field so one knob
+    // moves both paths together. Its rationale carries over verbatim -- even
+    // a fully-occluded direction still sees some sky through nearby gaps, so
+    // irradiance is dimmed, not zeroed. A true [0,1] blend: 0 = no ambient
+    // horizon darkening, 1 = the full mean-occlusion term. Clamped to [0,1]
+    // in both shaders so it can never extrapolate the way 1.40 did.
+    float horizon_ambient_strength = 0.7f;
     // Horizon-map occlusion strength (Phase 2 horizon-map lighting): blends
     // the per-direction baked horizon occlusion toward 0 (no occlusion)
-    // instead of always applying it at full strength. Mirrors ao_strength /
-    // shadow_strength's blend-factor convention. Consumed by
+    // instead of always applying it at full strength. Mirrors ao_strength's
+    // blend-factor convention. Consumed by
     // TilesetParamsGpu.pom_c.w (see vk_scene_renderer.h/.cpp) and by
-    // tileset_common.glsl's tileset_horizon_occlusion.
+    // tileset_common.glsl's tileset_horizon_occlusion. Gates BOTH the sun
+    // gate (out_orm.a -> rt_shadow.rgen) and, together with
+    // horizon_ambient_strength above, the ambient term.
     float horizon_strength   = 0.47f;
     // Diagnostic overlay for the horizon term, 0 = off (shipped). Draws a
     // greyscale field over the parallaxed ground in place of its albedo, read

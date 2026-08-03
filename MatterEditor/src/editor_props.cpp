@@ -164,8 +164,15 @@ const auto s_pom = matter::props::group<matter::TilesetPomSettings>(
         .label("Fade band").range(1.0f, 200.0f).units("m"),
     prop(&matter::TilesetPomSettings::ao_strength, "ao_strength")
         .label("AO strength").range(0.0f, 1.0f),
-    prop(&matter::TilesetPomSettings::shadow_strength, "shadow_strength")
-        .label("Shadow strength").range(0.0f, 2.0f),
+    prop(&matter::TilesetPomSettings::horizon_ambient_strength,
+         "horizon_ambient_strength")
+        .label("Horizon ambient").range(0.0f, 1.0f)
+        .doc("How strongly the baked horizon darkens AMBIENT sky irradiance, "
+             "using the direction-free mean of the 8 baked azimuth bins. "
+             "Scales the same term rt_lighting.rgen applies at a traced hit, "
+             "so raster and RT stay in step. Replaced `shadow_strength`, "
+             "which asked the directional toward-the-sun question of an "
+             "omnidirectional channel and shipped at 1.40 in a 0-1 blend."),
     prop(&matter::TilesetPomSettings::horizon_strength, "horizon_strength")
         .label("Horizon occlusion").range(0.0f, 1.0f)
         .doc("Blends the baked per-direction horizon occlusion toward 0. No "

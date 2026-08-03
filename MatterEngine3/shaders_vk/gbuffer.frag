@@ -136,14 +136,26 @@ void main() {
     // reads them unless in_vt_slot != 0.
     vec3 detail_albedo = vec3(1.0);
     vec3 detail_orm = vec3(1.0);
+    // The AMBIENT share of the baked horizon term: DIRECTION-FREE, because
+    // its consumer is `ao`, and ao multiplies ambient sky irradiance only
+    // (composite.frag: `ambient = diffuse * sky_irradiance(normal) * ao`).
+    // Built from tileset_horizon_mean_occlusion -- the mean of all 8 baked
+    // azimuth bins -- which is the same instrument rt_lighting.rgen scales
+    // sky irradiance by at a traced hit.
+    //
+    // It used to be the DIRECTIONAL toward-the-sun visibility scaled by a
+    // knob called shadow_strength. That asked "is the sun visible along this
+    // one azimuth" of an omnidirectional channel, which is a category error
+    // of the same kind as the terminator bug fixed in 8039bcdc (that fix
+    // corrected the term's baseline but left its semantics intact). Ablating
+    // it measured mean 3.07/255 on PomProof under a sky-dominated sun -- more
+    // than ao_strength's 1.78 at the same camera -- so it was doing real work
+    // in the wrong shape, and had to be replaced rather than removed.
     float horizon_visibility = 1.0;
-    // The SUN's share of the same term, exported through out_orm.a for
-    // rt_shadow.rgen (see the write at the bottom of main). Deliberately a
-    // second variable rather than a reuse of horizon_visibility: that one is
-    // scaled by shadow_strength (tileset.pom_c.z) because its consumer is the
-    // AMBIENT channel and that knob is what the UI offers for it. The sun gate
-    // must not inherit an extrapolating blend factor -- pom_c.z ships at 1.40,
-    // and mix(1.0, v, 1.40) = 1.4v - 0.4 goes NEGATIVE below v = 0.286.
+    // The SUN's share of the same baked map, exported through out_orm.a for
+    // rt_shadow.rgen (see the write at the bottom of main). Still DIRECTIONAL
+    // and still a separate variable, because the sun genuinely is a direction:
+    // this is the one question the per-azimuth query is right for.
     //
     // 1.0 everywhere the POM branch does not run, which is what makes this
     // channel free: every non-tileset fragment, every chartless part and every
@@ -421,6 +433,48 @@ void main() {
                 mix(1.0, clamp(marched_orm.r, 0.0, 1.0), tileset.pom_c.y);
             float marched_ao = ao * marched_ao_tex_effective;
 
+            // ---- AMBIENT horizon occlusion (direction-free) --------------
+            //
+            // OUTSIDE the sun gate below, deliberately. Ambient arrives from
+            // the whole sky; how much of the sky this texel's baked horizon
+            // hides is a fact about the ground, not about where the sun is.
+            // The old directional form lived inside that gate and so switched
+            // off entirely once the sun set -- which also put it out of step
+            // with rt_lighting.rgen, whose hit-path sky_scale has never been
+            // sun-gated.
+            //
+            // SAME FRAME as everything else in this branch: marched_uv under
+            // a warp field, marched_pos.xz without one, with the matching
+            // derivative pair -- the addressing fix of 74b09902 / 8e9fa639
+            // applies to this query too. No azimuth to rotate (see
+            // tileset_horizon_mean_occlusion): the mean over all 8 bins is
+            // basis-independent, only the address moves.
+            //
+            // SAME EXPRESSION as rt_lighting.rgen's sky_scale:
+            //   1 - clamp(horizon_strength) * mean_occlusion * ambient_strength
+            // so raster and RT scale one instrument by one pair of knobs.
+            // Both factors are clamped to [0,1]; the term this replaced was a
+            // mix() factor shipping at 1.40, and mix(1,v,1.40) = 1.4v - 0.4
+            // goes negative below v = 0.286, surviving only on the UNORM
+            // attachment's clamp.
+            float mean_occlusion =
+                warp_valid
+                    ? tileset_horizon_mean_occlusion(
+                          tileset_slot, marched_uv,
+                          marched_duvdx, marched_duvdy)
+                    : tileset_horizon_mean_occlusion(
+                          tileset_slot, marched_pos.xz, mdWdx, mdWdy);
+            float ambient_visibility =
+                1.0 - clamp(tileset.pom_c.w, 0.0, 1.0) * mean_occlusion *
+                          clamp(tileset.pom_c.z, 0.0, 1.0);
+            marched_ao *= ambient_visibility;
+            // Kept separately so the near-band AO composite can re-apply the
+            // horizon term on top of the PAGE's occlusion. Folding it into
+            // `ao` and dividing back out there would drag the detail AO along
+            // with it, and the detail AO now goes through the
+            // mean-preserving ratio instead.
+            horizon_visibility = ambient_visibility;
+
             // Phase 2 (horizon-map lighting): baked per-direction horizon
             // occlusion toward the sun, replacing the old in-shader
             // self-shadow march (tileset_self_shadow, now retired -- see
@@ -524,18 +578,14 @@ void main() {
                               tileset_slot, marched_pos.xz, q_dir_uv, q_sin,
                               mdWdx, mdWdy, dPdx.xz, dPdy.xz);
                 float visibility = 1.0 - occlusion;
-                // Ground POM UI "shadow strength" (tileset.pom_c.z): blends
-                // the horizon-occlusion visibility toward 1.0 (unoccluded)
-                // instead of always applying it at full strength -- same
-                // slider semantics the old self-shadow march used.
-                float shadow_effective = mix(1.0, visibility, tileset.pom_c.z);
-                marched_ao *= shadow_effective;
-                // Phase 0: kept separately so the near-band AO composite can
-                // re-apply the horizon term on top of the PAGE's occlusion.
-                // Folding it into `ao` and dividing back out there would drag
-                // the detail AO along with it, and the detail AO now goes
-                // through the mean-preserving ratio instead.
-                horizon_visibility = shadow_effective;
+                // NOTHING AMBIENT IS COMPUTED HERE ANY MORE. `marched_ao` and
+                // `horizon_visibility` used to be multiplied by
+                // mix(1.0, visibility, shadow_strength) at this point, which
+                // spent a single-azimuth answer on the omnidirectional AO
+                // channel; the direction-free replacement now runs above,
+                // outside this sun gate. What remains is the one consumer the
+                // per-azimuth query is genuinely right for: the sun.
+                //
                 // THE SUN'S COPY, exported for rt_shadow.rgen. Unscaled by
                 // pom_c.z (see the declaration) and unclamped-but-bounded:
                 // tileset_horizon_relief_occlusion_frame already clamps its
