@@ -8,7 +8,10 @@
 // (§4, the warped ground field). One sentence: a per-sector, bake-time
 // (u, v) parameterisation of the rung-0 surface mesh, stored per vertex,
 // continuous across the whole sector by construction and across sector
-// borders by a deterministic shared-chain pin rule, so a seam cannot exist;
+// borders by a deterministic shared-chain pin rule — plus, at the CORNERS
+// where two chains meet and no single chain owns the vertex, a shared-corner
+// pin rule (the corner's own anchored world XZ, which each chain is then
+// fitted to terminate at) — so a seam cannot exist;
 // the price is smooth low-frequency stretch where the surface is
 // intrinsically curved (§2.4 measures that kind of error as statistically
 // invisible on stochastic content).
