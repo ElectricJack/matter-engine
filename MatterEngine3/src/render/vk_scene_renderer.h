@@ -1157,7 +1157,8 @@ private:
     // vec4 pom_a{steps,refine,max_distance,fade_band},
     // vec4 pom_b{fade_center,fade_width,max_relief_m,max_march_m},
     // vec4 sun_dir_intensity{dir.xyz,intensity} (Phase 2 Task 11),
-    // vec4 pom_c{datum_bias_m,ao_strength,shadow_strength,horizon_strength}
+    // vec4 pom_c{datum_bias_m,ao_strength,horizon_ambient_strength,
+    //            horizon_strength}
     // (Ground POM UI knobs; .w repurposed from "reserved" for the horizon-map
     // lighting feature -- see TilesetPomSettings::horizon_strength),
     // vec4 vt_near{near_band_m, near_fade_m, 0, 0} (Phase 0; see
@@ -1220,13 +1221,19 @@ private:
         // from the decoded relief height before the clamp in
         // tileset_relief_h, letting baked litter stand proud of a recessed
         // dirt floor instead of clamping flat at the datum. y = ao_strength,
-        // z = shadow_strength -- gbuffer.frag blend factors for the baked AO
-        // texel and the self-shadow march result (0 = fully suppressed, 1 =
-        // full baked strength). w = horizon_strength (Phase 2 horizon-map
-        // lighting) -- blends the per-direction baked horizon occlusion
-        // toward 0 (fully visible) instead of always applying it at full
-        // strength; see tileset_common.glsl's tileset_horizon_occlusion.
-        float pom_datum_bias_ao_shadow[4] = {0.105f, 0.63f, 0.68f, 1.0f};
+        // z = horizon_ambient_strength -- how strongly the DIRECTION-FREE
+        // mean horizon occlusion darkens ambient sky irradiance, read by
+        // gbuffer.frag's ambient term AND by rt_lighting.rgen's hit-path
+        // sky_scale (where it replaced a hardcoded 0.7), so one knob keeps
+        // raster and RT in step. Replaced shadow_strength, which blended the
+        // DIRECTIONAL toward-the-sun visibility into the same omnidirectional
+        // channel and shipped at 1.40 in a mix() documented as 0-1.
+        // w = horizon_strength (Phase 2 horizon-map lighting) -- blends the
+        // per-direction baked horizon occlusion toward 0 (fully visible)
+        // instead of always applying it at full strength; see
+        // tileset_common.glsl's tileset_horizon_occlusion. Gates the sun term
+        // and, multiplied by z, the ambient one.
+        float pom_datum_bias_ao_shadow[4] = {0.105f, 0.63f, 0.7f, 1.0f};
         // Phase 0 (matter::VtNearBandSettings): x = near_band_m (full-strength
         // reach of the live-detail modulation), y = near_fade_m (fade width
         // beyond it), z/w unused. Defaults match the struct's compiled

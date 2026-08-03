@@ -3490,7 +3490,8 @@ void VkSceneRenderer::write_tileset_params_buffer() {
     params.pom_max_march_m = tileset_pom_settings_.max_march_m;
     params.pom_datum_bias_ao_shadow[0] = tileset_pom_settings_.datum_bias_m;
     params.pom_datum_bias_ao_shadow[1] = tileset_pom_settings_.ao_strength;
-    params.pom_datum_bias_ao_shadow[2] = tileset_pom_settings_.shadow_strength;
+    params.pom_datum_bias_ao_shadow[2] =
+        tileset_pom_settings_.horizon_ambient_strength;
     params.pom_datum_bias_ao_shadow[3] = tileset_pom_settings_.horizon_strength;
     // Phase 0 near band (matter::VtNearBandSettings). Deliberately NOT
     // derived from the POM distance pair above any more -- see the struct's

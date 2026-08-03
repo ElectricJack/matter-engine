@@ -72,13 +72,18 @@ layout(set = TILESET_SET, binding = TILESET_PARAMS_BINDING, std140)
     // POM" UI): x = datum_bias_m -- subtracted from the decoded relief height
     // before the clamp in tileset_relief_h, so raising it sinks the dirt
     // floor and lets baked litter (which tops out above the dirt-mean datum)
-    // stand proud instead of clamping flat at 0. y = ao_strength, z =
-    // shadow_strength -- both blend factors (0 = baked term fully
-    // suppressed, 1 = full baked strength) applied in gbuffer.frag. w =
-    // horizon_strength (Phase 2 horizon-map lighting) -- blends the
-    // per-direction baked horizon occlusion toward 0 (fully visible)
-    // instead of always applying it at full strength; see
-    // tileset_horizon_occlusion below.
+    // stand proud instead of clamping flat at 0. y = ao_strength -- blend
+    // factor (0 = baked term fully suppressed, 1 = full baked strength) for
+    // the baked cavity-AO texel, applied in gbuffer.frag. z =
+    // horizon_ambient_strength -- how strongly the DIRECTION-FREE mean
+    // horizon occlusion (tileset_horizon_mean_occlusion below) darkens
+    // ambient sky irradiance. Read by gbuffer.frag's ambient term and by
+    // rt_lighting.rgen's hit-path sky_scale, so raster and RT scale the same
+    // instrument by the same knob. w = horizon_strength (Phase 2 horizon-map
+    // lighting) -- blends the per-direction baked horizon occlusion toward 0
+    // (fully visible) instead of always applying it at full strength; see
+    // tileset_horizon_occlusion below. Gates the sun term, and multiplied by
+    // z the ambient one.
     vec4 pom_c;
     // Phase 0 chart-VT near band (matter::VtNearBandSettings, property group
     // "render.vt"): x = near_band_m, y = near_fade_m, z/w unused. The band is
@@ -938,11 +943,23 @@ float tileset_horizon_relief_occlusion_frame(int slot, vec2 uv, vec2 dir_uv,
 // would double-apply it wherever a caller also multiplies by
 // tileset.pom_c.w. Returns 0 (no occlusion) when the slot has no horizon
 // data.
-float tileset_horizon_mean_occlusion(int slot, vec2 worldXZ,
+//
+// FRAME: only the ADDRESS moves. The directional queries above need the whole
+// frame treatment -- azimuth resolved onto the addressing frame's (u, v) and
+// elevation against its normal -- because they pick ONE azimuth bin out of the
+// 8 and which bin that is depends on the basis. This one averages ALL EIGHT,
+// and the mean of a full set is invariant to the basis those directions are
+// expressed in, so there is no direction to rotate. What still has to move is
+// `uv`: it names the texel, and a warp-addressed ground names its texels in
+// warp uv, not world XZ. Hence the parameter is `uv` and not `worldXZ` --
+// gbuffer.frag passes marched_uv under a warp field and marched_pos.xz
+// without one, exactly as the directional queries do; the RT hit paths, which
+// have no warp frame, pass world XZ.
+float tileset_horizon_mean_occlusion(int slot, vec2 uv,
                                      vec2 dWdx, vec2 dWdy) {
     if (!tileset_has_horizon(slot)) return 0.0;
-    vec4 texA = tileset_sample(slot, TILESET_CH_HORIZON_A, worldXZ, dWdx, dWdy);
-    vec4 texB = tileset_sample(slot, TILESET_CH_HORIZON_B, worldXZ, dWdx, dWdy);
+    vec4 texA = tileset_sample(slot, TILESET_CH_HORIZON_A, uv, dWdx, dWdy);
+    vec4 texB = tileset_sample(slot, TILESET_CH_HORIZON_B, uv, dWdx, dWdy);
     float mean_sin = (texA.x + texA.y + texA.z + texA.w +
                       texB.x + texB.y + texB.z + texB.w) * 0.125;
     return clamp(1.0 - mean_sin, 0.0, 1.0);

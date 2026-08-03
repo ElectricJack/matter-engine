@@ -304,12 +304,18 @@ vec3 hit_radiance(RtSurface surface, out vec3 base) {
     // Phase 2 (horizon-map lighting): hollow ground seen in reflections/GI
     // picks up hollow darkening -- baked horizon occlusion attenuates the
     // sky-irradiance term (not the sun/emission terms, which already have
-    // their own visibility handling) by up to horizon_strength * 0.7. The
-    // 0.7 cap is a documented approximation: even a fully-occluded direction
-    // still sees SOME sky through nearby gaps, so irradiance is dimmed, not
-    // zeroed.
-    float sky_scale =
-        1.0 - clamp(tileset.pom_c.w, 0.0, 1.0) * mean_occlusion * 0.7;
+    // their own visibility handling) by up to horizon_strength *
+    // horizon_ambient_strength. That second factor was a hardcoded 0.7 until
+    // 2026-08-03; it is now tileset.pom_c.z, the SAME knob gbuffer.frag's
+    // ambient term reads, so raster and RT cannot drift apart when it is
+    // tuned. Its default is 0.7, so this is a no-op at ship settings.
+    //
+    // The cap remains a documented approximation: even a fully-occluded
+    // direction still sees SOME sky through nearby gaps, so irradiance is
+    // dimmed, not zeroed.
+    float sky_scale = 1.0 - clamp(tileset.pom_c.w, 0.0, 1.0) *
+                                mean_occlusion *
+                                clamp(tileset.pom_c.z, 0.0, 1.0);
     return emission + rt_sky_irradiance(shading_normal) * base * sky_scale;
 }
 
