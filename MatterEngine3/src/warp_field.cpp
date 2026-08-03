@@ -6,7 +6,9 @@
 // Solver shape: local/global ARAP (as-rigid-as-possible) parameterisation of
 // the welded sector surface onto (u, v), with
 //   * the sector border pinned by the deterministic shared-chain rule (§4.2)
-//     so neighbouring sectors agree bitwise at their shared border;
+//     so neighbouring sectors agree bitwise at their shared border — both the
+//     uv VALUE (compute_border_pins) and the uv DERIVATIVE, i.e. the per-vertex
+//     frame (apply_chain_frames), which a one-sided incident fan cannot see;
 //   * clamped cotangent weights (positive => the harmonic init has the
 //     convex-combination structure that keeps folds rare);
 //   * a harmonic init from the anchored world-XZ guess;
@@ -128,6 +130,13 @@ bool build_solve_mesh(const Tri* tris, size_t tri_count,
 struct PinSet {
     std::vector<uint8_t> pinned;   // per vertex
     std::vector<double2> uv;       // valid where pinned
+    // Chain-local uv DERIVATIVE, alongside the pinned uv VALUE and computed
+    // from the same shared chain: `tangent` is the unit 3D direction of the
+    // (smoothed) chain at this vertex and `rate` is d(u,v)/ds along it. Both
+    // are functions of the bitwise-shared chain alone, so two sectors of a
+    // border compute them identically — see apply_chain_frames().
+    std::vector<float3> tangent;   // valid where pinned
+    std::vector<float2> rate;      // valid where pinned
 };
 
 void compute_border_pins(const SolveMesh& mesh, const SolveOptions& opts,
@@ -136,6 +145,8 @@ void compute_border_pins(const SolveMesh& mesh, const SolveOptions& opts,
     const size_t nt = mesh.tri_count();
     pins.pinned.assign(nv, 0);
     pins.uv.assign(nv, double2{});
+    pins.tangent.assign(nv, float3{});
+    pins.rate.assign(nv, float2{});
 
     // Boundary edges: exactly one incident triangle.
     std::unordered_map<uint64_t, uint32_t> edge_count;
@@ -447,6 +458,37 @@ void compute_border_pins(const SolveMesh& mesh, const SolveOptions& opts,
                 const uint32_t v = chain[i];
                 pins.pinned[v] = 1;
                 pins.uv[v] = double2{tr[i].x + bx, tr[i].y + bz};
+                // Chain-local uv DERIVATIVE, from the same shared chain that
+                // produced the value above: a centered difference of the
+                // trace over the smoothed 3D geometry. The anchor shift
+                // (bx, bz) is a constant, so it drops out — this is a
+                // function of the chain alone, exactly like the pin, and
+                // therefore identical from both sectors. Consumed by
+                // apply_chain_frames(); see the long note there for why the
+                // Jacobian at a border vertex cannot be measured from one
+                // sector's triangles.
+                size_t i0, i1;
+                if (is_loop) {
+                    i0 = (i == 0) ? n - 2 : i - 1;
+                    i1 = (i + 1 == n) ? 1 : i + 1;
+                } else {
+                    i0 = (i == 0) ? 0 : i - 1;
+                    i1 = (i + 1 == n) ? n - 1 : i + 1;
+                }
+                const double ex = qx[i1] - qx[i0];
+                const double ey = qy[i1] - qy[i0];
+                const double ez = qz[i1] - qz[i0];
+                const double el = std::sqrt(ex * ex + ey * ey + ez * ez);
+                if (el > 1e-9) {
+                    pins.tangent[v] =
+                        f3(float(ex / el), float(ey / el), float(ez / el));
+                    pins.rate[v] =
+                        make_float2(float((tr[i1].x - tr[i0].x) / el),
+                                    float((tr[i1].y - tr[i0].y) / el));
+                } else {
+                    pins.tangent[v] = f3(0, 0, 0);
+                    pins.rate[v] = make_float2(0.0f, 0.0f);
+                }
             }
         }
     }
@@ -711,6 +753,79 @@ inline void tri_jacobian(const float3& p0, const float3& p1, const float3& p2,
     const float inv = 1.0f / n2;
     gu = (c2 * (uv1.x - uv0.x) - c1 * (uv2.x - uv0.x)) * inv;
     gv = (c2 * (uv1.y - uv0.y) - c1 * (uv2.y - uv0.y)) * inv;
+}
+
+// Border-chain frames (the derivative half of the §4.2 pin rule).
+//
+// A vertex's Jacobian rows are averaged from its INCIDENT triangles, and at a
+// border-chain vertex that fan is one-sided: the sector owns the triangles on
+// its side of the chain and none on the other. The averaged rows are therefore
+// a one-sided difference, and the two sectors sharing the chain take theirs
+// from opposite sides. Nothing makes them agree — measured on the committed
+// border pair, grad-u disagreed by up to 40 degrees, essentially all of it in
+// the ACROSS-chain component (the along-chain component is fixed by the shared
+// pins and matched to 1e-3). uv is continuous there but not smooth: the pin is
+// a crease, and each sector sees one of its two faces.
+//
+// That was invisible while the frame only scaled a few centimetres of march
+// displacement. Using it as a shading BASIS (issue b005ca2e) turned it into a
+// hard normal seam along every sector border.
+//
+// The fix is to derive the frame from the same shared data the pin value comes
+// from. The chain supplies d(u,v)/ds along itself exactly (`rate`, `tangent`);
+// the across-chain direction is not measurable from either sector, so it is
+// completed by the conformality the frame's own storage format already assumes
+// (evaluate() drops the grad-v-along-T shear for the same reason). With
+// f = N x e, a conformal map sends f to (w.y, -w.x):
+//
+//     grad_u = w.x * e + w.y * f        grad_v = w.y * e - w.x * f
+//
+// which on flat, world-aligned ground is exactly grad_u = +X, grad_v = +Z,
+// i.e. the sv = -1 the shader's frame convention expects. On the measured
+// border pair it lands within 1e-3 of the MEAN of the two one-sided estimates
+// — the centered difference neither sector could see on its own.
+//
+// N (the plane the frame lives in) is taken from the vertex's own averaged
+// Jacobian rather than the mesh winding, and that is not a convenience — it
+// makes the replacement orientation-preserving by construction. With
+// N = -normalize(gu x gv), the frame written back satisfies
+// gu' x gv' = -|w|^2 (e x f) = +|w|^2 * normalize(gu x gv): the same
+// handedness as the frame it replaces, whatever the mesh winding is and even
+// where the field is locally folded. So this cannot introduce a sign flip in
+// sv, i.e. it cannot mirror a relief normal's green channel (see the
+// five-places convention note in tileset_common.glsl, and the open
+// render-ground-normal-green-inverted issue this must not disturb).
+//
+// N is the one input here that is not shared
+// across the border, but evaluate() re-projects onto the RENDER vertex's
+// normal anyway: a tilt of delta between the two sectors' N leaves the
+// projected direction of f unchanged (f is perpendicular to e either way) and
+// only scales su/sv by cos(delta). Direction — the thing that seams — is
+// exact; the scales move by second-order amounts that reach nothing but the
+// march's few-centimetre displacement.
+static void apply_chain_frames(const PinSet& pins, Field& out) {
+    for (size_t v = 0; v < out.positions.size(); ++v) {
+        if (!pins.pinned[v]) continue;
+        const float3 e_raw = pins.tangent[v];
+        const float2 w = pins.rate[v];
+        // A chain too short/degenerate to differentiate, or a zero-rate pin,
+        // keeps the averaged frame: a shared-but-meaningless frame would be
+        // worse than an unshared one.
+        if (dot(e_raw, e_raw) < 0.5f) continue;
+        if (w.x * w.x + w.y * w.y < 1e-12f) continue;
+        VertexField& vf = out.verts[v];
+        float3 nrm = cross(vf.gu, vf.gv) * -1.0f;
+        const float nl = std::sqrt(dot(nrm, nrm));
+        if (!(nl > 1e-12f)) continue;  // folded/degenerate: leave it alone
+        nrm = nrm * (1.0f / nl);
+        float3 e = e_raw - nrm * dot(nrm, e_raw);
+        const float el = std::sqrt(dot(e, e));
+        if (!(el > 1e-6f)) continue;  // chain runs along the normal
+        e = e * (1.0f / el);
+        const float3 f = cross(nrm, e);
+        vf.gu = e * w.x + f * w.y;
+        vf.gv = e * w.y - f * w.x;
+    }
 }
 
 struct WeightedValue {
@@ -1081,6 +1196,10 @@ bool solve(const Tri* tris, size_t tri_count, const uint8_t* skirt_mask,
             out.verts[v].gv = out.verts[v].gv * (1.0f / wsum[v]);
         }
     }
+    // Border-chain vertices: replace the one-sided average with the frame the
+    // shared chain determines, so the FRAME is border-continuous for the same
+    // reason the uv VALUE is.
+    apply_chain_frames(pins, out);
 
     // Uniform XZ triangle grid for evaluate().
     {

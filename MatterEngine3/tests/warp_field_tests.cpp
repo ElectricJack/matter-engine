@@ -581,6 +581,82 @@ static void gate_border_pair() {
     CHECK(shared > 0 && exact == shared, msg);
 }
 
+// Solve both sectors of the committed border pair and compare the per-vertex
+// FRAME (gu/gv) on the shared chain, the way gate_border_pair() compares the
+// pinned uv. The frame is a shading BASIS since issue b005ca2e, so a frame
+// that steps across a border is a visible normal seam even where the uv is
+// continuous. Before apply_chain_frames() this measured 40.1 degrees of
+// grad-u disagreement; the gate is set an order of magnitude below what the
+// eye can find on flat ground at grazing angles.
+static void gate_frame_pair() {
+    Fixture a, b;
+    if (!load_wfx(fixture_dir() + "/border_a.wfx", a) ||
+        !load_wfx(fixture_dir() + "/border_b.wfx", b)) {
+        CHECK(false, "frame pair fixtures load");
+        return;
+    }
+    warp_field::SolveOptions oa, ob;
+    oa.anchor_x = a.anchor_x; oa.anchor_z = a.anchor_z;
+    ob.anchor_x = b.anchor_x; ob.anchor_z = b.anchor_z;
+    warp_field::Field fa, fb;
+    if (!warp_field::solve(a.tris.data(), a.tris.size(), a.skirt.data(), oa,
+                           fa) ||
+        !warp_field::solve(b.tris.data(), b.tris.size(), b.skirt.data(), ob,
+                           fb)) {
+        CHECK(false, "frame pair: both sectors solve");
+        return;
+    }
+    struct WKey { float x, y, z;
+        bool operator<(const WKey& o) const {
+            if (x != o.x) return x < o.x;
+            if (y != o.y) return y < o.y;
+            return z < o.z; } };
+    std::map<WKey, uint32_t> amap;
+    for (uint32_t v = 0; v < fa.positions.size(); ++v) {
+        const float3& l = fa.positions[v];
+        amap[{float(oa.anchor_x + double(l.x)), l.y,
+              float(oa.anchor_z + double(l.z))}] = v;
+    }
+    size_t n = 0;
+    double max_duv = 0, max_dgu = 0, max_dgv = 0, max_ang = 0;
+    for (uint32_t v = 0; v < fb.positions.size(); ++v) {
+        const float3& l = fb.positions[v];
+        auto it = amap.find({float(ob.anchor_x + double(l.x)), l.y,
+                             float(ob.anchor_z + double(l.z))});
+        if (it == amap.end()) continue;
+        const warp_field::VertexField& va = fa.verts[it->second];
+        const warp_field::VertexField& vb = fb.verts[v];
+        ++n;
+        max_duv = std::max<double>(max_duv,
+            std::max(std::fabs(va.uv.x - vb.uv.x), std::fabs(va.uv.y - vb.uv.y)));
+        auto len = [](float3 q){ return std::sqrt(q.x*q.x+q.y*q.y+q.z*q.z); };
+        float3 du{va.gu.x-vb.gu.x, va.gu.y-vb.gu.y, va.gu.z-vb.gu.z};
+        float3 dv{va.gv.x-vb.gv.x, va.gv.y-vb.gv.y, va.gv.z-vb.gv.z};
+        max_dgu = std::max<double>(max_dgu, len(du));
+        max_dgv = std::max<double>(max_dgv, len(dv));
+        const float la = len(va.gu), lb = len(vb.gu);
+        if (la > 1e-6f && lb > 1e-6f) {
+            double c = (va.gu.x*vb.gu.x + va.gu.y*vb.gu.y + va.gu.z*vb.gu.z)
+                       / (double(la) * lb);
+            c = std::max(-1.0, std::min(1.0, c));
+            max_ang = std::max(max_ang, std::acos(c) * 57.2957795);
+        }
+    }
+    std::printf("[frame pair] shared solve verts=%zu  max|duv|=%.4g  "
+                "max|d gu|=%.4g  max|d gv|=%.4g  max angle(gu)=%.2f deg\n",
+                n, max_duv, max_dgu, max_dgv, max_ang);
+    CHECK(n >= 16, "frame pair: shared chain found (>= 16 verts)");
+    char msg[160];
+    std::snprintf(msg, sizeof msg,
+                  "frame pair: grad-u agrees across the border "
+                  "(%.2f deg <= 2.00)", max_ang);
+    CHECK(n > 0 && max_ang <= 2.0, msg);
+    std::snprintf(msg, sizeof msg,
+                  "frame pair: grad-v agrees across the border "
+                  "(|d| %.4g <= 0.02)", max_dgv);
+    CHECK(n > 0 && max_dgv <= 0.02, msg);
+}
+
 // --dump-uv <fixture.wfx> <out.png>: render the solved uv layout for eyes-on
 // debugging. uv-space triangles (gray = ok, red = folded), pins in blue.
 static int dump_uv(const char* fixture_path, const char* out_png) {
@@ -680,6 +756,7 @@ int main(int argc, char** argv) {
     gate_fixture("mid_steep", false, 0, 0, 0, 0);
     gate_fixture("extreme_wall", true, 2.5f, 3.0f, 0.3f, 1.0f);
     gate_border_pair();
+    gate_frame_pair();
 
     std::printf("warp_field_tests: %d failure(s)\n", g_failures);
     return g_failures == 0 ? 0 : 1;

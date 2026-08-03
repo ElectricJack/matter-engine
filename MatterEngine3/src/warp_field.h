@@ -74,6 +74,13 @@ struct SolveOptions {
 // averaged from incident triangles (area-weighted) — kept as full float3
 // vectors here; the oct-tangent + f16-scale packing happens at evaluate()
 // against the *render* vertex's own shading normal.
+//
+// EXCEPT on border-chain vertices, where the incident fan is one-sided and the
+// average would be a one-sided difference that the neighbouring sector takes
+// from the other side. Those get a frame derived from the shared chain
+// instead, so the frame is border-continuous for the same reason the uv is —
+// see apply_chain_frames() in warp_field.cpp. It matters because the frame is
+// a shading BASIS downstream (gbuffer.frag), not just a march scale.
 struct VertexField {
     float2 uv;        // world-anchored metres
     float3 gu, gv;    // d(u)/d(pos), d(v)/d(pos)

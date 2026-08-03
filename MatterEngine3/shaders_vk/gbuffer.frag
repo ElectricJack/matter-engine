@@ -172,23 +172,18 @@ void main() {
     // and therefore the axes tileset_sample_ground_warp must rotate its
     // tangent-space normal through. Only read when warp_valid.
     //
-    // KNOWN UPSTREAM DEFECT, measured while landing issue b005ca2e — read this
-    // before blaming the shading for a seam. The warped ground field's uv is
-    // continuous across sector borders, but the per-vertex FRAME it ships
-    // alongside (in_warp_tangent / su / sv, packed by warp_field.cpp's
-    // evaluate()) is NOT: on PomProofBrick the tangent's z component steps
-    // discontinuously across a world-locked line at a sector border, over a
-    // single pixel, while the uv either side shows no step at all. Measured by
-    // painting dir_u into albedo: the step is in dir_u.z only, dir_u.x is
-    // continuous through it.
-    //
-    // The march barely notices, which is why this went unseen: uv(p) = uv0 +
-    // (gu.dp, gv.dp) is dominated by the interpolated uv0, and the frame only
-    // scales a displacement of at most a few centimetres. A normal BASIS uses
-    // the frame at full strength, so the same defect becomes a hard shading
-    // seam. That is a warp_field.cpp problem — the stored frame disagreeing
-    // with the stored uv — not a reason to rotate the normal through some
-    // other frame here, which would only trade a visible seam for a silently
+    // This frame is border-continuous, and that is not free — read
+    // warp_field.cpp's apply_chain_frames() before assuming it. A vertex's
+    // Jacobian is averaged from its incident triangles, which at a sector
+    // border is a ONE-SIDED fan, so for a while the two sectors sharing a
+    // border shipped frames that disagreed by up to 40 degrees while their uv
+    // matched to 1e-3. The march barely noticed (uv(p) = uv0 + (gu.dp, gv.dp)
+    // is dominated by the interpolated uv0 and the frame only scales a few
+    // centimetres of displacement); a normal BASIS uses the frame at full
+    // strength, so the same data turned into a hard shading seam the moment
+    // issue b005ca2e started reading the material through it. Fixed where it
+    // lived, in the solve — NOT by rotating the normal through some other
+    // frame here, which would only have traded a visible seam for a silently
     // wrong tangent direction everywhere.
     vec3 warp_dir_u = vec3(1.0, 0.0, 0.0);
     vec3 warp_dir_v = vec3(0.0, 0.0, 1.0);
