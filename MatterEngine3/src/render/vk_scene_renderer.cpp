@@ -3507,6 +3507,14 @@ void VkSceneRenderer::write_tileset_params_buffer() {
         }();
         params.vt_near_band[2] = warp_enabled ? 1.0f : 0.0f;
     }
+    // vt_near.w: the horizon diagnostic mode (TilesetPomSettings::
+    // horizon_debug, viewer "Ground POM" UI). 0 = off, which is what every
+    // shipped frame uploads; gbuffer.frag's overlay branch is a
+    // uniform-conditional and does nothing at 0. Carried here rather than in
+    // a new vec4 because vt_near.w was the last unused component and
+    // TilesetParamsGpu's size is static_asserted at 464 bytes.
+    params.vt_near_band[3] =
+        static_cast<float>(tileset_pom_settings_.horizon_debug);
     // Task 11: direction-to-sun, same convention as the RT shadow push
     // constants (record_ray_trace_dispatch): normalize(-sun_direction),
     // since VkSceneLighting::sun_direction points FROM the sun toward the
@@ -10764,8 +10772,12 @@ bool VkSceneRenderer::record_composite_to_swapchain(
                             &frame_slot.display_descriptor_set, 0, nullptr);
     // composite.frag's debug_view 3.0 packs linear depth across R/G/B; it has
     // to reach the swapchain byte-for-byte, so the display pass runs in
-    // passthrough for that view alone (every other view, including the normal
-    // buffer, keeps its exposure + ACES exactly as before). srgb_output
+    // passthrough for it (every lit view, including the normal buffer, keeps
+    // its exposure + ACES exactly as before). The > 2.5 test now also covers
+    // debug_view 4.0, the raw GBuffer albedo -- and must: that view exists to
+    // read a diagnostic FIELD off the pixels (render.pom.horizon_debug), and a
+    // tone curve would make the bytes mean something other than the value the
+    // shader wrote. srgb_output
     // cancels the hardware OETF when the swapchain is an _SRGB format --
     // choose_surface_format prefers B8G8R8A8_SRGB, and the readback hands the
     // raw swapchain bytes back with only a BGR swap.

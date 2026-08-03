@@ -1166,8 +1166,9 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
     // linear depth into R/G/B (log-depth coarse + quadrature fine) and the
     // display pass drops to passthrough for it, so a screenshot decodes back
     // to metres. It looks like banded noise on screen; that is correct.
-    const char* debug_views[] = { "None", "Normals", "Depth" };
-    ImGui::Combo("View", &s.debug_view_mode, debug_views, 3);
+    const char* debug_views[] = { "None", "Normals", "Depth",
+                                  "Sun visibility", "Raw albedo" };
+    ImGui::Combo("View", &s.debug_view_mode, debug_views, 5);
     // Not a registered property: main.cpp overwrites the volumetrics struct's
     // vol_debug_view from this every frame, so it has nowhere to persist to.
     // Kept with the other debug views rather than following render.volumetrics

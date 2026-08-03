@@ -45,6 +45,16 @@ layout(set = 0, binding = 4, std430) readonly buffer RtMaterialTable {
 
 layout(set = 0, binding = 11) uniform usampler2D identity_texture;
 
+// GBuffer ORM. Declared for the same reason as bindings 4 and 11 above: it is
+// already written into this set every frame for rt_lighting.rgen (binding 10,
+// RAYGEN-visible, SHADER_READ_ONLY_OPTIMAL by the time either raygen runs --
+// both dispatches are recorded by one record_ray_trace_dispatch after the
+// single descriptor update), this shader simply had not declared it.
+//
+// Only .w is read here: gbuffer.frag's baked-horizon SUN visibility for the
+// parallaxed ground, computed in the frame the ground is addressed in.
+layout(set = 0, binding = 10) uniform sampler2D orm_texture;
+
 layout(push_constant) uniform ShadowConstants {
     mat4 clip_to_world;
     vec3 to_sun;
@@ -106,18 +116,51 @@ void main() {
         if (shadow_tileset_slot >= 0)
             world += sun * (constants.pom_lift / max(sun.y, 0.05));
     }
-    // Baked per-direction horizon occlusion toward the sun. No screen-space
-    // derivatives exist in a raygen shader, so dWdx/dWdy are passed as zero
-    // (finest available mip -- acceptable given the horizon texture's
-    // already-coarse quarter resolution). Soft (smoothstep-edged) visibility
-    // in [0,1]; 1.0 (no attenuation) when this pixel has no ground-tileset
-    // material or its slot carries no horizon data.
+    // Baked per-direction horizon visibility toward the sun, READ FROM THE
+    // GBUFFER rather than re-derived here (issue 91919e5d, "I'm still not
+    // seeing the horizon matching the POM texturing").
+    //
+    // What this replaced:
+    //
+    //     float occl = tileset_horizon_occlusion(shadow_tileset_slot,
+    //                                            world.xz, sun,
+    //                                            vec2(0.0), vec2(0.0));
+    //
+    // and every argument in it was wrong by the time it ran.
+    //
+    // POSITION. `world` above is no longer the shading point: the roof escape
+    // three lines up moved it pom_lift / max(sun.y, 0.05) metres ALONG THE SUN
+    // so the ray clears the flat ground mesh. That lift is a legitimate ray
+    // origin and a nonsensical texture coordinate. At this world's sun
+    // (elevation 24.8 deg) and the shipped relief cap it displaces the lookup
+    // 0.81 m across the ground -- 1.6 brick pitches, 3.2 course pitches on
+    // BrickProof -- along the sun azimuth. That alone put every horizon shadow
+    // a brick and a half from the groove that casts it, which is exactly the
+    // "right direction, wrong registration" in the report.
+    //
+    // FRAME. world.xz and the world azimuth/elevation of `sun` were the
+    // addressing the raster ground abandoned in c3fea496 / 7915bd1f: the
+    // ground is addressed by the warped ground field, and the horizon channels
+    // are baked in the TILE's own texel frame, so the query has to be resolved
+    // onto that frame (marched_uv, (s.dir_u, s.dir_v), s.plane_n). A raygen
+    // shader cannot do that -- it has no warp frame, no tangent, not even a
+    // surface normal -- so the two frame fixes that landed on gbuffer.frag
+    // could never have reached here. Reading the answer is the only way this
+    // shader can be right.
+    //
+    // FILTERING. Passing zero derivatives pinned the fetch at mip 0 with the
+    // fixed 0.05 soft edge, which is the exact failure
+    // tileset_horizon_relief_occlusion_frame's footprint-widened edge exists
+    // to fix -- a threshold applied to a mip-filtered mean.
+    //
+    // The gbuffer value already carries horizon_strength and the POM fade, and
+    // is 1.0 for every pixel that is not parallaxed ground -- including the
+    // no-horizon-data and no-tileset cases the old guard handled -- so the
+    // slot test is only kept to skip the fetch, not to make it safe.
     float horizon_visibility = 1.0;
-    if (shadow_tileset_slot >= 0) {
-        float occl = tileset_horizon_occlusion(shadow_tileset_slot, world.xz,
-                                               sun, vec2(0.0), vec2(0.0));
-        horizon_visibility = 1.0 - occl;
-    }
+    if (shadow_tileset_slot >= 0)
+        horizon_visibility = clamp(texelFetch(orm_texture, pixel, 0).w,
+                                   0.0, 1.0);
     vec3 tangent = normalize(abs(sun.y) < 0.99
                                  ? cross(sun, vec3(0.0, 1.0, 0.0))
                                  : cross(sun, vec3(1.0, 0.0, 0.0)));

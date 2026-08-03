@@ -423,6 +423,16 @@ void main() {
     // the flat mesh, there is no recessed point to escape, and lifting by
     // the relief cap would only push the origin past real contact occluders.
     int ground_tileset_slot = -1;
+    // THE SHADING POINT, kept before the lift moves it. The lift is a ray
+    // ORIGIN correction and nothing else; using the lifted point as a texture
+    // coordinate reads the ground's horizon from somewhere the pixel is not.
+    // Here the lift is along the surface normal, so it costs
+    // (pom_b.z + 0.02) * length(normal.xz) metres of lateral error -- zero on
+    // flat ground, and 0.33 m on the PomProofBrick dome flank at the
+    // 91919e5d camera, which is two thirds of a brick pitch. rt_shadow.rgen
+    // had the same bug along the SUN, where it was worth 0.81 m; see the long
+    // note there.
+    vec3 shading_world = world;
     if (identity.x < rt_materials.length()) {
         RtMaterialGpu roof_mat = rt_materials[identity.x];
         ground_tileset_slot = tileset_detail_slot(roof_mat.flags_misc);
@@ -467,10 +477,20 @@ void main() {
         // fully black. No screen-space derivatives exist in a raygen shader,
         // so dWdx/dWdy are passed as zero (finest available mip -- fine
         // given the horizon texture's already-coarse quarter resolution).
+        //
+        // Addressed at shading_world, not the roof-escape origin (see above).
+        // The remaining error here is the FRAME: world XZ and a world-space
+        // ray elevation, where the ground is addressed by the warped ground
+        // field and the map is baked in the tile's own frame. Unlike the sun
+        // term, this one cannot be answered in gbuffer.frag and read back --
+        // `direction` is a per-ray hemisphere sample drawn here, so there is
+        // no single scalar the raster pass could export. It stays wrong on
+        // curved ground, it is a GI bounce weight rather than the sun, and
+        // fixing it needs the warp frame in the RT payload.
         float horizon_ray_scale = 1.0;
         if (vertex == 0 && ground_tileset_slot >= 0) {
             float occl = tileset_horizon_occlusion(
-                ground_tileset_slot, world.xz, direction, vec2(0.0),
+                ground_tileset_slot, shading_world.xz, direction, vec2(0.0),
                 vec2(0.0));
             horizon_ray_scale = 1.0 - occl;
             // 0.35 is a documented approximation: the fraction of ambient

@@ -2689,10 +2689,16 @@ int main() {
         options.min_projected_size = min_projected_size;
         options.dlss_mode = selected_dlss_mode();
         options.vulkan_lighting = stats.lighting;
-        // 1 -> 2.0 normals, 2 -> 3.0 packed linear depth (composite.frag).
+        // ViewerStats index -> composite.frag mode. The two numberings differ
+        // and always have; keep this in step with kDebugViewLabels
+        // (editor_props.cpp), which documents why the indices are append-only.
+        // 1 -> 2.0 normals, 2 -> 3.0 packed linear depth, 3 -> 1.0 RT sun
+        // visibility, 4 -> 4.0 raw GBuffer albedo (the horizon diagnostic).
         options.vulkan_lighting.composite_debug_view =
             stats.debug_view_mode == 1   ? 2.0f
             : stats.debug_view_mode == 2 ? 3.0f
+            : stats.debug_view_mode == 3 ? 1.0f
+            : stats.debug_view_mode == 4 ? 4.0f
                                          : 0.0f;
         options.vulkan_volumetrics = stats.volumetrics;
         options.vulkan_volumetrics.vol_debug_view =
