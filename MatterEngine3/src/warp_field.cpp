@@ -213,14 +213,64 @@ void compute_border_pins(const SolveMesh& mesh, const SolveOptions& opts,
         return wa.z < wb.z;
     };
 
-    // Processing order gives X-side chains PRIORITY at corner vertices: a
-    // corner vertex belongs to one x-chain and one z-chain, whose traces
-    // disagree there on steep terrain. Z sides are written first, X sides
-    // overwrite — deterministically, and identically from every sector that
-    // shares the x-chain. The two sectors sharing a Z border therefore agree
-    // on every pinned vertex EXCEPT the two chain-end corner vertices (each
-    // overridden by its owner's own x-chain) — the spec's accepted
-    // corner-knot residual, localized to single vertices.
+    // ---- Corner rule (§4.2, corner knots) -------------------------------
+    // A corner vertex sits in an X band AND a Z band: it belongs to one
+    // x-chain and one z-chain, and it is shared by up to FOUR sectors. The
+    // chain rule cannot resolve it. Two sectors sharing a border agree on
+    // that border's chain bitwise, but the chains that MEET at a corner are
+    // different chains in every sector that touches it — sector (0,0)'s
+    // x-chain spans z in [-v, S] while sector (0,S)'s spans [S-v, 2S], so
+    // they overlap only AT the corner and each derives its own endpoint from
+    // its own trace. A corner is interior to no chain, so nothing made its
+    // sharers agree.
+    //
+    // Worse, and this is the visible defect: each chain anchors its own
+    // spread independently (arc-midpoint, below), so where an x-chain that
+    // climbed a wall meets a z-chain that ran across the slope, the two
+    // disagree by the WHOLE accumulated spread. Measured on the committed
+    // fixtures, at two boundary vertices ~1 m apart in 3D:
+    //     extreme_wall  41.0 m of uv over 1.02 m of surface
+    //     mid_steep     20.9 m of uv over 1.07 m of surface
+    // No injective interior exists across a boundary that tears like that,
+    // which is the fan of folds concentrated at sector corners — and, at
+    // render time, the swirl of converging/mirrored courses photographed on
+    // the CROSSING of two sector boundaries.
+    //
+    // The fix is the chain rule one level down: pin the corner as a function
+    // of the CORNER ALONE — its own anchored world XZ, which every sector
+    // that touches the vertex computes from the same bitwise-shared local
+    // position with the same expression — and require each chain to
+    // TERMINATE at its two corner pins instead of deriving its own endpoints
+    // (the similarity fit in the per-chain "Place the trace" block below,
+    // plus the corner pass at the end of this function). The four chains
+    // then close into one boundary polygon, and every sharer of a corner
+    // agrees on it bitwise.
+    //
+    // The price is real and was measured before (see the trace comment
+    // below): a chain's uv arc can no longer exceed its world-XZ span, so a
+    // sector's uv budget is capped at its footprint. The chain keeps the
+    // RELATIVE redistribution (the similarity fit preserves the trace's
+    // shape, so a wall still takes uv from the flat ground beside it); what
+    // it loses is the ability to grow the budget. A budget that grows to a
+    // value the adjacent chain cannot know is exactly what tore the corner.
+    auto is_corner_vertex = [&](uint32_t v) {
+        int sx, sz;
+        side_of_vertex(mesh.positions[v], sx, sz);
+        return sx != 0 && sz != 0;
+    };
+    // The corner pin. Identical from every sector that has the vertex: the
+    // local position is bitwise shared and the anchor is a multiple of the
+    // sector size, so this is the same expression on the same bits.
+    auto corner_uv = [&](uint32_t v) {
+        const float3 w = world(v);
+        return double2{double(w.x), double(w.z)};
+    };
+
+    // Processing order still gives X-side chains priority where a corner
+    // vertex is written by both an x- and a z-chain, but it no longer
+    // decides anything: both chains are fitted to the same corner pins, and
+    // the corner pass after this loop overwrites every corner vertex with
+    // the corner rule regardless.
     const int side_order[4] = {2, 3, 0, 1};
     for (int side_i = 0; side_i < 4; ++side_i) {
         const int side = side_order[side_i];
@@ -387,16 +437,21 @@ void compute_border_pins(const SolveMesh& mesh, const SolveOptions& opts,
                     dir[i] = (side < 2) ? double2{0.0, 1.0} : double2{1.0, 0.0};
                 }
             }
-            // Directional cumulative trace in canonical order, then anchor:
-            // uv = trace shifted so the chain's lexicographically-smallest
-            // vertex lands exactly on its world XZ. NO endpoint
-            // canonicalization: a chain crossing a cliff wall spreads to its
-            // true 3D arc length — that spread is the whole point (§4.2) —
-            // and pulling its endpoints back to world-XZ corners would crush
-            // the spread back out (measured: the wall then cannot beat the
-            // world-XZ baseline at all). The price is that chains MEETING at
-            // a sector corner can disagree there; see the priority note
-            // below ("corner knots", the spec's accepted residual (a)).
+            // Directional cumulative trace in canonical order, then placed
+            // by the corner rule: the trace is SIMILARITY-fitted so its two
+            // terminal vertices land exactly on their corner pins (see the
+            // corner-rule note above). The trace's own shape survives the
+            // fit unchanged — a segment that crossed a wall still advances
+            // further in uv than the flat segment beside it — so the chain
+            // keeps redistributing uv toward the steep ground. What the fit
+            // removes is the chain's freedom to set its own NET span, which
+            // is the only quantity a neighbouring chain cannot know and
+            // therefore the one that tore every corner.
+            //
+            // The earlier rule anchored each chain at its own arc-midpoint
+            // and let the net span float to ~sqrt(len3d * lenxz). It is kept
+            // as the fallback for chains with no corner endpoint (a loop, or
+            // a rim that never reaches a band corner).
             const bool is_loop = chain.front() == chain.back() && n > 2;
             // Per-segment geometric-mean spread: each segment advances by
             // sqrt(len3d * lenxz) — the LOCAL conformal compromise between
@@ -433,14 +488,66 @@ void compute_border_pins(const SolveMesh& mesh, const SolveOptions& opts,
                     tr[i].y += ez * (t[i] / total);
                 }
             }
-            // Anchor at the ARC-MIDPOINT vertex's world XZ. The spec's
-            // as-written anchor (the lex-smallest vertex) parks the whole
-            // residual spread-vs-corner conflict at ONE end of the chain;
-            // midpoint anchoring splits it across both ends, halving each
-            // knot. Deterministic and chain-local, so both sectors of a
-            // shared border still compute identical pins.
-            size_t anchor = 0;
-            {
+            // Place the trace. Preferred: the corner rule — a similarity
+            // (rotation + uniform scale + translation, so the trace's shape
+            // is preserved exactly) that carries the chain's two terminal
+            // vertices onto their corner pins. Both are functions of shared
+            // data — the chain for the shape, the corner vertices' own world
+            // XZ for the placement — so two sectors sharing the chain still
+            // compute identical pins, and now so do the up-to-four sectors
+            // sharing each corner.
+            bool placed = false;
+            if (!is_loop) {
+                const bool c0 = is_corner_vertex(chain[0]);
+                const bool c1 = is_corner_vertex(chain[n - 1]);
+                if (c0 && c1) {
+                    const double2 q0 = corner_uv(chain[0]);
+                    const double2 q1 = corner_uv(chain[n - 1]);
+                    const double dtx = tr[n - 1].x - tr[0].x;
+                    const double dty = tr[n - 1].y - tr[0].y;
+                    const double dqx = q1.x - q0.x, dqy = q1.y - q0.y;
+                    const double dt2 = dtx * dtx + dty * dty;
+                    const double dq2 = dqx * dqx + dqy * dqy;
+                    // Complex division (dq / dt): the unique similarity
+                    // taking tr[0] -> q0 and tr[n-1] -> q1.
+                    const double re = dt2 > 1e-12 ? (dqx * dtx + dqy * dty) / dt2 : 0.0;
+                    const double im = dt2 > 1e-12 ? (dqy * dtx - dqx * dty) / dt2 : 0.0;
+                    const double scale2 = re * re + im * im;
+                    // Reject a degenerate fit rather than let it warp the
+                    // whole chain: a trace that doubled back on itself (tiny
+                    // net displacement) would fit with a huge scale, and a
+                    // pair of coincident corner pins with none at all. Both
+                    // are deterministic tests on shared data, so a rejection
+                    // is taken identically by every sector.
+                    if (dt2 > 1e-12 && dq2 > 1e-12 && scale2 > 0.0025 &&
+                        scale2 < 16.0) {
+                        const double ox = tr[0].x, oy = tr[0].y;
+                        for (size_t i = 0; i < n; ++i) {
+                            const double x = tr[i].x - ox, y = tr[i].y - oy;
+                            tr[i] = double2{q0.x + re * x - im * y,
+                                            q0.y + im * x + re * y};
+                        }
+                        placed = true;
+                    }
+                } else if (c0 || c1) {
+                    // One corner endpoint: translate onto it and let the
+                    // other end keep the chain's own spread. Better than
+                    // midpoint anchoring, which would split the mismatch
+                    // across a corner that IS determined.
+                    const size_t e = c0 ? 0 : n - 1;
+                    const double2 q = corner_uv(chain[e]);
+                    const double sx = q.x - tr[e].x, sy = q.y - tr[e].y;
+                    for (size_t i = 0; i < n; ++i)
+                        tr[i] = double2{tr[i].x + sx, tr[i].y + sy};
+                    placed = true;
+                }
+            }
+            if (!placed) {
+                // Fallback (loops, and rims that reach no corner): anchor at
+                // the ARC-MIDPOINT vertex's world XZ, which splits a free
+                // chain's spread across both of its ends instead of parking
+                // all of it at one. Deterministic and chain-local.
+                size_t anchor = 0;
                 const double half = t[n - 1] * 0.5;
                 double bd = 1e300;
                 for (size_t i = 0; i < n - (is_loop ? 1 : 0); ++i) {
@@ -450,23 +557,26 @@ void compute_border_pins(const SolveMesh& mesh, const SolveOptions& opts,
                         anchor = i;
                     }
                 }
+                const float3 wa = world(chain[anchor]);
+                const double bx = double(wa.x) - tr[anchor].x;
+                const double bz = double(wa.z) - tr[anchor].y;
+                for (size_t i = 0; i < n; ++i)
+                    tr[i] = double2{tr[i].x + bx, tr[i].y + bz};
             }
-            const float3 wa = world(chain[anchor]);
-            const double bx = double(wa.x) - tr[anchor].x;
-            const double bz = double(wa.z) - tr[anchor].y;
             for (size_t i = 0; i < n; ++i) {
                 const uint32_t v = chain[i];
                 pins.pinned[v] = 1;
-                pins.uv[v] = double2{tr[i].x + bx, tr[i].y + bz};
+                pins.uv[v] = tr[i];
                 // Chain-local uv DERIVATIVE, from the same shared chain that
                 // produced the value above: a centered difference of the
-                // trace over the smoothed 3D geometry. The anchor shift
-                // (bx, bz) is a constant, so it drops out — this is a
-                // function of the chain alone, exactly like the pin, and
-                // therefore identical from both sectors. Consumed by
-                // apply_chain_frames(); see the long note there for why the
-                // Jacobian at a border vertex cannot be measured from one
-                // sector's triangles.
+                // placed trace over the smoothed 3D geometry. Placement is a
+                // similarity (or a translation), so the rate carries the
+                // same rotation and scale the pin values did and stays the
+                // exact derivative of what is pinned — and stays a function
+                // of shared data, so it is identical from both sectors.
+                // Consumed by apply_chain_frames(); see the long note there
+                // for why the Jacobian at a border vertex cannot be measured
+                // from one sector's triangles.
                 size_t i0, i1;
                 if (is_loop) {
                     i0 = (i == 0) ? n - 2 : i - 1;
@@ -491,6 +601,18 @@ void compute_border_pins(const SolveMesh& mesh, const SolveOptions& opts,
                 }
             }
         }
+    }
+
+    // Corner pass, last so it wins over both chains that reach a corner. The
+    // fit above already lands a chain's TERMINAL vertex on exactly this
+    // value; this also covers the interior of a corner band (a wiggly voxel
+    // rim can put several vertices inside one), and any corner vertex a
+    // chain reached without terminating there. It writes no new pins — a
+    // vertex the chain rule never pinned is interior and stays free.
+    for (uint32_t v = 0; v < uint32_t(nv); ++v) {
+        if (!pins.pinned[v]) continue;
+        if (!is_corner_vertex(v)) continue;
+        pins.uv[v] = corner_uv(v);
     }
 }
 
