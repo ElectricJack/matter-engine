@@ -134,6 +134,39 @@ Tests retired here: `stress_forest_tests.cpp`, `tileset_provider_tests.cpp`, the
 
 ## M1 — Distance authority (runtime selection only; artifacts untouched)
 
+> **Status 2026-08-04 — selection unification COMPLETE; only M1d (the determinism gate)
+> remains.** Landed as `583bc17b` (the rule + its equivalence proof), `e2a3c980`
+> (radius normalization), `daca884b` (GPU + both CPU mirrors), `b43b81fc` (smoke fixture),
+> `5c4d4bc8` (the `lod_select` sector family) and `045ff57c` (the zero-reach contract fix).
+>
+> A repo-wide sweep now finds exactly ONE `radius * scale / distance` site left —
+> `vk_scene_renderer.cpp`'s VT *fetch priority*, which is a ranking rather than a selection
+> and correctly keeps that form. Every actual selection goes through `lod_distance.h`.
+>
+> Three things worth carrying forward, because each was found the hard way:
+>
+> - **There were THREE CPU copies of the shader's pick**, not two — the mesh rung, the
+>   planning mirror, and a VT rung-demand loop nobody had counted. The replay gate caught
+>   the third at 6.611 % against a 0.069 % floor, after a mechanical field rename silently
+>   turned `projected_size >= threshold` into `projected_size >= switch_distance`. That
+>   compiles cleanly (both are floats) and compares incommensurate quantities. **Every
+>   suite stayed green.** After any rename in this area, re-run the pixel gate.
+> - **Radius must stay a RUNTIME factor.** `cull.comp` computes `local_radius` per instance
+>   for dynamic-bound clusters, a value that does not exist at bake time; folding a baked
+>   radius into the stored distance would have mis-selected exactly the animated parts.
+> - **`pixel_budget` is not the dial it looks like.** `part_flatten.cpp` bakes it into the
+>   threshold while `cull.comp` multiplies the projected size by it again, so for parts
+>   flattened through that path the factor CANCELS and the dial does nothing, while it works
+>   normally for parts on `lod_bake.h`'s hardcoded ladder. M1 preserves this rather than
+>   fixing it; unifying it is a deliberate, separately-verified change (it moves pixels).
+>
+> Verified: kernel + editor build clean; `run-lod-distance`, `run-comp`, `run-partstore`,
+> `run-world-definition`, `run-script`, `run-evalworld` pass; Vulkan smoke ALL PASS with 0
+> validation errors; both replay gates on their noise floors (PomProofBrick 0.065 % against
+> 0.069 %, ChartVtProof 0.352 % against 0.353 %). Jack accepted M0 and the Meadow world —
+> the one live path the replay gates do not cover, since Meadow is the sole user of the
+> SectorLod resolver and of a non-zero `min_projected_size` floor — interactively.
+
 Scope (adjusted for the main base — there is no impostor system to convert, so rep N is
 built once, correctly, rather than repaired):
 1. At stage time, convert each part's existing threshold table into a **distance table**
