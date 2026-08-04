@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "render/lod_distance.h"
 #include "render/part_store.h"
 #include "render/raster_cull.h"
 #include "part_asset_v2.h"
@@ -128,6 +129,39 @@ static bool publish_static_part(const std::filesystem::path& root, uint64_t hash
 
 static bool publish_static_part_and_flat(const std::filesystem::path& root, uint64_t hash) {
     return publish_static_part(root, hash) && publish_flat(root, hash);
+}
+
+// viewer::cluster_lod_select was deleted with the GL path in M0. The assertion
+// it served here -- that a recorded camera pose selects a valid SERIALIZED LOD
+// for this sector cluster -- is still worth making, so it is expressed against
+// the one selection rule (render/lod_distance.h) using the transform helpers
+// raster_cull.h still owns. Same inputs, same answer; see the equivalence proof
+// in lod_distance_tests.cpp.
+static int select_cluster_lod_for_test(const viewer::LoadedCluster& cluster,
+                                       const float persisted_transform[16],
+                                       const float camera_eye[3]) {
+    const matter::Mat4f object_to_world =
+        viewer::persisted_mat4(persisted_transform);
+    const float scale = viewer::inst_scale(object_to_world);
+    const matter::Float3 local_center{
+        (cluster.aabb_min[0] + cluster.aabb_max[0]) * 0.5f,
+        (cluster.aabb_min[1] + cluster.aabb_max[1]) * 0.5f,
+        (cluster.aabb_min[2] + cluster.aabb_max[2]) * 0.5f};
+    const matter::Float3 world_center =
+        viewer::transform_point(object_to_world, local_center);
+    const float dx = world_center.x - camera_eye[0];
+    const float dy = world_center.y - camera_eye[1];
+    const float dz = world_center.z - camera_eye[2];
+    float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (distance < 0.01f) distance = 0.01f;
+
+    std::vector<float> switch_distances;
+    switch_distances.reserve(cluster.thresholds.size());
+    for (float threshold : cluster.thresholds)
+        switch_distances.push_back(lod::normalized_switch_distance(threshold));
+    return lod::select_rep(switch_distances.data(),
+                           static_cast<int>(switch_distances.size()), distance,
+                           lod::reach(cluster.radius, scale, 1.0f));
 }
 
 static void test_partstore_owns_committed_animation_and_keeps_live_last_good() {
@@ -669,7 +703,7 @@ static void test_compositional_sector_bounds_survive_to_frustum_culling() {
     transform[11] = -9.0f * 64.0f;
     const float camera_eye[3] = {-101.4326f, 14.7310f, 519.3806f};
     const int selected_lod =
-        viewer::cluster_lod_select(*cluster, transform, camera_eye);
+        select_cluster_lod_for_test(*cluster, transform, camera_eye);
     CHECK(selected_lod >= 0 &&
               static_cast<size_t>(selected_lod) < cluster->lod_mesh.size(),
           "sector bounds: recorded camera selects a serialized LOD");
