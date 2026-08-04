@@ -163,15 +163,76 @@ Acceptance:
 - Shot-replay diff vs M0 baseline within stated tolerance on Demo + PomProofBrick at rep-0
   distances; document and review any far-field diffs (threshold-crowding cases *should*
   change — that is the point).
-- **New: fly-through determinism test.** Record a camera path; run twice warm; assert the
-  per-frame list of `(instance, rep)` switch events is identical. This test is the permanent
-  guardian of R4 and survives every later milestone.
-- Frame capture shows the ~14 MB/frame instance copy+upload is gone at 90k instances.
-- A far tree costs one impostor draw and zero retained subtree records (GPU capture).
+- **New: fly-through determinism test** — design settled 2026-08-04, see below.
+- ~~Frame capture shows the ~14 MB/frame instance copy+upload is gone~~ / ~~a far tree costs
+  one impostor draw~~ — both describe branch-only machinery that does not exist on a main
+  base. Moved to M2.5 with the impostor tier.
 
-Tests rewritten here: the 11 Vulkan smoke fixtures that encode projected-size constants are
-recalibrated to distance constants (they encoded the *old* convention numerically; the new
-fixtures should assert distances, which are human-checkable).
+Tests rewritten here: the Vulkan smoke fixture that encoded a projected-size constant is
+re-authored in distance units (done, `M1c`).
+
+### The fly-through determinism test (M1d)
+
+**Design: GPU readback, frame-indexed camera path, symbolic switch-event log, two warm runs
+diffed on one machine.** Established by investigation 2026-08-04; the rejected alternatives
+matter as much as the choice.
+
+- **Not headless-CPU.** Cheapest to build and *unsound as the keystone*: it can only test a
+  pure function of pose and static tables, so it is green by construction and stays green
+  through exactly the M2/M7/M9 regressions it exists to catch — residency gating, hysteresis,
+  visibility priority, budget throttling all live in state a headless harness does not have.
+- **Not replay-based.** `MATTER_REPLAY` is a single pose, and its output is pixels with a
+  ~0.07 % noise floor — far too blunt to see one instance switch a rung one frame early.
+- **GPU readback is sound and mostly built.** `cull.comp` already computes
+  `bucket = cluster_index * MAX_LOD + lod` and writes `draw_transforms[...].instance_token`,
+  so pairing an occupied transform slot back to its bucket recovers
+  `(instance_token, cluster_index, selected_lod)` — the *draw authority's own answer*, not a
+  mirror's prediction. `readback_commands` / `readback_draw_transforms` already exist; they
+  are behind `MATTER_VK_TEST_FAULT_INJECTION` and the transform readback currently discards
+  `instance_token`. Both are small changes.
+
+Pieces to build: a `MATTER_CAM_PATH` camera path consumed **one pose per rendered frame**
+(frame-indexed, never wall-clock — the existing `MATTER_CMD_FIFO` drains every buffered line
+in one frame and `tools/viewer_shots.sh` paces it with `sleep`, which a determinism test must
+never depend on); a `MATTER_LOD_TRACE` emitter shaped exactly like the existing
+`MATTER_SKIN_PROBE` (env latch, diff against last frame, print only on change — it is already
+a switch-event log); and a comparator.
+
+Constraints the code forces, each of which would otherwise produce a permanently red or
+permanently green test:
+
+- **Canonicalize order before diffing.** Transform slots come from an `atomicAdd`, so slot
+  assignment races even when the selection is identical. Sort by
+  `(instance_token, cluster_index)`.
+- **Record "not drawn" as its own symbol.** A frustum- or distance-culled cluster emits no
+  bucket write, so absence must be distinguishable from a rung change — otherwise a culling
+  change reads as a storm of LOD switches.
+- **Assert switch ORDER, not frame index.** Streaming and publish timing differ run to run
+  even warm; M2's degradation gate makes the same demand.
+- **Assert `instance_token != 0`.** The token falls back to `source_index + 1`, an
+  order-dependent key that would look perfectly stable while meaning nothing.
+- **Emit a per-frame census** (instance count, drawn-cluster count) beside the events.
+  Without it the test is satisfiable by rendering *nothing* — two runs that both draw an
+  empty world diff identically.
+- **Do not commit a golden trace**, for the same reason `docs/baselines/` does not commit
+  golden PNGs: float ties at switch boundaries can differ across GPU and compiler. Compare
+  two runs on one machine.
+
+What it catches: any change to the rule, tables, `reach`, or budget plumbing that moves an
+instance's rung at a given pose; boundary flicker (A→B→A appears as extra events — arguably
+the actual R4 complaint, and nothing else in the repo can see it); order changes injected by
+M2 hysteresis, M7 visibility priority, or M9 throttling, which is precisely the
+"budgets shape *when*, never *what*" contract; and CPU-mirror-vs-GPU divergence, because the
+trace is readback rather than mirror.
+
+What it does not catch, and must not be trusted for: visual correctness of a rung (that stays
+the replay gate), switch *atomicity* across mesh/VT/BLAS (that is M2's pop-coherence test),
+bake nondeterminism (warm runs exclude it by design; that is M3/M4's golden-bake gates), and
+cross-machine equivalence.
+
+An optional cheap pre-filter — a single-TU `run-lod-flythrough` driving `SectorLodResolver`
+over the same pose list twice — catches resolver-layer regressions in seconds with no GPU.
+Useful as a smoke test; never as the gate, for the headless reason above.
 
 ---
 
