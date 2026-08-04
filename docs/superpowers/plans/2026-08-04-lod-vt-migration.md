@@ -114,6 +114,19 @@ Acceptance:
 Baseline recorded 2026-08-04 on `feature/representation` before any deletion: kernel builds
 clean; `run-world-definition`, `run-script`, `run-evalworld` all report ALL PASS.
 
+**Known-red baseline — `run-viewer-logic` fails on pristine main.** One assertion,
+`test_partstore_cluster_loading` → `FAIL: cluster test: v3 flat part loads`, preceded by
+`PartStore: coherent load failed for c1c2c3c4d1d2d3d4` on a freshly written `save_flat_v3`.
+Attributed by running the suite on an unmodified `main` checkout (2026-08-04): the failure
+set is **byte-identical** to `feature/representation`'s — same single FAIL, same pass count.
+So this suite is red before this effort starts and must not be read as a regression signal
+until it is fixed on its own terms. Note it is *not* the TMP/TEMP sandbox trap: it
+reproduces with `TMP`/`TEMP` passed as the exe's own env prefix. Two cautions for whoever
+picks it up: the test exes are dynamically linked, so they need the MSYS2 UCRT64 PATH *and*
+an explicit `TMP`/`TEMP` prefix (the static editor needs neither); and piping a suite run
+through `tail` hides the FAIL line, which is why the first attribution attempt was
+inconclusive.
+
 Tests retired here: `stress_forest_tests.cpp`, `tileset_provider_tests.cpp`, the
 `.static_lods` cache-probe tests, and the GL-selection portions of `viewer_logic_tests.cpp`.
 
