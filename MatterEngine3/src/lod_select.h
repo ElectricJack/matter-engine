@@ -16,6 +16,10 @@ float projected_size(const float3& world_center, float bound_radius,
 // thresholds are ordered fine->coarse (index 0 = finest, largest threshold).
 // If projected_size clears the finest threshold, returns 0 (finest). If it
 // clears nothing, clamps to the coarsest (last) level.
+//
+// NOTE: no production caller remains — sector selection now goes through
+// lod::select_rep (render/lod_distance.h), the single distance-valued rule.
+// This is kept as the projected-size reference the tests compare against.
 int select_level(float projected_size, const std::vector<float>& thresholds);
 
 // A single instance-ref entry in a part's LOD table: identifies the child part
@@ -37,7 +41,14 @@ using PartLodTable = std::map<uint64_t, PartLod>;     // resolved_hash -> PartLo
 
 struct LodChoice {
     int   level;
-    float projected_size;
+    // Distance from the camera to the sector's CLOSEST instance — the same `d`
+    // selection used, handed to the caller so downstream decisions (the inline
+    // cutover, the child rung) can stay in distance form too. It replaces the
+    // projected size this struct used to carry: with the single selection rule
+    // in render/lod_distance.h, every consumer compares a distance against
+    // normalized_switch_distance(threshold) * reach(...), so nothing needs the
+    // size any more.
+    float distance;
 };
 
 // For each sector, find its CLOSEST instance to cam_pos, and for every distinct
@@ -48,7 +59,7 @@ struct LodChoice {
 // pixel_budget scales the projected size before BOTH the floor check and level
 // selection — the runtime quality/speed dial (Stage 2). Default 1.0 is bit-
 // identical to the pre-budget behaviour.
-// _ex returns sector -> (part hash -> LodChoice{level, projected_size}).
+// _ex returns sector -> (part hash -> LodChoice{level, distance}).
 std::map<sector_grid::SectorCoord, std::map<uint64_t, LodChoice>>
 select_sector_lods_ex(const sector_grid::Sectors& sectors,
                       const PartLodTable& parts, const float3& cam_pos,
