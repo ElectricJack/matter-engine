@@ -115,11 +115,21 @@ inline float reach(float bound_radius, float instance_scale,
 //
 // Returns the FINEST rung the camera is close enough for, clamped to the
 // coarsest when it is beyond all of them -- the same clamp cull.comp applies.
+//
+// The isinf test is not decoration. An open rung (threshold <= 0, meaning
+// "always qualifies") is stored as an INFINITE switch distance, and when reach
+// is 0 -- a zero bound_radius, or a zero dial -- `INFINITY * 0` is NaN, so the
+// plain comparison is FALSE and the open rung would be skipped. The rule it
+// replaces does qualify there: projected_size is 0 and `0 >= 0` holds. Without
+// this branch the header's own "always qualifies" contract is a lie in exactly
+// the degenerate case someone would rely on it.
 inline int select_rep(const float* switch_distances, int count,
                       float distance_to_eye, float reach_) noexcept {
     if (count <= 0 || switch_distances == nullptr) return 0;
-    for (int i = 0; i < count; ++i)
-        if (distance_to_eye <= switch_distances[i] * reach_) return i;
+    for (int i = 0; i < count; ++i) {
+        const float limit = switch_distances[i];
+        if (std::isinf(limit) || distance_to_eye <= limit * reach_) return i;
+    }
     return count - 1;
 }
 

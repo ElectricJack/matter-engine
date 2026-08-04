@@ -184,6 +184,46 @@ static void test_one_table_serves_any_radius() {
           "a single normalized table selects correctly for any runtime radius");
 }
 
+// A zero reach (zero bound_radius, or a zero dial) makes `INFINITY * reach`
+// NaN, and every comparison against NaN is false -- so without an explicit
+// isinf branch an OPEN rung would be skipped exactly where the header promises
+// it always qualifies. The rule being replaced does select it: projected_size
+// is 0 there and `0 >= 0` holds. Flagged during the lod_select conversion as
+// the one case that did not convert exactly; fixed in select_rep rather than
+// guarded per-caller, because every caller (including cull.comp) shares it.
+static void test_open_rung_survives_zero_reach() {
+    const std::vector<float> thresholds{0.5f, 0.0f};   // rung 1 is open
+    const std::vector<float> d = to_distances(thresholds);
+    CHECK(std::isinf(d[1]), "open rung stored as an infinite switch distance");
+
+    // With the open rung LAST, the NaN simply falls through to the clamp --
+    // which lands on that same index, so the bug is invisible here. Asserting
+    // it would be an inert guard; it is kept only to pin the benign case.
+    CHECK(lod::select_rep(d.data(), 2, 12.34f, 0.0f) == 1,
+          "trailing open rung selected at zero reach (clamp happens to agree)");
+
+    // The divergence needs an INTERIOR open rung, so the fall-through clamp
+    // cannot cover for it. Such a ladder is malformed -- producers emit
+    // strictly decreasing thresholds with at most a trailing zero -- but
+    // select_rep is a shared primitive and must not answer differently from
+    // the rule it replaces just because its input is odd.
+    const std::vector<float> interior_thresholds{0.5f, 0.0f, 0.1f};
+    const std::vector<float> interior = to_distances(interior_thresholds);
+    for (float reach : {0.0f, -0.0f}) {
+        const int got  = lod::select_rep(interior.data(), 3, 12.34f, reach);
+        const int want = select_by_threshold(interior_thresholds, 0.0f, 12.34f,
+                                             1.0f, 1.0f);
+        CHECK(want == 1, "threshold form picks the interior open rung");
+        CHECK(got == want,
+              "interior open rung survives zero reach (NaN must not skip it)");
+    }
+
+    // A ladder with no open rung still clamps at zero reach, as before.
+    const std::vector<float> closed = to_distances({0.5f, 0.1f});
+    CHECK(lod::select_rep(closed.data(), 2, 12.34f, 0.0f) == 1,
+          "closed ladder at zero reach clamps to coarsest");
+}
+
 // FAILABILITY: the sweep above only means something if it would catch a wrong
 // conversion. Feed it one (radius/threshold^2 instead of radius/threshold) and
 // require that structural disagreements appear.
@@ -217,6 +257,7 @@ int main() {
     std::printf("=== test_known_answers ===\n");            test_known_answers();
     std::printf("=== test_equivalence_sweep ===\n");         test_equivalence_sweep();
     std::printf("=== test_one_table_serves_any_radius ===\n"); test_one_table_serves_any_radius();
+    std::printf("=== test_open_rung_survives_zero_reach ===\n"); test_open_rung_survives_zero_reach();
     std::printf("=== test_detects_a_wrong_conversion ===\n"); test_detects_a_wrong_conversion();
 
     if (g_failures) { std::printf("lod-distance FAILED (%d)\n", g_failures); return 1; }

@@ -299,7 +299,14 @@ void main() {
     if (override_lod_bias != 1.0) reach *= override_lod_bias;
     uint lod = cluster.lod_count - 1u;
     for (uint i = 0u; i < cluster.lod_count; ++i) {
-        if (distance_to_eye <= cluster.switch_distances[i] * reach) {
+        // isinf mirrors lod_distance.h::select_rep. An OPEN rung (threshold <= 0,
+        // "always qualifies") is an infinite switch distance, and a zero reach --
+        // a degenerate zero-radius cluster -- makes inf * 0 a NaN that compares
+        // false, silently skipping it. Keep the two implementations of the rule
+        // identical here, or the CPU mirror and the GPU disagree in exactly the
+        // case neither is tested on.
+        const float limit = cluster.switch_distances[i];
+        if (isinf(limit) || distance_to_eye <= limit * reach) {
             lod = i;
             break;
         }
