@@ -22,14 +22,27 @@
 //
 //     projected_size >= T_i
 //   <=> r * s / d * G >= T_i                       (G = pixel_budget * lod_bias)
-//   <=> d <= (r / T_i) * s * G                     (d, r, s, G, T_i all > 0)
-//   <=> d <= D_i * s * G          where  D_i := r / T_i
+//   <=> d <= (1 / T_i) * (r * s * G)               (d, r, s, G, T_i all > 0)
+//   <=> d <= D_i * reach          where  D_i := 1 / T_i
+//                                       reach := bound_radius * scale * G
 //
 // So the rung whose threshold the projected size clears is exactly the rung
-// whose SWITCH DISTANCE the camera is within, and the conversion is a division
-// that depends on nothing but the part's own baked data. D_i is stored
-// normalized -- unit instance scale, unit global LOD scale -- so the runtime
-// dials keep working untouched (see WHY G IS STILL HERE).
+// whose SWITCH DISTANCE the camera is within.
+//
+// WHY THE RADIUS IS IN `reach` AND NOT IN D_i. Thresholds are radius-relative
+// by construction, so D_i normalizes to a UNIT radius as well as unit scale and
+// unit dial. That is not a stylistic choice: cull.comp does not always use the
+// cluster's baked radius. For a dynamic-bound cluster (an animated part whose
+// AABB is unioned per-instance at runtime) it computes
+// `local_radius = length(aabb_max - aabb_min) * 0.5` on the GPU, a value that
+// does not exist at bake time. Folding a baked radius into D_i would therefore
+// have silently mis-selected exactly the dynamic parts. Keeping radius in the
+// runtime `reach` handles static and dynamic identically, with no special case
+// and no division by a possibly-zero baked radius.
+//
+// When tables are AUTHORED in metres (M3), the author's `at` is divided by the
+// part's radius at bake time to land in this same normalized form, so runtime
+// selection never learns the difference.
 //
 // D_i is INCREASING in i (thresholds decrease), i.e. coarser rungs switch in
 // further away, which is the ordering the redesign's authored `at` tables use.
@@ -65,36 +78,48 @@
 
 namespace lod {
 
-// Normalized switch distance for one rung: how far a unit-scale instance of
-// this part can be, at unit global LOD scale, before it stops qualifying.
+// Normalized switch distance for one rung: how far a UNIT-radius, unit-scale
+// instance can be, at unit global LOD scale, before this rung stops qualifying.
+// Multiply by reach() to get the real switch distance in metres.
 //
 // A threshold of 0 (or negative) means "no lower bound" -- the rung always
 // qualifies -- which in distance terms is an infinite switch distance. That
 // mirrors the comparison it replaces: projected_size >= 0 holds for every
-// positive projected size.
-inline float switch_distance(float bound_radius, float threshold) noexcept {
+// positive projected size. A threshold of FLT_MAX (the padding cull.comp's
+// unused rung slots carry) maps to ~0, i.e. never qualifies, which is likewise
+// what the comparison it replaces does.
+inline float normalized_switch_distance(float threshold) noexcept {
     if (!(threshold > 0.0f)) return INFINITY;
-    return bound_radius / threshold;
+    return 1.0f / threshold;
+}
+
+// The runtime factor that turns a normalized switch distance into metres.
+//
+//   bound_radius     : the radius actually in play -- the cluster's baked
+//                      radius for a static cluster, or the per-instance
+//                      dynamic bound where one exists (see the header note)
+//   instance_scale   : the instance's uniform scale
+//   global_lod_scale : pixel_budget * lod_bias, the combined runtime dial
+inline float reach(float bound_radius, float instance_scale,
+                   float global_lod_scale) noexcept {
+    return bound_radius * instance_scale * global_lod_scale;
 }
 
 // Pick the rung to draw.
 //
 //   switch_distances : normalized distances, INCREASING, one per rung
-//                      (switch_distance() applied to the part's thresholds)
+//                      (normalized_switch_distance() per threshold)
 //   count            : number of rungs; 0 selects rung 0 by convention
 //   distance_to_eye  : world distance from camera to the rung's reference point
-//   instance_scale   : the instance's uniform scale
-//   global_lod_scale : pixel_budget * lod_bias, the combined runtime dial
+//   reach_           : reach() above
 //
 // Returns the FINEST rung the camera is close enough for, clamped to the
 // coarsest when it is beyond all of them -- the same clamp cull.comp applies.
 inline int select_rep(const float* switch_distances, int count,
-                      float distance_to_eye, float instance_scale,
-                      float global_lod_scale) noexcept {
+                      float distance_to_eye, float reach_) noexcept {
     if (count <= 0 || switch_distances == nullptr) return 0;
-    const float reach = instance_scale * global_lod_scale;
     for (int i = 0; i < count; ++i)
-        if (distance_to_eye <= switch_distances[i] * reach) return i;
+        if (distance_to_eye <= switch_distances[i] * reach_) return i;
     return count - 1;
 }
 

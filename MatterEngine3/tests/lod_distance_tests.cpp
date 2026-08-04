@@ -37,11 +37,10 @@ static int select_by_threshold(const std::vector<float>& thresholds,
     return (int)thresholds.size() - 1;
 }
 
-static std::vector<float> to_distances(const std::vector<float>& thresholds,
-                                       float bound_radius) {
+static std::vector<float> to_distances(const std::vector<float>& thresholds) {
     std::vector<float> d;
     d.reserve(thresholds.size());
-    for (float t : thresholds) d.push_back(lod::switch_distance(bound_radius, t));
+    for (float t : thresholds) d.push_back(lod::normalized_switch_distance(t));
     return d;
 }
 
@@ -86,7 +85,7 @@ static void test_equivalence_sweep() {
         // qualifies"), which is a real case the engine emits.
         if (frand(0.0f, 1.0f) < 0.1f) thresholds.back() = 0.0f;
 
-        const std::vector<float> distances = to_distances(thresholds, bound_radius);
+        const std::vector<float> distances = to_distances(thresholds);
 
         for (int probe = 0; probe < 6; ++probe) {
             const float instance_scale   = frand(0.05f, 20.0f);
@@ -96,14 +95,14 @@ static void test_equivalence_sweep() {
             const int a = select_by_threshold(thresholds, bound_radius,
                                               distance_to_eye, instance_scale,
                                               global_lod_scale);
-            const int b = lod::select_rep(distances.data(), (int)distances.size(),
-                                          distance_to_eye, instance_scale,
-                                          global_lod_scale);
+            const int b = lod::select_rep(
+                distances.data(), (int)distances.size(), distance_to_eye,
+                lod::reach(bound_radius, instance_scale, global_lod_scale));
             ++compared;
             if (a != b) {
                 ++disagreed;
                 if (!near_a_boundary(distances, distance_to_eye,
-                                     instance_scale * global_lod_scale)) {
+                                     lod::reach(bound_radius, instance_scale, global_lod_scale))) {
                     ++structural;
                     if (structural <= 3)
                         std::printf("  structural disagreement: thr=%d r=%.4f d=%.4f "
@@ -126,32 +125,63 @@ static void test_equivalence_sweep() {
 }
 
 static void test_known_answers() {
-    // radius 2, thresholds {0.5, 0.25, 0.1} -> switch distances {4, 8, 20}.
+    // thresholds {0.5, 0.25, 0.1} -> normalized distances {2, 4, 10}; at
+    // radius 2 (unit scale, unit dial) the real switches are {4, 8, 20} m.
     const std::vector<float> thresholds{0.5f, 0.25f, 0.1f};
-    const std::vector<float> d = to_distances(thresholds, 2.0f);
-    CHECK(std::fabs(d[0] - 4.0f)  < 1e-5f, "switch distance rung 0 == 4");
-    CHECK(std::fabs(d[1] - 8.0f)  < 1e-5f, "switch distance rung 1 == 8");
-    CHECK(std::fabs(d[2] - 20.0f) < 1e-5f, "switch distance rung 2 == 20");
+    const std::vector<float> d = to_distances(thresholds);
+    CHECK(std::fabs(d[0] -  2.0f) < 1e-5f, "normalized switch rung 0 == 2");
+    CHECK(std::fabs(d[1] -  4.0f) < 1e-5f, "normalized switch rung 1 == 4");
+    CHECK(std::fabs(d[2] - 10.0f) < 1e-5f, "normalized switch rung 2 == 10");
+    const float R = lod::reach(2.0f, 1.0f, 1.0f);
+    CHECK(std::fabs(d[0] * R -  4.0f) < 1e-4f, "switch metres rung 0 == 4");
+    CHECK(std::fabs(d[2] * R - 20.0f) < 1e-4f, "switch metres rung 2 == 20");
 
-    CHECK(lod::select_rep(d.data(), 3,  1.0f, 1.0f, 1.0f) == 0, "inside rung 0");
-    CHECK(lod::select_rep(d.data(), 3,  4.0f, 1.0f, 1.0f) == 0, "exactly at rung 0 boundary stays fine");
-    CHECK(lod::select_rep(d.data(), 3,  6.0f, 1.0f, 1.0f) == 1, "between rung 0 and 1");
-    CHECK(lod::select_rep(d.data(), 3, 12.0f, 1.0f, 1.0f) == 2, "between rung 1 and 2");
-    CHECK(lod::select_rep(d.data(), 3, 999.0f, 1.0f, 1.0f) == 2, "beyond all rungs clamps to coarsest");
+    CHECK(lod::select_rep(d.data(), 3, 1.0f, lod::reach(2.0f, 1.0f, 1.0f)) == 0, "inside rung 0");
+    CHECK(lod::select_rep(d.data(), 3, 4.0f, lod::reach(2.0f, 1.0f, 1.0f)) == 0, "exactly at rung 0 boundary stays fine");
+    CHECK(lod::select_rep(d.data(), 3, 6.0f, lod::reach(2.0f, 1.0f, 1.0f)) == 1, "between rung 0 and 1");
+    CHECK(lod::select_rep(d.data(), 3, 12.0f, lod::reach(2.0f, 1.0f, 1.0f)) == 2, "between rung 1 and 2");
+    CHECK(lod::select_rep(d.data(), 3, 999.0f, lod::reach(2.0f, 1.0f, 1.0f)) == 2, "beyond all rungs clamps to coarsest");
 
     // The runtime dials multiply reach: doubling the scale doubles every switch.
-    CHECK(lod::select_rep(d.data(), 3, 6.0f, 2.0f, 1.0f) == 0, "2x instance scale keeps rung 0 at 6");
-    CHECK(lod::select_rep(d.data(), 3, 6.0f, 1.0f, 2.0f) == 0, "2x global scale keeps rung 0 at 6");
+    CHECK(lod::select_rep(d.data(), 3, 6.0f, lod::reach(2.0f, 2.0f, 1.0f)) == 0, "2x instance scale keeps rung 0 at 6");
+    CHECK(lod::select_rep(d.data(), 3, 6.0f, lod::reach(2.0f, 1.0f, 2.0f)) == 0, "2x global scale keeps rung 0 at 6");
 
     // A zero threshold is an infinite switch distance: that rung always qualifies.
-    const std::vector<float> open = to_distances({0.5f, 0.0f}, 2.0f);
+    const std::vector<float> open = to_distances({0.5f, 0.0f});
     CHECK(std::isinf(open[1]), "zero threshold -> infinite switch distance");
-    CHECK(lod::select_rep(open.data(), 2, 1e9f, 1.0f, 1.0f) == 1,
+    CHECK(lod::select_rep(open.data(), 2, 1e9f, lod::reach(2.0f, 1.0f, 1.0f)) == 1,
           "open rung qualifies at any distance");
 
     // Degenerate inputs must not read memory or crash.
-    CHECK(lod::select_rep(nullptr, 0, 1.0f, 1.0f, 1.0f) == 0, "null table selects rung 0");
-    CHECK(lod::select_rep(d.data(), 0, 1.0f, 1.0f, 1.0f) == 0, "zero count selects rung 0");
+    CHECK(lod::select_rep(nullptr, 0, 1.0f, 1.0f) == 0, "null table selects rung 0");
+    CHECK(lod::select_rep(d.data(), 0, 1.0f, 1.0f) == 0, "zero count selects rung 0");
+}
+
+// The reason radius lives in reach() rather than in the stored table: cull.comp
+// computes a PER-INSTANCE radius for dynamic-bound clusters, a value that does
+// not exist when the table is built. So one normalized table must stay correct
+// under a radius it was never told about. Assert exactly that.
+static void test_one_table_serves_any_radius() {
+    const std::vector<float> thresholds{0.4f, 0.12f, 0.03f};
+    const std::vector<float> d = to_distances(thresholds);   // radius-free
+
+    long long mismatches = 0;
+    for (int i = 0; i < 20000; ++i) {
+        // A radius the table never saw, as a dynamic AABB union would produce.
+        const float runtime_radius = frand(0.02f, 400.0f);
+        const float s = frand(0.05f, 12.0f), G = frand(0.05f, 3.0f);
+        const float dist = frand(0.05f, 4000.0f);
+
+        const int a = select_by_threshold(thresholds, runtime_radius, dist, s, G);
+        const int b = lod::select_rep(d.data(), 3, dist,
+                                      lod::reach(runtime_radius, s, G));
+        if (a != b && !near_a_boundary(d, dist, lod::reach(runtime_radius, s, G)))
+            ++mismatches;
+    }
+    std::printf("  one table across 20000 unseen radii: %lld structural mismatches\n",
+                mismatches);
+    CHECK(mismatches == 0,
+          "a single normalized table selects correctly for any runtime radius");
 }
 
 // FAILABILITY: the sweep above only means something if it would catch a wrong
@@ -166,14 +196,15 @@ static void test_detects_a_wrong_conversion() {
         for (int i = 0; i < 3; ++i) { thresholds.push_back(t); t *= 0.4f; }
 
         std::vector<float> wrong;
-        for (float th : thresholds) wrong.push_back(bound_radius / (th * th)); // WRONG
+        for (float th : thresholds) wrong.push_back(1.0f / (th * th)); // WRONG
 
         for (int probe = 0; probe < 4; ++probe) {
             const float s = frand(0.5f, 4.0f), G = frand(0.5f, 2.0f);
             const float dist = frand(0.5f, 500.0f);
             const int a = select_by_threshold(thresholds, bound_radius, dist, s, G);
-            const int b = lod::select_rep(wrong.data(), 3, dist, s, G);
-            if (a != b && !near_a_boundary(wrong, dist, s * G)) ++structural;
+            const int b = lod::select_rep(wrong.data(), 3, dist,
+                                          lod::reach(bound_radius, s, G));
+            if (a != b && !near_a_boundary(wrong, dist, lod::reach(bound_radius, s, G))) ++structural;
         }
     }
     std::printf("  wrong-conversion probe produced %lld structural disagreements\n",
@@ -185,6 +216,7 @@ static void test_detects_a_wrong_conversion() {
 int main() {
     std::printf("=== test_known_answers ===\n");            test_known_answers();
     std::printf("=== test_equivalence_sweep ===\n");         test_equivalence_sweep();
+    std::printf("=== test_one_table_serves_any_radius ===\n"); test_one_table_serves_any_radius();
     std::printf("=== test_detects_a_wrong_conversion ===\n"); test_detects_a_wrong_conversion();
 
     if (g_failures) { std::printf("lod-distance FAILED (%d)\n", g_failures); return 1; }
