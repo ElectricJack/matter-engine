@@ -4,10 +4,8 @@
 #include "../src/provider/sector_resolver.h"
 #include "../src/render/part_store.h"
 #include "../src/provider/local_provider.h"
-#include "../src/render/world_composer.h"
 #include "../src/render/raster_mesh.h"
 #include "../src/render/raster_cull.h"
-#include "../src/render/gpu_cull_types.h"
 #include "../src/render/frame_matrices.h"
 #include "../src/render/matrix_math.h"
 #include "lod_select.h"   // PartLodTable, PartLod
@@ -653,40 +651,6 @@ static void test_local_provider_cache() {
     }
 }
 
-static void test_composer_counts() {
-    // Reuse the shared PartStore + manifest populated by test_local_provider_cache.
-    // This avoids a second lod_bake pass on the large Tree geometry.
-    if (!g_shared_store) { CHECK(false, "composer test: shared store not set"); return; }
-    viewer::PartStore& store = *g_shared_store;
-    viewer::WorldManifest& m = g_shared_manifest;
-
-    viewer::WorldState state; state.reset(m);
-
-    // Match WorldComposer's shared tree walk: assembly nodes with no LOD BLAS
-    // contribute no TLAS instance, but their children are still visited.
-    // All parts are already loaded in the shared store (no lod_bake re-run needed).
-    size_t expected = 0;
-    for (auto& e : m.instances) {
-        viewer::walk_part_tree(e.part_hash,
-            [&](uint64_t hash) -> const viewer::LoadedPart* { return store.get_or_load(hash); },
-            [&](const viewer::LoadedPart* part, uint64_t, const float[16], int) {
-                if (!part->lod_blas.empty()) ++expected;
-            });
-    }
-    viewer::WorldComposer composer(store, expected + 16);
-    auto lods = store.part_lod_table();
-
-    viewer::PassThroughResolver pass;
-    int active_all = composer.compose(state, pass, lods, make_float3(0,0,0));
-    CHECK(active_all == (int)expected,
-          "passthrough composes every drawable node while traversing assemblies");
-
-    // Far camera with a small activation radius -> fewer active instances.
-    viewer::SectorLodResolver sec(16.0f, 32.0f);
-    int active_far = composer.compose(state, sec, lods, make_float3(1000,1000,1000));
-    CHECK(active_far < active_all, "sectorlod from far/small-radius composes fewer");
-}
-
 static std::string read_file(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     std::ostringstream ss; ss << f.rdbuf();
@@ -843,44 +807,17 @@ static void test_compose_expands_children() {
     CHECK(parent && parent->lod_mesh_data.size() == parent->lod_blas.size(), "raster data per LOD level");
     CHECK(parent && !parent->lod_mesh_data.empty() && parent->lod_mesh_data[0].vertex_count > 0, "LOD0 raster verts present");
 
-    viewer::WorldManifest single;
-    single.world_root_hash = 1;
-    single.instances.push_back(mk_entry(1, parent_hash, 0.0f));
-    viewer::WorldState state;
-    state.reset(single);
-
-    viewer::WorldComposer composer(store, 16);
-    auto lods = store.part_lod_table();
-    viewer::PassThroughResolver pass;
-
-    int recorded = composer.compose(state, pass, lods, make_float3(0,0,0));
-    printf("  recorded=%d  expected=3\n", recorded);
-    CHECK(recorded == 3, "one parent expands into parent + 2 children");
-
-    // Same instance set again -> the fingerprint skip must return the SAME count
-    // without rebuilding (behavioral check: count identical and stable).
-    int again = composer.compose(state, pass, lods, make_float3(0,0,0));
-    CHECK(again == recorded, "unchanged instance set composes to the same count");
-
-    // An assembly root has no geometry of its own, but composition must still
-    // traverse it and emit its drawable children.
+    // An assembly root has no geometry of its own, but its child table must
+    // survive loading so the expansion walk can emit its drawable children.
     const viewer::LoadedPart* assembler = store.get_or_load(assembler_hash);
     CHECK(assembler && assembler->lod_blas.empty() && assembler->children.size() == 2,
           "synthetic assembly root retains children without geometry");
-    viewer::WorldManifest assembly_world;
-    assembly_world.world_root_hash = 1;
-    assembly_world.instances.push_back(mk_entry(2, assembler_hash, 0.0f));
-    viewer::WorldState assembly_state;
-    assembly_state.reset(assembly_world);
-    int assembly_recorded = composer.compose(assembly_state, pass, lods, make_float3(0,0,0));
-    CHECK(assembly_recorded == 2,
-          "geometry-less assembly root emits its two drawable children only");
 
-    // NOTE: RasterComposer::build_batches (CPU batch path) was deleted in Task 12
-    // along with the whole CPU raster fallback; the GPU-driven path replaces it,
-    // and expansion+batching is exercised by gpu_cull_tests (readback_batches
-    // parity) instead. The (child_hash) variable is left set so the fixture
-    // remains valid for any future GL-free assertion added here.
+    // The WorldComposer expansion assertions that used to stand here went with
+    // the GL path in M0. Expansion against the SHIPPING path is covered by
+    // test_build_expansion_leaf_and_children; what is kept here is the PartStore
+    // loading contract those assertions depended on, which is what this fixture
+    // is actually expensive to set up.
     (void)child_hash;
 
     remove_test_dir(root);
@@ -1358,48 +1295,6 @@ static void test_partstore_cluster_loading() {
 // translation at cells 3/7/11 — the same layout mk_entry writes and
 // sector_grid::instance_position reads. transform_point must place points at
 // their true world positions, not collapse them toward the origin.
-static void test_cull_transform_convention() {
-    // T(100, 0, 0) in engine convention.
-    float t100[16] = { 1,0,0,100,  0,1,0,0,  0,0,1,0,  0,0,0,1 };
-
-    const matter::Mat4f transform = viewer::persisted_mat4(t100);
-    const auto origin = viewer::transform_point(transform, {0, 0, 0});
-    CHECK(std::fabs(origin.x - 100.0f) < 1e-4f && std::fabs(origin.y) < 1e-4f &&
-          std::fabs(origin.z) < 1e-4f,
-          "cull_convention: T(100,0,0) maps origin to (100,0,0)");
-
-    const auto point = viewer::transform_point(transform, {1, 2, 3});
-    CHECK(std::fabs(point.x - 101.0f) < 1e-4f && std::fabs(point.y - 2.0f) < 1e-4f &&
-          std::fabs(point.z - 3.0f) < 1e-4f,
-          "cull_convention: T(100,0,0) maps (1,2,3) to (101,2,3)");
-
-    // Half-space planes accepting only x >= 50 (repeated to fill all 6 slots).
-    float planes[6][4];
-    for (int p = 0; p < 6; ++p) {
-        planes[p][0] = 1; planes[p][1] = 0; planes[p][2] = 0; planes[p][3] = -50;
-    }
-    float mn[3] = { 0, 0, 0 }, mx[3] = { 1, 1, 1 };
-    CHECK(!viewer::aabb_culled(mn, mx, t100, planes),
-          "cull_convention: unit box translated to x=100 survives x>=50 planes");
-    float ident[16] = { 1,0,0,0,  0,1,0,0,  0,0,1,0,  0,0,0,1 };
-    CHECK(viewer::aabb_culled(mn, mx, ident, planes),
-          "cull_convention: unit box at origin is culled by x>=50 planes");
-
-    // LOD must follow the true per-instance distance, not distance-to-origin.
-    viewer::LoadedCluster cl{};
-    cl.aabb_min[0] = cl.aabb_min[1] = cl.aabb_min[2] = -1;
-    cl.aabb_max[0] = cl.aabb_max[1] = cl.aabb_max[2] =  1;
-    cl.radius = 1.0f;
-    cl.thresholds = { 0.5f, 0.05f, 0.0f };   // fine -> coarse
-    float eye[3] = { 0, 0, 0 };
-    float near_t[16] = { 1,0,0,1.9f,  0,1,0,0,  0,0,1,0,  0,0,0,1 };
-    float far_t[16]  = { 1,0,0,30,    0,1,0,0,  0,0,1,0,  0,0,0,1 };
-    CHECK(viewer::cluster_lod_select(cl, near_t, eye) == 0,
-          "cull_convention: cluster 1.9m away picks LOD0");
-    CHECK(viewer::cluster_lod_select(cl, far_t, eye) == 2,
-          "cull_convention: cluster 30m away picks coarsest LOD");
-}
-
 static void test_resolver_binning_cache() {
     viewer::WorldState s;
     viewer::WorldManifest m;
@@ -1556,20 +1451,6 @@ static void test_never_invisible_guarantee() {
     printf("  test_never_invisible_guarantee OK\n");
 }
 
-static void test_cluster_budget_dial() {
-    viewer::LoadedCluster cl{};
-    cl.aabb_min[0] = -1; cl.aabb_min[1] = -1; cl.aabb_min[2] = -1;
-    cl.aabb_max[0] =  1; cl.aabb_max[1] =  1; cl.aabb_max[2] =  1;
-    cl.radius = 1.7f;
-    cl.thresholds = { 0.3f, 0.1f, 0.0f };
-    float inst[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-    float eye[3] = { 10, 0, 0 };
-    int lf = viewer::cluster_lod_select(cl, inst, eye, 1.0f);
-    int lh = viewer::cluster_lod_select(cl, inst, eye, 0.5f);
-    CHECK(lh >= lf, "cluster: half-budget selects coarser-or-equal LOD");
-    printf("  test_cluster_budget_dial OK\n");
-}
-
 static void test_frustum_planes_known_camera() {
     matter::CameraDesc camera{{0, 0, 0}, {0, 0, -1}, {0, 1, 0},
                               60.0f * 3.14159265358979323846f / 180.0f,
@@ -1602,57 +1483,6 @@ static void test_frustum_planes_known_camera() {
     }
     CHECK(outside, "behind point fails a plane");
     printf("  test_frustum_planes_known_camera OK\n");
-}
-
-// Task 3: GPU record types + packing
-static void test_serialized_transform_bytes_are_unchanged() {
-    // Persisted transform: translate(7,8,9) at [3],[7],[11].
-    float fixture[16] = {1,0,0,7, 0,1,0,8, 0,0,1,9, 0,0,0,1};
-    matter::Mat4f matrix{};
-    std::memcpy(matrix.m, fixture, sizeof fixture);
-    const auto translated = viewer::transform_point(matrix, {0,0,0});
-    CHECK(std::fabs(translated.x - 7.0f) < 1e-6f &&
-          std::fabs(translated.y - 8.0f) < 1e-6f &&
-          std::fabs(translated.z - 9.0f) < 1e-6f,
-          "serialized translation remains at [3,7,11]");
-    CHECK(std::memcmp(matrix.m, fixture, sizeof fixture) == 0,
-          "serialized transform bytes unchanged");
-    const viewer::GpuInstanceRec packed = viewer::pack_instance(fixture);
-    CHECK(packed.object_to_world.elements[12] == 7.0f &&
-          packed.object_to_world.elements[13] == 8.0f &&
-          packed.object_to_world.elements[14] == 9.0f,
-          "explicit GLSL packing moves translation to column 3");
-    CHECK(std::memcmp(fixture, matrix.m, sizeof fixture) == 0,
-          "GPU packing does not mutate serialized bytes");
-    printf("  test_serialized_transform_bytes_are_unchanged OK\n");
-}
-
-static void test_pack_cluster_thresholds() {
-    viewer::LoadedCluster cl{};
-    cl.aabb_min[0]=-1; cl.aabb_min[1]=-2; cl.aabb_min[2]=-3;
-    cl.aabb_max[0]= 1; cl.aabb_max[1]= 2; cl.aabb_max[2]= 3;
-    cl.radius = 3.74f;
-    cl.thresholds = {0.5f, 0.25f, 0.125f};
-    cl.lod_mesh   = {4, 7, 9};
-    auto m = viewer::pack_cluster(cl, 2, 5);
-    CHECK(m.lod_count == 3, "lod_count");
-    CHECK(m.thresholds[2] == 0.125f && m.lod_mesh_idx[1] == 7, "arrays copied");
-    CHECK(m.thresholds[3] > 1e38f, "tail thresholds are +inf");
-    CHECK(m.part_slot == 2 && m.cluster_index == 5, "ids");
-    printf("  test_pack_cluster_thresholds OK\n");
-}
-
-static void test_pack_whole_part_zero_threshold() {
-    viewer::LoadedPart lp{};
-    lp.bound_radius = 5.0f;
-    lp.thresholds = {};  // Empty thresholds -> n == 0
-    lp.lod_mesh_data = {};
-    auto m = viewer::pack_whole_part(lp, 10);
-    CHECK(m.lod_count == 1, "lod_count for n==0");
-    CHECK(m.thresholds[0] == 0.0f, "synthetic threshold");
-    CHECK(m.thresholds[1] > 1e38f, "thresholds[1] is +inf");
-    CHECK(m.thresholds[8] > 1e38f, "thresholds[8] is +inf");
-    printf("  test_pack_whole_part_zero_threshold OK\n");
 }
 
 // Task 4: per-part compositional expansion table
@@ -1765,7 +1595,6 @@ int main() {
     test_streaming_anchor_frame_repositions_only_camera();
     test_streaming_anchor_camera_input_truth_table();
     test_current_frame_camera_input_order();
-    test_cull_transform_convention();
     test_world_state_version();
     test_world_state_delta();
     test_resolvers();
@@ -1773,7 +1602,6 @@ int main() {
     test_resolver_cutover_expansion();
     test_part_store_missing();
     test_local_provider_cache();
-    test_composer_counts();
     test_partstore_keeps_children();
     test_compose_expands_children();
     test_append_expanded_children();
@@ -1791,15 +1619,11 @@ int main() {
     // Per-cluster cull is exercised in gpu_cull_tests via readback_batches parity.
     // Task 9: runtime pixel-budget dial
     test_pixel_budget_dial();
-    test_cluster_budget_dial();
     // Task 10: never-invisible guarantee for large parts
     test_never_invisible_guarantee();
     // Task 1 (GPU culler): frustum/matrix helpers in raster_cull.h
     test_frustum_planes_known_camera();
     // Task 3 (GPU culler): GPU record types + packing
-    test_serialized_transform_bytes_are_unchanged();
-    test_pack_cluster_thresholds();
-    test_pack_whole_part_zero_threshold();
     // Task 4 (GPU culler): per-part compositional expansion table
     test_build_expansion_leaf_and_children();
     // Task 5 (Phase B): install_graph() fires on_part with total==0; fetch_parts carries want.size()

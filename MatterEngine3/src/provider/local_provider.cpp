@@ -13,10 +13,6 @@
 #include "tileset_phase.h"
 #include "bake_trace.h"        // Bake Lab task 1.3: tileset span split
 #include "bake_trace_names.h"  // kSpanTileset
-#ifndef MATTER_VULKAN_ONLY
-#include "tileset_provider.h"  // GL atlas-slot consumer (unload_all); the GL
-                               // bake it used to sit beside is gone (V5).
-#endif
 #include "material_registry.h"
 
 #if defined(MATTER_HAVE_AUTOREMESHER)
@@ -341,9 +337,6 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     // unbinds every material this provider pointed at a detail slot (material 16
     // via the deprecated root path, plus any defineMaterial() detail), empties
     // the LRU pool, and drops the previous world's dynamic registry entries.
-#ifndef MATTER_VULKAN_ONLY
-    viewer::tileset_provider::unload_all();
-#endif
     reset_tileset_bindings();
     baked_tileset_count_ = 0;
 
@@ -1312,9 +1305,6 @@ bool LocalProvider::restore_from_cache(
 {
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     // Reset mutable state (mirrors the preamble of install_graph()).
-#ifndef MATTER_VULKAN_ONLY
-    viewer::tileset_provider::unload_all();
-#endif
     reset_tileset_bindings();
     baked_tileset_count_ = 0;
     baked_count_  = 0;

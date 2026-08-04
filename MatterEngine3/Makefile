@@ -146,8 +146,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/shader_source.cpp \
           src/render/raster_mesh.cpp src/render/indexed_part_geometry.cpp \
           src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp \
-          src/render/part_store.cpp src/render/world_composer.cpp src/render/world_state.cpp \
-          src/render/tileset_provider.cpp \
+          src/render/part_store.cpp src/render/world_state.cpp \
           src/render/tileset_slicer.cpp src/render/bc_encode.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
           src/ecs/ecs_runtime.cpp src/ecs/simulation_control.cpp src/ecs/physics_context.cpp src/ecs/physics_shapes.cpp src/ecs/physics_systems.cpp src/ecs/streaming_systems.cpp src/ecs/transform_system.cpp \
@@ -221,8 +220,7 @@ ME3_OBJ = $(addprefix $(OBJDIR)/,script_host.o dsl_state.o dsl_bindings.o dsl_an
           tileset_metrics.o \
           tileset_gtex.o tileset_torus_bvh.o shader_source.o \
           raster_mesh.o indexed_part_geometry.o matrix_math.o frame_matrices.o vk_temporal.o vk_gi_math.o vk_lighting_controls.o \
-          part_store.o world_composer.o world_state.o \
-          tileset_provider.o \
+          part_store.o world_state.o \
           tileset_slicer.o bc_encode.o \
           local_provider.o resolvers.o \
           ecs_runtime.o simulation_control.o physics_context.o physics_shapes.o physics_systems.o streaming_systems.o transform_system.o \
@@ -484,6 +482,13 @@ $(BOX3D_LIB):
 	$(MAKE) -C $(BOX3D_DIR)
 
 $(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BC7ENC_OBJ) $(BOX3D_LIB)
+# `ar rcs` REPLACES the members it is given and leaves every other member in
+# place, so an object whose source was deleted (and whose name was dropped from
+# ME3_OBJ) keeps being served out of a stale archive forever -- linking dead
+# code that no longer exists in the tree, with no build error to notice. This
+# bit the far-field-impostor work twice (a deleted impostor_root_ledger.o, then
+# M0's world_composer.o / tileset_provider.o). Rebuild the archive from scratch.
+	rm -f $(LIB)
 	ar rcs $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BC7ENC_OBJ)
 
 # Delegate to the test suite (headless, GL-free host + raylib-linked BLAS path).

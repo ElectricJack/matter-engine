@@ -61,9 +61,19 @@ Scope — pure deletion; no behaviour change at all:
    `world_composer.{cpp,h}`, `gpu_cull_types.h`, `shaders_gpu/cull.comp`,
    `tileset_provider.{cpp,h}`, `raster_cull.h::cluster_lod_select`. Drop the corresponding
    objects from `ME3_OBJ`.
-2. **Stop generating the write-only artifacts**: `.static_lods` + the `LMSK` trailer and
-   their probe machinery (`matter_engine.cpp`, `part_asset_v2.cpp`, `part_graph.cpp`) —
-   the only reader is the writer's own cache probe.
+2. **Stop generating the `.static_lods` artifact** and its probe machinery
+   (`cache_path_static_lods` / `save_static_lod_plan` / `load_static_lod_plan`, the
+   `bake_static_lods` call site) — the only reader is the writer's own cache probe.
+
+   **Scope correction (2026-08-04): the `LMSK` trailer is NOT removed in M0.** The audit
+   filed it beside `.static_lods` as one write-only artifact, but they are different things.
+   `LMSK` is a trailer *inside the `.part` format itself*, with save, load, skip-on-load and
+   byte-identical-when-empty compatibility paths in `part_asset_v2.cpp`, and round-trip tests
+   asserting all of it. Deleting it is a **format change**: it forces a version bump and a
+   full cache invalidation. M4 rewrites the artifact format wholesale into PartBundle and
+   invalidates everything anyway, so removing it now buys nothing and costs a rebake.
+   Deferred to M4, where it is free. M0 stays what it claims to be — deletion of provably
+   unreachable code with no format or behaviour change.
 3. Delete `stress_forest_tests.cpp` (dead), and update `viewer_logic_tests.cpp` /
    `tileset_provider_tests.cpp`, which are the only remaining includers of the deleted
    headers.

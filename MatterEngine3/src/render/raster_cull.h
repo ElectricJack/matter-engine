@@ -64,30 +64,11 @@ inline float inst_scale(const matter::Mat4f& matrix) {
     return (sx + sy + sz) * (1.0f / 3.0f);
 }
 
-inline int cluster_lod_select(const LoadedCluster& cluster,
-                              const float persisted_transform[16],
-                              const float camera_eye[3],
-                              float pixel_budget = 1.0f) {
-    const matter::Mat4f object_to_world = persisted_mat4(persisted_transform);
-    const float scale = inst_scale(object_to_world);
-    const matter::Float3 local_center{
-        (cluster.aabb_min[0] + cluster.aabb_max[0]) * 0.5f,
-        (cluster.aabb_min[1] + cluster.aabb_max[1]) * 0.5f,
-        (cluster.aabb_min[2] + cluster.aabb_max[2]) * 0.5f};
-    const matter::Float3 world_center = transform_point(object_to_world, local_center);
-    const float dx = world_center.x - camera_eye[0];
-    const float dy = world_center.y - camera_eye[1];
-    const float dz = world_center.z - camera_eye[2];
-    float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-    if (distance < 0.01f) distance = 0.01f;
-    const float projected_size =
-        cluster.radius * scale / distance * pixel_budget;
-
-    const auto& thresholds = cluster.thresholds;
-    if (thresholds.empty()) return 0;
-    for (size_t index = 0; index < thresholds.size(); ++index)
-        if (projected_size >= thresholds[index]) return static_cast<int>(index);
-    return static_cast<int>(thresholds.size()) - 1;
-}
+// cluster_lod_select lived here and was the GL path's per-cluster LOD pick. It
+// was deleted in M0 with the rest of that path (no caller outside its own
+// tests). The shipping selector is the GPU cull shader; the Representation
+// migration replaces both with one distance function (see
+// docs/lod-vt-redesign-2026-08-04.md S5). The helpers above are still used by
+// the test suites and stay.
 
 } // namespace viewer
