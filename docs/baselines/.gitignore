@@ -1,0 +1,4 @@
+# Baseline captures are GPU/driver/machine-specific and large; the durable
+# artifacts here are the capture script and README.md's measured thresholds.
+# Always capture both sides of a comparison locally. See README.md.
+*.png
