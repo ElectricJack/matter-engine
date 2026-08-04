@@ -26,7 +26,10 @@ fix_junction() {
 }
 
 echo "Setting up symlinks/junctions..."
+# MatterEditor/shaders_gpu -> MatterEngine3/shaders_gpu used to be a third
+# junction here. Both it and its target were retired with the GL path: Vulkan
+# shader sources live in MatterEngine3/shaders_vk/ and reach the binaries as
+# embedded SPIR-V, so nothing needs to see them through a second path.
 fix_junction "MatterEngine3/shaders"      "$(pwd)/libs/MatterSurfaceLib/shaders"
 fix_junction "MatterEditor/shaders"       "$(pwd)/libs/MatterSurfaceLib/shaders"
-fix_junction "MatterEditor/shaders_gpu"   "$(pwd)/MatterEngine3/shaders_gpu"
 echo "Done."

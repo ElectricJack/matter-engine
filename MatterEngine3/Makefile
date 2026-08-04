@@ -266,18 +266,20 @@ LIB_FLAGS_STAMP = build/.lib_flags
 
 # Shader embedding codegen (Stage 1a).
 # Base shader list from the brief table + glsl includes found in .fs/.comp sources.
-# shaders_gpu/cull.comp, hiz_downsample.comp, raster_gpu_driven.vs used to be
-# embedded here for the GL GpuCuller/raster-composer path; that path (and its
-# only readers of these three sources) was deleted outright in Phase 5a
-# (tech-debt.md §6), so they are no longer listed. NOTE: this is unrelated to
-# build/shaders_vk/cull.comp.spv below (VK_SPV) -- that is a compiled Vulkan
-# SPIR-V binary built from the separate, live shaders_vk/cull.comp source and
-# must not be confused with the retired shaders_gpu/cull.comp GL source.
+# A shaders_gpu/ directory used to sit beside shaders/ holding cull.comp,
+# hiz_downsample.comp and raster_gpu_driven.vs for the GL GpuCuller /
+# raster-composer path. That path was deleted in Phase 5a (tech-debt.md §6),
+# which left the sources unread; the directory and its MatterEditor junction
+# were retired outright once the last of them went.
+# NOTE, still worth stating because the names collide: build/shaders_vk/cull.comp.spv
+# below (VK_SPV) is a compiled Vulkan SPIR-V binary built from the LIVE
+# shaders_vk/cull.comp source. That is the shipping culler and must not be
+# confused with the retired GL shaders_gpu/cull.comp it was named after.
 SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.glsl \
     shaders/raytrace_tlas_blas_processed.fs \
     shaders/materials.glsl shaders/bvh_tlas_common.glsl shaders/lighting.glsl
 # SHADER_FILES resolves logical paths into real filesystem paths under MatterEngine3/:
-# shaders/ is a symlink -> ../libs/MatterSurfaceLib/shaders; shaders_gpu/ is a real dir.
+# shaders/ is a symlink -> ../libs/MatterSurfaceLib/shaders.
 SHADER_FILES := $(SHADER_LOGICAL)
 
 .PHONY: all clean test vulkan-spirv check-animation-production-sources check-animation-runtime-boundary

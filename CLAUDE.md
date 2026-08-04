@@ -123,10 +123,14 @@ script from repo root after creating a worktree:
 bash setup-worktree.sh
 ```
 
-This creates NTFS junctions for the three directory symlinks the build requires:
+This creates NTFS junctions for the two directory symlinks the build requires:
 - `MatterEngine3/shaders` → `libs/MatterSurfaceLib/shaders`
 - `MatterEditor/shaders` → `libs/MatterSurfaceLib/shaders`
-- `MatterEditor/shaders_gpu` → `MatterEngine3/shaders_gpu`
+
+(There used to be a third, `MatterEditor/shaders_gpu` → `MatterEngine3/shaders_gpu`. Both
+the junction and its target were retired once the GL path was deleted; Vulkan shader
+sources live in `MatterEngine3/shaders_vk/` and are compiled to SPIR-V and embedded, not
+symlinked.)
 
 ### Sandbox note for Claude Desktop App
 
@@ -195,8 +199,8 @@ Current projects and their relationships. Dependencies run one way only:
    - Packaging: `make -C MatterEditor dist` (optionally `PROJECT=<name>`, default `world_demo`)
      → `build/dist/<PROJECT>/` — the exe plus `projects/<PROJECT>/` (minus `.cache`/`backup`),
      ready to zip and hand off; shaders are embedded in the exe, not copied
-   - Shader symlinks: `MatterEditor/shaders` → libs/MatterSurfaceLib/shaders,
-     `MatterEditor/shaders_gpu` → MatterEngine3/shaders_gpu
+   - Shader symlink: `MatterEditor/shaders` → libs/MatterSurfaceLib/shaders
+     (the former `shaders_gpu` junction went with the GL path)
 
 7. **libs/MeshChartingLib** - UV chart segmentation + atlas packing (GL-free)
    - No consumers today; kept for the voxel-box-imposter work
