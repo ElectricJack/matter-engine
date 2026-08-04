@@ -109,8 +109,9 @@ Acceptance:
 ## M3 — DSL recipes and lazy staged baking
 
 Scope:
-1. `lods(p)` on `Part`, `LOD.*` library generators, named stages with content-addressed
-   memoization, per-rep source hashing.
+1. `lods(p)` on `Part`, `LOD.*` library generators, demand-driven stages with
+   content-addressed memoization + dependency traces (design §3.2), per-rep source hashing,
+   the explicit `LOD.impostor`/`LOD.vanish` terminals with their placement validation.
 2. Default recipe = current adaptive ladder wrapped as a generator, with **measured**
    geometric error replacing the synthetic `prior + 0.9 × remaining` schedule, and default
    distances derived from it. Skinned parts move off hardcoded `BakeTargets` onto a default
@@ -121,7 +122,10 @@ Scope:
 Acceptance:
 - **Golden-bake test:** a scripted part (tree with a `skeleton` stage and a custom card rep)
   bakes deterministically twice → bit-identical rep blobs; editing only rep 2's builder
-  re-bakes only rep 2 (stage memo hit counts asserted).
+  re-bakes only rep 2 (stage memo hit counts asserted). A second fixture implements the
+  design §3.2 worked example — physics-settle stage feeding a placement stage consumed
+  differently by two reps — asserting the settle runs exactly once across all rep bakes and
+  reloads from the store on a cold process.
 - Existing worlds render unmodified under default recipes (replay parity vs M2 baseline,
   bounded diff at far distances where the fixed error schedule legitimately changes rungs —
   and branch LODs now visibly step through >2 usable rungs, the original complaint).

@@ -79,19 +79,19 @@ A part class may declare its representations. In the engine's existing idiom:
 class AlpineConifer extends Part {
   static params = { seed: 0, dryness: 0.35, size: 1.0, form: 0 };
 
-  // A STAGE: computed at most once per part hash, content-addressed and cached,
-  // available to any rep builder that asks for it. This is where a tree derives
-  // its branch hierarchy for every coarser rep to reuse.
-  skeleton(p) { /* ... returns branch graph ... */ }
+  // A STAGE (§3.2): computed at most once, cached in the store, available to
+  // any rep builder that asks. This is where the tree derives its branch
+  // hierarchy for every coarser rep to reuse.
+  skeleton(p, ctx) { /* ... returns branch graph ... */ }
 
-  build(p) { /* full-detail geometry, exactly as today */ }
+  build(p, ctx) { /* full-detail geometry, exactly as today */ }
 
   lods(p) {
     return [
-      { at: 0 },                                        // rep 0: build() verbatim
-      { at: 18,  gen: LOD.remesh({ voxel: 0.06 }) },    // engine library generator
+      { at: 0 },                                       // rep 0: build() verbatim
+      { at: 18,  gen: LOD.remesh({ voxel: 0.06 }) },   // engine library generator
       { at: 45,  gen: (ctx) => this.crownCards(p, ctx.stage('skeleton')) },
-      { at: 140, gen: LOD.impostor({ views: 24 }) },    // last rep = the impostor
+      LOD.impostor({ at: 140, views: 24 }),            // explicit terminal (§3.3)
     ];
   }
 }
@@ -102,17 +102,110 @@ Semantics:
 - `at` is the switch-in distance in metres for a unit-scale instance. An instance's effective
   distance table is `at × instance_scale × lod_bias`. Nothing else enters the selection
   function — no pixel budget, no error term, no feedback (R4's determinism follows from this).
-- `gen` is either an **engine library generator** (`LOD.remesh`, `LOD.simplify`,
-  `LOD.impostor`, composable: `LOD.remesh({voxel}).then(LOD.simplify({error}))`) or a
-  **script builder** — an ordinary function using the same drawing API as `build()`, with
-  access to declared stages. Custom builders are how a part exploits its own structure
-  (crown cards from a skeleton) far more efficiently than any generic remesher can.
-- **Stages** are named methods. The engine memoizes each stage's output keyed by
-  `(part hash, stage name)`; a rep bake pulls only the stage closure it declares. Rep builders
-  and stages must be pure functions of `(params, stages)` — the engine hashes per-rep source
-  so an edit to one rep's builder invalidates only that rep.
+- `gen` is either an **engine library generator** (`LOD.remesh`, `LOD.simplify`, composable:
+  `LOD.remesh({voxel}).then(LOD.simplify({error}))`) or a **script builder** — an ordinary
+  function using the same drawing API as `build()`, with access to stages. Custom builders
+  are how a part exploits its own structure (crown cards from a skeleton) far more
+  efficiently than any generic remesher can.
 
-### 3.2 Lazy, per-rep baking
+### 3.2 Stages: order, execution, and persistence
+
+**Order is data flow, not declaration.** There is no stage list and no numbering. A stage is
+an ordinary named method; anything running under the bake context — `build()`, a rep builder,
+or another stage — pulls one with `ctx.stage('name')`. That call ensures the named stage is
+up to date (running it first if it has never run) and returns its output. Execution order is
+therefore the topological order of the demand graph and nothing else; a dependency cycle is
+a bake error naming the cycle. The position of entries in `lods()` never influences stage
+order — rep 3 demanding `settle` before rep 1 is ever baked is perfectly normal.
+
+**When stages run.** On the bake workers, the first time something demands them — never
+eagerly. Baking rep 3 cold runs exactly rep 3's transitive stage closure and nothing more.
+A stage no rep or build ever demands never runs at all.
+
+**How stage data persists.** Every stage output is serialized to a blob in the store (§8)
+under `(part hash, stage name, version vector)`, alongside a recorded **dependency trace**:
+the list of stages it consumed and the content hash of each consumed output. A later bake —
+minutes or days later, warm or on another machine — validates the trace bottom-up and
+reloads the blob instead of re-running the stage. The memo key folds the stage's **own
+method source**, the params, and its inputs' *output* hashes, which buys early cutoff: if
+you edit `settle` but it reproduces bit-identical resting poses, everything downstream
+still hits. Editing one rep's builder invalidates only that rep; editing a shared module
+invalidates every part that imports it (module-closure hashing — coarse but honest).
+
+Stage outputs must be plain serializable data (positions, transforms, graphs) or engine
+blob handles (a mesh). A closure or function in a stage result is rejected at bake with a
+clear error. Stages must be deterministic — seeded RNG, fixed timesteps — which is the same
+discipline the tileset settle cache already proves out today; the stage system is that
+pattern generalized and made available to scripts.
+
+**Worked example — physics settle → placement → per-rep foliage:**
+
+```js
+class ForestKnoll extends Part {
+  static params = { seed: 7, boulders: 12 };
+
+  // Stage: scatter boulders and physics-settle them over a fixed number of
+  // timesteps. Deterministic: seeded scatter, fixed dt, fixed step count.
+  settle(p, ctx) {
+    const bodies = scatterBoulders(p.seed, p.boulders);
+    return ctx.physics.settle(bodies, { dt: 1 / 60, steps: 240 });
+  }
+
+  // Stage: foliage PLACEMENT derived from where the boulders came to rest —
+  // ferns in the lee, moss on shaded faces. Placement is decided once, HERE,
+  // not per rep, so every rep agrees on where each plant lives.
+  foliagePlan(p, ctx) {
+    return planFoliage(ctx.stage('settle'), p.seed);
+  }
+
+  build(p, ctx) {
+    const rest = ctx.stage('settle');
+    const plan = ctx.stage('foliagePlan');
+    /* full boulders + full-geometry plants at the planned positions */
+  }
+
+  lods(p) {
+    return [
+      { at: 0 },
+      // Same plan, cheaper realization: card plants at the same positions.
+      { at: 35,  gen: (ctx) => this.cardFoliage(p, ctx.stage('foliagePlan')) },
+      // Same plan again: nearby entries merged into clumps, boulders remeshed.
+      { at: 110, gen: (ctx) => this.clumps(p, ctx.stage('foliagePlan'), ctx) },
+      LOD.impostor({ at: 300, views: 24 }),
+    ];
+  }
+}
+```
+
+The settle runs **once, ever** — the first time any rep of this part is baked. Rep 2, baked
+weeks later when the camera first sees this part at range, reloads the settled poses and the
+plan from the store and runs only `clumps`. And because *placement* is a stage while
+*realization* is per-rep, a rep switch changes what each plant looks like but never where it
+stands — the geometry analogue of §6's shared parameterisation, and part of why pops read as
+calm rather than as reshuffles.
+
+### 3.3 The impostor and vanish callouts
+
+The switch to an impostor is the most consequential transition in the table, so it is
+syntactically explicit rather than buried in a `gen`:
+
+- `LOD.impostor({ at, views, ... })` is a distinguished terminal entry. Validation enforces
+  **at most one, and only in last position** — a mesh rep after an impostor is a bake error.
+  Reading a part's `lods()` tells you at a glance whether it ever impostors and at exactly
+  what distance.
+- For an assembly, the impostor **replaces the entire subtree** (`replaces: 'subtree'` — the
+  default and the only v1 mode, matching today's feature; written out so the reader sees the
+  contract at the callsite).
+- `LOD.vanish({ at })` is the other explicit terminal: past `at`, the instance is culled
+  entirely. This is the honest recipe for litter and small ground detail, which today either
+  over-lives or falls out implicitly.
+- Omitting both means the last mesh rep holds at any distance — never a silent impostor.
+
+At runtime none of this is special: the impostor (or vanish) is still just rep N of one
+table, selected by the same walk (§5). The explicitness is purely an authoring-surface
+guarantee.
+
+### 3.4 Lazy, per-rep baking
 
 `lods()` is a *declaration*, not a work order. Nothing is generated until the streamer
 requests a specific `(part, rep)` pair — a sector entering at far range bakes **only** the far
@@ -123,13 +216,16 @@ rep and whatever stages it needs. This single property deletes, by construction:
   passes to be discarded at `part_store.cpp:1166`),
 - most of the initial-bake latency the current system pays before anything appears.
 
-### 3.3 Defaults (R5's second half)
+### 3.5 Defaults (R5's second half)
 
 A part with no `lods()` gets the **default recipe**: the current adaptive ladder, repackaged
 as a library generator with two fixes from the audit — a *measured* geometric error per rep
 (actual mesh-to-mesh deviation, not the synthetic `prior + 0.9 × remaining` schedule), and
 distances derived from that error via the projected-size relation. The projected-size metric
 survives *only* here, at bake time, as a default-distance estimator; it is gone from runtime.
+The default recipe ends in an explicit `LOD.impostor` entry for parts that meet today's
+eligibility policy — so the editor's effective-table view (below) always shows the impostor
+distance, defaulted or authored, in the same place.
 
 Tooling requirement: the editor shows every part's **effective** distance table (authored or
 default) and can copy a default table into script text with one action, so tuning is
@@ -388,10 +484,10 @@ default-distance estimator.
 | Req | Where satisfied |
 |---|---|
 | R1 one world path | §4 |
-| R2 DSL-owned staged LODs | §3.1–3.2 |
+| R2 DSL-owned staged LODs | §3.1–3.3 |
 | R3 only what is read | §9.1–9.2 |
 | R4 atomic deterministic switches | §2, §5 |
-| R5 distances, error as default | §3.1, §3.3 |
+| R5 distances, error as default | §3.1, §3.5 |
 | R6 global budgets only | §7 |
 | R7 smooth frames, instant revisit | §5.3, §6, §7, §8.2 |
 | R8 asset store foundation | §8 |
