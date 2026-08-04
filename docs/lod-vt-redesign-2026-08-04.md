@@ -36,6 +36,11 @@ Distilled from the feedback, numbered so the rest of the document can cite them:
 - **R8 — A real asset storage foundation.** Binary data, loaded and saved in large chunks with
   fast async file I/O. Designed as a standalone MatterEngine subsystem first, then used as the
   foundation of all caching.
+- **R9 — Visibility-gated streaming.** The engine should not load or compute what the camera
+  provably cannot see: travelling down a canyon, nothing beyond its walls is baked, read, or
+  resident. A very coarse whole-world pass computes sector visibility, visible sectors
+  generate nearest-first, and that same coarse world doubles as the always-present backdrop
+  that grounds high-resolution detail as it pops in.
 
 Non-goals: changing the `.gtex` material bake itself, changing the RT lighting core,
 networked/multi-client streaming, animated impostors.
@@ -122,7 +127,7 @@ order — rep 3 demanding `settle` before rep 1 is ever baked is perfectly norma
 eagerly. Baking rep 3 cold runs exactly rep 3's transitive stage closure and nothing more.
 A stage no rep or build ever demands never runs at all.
 
-**How stage data persists.** Every stage output is serialized to a blob in the store (§8)
+**How stage data persists.** Every stage output is serialized to a blob in the store (§9)
 under `(part hash, stage name, version vector)`, alongside a recorded **dependency trace**:
 the list of stages it consumed and the content hash of each consumed output. A later bake —
 minutes or days later, warm or on another machine — validates the trace bottom-up and
@@ -181,7 +186,7 @@ The settle runs **once, ever** — the first time any rep of this part is baked.
 weeks later when the camera first sees this part at range, reloads the settled poses and the
 plan from the store and runs only `clumps`. And because *placement* is a stage while
 *realization* is per-rep, a rep switch changes what each plant looks like but never where it
-stands — the geometry analogue of §6's shared parameterisation, and part of why pops read as
+stands — the geometry analogue of §7's shared parameterisation, and part of why pops read as
 calm rather than as reshuffles.
 
 ### 3.3 The impostor and vanish callouts
@@ -254,7 +259,7 @@ Skinned parts drop their hardcoded `BakeTargets` and get a default recipe like e
   its own name.
 
 What this buys beyond conceptual hygiene: every fix to publish slicing, budgets, residency
-and commit atomicity (§5, §7) automatically applies to small worlds too, instead of the
+and commit atomicity (§5, §8) automatically applies to small worlds too, instead of the
 closed path being a second implementation that drifts.
 
 ---
@@ -285,8 +290,8 @@ selectors become one function, two evaluators, one clamp.
 ### 5.2 Atomic switches
 
 A rep switch for a cluster **commits** only when the target rep's full resource set is
-resident: geometry uploaded, BLAS built, and its texture mip level composited (§6). The
-commit itself is one small buffer write, batched under the main-thread budget (§7). The
+resident: geometry uploaded, BLAS built, and its texture mip level composited (§7). The
+commit itself is one small buffer write, batched under the main-thread budget (§8). The
 outgoing rep's resources are evicted only after commit + a grace period.
 
 Consequences, matching R4 exactly:
@@ -311,7 +316,82 @@ re-upload all delete; suppressed instances genuinely leave the dispatch.
 
 ---
 
-## 6. Texturing: one parameterisation, a real mip chain
+## 6. The proxy world: occlusion-gated, nearest-first streaming (R9)
+
+The camera in a canyon should cost what the canyon costs — nothing beyond its walls should
+be baked, read, or resident. The mechanism is one new tier with two jobs:
+
+> The **proxy** is the world's coarsest representation: per-sector, always-resident,
+> whole-world, baked one to two orders of magnitude coarser than the coarsest streaming
+> rung. Job one: it is the **occluder** from which sector visibility is computed. Job two:
+> it is the **backdrop** that draws wherever real reps aren't committed yet, grounding
+> high-resolution detail as it arrives.
+
+### 6.1 What it is and where it comes from
+
+- The proxy is produced by the same rep machinery as everything else — it *is* a rep, so
+  identity, versioning, caching and invalidation come for free. For terrain it is a very
+  coarse field march; the occluder set is terrain-only in v1 (§12, Q5).
+- Baking it is the **first pass over any world**: cheap per sector, embarrassingly
+  parallel, and written contiguously in the store (§9) so a warm session loads the entire
+  world's proxy in one or two sequential reads at open.
+- It must be small enough to be **unconditionally resident** — target single-digit MB per
+  square kilometre: coarse mesh, per-vertex material derived from the tape, no pages, no
+  per-part instancing. It is never evicted; the memory budgets (§8) govern everything
+  above it.
+- It **subsumes two existing mechanisms**: the terrain far-field impostors (StreamMountain's
+  25 mode-1 `.fimp`) and the fog-wall ring trim. Beyond the streaming rings you see proxy,
+  not fog.
+
+### 6.2 Visibility
+
+Each frame (amortized under camera motion) the proxy renders to a small depth buffer; a
+HiZ pyramid is built; every candidate sector's bounds test against it and classify as
+**visible**, **offscreen**, or **occluded**.
+
+The rule that makes coarse occlusion safe for *loading* decisions: the occluder variant of
+the proxy is **eroded at bake** — offset inward by at least its own voxel error — so it can
+never occlude anything the true surface would not. A coarse proxy may under-occlude (waste
+a little work); it must never over-occlude (a hole when you round the corner). Erosion is
+the conservative direction, and it is directly testable (the migration plan's
+erosion-safety gate).
+
+Prediction, not reaction: the visibility test uses a widened frustum swept along
+short-horizon camera motion, and hysteresis keeps recently visible sectors warm — a camera
+turn should not stare at raw proxy while a burst of bakes catches up.
+
+### 6.3 What visibility drives
+
+**Priority — never selection.** Consistent with §8's contract (budgets shape *when*, never
+*what*), the desired rep remains the pure distance function; visibility reorders the work
+queue:
+
+1. **Visible** sectors stream nearest-first — the entire bake/IO budget goes down the
+   canyon you are actually in.
+2. **Offscreen** near sectors follow (turn insurance).
+3. **Occluded** sectors come last — and beyond a distance threshold, not at all: no bake,
+   no read, no residency. This is "do not load or compute anything outside the canyon,"
+   literally.
+
+Determinism survives because visibility is a pure function of camera pose against a static
+proxy: the same fly-through yields the same classification sequence, hence the same commit
+order. The keystone determinism test gains a canyon path.
+
+### 6.4 Grounding the pop
+
+The proxy is the floor of the visual ladder. Wherever a sector has no committed rep, proxy
+draws; when the sector's first real rep commits, its proxy hides — and that swap is itself
+an atomic commit (§5.2): never both, never a gap. Because the proxy is shaded from the same
+tape-derived material the real world uses (§7), arrival reads as *sharpening*, not
+*materializing*. Cresting a canyon rim therefore looks like: a complete soft world
+instantly (the proxy was always resident), then detail pouring in nearest-first.
+
+Optional and v1-deferred: the proxy's BLAS can stand in for far geometry in RT, giving
+distant shadows and GI something to hit beyond the streamed rings.
+
+---
+
+## 7. Texturing: one parameterisation, a real mip chain
 
 The root cost driver in the audit was per-rung charting: six call sites, each rung a complete
 independent texture world. The fix is structural:
@@ -338,14 +418,14 @@ independent texture world. The fix is structural:
 - **Warp** is solved once per sector against rep-0 geometry and shared by every rep through
   the shared parameterisation; the per-rung reprojection path is deleted.
 
-Open question (deliberately deferred to measurement, §11): whether composited pages are
+Open question (deliberately deferred to measurement, §12): whether composited pages are
 *persisted* in the store or recomposited on load. They are deterministic functions of
 `(rep geometry, chart table, tileset, tape)`, so both are correct; the store supports either
 as a policy flag.
 
 ---
 
-## 7. Budgets and the frame contract (R6, R7)
+## 8. Budgets and the frame contract (R6, R7)
 
 The engine exposes **three global constraints and nothing else**:
 
@@ -370,12 +450,12 @@ path are bit-identical in switch order (this is testable, and the migration plan
 
 ---
 
-## 8. MatterStore: the asset storage subsystem (R8)
+## 9. MatterStore: the asset storage subsystem (R8)
 
 Designed standalone — its own library, tests and benchmark — then adopted as the foundation
 of every cache. Nothing in it knows what a "part" is.
 
-### 8.1 Shape
+### 9.1 Shape
 
 Two layers:
 
@@ -388,7 +468,7 @@ Two layers:
   `(part hash, kind, rep index, version vector)`. Eviction is LRU over refs against the disk
   budget; compaction rewrites surviving blobs and drops orphans.
 
-### 8.2 I/O model
+### 9.2 I/O model
 
 - **Async reads, batched.** The API takes a batch of refs and returns completions
   (future/callback marshalled to the caller's thread). Windows implementation is
@@ -404,7 +484,7 @@ Two layers:
 - Single writer, many readers, cross-process file lock; per-blob checksum, and a bad blob is
   a cache miss, never a crash.
 
-### 8.3 The version vector
+### 9.3 The version vector
 
 The cache layer on top defines **one** version vector — engine bake version, representation
 version, box3d version, format versions — folded into **every** RefTable key. This
@@ -413,7 +493,7 @@ reaching the resolve key and the impostor hash but not the part hash): there is 
 place versions enter keys, so a rule change either invalidates everything it should or the
 single fold site is wrong — no more per-artifact-kind plumbing to forget.
 
-### 8.4 Placement
+### 9.4 Placement
 
 `libs/AssetStoreLib`, depending only on MemoryLib, beside SpatialQueryLib in the dependency
 chain. Own unit tests (crash-mid-write recovery, eviction, concurrent read) and a benchmark
@@ -422,9 +502,9 @@ that justifies the subsystem.
 
 ---
 
-## 9. Disposition: what dies, what lives (R3)
+## 10. Disposition: what dies, what lives (R3)
 
-### 9.1 Artifacts — twelve kinds to four
+### 10.1 Artifacts — twelve kinds to four
 
 | Current | Fate |
 |---|---|
@@ -432,7 +512,7 @@ that justifies the subsystem.
 | `.lods` (serialized ladder) | → per-rep blobs in the PartBundle |
 | `.static_lods` + `LMSK` trailer | **delete** — write-only today (only reader is the writer's own cache probe) |
 | `.flat.part` | **delete from production** — `world_flatten` is test scaffolding |
-| `.fimp` (impostor atlas) | → the last rep's blob in the PartBundle |
+| `.fimp` (impostor atlas) | → the last rep's blob in the PartBundle; the terrain far-field mode is retired by the proxy (§6) |
 | `.impostor` link files | **delete** — a RefTable row replaces the link indirection entirely |
 | `.hints` | fold into the PartBundle manifest |
 | chart trailer / chart-atlas serializer | → the shared parameterisation blob (finally gets its production reader) |
@@ -440,12 +520,13 @@ that justifies the subsystem.
 | settle cache | → RefTable rows (bake unchanged) |
 | `.gtex` | **unchanged** as an offline file; decoded BC form mirrored into the store |
 | world tape | **unchanged**, stored as blobs |
+| — | **new: world proxy** (§6) — per-sector coarse rep + its eroded occluder variant, always resident, written contiguously |
 
 New persistent set: **PartBundle** (manifest + per-rep geometry + shared parameterisation +
-impostor atlas + memoized stage outputs), **`.gtex`**, **world tape/settle**, all inside
-MatterStore.
+impostor atlas + memoized stage outputs), the **world proxy**, **`.gtex`**, **world
+tape/settle**, all inside MatterStore.
 
-### 9.2 Stop generating (independent of any redesign — these are pure waste today)
+### 10.2 Stop generating (independent of any redesign — these are pure waste today)
 
 - The adaptive ladder for terrain sectors (387 MB → 6.6 GB cache inflation, discarded
   unconditionally at load).
@@ -453,7 +534,7 @@ MatterStore.
 - The second impostor producer (same object baked twice from two hierarchy walks).
 - `SectorLodResolver` output (computed per instance, read by nothing shipping).
 
-### 9.3 Code counts
+### 10.3 Code counts
 
 | | Today | Redesign |
 |---|---|---|
@@ -469,7 +550,7 @@ Plus the audit §4.5 dead list (`shaders_gpu/cull.comp`, `gpu_cull_types.h`,
 `tileset_macro_slot`, `ResolvedInstance::segment`), which is deleted **before any other work**
 per the requirements.
 
-### 9.4 What we deliberately keep
+### 10.4 What we deliberately keep
 
 The streamer core (rings, hysteresis, generation tags, publish-then-evict — promoted to the
 only world path). The QEM simplifier, marching-cubes surfacing, chart segmentation and
@@ -479,22 +560,23 @@ default-distance estimator.
 
 ---
 
-## 10. How the requirements map
+## 11. How the requirements map
 
 | Req | Where satisfied |
 |---|---|
 | R1 one world path | §4 |
 | R2 DSL-owned staged LODs | §3.1–3.3 |
-| R3 only what is read | §9.1–9.2 |
+| R3 only what is read | §10.1–10.2 |
 | R4 atomic deterministic switches | §2, §5 |
 | R5 distances, error as default | §3.1, §3.5 |
-| R6 global budgets only | §7 |
-| R7 smooth frames, instant revisit | §5.3, §6, §7, §8.2 |
-| R8 asset store foundation | §8 |
+| R6 global budgets only | §8 |
+| R7 smooth frames, instant revisit | §5.3, §7, §8, §9.2 |
+| R8 asset store foundation | §9 |
+| R9 visibility-gated streaming | §6 |
 
 ---
 
-## 11. Open questions
+## 12. Open questions
 
 1. **Persist composited pages, or recomposite on load?** Deterministic either way; a store
    policy flag decided by measurement (disk read of BC pages vs GPU recomposite time).
@@ -506,3 +588,7 @@ default-distance estimator.
    scopes it to "subtree → impostor" only, matching today's feature.
 4. **Existing worlds.** Default recipes keep every current script working unmodified; explicit
    `lods()` is adopted part by part. No migration of project scripts is ever forced.
+5. **The occluder set (Q5).** v1 computes visibility from eroded terrain only. Large authored
+   structures (a city wall, a fortress) are legitimate occluders too; admitting them needs a
+   per-part `occluder` flag and erosion of authored meshes — deferred until a world needs it,
+   because a missing occluder only costs work, never correctness.

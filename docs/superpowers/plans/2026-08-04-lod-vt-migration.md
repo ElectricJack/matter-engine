@@ -4,7 +4,7 @@ Date: 2026-08-04
 Design: `docs/lod-vt-redesign-2026-08-04.md`
 Audit of the starting point: `docs/lod-vt-system-walkthrough-2026-08-04.md`
 
-Nine milestones, M0–M8. Every milestone leaves the branch shippable and ends with an
+Ten milestones, M0–M9. Every milestone leaves the branch shippable and ends with an
 acceptance gate a human can run. Order was chosen to (a) honour the requirement that dead-code
 removal precedes everything, (b) deliver the user-visible wins (deterministic pops, visible
 impostors, smooth frames) early, and (c) never build migration machinery for a format that a
@@ -27,7 +27,8 @@ later milestone deletes.
 - **`embedded_spirv.h` conflicts on every merge**; regenerate, don't hand-merge.
 - **Visual re-baselines are deliberate events**: capture before/after replays
   (`MATTER_REPLAY`), review the diff, then commit new baselines with the evidence noted in
-  the commit message. M1 and M6 are the two milestones that intentionally move pixels.
+  the commit message. M1 and M6 intentionally move pixels; M7 intentionally changes the far
+  field (fog wall → proxy backdrop).
 
 ---
 
@@ -197,7 +198,40 @@ Acceptance:
 
 ---
 
-## M7 — One world path
+## M7 — Proxy world and visibility-gated streaming
+
+Scope (design §6):
+1. **Proxy rep per sector**: coarse terrain march at proxy pitch, plus its **eroded
+   occluder variant** baked alongside; whole-world proxy pass at world open; stored
+   contiguously in the store; always resident. Retires the terrain far-field `.fimp`
+   impostors and the fog-wall ring trim — beyond the rings you see proxy, not fog.
+2. **Visibility**: proxy depth → HiZ pyramid → per-sector classification
+   (visible / offscreen / occluded), widened predictive frustum, hysteresis on recently
+   visible.
+3. **Priority**: streamer work order becomes (visibility class, distance) — visible
+   nearest-first; occluded-beyond-threshold sectors are neither baked nor read nor
+   resident.
+4. **Proxy↔real swap** rides the M2 commit machinery: proxy draws exactly where no real
+   rep is committed; the handover is atomic — never both, never a gap.
+
+Acceptance:
+- **Canyon test (new):** a scripted canyon fly-through in StreamMountain. Assert from job
+  logs that occluded-side sectors never bake and never load; total bake+IO measurably below
+  the same path with occlusion disabled; and no visual hole when cresting the rim — the
+  proxy covers until real sectors commit, nearest-first.
+- **Erosion-safety proof (failability):** run with the *un-eroded* proxy as occluder → the
+  test must catch a false occlusion (a hole); with erosion → none. Proves the conservative
+  direction is doing the work, not luck.
+- Whole-disc proxy metrics recorded: cold bake time for all 6547 StreamMountain sectors,
+  warm open is O(1–2 sequential reads), resident proxy memory within its stated cap.
+- Fly-through determinism test extended with the canyon path: commit order identical
+  across runs (visibility is a pure function of pose against a static proxy).
+- Far-view screenshot evidence: fog wall replaced by proxy backdrop, shaded in-family from
+  the tape.
+
+---
+
+## M8 — One world path
 
 Scope: closed worlds boot through the streamer (`residency: all`, finite grid, no eviction);
 `compose_world` deleted; one compiled `WorldProgram` (explicit world export replaces the
@@ -205,20 +239,22 @@ regex; per-sector isolates from bytecode); "sector" renamed to one meaning
 (`LocalityGrid` for the pitch-16 grid).
 
 Acceptance:
-- Demo, Meadow, Primitives, FloorDemo boot via the streamer, replay-identical to M6
+- Demo, Meadow, Primitives, FloorDemo boot via the streamer, replay-identical to M7
   baselines once resident.
 - `run-world-definition` rewritten for the streamed path; no `find_world_class_name`
   remains; a world without an explicit export fails with a clear error (failability proof).
-- Closed-world boot time within noise of M6 (the streamer with `residency: all` must not be
-  slower than the manifest it replaced — warm store from M5 does the heavy lifting).
+- Closed-world boot time within noise of the prior milestone (the streamer with
+  `residency: all` must not be slower than the manifest it replaced — warm store from M5
+  does the heavy lifting).
 
 ---
 
-## M8 — Budget governor and final acceptance
+## M9 — Budget governor and final acceptance
 
 Scope: the single main-thread queue with per-frame ms accounting; `stream.publish` rebuilt as
-resumable slices; RAM/VRAM/disk budgets enforced (farthest-first eviction); all remaining
-per-system knobs either deleted or demoted to debug-only.
+resumable slices; RAM/VRAM/disk budgets enforced (farthest-first eviction, proxy tier exempt);
+M7's visibility priority folds into the unified queue; all remaining per-system knobs either
+deleted or demoted to debug-only.
 
 Acceptance:
 - **Frame-time conformance:** StreamMountain scripted fly-through; p99 of streaming-side
@@ -241,24 +277,29 @@ Acceptance:
 | Golden staged bake (new, M3) | Permanent |
 | Store crash/eviction/bench (new, M5) | Permanent |
 | Texture-persistence, occlusion ablation (new, M6) | Permanent |
-| Budget conformance (new, M8) | Permanent |
-| Shot replay (`MATTER_REPLAY`) | Keep; re-baseline deliberately at M1 and M6 only |
+| Canyon visibility + erosion safety (new, M7) | Permanent |
+| Budget conformance (new, M9) | Permanent |
+| Shot replay (`MATTER_REPLAY`) | Keep; re-baseline deliberately at M1, M6, and M7 (far field) only |
 | `.gtex` double-bake determinism | Keep unchanged |
 | Vulkan smoke suite (~16 modes) | Keep; 11 threshold-constant fixtures recalibrated to distances at M1 |
-| `run-world-definition` | Rewrite at M7 for the streamed path |
+| `run-world-definition` | Rewrite at M8 for the streamed path |
 | `.static_lods` probe tests, `stress_forest_tests.cpp`, GL-selection tests | Retire at M0 |
 | Threshold-formula / epsilon-search unit tests | Retire at M3 with their formulas |
 | `demand_bake_tests`, `script_host_tests` (`lodPolicy` surface) | Rewrite at M3 against `lods()`; `lodPolicy` becomes the default-recipe config and keeps a thin compat shim until M4 |
 
 ## Risk register
 
-- **Two deliberate pixel re-baselines (M1, M6).** Mitigation: replay evidence reviewed by
-  Jack before baselines move; everything else must be pixel-stable.
+- **Three deliberate visual changes (M1, M6, and M7's far field).** Mitigation: replay
+  evidence reviewed by Jack before baselines move; everything else must be pixel-stable.
 - **M4's one-time full rebake** invalidates every cache on every machine. Schedule it; pair
   it with M5 so the rebuilt cache lands directly in the store.
 - **Parity mapping in M1 depends on `pixel_budget = 2.01`** (the shipped value — not 1).
   The conversion must read it from the live config, not assume it.
 - **Lazy baking changes *when* bake cost is paid** — watch for hitching at rep boundaries
-  before M8's governor lands; M2's clamp already guarantees correctness (old rep holds).
-- **The streamer becomes load-bearing for closed worlds at M7** — its bugs get a larger
-  blast radius; the M2/M8 instrumentation must land first, which the ordering guarantees.
+  before M9's governor lands; M2's clamp already guarantees correctness (old rep holds).
+- **False occlusion is the one proxy failure that costs correctness** (a hole instead of
+  wasted work). The erosion-safety gate is the guard; it must be proven failable with the
+  un-eroded proxy before M7 ships. Proxy staleness against world edits is covered by the
+  version vector.
+- **The streamer becomes load-bearing for closed worlds at M8** — its bugs get a larger
+  blast radius; the M2/M9 instrumentation must land first, which the ordering guarantees.
