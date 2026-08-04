@@ -61,19 +61,31 @@ Scope — pure deletion; no behaviour change at all:
    `world_composer.{cpp,h}`, `gpu_cull_types.h`, `shaders_gpu/cull.comp`,
    `tileset_provider.{cpp,h}`, `raster_cull.h::cluster_lod_select`. Drop the corresponding
    objects from `ME3_OBJ`.
-2. **Stop generating the `.static_lods` artifact** and its probe machinery
-   (`cache_path_static_lods` / `save_static_lod_plan` / `load_static_lod_plan`, the
-   `bake_static_lods` call site) — the only reader is the writer's own cache probe.
+2. ~~**Stop generating the write-only artifacts**: `.static_lods` + `LMSK`.~~
+   **WITHDRAWN 2026-08-04 — neither is write-only. Verified, not assumed:**
 
-   **Scope correction (2026-08-04): the `LMSK` trailer is NOT removed in M0.** The audit
-   filed it beside `.static_lods` as one write-only artifact, but they are different things.
-   `LMSK` is a trailer *inside the `.part` format itself*, with save, load, skip-on-load and
-   byte-identical-when-empty compatibility paths in `part_asset_v2.cpp`, and round-trip tests
-   asserting all of it. Deleting it is a **format change**: it forces a version bump and a
-   full cache invalidation. M4 rewrites the artifact format wholesale into PartBundle and
-   invalidates everything anyway, so removing it now buys nothing and costs a rebake.
-   Deferred to M4, where it is free. M0 stays what it claims to be — deletion of provably
-   unreachable code with no format or behaviour change.
+   - **`.static_lods` is a working bake cache, not a dead artifact.**
+     `HostBaker::bake_static_lods` (`part_graph.cpp:730-744`) reads the sidecar back
+     through `load_static_lod_plan`, checks every referenced `.part` still exists, and
+     `return true`s — skipping the whole per-level rebake. The audit's wording ("the only
+     reader is the writer's own cache probe") is literally accurate, but a cache probe *is*
+     a reader: deleting it would force every static-LOD part to rebake on every bake. The
+     surrounding function is also live work — it is gated on a part opting in via
+     `eval_lods`, and it writes real per-level geometry.
+   - **`LMSK` is a trailer inside the `.part` format**, with save, load, skip-on-load and
+     byte-identical-when-empty compatibility paths in `part_asset_v2.cpp` plus round-trip
+     tests. Removing it is a format change forcing a version bump and full cache
+     invalidation. It is also written *by* `bake_static_lods` (`part_graph.cpp:858`), so the
+     two are coupled.
+
+   Both are folded into **M4**, which rewrites the artifact set into PartBundle and
+   invalidates every cache anyway — there they cost nothing. This keeps M0 honestly what it
+   claims to be: deletion of provably unreachable code, with no format, cache, or behaviour
+   change. Three of the audit's §4.5 "confirmed dead" entries have now failed verification
+   (`world_composer`/`tileset_provider` were reachable-looking but macro-dead, and needed
+   the enclosing blocks removed first; `ResolvedInstance::segment` and `tileset_macro_slot`
+   are still written; `.static_lods` and `LMSK` are live) — treat that list as leads, not
+   findings.
 3. Delete `stress_forest_tests.cpp` (dead), and update `viewer_logic_tests.cpp` /
    `tileset_provider_tests.cpp`, which are the only remaining includers of the deleted
    headers.
