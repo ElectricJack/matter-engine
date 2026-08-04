@@ -305,9 +305,33 @@ Three findings the design did not anticipate:
    and says so rather than printing hundreds of unrelated diffs. The gate currently runs
    on RockGallery, whose instances are all authored parts.
 
+   **This is a BLOCKER for M2, M7 and M9, not a footnote.** Those three milestones are
+   about streaming — atomic commits under residency pressure, visibility-priority ordering,
+   budget throttling — and each one's acceptance leans on this gate to show that
+   "budgets shape *when*, never *what*". A gate that cannot run on a streamed world cannot
+   make that showing. Confirmed at source: `matter_engine.cpp:4522` assigns
+   `entry.instance_id = sector_next_id++`, a monotonic counter, so two runs whose sectors
+   publish in a different order (worker-pool completion order, which streaming does not
+   fix) give the same geometry different identities.
+
+   **Prerequisite for M2: make streamed-sector `stable_id` content-derived** — a hash of
+   (sector coord, part hash, placement index) rather than an allocation counter. The
+   machinery already exists one level down: `resolvers.cpp::child_stable_id` derives child
+   identity by hashing exactly that way, so this is extending an established pattern rather
+   than inventing one. It is also what the field's own comment already claims it is
+   ("authoritative world/path identity"). Not a live rendering defect today — within a
+   single session the counter is self-consistent, which is all temporal reprojection and
+   the instance cache need — but it is load-bearing for every identity-keyed feature the
+   redesign adds, impostor hierarchy ownership included.
+
 ---
 
 ## M2 — Atomic switches
+
+> **Prerequisite (2026-08-04): make streamed-sector `stable_id` content-derived** before
+> the acceptance gates below are meaningful. M1d's determinism gate cannot run on a
+> streamed world while `instance_id` is an allocation counter, and both gates below are
+> statements about streamed worlds. See the note at the end of M1d.
 
 Scope: residency-gated commits — a rep switch commits only when geometry + BLAS + (for now)
 its per-rung pages are all resident; batched commits; hysteresis bands; evict-after-commit
