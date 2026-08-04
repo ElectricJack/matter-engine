@@ -11083,6 +11083,7 @@ void VkSceneRenderer::reset() {
     rt_instances_.clear();
     static_rt_instance_count_ = 0;
     vertex_staging_.clear();
+    index_staging_.clear();
     max_clusters_per_instance_ = 0;
     draw_transform_slots_ = 0;
     uploaded_command_count_ = 0;
