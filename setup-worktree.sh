@@ -21,7 +21,21 @@ fix_junction() {
     # Remove the text-file placeholder git created.
     rm -f "$link"
     # Create an NTFS junction (no admin required).
-    cmd //c "mklink /J \"$(cygpath -w "$link")\" \"$(cygpath -w "$target")\"" > /dev/null
+    #
+    # PowerShell rather than `cmd //c mklink`: this repo's checkout path
+    # contains spaces ("D:\Shared With Desktop\..."), and MSYS2 mangles the
+    # nested quoting cmd needs. The old cmd form failed on the very FIRST
+    # junction with "The system cannot find the path specified", and with an
+    # absolute link path it failed differently ("The filename, directory name,
+    # or volume label syntax is incorrect") -- so this script never worked here
+    # and every worktree so far had its junctions made by hand.
+    #
+    # Both paths are made absolute and handed over through the ENVIRONMENT,
+    # which sidesteps shell, cmd and PowerShell quoting all at once.
+    ME_LINK="$(cygpath -w "$(pwd)/$link")" \
+    ME_TARGET="$(cygpath -w "$target")" \
+        powershell -NoProfile -NonInteractive -Command \
+        'New-Item -ItemType Junction -Path $env:ME_LINK -Target $env:ME_TARGET | Out-Null'
     echo "  Created junction: $link -> $target"
 }
 
