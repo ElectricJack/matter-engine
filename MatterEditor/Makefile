@@ -229,6 +229,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               \
               $(ME3_DIR)/src/render/raster_mesh.cpp $(ME3_DIR)/src/render/indexed_part_geometry.cpp $(ME3_DIR)/src/render/part_store.cpp \
               $(ME3_DIR)/src/render/world_state.cpp \
+              $(ME3_DIR)/src/render/lod_trace.cpp \
               $(ME3_DIR)/src/render/streamline_bridge.cpp \
               $(ME3_DIR)/src/render/vk_context.cpp $(ME3_DIR)/src/render/vk_resources.cpp \
               $(ME3_DIR)/src/render/vk_pipeline.cpp $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
@@ -672,6 +673,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_gi_math.cpp \
         $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
         $(ME3_DIR)/src/render/matrix_math.cpp \
+        $(ME3_DIR)/src/render/lod_trace.cpp \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ) $(W_BC7ENC_OBJ)
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp src/ui_lighting_controls.cpp \
@@ -703,6 +705,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_gi_math.cpp \
 	    $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
 	    $(ME3_DIR)/src/render/matrix_math.cpp \
+	    $(ME3_DIR)/src/render/lod_trace.cpp \
 	    $(GLFW_WIN_LIB) $(W_FLECS_OBJ) $(W_BC7ENC_OBJ) -o $@ \
 	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
 	    -ffunction-sections -Wl,--gc-sections \

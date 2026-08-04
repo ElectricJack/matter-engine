@@ -147,6 +147,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/render/raster_mesh.cpp src/render/indexed_part_geometry.cpp \
           src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp \
           src/render/part_store.cpp src/render/world_state.cpp \
+          src/render/lod_trace.cpp \
           src/render/tileset_slicer.cpp src/render/bc_encode.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
           src/ecs/ecs_runtime.cpp src/ecs/simulation_control.cpp src/ecs/physics_context.cpp src/ecs/physics_shapes.cpp src/ecs/physics_systems.cpp src/ecs/streaming_systems.cpp src/ecs/transform_system.cpp \
@@ -221,6 +222,7 @@ ME3_OBJ = $(addprefix $(OBJDIR)/,script_host.o dsl_state.o dsl_bindings.o dsl_an
           tileset_gtex.o tileset_torus_bvh.o shader_source.o \
           raster_mesh.o indexed_part_geometry.o matrix_math.o frame_matrices.o vk_temporal.o vk_gi_math.o vk_lighting_controls.o \
           part_store.o world_state.o \
+          lod_trace.o \
           tileset_slicer.o bc_encode.o \
           local_provider.o resolvers.o \
           ecs_runtime.o simulation_control.o physics_context.o physics_shapes.o physics_systems.o streaming_systems.o transform_system.o \

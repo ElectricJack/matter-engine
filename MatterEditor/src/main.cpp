@@ -20,6 +20,10 @@
 #include "image_preview.h"
 #include "issue_reporter.h"
 #include "shot_replay.h"
+// M1d fly-through determinism trace. Deliberately the only engine render header
+// main.cpp reaches for: it is Vulkan-free, so the editor gates the trace without
+// pulling VkSceneRenderer's surface into the app translation unit.
+#include "render/lod_trace.h"
 #include "properties_panel.h"
 #include "properties_registry.h"
 #include "reveal_part.h"
@@ -902,6 +906,72 @@ int main() {
                         c[0], c[1], c[2], c[3], c[4], c[5]);
         }
     }
+
+    // MATTER_CAM_PATH=<file>: a scripted fly-through consumed ONE POSE PER
+    // RENDERED FRAME, and frame-indexed rather than wall-clock — the M1d
+    // determinism gate (docs/superpowers/plans/2026-08-04-lod-vt-migration.md)
+    // may not depend on timing, and neither existing mechanism qualifies:
+    // MATTER_REPLAY is a single pose, and MATTER_CMD_FIFO's drain loop consumes
+    // every buffered line in one frame, which tools/viewer_shots.sh only paces
+    // by sleeping between writes.
+    //
+    // Format: one pose per line,
+    //     eye_x eye_y eye_z target_x target_y target_z
+    // Blank lines and lines starting with '#' are ignored. Companion env vars:
+    //     MATTER_CAM_PATH_EXIT=1   quit once the path (plus its drain tail) ends
+    //     MATTER_CAM_PATH_WARMUP=n frames to hold at the first pose after the
+    //                              world is drawable, default 30
+    struct CamPathPose {
+        float eye[3];
+        float target[3];
+    };
+    std::vector<CamPathPose> cam_path;
+    if (const char* value = std::getenv("MATTER_CAM_PATH")) {
+        if (FILE* file = std::fopen(value, "rb")) {
+            char line[512];
+            while (std::fgets(line, sizeof(line), file)) {
+                CamPathPose pose{};
+                if (std::sscanf(line, "%f %f %f %f %f %f", &pose.eye[0],
+                                &pose.eye[1], &pose.eye[2], &pose.target[0],
+                                &pose.target[1], &pose.target[2]) == 6) {
+                    cam_path.push_back(pose);
+                }
+            }
+            std::fclose(file);
+            std::printf("MATTER_CAM_PATH: %zu poses from %s\n", cam_path.size(),
+                        value);
+        } else {
+            std::fprintf(stderr, "FATAL: MATTER_CAM_PATH: cannot open %s\n",
+                         value);
+            return 1;
+        }
+        if (cam_path.empty()) {
+            std::fprintf(stderr, "FATAL: MATTER_CAM_PATH: %s has no poses\n",
+                         value);
+            return 1;
+        }
+        // Hold the LOD trace closed until the path actually starts, so the
+        // world's streaming-in churn — the genuinely timing-dependent part of a
+        // warm run — never reaches the compared stream.
+        viewer::lod_trace::set_capture_enabled(false);
+    }
+    const bool cam_path_exit = [] {
+        const char* value = std::getenv("MATTER_CAM_PATH_EXIT");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    int cam_path_warmup = 30;
+    if (const char* value = std::getenv("MATTER_CAM_PATH_WARMUP")) {
+        const int parsed = std::atoi(value);
+        if (parsed >= 0) cam_path_warmup = parsed;
+    }
+    size_t cam_path_index = 0;
+    bool cam_path_running = false;
+    bool cam_path_finished = false;
+    // Frames to keep rendering the last pose after the path ends. The trace is
+    // captured one frame-slot rotation behind the frame that produced it (see
+    // VkSceneRenderer::capture_lod_trace), so quitting the instant the path ends
+    // would drop the last few poses' results.
+    int cam_path_drain = 0;
 
     int initial_world = 0;
     // MATTER_WORLD still wins, so a replay can be re-aimed at another world
@@ -2401,6 +2471,53 @@ int main() {
             camera_input_order.decide_capture(ui.camera_input_allowed());
         }
 
+        // MATTER_CAM_PATH: one pose per rendered frame. This sits immediately
+        // before the frame_camera snapshot below so the scripted pose is what
+        // streaming, the tick, and the scene render all see, and after the UI
+        // so nothing can overwrite it later in the frame.
+        if (!cam_path.empty() && !cam_path_finished) {
+            if (!cam_path_running) {
+                // Start only once the world is genuinely drawing. Same signal
+                // the perf harness and the screenshot path already gate on.
+                if (bake_ready && session->frame_stats().instances_drawn > 0) {
+                    if (cam_path_warmup > 0) {
+                        --cam_path_warmup;
+                    } else {
+                        cam_path_running = true;
+                        viewer::lod_trace::set_capture_enabled(true);
+                        std::printf("MATTER_CAM_PATH: starting (%zu poses)\n",
+                                    cam_path.size());
+                    }
+                }
+                // Hold the first pose through the warmup so the trace's opening
+                // census describes the pose the path starts from.
+                camera.position = {cam_path[0].eye[0], cam_path[0].eye[1],
+                                   cam_path[0].eye[2]};
+                camera.target = {cam_path[0].target[0], cam_path[0].target[1],
+                                 cam_path[0].target[2]};
+            }
+            if (cam_path_running && cam_path_index < cam_path.size()) {
+                const CamPathPose& pose = cam_path[cam_path_index];
+                camera.position = {pose.eye[0], pose.eye[1], pose.eye[2]};
+                camera.target = {pose.target[0], pose.target[1], pose.target[2]};
+                // Stamp the trace with the POSE index, not the frame serial:
+                // one pose per rendered frame makes this a run-independent
+                // clock, while how many frames a world took to become drawable
+                // is not (37 vs 36 between two warm runs, measured).
+                viewer::lod_trace::set_frame_label(cam_path_index);
+                ++cam_path_index;
+                if (cam_path_index == cam_path.size()) cam_path_drain = 8;
+            } else if (cam_path_running) {
+                if (--cam_path_drain <= 0) {
+                    cam_path_finished = true;
+                    viewer::lod_trace::set_capture_enabled(false);
+                    viewer::lod_trace::close();
+                    std::printf("MATTER_CAM_PATH: complete\n");
+                    if (cam_path_exit) quit_requested = true;
+                }
+            }
+        }
+
         // UI actions (including Frame Anchor) and the gizmo have finished. Keep
         // this snapshot immutable through streaming, tick, scene render, and UI
         // submission so every current-frame camera consumer agrees.
@@ -2983,9 +3100,13 @@ int main() {
                 camera_input_order.end_frame();
                 // A region drag must not also fly the camera — the rubber band
                 // reads the mouse straight off the IO, outside any ImGui window.
+                // A running MATTER_CAM_PATH owns the camera outright: the
+                // free-fly controller reads live keyboard/mouse state, which is
+                // exactly the nondeterminism the gate exists to exclude.
                 if ((camera_input_order.camera_update_allowed() ||
                      camera_capture) &&
-                    !viewer::issue_reporter_wants_mouse(issue_state)) {
+                    !viewer::issue_reporter_wants_mouse(issue_state) &&
+                    !cam_path_running) {
                     camera_controller.update(window, dt, camera, camera_prefs);
                 }
             }
@@ -3388,6 +3509,11 @@ int main() {
             }
         }
     }
+
+    // Idempotent: a completed MATTER_CAM_PATH already closed it. This covers a
+    // run that ended some other way (window closed, fatal error) so the trace
+    // still gets its summary line rather than being silently truncated.
+    viewer::lod_trace::close();
 
 #ifndef _WIN32
     if (cmd_fd >= 0) close(cmd_fd);

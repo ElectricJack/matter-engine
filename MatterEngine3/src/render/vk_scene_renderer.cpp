@@ -4,6 +4,7 @@
 #include "vk_scene_renderer.h"
 
 #include "lod_distance.h"   // the one LOD selection rule (M1)
+#include "lod_trace.h"      // M1d fly-through determinism trace
 
 #include <algorithm>
 #include <array>
@@ -8600,6 +8601,12 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     }
     if (!ensure_frame_resources(frame.frame_slot_count, error)) return false;
     FrameResources& selected = frames_[frame.frame_slot];
+    // M1d: this slot's previous submission has retired (begin_frame waited its
+    // fence) and nothing has written its buffers yet, so `commands` still holds
+    // that frame's GPU-written instance counts and `draw_transforms` its tokens.
+    // upload_scene_buffers below restores command_template_ unconditionally,
+    // which is why the capture cannot live any later in this function.
+    capture_lod_trace(selected);
     // Advance the range recycler's notion of time: a freed range becomes
     // reusable once every frame that could read its old bytes has retired.
     if (frame.serial > static_frame_serial_)
@@ -8813,6 +8820,64 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
                                 cluster_staging_.size(), parts_.size(),
                                 command_template_.size());
     return retained;
+}
+
+void VkSceneRenderer::capture_lod_trace(FrameResources& frame) {
+    const bool had_result = frame.lod_trace_valid;
+    frame.lod_trace_valid = false;
+    // NOT gated on capture_enabled() here: the gate is evaluated when the frame
+    // RECORDS (below, beside stats_valid). Testing it at capture time instead
+    // let the two or three frames still in flight when the camera path opened
+    // the gate into the stream — frames whose pose was the world's default and
+    // whose label was a frame serial, and whose COUNT depends on how the slot
+    // rotation happened to line up, which made two warm runs disagree.
+    if (!had_result || !lod_trace::enabled()) return;
+    const uint32_t command_count = frame.lod_trace_command_count;
+    const uint32_t slot_count = frame.lod_trace_transform_slots;
+    if (command_count == 0 || slot_count == 0) return;
+    // Both buffers are created HOST_VISIBLE by ensure_buffer, so readback_buffer
+    // takes its map/invalidate/memcpy path: no submit, no wait, no ordering
+    // hazard beyond the fence begin_frame already waited on for this slot.
+    std::string error;
+    std::vector<DrawCommand> commands(command_count);
+    if (!matter::readback_buffer(
+            *vulkan_, frame.commands, commands.data(),
+            commands.size() * sizeof(DrawCommand), 0, error)) {
+        std::fprintf(stderr, "[lod-trace] command readback failed: %s\n",
+                     error.c_str());
+        return;
+    }
+    std::vector<GpuDrawTransform> transforms(slot_count);
+    if (!matter::readback_buffer(
+            *vulkan_, frame.draw_transforms, transforms.data(),
+            transforms.size() * sizeof(GpuDrawTransform), 0, error)) {
+        std::fprintf(stderr, "[lod-trace] transform readback failed: %s\n",
+                     error.c_str());
+        return;
+    }
+    // Invert cull.comp's bucket arithmetic. The shader computes
+    // `bucket = cluster_index * MAX_LOD + lod`, atomically reserves a dense
+    // slot inside [first_instance, first_instance + reserved), and writes the
+    // instance's token there — so a bucket's occupied slot range names exactly
+    // the instances that selected that (cluster, rung). `first_instance` comes
+    // from the readback rather than command_template_ because the CPU template
+    // may have been relaid out since this frame recorded; `instance_count` is
+    // the GPU's own settled count (reserve_transform_slot's compensating
+    // decrement leaves it at min(demand, available)).
+    std::vector<lod_trace::Entry> entries;
+    for (uint32_t bucket = 0; bucket < command_count; ++bucket) {
+        const uint32_t drawn = commands[bucket].instance_count;
+        if (drawn == 0) continue;
+        const uint32_t first = commands[bucket].first_instance;
+        for (uint32_t offset = 0; offset < drawn; ++offset) {
+            const uint64_t index = static_cast<uint64_t>(first) + offset;
+            if (index >= transforms.size()) break;
+            entries.push_back(lod_trace::Entry{
+                transforms[static_cast<size_t>(index)].instance_token,
+                bucket / kVkMaxLod, bucket % kVkMaxLod});
+        }
+    }
+    lod_trace::submit_frame(frame.lod_trace_serial, std::move(entries));
 }
 
 bool VkSceneRenderer::validate_draw_command_regions(std::string& error) const {
@@ -10067,6 +10132,16 @@ bool VkSceneRenderer::record_cull_and_render(
     if (!ray_trace_ok) return false;
     raster_attachments_ready_ = true;
     selected.stats_valid = true;
+    // M1d: same publication contract as stats_valid — a slot only carries a
+    // readable cull result once the frame that dispatched culling recorded
+    // through to here. The counts travel with the flag; see FrameResources.
+    selected.lod_trace_valid =
+        lod_trace::enabled() && lod_trace::capture_enabled();
+    selected.lod_trace_command_count = uploaded_command_count_;
+    selected.lod_trace_transform_slots = uploaded_transform_slots_;
+    // The editor's camera-path pose index when one is driving, else the frame
+    // serial. See lod_trace.h: the serial is NOT run-independent.
+    selected.lod_trace_serial = lod_trace::frame_label(frame.serial);
     return true;
 }
 
@@ -11119,7 +11194,11 @@ void VkSceneRenderer::reset() {
         frame.rt_tlas_valid = false;
         frame.rt_tlas_pending_serial = 0;
     }
-    for (FrameResources& frame : frames_) frame.stats_valid = false;
+    for (FrameResources& frame : frames_) {
+        frame.stats_valid = false;
+        // A reset invalidates the part set the pending cull results describe.
+        frame.lod_trace_valid = false;
+    }
     raster_attachments_ready_ = false;
     ++static_generation_;
     ++instance_generation_;

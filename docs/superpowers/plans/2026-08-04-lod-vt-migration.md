@@ -267,6 +267,44 @@ An optional cheap pre-filter — a single-TU `run-lod-flythrough` driving `Secto
 over the same pose list twice — catches resolver-layer regressions in seconds with no GPU.
 Useful as a smoke test; never as the gate, for the headless reason above.
 
+#### Delivered (M1d), and how to run it
+
+```
+cd MatterEditor
+TMP=... TEMP=... MATTER_WORLD=RockGallery \
+  MATTER_CAM_PATH=path.txt MATTER_LOD_TRACE=run_a.trace MATTER_CAM_PATH_EXIT=1 \
+  ./build/windows/editor.exe          # repeat into run_b.trace
+python ../MatterEngine3/tools/lod_trace_diff.py run_a.trace run_b.trace
+```
+
+`path.txt` is one pose per line, `eye_x eye_y eye_z target_x target_y target_z`;
+`#` comments and blank lines are ignored. `MATTER_CAM_PATH_WARMUP=n` (default 30) holds
+the first pose for n frames after the world becomes drawable, then the path advances one
+pose per RENDERED frame. The trace is `MatterEngine3/src/render/lod_trace.{h,cpp}`; the
+readback that feeds it is `VkSceneRenderer::capture_lod_trace`, at the top of
+`prepare_frame`, which is the one point where the slot's fence has been waited and
+`upload_scene_buffers` has not yet restored `command_template_` over the GPU's counts.
+
+Three findings the design did not anticipate:
+
+1. **The frame serial is not a usable clock, but the pose index is.** Two warm runs put
+   the same first switch on serial 37 and 36 — how many frames a world takes to become
+   drawable varies. Stamping with the `MATTER_CAM_PATH` pose index instead makes two warm
+   runs BYTE-identical, which buys back the case order-only comparison cannot see: a
+   uniform rescale of `reach` or the budget moves every switch without reordering any of
+   them. `--ignore-frames` restores the design's order-only comparison.
+2. **The capture gate must be evaluated when a frame RECORDS, not when it is read back.**
+   Gating at capture let the two or three frames still in flight when the path opened the
+   gate into the stream — default-pose frames whose count depends on slot rotation.
+3. **`instance_token != 0` is not a strong enough identity assertion.** On PomProofBrick
+   the tokens are all nonzero and still differ between runs: only 5 of ~132
+   (token, cluster) pairs survived. `instance_token` derives from `WorldSession`'s
+   `instance_id`, which for streamed terrain sectors is allocation-ordered rather than
+   content-derived. **A world with streamed terrain cannot be gated here until its
+   instance ids are content-derived** — `lod_trace_diff.py` detects the low key overlap
+   and says so rather than printing hundreds of unrelated diffs. The gate currently runs
+   on RockGallery, whose instances are all authored parts.
+
 ---
 
 ## M2 — Atomic switches

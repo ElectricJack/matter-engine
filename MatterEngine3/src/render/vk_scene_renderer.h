@@ -1314,6 +1314,17 @@ private:
         uint64_t material_upload_record_count = 0;
         VkDeviceSize pending_material_bytes = 0;
         bool stats_valid = false;
+        // M1d fly-through determinism trace (render/lod_trace.h). Published on
+        // exactly the same contract as stats_valid: only a frame that recorded
+        // culling successfully leaves a readable cull result behind in this
+        // slot's `commands` / `draw_transforms`. The counts and serial are
+        // snapshotted with the flag because the capture happens one full
+        // frame-slot rotation later, by which time the global
+        // uploaded_command_count_ may describe a different part set.
+        bool lod_trace_valid = false;
+        uint32_t lod_trace_command_count = 0;
+        uint32_t lod_trace_transform_slots = 0;
+        uint64_t lod_trace_serial = 0;
         // Published only after the compute dispatch and both vertex-input
         // barriers have been recorded.  A malformed source/mapping therefore
         // leaves the regular static/last-good draw path intact.
@@ -1437,6 +1448,13 @@ private:
                                 matter::Float3 camera_eye,
                                 float pixel_budget, std::string& error);
     bool validate_draw_command_regions(std::string& error) const;
+    // M1d: read this slot's completed cull result back and hand it to
+    // render/lod_trace.h. Called from prepare_frame BEFORE any upload touches
+    // the slot, which is the one point where the slot's fence has been waited
+    // (VulkanContext::begin_frame) and the GPU-written instance counts have not
+    // yet been overwritten by upload_scene_buffers' unconditional restore of
+    // command_template_. Inert unless MATTER_LOD_TRACE is set.
+    void capture_lod_trace(FrameResources& frame);
     void note_command_layout_rebuild();
     bool rebuild_command_template(std::string& error);
     bool apply_dynamic_command_layout(std::string& error);
