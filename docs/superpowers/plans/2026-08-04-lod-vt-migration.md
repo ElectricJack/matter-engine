@@ -141,10 +141,19 @@ built once, correctly, rather than repaired):
    unchanged by construction where thresholds were sane).
 2. One selection function (`desired_rep`) in a single header, evaluated CPU-side (planning)
    and GPU-side (cull); delete the other call paths as consumers switch.
-3. **Introduce the impostor as rep N of that same table** — one producer, selected by the
-   same cull walk, with rep-indexed subtree replacement (design §5.3) rather than the
-   order-dependent record encoding. No parallel CPU comparison and no per-frame partition
-   is ever built, so there is nothing to delete later.
+3. ~~**Introduce the impostor as rep N of that same table.**~~ **MOVED to M2.5 (2026-08-04).**
+   On the branch this was a *conversion* of an existing impostor system, which is why the
+   plan filed it under M1. On a main base there is no impostor system at all, so it is a
+   net-new rendering tier — an atlas bake, an artifact, a draw path, and a selection
+   integration. That is a milestone, not a line item, and bundling it here would make M1
+   both large and visually non-inert, destroying the one property that makes M1 safe.
+
+   Moving it after M2 is also the better order on its own merits: the redesign wants the
+   impostor to be "rep N of the same table" (§5.3), and M2 builds the atomic
+   residency-gated commit. Landing impostors *after* that means the new tier gets
+   whole-or-nothing switching from its first frame, rather than having it retrofitted —
+   which is precisely how the branch ended up with a rendering tier that never drew and
+   reported nothing when it failed.
 4. Residency clamp `[min_resident, max_resident]` per cluster (groundwork for M2's commits).
 5. Salvage triage from `codex/far-field-impostors`: cherry-pick the LOD-tint and wireframe
    debug views and the editor prefab-view fixes — diagnostics this milestone actively needs.
@@ -181,6 +190,25 @@ Acceptance:
   delayed but never partial (no frame draws rep k geometry with rep j pages), and the switch
   event list is unchanged in *order* vs the unthrottled run.
 - Fly-through determinism test still green.
+
+---
+
+## M2.5 — Object impostors as rep N *(moved out of M1; see the note there)*
+
+Scope: one impostor producer baking a view atlas per eligible part; the atlas stored as the
+LAST rep of the part's existing distance table; selection by the same `lod::select_rep` walk
+with no parallel comparison; rep-indexed subtree replacement (design §5.3) rather than the
+order-dependent instance-record encoding; commits ride M2's atomic gate.
+
+Acceptance:
+- A part's impostor is visibly selected at its authored distance and nowhere else, shown by
+  the LOD debug view.
+- **Every load failure is logged, once, naming the part and the reason** — the single
+  cheapest lesson from the branch, where an entire tier was silently absent for a full
+  generation of artifacts and produced zero diagnostics. Proven failable by corrupting one
+  atlas.
+- Resident impostor count is on the editor stats overlay.
+- Fly-through determinism and pop-coherence tests still green with the new tier present.
 
 ---
 
