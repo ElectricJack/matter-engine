@@ -16,6 +16,7 @@
 
 #include "matter/vulkan_device.h"
 #include "render/gpu_matrix_pack.h"
+#include "render/lod_distance.h"
 #include "render/matrix_math.h"
 #include "render/raster_mesh.h"
 #include "render/streamline_bridge.h"
@@ -1136,12 +1137,21 @@ void run_rt_lod_payload_contract_tests() {
               !viewer::vk_scene_detail::dense_rt_lod_index(
                   offsets, 1, 2, record_index),
           "dense RT LOD offsets provide bounded O(1) cluster/LOD indexing");
-    const float thresholds[] = {1.0f, 0.0f};
+    // M1: select_cluster_lod_view reads normalized SWITCH DISTANCES, not
+    // thresholds. Authored through the conversion rather than as bare
+    // constants, so the unit is visible at the callsite -- the old {1.0f, 0.0f}
+    // would still compile here and would silently mean something else.
+    // Intent is unchanged: rung 0 reaches one radius-scaled unit, rung 1 is
+    // open, and a camera 10 units out lands on rung 1.
+    const float switch_distances[] = {
+        lod::normalized_switch_distance(1.0f),   // -> 1.0
+        lod::normalized_switch_distance(0.0f),   // -> INFINITY, always qualifies
+    };
     CHECK(viewer::vk_scene_detail::select_cluster_lod_view(
               part.clusters[1].aabb_min, part.clusters[1].aabb_max,
-              part.clusters[1].radius, thresholds, 2, identity_matrix(),
+              part.clusters[1].radius, switch_distances, 2, identity_matrix(),
               {0.0f, 0.0f, 10.0f}, 1.0f) == 1,
-          "non-owning RT LOD view matches raster threshold selection");
+          "non-owning RT LOD view matches raster distance selection");
 }
 
 void run_raster_path(matter::VulkanDevice& vulkan) {
