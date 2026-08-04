@@ -3,6 +3,8 @@
 #endif
 #include "vk_scene_renderer.h"
 
+#include "lod_distance.h"   // the one LOD selection rule (M1)
+
 #include <algorithm>
 #include <array>
 #include <atomic>   // static_upload_census() backing counters
@@ -811,23 +813,25 @@ uint32_t select_scene_cluster_lod(const VkSceneCluster& cluster,
                                   matter::Float3 camera_eye,
                                   float pixel_budget) noexcept {
     if (cluster.lods.empty()) return 0;
-    std::array<float, kVkMaxLod> thresholds{};
+    // VkSceneCluster still carries raw thresholds (the bake's own units);
+    // convert here, the same way stage-time conversion does for the GPU table.
+    std::array<float, kVkMaxLod> switch_distances{};
     for (uint32_t i = 0; i < cluster.lods.size(); ++i)
-        thresholds[i] = cluster.lods[i].threshold;
+        switch_distances[i] = lod::normalized_switch_distance(cluster.lods[i].threshold);
     return select_cluster_lod_view(
         cluster.aabb_min, cluster.aabb_max, cluster.radius,
-        thresholds.data(), static_cast<uint32_t>(cluster.lods.size()),
+        switch_distances.data(), static_cast<uint32_t>(cluster.lods.size()),
         object_to_world, camera_eye, pixel_budget);
 }
 
 uint32_t select_cluster_lod_view(const matter::Float3& aabb_min,
                                  const matter::Float3& aabb_max,
-                                 float radius, const float* thresholds,
+                                 float radius, const float* switch_distances,
                                  uint32_t lod_count,
                                  const matter::Mat4f& object_to_world,
                                  matter::Float3 camera_eye,
                                  float pixel_budget) noexcept {
-    if (lod_count == 0 || thresholds == nullptr) return 0;
+    if (lod_count == 0 || switch_distances == nullptr) return 0;
     const matter::Float3 x_basis{object_to_world.m[0], object_to_world.m[4],
                                  object_to_world.m[8]};
     const matter::Float3 y_basis{object_to_world.m[1], object_to_world.m[5],
@@ -851,16 +855,12 @@ uint32_t select_cluster_lod_view(const matter::Float3& aabb_min,
     const float dz = world_center.z - camera_eye.z;
     const float distance =
         std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 0.01f);
-    const float projected_size =
-        radius * scale / distance * pixel_budget;
-    uint32_t selected = lod_count - 1;
-    for (uint32_t lod = 0; lod < lod_count; ++lod) {
-        if (projected_size >= thresholds[lod]) {
-            selected = lod;
-            break;
-        }
-    }
-    return selected;
+    // Must stay bit-for-bit the same rule as cull.comp's loop -- this mirror
+    // exists to predict what the GPU will pick. Both now go through
+    // lod_distance.h so there is one rule rather than two copies of one.
+    return static_cast<uint32_t>(lod::select_rep(
+        switch_distances, static_cast<int>(lod_count), distance,
+        lod::reach(radius, scale, pixel_budget)));
 }
 
 std::vector<uint32_t> dense_rt_lod_offsets(const VkScenePart& part) {
@@ -1155,7 +1155,7 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
              planning_bounds.min[2]},
             {planning_bounds.max[0], planning_bounds.max[1],
              planning_bounds.max[2]},
-            planning_radius, cluster.thresholds, cluster.lod_count,
+            planning_radius, cluster.switch_distances, cluster.lod_count,
             unpack_matrix(instance.object_to_world), camera_eye, pixel_budget);
         if (candidate.lod != selected_lod) {
             if (probe)
@@ -4148,15 +4148,21 @@ void VkSceneRenderer::update_vt_demand(matter::Float3 camera_eye,
             const float dz = wz - camera_eye.z;
             const float distance_to_eye =
                 std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 0.01f);
+            // Third copy of cull.comp's pick before M1 (mesh rung, VT demand,
+            // and the planning mirror each had their own). All three now go
+            // through lod_distance.h, so a divergence between what the GPU
+            // draws and what VT prefetches can no longer come from the rule
+            // itself -- only from the inputs, which is the divergence the
+            // comment above this loop actually reasons about.
+            const uint32_t lod = static_cast<uint32_t>(lod::select_rep(
+                cluster.switch_distances, static_cast<int>(cluster.lod_count),
+                distance_to_eye,
+                lod::reach(cluster.radius, scale, pixel_budget)));
+            // Still wanted as the request PRIORITY below (bigger on screen ==
+            // fetch first). That is a ranking, not a selection, so it keeps the
+            // projected-size form rather than being converted.
             const float projected_size =
                 cluster.radius * scale / distance_to_eye * pixel_budget;
-            uint32_t lod = cluster.lod_count != 0 ? cluster.lod_count - 1u : 0u;
-            for (uint32_t i = 0; i < cluster.lod_count; ++i) {
-                if (projected_size >= cluster.thresholds[i]) {
-                    lod = i;
-                    break;
-                }
-            }
             if (c >= cluster_lods_.size()) continue;
             const std::vector<VkSceneLod>& lods = cluster_lods_[c];
             if (lod >= lods.size()) continue;
@@ -5565,10 +5571,17 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         cluster.part_slot = static_cast<uint32_t>(slot);
         cluster.cluster_index = static_cast<uint32_t>(i);
         for (uint32_t lod = 0; lod < kVkMaxLod; ++lod) {
-            cluster.thresholds[lod] =
+            // M1: the GPU selects on switch DISTANCE, not projected size. The
+            // stored value is normalized (unit radius, scale and dial); cull.comp
+            // multiplies by lod::reach(...) built from the radius actually in
+            // play, which for a dynamic-bound cluster is a per-instance value
+            // that does not exist here. Padding past lod_count keeps the
+            // "never qualifies" sense of the FLT_MAX threshold it replaces --
+            // 1/FLT_MAX is ~0, and the loop never reads past lod_count anyway.
+            cluster.switch_distances[lod] =
                 lod < source.lods.size()
-                    ? source.lods[lod].threshold
-                    : std::numeric_limits<float>::max();
+                    ? lod::normalized_switch_distance(source.lods[lod].threshold)
+                    : 0.0f;
             cluster.lod_mesh_idx[lod] = lod;
         }
         cluster_staging_[cluster_base + i] = cluster;
@@ -8985,7 +8998,7 @@ bool VkSceneRenderer::build_ray_geometry(
                  planning_bounds.min[2]},
                 {planning_bounds.max[0], planning_bounds.max[1],
                  planning_bounds.max[2]},
-                planning_radius, gpu_cluster.thresholds,
+                planning_radius, gpu_cluster.switch_distances,
                 gpu_cluster.lod_count, object_to_world, camera_eye,
                 pixel_budget);
             uint32_t record_index = 0;

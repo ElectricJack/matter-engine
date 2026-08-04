@@ -8,7 +8,13 @@ const uint ANIMATION_BOUND_SKIN_RASTER = 2u;
 struct ClusterMeta {
     vec4 aabb_min_radius;
     vec4 aabb_max_pad;
-    float thresholds[MAX_LOD];
+    // Normalized LOD switch distances, fine -> coarse and INCREASING: rung i
+    // applies while distance_to_eye <= switch_distances[i] * reach, where
+    // reach = local_radius * scale * pixel_budget * lod_bias. Normalized by
+    // radius as well as scale/dial because local_radius below is per-instance
+    // for a dynamic-bound cluster. See MatterEngine3/src/render/lod_distance.h,
+    // which owns the rule and carries the equivalence proof.
+    float switch_distances[MAX_LOD];
     uint lod_mesh_idx[MAX_LOD];
     uint lod_count;
     uint part_slot;
@@ -288,13 +294,12 @@ void main() {
         }
         override_lod_bias = ov.lod_bias;
     }
-    float projected_size = local_radius * scale /
-                           distance_to_eye *
-                           frame.camera_eye_pixel_budget.w;
-    if (override_lod_bias != 1.0) projected_size *= override_lod_bias;
+    // lod_distance.h: reach turns a normalized switch distance into metres.
+    float reach = local_radius * scale * frame.camera_eye_pixel_budget.w;
+    if (override_lod_bias != 1.0) reach *= override_lod_bias;
     uint lod = cluster.lod_count - 1u;
     for (uint i = 0u; i < cluster.lod_count; ++i) {
-        if (projected_size >= cluster.thresholds[i]) {
+        if (distance_to_eye <= cluster.switch_distances[i] * reach) {
             lod = i;
             break;
         }

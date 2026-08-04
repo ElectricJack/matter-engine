@@ -255,7 +255,7 @@ uint32_t select_scene_cluster_lod(const VkSceneCluster& cluster,
                                   float pixel_budget) noexcept;
 uint32_t select_cluster_lod_view(const matter::Float3& aabb_min,
                                  const matter::Float3& aabb_max,
-                                 float radius, const float* thresholds,
+                                 float radius, const float* switch_distances,
                                  uint32_t lod_count,
                                  const matter::Mat4f& object_to_world,
                                  matter::Float3 camera_eye,
@@ -1000,7 +1000,9 @@ private:
         float radius;
         float aabb_max[3];
         float pad0;
-        float thresholds[kVkMaxLod];
+        // Normalized LOD switch distances (lod_distance.h), fine -> coarse and
+        // INCREASING. Mirrors ClusterMeta.switch_distances in shaders_vk/cull.comp.
+        float switch_distances[kVkMaxLod];
         uint32_t lod_mesh_idx[kVkMaxLod];
         uint32_t lod_count;
         uint32_t part_slot;
