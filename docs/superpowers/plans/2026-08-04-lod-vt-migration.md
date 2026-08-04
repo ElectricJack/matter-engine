@@ -34,44 +34,86 @@ later milestone deletes.
 
 ## M0 — Ground clearing *(required first, per requirements)*
 
-Scope — pure deletion plus diagnostics; no behaviour redesign:
+> **Base decision (2026-08-04).** This work starts from **main**, on `feature/representation`
+> in `.worktrees/representation` — not from `codex/far-field-impostors`. Main has no
+> `bake_adaptive_static_lods` and no impostor files at all: those 134 branch commits *are*
+> the adaptive-ladder + far-field-impostor programme, which M1/M3/M4/M7 replace. Starting
+> from main means never merging code in order to delete it, and several of the branch's
+> hardest fixes (the stacked-shell staging bug, the `.gtex` version bump, the archive
+> repairs) exist only to repair damage that programme caused, so they are moot rather than
+> lost. The branch remains in git as reference; its durable output — the three design
+> documents — is cherry-picked here.
+>
+> **Consequences for this plan.** Original M0 items 2–4 (terrain adaptive ladder, impostor
+> load logging, orphaned-link repair) describe branch-only code and **do not apply**. M0 is
+> correspondingly smaller. M1 now *builds* the impostor as rep N rather than converting an
+> existing one, which is strictly simpler — we implement it once, correctly, instead of
+> repairing a system we were about to restructure.
 
-1. Delete the confirmed-dead list: `shaders_gpu/cull.comp`, `gpu_cull_types.h`,
-   `world_composer.*`, `raster_cull.h::cluster_lod_select`, `tileset_provider.*` (also the
-   engine build's last GL dependency), `tileset_macro_slot` + its C API,
-   `ResolvedInstance::segment`, `stress_forest_tests.cpp`.
-2. Stop generating the write-only artifacts: `.static_lods` + `LMSK` and their ~160 lines of
-   probe machinery; the adaptive ladder for terrain sectors (`WorldSector` parts skip
-   `bake_adaptive_static_lods`); the duplicate impostor producer.
-3. **Log the impostor load failure** (`part_store.cpp` `adopt_object_far_imposter`) and print
-   the resident-impostor count in the editor stats overlay.
-4. Repair the orphaned impostor links (rebake or re-key the 10-of-20 orphans) so impostors
-   load again under current rules.
+Scope — pure deletion; no behaviour change at all:
+
+1. **Delete the unreachable GL path.** Verified 2026-08-04: `MATTER_VULKAN_ONLY` is defined
+   unconditionally by every build (`MatterEngine3/Makefile:74`,
+   `MatterEditor/Makefile:337`, `MatterEngine3/tests/Makefile:422`), so every
+   `#ifndef MATTER_VULKAN_ONLY` block is provably unreachable — 23 sites in
+   `matter_engine.cpp`, 3 in `local_provider.cpp`, 1 each in `vulkan_only_compat.cpp` and
+   `tileset_bake_vk.cpp`. Removing them strands, and so also deletes:
+   `world_composer.{cpp,h}`, `gpu_cull_types.h`, `shaders_gpu/cull.comp`,
+   `tileset_provider.{cpp,h}`, `raster_cull.h::cluster_lod_select`. Drop the corresponding
+   objects from `ME3_OBJ`.
+2. **Stop generating the write-only artifacts**: `.static_lods` + the `LMSK` trailer and
+   their probe machinery (`matter_engine.cpp`, `part_asset_v2.cpp`, `part_graph.cpp`) —
+   the only reader is the writer's own cache probe.
+3. Delete `stress_forest_tests.cpp` (dead), and update `viewer_logic_tests.cpp` /
+   `tileset_provider_tests.cpp`, which are the only remaining includers of the deleted
+   headers.
+
+**Corrections to the audit's §4.5 list, established by verification rather than assumed:**
+`world_composer` and `tileset_provider` are *not* unreferenced — `matter_engine.cpp`
+constructs `WorldComposer` at four sites and `local_provider.cpp` calls
+`tileset_provider::unload_all()` at two. Every one of those sites is inside
+`#ifndef MATTER_VULKAN_ONLY`, which is what makes them dead; deleting the files without
+removing the guarded blocks would not compile. **`ResolvedInstance::segment` is written at
+three sites in `resolvers.cpp` and was NOT confirmed dead** — it is deferred out of M0 until
+a reader search proves it unread (`segment` appears widely on unrelated types, e.g.
+`FlatCluster::segment` and `rigid_segments`, which is how the audit's claim went wrong).
+`tileset_macro_slot` likewise has live references in `material_registry.{h,c}` and
+`vk_gi_contract.h` and is deferred pending the same proof.
 
 Acceptance:
-- `./build-all.sh test` green; Vulkan smoke suite green.
-- StreamMountain cache rebake measured: ~6.6 GB → the neighbourhood of 400 MB.
-- **Failability proof:** hand-corrupt one `.impostor` link → exactly one log line names the
-  part and reason; stats overlay count drops by one.
-- Demo world shows impostors (first time ever verified visually).
+- Kernel + editor build green; headless suites (`run-world-definition`, `run-script`,
+  `run-evalworld`) ALL PASS; Vulkan smoke suite at its known baseline.
+- **M0 is pure subtraction of unreachable code, so a shot replay must be pixel-identical
+  to the M0 baseline.** Any pixel diff means something deleted was reachable — investigate,
+  do not re-baseline.
+- `nm` the archive: no `world_composer` / `tileset_provider` / `cluster_lod_select` symbols
+  remain.
 
-Tests retired here: `.static_lods` cache-probe tests, `stress_forest_tests.cpp`, any test
-referencing deleted GL selection files.
+Baseline recorded 2026-08-04 on `feature/representation` before any deletion: kernel builds
+clean; `run-world-definition`, `run-script`, `run-evalworld` all report ALL PASS.
+
+Tests retired here: `stress_forest_tests.cpp`, `tileset_provider_tests.cpp`, the
+`.static_lods` cache-probe tests, and the GL-selection portions of `viewer_logic_tests.cpp`.
 
 ---
 
 ## M1 — Distance authority (runtime selection only; artifacts untouched)
 
-Scope:
+Scope (adjusted for the main base — there is no impostor system to convert, so rep N is
+built once, correctly, rather than repaired):
 1. At stage time, convert each part's existing threshold table into a **distance table**
    (parity mapping: `d_k = radius × scale × pixel_budget / threshold_k`, so visuals are
    unchanged by construction where thresholds were sane).
 2. One selection function (`desired_rep`) in a single header, evaluated CPU-side (planning)
-   and GPU-side (cull); delete the other five call paths as consumers switch.
-3. The impostor becomes rep N of the same table: cull selects it in the same walk; delete the
-   terminal-impostor CPU comparison, both per-frame partition state machines, the full array
-   copy, and the unconditional instance re-upload; suppressed instances leave the dispatch.
+   and GPU-side (cull); delete the other call paths as consumers switch.
+3. **Introduce the impostor as rep N of that same table** — one producer, selected by the
+   same cull walk, with rep-indexed subtree replacement (design §5.3) rather than the
+   order-dependent record encoding. No parallel CPU comparison and no per-frame partition
+   is ever built, so there is nothing to delete later.
 4. Residency clamp `[min_resident, max_resident]` per cluster (groundwork for M2's commits).
+5. Salvage triage from `codex/far-field-impostors`: cherry-pick the LOD-tint and wireframe
+   debug views and the editor prefab-view fixes — diagnostics this milestone actively needs.
+   Everything else on that branch stays unmerged.
 
 Acceptance:
 - Shot-replay diff vs M0 baseline within stated tolerance on Demo + PomProofBrick at rep-0
