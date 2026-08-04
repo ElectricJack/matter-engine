@@ -176,8 +176,14 @@ Current projects and their relationships. Dependencies run one way only:
 
 5. **MatterEngine3** - Kernel library (`libmatter_engine3.a`) for the procedural engine
    - Provides: script host (QuickJS-ng DSL), bake pipeline (world_flatten/lod_bake/sector_grid),
-     render subsystem (renderer/raster_composer/part_store/world_composer/gpu_culler),
-     provider subsystem (local_provider/resolvers), facade (matter_engine.cpp)
+     render subsystem (part_store/world_state/vk_scene_renderer + the Vulkan compute cull in
+     `shaders_vk/cull.comp`), provider subsystem (local_provider/resolvers), facade
+     (matter_engine.cpp)
+   - LOD selection has ONE rule, `MatterEngine3/src/render/lod_distance.h`: rungs carry
+     normalized switch DISTANCES and the cull shader plus both CPU mirrors call it. The
+     header carries the equivalence proof; `make -C MatterEngine3/tests run-lod-distance`
+     asserts it. Do not add a second projected-size comparison — that duplication is what
+     the Representation migration exists to remove (docs/lod-vt-redesign-2026-08-04.md)
    - Build: `make -C MatterEngine3` → `build/libmatter_engine3.a` + embedded shader header
    - Tests: `make -C MatterEngine3/tests run-*` (headless) and GPU suites with `GALLIUM_DRIVER=d3d12`
 
