@@ -1014,8 +1014,7 @@ bool LocalProvider::run_tileset_deferred(
 
         const std::string gtex_path = abs_cache_root_ + "/" + gtex_name + ".gtex";
         const uint64_t expected = tileset::gtex_content_hash(
-            settled.report.pose_hash, script_source_hash,
-            tileset::kEngineBakeVersion, tileset::kBox3dVersion);
+            settled.report.pose_hash, script_source_hash);
 
         const int slot_idx = acquire_slot(expected, root_module);
         if (slot_idx < 0) {

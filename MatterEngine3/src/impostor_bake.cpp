@@ -102,7 +102,11 @@ std::string cache_path_impostor(uint64_t resolved_hash) {
 // change its pixels, and by nothing else.
 uint64_t depicts_hash_begin() {
     uint64_t h = 1469598103934665603ull;
-    const uint32_t params[4] = {kFormatVersion, kViews, kCellPx, kSuperSample};
+    // M4: kFormatVersion is no longer folded here -- it is a component of the
+    // version vector, which depicts_hash_finish folds in one place for the
+    // whole engine. Only the atlas LAYOUT constants (which are not versions)
+    // stay in this stream.
+    const uint32_t params[3] = {kViews, kCellPx, kSuperSample};
     const auto* b = reinterpret_cast<const uint8_t*>(params);
     for (size_t i = 0; i < sizeof(params); ++i) { h ^= b[i]; h *= 1099511628211ull; }
     return h;
@@ -127,7 +131,7 @@ void depicts_hash_add_cluster(uint64_t& h, uint32_t cluster_index,
     }
 }
 
-uint64_t depicts_hash_finish(uint64_t h) { return h ? h : 1ull; }
+uint64_t depicts_hash_finish(uint64_t h) { return matter_version::fold(h); }
 
 // ---------------------------------------------------------------------------
 // The bake.

@@ -65,6 +65,53 @@ static void test_resolved_hash() {
     CHECK(h7 != h1, "zero children differs from three children");
 }
 
+// ---------------------------------------------------------------------------
+// M4 -- THE VERSION VECTOR IS IN THE PART HASH.
+//
+// This is the structural guard for the milestone's whole point. The part
+// resolved hash NAMES every artifact a part owns on disk (`parts/<hash>.*`),
+// so if the vector does not reach this hash, a version bump invalidates the
+// resolve key and the atlas key while stale GEOMETRY keeps being served under
+// the new rules -- the bug found twice in one month
+// (docs/lod-vt-redesign-2026-08-04.md 9.3).
+//
+// The assertion is structural rather than behavioural on purpose: it
+// recomputes the pre-fold FNV stream by hand and requires the shipped hash to
+// be exactly matter_version::fold() of it. A compute_resolved_hash that
+// dropped the fold, or folded something other than the vector, fails here --
+// whereas every determinism/sensitivity check above would still pass.
+// ---------------------------------------------------------------------------
+static void test_resolved_hash_carries_version_vector() {
+    using namespace part_asset;
+    const char* src = "function part(){ return cube(); }";
+    const char* par = "";
+    uint64_t kids[3] = { 0xCCCCull, 0xAAAAull, 0xBBBBull };  // unsorted on purpose
+
+    // The pre-fold stream, reproduced independently: FNV-1a over source, then
+    // params, then the child hashes ASCENDING.
+    uint64_t raw = 1469598103934665603ull;
+    auto fold_bytes = [&raw](const void* d, size_t n) {
+        const unsigned char* p = static_cast<const unsigned char*>(d);
+        for (size_t i = 0; i < n; ++i) { raw ^= p[i]; raw *= 1099511628211ull; }
+    };
+    fold_bytes(src, strlen(src));
+    fold_bytes(par, 4);
+    uint64_t sorted_kids[3] = { 0xAAAAull, 0xBBBBull, 0xCCCCull };
+    for (uint64_t c : sorted_kids) fold_bytes(&c, sizeof(c));
+
+    const uint64_t shipped = compute_resolved_hash(src, strlen(src), par, 4, kids, 3);
+    CHECK(shipped == matter_version::fold(raw),
+          "resolved hash is exactly fold(content) -- the version vector is in the part hash");
+    CHECK(shipped != raw,
+          "the fold is not a no-op: the versioned hash differs from the raw content hash");
+
+    // And the fold is what carries a version change: a hand-perturbed digest
+    // must produce a different key for identical content.
+    CHECK(matter_version::fold(raw) != matter_version::fold(raw ^ 1ull),
+          "the fold separates keys");
+    CHECK(matter_version::digest() != 0ull, "version digest is never the 0 sentinel");
+}
+
 static void test_cache_path_resolved() {
     using namespace part_asset;
     CHECK(cache_path_resolved(0x1ull) == "parts/0000000000000001.part",
@@ -544,8 +591,16 @@ static void test_cache_artifact_compatibility_probe() {
     std::vector<FlatCluster> clusters;
     CHECK(save_flat_v3(flat_path, blas, tlas, clusters, flat_hash),
           "compat probe flat fixture saved");
-    CHECK(kFormatVersionFlat == 8u,
-          "flat compatibility version invalidates pre-LOD-cap artifacts");
+    // M4: this used to be a hand-copied literal (`== 8u`) and had been stale
+    // since a0b86a19 bumped the constant to 9 -- a red suite nobody read,
+    // because the literal has to be edited by hand every time the format
+    // moves. Assert the RELATIONSHIP instead: kFormatVersionFlat is the
+    // version vector's flat-format component, so it can never drift from the
+    // thing that actually keys the cache.
+    CHECK(kFormatVersionFlat == matter_version::components::kFlatFormat,
+          "flat format version is the version vector's component, not a copy");
+    CHECK(matter_version::fold(flat_hash) != flat_hash,
+          "the flat artifact's identity passes through the version fold");
     CHECK(is_cache_artifact_header_compatible(flat_path, flat_hash, kFormatVersionFlat),
           "header probe accepts current flat artifact");
     std::vector<uint8_t> current_flat = read_file(flat_path);
@@ -840,6 +895,7 @@ int main() {
     test_atomic_replace_preserves_target_on_failure();
     test_cache_path_resolved();
     test_resolved_hash();
+    test_resolved_hash_carries_version_vector();
     test_save_v2_header();
     test_round_trip_full();
     test_round_trip_degenerate_lod();

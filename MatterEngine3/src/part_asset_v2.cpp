@@ -1,5 +1,6 @@
 #include "part_asset_v2.h"
 #include "matter/lod_contract.h"
+#include "version_vector.h"   // M4: the one fold site for cache keys
 
 #include <cstdio>
 #include <cstring>
@@ -120,7 +121,12 @@ uint64_t compute_resolved_hash(const void* source_bytes, size_t source_len,
     std::vector<uint64_t> sorted(child_hashes, child_hashes + child_count);
     std::sort(sorted.begin(), sorted.end()); // order-independent over children
     for (uint64_t c : sorted) fold(&c, sizeof(c));
-    return h;
+    // M4: the version vector, folded here and nowhere else. This hash NAMES
+    // every artifact a part owns on disk, so folding the vector into it is
+    // what makes a version bump re-BAKE rather than merely re-resolve — the
+    // hole that let stale geometry be served under new rules
+    // (version_vector.h, docs/lod-vt-redesign-2026-08-04.md §9.3).
+    return matter_version::fold(h);
 }
 
 std::string cache_path_resolved(uint64_t resolved_hash) {

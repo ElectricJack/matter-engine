@@ -10,6 +10,7 @@
                           // fnv1a64, cache_path, kMagic, BLASManager/TLASManager,
                           // MaterialDef, Tri/TriEx/BVHNode
 #include "render/chart_atlas.h"  // chart-space VT sidecar schema (contract C1)
+#include "version_vector.h"      // M4: the single version-vector fold
 
 #include <cstddef>
 #include <cstdint>
@@ -20,7 +21,11 @@
 
 namespace part_asset {
 
-constexpr uint32_t kFormatVersionV2 = 2u;
+// M4: these are ALIASES of the version vector's format components, not
+// independent constants. The value lives in version_vector.h so that bumping a
+// format reaches every cache key through the single fold, instead of only
+// gating the header of the file that happens to carry it.
+constexpr uint32_t kFormatVersionV2 = matter_version::components::kPartFormat;
 constexpr uint32_t kFormatVersionV3 = 3u;
 // Flat-artifact bake version: bump whenever FlattenTargets defaults change so
 // stale flats regenerate automatically (Stage 2 ladder retune bumped 3 -> 4;
@@ -35,7 +40,11 @@ constexpr uint32_t kFormatVersionV3 = 3u;
 // mesh whose .fimp sidecar does not exist, so leaving the version alone would
 // have shipped an engine that silently never impostors on any pre-existing
 // cache).
-constexpr uint32_t kFormatVersionFlat = 9u;
+// (M4: now an alias of matter_version::components::kFlatFormat — and the
+// smuggling above is retired. A ladder-RULE change like M1.5's benefit floor
+// belongs in kRepresentation, not in a format version that happens to be the
+// only thing a cache probe could see.)
+constexpr uint32_t kFormatVersionFlat = matter_version::components::kFlatFormat;
 
 // Content-addressed identity for a part. All three inputs are OPAQUE byte ranges
 // to SP-1 (script source, params, child resolved-hashes). child_hashes need NOT be

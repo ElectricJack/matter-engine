@@ -99,6 +99,8 @@
 
 #include <cstddef>
 #include <cstdint>
+
+#include "version_vector.h"   // M4: the single version-vector fold
 #include <string>
 #include <vector>
 
@@ -108,7 +110,10 @@ namespace impostor {
 // the cell size, the channel packing, or the rasterizer. Folded into the
 // sidecar's identity word, so a stale atlas is detected and rebaked rather
 // than silently drawn.
-constexpr uint32_t kFormatVersion = 1u;
+// M4: an alias of the version vector's impostor-format component. The atlas
+// header still records it (a truncated/mismatched file must fail to parse),
+// but the CACHE identity now comes from the vector through the one fold site.
+constexpr uint32_t kFormatVersion = matter_version::components::kImpostorFormat;
 
 constexpr uint32_t kViews    = 16;                    // azimuth ring
 constexpr uint32_t kCellPx   = 32;                    // per-view cell edge
