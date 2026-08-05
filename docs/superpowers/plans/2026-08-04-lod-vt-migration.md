@@ -728,6 +728,64 @@ Acceptance:
 
 ---
 
+## M6.5 — Distant shadows in the receiver's horizon map
+
+An impostor cannot cast a correct shadow (design §6.5) — it is a camera-facing card whose
+plane passes through the object's centre, so a traced ray starts inside the volume it
+depicts. M2.5 therefore ships impostors as non-tracing, and a tree loses its shadow the
+moment it impostors. This milestone gives the shadow back by baking it at the **receiving**
+end: not into the pine's page (keyed per VARIANT — every pine would share one shadow) but
+into the terrain **sector's** page, which has exactly one placement.
+
+**Prerequisites, both hard:**
+- **M6.** The horizon channel has already produced one visual defect in this engine — the
+  dark dome patches were the baked horizon queried through a per-rung, mesh-dependent basis.
+  Do not add data to that channel until M6's single parameterisation makes the query
+  rung-invariant, or this builds on the bug.
+- **Authorable impostor distances.** M3 landed authored `at` in metres and M2.5 landed the
+  impostor, but they do not compose yet: an authored ladder gets no terminal impostor rung.
+  The fold-in distance must BE the impostor distance, so close that gap first or the two
+  dials fight.
+
+Scope:
+
+1. Extend the sector horizon bake to treat impostored props as occluders, writing into the
+   sector's own `CHAN_HORIZON_A`/`CHAN_HORIZON_B` — 8 azimuths of `sin(elevation)` per texel,
+   already consumed by `gbuffer.frag` → `out_orm.w` → `rt_shadow.rgen`. **A horizon stores
+   the occluder's elevation profile, not the lighting**, so the sun angle is applied at
+   runtime and stays a live property. That is the whole reason to bake a horizon rather than
+   a shadow.
+2. Gate it on the prop's impostor switch distance: a prop is either casting RT rays or folded
+   into the horizon, never both and never neither.
+3. Include casters slightly **outside** the sector bounds, or shadows will not cross sector
+   seams.
+4. Fold the new dependencies into the version vector (`version_vector.h`; `fold()` is the
+   only entry point) — horizon content now depends on prop placement and on the impostor
+   distance, which it did not before.
+
+Acceptance:
+- **Measure the angular-resolution question BEFORE claiming shadows.** 45° azimuth bins at
+  quarter resolution will render a canopy as soft darkening, not as trunk shadows. Capture a
+  sector with and without the fold-in and report what is actually resolvable. If it reads as
+  ambient darkening, say so — that may well be right at impostor distance, but it must be
+  described honestly rather than sold as shadows.
+- **No double-darkening at the handoff and no gap.** Fly the switch distance; sun visibility
+  must be continuous across it.
+- **The sun stays live.** Drag `sun_azimuth_deg` / `sun_elevation_deg` and show the baked
+  occlusion responds correctly. This is the one property that must not regress — freezing it
+  would defeat the entire design.
+- **No seam** where a prop straddles a sector boundary.
+- Double-bake determinism; the fly-through determinism gate green; replay gates re-baselined
+  deliberately (this is a visual change by intent).
+- **Measure the RT compute actually saved.** The claim is that far-field shadow rays go away;
+  if the saving is small, that is a finding.
+
+Not in scope: near-field shadows. A horizon map is a coarse directional approximation and
+contact shadows are exactly what 45° bins cannot represent. Near stays RT — this is the far
+half of a hybrid, and the switch is the impostor distance.
+
+---
+
 ## M7 — Proxy world and visibility-gated streaming
 
 Scope (design §6):

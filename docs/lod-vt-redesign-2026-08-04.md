@@ -428,6 +428,58 @@ instantly (the proxy was always resident), then detail pouring in nearest-first.
 Optional and v1-deferred: the proxy's BLAS can stand in for far geometry in RT, giving
 distant shadows and GI something to hit beyond the streamed rings.
 
+### 6.5 Distant shadows: bake the caster into the RECEIVER's page
+
+An impostor cannot cast a correct shadow. It is a camera-facing card, so the silhouette the
+light sees is not the silhouette the camera sees, and its plane passes through the object's
+centre so a traced ray starts inside the volume it depicts (measured: clamping RT to the
+mesh rung instead darkened the card 10x, 100 % lit → 2.6 %). M2.5 therefore ships impostors
+as non-tracing, and a tree loses its shadow the moment it impostors.
+
+**The resolution is to move the bake to the other end of the shadow.** Do not bake a
+shadow into the *pine's* page — pages are keyed per part VARIANT (`variant_hash` =
+`resolved_hash`), so every pine in the world would share one shadow, which is precisely why
+tier-2 enrichment is restricted to part-local self-occlusion. Bake the pine's occlusion into
+the **terrain sector's** page. A sector is its own part with **exactly one placement**, so
+world-context data is legitimately correct there. The per-variant objection applies to the
+caster and not to the receiver.
+
+**Bake a HORIZON, not a shadow.** `.gtex` already carries a horizon map — `CHAN_HORIZON_A`
+and `CHAN_HORIZON_B`, eight azimuths (0/45/…/315°) of `sin(elevation)` per texel — and it is
+already consumed: `gbuffer.frag` resolves it into `horizon_sun_visibility`, writes it to
+`out_orm.w`, and `rt_shadow.rgen` multiplies it into traced sun visibility. A horizon map
+stores the *occluding geometry's elevation profile*, not the lighting, so **the sun angle is
+applied at runtime**. `sun_azimuth_deg` and `sun_elevation_deg` stay live draggable
+properties and the shadows still come for free. That is what makes this a bake worth doing:
+it does not freeze the thing you would most regret freezing.
+
+So: **when a sector's props become impostors, fold their occlusion into that sector's
+horizon map.** The props stop casting RT rays and the terrain keeps receiving their shadow.
+Near the camera, RT; far, the horizon map; the handoff is the impostor switch itself.
+
+**Four things to establish before this is promised, not after.**
+
+- **Angular resolution.** Eight azimuth bins are 45° apart and the map is quarter-resolution.
+  That is ample for a ridgeline and coarse for a trunk. The honest expectation is a soft
+  darkening under a canopy rather than a recognisable trunk shadow — which at impostor
+  distance is probably right, but it must be *measured* before anyone is told to expect
+  shadows.
+- **The handoff distance is the impostor distance.** Fold props in nearer and their RT shadow
+  and their baked horizon double up; farther and there is a gap with no shadow at all. This
+  therefore wants authorable impostor distances (§3.4 composed with §3.1), or the two dials
+  fight each other.
+- **Sector boundaries.** A prop near an edge casts onto its neighbour, so the bake must
+  consider casters outside the sector's own bounds — otherwise there is a seam exactly where
+  the shadow should cross.
+- **It must come AFTER §7's single parameterisation.** The horizon channel has already
+  produced one hard visual defect in this engine: the dark dome patches were the baked
+  horizon interrogated through a per-rung, mesh-dependent basis. Adding data to a channel
+  that is still asked in the wrong frame would build on the bug. §7 makes the query
+  rung-invariant; this belongs after it.
+
+Credit where due: this is Jack's proposal, and the horizon framing is what makes it
+sun-independent rather than a lighting bake.
+
 ---
 
 ## 7. Texturing: one parameterisation, a real mip chain
