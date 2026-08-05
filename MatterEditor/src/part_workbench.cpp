@@ -815,6 +815,18 @@ void PartWorkbench::seed_lod_authoring() {
         ui.has_params = L.has_params;
         ui.params_text = L.params_json;
         ui.exclude = std::move(L.exclude);
+        // M3: re-encode the named generator as a JS object literal ({"gen":
+        // "decimate","error":0.05}) -- valid JS, and eval_lods reads it back
+        // as the same descriptor. Order inside the literal is irrelevant to
+        // the parser, so splicing the name in front of the canonical params is
+        // a faithful round-trip.
+        if (L.has_at) ui.at = L.at;
+        if (!L.gen.empty()) {
+            std::string p = L.gen_params_json;   // canonical, e.g. {"error":0.05}
+            ui.gen_text = "{\"gen\":\"" + L.gen + "\"";
+            if (p.size() > 2) ui.gen_text += "," + p.substr(1, p.size() - 2);
+            ui.gen_text += "}";
+        }
         lod_authoring_.push_back(std::move(ui));
     }
 }
@@ -827,6 +839,19 @@ std::string PartWorkbench::render_lods_block() const {
         const LodAuthLevelUI& L = lod_authoring_[i];
         out << "    { ";
         bool wrote = false;
+        // M3: the authored switch distance leads the entry, matching the
+        // redesign doc's spelling and the order a reader scans for.
+        if (L.at >= 0.0) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "at: %g", L.at);
+            out << buf;
+            wrote = true;
+        }
+        if (!L.gen_text.empty()) {
+            if (wrote) out << ", ";
+            out << "gen: " << L.gen_text;
+            wrote = true;
+        }
         if (L.has_params) {
             out << "params: " << (L.params_text.empty() ? "{}" : L.params_text);
             wrote = true;
@@ -845,6 +870,12 @@ std::string PartWorkbench::render_lods_block() const {
         // Human-readable comment (part-workbench.md I.5: "annotating levels
         // with plain-language comments").
         out << "  // LOD" << i << ": ";
+        if (L.at >= 0.0) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "from %gm, ", L.at);
+            out << buf;
+        }
+        if (!L.gen_text.empty()) out << "generated, ";
         if (L.has_params && !L.exclude.empty())
             out << "regenerated, excludes " << L.exclude.size() << " module(s)";
         else if (L.has_params)
@@ -1000,6 +1031,23 @@ void PartWorkbench::draw_lod_authoring_panel() {
         LodAuthLevelUI& L = lod_authoring_[i];
         ImGui::PushID(static_cast<int>(i));
         ImGui::Text("LOD %zu", i);
+        // M3: the rep's own switch-in distance, in metres. Unchecked means
+        // "no authored distance" -- the bake keeps the value its error
+        // estimation derives, which is the default the author edits from.
+        ImGui::SameLine();
+        bool has_at = L.at >= 0.0;
+        if (ImGui::Checkbox("at (m)", &has_at)) L.at = has_at ? (i == 0 ? 0.0 : 0.0) : -1.0;
+        if (has_at) {
+            float at_f = static_cast<float>(L.at);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(90);
+            if (ImGui::InputFloat("##at", &at_f, 0.0f, 0.0f, "%.1f"))
+                L.at = at_f < 0.0f ? 0.0 : static_cast<double>(at_f);
+        }
+        if (!L.gen_text.empty()) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("gen %s", L.gen_text.c_str());
+        }
         ImGui::SameLine();
         ImGui::Checkbox("params override", &L.has_params);
         if (L.has_params) {

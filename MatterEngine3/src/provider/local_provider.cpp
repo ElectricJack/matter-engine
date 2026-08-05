@@ -13,10 +13,6 @@
 #include "tileset_phase.h"
 #include "bake_trace.h"        // Bake Lab task 1.3: tileset span split
 #include "bake_trace_names.h"  // kSpanTileset
-#ifndef MATTER_VULKAN_ONLY
-#include "tileset_provider.h"  // GL atlas-slot consumer (unload_all); the GL
-                               // bake it used to sit beside is gone (V5).
-#endif
 #include "material_registry.h"
 
 #if defined(MATTER_HAVE_AUTOREMESHER)
@@ -341,9 +337,6 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     // unbinds every material this provider pointed at a detail slot (material 16
     // via the deprecated root path, plus any defineMaterial() detail), empties
     // the LRU pool, and drops the previous world's dynamic registry entries.
-#ifndef MATTER_VULKAN_ONLY
-    viewer::tileset_provider::unload_all();
-#endif
     reset_tileset_bindings();
     baked_tileset_count_ = 0;
 
@@ -1021,8 +1014,7 @@ bool LocalProvider::run_tileset_deferred(
 
         const std::string gtex_path = abs_cache_root_ + "/" + gtex_name + ".gtex";
         const uint64_t expected = tileset::gtex_content_hash(
-            settled.report.pose_hash, script_source_hash,
-            tileset::kEngineBakeVersion, tileset::kBox3dVersion);
+            settled.report.pose_hash, script_source_hash);
 
         const int slot_idx = acquire_slot(expected, root_module);
         if (slot_idx < 0) {
@@ -1129,8 +1121,20 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // append world entries for any instance refs (BOUNDARY-path roots like
     // StressForest). Iterates to a fixed point so nested boundaries expand too.
     {
-        uint32_t next_id = out.instances.empty() ? 1u :
-            (out.instances.back().instance_id + 1u);
+        // Order-independent max-scan, matching the sibling allocator in
+        // matter_engine.cpp's publish pipeline. This read `back().instance_id
+        // + 1u`, which is only the maximum while every id in `out.instances`
+        // was allocated by one ascending counter in vector order -- an
+        // assumption nothing states and nothing checks, and the one place in
+        // the engine that would break if any id here ever stopped being an
+        // allocation counter (streamed sector ids already have; they are
+        // content-derived and live in the high half of the range, and they
+        // reach WorldState through a WorldDelta rather than this manifest,
+        // which is the only reason this line has not already produced
+        // duplicate ids).
+        uint32_t next_id = 1u;
+        for (const auto& e : out.instances)
+            if (e.instance_id >= next_id) next_id = e.instance_id + 1u;
         std::set<uint64_t> visited;
         while (true) {
             std::vector<uint64_t> to_process;
@@ -1312,9 +1316,6 @@ bool LocalProvider::restore_from_cache(
 {
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     // Reset mutable state (mirrors the preamble of install_graph()).
-#ifndef MATTER_VULKAN_ONLY
-    viewer::tileset_provider::unload_all();
-#endif
     reset_tileset_bindings();
     baked_tileset_count_ = 0;
     baked_count_  = 0;

@@ -43,6 +43,7 @@ static float horizon_sin_reference(const std::function<float(float, float)>& hei
 }
 
 #include "check.h"
+#include "version_vector.h"   // M4: the version vector under test
 static int g_pass = 0;
 #undef CHECK
 #define CHECK(cond) do { \
@@ -127,13 +128,23 @@ int main() {
         CHECK(errX.find("magic") != std::string::npos || errX.find("GTEX") != std::string::npos);
     }
 
-    // Content-hash helper.
-    const uint64_t h1 = gtex_content_hash(0xAAAAAAAA00000000ull, 0x00000000BBBBBBBBull, 1, 1);
-    const uint64_t h2v = gtex_content_hash(0xAAAAAAAA00000000ull, 0x00000000BBBBBBBBull, 1, 1);
-    const uint64_t h3 = gtex_content_hash(0xAAAAAAAA00000000ull, 0x00000000BBBBBBBBull, 1, 2);
+    // Content-hash helper. M4: the version arguments are gone -- the vector is
+    // folded inside, through matter_version::fold. The "a version change moves
+    // the key" property is now asserted against the VECTOR (below) rather than
+    // against a parameter a caller could get wrong.
+    const uint64_t h1 = gtex_content_hash(0xAAAAAAAA00000000ull, 0x00000000BBBBBBBBull);
+    const uint64_t h2v = gtex_content_hash(0xAAAAAAAA00000000ull, 0x00000000BBBBBBBBull);
+    const uint64_t h3 = gtex_content_hash(0xAAAAAAAA00000000ull, 0x00000000BBBBBBBCull);
     CHECK(h1 == h2v);
     CHECK(h1 != h3);
     CHECK(h1 != 0);
+    // The fold itself must be injective enough to be worth having and must
+    // never emit the 0 sentinel. (The "gtex_content_hash actually calls it"
+    // property is asserted structurally in part_asset_v2_tests, which can
+    // recompute its input stream; here we only guard the fold's contract.)
+    CHECK(matter_version::fold(0ull) != matter_version::fold(1ull));
+    CHECK(matter_version::fold(0ull) != 0ull);
+    CHECK(matter_version::digest() != 0ull);
 
     // ------------------------------------------------------------------
     // Child-hash fold (gtex_script_identity_hash). The .gtex cache key used
@@ -160,20 +171,16 @@ int main() {
         // regression being locked down: same settle, same root source, new
         // child appearance => the cached atlas must be rejected.
         const uint64_t pose = 0xFEEDFACECAFEBEEFull;
-        const uint64_t key_a =
-            gtex_content_hash(pose, id_a, kEngineBakeVersion, kBox3dVersion);
-        const uint64_t key_b =
-            gtex_content_hash(pose, id_b, kEngineBakeVersion, kBox3dVersion);
+        const uint64_t key_a = gtex_content_hash(pose, id_a);
+        const uint64_t key_b = gtex_content_hash(pose, id_b);
         CHECK(key_a != key_b);
 
         // The empty list is the identity, so a childless tileset keeps the
         // exact key it had before this fold existed (no gratuitous
         // invalidation of atlases that could not be stale).
         CHECK(gtex_script_identity_hash(root_src, {}) == root_src);
-        CHECK(gtex_content_hash(pose, gtex_script_identity_hash(root_src, {}),
-                                kEngineBakeVersion, kBox3dVersion) ==
-              gtex_content_hash(pose, root_src, kEngineBakeVersion,
-                                kBox3dVersion));
+        CHECK(gtex_content_hash(pose, gtex_script_identity_hash(root_src, {})) ==
+              gtex_content_hash(pose, root_src));
 
         // Order independence is the CALLER's contract (sort ascending), but
         // the fold must at least distinguish a genuinely different multiset

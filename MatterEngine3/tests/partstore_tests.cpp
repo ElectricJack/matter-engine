@@ -1,5 +1,6 @@
 // Lightweight PartStore tests — split out from viewer_logic_tests.cpp to avoid
 // the 30GB Meadow-flatten test in the same binary.
+#include "part_bundle.h"   // M4: the part body is the REP0 section
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -11,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "render/lod_distance.h"
 #include "render/part_store.h"
 #include "render/raster_cull.h"
 #include "part_asset_v2.h"
@@ -26,9 +28,14 @@ static int g_failures = 0;
     if (!(cond)) { printf("  FAIL: %s\n", msg); ++g_failures; } \
 } while(0)
 
-static uint64_t part_checksum(const std::filesystem::path& path) {
-    std::ifstream input(path, std::ios::binary);
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)), {});
+// M4: the part body is the bundle's REP0 section (see anim_bundle's
+// checksum_part). Reading the raw file would fold the bundle directory and
+// every sibling section into what is supposed to be the part's own body.
+static uint64_t part_checksum(const std::filesystem::path& path, uint64_t part_hash) {
+    std::vector<uint8_t> bytes;
+    if (!part_bundle::read_section(path.string(), part_hash,
+                                   part_bundle::kSectionRep0, bytes))
+        return 0;
     uint64_t hash = 1469598103934665603ull;
     for (size_t i = 40; i < bytes.size(); ++i) { hash ^= bytes[i]; hash *= 1099511628211ull; }
     return hash;
@@ -81,7 +88,7 @@ static bool publish_rigid_bundle(const std::filesystem::path& root, uint64_t has
     if (!anim::save_anim_candidate(asset,candidate_anim,diagnostics)) return false;
     anim::BundleIdentity identity;
     identity.resolved_hash=hash; identity.nonce=nonce;
-    identity.part_body_checksum=part_checksum(candidate_part);
+    identity.part_body_checksum=part_checksum(candidate_part,hash);
     identity.anim_body_checksum=anim::anim_body_checksum(asset);
     identity.target_abi_tag=asset.target_abi_tag; identity.ozz_tag_hash=asset.ozz_tag_hash;
     return anim::publish_animation_bundle({candidate_part,candidate_anim,root},identity,diagnostics);
@@ -130,6 +137,39 @@ static bool publish_static_part_and_flat(const std::filesystem::path& root, uint
     return publish_static_part(root, hash) && publish_flat(root, hash);
 }
 
+// viewer::cluster_lod_select was deleted with the GL path in M0. The assertion
+// it served here -- that a recorded camera pose selects a valid SERIALIZED LOD
+// for this sector cluster -- is still worth making, so it is expressed against
+// the one selection rule (render/lod_distance.h) using the transform helpers
+// raster_cull.h still owns. Same inputs, same answer; see the equivalence proof
+// in lod_distance_tests.cpp.
+static int select_cluster_lod_for_test(const viewer::LoadedCluster& cluster,
+                                       const float persisted_transform[16],
+                                       const float camera_eye[3]) {
+    const matter::Mat4f object_to_world =
+        viewer::persisted_mat4(persisted_transform);
+    const float scale = viewer::inst_scale(object_to_world);
+    const matter::Float3 local_center{
+        (cluster.aabb_min[0] + cluster.aabb_max[0]) * 0.5f,
+        (cluster.aabb_min[1] + cluster.aabb_max[1]) * 0.5f,
+        (cluster.aabb_min[2] + cluster.aabb_max[2]) * 0.5f};
+    const matter::Float3 world_center =
+        viewer::transform_point(object_to_world, local_center);
+    const float dx = world_center.x - camera_eye[0];
+    const float dy = world_center.y - camera_eye[1];
+    const float dz = world_center.z - camera_eye[2];
+    float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (distance < 0.01f) distance = 0.01f;
+
+    std::vector<float> switch_distances;
+    switch_distances.reserve(cluster.thresholds.size());
+    for (float threshold : cluster.thresholds)
+        switch_distances.push_back(lod::normalized_switch_distance(threshold));
+    return lod::select_rep(switch_distances.data(),
+                           static_cast<int>(switch_distances.size()), distance,
+                           lod::reach(cluster.radius, scale, 1.0f));
+}
+
 static void test_partstore_owns_committed_animation_and_keeps_live_last_good() {
     namespace fs = std::filesystem;
     namespace anim = matter::animation;
@@ -150,7 +190,7 @@ static void test_partstore_owns_committed_animation_and_keeps_live_last_good() {
     const anim::AnimAsset asset=rigid_asset(hash,nonce); anim::Diagnostics diagnostics;
     CHECK(anim::save_anim_candidate(asset,candidate_anim,diagnostics), "A8 PartStore fixture writes MANM candidate");
     anim::BundleIdentity identity; identity.resolved_hash=hash; identity.nonce=nonce;
-    identity.part_body_checksum=part_checksum(candidate_part); identity.anim_body_checksum=anim::anim_body_checksum(asset);
+    identity.part_body_checksum=part_checksum(candidate_part,hash); identity.anim_body_checksum=anim::anim_body_checksum(asset);
     identity.target_abi_tag=asset.target_abi_tag; identity.ozz_tag_hash=asset.ozz_tag_hash;
     CHECK(anim::publish_animation_bundle({candidate_part,candidate_anim,root},identity,diagnostics), "A8 PartStore fixture publishes committed siblings");
     viewer::PartStore store(root.string());
@@ -669,7 +709,7 @@ static void test_compositional_sector_bounds_survive_to_frustum_culling() {
     transform[11] = -9.0f * 64.0f;
     const float camera_eye[3] = {-101.4326f, 14.7310f, 519.3806f};
     const int selected_lod =
-        viewer::cluster_lod_select(*cluster, transform, camera_eye);
+        select_cluster_lod_for_test(*cluster, transform, camera_eye);
     CHECK(selected_lod >= 0 &&
               static_cast<size_t>(selected_lod) < cluster->lod_mesh.size(),
           "sector bounds: recorded camera selects a serialized LOD");

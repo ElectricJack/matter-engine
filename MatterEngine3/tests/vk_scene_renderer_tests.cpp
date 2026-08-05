@@ -14,7 +14,9 @@
 #include "render/vk_gi_contract.h"
 #include "render/dynamic_instance_slots.h"
 #include "matter/scene.h"
+#include "matter/vulkan_device.h"
 #include "shaders_gen/embedded_spirv.h"
+#include "../../MatterEditor/src/wireframe_controls.h"
 
 #include <cstddef>
 #include <cmath>
@@ -235,6 +237,266 @@ static void test_animation_bounds_cull_shader_contract() {
     const matter::EmbeddedSpirvView cull = matter::find_spirv("cull.comp.spv");
     CHECK(cull.words != nullptr && cull.word_count != 0,
           "clean embedded shader table contains the generated dynamic-bounds cull shader");
+}
+
+// The graphics push contract carries the per-direct-draw override separately
+// from the indirect transform tail. That separation is what lets two skin
+// clusters of one instance retain different cull-selected rungs.
+static void test_raster_debug_push_constants_contract() {
+    printf("\n[test_raster_debug_push_constants_contract]\n");
+    const viewer::RasterDebugPushConstants indirect =
+        viewer::make_raster_debug_push_constants(
+            99u, false, matter::GeometryDebugView::LodTint, false);
+    CHECK(sizeof(viewer::RasterDebugPushConstants) == 16,
+          "raster debug push constants stay four 32-bit words");
+    CHECK(indirect.direct_lod == 99u && indirect.direct_lod_valid == 0u,
+          "indirect mesh draws do not override the cull-selected transform LOD");
+    CHECK(indirect.lod_tint_enabled == 1u && indirect.wireframe_enabled == 0u,
+          "LOD tint and the reserved wireframe bit remain independent");
+
+    const viewer::RasterDebugPushConstants skin =
+        viewer::make_raster_debug_push_constants(
+            7u, true, matter::GeometryDebugView::None, true);
+    CHECK(skin.direct_lod == 7u && skin.direct_lod_valid == 1u,
+          "a skinned direct draw transports its exact selected LOD");
+    CHECK(skin.lod_tint_enabled == 0u && skin.wireframe_enabled == 1u,
+          "the wireframe bit does not imply the LOD tint");
+}
+
+// One decision, made once: a partially created or unavailable line set must
+// fall back to EVERY fill pipeline and must clear the shader flag with it.
+// A mixed frame -- lines for static geometry, fill for skins, or a raised
+// wireframe word over filled triangles -- is the lie this guards against.
+static void test_wireframe_raster_pipeline_selection() {
+    printf("\n[test_wireframe_raster_pipeline_selection]\n");
+    const viewer::RasterPipelineSet fill{
+        reinterpret_cast<VkPipeline>(0x1001ull),
+        reinterpret_cast<VkPipeline>(0x1002ull)};
+    const viewer::RasterPipelineSet line{
+        reinterpret_cast<VkPipeline>(0x2001ull),
+        reinterpret_cast<VkPipeline>(0x2002ull)};
+
+    const auto off = viewer::select_raster_pipelines(false, true, fill, line);
+    CHECK(off.static_mesh == fill.static_mesh &&
+              off.skinned_mesh == fill.skinned_mesh && !off.wireframe_enabled,
+          "the view off keeps every fill pipeline and the flag clear");
+
+    const auto unsupported =
+        viewer::select_raster_pipelines(true, false, fill, {});
+    CHECK(unsupported.static_mesh == fill.static_mesh &&
+              unsupported.skinned_mesh == fill.skinned_mesh &&
+              !unsupported.wireframe_enabled,
+          "an unsupported device renders fill and does NOT claim wireframe");
+
+    const auto enabled = viewer::select_raster_pipelines(true, true, fill, line);
+    CHECK(enabled.static_mesh == line.static_mesh &&
+              enabled.skinned_mesh == line.skinned_mesh &&
+              enabled.wireframe_enabled,
+          "a supported wireframe selects both line pipelines and the flag");
+
+    viewer::RasterPipelineSet incomplete_line = line;
+    incomplete_line.skinned_mesh = VK_NULL_HANDLE;
+    const auto incomplete =
+        viewer::select_raster_pipelines(true, true, fill, incomplete_line);
+    CHECK(incomplete.static_mesh == fill.static_mesh &&
+              incomplete.skinned_mesh == fill.skinned_mesh &&
+              !incomplete.wireframe_enabled,
+          "an incomplete line set falls back atomically to every fill pipeline");
+}
+
+// The line variants are built from a COPY of the fill raster state. Mutating
+// the shared struct in place is how the pipelines created afterwards -- the
+// composite fullscreen pass among them -- inherit a polygon mode nobody asked
+// for.
+static void test_wireframe_rasterization_state_is_a_copy() {
+    printf("\n[test_wireframe_rasterization_state_is_a_copy]\n");
+    VkPipelineRasterizationStateCreateInfo fill{
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    fill.polygonMode = VK_POLYGON_MODE_FILL;
+    fill.cullMode = VK_CULL_MODE_BACK_BIT;
+    fill.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    fill.lineWidth = 1.0f;
+    fill.depthBiasEnable = VK_TRUE;
+
+    const VkPipelineRasterizationStateCreateInfo line =
+        viewer::make_wireframe_rasterization(fill);
+    CHECK(fill.polygonMode == VK_POLYGON_MODE_FILL &&
+              fill.cullMode == VK_CULL_MODE_BACK_BIT,
+          "the fill state the other pipelines share is left untouched");
+    CHECK(line.polygonMode == VK_POLYGON_MODE_LINE &&
+              line.cullMode == VK_CULL_MODE_NONE && line.lineWidth == 1.0f,
+          "the line state draws unculled edges so density is not halved");
+    CHECK(line.sType == fill.sType && line.frontFace == fill.frontFace &&
+              line.depthBiasEnable == fill.depthBiasEnable,
+          "everything the copy does not deliberately change is preserved");
+}
+
+// fillModeNonSolid is a viewer diagnostic, not a device admission
+// requirement. A fill-only device stays usable and REPORTS why the control
+// is disabled.
+static void test_wireframe_capability_policy_is_diagnostic_only() {
+    printf("\n[test_wireframe_capability_policy_is_diagnostic_only]\n");
+    matter::VulkanWireframeCapabilities none{};
+    const matter::VulkanWireframeCapabilityPolicy denied =
+        matter::evaluate_wireframe_capabilities(none);
+    CHECK(denied.device_accepted && !denied.wireframe_available,
+          "a device without fillModeNonSolid is still accepted");
+    CHECK(!denied.unavailable_reason.empty() &&
+              denied.unavailable_reason.find("fillModeNonSolid") !=
+                  std::string::npos,
+          "the refusal names the missing feature instead of failing silently");
+
+    matter::VulkanWireframeCapabilities supported{};
+    supported.fill_mode_non_solid = true;
+    const matter::VulkanWireframeCapabilityPolicy allowed =
+        matter::evaluate_wireframe_capabilities(supported);
+    CHECK(allowed.device_accepted && allowed.wireframe_available &&
+              allowed.unavailable_reason.empty(),
+          "a device with the feature reports wireframe available, no reason");
+}
+
+static void test_wireframe_console_commands_respect_capability() {
+    printf("\n[test_wireframe_console_commands_respect_capability]\n");
+    bool enabled = false;
+    CHECK(viewer::apply_wireframe_console_command("wireframe", true, enabled) ==
+                  viewer::WireframeConsoleCommandResult::Applied &&
+              enabled,
+          "wireframe command toggles the session control on a supported device");
+    CHECK(viewer::apply_wireframe_console_command("wireframe off", true,
+                                                  enabled) ==
+                  viewer::WireframeConsoleCommandResult::Applied &&
+              !enabled,
+          "wireframe off disables the same session control");
+    enabled = true;
+    CHECK(viewer::apply_wireframe_console_command("wireframe on", false,
+                                                  enabled) ==
+                  viewer::WireframeConsoleCommandResult::Unavailable &&
+              !enabled,
+          "unsupported wireframe clears and rejects the session control");
+    CHECK(viewer::apply_wireframe_console_command("reload", true, enabled) ==
+              viewer::WireframeConsoleCommandResult::Unrecognized,
+          "unrelated console verbs are left to their own handlers");
+}
+
+// The combo entry and the checkbox are two inputs to ONE flag. The checkbox
+// exists so wireframe composes with the LOD tint at index 5 -- triangle
+// density and rung colour are the diagnostic pair -- while index 6 is the
+// single persistable int a shot descriptor stores.
+static void test_wireframe_view_index_composes_with_the_lod_tint() {
+    printf("\n[test_wireframe_view_index_composes_with_the_lod_tint]\n");
+    constexpr int kWireframeIndex = 6;
+    constexpr int kLodTintIndex = 5;
+    CHECK(!viewer::resolve_wireframe_request(false, 0, kWireframeIndex, true),
+          "no control asked for wireframe, so the frame stays filled");
+    CHECK(viewer::resolve_wireframe_request(false, kWireframeIndex,
+                                            kWireframeIndex, true),
+          "the appended combo index alone requests wireframe");
+    CHECK(viewer::resolve_wireframe_request(true, kLodTintIndex,
+                                            kWireframeIndex, true),
+          "the checkbox composes wireframe with the LOD tint view");
+    CHECK(!viewer::resolve_wireframe_request(true, kWireframeIndex,
+                                            kWireframeIndex, false),
+          "an unsupported device refuses BOTH controls rather than pretending");
+    // Appending, not renumbering: the five composite views and the LOD tint
+    // keep the indices every capture on disk already records.
+    CHECK(kLodTintIndex == 5 && kWireframeIndex == 6,
+          "wireframe is appended after LOD levels, renumbering nothing");
+}
+
+// The shader half of the same contract: the reserved fourth push word is now
+// READ, and its branch runs after every material/tileset/VT write so the
+// view-off path is untouched.
+static void test_wireframe_gbuffer_shader_contract() {
+    printf("\n[test_wireframe_gbuffer_shader_contract]\n");
+    std::ifstream frag("../shaders_vk/gbuffer.frag");
+    const std::string text((std::istreambuf_iterator<char>(frag)),
+                           std::istreambuf_iterator<char>());
+    CHECK(!text.empty(), "read the gbuffer wireframe contract");
+    const size_t tint = text.find("debug_push.lod_tint_enabled != 0u");
+    const size_t wire = text.find("debug_push.wireframe_enabled != 0u");
+    const size_t albedo_out = text.find("out_albedo = vec4(base_color");
+    CHECK(tint != std::string::npos && wire != std::string::npos &&
+              albedo_out != std::string::npos,
+          "gbuffer.frag reads both debug words and still writes base_color out");
+    CHECK(tint < wire && wire < albedo_out,
+          "the wireframe branch runs last, after the tint and before the write");
+    CHECK(text.find("vec3(0.0, 1.0, 1.0)") != std::string::npos &&
+              text.find("encoded_emission = 15.875") != std::string::npos,
+          "edges are flat cyan and self-lit so a 1px line stays readable");
+}
+
+// The rung reaches the fragment shader in the transform tail's LAST word, which
+// used to be pad. Renaming it must not have grown the struct, and the shader
+// must write the rung it actually computed there.
+static void test_selected_lod_draw_transform_contract() {
+    printf("\n[test_selected_lod_draw_transform_contract]\n");
+    std::ifstream header("../src/render/vk_scene_renderer.h");
+    const std::string header_text((std::istreambuf_iterator<char>(header)),
+                                  std::istreambuf_iterator<char>());
+    CHECK(!header_text.empty(),
+          "read draw-transform selected-LOD layout contract");
+    CHECK(header_text.find("uint32_t selected_lod;") != std::string::npos &&
+              header_text.find("static_assert(sizeof(GpuDrawTransform) == 144)") !=
+                  std::string::npos &&
+              header_text.find("offsetof(GpuDrawTransform, selected_lod) == 140") !=
+                  std::string::npos,
+          "draw transform remains 144 bytes with selected LOD in its final word");
+
+    std::ifstream cull("../shaders_vk/cull.comp");
+    const std::string cull_text((std::istreambuf_iterator<char>(cull)),
+                                std::istreambuf_iterator<char>());
+    CHECK(!cull_text.empty(), "read cull shader selected-LOD contract");
+    CHECK(cull_text.find("uint selected_lod;") != std::string::npos &&
+              cull_text.find("draw_transforms[first + slot].selected_lod = lod;") !=
+                  std::string::npos,
+          "cull emission writes its exact computed LOD into the transform tail");
+
+    // Locations 9 and 10 are the warp field on this base. The branch this was
+    // ported from had no warp field and emitted the rung at 9; copying that
+    // number aliases in_warp_uv_scales and corrupts ground shading, silently.
+    std::ifstream vert("../shaders_vk/raster.vert");
+    const std::string vert_text((std::istreambuf_iterator<char>(vert)),
+                                std::istreambuf_iterator<char>());
+    std::ifstream frag("../shaders_vk/gbuffer.frag");
+    const std::string frag_text((std::istreambuf_iterator<char>(frag)),
+                                std::istreambuf_iterator<char>());
+    CHECK(!vert_text.empty() && !frag_text.empty(),
+          "read raster varying location contract");
+    CHECK(vert_text.find("layout(location = 11) flat out uint out_selected_lod;") !=
+                  std::string::npos &&
+              frag_text.find("layout(location = 11) flat in uint in_selected_lod;") !=
+                  std::string::npos,
+          "the selected rung rides location 11, clear of the warp field at 9/10");
+    CHECK(vert_text.find("layout(location = 9) out vec4 out_warp_uv_scales;") !=
+                  std::string::npos &&
+              vert_text.find("layout(location = 10) out vec3 out_warp_tangent;") !=
+                  std::string::npos,
+          "the warp field still owns locations 9 and 10");
+}
+
+// The host legend and gbuffer.frag compute the SAME colour for a rung; a
+// legend that disagrees with the picture is worse than no legend.
+static void test_lod_debug_palette_is_distinct_and_bounded() {
+    printf("\n[test_lod_debug_palette_is_distinct_and_bounded]\n");
+    bool distinct = true;
+    bool bounded = true;
+    for (uint32_t a = 0; a < matter::kLodDebugColorCount; ++a) {
+        const matter::DebugRgb ca = matter::lod_debug_color(a);
+        bounded = bounded && ca.r >= 0.0f && ca.r <= 1.0f && ca.g >= 0.0f &&
+                  ca.g <= 1.0f && ca.b >= 0.0f && ca.b <= 1.0f;
+        for (uint32_t b = a + 1; b < matter::kLodDebugColorCount; ++b) {
+            const matter::DebugRgb cb = matter::lod_debug_color(b);
+            const float separation = std::fabs(ca.r - cb.r) +
+                                     std::fabs(ca.g - cb.g) +
+                                     std::fabs(ca.b - cb.b);
+            distinct = distinct && ca != cb && separation > 0.05f;
+        }
+    }
+    CHECK(distinct, "all 16 rung colours are distinguishable from one another");
+    CHECK(bounded, "every rung colour stays inside the unit RGB cube");
+    CHECK(matter::lod_debug_color(0) ==
+              matter::lod_debug_color(matter::kLodDebugColorCount),
+          "the palette wraps exactly like the shader's lod % 16");
 }
 
 static void test_skin_raster_validation_controls_cull_exclusion() {
@@ -731,6 +993,15 @@ int main() {
     test_instance_identity_tagging();
     test_dynamic_slot_change_kind_distinct();
     test_animation_bounds_cull_shader_contract();
+    test_raster_debug_push_constants_contract();
+    test_wireframe_raster_pipeline_selection();
+    test_wireframe_rasterization_state_is_a_copy();
+    test_wireframe_capability_policy_is_diagnostic_only();
+    test_wireframe_console_commands_respect_capability();
+    test_wireframe_view_index_composes_with_the_lod_tint();
+    test_wireframe_gbuffer_shader_contract();
+    test_selected_lod_draw_transform_contract();
+    test_lod_debug_palette_is_distinct_and_bounded();
     test_skin_raster_validation_controls_cull_exclusion();
     test_skin_raster_exclusion_survives_lod_disagreement();
     test_skin_raster_ownership_excludes_traced_bind_pose();

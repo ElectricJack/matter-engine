@@ -6,6 +6,7 @@
 #include "chart_atlas.h"        // chart-space VT sidecar (WP-A, contract C1)
 #include "lod_select.h"         // lod_select::PartLodTable
 #include "part_asset_v2.h"      // part_asset::ChildInstance
+#include "impostor_bake.h"      // terminal impostor rep (M2.5)
 #include "raster_mesh.h"        // RasterMeshData
 #include "animation/animation_asset_store.h"
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
@@ -152,6 +153,25 @@ struct LoadedPart {
     // demand-registration path on the app thread. Empty for every part whose
     // world has no surfaces() tape.
     SurfaceClassCache surface_cache;
+
+    // M2.5 terminal impostors, one per cluster that earned one. `mesh_index`
+    // is the index into lod_mesh_data of the billboard rung, so the renderer
+    // can find the two vertices whose atlas slot it must patch; `cluster` is
+    // the index into `clusters`. EMPTY is the normal state for a part whose
+    // terminal mesh rung is already tiny, and is NOT a failure -- a failure is
+    // an impostor rung present in the ladder with no atlas behind it, which
+    // load_flat resolves by removing the rung and logging once.
+    struct ResidentImpostor {
+        uint32_t cluster = 0;
+        // Bake-order index of this billboard within the part -- the value the
+        // quad's vertices carry, and the key the renderer patches by. NOT the
+        // position in this vector, which compacts when another cluster's
+        // impostor is rejected.
+        uint32_t ordinal = 0;
+        int      mesh_index = -1;
+        impostor::ClusterImpostor data;
+    };
+    std::vector<ResidentImpostor> impostors;
 };
 
 // Walk the part tree rooted at root_hash depth-first, depth-capped at 8.
@@ -423,6 +443,11 @@ private:
     std::function<void()>              flat_admission_hook_for_tests_;
 #endif
     std::set<uint64_t>                load_failed_;      // suppress repeat logging
+    // M2.5: parts whose impostor atlas was already reported unusable. ONCE per
+    // part, not once per load -- a streamed part re-enters the store on every
+    // ring crossing, and a per-load line would bury the diagnostic it exists
+    // to make visible.
+    std::set<uint64_t>                impostor_load_logged_;
     BakeObserver*                     observer_ = nullptr;  // W3: optional per-rung observer
 };
 

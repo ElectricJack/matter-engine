@@ -1,4 +1,5 @@
 #include "animation/anim_bundle.h"
+#include "part_bundle.h"   // M4: the part body is the REP0 section
 #include "animation/animation_binding_bake.h"
 
 #include <cstdio>
@@ -92,7 +93,14 @@ bool sync_parent(const std::filesystem::path& p) {
 // though there is no buffered payload to flush.
 bool flush_existing(const std::filesystem::path& p) { FILE* f=std::fopen(p.string().c_str(),"rb+");if(!f)return false;bool ok=durable_flush(f);bool closed=std::fclose(f)==0;return ok&&closed; }
 bool write(const std::filesystem::path&p,const std::vector<uint8_t>&b){FILE*f=std::fopen(p.string().c_str(),"wb");if(!f)return false;bool ok=std::fwrite(b.data(),1,b.size(),f)==b.size()&&durable_flush(f);bool closed=std::fclose(f)==0;return ok&&closed;}
-bool checksum_part(const std::filesystem::path&p,uint64_t&out){std::vector<uint8_t>b;if(!read(p,b)||b.size()<40)return false;out=fnv(b.data()+40,b.size()-40);return true;}
+// M4: the animation link binds to the PART BODY, so this checksums the REP0
+// section rather than the whole file. It used to be "everything after the
+// 40-byte header", which was the body only while a part owned a file to
+// itself. In a bundle that would also cover the flat ladder and the impostor
+// atlas -- so flattening a linked part, or baking its impostor, would have
+// broken the animation commit it had nothing to do with. (Caught by
+// partstore_tests A8's co-located-flat case, which is exactly this shape.)
+bool checksum_part(const std::filesystem::path&p,uint64_t part_hash,uint64_t&out){std::vector<uint8_t>b;if(!part_bundle::read_section(p.string(),part_hash,part_bundle::kSectionRep0,b)||b.size()<40)return false;out=fnv(b.data()+40,b.size()-40);return true;}
 std::string nonce_suffix(const BuildNonce& n) { char out[40]; std::snprintf(out,sizeof out,".%016llx%016llx",(unsigned long long)n.high,(unsigned long long)n.low); return out; }
 std::filesystem::path tmp(const std::filesystem::path&p,const BuildNonce&n){return p.string()+nonce_suffix(n)+".tmp";}
 std::filesystem::path backup(const std::filesystem::path&p,const BuildNonce&n){return p.string()+nonce_suffix(n)+".backup";}
@@ -175,7 +183,7 @@ bool publish_animation_bundle(const BundleCandidates& c,const BundleIdentity& i,
     std::vector<part_asset::ChildInstance> candidate_children; part_asset::LodLevels candidate_lods;
     std::vector<part_asset::VolumeEmitter> candidate_emitters;
     BindingBake binding;
-    if(i.part_format_version!=part_asset::kFormatVersionV2||i.animation_schema_version!=kAnimationSchemaVersion||i.animation_bake_epoch!=kAnimationBakeEpoch||i.compiler_identifier!=kAnimationCompilerIdentifier||i.target_abi_tag!=kAnimationTargetAbiTag||i.ozz_tag_hash!=kAnimationOzzTagHash||(i.nonce.high==0&&i.nonce.low==0)||!load_anim(c.anim_candidate,a,d)||!get_anim_binding_bake(a,binding)||!manifest_matches_binding(i.lods,binding)||a.resolved_hash!=i.resolved_hash||!(a.nonce==i.nonce)||a.target_abi_tag!=kAnimationTargetAbiTag||a.ozz_tag_hash!=kAnimationOzzTagHash||a.target_abi_tag!=i.target_abi_tag||a.ozz_tag_hash!=i.ozz_tag_hash||anim_body_checksum(a)!=i.anim_body_checksum||!checksum_part(c.part_candidate,pc)||pc!=i.part_body_checksum||!part_asset::load_v2(c.part_candidate.string(),i.resolved_hash,candidate_blas,candidate_tlas,candidate_children,candidate_lods,candidate_emitters,link)||!part_matches_binding(candidate_blas,candidate_lods,binding)||!link||link->nonce_high!=i.nonce.high||link->nonce_low!=i.nonce.low){fail(d,"bundle.candidate");return false;}
+    if(i.part_format_version!=part_asset::kFormatVersionV2||i.animation_schema_version!=kAnimationSchemaVersion||i.animation_bake_epoch!=kAnimationBakeEpoch||i.compiler_identifier!=kAnimationCompilerIdentifier||i.target_abi_tag!=kAnimationTargetAbiTag||i.ozz_tag_hash!=kAnimationOzzTagHash||(i.nonce.high==0&&i.nonce.low==0)||!load_anim(c.anim_candidate,a,d)||!get_anim_binding_bake(a,binding)||!manifest_matches_binding(i.lods,binding)||a.resolved_hash!=i.resolved_hash||!(a.nonce==i.nonce)||a.target_abi_tag!=kAnimationTargetAbiTag||a.ozz_tag_hash!=kAnimationOzzTagHash||a.target_abi_tag!=i.target_abi_tag||a.ozz_tag_hash!=i.ozz_tag_hash||anim_body_checksum(a)!=i.anim_body_checksum||!checksum_part(c.part_candidate,i.resolved_hash,pc)||pc!=i.part_body_checksum||!part_asset::load_v2(c.part_candidate.string(),i.resolved_hash,candidate_blas,candidate_tlas,candidate_children,candidate_lods,candidate_emitters,link)||!part_matches_binding(candidate_blas,candidate_lods,binding)||!link||link->nonce_high!=i.nonce.high||link->nonce_low!=i.nonce.low){fail(d,"bundle.candidate");return false;}
     std::error_code ec;std::filesystem::create_directories(c.cache_root/"parts",ec);if(ec){fail(d,"bundle.directory");return false;}
     auto part=c.cache_root/part_asset::cache_path_resolved(i.resolved_hash);auto anim=cache_path_anim(c.cache_root,i.resolved_hash);auto manifest=cache_path_anim_commit(c.cache_root,i.resolved_hash);std::vector<uint8_t>m;
     if(c.test_hold_publication_lock){
@@ -215,7 +223,7 @@ bool load_committed_animation_bundle(const std::filesystem::path& root,uint64_t 
         (i.nonce.high == 0 && i.nonce.low == 0)) { fail(d, "bundle.manifest"); return false; }
     auto part = root / part_asset::cache_path_resolved(hash);
     uint64_t pc = 0;
-    if (!checksum_part(part, pc) || pc != i.part_body_checksum) { fail(d, "bundle.part_checksum"); return false; }
+    if (!checksum_part(part, hash, pc) || pc != i.part_body_checksum) { fail(d, "bundle.part_checksum"); return false; }
     BLASManager checked_blas; TLASManager checked_tlas(1 << 20);
     std::vector<part_asset::ChildInstance> checked_children; part_asset::LodLevels checked_lods;
     std::vector<part_asset::VolumeEmitter> checked_emitters; std::optional<part_asset::PartAnimationLink> link;

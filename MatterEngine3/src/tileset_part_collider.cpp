@@ -16,8 +16,8 @@ bool collider_for_part(const std::string& cache_dir, uint64_t resolved_hash,
                        const char* override_kind,
                        ColliderFit& out, std::string& err)
 {
-    // Build the full path: cache_dir + "/parts/<16-hex>.part"
-    // cache_path_resolved returns "parts/<16-hex>.part" (relative).
+    // Build the full path: cache_dir + "/parts/<16-hex>.bundle"
+    // cache_path_resolved returns "parts/<16-hex>.bundle" (relative).
     std::string rel = part_asset::cache_path_resolved(resolved_hash);
     std::string path = cache_dir + "/" + rel;
 

@@ -94,6 +94,14 @@ DEPFLAGS := -MMD -MP
 build:
 	@mkdir -p $@
 
+LOD_DISTANCE_TARGET = build/lod_distance_tests
+LOD_DISTANCE_CPP = lod_distance_tests.cpp
+# Header-only subject: depend on it explicitly, or an edit to the conversion
+# leaves a stale binary reporting a pass for code it never compiled. (That is
+# exactly how the far-imposter asset pin was disarmed; see the note on
+# far-imposter-asset in the impostor work.)
+LOD_DISTANCE_HEADERS = ../src/render/lod_distance.h
+
 MATRIX_TARGET = build/matrix_tests
 MATRIX_CPP = matrix_tests.cpp ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp
 MATRIX_HEADERS = check.h ../include/matter/math_types.h ../include/matter/camera.h \
@@ -515,7 +523,7 @@ CHARTATLAS_TARGET = build/chart_atlas_tests
 CHARTATLAS_CPP = chart_atlas_tests.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
                  ../src/part_asset_v2.cpp \
                  ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp \
-                 ../src/render/part_store.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
+                 ../src/render/part_store.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
                  ../src/lod_select.cpp ../src/sector_grid.cpp \
                  ../src/animation/animation_asset_store.cpp ../src/animation/anim_asset.cpp \
                  ../src/animation/anim_bundle.cpp ../src/animation/animation_binding_bake.cpp \
@@ -528,6 +536,7 @@ CHARTATLAS_C   = $(MSL)/material_registry.c
 
 FLATTEN_TARGET = build/part_flatten_tests
 FLATTEN_CPP = part_flatten_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp \
+              ../src/impostor_bake.cpp \
               ../src/bake_trace.cpp \
               ../src/part_cluster.cpp \
               ../src/part_asset_v2.cpp \
@@ -867,7 +876,7 @@ SECTORPROF_CPP = sector_setup_profile.cpp $(filter-out sector_bake_tests.cpp,$(S
 SECTORPROF_C = $(COMMON_MSL_C)
 
 PARTSTORE_TARGET = build/partstore_tests
-PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp ../src/warp_field.cpp \
+PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp \
                 ../src/render/matrix_math.cpp \
                 ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
@@ -931,7 +940,7 @@ GRAPH_INT_TARGET = build/part_graph_integration_tests
 # carries the animation-authoring closure this suite now needs. The extra
 # render/LOD sources below are the A8 additions (part_store.h consumers).
 GRAPH_INT_CPP = part_graph_integration_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP)) \
-                ../src/render/part_store.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
+                ../src/render/part_store.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
                 ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/animation/animation_asset_store.cpp
 GRAPH_INT_C   = $(COMMON_MSL_C)
@@ -947,6 +956,7 @@ EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
               ../src/script/world_definition_loader.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp \
+              ../src/impostor_bake.cpp \
               ../src/retopo_blacklist.cpp \
               ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
               ../src/part_cluster.cpp \
@@ -974,9 +984,6 @@ AONORMPROBE_CPP = tileset_ao_normal_probe.cpp $(filter-out example_world.cpp, $(
 
 GRASSLOD_TARGET = build/grass_lod_tests
 GRASSLOD_CPP = grass_lod_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
-
-STRESSFOREST_TARGET = build/stress_forest_tests
-STRESSFOREST_CPP = stress_forest_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
 LIGHTING_GARDEN_TARGET = build/lighting_garden_tests
 LIGHTING_GARDEN_CPP = lighting_garden_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
@@ -1125,6 +1132,11 @@ VIEWER_PIPELINE_CPP = $(sort $(filter-out example_world.cpp, $(EXAMPLE_CPP)) \
 # example_world/gallery_bake_tests/lighting_garden_tests could link). obj_list
 # (:261) does not dedupe, so listing it in both places causes ld to see the
 # same object twice -> "multiple definition of matter::load_world_definition".
+# NOTE: do NOT name ../src/impostor_bake.cpp in this list. VIEWER_PIPELINE_CPP
+# (below) already supplies it through EXAMPLE_CPP, and that list is $(sort ...)ed
+# while this one is not — so naming it in both puts the SAME object on the link
+# line twice and viewer_logic_tests fails with "multiple definition of
+# impostor::save". The same trap applies to anything else EXAMPLE_CPP carries.
 VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../../MatterEditor/src/camera_controller.cpp \
               ../../MatterEditor/src/streaming_anchor_controller.cpp \
@@ -1134,9 +1146,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/provider/resolvers.cpp \
               ../src/render/part_store.cpp ../src/warp_field.cpp \
               ../src/provider/local_provider.cpp \
-              ../src/render/world_composer.cpp \
               ../src/render/raster_mesh.cpp \
-              ../src/render/tileset_provider.cpp \
               ../src/tileset_phase.cpp \
               ../src/tileset_settle.cpp ../src/tileset_gtex.cpp \
               ../src/tileset_bake.cpp ../src/tileset_collider.cpp \
@@ -1158,7 +1168,7 @@ RETOPO_INT_CPP = retopo_integration_tests.cpp ../src/bake_trace.cpp \
                  ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \
                  ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
-                 ../src/part_flatten.cpp ../src/part_cluster.cpp \
+                 ../src/part_flatten.cpp ../src/impostor_bake.cpp ../src/part_cluster.cpp \
                  ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                  ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp \
                  $(MSL)/mesh_retopo.cpp \
@@ -1189,8 +1199,7 @@ GPU_RENDER_CPP = \
     ../src/bake_trace.cpp \
     ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
     ../src/render/raster_mesh.cpp ../src/render/part_store.cpp ../src/warp_field.cpp \
-    ../src/render/world_composer.cpp ../src/render/world_state.cpp \
-    ../src/render/tileset_provider.cpp \
+    ../src/render/world_state.cpp \
     ../src/provider/local_provider.cpp ../src/provider/resolvers.cpp \
     ../src/matter_engine.cpp \
     ../src/event/event_hub.cpp \
@@ -1213,7 +1222,7 @@ GPU_PIPELINE_CPP = \
     ../src/script_rng_binding.cpp \
     ../src/polygon_triangulate.cpp \
     ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
-    ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/triangle_emit.cpp \
+    ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/impostor_bake.cpp ../src/triangle_emit.cpp \
     ../src/part_cluster.cpp \
     ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
     ../src/tileset_torus_bvh.cpp \
@@ -1374,7 +1383,6 @@ sh_CPP_SRCS := $(sort \
     $(SECTORPROF_CPP) \
     $(AONORMPROBE_CPP) \
     $(GRASSLOD_CPP) \
-    $(STRESSFOREST_CPP) \
     $(LIGHTING_GARDEN_CPP) \
     $(TILESETBAKE_CPP) \
     $(TILESETPARAMS_CPP) \
@@ -1388,7 +1396,6 @@ sp2_CPP_SRCS := $(sort $(SHLIB_CPP))
 vl_CPP_SRCS  := $(sort $(VIEWER_LOGIC_CPP))
 retopo_CPP_SRCS := $(sort $(RETOPO_INT_CPP))
 gpu_CPP_SRCS := $(sort \
-    tileset_provider_tests.cpp \
     api_tests.cpp \
     async_bake_tests.cpp \
     demand_bake_tests.cpp \
@@ -1544,7 +1551,6 @@ ROCKPROF_OBJS = $(call obj_list,sh,$(ROCKPROF_CPP)) $(call obj_list,mslc,$(EXAMP
 SLABPROBE_OBJS = $(call obj_list,sh,$(SLABPROBE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 AONORMPROBE_OBJS = $(call obj_list,sh,$(AONORMPROBE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 GRASSLOD_OBJS = $(call obj_list,sh,$(GRASSLOD_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
-STRESSFOREST_OBJS = $(call obj_list,sh,$(STRESSFOREST_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 LIGHTING_GARDEN_OBJS = $(call obj_list,sh,$(LIGHTING_GARDEN_CPP)) \
                        $(call obj_list,mslc,$(LIGHTING_GARDEN_C)) $(qjsc_C_OBJS)
 TILESETBAKE_OBJS = $(call obj_list,sh,$(TILESETBAKE_CPP)) $(call obj_list,mslc,$(TILESETBAKE_C)) $(qjsc_C_OBJS)
@@ -1563,11 +1569,17 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-warp-field run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sector-profile run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sector-profile run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
 # ---------------------------------------------------------------------------
+
+$(LOD_DISTANCE_TARGET): $(LOD_DISTANCE_CPP) $(LOD_DISTANCE_HEADERS) | build
+	$(CC) $(LOD_DISTANCE_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
+
+run-lod-distance: $(LOD_DISTANCE_TARGET)
+	./$(LOD_DISTANCE_TARGET)
 
 $(MATRIX_TARGET): $(MATRIX_CPP) $(MATRIX_HEADERS) | build
 	$(CC) $(MATRIX_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
@@ -2079,15 +2091,6 @@ $(GRASSLOD_TARGET): $(GRASSLOD_OBJS)
 
 run-grasslod: $(GRASSLOD_TARGET)
 	./$(GRASSLOD_TARGET)
-
-# Stage-4 stress fixture scatter determinism.
-$(STRESSFOREST_TARGET): $(STRESSFOREST_OBJS)
-	$(CC) $(STRESSFOREST_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
-
-run-stressforest: $(STRESSFOREST_TARGET)
-	./$(STRESSFOREST_TARGET)
-
 # Task 9: live-edit production seam tests (ProdGraphResolver/Baker/Flattener).
 $(LIVEPROD_TARGET): $(LIVEPROD_OBJS)
 	$(CC) $(LIVEPROD_OBJS) -o $@ \
@@ -2366,14 +2369,6 @@ run-modbake: $(MODBAKE_TARGET)
 # The first two assertions live on in the Vulkan bake's CPU harnesses
 # (run-tilesetvkrepack / run-tilesetvkao / run-tilesetvkhorizon) and the
 # device-side gates under run-vk-scene-renderer.
-
-tileset-provider-tests: $(call obj_of,gpu,tileset_provider_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
-	$(CC) $(call obj_of,gpu,tileset_provider_tests.cpp) $(GPU_SHARED_OBJS) \
-	      -o build/tileset_provider_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
-
-run-tilesetprovider: tileset-provider-tests
-	GALLIUM_DRIVER=d3d12 ./build/tileset_provider_tests
 
 api-tests: $(call obj_of,gpu,api_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,api_tests.cpp) $(GPU_SHARED_OBJS) \

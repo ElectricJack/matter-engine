@@ -8,7 +8,13 @@ const uint ANIMATION_BOUND_SKIN_RASTER = 2u;
 struct ClusterMeta {
     vec4 aabb_min_radius;
     vec4 aabb_max_pad;
-    float thresholds[MAX_LOD];
+    // Normalized LOD switch distances, fine -> coarse and INCREASING: rung i
+    // applies while distance_to_eye <= switch_distances[i] * reach, where
+    // reach = local_radius * scale * pixel_budget * lod_bias. Normalized by
+    // radius as well as scale/dial because local_radius below is per-instance
+    // for a dynamic-bound cluster. See MatterEngine3/src/render/lod_distance.h,
+    // which owns the rule and carries the equivalence proof.
+    float switch_distances[MAX_LOD];
     uint lod_mesh_idx[MAX_LOD];
     uint lod_count;
     uint part_slot;
@@ -56,7 +62,10 @@ struct DrawTransform {
     // 0 = this draw has no chart table). Written below from the per-(part,
     // lod) vt_draw_slots table and forwarded flat by raster.vert.
     uint vt_slot;
-    uint pad2;
+    // LOD debug view: the rung THIS dispatch selected for this draw, written
+    // below and forwarded flat by raster.vert. Repurposes the trailing pad
+    // word, so DrawTransform stays 144 bytes.
+    uint selected_lod;
 };
 
 struct DrawCommand {
@@ -288,13 +297,19 @@ void main() {
         }
         override_lod_bias = ov.lod_bias;
     }
-    float projected_size = local_radius * scale /
-                           distance_to_eye *
-                           frame.camera_eye_pixel_budget.w;
-    if (override_lod_bias != 1.0) projected_size *= override_lod_bias;
+    // lod_distance.h: reach turns a normalized switch distance into metres.
+    float reach = local_radius * scale * frame.camera_eye_pixel_budget.w;
+    if (override_lod_bias != 1.0) reach *= override_lod_bias;
     uint lod = cluster.lod_count - 1u;
     for (uint i = 0u; i < cluster.lod_count; ++i) {
-        if (projected_size >= cluster.thresholds[i]) {
+        // isinf mirrors lod_distance.h::select_rep. An OPEN rung (threshold <= 0,
+        // "always qualifies") is an infinite switch distance, and a zero reach --
+        // a degenerate zero-radius cluster -- makes inf * 0 a NaN that compares
+        // false, silently skipping it. Keep the two implementations of the rule
+        // identical here, or the CPU mirror and the GPU disagree in exactly the
+        // case neither is tested on.
+        const float limit = cluster.switch_distances[i];
+        if (isinf(limit) || distance_to_eye <= limit * reach) {
             lod = i;
             break;
         }
@@ -357,7 +372,7 @@ void main() {
     // means "no VT" and the fragment shader takes the legacy path.
     draw_transforms[first + slot].vt_slot =
         bucket < vt_draw_slots.length() ? vt_draw_slots[bucket] : 0u;
-    draw_transforms[first + slot].pad2 = 0u;
+    draw_transforms[first + slot].selected_lod = lod;
     atomicAdd(emitted, 1u);
     atomicAdd(triangles, commands[bucket].index_count / 3u);
     if (slot == 0u) atomicAdd(batches, 1u);

@@ -366,7 +366,7 @@ bool PartStore::build_rigid_segment_subparts(
 }
 
 std::string PartStore::disk_path(uint64_t part_hash) const {
-    // cache_path_resolved returns the RELATIVE "parts/<hash>.part"; prefix cache_root_.
+    // cache_path_resolved returns the RELATIVE "parts/<hash>.bundle"; prefix cache_root_.
     return cache_root_ + "/" + part_asset::cache_path_resolved(part_hash);
 }
 
@@ -440,6 +440,101 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
         bool segmented = std::any_of(clusters_in.begin(), clusters_in.end(),
                                      [](const part_asset::FlatCluster& c){ return c.segment == 1; });
 
+        // ------------------------------------------------------------------
+        // M2.5 — resolve the terminal impostor rung against its atlas sidecar.
+        //
+        // The ladder in the artifact already ends in a two-triangle billboard
+        // for every cluster the bake found eligible. The PIXELS live beside it
+        // in a `.fimp`. This block decides, per cluster, whether that rung can
+        // actually draw: it recomputes the depicts-hash from the mesh rung the
+        // billboard replaces and matches it against the sidecar's.
+        //
+        // EVERY REJECTION IS LOGGED ONCE, NAMING THE PART AND THE REASON. That
+        // sentence is the whole point of this block. On the abandoned branch an
+        // entire rendering tier was absent for a full generation of artifacts
+        // and produced no diagnostic anywhere, because the equivalent code was
+        // a bare `return` inside a `catch (...)`. A rung with no atlas behind
+        // it is dropped here so the finest surviving mesh rung holds at any
+        // distance -- degraded, never wrong, and never silent.
+        //
+        // `impostor_rung[i]` is the index into clusters_in[i].lods of the
+        // billboard rung, or SIZE_MAX for "this cluster draws mesh all the way
+        // down". Populated only for UNSEGMENTED flats: the segmented
+        // (LOD-instanced-children) bake path does not emit impostors, so a
+        // segmented artifact never carries one and the stable_partition below
+        // can never disturb the cluster indices the sidecar names.
+        std::vector<size_t> impostor_rung(clusters_in.size(), SIZE_MAX);
+        std::vector<const impostor::ClusterImpostor*> impostor_data(
+            clusters_in.size(), nullptr);
+        impostor::PartImpostor loaded_impostors;
+        if (!segmented) {
+            const auto& probe_entries = scratch.get_entries();
+            uint64_t depicts = impostor::depicts_hash_begin();
+            bool any_rung = false;
+            for (size_t ci = 0; ci < clusters_in.size(); ++ci) {
+                const auto& lods = clusters_in[ci].lods;
+                if (lods.size() < 2) continue;
+                const auto& last = lods.back().blas_indices;
+                if (last.size() != 1 || last[0] >= probe_entries.size()) continue;
+                const BLASManager::BLASEntry* e = probe_entries[last[0]].get();
+                if (!e || e->triangles.size() != 2 || e->tri_extra.size() != 2 ||
+                    !(e->tri_extra[0].uv0.x >= impostor::kQuadMarker))
+                    continue;
+                // The rung the billboard takes over from is what it depicts.
+                const auto& src = lods[lods.size() - 2].blas_indices;
+                if (src.size() != 1 || src[0] >= probe_entries.size()) continue;
+                impostor_rung[ci] = lods.size() - 1;
+                impostor::depicts_hash_add_cluster(
+                    depicts, static_cast<uint32_t>(ci),
+                    probe_entries[src[0]]->triangles);
+                any_rung = true;
+            }
+            if (any_rung) {
+                const std::string imp_path =
+                    artifact_root + "/" + impostor::cache_path_impostor(part_hash);
+                impostor::LoadFailure fail = impostor::LoadFailure::None;
+                std::string reason;
+                if (impostor::load(imp_path, part_hash,
+                                   impostor::depicts_hash_finish(depicts),
+                                   loaded_impostors, &fail, &reason)) {
+                    for (const auto& c : loaded_impostors.clusters) {
+                        if (c.cluster_index < impostor_data.size() &&
+                            impostor_rung[c.cluster_index] != SIZE_MAX)
+                            impostor_data[c.cluster_index] = &c;
+                    }
+                }
+                // Anything the sidecar did not answer for -- a hard rejection,
+                // or a cluster the file simply does not mention -- loses its
+                // rung, and says so exactly once per part.
+                size_t unbacked = 0;
+                for (size_t ci = 0; ci < clusters_in.size(); ++ci)
+                    if (impostor_rung[ci] != SIZE_MAX && !impostor_data[ci])
+                        ++unbacked;
+                if (unbacked > 0 && impostor_load_logged_.insert(part_hash).second) {
+                    printf("PartStore: impostor atlas unusable for part %016llx "
+                           "(%s): %s -- %zu impostor rung(s) dropped, coarsest "
+                           "mesh rung holds\n",
+                           (unsigned long long)part_hash,
+                           impostor::cache_path_impostor(part_hash).c_str(),
+                           fail == impostor::LoadFailure::None
+                               ? "sidecar omits this cluster"
+                               : (reason.empty()
+                                      ? impostor::load_failure_text(fail)
+                                      : reason.c_str()),
+                           unbacked);
+                    fflush(stdout);
+                }
+                // PRUNE, so nothing downstream has to know this happened: an
+                // unbacked billboard rung leaves the ladder entirely and the
+                // artifact reads exactly as a mesh-only ladder would.
+                for (size_t ci = 0; ci < clusters_in.size(); ++ci) {
+                    if (impostor_rung[ci] == SIZE_MAX || impostor_data[ci]) continue;
+                    clusters_in[ci].lods.pop_back();
+                    impostor_rung[ci] = SIZE_MAX;
+                }
+            }
+        }
+
         // Partition fine clusters before coarse (stable: preserves within-segment order).
         // This must happen BEFORE the registration loops so lp.clusters[0..fine_count-1]
         // are contiguous fine-segment entries.
@@ -490,11 +585,17 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             std::vector<Tri> tris;
             std::vector<TriEx> triex;
             float thr = 0.0f;
-            for (const auto& cl : clusters_in) {
+            // M2.5: a billboard rung carries no surface to chart -- its texel
+            // detail IS the atlas -- so charting it would build a VT page for
+            // two triangles nothing samples.
+            bool legacy_impostor = false;
+            for (size_t ci = 0; ci < clusters_in.size(); ++ci) {
+                const auto& cl = clusters_in[ci];
                 // When segmented, the legacy view uses only coarse clusters.
                 if (segmented && cl.segment != 1) continue;
                 // Use level min(li, cluster_levels-1) for clusters with fewer levels.
                 size_t use_li = (li < cl.lods.size()) ? li : cl.lods.size() - 1;
+                if (use_li == impostor_rung[ci]) legacy_impostor = true;
                 thr = std::fmax(thr, cl.lods[use_li].screen_size_threshold);
                 for (uint32_t bi : cl.lods[use_li].blas_indices) {
                     if (bi >= entries.size()) continue;
@@ -512,7 +613,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             std::vector<TriEx> charted;
             chart_atlas::ChartAtlasRung rung_table;
             bool charted_ok = false;
-            if (ex) {
+            if (ex && !legacy_impostor) {
                 charted.assign(triex.begin(), triex.end());
                 charted_ok = lod_bake::build_chart_rung(
                     tris, charted, 16.0f, chart_atlas::kChartNormalConeDeg,
@@ -557,8 +658,10 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
         // skip means we can't simply count input clusters with segment==0.
         uint32_t fine_pushed = 0;
         lp.clusters.reserve(clusters_in.size());
-        for (const auto& cl_in : clusters_in) {
+        for (size_t ci = 0; ci < clusters_in.size(); ++ci) {
+            const auto& cl_in = clusters_in[ci];
             LoadedCluster cl_out;
+            int impostor_mesh_index = -1;
             // AABB / radius from the FlatCluster's stored AABB.
             std::memcpy(cl_out.aabb_min, cl_in.aabb_min, sizeof cl_out.aabb_min);
             std::memcpy(cl_out.aabb_max, cl_in.aabb_max, sizeof cl_out.aabb_max);
@@ -578,6 +681,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                     ctriex.insert(ctriex.end(), entries[bi]->tri_extra.begin(), entries[bi]->tri_extra.end());
                 }
                 if (ctris.empty()) continue;
+                const bool is_impostor = (li == impostor_rung[ci]);
                 const TriEx* cex = (ctriex.size() == ctris.size()) ? ctriex.data() : nullptr;
                 // WP-A follow-up: chart the cluster rung (same contract as the
                 // legacy-view loop above). These are the meshes the raster
@@ -585,7 +689,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 std::vector<TriEx> ccharted;
                 chart_atlas::ChartAtlasRung crung_table;
                 bool ccharted_ok = false;
-                if (cex) {
+                if (cex && !is_impostor) {
                     ccharted.assign(ctriex.begin(), ctriex.end());
                     ccharted_ok = lod_bake::build_chart_rung(
                         ctris, ccharted, 16.0f, chart_atlas::kChartNormalConeDeg,
@@ -614,6 +718,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 cl_out.thresholds.push_back(lod_in.screen_size_threshold);
                 cl_out.lod_blas.push_back(ch);
                 cl_out.lod_mesh.push_back(mesh_idx);
+                if (is_impostor) impostor_mesh_index = mesh_idx;
             }
             if (cl_out.lod_blas.empty()) {
                 // Cluster yielded no geometry - skip rather than leaving an empty entry.
@@ -621,6 +726,15 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 continue;
             }
             if (segmented && cl_in.segment == 0) ++fine_pushed;
+            if (impostor_mesh_index >= 0 && impostor_data[ci]) {
+                LoadedPart::ResidentImpostor res_imp;
+                res_imp.cluster = static_cast<uint32_t>(lp.clusters.size());
+                res_imp.ordinal = static_cast<uint32_t>(
+                    impostor_data[ci] - loaded_impostors.clusters.data());
+                res_imp.mesh_index = impostor_mesh_index;
+                res_imp.data = *impostor_data[ci];
+                lp.impostors.push_back(std::move(res_imp));
+            }
             lp.clusters.push_back(std::move(cl_out));
         }
         if (lp.clusters.empty()) return rollback();
@@ -638,9 +752,10 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             }
         }
 
-        printf("PartStore: loaded v3 FLAT part %016llx (%zu LOD levels, %zu clusters, %zu refs)\n",
+        printf("PartStore: loaded v3 FLAT part %016llx (%zu LOD levels, %zu clusters, "
+               "%zu refs, %zu impostors)\n",
                (unsigned long long)part_hash, lp.lod_blas.size(), lp.clusters.size(),
-               lp.flat_refs.size());
+               lp.flat_refs.size(), lp.impostors.size());
         return true;
     }
 

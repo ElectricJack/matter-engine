@@ -7,6 +7,7 @@
 
 #include "matter/camera.h"
 #include "matter/animation_debug.h"
+#include "matter/render_debug.h"
 #include "matter/ecs.h"
 #include "matter/world_definition.h"
 #include "matter/streaming.h"
@@ -118,6 +119,9 @@ struct VulkanLightingOverrides {
 struct RenderOptions {
     RenderPath   path     = RenderPath::GpuDriven;
     ResolverKind resolver = ResolverKind::SectorLod;
+    // Geometry-stage diagnostic. Applied while the G-buffer is written, unlike
+    // VulkanLightingOverrides::composite_debug_view; None is inert.
+    GeometryDebugView geometry_debug_view = GeometryDebugView::None;
     bool  wireframe       = false;
     bool  hiz_occlusion   = false;    // default OFF (known false-positive issue)
     float pixel_budget    = 0.0f;     // 0 = default (1.0); clamped to [0.05, 4.0]
@@ -216,6 +220,11 @@ struct FrameStats {
     uint32_t hiz_culled        = 0;   // HiZ-occlusion-culled clusters
     uint32_t triangles         = 0;   // rasterized triangle count
     uint32_t draw_batches      = 0;   // indirect draw buckets with >=1 instance
+    // M2.5: terminal impostors holding an atlas slot right now. On the stats
+    // overlay because "are any drawing?" is the question the abandoned
+    // impostor tier could not answer -- it was absent for a whole generation
+    // of artifacts and reported nothing.
+    uint32_t resident_impostors = 0;
     // world/bake census (filled by request_bake / reload)
     uint32_t instances_total = 0;
     uint32_t parts_baked = 0;         // cache misses last bake

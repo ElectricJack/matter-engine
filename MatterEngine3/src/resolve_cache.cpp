@@ -8,7 +8,7 @@
 //     u32  magic              (kResolveCacheMagic)
 //     u32  format_version     (kResolveCacheVersion)
 //     u64  cache_key          (compute_key() result)
-//     u32  engine_bake_version (kEngineBakeVersion from tileset_gtex.h)
+//     u64  version_digest     (matter_version::digest(); M4 replaced the u32 ebv)
 //
 //   Payload:
 //     === WorldManifest.instances ===
@@ -84,7 +84,8 @@
 
 #include "resolve_cache.h"
 #include "part_asset.h"    // fnv1a64
-#include "tileset_gtex.h"  // kEngineBakeVersion
+#include "part_asset_v2.h" // replace_file_atomic (Windows-safe publish)
+#include "version_vector.h"  // M4: the single version-vector fold
 
 #include <algorithm>
 #include <cassert>
@@ -115,7 +116,7 @@ namespace resolve_cache {
 // ea579ba). Version 4 adds each node's selected shared_source_paths. Older
 // versions are treated as misses because fmt_ver != kResolveCacheVersion.
 static constexpr uint32_t kResolveCacheMagic   = 0x00314352u;
-static constexpr uint32_t kResolveCacheVersion = 4u;
+static constexpr uint32_t kResolveCacheVersion = 5u;  // M4: u32 ebv -> u64 version digest
 
 // ---------------------------------------------------------------------------
 // Low-level binary read/write helpers (little-endian)
@@ -294,10 +295,10 @@ uint64_t compute_key(const std::string& world_path,
         }
     }
 
-    // 4. kEngineBakeVersion.
-    h = fold_u32(h, tileset::kEngineBakeVersion);
-
-    return h;
+    // 4. M4: the version vector, through the ONE fold site. This used to fold
+    //    kEngineBakeVersion alone -- one component of one artifact kind, which
+    //    is exactly how a version could reach this key and not the part hash.
+    return matter_version::fold(h);
 }
 
 static std::string resolve_cache_path(const std::string& cache_root,
@@ -322,8 +323,13 @@ bool save(const std::string& cache_root,
     if (!write_le(f, kResolveCacheMagic))    return false;
     if (!write_le(f, kResolveCacheVersion))  return false;
     if (!write_le(f, cache_key))             return false;
-    uint32_t ebv = tileset::kEngineBakeVersion;
-    if (!write_le(f, ebv))                   return false;
+    // M4: the whole version-vector digest, replacing the lone u32
+    // kEngineBakeVersion field. cache_key already folds the vector, so this is
+    // a self-describing record for a human reading a stale file -- but it is
+    // also checked, because a file whose digest disagrees with its key would
+    // mean the two folds had drifted apart.
+    uint64_t vdigest = matter_version::digest();
+    if (!write_le(f, vdigest))               return false;
 
     // === instances ===
     {
@@ -479,8 +485,14 @@ bool save(const std::string& cache_root,
         return false;
     }
 
-    // Atomic rename.
-    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+    // Atomic publish. NOT std::rename: on Windows rename FAILS when the target
+    // exists, so this cache could be written exactly once and never updated
+    // again -- every save after the first returned "save failed (non-fatal)"
+    // and the world re-resolved from scratch forever. Nothing noticed because
+    // the first write of a fresh cache always succeeds; M4's version bump is
+    // the first thing that routinely rewrites an existing entry.
+    // replace_file_atomic is the same helper every .part write already uses.
+    if (!part_asset::replace_file_atomic(tmp, path)) {
         std::remove(tmp.c_str());
         return false;
     }
@@ -496,16 +508,16 @@ bool load(const std::string& cache_root,
     if (!f) return false;
 
     // Header validation.
-    uint32_t magic = 0, fmt_ver = 0, ebv = 0;
-    uint64_t stored_key = 0;
+    uint32_t magic = 0, fmt_ver = 0;
+    uint64_t stored_key = 0, stored_digest = 0;
     if (!read_le(f, magic))      return false;
     if (magic != kResolveCacheMagic) return false;
     if (!read_le(f, fmt_ver))    return false;
     if (fmt_ver != kResolveCacheVersion) return false;
     if (!read_le(f, stored_key)) return false;
     if (stored_key != expected_key) return false;
-    if (!read_le(f, ebv))        return false;
-    if (ebv != tileset::kEngineBakeVersion) return false;
+    if (!read_le(f, stored_digest)) return false;
+    if (stored_digest != matter_version::digest()) return false;
 
     // === instances ===
     {

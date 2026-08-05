@@ -36,17 +36,14 @@ static inline uint64_t splitmix64(uint64_t x) {
 }
 
 uint64_t gtex_content_hash(uint64_t pose_hash,
-                           uint64_t script_source_hash,
-                           uint32_t engine_bake_version,
-                           uint32_t box3d_version)
+                           uint64_t script_source_hash)
 {
     uint64_t h = 0xC0FFEE1234567890ull;
     h = splitmix64(h ^ pose_hash);
     h = splitmix64(h ^ script_source_hash);
-    h = splitmix64(h ^ (uint64_t)engine_bake_version);
-    h = splitmix64(h ^ (uint64_t)box3d_version);
-    if (h == 0) h = 1; // 0 is our "unhashed" sentinel; nudge to avoid collision
-    return h;
+    // M4: the whole version vector, through the one fold site. `fold` never
+    // returns 0, so the "unhashed" sentinel stays unreachable.
+    return matter_version::fold(h);
 }
 
 uint64_t gtex_script_identity_hash(

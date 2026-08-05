@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "material_common.glsl"
+#include "impostor_common.glsl"
 
 #define TILESET_SET 1
 #define TILESET_TEX_BINDING 6
@@ -52,6 +53,29 @@ layout(location = 8) flat in uint in_vt_slot;
 // the shipped world-XZ addressing.
 layout(location = 9) in vec4 in_warp_uv_scales;
 layout(location = 10) in vec3 in_warp_tangent;
+// LOD debug view: the rung cull.comp selected for this draw. Location 11, not
+// the 9 the source branch used -- 9/10 are the warp field here.
+layout(location = 11) flat in uint in_selected_lod;
+// M2.5 impostor: the instance's object->world rotation basis (see raster.vert).
+// The atlas stores OBJECT-space normals so one atlas serves every placement.
+layout(location = 12) flat in vec3 in_model_basis_x;
+layout(location = 13) flat in vec3 in_model_basis_y;
+
+// M2.5 impostor atlas, scene set binding 15. Layer pairs: 2*slot is the SHADE
+// layer (rg = octahedral object-space normal, b = baked AO, a = fractional
+// coverage) and 2*slot+1 is the TINT layer (rgb = TriEx tint, a = its blend
+// strength). Deliberately NOT albedo: the impostor resolves colour through the
+// same MaterialGpu record as every other surface, so it is lit by the part's
+// material and a live material edit reaches it.
+layout(set = 1, binding = 15) uniform sampler2DArray impostorAtlas;
+
+// Must match raster.vert's block word for word (one range, both stages).
+layout(push_constant) uniform RasterDebugPushConstants {
+    uint direct_lod;
+    uint direct_lod_valid;
+    uint lod_tint_enabled;
+    uint wireframe_enabled;
+} debug_push;
 
 layout(location = 0) out vec4 out_albedo;
 layout(location = 1) out vec4 out_normal;
@@ -70,6 +94,31 @@ layout(location = 4) out uvec2 out_material_instance;
 // initialized to the rasterized depth up front and written unconditionally
 // at the end of main(), whether or not the tileset branch ran.
 layout(depth_less) out float gl_FragDepth;
+
+// The GLSL twin of matter::lod_debug_color (matter/render_debug.h). Kept
+// literally parallel -- same golden-ratio hue rotation, same saturation and
+// value -- so the editor's legend swatch for rung N is the colour drawn for
+// rung N rather than an approximation of it.
+float debug_abs(float value) { return value < 0.0 ? -value : value; }
+
+float debug_hue_component(float hue, float offset) {
+    float wrapped = hue * 6.0 + offset;
+    if (wrapped >= 6.0) wrapped -= 6.0;
+    return clamp(debug_abs(wrapped - 3.0) - 1.0, 0.0, 1.0);
+}
+
+vec3 lod_debug_color(uint lod) {
+    const float hue_step = 0.61803398875;
+    const float saturation = 0.85;
+    const float value = 1.0;
+    const float unwrapped_hue = float(lod % 16u) * hue_step;
+    const float hue = unwrapped_hue - float(uint(unwrapped_hue));
+    const float chroma = value * saturation;
+    const float minimum = value - chroma;
+    return minimum + chroma * vec3(debug_hue_component(hue, 0.0),
+                                   debug_hue_component(hue, 4.0),
+                                   debug_hue_component(hue, 2.0));
+}
 
 void main() {
     MaterialGpu material;
@@ -94,6 +143,55 @@ void main() {
     float encoded_emission = min(log2(1.0 + emission), 15.875);
     float ao = in_surface.w > 0.5 ? clamp(in_surface.z, 0.0, 1.0) : 1.0;
     vec3 shading_normal = normalize(in_normal);
+
+    // ---- M2.5: the terminal impostor rep ----------------------------------
+    //
+    // raster.vert has already oriented this quad at the camera and handed over
+    // the cell uv (surface.yz), the atlas slot and the chosen view (tint.xy).
+    // All that is left is the sample.
+    //
+    // Placed HERE, before the tileset/POM and VT branches, for two reasons: the
+    // cutout discard should retire the fragment before any of that work, and
+    // the branches below must not run at all -- an impostor has no ground
+    // parameterisation to march and no chart table to sample, so both would
+    // read garbage through a uv channel this rung repurposed.
+    const bool is_impostor = in_surface.x > kImpostorMarker;
+    if (is_impostor) {
+        const uint slot = uint(in_tint.x + 0.5) | (uint(in_tint.y + 0.5) << 8);
+        const uint view = uint(in_tint.z + 0.5);
+        const vec2 cell = vec2(float(view % IMPOSTOR_GRID_DIM),
+                               float(view / IMPOSTOR_GRID_DIM));
+        // Clamp inside the cell so a bilinear tap at the quad's edge cannot
+        // reach the neighbouring view even before the bake's guard band.
+        const vec2 local = clamp(in_surface.yz, 0.0, 1.0);
+        const vec2 uv = (cell + local) / float(IMPOSTOR_GRID_DIM);
+        const vec4 shade = texture(impostorAtlas, vec3(uv, float(slot * 2u)));
+        // Alpha cutout. gl_FragDepth is already written by this shader, so
+        // early depth WRITE was off regardless; discard costs the depth TEST
+        // nothing extra here.
+        //
+        // The WIREFRAME view is exempt, and that exemption is a diagnostic
+        // rather than a nicety: wireframe exists to answer "what geometry is
+        // being drawn", and a billboard whose every fragment discards is
+        // indistinguishable from a rung that was never selected. Keeping the
+        // quad's edges visible under wireframe separates "the tier did not
+        // draw" from "the tier drew nothing" -- two failures that look
+        // identical on screen and have nothing else in common.
+        if (shade.a < 0.5 && debug_push.wireframe_enabled == 0u) discard;
+        const vec4 baked_tint = texture(impostorAtlas, vec3(uv, float(slot * 2u + 1u)));
+        base_color = resolveBaseColor(material, baked_tint);
+        ao = clamp(shade.b, 0.0, 1.0);
+        // Octahedral decode, the exact inverse of impostor_bake.cpp's encode.
+        vec2 e = shade.rg * 2.0 - 1.0;
+        vec3 n = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
+        if (n.z < 0.0)
+            n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0,
+                                            n.y >= 0.0 ? 1.0 : -1.0);
+        n = normalize(n);
+        const vec3 bz = cross(in_model_basis_x, in_model_basis_y);
+        shading_normal = normalize(in_model_basis_x * n.x +
+                                   in_model_basis_y * n.y + bz * n.z);
+    }
 
     // Depth defaults to whatever standard rasterization produced; the
     // tileset/POM branch below (Task 10) may push it further away (smaller,
@@ -255,7 +353,7 @@ void main() {
     // carries detailSlot+1 (0 = no tileset). When present, the Wang-sampled
     // ground texture replaces the material's flat base color/normal/ORM.
     int tileset_slot = tileset_detail_slot(material.flags_misc);
-    if (tileset_slot >= 0) {
+    if (tileset_slot >= 0 && !is_impostor) {
         vec3 plane_n = geo_n;
         vec3 flat_orm;
         vec3 flat_shading_normal;
@@ -882,6 +980,26 @@ void main() {
     // returns this untouched and runs the display pass in passthrough, so the
     // swapchain byte IS round(value * 255).
     if (horizon_debug_value >= 0.0) base_color = vec3(horizon_debug_value);
+
+    // Applied AFTER every material, tileset/POM, VT and horizon-debug write to
+    // base_color, so the view-off path (lod_tint_enabled == 0) stays
+    // bit-identical to what shipped.
+    if (debug_push.lod_tint_enabled != 0u)
+        base_color = mix(base_color, lod_debug_color(in_selected_lod), 0.85);
+    // Wireframe. Only the triangle edges reach this shader at all (the host
+    // bound a VK_POLYGON_MODE_LINE pipeline), so every surviving fragment IS
+    // an edge and gets a flat colour: cyan on its own, or the rung's colour
+    // when the LOD view is also on -- density and rung read together, which
+    // is the diagnostic pair. Emission is forced to the encodable maximum so
+    // a one-pixel line stays visible regardless of the world's lighting;
+    // unlit edges over a dark sky are unreadable and would make a coarse
+    // rung look like an empty one.
+    if (debug_push.wireframe_enabled != 0u) {
+        base_color = debug_push.lod_tint_enabled != 0u
+                         ? lod_debug_color(in_selected_lod)
+                         : vec3(0.0, 1.0, 1.0);
+        encoded_emission = 15.875;
+    }
 
     out_albedo = vec4(base_color, opacity);
     // out_normal feeds the RT passes too (rt_lighting.rgen); keep it unit

@@ -299,8 +299,7 @@ bool bake_tileset_vk(matter::VulkanDevice& vulkan, const SettledTorus& settled,
     try {
         // 1. Cache-hit check (same key scheme as the GL bake; version unchanged).
         const uint64_t expected = gtex_content_hash(
-            settled.report.pose_hash, script_source_hash, kEngineBakeVersion,
-            kBox3dVersion);
+            settled.report.pose_hash, script_source_hash);
         if (!force_rebake && gtex_cache_hit(out_gtex_path, expected)) return true;
 
         // 2. Hardware ray tracing is required (fail-closed, like volumetrics).

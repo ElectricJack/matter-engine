@@ -132,6 +132,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/part_asset_v2.cpp src/part_graph.cpp src/part_graph_snapshot.cpp \
           src/live_edit.cpp src/live_edit_prod.cpp src/inotify_watcher.cpp \
           src/lod_bake.cpp src/world_flatten.cpp src/part_flatten.cpp \
+          src/impostor_bake.cpp \
           src/retopo_blacklist.cpp \
           src/modifier_apply.cpp \
           src/sector_grid.cpp src/lod_select.cpp \
@@ -146,8 +147,8 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/shader_source.cpp \
           src/render/raster_mesh.cpp src/render/indexed_part_geometry.cpp \
           src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp \
-          src/render/part_store.cpp src/render/world_composer.cpp src/render/world_state.cpp \
-          src/render/tileset_provider.cpp \
+          src/render/part_store.cpp src/render/world_state.cpp \
+          src/render/lod_trace.cpp \
           src/render/tileset_slicer.cpp src/render/bc_encode.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
           src/ecs/ecs_runtime.cpp src/ecs/simulation_control.cpp src/ecs/physics_context.cpp src/ecs/physics_shapes.cpp src/ecs/physics_systems.cpp src/ecs/streaming_systems.cpp src/ecs/transform_system.cpp \
@@ -201,49 +202,19 @@ MSL_C   = $(MSL_DIR)/src/surface.c \
 MSL_C_OBJ = $(addprefix $(OBJDIR)/,surface.o spatial_hash.o \
             mem_pool.o material_registry.o fat_primitive.o)
 
-ME3_OBJ = $(addprefix $(OBJDIR)/,script_host.o dsl_state.o dsl_bindings.o dsl_animation.o \
-          pf_math.o pf_sim.o pf_fields.o pf_path_recorder.o pf_bindings.o \
-          dsl_triangle.o triangle_emit.o polygon_triangulate.o \
-          csg_lowering.o module_resolver.o world_definition_loader.o script_rng_binding.o \
-          part_asset_v2.o part_graph.o part_graph_snapshot.o \
-          live_edit.o live_edit_prod.o inotify_watcher.o \
-          lod_bake.o world_flatten.o part_flatten.o \
-          warp_field.o \
-          retopo_blacklist.o \
-          modifier_apply.o \
-          sector_grid.o lod_select.o \
-          world_lights.o \
-          world_tracer.o \
-          part_cluster.o \
-          tileset_layout.o tileset_collider.o \
-          tileset_settle.o tileset_placement.o tileset_part_collider.o tileset_bake.o \
-          tileset_phase.o \
-          tileset_metrics.o \
-          tileset_gtex.o tileset_torus_bvh.o shader_source.o \
-          raster_mesh.o indexed_part_geometry.o matrix_math.o frame_matrices.o vk_temporal.o vk_gi_math.o vk_lighting_controls.o \
-          part_store.o world_composer.o world_state.o \
-          tileset_provider.o \
-          tileset_slicer.o bc_encode.o \
-          local_provider.o resolvers.o \
-          ecs_runtime.o simulation_control.o physics_context.o physics_shapes.o physics_systems.o streaming_systems.o transform_system.o \
-          scene_service.o scene_change_tracker.o \
-          matter_engine.o \
-          refine_controller.o \
-          async_bake.o \
-          bake_trace.o \
-          resolve_cache.o \
-          terrain_field.o \
-          terrain_mesher.o \
-          sector_streamer.o \
-          ozz_adapter.o \
-          ozz_bake.o \
-          animation_ir.o animation_validate.o animation_binding_bake.o animation_budget.o anim_asset.o anim_bundle.o animation_asset_store.o animation_runtime_asset.o animation_store.o animation_evaluator.o animation_systems.o animation_world_queries.o animation_controllers.o animation_targets.o \
-          animation_rigid_bridge.o animation_skin_bridge.o vk_animation_skinning.o vk_animation_bounds.o \
-          sector_streaming_coordinator.o \
-          dispatch_context.o subscription.o event_hub.o command.o \
-          property.o \
-          json_doc.o \
-          props.o props_file.o draw_overrides.o)
+# ME3_OBJ is DERIVED from ME3_CPP -- never hand-maintained.
+#
+# It used to be a second, parallel list of .o names, and keeping the two in sync
+# by hand failed twice in one migration: part_imposter_representation.o and then
+# impostor_bake.o were each in ME3_CPP but missing here, so the archive silently
+# shipped with the symbol unresolved. The editor still linked, because it
+# compiles those sources a second time itself -- which is exactly what makes the
+# omission invisible until something links against the archive alone.
+#
+# vpath (above) already resolves every source directory, and all ME3_CPP
+# basenames are unique, so the mapping is total and unambiguous. Adding a source
+# to ME3_CPP is now sufficient.
+ME3_OBJ = $(addprefix $(OBJDIR)/,$(notdir $(ME3_CPP:.cpp=.o)))
 
 # Vendored BC encoder objects. Explicit rules (below) rather than vpath: these
 # are third-party sources that must never be picked up by the generic %.cpp
@@ -268,18 +239,20 @@ LIB_FLAGS_STAMP = build/.lib_flags
 
 # Shader embedding codegen (Stage 1a).
 # Base shader list from the brief table + glsl includes found in .fs/.comp sources.
-# shaders_gpu/cull.comp, hiz_downsample.comp, raster_gpu_driven.vs used to be
-# embedded here for the GL GpuCuller/raster-composer path; that path (and its
-# only readers of these three sources) was deleted outright in Phase 5a
-# (tech-debt.md §6), so they are no longer listed. NOTE: this is unrelated to
-# build/shaders_vk/cull.comp.spv below (VK_SPV) -- that is a compiled Vulkan
-# SPIR-V binary built from the separate, live shaders_vk/cull.comp source and
-# must not be confused with the retired shaders_gpu/cull.comp GL source.
+# A shaders_gpu/ directory used to sit beside shaders/ holding cull.comp,
+# hiz_downsample.comp and raster_gpu_driven.vs for the GL GpuCuller /
+# raster-composer path. That path was deleted in Phase 5a (tech-debt.md §6),
+# which left the sources unread; the directory and its MatterEditor junction
+# were retired outright once the last of them went.
+# NOTE, still worth stating because the names collide: build/shaders_vk/cull.comp.spv
+# below (VK_SPV) is a compiled Vulkan SPIR-V binary built from the LIVE
+# shaders_vk/cull.comp source. That is the shipping culler and must not be
+# confused with the retired GL shaders_gpu/cull.comp it was named after.
 SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.glsl \
     shaders/raytrace_tlas_blas_processed.fs \
     shaders/materials.glsl shaders/bvh_tlas_common.glsl shaders/lighting.glsl
 # SHADER_FILES resolves logical paths into real filesystem paths under MatterEngine3/:
-# shaders/ is a symlink -> ../libs/MatterSurfaceLib/shaders; shaders_gpu/ is a real dir.
+# shaders/ is a symlink -> ../libs/MatterSurfaceLib/shaders.
 SHADER_FILES := $(SHADER_LOGICAL)
 
 .PHONY: all clean test vulkan-spirv check-animation-production-sources check-animation-runtime-boundary
@@ -484,6 +457,13 @@ $(BOX3D_LIB):
 	$(MAKE) -C $(BOX3D_DIR)
 
 $(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BC7ENC_OBJ) $(BOX3D_LIB)
+# `ar rcs` REPLACES the members it is given and leaves every other member in
+# place, so an object whose source was deleted (and whose name was dropped from
+# ME3_OBJ) keeps being served out of a stale archive forever -- linking dead
+# code that no longer exists in the tree, with no build error to notice. This
+# bit the far-field-impostor work twice (a deleted impostor_root_ledger.o, then
+# M0's world_composer.o / tileset_provider.o). Rebuild the archive from scratch.
+	rm -f $(LIB)
 	ar rcs $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BC7ENC_OBJ)
 
 # Delegate to the test suite (headless, GL-free host + raylib-linked BLAS path).

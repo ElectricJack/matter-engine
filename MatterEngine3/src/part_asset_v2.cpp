@@ -1,13 +1,16 @@
 #include "part_asset_v2.h"
 #include "matter/lod_contract.h"
+#include "version_vector.h"   // M4: the one fold site for cache keys
+#include "part_bundle.h"      // M4: the one file a part owns
 
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
 #include <cstdint>
 #include <cstddef>   // offsetof
-#include <cstdlib>   // strtoull
+#include <cstdlib>   // strtoull, strtod
 #include <fstream>
+#include <sstream>   // load_static_lod_plan's per-line tokenizer
 #include <filesystem>
 #include <vector>
 #include <unordered_map>
@@ -119,32 +122,87 @@ uint64_t compute_resolved_hash(const void* source_bytes, size_t source_len,
     std::vector<uint64_t> sorted(child_hashes, child_hashes + child_count);
     std::sort(sorted.begin(), sorted.end()); // order-independent over children
     for (uint64_t c : sorted) fold(&c, sizeof(c));
-    return h;
+    // M4: the version vector, folded here and nowhere else. This hash NAMES
+    // every artifact a part owns on disk, so folding the vector into it is
+    // what makes a version bump re-BAKE rather than merely re-resolve — the
+    // hole that let stale geometry be served under new rules
+    // (version_vector.h, docs/lod-vt-redesign-2026-08-04.md §9.3).
+    return matter_version::fold(h);
 }
 
+// M4: every one of these used to name a different file. They now all name the
+// part's single bundle -- the KIND is a section tag inside it, chosen by the
+// save/load function itself rather than by the caller's filename. Call sites
+// are unchanged on purpose: which artifact a caller wants was never expressed
+// by the extension, only by the function it called.
 std::string cache_path_resolved(uint64_t resolved_hash) {
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "%016llx",
-                  static_cast<unsigned long long>(resolved_hash));
-    return std::string("parts/") + buf + ".part";
+    return part_bundle::cache_path_bundle(resolved_hash);
 }
 
 std::string cache_path_flat(uint64_t resolved_hash) {
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "%016llx",
-                  static_cast<unsigned long long>(resolved_hash));
-    return std::string("parts/") + buf + ".flat.part";
+    return part_bundle::cache_path_bundle(resolved_hash);
 }
 
 std::string cache_path_lods(uint64_t resolved_hash) {
-    char hex[17];
-    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)resolved_hash);
-    return std::string("parts/") + hex + ".lods";
+    return part_bundle::cache_path_bundle(resolved_hash);
 }
 
-bool load_lod_sidecar(const std::string& path, LodVariants& out) {
-    std::ifstream in(path);
-    if (!in) return false;
+std::string cache_path_static_lods(uint64_t resolved_hash) {
+    return part_bundle::cache_path_bundle(resolved_hash);
+}
+
+std::string cache_path_hints(uint64_t resolved_hash) {
+    return part_bundle::cache_path_bundle(resolved_hash);
+}
+
+// ---------------------------------------------------------------------------
+// The three text sidecars, now bundle SECTIONS.
+//
+// M4 added a resolved_hash parameter to each. The hash was always implicit in
+// the path -- but a bundle section has to state which part it belongs to, and
+// scraping 16 hex digits back out of a filename is exactly the implicit
+// coupling this milestone is removing. Every caller already had the hash in
+// scope; passing it costs nothing and makes the identity checkable.
+//
+// The payload bytes are the same text these files always held, so the
+// grammars (and their round-trip tests) are unchanged.
+// ---------------------------------------------------------------------------
+
+namespace {
+bool read_text_section(const std::string& path, uint64_t resolved_hash,
+                       uint32_t tag, std::string& out) {
+    std::vector<uint8_t> bytes;
+    if (!part_bundle::read_section(path, resolved_hash, tag, bytes)) return false;
+    out.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    return true;
+}
+bool write_text_section(const std::string& path, uint64_t resolved_hash,
+                        uint32_t tag, const std::string& text) {
+    return part_bundle::write_section(path, resolved_hash, tag,
+                                      text.data(), text.size());
+}
+}  // namespace
+
+bool save_lod_sidecar(const std::string& path, uint64_t resolved_hash,
+                      const LodVariants& v) {
+    if (v.budgets.size() != v.hashes.size() || v.hashes.empty()) return false;
+    std::ostringstream out;
+    out << v.anchor_size << "\n";
+    for (size_t i = 0; i < v.budgets.size(); ++i) {
+        char hex[17];
+        snprintf(hex, sizeof hex, "%016llx", (unsigned long long)v.hashes[i]);
+        out << v.budgets[i] << " " << hex << "\n";
+    }
+    return write_text_section(path, resolved_hash,
+                              part_bundle::kSectionVariants, out.str());
+}
+
+bool load_lod_sidecar(const std::string& path, uint64_t resolved_hash,
+                      LodVariants& out) {
+    std::string text;
+    if (!read_text_section(path, resolved_hash, part_bundle::kSectionVariants, text))
+        return false;
+    std::istringstream in(text);
     LodVariants v;
     if (!(in >> v.anchor_size)) return false;
     double budget; std::string hex;
@@ -158,62 +216,84 @@ bool load_lod_sidecar(const std::string& path, LodVariants& out) {
     return true;
 }
 
-std::string cache_path_static_lods(uint64_t resolved_hash) {
-    char hex[17];
-    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)resolved_hash);
-    return std::string("parts/") + hex + ".static_lods";
-}
-
-bool save_static_lod_plan(const std::string& path, const StaticLodPlan& plan) {
-    if (plan.level_hashes.size() != plan.level_exclude_masks.size()) return false;
-    const std::string tmp = path + ".tmp";
-    {
-        std::ofstream out(tmp);
-        if (!out) return false;
-        for (size_t i = 0; i < plan.level_hashes.size(); ++i) {
-            char hhex[17], mhex[9];
-            snprintf(hhex, sizeof hhex, "%016llx", (unsigned long long)plan.level_hashes[i]);
-            snprintf(mhex, sizeof mhex, "%08x", plan.level_exclude_masks[i]);
-            out << hhex << " " << mhex << "\n";
-        }
-        if (!out.good()) return false;
+// Line format, one per authored level:
+//   <hash16> <mask8> <at> <gen>
+// `at` is the authored switch-in distance in metres, or -1 when the level
+// declared none. `gen` is "-" for no generator, else the generator name and
+// its canonical params joined by '|' (canonical JSON never contains a space,
+// so the record stays whitespace-delimited and `>>`-readable).
+//
+// A two-token line is the pre-M3 form and still loads, with at = -1 and no
+// generator -- which is exactly "this plan does not drive the ladder".
+bool save_static_lod_plan(const std::string& path, uint64_t resolved_hash,
+                          const StaticLodPlan& plan) {
+    const size_t n = plan.level_hashes.size();
+    if (plan.level_exclude_masks.size() != n) return false;
+    if (!plan.level_at.empty()  && plan.level_at.size()  != n) return false;
+    if (!plan.level_gen.empty() && plan.level_gen.size() != n) return false;
+    std::ostringstream out;
+    for (size_t i = 0; i < n; ++i) {
+        char hhex[17], mhex[9];
+        snprintf(hhex, sizeof hhex, "%016llx", (unsigned long long)plan.level_hashes[i]);
+        snprintf(mhex, sizeof mhex, "%08x", plan.level_exclude_masks[i]);
+        const double at = plan.level_at.empty() ? -1.0 : plan.level_at[i];
+        std::string gen = plan.level_gen.empty() ? std::string() : plan.level_gen[i];
+        for (char& c : gen) if (c == ' ') c = '|';
+        if (gen.empty()) gen = "-";
+        char atbuf[40];
+        snprintf(atbuf, sizeof atbuf, "%.17g", at);
+        out << hhex << " " << mhex << " " << atbuf << " " << gen << "\n";
     }
-    return replace_file_atomic(tmp, path);
+    return write_text_section(path, resolved_hash,
+                              part_bundle::kSectionPlan, out.str());
 }
 
-bool load_static_lod_plan(const std::string& path, StaticLodPlan& out) {
-    std::ifstream in(path);
-    if (!in) return false;
+bool load_static_lod_plan(const std::string& path, uint64_t resolved_hash,
+                          StaticLodPlan& out) {
+    std::string text;
+    if (!read_text_section(path, resolved_hash, part_bundle::kSectionPlan, text))
+        return false;
+    std::istringstream in(text);
     StaticLodPlan plan;
-    std::string hhex, mhex;
-    while (in >> hhex >> mhex) {
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        std::istringstream ls(line);
+        std::string hhex, mhex, atstr, gen;
+        if (!(ls >> hhex >> mhex)) return false;
         if (hhex.size() != 16 || mhex.size() != 8) return false;
         plan.level_hashes.push_back((uint64_t)strtoull(hhex.c_str(), nullptr, 16));
         plan.level_exclude_masks.push_back((uint32_t)strtoull(mhex.c_str(), nullptr, 16));
+        double at = -1.0;
+        if (ls >> atstr) at = strtod(atstr.c_str(), nullptr);
+        plan.level_at.push_back(at);
+        if (ls >> gen && gen != "-") {
+            for (char& c : gen) if (c == '|') c = ' ';
+            plan.level_gen.push_back(gen);
+        } else {
+            plan.level_gen.push_back(std::string());
+        }
     }
     if (plan.level_hashes.empty()) return false;
     out = std::move(plan);
     return true;
 }
 
-std::string cache_path_hints(uint64_t resolved_hash) {
-    char buf[64];
-    snprintf(buf, sizeof buf, "parts/%016llx.hints",
-             (unsigned long long)resolved_hash);
-    return buf;
-}
-
-bool save_flatten_hints(const std::string& path, const FlattenHints& hints) {
-    std::ofstream out(path);
-    if (!out) return false;
+bool save_flatten_hints(const std::string& path, uint64_t resolved_hash,
+                        const FlattenHints& hints) {
+    std::ostringstream out;
     for (const auto& [idx, px] : hints.child_px)
         out << idx << " " << px << "\n";
-    return (bool)out;
+    return write_text_section(path, resolved_hash,
+                              part_bundle::kSectionHints, out.str());
 }
 
-bool load_flatten_hints(const std::string& path, FlattenHints& out_hints) {
-    std::ifstream ifs(path);
-    if (!ifs) return false;
+bool load_flatten_hints(const std::string& path, uint64_t resolved_hash,
+                        FlattenHints& out_hints) {
+    std::string text;
+    if (!read_text_section(path, resolved_hash, part_bundle::kSectionHints, text))
+        return false;
+    std::istringstream ifs(text);
     uint32_t idx; float px;
     while (ifs >> idx >> px) out_hints.child_px[idx] = px;
     if (ifs.fail() && !ifs.eof()) { out_hints.child_px.clear(); return false; }
@@ -318,45 +398,56 @@ static bool append_common_body(std::vector<uint8_t>& body,
 }
 
 // Finalize and atomically write header + body to path.
+// M4: which SECTION of the bundle a body belongs to is decided by the format
+// version the body was serialized under -- the same discriminator the old
+// filename encoded, now stated once instead of by two path helpers that
+// happened to append different suffixes.
+static uint32_t bundle_tag_for_format(uint32_t format_version) {
+    return format_version == kFormatVersionFlat ? part_bundle::kSectionFlat
+                                                : part_bundle::kSectionRep0;
+}
+
+// Serialize the 40-byte artifact header + body and publish it as one bundle
+// section. THE SECTION PAYLOAD IS EXACTLY WHAT THE STANDALONE FILE HELD: the
+// header stays, so a section still validates its own magic, format version,
+// struct sizes and resolved hash without trusting the bundle around it.
 static bool write_file_atomic(const std::string& path,
                               uint32_t version,
                               uint64_t resolved_hash,
                               const std::vector<uint8_t>& body) {
     const uint64_t content_hash = fnv1a64(body.data(), body.size());
-    std::vector<uint8_t> head;
-    put<uint32_t>(head, kMagic);
-    put<uint32_t>(head, version);
-    put<uint64_t>(head, resolved_hash ^ static_cast<uint64_t>(version));
-    put<uint32_t>(head, static_cast<uint32_t>(sizeof(Tri)));
-    put<uint32_t>(head, static_cast<uint32_t>(sizeof(TriEx)));
-    put<uint32_t>(head, static_cast<uint32_t>(sizeof(BVHNode)));
-    put<uint32_t>(head, static_cast<uint32_t>(sizeof(ChildInstance)));
-    put<uint64_t>(head, content_hash);
+    std::vector<uint8_t> payload;
+    payload.reserve(40 + body.size());
+    put<uint32_t>(payload, kMagic);
+    put<uint32_t>(payload, version);
+    put<uint64_t>(payload, resolved_hash ^ static_cast<uint64_t>(version));
+    put<uint32_t>(payload, static_cast<uint32_t>(sizeof(Tri)));
+    put<uint32_t>(payload, static_cast<uint32_t>(sizeof(TriEx)));
+    put<uint32_t>(payload, static_cast<uint32_t>(sizeof(BVHNode)));
+    put<uint32_t>(payload, static_cast<uint32_t>(sizeof(ChildInstance)));
+    put<uint64_t>(payload, content_hash);
+    payload.insert(payload.end(), body.begin(), body.end());
 
-    ensure_parent_dir(path);
-    const std::string tmp = path + ".tmp";
-    FILE* f = std::fopen(tmp.c_str(), "wb");
-    if (!f) {
-        std::fprintf(stderr, "  save_v2: fopen('%s', 'wb') failed: errno=%d (%s); path is absolute from BakeOptions.parts_dir (or cwd-relative if empty)\n",
-                     tmp.c_str(), errno, std::strerror(errno));
-        return false;
-    }
-    const bool wrote = std::fwrite(head.data(), 1, head.size(), f) == head.size() &&
-                       std::fwrite(body.data(), 1, body.size(), f) == body.size();
-    const bool flushed = wrote && durable_flush(f);
-    const bool closed = std::fclose(f) == 0;
-    if (!wrote || !flushed || !closed) {
-        std::fprintf(stderr, "  save_v2: fwrite('%s') failed\n", tmp.c_str());
-        if (std::remove(tmp.c_str()) != 0 && errno != ENOENT) return false;
-        return false;
-    }
-    if (!replace_file_atomic(tmp, path)) {
-        std::fprintf(stderr, "  save_v2: atomic replace('%s' -> '%s') failed: errno=%d (%s)\n",
-                     tmp.c_str(), path.c_str(), errno, std::strerror(errno));
-        if (std::remove(tmp.c_str()) != 0 && errno != ENOENT) return false;
+    if (!part_bundle::write_section(path, resolved_hash,
+                                    bundle_tag_for_format(version),
+                                    payload.data(), payload.size())) {
+        std::fprintf(stderr,
+                     "  save_v2: bundle section write failed for '%s' "
+                     "(format %u, hash %016llx)\n",
+                     path.c_str(), version,
+                     (unsigned long long)resolved_hash);
         return false;
     }
     return true;
+}
+
+// Read one geometry section's payload (header + body) out of the bundle.
+static bool read_artifact_section(const std::string& path,
+                                  uint64_t resolved_hash,
+                                  uint32_t format_version,
+                                  std::vector<uint8_t>& out) {
+    return part_bundle::read_section(path, resolved_hash,
+                                     bundle_tag_for_format(format_version), out);
 }
 
 // Read and validate the common header; on success sets `r` to point at the body
@@ -391,43 +482,45 @@ bool is_cache_artifact_header_compatible(
     const std::string& path, uint64_t expected_resolved_hash,
     uint32_t expected_format_version, CacheArtifactProbeStats* stats) {
     if (stats) *stats = CacheArtifactProbeStats{};
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return false;
-    uint8_t header[40];
-    if (std::fread(header, 1, sizeof(header), f) != sizeof(header)) {
-        std::fclose(f);
-        return false;
-    }
-    Reader reader{header, header + sizeof(header)};
-    uint64_t content_hash_ignored = 0;
-    if (!read_and_validate_header(reader, expected_resolved_hash,
-                                  expected_format_version,
-                                  content_hash_ignored)) {
-        std::fclose(f);
-        return false;
-    }
+    // M4: the probe reads a bounded PREFIX of the bundle section, not the
+    // whole file. It runs once per part per bake (part_graph's `cached()`), so
+    // slurping a multi-megabyte bundle to answer a header question would be a
+    // real regression -- and the CacheArtifactProbeStats assertions in
+    // part_asset_v2_tests exist precisely to keep it bounded. Deliberately does
+    // NOT verify the section checksum: judging the body is the loader's job,
+    // and checking it here would mean reading all of it.
     const size_t material_prefix_size =
         2u * sizeof(uint32_t) +
         static_cast<size_t>(MaterialRegistryStaticCount()) * sizeof(MaterialDef);
-    std::vector<uint8_t> prefix(material_prefix_size);
-    const size_t got = std::fread(prefix.data(), 1, prefix.size(), f);
-    std::fclose(f);
+    const size_t want = 40 + material_prefix_size;
+    std::vector<uint8_t> prefix;
+    uint64_t section_length = 0;
+    if (!part_bundle::read_section_prefix(
+            path, expected_resolved_hash,
+            bundle_tag_for_format(expected_format_version), want, prefix,
+            section_length))
+        return false;
     if (stats) {
-        stats->max_read_chunk = std::max(sizeof(header), got);
-        stats->body_bytes = got;
-        stats->retained_material_bytes = got;
+        stats->max_read_chunk = prefix.size();
+        stats->body_bytes = prefix.size() > 40 ? prefix.size() - 40 : 0;
+        stats->retained_material_bytes = stats->body_bytes;
     }
-    if (got != material_prefix_size) return false;
-    Reader material_reader{prefix.data(), prefix.data() + prefix.size()};
-    const uint32_t material_schema = material_reader.get<uint32_t>();
-    const uint32_t material_count = material_reader.get<uint32_t>();
-    if (!material_reader.ok ||
+    if (prefix.size() < want) return false;
+    Reader reader{prefix.data(), prefix.data() + prefix.size()};
+    uint64_t content_hash_ignored = 0;
+    if (!read_and_validate_header(reader, expected_resolved_hash,
+                                  expected_format_version,
+                                  content_hash_ignored))
+        return false;
+    const uint32_t material_schema = reader.get<uint32_t>();
+    const uint32_t material_count = reader.get<uint32_t>();
+    if (!reader.ok ||
         material_schema != MaterialRegistrySchemaVersion() ||
         material_count != static_cast<uint32_t>(MaterialRegistryStaticCount()))
         return false;
     for (uint32_t i = 0; i < material_count; ++i) {
-        const uint8_t* serialized = material_reader.take(sizeof(MaterialDef));
-        if (!material_reader.ok ||
+        const uint8_t* serialized = reader.take(sizeof(MaterialDef));
+        if (!reader.ok ||
             std::memcmp(serialized, MaterialRegistryGet(static_cast<int>(i)),
                         sizeof(MaterialDef)) != 0)
             return false;
@@ -652,16 +745,10 @@ static bool preflight_v2_file(const std::string& path, uint64_t expected_resolve
         if (reason) *reason = message;
         return false;
     };
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return fail(PartAssetLoadFailure::Header, "invalid part header");
-    std::fseek(f, 0, SEEK_END);
-    const long size = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
-    if (size < 40) { std::fclose(f); return fail(PartAssetLoadFailure::Header, "invalid part header"); }
-    out.bytes.resize(static_cast<size_t>(size));
-    const bool read_ok = std::fread(out.bytes.data(), 1, out.bytes.size(), f) == out.bytes.size();
-    std::fclose(f);
-    if (!read_ok) return fail(PartAssetLoadFailure::Header, "invalid part header");
+    if (!read_artifact_section(path, expected_resolved_hash, kFormatVersionV2,
+                               out.bytes) ||
+        out.bytes.size() < 40)
+        return fail(PartAssetLoadFailure::Header, "invalid part header");
     Reader reader{out.bytes.data(), out.bytes.data() + out.bytes.size()};
     uint64_t content_hash = 0;
     if (!read_and_validate_header(reader, expected_resolved_hash, kFormatVersionV2, content_hash))
@@ -709,27 +796,10 @@ static bool parse_v2_suffix(const PartV2Preflight& input, uint64_t expected_reso
             }
         }
     }
-    // W5's LMSK trailer (per-level child presence) is written after EMIT by the
-    // static-lods save path. It is inert here -- the mask is read by the load_v2
-    // overload that asks for it -- but it MUST be skipped rather than treated as
-    // the start of an ANLK block, or every LMSK part fails to load through this
-    // parser as an "unknown part trailer".
-    if (r.p != r.end && static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
-        uint32_t tag = 0;
-        std::memcpy(&tag, r.p, sizeof(tag));
-        if (tag == 0x4C4D534Bu) { // LMSK
-            r.p += sizeof(tag);
-            const uint32_t count = r.get<uint32_t>();
-            if (!r.ok || count > static_cast<uint64_t>(r.end - r.p) / sizeof(uint32_t))
-                return fail("corrupt LMSK trailer");
-            r.take(static_cast<size_t>(count) * sizeof(uint32_t));
-            if (!r.ok) return fail("corrupt LMSK trailer");
-        }
-    }
     // WP-A's CHRT trailer (chart-space VT sidecar) is byte-size framed; inert
     // here -- the chart table is read by the load_v2 overload that asks for it
     // -- but it must be skipped so chart-bearing parts still load through the
-    // strict suffix grammar (same rationale as LMSK above).
+    // strict suffix grammar (same rationale as the EMIT block above).
     if (r.p != r.end && static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
         uint32_t tag = 0;
         std::memcpy(&tag, r.p, sizeof(tag));
@@ -854,37 +924,6 @@ bool save_v2(const std::string& path, const BLASManager& blas,
              const ChildInstance* children, size_t child_count,
              const LodLevels& lods,
              const std::vector<VolumeEmitter>& emitters,
-             const std::vector<uint32_t>& child_level_mask,
-             uint64_t resolved_hash) {
-    // Compat guard: a non-empty mask must be parallel to the children table.
-    if (!child_level_mask.empty() && child_level_mask.size() != child_count)
-        return false;
-    std::vector<uint8_t> body;
-    std::unordered_map<BLASHandle, uint32_t> h2i;
-    if (!append_common_body(body, blas, tlas, children, child_count, lods, h2i))
-        return false;
-    if (!emitters.empty()) {
-        put<uint32_t>(body, 0x454D4954u);  // "EMIT" tag
-        put<uint32_t>(body, static_cast<uint32_t>(emitters.size()));
-        put_bytes(body, emitters.data(), emitters.size() * sizeof(VolumeEmitter));
-    }
-    // W5: LMSK trailer — written ONLY when the caller supplies a mask, so a
-    // part without `static lods` (child_level_mask always empty from every
-    // pre-W5 call site) appends nothing here, same as the EMIT gate above.
-    if (!child_level_mask.empty()) {
-        put<uint32_t>(body, 0x4C4D534Bu);  // "LMSK" tag
-        put<uint32_t>(body, static_cast<uint32_t>(child_level_mask.size()));
-        put_bytes(body, child_level_mask.data(),
-                  child_level_mask.size() * sizeof(uint32_t));
-    }
-    return write_file_atomic(path, kFormatVersionV2, resolved_hash, body);
-}
-
-bool save_v2(const std::string& path, const BLASManager& blas,
-             const TLASManager& tlas,
-             const ChildInstance* children, size_t child_count,
-             const LodLevels& lods,
-             const std::vector<VolumeEmitter>& emitters,
              const std::vector<chart_atlas::ChartAtlasRung>& rung_charts,
              uint64_t resolved_hash) {
     std::vector<uint8_t> body;
@@ -897,7 +936,7 @@ bool save_v2(const std::string& path, const BLASManager& blas,
         put_bytes(body, emitters.data(), emitters.size() * sizeof(VolumeEmitter));
     }
     // WP-A: CHRT trailer — written ONLY when charts exist, so chartless parts
-    // stay byte-identical (same gate discipline as EMIT/LMSK above). Payload is
+    // stay byte-identical (same gate discipline as EMIT above). Payload is
     // byte-size framed so chart-unaware readers can skip it wholesale.
     if (!rung_charts.empty()) {
         std::vector<uint8_t> payload;
@@ -1004,94 +1043,6 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
              std::vector<ChildInstance>& children_out,
              LodLevels& lods_out,
              std::vector<VolumeEmitter>& emitters_out,
-             std::vector<uint32_t>& child_level_mask_out,
-             PartAssetLoadFailure* failure,
-             std::string* reason) {
-    emitters_out.clear();
-    children_out.clear();
-    lods_out.clear();
-    child_level_mask_out.clear();
-    if (failure) *failure = PartAssetLoadFailure::None;
-    if (reason) reason->clear();
-
-    const auto fail = [failure, reason](PartAssetLoadFailure value, const char* message) {
-        if (failure) *failure = value;
-        if (reason) *reason = message;
-        return false;
-    };
-
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return fail(PartAssetLoadFailure::Header, "invalid part header");
-    std::fseek(f, 0, SEEK_END);
-    long sz = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
-    if (sz < 40) { std::fclose(f); return fail(PartAssetLoadFailure::Header, "invalid part header"); }
-    std::vector<uint8_t> buf(static_cast<size_t>(sz));
-    bool read_ok = std::fread(buf.data(), 1, buf.size(), f) == buf.size();
-    std::fclose(f);
-    if (!read_ok) return fail(PartAssetLoadFailure::Header, "invalid part header");
-
-    Reader r{ buf.data(), buf.data() + buf.size() };
-    uint64_t content_hash = 0;
-    if (!read_and_validate_header(r, expected_resolved_hash, kFormatVersionV2, content_hash))
-        return fail(PartAssetLoadFailure::Header, "invalid part header");
-    if (fnv1a64(r.p, static_cast<size_t>(r.end - r.p)) != content_hash)
-        return fail(PartAssetLoadFailure::CorruptBody, "corrupt part body");
-
-    std::vector<BLASHandle> handles;
-    if (!read_common_body(r, blas, tlas, children_out, lods_out, handles, failure, reason)) {
-        if (failure && *failure == PartAssetLoadFailure::None)
-            *failure = PartAssetLoadFailure::CorruptBody;
-        if (reason && reason->empty()) *reason = "corrupt part body";
-        return false;
-    }
-
-    // Probe for the optional EMIT trailer (EOF-tolerant; same as the other
-    // emitters-reading overload above).
-    if (r.p < r.end && static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
-        uint32_t tag = 0;
-        std::memcpy(&tag, r.p, sizeof(uint32_t));
-        if (tag == 0x454D4954u) {
-            r.p += sizeof(uint32_t);
-            const uint32_t count = r.get<uint32_t>();
-            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt EMIT trailer");
-            const size_t bytes = static_cast<size_t>(count) * sizeof(VolumeEmitter);
-            const uint8_t* data = r.take(bytes);
-            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt EMIT trailer");
-            emitters_out.resize(count);
-            std::memcpy(emitters_out.data(), data, bytes);
-        }
-    }
-
-    // W5: probe for the optional LMSK trailer (EOF-tolerant, same pattern).
-    // Absent => child_level_mask_out stays empty (compat: all levels).
-    if (r.p < r.end && static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
-        uint32_t tag = 0;
-        std::memcpy(&tag, r.p, sizeof(uint32_t));
-        if (tag == 0x4C4D534Bu) {
-            r.p += sizeof(uint32_t);
-            const uint32_t count = r.get<uint32_t>();
-            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt LMSK trailer");
-            const size_t bytes = static_cast<size_t>(count) * sizeof(uint32_t);
-            const uint8_t* data = r.take(bytes);
-            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt LMSK trailer");
-            if (count != children_out.size())
-                return fail(PartAssetLoadFailure::CorruptBody,
-                            "LMSK trailer size does not match child table");
-            child_level_mask_out.resize(count);
-            std::memcpy(child_level_mask_out.data(), data, bytes);
-        }
-    }
-    return true;
-}
-
-// WP-A: emitters + chart-sidecar overload. Absent CHRT (older or chartless
-// parts) => rung_charts_out stays empty (charts = 0, legacy path).
-bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
-             BLASManager& blas, TLASManager& tlas,
-             std::vector<ChildInstance>& children_out,
-             LodLevels& lods_out,
-             std::vector<VolumeEmitter>& emitters_out,
              std::vector<chart_atlas::ChartAtlasRung>& rung_charts_out,
              PartAssetLoadFailure* failure,
              std::string* reason) {
@@ -1108,16 +1059,10 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
         return false;
     };
 
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return fail(PartAssetLoadFailure::Header, "invalid part header");
-    std::fseek(f, 0, SEEK_END);
-    long sz = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
-    if (sz < 40) { std::fclose(f); return fail(PartAssetLoadFailure::Header, "invalid part header"); }
-    std::vector<uint8_t> buf(static_cast<size_t>(sz));
-    bool read_ok = std::fread(buf.data(), 1, buf.size(), f) == buf.size();
-    std::fclose(f);
-    if (!read_ok) return fail(PartAssetLoadFailure::Header, "invalid part header");
+    std::vector<uint8_t> buf;
+    if (!read_artifact_section(path, expected_resolved_hash, kFormatVersionV2, buf) ||
+        buf.size() < 40)
+        return fail(PartAssetLoadFailure::Header, "invalid part header");
 
     Reader r{ buf.data(), buf.data() + buf.size() };
     uint64_t content_hash = 0;
@@ -1147,19 +1092,6 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
             if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt EMIT trailer");
             emitters_out.resize(count);
             std::memcpy(emitters_out.data(), data, bytes);
-        }
-    }
-
-    // Skip an optional LMSK trailer (this overload does not surface it).
-    if (r.p < r.end && static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
-        uint32_t tag = 0;
-        std::memcpy(&tag, r.p, sizeof(uint32_t));
-        if (tag == 0x4C4D534Bu) {
-            r.p += sizeof(uint32_t);
-            const uint32_t count = r.get<uint32_t>();
-            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt LMSK trailer");
-            r.take(static_cast<size_t>(count) * sizeof(uint32_t));
-            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt LMSK trailer");
         }
     }
 
@@ -1281,16 +1213,10 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
     clusters_out.clear();
     instance_refs_out.clear();
 
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return false;
-    std::fseek(f, 0, SEEK_END);
-    long sz = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
-    if (sz < 40) { std::fclose(f); return false; }
-    std::vector<uint8_t> buf(static_cast<size_t>(sz));
-    bool read_ok = std::fread(buf.data(), 1, buf.size(), f) == buf.size();
-    std::fclose(f);
-    if (!read_ok) return false;
+    std::vector<uint8_t> buf;
+    if (!read_artifact_section(path, expected_resolved_hash, kFormatVersionFlat, buf) ||
+        buf.size() < 40)
+        return false;
 
     Reader r{ buf.data(), buf.data() + buf.size() };
     uint64_t content_hash = 0;
@@ -1375,16 +1301,10 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
     instance_refs_out.clear();
     emitters_out.clear();
 
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return false;
-    std::fseek(f, 0, SEEK_END);
-    long sz = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
-    if (sz < 40) { std::fclose(f); return false; }
-    std::vector<uint8_t> buf(static_cast<size_t>(sz));
-    bool read_ok = std::fread(buf.data(), 1, buf.size(), f) == buf.size();
-    std::fclose(f);
-    if (!read_ok) return false;
+    std::vector<uint8_t> buf;
+    if (!read_artifact_section(path, expected_resolved_hash, kFormatVersionFlat, buf) ||
+        buf.size() < 40)
+        return false;
 
     Reader r{ buf.data(), buf.data() + buf.size() };
     uint64_t content_hash = 0;
@@ -1465,15 +1385,24 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
     return true;
 }
 
+// M4: every caller of this asks exactly one question -- "is there a FLATTENED
+// artifact here?" -- and used to get its answer from the version field of a
+// file that only existed if the answer was yes. A bundle holds the
+// compositional body too, so returning "the version of whatever is at this
+// path" would answer a DIFFERENT question and answer it wrongly: PartStore's
+// flat-preferred load would see kFormatVersionV2, take its legacy-v2-flat
+// branch, and load the compositional body AS a flat -- dropping the child
+// table. (viewer_logic_tests caught exactly that.)
+//
+// So this reports the flat format when a FLAT section exists and 0 otherwise.
+// The legacy-v2-flat branch in part_store is thereby unreachable: a v2-format
+// body in the flat position was only ever a pre-Task-11 `.flat.part` file, and
+// the bundle makes that unrepresentable -- the FLAT tag only ever carries
+// kFormatVersionFlat bodies.
 uint32_t peek_format_version(const std::string& path) {
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return 0;
-    uint32_t magic = 0, version = 0;
-    bool ok = std::fread(&magic,   sizeof(uint32_t), 1, f) == 1 &&
-              std::fread(&version, sizeof(uint32_t), 1, f) == 1;
-    std::fclose(f);
-    if (!ok || magic != kMagic) return 0;
-    return version;
+    for (uint32_t t : part_bundle::section_tags(path))
+        if (t == part_bundle::kSectionFlat) return kFormatVersionFlat;
+    return 0;
 }
 
 } // namespace part_asset

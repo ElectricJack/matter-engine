@@ -2,7 +2,7 @@
 #include "tileset_layout.h"
 #include "tileset_part_collider.h"
 #include "tileset_settle.h"
-#include "tileset_gtex.h"   // kEngineBakeVersion, kBox3dVersion
+#include "version_vector.h"  // M4: the single version-vector fold
 #include "part_asset.h"     // fnv1a64
 #include "bake_trace.h"        // Bake Lab task 1.5: per-layer settle spans
 #include "bake_trace_names.h"  // kSpanSettleLayer
@@ -600,8 +600,7 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
 //   uint32_t magic    = 0x544C5343  ('CSTL' = Cache SeTtLe)
 //   uint32_t version  = 1
 //   uint64_t key                 (lookup key written at save time)
-//   uint32_t engine_bake_version (from kEngineBakeVersion)
-//   uint32_t box3d_version       (from kBox3dVersion)
+//   uint64_t version_digest      (matter_version::digest(); M4)
 //
 // Body (all little-endian):
 //   TileConfig cfg               (5 floats + 1 uint64 + 2 floats = fixed layout)
@@ -617,7 +616,7 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
 // ---------------------------------------------------------------------------
 
 static constexpr uint32_t kSettleCacheMagic   = 0x434C5453u; // 'STLC' little-endian
-static constexpr uint32_t kSettleCacheVersion = 1u;
+static constexpr uint32_t kSettleCacheVersion = 2u;  // M4: two u32 versions -> one u64 digest
 
 // Helpers: write/read primitive types to/from a file stream in little-endian.
 namespace {
@@ -644,13 +643,15 @@ uint64_t settle_cache_key(uint64_t script_source_hash,
                           const std::string& canonical_root_params_json)
 {
     // FNV-1a over (script_source_hash u64 LE, sorted child hashes u64s LE,
-    //              canonical root params bytes + NUL,
-    //              kEngineBakeVersion u32 LE, kBox3dVersion u32 LE).
+    //              canonical root params bytes + NUL), then M4's version
+    //              vector through the ONE fold site. The two u32 version
+    //              fields this used to append are gone: they were per-kind
+    //              plumbing, and a component added later would not have
+    //              reached them.
     std::vector<uint8_t> buf;
     buf.resize(sizeof(uint64_t)
              + sorted_child_hashes.size() * sizeof(uint64_t)
-             + canonical_root_params_json.size() + 1
-             + sizeof(uint32_t) * 2);
+             + canonical_root_params_json.size() + 1);
     size_t off = 0;
     std::memcpy(buf.data() + off, &script_source_hash, sizeof(uint64_t));
     off += sizeof(uint64_t);
@@ -662,11 +663,7 @@ uint64_t settle_cache_key(uint64_t script_source_hash,
                 canonical_root_params_json.size());
     off += canonical_root_params_json.size();
     buf[off++] = 0;
-    uint32_t ebv = kEngineBakeVersion;
-    uint32_t bv  = kBox3dVersion;
-    std::memcpy(buf.data() + off, &ebv, sizeof(uint32_t)); off += sizeof(uint32_t);
-    std::memcpy(buf.data() + off, &bv,  sizeof(uint32_t));
-    return part_asset::fnv1a64(buf.data(), buf.size());
+    return matter_version::fold(part_asset::fnv1a64(buf.data(), buf.size()));
 }
 
 static std::string settle_cache_path(const std::string& cache_root, uint64_t key) {
@@ -689,9 +686,9 @@ bool settle_cache_save(const std::string& cache_root, uint64_t key, const Settle
     if (!write_le(f, kSettleCacheMagic))    return false;
     if (!write_le(f, kSettleCacheVersion))  return false;
     if (!write_le(f, key))                  return false;
-    uint32_t ebv = kEngineBakeVersion, bv = kBox3dVersion;
-    if (!write_le(f, ebv)) return false;
-    if (!write_le(f, bv))  return false;
+    // M4: one u64 version-vector digest replaces the two u32 component fields.
+    uint64_t vdigest = matter_version::digest();
+    if (!write_le(f, vdigest)) return false;
 
     // TileConfig: size, texels_per_meter, seed, edge_strip_width, corner_clear_radius.
     if (!write_le(f, s.cfg.size))                 return false;
@@ -787,18 +784,15 @@ bool settle_cache_load(const std::string& cache_root, uint64_t key, SettledTorus
 
     // Header validation.
     uint32_t magic = 0, version = 0;
-    uint64_t stored_key = 0;
-    uint32_t ebv = 0, bv = 0;
+    uint64_t stored_key = 0, stored_digest = 0;
     if (!read_le(f, magic))      return false;
     if (magic != kSettleCacheMagic) return false;
     if (!read_le(f, version))    return false;
     if (version != kSettleCacheVersion) return false;
     if (!read_le(f, stored_key)) return false;
     if (stored_key != key)       return false;  // key mismatch → treat as miss
-    if (!read_le(f, ebv))        return false;
-    if (ebv != kEngineBakeVersion) return false; // version bump → reject
-    if (!read_le(f, bv))         return false;
-    if (bv != kBox3dVersion)     return false;
+    if (!read_le(f, stored_digest)) return false;
+    if (stored_digest != matter_version::digest()) return false; // vector bump → reject
 
     // TileConfig.
     if (!read_le(f, out.cfg.size))                 return false;

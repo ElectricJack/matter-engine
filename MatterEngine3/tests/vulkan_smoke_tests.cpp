@@ -16,6 +16,7 @@
 
 #include "matter/vulkan_device.h"
 #include "render/gpu_matrix_pack.h"
+#include "render/lod_distance.h"
 #include "render/matrix_math.h"
 #include "render/raster_mesh.h"
 #include "render/streamline_bridge.h"
@@ -30,6 +31,9 @@
 #include "provider/sector_resolver.h"
 #include "tileset_gtex.h"
 #include "../../MatterEditor/src/ui.h"
+// LAST on purpose: impostor_bake.h reaches precomp.h, whose `using namespace
+// std;` makes `byte` ambiguous inside any <windows.h> pulled in after it.
+#include "impostor_bake.h"   // M2.5 kQuadMarker, the billboard sentinel
 
 namespace {
 
@@ -1136,12 +1140,59 @@ void run_rt_lod_payload_contract_tests() {
               !viewer::vk_scene_detail::dense_rt_lod_index(
                   offsets, 1, 2, record_index),
           "dense RT LOD offsets provide bounded O(1) cluster/LOD indexing");
-    const float thresholds[] = {1.0f, 0.0f};
+    // M1: select_cluster_lod_view reads normalized SWITCH DISTANCES, not
+    // thresholds. Authored through the conversion rather than as bare
+    // constants, so the unit is visible at the callsite -- the old {1.0f, 0.0f}
+    // would still compile here and would silently mean something else.
+    // Intent is unchanged: rung 0 reaches one radius-scaled unit, rung 1 is
+    // open, and a camera 10 units out lands on rung 1.
+    const float switch_distances[] = {
+        lod::normalized_switch_distance(1.0f),   // -> 1.0
+        lod::normalized_switch_distance(0.0f),   // -> INFINITY, always qualifies
+    };
     CHECK(viewer::vk_scene_detail::select_cluster_lod_view(
               part.clusters[1].aabb_min, part.clusters[1].aabb_max,
-              part.clusters[1].radius, thresholds, 2, identity_matrix(),
+              part.clusters[1].radius, switch_distances, 2, identity_matrix(),
               {0.0f, 0.0f, 10.0f}, 1.0f) == 1,
-          "non-owning RT LOD view matches raster threshold selection");
+          "non-owning RT LOD view matches raster distance selection");
+
+    // M2.5: the terminal billboard is not traceable geometry. It is oriented
+    // in the vertex stage, so its BLAS holds the quad UNROTATED -- a ray that
+    // hits it sees an axis-fixed rectangle where raster drew a camera-facing
+    // card. A cluster whose selected rung is that billboard therefore
+    // contributes NOTHING to the RT payload rather than contributing the wrong
+    // shape (and rather than being clamped down to the last mesh rung, which
+    // buries the card inside the traced mesh -- see build_ray_geometry).
+    {
+        viewer::VkScenePart billboard{};
+        billboard.part_hash = 0x494d504fu;
+        // Two rungs: a 2-triangle mesh, then the 2-triangle billboard. Only
+        // the second carries the marker, so only the second is peeled.
+        billboard.clusters = {
+            {{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}, 1.0f,
+             {{0, 6, 1.0f}, {6, 6, 0.0f}}},
+        };
+        billboard.indices = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+        billboard.vertices.resize(12);
+        // surface.x carries impostor::kQuadMarker on the billboard's vertices;
+        // build_vulkan_part forwards it from TriEx::uv0.x, and raster.vert /
+        // gbuffer.frag branch on the same sentinel.
+        for (size_t i = 6; i < billboard.vertices.size(); ++i)
+            billboard.vertices[i].surface.x = impostor::kQuadMarker;
+        CHECK(viewer::vk_scene_detail::cluster_mesh_lod_count(billboard, 0) == 1,
+              "the trailing billboard rung is not counted as a mesh rung");
+        // A near camera selects rung 0 (the mesh): still traced.
+        const auto near_selection =
+            viewer::vk_scene_detail::select_rt_instance_geometry(
+                billboard, identity_matrix(), {0.0f, 0.0f, 1.0f}, 1.0f);
+        // A far camera selects rung 1 (the billboard): traced by nothing.
+        const auto far_selection =
+            viewer::vk_scene_detail::select_rt_instance_geometry(
+                billboard, identity_matrix(), {0.0f, 0.0f, 10000.0f}, 1.0f);
+        CHECK(near_selection.size() == 1 && near_selection[0].lod_index == 0 &&
+                  near_selection[0].index_count == 6 && far_selection.empty(),
+              "RT traces the mesh rung and drops the cluster at its billboard");
+    }
 }
 
 void run_raster_path(matter::VulkanDevice& vulkan) {
@@ -1589,6 +1640,228 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
                 background.albedo.x, background.albedo.y,
                 background.albedo.z, background.depth, background.hdr.x,
                 background.hdr.y, background.hdr.z);
+    // --- LOD debug tint (viewer.debug "LOD levels") -------------------------
+    //
+    // Two rungs of the SAME near, covered geometry, so nothing about the pixel
+    // can move except which rung cull.comp selected for it. A transform-tail
+    // regression, or a varying-location collision, reads out here as the wrong
+    // hue rather than as a subtle shading difference nobody notices.
+    {
+        viewer::VkScenePart two_rung = known_raster_triangle(907);
+        // 1000 normalizes to a 0.001 switch distance, which this triangle at
+        // 2 m fails; rung 1 is open (threshold 0) and therefore wins.
+        two_rung.clusters[0].lods[0].threshold = 1000.0f;
+        two_rung.clusters[0].lods.push_back({0, 3, 0.0f});
+        CHECK(renderer.ensure_part(two_rung, error) >= 0,
+              error.empty() ? "ensure two-rung LOD tint part" : error.c_str());
+        CHECK(renderer.update_instances({{907, identity, 907}}, error) &&
+                  renderer.dispatch_culling(frame, camera.position, 1.0f,
+                                            error) &&
+                  renderer.render_gbuffer_and_composite(width, height, error),
+              error.empty() ? "render two-rung part with the view off"
+                            : error.c_str());
+        viewer::VkRasterPixel untinted{};
+        CHECK(renderer.readback_raster_pixel(width / 2, height / 2, untinted,
+                                             error) &&
+                  untinted.albedo.w > 0.99f,
+              error.empty() ? "read two-rung center with the view off"
+                            : error.c_str());
+
+        renderer.set_geometry_debug_view(matter::GeometryDebugView::LodTint);
+        viewer::VkRasterPixel tinted{};
+        CHECK(renderer.render_gbuffer_and_composite(width, height, error) &&
+                  renderer.readback_raster_pixel(width / 2, height / 2, tinted,
+                                                 error),
+              error.empty() ? "render and read the LOD-tinted center"
+                            : error.c_str());
+        const matter::DebugRgb rung0 = matter::lod_debug_color(0);
+        const matter::DebugRgb rung1 = matter::lod_debug_color(1);
+        CHECK(std::fabs(tinted.albedo.x -
+                        (0.85f * rung1.r + 0.15f * untinted.albedo.x)) < 0.02f &&
+                  std::fabs(tinted.albedo.y -
+                            (0.85f * rung1.g + 0.15f * untinted.albedo.y)) <
+                      0.02f &&
+                  std::fabs(tinted.albedo.z -
+                            (0.85f * rung1.b + 0.15f * untinted.albedo.z)) <
+                      0.02f,
+              "LOD tint paints the exact rung cull.comp selected, not rung 0");
+        CHECK(std::fabs(rung0.r - rung1.r) + std::fabs(rung0.g - rung1.g) +
+                      std::fabs(rung0.b - rung1.b) >
+                  0.2f,
+              "adjacent rungs are far enough apart to read as different rungs");
+        CHECK(tinted.material_index == untinted.material_index &&
+                  tinted.instance_token == untinted.instance_token &&
+                  std::fabs(tinted.depth - untinted.depth) < 1e-4f,
+              "the tint rewrites albedo only, leaving identity and depth alone");
+
+        renderer.set_geometry_debug_view(matter::GeometryDebugView::None);
+        viewer::VkRasterPixel restored{};
+        CHECK(renderer.render_gbuffer_and_composite(width, height, error) &&
+                  renderer.readback_raster_pixel(width / 2, height / 2, restored,
+                                                 error),
+              error.empty() ? "render and read the center with the view off "
+                              "again"
+                            : error.c_str());
+        CHECK(close4(restored.albedo, untinted.albedo, 1e-6f),
+              "switching the view off restores the pixel exactly");
+
+        CHECK(renderer.update_instances({{900, identity}, {906, identity}},
+                                        error) &&
+                  renderer.dispatch_culling(frame, camera.position, 1.0f,
+                                            error),
+              error.empty() ? "restore the pre-tint raster scene"
+                            : error.c_str());
+        renderer.release_part(907);
+        renderer.consume_gi_history_reset();
+    }
+
+    // --- Wireframe debug view (viewer.debug "Wireframe") --------------------
+    //
+    // The claim "this is wireframe" is only worth making if the INTERIOR is
+    // gone. One filled triangle, one scanline through its middle: with
+    // VK_POLYGON_MODE_FILL that row is a solid covered run; with
+    // VK_POLYGON_MODE_LINE only the two slanted edges survive. Counting
+    // covered samples on that row is a number that cannot hold for a filled
+    // frame, which is exactly what a screenshot alone cannot establish.
+    {
+        viewer::VkScenePart wire_part = known_raster_triangle(908);
+        CHECK(renderer.ensure_part(wire_part, error) >= 0,
+              error.empty() ? "ensure wireframe fixture part" : error.c_str());
+        CHECK(renderer.update_instances({{908, identity, 908}}, error) &&
+                  renderer.dispatch_culling(frame, camera.position, 1.0f,
+                                            error) &&
+                  renderer.render_gbuffer_and_composite(width, height, error),
+              error.empty() ? "render the wireframe fixture filled"
+                            : error.c_str());
+
+        // The triangle spans y in [-0.75, 1.5] at z = -2; this row sits inside
+        // it, below the apex and above the base, so a fill covers a long run.
+        const uint32_t scan_row = height / 2;
+        auto scan_covered = [&](uint32_t& covered) {
+            covered = 0;
+            for (uint32_t x = 0; x < width; ++x) {
+                viewer::VkRasterPixel pixel{};
+                if (!renderer.readback_raster_pixel(x, scan_row, pixel, error))
+                    return false;
+                if (pixel.albedo.w > 0.5f) ++covered;
+            }
+            return true;
+        };
+        uint32_t filled_covered = 0;
+        CHECK(scan_covered(filled_covered),
+              error.empty() ? "scan the filled scanline" : error.c_str());
+        viewer::VkRasterPixel filled_center{};
+        CHECK(renderer.readback_raster_pixel(width / 2, scan_row, filled_center,
+                                             error) &&
+                  filled_center.albedo.w > 0.99f,
+              error.empty() ? "the filled interior is covered" : error.c_str());
+
+        renderer.set_wireframe(true);
+        // Report, never lie. A device without fillModeNonSolid has no line
+        // pipelines, and the renderer must say so rather than record a filled
+        // frame with the wireframe push-constant word raised.
+        CHECK(renderer.wireframe_available() ==
+                  vulkan.wireframe_available(),
+              "renderer wireframe availability tracks the device capability");
+        if (!renderer.wireframe_available()) {
+            std::printf(
+                "  wireframe view UNAVAILABLE on this device (%s); the view "
+                "must stay inert rather than render solid\n",
+                vulkan.wireframe_unavailable_reason().c_str());
+            CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+                  error.empty() ? "render with wireframe requested but "
+                                  "unsupported"
+                                : error.c_str());
+            CHECK(!renderer.test_last_raster_pipeline_draw().wireframe_enabled &&
+                      !renderer.test_last_raster_pipeline_draw()
+                           .static_mesh_wireframe,
+                  "an unsupported wireframe request degrades to fill WITHOUT "
+                  "claiming wireframe in the push constant");
+        } else {
+            CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+                  error.empty() ? "render the wireframe fixture as lines"
+                                : error.c_str());
+            const auto bound = renderer.test_last_raster_pipeline_draw();
+            CHECK(bound.wireframe_enabled && bound.static_mesh_wireframe &&
+                      bound.skinned_mesh_wireframe,
+                  "the whole raster pass binds line pipelines together with "
+                  "the shader flag that matches them");
+            uint32_t line_covered = 0;
+            CHECK(scan_covered(line_covered),
+                  error.empty() ? "scan the wireframe scanline" : error.c_str());
+            std::printf(
+                "  wireframe scanline coverage: fill %u px, line %u px of %u\n",
+                filled_covered, line_covered, width);
+            // Measured: 40 covered samples filled, 2 in line mode.
+            CHECK(filled_covered > 30u,
+                  "the filled triangle covers a long run on the scan row");
+            // Two 1-px edges, plus a little slack for the rasterizer's
+            // diamond-exit rule on a steeply sloped edge. The upper bound is
+            // the assertion that matters: a filled frame cannot produce it.
+            CHECK(line_covered >= 2u && line_covered <= 8u,
+                  "line mode leaves only the two slanted edges on that row");
+            CHECK(line_covered * 8u < filled_covered,
+                  "wireframe coverage is an order of magnitude below fill");
+
+            viewer::VkRasterPixel wire_center{};
+            CHECK(renderer.readback_raster_pixel(width / 2, scan_row,
+                                                 wire_center, error),
+                  error.empty() ? "read the wireframe interior" : error.c_str());
+            CHECK(wire_center.albedo.w < 0.5f,
+                  "the triangle INTERIOR is empty in line mode -- the single "
+                  "fact a solid render can never satisfy");
+
+            // Composition with the LOD tint: edges take the rung colour rather
+            // than the standalone cyan, so density and rung read together.
+            uint32_t edge_x = width;
+            for (uint32_t x = 0; x < width && edge_x == width; ++x) {
+                viewer::VkRasterPixel pixel{};
+                if (!renderer.readback_raster_pixel(x, scan_row, pixel, error))
+                    break;
+                if (pixel.albedo.w > 0.5f) edge_x = x;
+            }
+            CHECK(edge_x < width, "found a lit wireframe edge on the scan row");
+            viewer::VkRasterPixel cyan_edge{};
+            CHECK(renderer.readback_raster_pixel(edge_x, scan_row, cyan_edge,
+                                                 error) &&
+                      cyan_edge.albedo.x < 0.05f && cyan_edge.albedo.y > 0.95f &&
+                      cyan_edge.albedo.z > 0.95f,
+                  "an edge with the tint off is flat cyan");
+            renderer.set_geometry_debug_view(matter::GeometryDebugView::LodTint);
+            viewer::VkRasterPixel tinted_edge{};
+            CHECK(renderer.render_gbuffer_and_composite(width, height, error) &&
+                      renderer.readback_raster_pixel(edge_x, scan_row,
+                                                     tinted_edge, error),
+                  error.empty() ? "render wireframe with the LOD tint on"
+                                : error.c_str());
+            const matter::DebugRgb rung0 = matter::lod_debug_color(0);
+            CHECK(std::fabs(tinted_edge.albedo.x - rung0.r) < 0.02f &&
+                      std::fabs(tinted_edge.albedo.y - rung0.g) < 0.02f &&
+                      std::fabs(tinted_edge.albedo.z - rung0.b) < 0.02f,
+                  "wireframe + LOD tint paints the edge the rung's own colour, "
+                  "not cyan and not a blend");
+            renderer.set_geometry_debug_view(matter::GeometryDebugView::None);
+        }
+
+        renderer.set_wireframe(false);
+        viewer::VkRasterPixel restored_center{};
+        CHECK(renderer.render_gbuffer_and_composite(width, height, error) &&
+                  renderer.readback_raster_pixel(width / 2, scan_row,
+                                                 restored_center, error),
+              error.empty() ? "render the fixture filled again" : error.c_str());
+        CHECK(close4(restored_center.albedo, filled_center.albedo, 1e-6f),
+              "switching the wireframe view off restores the pixel exactly");
+
+        CHECK(renderer.update_instances({{900, identity}, {906, identity}},
+                                        error) &&
+                  renderer.dispatch_culling(frame, camera.position, 1.0f,
+                                            error),
+              error.empty() ? "restore the pre-wireframe raster scene"
+                            : error.c_str());
+        renderer.release_part(908);
+        renderer.consume_gi_history_reset();
+    }
+
     matter::VulkanRayTracingSettings disabled_rt{};
     disabled_rt.enabled = false;
     renderer.set_ray_tracing_settings(disabled_rt);

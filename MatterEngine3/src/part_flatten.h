@@ -3,7 +3,7 @@
 // Bake-time subtree flattening: merge a root part's whole child hierarchy
 // (transforms applied, TriEx carried) into ONE mesh, split it into spatial
 // clusters, build a per-cluster error-bounded LOD ladder, and save the result
-// as a v3 .flat.part artifact under cache_path_flat(root_hash). The viewer
+// as a v3 FLAT section of the part bundle at cache_path_flat(root_hash). The viewer
 // then renders the root as a single flat instance per cluster instead of
 // re-expanding hundreds of child instances every frame.
 //
@@ -26,6 +26,57 @@ struct FlattenTargets {
     // coarser far rungs (a terrain tile drops to tens of tris at distance).
     std::vector<float> radius_divisor = {512.0f, 256.0f, 128.0f, 64.0f,
                                          32.0f, 16.0f, 8.0f, 4.0f, 2.0f};
+
+    // BENEFIT FLOOR (M1.5, redesign doc §3.3). A coarser rung is admitted only
+    // when decimation removed at least this FRACTION of the previous surviving
+    // rung's triangles. Until 2026-08-04 the test was merely
+    // `geo.size() < prev_count` — one triangle qualified — which is why a rock's
+    // LOD tint cycled through colours while its silhouette stood still: the
+    // coarse tail ran 214 -> 206 -> 190 (4 %, then 8 %), three rungs and one
+    // shape. The ladder was driven by error tolerance and never once asked
+    // whether a rung bought anything.
+    //
+    // 0.30 was measured, not guessed. Sweeping every divisor over the 19 distinct
+    // parts of RockGallery + PomProofBrick (MATTER_FLATTEN_LADDER=2) and
+    // histogramming the 116 rungs the old rule admitted gives a bimodal
+    // distribution: 29 rungs under 10 % (down to 0.5 % — 392 -> 390 triangles),
+    // a thin 24-rung tail from 10-29 %, then 63 rungs bunched at 30-54 %. The
+    // density steps up 2.5x at 30 %, which is the boundary between the ladder
+    // working and the ladder idling. It agrees with theory: radius_divisor is a
+    // ratio-2 schedule on epsilon, and QEM in its linear regime sheds ~50 % of
+    // its triangles per doubling of tolerance, so 0.30 sits at 60 % of the
+    // schedule's design intent — permissive enough that a mesh already near its
+    // topological floor still earns a couple of coarse rungs.
+    //
+    // Tighter was tried and rejected on evidence: at 0.40 the small rocks
+    // collapse to near-degenerate coarsest levels (94 -> 42 -> 12 tris) and the
+    // 4258-triangle hero boulder takes a 54 % first step at close range. At 0.30
+    // that boulder's ladder is bit-for-bit the one it had before, because every
+    // step it already took exceeded 30 % — direct evidence the floor is not
+    // over-tightening.
+    //
+    // Dropping a rung is error-CONSERVATIVE, not a fidelity cut: level i is
+    // selected while its own eps still projects under pixel_budget (see the
+    // threshold fill in part_flatten.cpp), so a removed rung means the FINER
+    // surviving rung is drawn over that band instead. The one place fidelity can
+    // fall is the coarsest rung, where a ladder that used to be truncated by
+    // kMaxSerializedLodLevels now reaches a genuinely coarser terminal.
+    //
+    // There is deliberately no artifact field recording where the ladder bottoms
+    // out: once admission terminates on benefit exhaustion, the LAST rung IS the
+    // bottom-out point, which is what M2.5's impostor terminal keys off. The
+    // .flat.part format is unchanged.
+    float min_level_benefit = 0.30f;
+
+    // TERMINAL IMPOSTOR (M2.5, redesign §2/§3.3). When set, the rung the
+    // benefit floor above left LAST gets one more rung after it that is not a
+    // mesh: a two-triangle camera-facing billboard sampling a baked view atlas,
+    // written to a `.fimp` sidecar beside the .flat.part. It is an ordinary
+    // entry in this same ladder -- same blas_indices, same threshold table --
+    // so runtime selection, the indirect draw and the LOD trace need no new
+    // code. Eligibility and atlas sizing live in impostor_bake.h with their
+    // derivations. Set false to bake a mesh-only ladder (what shipped before).
+    bool impostor_terminal = true;
 
     // Selection thresholds are derived from eps: a level becomes eligible when
     // its world-space error projects below pixel_budget pixels.
@@ -120,10 +171,13 @@ struct FlattenResult {
     // used by the cutover math helpers to split the ladder.
     size_t      fine_tris = 0;          // trunk-only QEM input (segmented flats)
     size_t      coarse_input_tris = 0;  // merged coarse-segment input
+    // M2.5: clusters that earned a terminal impostor rung (0 = none, which is
+    // the correct outcome for a part whose terminal mesh is already tiny).
+    size_t      impostors = 0;
 };
 
 // Flatten the subtree rooted at root_hash. Reads parts from
-// <cache_root>/parts/<hash>.part, writes <cache_root>/parts/<root>.flat.part
+// the REP0 sections under <cache_root>/parts/, writes the root bundle's FLAT section
 // (atomic). Idempotent and content-addressed: callers should skip the call when
 // the flat file already exists, since any subtree change changes root_hash.
 FlattenResult flatten_part(const std::string& cache_root, uint64_t root_hash,

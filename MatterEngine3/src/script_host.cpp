@@ -918,6 +918,34 @@ ScriptHost::LodAuthoring ScriptHost::eval_lods(const std::string& source) {
       "return JSON.stringify(r);})";
     JSValue canonFn = JS_Eval(ctx, kCanon, strlen(kCanon), "<canon>", JS_EVAL_TYPE_GLOBAL);
 
+    // M3 (redesign §3.1): read a level's NAMED generator as data. Returns ''
+    // for "no gen", null for any shape violation (fail-closed like everything
+    // else here), else "<name> <canonical-params-json>". A function is a
+    // violation on purpose: a closure cannot be read without evaluating the
+    // class, and lazy per-rep baking has to know what reps exist BEFORE it
+    // bakes any of them.
+    static const char* kGenSpec =
+      "(function(g){"
+      "if(g===undefined||g===null)return '';"
+      "let name,o;"
+      "if(typeof g==='string'){name=g;o={};}"
+      "else if(typeof g==='object'&&!Array.isArray(g)){"
+      "if(typeof g.gen!=='string')return null;name=g.gen;o=g;}"
+      "else return null;"
+      // The built-in registry. `decimate` is the QEM pass the default ladder
+      // already runs, spelled so an authored ladder can ask for it explicitly.
+      "if(name!=='decimate')return null;"
+      "let keys=Object.keys(o).sort();let r={};"
+      "for(let k of keys){if(k==='gen')continue;let v=o[k];"
+      "if(typeof v!=='number'||!isFinite(v))return null;r[k]=v;}"
+      // decimate takes EXACTLY one of error (metres) or divisor (radius/div).
+      "let he=(r.error!==undefined),hd=(r.divisor!==undefined);"
+      "if(he===hd)return null;"
+      "if(he&&!(r.error>0))return null;"
+      "if(hd&&!(r.divisor>0))return null;"
+      "return name+' '+JSON.stringify(r);})";
+    JSValue genFn = JS_Eval(ctx, kGenSpec, strlen(kGenSpec), "<genspec>", JS_EVAL_TYPE_GLOBAL);
+
     JSValue lods = JS_GetPropertyStr(ctx, authored, "lods");
     if (JS_IsArray(lods)) {
         uint32_t len = 0;
@@ -972,6 +1000,54 @@ ScriptHost::LodAuthoring ScriptHost::eval_lods(const std::string& source) {
                 }
             }
             JS_FreeValue(ctx, excludeV);
+
+            // M3: `at` -- the rep's own switch-in distance, in metres, for a
+            // unit-scale instance (redesign §3.1). Must be a finite,
+            // non-negative number; anything else discards the whole block.
+            if (ok) {
+                JSValue atV = JS_GetPropertyStr(ctx, entry, "at");
+                if (!JS_IsUndefined(atV)) {
+                    double a = 0.0;
+                    if (!JS_IsNumber(atV) || JS_ToFloat64(ctx, &a, atV) != 0 ||
+                        !std::isfinite(a) || a < 0.0) {
+                        ok = false;
+                    } else {
+                        spec.has_at = true;
+                        spec.at = a;
+                    }
+                }
+                JS_FreeValue(ctx, atV);
+            }
+
+            // M3: `gen` -- the named built-in generator plus its parameters.
+            if (ok) {
+                JSValue genV = JS_GetPropertyStr(ctx, entry, "gen");
+                JSValue spec_s = JS_Call(ctx, genFn, JS_UNDEFINED, 1, &genV);
+                JS_FreeValue(ctx, genV);
+                if (JS_IsException(spec_s) || JS_IsNull(spec_s)) {
+                    ok = false;
+                } else {
+                    const char* s = JS_ToCString(ctx, spec_s);
+                    if (!s) {
+                        ok = false;
+                    } else {
+                        std::string decoded(s);
+                        JS_FreeCString(ctx, s);
+                        const size_t sp = decoded.find(' ');
+                        if (decoded.empty()) {
+                            spec.gen_params_json = "{}";      // no generator
+                        } else if (sp == std::string::npos) {
+                            ok = false;                       // malformed encoding
+                        } else {
+                            spec.gen = decoded.substr(0, sp);
+                            spec.gen_params_json = decoded.substr(sp + 1);
+                        }
+                    }
+                }
+                JS_FreeValue(ctx, spec_s);
+            }
+            if (spec.gen_params_json.empty()) spec.gen_params_json = "{}";
+
             JS_FreeValue(ctx, entry);
             if (ok) out.push_back(std::move(spec));
         }
@@ -979,9 +1055,34 @@ ScriptHost::LodAuthoring ScriptHost::eval_lods(const std::string& source) {
         ok = false;  // `static lods` present but not an array: fail closed
     }
     JS_FreeValue(ctx, lods);
+    JS_FreeValue(ctx, genFn);
     JS_FreeValue(ctx, canonFn);
     JS_FreeValue(ctx, authored);
     JS_FreeContext(ctx); JS_FreeRuntime(rt);
+
+    // M3: whole-TABLE validation. The per-entry loop above can only see one
+    // entry; these three rules are properties of the ladder.
+    if (ok && !out.empty()) {
+        // Rep 0 is build() verbatim at the camera: no generator, and if it
+        // names a distance at all that distance is 0.
+        if (!out[0].gen.empty()) ok = false;
+        if (out[0].has_at && out[0].at != 0.0) ok = false;
+        // Declared distances must strictly increase. A table that does not
+        // increase names no band for at least one rep, which is never what an
+        // author means, and the runtime walk (lod_distance.h select_rep) would
+        // silently never reach the out-of-order rung.
+        double last = -1.0;
+        for (const auto& L : out) {
+            // `params` and `gen` are two different answers to "where does this
+            // level's geometry come from" (a fresh build vs. a generator over
+            // LOD0). Naming both leaves the bake to pick, so neither is
+            // honoured: reject the block instead.
+            if (L.has_params && !L.gen.empty()) { ok = false; break; }
+            if (!L.has_at) continue;
+            if (L.at <= last) { ok = false; break; }
+            last = L.at;
+        }
+    }
 
     if (!ok) out.clear();  // fail-closed: any malformed entry discards the whole block
     return out;
@@ -1945,7 +2046,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         }
         // Build the write path: if opts.parts_dir is non-empty, make it absolute
         // by joining parts_dir + "/" + cache_path_resolved(...).  Otherwise fall
-        // back to the legacy cwd-relative "parts/<hash>.part" so callers that
+        // back to the legacy cwd-relative "parts/<hash>.bundle" so callers that
         // chdir() themselves (e.g. existing tests) keep working unchanged.
         std::string rel_path = part_asset::cache_path_resolved(r.resolved_hash);
         std::string path = opts.parts_dir.empty()
@@ -2148,7 +2249,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                 std::string hpath = opts.parts_dir.empty()
                     ? part_asset::cache_path_hints(r.resolved_hash)
                     : opts.parts_dir + "/" + part_asset::cache_path_hints(r.resolved_hash);
-                part_asset::save_flatten_hints(hpath, hints);
+                part_asset::save_flatten_hints(hpath, r.resolved_hash, hints);
             }
             // Streaming fast path (BakeOptions::retain_geometry): hand back the
             // geometry save_v2 was just given, so the caller can stage this part

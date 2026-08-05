@@ -1114,6 +1114,99 @@ static void test_eval_lods_schema_parsing() {
     printf("  test_eval_lods_schema_parsing OK\n");
 }
 
+// M3 (docs/lod-vt-redesign-2026-08-04.md §3.1): the authored ladder — `at`
+// switch distances and NAMED generators — read off `static lods` without
+// building. The point of the whole exercise is that a ladder can be read
+// before any rep of it is generated, so the no-build assertion below is not a
+// footnote: it is the property lazy per-rep baking stands on.
+static void test_eval_lods_authored_ladder() {
+    script_host::ScriptHost host;
+    const char* authored =
+        "class T extends Part {\n"
+        "  static params = { seed: 0 };\n"
+        "  static lods = [\n"
+        "    { at: 0 },\n"
+        "    { at: 18, gen: LOD.decimate({ error: 0.05 }) },\n"
+        "    { at: 45, gen: LOD.simplify({ divisor: 32 }) },\n"
+        "    { at: 140, params: { seed: 1 } }\n"
+        "  ];\n"
+        "  build(p) {}\n"
+        "}\n";
+    auto L = host.eval_lods(authored);
+    CHECK(L.size() == 4, "authored ladder: four reps parsed");
+    if (L.size() == 4) {
+        CHECK(L[0].has_at && L[0].at == 0.0, "rep 0: at 0");
+        CHECK(L[0].gen.empty(), "rep 0: build() verbatim, no generator");
+        CHECK(L[1].has_at && L[1].at == 18.0, "rep 1: at 18 m");
+        CHECK(L[1].gen == "decimate", "rep 1: named generator decimate");
+        CHECK(L[1].gen_params_json == "{\"error\":0.05}",
+              "rep 1: generator params canonical");
+        CHECK(L[2].gen == "decimate", "rep 2: LOD.simplify is the same generator");
+        CHECK(L[2].gen_params_json == "{\"divisor\":32}", "rep 2: divisor spelling");
+        CHECK(L[3].has_at && L[3].at == 140.0 && L[3].has_params,
+              "rep 3: authored distance on a params rebuild");
+    }
+
+    // A rep may decline to name a distance — that rep keeps the derived
+    // default (R5) — and a generator may be spelled as a plain object rather
+    // than through the LOD helper.
+    const char* mixed =
+        "class M extends Part { static lods = ["
+        "{}, { gen: { gen: 'decimate', error: 0.1 } }, { at: 60 }]; build(p){} }\n";
+    auto M = host.eval_lods(mixed);
+    CHECK(M.size() == 3, "mixed ladder: three reps");
+    if (M.size() == 3) {
+        CHECK(!M[0].has_at && M[0].gen.empty(), "mixed rep 0: nothing declared");
+        CHECK(M[1].gen == "decimate" && !M[1].has_at,
+              "mixed rep 1: generator, no distance");
+        CHECK(M[2].has_at && M[2].at == 60.0, "mixed rep 2: distance, no generator");
+    }
+
+    // Fail-closed, one violation per source. Each discards the WHOLE block.
+    struct Case { const char* src; const char* why; };
+    const Case bad[] = {
+        {"class A extends Part { static lods = [{at:0},{at:'far'}]; build(p){} }",
+         "at not a number -> empty"},
+        {"class A extends Part { static lods = [{at:0},{at:-5}]; build(p){} }",
+         "negative at -> empty"},
+        {"class A extends Part { static lods = [{at:0},{at:0/0}]; build(p){} }",
+         "non-finite at -> empty"},
+        {"class A extends Part { static lods = [{at:5}]; build(p){} }",
+         "rep 0 at != 0 -> empty"},
+        {"class A extends Part { static lods = [{at:0},{at:40},{at:20}]; build(p){} }",
+         "distances not increasing -> empty"},
+        {"class A extends Part { static lods = [{at:0},{at:20},{at:20}]; build(p){} }",
+         "duplicate distance -> empty"},
+        {"class A extends Part { static lods = [{gen:LOD.decimate({error:1})}]; build(p){} }",
+         "generator on rep 0 -> empty"},
+        // A CLOSURE is the redesign doc's own spelling, and it is rejected:
+        // it cannot be read without evaluating the class, which is exactly
+        // what the no-build read exists to avoid.
+        {"class A extends Part { static lods = [{},{gen:(c)=>c}]; build(p){} }",
+         "gen as a closure -> empty"},
+        {"class A extends Part { static lods = [{},{gen:'remesh'}]; build(p){} }",
+         "unknown generator name -> empty"},
+        {"class A extends Part { static lods = [{},{gen:'decimate'}]; build(p){} }",
+         "decimate with neither error nor divisor -> empty"},
+        {"class A extends Part { static lods = [{},{gen:'decimate',error:1,divisor:8}];"
+         " build(p){} }",
+         "decimate with both error and divisor -> empty"},
+        {"class A extends Part { static lods = [{},{gen:'decimate',error:-1}]; build(p){} }",
+         "decimate with a non-positive error -> empty"},
+        {"class A extends Part { static lods = [{},{gen:'decimate',error:'x'}]; build(p){} }",
+         "non-numeric generator param -> empty"},
+        {"class A extends Part { static lods = [{},"
+         "{gen:'decimate',error:1,params:{seed:1}}]; build(p){} }",
+         "params and gen on the same rep -> empty"},
+    };
+    for (const auto& c : bad) CHECK(host.eval_lods(c.src).empty(), c.why);
+
+    // The no-build discipline holds for the authored surface too.
+    host.eval_lods(authored);
+    CHECK(!host.last_build_ran(), "authored ladder read without running build()");
+    printf("  test_eval_lods_authored_ladder OK\n");
+}
+
 // W5 THE SEEDING RULE: a per-LOD-level bake that overrides params but seeds
 // from the BASE (LOD0) merged params must draw the identical rng sequence as
 // LOD0 itself — same structural draws, same order, no different-tree-per-LOD
@@ -1758,7 +1851,7 @@ static void test_bake_writes_flatten_hints() {
     // part_asset::cache_path_hints(parent_hash) relative to CWD.
     std::string hp = part_asset::cache_path_hints(pr.resolved_hash);
     part_asset::FlattenHints h;
-    bool hints_loaded = part_asset::load_flatten_hints(hp, h);
+    bool hints_loaded = part_asset::load_flatten_hints(hp, pr.resolved_hash, h);
     CHECK(hints_loaded, "hints sidecar written");
     if (hints_loaded) {
         CHECK(h.child_px.size() == 2, "hints: two instanced entries");
@@ -2115,6 +2208,7 @@ int main() {
     test_extrude_dispatch_and_polygon();
     test_eval_lod_budgets();
     test_eval_lods_schema_parsing();
+    test_eval_lods_authored_ladder();
     test_bake_seed_invariance_per_lod_params();
     test_bake_result_child_modules_placed();
     test_modifier_region_state_rules();

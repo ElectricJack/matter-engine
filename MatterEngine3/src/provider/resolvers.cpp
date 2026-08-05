@@ -1,10 +1,13 @@
 #include "sector_resolver.h"
 #include "matrix_math.h"
+#include "render/lod_distance.h"   // lod::normalized_switch_distance / reach / select_rep
 
 #include "world_flatten.h"     // world_flatten::FlatInstance
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <map>
+#include <vector>
 
 namespace viewer {
 
@@ -63,7 +66,26 @@ SectorLodResolver::resolve(const WorldState& state,
                                                     min_projected_size_, pixel_budget_);
 
     // 3. Emit instances only for sectors within the activation sphere.
+    //
+    // Both remaining decisions here — the inline cutover and the expanded
+    // child's rung — were projected-size comparisons against the same `size`
+    // select_sector_lods_ex computed. They are now distance comparisons through
+    // the single rule in render/lod_distance.h, using the distance the choice
+    // carries. With size = r_parent * pixel_budget / d:
+    //
+    //   cutover: size >= C
+    //          <=> d <= normalized_switch_distance(C) * reach(r_parent, 1, G)
+    //
+    //   child:  child_size = size * r_child * child_scale / r_parent
+    //                      = r_child * child_scale * G / d       (r_parent cancels)
+    //           child_size >= thr[i]
+    //          <=> d <= normalized_switch_distance(thr[i])
+    //                     * reach(r_child, child_scale, G)
+    //
+    // The child is the one site with a real instance scale; the parent's own
+    // selection keeps scale 1.0f, exactly as before.
     std::vector<ResolvedInstance> out;
+    std::vector<float> child_switch_distances;   // scratch, reused across refs
     for (const auto& sk : sectors) {
         const sector_grid::SectorCoord& c = sk.first;
         float sx = (c.x + 0.5f) * pitch_;
@@ -76,14 +98,20 @@ SectorLodResolver::resolve(const WorldState& state,
         auto cit = chosen.find(c);
         const auto& lod_for_part = (cit != chosen.end()) ? cit->second : kNoLods;
         for (const auto& inst : sk.second) {
-            int lod = 0; float ps = 0.0f;
+            // No entry means the part is absent from the LOD table, so the
+            // cutover branch below cannot fire anyway; +inf is the distance
+            // spelling of the 0.0f projected size this used to default to.
+            int lod = 0;
+            float dist_to_eye = std::numeric_limits<float>::infinity();
             auto it = lod_for_part.find(inst.resolved_hash);
-            if (it != lod_for_part.end()) { lod = it->second.level; ps = it->second.projected_size; }
+            if (it != lod_for_part.end()) { lod = it->second.level; dist_to_eye = it->second.distance; }
             if (lod < 0) continue;
 
             auto pit = lods.find(inst.resolved_hash);
             const lod_select::PartLod* pl = (pit != lods.end()) ? &pit->second : nullptr;
-            if (pl && pl->inline_cutover > 0.0f && ps >= pl->inline_cutover) {
+            if (pl && pl->inline_cutover > 0.0f &&
+                dist_to_eye <= lod::normalized_switch_distance(pl->inline_cutover)
+                                   * lod::reach(pl->bound_radius, 1.0f, pixel_budget_)) {
                 ResolvedInstance r;
                 r.part_hash = inst.resolved_hash;
                 r.stable_id = inst.stable_id;
@@ -107,10 +135,22 @@ SectorLodResolver::resolve(const WorldState& state,
                     const matter::Mat4f child = mat4_mul(parent, relative);
                     std::memcpy(cr.transform, child.m, sizeof cr.transform);
                     auto child_it = lods.find(ref.child_hash);
+                    // The parent radius cancels out of the child's size, but the
+                    // > 0 guard is kept: it is what made the old division safe,
+                    // and dropping it would start emitting a selected rung where
+                    // the code used to hard-code 0.
                     if (child_it != lods.end() && pl->bound_radius > 0.0f) {
-                        float child_ps = ps * child_it->second.bound_radius * ref.child_scale
-                                         / pl->bound_radius;
-                        cr.lod_level = lod_select::select_level(child_ps, child_it->second.thresholds);
+                        const auto& child_thresholds = child_it->second.thresholds;
+                        child_switch_distances.clear();
+                        child_switch_distances.reserve(child_thresholds.size());
+                        for (float t : child_thresholds)
+                            child_switch_distances.push_back(
+                                lod::normalized_switch_distance(t));
+                        cr.lod_level = lod::select_rep(
+                            child_switch_distances.data(),
+                            (int)child_switch_distances.size(), dist_to_eye,
+                            lod::reach(child_it->second.bound_radius,
+                                       ref.child_scale, pixel_budget_));
                     } else {
                         cr.lod_level = 0;
                     }

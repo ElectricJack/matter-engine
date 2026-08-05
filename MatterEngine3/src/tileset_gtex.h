@@ -32,34 +32,23 @@
 #include <string>
 #include <vector>
 
+#include "version_vector.h"   // M4: the single version-vector fold
+
 namespace tileset {
 
 inline constexpr uint32_t kGTexMagic       = 0x58455447u; // 'GTEX' little-endian
 inline constexpr uint32_t kGTexVersion     = 2u;
-// 2 -> 3 (vulkan-rt-gtex-bake.md §I.6, V4): the .gtex bake moved from the GL
-// software-BVH compute path to Vulkan hardware ray tracing. The output is not
-// bit-identical, so the two bakes must not share a cache identity — every
-// GL-baked atlas now fails gtex_cache_hit honestly and is rebaked. No
-// dual-accept, no migration shim. Also folded into the resolve-cache key
-// (resolve_cache.cpp:298) and the settle-cache key (tileset_bake.cpp:665).
+// M4: these two are now ALIASES of the version vector (version_vector.h).
+// They remain here because the .gtex header RECORDS them for provenance, and
+// because that is the name four years of comments use. They are no longer
+// cache keys in their own right: every key that used to fold them now folds
+// the whole vector through matter_version::fold, so bumping either reaches
+// the part hash and the bundle as well as the atlas.
 //
-// 3 -> 4: shaders_vk/tileset_bake_ao.comp now traces its hemisphere around the
-// owning triangle's geometric normal instead of the interpolated vertex normal
-// (see the note in that shader's main()). ORM.r changes wherever a smooth-shaded
-// material is visible in the atlas — flat-shaded materials are bit-identical, so
-// on the shipping ForestFloor only BARK/Twig texels move. That is still a
-// content change, and nothing else in the cache key can see a shader edit: the
-// key is (pose_hash, script_source_hash, kEngineBakeVersion, kBox3dVersion), so
-// without this bump every already-baked .gtex would keep being served with the
-// old, self-occluded AO.
-//
-// 4 -> 5: assemble_torus_bvh registers EVERY BLAS entry a part draws instead of
-// only entries.front(). The no-modifier voxel path emits one entry per cell per
-// merge group, so multi-cell litter was reaching the bake as a fragment of itself
-// (a Pebble contributed 3 of its 496 triangles); every channel changes wherever
-// the missing geometry now appears.
-inline constexpr uint32_t kEngineBakeVersion = 5u;
-inline constexpr uint32_t kBox3dVersion    = 1u;
+// The bump history that used to live here moved to version_vector.h with the
+// value; kEngineBakeVersion is 5 as of the assemble_torus_bvh fix.
+inline constexpr uint32_t kEngineBakeVersion = matter_version::record::engine_bake();
+inline constexpr uint32_t kBox3dVersion      = matter_version::record::box3d();
 
 // Ground-tileset sampler slots the renderer can hold simultaneously — the
 // SINGLE source of truth for that count. Everything that bounds a slot index
@@ -120,11 +109,17 @@ struct GTexChannelEntry {
     uint32_t height;
 };
 
-// Fold four ids into one 64-bit stable content hash (SplitMix64).
+// Fold the two content ids into one 64-bit stable content hash (SplitMix64),
+// then fold the version vector.
+//
+// M4: this used to take engine_bake_version and box3d_version as PARAMETERS —
+// the per-artifact-kind plumbing the version vector exists to delete. A caller
+// could pass the wrong pair, or a new version component could be added and
+// never reach this signature. It now folds matter_version::digest() itself,
+// through the one fold site, so the atlas key tracks every version by
+// construction.
 uint64_t gtex_content_hash(uint64_t pose_hash,
-                           uint64_t script_source_hash,
-                           uint32_t engine_bake_version,
-                           uint32_t box3d_version);
+                           uint64_t script_source_hash);
 
 // Fold the tileset root's resolved CHILD hashes into its own script-source
 // hash, producing the value callers must pass as gtex_content_hash's

@@ -20,7 +20,7 @@ MatterEngine2 follows a modular architecture where:
 The root directory contains:
 
 - `third_party/` - Vendored third-party dependencies (raylib, imgui, box3d, quickjs-ng, autoremesher_core, Vulkan-Headers)
-- `libs/` - Foundation libraries beneath MatterEngine3 in the dependency chain: `MemoryLib`, `SpatialQueryLib`, `ParticleFlowLib`, `MatterSurfaceLib`, `MeshChartingLib`
+- `libs/` - Foundation libraries beneath MatterEngine3 in the dependency chain: `MemoryLib`, `SpatialQueryLib`, `ParticleFlowLib`, `MatterSurfaceLib`, `MeshChartingLib`, `AssetStoreLib`
 - `build-all.sh` - Top-level script that builds every project for the current platform; `./build-all.sh test` also runs headless test suites
 - `create_project.sh` - Bootstrap a new sub-project skeleton
 - Individual sub-project directories (e.g., `MatterEngine3`, `MatterEditor`, `BasicWindowApp`)
@@ -123,10 +123,14 @@ script from repo root after creating a worktree:
 bash setup-worktree.sh
 ```
 
-This creates NTFS junctions for the three directory symlinks the build requires:
+This creates NTFS junctions for the two directory symlinks the build requires:
 - `MatterEngine3/shaders` → `libs/MatterSurfaceLib/shaders`
 - `MatterEditor/shaders` → `libs/MatterSurfaceLib/shaders`
-- `MatterEditor/shaders_gpu` → `MatterEngine3/shaders_gpu`
+
+(There used to be a third, `MatterEditor/shaders_gpu` → `MatterEngine3/shaders_gpu`. Both
+the junction and its target were retired once the GL path was deleted; Vulkan shader
+sources live in `MatterEngine3/shaders_vk/` and are compiled to SPIR-V and embedded, not
+symlinked.)
 
 ### Sandbox note for Claude Desktop App
 
@@ -176,8 +180,14 @@ Current projects and their relationships. Dependencies run one way only:
 
 5. **MatterEngine3** - Kernel library (`libmatter_engine3.a`) for the procedural engine
    - Provides: script host (QuickJS-ng DSL), bake pipeline (world_flatten/lod_bake/sector_grid),
-     render subsystem (renderer/raster_composer/part_store/world_composer/gpu_culler),
-     provider subsystem (local_provider/resolvers), facade (matter_engine.cpp)
+     render subsystem (part_store/world_state/vk_scene_renderer + the Vulkan compute cull in
+     `shaders_vk/cull.comp`), provider subsystem (local_provider/resolvers), facade
+     (matter_engine.cpp)
+   - LOD selection has ONE rule, `MatterEngine3/src/render/lod_distance.h`: rungs carry
+     normalized switch DISTANCES and the cull shader plus both CPU mirrors call it. The
+     header carries the equivalence proof; `make -C MatterEngine3/tests run-lod-distance`
+     asserts it. Do not add a second projected-size comparison — that duplication is what
+     the Representation migration exists to remove (docs/lod-vt-redesign-2026-08-04.md)
    - Build: `make -C MatterEngine3` → `build/libmatter_engine3.a` + embedded shader header
    - Tests: `make -C MatterEngine3/tests run-*` (headless) and GPU suites with `GALLIUM_DRIVER=d3d12`
 
@@ -189,11 +199,25 @@ Current projects and their relationships. Dependencies run one way only:
    - Packaging: `make -C MatterEditor dist` (optionally `PROJECT=<name>`, default `world_demo`)
      → `build/dist/<PROJECT>/` — the exe plus `projects/<PROJECT>/` (minus `.cache`/`backup`),
      ready to zip and hand off; shaders are embedded in the exe, not copied
-   - Shader symlinks: `MatterEditor/shaders` → libs/MatterSurfaceLib/shaders,
-     `MatterEditor/shaders_gpu` → MatterEngine3/shaders_gpu
+   - Shader symlink: `MatterEditor/shaders` → libs/MatterSurfaceLib/shaders
+     (the former `shaders_gpu` junction went with the GL path)
 
 7. **libs/MeshChartingLib** - UV chart segmentation + atlas packing (GL-free)
    - No consumers today; kept for the voxel-box-imposter work
+
+8. **libs/AssetStoreLib** - MatterStore: content-addressed blobs in append-only packs
+   - Dependencies: MemoryLib only. No engine headers, no raylib, no Vulkan
+   - Provides: `BlobStore` (packs + an atomically-swapped index + per-blob CRC),
+     `RefTable` (opaque semantic keys, LRU against a disk budget, compaction),
+     `ReadBatch` (physical-order coalesced reads landing in a caller's arena)
+   - The committed index is the only authority on what exists, so a crash
+     mid-append leaves nothing addressable and nothing to repair
+   - Build: `make -C libs/AssetStoreLib` -> `build/libasset_store.a`;
+     `make -C libs/AssetStoreLib test`, and `bench` for the pack-vs-small-files
+     measurement (docs/asset-store-benchmark-2026-08-05.md)
+   - **No consumers yet.** Adopting it as the engine's cache is M5's second half
+     (docs/superpowers/plans/2026-08-04-lod-vt-migration.md), deliberately not
+     done alongside the library's first appearance
 
 `Prototypes/` holds retired experiments (`BasicWindowApp`, `GPURayTraceExample`).
 They are excluded from `build-all.sh` and their sources are frozen snapshots —

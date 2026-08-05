@@ -18,6 +18,7 @@
 #include "chart_atlas.h"   // WP-E: per-rung chart tables travel with a part
 #include "frame_matrices.h"
 #include "matter/draw_overrides.h"  // per-module draw overrides (GPU lane)
+#include "matter/render_debug.h"
 #include "gpu_matrix_pack.h"
 #include "matter/lod_contract.h"
 #include "matter/math_types.h"
@@ -63,6 +64,82 @@ inline uint32_t vulkan_history_token(uint64_t instance_id) {
     const uint32_t folded = static_cast<uint32_t>(instance_id) ^
                             static_cast<uint32_t>(instance_id >> 32);
     return folded != 0 ? folded : 1u;
+}
+
+// The graphics push contract shared by raster.vert and gbuffer.frag. Indirect
+// mesh draws leave the override off and read DrawTransform::selected_lod, which
+// cull.comp wrote. Direct draws (the skin tail) have no cull-written transform
+// tail of their own, so they carry their exact selected rung in the first two
+// words -- that separation is what lets two skin clusters of one instance keep
+// different rungs.
+//
+// `wireframe_enabled` is set only when the frame is genuinely being recorded
+// with the VK_POLYGON_MODE_LINE pipelines. It is what tells gbuffer.frag to
+// stop shading and emit a flat, self-lit line colour, so it must never be
+// raised on a device that fell back to fill -- see select_raster_pipelines,
+// which is the single place that decides both at once.
+struct RasterDebugPushConstants {
+    uint32_t direct_lod = 0;
+    uint32_t direct_lod_valid = 0;
+    uint32_t lod_tint_enabled = 0;
+    uint32_t wireframe_enabled = 0;
+};
+static_assert(sizeof(RasterDebugPushConstants) == 16,
+              "raster debug push constants must remain four uint32_t words");
+
+// Keep raster-pipeline choice atomic: an unavailable or partially created line
+// variant must never produce a mixed fill/line frame, and must never leave the
+// push constant claiming wireframe while filled triangles are drawn.
+//
+// The reference branch carried a third member here for the far-field impostor
+// sidecar (a five-vertex LINE_STRIP perimeter rather than polygon-line over
+// the fill quad's diagonal). There is no impostor system on this base, so that
+// member and its perimeter contract are deliberately absent; add them back
+// with the impostor pipeline, not before.
+struct RasterPipelineSet {
+    VkPipeline static_mesh = VK_NULL_HANDLE;
+    VkPipeline skinned_mesh = VK_NULL_HANDLE;
+};
+
+struct RasterPipelineSelection : RasterPipelineSet {
+    bool wireframe_enabled = false;
+};
+
+inline RasterPipelineSelection select_raster_pipelines(
+    bool wireframe_requested, bool wireframe_available,
+    const RasterPipelineSet& fill, const RasterPipelineSet& line) noexcept {
+    const bool line_complete = line.static_mesh != VK_NULL_HANDLE &&
+                               line.skinned_mesh != VK_NULL_HANDLE;
+    if (!wireframe_requested || !wireframe_available || !line_complete)
+        return {{fill.static_mesh, fill.skinned_mesh}, false};
+    return {{line.static_mesh, line.skinned_mesh}, true};
+}
+
+// A line-mode copy of the fill raster state. Copying rather than mutating is
+// the point: the fill pipelines' create-info aliases one rasterization struct,
+// and the composite pass historically aliased the input-assembly struct next
+// to it, so an in-place polygonMode/topology edit for the wireframe variants
+// silently changes pipelines built afterwards.
+//
+// Backface culling is dropped for the line pass on purpose. Wireframe exists
+// to show triangle DENSITY; hiding the far side of a shell halves the edge
+// count the view is supposed to be measuring.
+inline VkPipelineRasterizationStateCreateInfo make_wireframe_rasterization(
+    const VkPipelineRasterizationStateCreateInfo& fill) noexcept {
+    VkPipelineRasterizationStateCreateInfo line = fill;
+    line.polygonMode = VK_POLYGON_MODE_LINE;
+    line.cullMode = VK_CULL_MODE_NONE;
+    line.lineWidth = 1.0f;
+    return line;
+}
+
+inline RasterDebugPushConstants make_raster_debug_push_constants(
+    uint32_t direct_lod, bool direct_lod_valid,
+    matter::GeometryDebugView geometry_debug_view,
+    bool wireframe_enabled) noexcept {
+    return {direct_lod, direct_lod_valid ? 1u : 0u,
+            geometry_debug_view == matter::GeometryDebugView::LodTint ? 1u : 0u,
+            wireframe_enabled ? 1u : 0u};
 }
 
 // Emission is stored as log2(1 + strength) in the alpha channel of the
@@ -184,6 +261,17 @@ struct VkScenePartChartMesh {
     uint32_t surface_lane_count = 0;
 };
 
+// M2.5: one cluster's terminal impostor, carried from the part store to the
+// renderer. `mesh_index` is the part-local rung mesh whose two triangles are
+// the billboard -- the renderer patches their vertex tint with the atlas slot
+// it assigns, which is the only thing about the impostor that cannot be known
+// until upload time.
+struct VkScenePartImpostor {
+    uint32_t cluster = 0;
+    uint32_t ordinal = 0;   // this impostor's index within the part
+    std::vector<uint8_t> atlas;   // impostor::kAtlasBytes: shade layer, tint layer
+};
+
 struct VkScenePart {
     uint64_t part_hash = 0;
     std::vector<VkSceneCluster> clusters;
@@ -228,6 +316,12 @@ struct VkScenePart {
     // payloads) is the eager path: every chart rung registers at ensure_part,
     // exactly the pre-demand behaviour the smoke fixtures drive.
     uint32_t vt_deferred_rung_mask = 0;
+    // M2.5 terminal impostors, one per cluster that earned one. Empty for
+    // every part whose ladder bottoms out above the impostor tier. LAST in the
+    // struct on purpose: the Vulkan smoke fixtures build VkScenePart with
+    // positional aggregate initialisers, so a field inserted anywhere earlier
+    // silently re-binds their arguments.
+    std::vector<VkScenePartImpostor> impostors;
 };
 
 // Demand-driven VT: one wanted-but-unregistered (part, rung), surfaced by the
@@ -255,7 +349,7 @@ uint32_t select_scene_cluster_lod(const VkSceneCluster& cluster,
                                   float pixel_budget) noexcept;
 uint32_t select_cluster_lod_view(const matter::Float3& aabb_min,
                                  const matter::Float3& aabb_max,
-                                 float radius, const float* thresholds,
+                                 float radius, const float* switch_distances,
                                  uint32_t lod_count,
                                  const matter::Mat4f& object_to_world,
                                  matter::Float3 camera_eye,
@@ -264,6 +358,32 @@ std::vector<uint32_t> dense_rt_lod_offsets(const VkScenePart& part);
 bool dense_rt_lod_index(const std::vector<uint32_t>& offsets,
                         uint32_t cluster_index, uint32_t lod_index,
                         uint32_t& record_index) noexcept;
+
+// M2.5 — is this ladder rung the terminal billboard rather than a mesh?
+// The two triangles carry impostor::kQuadMarker in surface.x (the same
+// sentinel raster.vert and gbuffer.frag branch on, and the same one
+// adopt_part_impostors patches by), so the answer is read off the geometry
+// the renderer already holds rather than a parallel table that could drift.
+bool lod_is_billboard(const VkScenePart& part, const VkSceneLod& lod) noexcept;
+
+// How many LEADING rungs of a cluster's ladder are real meshes -- the ladder
+// length with any trailing billboard rung removed.
+//
+// This is the RT lane's CUTOFF. The billboard is oriented in the VERTEX stage,
+// so its BLAS holds the quad UNROTATED: raster draws a camera-facing card
+// while a ray hits a fixed rectangle, and every traced consumer (shadows, GI,
+// reflections) sees a shape the object does not have. No amount of alpha
+// testing repairs that, because a camera-facing card cannot present the
+// light's silhouette.
+//
+// A cluster whose selected rung is at or past this count contributes NO traced
+// geometry -- see the measurement in build_ray_geometry for why the traced rung
+// is not merely clamped down to the last mesh rung instead.
+//
+// Returns 0 for a cluster with no mesh rung at all, which the same rule
+// covers: nothing is traced.
+uint32_t cluster_mesh_lod_count(const VkScenePart& part,
+                                uint32_t cluster_index) noexcept;
 std::vector<RtGeometrySelection> select_rt_instance_geometry(
     const VkScenePart& part, const matter::Mat4f& object_to_world,
     matter::Float3 camera_eye, float pixel_budget);
@@ -328,6 +448,14 @@ struct VkRasterPixel {
 };
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    // What the last recorded raster pass ACTUALLY bound, as distinct from
+    // what was requested. `wireframe_enabled` here is the push-constant word,
+    // so a test can prove the shader flag and the polygon mode agree.
+    struct RasterPipelineDrawDebug {
+        bool wireframe_enabled = false;
+        bool static_mesh_wireframe = false;
+        bool skinned_mesh_wireframe = false;
+    };
     struct RtGeometryDebugRecord {
         uint64_t part_hash = 0;
         uint32_t cluster_index = 0;
@@ -520,6 +648,12 @@ public:
 
     bool init(std::string& error);
     int ensure_part(const VkScenePart& part, std::string& error);
+
+    // M2.5: how many terminal impostors currently hold an atlas slot. On the
+    // editor stats overlay so "are any drawing?" is answerable at a glance --
+    // the single question the abandoned branch could not answer for a whole
+    // generation of artifacts.
+    uint32_t resident_impostor_count() const { return impostor_resident_; }
     // Immutable renderer-global raster range for an already registered part.
     // Animation uses this after ensure_part() so skin work references the same
     // source vertex/index arenas as the conservative bind-pose draw.
@@ -693,6 +827,9 @@ public:
     uint32_t test_last_rt_blas_build_count() const {
         return test_last_rt_blas_build_count_;
     }
+    RasterPipelineDrawDebug test_last_raster_pipeline_draw() const noexcept {
+        return test_last_raster_pipeline_draw_;
+    }
     void set_test_dlss_bridge(matter::StreamlineBridge bridge);
     bool test_uses_device_streamline_bridge() const;
     VkImage test_dlss_output_image(uint32_t frame_slot) const {
@@ -733,6 +870,12 @@ public:
     void set_lighting(const VkSceneLighting& lighting);
     void set_display_exposure(float exposure_ev);
     void set_composite_debug_view(float mode) { composite_debug_override_ = mode; }
+    void set_geometry_debug_view(matter::GeometryDebugView view);
+    void set_wireframe(bool enabled);
+    // True only when the device enabled fillModeNonSolid AND both line
+    // pipelines were created. Callers that surface a wireframe control must
+    // ask this rather than assume; a false here is the honest "cannot".
+    bool wireframe_available() const noexcept;
     void set_ray_tracing_settings(
         const matter::VulkanRayTracingSettings& settings);
     void set_gi_settings(const matter::VulkanGiSettings& settings) {
@@ -1000,7 +1143,9 @@ private:
         float radius;
         float aabb_max[3];
         float pad0;
-        float thresholds[kVkMaxLod];
+        // Normalized LOD switch distances (lod_distance.h), fine -> coarse and
+        // INCREASING. Mirrors ClusterMeta.switch_distances in shaders_vk/cull.comp.
+        float switch_distances[kVkMaxLod];
         uint32_t lod_mesh_idx[kVkMaxLod];
         uint32_t lod_count;
         uint32_t part_slot;
@@ -1030,11 +1175,16 @@ private:
         // this struct (the skin tail, tests) leaves it zero, which is the
         // fail-closed legacy path.
         uint32_t vt_slot;
-        uint32_t pad;
+        // LOD debug view: the rung cull.comp selected for this draw. This is
+        // the old trailing pad word renamed, NOT a new field -- the 144-byte
+        // assert below is the guard. Direct writers of this struct (the skin
+        // tail, tests) leave it zero and supply their rung by push constant.
+        uint32_t selected_lod;
     };
     static_assert(sizeof(GpuCluster) == 128);
     static_assert(sizeof(GpuInstance) == 160);
     static_assert(sizeof(GpuDrawTransform) == 144);
+    static_assert(offsetof(GpuDrawTransform, selected_lod) == 140);
 
     struct RtLodRecord {
         uint32_t cluster_index = 0;
@@ -1067,6 +1217,13 @@ private:
         std::shared_ptr<matter::VkBufferResource> rt_index;
         std::vector<RtLodRecord> rt_lods;
         std::vector<uint32_t> rt_cluster_lod_offsets;
+        // M2.5: per cluster, the number of leading MESH rungs
+        // (vk_scene_detail::cluster_mesh_lod_count at registration time). A
+        // cluster whose RT rung pick reaches this count is at its terminal
+        // billboard and contributes NO traced geometry, so a ray never meets
+        // the billboard's unrotated quad. Entry 0 (no mesh rung at all) is the
+        // same case.
+        std::vector<uint32_t> rt_cluster_mesh_lods;
         std::vector<uint32_t> material_ids;
         bool rt_geometry_classification_dirty = false;
         // WP-E: transported vt slot per LOD rung (0 = chartless rung). Feeds
@@ -1312,6 +1469,36 @@ private:
         uint64_t material_upload_record_count = 0;
         VkDeviceSize pending_material_bytes = 0;
         bool stats_valid = false;
+        // M1d fly-through determinism trace (render/lod_trace.h). Published on
+        // exactly the same contract as stats_valid: only a frame that recorded
+        // culling successfully leaves a readable cull result behind in this
+        // slot's `commands` / `draw_transforms`. The counts and serial are
+        // snapshotted with the flag because the capture happens one full
+        // frame-slot rotation later, by which time the global
+        // uploaded_command_count_ may describe a different part set.
+        bool lod_trace_valid = false;
+        uint32_t lod_trace_command_count = 0;
+        uint32_t lod_trace_transform_slots = 0;
+        uint64_t lod_trace_serial = 0;
+        // Global cluster slot -> the cluster's index WITHIN ITS PART, snapshot
+        // at record time; UINT32_MAX where no registered part owns the slot.
+        //
+        // The bucket arithmetic recovers a global slot, which is
+        // PartRecord::cluster_start plus a local offset -- and cluster_start
+        // comes out of free_clusters_ in part REGISTRATION order. For a
+        // streamed world that is bake-completion order, so it moves between
+        // warm runs exactly as the sector instance ids used to: measured on
+        // PomProofBrick, 42 of 48 cluster indices survived a second warm run,
+        // and the six that moved were enough to fail the gate on their own
+        // once instance_token had been made content-derived. The part-local
+        // index does not move, and (instance_token, local index) is still a
+        // unique key: a token names one instance, an instance names one part.
+        //
+        // Snapshotted rather than looked up in parts_ at capture time for the
+        // same reason as the counts above -- capture runs a full frame-slot
+        // rotation later, and a released part's cluster range can be reused by
+        // a different part in between. Populated only while the trace is on.
+        std::vector<uint32_t> lod_trace_local_cluster;
         // Published only after the compute dispatch and both vertex-input
         // barriers have been recorded.  A malformed source/mapping therefore
         // leaves the regular static/last-good draw path intact.
@@ -1435,6 +1622,13 @@ private:
                                 matter::Float3 camera_eye,
                                 float pixel_budget, std::string& error);
     bool validate_draw_command_regions(std::string& error) const;
+    // M1d: read this slot's completed cull result back and hand it to
+    // render/lod_trace.h. Called from prepare_frame BEFORE any upload touches
+    // the slot, which is the one point where the slot's fence has been waited
+    // (VulkanContext::begin_frame) and the GPU-written instance counts have not
+    // yet been overwritten by upload_scene_buffers' unconditional restore of
+    // command_template_. Inert unless MATTER_LOD_TRACE is set.
+    void capture_lod_trace(FrameResources& frame);
     void note_command_layout_rebuild();
     bool rebuild_command_template(std::string& error);
     bool apply_dynamic_command_layout(std::string& error);
@@ -1596,6 +1790,7 @@ private:
     bool test_skip_volumetrics_ = false;
     std::vector<RtGeometryDebugRecord> test_last_rt_geometry_records_;
     uint32_t test_last_rt_blas_build_count_ = 0;
+    RasterPipelineDrawDebug test_last_raster_pipeline_draw_{};
 #endif
     matter::DlssMode selected_dlss_mode_ = static_cast<matter::DlssMode>(0);
     bool dlss_history_reset_pending_ = false;
@@ -1610,6 +1805,12 @@ private:
     // Same descriptors/fragment stage as raster_pipeline_, but a 96-byte
     // VkSkinVertex binding with an explicit previous-position attribute.
     VkPipeline skinned_raster_pipeline_ = VK_NULL_HANDLE;
+    // VK_POLYGON_MODE_LINE twins of the two above, created only when the
+    // device enabled fillModeNonSolid. Everything else about them -- shaders,
+    // layout, attachments, depth state -- is identical, so the wireframe view
+    // is the same frame with the interiors removed.
+    VkPipeline wireframe_raster_pipeline_ = VK_NULL_HANDLE;
+    VkPipeline wireframe_skinned_raster_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout composite_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline composite_pipeline_ = VK_NULL_HANDLE;
@@ -1666,6 +1867,35 @@ private:
     TilesetImage tileset_dummy_rg8_;    // normal
     TilesetImage tileset_dummy_r16_;    // height
     VkSampler tileset_sampler_ = VK_NULL_HANDLE;
+
+    // ---- M2.5 terminal impostors -----------------------------------------
+    // One 2D array image, two layers per resident impostor (shade, tint), at
+    // scene-set binding 15. Created once at tileset-infrastructure time and
+    // never recreated, so the descriptor is valid from the first frame and a
+    // part with no impostor costs nothing.
+    static constexpr uint32_t kImpostorMaxSlots = 128;
+    TilesetImage impostor_atlas_{};
+    VkSampler    impostor_sampler_ = VK_NULL_HANDLE;
+    // Bump allocator with a free list. Slots are returned on release_part, so
+    // a streaming world recycles them; exhaustion is a LOGGED load failure
+    // (once), never a silent absence.
+    std::vector<uint32_t> impostor_free_slots_;
+    uint32_t     impostor_next_slot_ = 0;
+    uint32_t     impostor_resident_ = 0;
+    bool         impostor_slots_exhausted_logged_ = false;
+    // part slot -> the atlas slots it owns, so release_part can return them.
+    std::map<uint32_t, std::vector<uint32_t>> impostor_slots_of_part_;
+
+    bool create_impostor_atlas(std::string& error);
+    void write_impostor_descriptor_for_frame(VkDescriptorSet set);
+    // Assigns atlas slots for `part`, uploads its atlases, and patches the
+    // billboard vertices already staged at `vertex_base`. Failure is reported
+    // and the part still registers -- with its impostor rungs drawing as
+    // untextured cards is NOT an option, so a failed upload logs and the
+    // vertices keep slot 0, whose layers are cleared to zero coverage and
+    // therefore discard.
+    void adopt_part_impostors(const VkScenePart& part, uint32_t part_slot,
+                              uint32_t vertex_base);
     matter::VkBufferResource tileset_params_;
     bool tileset_infra_ready_ = false;
 
@@ -1857,6 +2087,11 @@ private:
     uint64_t material_geometry_revision_ = 0;
     uint64_t material_generation_ = 1;
     bool gi_history_reset_pending_ = false;
+    matter::GeometryDebugView geometry_debug_view_ =
+        matter::GeometryDebugView::None;
+    // Requested, not necessarily honoured: select_raster_pipelines is what
+    // turns this into an actually-recorded line frame.
+    bool wireframe_ = false;
     uint32_t uploaded_vertex_count_ = 0;
     uint32_t uploaded_index_count_ = 0;
     uint32_t raster_draw_command_count_ = 0;

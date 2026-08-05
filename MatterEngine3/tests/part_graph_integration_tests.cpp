@@ -11,6 +11,7 @@
 // both the writer and the cache check agree on the location (plan precondition);
 // the test_foreign_cwd_install variant intentionally avoids chdir to prove absolute-path independence.
 
+#include "part_bundle.h"   // M4: the part body is the REP0 section
 #include "part_graph.h"        // includes script_host.h under the guard
 #include "part_asset_v2.h"     // cache_path_resolved
 #include "render/part_store.h" // A8: verify HostBaker and runtime select one root
@@ -54,14 +55,16 @@ static std::string read_file(const std::string& path) {
     return ss.str();
 }
 
-static uint64_t part_checksum(const std::filesystem::path& path) {
-    std::ifstream input(path, std::ios::binary);
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)), {});
+// M4: the part body is the bundle's REP0 section (see anim_bundle's
+// checksum_part). Reading the raw file would fold the bundle directory and
+// every sibling section into what is supposed to be the part's own body.
+static uint64_t part_checksum(const std::filesystem::path& path, uint64_t part_hash) {
+    std::vector<uint8_t> bytes;
+    if (!part_bundle::read_section(path.string(), part_hash,
+                                   part_bundle::kSectionRep0, bytes))
+        return 0;
     uint64_t hash = 1469598103934665603ull;
-    for (size_t i = 40; i < bytes.size(); ++i) {
-        hash ^= bytes[i];
-        hash *= 1099511628211ull;
-    }
+    for (size_t i = 40; i < bytes.size(); ++i) { hash ^= bytes[i]; hash *= 1099511628211ull; }
     return hash;
 }
 
@@ -133,7 +136,7 @@ static bool publish_rigid_bundle(const std::filesystem::path& root, uint64_t has
     anim::BundleIdentity identity;
     identity.resolved_hash = hash;
     identity.nonce = nonce;
-    identity.part_body_checksum = part_checksum(candidate_part);
+    identity.part_body_checksum = part_checksum(candidate_part, hash);
     identity.anim_body_checksum = anim::anim_body_checksum(asset);
     identity.target_abi_tag = asset.target_abi_tag;
     identity.ozz_tag_hash = asset.ozz_tag_hash;

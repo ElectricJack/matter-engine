@@ -367,6 +367,8 @@ struct VulkanDevice::Impl {
     uint32_t graphics_queue_family = std::numeric_limits<uint32_t>::max();
     bool draw_indirect_first_instance_enabled = false;
     bool multi_draw_indirect_enabled = false;
+    bool wireframe_enabled = false;
+    std::string wireframe_reason;
     bool ray_tracing_enabled = false;
     std::string ray_tracing_reason;
     VulkanRayTracingProperties ray_tracing_properties{};
@@ -825,6 +827,15 @@ struct VulkanDevice::Impl {
             missing.emplace_back(
                 "VkPhysicalDeviceVulkan13Features::synchronization2");
         }
+        // M2.5: gbuffer.frag's impostor cutout is a `discard`, and glslang
+        // targeting SPIR-V 1.6 lowers discard to OpDemoteToHelperInvocation
+        // (OpKill is deprecated there), so the capability has to be enabled
+        // rather than merely present. Required, not optional: without it every
+        // pipeline in the raster pass fails to create.
+        if (!features13.shaderDemoteToHelperInvocation) {
+            missing.emplace_back(
+                "VkPhysicalDeviceVulkan13Features::shaderDemoteToHelperInvocation");
+        }
         if (!features12.bufferDeviceAddress) {
             missing.emplace_back(
                 "VkPhysicalDeviceVulkan12Features::bufferDeviceAddress");
@@ -1089,6 +1100,13 @@ struct VulkanDevice::Impl {
         rt_pipeline_features.pNext = &rt_query_features;
         rt_query_features.pNext = &fault_query;
         vkGetPhysicalDeviceFeatures2(physical_device, &rt_features2);
+        VulkanWireframeCapabilities wireframe_capabilities{};
+        wireframe_capabilities.fill_mode_non_solid =
+            rt_features2.features.fillModeNonSolid == VK_TRUE;
+        const VulkanWireframeCapabilityPolicy wireframe_policy =
+            evaluate_wireframe_capabilities(wireframe_capabilities);
+        wireframe_enabled = wireframe_policy.wireframe_available;
+        wireframe_reason = wireframe_policy.unavailable_reason;
         rt_capabilities.buffer_device_address = rt_features12.bufferDeviceAddress;
         rt_capabilities.acceleration_structure = rt_as_features.accelerationStructure;
         rt_capabilities.ray_tracing_pipeline = rt_pipeline_features.rayTracingPipeline;
@@ -1146,6 +1164,7 @@ struct VulkanDevice::Impl {
 
         features13.dynamicRendering = VK_TRUE;
         features13.synchronization2 = VK_TRUE;
+        features13.shaderDemoteToHelperInvocation = VK_TRUE;
         VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance1{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT};
         maintenance1.swapchainMaintenance1 = VK_TRUE;
@@ -1198,6 +1217,12 @@ struct VulkanDevice::Impl {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         features2.features.drawIndirectFirstInstance = VK_TRUE;
         features2.features.multiDrawIndirect = VK_TRUE;
+        // VK_POLYGON_MODE_LINE (the wireframe debug view) is invalid unless
+        // this is enabled at logical-device creation. It is optional: devices
+        // without it retain filled rendering and the editor reports the
+        // wireframe control as unavailable rather than pretending it works.
+        features2.features.fillModeNonSolid =
+            wireframe_enabled ? VK_TRUE : VK_FALSE;
         features2.features.shaderStorageImageExtendedFormats =
             ray_tracing_enabled ? VK_TRUE : VK_FALSE;
         // Phase 1 tileset Vulkan port (Task 6): the ground tileset sampler
@@ -2543,6 +2568,14 @@ bool VulkanDevice::draw_indirect_first_instance_enabled() const {
 }
 bool VulkanDevice::multi_draw_indirect_enabled() const {
     return impl_->multi_draw_indirect_enabled;
+}
+
+bool VulkanDevice::wireframe_available() const {
+    return impl_->wireframe_enabled;
+}
+
+const std::string& VulkanDevice::wireframe_unavailable_reason() const {
+    return impl_->wireframe_reason;
 }
 
 bool VulkanDevice::dlss_available() const {

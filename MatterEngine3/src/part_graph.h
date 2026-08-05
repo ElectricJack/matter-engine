@@ -238,10 +238,10 @@ public:
     // W5 (Part Workbench, static lods): for schemas exporting `static lods`,
     // (a) computes a per-authored-level exclude mask from `exclude` module
     // names (matched against the child-table order the immediately-preceding
-    // bake() call placed — see the CALLING CONVENTION note below) and folds it
-    // into the base .part's ChildInstance table as an LMSK trailer (only when
-    // at least one level actually excludes something — an unauthored/no-op
-    // `static lods` never touches the .part bytes); (b) for each level with
+    // bake() call placed — see the CALLING CONVENTION note below), which is
+    // recorded in the plan section at (c). (M4 removed the LMSK trailer this
+    // used to ALSO write into the compositional body: nothing read it back,
+    // and the plan already carries the same masks.) (b) for each level with
     // `params`, bakes a fresh, independent artifact with base-then-level-
     // merged params, seeding from the BASE (LOD0) merged params per the
     // seeding rule so the level draws the same rng stream and stays the same

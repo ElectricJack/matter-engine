@@ -214,6 +214,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/part_asset_v2.cpp $(ME3_DIR)/src/lod_bake.cpp \
               $(ME3_DIR)/src/warp_field.cpp \
               $(ME3_DIR)/src/world_flatten.cpp $(ME3_DIR)/src/part_flatten.cpp \
+              $(ME3_DIR)/src/impostor_bake.cpp \
               $(ME3_DIR)/src/triangle_emit.cpp \
               $(ME3_DIR)/src/part_cluster.cpp \
               $(ME3_DIR)/src/tileset_placement.cpp $(ME3_DIR)/src/tileset_layout.cpp \
@@ -229,6 +230,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               \
               $(ME3_DIR)/src/render/raster_mesh.cpp $(ME3_DIR)/src/render/indexed_part_geometry.cpp $(ME3_DIR)/src/render/part_store.cpp \
               $(ME3_DIR)/src/render/world_state.cpp \
+              $(ME3_DIR)/src/render/lod_trace.cpp \
               $(ME3_DIR)/src/render/streamline_bridge.cpp \
               $(ME3_DIR)/src/render/vk_context.cpp $(ME3_DIR)/src/render/vk_resources.cpp \
               $(ME3_DIR)/src/render/vk_pipeline.cpp $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
@@ -444,12 +446,6 @@ shaders: regen-processed-shader
 	     echo "ERROR: required shader files missing:$$missing"; \
 	     exit 1; \
 	 fi
-
-# shaders_gpu/ is a real directory committed to the repo; it lives under MatterEngine3/.
-# Create a symlink here so the binary can resolve shaders_gpu/cull.comp etc.
-shaders_gpu_link:
-	@[ -e shaders_gpu ] || ln -s $(ME3_DIR)/shaders_gpu shaders_gpu
-	@[ -d shaders_gpu ] || (echo "ERROR: shaders_gpu/ symlink target missing" && exit 1)
 
 # Rebuild MSL's shader preprocessor and re-flatten the processed fragment shader
 # so edits to bvh_tlas_common.glsl / materials.glsl / lighting.glsl take effect.
@@ -678,6 +674,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_gi_math.cpp \
         $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
         $(ME3_DIR)/src/render/matrix_math.cpp \
+        $(ME3_DIR)/src/render/lod_trace.cpp \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ) $(W_BC7ENC_OBJ)
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp src/ui_lighting_controls.cpp \
@@ -709,6 +706,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_gi_math.cpp \
 	    $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
 	    $(ME3_DIR)/src/render/matrix_math.cpp \
+	    $(ME3_DIR)/src/render/lod_trace.cpp \
 	    $(GLFW_WIN_LIB) $(W_FLECS_OBJ) $(W_BC7ENC_OBJ) -o $@ \
 	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
 	    -ffunction-sections -Wl,--gc-sections \
@@ -839,7 +837,7 @@ $(W_STREAMLINE_STAMP): FORCE | $(W_OBJ_DIR)
 	@[ "$$(cat $@ 2>/dev/null)" = "$(HAVE_STREAMLINE)" ] || echo "$(HAVE_STREAMLINE)" > $@
 $(W_OBJ_DIR)/streamline_bridge.o: $(W_STREAMLINE_STAMP)
 
-windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) win-shaders-gpu $(AR_CORE_DEP) $(W_ALL_OBJ)
+windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(AR_CORE_DEP) $(W_ALL_OBJ)
 	$(WIN_CXX) $(W_ALL_OBJ) -o $(W_DIR)/editor.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(AR_CORE_LDFLAGS) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
 	@if [ "$(HAVE_STREAMLINE)" = "1" ]; then cp -f "$(STREAMLINE_DLL_DIR)"/*.dll $(W_DIR)/; fi
 	@imports="$$($(WIN_CXX) -print-prog-name=objdump -p $(W_DIR)/editor.exe)"; \
@@ -869,12 +867,11 @@ endif
 # The old `rm -rf shaders && cp -r` recipe also destroyed the Linux symlink, so
 # removing it keeps the shaders/ symlink intact after a cross-compile.
 
-# shaders_gpu/ is a committed git symlink in MatterEditor/ pointing to
-# MatterEngine3/shaders_gpu/. The symlink is navigable from WSL for the Linux
-# editor; re-create it here in case it was missing for some other reason.
-win-shaders-gpu:
-	@[ -d shaders_gpu ] || ln -s $(ME3_DIR)/shaders_gpu shaders_gpu
-	@[ -d $(ME3_DIR)/shaders_gpu ] || (echo "ERROR: MatterEngine3/shaders_gpu/ missing" && exit 1)
+# win-shaders-gpu lived here and re-created a MatterEditor/shaders_gpu symlink
+# into MatterEngine3/shaders_gpu/. Both are gone: that directory held only GL
+# sources for the deleted GpuCuller/raster-composer path. Vulkan shaders live in
+# MatterEngine3/shaders_vk/ and reach the binary as embedded SPIR-V
+# ($(VK_EMBEDDED_HEADER)), so no symlink is needed to resolve them at runtime.
 
 # =============================================================================
 # ---- Linux Vulkan target (Phase 5b) ----------------------------------------
@@ -1028,13 +1025,8 @@ $(L_FLECS_OBJ): $(L_OBJ_DIR)/%.o: $(FLECS_DIR)/%.c | $(L_OBJ_DIR)
 # (a phony target) must not force object rebuilds every invocation.
 $(L_CPP_OBJ): | embedded-shaders
 
-# Same symlink shape as win-shaders-gpu, kept as its own target (rather than
-# depending on the Windows-named phony target directly) so the Linux path's
-# dependency graph does not read as depending on "windows" -- the two recipe
-# bodies are intentionally byte-identical POSIX shell.
-linux-shaders-gpu:
-	@[ -d shaders_gpu ] || ln -s $(ME3_DIR)/shaders_gpu shaders_gpu
-	@[ -d $(ME3_DIR)/shaders_gpu ] || (echo "ERROR: MatterEngine3/shaders_gpu/ missing" && exit 1)
+# linux-shaders-gpu was the Linux twin of win-shaders-gpu and went with it; see
+# the note there.
 
 # box3d: unlike WIN_BOX3D_LIB (a committed mingw cross-build with no build
 # rule of its own -- see mingw-box3d above), $(BOX3D_LIB) already has a real
@@ -1060,7 +1052,7 @@ LINUX_SYSTEM_LIBS = -lX11 -ldl -lpthread -lm -lrt
 # $(VK_EMBEDDED_HEADER)'s recipe (defined above, shared with `windows`) invokes
 # $(GLSLC) -- override that too (see the VULKAN_INCLUDE/VULKAN_LIB_DIR/GLSLC
 # note earlier in this section) if it is not already an X11/Linux glslc.
-linux: $(VK_EMBEDDED_HEADER) $(GLFW_LINUX_LIB) linux-shaders-gpu $(BOX3D_LIB) $(AR_CORE_DEP) $(L_ALL_OBJ)
+linux: $(VK_EMBEDDED_HEADER) $(GLFW_LINUX_LIB) $(BOX3D_LIB) $(AR_CORE_DEP) $(L_ALL_OBJ)
 	$(LINUX_CXX) $(L_ALL_OBJ) -o $(L_DIR)/editor $(CFLAGS) -Wl,--gc-sections \
 	    $(BOX3D_LIB) $(GLFW_LINUX_LIB) $(AR_CORE_LDFLAGS) $(LINUX_SYSTEM_LIBS) \
 	    -L$(VULKAN_LIB_DIR) -lvulkan
@@ -1075,9 +1067,9 @@ linux: $(VK_EMBEDDED_HEADER) $(GLFW_LINUX_LIB) linux-shaders-gpu $(BOX3D_LIB) $(
 -include $(L_ALL_OBJ:.o=.d)
 
 # clean: remove build artifacts and generated binaries.
-# shaders and shaders_gpu are committed git symlinks — do NOT remove them here,
+# shaders/ is a committed git symlink — do NOT remove it here,
 # or `git status` will show them as deleted. The build recreates them via the
-# shaders / shaders_gpu_link / win-shaders-gpu rules anyway.
+# shaders rule anyway.
 clean:
 	rm -rf build
 
@@ -1274,7 +1266,7 @@ build/test_issue_reporter.exe: tests/test_issue_reporter.cpp src/issue_reporter.
 run-test-issue-reporter: build/test_issue_reporter.exe
 	./build/test_issue_reporter.exe
 
-.PHONY: editor windows clean dist shaders shaders_gpu_link win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf linux linux-shaders-gpu check-animation-production-sources
+.PHONY: editor windows clean dist shaders  regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf linux check-animation-production-sources
 
 # The direct-source builds (windows/linux) are production. Keep their TU list
 # aligned with the archive's runtime implementation units without dragging in

@@ -5,7 +5,7 @@
 //
 // File: <cache_root>/cache/<world_name>.resolve
 // Format: little-endian binary (magic, format-version, cache-key u64,
-//   kEngineBakeVersion, payload).  Any anomaly on load returns false —
+//   matter_version::digest(), payload).  Any anomaly on load returns false —
 //   the caller falls through to a full resolve (fail-closed).
 //
 // NOT part of the public API (include/matter/).  Consumed only by
@@ -43,7 +43,7 @@ struct ResolveCachePayload {
 //   - for every file under objects_dir, project_shared_lib_dir, and
 //     engine_shared_lib_dir: sorted relative
 //     path + fnv1a64(file bytes) pairs
-//   - kEngineBakeVersion (from tileset_gtex.h)
+//   - the version vector (matter_version::fold, version_vector.h) -- M4
 // Returns 0 on any filesystem error (caller treats as a miss).
 uint64_t compute_key(const std::string& world_path,
                      const std::string& root_params_json,

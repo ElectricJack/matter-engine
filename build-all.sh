@@ -33,6 +33,7 @@ SIMPLE_PROJECTS=(
     libs/MemoryLib
     libs/ParticleFlowLib
     libs/SpatialQueryLib
+    libs/AssetStoreLib
     MatterEngine3
     MatterEditor
 )
@@ -202,11 +203,24 @@ if [ "$MODE" = "test" ]; then
         RESULT[libs/MathLib]="FAIL (test build)"
     fi
 
+    # AssetStoreLib (MatterStore). Spawns itself as a child process to kill one
+    # mid-append, and runs a six-thread reader soak, so it wants a couple of
+    # seconds. The benchmark is NOT run here -- it writes ~100 MB of scratch and
+    # its numbers are a measurement, not a pass/fail gate; run it deliberately
+    # with `make -C libs/AssetStoreLib bench`.
+    if make -C libs/AssetStoreLib/tests build/asset_store_tests >/dev/null 2>&1; then
+        echo; echo "--- AssetStoreLib (asset_store_tests) ---"
+        ./libs/AssetStoreLib/tests/build/asset_store_tests \
+            || RESULT[libs/AssetStoreLib]="FAIL (tests)"
+    else
+        RESULT[libs/AssetStoreLib]="FAIL (test build)"
+    fi
+
     # MatterEngine3 headless suites (script host + voxel-CSG bake; GL-free host,
     # raylib-linked BLAS path). Each run-* target builds then runs its binary, so
     # a non-zero status covers both build and test failures. run-graph-integration
     # exercises the full SP-3 install -> SP-2 ScriptHost bake path end-to-end.
-    for tgt in run-ecs run-physics run-partv2 run-script run-iso run-graph run-graph-integration run-trivar run-polytri run-shlib run-comp run-flatten run-dev run-example run-gallery run-treebake run-viewer-logic run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesetslicer run-bc-encode run-tilesetvkrepack run-tilesetvkao run-tilesetvkhorizon run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq run-liveprod run-modapply run-modbake; do
+    for tgt in run-lod-distance run-ecs run-physics run-partv2 run-script run-iso run-graph run-graph-integration run-trivar run-polytri run-shlib run-comp run-flatten run-dev run-example run-gallery run-treebake run-viewer-logic run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesetslicer run-bc-encode run-tilesetvkrepack run-tilesetvkao run-tilesetvkhorizon run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq run-liveprod run-modapply run-modbake; do
         echo
         echo "--- MatterEngine3 ($tgt) ---"
         make -C MatterEngine3/tests "$tgt" || RESULT[MatterEngine3]="FAIL ($tgt)"
