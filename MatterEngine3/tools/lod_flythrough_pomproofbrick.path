@@ -1,0 +1,74 @@
+# MATTER_CAM_PATH for the M1d fly-through determinism gate on a STREAMED world.
+# World: PomProofBrick -- three domes over streamed terrain sectors.
+#
+# The eye DESCENDS on a geometric ramp 420 m -> 6 m over a fixed ground point
+# and never moves in x/z. Both properties are load-bearing:
+#
+#   fixed x/z  SectorStreamer measures sector distance in the horizontal plane
+#              only (sector_streamer.cpp dist_to / desired_lod_for_dist), so a
+#              purely vertical path leaves sector RESIDENCY untouched while the
+#              renderer'''s 3D distance walks every resident sector down its rung
+#              ladder. Residency churn would add publish-order noise on top of
+#              the selection signal this gate is for.
+#
+#   descending the widest view is pose 0, so MATTER_CAM_PATH_WARMUP settles
+#              every cluster the path will ever draw BEFORE the first compared
+#              frame. Flown the other way (6 m -> 420 m) the same 48 sectors
+#              are the same 48 sectors, but each one first enters the frustum
+#              mid-path, and the rung it is first drawn at then races with
+#              whatever fills its LOD records -- three sectors flipped between
+#              rung 0 and rung 2 across four warm runs. That is a real engine
+#              nondeterminism and worth its own gate; it is not what this path
+#              is measuring.
+#
+# Run it with MATTER_CAM_PATH_WARMUP=300 (the 30-frame default does not settle
+# a streamed world) and one pose per RENDERED frame:
+#     eye_x eye_y eye_z target_x target_y target_z
+37.0000 420.0000 0.0000 53.0000 0.0000 0.0000
+37.0000 383.7001 0.0000 53.0000 0.0000 0.0000
+37.0000 350.5375 0.0000 53.0000 0.0000 0.0000
+37.0000 320.2411 0.0000 53.0000 0.0000 0.0000
+37.0000 292.5632 0.0000 53.0000 0.0000 0.0000
+37.0000 267.2774 0.0000 53.0000 0.0000 0.0000
+37.0000 244.1771 0.0000 53.0000 0.0000 0.0000
+37.0000 223.0732 0.0000 53.0000 0.0000 0.0000
+37.0000 203.7934 0.0000 53.0000 0.0000 0.0000
+37.0000 186.1798 0.0000 53.0000 0.0000 0.0000
+37.0000 170.0886 0.0000 53.0000 0.0000 0.0000
+37.0000 155.3881 0.0000 53.0000 0.0000 0.0000
+37.0000 141.9582 0.0000 53.0000 0.0000 0.0000
+37.0000 129.6890 0.0000 53.0000 0.0000 0.0000
+37.0000 118.4802 0.0000 53.0000 0.0000 0.0000
+37.0000 108.2401 0.0000 53.0000 0.0000 0.0000
+37.0000 98.8851 0.0000 53.0000 0.0000 0.0000
+37.0000 90.3386 0.0000 53.0000 0.0000 0.0000
+37.0000 82.5308 0.0000 53.0000 0.0000 0.0000
+37.0000 75.3978 0.0000 53.0000 0.0000 0.0000
+37.0000 68.8813 0.0000 53.0000 0.0000 0.0000
+37.0000 62.9280 0.0000 53.0000 0.0000 0.0000
+37.0000 57.4892 0.0000 53.0000 0.0000 0.0000
+37.0000 52.5205 0.0000 53.0000 0.0000 0.0000
+37.0000 47.9813 0.0000 53.0000 0.0000 0.0000
+37.0000 43.8343 0.0000 53.0000 0.0000 0.0000
+37.0000 40.0458 0.0000 53.0000 0.0000 0.0000
+37.0000 36.5847 0.0000 53.0000 0.0000 0.0000
+37.0000 33.4227 0.0000 53.0000 0.0000 0.0000
+37.0000 30.5341 0.0000 53.0000 0.0000 0.0000
+37.0000 27.8950 0.0000 53.0000 0.0000 0.0000
+37.0000 25.4841 0.0000 53.0000 0.0000 0.0000
+37.0000 23.2816 0.0000 53.0000 0.0000 0.0000
+37.0000 21.2694 0.0000 53.0000 0.0000 0.0000
+37.0000 19.4311 0.0000 53.0000 0.0000 0.0000
+37.0000 17.7517 0.0000 53.0000 0.0000 0.0000
+37.0000 16.2175 0.0000 53.0000 0.0000 0.0000
+37.0000 14.8158 0.0000 53.0000 0.0000 0.0000
+37.0000 13.5353 0.0000 53.0000 0.0000 0.0000
+37.0000 12.3655 0.0000 53.0000 0.0000 0.0000
+37.0000 11.2967 0.0000 53.0000 0.0000 0.0000
+37.0000 10.3204 0.0000 53.0000 0.0000 0.0000
+37.0000 9.4284 0.0000 53.0000 0.0000 0.0000
+37.0000 8.6135 0.0000 53.0000 0.0000 0.0000
+37.0000 7.8691 0.0000 53.0000 0.0000 0.0000
+37.0000 7.1890 0.0000 53.0000 0.0000 0.0000
+37.0000 6.5676 0.0000 53.0000 0.0000 0.0000
+37.0000 6.0000 0.0000 53.0000 0.0000 0.0000

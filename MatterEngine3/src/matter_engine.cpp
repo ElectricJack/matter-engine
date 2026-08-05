@@ -1120,9 +1120,63 @@ struct WorldSession::Impl {
     };
     std::unordered_map<SectorKey, SectorEntry, SectorKeyHash> sector_map;
 
-    // Next instance id for sector placements (separate from the publish-pipeline
-    // next_manifest_id so the two don't collide; starts at 0x10000000 for sectors).
-    uint32_t sector_next_id = 0x10000000u;
+    // Instance id for a streamed sector placement: CONTENT-DERIVED, never an
+    // allocation counter.
+    //
+    // This used to be `sector_next_id++`, which made a sector's identity a
+    // function of the order the bake worker pool happened to finish in -- and
+    // that order is not fixed run to run. Every key downstream is built on it:
+    // WorldManifestEntry::instance_id -> ResolvedInstance::stable_id ->
+    // GpuInstance::instance_token via vulkan_history_token(), plus the temporal
+    // reprojection history and VulkanInstanceCache's per-source expansion memo.
+    // So the same patch of terrain was a different instance on every launch.
+    // Measured on PomProofBrick: two warm runs of one camera path shared only
+    // 9 of 48 (instance_token, cluster) trace keys, which is why the M1d
+    // fly-through determinism gate (tools/lod_trace_diff.py) could not be run
+    // on any world with streamed terrain -- the gate M2, M7 and M9 depend on.
+    //
+    // The derivation mirrors provider/resolvers.cpp::child_stable_id: the same
+    // Boost-style golden-ratio mix, the same "never 0" rule. The inputs are
+    // exactly what identifies the sector, and they match SectorKey plus the
+    // baked content:
+    //
+    //   tx, tz   the signed tile coordinate. int64_t, and negative in three
+    //            quadrants of every world, so each is mixed as its full 64-bit
+    //            two's-complement pattern. Nothing is truncated to 32 bits and
+    //            nothing is folded through abs(), so tx = -1 and tx = 2^32 - 1
+    //            stay distinct however far the world extends.
+    //   rung     the packed sector variant (scatter rung + terrain LOD + edge
+    //            masks). Required: sector_map is keyed by (tx,tz,rung), so two
+    //            variants of one tile can be resident at once during a rung
+    //            change and must not share an id.
+    //   hash     the baked part hash, which is what the id ultimately names.
+    //
+    // No placement ordinal: a publication emits exactly one WorldManifestEntry
+    // (see the single delta.added.push_back in the publish job), so the tuple
+    // above is already unique per instance.
+    //
+    // WorldManifestEntry::instance_id is uint32_t, so the 64-bit mix is folded
+    // to 31 bits under a set high bit. That bit is a range tag, not decoration:
+    // authored ids come from counters that start at 1 (local_provider.cpp's
+    // next_id, this file's next_manifest_id) and reach the low thousands, so
+    // the streamed half stays disjoint from them -- the property the old
+    // 0x10000000 base was there for, now enforced by construction rather than
+    // by a gap. It also makes the result non-zero, which vk_scene_renderer.cpp
+    // requires: a zero stable_id falls back to `source_index + 1`, an
+    // allocation-ordered value that would quietly reintroduce this very bug.
+    static uint32_t sector_instance_id(int64_t tx, int64_t tz, int rung,
+                                       uint64_t part_hash) {
+        const auto mix = [](uint64_t hash, uint64_t value) {
+            return hash ^ (value + 0x9e3779b97f4a7c15ull + (hash << 6) +
+                           (hash >> 2));
+        };
+        uint64_t hash = mix(0x9e3779b97f4a7c15ull, (uint64_t)tx);
+        hash = mix(hash, (uint64_t)tz);
+        hash = mix(hash, (uint64_t)(int64_t)rung);
+        hash = mix(hash, part_hash);
+        const uint64_t folded = hash ^ (hash >> 32);
+        return 0x80000000u | (uint32_t)(folded & 0x7fffffffull);
+    }
 
     // Sector size from the eval_world result (world units per sector tile).
     float world_sector_size = 16.0f;
@@ -4519,8 +4573,22 @@ void WorldSession::Impl::bake_and_stage_sector(
 
                     SectorEntry entry;
                     entry.request = request;
-                    entry.instance_id = sector_next_id++;
+                    entry.instance_id = sector_instance_id(
+                        key.tx, key.tz, key.rung, sector_hash);
                     entry.part_hash = sector_hash;
+                    // The 31-bit fold makes an id collision astronomically
+                    // unlikely rather than impossible, and a collision would
+                    // not crash -- WorldState::apply matches adds by id, so
+                    // the newcomer would silently REPLACE the live instance it
+                    // collided with and one patch of terrain would vanish.
+                    // state.find is the exact question (it scans the same
+                    // entries_ vector apply is about to walk) and costs nothing
+                    // next to the apply below, so the improbable case is
+                    // detected instead of assumed away.
+                    if (state.find(entry.instance_id) != nullptr) {
+                        return fail_publication(
+                            "sector instance id collided with a live instance");
+                    }
                     entry.provider_ref = provider_ref;
                     entry.resources.transient_artifact = true;
                     auto inserted = sector_map.emplace(key, std::move(entry));

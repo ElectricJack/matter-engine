@@ -1122,8 +1122,20 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // append world entries for any instance refs (BOUNDARY-path roots like
     // StressForest). Iterates to a fixed point so nested boundaries expand too.
     {
-        uint32_t next_id = out.instances.empty() ? 1u :
-            (out.instances.back().instance_id + 1u);
+        // Order-independent max-scan, matching the sibling allocator in
+        // matter_engine.cpp's publish pipeline. This read `back().instance_id
+        // + 1u`, which is only the maximum while every id in `out.instances`
+        // was allocated by one ascending counter in vector order -- an
+        // assumption nothing states and nothing checks, and the one place in
+        // the engine that would break if any id here ever stopped being an
+        // allocation counter (streamed sector ids already have; they are
+        // content-derived and live in the high half of the range, and they
+        // reach WorldState through a WorldDelta rather than this manifest,
+        // which is the only reason this line has not already produced
+        // duplicate ids).
+        uint32_t next_id = 1u;
+        for (const auto& e : out.instances)
+            if (e.instance_id >= next_id) next_id = e.instance_id + 1u;
         std::set<uint64_t> visited;
         while (true) {
             std::vector<uint64_t> to_process;

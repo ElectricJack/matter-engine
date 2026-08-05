@@ -297,32 +297,39 @@ Three findings the design did not anticipate:
    Gating at capture let the two or three frames still in flight when the path opened the
    gate into the stream — default-pose frames whose count depends on slot rotation.
 3. **`instance_token != 0` is not a strong enough identity assertion.** On PomProofBrick
-   the tokens are all nonzero and still differ between runs: only 5 of ~132
+   the tokens were all nonzero and still differed between runs: only 5 of ~132
    (token, cluster) pairs survived. `instance_token` derives from `WorldSession`'s
-   `instance_id`, which for streamed terrain sectors is allocation-ordered rather than
-   content-derived. **A world with streamed terrain cannot be gated here until its
-   instance ids are content-derived** — `lod_trace_diff.py` detects the low key overlap
-   and says so rather than printing hundreds of unrelated diffs. The gate currently runs
-   on RockGallery, whose instances are all authored parts.
+   `instance_id`, which for streamed terrain sectors was allocation-ordered rather than
+   content-derived, so two runs whose sectors published in a different order (worker-pool
+   completion order, which streaming does not fix) gave the same geometry different
+   identities. This was a **BLOCKER for M2, M7 and M9**, all three of which are about
+   streaming and all three of whose acceptance leans on this gate to show that "budgets
+   shape *when*, never *what*".
 
-   **This is a BLOCKER for M2, M7 and M9, not a footnote.** Those three milestones are
-   about streaming — atomic commits under residency pressure, visibility-priority ordering,
-   budget throttling — and each one's acceptance leans on this gate to show that
-   "budgets shape *when*, never *what*". A gate that cannot run on a streamed world cannot
-   make that showing. Confirmed at source: `matter_engine.cpp:4522` assigns
-   `entry.instance_id = sector_next_id++`, a monotonic counter, so two runs whose sectors
-   publish in a different order (worker-pool completion order, which streaming does not
-   fix) give the same geometry different identities.
+   **RESOLVED 2026-08-04.** Both halves of the trace key were allocation-ordered, and both
+   are now content-derived:
 
-   **Prerequisite for M2: make streamed-sector `stable_id` content-derived** — a hash of
-   (sector coord, part hash, placement index) rather than an allocation counter. The
-   machinery already exists one level down: `resolvers.cpp::child_stable_id` derives child
-   identity by hashing exactly that way, so this is extending an established pattern rather
-   than inventing one. It is also what the field's own comment already claims it is
-   ("authoritative world/path identity"). Not a live rendering defect today — within a
-   single session the counter is self-consistent, which is all temporal reprojection and
-   the instance cache need — but it is load-bearing for every identity-keyed feature the
-   redesign adds, impostor hierarchy ownership included.
+   * `matter_engine.cpp`'s `sector_instance_id()` replaces `sector_next_id++` with a hash
+     of (tile coord, variant rung, part hash), mixed exactly the way
+     `resolvers.cpp::child_stable_id` mixes (parent, part hash, ordinal). It is folded to
+     31 bits under a set high bit, which keeps streamed ids disjoint from the authored
+     counters and makes zero unrepresentable — a zero `stable_id` falls back to
+     `source_index + 1` in `vk_scene_renderer.cpp`, which would have reintroduced the bug
+     silently.
+   * The trace's `cluster_index` was the renderer's GLOBAL cluster slot, i.e.
+     `PartRecord::cluster_start` (handed out in part-registration order) plus a local
+     offset. `capture_lod_trace` now reports the cluster's index within its own part,
+     through a `FrameResources::lod_trace_local_cluster` snapshot taken at record time.
+
+   Measured on PomProofBrick over `tools/lod_flythrough_pomproofbrick.path`: key overlap
+   between two warm runs went from **9 of 48** to **48 of 48**, and 58 of 58 across four
+   runs of the descending path. RockGallery is unaffected and still MATCHes.
+
+   **Still open, and now visible because the keys hold still:** exactly one streamed sector
+   per run is drawn at rung 2 while the other ~57 sit at rung 0, and *which* sector it is
+   varies run to run. Present in traces taken before the identity fix as well, so it is a
+   separate defect — a sector's baked LOD ladder, not its identity. It is the last thing
+   between this gate and a green MATCH on a streamed world.
 
 ---
 
@@ -367,10 +374,12 @@ recipe work (design §3.3, closing note).
 
 ## M2 — Atomic switches
 
-> **Prerequisite (2026-08-04): make streamed-sector `stable_id` content-derived** before
-> the acceptance gates below are meaningful. M1d's determinism gate cannot run on a
-> streamed world while `instance_id` is an allocation counter, and both gates below are
-> statements about streamed worlds. See the note at the end of M1d.
+> **Prerequisite (2026-08-04): make streamed-sector `stable_id` content-derived** —
+> **DONE.** Both allocation-ordered halves of M1d's trace key (the sector instance id and
+> the global cluster slot) are now content-derived, and key overlap between two warm runs
+> of PomProofBrick went from 9/48 to 48/48. See the note at the end of M1d, including the
+> one remaining streamed-world nondeterminism it uncovered (one sector per run drawn at the
+> coarsest rung), which the gates below will trip over until it is fixed.
 
 Scope: residency-gated commits — a rep switch commits only when geometry + BLAS + (for now)
 its per-rung pages are all resident; batched commits; hysteresis bands; evict-after-commit

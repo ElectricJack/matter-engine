@@ -8986,12 +8986,25 @@ void VkSceneRenderer::capture_lod_trace(FrameResources& frame) {
         const uint32_t drawn = commands[bucket].instance_count;
         if (drawn == 0) continue;
         const uint32_t first = commands[bucket].first_instance;
+        // The bucket names a GLOBAL cluster slot. Report the cluster's index
+        // within its own part instead: the global slot is allocation-ordered
+        // (see FrameResources::lod_trace_local_cluster) and would make the
+        // trace key unstable across warm runs of a streamed world. A slot no
+        // registered part claimed keeps its global index, which is a diff the
+        // gate should show rather than hide.
+        const uint32_t global_cluster = bucket / kVkMaxLod;
+        uint32_t cluster_key = global_cluster;
+        if (global_cluster < frame.lod_trace_local_cluster.size()) {
+            const uint32_t owned =
+                frame.lod_trace_local_cluster[global_cluster];
+            if (owned != UINT32_MAX) cluster_key = owned;
+        }
         for (uint32_t offset = 0; offset < drawn; ++offset) {
             const uint64_t index = static_cast<uint64_t>(first) + offset;
             if (index >= transforms.size()) break;
             entries.push_back(lod_trace::Entry{
                 transforms[static_cast<size_t>(index)].instance_token,
-                bucket / kVkMaxLod, bucket % kVkMaxLod});
+                cluster_key, bucket % kVkMaxLod});
         }
     }
     lod_trace::submit_frame(frame.lod_trace_serial, std::move(entries));
@@ -10277,6 +10290,27 @@ bool VkSceneRenderer::record_cull_and_render(
     // The editor's camera-path pose index when one is driving, else the frame
     // serial. See lod_trace.h: the serial is NOT run-independent.
     selected.lod_trace_serial = lod_trace::frame_label(frame.serial);
+    // Global-cluster -> part-local-cluster, taken here while parts_ still
+    // describes the part set this frame culled. See FrameResources for why the
+    // global slot is not a run-stable key.
+    if (selected.lod_trace_valid) {
+        std::vector<uint32_t>& local = selected.lod_trace_local_cluster;
+        size_t span = cluster_staging_.size();
+        for (const PartRecord& part : parts_)
+            span = std::max<size_t>(
+                span, static_cast<size_t>(part.cluster_start) +
+                          part.cluster_count);
+        local.assign(span, UINT32_MAX);
+        for (const PartRecord& part : parts_) {
+            for (uint32_t i = 0; i < part.cluster_count; ++i) {
+                const size_t index =
+                    static_cast<size_t>(part.cluster_start) + i;
+                if (index < local.size()) local[index] = i;
+            }
+        }
+    } else if (!selected.lod_trace_local_cluster.empty()) {
+        selected.lod_trace_local_cluster.clear();
+    }
     return true;
 }
 

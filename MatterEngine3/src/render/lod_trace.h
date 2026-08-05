@@ -49,6 +49,11 @@ namespace viewer::lod_trace {
 // chose for it.
 struct Entry {
     uint32_t instance_token = 0;
+    // The cluster's index WITHIN ITS PART, not the renderer's global cluster
+    // slot. The slot is PartRecord::cluster_start plus this, and cluster_start
+    // is handed out in part-registration order — for a streamed world, bake
+    // completion order, which differs between warm runs. VkSceneRenderer
+    // converts at capture time; see FrameResources::lod_trace_local_cluster.
     uint32_t cluster_index = 0;
     uint32_t lod = 0;
 };

@@ -1424,6 +1424,25 @@ private:
         uint32_t lod_trace_command_count = 0;
         uint32_t lod_trace_transform_slots = 0;
         uint64_t lod_trace_serial = 0;
+        // Global cluster slot -> the cluster's index WITHIN ITS PART, snapshot
+        // at record time; UINT32_MAX where no registered part owns the slot.
+        //
+        // The bucket arithmetic recovers a global slot, which is
+        // PartRecord::cluster_start plus a local offset -- and cluster_start
+        // comes out of free_clusters_ in part REGISTRATION order. For a
+        // streamed world that is bake-completion order, so it moves between
+        // warm runs exactly as the sector instance ids used to: measured on
+        // PomProofBrick, 42 of 48 cluster indices survived a second warm run,
+        // and the six that moved were enough to fail the gate on their own
+        // once instance_token had been made content-derived. The part-local
+        // index does not move, and (instance_token, local index) is still a
+        // unique key: a token names one instance, an instance names one part.
+        //
+        // Snapshotted rather than looked up in parts_ at capture time for the
+        // same reason as the counts above -- capture runs a full frame-slot
+        // rotation later, and a released part's cluster range can be reused by
+        // a different part in between. Populated only while the trace is on.
+        std::vector<uint32_t> lod_trace_local_cluster;
         // Published only after the compute dispatch and both vertex-input
         // barriers have been recorded.  A malformed source/mapping therefore
         // leaves the regular static/last-good draw path intact.

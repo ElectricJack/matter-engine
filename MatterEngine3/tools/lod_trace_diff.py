@@ -157,12 +157,18 @@ def main():
 
     # A specific diagnosis for a failure that otherwise reads as hundreds of
     # unrelated DIFF lines: the two runs did not disagree about SELECTION, they
-    # disagreed about who the instances ARE. instance_token derives from
-    # WorldSession's instance_id, and for streamed terrain sectors that id is
-    # allocation-ordered rather than content-derived, so it is not a stable key
-    # across runs. Measured on PomProofBrick: 5 of ~132 (token, cluster) pairs
-    # survived between two warm runs. A world in this state cannot be gated here
-    # until its instance ids become content-derived.
+    # disagreed about who the instances ARE.
+    #
+    # Both halves of this key were once allocation-ordered, and a streamed world
+    # scored 5 of ~132 surviving pairs here. instance_token derived from
+    # WorldSession's instance_id, which for a streamed sector was
+    # `sector_next_id++`; and cluster_index was the renderer's global cluster
+    # slot, i.e. PartRecord::cluster_start (part-registration order) plus a
+    # local offset. Both are now content-derived — see
+    # matter_engine.cpp::sector_instance_id and
+    # FrameResources::lod_trace_local_cluster — and PomProofBrick scores 48/48.
+    # This check stays as the regression guard for that: if it ever fires again,
+    # some new identity has been keyed on an allocation counter.
     a_keys = keys_of(a_lines)
     b_keys = keys_of(b_lines)
     if a_keys and b_keys:
@@ -170,10 +176,10 @@ def main():
         if overlap < 0.5:
             print("BAD  the two runs share only {:.0%} of their (instance_token,"
                   " cluster) keys. This is not a selection difference -- the "
-                  "instance IDENTITIES differ between runs, so the trace key is "
-                  "not stable for this world (streamed terrain instance_ids are "
-                  "allocation-ordered). Gate a world whose instances are "
-                  "authored parts instead.".format(overlap))
+                  "instance IDENTITIES differ between runs, so some part of the "
+                  "trace key has been derived from an allocation counter rather "
+                  "than from content. Both known offenders were fixed on "
+                  "2026-08-04; look for a THIRD.".format(overlap))
             failed = True
 
     if a_summary != b_summary:
