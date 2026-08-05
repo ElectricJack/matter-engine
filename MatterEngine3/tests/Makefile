@@ -523,7 +523,7 @@ CHARTATLAS_TARGET = build/chart_atlas_tests
 CHARTATLAS_CPP = chart_atlas_tests.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
                  ../src/part_asset_v2.cpp \
                  ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp \
-                 ../src/render/part_store.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
+                 ../src/render/part_store.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
                  ../src/lod_select.cpp ../src/sector_grid.cpp \
                  ../src/animation/animation_asset_store.cpp ../src/animation/anim_asset.cpp \
                  ../src/animation/anim_bundle.cpp ../src/animation/animation_binding_bake.cpp \
@@ -536,6 +536,7 @@ CHARTATLAS_C   = $(MSL)/material_registry.c
 
 FLATTEN_TARGET = build/part_flatten_tests
 FLATTEN_CPP = part_flatten_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp \
+              ../src/impostor_bake.cpp \
               ../src/bake_trace.cpp \
               ../src/part_cluster.cpp \
               ../src/part_asset_v2.cpp \
@@ -875,7 +876,7 @@ SECTORPROF_CPP = sector_setup_profile.cpp $(filter-out sector_bake_tests.cpp,$(S
 SECTORPROF_C = $(COMMON_MSL_C)
 
 PARTSTORE_TARGET = build/partstore_tests
-PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp ../src/warp_field.cpp \
+PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp \
                 ../src/render/matrix_math.cpp \
                 ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
@@ -939,7 +940,7 @@ GRAPH_INT_TARGET = build/part_graph_integration_tests
 # carries the animation-authoring closure this suite now needs. The extra
 # render/LOD sources below are the A8 additions (part_store.h consumers).
 GRAPH_INT_CPP = part_graph_integration_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP)) \
-                ../src/render/part_store.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
+                ../src/render/part_store.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
                 ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/animation/animation_asset_store.cpp
 GRAPH_INT_C   = $(COMMON_MSL_C)
@@ -955,6 +956,7 @@ EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
               ../src/script/world_definition_loader.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp \
+              ../src/impostor_bake.cpp \
               ../src/retopo_blacklist.cpp \
               ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
               ../src/part_cluster.cpp \
@@ -1137,7 +1139,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
               ../src/render/world_state.cpp \
               ../src/provider/resolvers.cpp \
-              ../src/render/part_store.cpp ../src/warp_field.cpp \
+              ../src/render/part_store.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp \
               ../src/provider/local_provider.cpp \
               ../src/render/raster_mesh.cpp \
               ../src/tileset_phase.cpp \
@@ -1161,7 +1163,7 @@ RETOPO_INT_CPP = retopo_integration_tests.cpp ../src/bake_trace.cpp \
                  ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \
                  ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
-                 ../src/part_flatten.cpp ../src/part_cluster.cpp \
+                 ../src/part_flatten.cpp ../src/impostor_bake.cpp ../src/part_cluster.cpp \
                  ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                  ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp \
                  $(MSL)/mesh_retopo.cpp \
@@ -1215,7 +1217,7 @@ GPU_PIPELINE_CPP = \
     ../src/script_rng_binding.cpp \
     ../src/polygon_triangulate.cpp \
     ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
-    ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/triangle_emit.cpp \
+    ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/impostor_bake.cpp ../src/triangle_emit.cpp \
     ../src/part_cluster.cpp \
     ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
     ../src/tileset_torus_bvh.cpp \

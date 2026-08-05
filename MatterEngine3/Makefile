@@ -132,6 +132,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/part_asset_v2.cpp src/part_graph.cpp src/part_graph_snapshot.cpp \
           src/live_edit.cpp src/live_edit_prod.cpp src/inotify_watcher.cpp \
           src/lod_bake.cpp src/world_flatten.cpp src/part_flatten.cpp \
+          src/impostor_bake.cpp \
           src/retopo_blacklist.cpp \
           src/modifier_apply.cpp \
           src/sector_grid.cpp src/lod_select.cpp \

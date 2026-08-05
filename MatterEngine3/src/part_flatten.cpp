@@ -4,6 +4,7 @@
 #include "bake_trace_names.h"  // kSpanFlatten
 
 #include "part_asset_v2.h"   // load_v2/save_flat_v3, cache_path_*, load_lod_sidecar
+#include "impostor_bake.h"   // terminal impostor rep (M2.5)
 #include "lod_bake.h"        // decimate_to_error
 #include "part_cluster.h"    // split_clusters
 #include "tlas_manager.hpp"             // MSL TLASManager (load_v2 signature)
@@ -911,6 +912,24 @@ static bool load_child_flat(const std::string& cache_root, uint64_t child_hash,
         return false;
     }
 
+    // M2.5: strip a child's terminal BILLBOARD rung before inlining anything.
+    // A billboard is only a picture once the vertex stage orients it at the
+    // camera; merged into a parent's mesh it is a two-triangle card lying in
+    // the child's local XY plane, and the parent has no way to know it was
+    // ever meant to rotate. The parent inlines the child's coarsest MESH rung
+    // instead, which is what the coarse segment always meant.
+    {
+        const auto& probe = blas.get_entries();
+        for (auto& c : clusters) {
+            if (c.lods.size() < 2) continue;
+            const auto& last = c.lods.back().blas_indices;
+            if (last.size() != 1 || last[0] >= probe.size()) continue;
+            const BLASManager::BLASEntry* e = probe[last[0]].get();
+            if (e && impostor::is_billboard_rung(e->triangles, e->tri_extra))
+                c.lods.pop_back();
+        }
+    }
+
     // If the child is itself segmented, its coarse (segment 1) clusters are the
     // stand-alone coarse geometry we want to inline; restrict the merged view to
     // those. Otherwise every cluster contributes.
@@ -1427,6 +1446,20 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
     std::vector<part_asset::FlatCluster> flat_clusters;
     flat_clusters.reserve(n_clusters);
 
+    // M2.5: the terminal impostor rep, accumulated per cluster and written to
+    // one sidecar beside the .flat.part. `impostor_depicts` folds the terminal
+    // MESH rung each atlas is a picture of, so an atlas outliving the ladder it
+    // depicts is detected at load rather than drawn.
+    impostor::PartImpostor part_impostor;
+    uint64_t impostor_depicts = impostor::depicts_hash_begin();
+    // MATTER_IMPOSTOR=0 bakes a mesh-only ladder, so the tier can be A/B'd
+    // against itself on one cache without a rebuild. Read once per flatten
+    // (not static) so a test can flip it between calls.
+    const bool impostors_enabled = [] {
+        const char* v = std::getenv("MATTER_IMPOSTOR");
+        return !(v && v[0] == '0');
+    }();
+
     size_t max_levels = 0;
     size_t coarsest_tris = 0;
 
@@ -1629,8 +1662,85 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
             if (prev_count <= (size_t)targets.min_level_tris) break;
         }
 
+        // ------------------------------------------------------------------
+        // M2.5 — the terminal impostor rep (redesign §2, §3.3).
+        //
+        // The ladder has just stopped, and it stopped because decimation
+        // stopped buying a real reduction (min_level_benefit). That index IS
+        // the bottom-out point the design names as the impostor's home, so no
+        // artifact field and no author guess is needed: whatever rung the loop
+        // above left last is what the billboard takes over from.
+        //
+        // The impostor is appended as an ORDINARY rung of this same ladder --
+        // two triangles, its own BLAS entry, its own switch threshold in the
+        // same table -- so lod::select_rep picks it with no new selection code,
+        // it rides the existing indirect draw, and capture_lod_trace sees it as
+        // rung N. The only thing that marks it out is what its TriEx carries
+        // (impostor::build_quad), which the vertex stage reads to face it at
+        // the camera.
+        float impostor_eps = 0.0f;
+        if (targets.impostor_terminal && impostors_enabled && !level_metas.empty()) {
+            const auto& blas_entries = blas.get_entries();
+            const uint32_t term_idx = level_metas.back().blas_idx;
+            const size_t term_tris =
+                term_idx < blas_entries.size()
+                    ? blas_entries[term_idx]->triangles.size() : 0;
+            if (impostor::cluster_earns_impostor(term_tris)) {
+                // The ladder is capped at kMaxSerializedLodLevels and the
+                // impostor IS the terminal rep, so when the cap is already
+                // spent the coarsest MESH rung yields its slot rather than the
+                // ladder overflowing. Its BLAS entry stays in the artifact
+                // unreferenced (a few KB); dropping it from the table would
+                // renumber every later blas_index.
+                if (level_metas.size() >= matter::kMaxSerializedLodLevels)
+                    level_metas.pop_back();
+                const uint32_t src_idx = level_metas.back().blas_idx;
+                const BLASManager::BLASEntry* src =
+                    src_idx < blas_entries.size()
+                        ? blas_entries[src_idx].get() : nullptr;
+                impostor::ClusterImpostor imp;
+                const bool baked =
+                    src && impostor::bake_cluster(
+                               static_cast<uint32_t>(flat_clusters.size()),
+                               src->triangles, src->tri_extra, imp);
+                if (baked) {
+                    std::vector<Tri> quad_tris;
+                    std::vector<TriEx> quad_ex;
+                    impostor::build_quad(imp, quad_tris, quad_ex);
+                    // The billboard's ORDINAL within this part, quantized to
+                    // the u8 tint channel the vertex stream carries. It is how
+                    // the renderer knows which of the part's atlases a given
+                    // pair of triangles belongs to, and it must survive a load
+                    // that drops some other cluster's impostor -- so it is the
+                    // bake-order index, not a position in any later list.
+                    {
+                        const float ordinal =
+                            static_cast<float>(std::min<size_t>(
+                                part_impostor.clusters.size(), 255)) / 255.0f;
+                        for (TriEx& e : quad_ex)
+                            e.tint = make_float4(0.0f, 0.0f, ordinal, 0.0f);
+                    }
+                    // One more ratio-2 step of the divisor schedule: the
+                    // impostor switches in exactly where the next mesh rung
+                    // would have, had one been worth building.
+                    impostor_eps = level_metas.back().eps > 0.0f
+                                       ? level_metas.back().eps * 2.0f
+                                       : radius;
+                    if (register_level(quad_tris, quad_ex, impostor_eps,
+                                       level_metas)) {
+                        impostor::depicts_hash_add_cluster(
+                            impostor_depicts, imp.cluster_index, src->triangles);
+                        part_impostor.clusters.push_back(std::move(imp));
+                    } else {
+                        return res;
+                    }
+                }
+            }
+        }
+
         if (ladder_log) {
             ladder_line += " levels=" + std::to_string(level_metas.size());
+            if (impostor_eps > 0.0f) ladder_line += " +impostor";
             std::fprintf(stderr, "%s\n", ladder_line.c_str());
         }
 
@@ -1687,6 +1797,23 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
     const size_t rss_peak = log_peak ? peak_rss_bytes() : 0;
 
     const std::string out_path = cache_root + "/" + part_asset::cache_path_flat(root_hash);
+    // The impostor sidecar goes down FIRST. Both files are published by atomic
+    // rename, so the only ordering that can leave a coherent pair on a crash is
+    // atlas-then-ladder: a .flat.part carrying impostor rungs whose atlas never
+    // arrived is a tier that draws untextured, whereas an orphan .fimp is
+    // rejected on identity and logged.
+    if (!part_impostor.empty()) {
+        const std::string imp_path =
+            cache_root + "/" + impostor::cache_path_impostor(root_hash);
+        res.impostors = part_impostor.clusters.size();
+        if (!impostor::save(imp_path,
+                            root_hash,
+                            impostor::depicts_hash_finish(impostor_depicts),
+                            part_impostor)) {
+            res.error = "flatten: impostor sidecar write failed for " + imp_path;
+            return res;
+        }
+    }
     if (!part_asset::save_flat_v3(out_path, blas, tlas, flat_clusters, refs,
                                   root_hash, root_emitters)) {
         res.error = "flatten: save_flat_v3 failed for " + out_path;

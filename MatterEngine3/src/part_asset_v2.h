@@ -27,8 +27,15 @@ constexpr uint32_t kFormatVersionV3 = 3u;
 // bake-hardening #2 bumped 4 -> 5 to add the instance_refs trailer;
 // lod-instanced-children bumped 5 -> 6 to add segment tag + inline_cutover;
 // the shared nine-level serialized/render capacity bumped 6 -> 7;
-// volumetric emitter trailer bumped 7 -> 8).
-constexpr uint32_t kFormatVersionFlat = 8u;
+// volumetric emitter trailer bumped 7 -> 8;
+// M1.5's ladder benefit floor plus M2.5's terminal impostor rung bumped 8 -> 9:
+// the on-disk BYTES are unchanged, but the LADDER a v8 flat carries is no
+// longer the ladder this engine builds -- fewer mesh rungs, and a two-triangle
+// billboard where the mesh ladder bottoms out. A v8 flat's terminal rung is a
+// mesh whose .fimp sidecar does not exist, so leaving the version alone would
+// have shipped an engine that silently never impostors on any pre-existing
+// cache).
+constexpr uint32_t kFormatVersionFlat = 9u;
 
 // Content-addressed identity for a part. All three inputs are OPAQUE byte ranges
 // to SP-1 (script source, params, child resolved-hashes). child_hashes need NOT be

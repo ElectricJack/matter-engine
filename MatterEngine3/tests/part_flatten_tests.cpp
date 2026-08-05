@@ -5,6 +5,7 @@
 // (parts/<hash>.part), then flatten_part() merges them and we verify the flat
 // artifact via load_v2.
 #include "part_flatten.h"
+#include "impostor_bake.h"
 #include "part_asset_v2.h"
 #include "lod_bake.h"
 #include "bake_trace.h"        // Bake Lab task 1.5: flatten/LOD trace-shape tests
@@ -1129,8 +1130,17 @@ static void test_flatten_watertight_invariant() {
             if (shared_verts.count(p)) cluster_shared.insert(p);
         if (cluster_shared.empty()) continue;
 
-        // Check every coarser level.
+        // Check every coarser MESH level. The terminal billboard rung (M2.5)
+        // is deliberately exempt: it is not a decimation of the cluster, it is
+        // a picture of it, and its four corners are a camera-facing quad that
+        // shares no vertex with anything. Watertightness is a property of the
+        // mesh ladder, and the mesh ladder now stops one rung earlier.
         for (size_t li = 1; li < clusters_in[ci].lods.size(); ++li) {
+            const auto& bi = clusters_in[ci].lods[li].blas_indices;
+            if (bi.size() == 1 && bi[0] < entries.size() &&
+                impostor::is_billboard_rung(entries[bi[0]]->triangles,
+                                            entries[bi[0]]->tri_extra))
+                continue;
             std::set<FP3> level_verts = collect_verts(clusters_in[ci].lods[li].blas_indices);
             for (const FP3& p : cluster_shared) {
                 if (level_verts.find(p) == level_verts.end()) {
@@ -1485,7 +1495,11 @@ static void test_flat_version_bump() {
 
     // New flats carry the bumped version.
     assert(part_asset::peek_format_version(p) == part_asset::kFormatVersionFlat);
-    assert(part_asset::kFormatVersionFlat == 8u);
+    // M2.5 bumped 8 -> 9: the ladder a flat carries changed (M1.5's benefit
+    // floor removed rungs, and the bottom-out point gained a billboard rung),
+    // so a v8 flat is not merely older bytes -- it is a different ladder whose
+    // impostor sidecar does not exist.
+    assert(part_asset::kFormatVersionFlat == 9u);
 
     // Patch the version field back to 3 (a pre-retune bake): loader must reject.
     // Header layout: magic (u32) then format_version (u32) — verify the write
@@ -1904,7 +1918,305 @@ static void test_bake_lods_observer_rungs() {
 
 static void test_emitter_flat_round_trip();
 
+
+// ------------------------------------------------------- M2.5 impostor rep --
+//
+// The terminal representation: past the ladder's bottom-out point a part draws
+// a two-triangle camera-facing billboard sampling a baked view atlas. These
+// tests cover the three properties the milestone is judged on -- ELIGIBILITY
+// (a 2-triangle part must never get one), DETERMINISM (two bakes are
+// byte-identical), and FAILABILITY (every rejection is reported with a named
+// reason, so a tier can never go missing in silence again).
+
+static std::vector<TriEx> triex_for(const std::vector<Tri>& tris, int material) {
+    std::vector<TriEx> ex(tris.size());
+    for (size_t i = 0; i < tris.size(); ++i) {
+        ex[i] = make_triex(material);
+        // Sphere fixture: the outward radial direction IS the surface normal.
+        ex[i].N0 = tris[i].vertex0;
+        ex[i].N1 = tris[i].vertex1;
+        ex[i].N2 = tris[i].vertex2;
+        ex[i].tint = make_float4(0.5f, 0.25f, 0.75f, 1.0f);
+        ex[i].ao0 = ex[i].ao1 = ex[i].ao2 = 0.5f;
+    }
+    return ex;
+}
+
+static void test_impostor_eligibility() {
+    printf("=== test_impostor_eligibility ===\n");
+    // The floor is an ORDER-OF-MAGNITUDE reduction (2 / N <= 0.125), not the
+    // ladder's 30 %: unlike a mesh rung the impostor carries a per-part atlas.
+    CHECK(!impostor::cluster_earns_impostor(0), "0 triangles: no impostor");
+    CHECK(!impostor::cluster_earns_impostor(2),
+          "2-triangle terminal: no impostor (it would ADD geometry)");
+    CHECK(!impostor::cluster_earns_impostor(15), "15 triangles: below the floor");
+    CHECK(impostor::cluster_earns_impostor(16), "16 triangles: 8x reduction, admitted");
+    CHECK(impostor::cluster_earns_impostor(4258), "hero boulder: admitted");
+    printf("PASSED\n");
+}
+
+static void test_impostor_bake_deterministic() {
+    printf("=== test_impostor_bake_deterministic ===\n");
+    std::vector<Tri> tris = sphere_tris(12, 8);
+    std::vector<TriEx> ex = triex_for(tris, 3);
+
+    impostor::ClusterImpostor a, b;
+    CHECK(impostor::bake_cluster(0, tris, ex, a), "bake_cluster succeeds");
+    CHECK(impostor::bake_cluster(0, tris, ex, b), "bake_cluster succeeds twice");
+    CHECK(a.atlas.size() == impostor::kAtlasBytes, "atlas is the declared size");
+    CHECK(a.atlas == b.atlas, "two bakes produce a byte-identical atlas");
+    CHECK(a.half_extent > 0.0f && a.half_extent == b.half_extent,
+          "half extent is positive and reproducible");
+    CHECK(a.material_index == 3u, "dominant material is the mesh's material");
+    CHECK(a.source_tris == tris.size(), "source triangle count recorded");
+
+    // Coverage: the sphere fills a good fraction of every cell, and the cell
+    // borders stay clear (the 2 % margin) so bilinear filtering cannot bleed a
+    // neighbouring view in.
+    size_t covered = 0;
+    for (size_t t = 0; t < impostor::kLayerPx * impostor::kLayerPx; ++t)
+        if (a.atlas[t * 4 + 3] > 0) ++covered;
+    CHECK(covered > impostor::kLayerPx * impostor::kLayerPx / 4,
+          "the baked silhouette covers a substantial share of the atlas");
+    bool border_clear = true;
+    for (uint32_t v = 0; v < impostor::kViews; ++v) {
+        const uint32_t cx = (v % impostor::kGridDim) * impostor::kCellPx;
+        const uint32_t cy = (v / impostor::kGridDim) * impostor::kCellPx;
+        for (uint32_t k = 0; k < impostor::kCellPx; ++k) {
+            const size_t top = (size_t(cy) * impostor::kLayerPx + cx + k) * 4;
+            const size_t left = (size_t(cy + k) * impostor::kLayerPx + cx) * 4;
+            if (a.atlas[top + 3] != 0 || a.atlas[left + 3] != 0) border_clear = false;
+        }
+    }
+    CHECK(border_clear,
+          "every cell border texel is empty (the guard band stops cross-view bleed)");
+
+    // Fractional coverage is what antialiases the silhouette: a hard 0/255
+    // cutout would leave every covered texel at 255.
+    bool any_partial = false;
+    for (size_t t = 0; t < impostor::kLayerPx * impostor::kLayerPx; ++t) {
+        const uint8_t cov = a.atlas[t * 4 + 3];
+        if (cov > 0 && cov < 255) { any_partial = true; break; }
+    }
+    CHECK(any_partial, "supersampling yields fractional edge coverage");
+
+    // A different mesh must produce a different atlas, or the bake is not
+    // actually looking at the geometry.
+    std::vector<Tri> other = sphere_tris(12, 8);
+    for (auto& t : other) {
+        t.vertex0.y *= 0.4f; t.vertex1.y *= 0.4f; t.vertex2.y *= 0.4f;
+    }
+    impostor::ClusterImpostor c;
+    CHECK(impostor::bake_cluster(0, other, triex_for(other, 3), c), "squashed bake ok");
+    CHECK(c.atlas != a.atlas, "a different shape produces a different atlas");
+    printf("PASSED\n");
+}
+
+static void test_impostor_quad_shape() {
+    printf("=== test_impostor_quad_shape ===\n");
+    impostor::ClusterImpostor imp;
+    imp.center[0] = 1.0f; imp.center[1] = 2.0f; imp.center[2] = -3.0f;
+    imp.half_extent = 0.75f;
+    imp.material_index = 7;
+    std::vector<Tri> tris; std::vector<TriEx> ex;
+    impostor::build_quad(imp, tris, ex);
+    CHECK(tris.size() == 2, "the billboard rung is exactly two triangles");
+    CHECK(ex.size() == 2, "with parallel TriEx");
+    if (tris.size() != 2 || ex.size() != 2) { printf("FAILED\n"); return; }
+    CHECK(ex[0].uv0.x >= impostor::kQuadMarker, "corner 0 carries the impostor marker");
+    CHECK(ex[1].uv2.x >= impostor::kQuadMarker, "every corner carries the marker");
+    CHECK(ex[0].materialId == 7, "the quad inherits the dominant material");
+    CHECK(ex[0].ao0 == imp.half_extent,
+          "the AO channel transports the half extent to the vertex stage");
+    // The vertex stage recovers the centre as position - sign(corner)*extent;
+    // that only works if every corner sits exactly one extent from the centre
+    // on both axes.
+    bool centred = true;
+    for (const Tri& t : tris) {
+        const float3 vs[3] = {t.vertex0, t.vertex1, t.vertex2};
+        for (const float3& v : vs) {
+            if (std::fabs(std::fabs(v.x - imp.center[0]) - imp.half_extent) > 1e-6f ||
+                std::fabs(std::fabs(v.y - imp.center[1]) - imp.half_extent) > 1e-6f ||
+                std::fabs(v.z - imp.center[2]) > 1e-6f)
+                centred = false;
+        }
+    }
+    CHECK(centred, "every corner is one half-extent from the centre on both axes");
+    printf("PASSED\n");
+}
+
+static void test_impostor_sidecar_failability() {
+    printf("=== test_impostor_sidecar_failability ===\n");
+    std::vector<Tri> tris = sphere_tris(12, 8);
+    std::vector<TriEx> ex = triex_for(tris, 2);
+    impostor::PartImpostor part;
+    part.clusters.resize(1);
+    CHECK(impostor::bake_cluster(0, tris, ex, part.clusters[0]), "bake ok");
+
+    uint64_t h = impostor::depicts_hash_begin();
+    impostor::depicts_hash_add_cluster(h, 0, tris);
+    const uint64_t depicts = impostor::depicts_hash_finish(h);
+    const uint64_t part_hash = 0xABCDEF0123456789ull;
+    const std::string path =
+        std::string(kCacheRoot) + "/" + impostor::cache_path_impostor(part_hash);
+
+    CHECK(impostor::save(path, part_hash, depicts, part), "sidecar written");
+
+    impostor::PartImpostor out;
+    impostor::LoadFailure fail = impostor::LoadFailure::None;
+    std::string reason;
+    CHECK(impostor::load(path, part_hash, depicts, out, &fail, &reason),
+          "sidecar loads");
+    CHECK(fail == impostor::LoadFailure::None, "no failure reported on a good load");
+    CHECK(out.clusters.size() == 1, "one cluster round-trips");
+    if (out.clusters.size() == 1) {
+        CHECK(out.clusters[0].atlas == part.clusters[0].atlas,
+              "atlas bytes survive the round trip exactly");
+        CHECK(out.clusters[0].half_extent == part.clusters[0].half_extent,
+              "half extent round-trips");
+        CHECK(out.clusters[0].material_index == part.clusters[0].material_index,
+              "material index round-trips");
+    }
+
+    // Byte-identical file for a byte-identical bake: the .gtex double-bake
+    // discipline applied to the atlas.
+    const std::string path2 = path + ".second";
+    impostor::PartImpostor part2;
+    part2.clusters.resize(1);
+    impostor::bake_cluster(0, tris, ex, part2.clusters[0]);
+    CHECK(impostor::save(path2, part_hash, depicts, part2), "second sidecar written");
+    {
+        std::ifstream fa(path, std::ios::binary), fb(path2, std::ios::binary);
+        std::string sa((std::istreambuf_iterator<char>(fa)),
+                       std::istreambuf_iterator<char>());
+        std::string sb((std::istreambuf_iterator<char>(fb)),
+                       std::istreambuf_iterator<char>());
+        CHECK(!sa.empty() && sa == sb, "two cold bakes write byte-identical sidecars");
+    }
+
+    // --- every rejection reports a distinct, named reason -------------------
+    CHECK(!impostor::load(path, part_hash ^ 1ull, depicts, out, &fail, &reason) &&
+              fail == impostor::LoadFailure::Identity,
+          "a sidecar for another part is rejected as Identity");
+    CHECK(!impostor::load(path, part_hash, depicts ^ 1ull, out, &fail, &reason) &&
+              fail == impostor::LoadFailure::Stale,
+          "an atlas depicting another mesh is rejected as Stale");
+    CHECK(!impostor::load(path + ".missing", part_hash, depicts, out, &fail, &reason) &&
+              fail == impostor::LoadFailure::Absent,
+          "a missing sidecar reports Absent");
+
+    std::string bytes;
+    {
+        std::ifstream f(path, std::ios::binary);
+        bytes.assign((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+    }
+    CHECK(bytes.size() > 4096, "sidecar has a payload to corrupt");
+
+    // Corrupt one atlas byte deep in the payload: the checksum must catch it.
+    {
+        const std::string corrupt = path + ".corrupt";
+        std::string copy = bytes;
+        copy[copy.size() / 2] = static_cast<char>(copy[copy.size() / 2] ^ 0x5A);
+        { std::ofstream f(corrupt, std::ios::binary); f.write(copy.data(), copy.size()); }
+        CHECK(!impostor::load(corrupt, part_hash, depicts, out, &fail, &reason) &&
+                  fail == impostor::LoadFailure::Checksum,
+              "one flipped atlas byte is rejected as Checksum");
+        CHECK(out.clusters.empty(), "a rejected load leaves nothing behind");
+    }
+    // Truncation and a bad magic are separate reasons, not one catch-all.
+    {
+        const std::string trunc = path + ".trunc";
+        {
+            std::ofstream f(trunc, std::ios::binary);
+            f.write(bytes.data(), static_cast<std::streamsize>(bytes.size() - 64));
+        }
+        CHECK(!impostor::load(trunc, part_hash, depicts, out, &fail, &reason) &&
+                  fail == impostor::LoadFailure::Truncated,
+              "a short file is rejected as Truncated");
+        const std::string magic = path + ".magic";
+        std::string copy = bytes;
+        copy[0] = 'X';
+        { std::ofstream f(magic, std::ios::binary); f.write(copy.data(), copy.size()); }
+        CHECK(!impostor::load(magic, part_hash, depicts, out, &fail, &reason) &&
+                  fail == impostor::LoadFailure::Header,
+              "a foreign file is rejected as Header");
+    }
+    printf("PASSED\n");
+}
+
+static void test_flatten_appends_impostor_rung() {
+    printf("=== test_flatten_appends_impostor_rung ===\n");
+    const std::string flat =
+        std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kSmallSphereHash);
+    const std::string fimp =
+        std::string(kCacheRoot) + "/" + impostor::cache_path_impostor(kSmallSphereHash);
+    std::remove(flat.c_str());
+    std::remove(fimp.c_str());
+
+    uint64_t hash = write_small_sphere_part();
+    CHECK(hash != 0, "small sphere fixture written");
+    if (hash == 0) { printf("  SKIPPING\n"); return; }
+
+    auto res = part_flatten::flatten_part(kCacheRoot, hash);
+    CHECK(res.ok, "flatten ok");
+    if (!res.ok) { printf("  error: %s\n", res.error.c_str()); return; }
+    CHECK(res.impostors > 0, "the ladder bottom-out point earned an impostor");
+    CHECK(fs::exists(fimp), "the atlas sidecar landed beside the flat artifact");
+
+    BLASManager blas; TLASManager tlas(4);
+    std::vector<part_asset::FlatCluster> clusters;
+    CHECK(part_asset::load_flat_v3(flat, hash, blas, tlas, clusters), "flat loads");
+    CHECK(!clusters.empty(), "flat has clusters");
+    if (clusters.empty()) { printf("FAILED\n"); return; }
+
+    // The impostor is an ORDINARY rung: same lods table, same blas_indices,
+    // its own threshold. Nothing about it is a separate list.
+    uint64_t depicts = impostor::depicts_hash_begin();
+    size_t impostor_rungs = 0, terminal_mesh_tris = 0;
+    for (size_t ci = 0; ci < clusters.size(); ++ci) {
+        const auto& lods = clusters[ci].lods;
+        CHECK(lods.size() >= 2, "cluster has a ladder with a terminal");
+        if (lods.size() < 2) continue;
+        const auto& last = blas.get_entries()[lods.back().blas_indices[0]];
+        if (last->triangles.size() != 2 || last->tri_extra.size() != 2 ||
+            !(last->tri_extra[0].uv0.x >= impostor::kQuadMarker))
+            continue;
+        ++impostor_rungs;
+        const auto& src = blas.get_entries()[lods[lods.size() - 2].blas_indices[0]];
+        terminal_mesh_tris = src->triangles.size();
+        impostor::depicts_hash_add_cluster(depicts, static_cast<uint32_t>(ci),
+                                           src->triangles);
+        // The rung the impostor takes over from now has a REAL switch
+        // threshold; before M2.5 the terminal rung threshold was always 0.
+        CHECK(lods[lods.size() - 2].screen_size_threshold > 0.0f,
+              "the terminal mesh rung gained a switch distance");
+        CHECK(lods.back().screen_size_threshold == 0.0f,
+              "the impostor is the terminal rung (threshold 0 = always qualifies)");
+    }
+    CHECK(impostor_rungs == res.impostors,
+          "every impostor the bake reported is present in the ladder");
+    CHECK(terminal_mesh_tris >= impostor::kMinTerminalTris,
+          "the mesh the impostor replaces cleared the eligibility floor");
+    printf("  terminal mesh rung = %zu tris -> impostor = 2 tris\n", terminal_mesh_tris);
+
+    // The sidecar written by this bake validates against the ladder in the
+    // artifact -- which is exactly the check part_store performs at load.
+    impostor::PartImpostor loaded;
+    impostor::LoadFailure fail = impostor::LoadFailure::None;
+    std::string reason;
+    CHECK(impostor::load(fimp, hash, impostor::depicts_hash_finish(depicts),
+                         loaded, &fail, &reason),
+          "the sidecar validates against the ladder it was baked with");
+    if (fail != impostor::LoadFailure::None) printf("  reason: %s\n", reason.c_str());
+    CHECK(loaded.clusters.size() == impostor_rungs, "one atlas per impostor rung");
+    printf("PASSED\n");
+}
+
 int main() {
+    // Unbuffered: an abort deep in a bake must not swallow the log that
+    // says which test was running when it happened.
+    setvbuf(stdout, nullptr, _IONBF, 0);
     if (!write_fixtures()) {
         printf("FAIL: could not write fixture parts under %s\n", kCacheRoot);
         return 1;
@@ -1941,6 +2253,12 @@ int main() {
     test_bake_lods_observer_rungs(); // Bake Lab W3: per-rung bake observer seam
 
     test_emitter_flat_round_trip();  // volumetric emitter metadata persistence
+
+    test_impostor_eligibility();          // M2.5 terminal impostor rep
+    test_impostor_bake_deterministic();
+    test_impostor_quad_shape();
+    test_impostor_sidecar_failability();
+    test_flatten_appends_impostor_rung();
 
     if (g_failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
     printf("part_flatten_tests: %d FAILURE(S)\n", g_failures);

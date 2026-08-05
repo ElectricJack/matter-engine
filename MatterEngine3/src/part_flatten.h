@@ -68,6 +68,16 @@ struct FlattenTargets {
     // .flat.part format is unchanged.
     float min_level_benefit = 0.30f;
 
+    // TERMINAL IMPOSTOR (M2.5, redesign §2/§3.3). When set, the rung the
+    // benefit floor above left LAST gets one more rung after it that is not a
+    // mesh: a two-triangle camera-facing billboard sampling a baked view atlas,
+    // written to a `.fimp` sidecar beside the .flat.part. It is an ordinary
+    // entry in this same ladder -- same blas_indices, same threshold table --
+    // so runtime selection, the indirect draw and the LOD trace need no new
+    // code. Eligibility and atlas sizing live in impostor_bake.h with their
+    // derivations. Set false to bake a mesh-only ladder (what shipped before).
+    bool impostor_terminal = true;
+
     // Selection thresholds are derived from eps: a level becomes eligible when
     // its world-space error projects below pixel_budget pixels.
     // pixel_angle ~= vertical fov (rad) / vertical resolution.
@@ -161,6 +171,9 @@ struct FlattenResult {
     // used by the cutover math helpers to split the ladder.
     size_t      fine_tris = 0;          // trunk-only QEM input (segmented flats)
     size_t      coarse_input_tris = 0;  // merged coarse-segment input
+    // M2.5: clusters that earned a terminal impostor rung (0 = none, which is
+    // the correct outcome for a part whose terminal mesh is already tiny).
+    size_t      impostors = 0;
 };
 
 // Flatten the subtree rooted at root_hash. Reads parts from

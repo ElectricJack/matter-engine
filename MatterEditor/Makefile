@@ -214,6 +214,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/part_asset_v2.cpp $(ME3_DIR)/src/lod_bake.cpp \
               $(ME3_DIR)/src/warp_field.cpp \
               $(ME3_DIR)/src/world_flatten.cpp $(ME3_DIR)/src/part_flatten.cpp \
+              $(ME3_DIR)/src/impostor_bake.cpp \
               $(ME3_DIR)/src/triangle_emit.cpp \
               $(ME3_DIR)/src/part_cluster.cpp \
               $(ME3_DIR)/src/tileset_placement.cpp $(ME3_DIR)/src/tileset_layout.cpp \
