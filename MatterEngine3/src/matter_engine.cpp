@@ -6712,6 +6712,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         err = "WorldSession received an invalid VulkanFrame";
         return false;
     }
+    impl_->vk_scene->set_geometry_debug_view(opts.geometry_debug_view);
     // Stage value-owned presentation observations now, but expose them to
     // animation only after this submission is reported presented. This makes
     // LOD consume prior completed scene state and prevents a failed render

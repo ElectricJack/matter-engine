@@ -52,6 +52,17 @@ layout(location = 8) flat in uint in_vt_slot;
 // the shipped world-XZ addressing.
 layout(location = 9) in vec4 in_warp_uv_scales;
 layout(location = 10) in vec3 in_warp_tangent;
+// LOD debug view: the rung cull.comp selected for this draw. Location 11, not
+// the 9 the source branch used -- 9/10 are the warp field here.
+layout(location = 11) flat in uint in_selected_lod;
+
+// Must match raster.vert's block word for word (one range, both stages).
+layout(push_constant) uniform RasterDebugPushConstants {
+    uint direct_lod;
+    uint direct_lod_valid;
+    uint lod_tint_enabled;
+    uint wireframe_enabled;
+} debug_push;
 
 layout(location = 0) out vec4 out_albedo;
 layout(location = 1) out vec4 out_normal;
@@ -70,6 +81,31 @@ layout(location = 4) out uvec2 out_material_instance;
 // initialized to the rasterized depth up front and written unconditionally
 // at the end of main(), whether or not the tileset branch ran.
 layout(depth_less) out float gl_FragDepth;
+
+// The GLSL twin of matter::lod_debug_color (matter/render_debug.h). Kept
+// literally parallel -- same golden-ratio hue rotation, same saturation and
+// value -- so the editor's legend swatch for rung N is the colour drawn for
+// rung N rather than an approximation of it.
+float debug_abs(float value) { return value < 0.0 ? -value : value; }
+
+float debug_hue_component(float hue, float offset) {
+    float wrapped = hue * 6.0 + offset;
+    if (wrapped >= 6.0) wrapped -= 6.0;
+    return clamp(debug_abs(wrapped - 3.0) - 1.0, 0.0, 1.0);
+}
+
+vec3 lod_debug_color(uint lod) {
+    const float hue_step = 0.61803398875;
+    const float saturation = 0.85;
+    const float value = 1.0;
+    const float unwrapped_hue = float(lod % 16u) * hue_step;
+    const float hue = unwrapped_hue - float(uint(unwrapped_hue));
+    const float chroma = value * saturation;
+    const float minimum = value - chroma;
+    return minimum + chroma * vec3(debug_hue_component(hue, 0.0),
+                                   debug_hue_component(hue, 4.0),
+                                   debug_hue_component(hue, 2.0));
+}
 
 void main() {
     MaterialGpu material;
@@ -882,6 +918,12 @@ void main() {
     // returns this untouched and runs the display pass in passthrough, so the
     // swapchain byte IS round(value * 255).
     if (horizon_debug_value >= 0.0) base_color = vec3(horizon_debug_value);
+
+    // Applied AFTER every material, tileset/POM, VT and horizon-debug write to
+    // base_color, so the view-off path (lod_tint_enabled == 0) stays
+    // bit-identical to what shipped.
+    if (debug_push.lod_tint_enabled != 0u)
+        base_color = mix(base_color, lod_debug_color(in_selected_lod), 0.85);
 
     out_albedo = vec4(base_color, opacity);
     // out_normal feeds the RT passes too (rt_lighting.rgen); keep it unit

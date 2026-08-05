@@ -1599,6 +1599,81 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
                 background.albedo.x, background.albedo.y,
                 background.albedo.z, background.depth, background.hdr.x,
                 background.hdr.y, background.hdr.z);
+    // --- LOD debug tint (viewer.debug "LOD levels") -------------------------
+    //
+    // Two rungs of the SAME near, covered geometry, so nothing about the pixel
+    // can move except which rung cull.comp selected for it. A transform-tail
+    // regression, or a varying-location collision, reads out here as the wrong
+    // hue rather than as a subtle shading difference nobody notices.
+    {
+        viewer::VkScenePart two_rung = known_raster_triangle(907);
+        // 1000 normalizes to a 0.001 switch distance, which this triangle at
+        // 2 m fails; rung 1 is open (threshold 0) and therefore wins.
+        two_rung.clusters[0].lods[0].threshold = 1000.0f;
+        two_rung.clusters[0].lods.push_back({0, 3, 0.0f});
+        CHECK(renderer.ensure_part(two_rung, error) >= 0,
+              error.empty() ? "ensure two-rung LOD tint part" : error.c_str());
+        CHECK(renderer.update_instances({{907, identity, 907}}, error) &&
+                  renderer.dispatch_culling(frame, camera.position, 1.0f,
+                                            error) &&
+                  renderer.render_gbuffer_and_composite(width, height, error),
+              error.empty() ? "render two-rung part with the view off"
+                            : error.c_str());
+        viewer::VkRasterPixel untinted{};
+        CHECK(renderer.readback_raster_pixel(width / 2, height / 2, untinted,
+                                             error) &&
+                  untinted.albedo.w > 0.99f,
+              error.empty() ? "read two-rung center with the view off"
+                            : error.c_str());
+
+        renderer.set_geometry_debug_view(matter::GeometryDebugView::LodTint);
+        viewer::VkRasterPixel tinted{};
+        CHECK(renderer.render_gbuffer_and_composite(width, height, error) &&
+                  renderer.readback_raster_pixel(width / 2, height / 2, tinted,
+                                                 error),
+              error.empty() ? "render and read the LOD-tinted center"
+                            : error.c_str());
+        const matter::DebugRgb rung0 = matter::lod_debug_color(0);
+        const matter::DebugRgb rung1 = matter::lod_debug_color(1);
+        CHECK(std::fabs(tinted.albedo.x -
+                        (0.85f * rung1.r + 0.15f * untinted.albedo.x)) < 0.02f &&
+                  std::fabs(tinted.albedo.y -
+                            (0.85f * rung1.g + 0.15f * untinted.albedo.y)) <
+                      0.02f &&
+                  std::fabs(tinted.albedo.z -
+                            (0.85f * rung1.b + 0.15f * untinted.albedo.z)) <
+                      0.02f,
+              "LOD tint paints the exact rung cull.comp selected, not rung 0");
+        CHECK(std::fabs(rung0.r - rung1.r) + std::fabs(rung0.g - rung1.g) +
+                      std::fabs(rung0.b - rung1.b) >
+                  0.2f,
+              "adjacent rungs are far enough apart to read as different rungs");
+        CHECK(tinted.material_index == untinted.material_index &&
+                  tinted.instance_token == untinted.instance_token &&
+                  std::fabs(tinted.depth - untinted.depth) < 1e-4f,
+              "the tint rewrites albedo only, leaving identity and depth alone");
+
+        renderer.set_geometry_debug_view(matter::GeometryDebugView::None);
+        viewer::VkRasterPixel restored{};
+        CHECK(renderer.render_gbuffer_and_composite(width, height, error) &&
+                  renderer.readback_raster_pixel(width / 2, height / 2, restored,
+                                                 error),
+              error.empty() ? "render and read the center with the view off "
+                              "again"
+                            : error.c_str());
+        CHECK(close4(restored.albedo, untinted.albedo, 1e-6f),
+              "switching the view off restores the pixel exactly");
+
+        CHECK(renderer.update_instances({{900, identity}, {906, identity}},
+                                        error) &&
+                  renderer.dispatch_culling(frame, camera.position, 1.0f,
+                                            error),
+              error.empty() ? "restore the pre-tint raster scene"
+                            : error.c_str());
+        renderer.release_part(907);
+        renderer.consume_gi_history_reset();
+    }
+
     matter::VulkanRayTracingSettings disabled_rt{};
     disabled_rt.enabled = false;
     renderer.set_ray_tracing_settings(disabled_rt);

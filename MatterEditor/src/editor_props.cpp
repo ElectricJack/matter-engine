@@ -520,8 +520,13 @@ const char* const kResolverLabels[] = {"PassThrough", "SectorLod"};
 // as a bare int (issue_reporter.cpp, shot_replay.cpp), so 0/1/2 have to keep
 // meaning what every capture on disk says they mean. Keep main.cpp's remap in
 // step with this array.
+// Index 5 is the odd one out: every entry before it is a COMPOSITE view
+// (main.cpp remaps it onto composite_debug_view), while "LOD levels" is a
+// GEOMETRY view written in the G-buffer pass, so main.cpp routes it to
+// RenderOptions::geometry_debug_view and leaves the composite mode at 0.
 const char* const kDebugViewLabels[] = {"None", "Normals", "Depth",
-                                        "Sun visibility", "Raw albedo"};
+                                        "Sun visibility", "Raw albedo",
+                                        "LOD levels"};
 const char* const kVolDebugLabels[] = {"Off", "Density", "Scatter",
                                        "Integrated"};
 
@@ -530,7 +535,9 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
     prop(&ViewerStats::resolver_choice, "resolver_choice")
         .label("Resolver").enums(kResolverLabels, 2),
     prop(&ViewerStats::debug_view_mode, "debug_view_mode")
-        .label("Debug view").enums(kDebugViewLabels, 5),
+        .label("Debug view").enums(kDebugViewLabels, 6)
+        .doc("0-4 select composite views; \"LOD levels\" tints each surface by "
+             "the rung the GPU cull actually selected for it."),
     prop(&ViewerStats::vol_debug_view, "vol_debug_view")
         .label("Volumetric view").enums(kVolDebugLabels, 4)
         .doc("Only meaningful while volumetrics are enabled."));

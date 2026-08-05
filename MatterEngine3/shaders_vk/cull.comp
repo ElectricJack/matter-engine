@@ -62,7 +62,10 @@ struct DrawTransform {
     // 0 = this draw has no chart table). Written below from the per-(part,
     // lod) vt_draw_slots table and forwarded flat by raster.vert.
     uint vt_slot;
-    uint pad2;
+    // LOD debug view: the rung THIS dispatch selected for this draw, written
+    // below and forwarded flat by raster.vert. Repurposes the trailing pad
+    // word, so DrawTransform stays 144 bytes.
+    uint selected_lod;
 };
 
 struct DrawCommand {
@@ -369,7 +372,7 @@ void main() {
     // means "no VT" and the fragment shader takes the legacy path.
     draw_transforms[first + slot].vt_slot =
         bucket < vt_draw_slots.length() ? vt_draw_slots[bucket] : 0u;
-    draw_transforms[first + slot].pad2 = 0u;
+    draw_transforms[first + slot].selected_lod = lod;
     atomicAdd(emitted, 1u);
     atomicAdd(triangles, commands[bucket].index_count / 3u);
     if (slot == 0u) atomicAdd(batches, 1u);

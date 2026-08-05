@@ -358,6 +358,7 @@ struct RasterRecord {
     VkPipeline skinned_raster_pipeline;
     VkPipelineLayout raster_layout;
     VkDescriptorSet raster_sets[2];
+    RasterDebugPushConstants raster_debug_push;
     VkPipeline composite_pipeline;
     VkPipelineLayout composite_layout;
     VkDescriptorSet composite_set;
@@ -519,6 +520,10 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             record.raster_layout, 0, 2,
                             record.raster_sets, 0, nullptr);
+    vkCmdPushConstants(command_buffer, record.raster_layout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(record.raster_debug_push),
+                       &record.raster_debug_push);
     vkCmdBindVertexBuffers(command_buffer, 0, 1, &record.vertex_buffer,
                            &vertex_offset);
     vkCmdBindIndexBuffer(command_buffer, record.index_buffer, 0,
@@ -606,6 +611,20 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
             // which is exactly what every fixture arranged.
             const int64_t rebase = -static_cast<int64_t>(draw.local_vertex_base);
             if (rebase < INT32_MIN || rebase > INT32_MAX) continue;
+            // A skinned draw is direct, so cull.comp never wrote a rung into
+            // its transform slot. Hand the shader the rung this draw was
+            // selected at, otherwise every animated part tints as rung 0.
+            const RasterDebugPushConstants skin_debug_push =
+                make_raster_debug_push_constants(
+                    draw.lod, true,
+                    record.raster_debug_push.lod_tint_enabled != 0u
+                        ? matter::GeometryDebugView::LodTint
+                        : matter::GeometryDebugView::None,
+                    record.raster_debug_push.wireframe_enabled != 0u);
+            vkCmdPushConstants(command_buffer, record.raster_layout,
+                               VK_SHADER_STAGE_VERTEX_BIT |
+                                   VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(skin_debug_push), &skin_debug_push);
             // The dynamic slot indexes the SKIN TAIL. Passing it raw put the
             // draw in cull.comp's bucket space -- slot 0 there is the gallery
             // world's Crate floor slab, whose scale(4, 0.1, 4) squashed the
@@ -1346,6 +1365,15 @@ void VkSceneRenderer::set_dlss_mode(matter::DlssMode mode) {
     gi_history_reset_pending_ = true;
 }
 
+void VkSceneRenderer::set_geometry_debug_view(matter::GeometryDebugView view) {
+    if (geometry_debug_view_ == view) return;
+    geometry_debug_view_ = view;
+    // The tint rewrites base_color, so every accumulated GI/temporal sample
+    // behind it describes a differently-coloured world. Reset on the switch in
+    // BOTH directions rather than ghosting the old albedo through the change.
+    gi_history_reset_pending_ = true;
+}
+
 void VkSceneRenderer::set_ray_tracing_settings(
     const matter::VulkanRayTracingSettings& settings) {
     if (ray_tracing_settings_.enabled != settings.enabled)
@@ -1628,6 +1656,14 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pipeline_layout.setLayoutCount = 2;
     pipeline_layout.pSetLayouts = set_layouts_;
+    // This layout is shared with the cull compute pipeline, which declares no
+    // push block; a range for stages the pipeline does not contain is legal
+    // and costs that dispatch nothing.
+    const VkPushConstantRange raster_debug_push_range{
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+        sizeof(RasterDebugPushConstants)};
+    pipeline_layout.pushConstantRangeCount = 1;
+    pipeline_layout.pPushConstantRanges = &raster_debug_push_range;
     result = vkCreatePipelineLayout(device, &pipeline_layout, nullptr,
                                     &pipeline_layout_);
     if (result != VK_SUCCESS)
@@ -10082,6 +10118,8 @@ bool VkSceneRenderer::record_cull_and_render(
                         skinned_raster_pipeline_,
                         pipeline_layout_,
                         {selected.descriptor_sets[0], selected.descriptor_sets[1]},
+                        make_raster_debug_push_constants(
+                            0u, false, geometry_debug_view_, false),
                         composite_pipeline_,
                         composite_pipeline_layout_,
                         selected.composite_descriptor_set,
@@ -10561,6 +10599,8 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     record.raster_layout = pipeline_layout_;
     record.raster_sets[0] = selected.descriptor_sets[0];
     record.raster_sets[1] = selected.descriptor_sets[1];
+    record.raster_debug_push = make_raster_debug_push_constants(
+        0u, false, geometry_debug_view_, false);
     record.composite_pipeline = composite_pipeline_;
     record.composite_layout = composite_pipeline_layout_;
     record.composite_set = selected.composite_descriptor_set;

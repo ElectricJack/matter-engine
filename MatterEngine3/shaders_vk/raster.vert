@@ -40,6 +40,11 @@ layout(location = 9) out vec4 out_warp_uv_scales;
 // The frame tangent (world space, unit-ish; re-orthogonalized against the
 // interpolated normal in the fragment shader).
 layout(location = 10) out vec3 out_warp_tangent;
+// LOD debug view: the rung cull.comp selected for this draw (or the direct
+// override below). Location 11 and NOT 9 -- 9/10 are the warp field on this
+// base; the branch this was ported from had no warp field and used 9, and
+// copying that number silently aliases the ground's warped uv.
+layout(location = 11) flat out uint out_selected_lod;
 
 layout(set = 0, binding = 0, std140) uniform FrameConstants {
     mat4 world_to_clip;
@@ -57,8 +62,19 @@ struct DrawTransform {
     uint history_valid;
     uint instance_token;
     uint vt_slot;
-    uint pad2;
+    uint selected_lod;
 };
+
+// Shared with gbuffer.frag. Direct (non-indirect) draws have no cull-written
+// transform tail, so they carry their own selected rung in the first two
+// words. `wireframe_enabled` is reserved: this base has no wireframe path, and
+// nothing reads the word.
+layout(push_constant) uniform RasterDebugPushConstants {
+    uint direct_lod;
+    uint direct_lod_valid;
+    uint lod_tint_enabled;
+    uint wireframe_enabled;
+} debug_push;
 
 layout(set = 1, binding = 3, std430) readonly buffer DrawTransforms {
     DrawTransform transforms[];
@@ -106,6 +122,9 @@ void main() {
     out_material_valid = in_material_index < frame.counts.z ? 1u : 0u;
     out_world_pos = world.xyz;
     out_vt_slot = draw.vt_slot;
+    out_selected_lod = debug_push.direct_lod_valid != 0u
+                           ? debug_push.direct_lod
+                           : draw.selected_lod;
 #ifdef MATTER_SKINNED_VERTEX_INPUT
     // Animated props carry no warp field; su == 0 selects the world-XZ
     // fallback in gbuffer.frag.

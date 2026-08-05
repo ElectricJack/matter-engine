@@ -237,6 +237,104 @@ static void test_animation_bounds_cull_shader_contract() {
           "clean embedded shader table contains the generated dynamic-bounds cull shader");
 }
 
+// The graphics push contract carries the per-direct-draw override separately
+// from the indirect transform tail. That separation is what lets two skin
+// clusters of one instance retain different cull-selected rungs.
+static void test_raster_debug_push_constants_contract() {
+    printf("\n[test_raster_debug_push_constants_contract]\n");
+    const viewer::RasterDebugPushConstants indirect =
+        viewer::make_raster_debug_push_constants(
+            99u, false, matter::GeometryDebugView::LodTint, false);
+    CHECK(sizeof(viewer::RasterDebugPushConstants) == 16,
+          "raster debug push constants stay four 32-bit words");
+    CHECK(indirect.direct_lod == 99u && indirect.direct_lod_valid == 0u,
+          "indirect mesh draws do not override the cull-selected transform LOD");
+    CHECK(indirect.lod_tint_enabled == 1u && indirect.wireframe_enabled == 0u,
+          "LOD tint and the reserved wireframe bit remain independent");
+
+    const viewer::RasterDebugPushConstants skin =
+        viewer::make_raster_debug_push_constants(
+            7u, true, matter::GeometryDebugView::None, true);
+    CHECK(skin.direct_lod == 7u && skin.direct_lod_valid == 1u,
+          "a skinned direct draw transports its exact selected LOD");
+    CHECK(skin.lod_tint_enabled == 0u && skin.wireframe_enabled == 1u,
+          "the reserved wireframe bit does not imply the LOD tint");
+}
+
+// The rung reaches the fragment shader in the transform tail's LAST word, which
+// used to be pad. Renaming it must not have grown the struct, and the shader
+// must write the rung it actually computed there.
+static void test_selected_lod_draw_transform_contract() {
+    printf("\n[test_selected_lod_draw_transform_contract]\n");
+    std::ifstream header("../src/render/vk_scene_renderer.h");
+    const std::string header_text((std::istreambuf_iterator<char>(header)),
+                                  std::istreambuf_iterator<char>());
+    CHECK(!header_text.empty(),
+          "read draw-transform selected-LOD layout contract");
+    CHECK(header_text.find("uint32_t selected_lod;") != std::string::npos &&
+              header_text.find("static_assert(sizeof(GpuDrawTransform) == 144)") !=
+                  std::string::npos &&
+              header_text.find("offsetof(GpuDrawTransform, selected_lod) == 140") !=
+                  std::string::npos,
+          "draw transform remains 144 bytes with selected LOD in its final word");
+
+    std::ifstream cull("../shaders_vk/cull.comp");
+    const std::string cull_text((std::istreambuf_iterator<char>(cull)),
+                                std::istreambuf_iterator<char>());
+    CHECK(!cull_text.empty(), "read cull shader selected-LOD contract");
+    CHECK(cull_text.find("uint selected_lod;") != std::string::npos &&
+              cull_text.find("draw_transforms[first + slot].selected_lod = lod;") !=
+                  std::string::npos,
+          "cull emission writes its exact computed LOD into the transform tail");
+
+    // Locations 9 and 10 are the warp field on this base. The branch this was
+    // ported from had no warp field and emitted the rung at 9; copying that
+    // number aliases in_warp_uv_scales and corrupts ground shading, silently.
+    std::ifstream vert("../shaders_vk/raster.vert");
+    const std::string vert_text((std::istreambuf_iterator<char>(vert)),
+                                std::istreambuf_iterator<char>());
+    std::ifstream frag("../shaders_vk/gbuffer.frag");
+    const std::string frag_text((std::istreambuf_iterator<char>(frag)),
+                                std::istreambuf_iterator<char>());
+    CHECK(!vert_text.empty() && !frag_text.empty(),
+          "read raster varying location contract");
+    CHECK(vert_text.find("layout(location = 11) flat out uint out_selected_lod;") !=
+                  std::string::npos &&
+              frag_text.find("layout(location = 11) flat in uint in_selected_lod;") !=
+                  std::string::npos,
+          "the selected rung rides location 11, clear of the warp field at 9/10");
+    CHECK(vert_text.find("layout(location = 9) out vec4 out_warp_uv_scales;") !=
+                  std::string::npos &&
+              vert_text.find("layout(location = 10) out vec3 out_warp_tangent;") !=
+                  std::string::npos,
+          "the warp field still owns locations 9 and 10");
+}
+
+// The host legend and gbuffer.frag compute the SAME colour for a rung; a
+// legend that disagrees with the picture is worse than no legend.
+static void test_lod_debug_palette_is_distinct_and_bounded() {
+    printf("\n[test_lod_debug_palette_is_distinct_and_bounded]\n");
+    bool distinct = true;
+    bool bounded = true;
+    for (uint32_t a = 0; a < matter::kLodDebugColorCount; ++a) {
+        const matter::DebugRgb ca = matter::lod_debug_color(a);
+        bounded = bounded && ca.r >= 0.0f && ca.r <= 1.0f && ca.g >= 0.0f &&
+                  ca.g <= 1.0f && ca.b >= 0.0f && ca.b <= 1.0f;
+        for (uint32_t b = a + 1; b < matter::kLodDebugColorCount; ++b) {
+            const matter::DebugRgb cb = matter::lod_debug_color(b);
+            const float separation = std::fabs(ca.r - cb.r) +
+                                     std::fabs(ca.g - cb.g) +
+                                     std::fabs(ca.b - cb.b);
+            distinct = distinct && ca != cb && separation > 0.05f;
+        }
+    }
+    CHECK(distinct, "all 16 rung colours are distinguishable from one another");
+    CHECK(bounded, "every rung colour stays inside the unit RGB cube");
+    CHECK(matter::lod_debug_color(0) ==
+              matter::lod_debug_color(matter::kLodDebugColorCount),
+          "the palette wraps exactly like the shader's lod % 16");
+}
+
 static void test_skin_raster_validation_controls_cull_exclusion() {
     printf("\n[test_skin_raster_validation_controls_cull_exclusion]\n");
     viewer::VkSkinRasterDraw draw{};
@@ -731,6 +829,9 @@ int main() {
     test_instance_identity_tagging();
     test_dynamic_slot_change_kind_distinct();
     test_animation_bounds_cull_shader_contract();
+    test_raster_debug_push_constants_contract();
+    test_selected_lod_draw_transform_contract();
+    test_lod_debug_palette_is_distinct_and_bounded();
     test_skin_raster_validation_controls_cull_exclusion();
     test_skin_raster_exclusion_survives_lod_disagreement();
     test_skin_raster_ownership_excludes_traced_bind_pose();

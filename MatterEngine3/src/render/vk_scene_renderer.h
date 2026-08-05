@@ -18,6 +18,7 @@
 #include "chart_atlas.h"   // WP-E: per-rung chart tables travel with a part
 #include "frame_matrices.h"
 #include "matter/draw_overrides.h"  // per-module draw overrides (GPU lane)
+#include "matter/render_debug.h"
 #include "gpu_matrix_pack.h"
 #include "matter/lod_contract.h"
 #include "matter/math_types.h"
@@ -63,6 +64,35 @@ inline uint32_t vulkan_history_token(uint64_t instance_id) {
     const uint32_t folded = static_cast<uint32_t>(instance_id) ^
                             static_cast<uint32_t>(instance_id >> 32);
     return folded != 0 ? folded : 1u;
+}
+
+// The graphics push contract shared by raster.vert and gbuffer.frag. Indirect
+// mesh draws leave the override off and read DrawTransform::selected_lod, which
+// cull.comp wrote. Direct draws (the skin tail) have no cull-written transform
+// tail of their own, so they carry their exact selected rung in the first two
+// words -- that separation is what lets two skin clusters of one instance keep
+// different rungs.
+//
+// `wireframe_enabled` is RESERVED and inert: this base has no wireframe path
+// (the sibling commit that adds one was left out of this port), and no shader
+// reads the word. It exists so the block's size and offsets do not move when
+// that work lands.
+struct RasterDebugPushConstants {
+    uint32_t direct_lod = 0;
+    uint32_t direct_lod_valid = 0;
+    uint32_t lod_tint_enabled = 0;
+    uint32_t wireframe_enabled = 0;
+};
+static_assert(sizeof(RasterDebugPushConstants) == 16,
+              "raster debug push constants must remain four uint32_t words");
+
+inline RasterDebugPushConstants make_raster_debug_push_constants(
+    uint32_t direct_lod, bool direct_lod_valid,
+    matter::GeometryDebugView geometry_debug_view,
+    bool wireframe_enabled) noexcept {
+    return {direct_lod, direct_lod_valid ? 1u : 0u,
+            geometry_debug_view == matter::GeometryDebugView::LodTint ? 1u : 0u,
+            wireframe_enabled ? 1u : 0u};
 }
 
 // Emission is stored as log2(1 + strength) in the alpha channel of the
@@ -733,6 +763,7 @@ public:
     void set_lighting(const VkSceneLighting& lighting);
     void set_display_exposure(float exposure_ev);
     void set_composite_debug_view(float mode) { composite_debug_override_ = mode; }
+    void set_geometry_debug_view(matter::GeometryDebugView view);
     void set_ray_tracing_settings(
         const matter::VulkanRayTracingSettings& settings);
     void set_gi_settings(const matter::VulkanGiSettings& settings) {
@@ -1032,11 +1063,16 @@ private:
         // this struct (the skin tail, tests) leaves it zero, which is the
         // fail-closed legacy path.
         uint32_t vt_slot;
-        uint32_t pad;
+        // LOD debug view: the rung cull.comp selected for this draw. This is
+        // the old trailing pad word renamed, NOT a new field -- the 144-byte
+        // assert below is the guard. Direct writers of this struct (the skin
+        // tail, tests) leave it zero and supply their rung by push constant.
+        uint32_t selected_lod;
     };
     static_assert(sizeof(GpuCluster) == 128);
     static_assert(sizeof(GpuInstance) == 160);
     static_assert(sizeof(GpuDrawTransform) == 144);
+    static_assert(offsetof(GpuDrawTransform, selected_lod) == 140);
 
     struct RtLodRecord {
         uint32_t cluster_index = 0;
@@ -1877,6 +1913,8 @@ private:
     uint64_t material_geometry_revision_ = 0;
     uint64_t material_generation_ = 1;
     bool gi_history_reset_pending_ = false;
+    matter::GeometryDebugView geometry_debug_view_ =
+        matter::GeometryDebugView::None;
     uint32_t uploaded_vertex_count_ = 0;
     uint32_t uploaded_index_count_ = 0;
     uint32_t raster_draw_command_count_ = 0;

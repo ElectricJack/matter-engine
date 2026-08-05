@@ -2800,6 +2800,11 @@ int main() {
                                ? matter::ResolverKind::SectorLod
                                : matter::ResolverKind::PassThrough;
         options.wireframe = false;
+        // Geometry-stage view (index 5). Unlike 1-4 this is not a composite
+        // mode, so the remap below leaves composite_debug_view at 0 for it.
+        options.geometry_debug_view =
+            stats.debug_view_mode == 5 ? matter::GeometryDebugView::LodTint
+                                       : matter::GeometryDebugView::None;
         options.hiz_occlusion = false;
         options.pixel_budget = stats.pixel_budget;
         options.active_radius = active_radius;
@@ -2811,6 +2816,8 @@ int main() {
         // (editor_props.cpp), which documents why the indices are append-only.
         // 1 -> 2.0 normals, 2 -> 3.0 packed linear depth, 3 -> 1.0 RT sun
         // visibility, 4 -> 4.0 raw GBuffer albedo (the horizon diagnostic).
+        // 5 (LOD levels) is a geometry view and deliberately falls through to
+        // 0.0 here -- the tint is already in the G-buffer albedo it composites.
         options.vulkan_lighting.composite_debug_view =
             stats.debug_view_mode == 1   ? 2.0f
             : stats.debug_view_mode == 2 ? 3.0f

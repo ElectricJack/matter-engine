@@ -13,6 +13,7 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 #include "matter/vulkan_device.h"
+#include "matter/render_debug.h"
 #include "editor_props.h"
 #include "camera_orbit.h"
 
@@ -1166,9 +1167,32 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
     // linear depth into R/G/B (log-depth coarse + quadrature fine) and the
     // display pass drops to passthrough for it, so a screenshot decodes back
     // to metres. It looks like banded noise on screen; that is correct.
+    // "LOD levels" is APPENDED, never inserted: shot descriptors and issue
+    // state.json store this as a bare int, so every existing index has to keep
+    // meaning what the captures on disk say it means.
     const char* debug_views[] = { "None", "Normals", "Depth",
-                                  "Sun visibility", "Raw albedo" };
-    ImGui::Combo("View", &s.debug_view_mode, debug_views, 5);
+                                  "Sun visibility", "Raw albedo",
+                                  "LOD levels" };
+    ImGui::Combo("View", &s.debug_view_mode, debug_views, 6);
+    if (s.debug_view_mode == 5) {
+        ImGui::TextDisabled("Tinted by the rung the GPU cull selected.");
+        for (uint32_t lod = 0; lod < matter::kLodDebugColorCount; ++lod) {
+            const matter::DebugRgb color = matter::lod_debug_color(lod);
+            ImGui::BeginGroup();
+            char id[16];
+            std::snprintf(id, sizeof(id), "##lod%u", lod);
+            ImGui::ColorButton(id, ImVec4(color.r, color.g, color.b, 1.0f),
+                               ImGuiColorEditFlags_NoTooltip,
+                               ImVec2(16.0f, 16.0f));
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("LOD %u", lod);
+            ImGui::Text("%u", lod);
+            ImGui::EndGroup();
+            // Eight swatches per row keeps the legend inside the panel at its
+            // default width; the palette wraps at 16 rungs.
+            if (lod + 1 < matter::kLodDebugColorCount && (lod % 8) != 7)
+                ImGui::SameLine();
+        }
+    }
     // Not a registered property: main.cpp overwrites the volumetrics struct's
     // vol_debug_view from this every frame, so it has nowhere to persist to.
     // Kept with the other debug views rather than following render.volumetrics
