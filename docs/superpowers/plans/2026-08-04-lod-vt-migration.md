@@ -351,6 +351,18 @@ Acceptance:
 
 ## M2.5 — Object impostors as rep N *(moved out of M1; see the note there)*
 
+> **Where the impostor goes is now answered, not guessed (2026-08-04).** Jack observed on the
+> shipping build, with the LOD-tint and wireframe views on, that a rock keeps changing rung
+> while its silhouette stops changing. Cause: `part_flatten.h:27` gives every part the same
+> nine-rung geometric error ladder and admits a rung on `geo.size() < prev_count` — ONE fewer
+> triangle qualifies — so the coarse tail runs 26 -> 24 -> 22 triangles, three rungs and one
+> silhouette. Nothing ever asks whether a rung bought anything.
+>
+> The rule (design §3.3): keep adding mesh reps while decimation still buys a REAL reduction;
+> the moment it does not, stop, and **that index is where the impostor goes**. Self-terminating
+> per part, so a 4,258-triangle boulder and a 58-triangle pebble get different depths
+> automatically. The ladder change is M3's; this milestone consumes its answer.
+
 Scope: one impostor producer baking a view atlas per eligible part; the atlas stored as the
 LAST rep of the part's existing distance table; selection by the same `lod::select_rep` walk
 with no parallel comparison; rep-indexed subtree replacement (design §5.3) rather than the
@@ -369,6 +381,13 @@ Acceptance:
 ---
 
 ## M3 — DSL recipes and lazy staged baking
+
+> **Two ladder defects to fix here, both observed on the build rather than inferred:**
+> (a) rungs are admitted on any reduction at all, producing visually identical coarse rungs —
+> replace with a benefit floor whose exhaustion terminates the ladder (design §3.3, feeds
+> M2.5); (b) **close-range fidelity is not a LOD problem at all** — rep 0 is the raw
+> undecimated mesh, so "more detail up close" is bounded by the part's own build resolution,
+> which is fixed engine-wide today. A `lods()`/build recipe must be able to declare it.
 
 Scope:
 1. `lods(p)` on `Part`, `LOD.*` library generators, demand-driven stages with

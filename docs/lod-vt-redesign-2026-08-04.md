@@ -96,7 +96,7 @@ class AlpineConifer extends Part {
       { at: 0 },                                       // rep 0: build() verbatim
       { at: 18,  gen: LOD.remesh({ voxel: 0.06 }) },   // engine library generator
       { at: 45,  gen: (ctx) => this.crownCards(p, ctx.stage('skeleton')) },
-      LOD.impostor({ at: 140, views: 24 }),            // explicit terminal (§3.3)
+      LOD.impostor({ at: 140, views: 24 }),            // explicit terminal (§3.4)
     ];
   }
 }
@@ -189,7 +189,46 @@ plan from the store and runs only `clumps`. And because *placement* is a stage w
 stands — the geometry analogue of §7's shared parameterisation, and part of why pops read as
 calm rather than as reshuffles.
 
-### 3.3 The impostor and vanish callouts
+### 3.3 Where the ladder stops: a benefit rule, not an error rule
+
+Observed on the shipping build 2026-08-04, with the LOD-tint and wireframe views on: a rock
+keeps changing rung — the tint cycles — while its silhouette stops changing. The cause is
+that today's ladder is driven by **error tolerance and never by benefit**.
+
+`part_flatten.h:27` gives every part the same nine rungs regardless of what it is:
+
+```
+radius_divisor = {512, 256, 128, 64, 32, 16, 8, 4, 2}
+eps_i = bound_radius / divisor_i
+```
+
+and the only condition for a rung to exist is `geo.size() < prev_count` — *strictly fewer
+triangles than the rung before*. One triangle qualifies. So the coarse tail runs
+26 → 24 → 22 triangles: three rungs, three colours, one silhouette. Measured on
+RockGallery, parts bottom out between 18 and 96 triangles, and the last several rungs each
+shave single digits. Nothing in the pipeline ever asks whether a rung bought anything.
+
+**The rule the redesign adopts instead:** keep adding mesh reps while decimation still buys
+a real reduction; the moment it does not, stop — **and that index is where the impostor
+goes**. Concretely, a rep is admitted only if it clears a *benefit* floor (a substantial
+triangle reduction, or a measured silhouette change) and not merely a non-zero one.
+
+Two things fall out of this that a tuned rung count cannot give:
+
+- **It is self-terminating per part.** A 4,258-triangle boulder and a 58-triangle pebble
+  earn different ladder depths automatically. Today they both get the fixed nine-rung
+  treatment, and the pebble spends four rungs achieving nothing.
+- **It answers "at which rung does the impostor go?"** — a question §3.4's `LOD.impostor`
+  terminal otherwise leaves to the author's guess. The bottom-out point is the principled
+  answer, and it is the point past which more mesh rungs are provably wasted work.
+
+Note this is orthogonal to close-range fidelity. **Rep 0 is the raw mesh, undecimated** —
+the ladder never removes anything at close range, so "more detail up close" is a question
+about the part's own build resolution, not about LOD. That too is a `lods()`/build-recipe
+concern (§3.1): a part should be able to declare the resolution it is built at, which today
+is fixed engine-wide.
+
+### 3.4 The impostor and vanish callouts
 
 The switch to an impostor is the most consequential transition in the table, so it is
 syntactically explicit rather than buried in a `gen`:
@@ -210,7 +249,7 @@ At runtime none of this is special: the impostor (or vanish) is still just rep N
 table, selected by the same walk (§5). The explicitness is purely an authoring-surface
 guarantee.
 
-### 3.4 Lazy, per-rep baking
+### 3.5 Lazy, per-rep baking
 
 `lods()` is a *declaration*, not a work order. Nothing is generated until the streamer
 requests a specific `(part, rep)` pair — a sector entering at far range bakes **only** the far
@@ -221,7 +260,7 @@ rep and whatever stages it needs. This single property deletes, by construction:
   passes to be discarded at `part_store.cpp:1166`),
 - most of the initial-bake latency the current system pays before anything appears.
 
-### 3.5 Defaults (R5's second half)
+### 3.6 Defaults (R5's second half)
 
 A part with no `lods()` gets the **default recipe**: the current adaptive ladder, repackaged
 as a library generator with two fixes from the audit — a *measured* geometric error per rep
@@ -565,10 +604,10 @@ default-distance estimator.
 | Req | Where satisfied |
 |---|---|
 | R1 one world path | §4 |
-| R2 DSL-owned staged LODs | §3.1–3.3 |
+| R2 DSL-owned staged LODs | §3.1–3.4 |
 | R3 only what is read | §10.1–10.2 |
 | R4 atomic deterministic switches | §2, §5 |
-| R5 distances, error as default | §3.1, §3.5 |
+| R5 distances, error as default | §3.1, §3.6 |
 | R6 global budgets only | §8 |
 | R7 smooth frames, instant revisit | §5.3, §7, §8, §9.2 |
 | R8 asset store foundation | §9 |
