@@ -1744,6 +1744,26 @@ int main() {
         });
     // Generic property set/get over the editor's registry (S6.3). One handler
     // replaces what would otherwise be a bespoke FIFO command per tunable.
+    //
+    // The grammar is `set <group.path>.<field> <value>` — ONE path token, not a
+    // group token followed by a field token. Writing `set draw.overrides
+    // Rock/lod_bias 0.25` therefore resolves the GROUP path as if it were a
+    // field path and takes the rest of the line as the value, and a bare
+    // "unknown property 'draw.overrides'" reads as "that group is not in the
+    // registry" — which sent one investigation hunting for a missing binding
+    // that had been there all along (draw.overrides is bound by
+    // EditorProps::on_world_connected, and resolve_field splits on the LAST '.'
+    // precisely so "Rock/lod_bias" survives as the field half). Name the
+    // near-miss instead of reporting the group as absent.
+    auto explain_unresolved = [&](const char* verb, bool takes_value,
+                                  const std::string& path) {
+        if (editor_props.registry().find(path.c_str()))
+            std::printf("%s: '%s' is a group, not a field - use `%s %s.<field>%s`\n",
+                        verb, path.c_str(), verb, path.c_str(),
+                        takes_value ? " <value>" : "");
+        else
+            std::printf("%s: unknown property '%s'\n", verb, path.c_str());
+    };
     auto reg_fifo_set_prop = registry.must_register_handler<viewer::FifoSetProp>(
         matter::evt::CommandScope::App, app_lane,
         [&](const viewer::FifoSetProp& cmd) {
@@ -1751,7 +1771,7 @@ int main() {
             const matter::props::Desc* desc = nullptr;
             if (!matter::props::resolve_field(editor_props.registry(),
                                               cmd.path.c_str(), binding, desc)) {
-                std::printf("set: unknown property '%s'\n", cmd.path.c_str());
+                explain_unresolved("set", true, cmd.path);
                 return viewer::FifoSetProp::Result::failed("unknown property");
             }
             const uint32_t index = static_cast<uint32_t>(
@@ -1787,7 +1807,7 @@ int main() {
             const matter::props::Desc* desc = nullptr;
             if (!matter::props::resolve_field(editor_props.registry(),
                                               cmd.path.c_str(), binding, desc)) {
-                std::printf("get: unknown property '%s'\n", cmd.path.c_str());
+                explain_unresolved("get", false, cmd.path);
                 return viewer::FifoGetProp::Result::failed("unknown property");
             }
             std::printf("get: %s = %s\n", cmd.path.c_str(),
