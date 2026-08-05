@@ -151,6 +151,14 @@ private:
         bool has_params = false;
         std::string params_text;          // raw editable JSON object text
         std::vector<std::string> exclude; // child module names dropped at this level
+        // M3 (docs/lod-vt-redesign-2026-08-04.md §3.1). `at` is the rep's
+        // authored switch-in distance in metres (< 0 = "none declared", keep
+        // the derived default); `gen_text` is the named generator, verbatim as
+        // it will be re-emitted. Both are carried so a workbench save
+        // ROUND-TRIPS an authored ladder instead of silently deleting the
+        // distances and generators the file already had.
+        double at = -1.0;
+        std::string gen_text;             // "" or e.g. "LOD.decimate({ error: 0.05 })"
     };
     void seed_lod_authoring();
     void draw_lod_authoring_panel();
