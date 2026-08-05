@@ -1851,7 +1851,7 @@ static void test_bake_writes_flatten_hints() {
     // part_asset::cache_path_hints(parent_hash) relative to CWD.
     std::string hp = part_asset::cache_path_hints(pr.resolved_hash);
     part_asset::FlattenHints h;
-    bool hints_loaded = part_asset::load_flatten_hints(hp, h);
+    bool hints_loaded = part_asset::load_flatten_hints(hp, pr.resolved_hash, h);
     CHECK(hints_loaded, "hints sidecar written");
     if (hints_loaded) {
         CHECK(h.child_px.size() == 2, "hints: two instanced entries");

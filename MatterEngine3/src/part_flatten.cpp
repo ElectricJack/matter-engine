@@ -653,7 +653,8 @@ private:
         // all-or-nothing and returns false when absent — that IS the "no hints"
         // case, so the return value is intentionally ignored.
         (void)part_asset::load_flatten_hints(
-            cache_root_ + "/" + part_asset::cache_path_hints(hash), geo->hints);
+            cache_root_ + "/" + part_asset::cache_path_hints(hash), hash,
+            geo->hints);
         auto ins = cache_.emplace(hash, std::move(geo));
         return ins.first->second.get();
     }
@@ -1584,7 +1585,8 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
     const std::string sidecar_path =
         cache_root + "/" + part_asset::cache_path_lods(root_hash);
     part_asset::LodVariants variants;
-    const bool has_variants = part_asset::load_lod_sidecar(sidecar_path, variants);
+    const bool has_variants =
+        part_asset::load_lod_sidecar(sidecar_path, root_hash, variants);
 
     // M3: an AUTHORED ladder (`static lods` naming `at` distances or `gen`
     // generators) also needs the full materialized root mesh, so it is
@@ -1596,7 +1598,7 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
         !has_variants &&
         part_asset::load_static_lod_plan(
             cache_root + "/" + part_asset::cache_path_static_lods(root_hash),
-            slod_plan) &&
+            root_hash, slod_plan) &&
         slod_plan.drives_ladder();
 
     if (has_variants || has_authored_ladder) {

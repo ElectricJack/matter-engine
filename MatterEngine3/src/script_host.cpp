@@ -2249,7 +2249,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                 std::string hpath = opts.parts_dir.empty()
                     ? part_asset::cache_path_hints(r.resolved_hash)
                     : opts.parts_dir + "/" + part_asset::cache_path_hints(r.resolved_hash);
-                part_asset::save_flatten_hints(hpath, hints);
+                part_asset::save_flatten_hints(hpath, r.resolved_hash, hints);
             }
             // Streaming fast path (BakeOptions::retain_geometry): hand back the
             // geometry save_v2 was just given, so the caller can stage this part

@@ -665,7 +665,7 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
         // content-addressed fast path: sidecar exists AND every referenced .part exists.
         // If a variant was pruned from the cache, fall through and re-bake the whole ladder.
         part_asset::LodVariants existing;
-        if (part_asset::load_lod_sidecar(sidecar, existing)) {
+        if (part_asset::load_lod_sidecar(sidecar, resolved_hash, existing)) {
             bool all_present = true;
             for (uint64_t h : existing.hashes) {
                 const std::string vpath = base_dir + "/" + part_asset::cache_path_resolved(h);
@@ -693,18 +693,15 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
         variant_hashes.push_back(r.resolved_hash);
     }
 
-    const std::string tmp = sidecar + ".tmp";
-    {
-        std::ofstream o(tmp);
-        o << spec.anchor_size << "\n";
-        for (size_t i = 0; i < spec.budgets.size(); ++i) {
-            char hex[17];
-            snprintf(hex, sizeof hex, "%016llx", (unsigned long long)variant_hashes[i]);
-            o << spec.budgets[i] << " " << hex << "\n";
-        }
-        if (!o.good()) return false;
-    }
-    return std::rename(tmp.c_str(), sidecar.c_str()) == 0;
+    // M4: the sidecar is a bundle section now, so its serializer moved next
+    // to its reader in part_asset_v2 instead of living inline here. (It also
+    // gains an atomic publish: this used to be std::rename, which on Windows
+    // fails when the target exists -- the same defect the resolve cache had.)
+    part_asset::LodVariants variants;
+    variants.anchor_size = spec.anchor_size;
+    variants.budgets     = spec.budgets;
+    variants.hashes      = variant_hashes;
+    return part_asset::save_lod_sidecar(sidecar, resolved_hash, variants);
 }
 
 bool HostBaker::bake_static_lods(const std::string& source, const Params& params,
@@ -744,7 +741,7 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
         base_dir + "/" + part_asset::cache_path_static_lods(resolved_hash);
     {
         part_asset::StaticLodPlan existing;
-        if (part_asset::load_static_lod_plan(sidecar, existing) &&
+        if (part_asset::load_static_lod_plan(sidecar, resolved_hash, existing) &&
             existing.level_hashes.size() == lods.size() &&
             existing.level_at == want_at && existing.level_gen == want_gen) {
             bool all_present = true;
@@ -846,44 +843,17 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
         plan.level_hashes[i] = lvl_r.resolved_hash;
     }
 
-    // Fold non-trivial exclude masks into the base .part's ChildInstance table
-    // as an LMSK trailer (transpose level-major plan.level_exclude_masks into
-    // child-major child_level_mask). Skipped entirely (byte-identical .part)
-    // when no level excludes anything -- e.g. a `static lods` block that only
-    // uses `params`, or an empty/no-exclude authoring.
-    bool any_exclusion = false;
-    for (uint32_t m : plan.level_exclude_masks) if (m != 0) { any_exclusion = true; break; }
-    if (any_exclusion) {
-        BLASManager blas; TLASManager tlas(65536);
-        std::vector<part_asset::ChildInstance> kids;
-        part_asset::LodLevels existing_lods;
-        std::vector<part_asset::VolumeEmitter> emitters;
-        const std::string part_path = base_dir + "/" + part_asset::cache_path_resolved(resolved_hash);
-        if (part_asset::load_v2(part_path, resolved_hash, blas, tlas, kids, existing_lods, emitters) &&
-            !kids.empty()) {
-            std::vector<uint32_t> child_level_mask(kids.size(), 0xFFFFFFFFu);
-            for (size_t i = 0; i < lods.size() && i < 32; ++i) {
-                const uint32_t excl = plan.level_exclude_masks[i];
-                // level_exclude_masks are uint32 (see the computation cap at
-                // k < 32 above), so only the first 32 child placements can be
-                // excluded; guard the shift to avoid UB (1u << k, k >= 32) and
-                // match that cap. Children past 31 are always-present (a known
-                // limitation to lift with a wider mask when the render path
-                // consumes LMSK).
-                for (size_t k = 0; k < kids.size() && k < 32; ++k)
-                    if (excl & (1u << k)) child_level_mask[k] &= ~(1u << (uint32_t)i);
-            }
-            if (!part_asset::save_v2(part_path, blas, tlas, kids.data(), kids.size(),
-                                     existing_lods, emitters, child_level_mask, resolved_hash)) {
-                std::fprintf(stderr,
-                    "  HostBaker::bake_static_lods: failed to write LMSK trailer for %016llx\n",
-                    (unsigned long long)resolved_hash);
-                return false;
-            }
-        }
-    }
+    // M4: the LMSK trailer is GONE. It transposed plan.level_exclude_masks
+    // into a child-major bitmask and appended it to the compositional body --
+    // and nothing in the engine ever read it back. The only reader was a
+    // load_v2 overload with no production caller, so the exclude information
+    // made a round trip through the part body purely to be skipped again on
+    // load. The plan section below already carries level_exclude_masks, which
+    // is where the flatten path actually reads them from. M0 deferred this to
+    // M4 because removing a trailer is a format change; M4 invalidates every
+    // cache anyway, so here it costs nothing.
 
-    return part_asset::save_static_lod_plan(sidecar, plan);
+    return part_asset::save_static_lod_plan(sidecar, resolved_hash, plan);
 }
 
 } // namespace part_graph

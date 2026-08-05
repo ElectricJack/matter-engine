@@ -1,4 +1,5 @@
 #include "impostor_bake.h"
+#include "part_bundle.h"   // M4: the atlas is a bundle section
 
 #include "part_asset.h"   // part_asset::fnv1a64, replace_file_atomic lives in v2
 #include "part_asset_v2.h"
@@ -84,11 +85,13 @@ const char* load_failure_text(LoadFailure f) {
     return "unknown";
 }
 
+// M4: the atlas is the IMPO section of the part's bundle, so this returns the
+// bundle path like every other cache_path_* helper. The old `.fimp` sidecar
+// beside the flat artifact is gone -- along with the class of failure where a
+// flat carrying impostor rungs outlived its atlas, or an orphan atlas outlived
+// its flat. One file, one identity, one atomic publish.
 std::string cache_path_impostor(uint64_t resolved_hash) {
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "parts/%016llx.fimp",
-                  static_cast<unsigned long long>(resolved_hash));
-    return buf;
+    return part_bundle::cache_path_bundle(resolved_hash);
 }
 
 // ---------------------------------------------------------------------------
@@ -438,18 +441,17 @@ bool save(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
     h.payload_bytes = payload.size();
     h.payload_checksum = part_asset::fnv1a64(payload.data(), payload.size());
 
-    const std::string tmp = path + ".tmp";
-    FILE* f = std::fopen(tmp.c_str(), "wb");
-    if (!f) return false;
-    bool ok = std::fwrite(&h, sizeof(h), 1, f) == 1 &&
-              std::fwrite(payload.data(), 1, payload.size(), f) == payload.size();
-    ok = (std::fclose(f) == 0) && ok;
-    if (!ok) { std::remove(tmp.c_str()); return false; }
-    if (!part_asset::replace_file_atomic(tmp, path)) {
-        std::remove(tmp.c_str());
-        return false;
-    }
-    return true;
+    // M4: header + payload become one bundle section, byte-for-byte what the
+    // `.fimp` file held, so the atlas keeps validating its own magic, format,
+    // part identity and depicts-hash independently of the bundle around it.
+    std::vector<uint8_t> section;
+    section.reserve(sizeof(h) + payload.size());
+    const auto* hb = reinterpret_cast<const uint8_t*>(&h);
+    section.insert(section.end(), hb, hb + sizeof(h));
+    section.insert(section.end(), payload.begin(), payload.end());
+    return part_bundle::write_section(path, part_hash,
+                                      part_bundle::kSectionImpostor,
+                                      section.data(), section.size());
 }
 
 bool load(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
@@ -463,22 +465,21 @@ bool load(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
     };
     if (fail) *fail = LoadFailure::None;
 
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return reject(LoadFailure::Absent, load_failure_text(LoadFailure::Absent));
+    std::vector<uint8_t> section;
+    if (!part_bundle::read_section(path, part_hash,
+                                   part_bundle::kSectionImpostor, section))
+        return reject(LoadFailure::Absent, load_failure_text(LoadFailure::Absent));
 
     Header h{};
-    if (std::fread(&h, sizeof(h), 1, f) != 1) {
-        std::fclose(f);
+    if (section.size() < sizeof(h))
         return reject(LoadFailure::Truncated, "header short read");
-    }
+    std::memcpy(&h, section.data(), sizeof(h));
     if (std::memcmp(h.magic, kMagic, 4) != 0) {
-        std::fclose(f);
         return reject(LoadFailure::Header, load_failure_text(LoadFailure::Header));
     }
     if (h.version != kFormatVersion || h.views != kViews ||
         h.cell_px != kCellPx || h.grid_dim != kGridDim ||
         h.supersample != kSuperSample) {
-        std::fclose(f);
         char buf[160];
         std::snprintf(buf, sizeof(buf),
                       "format v%u/%uview/%upx, engine wants v%u/%uview/%upx",
@@ -486,14 +487,12 @@ bool load(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
         return reject(LoadFailure::Version, buf);
     }
     if (h.part_hash != part_hash) {
-        std::fclose(f);
         char buf[128];
         std::snprintf(buf, sizeof(buf), "sidecar names part %016llx",
                       static_cast<unsigned long long>(h.part_hash));
         return reject(LoadFailure::Identity, buf);
     }
     if (h.depicts_hash != depicts_hash) {
-        std::fclose(f);
         char buf[160];
         std::snprintf(buf, sizeof(buf),
                       "depicts %016llx, ladder terminal is %016llx",
@@ -502,13 +501,11 @@ bool load(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
         return reject(LoadFailure::Stale, buf);
     }
     if (h.cluster_count == 0) {
-        std::fclose(f);
         return reject(LoadFailure::Malformed, "zero clusters");
     }
     const uint64_t expect_bytes =
         static_cast<uint64_t>(h.cluster_count) * (kRecordFixed + kAtlasBytes);
     if (h.payload_bytes != expect_bytes) {
-        std::fclose(f);
         char buf[128];
         std::snprintf(buf, sizeof(buf), "payload declares %llu bytes, expected %llu",
                       static_cast<unsigned long long>(h.payload_bytes),
@@ -516,11 +513,9 @@ bool load(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
         return reject(LoadFailure::Malformed, buf);
     }
 
-    std::vector<uint8_t> payload(static_cast<size_t>(h.payload_bytes));
-    const size_t got = std::fread(payload.data(), 1, payload.size(), f);
-    std::fclose(f);
-    if (got != payload.size())
+    if (section.size() - sizeof(h) != static_cast<size_t>(h.payload_bytes))
         return reject(LoadFailure::Truncated, "payload short read");
+    std::vector<uint8_t> payload(section.begin() + sizeof(h), section.end());
     if (part_asset::fnv1a64(payload.data(), payload.size()) != h.payload_checksum)
         return reject(LoadFailure::Checksum,
                       load_failure_text(LoadFailure::Checksum));

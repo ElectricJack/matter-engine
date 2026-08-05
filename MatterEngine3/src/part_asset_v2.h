@@ -75,16 +75,23 @@ struct LodLevel {
 // convention; SP-1 preserves array order as-is.
 using LodLevels = std::vector<LodLevel>;
 
-// Cache key / filename for a part keyed on its resolved hash: "parts/<16-hex>.part".
+// M4 -- THE PART BUNDLE. Every cache_path_* helper below now returns the SAME
+// path: "parts/<16-hex>.bundle", the one file a part owns (part_bundle.h).
+// What used to be six sibling files are six SECTIONS of it; which section a
+// call touches is decided by the save/load function, not by the filename.
+// Call sites are unchanged, because which artifact a caller wanted was never
+// expressed by the extension -- only by the function it called.
+//
+// Cache key for the compositional body (the old "<hash>.part"): bundle REP0.
 std::string cache_path_resolved(uint64_t resolved_hash);
 
-// Cache key for the FLATTENED artifact of the same part: "parts/<16-hex>.flat.part".
+// Cache key for the FLATTENED artifact of the same part: bundle FLAT.
 // Same v2 format; whole subtree merged into the BLAS table (LOD ladder populated,
 // child table empty). Derived from the compositional .part, so it shares the hash:
 // any subtree change changes the resolved hash and orphans the stale flat file.
 std::string cache_path_flat(uint64_t resolved_hash);
 
-// Sidecar listing a part's budget-LOD variant bakes: "parts/<16-hex>.lods".
+// Sidecar listing a part's budget-LOD variant bakes: bundle VARS.
 // Written by HostBaker::bake_lod_variants for schemas exporting `static
 // lodBudgets`; consumed by part_flatten to assemble a budget ladder instead
 // of QEM. Text format: line 1 = anchor_size, then "<budget> <16-hex-hash>"
@@ -97,11 +104,14 @@ struct LodVariants {
     std::vector<double>   budgets;   // parallel to hashes, finest first
     std::vector<uint64_t> hashes;
 };
-// False if the file is missing or unparseable (callers fall back to QEM).
-bool load_lod_sidecar(const std::string& path, LodVariants& out);
+// False if the section is missing or unparseable (callers fall back to QEM).
+bool load_lod_sidecar(const std::string& path, uint64_t resolved_hash,
+                      LodVariants& out);
+bool save_lod_sidecar(const std::string& path, uint64_t resolved_hash,
+                      const LodVariants& variants);
 
 // Sidecar recording a part's authored `static lods` bake plan (W5, Part
-// Workbench): "parts/<16-hex>.static_lods". Written by
+// Workbench): bundle PLAN. Written by
 // HostBaker::bake_static_lods for schemas exporting `static lods`; one line
 // per authored level, in level order:
 //   <geometry-hash-hex> <exclude-mask-hex>
@@ -141,20 +151,28 @@ struct StaticLodPlan {
         return false;
     }
 };
-bool save_static_lod_plan(const std::string& path, const StaticLodPlan& plan);
-// False if the file is missing or unparseable (callers fall back to treating
-// the part as if it had no `static lods`).
-bool load_static_lod_plan(const std::string& path, StaticLodPlan& out);
+// M4: each of these takes the resolved hash now. It was always implicit in
+// the path, but a bundle section must state which part it belongs to, and
+// scraping hex digits back out of a filename is the implicit coupling this
+// milestone removes. Every caller already had the hash in scope.
+bool save_static_lod_plan(const std::string& path, uint64_t resolved_hash,
+                          const StaticLodPlan& plan);
+// False if the section is missing or unparseable (callers fall back to
+// treating the part as if it had no `static lods`).
+bool load_static_lod_plan(const std::string& path, uint64_t resolved_hash,
+                          StaticLodPlan& out);
 
-// Cache key for the flatten-hints sidecar of a part: "parts/<16-hex>.hints".
+// Cache key for the flatten-hints sidecar of a part: bundle HINT.
 // Stores which children are LOD-instanced and at what pixel threshold.
 std::string cache_path_hints(uint64_t resolved_hash);
 
 struct FlattenHints {
     std::map<uint32_t, float> child_px;   // child index (bake order) -> inlineBelowPx
 };
-bool save_flatten_hints(const std::string& path, const FlattenHints& hints);
-bool load_flatten_hints(const std::string& path, FlattenHints& out);
+bool save_flatten_hints(const std::string& path, uint64_t resolved_hash,
+                        const FlattenHints& hints);
+bool load_flatten_hints(const std::string& path, uint64_t resolved_hash,
+                        FlattenHints& out);
 
 // Volumetric emitter record serialized as a tagged trailer in .part artifacts.
 // 60 bytes, padding-free layout for stable serialization.
@@ -211,28 +229,9 @@ bool save_v2(const std::string& path, const BLASManager& blas,
              const PartAnimationLink& animation_link,
              uint64_t resolved_hash);
 
-// W5 (Part Workbench, static lods) — per-level child presence. Extends the v2
-// body with an OPTIONAL tagged "LMSK" trailer (same additive-trailer pattern
-// as the EMIT block above, appended after it): one uint32 bitmask per child,
-// parallel to the children table, bit k set means the child at that table
-// position is present at authored LOD level k. THE COMPAT GUARANTEE: the
-// trailer is written ONLY when child_level_mask is non-empty, so every
-// existing call site (the two overloads above, and any part baked without
-// `static lods`) writes ZERO extra bytes — byte-for-byte identical output to
-// before this overload existed. child_level_mask must be either empty (no
-// trailer; "present at all levels" for every child, today's behavior) or
-// exactly child_count entries long; a size mismatch fails the save.
-bool save_v2(const std::string& path, const BLASManager& blas,
-             const TLASManager& tlas,
-             const ChildInstance* children, size_t child_count,
-             const LodLevels& lods,
-             const std::vector<VolumeEmitter>& emitters,
-             const std::vector<uint32_t>& child_level_mask,
-             uint64_t resolved_hash);
-
 // Chart-space virtual texturing (WP-A) — chart sidecar section. Extends the
 // v2 body with an OPTIONAL tagged "CHRT" trailer (same additive-trailer
-// pattern as EMIT/LMSK; written after EMIT, before any ANLK): a u32 byte-size
+// pattern as EMIT; written after EMIT, before any ANLK): a u32 byte-size
 // frame around the chart_atlas payload (version, then one ChartAtlasRung per
 // LOD rung, ladder order — see chart_atlas.h for the exact encoding). THE
 // COMPAT GUARANTEE: the trailer is written ONLY when rung_charts is non-empty,
@@ -304,19 +303,6 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
              std::vector<ChildInstance>& children_out,
              LodLevels& lods_out,
              std::vector<VolumeEmitter>& emitters_out,
-             PartAssetLoadFailure* failure = nullptr,
-             std::string* reason = nullptr);
-
-// W5: overload that also reads the optional LMSK per-level child-presence
-// trailer (see save_v2 above). child_level_mask_out is left EMPTY when the
-// trailer is absent (the compat default: every child present at all levels) —
-// callers must treat empty as "no restriction", not "no children visible".
-bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
-             BLASManager& blas, TLASManager& tlas,
-             std::vector<ChildInstance>& children_out,
-             LodLevels& lods_out,
-             std::vector<VolumeEmitter>& emitters_out,
-             std::vector<uint32_t>& child_level_mask_out,
              PartAssetLoadFailure* failure = nullptr,
              std::string* reason = nullptr);
 

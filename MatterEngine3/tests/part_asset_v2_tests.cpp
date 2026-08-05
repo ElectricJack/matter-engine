@@ -1,4 +1,5 @@
 #include "part_asset_v2.h"
+#include "part_bundle.h"   // M4: an artifact is a bundle section
 #include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
 #include "../../libs/MatterSurfaceLib/include/material_registry.h"
@@ -114,9 +115,9 @@ static void test_resolved_hash_carries_version_vector() {
 
 static void test_cache_path_resolved() {
     using namespace part_asset;
-    CHECK(cache_path_resolved(0x1ull) == "parts/0000000000000001.part",
+    CHECK(cache_path_resolved(0x1ull) == "parts/0000000000000001.bundle",
           "cache_path_resolved zero-padded hex");
-    CHECK(cache_path_resolved(0xDEADBEEFCAFEBABEull) == "parts/deadbeefcafebabe.part",
+    CHECK(cache_path_resolved(0xDEADBEEFCAFEBABEull) == "parts/deadbeefcafebabe.bundle",
           "cache_path_resolved full-width hex");
 }
 
@@ -188,6 +189,23 @@ static void write_file(const char* path, const std::vector<uint8_t>& b) {
     FILE* f = fopen(path, "wb"); fwrite(b.data(),1,b.size(),f); fclose(f);
 }
 
+// M4: an artifact's bytes are a bundle SECTION now, not a whole file. The
+// header/corruption tests below reach for the artifact header at offset 0 and
+// the body at offset 40, which is still exactly the section's layout -- what
+// changed is where those bytes live. These two helpers are the only thing that
+// had to move; every assertion about the header, the content hash and the
+// material prefix reads the same as before.
+static std::vector<uint8_t> read_artifact(const char* path, uint64_t hash,
+                                          uint32_t tag) {
+    std::vector<uint8_t> b;
+    part_bundle::read_section(path, hash, tag, b);
+    return b;
+}
+static void write_artifact(const char* path, uint64_t hash, uint32_t tag,
+                           const std::vector<uint8_t>& b) {
+    part_bundle::write_section(path, hash, tag, b.data(), b.size());
+}
+
 static void write_text_file(const char* path, const char* text) {
     FILE* f = fopen(path, "wb");
     fwrite(text, 1, strlen(text), f);
@@ -228,7 +246,7 @@ static void test_save_v2_header() {
     bool ok = save_v2(path, blas, tlas, kids.data(), kids.size(), lods, 0xABCDEF12u);
     CHECK(ok, "save_v2 returns true");
 
-    std::vector<uint8_t> b = read_file(path);
+    std::vector<uint8_t> b = read_artifact(path, 0xABCDEF12u, part_bundle::kSectionRep0);
     // Header layout (v2): magic u32, version u32, resolved_hash^ver u64, sizeof Tri/TriEx/
     // BVHNode/ChildInstance u32 x4, content_hash u64 => 8 + 16 + 8 = 40-byte header.
     CHECK(b.size() >= 40, "file has at least a v2 header");
@@ -405,7 +423,7 @@ static void test_v2_guards() {
     remove(path);
     CHECK(save_v2(path, blasA, tlasA, kids.data(), kids.size(), lods, 0x1234u),
           "guard save ok");
-    std::vector<uint8_t> good = read_file(path);
+    std::vector<uint8_t> good = read_artifact(path, 0x1234u, part_bundle::kSectionRep0);
 
     // Sanity: unmodified file loads.
     { BLASManager b; TLASManager t(64); std::vector<ChildInstance> ko; LodLevels lo;
@@ -413,19 +431,19 @@ static void test_v2_guards() {
 
     // Layout guard: corrupt sizeof_ChildInstance (offset 28).
     { auto bad = good; uint32_t v = rd_u32(bad,28) + 1; memcpy(bad.data()+28,&v,4);
-      write_file(path, bad);
+      write_artifact(path, 0x1234u, part_bundle::kSectionRep0, bad);
       BLASManager b; TLASManager t(64); std::vector<ChildInstance> ko; LodLevels lo;
       CHECK(!load_v2(path, 0x1234u, b, t, ko, lo), "rejects sizeof_ChildInstance mismatch"); }
 
     // Layout guard: corrupt sizeof_Tri (offset 16).
     { auto bad = good; uint32_t v = rd_u32(bad,16) + 1; memcpy(bad.data()+16,&v,4);
-      write_file(path, bad);
+      write_artifact(path, 0x1234u, part_bundle::kSectionRep0, bad);
       BLASManager b; TLASManager t(64); std::vector<ChildInstance> ko; LodLevels lo;
       CHECK(!load_v2(path, 0x1234u, b, t, ko, lo), "rejects sizeof_Tri mismatch"); }
 
     // Version guard / v1 cutover: a format_version=1 file is rejected by the v2 loader.
     { auto bad = good; uint32_t v = 1u; memcpy(bad.data()+4,&v,4);
-      write_file(path, bad);
+      write_artifact(path, 0x1234u, part_bundle::kSectionRep0, bad);
       BLASManager b; TLASManager t(64); std::vector<ChildInstance> ko; LodLevels lo;
       CHECK(!load_v2(path, 0x1234u, b, t, ko, lo), "v2 loader rejects v1 (format_version=1)"); }
 
@@ -433,13 +451,13 @@ static void test_v2_guards() {
     // The body is at least the header(40) + materials + BLAS + instances; flipping
     // the last byte lands inside the trailing LOD section.
     { auto bad = good; bad[bad.size()-1] ^= 0xFF;
-      write_file(path, bad);
+      write_artifact(path, 0x1234u, part_bundle::kSectionRep0, bad);
       BLASManager b; TLASManager t(64); std::vector<ChildInstance> ko; LodLevels lo;
       CHECK(!load_v2(path, 0x1234u, b, t, ko, lo), "rejects trailing-section corruption"); }
 
     // Magic guard.
     { auto bad = good; bad[0] ^= 0xFF;
-      write_file(path, bad);
+      write_artifact(path, 0x1234u, part_bundle::kSectionRep0, bad);
       BLASManager b; TLASManager t(64); std::vector<ChildInstance> ko; LodLevels lo;
       CHECK(!load_v2(path, 0x1234u, b, t, ko, lo), "rejects bad magic"); }
 
@@ -457,14 +475,14 @@ static void test_material_schema_guard() {
     remove(path);
     CHECK(save_v2(path, blasA, tlasA, kids.data(), kids.size(), lods, 0x4321u),
           "material-schema guard save ok");
-    std::vector<uint8_t> prior = read_file(path);
+    std::vector<uint8_t> prior = read_artifact(path, 0x4321u, part_bundle::kSectionRep0);
     CHECK(prior.size() >= 44, "material-schema fixture contains common body");
     if (prior.size() >= 44) {
         const uint32_t old_schema = MaterialRegistrySchemaVersion() - 1u;
         memcpy(prior.data() + 40, &old_schema, sizeof(old_schema));
         const uint64_t content_hash = fnv1a64(prior.data() + 40, prior.size() - 40);
         memcpy(prior.data() + 32, &content_hash, sizeof(content_hash));
-        write_file(path, prior);
+        write_artifact(path, 0x4321u, part_bundle::kSectionRep0, prior);
 
         BLASManager b; TLASManager t(64);
         std::vector<ChildInstance> ko; LodLevels lo;
@@ -489,16 +507,17 @@ static void patch_body_u32_and_rehash(std::vector<uint8_t>& bytes,
 }
 
 // Flip one byte at file offset `offset` in place (r+b).
-static void corrupt_byte_at(const char* path, size_t offset) {
-    FILE* f = fopen(path, "r+b");
-    if (!f) return;
-    fseek(f, static_cast<long>(offset), SEEK_SET);
-    int c = fgetc(f);
-    if (c != EOF) {
-        fseek(f, static_cast<long>(offset), SEEK_SET);
-        fputc(c ^ 0x01, f);
-    }
-    fclose(f);
+// M4: offsets are into the ARTIFACT (the bundle section), not the file. The
+// tests using this are reasoning about the part's own header/body layout, so
+// the section is the right frame -- a raw file offset would now land in the
+// bundle header or the directory and mean nothing.
+static void corrupt_byte_at(const char* path, uint64_t hash, uint32_t tag,
+                            size_t offset) {
+    std::vector<uint8_t> bytes;
+    if (!part_bundle::read_section(path, hash, tag, bytes)) return;
+    if (offset >= bytes.size()) return;
+    bytes[offset] ^= 0x01;
+    part_bundle::write_section(path, hash, tag, bytes.data(), bytes.size());
 }
 
 static void test_cache_artifact_compatibility_probe() {
@@ -549,11 +568,11 @@ static void test_cache_artifact_compatibility_probe() {
               8u + static_cast<size_t>(MaterialRegistryCount()) * sizeof(MaterialDef),
           "large header probe retains no geometry bytes");
 
-    std::vector<uint8_t> current_v2 = read_file(v2_path);
+    std::vector<uint8_t> current_v2 = read_artifact(v2_path, v2_hash, part_bundle::kSectionRep0);
     std::vector<uint8_t> stale_schema = current_v2;
     patch_body_u32_and_rehash(stale_schema, 0,
                               MaterialRegistrySchemaVersion() - 1u);
-    write_file(v2_path, stale_schema);
+    write_artifact(v2_path, v2_hash, part_bundle::kSectionRep0, stale_schema);
     CHECK(!is_cache_artifact_header_compatible(v2_path, v2_hash, kFormatVersionV2),
           "header probe rejects prior-schema v2 artifact");
 
@@ -563,16 +582,16 @@ static void test_cache_artifact_compatibility_probe() {
     const uint64_t definition_hash =
         fnv1a64(stale_definition.data() + 40, stale_definition.size() - 40);
     memcpy(stale_definition.data() + 32, &definition_hash, sizeof(definition_hash));
-    write_file(v2_path, stale_definition);
+    write_artifact(v2_path, v2_hash, part_bundle::kSectionRep0, stale_definition);
     CHECK(!is_cache_artifact_header_compatible(v2_path, v2_hash, kFormatVersionV2),
           "header probe rejects changed material definition in prefix");
 
     // Corrupt a byte in the BODY PAST the material prefix: header probe must
     // still accept (it does not hash the body); loader must reject it.
-    write_file(v2_path, current_v2);
+    write_artifact(v2_path, v2_hash, part_bundle::kSectionRep0, current_v2);
     std::vector<uint8_t> deep_corrupt = current_v2;
     deep_corrupt.back() ^= 0x01;
-    write_file(v2_path, deep_corrupt);
+    write_artifact(v2_path, v2_hash, part_bundle::kSectionRep0, deep_corrupt);
     CHECK(is_cache_artifact_header_compatible(v2_path, v2_hash, kFormatVersionV2),
           "header probe ignores deep body corruption (loader's job)");
     {
@@ -584,7 +603,7 @@ static void test_cache_artifact_compatibility_probe() {
               "loader rejects body-corrupt artifact that header probe accepted");
     }
 
-    write_file(v2_path, current_v2);
+    write_artifact(v2_path, v2_hash, part_bundle::kSectionRep0, current_v2);
     const uint64_t flat_hash = 0x12345678u;
     const char* flat_path = "test_flat_compat.flat.part";
     remove(flat_path);
@@ -603,13 +622,13 @@ static void test_cache_artifact_compatibility_probe() {
           "the flat artifact's identity passes through the version fold");
     CHECK(is_cache_artifact_header_compatible(flat_path, flat_hash, kFormatVersionFlat),
           "header probe accepts current flat artifact");
-    std::vector<uint8_t> current_flat = read_file(flat_path);
+    std::vector<uint8_t> current_flat = read_artifact(flat_path, flat_hash, part_bundle::kSectionFlat);
     std::vector<uint8_t> stale_v6 = current_flat;
     const uint32_t v6 = 6u;
     const uint64_t v6_hash_guard = flat_hash ^ static_cast<uint64_t>(v6);
     memcpy(stale_v6.data() + 4, &v6, sizeof(v6));
     memcpy(stale_v6.data() + 8, &v6_hash_guard, sizeof(v6_hash_guard));
-    write_file(flat_path, stale_v6);
+    write_artifact(flat_path, flat_hash, part_bundle::kSectionFlat, stale_v6);
     CHECK(!is_cache_artifact_header_compatible(flat_path, flat_hash, kFormatVersionFlat),
           "header probe rejects stale v6 flat artifact");
     BLASManager stale_blas; TLASManager stale_tlas(64);
@@ -631,10 +650,10 @@ static void test_cache_artifact_compatibility_probe() {
 
     CHECK(save_flat_v3(flat_path, blas, tlas, clusters, flat_hash),
           "stale v6 flat regenerates through atomic save");
-    std::vector<uint8_t> stale_flat = read_file(flat_path);
+    std::vector<uint8_t> stale_flat = read_artifact(flat_path, flat_hash, part_bundle::kSectionFlat);
     patch_body_u32_and_rehash(stale_flat, 0,
                               MaterialRegistrySchemaVersion() - 1u);
-    write_file(flat_path, stale_flat);
+    write_artifact(flat_path, flat_hash, part_bundle::kSectionFlat, stale_flat);
     CHECK(!is_cache_artifact_header_compatible(flat_path, flat_hash, kFormatVersionFlat),
           "header probe rejects prior-schema flat artifact");
 
@@ -659,7 +678,7 @@ static void test_cache_artifact_compatibility_probe() {
         const uint64_t truncated_hash =
             fnv1a64(truncated.data() + 40, truncated.size() - 40);
         memcpy(truncated.data() + 32, &truncated_hash, sizeof(truncated_hash));
-        write_file(truncated_path, truncated);
+        write_artifact(truncated_path, v2_hash, part_bundle::kSectionRep0, truncated);
         CHECK(!is_cache_artifact_header_compatible(truncated_path, v2_hash,
                                                    kFormatVersionV2),
               "header probe rejects truncated material prefix");
@@ -708,7 +727,7 @@ static void test_header_probe() {
 
     // Corrupt one byte in the BODY PAST the material prefix: header probe must
     // still accept (it does not hash the body)...
-    corrupt_byte_at(v2_path, 40 + material_prefix + 8);
+    corrupt_byte_at(v2_path, v2_hash, part_bundle::kSectionRep0, 40 + material_prefix + 8);
     CHECK(is_cache_artifact_header_compatible(
               v2_path, v2_hash, kFormatVersionV2),
           "header probe ignores deep body corruption");
@@ -740,24 +759,30 @@ static void test_flatten_hints_round_trip() {
     make_test_dir((std::string(kCacheRoot) + "/parts").c_str());
 
     const uint64_t h = 0xABCD0000ABCD0000ull;
-    CHECK(part_asset::cache_path_hints(h) == "parts/abcd0000abcd0000.hints",
-          "cache_path_hints returns correct filename");
+    // M4: every kind names the ONE bundle; the kind is a section inside it.
+    CHECK(part_asset::cache_path_hints(h) == "parts/abcd0000abcd0000.bundle",
+          "cache_path_hints names the part's bundle");
+    CHECK(part_asset::cache_path_hints(h) == part_asset::cache_path_resolved(h) &&
+          part_asset::cache_path_hints(h) == part_asset::cache_path_flat(h) &&
+          part_asset::cache_path_hints(h) == part_asset::cache_path_static_lods(h) &&
+          part_asset::cache_path_hints(h) == part_asset::cache_path_lods(h),
+          "every cache_path_* helper names the same bundle");
 
     std::string p = std::string(kCacheRoot) + "/" + part_asset::cache_path_hints(h);
 
     part_asset::FlattenHints out;
     out.child_px[1] = 64.0f;
     out.child_px[5] = 32.0f;
-    CHECK(part_asset::save_flatten_hints(p, out), "save_flatten_hints returns true");
+    CHECK(part_asset::save_flatten_hints(p, h, out), "save_flatten_hints returns true");
 
     part_asset::FlattenHints loaded;
-    CHECK(part_asset::load_flatten_hints(p, loaded), "load_flatten_hints returns true");
+    CHECK(part_asset::load_flatten_hints(p, h, loaded), "load_flatten_hints returns true");
     CHECK(loaded.child_px.size() == 2, "loaded hints has 2 entries");
     CHECK(loaded.child_px.at(1) == 64.0f, "child 1 px preserved");
     CHECK(loaded.child_px.at(5) == 32.0f, "child 5 px preserved");
 
     part_asset::FlattenHints missing;
-    CHECK(!part_asset::load_flatten_hints(p + ".nope", missing),
+    CHECK(!part_asset::load_flatten_hints(p + ".nope", h, missing),
           "load_flatten_hints returns false for missing file");
     CHECK(missing.child_px.empty(), "hints empty after failed load");
 
@@ -769,51 +794,25 @@ static void test_flatten_hints_round_trip() {
         ofs << "2 notanumber\n";
     }
     part_asset::FlattenHints hmal;
-    CHECK(!part_asset::load_flatten_hints(pmal, hmal),
+    CHECK(!part_asset::load_flatten_hints(pmal, h, hmal),
           "load_flatten_hints returns false for malformed file");
     CHECK(hmal.child_px.empty(),
           "hints cleared (all-or-nothing) on malformed file");
 }
 
-// W5 (Part Workbench, static lods) — THE CRITICAL FORMAT-COMPAT GATE: the new
-// save_v2 overload that can append an LMSK per-level-child-presence trailer
-// must write BYTE-IDENTICAL output to the pre-W5 save_v2 overloads when the
-// caller passes an empty child_level_mask (every pre-W5 call site, and every
-// part without `static lods`). Proven directly by comparing raw file bytes
-// from both overloads, not just "loads back the same" — the strongest form
-// of the compat guarantee the milestone spec demands.
-static void test_lmsk_absent_is_byte_identical() {
-    using namespace part_asset;
-    BLASManager blasA; TLASManager tlasA(64);
-    BLASHandle hA, hB; build_scene(blasA, tlasA, hA, hB);
-    auto kids = sample_children();
-    auto lods = sample_lods();
-    std::vector<VolumeEmitter> emitters;  // empty: also exercises the EMIT-absent path
-
-    const char* path_old = "test_v2_lmsk_old.part";
-    const char* path_new = "test_v2_lmsk_new.part";
-    remove(path_old); remove(path_new);
-
-    CHECK(save_v2(path_old, blasA, tlasA, kids.data(), kids.size(), lods,
-                  emitters, 0x7777u),
-          "pre-W5 emitters-overload save ok");
-    CHECK(save_v2(path_new, blasA, tlasA, kids.data(), kids.size(), lods,
-                  emitters, std::vector<uint32_t>{}, 0x7777u),
-          "W5 overload save ok with empty mask");
-
-    std::vector<uint8_t> bytes_old = read_file(path_old);
-    std::vector<uint8_t> bytes_new = read_file(path_new);
-    CHECK(!bytes_old.empty() && bytes_old.size() == bytes_new.size() &&
-          memcmp(bytes_old.data(), bytes_new.data(), bytes_old.size()) == 0,
-          "LMSK-capable overload with empty mask == byte-identical to pre-W5 output");
-
-    remove(path_old); remove(path_new);
-}
-
-// W5: a non-empty child_level_mask round-trips through the LMSK trailer, and
-// load_v2 without the mask-reading overload still loads the SAME children/
-// lods/emitters (the trailer is inert to old callers, an EOF-tolerant probe).
-static void test_lmsk_round_trip() {
+// M4 -- THE BUNDLE IS A PURE FUNCTION OF ITS SECTION SET.
+//
+// This replaces W5's LMSK byte-identity gate, which went with the trailer. The
+// property it guards is the one M4's double-bake acceptance rests on: a bake
+// writes a part's sections at different times (body, then flatten, then
+// impostor), and worker-pool completion order decides which lands first. If
+// the container encoded arrival order, two cold bakes of identical content
+// would produce different bytes and the determinism gate would fail
+// intermittently -- the worst possible failure mode for a cache.
+//
+// So: write the same three sections into two bundles in OPPOSITE orders and
+// require the files to be byte-identical.
+static void test_bundle_is_order_independent() {
     using namespace part_asset;
     BLASManager blasA; TLASManager tlasA(64);
     BLASHandle hA, hB; build_scene(blasA, tlasA, hA, hB);
@@ -821,38 +820,48 @@ static void test_lmsk_round_trip() {
     auto lods = sample_lods();
     std::vector<VolumeEmitter> emitters;
 
-    // child 0 present at levels {0,2}; child 1 present at all levels (bit
-    // pattern 0xFFFFFFFF, still explicit here to prove non-default masks
-    // round-trip too, not just the "excluded somewhere" case).
-    std::vector<uint32_t> mask = { 0b101u, 0xFFFFFFFFu };
+    const uint64_t hash = 0x7777u;
+    const char* path_a = "test_bundle_order_a.bundle";
+    const char* path_b = "test_bundle_order_b.bundle";
+    remove(path_a); remove(path_b);
 
-    const char* path = "test_v2_lmsk_round.part";
-    remove(path);
-    CHECK(save_v2(path, blasA, tlasA, kids.data(), kids.size(), lods,
-                  emitters, mask, 0x8888u),
-          "LMSK save ok");
+    FlattenHints hints;
+    hints.child_px[1] = 64.0f;
 
+    // A: body, then hints.
+    CHECK(save_v2(path_a, blasA, tlasA, kids.data(), kids.size(), lods, emitters, hash),
+          "order A: body written first");
+    CHECK(save_flatten_hints(path_a, hash, hints), "order A: hints written second");
+
+    // B: hints, then body.
+    CHECK(save_flatten_hints(path_b, hash, hints), "order B: hints written first");
+    CHECK(save_v2(path_b, blasA, tlasA, kids.data(), kids.size(), lods, emitters, hash),
+          "order B: body written second");
+
+    std::vector<uint8_t> bytes_a = read_file(path_a);
+    std::vector<uint8_t> bytes_b = read_file(path_b);
+    CHECK(!bytes_a.empty() && bytes_a.size() == bytes_b.size() &&
+          memcmp(bytes_a.data(), bytes_b.data(), bytes_a.size()) == 0,
+          "bundle bytes depend on the section SET, not the write order");
+
+    // And a merge preserves what it did not write: the body must still load
+    // out of the bundle the hints write republished.
     BLASManager blasB; TLASManager tlasB(64);
-    std::vector<ChildInstance> kidsOut; LodLevels lodsOut;
-    std::vector<VolumeEmitter> emittersOut; std::vector<uint32_t> maskOut;
-    CHECK(load_v2(path, 0x8888u, blasB, tlasB, kidsOut, lodsOut, emittersOut, maskOut),
-          "LMSK-aware load_v2 ok");
-    CHECK(kidsOut.size() == 2, "children still round-trip");
-    CHECK(maskOut.size() == 2, "mask round-trips parallel to children");
-    if (maskOut.size() == 2) {
-        CHECK(maskOut[0] == 0b101u, "child 0 mask preserved");
-        CHECK(maskOut[1] == 0xFFFFFFFFu, "child 1 mask preserved");
-    }
+    std::vector<ChildInstance> kids_out; LodLevels lods_out;
+    CHECK(load_v2(path_b, hash, blasB, tlasB, kids_out, lods_out),
+          "a section write preserves the sections it did not touch");
+    CHECK(kids_out.size() == kids.size(), "merged bundle still has the children");
+    FlattenHints hints_out;
+    CHECK(load_flatten_hints(path_b, hash, hints_out) && hints_out.child_px.size() == 1,
+          "merged bundle still has the hints");
 
-    // An OLD caller (the emitters-only overload, no mask out-param) still
-    // loads the same children/lods -- the trailer is inert to it.
+    // A bundle keyed on a different part is not this part's bundle.
     BLASManager blasC; TLASManager tlasC(64);
-    std::vector<ChildInstance> kidsC; LodLevels lodsC; std::vector<VolumeEmitter> emC;
-    CHECK(load_v2(path, 0x8888u, blasC, tlasC, kidsC, lodsC, emC),
-          "pre-W5 load_v2 overload still loads an LMSK-trailer file");
-    CHECK(kidsC.size() == 2, "pre-W5 overload sees the same children");
+    std::vector<ChildInstance> kids_c; LodLevels lods_c;
+    CHECK(!load_v2(path_b, hash ^ 1ull, blasC, tlasC, kids_c, lods_c),
+          "a bundle rejects a load asking for a different part hash");
 
-    remove(path);
+    remove(path_a); remove(path_b);
 }
 
 // W5: cache_path_static_lods / save_static_lod_plan / load_static_lod_plan
@@ -864,17 +873,17 @@ static void test_static_lod_plan_sidecar() {
     make_test_dir((std::string(kCacheRoot) + "/parts").c_str());
 
     const uint64_t h = 0x1234000056780000ull;
-    CHECK(cache_path_static_lods(h) == "parts/1234000056780000.static_lods",
-          "cache_path_static_lods filename");
+    CHECK(cache_path_static_lods(h) == "parts/1234000056780000.bundle",
+          "cache_path_static_lods names the part's bundle");
 
     std::string p = std::string(kCacheRoot) + "/" + cache_path_static_lods(h);
     StaticLodPlan plan;
     plan.level_hashes        = { h, 0xAAAAAAAAAAAAAAAAull, h, h };
     plan.level_exclude_masks = { 0u, 0u, 0b11u, 0b1u };
-    CHECK(save_static_lod_plan(p, plan), "save_static_lod_plan ok");
+    CHECK(save_static_lod_plan(p, h, plan), "save_static_lod_plan ok");
 
     StaticLodPlan loaded;
-    CHECK(load_static_lod_plan(p, loaded), "load_static_lod_plan ok");
+    CHECK(load_static_lod_plan(p, h, loaded), "load_static_lod_plan ok");
     CHECK(loaded.level_hashes == plan.level_hashes, "level hashes preserved");
     CHECK(loaded.level_exclude_masks == plan.level_exclude_masks,
           "level exclude masks preserved");
@@ -883,11 +892,11 @@ static void test_static_lod_plan_sidecar() {
     StaticLodPlan bad;
     bad.level_hashes = { h };
     bad.level_exclude_masks = { 0u, 1u };
-    CHECK(!save_static_lod_plan(p + ".bad", bad),
+    CHECK(!save_static_lod_plan(p + ".bad", h, bad),
           "save_static_lod_plan rejects mismatched array sizes");
 
     StaticLodPlan missing;
-    CHECK(!load_static_lod_plan(p + ".nope", missing),
+    CHECK(!load_static_lod_plan(p + ".nope", h, missing),
           "load_static_lod_plan returns false for a missing file");
 }
 
@@ -906,8 +915,7 @@ int main() {
     test_header_probe();
     test_new_materials();
     test_flatten_hints_round_trip();
-    test_lmsk_absent_is_byte_identical();
-    test_lmsk_round_trip();
+    test_bundle_is_order_independent();
     test_static_lod_plan_sidecar();
     if (g_failures == 0) printf("All part_asset_v2 tests passed\n");
     return g_failures == 0 ? 0 : 1;
