@@ -786,11 +786,45 @@ Acceptance:
 
 ## M6 — Texture unification *(second deliberate visual re-baseline)*
 
-Scope: one parameterisation per part (chart rep 0, reproject other reps at bake); page pool
-becomes a per-part mip chain composited per `(part, mip)`; horizon sampled in the tile frame
-via the rung-invariant basis; occlusion reduced to the two-term contract; warp solved once
-per sector on rep 0, per-rung reprojection deleted. M2's commit gate switches from per-rung
-pages to mip residency.
+> **SURVEYED 2026-08-05, and the scope is SMALLER than this milestone assumed.** The plan
+> says "chart rep 0, **reproject** other reps at bake", which reads as a closest-point UV
+> transfer — the expensive, seam-fragile kind. It is not needed, because **the
+> parameterisation is already analytic**.
+>
+> `build_chart_rung` (`lod_bake.cpp:120`) segments charts by normal cone, gives each chart a
+> planar basis from its area-weighted average normal, and emits a `ChartEntry` carrying
+> `origin`, `tangent`, `bitangent`, `rect_*` and `tpm`. `vt_chart_resolve.glsl:117` states
+> the mapping outright:
+>
+>     texel = rect + gutter + (dot(p, T/B) - dot(origin, T/B)) * tpm
+>
+> A point's UV is therefore a pure function of its WORLD POSITION and its chart — not of the
+> mesh it belongs to. So a coarser rung does not need reprojected UVs at all; it needs a
+> **chart id per triangle**, and the UV falls out of the same formula. A decimated vertex
+> sits slightly off rep 0's surface and lands on a slightly different texel, which is the
+> behaviour we want: the texture stays glued to the surface while the geometry moves under it.
+>
+> **`reproject_triex` is NOT the tool here, contrary to first appearances.** Its doc comment
+> says it carries "materialId/tint/uv/AO", but the implementation does
+> `TriEx ex = source.triex[match]` — it copies the nearest source triangle's TriEx *wholesale*,
+> including all three corner UVs verbatim. Correct for per-triangle constants, wrong for a
+> per-corner UV: a large coarse triangle would inherit a small source triangle's UV range
+> stretched across it. Do not reach for it.
+>
+> **Revised scope**, in dependency order:
+> 1. Build the chart table ONCE per part from rep 0; store it per part, not per rung.
+> 2. Assign every coarser rung's triangles a chart id (nearest rep-0 chart by face normal +
+>    centroid). A coarse triangle spanning two charts takes one of them; its UVs then reach
+>    outside that chart's packed rect, so the gutter/clamp policy is what bounds the error —
+>    **measure it, it is the one real risk left.**
+> 3. Key the VT variant on `part_hash` alone (`variant_key(variant_hash, rung)` at
+>    `vt_residency.cpp:618` is the per-rung churn, and `register_variant`'s `rung` parameter
+>    is the whole of it).
+> 4. Composite pages from rep 0's mesh — one authority, so page texels stop depending on the
+>    selected rung. This is what makes the horizon query rung-invariant and is the actual fix
+>    for the dome patches.
+>
+> Item 2 is the only step with a genuine unknown. Items 1, 3 and 4 are re-plumbing.
 
 Acceptance:
 - **The dome dark patches are gone** (the standing PomProofBrick repro; boundary no longer
