@@ -547,18 +547,72 @@ epsilon-search duplication tests. Tests added: stage memoization, per-rep invali
 
 ## M4 — Artifact consolidation and the version vector
 
+> **STATUS 2026-08-05: DONE.** Landed as `e9d16341` (the version vector), `976ba3af` (the
+> resolve census + a resolve cache that could never be updated), `bd1fd2bf` (PartBundle and
+> the LMSK removal) and `152cd596` (peek's question, and the suites following the sections).
+>
+> **The vector.** `MatterEngine3/src/version_vector.h` holds every component
+> (`kEngineBake`, `kBox3d`, `kRepresentation`, `kPartFormat`, `kFlatFormat`,
+> `kImpostorFormat`, `kBundleFormat`, and `kStageFormat` reserved for M3b), and
+> `matter_version::fold` is the only way one enters a key. Four key sites call it:
+> `compute_resolved_hash` (which folded NO version before — the hole), `resolve_cache::
+> compute_key`, `tileset::settle_cache_key`, and `gtex_content_hash`, which used to TAKE
+> the versions as parameters. That signature change is the shape that mattered: a version
+> passed as an argument is one a caller can get wrong, and a component added later would
+> never have reached it. `kFormatVersionV2`/`Flat`, `impostor_bake::kFormatVersion` and
+> tileset's `kEngineBakeVersion`/`kBox3dVersion` are now aliases of components; the only
+> two remaining uses of a component name outside the header write `GTexHeader` provenance
+> fields, which `gtex_cache_hit` does not compare.
+>
+> **The bundle.** `parts/<hash>.bundle` — REP0, FLAT, IMPO, PLAN, HINT, VARS, and a
+> reserved STGE. A section's payload is byte-for-byte what its file held, so every body
+> serializer and trailer grammar is untouched and a section still validates its own
+> header. The directory is sorted by tag, making the bytes a pure function of the section
+> SET rather than of the order the bake wrote them — which is what makes the double-bake
+> gate stable when flatten and impostor land in different orders.
+>
+> **Three defects the milestone's own acceptance surfaced**, none of them predicted:
+>
+> 1. **`resolve_cache::save` published with `std::rename`, which on Windows fails when the
+>    target exists** — and the resolve cache lives at a FIXED path. It could be written
+>    exactly once, ever; every later save logged "save failed (non-fatal)" and the world
+>    re-resolved from scratch forever. Invisible because the first write of a fresh cache
+>    always succeeds and a warm hit never saves: the only routine way to rewrite an entry
+>    is to invalidate it, which is what M4 does.
+> 2. **The animation bundle's `part_body_checksum` was "the file past its 40-byte header"**,
+>    which was the part body only while a part owned a file. In a bundle it would also
+>    cover the flat and the impostor, so flattening a linked part would break an animation
+>    commit it has nothing to do with. It checksums the REP0 section now.
+> 3. **`peek_format_version` answered the wrong question.** "The version of the file here"
+>    and "is there a flattened artifact here" were the same answer only while `.flat.part`
+>    existed exactly when the answer was yes. Reporting v2 for a bundle sent PartStore's
+>    flat-preferred load down its legacy-v2-flat branch, loading the compositional body AS
+>    a flat and dropping the child table.
+>
+> Also absorbed from M0: **`.static_lods` survives as the PLAN section** (its cache-probe
+> function is intact — a probe is a reader), and **LMSK is deleted**, confirmed write-only:
+> its one reader was a `load_v2` overload with no production caller, and the plan already
+> carries the same masks.
+
 Scope: the **PartBundle** (manifest + per-rep blobs + parameterisation + impostor atlas +
 stage outputs) replaces `.part`/`.lods`/`.fimp`/`.impostor`/`.hints`; one **version vector**
 defined in one place and folded into every cache key (closes the part-resolved-hash hole
 permanently). One-time full rebake.
 
-Acceptance:
-- Double-bake determinism: two cold bakes of Demo produce bit-identical bundles.
-- **Failability proof of the version vector:** bump the representation version → every part
-  re-resolves *and re-bakes* (the exact scenario that silently failed before); revert →
-  clean hits.
-- No `.lods`/`.fimp`/`.impostor`/`.static_lods` files are written anywhere (asserted by a
-  test that bakes a world and inventories the cache directory).
+Acceptance — measured on RockGallery, 13 parts:
+- **Double-bake determinism:** two cold bakes produce 14/14 byte-identical artifacts;
+  a warm run touches no file, mtimes included.
+- **Failability proof of the version vector:** `kRepresentation` 1 → 2 moves the digest
+  `2fb0b46c73e560e9` → `25c4f06e96d49409`, and the census goes from `0 baked, 12 hits` to
+  `13 baked, 0 hits`. Every part filename is NEW (36 of 36 pre-bundle part artifacts, 0
+  shared with the pre-bump set) and every one was written in that run — re-BAKED, not
+  merely re-resolved. Reverting restores the digest and gives `0 baked, 13 hits` with no
+  part artifact touched.
+- **Cache inventory:** 37 artifacts become 14 — 13 `.bundle` + 1 `.resolve`. Sections
+  REP0 13 / FLAT 12 / IMPO 11, exactly the old `.part`/`.flat.part`/`.fimp` counts. No
+  `.part`, `.flat.part`, `.fimp`, `.static_lods`, `.hints` or `.lods` file is written
+  anywhere. `.resolve` remains: it is a WORLD-level artifact, not a part's, so it has no
+  bundle to live in — it moves into the store at M5.
 
 ---
 
