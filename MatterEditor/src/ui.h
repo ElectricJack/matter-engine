@@ -142,6 +142,15 @@ struct ViewerStats {
     float gpu_vol_ms            = 0.0f;
     bool  gpu_timers_supported  = false;
     int   debug_view_mode       = 0;
+    // Wireframe debug view. `wireframe` is the session-owned request (the
+    // Debug View checkbox and the FIFO `wireframe` verbs both write it);
+    // `wireframe_available` is seeded once from the device and is NOT a
+    // preference -- it is why the control is disabled when it is. The reason
+    // string is shown rather than swallowed, because a wireframe view that
+    // silently renders solid is worse than an absent one.
+    bool  wireframe             = false;
+    bool  wireframe_available   = false;
+    std::string wireframe_unavailable_reason;
     // Viewer-local diagnostic toggles.  These are deliberately not part of
     // the animation service or checkpoint state.
     AnimationDebugOverlayOptions animation_overlay{};

@@ -1674,6 +1674,153 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
         renderer.consume_gi_history_reset();
     }
 
+    // --- Wireframe debug view (viewer.debug "Wireframe") --------------------
+    //
+    // The claim "this is wireframe" is only worth making if the INTERIOR is
+    // gone. One filled triangle, one scanline through its middle: with
+    // VK_POLYGON_MODE_FILL that row is a solid covered run; with
+    // VK_POLYGON_MODE_LINE only the two slanted edges survive. Counting
+    // covered samples on that row is a number that cannot hold for a filled
+    // frame, which is exactly what a screenshot alone cannot establish.
+    {
+        viewer::VkScenePart wire_part = known_raster_triangle(908);
+        CHECK(renderer.ensure_part(wire_part, error) >= 0,
+              error.empty() ? "ensure wireframe fixture part" : error.c_str());
+        CHECK(renderer.update_instances({{908, identity, 908}}, error) &&
+                  renderer.dispatch_culling(frame, camera.position, 1.0f,
+                                            error) &&
+                  renderer.render_gbuffer_and_composite(width, height, error),
+              error.empty() ? "render the wireframe fixture filled"
+                            : error.c_str());
+
+        // The triangle spans y in [-0.75, 1.5] at z = -2; this row sits inside
+        // it, below the apex and above the base, so a fill covers a long run.
+        const uint32_t scan_row = height / 2;
+        auto scan_covered = [&](uint32_t& covered) {
+            covered = 0;
+            for (uint32_t x = 0; x < width; ++x) {
+                viewer::VkRasterPixel pixel{};
+                if (!renderer.readback_raster_pixel(x, scan_row, pixel, error))
+                    return false;
+                if (pixel.albedo.w > 0.5f) ++covered;
+            }
+            return true;
+        };
+        uint32_t filled_covered = 0;
+        CHECK(scan_covered(filled_covered),
+              error.empty() ? "scan the filled scanline" : error.c_str());
+        viewer::VkRasterPixel filled_center{};
+        CHECK(renderer.readback_raster_pixel(width / 2, scan_row, filled_center,
+                                             error) &&
+                  filled_center.albedo.w > 0.99f,
+              error.empty() ? "the filled interior is covered" : error.c_str());
+
+        renderer.set_wireframe(true);
+        // Report, never lie. A device without fillModeNonSolid has no line
+        // pipelines, and the renderer must say so rather than record a filled
+        // frame with the wireframe push-constant word raised.
+        CHECK(renderer.wireframe_available() ==
+                  vulkan.wireframe_available(),
+              "renderer wireframe availability tracks the device capability");
+        if (!renderer.wireframe_available()) {
+            std::printf(
+                "  wireframe view UNAVAILABLE on this device (%s); the view "
+                "must stay inert rather than render solid\n",
+                vulkan.wireframe_unavailable_reason().c_str());
+            CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+                  error.empty() ? "render with wireframe requested but "
+                                  "unsupported"
+                                : error.c_str());
+            CHECK(!renderer.test_last_raster_pipeline_draw().wireframe_enabled &&
+                      !renderer.test_last_raster_pipeline_draw()
+                           .static_mesh_wireframe,
+                  "an unsupported wireframe request degrades to fill WITHOUT "
+                  "claiming wireframe in the push constant");
+        } else {
+            CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+                  error.empty() ? "render the wireframe fixture as lines"
+                                : error.c_str());
+            const auto bound = renderer.test_last_raster_pipeline_draw();
+            CHECK(bound.wireframe_enabled && bound.static_mesh_wireframe &&
+                      bound.skinned_mesh_wireframe,
+                  "the whole raster pass binds line pipelines together with "
+                  "the shader flag that matches them");
+            uint32_t line_covered = 0;
+            CHECK(scan_covered(line_covered),
+                  error.empty() ? "scan the wireframe scanline" : error.c_str());
+            std::printf(
+                "  wireframe scanline coverage: fill %u px, line %u px of %u\n",
+                filled_covered, line_covered, width);
+            // Measured: 40 covered samples filled, 2 in line mode.
+            CHECK(filled_covered > 30u,
+                  "the filled triangle covers a long run on the scan row");
+            // Two 1-px edges, plus a little slack for the rasterizer's
+            // diamond-exit rule on a steeply sloped edge. The upper bound is
+            // the assertion that matters: a filled frame cannot produce it.
+            CHECK(line_covered >= 2u && line_covered <= 8u,
+                  "line mode leaves only the two slanted edges on that row");
+            CHECK(line_covered * 8u < filled_covered,
+                  "wireframe coverage is an order of magnitude below fill");
+
+            viewer::VkRasterPixel wire_center{};
+            CHECK(renderer.readback_raster_pixel(width / 2, scan_row,
+                                                 wire_center, error),
+                  error.empty() ? "read the wireframe interior" : error.c_str());
+            CHECK(wire_center.albedo.w < 0.5f,
+                  "the triangle INTERIOR is empty in line mode -- the single "
+                  "fact a solid render can never satisfy");
+
+            // Composition with the LOD tint: edges take the rung colour rather
+            // than the standalone cyan, so density and rung read together.
+            uint32_t edge_x = width;
+            for (uint32_t x = 0; x < width && edge_x == width; ++x) {
+                viewer::VkRasterPixel pixel{};
+                if (!renderer.readback_raster_pixel(x, scan_row, pixel, error))
+                    break;
+                if (pixel.albedo.w > 0.5f) edge_x = x;
+            }
+            CHECK(edge_x < width, "found a lit wireframe edge on the scan row");
+            viewer::VkRasterPixel cyan_edge{};
+            CHECK(renderer.readback_raster_pixel(edge_x, scan_row, cyan_edge,
+                                                 error) &&
+                      cyan_edge.albedo.x < 0.05f && cyan_edge.albedo.y > 0.95f &&
+                      cyan_edge.albedo.z > 0.95f,
+                  "an edge with the tint off is flat cyan");
+            renderer.set_geometry_debug_view(matter::GeometryDebugView::LodTint);
+            viewer::VkRasterPixel tinted_edge{};
+            CHECK(renderer.render_gbuffer_and_composite(width, height, error) &&
+                      renderer.readback_raster_pixel(edge_x, scan_row,
+                                                     tinted_edge, error),
+                  error.empty() ? "render wireframe with the LOD tint on"
+                                : error.c_str());
+            const matter::DebugRgb rung0 = matter::lod_debug_color(0);
+            CHECK(std::fabs(tinted_edge.albedo.x - rung0.r) < 0.02f &&
+                      std::fabs(tinted_edge.albedo.y - rung0.g) < 0.02f &&
+                      std::fabs(tinted_edge.albedo.z - rung0.b) < 0.02f,
+                  "wireframe + LOD tint paints the edge the rung's own colour, "
+                  "not cyan and not a blend");
+            renderer.set_geometry_debug_view(matter::GeometryDebugView::None);
+        }
+
+        renderer.set_wireframe(false);
+        viewer::VkRasterPixel restored_center{};
+        CHECK(renderer.render_gbuffer_and_composite(width, height, error) &&
+                  renderer.readback_raster_pixel(width / 2, scan_row,
+                                                 restored_center, error),
+              error.empty() ? "render the fixture filled again" : error.c_str());
+        CHECK(close4(restored_center.albedo, filled_center.albedo, 1e-6f),
+              "switching the wireframe view off restores the pixel exactly");
+
+        CHECK(renderer.update_instances({{900, identity}, {906, identity}},
+                                        error) &&
+                  renderer.dispatch_culling(frame, camera.position, 1.0f,
+                                            error),
+              error.empty() ? "restore the pre-wireframe raster scene"
+                            : error.c_str());
+        renderer.release_part(908);
+        renderer.consume_gi_history_reset();
+    }
+
     matter::VulkanRayTracingSettings disabled_rt{};
     disabled_rt.enabled = false;
     renderer.set_ray_tracing_settings(disabled_rt);

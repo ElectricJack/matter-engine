@@ -52,6 +52,39 @@ struct VulkanRayTracingSettings {
     bool debug_view = false;
 };
 
+struct VulkanWireframeCapabilities {
+    bool fill_mode_non_solid = false;
+};
+
+struct VulkanWireframeCapabilityPolicy {
+    // This feature is diagnostic-only; it never rejects an otherwise suitable
+    // physical device.
+    bool device_accepted = true;
+    bool wireframe_available = false;
+    std::string unavailable_reason;
+};
+
+// Wireframe is an editor diagnostic rather than a device admission
+// requirement. Keep this policy header-only so compatibility tests can prove
+// a fill-only device remains usable without creating a logical device.
+//
+// The reason string is the whole point of the struct: a device without
+// fillModeNonSolid must SAY so. The alternative -- silently drawing the same
+// filled frame while the control reads "on" -- is the failure mode this
+// policy exists to prevent, because a wireframe view that lies about
+// triangle density is worse than no wireframe view at all.
+inline VulkanWireframeCapabilityPolicy evaluate_wireframe_capabilities(
+    const VulkanWireframeCapabilities& capabilities) {
+    VulkanWireframeCapabilityPolicy policy;
+    if (!capabilities.fill_mode_non_solid) {
+        policy.unavailable_reason =
+            "VkPhysicalDeviceFeatures::fillModeNonSolid is not supported";
+        return policy;
+    }
+    policy.wireframe_available = true;
+    return policy;
+}
+
 bool supports_native_ray_tracing(const VulkanRayTracingCapabilities& capabilities,
                                  std::string& reason);
 
@@ -110,6 +143,8 @@ public:
     uint32_t swapchain_image_count() const;
     bool draw_indirect_first_instance_enabled() const;
     bool multi_draw_indirect_enabled() const;
+    bool wireframe_available() const;
+    const std::string& wireframe_unavailable_reason() const;
     bool dlss_available() const;
     const std::string& dlss_unavailable_reason() const;
     // Non-owning access for render passes which record Streamline work on this

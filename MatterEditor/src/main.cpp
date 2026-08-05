@@ -33,6 +33,7 @@
 #include "toolbar_panel.h"
 #include "console_panel.h"
 #include "ui.h"
+#include "wireframe_controls.h"
 #include "session_binding.h"
 #include "scene_model_adapter.h"
 #include "viewer_commands.h"
@@ -1016,7 +1017,6 @@ int main() {
     float min_projected_size = 0.0f;
     apply_world_resolver_defaults(worlds[initial_world].world_name,
                                   active_radius, min_projected_size, stats);
-    bool wireframe = false;
 
     // Property registry (property-system design S3/S4). Bound BEFORE anything
     // writes the tunable structs, so bind() captures the compiled defaults;
@@ -1053,6 +1053,17 @@ int main() {
                            : "disabled by render.gpu.ray_tracing "
                              "(MATTER_DISABLE_VK_RT / Performance panel)")
                     : vulkan->ray_tracing_unavailable_reason().c_str());
+    // Read once, at the same seam as the RT report and for the same reason:
+    // it is a device fact, not a preference. Every wireframe control is gated
+    // on it, and a device that cannot draw lines SAYS so on startup rather
+    // than letting a control silently render solid.
+    stats.wireframe_available = vulkan->wireframe_available();
+    stats.wireframe_unavailable_reason = vulkan->wireframe_unavailable_reason();
+    std::printf("Vulkan wireframe available=%s reason=%s\n",
+                stats.wireframe_available ? "true" : "false",
+                stats.wireframe_available
+                    ? "none"
+                    : stats.wireframe_unavailable_reason.c_str());
     editor_props.set_world(worlds[initial_world].project_dir,
                            worlds[initial_world].world_name);
     // Set at every connect seam; consumed on the first successful bake, after
@@ -1995,9 +2006,9 @@ int main() {
         // only sometimes. Neither key is a text character, so claiming them
         // unconditionally costs nothing.
         //
-        // F9 was previously a wireframe toggle that only ever printed "not
-        // available in Vulkan milestone"; the Vulkan path hardcodes
-        // options.wireframe = false. The FIFO `wireframe` verbs keep their stub.
+        // F9 is reserved for issue capture. Wireframe is controlled by the
+        // capability-gated Debug View checkbox / combo entry, or by the FIFO
+        // `wireframe` verbs, which now do something.
         const bool issue_capture_idle =
             issue_state.phase != viewer::ReporterPhase::AwaitingCapture &&
             issue_state.phase != viewer::ReporterPhase::SelectingRegion;
@@ -2154,10 +2165,25 @@ int main() {
                     registry.dispatch(cmd);
                 } else if (line == "reload") {
                     registry.dispatch(viewer::ViewerReload{});
-                } else if (line == "wireframe" || line == "wireframe toggle") {
-                    std::printf("wireframe: not available in Vulkan milestone\n");
-                } else if (line == "wireframe on" || line == "wireframe off") {
-                    std::printf("wireframe: not available in Vulkan milestone\n");
+                } else if (const auto wireframe_result =
+                               viewer::apply_wireframe_console_command(
+                                   line, stats.wireframe_available,
+                                   stats.wireframe);
+                           wireframe_result !=
+                               viewer::WireframeConsoleCommandResult::
+                                   Unrecognized) {
+                    if (wireframe_result ==
+                        viewer::WireframeConsoleCommandResult::Unavailable) {
+                        std::printf(
+                            "wireframe: unavailable (%s)\n",
+                            stats.wireframe_unavailable_reason.empty()
+                                ? "device does not support "
+                                  "VK_POLYGON_MODE_LINE"
+                                : stats.wireframe_unavailable_reason.c_str());
+                    } else {
+                        std::printf("wireframe: %s\n",
+                                    stats.wireframe ? "on" : "off");
+                    }
                 } else if (line == "quit") {
                     registry.dispatch(viewer::FifoQuit{});
                 } else if (std::sscanf(line.c_str(), "timescale %f", &c[0]) == 1) {
@@ -2799,9 +2825,16 @@ int main() {
         options.resolver = stats.resolver_choice == 1
                                ? matter::ResolverKind::SectorLod
                                : matter::ResolverKind::PassThrough;
-        options.wireframe = false;
-        // Geometry-stage view (index 5). Unlike 1-4 this is not a composite
-        // mode, so the remap below leaves composite_debug_view at 0 for it.
+        // Geometry-stage views. Unlike 1-4 these are not composite modes, so
+        // the remap below leaves composite_debug_view at 0 for them.
+        //
+        // Wireframe has TWO inputs on purpose (see resolve_wireframe_request):
+        // combo index 6 is the persistable single int, and the checkbox is the
+        // form that composes with index 5's LOD tint. Capability is enforced
+        // here, once, so no caller can ask for lines the device cannot draw.
+        options.wireframe = viewer::resolve_wireframe_request(
+            stats.wireframe, stats.debug_view_mode, /*wireframe_view_index=*/6,
+            stats.wireframe_available);
         options.geometry_debug_view =
             stats.debug_view_mode == 5 ? matter::GeometryDebugView::LodTint
                                        : matter::GeometryDebugView::None;
@@ -2816,8 +2849,9 @@ int main() {
         // (editor_props.cpp), which documents why the indices are append-only.
         // 1 -> 2.0 normals, 2 -> 3.0 packed linear depth, 3 -> 1.0 RT sun
         // visibility, 4 -> 4.0 raw GBuffer albedo (the horizon diagnostic).
-        // 5 (LOD levels) is a geometry view and deliberately falls through to
-        // 0.0 here -- the tint is already in the G-buffer albedo it composites.
+        // 5 (LOD levels) and 6 (Wireframe) are geometry views and deliberately
+        // fall through to 0.0 here -- both are already in the G-buffer albedo
+        // this composites.
         options.vulkan_lighting.composite_debug_view =
             stats.debug_view_mode == 1   ? 2.0f
             : stats.debug_view_mode == 2 ? 3.0f

@@ -924,6 +924,20 @@ void main() {
     // bit-identical to what shipped.
     if (debug_push.lod_tint_enabled != 0u)
         base_color = mix(base_color, lod_debug_color(in_selected_lod), 0.85);
+    // Wireframe. Only the triangle edges reach this shader at all (the host
+    // bound a VK_POLYGON_MODE_LINE pipeline), so every surviving fragment IS
+    // an edge and gets a flat colour: cyan on its own, or the rung's colour
+    // when the LOD view is also on -- density and rung read together, which
+    // is the diagnostic pair. Emission is forced to the encodable maximum so
+    // a one-pixel line stays visible regardless of the world's lighting;
+    // unlit edges over a dark sky are unreadable and would make a coarse
+    // rung look like an empty one.
+    if (debug_push.wireframe_enabled != 0u) {
+        base_color = debug_push.lod_tint_enabled != 0u
+                         ? lod_debug_color(in_selected_lod)
+                         : vec3(0.0, 1.0, 1.0);
+        encoded_emission = 15.875;
+    }
 
     out_albedo = vec4(base_color, opacity);
     // out_normal feeds the RT passes too (rt_lighting.rgen); keep it unit

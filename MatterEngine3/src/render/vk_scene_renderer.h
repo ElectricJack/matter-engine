@@ -73,10 +73,11 @@ inline uint32_t vulkan_history_token(uint64_t instance_id) {
 // words -- that separation is what lets two skin clusters of one instance keep
 // different rungs.
 //
-// `wireframe_enabled` is RESERVED and inert: this base has no wireframe path
-// (the sibling commit that adds one was left out of this port), and no shader
-// reads the word. It exists so the block's size and offsets do not move when
-// that work lands.
+// `wireframe_enabled` is set only when the frame is genuinely being recorded
+// with the VK_POLYGON_MODE_LINE pipelines. It is what tells gbuffer.frag to
+// stop shading and emit a flat, self-lit line colour, so it must never be
+// raised on a device that fell back to fill -- see select_raster_pipelines,
+// which is the single place that decides both at once.
 struct RasterDebugPushConstants {
     uint32_t direct_lod = 0;
     uint32_t direct_lod_valid = 0;
@@ -85,6 +86,52 @@ struct RasterDebugPushConstants {
 };
 static_assert(sizeof(RasterDebugPushConstants) == 16,
               "raster debug push constants must remain four uint32_t words");
+
+// Keep raster-pipeline choice atomic: an unavailable or partially created line
+// variant must never produce a mixed fill/line frame, and must never leave the
+// push constant claiming wireframe while filled triangles are drawn.
+//
+// The reference branch carried a third member here for the far-field impostor
+// sidecar (a five-vertex LINE_STRIP perimeter rather than polygon-line over
+// the fill quad's diagonal). There is no impostor system on this base, so that
+// member and its perimeter contract are deliberately absent; add them back
+// with the impostor pipeline, not before.
+struct RasterPipelineSet {
+    VkPipeline static_mesh = VK_NULL_HANDLE;
+    VkPipeline skinned_mesh = VK_NULL_HANDLE;
+};
+
+struct RasterPipelineSelection : RasterPipelineSet {
+    bool wireframe_enabled = false;
+};
+
+inline RasterPipelineSelection select_raster_pipelines(
+    bool wireframe_requested, bool wireframe_available,
+    const RasterPipelineSet& fill, const RasterPipelineSet& line) noexcept {
+    const bool line_complete = line.static_mesh != VK_NULL_HANDLE &&
+                               line.skinned_mesh != VK_NULL_HANDLE;
+    if (!wireframe_requested || !wireframe_available || !line_complete)
+        return {{fill.static_mesh, fill.skinned_mesh}, false};
+    return {{line.static_mesh, line.skinned_mesh}, true};
+}
+
+// A line-mode copy of the fill raster state. Copying rather than mutating is
+// the point: the fill pipelines' create-info aliases one rasterization struct,
+// and the composite pass historically aliased the input-assembly struct next
+// to it, so an in-place polygonMode/topology edit for the wireframe variants
+// silently changes pipelines built afterwards.
+//
+// Backface culling is dropped for the line pass on purpose. Wireframe exists
+// to show triangle DENSITY; hiding the far side of a shell halves the edge
+// count the view is supposed to be measuring.
+inline VkPipelineRasterizationStateCreateInfo make_wireframe_rasterization(
+    const VkPipelineRasterizationStateCreateInfo& fill) noexcept {
+    VkPipelineRasterizationStateCreateInfo line = fill;
+    line.polygonMode = VK_POLYGON_MODE_LINE;
+    line.cullMode = VK_CULL_MODE_NONE;
+    line.lineWidth = 1.0f;
+    return line;
+}
 
 inline RasterDebugPushConstants make_raster_debug_push_constants(
     uint32_t direct_lod, bool direct_lod_valid,
@@ -358,6 +405,14 @@ struct VkRasterPixel {
 };
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    // What the last recorded raster pass ACTUALLY bound, as distinct from
+    // what was requested. `wireframe_enabled` here is the push-constant word,
+    // so a test can prove the shader flag and the polygon mode agree.
+    struct RasterPipelineDrawDebug {
+        bool wireframe_enabled = false;
+        bool static_mesh_wireframe = false;
+        bool skinned_mesh_wireframe = false;
+    };
     struct RtGeometryDebugRecord {
         uint64_t part_hash = 0;
         uint32_t cluster_index = 0;
@@ -723,6 +778,9 @@ public:
     uint32_t test_last_rt_blas_build_count() const {
         return test_last_rt_blas_build_count_;
     }
+    RasterPipelineDrawDebug test_last_raster_pipeline_draw() const noexcept {
+        return test_last_raster_pipeline_draw_;
+    }
     void set_test_dlss_bridge(matter::StreamlineBridge bridge);
     bool test_uses_device_streamline_bridge() const;
     VkImage test_dlss_output_image(uint32_t frame_slot) const {
@@ -764,6 +822,11 @@ public:
     void set_display_exposure(float exposure_ev);
     void set_composite_debug_view(float mode) { composite_debug_override_ = mode; }
     void set_geometry_debug_view(matter::GeometryDebugView view);
+    void set_wireframe(bool enabled);
+    // True only when the device enabled fillModeNonSolid AND both line
+    // pipelines were created. Callers that surface a wireframe control must
+    // ask this rather than assume; a false here is the honest "cannot".
+    bool wireframe_available() const noexcept;
     void set_ray_tracing_settings(
         const matter::VulkanRayTracingSettings& settings);
     void set_gi_settings(const matter::VulkanGiSettings& settings) {
@@ -1652,6 +1715,7 @@ private:
     bool test_skip_volumetrics_ = false;
     std::vector<RtGeometryDebugRecord> test_last_rt_geometry_records_;
     uint32_t test_last_rt_blas_build_count_ = 0;
+    RasterPipelineDrawDebug test_last_raster_pipeline_draw_{};
 #endif
     matter::DlssMode selected_dlss_mode_ = static_cast<matter::DlssMode>(0);
     bool dlss_history_reset_pending_ = false;
@@ -1666,6 +1730,12 @@ private:
     // Same descriptors/fragment stage as raster_pipeline_, but a 96-byte
     // VkSkinVertex binding with an explicit previous-position attribute.
     VkPipeline skinned_raster_pipeline_ = VK_NULL_HANDLE;
+    // VK_POLYGON_MODE_LINE twins of the two above, created only when the
+    // device enabled fillModeNonSolid. Everything else about them -- shaders,
+    // layout, attachments, depth state -- is identical, so the wireframe view
+    // is the same frame with the interiors removed.
+    VkPipeline wireframe_raster_pipeline_ = VK_NULL_HANDLE;
+    VkPipeline wireframe_skinned_raster_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout composite_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline composite_pipeline_ = VK_NULL_HANDLE;
@@ -1915,6 +1985,9 @@ private:
     bool gi_history_reset_pending_ = false;
     matter::GeometryDebugView geometry_debug_view_ =
         matter::GeometryDebugView::None;
+    // Requested, not necessarily honoured: select_raster_pipelines is what
+    // turns this into an actually-recorded line frame.
+    bool wireframe_ = false;
     uint32_t uploaded_vertex_count_ = 0;
     uint32_t uploaded_index_count_ = 0;
     uint32_t raster_draw_command_count_ = 0;

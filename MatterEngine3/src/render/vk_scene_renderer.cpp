@@ -1374,6 +1374,20 @@ void VkSceneRenderer::set_geometry_debug_view(matter::GeometryDebugView view) {
     gi_history_reset_pending_ = true;
 }
 
+void VkSceneRenderer::set_wireframe(bool enabled) {
+    if (wireframe_ == enabled) return;
+    wireframe_ = enabled;
+    // Same reasoning as the tint: the G-buffer the temporal/GI history
+    // accumulated behind a filled frame does not describe a line frame.
+    gi_history_reset_pending_ = true;
+}
+
+bool VkSceneRenderer::wireframe_available() const noexcept {
+    return vulkan_ != nullptr && vulkan_->wireframe_available() &&
+           wireframe_raster_pipeline_ != VK_NULL_HANDLE &&
+           wireframe_skinned_raster_pipeline_ != VK_NULL_HANDLE;
+}
+
 void VkSceneRenderer::set_ray_tracing_settings(
     const matter::VulkanRayTracingSettings& settings) {
     if (ray_tracing_settings_.enabled != settings.enabled)
@@ -1509,6 +1523,10 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyPipeline(device, raster_pipeline_, nullptr);
     if (skinned_raster_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, skinned_raster_pipeline_, nullptr);
+    if (wireframe_raster_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, wireframe_raster_pipeline_, nullptr);
+    if (wireframe_skinned_raster_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, wireframe_skinned_raster_pipeline_, nullptr);
     if (skin_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, skin_pipeline_, nullptr);
     if (skin_pipeline_layout_ != VK_NULL_HANDLE)
@@ -1529,6 +1547,8 @@ void VkSceneRenderer::destroy_pipeline() {
     pipeline_ = VK_NULL_HANDLE;
     raster_pipeline_ = VK_NULL_HANDLE;
     skinned_raster_pipeline_ = VK_NULL_HANDLE;
+    wireframe_raster_pipeline_ = VK_NULL_HANDLE;
+    wireframe_skinned_raster_pipeline_ = VK_NULL_HANDLE;
     skin_pipeline_ = VK_NULL_HANDLE;
     skin_pipeline_layout_ = VK_NULL_HANDLE;
     skin_set_layout_ = VK_NULL_HANDLE;
@@ -2340,12 +2360,73 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
                                        &raster_create, nullptr,
                                        &skinned_raster_pipeline_);
+    if (result != VK_SUCCESS) {
+        vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
+        vkDestroyShaderModule(device, raster_fragment, nullptr);
+        vkDestroyShaderModule(device, raster_vertex, nullptr);
+        return fail_vk("vkCreateGraphicsPipelines(skinned raster)", result,
+                       error);
+    }
+
+    // Wireframe debug view. Devices that did not enable fillModeNonSolid keep
+    // the complete fill set above and leave these null; select_raster_pipelines
+    // then refuses to claim wireframe, and the editor says so instead of
+    // showing a filled frame under a control labelled "wireframe".
+    //
+    // Both variants are built from COPIES of the fill create-info. The
+    // rasterization and input-assembly structs are aliased by the pipelines
+    // created after this point (the composite pass among them), so mutating
+    // them in place to add a line mode is how a fullscreen triangle ends up
+    // rendered as three lines.
+    if (vulkan_->wireframe_available()) {
+        const VkPipelineRasterizationStateCreateInfo wireframe_rasterization =
+            make_wireframe_rasterization(rasterization);
+        VkGraphicsPipelineCreateInfo wireframe_create = raster_create;
+        wireframe_create.pRasterizationState = &wireframe_rasterization;
+
+        VkPipelineShaderStageCreateInfo wireframe_stages[2] = {raster_stages[0],
+                                                               raster_stages[1]};
+        wireframe_stages[0].module = raster_vertex;
+        wireframe_create.pStages = wireframe_stages;
+
+        VkPipelineVertexInputStateCreateInfo wireframe_vertex_input{
+            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        wireframe_vertex_input.vertexBindingDescriptionCount = 1;
+        wireframe_vertex_input.pVertexBindingDescriptions = &vertex_binding;
+        wireframe_vertex_input.vertexAttributeDescriptionCount = 7;
+        wireframe_vertex_input.pVertexAttributeDescriptions = attributes;
+        wireframe_create.pVertexInputState = &wireframe_vertex_input;
+        result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
+                                           &wireframe_create, nullptr,
+                                           &wireframe_raster_pipeline_);
+        if (result != VK_SUCCESS) {
+            vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
+            vkDestroyShaderModule(device, raster_fragment, nullptr);
+            vkDestroyShaderModule(device, raster_vertex, nullptr);
+            return fail_vk("vkCreateGraphicsPipelines(wireframe raster)",
+                           result, error);
+        }
+
+        wireframe_stages[0].module = skinned_raster_vertex;
+        wireframe_vertex_input.vertexBindingDescriptionCount = 2;
+        wireframe_vertex_input.pVertexBindingDescriptions = skin_vertex_bindings;
+        wireframe_vertex_input.vertexAttributeDescriptionCount = 6;
+        wireframe_vertex_input.pVertexAttributeDescriptions = skin_attributes;
+        result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
+                                           &wireframe_create, nullptr,
+                                           &wireframe_skinned_raster_pipeline_);
+        if (result != VK_SUCCESS) {
+            vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
+            vkDestroyShaderModule(device, raster_fragment, nullptr);
+            vkDestroyShaderModule(device, raster_vertex, nullptr);
+            return fail_vk(
+                "vkCreateGraphicsPipelines(wireframe skinned raster)", result,
+                error);
+        }
+    }
     vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
     vkDestroyShaderModule(device, raster_fragment, nullptr);
     vkDestroyShaderModule(device, raster_vertex, nullptr);
-    if (result != VK_SUCCESS)
-        return fail_vk("vkCreateGraphicsPipelines(skinned raster)", result,
-                       error);
 
     std::array<VkDescriptorSetLayoutBinding, 11> sampled_bindings{};
     for (uint32_t i = 0; i < 7; ++i) {
@@ -10102,6 +10183,21 @@ bool VkSceneRenderer::record_cull_and_render(
         skin_vertex_counts[slot] =
             animation_skinning_.frame(slot).current_output_vertices;
     }
+    // One decision for the whole pass: the bound pipelines and the push
+    // constant's wireframe word come from the same call, so the shader can
+    // never claim a line frame the rasterizer is filling.
+    const RasterPipelineSelection raster_pipelines = select_raster_pipelines(
+        wireframe_, vulkan_->wireframe_available(),
+        {raster_pipeline_, skinned_raster_pipeline_},
+        {wireframe_raster_pipeline_, wireframe_skinned_raster_pipeline_});
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    test_last_raster_pipeline_draw_ = {
+        raster_pipelines.wireframe_enabled,
+        raster_pipelines.static_mesh == wireframe_raster_pipeline_ &&
+            wireframe_raster_pipeline_ != VK_NULL_HANDLE,
+        raster_pipelines.skinned_mesh == wireframe_skinned_raster_pipeline_ &&
+            wireframe_skinned_raster_pipeline_ != VK_NULL_HANDLE};
+#endif
     RasterRecord record{&albedo_,
                         &normal_,
                         &orm_,
@@ -10114,12 +10210,13 @@ bool VkSceneRenderer::record_cull_and_render(
                         &raw_specular_,
                         &raw_transmission_,
                         raster_extent_,
-                        raster_pipeline_,
-                        skinned_raster_pipeline_,
+                        raster_pipelines.static_mesh,
+                        raster_pipelines.skinned_mesh,
                         pipeline_layout_,
                         {selected.descriptor_sets[0], selected.descriptor_sets[1]},
                         make_raster_debug_push_constants(
-                            0u, false, geometry_debug_view_, false),
+                            0u, false, geometry_debug_view_,
+                            raster_pipelines.wireframe_enabled),
                         composite_pipeline_,
                         composite_pipeline_layout_,
                         selected.composite_descriptor_set,
@@ -10595,12 +10692,26 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     record.raw_specular = &raw_specular_;
     record.raw_transmission = &raw_transmission_;
     record.extent = raster_extent_;
-    record.raster_pipeline = raster_pipeline_;
+    const RasterPipelineSelection raster_pipelines = select_raster_pipelines(
+        wireframe_, vulkan_->wireframe_available(),
+        {raster_pipeline_, skinned_raster_pipeline_},
+        {wireframe_raster_pipeline_, wireframe_skinned_raster_pipeline_});
+    record.raster_pipeline = raster_pipelines.static_mesh;
+    record.skinned_raster_pipeline = raster_pipelines.skinned_mesh;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    test_last_raster_pipeline_draw_ = {
+        raster_pipelines.wireframe_enabled,
+        raster_pipelines.static_mesh == wireframe_raster_pipeline_ &&
+            wireframe_raster_pipeline_ != VK_NULL_HANDLE,
+        raster_pipelines.skinned_mesh == wireframe_skinned_raster_pipeline_ &&
+            wireframe_skinned_raster_pipeline_ != VK_NULL_HANDLE};
+#endif
     record.raster_layout = pipeline_layout_;
     record.raster_sets[0] = selected.descriptor_sets[0];
     record.raster_sets[1] = selected.descriptor_sets[1];
     record.raster_debug_push = make_raster_debug_push_constants(
-        0u, false, geometry_debug_view_, false);
+        0u, false, geometry_debug_view_,
+        raster_pipelines.wireframe_enabled);
     record.composite_pipeline = composite_pipeline_;
     record.composite_layout = composite_pipeline_layout_;
     record.composite_set = selected.composite_descriptor_set;

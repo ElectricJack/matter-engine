@@ -497,9 +497,9 @@ const auto s_overlay = matter::props::group<AnimationDebugOverlayOptions>(
 
 // viewer.debug — Scope::Session.
 //
-// These three ARE user-owned, which is exactly what the excluded debug-view
+// These four ARE user-owned, which is exactly what the excluded debug-view
 // fields at the top of this file are not: main.cpp reads
-// ViewerStats::debug_view_mode / vol_debug_view and WRITES them into
+// ViewerStats::debug_view_mode / vol_debug_view / wireframe and WRITES them into
 // VulkanLightingOverrides::composite_debug_view /
 // VulkanVolumetricsSettings::vol_debug_view every frame. The struct members are
 // the overwritten copies; these ints are the source the combos edit, so binding
@@ -524,9 +524,13 @@ const char* const kResolverLabels[] = {"PassThrough", "SectorLod"};
 // (main.cpp remaps it onto composite_debug_view), while "LOD levels" is a
 // GEOMETRY view written in the G-buffer pass, so main.cpp routes it to
 // RenderOptions::geometry_debug_view and leaves the composite mode at 0.
+// Index 6 ("Wireframe") is the second geometry view and routes to
+// RenderOptions::wireframe. It ORs with the `wireframe` field below rather
+// than replacing it -- the field is what lets wireframe compose with the LOD
+// tint, and this index is the single-int form a shot descriptor can store.
 const char* const kDebugViewLabels[] = {"None", "Normals", "Depth",
                                         "Sun visibility", "Raw albedo",
-                                        "LOD levels"};
+                                        "LOD levels", "Wireframe"};
 const char* const kVolDebugLabels[] = {"Off", "Density", "Scatter",
                                        "Integrated"};
 
@@ -535,9 +539,15 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
     prop(&ViewerStats::resolver_choice, "resolver_choice")
         .label("Resolver").enums(kResolverLabels, 2),
     prop(&ViewerStats::debug_view_mode, "debug_view_mode")
-        .label("Debug view").enums(kDebugViewLabels, 6)
+        .label("Debug view").enums(kDebugViewLabels, 7)
         .doc("0-4 select composite views; \"LOD levels\" tints each surface by "
-             "the rung the GPU cull actually selected for it."),
+             "the rung the GPU cull actually selected for it, and "
+             "\"Wireframe\" draws its edges."),
+    prop(&ViewerStats::wireframe, "wireframe")
+        .label("Wireframe")
+        .doc("Draw triangle edges instead of filled faces. Composes with the "
+             "\"LOD levels\" view. Forced off, and reported as such, on "
+             "devices without VkPhysicalDeviceFeatures::fillModeNonSolid."),
     prop(&ViewerStats::vol_debug_view, "vol_debug_view")
         .label("Volumetric view").enums(kVolDebugLabels, 4)
         .doc("Only meaningful while volumetrics are enabled."));
