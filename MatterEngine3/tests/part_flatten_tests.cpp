@@ -12,6 +12,8 @@
 #include "bake_trace_names.h"  // kSpanFlatten, kSpanLod, kSpanLodRung
 #include "matter/bake_observer.h"  // Bake Lab W3: per-rung bake observer seam
 #include "part_cluster.h"
+#include "render/lod_distance.h"   // M3: the ONE selection rule, asserted against
+                                   // the authored ladder's own metres
 #include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
 #include "../../libs/MatterSurfaceLib/include/mesh_simplifier.hpp"
@@ -92,6 +94,14 @@ static bool save_fixture(uint64_t hash, int mat,
     return part_asset::save_v2(path, blas, tlas,
                                children.empty() ? nullptr : children.data(),
                                children.size(), lods, hash);
+}
+
+// Whole-file byte read; the determinism gates compare artifacts with it.
+static std::vector<char> read_all_bytes(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    return std::vector<char>((std::istreambuf_iterator<char>(in)),
+                             std::istreambuf_iterator<char>());
 }
 
 static void set_translate(float m[16], float x, float y, float z) {
@@ -1318,6 +1328,159 @@ static void test_budget_ladder_assembly() {
     std::remove(sidecar.c_str());
 }
 
+// ---------------------------------------------------------------------------
+// M3 (docs/lod-vt-redesign-2026-08-04.md §3.1): an AUTHORED ladder does what
+// it says. A `static lods` block naming switch distances in metres and named
+// generators drives the flatten directly, and the thresholds it writes make
+// the runtime selection walk (lod_distance.h — the ONE rule) flip rungs at
+// exactly those metres.
+//
+// Fixture hash is its own so this test cannot be perturbed by, or perturb,
+// the budget-ladder fixture's sidecar.
+static const uint64_t kAuthoredHash = 0xA110000011110001ull;
+
+static void test_authored_ladder_switch_distances() {
+    printf("=== test_authored_ladder_switch_distances ===\n");
+
+    std::vector<Tri> tris = sphere_tris(20, 10);        // ~400 tris, radius 1
+    CHECK(save_fixture(kAuthoredHash, 5, {tris}, {}), "authored: fixture written");
+
+    const std::string flat =
+        std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kAuthoredHash);
+    const std::string slods =
+        std::string(kCacheRoot) + "/" + part_asset::cache_path_static_lods(kAuthoredHash);
+    std::remove(flat.c_str());
+
+    // Three reps: build() verbatim out to 18 m, a coarse decimation out to
+    // 45 m, a coarser one past that. Written through the real save/load so the
+    // sidecar round-trip is under test too.
+    const double kAt1 = 18.0, kAt2 = 45.0;
+    {
+        part_asset::StaticLodPlan plan;
+        plan.level_hashes = { kAuthoredHash, kAuthoredHash, kAuthoredHash };
+        plan.level_exclude_masks = { 0u, 0u, 0u };
+        plan.level_at  = { 0.0, kAt1, kAt2 };
+        plan.level_gen = { "", "decimate {\"error\":0.02}", "decimate {\"divisor\":8}" };
+        CHECK(part_asset::save_static_lod_plan(slods, plan), "authored: sidecar written");
+
+        part_asset::StaticLodPlan rt;
+        CHECK(part_asset::load_static_lod_plan(slods, rt), "authored: sidecar reloads");
+        CHECK(rt.level_at == plan.level_at, "authored: distances round-trip");
+        CHECK(rt.level_gen == plan.level_gen, "authored: generators round-trip");
+        CHECK(rt.drives_ladder(), "authored: plan drives the ladder");
+    }
+
+    auto res = part_flatten::flatten_part(kCacheRoot, kAuthoredHash);
+    CHECK(res.ok, "authored: flatten_part ok");
+    if (!res.ok) { printf("  error: %s\n", res.error.c_str()); std::remove(slods.c_str()); return; }
+    CHECK(res.clusters == 1, "authored: single cluster");
+    CHECK(res.levels == 3, "authored: one rep per authored entry");
+
+    BLASManager blas; TLASManager tlas(4);
+    std::vector<part_asset::FlatCluster> clusters;
+    CHECK(part_asset::load_flat_v3(flat, kAuthoredHash, blas, tlas, clusters),
+          "authored: load_flat_v3 ok");
+    if (clusters.size() != 1 || clusters[0].lods.size() != 3) {
+        printf("  SKIPPING (unexpected artifact shape)\n");
+        std::remove(slods.c_str()); return;
+    }
+    const auto& lods = clusters[0].lods;
+    const auto& entries = blas.get_entries();
+    const size_t t0 = entries[lods[0].blas_indices[0]]->triangles.size();
+    const size_t t1 = entries[lods[1].blas_indices[0]]->triangles.size();
+    const size_t t2 = entries[lods[2].blas_indices[0]]->triangles.size();
+    CHECK(t0 == tris.size(), "authored: rep 0 is build() verbatim (undecimated)");
+    CHECK(t1 < t0 && t2 < t1, "authored: the named generator actually decimated");
+
+    // The radius the RUNTIME will use: half the cluster AABB diagonal
+    // (part_store.cpp). The authored metres were normalized against this.
+    const float dx = clusters[0].aabb_max[0] - clusters[0].aabb_min[0];
+    const float dy = clusters[0].aabb_max[1] - clusters[0].aabb_min[1];
+    const float dz = clusters[0].aabb_max[2] - clusters[0].aabb_min[2];
+    const float radius = 0.5f * std::sqrt(dx*dx + dy*dy + dz*dz);
+
+    // The table is switch-OUT: rep i's threshold is rep (i+1)'s switch-IN.
+    const float want0 = radius / (float)kAt1;
+    const float want1 = radius / (float)kAt2;
+    CHECK(std::fabs(lods[0].screen_size_threshold - want0) < 1e-4f * want0,
+          "authored: rep 0's threshold is radius / at(rep 1)");
+    CHECK(std::fabs(lods[1].screen_size_threshold - want1) < 1e-4f * want1,
+          "authored: rep 1's threshold is radius / at(rep 2)");
+    CHECK(lods[2].screen_size_threshold == 0.0f,
+          "authored: the last rep never hides");
+
+    // ...and the selection walk flips exactly there. reach for a unit-scale
+    // instance at the default dial is the cluster radius itself.
+    float sw[3];
+    for (int i = 0; i < 3; ++i)
+        sw[i] = lod::normalized_switch_distance(lods[i].screen_size_threshold);
+    const float reach = lod::reach(radius, 1.0f, 1.0f);
+    CHECK(lod::select_rep(sw, 3, 1.0f,   reach) == 0, "authored: 1 m  -> rep 0");
+    CHECK(lod::select_rep(sw, 3, 17.9f,  reach) == 0, "authored: 17.9 m -> rep 0");
+    CHECK(lod::select_rep(sw, 3, 18.1f,  reach) == 1, "authored: 18.1 m -> rep 1");
+    CHECK(lod::select_rep(sw, 3, 44.9f,  reach) == 1, "authored: 44.9 m -> rep 1");
+    CHECK(lod::select_rep(sw, 3, 45.1f,  reach) == 2, "authored: 45.1 m -> rep 2");
+    CHECK(lod::select_rep(sw, 3, 5000.f, reach) == 2, "authored: far away -> rep 2");
+
+    // Determinism: a second cold flatten of the same inputs is byte-identical.
+    std::vector<char> first = read_all_bytes(flat);
+    std::remove(flat.c_str());
+    auto res2 = part_flatten::flatten_part(kCacheRoot, kAuthoredHash);
+    CHECK(res2.ok, "authored: second flatten ok");
+    std::vector<char> second = read_all_bytes(flat);
+    CHECK(!first.empty() && first == second,
+          "authored: two cold bakes are byte-identical");
+
+    printf("  t=%zu/%zu/%zu radius=%.4f thr=%.5f/%.5f/%.1f\n", t0, t1, t2, radius,
+           lods[0].screen_size_threshold, lods[1].screen_size_threshold,
+           lods[2].screen_size_threshold);
+    printf("  test_authored_ladder_switch_distances OK\n");
+
+    std::remove(slods.c_str());
+}
+
+// M3 companion: a `static lods` block that names NEITHER a distance nor a
+// generator — the pre-M3 W5 surface, params/exclude only — must not touch the
+// ladder at all. Same fixture, same flatten, byte-identical artifact with and
+// without the sidecar present.
+static void test_w5_plan_does_not_drive_the_ladder() {
+    printf("=== test_w5_plan_does_not_drive_the_ladder ===\n");
+
+    const uint64_t h = 0xA110000022220002ull;
+    std::vector<Tri> tris = sphere_tris(20, 10);
+    CHECK(save_fixture(h, 5, {tris}, {}), "w5 plan: fixture written");
+
+    const std::string flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(h);
+    const std::string slods =
+        std::string(kCacheRoot) + "/" + part_asset::cache_path_static_lods(h);
+
+    std::remove(slods.c_str());
+    std::remove(flat.c_str());
+    CHECK(part_flatten::flatten_part(kCacheRoot, h).ok, "w5 plan: baseline flatten ok");
+    std::vector<char> baseline = read_all_bytes(flat);
+
+    {
+        part_asset::StaticLodPlan plan;             // params/exclude only
+        plan.level_hashes = { h, h };
+        plan.level_exclude_masks = { 0u, 2u };
+        plan.level_at  = { -1.0, -1.0 };
+        plan.level_gen = { "", "" };
+        CHECK(part_asset::save_static_lod_plan(slods, plan), "w5 plan: sidecar written");
+        part_asset::StaticLodPlan rt;
+        CHECK(part_asset::load_static_lod_plan(slods, rt) && !rt.drives_ladder(),
+              "w5 plan: does NOT drive the ladder");
+    }
+
+    std::remove(flat.c_str());
+    CHECK(part_flatten::flatten_part(kCacheRoot, h).ok, "w5 plan: flatten with sidecar ok");
+    std::vector<char> with_plan = read_all_bytes(flat);
+    CHECK(!baseline.empty() && baseline == with_plan,
+          "w5 plan: artifact byte-identical to the no-sidecar bake");
+
+    printf("  test_w5_plan_does_not_drive_the_ladder OK\n");
+    std::remove(slods.c_str());
+}
+
 // Bake-hardening #2: a parent with N instances of a heavy child should trip
 // the flatten budget, land the parent on the BOUNDARY path, and emit
 // instance_refs instead of inlining the child's mesh. Fixture: 10 instances
@@ -2241,6 +2404,8 @@ int main() {
     test_small_part_gets_ladder();
     test_ratio2_ladder_shape();
     test_budget_ladder_assembly();
+    test_authored_ladder_switch_distances();
+    test_w5_plan_does_not_drive_the_ladder();
     test_instance_boundary_records_refs();
     test_generous_budget_inlines();
     test_flat_version_bump();

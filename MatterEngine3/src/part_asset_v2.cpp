@@ -6,8 +6,9 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstddef>   // offsetof
-#include <cstdlib>   // strtoull
+#include <cstdlib>   // strtoull, strtod
 #include <fstream>
+#include <sstream>   // load_static_lod_plan's per-line tokenizer
 #include <filesystem>
 #include <vector>
 #include <unordered_map>
@@ -164,17 +165,35 @@ std::string cache_path_static_lods(uint64_t resolved_hash) {
     return std::string("parts/") + hex + ".static_lods";
 }
 
+// Line format, one per authored level:
+//   <hash16> <mask8> <at> <gen>
+// `at` is the authored switch-in distance in metres, or -1 when the level
+// declared none. `gen` is "-" for no generator, else the generator name and
+// its canonical params joined by '|' (canonical JSON never contains a space,
+// so the record stays whitespace-delimited and `>>`-readable).
+//
+// A two-token line is the pre-M3 form and still loads, with at = -1 and no
+// generator -- which is exactly "this plan does not drive the ladder".
 bool save_static_lod_plan(const std::string& path, const StaticLodPlan& plan) {
-    if (plan.level_hashes.size() != plan.level_exclude_masks.size()) return false;
+    const size_t n = plan.level_hashes.size();
+    if (plan.level_exclude_masks.size() != n) return false;
+    if (!plan.level_at.empty()  && plan.level_at.size()  != n) return false;
+    if (!plan.level_gen.empty() && plan.level_gen.size() != n) return false;
     const std::string tmp = path + ".tmp";
     {
         std::ofstream out(tmp);
         if (!out) return false;
-        for (size_t i = 0; i < plan.level_hashes.size(); ++i) {
+        for (size_t i = 0; i < n; ++i) {
             char hhex[17], mhex[9];
             snprintf(hhex, sizeof hhex, "%016llx", (unsigned long long)plan.level_hashes[i]);
             snprintf(mhex, sizeof mhex, "%08x", plan.level_exclude_masks[i]);
-            out << hhex << " " << mhex << "\n";
+            const double at = plan.level_at.empty() ? -1.0 : plan.level_at[i];
+            std::string gen = plan.level_gen.empty() ? std::string() : plan.level_gen[i];
+            for (char& c : gen) if (c == ' ') c = '|';
+            if (gen.empty()) gen = "-";
+            char atbuf[40];
+            snprintf(atbuf, sizeof atbuf, "%.17g", at);
+            out << hhex << " " << mhex << " " << atbuf << " " << gen << "\n";
         }
         if (!out.good()) return false;
     }
@@ -185,11 +204,24 @@ bool load_static_lod_plan(const std::string& path, StaticLodPlan& out) {
     std::ifstream in(path);
     if (!in) return false;
     StaticLodPlan plan;
-    std::string hhex, mhex;
-    while (in >> hhex >> mhex) {
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        std::istringstream ls(line);
+        std::string hhex, mhex, atstr, gen;
+        if (!(ls >> hhex >> mhex)) return false;
         if (hhex.size() != 16 || mhex.size() != 8) return false;
         plan.level_hashes.push_back((uint64_t)strtoull(hhex.c_str(), nullptr, 16));
         plan.level_exclude_masks.push_back((uint32_t)strtoull(mhex.c_str(), nullptr, 16));
+        double at = -1.0;
+        if (ls >> atstr) at = strtod(atstr.c_str(), nullptr);
+        plan.level_at.push_back(at);
+        if (ls >> gen && gen != "-") {
+            for (char& c : gen) if (c == '|') c = ' ';
+            plan.level_gen.push_back(gen);
+        } else {
+            plan.level_gen.push_back(std::string());
+        }
     }
     if (plan.level_hashes.empty()) return false;
     out = std::move(plan);

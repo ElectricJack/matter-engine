@@ -108,6 +108,29 @@ std::string cache_path_static_lods(uint64_t resolved_hash);
 struct StaticLodPlan {
     std::vector<uint64_t> level_hashes;        // geometry hash per authored level
     std::vector<uint32_t> level_exclude_masks; // parallel; bit k = child k dropped
+
+    // M3 (docs/lod-vt-redesign-2026-08-04.md §3.1). Both parallel to
+    // level_hashes, and both OPTIONAL: an empty vector means "no level
+    // declared one", which is how a pre-M3 (W5) `static lods` block -- params
+    // and exclude only -- keeps the ladder it already had.
+    //   level_at  : authored switch-in distance in metres for a unit-scale
+    //               instance; NEGATIVE means the level declared none and the
+    //               bake keeps its derived value (R5).
+    //   level_gen : "" or "<name> <canonical-params-json>", the named built-in
+    //               generator that produces this level's geometry from LOD0.
+    std::vector<double>      level_at;
+    std::vector<std::string> level_gen;
+
+    // True when at least one level carries an M3 field. The flatten path uses
+    // this to decide whether the plan DRIVES a ladder (authored distances /
+    // named generators) or is merely the W5 params+exclude record it has
+    // always been -- so a part written before M3 flattens down the identical
+    // code path and produces identical bytes.
+    bool drives_ladder() const {
+        for (double a : level_at) if (a >= 0.0) return true;
+        for (const std::string& g : level_gen) if (!g.empty()) return true;
+        return false;
+    }
 };
 bool save_static_lod_plan(const std::string& path, const StaticLodPlan& plan);
 // False if the file is missing or unparseable (callers fall back to treating

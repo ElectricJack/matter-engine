@@ -227,13 +227,36 @@ public:
         bool has_params = false;
         std::string params_json;         // canonical JSON object; "{}" if absent
         std::vector<std::string> exclude; // child module names to drop at this level
+
+        // ---- M3 (docs/lod-vt-redesign-2026-08-04.md §3.1) --------------------
+        // `at`: the rep's own SWITCH-IN distance in metres, for a unit-scale
+        // instance. Authored distances are the R5 half the estimator cannot
+        // supply; where a rep declares none, the bake keeps the derived value
+        // (see part_flatten's static-lod ladder). Entry 0's `at`, when present,
+        // must be 0 -- rep 0 starts at the camera -- and declared distances
+        // must strictly increase down the ladder, since a table that does not
+        // increase names no band at all.
+        bool   has_at = false;
+        double at     = 0.0;
+
+        // `gen`: the NAME of a built-in generator plus its parameters, read as
+        // data. A closure would force a class evaluation just to answer what
+        // reps exist, which is exactly what lazy per-rep baking cannot afford,
+        // so a function here is a shape violation like any other. Empty name =
+        // no generator (the level's geometry is LOD0, or its `params` rebuild).
+        std::string gen;                 // "" or a validated built-in name
+        std::string gen_params_json;     // canonical JSON object; "{}" if none
     };
     using LodAuthoring = std::vector<LodLevelSpec>;
 
     // Reads `static lods` from the part class WITHOUT building. Mirrors
     // eval_lod_budgets's no-build static-reading approach. Fail-closed: any
     // shape violation (lods not an array; an entry not a plain object; `params`
-    // present but not an object; `exclude` present but not an array of strings)
+    // present but not an object; `exclude` present but not an array of strings;
+    // M3: `at` not a finite number >= 0, a non-zero `at` on entry 0, declared
+    // `at`s that do not strictly increase, a `gen` that is a function or names
+    // an unknown generator, a `gen` on entry 0, or generator params that are
+    // not numbers / do not satisfy the generator's own requirements)
     // discards the WHOLE list (empty result == "not opted in", never a partial/
     // best-effort parse) so a malformed block can't silently half-apply.
     LodAuthoring eval_lods(const std::string& source);

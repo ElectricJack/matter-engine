@@ -725,6 +725,19 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
     const std::string base_dir = is_transient(current_module_) ? transient_dir_ : parts_dir_;
     const std::string base_params_json = params_to_json(params);
 
+    // M3: the authored switch distances and named generators. Computed here,
+    // BEFORE the fast path, so the fast path can insist a cached sidecar
+    // already carries them — a sidecar written by a pre-M3 binary at this same
+    // resolved hash would otherwise be accepted as current while silently
+    // missing the whole authored ladder.
+    std::vector<double>      want_at(lods.size(), -1.0);
+    std::vector<std::string> want_gen(lods.size());
+    for (size_t i = 0; i < lods.size(); ++i) {
+        if (lods[i].has_at) want_at[i] = lods[i].at;
+        if (!lods[i].gen.empty())
+            want_gen[i] = lods[i].gen + " " + lods[i].gen_params_json;
+    }
+
     // Content-addressed fast path (mirrors bake_lod_variants): a fresh sidecar
     // with every referenced .part still present means the plan is current.
     const std::string sidecar =
@@ -732,7 +745,8 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
     {
         part_asset::StaticLodPlan existing;
         if (part_asset::load_static_lod_plan(sidecar, existing) &&
-            existing.level_hashes.size() == lods.size()) {
+            existing.level_hashes.size() == lods.size() &&
+            existing.level_at == want_at && existing.level_gen == want_gen) {
             bool all_present = true;
             for (uint64_t h : existing.level_hashes) {
                 const std::string vpath = base_dir + "/" + part_asset::cache_path_resolved(h);
@@ -783,6 +797,13 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
     part_asset::StaticLodPlan plan;
     plan.level_hashes.resize(lods.size());
     plan.level_exclude_masks.assign(lods.size(), 0u);
+    // M3: the authored switch distance and the named generator ride through to
+    // the flatten stage, which is the only place that can turn metres into the
+    // normalized threshold the runtime table stores (it needs the baked
+    // cluster radius; see part_flatten's static-lod ladder). Nothing is
+    // generated here.
+    plan.level_at  = want_at;
+    plan.level_gen = want_gen;
 
     for (size_t i = 0; i < lods.size(); ++i) {
         const auto& L = lods[i];

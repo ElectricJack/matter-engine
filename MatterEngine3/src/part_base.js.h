@@ -12,6 +12,27 @@ globalThis.MAT = {
 };
 globalThis.SHAPE = { triangles: 0, strip: 1, fan: 2, polygon: 3 };
 globalThis.JOIN = { miter: 0, bevel: 1, round: 2 };
+// M3 (docs/lod-vt-redesign-2026-08-04.md §3.1): NAMED generators for a
+// `static lods` entry. Each helper returns a plain DATA descriptor -- never a
+// closure -- so ScriptHost::eval_lods can read the whole ladder without
+// evaluating build(). That no-build read is what lets the bake answer "what
+// reps does this part have?" before generating any of them.
+//
+//   static lods = [
+//     { at: 0 },                                    // rep 0 = build() verbatim
+//     { at: 18, gen: LOD.decimate({ error: 0.05 }) },
+//     { at: 45, gen: LOD.decimate({ divisor: 32 }) },
+//   ];
+//
+// `error` is a world-space deviation in metres; `divisor` spells the same
+// thing the default ladder uses (eps = part_radius / divisor). Exactly one of
+// the two is required. `gen: 'decimate'` (a bare string) is also accepted for
+// a generator that needs no parameters.
+globalThis.LOD = {
+  decimate(o) { return Object.assign({ gen: 'decimate' }, o || {}); },
+  // The redesign doc spells this generator `simplify`; same QEM decimation.
+  simplify(o) { return Object.assign({ gen: 'decimate' }, o || {}); },
+};
 globalThis.Part = class Part {
   build(p) {}
   pushMatrix()           { __dsl_pushMatrix(); }
