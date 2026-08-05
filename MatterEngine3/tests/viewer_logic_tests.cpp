@@ -1007,25 +1007,20 @@ static void test_provider_regen_stale_v2_flat() {
         if (!sp) { printf("  SKIPPING regen sniff\n"); return; }
     }
 
-    // Plant a stale v2 FLAT file at the provider's expected flat path.
+    // M4: this used to plant a stale V2-FORMAT artifact at the flat path and
+    // assert peek reported 2. That scenario is now unrepresentable, twice
+    // over: a bundle's FLAT section only ever carries kFormatVersionFlat
+    // bodies, and the version vector is folded into the part hash, so a
+    // stale-format artifact lands under a DIFFERENT filename rather than
+    // under this one.
+    //
+    // What survives -- and is the property this test was really about -- is
+    // that flatten regenerates a missing flat and leaves the current bake
+    // version behind. The bundle already holds the compositional body written
+    // above, so this is the honest "no flat yet" starting state.
     const std::string flat_path = regen_cache + "/" + part_asset::cache_path_flat(kRegenHash);
-    {
-        BLASManager blas; TLASManager tlas(16);
-        Tri t[2] = {};
-        t[0].vertex0 = make_float3(0,0,0); t[0].vertex1 = make_float3(1,0,0); t[0].vertex2 = make_float3(1,1,0);
-        t[0].centroid = make_float3(2.0f/3,1.0f/3,0);
-        t[1].vertex0 = make_float3(0,0,0); t[1].vertex1 = make_float3(1,1,0); t[1].vertex2 = make_float3(0,1,0);
-        t[1].centroid = make_float3(1.0f/3,2.0f/3,0);
-        blas.register_triangles(t, 2, nullptr);
-        part_asset::LodLevels lods;
-        part_asset::LodLevel L; L.screen_size_threshold = 0.0f; L.blas_indices.push_back(0);
-        lods.push_back(L);
-        bool sp = part_asset::save_v2(flat_path, blas, tlas, nullptr, 0, lods, kRegenHash);
-        CHECK(sp, "regen sniff: stale v2 flat planted");
-        CHECK(part_asset::peek_format_version(flat_path) == 2,
-              "regen sniff: pre-connect flat is v2");
-        if (!sp) { printf("  SKIPPING regen sniff\n"); return; }
-    }
+    CHECK(part_asset::peek_format_version(flat_path) == 0,
+          "regen sniff: no flat section before flatten");
 
     // Call flatten_part directly (the provider's flatten_placed does exactly this).
     // The provider checks peek_format_version != kFormatVersionFlat and regenerates.

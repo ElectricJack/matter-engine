@@ -1385,21 +1385,23 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
     return true;
 }
 
-// M4: "which artifact is at this path" used to be answered by the file's own
-// header, because a path named exactly one artifact. A bundle holds both, so
-// the question becomes "which SECTIONS does this part have", and the answer
-// keeps the old meaning: a flattened ladder if one exists, else the
-// compositional body, else nothing. Every caller uses it as exactly that
-// preference test.
+// M4: every caller of this asks exactly one question -- "is there a FLATTENED
+// artifact here?" -- and used to get its answer from the version field of a
+// file that only existed if the answer was yes. A bundle holds the
+// compositional body too, so returning "the version of whatever is at this
+// path" would answer a DIFFERENT question and answer it wrongly: PartStore's
+// flat-preferred load would see kFormatVersionV2, take its legacy-v2-flat
+// branch, and load the compositional body AS a flat -- dropping the child
+// table. (viewer_logic_tests caught exactly that.)
+//
+// So this reports the flat format when a FLAT section exists and 0 otherwise.
+// The legacy-v2-flat branch in part_store is thereby unreachable: a v2-format
+// body in the flat position was only ever a pre-Task-11 `.flat.part` file, and
+// the bundle makes that unrepresentable -- the FLAT tag only ever carries
+// kFormatVersionFlat bodies.
 uint32_t peek_format_version(const std::string& path) {
-    const std::vector<uint32_t> tags = part_bundle::section_tags(path);
-    bool has_flat = false, has_rep0 = false;
-    for (uint32_t t : tags) {
-        if (t == part_bundle::kSectionFlat) has_flat = true;
-        if (t == part_bundle::kSectionRep0) has_rep0 = true;
-    }
-    if (has_flat) return kFormatVersionFlat;
-    if (has_rep0) return kFormatVersionV2;
+    for (uint32_t t : part_bundle::section_tags(path))
+        if (t == part_bundle::kSectionFlat) return kFormatVersionFlat;
     return 0;
 }
 

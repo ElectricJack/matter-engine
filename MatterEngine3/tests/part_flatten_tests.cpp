@@ -7,6 +7,7 @@
 #include "part_flatten.h"
 #include "impostor_bake.h"
 #include "part_asset_v2.h"
+#include "part_bundle.h"   // M4: sections, not sibling files
 #include "lod_bake.h"
 #include "bake_trace.h"        // Bake Lab task 1.5: flatten/LOD trace-shape tests
 #include "bake_trace_names.h"  // kSpanFlatten, kSpanLod, kSpanLodRung
@@ -132,6 +133,19 @@ static std::string flat_path() {
     return std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kParentHash);
 }
 
+
+// M4: "delete the flat artifact" is a section drop, not a file delete -- the
+// bundle at that path also holds the compositional body the flatten reads.
+static void drop_flat(const std::string& bundle_path, uint64_t hash) {
+    part_bundle::remove_section(bundle_path, hash, part_bundle::kSectionFlat);
+}
+static void drop_plan(const std::string& bundle_path, uint64_t hash) {
+    part_bundle::remove_section(bundle_path, hash, part_bundle::kSectionPlan);
+}
+static void drop_variants(const std::string& bundle_path, uint64_t hash) {
+    part_bundle::remove_section(bundle_path, hash, part_bundle::kSectionVariants);
+}
+
 static bool read_bytes(const std::string& path, std::vector<char>& out) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
@@ -142,7 +156,7 @@ static bool read_bytes(const std::string& path, std::vector<char>& out) {
 // ------------------------------------------------------------------- tests --
 
 static void test_flatten_merge() {
-    std::remove(flat_path().c_str());
+    drop_flat(flat_path(), kParentHash);
     part_flatten::FlattenResult res =
         part_flatten::flatten_part(kCacheRoot, kParentHash);
     CHECK(res.ok, "flatten_part ok");
@@ -218,13 +232,13 @@ static void test_flatten_merge() {
 }
 
 static void test_flatten_deterministic() {
-    std::remove(flat_path().c_str());
+    drop_flat(flat_path(), kParentHash);
     part_flatten::FlattenResult a = part_flatten::flatten_part(kCacheRoot, kParentHash);
     std::vector<char> bytes_a;
     CHECK(a.ok && read_bytes(flat_path(), bytes_a), "first flatten written");
     CHECK(part_asset::peek_format_version(flat_path()) == part_asset::kFormatVersionFlat, "first flatten is current bake version");
 
-    std::remove(flat_path().c_str());
+    drop_flat(flat_path(), kParentHash);
     part_flatten::FlattenResult b = part_flatten::flatten_part(kCacheRoot, kParentHash);
     std::vector<char> bytes_b;
     CHECK(b.ok && read_bytes(flat_path(), bytes_b), "second flatten written (v3)");
@@ -856,20 +870,38 @@ static void test_v3_empty_children_and_lods() {
 static void test_v3_cross_version_guards() {
     printf("=== test_v3_cross_version_guards ===\n");
 
-    // Write a v2 file using save_v2 (parent fixture already written above).
-    // load_flat_v3 on a v2 file must return false.
+    // M4: the guard is now about SECTIONS. It used to matter that a v2 file
+    // and a v3 file were distinguishable by their headers, because both could
+    // sit at a path a loader might be pointed at. In the bundle they are
+    // different tags, so the question becomes: a bundle carrying only a
+    // compositional body must not satisfy a flat load, and vice versa.
+    //
+    // Note kParentHash is NOT usable for this any more -- earlier tests in
+    // this suite flatten it, so its bundle legitimately holds BOTH sections.
+    const uint64_t kHashV2Guard = 0x2233445566778899ull;
     const std::string v2_path = std::string(kCacheRoot) + "/" +
-                                part_asset::cache_path_resolved(kParentHash);
+                                part_asset::cache_path_resolved(kHashV2Guard);
+    part_bundle::remove_section(v2_path, kHashV2Guard, part_bundle::kSectionFlat);
+    {
+        BLASManager blas_only; TLASManager tlas_only(16);
+        make_blas_n(blas_only, 1, 0);
+        part_asset::LodLevels lods_only;
+        part_asset::LodLevel L; L.screen_size_threshold = 0.0f; L.blas_indices.push_back(0);
+        lods_only.push_back(std::move(L));
+        CHECK(part_asset::save_v2(v2_path, blas_only, tlas_only, nullptr, 0,
+                                  lods_only, kHashV2Guard),
+              "cross-guard: body-only bundle written");
+    }
     BLASManager bv2; TLASManager tv2(16);
     std::vector<part_asset::ChildInstance> ch;
     part_asset::LodLevels lv2;
-    bool v2_ok = part_asset::load_v2(v2_path, kParentHash, bv2, tv2, ch, lv2);
-    CHECK(v2_ok, "cross-guard: v2 file loads as v2 (sanity)");
+    bool v2_ok = part_asset::load_v2(v2_path, kHashV2Guard, bv2, tv2, ch, lv2);
+    CHECK(v2_ok, "cross-guard: v2 body loads as v2 (sanity)");
 
     BLASManager bv3_a; TLASManager tv3_a(16);
     std::vector<part_asset::FlatCluster> dummy;
-    bool v3_on_v2 = part_asset::load_flat_v3(v2_path, kParentHash, bv3_a, tv3_a, dummy);
-    CHECK(!v3_on_v2, "cross-guard: load_flat_v3 on a v2 file returns false");
+    bool v3_on_v2 = part_asset::load_flat_v3(v2_path, kHashV2Guard, bv3_a, tv3_a, dummy);
+    CHECK(!v3_on_v2, "cross-guard: a body-only bundle does not satisfy a flat load");
 
     // Write a v3 file; load_v2 on it must return false.
     BLASManager blas_v3; TLASManager tlas_v3(16);
@@ -898,47 +930,48 @@ static void test_v3_cross_version_guards() {
 static void test_peek_format_version() {
     printf("=== test_peek_format_version ===\n");
 
-    // v2 file (parent fixture).
-    const std::string v2_path = std::string(kCacheRoot) + "/" +
-                                part_asset::cache_path_resolved(kParentHash);
-    uint32_t pv2 = part_asset::peek_format_version(v2_path);
-    CHECK(pv2 == 2, "peek returns 2 for a v2 file");
-
-    // v3 file (created in cross-version guard test or create a fresh one).
-    BLASManager bpk; TLASManager tpk(16);
-    make_blas_n(bpk, 1, 0);
-    part_asset::FlatCluster fcp;
-    fcp.aabb_min[0] = fcp.aabb_min[1] = fcp.aabb_min[2] = 0.0f;
-    fcp.aabb_max[0] = fcp.aabb_max[1] = fcp.aabb_max[2] = 1.0f;
-    part_asset::LodLevel lvp;
-    lvp.screen_size_threshold = 0.0f; lvp.blas_indices.push_back(0);
-    fcp.lods.push_back(std::move(lvp));
-    std::vector<part_asset::FlatCluster> clspk = { fcp };
-    const uint64_t kPeekHash = 0x9988776655443322ull;
-    const std::string v3_path = std::string(kCacheRoot) + "/parts/test_peek_v3.flat.part";
-    bool spk = part_asset::save_flat_v3(v3_path, bpk, tpk, clspk, kPeekHash);
-    CHECK(spk, "peek: v3 file saved");
-    uint32_t pv3 = part_asset::peek_format_version(v3_path);
-    CHECK(pv3 == part_asset::kFormatVersionFlat, "peek returns kFormatVersionFlat for a fresh flat file");
-
-    // Garbage / non-existent file.
-    uint32_t pg = part_asset::peek_format_version("/tmp/__no_such_file_matter_v3__.part");
-    CHECK(pg == 0, "peek returns 0 for a non-existent file");
-
-    // Write a garbage file (wrong magic).
-    const std::string garbage_path = std::string(kCacheRoot) + "/parts/garbage.part";
+    // M4: peek answers ONE question -- "is there a flattened artifact here?".
+    // It used to report the format version of whatever file sat at the path,
+    // which was the same answer only because a `.flat.part` existed exactly
+    // when the answer was yes. A bundle holds the compositional body too, so
+    // reporting "2" for it would send PartStore's flat-preferred load down its
+    // legacy-v2-flat branch and load the body AS a flat, losing the child
+    // table. So: kFormatVersionFlat when a FLAT section exists, else 0.
+    const uint64_t kPeekHash = 0x33445566778899AAull;
+    const std::string path = std::string(kCacheRoot) + "/" +
+                             part_asset::cache_path_resolved(kPeekHash);
+    part_bundle::remove_section(path, kPeekHash, part_bundle::kSectionFlat);
     {
-        FILE* fg = std::fopen(garbage_path.c_str(), "wb");
-        if (fg) {
-            uint32_t bad_magic = 0xDEADDEADu;
-            uint32_t bad_version = 99u;
-            std::fwrite(&bad_magic, 4, 1, fg);
-            std::fwrite(&bad_version, 4, 1, fg);
-            std::fclose(fg);
-        }
+        BLASManager blas; TLASManager tlas(16);
+        make_blas_n(blas, 1, 0);
+        part_asset::LodLevels lods;
+        part_asset::LodLevel L; L.screen_size_threshold = 0.0f; L.blas_indices.push_back(0);
+        lods.push_back(std::move(L));
+        CHECK(part_asset::save_v2(path, blas, tlas, nullptr, 0, lods, kPeekHash),
+              "peek: body-only bundle written");
     }
-    uint32_t pbad = part_asset::peek_format_version(garbage_path);
-    CHECK(pbad == 0, "peek returns 0 for a wrong-magic file");
+    CHECK(part_asset::peek_format_version(path) == 0,
+          "peek returns 0 for a bundle with no flat section");
+
+    {
+        BLASManager blas; TLASManager tlas(16);
+        make_blas_n(blas, 1, 0);
+        part_asset::FlatCluster fc;
+        fc.aabb_min[0] = fc.aabb_min[1] = fc.aabb_min[2] = 0.0f;
+        fc.aabb_max[0] = fc.aabb_max[1] = fc.aabb_max[2] = 1.0f;
+        part_asset::LodLevel L; L.screen_size_threshold = 0.0f; L.blas_indices.push_back(0);
+        fc.lods.push_back(std::move(L));
+        std::vector<part_asset::FlatCluster> cls = { fc };
+        CHECK(part_asset::save_flat_v3(path, blas, tlas, cls, kPeekHash),
+              "peek: flat section added to the same bundle");
+    }
+    CHECK(part_asset::peek_format_version(path) == part_asset::kFormatVersionFlat,
+          "peek returns the flat version once a flat section exists");
+
+    // A missing bundle is 0, not a crash.
+    CHECK(part_asset::peek_format_version(std::string(kCacheRoot) +
+                                          "/parts/does_not_exist.bundle") == 0,
+          "peek returns 0 for a missing bundle");
 
     printf("PASSED\n");
 }
@@ -1025,7 +1058,7 @@ static void test_flatten_clustered_v3() {
     }
 
     const std::string big_flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kBigHash);
-    std::remove(big_flat.c_str());
+    part_bundle::remove_section(big_flat, kBigHash, part_bundle::kSectionFlat);
 
     part_flatten::FlattenTargets tgt;
     // Use tight cluster size so we definitely get multiple clusters.
@@ -1175,11 +1208,11 @@ static void test_small_part_gets_ladder() {
 
     // Remove any stale flat artifact first.
     std::string flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kSmallSphereHash);
-    std::remove(flat.c_str());
+    part_bundle::remove_section(flat, kSmallSphereHash, part_bundle::kSectionFlat);
 
     // Remove any stale lods sidecar to ensure QEM path, not budget-ladder path.
     std::string lods = std::string(kCacheRoot) + "/" + part_asset::cache_path_lods(kSmallSphereHash);
-    std::remove(lods.c_str());
+    part_bundle::remove_section(lods, kSmallSphereHash, part_bundle::kSectionVariants);
 
     uint64_t hash = write_small_sphere_part();
     CHECK(hash != 0, "small sphere part written");
@@ -1204,7 +1237,7 @@ static void test_ratio2_ladder_shape() {
     printf("=== test_ratio2_ladder_shape ===\n");
 
     std::string flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kDenseSphereHash);
-    std::remove(flat.c_str());
+    part_bundle::remove_section(flat, kDenseSphereHash, part_bundle::kSectionFlat);
 
     uint64_t hash = write_dense_sphere_part();
     CHECK(hash != 0, "dense sphere part written");
@@ -1268,19 +1301,19 @@ static void test_budget_ladder_assembly() {
 
     // Remove any stale flat artifact so the sidecar path re-runs.
     std::string flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(full_hash);
-    std::remove(flat.c_str());
+    part_bundle::remove_section(flat, full_hash, part_bundle::kSectionFlat);
 
-    // Write the .lods sidecar for full_hash.
+    // Write the budget-variant sidecar for full_hash. M4: it is a bundle
+    // section, so it goes through its serializer rather than an ofstream at a
+    // sibling path.
     {
         std::string sidecar = std::string(kCacheRoot) + "/" + part_asset::cache_path_lods(full_hash);
-        std::ofstream o(sidecar);
-        char hex[17];
-        o << 0.5 << "\n";
-        snprintf(hex, sizeof hex, "%016llx", (unsigned long long)full_hash);
-        o << 1.0 << " " << hex << "\n";
-        snprintf(hex, sizeof hex, "%016llx", (unsigned long long)low_hash);
-        o << 0.3 << " " << hex << "\n";
-        CHECK(o.good(), "budget ladder: sidecar written");
+        part_asset::LodVariants v;
+        v.anchor_size = 0.5;
+        v.budgets = {1.0, 0.3};
+        v.hashes  = {full_hash, low_hash};
+        CHECK(part_asset::save_lod_sidecar(sidecar, full_hash, v),
+              "budget ladder: sidecar written");
     }
 
     auto res = part_flatten::flatten_part(kCacheRoot, full_hash);
@@ -1325,7 +1358,7 @@ static void test_budget_ladder_assembly() {
 
     // Clean up the sidecar we wrote so ordering doesn't matter on reruns.
     std::string sidecar = std::string(kCacheRoot) + "/" + part_asset::cache_path_lods(full_hash);
-    std::remove(sidecar.c_str());
+    part_bundle::remove_section(sidecar, full_hash, part_bundle::kSectionVariants);
 }
 
 // ---------------------------------------------------------------------------
@@ -1349,7 +1382,7 @@ static void test_authored_ladder_switch_distances() {
         std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kAuthoredHash);
     const std::string slods =
         std::string(kCacheRoot) + "/" + part_asset::cache_path_static_lods(kAuthoredHash);
-    std::remove(flat.c_str());
+    part_bundle::remove_section(flat, kAuthoredHash, part_bundle::kSectionFlat);
 
     // Three reps: build() verbatim out to 18 m, a coarse decimation out to
     // 45 m, a coarser one past that. Written through the real save/load so the
@@ -1361,10 +1394,10 @@ static void test_authored_ladder_switch_distances() {
         plan.level_exclude_masks = { 0u, 0u, 0u };
         plan.level_at  = { 0.0, kAt1, kAt2 };
         plan.level_gen = { "", "decimate {\"error\":0.02}", "decimate {\"divisor\":8}" };
-        CHECK(part_asset::save_static_lod_plan(slods, plan), "authored: sidecar written");
+        CHECK(part_asset::save_static_lod_plan(slods, kAuthoredHash, plan), "authored: sidecar written");
 
         part_asset::StaticLodPlan rt;
-        CHECK(part_asset::load_static_lod_plan(slods, rt), "authored: sidecar reloads");
+        CHECK(part_asset::load_static_lod_plan(slods, kAuthoredHash, rt), "authored: sidecar reloads");
         CHECK(rt.level_at == plan.level_at, "authored: distances round-trip");
         CHECK(rt.level_gen == plan.level_gen, "authored: generators round-trip");
         CHECK(rt.drives_ladder(), "authored: plan drives the ladder");
@@ -1372,7 +1405,7 @@ static void test_authored_ladder_switch_distances() {
 
     auto res = part_flatten::flatten_part(kCacheRoot, kAuthoredHash);
     CHECK(res.ok, "authored: flatten_part ok");
-    if (!res.ok) { printf("  error: %s\n", res.error.c_str()); std::remove(slods.c_str()); return; }
+    if (!res.ok) { printf("  error: %s\n", res.error.c_str()); part_bundle::remove_section(slods, kAuthoredHash, part_bundle::kSectionPlan); return; }
     CHECK(res.clusters == 1, "authored: single cluster");
     CHECK(res.levels == 3, "authored: one rep per authored entry");
 
@@ -1382,7 +1415,7 @@ static void test_authored_ladder_switch_distances() {
           "authored: load_flat_v3 ok");
     if (clusters.size() != 1 || clusters[0].lods.size() != 3) {
         printf("  SKIPPING (unexpected artifact shape)\n");
-        std::remove(slods.c_str()); return;
+        part_bundle::remove_section(slods, kAuthoredHash, part_bundle::kSectionPlan); return;
     }
     const auto& lods = clusters[0].lods;
     const auto& entries = blas.get_entries();
@@ -1424,7 +1457,7 @@ static void test_authored_ladder_switch_distances() {
 
     // Determinism: a second cold flatten of the same inputs is byte-identical.
     std::vector<char> first = read_all_bytes(flat);
-    std::remove(flat.c_str());
+    part_bundle::remove_section(flat, kAuthoredHash, part_bundle::kSectionFlat);
     auto res2 = part_flatten::flatten_part(kCacheRoot, kAuthoredHash);
     CHECK(res2.ok, "authored: second flatten ok");
     std::vector<char> second = read_all_bytes(flat);
@@ -1436,7 +1469,7 @@ static void test_authored_ladder_switch_distances() {
            lods[2].screen_size_threshold);
     printf("  test_authored_ladder_switch_distances OK\n");
 
-    std::remove(slods.c_str());
+    part_bundle::remove_section(slods, kAuthoredHash, part_bundle::kSectionPlan);
 }
 
 // M3 companion: a `static lods` block that names NEITHER a distance nor a
@@ -1454,10 +1487,15 @@ static void test_w5_plan_does_not_drive_the_ladder() {
     const std::string slods =
         std::string(kCacheRoot) + "/" + part_asset::cache_path_static_lods(h);
 
-    std::remove(slods.c_str());
-    std::remove(flat.c_str());
+    part_bundle::remove_section(slods, h, part_bundle::kSectionPlan);
+    part_bundle::remove_section(flat, h, part_bundle::kSectionFlat);
     CHECK(part_flatten::flatten_part(kCacheRoot, h).ok, "w5 plan: baseline flatten ok");
-    std::vector<char> baseline = read_all_bytes(flat);
+    // M4: compare the FLAT SECTION, not the file. The with-sidecar run also
+    // adds a PLAN section to the same bundle, so whole-file bytes would differ
+    // for a reason that has nothing to do with the ladder this test is about.
+    std::vector<uint8_t> baseline;
+    CHECK(part_bundle::read_section(flat, h, part_bundle::kSectionFlat, baseline),
+          "w5 plan: baseline flat section reads back");
 
     {
         part_asset::StaticLodPlan plan;             // params/exclude only
@@ -1465,20 +1503,22 @@ static void test_w5_plan_does_not_drive_the_ladder() {
         plan.level_exclude_masks = { 0u, 2u };
         plan.level_at  = { -1.0, -1.0 };
         plan.level_gen = { "", "" };
-        CHECK(part_asset::save_static_lod_plan(slods, plan), "w5 plan: sidecar written");
+        CHECK(part_asset::save_static_lod_plan(slods, h, plan), "w5 plan: sidecar written");
         part_asset::StaticLodPlan rt;
-        CHECK(part_asset::load_static_lod_plan(slods, rt) && !rt.drives_ladder(),
+        CHECK(part_asset::load_static_lod_plan(slods, h, rt) && !rt.drives_ladder(),
               "w5 plan: does NOT drive the ladder");
     }
 
-    std::remove(flat.c_str());
+    part_bundle::remove_section(flat, h, part_bundle::kSectionFlat);
     CHECK(part_flatten::flatten_part(kCacheRoot, h).ok, "w5 plan: flatten with sidecar ok");
-    std::vector<char> with_plan = read_all_bytes(flat);
+    std::vector<uint8_t> with_plan;
+    CHECK(part_bundle::read_section(flat, h, part_bundle::kSectionFlat, with_plan),
+          "w5 plan: with-sidecar flat section reads back");
     CHECK(!baseline.empty() && baseline == with_plan,
           "w5 plan: artifact byte-identical to the no-sidecar bake");
 
     printf("  test_w5_plan_does_not_drive_the_ladder OK\n");
-    std::remove(slods.c_str());
+    part_bundle::remove_section(slods, h, part_bundle::kSectionPlan);
 }
 
 // Bake-hardening #2: a parent with N instances of a heavy child should trip
@@ -1522,7 +1562,7 @@ static void test_instance_boundary_records_refs() {
 
     const std::string flat = std::string(kCacheRoot) + "/" +
                              part_asset::cache_path_flat(kParentBHash);
-    std::remove(flat.c_str());
+    part_bundle::remove_section(flat, kParentBHash, part_bundle::kSectionFlat);
     part_flatten::FlattenResult res =
         part_flatten::flatten_part(kCacheRoot, kParentBHash, targets);
     CHECK(res.ok, "flatten with tight budget succeeds");
@@ -1562,7 +1602,7 @@ static void test_instance_boundary_records_refs() {
     printf("  test_instance_boundary_records_refs OK\n");
 
     // Clean up the parent-B fixture / flat.
-    std::remove(flat.c_str());
+    part_bundle::remove_section(flat, kParentBHash, part_bundle::kSectionFlat);
 }
 
 // Bake-hardening #2: when the budget is generous, the same fixture should
@@ -1589,7 +1629,7 @@ static void test_generous_budget_inlines() {
     part_flatten::FlattenTargets targets;   // default budget
     const std::string flat = std::string(kCacheRoot) + "/" +
                              part_asset::cache_path_flat(kParentCHash);
-    std::remove(flat.c_str());
+    part_bundle::remove_section(flat, kParentCHash, part_bundle::kSectionFlat);
     part_flatten::FlattenResult res =
         part_flatten::flatten_part(kCacheRoot, kParentCHash, targets);
     CHECK(res.ok, "flatten with generous budget succeeds");
@@ -1609,7 +1649,7 @@ static void test_generous_budget_inlines() {
     printf("  total_tris=%zu clusters=%zu\n", total_tris, clusters.size());
     printf("  test_generous_budget_inlines OK\n");
 
-    std::remove(flat.c_str());
+    part_bundle::remove_section(flat, kParentCHash, part_bundle::kSectionFlat);
 }
 
 static void test_cutover_helpers() {
@@ -1668,14 +1708,19 @@ static void test_flat_version_bump() {
     // Header layout: magic (u32) then format_version (u32) — verify the write
     // offset against write_file_atomic in part_asset_v2.cpp before relying on it.
     {
-        FILE* f = fopen(p.c_str(), "r+b");
-        assert(f);
-        uint32_t old = 3u;
-        fseek(f, 4, SEEK_SET);
-        fwrite(&old, sizeof old, 1, f);
-        fclose(f);
+        // M4: the version field lives at offset 4 of the SECTION, not of the
+        // file -- offset 4 of a bundle is the bundle's own format version, and
+        // poking that would test the container instead of the artifact.
+        std::vector<uint8_t> section;
+        assert(part_bundle::read_section(p, hash, part_bundle::kSectionFlat, section));
+        const uint32_t old = 3u;
+        std::memcpy(section.data() + 4, &old, sizeof old);
+        assert(part_bundle::write_section(p, hash, part_bundle::kSectionFlat,
+                                          section.data(), section.size()));
     }
-    assert(part_asset::peek_format_version(p) == 3u);
+    // peek reports "a flat section is present" -- it does not re-read the
+    // artifact's own version, which is the loader's gate and is checked next.
+    assert(part_asset::peek_format_version(p) == part_asset::kFormatVersionFlat);
     BLASManager b2; TLASManager t2(4);
     std::vector<part_asset::FlatCluster> cl2;
     assert(!part_asset::load_flat_v3(p, hash, b2, t2, cl2));
@@ -1731,12 +1776,13 @@ static void test_flatten_segmented() {
     h.child_px[0] = 64.0f;
     h.child_px[1] = 64.0f;
     CHECK(part_asset::save_flatten_hints(
-              std::string(kCacheRoot) + "/" + part_asset::cache_path_hints(kSegParentHash), h),
+              std::string(kCacheRoot) + "/" + part_asset::cache_path_hints(kSegParentHash),
+              kSegParentHash, h),
           "seg hints sidecar written");
 
     const std::string flat = std::string(kCacheRoot) + "/" +
                              part_asset::cache_path_flat(kSegParentHash);
-    std::remove(flat.c_str());
+    part_bundle::remove_section(flat, kSegParentHash, part_bundle::kSectionFlat);
 
     part_flatten::FlattenTargets t;
     auto res = part_flatten::flatten_part(kCacheRoot, kSegParentHash, t);
@@ -1806,11 +1852,12 @@ static void test_flatten_unhinted_unchanged() {
     CHECK(write_seg_child(), "seg child fixture written (guard)");
     CHECK(write_seg_parent(kSegParentNoHintHash), "no-hint parent fixture written");
     // Make sure no stray hints file exists for this hash.
-    std::remove((std::string(kCacheRoot) + "/" +
-                 part_asset::cache_path_hints(kSegParentNoHintHash)).c_str());
+    part_bundle::remove_section(std::string(kCacheRoot) + "/" +
+                                    part_asset::cache_path_hints(kSegParentNoHintHash),
+                                kSegParentNoHintHash, part_bundle::kSectionHints);
     const std::string flat_nh = std::string(kCacheRoot) + "/" +
                                 part_asset::cache_path_flat(kSegParentNoHintHash);
-    std::remove(flat_nh.c_str());
+    part_bundle::remove_section(flat_nh, kSegParentNoHintHash, part_bundle::kSectionFlat);
     auto res_nh = part_flatten::flatten_part(kCacheRoot, kSegParentNoHintHash);
     CHECK(res_nh.ok, "no-hint flatten ok");
     if (res_nh.ok) {
@@ -1834,11 +1881,11 @@ static void test_flatten_unhinted_unchanged() {
                                part_asset::cache_path_flat(kSegParentHash);
     // (Fixture + hints sidecar were written by test_flatten_segmented, which
     // runs immediately before this in main(); re-assert they exist.)
-    std::remove(flat_h.c_str());
+    part_bundle::remove_section(flat_h, kSegParentHash, part_bundle::kSectionFlat);
     auto a = part_flatten::flatten_part(kCacheRoot, kSegParentHash);
     std::vector<char> bytes_a;
     CHECK(a.ok && read_bytes(flat_h, bytes_a), "hinted flatten #1 written");
-    std::remove(flat_h.c_str());
+    part_bundle::remove_section(flat_h, kSegParentHash, part_bundle::kSectionFlat);
     auto b2 = part_flatten::flatten_part(kCacheRoot, kSegParentHash);
     std::vector<char> bytes_b;
     CHECK(b2.ok && read_bytes(flat_h, bytes_b), "hinted flatten #2 written");
@@ -1901,7 +1948,7 @@ static void test_flatten_retain_budget_identical() {
     // Run A: retention enabled (512 MB budget — takes the retained path).
     pf_set_env("MATTER_FLATTEN_RETAIN_MB", "512");
     const std::string flat_a = root_a + "/" + part_asset::cache_path_flat(kRetainHash);
-    std::remove(flat_a.c_str());
+    part_bundle::remove_section(flat_a, kRetainHash, part_bundle::kSectionFlat);
     auto res_a = part_flatten::flatten_part(root_a, kRetainHash, tgt);
     CHECK(res_a.ok, "retain test (budget=512): flatten ok");
     if (!res_a.ok) { printf("  error: %s\n", res_a.error.c_str()); pf_set_env("MATTER_FLATTEN_RETAIN_MB", nullptr); return; }
@@ -1911,7 +1958,7 @@ static void test_flatten_retain_budget_identical() {
     // Run B: retention disabled (budget=0 — forces re-materialization).
     pf_set_env("MATTER_FLATTEN_RETAIN_MB", "0");
     const std::string flat_b = root_b + "/" + part_asset::cache_path_flat(kRetainHash);
-    std::remove(flat_b.c_str());
+    part_bundle::remove_section(flat_b, kRetainHash, part_bundle::kSectionFlat);
     auto res_b = part_flatten::flatten_part(root_b, kRetainHash, tgt);
     CHECK(res_b.ok, "retain test (budget=0): flatten ok");
     if (!res_b.ok) { printf("  error: %s\n", res_b.error.c_str()); pf_set_env("MATTER_FLATTEN_RETAIN_MB", nullptr); return; }
@@ -1942,7 +1989,7 @@ static const bake_trace::Counter* find_counter(const bake_trace::Span& s,
 // counters mirror the returned FlattenResult fields.
 static void test_flatten_trace_spans() {
     printf("=== test_flatten_trace_spans ===\n");
-    std::remove(flat_path().c_str());
+    drop_flat(flat_path(), kParentHash);
     bake_trace::Collector col;
     bake_trace::set_current(&col);
     part_flatten::FlattenResult res =
@@ -2268,20 +2315,30 @@ static void test_impostor_sidecar_failability() {
               fail == impostor::LoadFailure::Absent,
           "a missing sidecar reports Absent");
 
-    std::string bytes;
-    {
-        std::ifstream f(path, std::ios::binary);
-        bytes.assign((std::istreambuf_iterator<char>(f)),
-                     std::istreambuf_iterator<char>());
-    }
-    CHECK(bytes.size() > 4096, "sidecar has a payload to corrupt");
+    // M4: the atlas is a bundle SECTION, so its own guards -- checksum,
+    // truncation, magic -- are exercised by corrupting the section, not the
+    // file. Corrupting the file would be caught one layer earlier by the
+    // bundle's directory checksum and reported as Absent, which would test the
+    // container rather than the atlas.
+    std::vector<uint8_t> atlas;
+    CHECK(part_bundle::read_section(path, part_hash, part_bundle::kSectionImpostor, atlas),
+          "atlas section reads back");
+    CHECK(atlas.size() > 4096, "atlas section has a payload to corrupt");
+
+    const auto republish = [&](const std::string& dst, const std::vector<uint8_t>& payload) {
+        std::error_code copy_ec;
+        fs::remove(dst, copy_ec);
+        return part_bundle::write_section(dst, part_hash,
+                                          part_bundle::kSectionImpostor,
+                                          payload.data(), payload.size());
+    };
 
     // Corrupt one atlas byte deep in the payload: the checksum must catch it.
     {
         const std::string corrupt = path + ".corrupt";
-        std::string copy = bytes;
-        copy[copy.size() / 2] = static_cast<char>(copy[copy.size() / 2] ^ 0x5A);
-        { std::ofstream f(corrupt, std::ios::binary); f.write(copy.data(), copy.size()); }
+        std::vector<uint8_t> copy = atlas;
+        copy[copy.size() / 2] ^= 0x5A;
+        CHECK(republish(corrupt, copy), "corrupt fixture published");
         CHECK(!impostor::load(corrupt, part_hash, depicts, out, &fail, &reason) &&
                   fail == impostor::LoadFailure::Checksum,
               "one flipped atlas byte is rejected as Checksum");
@@ -2290,20 +2347,18 @@ static void test_impostor_sidecar_failability() {
     // Truncation and a bad magic are separate reasons, not one catch-all.
     {
         const std::string trunc = path + ".trunc";
-        {
-            std::ofstream f(trunc, std::ios::binary);
-            f.write(bytes.data(), static_cast<std::streamsize>(bytes.size() - 64));
-        }
+        std::vector<uint8_t> shortened(atlas.begin(), atlas.end() - 64);
+        CHECK(republish(trunc, shortened), "truncated fixture published");
         CHECK(!impostor::load(trunc, part_hash, depicts, out, &fail, &reason) &&
                   fail == impostor::LoadFailure::Truncated,
-              "a short file is rejected as Truncated");
+              "a short atlas is rejected as Truncated");
         const std::string magic = path + ".magic";
-        std::string copy = bytes;
+        std::vector<uint8_t> copy = atlas;
         copy[0] = 'X';
-        { std::ofstream f(magic, std::ios::binary); f.write(copy.data(), copy.size()); }
+        CHECK(republish(magic, copy), "bad-magic fixture published");
         CHECK(!impostor::load(magic, part_hash, depicts, out, &fail, &reason) &&
                   fail == impostor::LoadFailure::Header,
-              "a foreign file is rejected as Header");
+              "a foreign atlas is rejected as Header");
     }
     printf("PASSED\n");
 }
@@ -2314,8 +2369,8 @@ static void test_flatten_appends_impostor_rung() {
         std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kSmallSphereHash);
     const std::string fimp =
         std::string(kCacheRoot) + "/" + impostor::cache_path_impostor(kSmallSphereHash);
-    std::remove(flat.c_str());
-    std::remove(fimp.c_str());
+    part_bundle::remove_section(flat, kSmallSphereHash, part_bundle::kSectionFlat);
+    part_bundle::remove_section(fimp, kSmallSphereHash, part_bundle::kSectionImpostor);
 
     uint64_t hash = write_small_sphere_part();
     CHECK(hash != 0, "small sphere fixture written");
@@ -2325,7 +2380,8 @@ static void test_flatten_appends_impostor_rung() {
     CHECK(res.ok, "flatten ok");
     if (!res.ok) { printf("  error: %s\n", res.error.c_str()); return; }
     CHECK(res.impostors > 0, "the ladder bottom-out point earned an impostor");
-    CHECK(fs::exists(fimp), "the atlas sidecar landed beside the flat artifact");
+    CHECK(part_bundle::has_section(fimp, kSmallSphereHash, part_bundle::kSectionImpostor),
+          "the atlas landed in the part's bundle beside the flat ladder");
 
     BLASManager blas; TLASManager tlas(4);
     std::vector<part_asset::FlatCluster> clusters;

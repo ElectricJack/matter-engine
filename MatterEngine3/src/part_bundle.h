@@ -137,6 +137,13 @@ bool read_section_prefix(const std::string& bundle_path, uint64_t resolved_hash,
                          uint32_t tag, size_t max_bytes,
                          std::vector<uint8_t>& out, uint64_t& full_length_out);
 
+// Drop one section, keeping the rest. True when the bundle no longer has it
+// (including when it never did). This is what "delete the flat artifact" means
+// now: a bundle is one file, so removing the file would take the compositional
+// body and the impostor with it.
+bool remove_section(const std::string& bundle_path, uint64_t resolved_hash,
+                    uint32_t tag);
+
 // The tags present, ascending. Empty when the bundle is missing or rejected.
 // Used by cache inventories and by peek_format_version.
 std::vector<uint32_t> section_tags(const std::string& bundle_path);
@@ -459,6 +466,25 @@ inline bool read_section_prefix(const std::string& bundle_path,
     std::fclose(f);
     out.resize(got);
     return got == want;
+}
+
+inline bool remove_section(const std::string& bundle_path, uint64_t resolved_hash,
+                           uint32_t tag) {
+    std::lock_guard<std::mutex> guard(bundle_lock());
+    std::vector<uint8_t> existing;
+    if (!read_whole_file(bundle_path, existing)) return true;  // nothing to drop
+    std::vector<Section> sections;
+    if (!parse(existing, resolved_hash, sections)) return true;
+    const size_t before = sections.size();
+    sections.erase(std::remove_if(sections.begin(), sections.end(),
+                                  [tag](const Section& s) { return s.tag == tag; }),
+                   sections.end());
+    if (sections.size() == before) return true;
+    if (sections.empty()) {
+        std::remove(bundle_path.c_str());
+        return true;
+    }
+    return write_atomic(bundle_path, serialize(resolved_hash, sections));
 }
 
 }  // namespace part_bundle
