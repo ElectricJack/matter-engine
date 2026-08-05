@@ -8562,12 +8562,58 @@ bool VkSceneRenderer::upload_scene_buffers(
         return poison(error);
     descriptors_changed |= replaced;
     if (descriptors_changed) update_frame_descriptors(frame);
-    if (vt_slot_bytes != 0 &&
-        !upload(frame.vt_draw_slots, vt_draw_slot_table_.data(), vt_slot_bytes))
+    // Both of these tables are read in cull.comp under a `slot <
+    // buffer.length()` bound, and length() is the BUFFER's element count, not
+    // the table's. ensure_buffer never shrinks and rounds capacity up -- a
+    // 16-byte floor, then doubling -- so the buffer is routinely longer than
+    // the payload, and every element past the payload is memory the CPU has
+    // never written.
+    //
+    // That is not a theoretical gap. A default world overrides nothing, so
+    // rebuild_part_draw_overrides emits ONE neutral entry (8 B) and
+    // ensure_buffer hands back a 16-byte buffer: length() is 2, part slot 1
+    // clears the bound, and cull.comp reads 8 bytes of uninitialised device
+    // memory as an override. On this driver they read {0, 0} -- lod_bias 0,
+    // which zeroes `reach`, so no rung's switch distance can be met and the
+    // selection loop falls through to `lod_count - 1`. Whichever part happened
+    // to hold slot 1 was drawn at its COARSEST rung for as long as it was on
+    // screen; on a streamed world that is a different sector every run, which
+    // is what the M1d fly-through gate was failing on (one record per pair,
+    // "rung 0" vs "rung 2", moving between warm runs).
+    //
+    // Fill the whole buffer instead of narrowing the shader's bound: the
+    // neutral entry the shader wants to find IS the default-constructed value
+    // ({0 = unlimited, 1 = no bias}), and a zero vt slot is already the
+    // fail-closed "no VT" reading, so padding costs one memset-equivalent on a
+    // table measured in kilobytes and leaves no readable element undefined.
+    // The vt slot table is bounded by capacities.z today and so cannot reach
+    // its own tail, but it is the same idiom on the same buffer contract and
+    // is padded for the same reason.
+    const size_t vt_slot_capacity =
+        static_cast<size_t>(frame.vt_draw_slots.size) / sizeof(uint32_t);
+    if (vt_slot_capacity > vt_draw_slot_table_.size())
+        vt_draw_slot_table_.resize(vt_slot_capacity, 0u);
+    const VkDeviceSize vt_slot_upload_bytes = std::min<VkDeviceSize>(
+        frame.vt_draw_slots.size,
+        static_cast<VkDeviceSize>(vt_draw_slot_table_.size()) *
+            sizeof(uint32_t));
+    const size_t part_override_capacity =
+        static_cast<size_t>(frame.part_draw_overrides.size) /
+        sizeof(matter::PartDrawOverrideGpu);
+    if (part_override_capacity > part_draw_override_table_.size())
+        part_draw_override_table_.resize(part_override_capacity,
+                                         matter::PartDrawOverrideGpu{});
+    const VkDeviceSize part_override_upload_bytes = std::min<VkDeviceSize>(
+        frame.part_draw_overrides.size,
+        static_cast<VkDeviceSize>(part_draw_override_table_.size()) *
+            sizeof(matter::PartDrawOverrideGpu));
+    if (vt_slot_upload_bytes != 0 &&
+        !upload(frame.vt_draw_slots, vt_draw_slot_table_.data(),
+                vt_slot_upload_bytes))
         return false;
-    if (part_override_bytes != 0 &&
+    if (part_override_upload_bytes != 0 &&
         !upload(frame.part_draw_overrides, part_draw_override_table_.data(),
-                part_override_bytes))
+                part_override_upload_bytes))
         return false;
     vt_slots_scope.stop();
 
