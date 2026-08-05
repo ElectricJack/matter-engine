@@ -2046,7 +2046,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         }
         // Build the write path: if opts.parts_dir is non-empty, make it absolute
         // by joining parts_dir + "/" + cache_path_resolved(...).  Otherwise fall
-        // back to the legacy cwd-relative "parts/<hash>.part" so callers that
+        // back to the legacy cwd-relative "parts/<hash>.bundle" so callers that
         // chdir() themselves (e.g. existing tests) keep working unchanged.
         std::string rel_path = part_asset::cache_path_resolved(r.resolved_hash);
         std::string path = opts.parts_dir.empty()

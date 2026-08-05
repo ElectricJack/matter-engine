@@ -366,7 +366,7 @@ bool PartStore::build_rigid_segment_subparts(
 }
 
 std::string PartStore::disk_path(uint64_t part_hash) const {
-    // cache_path_resolved returns the RELATIVE "parts/<hash>.part"; prefix cache_root_.
+    // cache_path_resolved returns the RELATIVE "parts/<hash>.bundle"; prefix cache_root_.
     return cache_root_ + "/" + part_asset::cache_path_resolved(part_hash);
 }
 

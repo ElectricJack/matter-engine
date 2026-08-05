@@ -166,7 +166,7 @@ void     depicts_hash_add_cluster(uint64_t& h, uint32_t cluster_index,
                                   const std::vector<Tri>& tris);
 uint64_t depicts_hash_finish(uint64_t h);
 
-// "parts/<16-hex>.fimp" — sidecar beside the part's .flat.part, same
+// "parts/<16-hex>.bundle" — the IMPO section of the part's bundle, same
 // content-addressed discipline as cache_path_lods / cache_path_hints.
 std::string cache_path_impostor(uint64_t resolved_hash);
 

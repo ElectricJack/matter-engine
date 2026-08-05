@@ -34,7 +34,7 @@ struct BakeOptions {
     uint64_t time_budget_ms = 0;
     // If non-empty, bake_source writes the artifact to
     // parts_dir + "/" + cache_path_resolved(hash) instead of the cwd-relative
-    // "parts/<hash>.part".  Set by HostBaker::bake so the bake pipeline is
+    // "parts/<hash>.bundle".  Set by HostBaker::bake so the bake pipeline is
     // cwd-independent (Task 3 Phase B).
     std::string parts_dir;
     // World field binding: threaded through so the terrainVolume verb can call

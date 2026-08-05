@@ -619,7 +619,7 @@ bool HostBaker::bake(const std::string& source, const Params& params,
                      const std::vector<std::string>& child_params, uint64_t resolved_hash) {
     // SP-2 bake_source recomputes the same hash and writes the .part via save_v2.
     // Pass parts_dir_ so bake_source writes to an absolute path rather than a
-    // cwd-relative "parts/<hash>.part" (Task 3 Phase B: cwd-independence).
+    // cwd-relative "parts/<hash>.bundle" (Task 3 Phase B: cwd-independence).
     // Task 2: route transient modules to scratch_dir instead.
     script_host::BakeOptions bopts;
     bopts.parts_dir = is_transient(current_module_) ? transient_dir_ : parts_dir_;

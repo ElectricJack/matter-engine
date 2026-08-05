@@ -3,7 +3,7 @@
 // Bake-time subtree flattening: merge a root part's whole child hierarchy
 // (transforms applied, TriEx carried) into ONE mesh, split it into spatial
 // clusters, build a per-cluster error-bounded LOD ladder, and save the result
-// as a v3 .flat.part artifact under cache_path_flat(root_hash). The viewer
+// as a v3 FLAT section of the part bundle at cache_path_flat(root_hash). The viewer
 // then renders the root as a single flat instance per cluster instead of
 // re-expanding hundreds of child instances every frame.
 //
@@ -177,7 +177,7 @@ struct FlattenResult {
 };
 
 // Flatten the subtree rooted at root_hash. Reads parts from
-// <cache_root>/parts/<hash>.part, writes <cache_root>/parts/<root>.flat.part
+// the REP0 sections under <cache_root>/parts/, writes the root bundle's FLAT section
 // (atomic). Idempotent and content-addressed: callers should skip the call when
 // the flat file already exists, since any subtree change changes root_hash.
 FlattenResult flatten_part(const std::string& cache_root, uint64_t root_hash,
