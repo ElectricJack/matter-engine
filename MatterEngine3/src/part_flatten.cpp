@@ -186,6 +186,54 @@ static bool peak_logging_enabled() {
     return v && v[0] && v[0] != '0';
 }
 
+// The ladder's admission rule (M1.5; FlattenTargets::min_level_benefit carries
+// the reasoning and the measurements). A coarser rung exists only if decimation
+// bought a SUBSTANTIAL reduction against the previous SURVIVING rung — not
+// merely a non-zero one, which is what let 214 -> 206 -> 190 become three rungs
+// and one silhouette.
+//
+// Skip, never break: decimate_to_error always sources the raw cluster, so a
+// divisor that buys nothing says nothing about the coarser divisors behind it.
+// The fine end of radius_divisor routinely returns the input unchanged (eps =
+// radius/512 on a 58-triangle rock), and breaking there would leave every small
+// part frozen at level 0. The ladder terminates by running out of divisors, by
+// min_level_tris, or by kMaxSerializedLodLevels — and wherever it terminates,
+// that last rung is the bottom-out point M2.5's impostor terminal wants.
+//
+// A part that cannot clear the floor even once keeps a valid single-rung ladder
+// (level 0 alone): RockGallery's 2-triangle part reads 2 <= 2 * 0.7 == false at
+// every divisor and emits levels=1, exactly as it did before.
+static bool rung_earns_its_place(size_t decimated_tris, size_t prev_tris,
+                                 const FlattenTargets& targets) {
+    if (decimated_tris == 0) return false;
+    if (decimated_tris >= prev_tris) return false;   // holds even at benefit 0
+    const double keep = 1.0 - (double)targets.min_level_benefit;
+    return (double)decimated_tris <= keep * (double)prev_tris;
+}
+
+// M1.5 ladder instrumentation, and the calibration tool behind the benefit
+// floor. Read once; 0 (the default) costs nothing per cluster.
+//
+//   MATTER_FLATTEN_LADDER=1  one line per cluster: for every divisor the ladder
+//                            evaluated, the triangle count decimation produced
+//                            and whether min_level_benefit admitted it. Makes
+//                            the admission rule auditable on a real bake.
+//   MATTER_FLATTEN_LADDER=2  additionally sweeps EVERY divisor before the
+//                            ladder runs, ignoring admission and the
+//                            min_level_tris break, so the full decision space
+//                            is visible. This is how min_level_benefit was
+//                            chosen (and how M3 can re-derive it) rather than
+//                            guessed. Costs one extra decimation per divisor
+//                            per cluster — a calibration mode, not a bake mode.
+static int ladder_log_level() {
+    static const int level = [] {
+        const char* v = std::getenv("MATTER_FLATTEN_LADDER");
+        if (!v || !v[0] || v[0] == '0') return 0;
+        return (v[0] == '2') ? 2 : 1;
+    }();
+    return level;
+}
+
 // mul16 and NormalMat (core) are provided by mat_math.h above.
 
 float3 xform_point(const float* m, const float3& p) {
@@ -1131,6 +1179,17 @@ static FlattenResult flatten_segmented(const std::string& cache_root,
             // below the cutover (continuity between fine and coarse segments).
             if (!register_level(ctris, ctriex, eps_base, level_metas)) { seg_error = true; return; }
 
+            const bool ladder_log = ladder_log_level() > 0;
+            std::string ladder_line;
+            if (ladder_log) {
+                char hdr[160];
+                std::snprintf(hdr, sizeof(hdr),
+                              "FLATLADDER part=%llu seg=%u cl=%zu base=%zu",
+                              (unsigned long long)root_hash, segment_tag,
+                              flat_clusters.size(), ctris.size());
+                ladder_line = hdr;
+            }
+
             size_t prev_count = ctris.size();
             size_t last_kept_count = ctris.size();
             for (int di = div_lo; di < div_hi; ++di) {
@@ -1140,7 +1199,15 @@ static FlattenResult flatten_segmented(const std::string& cache_root,
                 if (eps_qem <= 0.0f) continue;   // skip: budget already spent by child
                 std::vector<Tri> geo =
                     lod_bake::decimate_to_error(ctris, eps_qem, /*use_aabb_bounds=*/false);
-                if (geo.empty() || geo.size() >= prev_count) continue;  // no progress
+                const bool admit = rung_earns_its_place(geo.size(), prev_count, targets);
+                if (ladder_log) {
+                    char rec[64];
+                    std::snprintf(rec, sizeof(rec), " %g:%zu%c",
+                                  (double)targets.radius_divisor[di], geo.size(),
+                                  admit ? '+' : '-');
+                    ladder_line += rec;
+                }
+                if (!admit) continue;  // rung did not earn its place
                 std::vector<TriEx> ex;
                 {
                     MeshIndexed src_m = from_tri(ctris, &ctriex);
@@ -1157,6 +1224,11 @@ static FlattenResult flatten_segmented(const std::string& cache_root,
                 prev_count = geo.size();
                 last_kept_count = geo.size();
                 if (prev_count <= (size_t)targets.min_level_tris) break;
+            }
+
+            if (ladder_log) {
+                ladder_line += " levels=" + std::to_string(level_metas.size());
+                std::fprintf(stderr, "%s\n", ladder_line.c_str());
             }
 
             // Threshold fill: level i's threshold from level (i+1)'s eps; coarsest 0.
@@ -1479,6 +1551,32 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
         std::vector<LevelMeta> level_metas;
         if (!register_level(ctris, ctriex, /*eps=*/0.0f, level_metas)) return res;
 
+        const bool ladder_log = ladder_log_level() > 0;
+        std::string ladder_line;
+        if (ladder_log) {
+            char hdr[128];
+            std::snprintf(hdr, sizeof(hdr), "FLATLADDER part=%llu cl=%zu base=%zu",
+                          (unsigned long long)root_hash, ci, ctris.size());
+            ladder_line = hdr;
+        }
+        // Calibration sweep: sound because decimate_to_error always sources the
+        // raw cluster (never a cascade), so the count at a divisor is a pure
+        // function of (cluster, eps) and can be replayed against any candidate
+        // floor offline.
+        if (ladder_log_level() >= 2) {
+            std::string sweep = "FLATSWEEP part=" + std::to_string(root_hash) +
+                                " cl=" + std::to_string(ci) +
+                                " base=" + std::to_string(ctris.size());
+            for (float div : targets.radius_divisor) {
+                std::vector<Tri> probe = lod_bake::decimate_to_error(
+                    ctris, radius / div, /*use_aabb_bounds=*/false);
+                char rec[64];
+                std::snprintf(rec, sizeof(rec), " %g:%zu", (double)div, probe.size());
+                sweep += rec;
+            }
+            std::fprintf(stderr, "%s\n", sweep.c_str());
+        }
+
         size_t prev_count = ctris.size();
         size_t last_kept_count = ctris.size();
         for (float div : targets.radius_divisor) {
@@ -1489,7 +1587,14 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
             // cluster-cut seam edges) freezes cut vertices; face-plane locking
             // would over-freeze cluster interiors that touch the cluster AABB.
             std::vector<Tri> geo = lod_bake::decimate_to_error(ctris, eps, /*use_aabb_bounds=*/false);
-            if (geo.empty() || geo.size() >= prev_count) continue;  // no progress
+            const bool admit = rung_earns_its_place(geo.size(), prev_count, targets);
+            if (ladder_log) {
+                char rec[64];
+                std::snprintf(rec, sizeof(rec), " %g:%zu%c", (double)div, geo.size(),
+                              admit ? '+' : '-');
+                ladder_line += rec;
+            }
+            if (!admit) continue;  // rung did not earn its place
             // reproject_triex lives in MSL and operates on MeshIndexed
             // (Task 8). part_flatten's ladder still works at the Tri/TriEx
             // boundary (that's what lod_bake::decimate_to_error returns and
@@ -1522,6 +1627,11 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
             // the streaming win: only one decimated level buffer is alive at a
             // time instead of the whole ladder in `levels`.
             if (prev_count <= (size_t)targets.min_level_tris) break;
+        }
+
+        if (ladder_log) {
+            ladder_line += " levels=" + std::to_string(level_metas.size());
+            std::fprintf(stderr, "%s\n", ladder_line.c_str());
         }
 
         // ctris/ctriex are no longer needed for this cluster; drop them before

@@ -27,6 +27,47 @@ struct FlattenTargets {
     std::vector<float> radius_divisor = {512.0f, 256.0f, 128.0f, 64.0f,
                                          32.0f, 16.0f, 8.0f, 4.0f, 2.0f};
 
+    // BENEFIT FLOOR (M1.5, redesign doc §3.3). A coarser rung is admitted only
+    // when decimation removed at least this FRACTION of the previous surviving
+    // rung's triangles. Until 2026-08-04 the test was merely
+    // `geo.size() < prev_count` — one triangle qualified — which is why a rock's
+    // LOD tint cycled through colours while its silhouette stood still: the
+    // coarse tail ran 214 -> 206 -> 190 (4 %, then 8 %), three rungs and one
+    // shape. The ladder was driven by error tolerance and never once asked
+    // whether a rung bought anything.
+    //
+    // 0.30 was measured, not guessed. Sweeping every divisor over the 19 distinct
+    // parts of RockGallery + PomProofBrick (MATTER_FLATTEN_LADDER=2) and
+    // histogramming the 116 rungs the old rule admitted gives a bimodal
+    // distribution: 29 rungs under 10 % (down to 0.5 % — 392 -> 390 triangles),
+    // a thin 24-rung tail from 10-29 %, then 63 rungs bunched at 30-54 %. The
+    // density steps up 2.5x at 30 %, which is the boundary between the ladder
+    // working and the ladder idling. It agrees with theory: radius_divisor is a
+    // ratio-2 schedule on epsilon, and QEM in its linear regime sheds ~50 % of
+    // its triangles per doubling of tolerance, so 0.30 sits at 60 % of the
+    // schedule's design intent — permissive enough that a mesh already near its
+    // topological floor still earns a couple of coarse rungs.
+    //
+    // Tighter was tried and rejected on evidence: at 0.40 the small rocks
+    // collapse to near-degenerate coarsest levels (94 -> 42 -> 12 tris) and the
+    // 4258-triangle hero boulder takes a 54 % first step at close range. At 0.30
+    // that boulder's ladder is bit-for-bit the one it had before, because every
+    // step it already took exceeded 30 % — direct evidence the floor is not
+    // over-tightening.
+    //
+    // Dropping a rung is error-CONSERVATIVE, not a fidelity cut: level i is
+    // selected while its own eps still projects under pixel_budget (see the
+    // threshold fill in part_flatten.cpp), so a removed rung means the FINER
+    // surviving rung is drawn over that band instead. The one place fidelity can
+    // fall is the coarsest rung, where a ladder that used to be truncated by
+    // kMaxSerializedLodLevels now reaches a genuinely coarser terminal.
+    //
+    // There is deliberately no artifact field recording where the ladder bottoms
+    // out: once admission terminates on benefit exhaustion, the LAST rung IS the
+    // bottom-out point, which is what M2.5's impostor terminal keys off. The
+    // .flat.part format is unchanged.
+    float min_level_benefit = 0.30f;
+
     // Selection thresholds are derived from eps: a level becomes eligible when
     // its world-space error projects below pixel_budget pixels.
     // pixel_angle ~= vertical fov (rad) / vertical resolution.
