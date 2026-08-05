@@ -377,9 +377,29 @@ recipe work (design §3.3, closing note).
 > **Prerequisite (2026-08-04): make streamed-sector `stable_id` content-derived** —
 > **DONE.** Both allocation-ordered halves of M1d's trace key (the sector instance id and
 > the global cluster slot) are now content-derived, and key overlap between two warm runs
-> of PomProofBrick went from 9/48 to 48/48. See the note at the end of M1d, including the
-> one remaining streamed-world nondeterminism it uncovered (one sector per run drawn at the
-> coarsest rung), which the gates below will trip over until it is fixed.
+> of PomProofBrick went from 9/48 to 48/48. See the note at the end of M1d.
+>
+> **The gate then found M2's first bug, before M2 started.** Reproduced independently on
+> PomProofBrick over two warm runs of one camera path, with `zero_tokens=0` and
+> `duplicate_keys=0` confirming it is a real divergence rather than an identity artefact.
+> Two distinct causes:
+>
+> 1. **A freshly published sector's rung is nondeterministic.** The same sector first appears
+>    at rung 0 in one run and rung 2 in the other — `E 1038595253 0 - 0` versus
+>    `E 1038595253 0 - 2` — with a *different* sector swapping the opposite way in the same
+>    pair of runs. A sector must commit at a determined rung or not at all, which is exactly
+>    the whole-or-nothing property this milestone exists to establish. **This is M2's first
+>    target.** Suspected source: the publish job's `commit_staged` vs `get_or_load` fallback,
+>    i.e. the sector sometimes commits before its full LOD table is available.
+> 2. **Arrival timing varies** — sectors publish on different frames between runs (events at
+>    `@f1`/`@f2`/`@f3` differ), worker-pool completion order reaching the frame stream. That
+>    is timing rather than selection, and is what "budgets shape *when*, never *what*"
+>    governs; for streamed worlds the gate must therefore compare the ordered switch sequence
+>    per instance rather than raw frame stamps.
+>
+> Encouraging: the steady state converges exactly — final census lines are identical across
+> runs (`C 8 8 1`, `C 12 12 1`, `C 22 22 1`). It is the transient that differs, not where the
+> world settles.
 
 Scope: residency-gated commits — a rep switch commits only when geometry + BLAS + (for now)
 its per-rung pages are all resident; batched commits; hysteresis bands; evict-after-commit
