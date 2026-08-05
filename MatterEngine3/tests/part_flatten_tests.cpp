@@ -5,6 +5,7 @@
 // (parts/<hash>.part), then flatten_part() merges them and we verify the flat
 // artifact via load_v2.
 #include "part_flatten.h"
+#include "matter/lod_contract.h"   // kMaxSerializedLodLevels (the over-cap guard)
 #include "impostor_bake.h"
 #include "part_asset_v2.h"
 #include "part_bundle.h"   // M4: sections, not sibling files
@@ -1491,6 +1492,18 @@ static const uint64_t kImpostorLadderHash = 0xA110000033330003ull;
 static void test_authored_ladder_impostor_terminal() {
     printf("=== test_authored_ladder_impostor_terminal ===\n");
 
+    // This test drives MATTER_IMPOSTOR itself for one phase. If the whole
+    // process was already started with impostors off (a diagnostic run), the
+    // "one billboard baked" phase cannot hold and the failure would say
+    // nothing about the code. Skip rather than report a false red.
+    {
+        const char* v = std::getenv("MATTER_IMPOSTOR");
+        if (v && v[0] == '0') {
+            printf("  SKIPPED (MATTER_IMPOSTOR=0 in the environment)\n");
+            return;
+        }
+    }
+
     // Tall and thin: 0.4 m across, 6 m tall.
     std::vector<Tri> tris = sphere_tris(20, 10);
     auto stretch = [](float3& v) { v.x *= 0.2f; v.z *= 0.2f; v.y *= 3.0f; };
@@ -1690,6 +1703,33 @@ static void test_authored_ladder_impostor_terminal() {
               "imp ladder: the atlas section reads back after the second bake");
         CHECK(!first_atlas.empty() && first_atlas == second_atlas,
               "imp ladder: the atlas is byte-identical too");
+    }
+
+    // A plan longer than the serialized cap would TRUNCATE, and the terminal
+    // is by definition the last entry — so the impostor would vanish and the
+    // result would look like a deliberate mesh-only ladder. bake_static_lods
+    // refuses to write such a plan, but a plan is a file. Prove the guard
+    // fires rather than trusting that it would.
+    {
+        const size_t over = matter::kMaxSerializedLodLevels + 1;
+        std::vector<double> at(over, -1.0);
+        std::vector<std::string> gen(over);
+        at[0] = 0.0;
+        for (size_t i = 1; i + 1 < over; ++i) {
+            at[i] = 10.0 * (double)i;
+            gen[i] = "decimate {\"divisor\":8}";
+        }
+        at[over - 1] = 500.0;
+        gen[over - 1] = "impostor {}";
+        part_flatten::FlattenResult r;
+        std::vector<part_asset::FlatCluster> cl;
+        BLASManager b;
+        const float got = bake(at, gen, r, cl, b);
+        CHECK(got < 0.0f && !r.ok,
+              "imp ladder: an over-cap plan whose terminal falls off the end fails");
+        CHECK(r.error.find("impostor terminal falls outside") != std::string::npos,
+              "imp ladder: ...and says so, rather than baking a mesh-only ladder");
+        if (r.ok) printf("  UNEXPECTED: over-cap plan baked %zu levels\n", r.levels);
     }
 
     printf("  radius=%.4f (mesh-only %.4f) thr=%.5f/%.5f/%.1f\n", radius, mesh_radius,
@@ -1999,10 +2039,26 @@ static void test_flatten_segmented() {
     CHECK(write_seg_child(), "seg child fixture written");
     CHECK(write_seg_parent(kSegParentHash), "seg parent fixture written");
 
-    // Hints sidecar: inline both children below 64 px.
+    // Hints sidecar: inline both children below 8 px.
+    //
+    // This was 64 px, and M1.5's ladder BENEFIT RULE invalidated that number
+    // (2026-08-05). The seg child's ladder now reads
+    //   512:360- 256:360- 128:332- 64:312- 32:280- 16:156+ 8:90+ 4:54+ 2:28+
+    // — every rung down to divisor 32 REJECTED, because decimating 360 tris to
+    // 332 / 312 / 280 never buys the 30% the benefit rule requires. Those
+    // near-duplicate rungs used to exist (rungs were admitted on any reduction
+    // at all), and a 64 px hint landed on one of them.
+    //
+    // With them gone the child's first real switch is a 16 px-equivalent, so
+    // at 64 px the child correctly still wants LOD 0 — `src = min(C,E)` picks
+    // 0 and the coarse segment inlines full-res, which made `coarse L0 <
+    // trunk + 2 * child full-res` fail by exactly zero (722 vs 722). The
+    // mechanism under test was never broken; the fixture stopped exercising
+    // it. 8 px lands inside the child's ADMITTED ladder (the 156-tri rung),
+    // which is what this test exists to prove gets sourced.
     part_asset::FlattenHints h;
-    h.child_px[0] = 64.0f;
-    h.child_px[1] = 64.0f;
+    h.child_px[0] = 8.0f;
+    h.child_px[1] = 8.0f;
     CHECK(part_asset::save_flatten_hints(
               std::string(kCacheRoot) + "/" + part_asset::cache_path_hints(kSegParentHash),
               kSegParentHash, h),

@@ -848,6 +848,20 @@ static FlattenResult flatten_static_lod_ladder(
                               matter::kMaxSerializedLodLevels);
     if (n == 0) { res.error = "flatten: empty static-lod plan"; return res; }
 
+    // The clamp above would TRUNCATE an over-long plan, and §3.4's terminal is
+    // by definition the last entry — so a plan longer than the cap would drop
+    // the impostor and bake a mesh-only ladder that looks entirely intentional.
+    // bake_static_lods refuses to write such a plan, but a plan is a file, and
+    // silently losing the terminal is the exact failure the workbench's
+    // count-only parse-verify used to allow. Fail loudly instead.
+    for (size_t i = n; i < plan.level_gen.size(); ++i) {
+        if (plan.level_gen[i].compare(0, 8, "impostor") == 0) {
+            res.error = "flatten: static-lod plan exceeds the serialized level "
+                        "cap and its impostor terminal falls outside it";
+            return res;
+        }
+    }
+
     // Per-level record: the BLAS slot, and the world-space error the level was
     // produced at (0 = none, i.e. verbatim geometry). eps is what supplies the
     // DERIVED default distance for a level that declared no `at` — R5's

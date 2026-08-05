@@ -370,6 +370,29 @@ Not in scope: close-range fidelity. Rep 0 is the raw undecimated mesh, so this m
 cannot add near detail — that is bounded by the part's build resolution and belongs to M3's
 recipe work (design §3.3, closing note).
 
+> **A downstream consumer this rule silently invalidated, found 2026-08-05.** The benefit
+> floor does not only delete rungs — it moves where a ladder's FIRST switch happens, and
+> anything that picks a rung by pixel size feels that. `test_flatten_segmented` had been red
+> on this branch (cold cache and warm, with and without `MATTER_IMPOSTOR`) on
+> `coarse L0 < trunk + 2 * child full-res`, failing by exactly zero: 722 vs 722.
+>
+> The seg child's ladder now reads
+> `512:360- 256:360- 128:332- 64:312- 32:280- 16:156+ 8:90+ 4:54+ 2:28+` — every rung down to
+> divisor 32 rejected, because 360 → 332 → 312 → 280 never buys 30%. Those near-duplicate
+> rungs used to exist, and the fixture's 64 px hint landed on one. With them gone the child's
+> first real switch is a 16 px-equivalent, so at 64 px `select_level_local` correctly returns
+> level 0, `src = min(C,E)` is 0, and the coarse segment inlines full-res.
+>
+> **The mechanism was never broken; the fixture stopped exercising it.** The hint moved to
+> 8 px, which lands inside the admitted ladder (the 156-tri rung) — the thing the test exists
+> to prove gets sourced. The ladder listing and the reasoning are in the test so the next
+> person to move a benefit floor sees what it costs downstream.
+>
+> **Not a production regression:** no schema in the repo passes `inlineBelowPx` (checked
+> across `projects/` and `MatterEditor/`), so the segmented coarse path has no live caller —
+> this test is its only consumer today. Worth remembering when one appears: a hint px chosen
+> against a pre-M1.5 ladder can now select full-res.
+
 ---
 
 ## M2 — Atomic switches
