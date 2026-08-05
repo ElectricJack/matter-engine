@@ -460,6 +460,34 @@ Acceptance:
 
 ## M3 — DSL recipes and lazy staged baking
 
+> **STATUS 2026-08-05: items 1–2 landed (`7ce0d045`, `1a9b4606`); items 3–4 NOT started.**
+> Deliberately, on the brief's own instruction to land a coherent increment rather than
+> half-wire the rest.
+>
+> **Done.** Authored switch distances in metres (`at`) and named generators (`gen`), added to
+> the existing `static lods` surface rather than replacing it. `LOD.decimate({error|divisor})`
+> returns a plain **data descriptor, never a closure** — which is the whole point, since a
+> closure cannot be read without evaluating the class. Fail-closed parsing extended to
+> whole-table rules (rep 0 takes no generator; distances must strictly increase; `params` and
+> `gen` together is a conflict; a function in `gen` is rejected). Metres convert at the one
+> place the cluster radius exists, with `pixel_budget` folded in so it cancels against
+> `cull.comp` exactly as the default ladder's does — leaving `at` as honest metres.
+>
+> Verified: RockGallery cold-rebaked to **23 md5-identical artifacts** (existing worlds are
+> untouched, byte for byte), a second cold bake reproduced them, an authored 0/18/45 m ladder
+> was checked against `lod::select_rep` itself (17.9→rep 0, 18.1→rep 1, 44.9→rep 1,
+> 45.1→rep 2), 14 fail-closed parse cases, and every suite at its known baseline.
+>
+> **Not started — carried as M3b:** stages (`ctx.stage()`, content-addressed memo, dependency
+> traces, cycle detection), lazy per-rep baking (the biggest win — it removes the eager
+> full-ladder bake), and custom script builders naming a method. The authored path is also
+> single-cluster, gets no terminal impostor, and ignores `exclude`.
+>
+> **A near-miss worth keeping:** the Part Workbench's "Save lods to source" would have
+> silently *deleted* an authored ladder, and its own parse-verify would have approved the
+> result — because that check compares level COUNT, not content. Fixed in `1a9b4606`.
+
+
 > **M3 is NOT greenfield — there is already a `static lods` authoring surface, and its
 > shape is better than the design doc's (2026-08-05).** `ScriptHost::eval_lods`
 > (`script_host.cpp:882`, spec at `script_host.h:226`) reads a part's `static lods` array
