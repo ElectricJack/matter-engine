@@ -20,7 +20,7 @@ MatterEngine2 follows a modular architecture where:
 The root directory contains:
 
 - `third_party/` - Vendored third-party dependencies (raylib, imgui, box3d, quickjs-ng, autoremesher_core, Vulkan-Headers)
-- `libs/` - Foundation libraries beneath MatterEngine3 in the dependency chain: `MemoryLib`, `SpatialQueryLib`, `ParticleFlowLib`, `MatterSurfaceLib`, `MeshChartingLib`
+- `libs/` - Foundation libraries beneath MatterEngine3 in the dependency chain: `MemoryLib`, `SpatialQueryLib`, `ParticleFlowLib`, `MatterSurfaceLib`, `MeshChartingLib`, `AssetStoreLib`
 - `build-all.sh` - Top-level script that builds every project for the current platform; `./build-all.sh test` also runs headless test suites
 - `create_project.sh` - Bootstrap a new sub-project skeleton
 - Individual sub-project directories (e.g., `MatterEngine3`, `MatterEditor`, `BasicWindowApp`)
@@ -204,6 +204,20 @@ Current projects and their relationships. Dependencies run one way only:
 
 7. **libs/MeshChartingLib** - UV chart segmentation + atlas packing (GL-free)
    - No consumers today; kept for the voxel-box-imposter work
+
+8. **libs/AssetStoreLib** - MatterStore: content-addressed blobs in append-only packs
+   - Dependencies: MemoryLib only. No engine headers, no raylib, no Vulkan
+   - Provides: `BlobStore` (packs + an atomically-swapped index + per-blob CRC),
+     `RefTable` (opaque semantic keys, LRU against a disk budget, compaction),
+     `ReadBatch` (physical-order coalesced reads landing in a caller's arena)
+   - The committed index is the only authority on what exists, so a crash
+     mid-append leaves nothing addressable and nothing to repair
+   - Build: `make -C libs/AssetStoreLib` -> `build/libasset_store.a`;
+     `make -C libs/AssetStoreLib test`, and `bench` for the pack-vs-small-files
+     measurement (docs/asset-store-benchmark-2026-08-05.md)
+   - **No consumers yet.** Adopting it as the engine's cache is M5's second half
+     (docs/superpowers/plans/2026-08-04-lod-vt-migration.md), deliberately not
+     done alongside the library's first appearance
 
 `Prototypes/` holds retired experiments (`BasicWindowApp`, `GPURayTraceExample`).
 They are excluded from `build-all.sh` and their sources are frozen snapshots —

@@ -33,6 +33,7 @@ SIMPLE_PROJECTS=(
     libs/MemoryLib
     libs/ParticleFlowLib
     libs/SpatialQueryLib
+    libs/AssetStoreLib
     MatterEngine3
     MatterEditor
 )
@@ -200,6 +201,19 @@ if [ "$MODE" = "test" ]; then
         ./libs/MathLib/tests/build/mathlib_tests || RESULT[libs/MathLib]="FAIL (tests)"
     else
         RESULT[libs/MathLib]="FAIL (test build)"
+    fi
+
+    # AssetStoreLib (MatterStore). Spawns itself as a child process to kill one
+    # mid-append, and runs a six-thread reader soak, so it wants a couple of
+    # seconds. The benchmark is NOT run here -- it writes ~100 MB of scratch and
+    # its numbers are a measurement, not a pass/fail gate; run it deliberately
+    # with `make -C libs/AssetStoreLib bench`.
+    if make -C libs/AssetStoreLib/tests build/asset_store_tests >/dev/null 2>&1; then
+        echo; echo "--- AssetStoreLib (asset_store_tests) ---"
+        ./libs/AssetStoreLib/tests/build/asset_store_tests \
+            || RESULT[libs/AssetStoreLib]="FAIL (tests)"
+    else
+        RESULT[libs/AssetStoreLib]="FAIL (test build)"
     fi
 
     # MatterEngine3 headless suites (script host + voxel-CSG bake; GL-free host,

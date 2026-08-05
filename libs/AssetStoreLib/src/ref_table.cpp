@@ -146,6 +146,9 @@ std::unique_ptr<RefTable> RefTable::open(BlobStore& store, const RefTableConfig&
 bool RefTable::put(const std::string& key, const BlobHash& h, uint32_t kind, uint64_t size) {
     Impl& d = *d_;
     if (!h.valid()) return false;
+    /* A reader must never mutate the table. Without this a reader thread could
+     * quietly overwrite the writer's refs.bin. */
+    if (d.store->read_only()) return false;
     auto it = d.refs.find(key);
     if (it != d.refs.end()) {
         /* Re-pointing an existing key: the old blob loses a reference. */
@@ -184,6 +187,7 @@ bool RefTable::peek(const std::string& key, RefInfo* out) const {
 
 bool RefTable::erase(const std::string& key) {
     Impl& d = *d_;
+    if (d.store->read_only()) return false;
     auto it = d.refs.find(key);
     if (it == d.refs.end()) return false;
     auto oh = d.by_hash.find(it->second.hash);
@@ -202,6 +206,7 @@ EvictStats RefTable::evict_to_budget() {
     Impl& d = *d_;
     EvictStats st;
     st.bytes_live_after = d.live_bytes();
+    if (d.store->read_only()) return st;
     if (d.cfg.budget_bytes == 0 || st.bytes_live_after <= d.cfg.budget_bytes) return st;
 
     /* Oldest touch first. */
@@ -236,6 +241,7 @@ EvictStats RefTable::evict_to_budget() {
 
 bool RefTable::compact(CompactStats* out) {
     Impl& d = *d_;
+    if (d.store->read_only()) return false;
     /* Survivors in key order: deterministic, and it puts blobs whose keys share
      * a prefix -- one sector's artifacts, under the caller's naming -- next to
      * each other in the pack. */
@@ -249,6 +255,9 @@ bool RefTable::compact(CompactStats* out) {
 
 bool RefTable::flush() {
     Impl& d = *d_;
+    /* The last line of defence: whatever a reader did to its in-memory copy --
+     * lookup() bumps last-access, harmlessly -- none of it reaches the disk. */
+    if (d.store->read_only()) return false;
 
     std::vector<uint8_t> buf;
     push_u32(buf, kRefsMagic);

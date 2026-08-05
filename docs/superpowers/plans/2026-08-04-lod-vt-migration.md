@@ -618,6 +618,42 @@ Acceptance — measured on RockGallery, 13 parts:
 
 ## M5 — MatterStore
 
+> **STATUS 2026-08-05: FIRST HALF DONE, SECOND HALF NOT STARTED.** The standalone
+> library landed as `23cb5fbb` (BlobStore, RefTable, ReadBatch, the suite) and
+> `a5c91892` (the benchmark and two performance fixes it forced). `libs/AssetStoreLib`
+> depends on MemoryLib and nothing else; no engine code references it.
+>
+> **Acceptance, measured.** All five lib tests pass — crash-mid-write recovery,
+> corruption-is-a-miss, LRU eviction to a disk budget, a concurrent reader soak, and
+> determinism — plus batching, arena landing, read-only enforcement and a CRC32
+> correctness suite. 244 checks, 0 failures. The crash test spawns a real child that
+> `_exit(3)`s mid-payload and asserts the pack physically grew past its committed
+> extent *before* asserting that reopening erases it, so the tear it recovers from is
+> a real one.
+>
+> **The benchmark missed its target, and that is the finding.** The plan asked for
+> ≥ 5×. Measured (docs/asset-store-benchmark-2026-08-05.md): whole-corpus cold load
+> **4.3–4.7×**, the sector-revisit case the criterion actually names **3.0–3.3×**,
+> scattered access **1.5–1.6×**, and with the OS page cache hot the store **loses at
+> 0.54×**. The ratio falls as the request shrinks and as locality worsens, and it
+> inverts when everything is cached.
+>
+> Two fixes came out of measuring: CRC32 was a byte-at-a-time loop at ~575 MB/s and
+> was 82% of the store's warm read time (now slice-by-eight, ~2.8 GB/s, same
+> polynomial and same bytes on disk), and ReadBatch was staging each chunk before
+> copying payloads into the arena (now reads straight into the arena).
+>
+> **What this means for the second half.** The throughput case is real but smaller
+> than assumed, and the warm regression is a genuine adoption risk: if the engine's
+> revisit path is mostly page-cache-hot, adoption could make it slower until the
+> checksum gets cheaper (hardware CRC32C would fix it, and changing the polynomial is
+> cheap *now* while nothing has adopted the format). The instant-revisit acceptance
+> below is the measurement that settles it and should be read against that table.
+> The stronger arguments for adoption are the ones the benchmark does not measure:
+> crash safety by construction, per-blob checksums, budget eviction, and 600× fewer
+> file operations on a machine that — unlike this one — has an antivirus filter, a
+> network share or a spinning disc in the path.
+
 Scope, in two halves:
 1. **Standalone `libs/AssetStoreLib`**: BlobStore (append-only packs, atomic index swap,
    checksums, compaction), RefTable (semantic keys, LRU vs disk budget), async batched read

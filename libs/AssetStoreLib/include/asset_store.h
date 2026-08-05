@@ -161,7 +161,13 @@ public:
     /* Rewrites the surviving blobs into a fresh pack generation, in the order
      * given -- so the caller controls locality -- and drops everything else.
      * Commits by index rename, then deletes the old packs (best effort; any
-     * pack a reader still holds open is swept on the next writer open). */
+     * pack a reader still holds open is swept on the next writer open).
+     *
+     * A reader holding a pre-compaction index keeps reading the old packs,
+     * correctly, until it calls reload_index(). Once the old generation is
+     * deleted, a reader that has still not reloaded sees IoError rather than
+     * wrong bytes -- reads never silently cross generations. Readers that
+     * reload each batch (the expected pattern) never notice. */
     bool compact(const BlobHash* keep, size_t keep_count, CompactStats* out);
 
     /* ---- read side ---- */

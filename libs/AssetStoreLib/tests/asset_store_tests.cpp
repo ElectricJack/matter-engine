@@ -958,6 +958,75 @@ static void test_crc32_is_correct() {
     CHECK(missed == 0, "every single-bit flip changed the checksum (%d missed)", missed);
 }
 
+/* A read-only handle must be read-only all the way down -- including the ref
+ * table sitting on top of it, whose flush would otherwise stamp a reader's
+ * private view over the writer's refs.bin. */
+static void test_read_only_cannot_write(const std::string& root) {
+    printf("- read-only: neither the store nor its ref table can write\n");
+    std::string dir = root + "/ro";
+    rm_tree(dir);
+
+    std::vector<uint8_t> buf;
+    BlobHash h;
+    std::string err;
+    {
+        StoreConfig cfg;
+        cfg.dir = dir;
+        auto s = BlobStore::open(cfg, &err);
+        CHECK(s != nullptr, "open writer: %s", err.c_str());
+        if (!s) return;
+        fill_payload(buf, 12321, 5000);
+        s->put(buf.data(), buf.size(), &h);
+        s->flush_index();
+        RefTableConfig rcfg;
+        auto t = RefTable::open(*s, rcfg, &err);
+        CHECK(t != nullptr, "open ref table");
+        if (t) { t->put("keep/me", h, 1, 5000); CHECK(t->flush(), "flush refs"); }
+    }
+
+    uint64_t refs_size_before = raw_file_size(dir + "/refs.bin");
+    uint64_t pack_size_before = raw_file_size(dir + "/p0_0.pack");
+
+    StoreConfig rcfg;
+    rcfg.dir = dir;
+    rcfg.read_only = true;
+    auto r = BlobStore::open(rcfg, &err);
+    CHECK(r != nullptr, "open read-only: %s", err.c_str());
+    if (!r) return;
+
+    CHECK(r->read_only(), "the handle reports itself read-only");
+    fill_payload(buf, 45678, 3000);
+    CHECK(r->put(buf.data(), buf.size(), nullptr) == Status::ReadOnly,
+          "put through a read-only handle is refused");
+    CHECK(!r->flush_index(), "flush_index through a read-only handle is refused");
+    CHECK(!r->compact(nullptr, 0, nullptr), "compact through a read-only handle is refused");
+
+    RefTableConfig tcfg;
+    auto t = RefTable::open(*r, tcfg, &err);
+    CHECK(t != nullptr, "open ref table over a read-only store: %s", err.c_str());
+    if (t) {
+        CHECK(t->count() == 1, "the reader sees the writer's ref (%zu)", t->count());
+        BlobHash other = hash_bytes("something else", 14);
+        CHECK(!t->put("sneak/in", other, 2, 10), "ref put is refused");
+        CHECK(!t->erase("keep/me"), "ref erase is refused");
+        CHECK(!t->flush(), "ref flush is refused");
+        /* lookup() may bump last-access in memory -- that is harmless precisely
+         * because flush() will never carry it to disk. */
+        RefInfo ri;
+        CHECK(t->lookup("keep/me", &ri), "lookup still works for a reader");
+        CHECK(!t->flush(), "and still cannot be persisted afterwards");
+    }
+
+    CHECK(raw_file_size(dir + "/refs.bin") == refs_size_before,
+          "refs.bin on disk is untouched");
+    CHECK(raw_file_size(dir + "/p0_0.pack") == pack_size_before,
+          "the pack on disk is untouched");
+
+    r.reset();
+    t.reset();
+    rm_tree(dir);
+}
+
 /* ==================================================================== main */
 
 int main(int argc, char** argv) {
@@ -993,6 +1062,7 @@ int main(int argc, char** argv) {
     test_determinism(root);
     test_batch_coalescing(root);
     test_arena_landing(root);
+    test_read_only_cannot_write(root);
 
     rm_tree(root);
 
