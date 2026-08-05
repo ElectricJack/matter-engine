@@ -460,6 +460,27 @@ Acceptance:
 
 ## M3 — DSL recipes and lazy staged baking
 
+> **M3 is NOT greenfield — there is already a `static lods` authoring surface, and its
+> shape is better than the design doc's (2026-08-05).** `ScriptHost::eval_lods`
+> (`script_host.cpp:882`, spec at `script_host.h:226`) reads a part's `static lods` array
+> **without building the part**, fail-closed on any shape violation. Each entry can already
+> declare `params` (opting that level into a fresh `build()` with overridden params rather
+> than pure decimation from LOD 0) and `exclude` (child modules dropped at that level).
+> `static lodBudgets` is a sibling; `Grass.js` and `AnimatedRigGallery.js` use it today.
+>
+> **The no-build read is a feature, not an accident, and the redesign doc under-values it.**
+> §3.1 sketches `lods(p)` returning entries with `gen:` closures — but a closure cannot be
+> read without evaluating the class, and **lazy per-rep baking (§3.4) requires knowing what
+> reps exist before baking any of them**. A method returning closures forces an evaluation
+> just to answer "what reps does this part have?".
+>
+> So M3 should adopt a **hybrid** rather than replacing the static surface: keep `static lods`
+> as the declarative shape — how many reps, their switch distances, which generator and with
+> what parameters — readable without a build; and let a generator *name* a method on the class
+> whose body runs only when that rep is actually baked. That keeps no-build introspection,
+> keeps fail-closed parsing, and still gets custom per-rep builders and stages. Extending this
+> surface is also far less disruptive to existing worlds than replacing it.
+
 > **Two ladder defects to fix here, both observed on the build rather than inferred:**
 > (a) rungs are admitted on any reduction at all, producing visually identical coarse rungs —
 > replace with a benefit floor whose exhaustion terminates the ladder (design §3.3, feeds
