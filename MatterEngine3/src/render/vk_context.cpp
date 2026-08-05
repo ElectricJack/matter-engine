@@ -827,6 +827,15 @@ struct VulkanDevice::Impl {
             missing.emplace_back(
                 "VkPhysicalDeviceVulkan13Features::synchronization2");
         }
+        // M2.5: gbuffer.frag's impostor cutout is a `discard`, and glslang
+        // targeting SPIR-V 1.6 lowers discard to OpDemoteToHelperInvocation
+        // (OpKill is deprecated there), so the capability has to be enabled
+        // rather than merely present. Required, not optional: without it every
+        // pipeline in the raster pass fails to create.
+        if (!features13.shaderDemoteToHelperInvocation) {
+            missing.emplace_back(
+                "VkPhysicalDeviceVulkan13Features::shaderDemoteToHelperInvocation");
+        }
         if (!features12.bufferDeviceAddress) {
             missing.emplace_back(
                 "VkPhysicalDeviceVulkan12Features::bufferDeviceAddress");
@@ -1155,6 +1164,7 @@ struct VulkanDevice::Impl {
 
         features13.dynamicRendering = VK_TRUE;
         features13.synchronization2 = VK_TRUE;
+        features13.shaderDemoteToHelperInvocation = VK_TRUE;
         VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance1{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT};
         maintenance1.swapchainMaintenance1 = VK_TRUE;

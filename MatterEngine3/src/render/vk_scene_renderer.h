@@ -274,8 +274,6 @@ struct VkScenePartImpostor {
 
 struct VkScenePart {
     uint64_t part_hash = 0;
-    // Empty for every part whose ladder bottoms out above the impostor tier.
-    std::vector<VkScenePartImpostor> impostors;
     std::vector<VkSceneCluster> clusters;
     std::vector<VkRasterVertex> vertices;   // unique vertices, all LOD meshes concatenated
     // Index buffer: values are PART-LOCAL (already include each mesh's vertex
@@ -318,6 +316,12 @@ struct VkScenePart {
     // payloads) is the eager path: every chart rung registers at ensure_part,
     // exactly the pre-demand behaviour the smoke fixtures drive.
     uint32_t vt_deferred_rung_mask = 0;
+    // M2.5 terminal impostors, one per cluster that earned one. Empty for
+    // every part whose ladder bottoms out above the impostor tier. LAST in the
+    // struct on purpose: the Vulkan smoke fixtures build VkScenePart with
+    // positional aggregate initialisers, so a field inserted anywhere earlier
+    // silently re-binds their arguments.
+    std::vector<VkScenePartImpostor> impostors;
 };
 
 // Demand-driven VT: one wanted-but-unregistered (part, rung), surfaced by the
