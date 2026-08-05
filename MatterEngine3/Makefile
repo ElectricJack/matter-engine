@@ -126,12 +126,26 @@ FLECS_OBJ = $(addprefix $(OBJDIR)/,flecs.o)
 
 # MatterEngine3 C++ sources: full pipeline — bake/script/DSL/CSG, part-graph,
 # LOD flatten/select, tileset pipeline, render, provider, and facade.
+#
+# ME3_OBJ derives from this list (below), so this list alone decides what the
+# archive contains. Not every .cpp under src/ belongs here: the vk_*/vt_* render
+# sources are deliberately absent because this build doesn't define
+# MATTER_VULKAN_VIEWER, and MatterEditor compiles them itself via WIN_ME3_CPP.
+# That exception is what makes an accidental omission hard to see -- an absent
+# source looks like one more deliberate editor-only source. So absences here are
+# NOT self-evident; check that the editor really does supply the symbol before
+# concluding one is intentional. pf_bindings, warp_field and the ParticleFlowLib
+# sources were each absent for that reason and left the archive unlinkable.
 ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_animation.cpp \
+          $(PFL_DIR)/src/pf_math.cpp $(PFL_DIR)/src/pf_sim.cpp \
+          $(PFL_DIR)/src/pf_fields.cpp $(PFL_DIR)/src/pf_path_recorder.cpp \
+          src/pf_bindings.cpp \
           src/dsl_triangle.cpp src/triangle_emit.cpp src/polygon_triangulate.cpp \
           src/csg_lowering.cpp src/module_resolver.cpp src/script/world_definition_loader.cpp src/script_rng_binding.cpp \
           src/part_asset_v2.cpp src/part_graph.cpp src/part_graph_snapshot.cpp \
           src/live_edit.cpp src/live_edit_prod.cpp src/inotify_watcher.cpp \
           src/lod_bake.cpp src/world_flatten.cpp src/part_flatten.cpp \
+          src/warp_field.cpp \
           src/impostor_bake.cpp \
           src/retopo_blacklist.cpp \
           src/modifier_apply.cpp \
@@ -211,9 +225,12 @@ MSL_C_OBJ = $(addprefix $(OBJDIR)/,surface.o spatial_hash.o \
 # compiles those sources a second time itself -- which is exactly what makes the
 # omission invisible until something links against the archive alone.
 #
-# vpath (above) already resolves every source directory, and all ME3_CPP
-# basenames are unique, so the mapping is total and unambiguous. Adding a source
-# to ME3_CPP is now sufficient.
+# vpath (above) already resolves every source directory, so the mapping is total.
+# It is unambiguous only while ME3_CPP basenames stay unique -- two same-named
+# sources in different directories collapse onto one .o here and one of them
+# silently never compiles, which is the one way this derivation can still lose a
+# source. check-me3-source-basenames (below) holds that assumption to account.
+# Adding a source to ME3_CPP is otherwise sufficient.
 ME3_OBJ = $(addprefix $(OBJDIR)/,$(notdir $(ME3_CPP:.cpp=.o)))
 
 # Vendored BC encoder objects. Explicit rules (below) rather than vpath: these
@@ -255,13 +272,29 @@ SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.g
 # shaders/ is a symlink -> ../libs/MatterSurfaceLib/shaders.
 SHADER_FILES := $(SHADER_LOGICAL)
 
-.PHONY: all clean test vulkan-spirv check-animation-production-sources check-animation-runtime-boundary
+.PHONY: all clean test vulkan-spirv check-me3-source-basenames check-animation-production-sources check-animation-runtime-boundary
 
 # all MUST be the first target so it is the default goal.
 all: $(LIB)
 
 $(OBJDIR) build:
 	@mkdir -p $@
+
+# ME3_OBJ derives from ME3_CPP by $(notdir), so two ME3_CPP sources sharing a
+# basename collapse onto one object: one of them is never compiled, and `ar` is
+# handed the same member name twice without complaint. That is the single way
+# the derivation can still lose a source, and it is silent -- so assert the
+# uniqueness the derivation assumes rather than leaving it to review.
+# $(LIB) depends on this order-only (it is phony; a normal prerequisite would
+# leave the archive perpetually out of date and re-run `ar` every build).
+check-me3-source-basenames:
+	@dups=`printf '%s\n' $(notdir $(ME3_CPP)) | sort | uniq -d`; \
+	if [ -n "$$dups" ]; then \
+		echo "ERROR: ME3_CPP sources share a basename, so they collide on one .o:"; \
+		printf '  %s\n' $$dups; \
+		echo "       rename one, or the archive silently ships only the other."; \
+		exit 1; \
+	fi
 
 # Keep the archive's explicit object list in sync with the animation sources
 # consumed by the bake/runtime boundary.  The archive is flat, so a source
@@ -456,7 +489,7 @@ $(OBJDIR)/%.o: %.cpp | $(OBJDIR)
 $(BOX3D_LIB):
 	$(MAKE) -C $(BOX3D_DIR)
 
-$(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BC7ENC_OBJ) $(BOX3D_LIB)
+$(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BC7ENC_OBJ) $(BOX3D_LIB) | check-me3-source-basenames
 # `ar rcs` REPLACES the members it is given and leaves every other member in
 # place, so an object whose source was deleted (and whose name was dropped from
 # ME3_OBJ) keeps being served out of a stale archive forever -- linking dead
