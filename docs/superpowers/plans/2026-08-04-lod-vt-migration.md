@@ -384,13 +384,23 @@ recipe work (design §3.3, closing note).
 > `duplicate_keys=0` confirming it is a real divergence rather than an identity artefact.
 > Two distinct causes:
 >
-> 1. **A freshly published sector's rung is nondeterministic.** The same sector first appears
->    at rung 0 in one run and rung 2 in the other — `E 1038595253 0 - 0` versus
->    `E 1038595253 0 - 2` — with a *different* sector swapping the opposite way in the same
->    pair of runs. A sector must commit at a determined rung or not at all, which is exactly
->    the whole-or-nothing property this milestone exists to establish. **This is M2's first
->    target.** Suspected source: the publish job's `commit_staged` vs `get_or_load` fallback,
->    i.e. the sector sometimes commits before its full LOD table is available.
+> 1. ~~**A freshly published sector's rung is nondeterministic.**~~ **FIXED (`95faead2`), and
+>    the suspected cause recorded here was WRONG.** The symptom was real — the same sector
+>    first appearing at rung 0 in one run and rung 2 in the other, a different sector each
+>    time — but it had nothing to do with the publish path, `commit_staged`, or
+>    `get_or_load`. **It was the draw-override SSBO.** `part_draw_overrides.length()` in
+>    `cull.comp` returns the buffer's CAPACITY, not the number of entries the CPU wrote, and
+>    `ensure_buffer` rounds allocations up from 16 bytes — so a one-entry neutral table left
+>    readable garbage past its payload, and a cluster whose `part_slot` landed in that garbage
+>    took `lod_bias = 0`. That makes `reach` zero, nothing clears its switch distance, and the
+>    cluster clamps to the coarsest rung. Which cluster it hit depended on slot assignment,
+>    hence one sector per run, varying.
+>
+>    Two lessons worth more than the fix. **An SSBO's `.length()` is a capacity, not a count**
+>    — every shader reading a variable-length table must be given a real count or a fully
+>    initialised buffer. And this is a reminder that a *suspected* cause written into a plan
+>    reads like a finding to whoever picks it up next; the publish path was never implicated
+>    by evidence, only by plausibility.
 > 2. **Arrival timing varies** — sectors publish on different frames between runs (events at
 >    `@f1`/`@f2`/`@f3` differ), worker-pool completion order reaching the frame stream. That
 >    is timing rather than selection, and is what "budgets shape *when*, never *what*"
