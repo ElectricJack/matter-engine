@@ -19,6 +19,7 @@
 #include "matter/events/bake_events.h"
 #include "matter/events/stream_events.h"
 
+#include "version_vector.h"   // M4: digest, for the resolve census line
 #include "async_bake.h"
 #include "bake_trace.h"        // Bake Lab: per-session stage-span collector
 #include "bake_trace_names.h"
@@ -2604,6 +2605,19 @@ void WorldSession::Impl::publish_pipeline(
         stats.instances_total = (uint32_t)manifest.instances.size();
         stats.parts_baked     = (uint32_t)provider->baked_count();
         stats.cache_hits      = (uint32_t)provider->hit_count();
+
+        // M4: the resolve/bake census on one line, at the point both counters
+        // are final (demand bakes have landed). The version vector's
+        // acceptance is "bump it and EVERY part re-resolves AND RE-BAKES" --
+        // re-resolution alone, producing the same hashes while stale artifacts
+        // are served, is the exact bug the vector exists to kill. So the two
+        // numbers have to be separately readable from a script, not only from
+        // the editor's stats overlay.
+        std::fprintf(stderr,
+            "  resolve census: %u parts baked, %u cache hits, "
+            "version digest %016llx\n",
+            stats.parts_baked, stats.cache_hits,
+            (unsigned long long)matter_version::digest());
 
         return true;
     };

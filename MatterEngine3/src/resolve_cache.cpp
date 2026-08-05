@@ -84,6 +84,7 @@
 
 #include "resolve_cache.h"
 #include "part_asset.h"    // fnv1a64
+#include "part_asset_v2.h" // replace_file_atomic (Windows-safe publish)
 #include "version_vector.h"  // M4: the single version-vector fold
 
 #include <algorithm>
@@ -484,8 +485,14 @@ bool save(const std::string& cache_root,
         return false;
     }
 
-    // Atomic rename.
-    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+    // Atomic publish. NOT std::rename: on Windows rename FAILS when the target
+    // exists, so this cache could be written exactly once and never updated
+    // again -- every save after the first returned "save failed (non-fatal)"
+    // and the world re-resolved from scratch forever. Nothing noticed because
+    // the first write of a fresh cache always succeeds; M4's version bump is
+    // the first thing that routinely rewrites an existing entry.
+    // replace_file_atomic is the same helper every .part write already uses.
+    if (!part_asset::replace_file_atomic(tmp, path)) {
         std::remove(tmp.c_str());
         return false;
     }
