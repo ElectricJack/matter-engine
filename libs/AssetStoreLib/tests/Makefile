@@ -7,11 +7,13 @@
 # Both compile MemoryLib's mem_arena.c from where it lives (CLAUDE.md's rule);
 # the library archive does not carry it.
 #
-# NOT built with ASan: the crash-recovery test kills a child process with
-# _exit(3) mid-write on purpose, and LeakSanitizer's atexit hook does not run
-# under _exit -- but ASan's "hard exit during a write" reporting adds nothing
-# here, while the child's exit code IS the assertion. The suite is checked with
-# -fsanitize=address,undefined via `make asan`, which skips the crash child.
+# NOT built with ASan, unlike MemoryLib and ParticleFlowLib. The crash-recovery
+# test kills a child process with _exit(3) partway through a write on purpose,
+# and the whole suite spawns children whose exit codes ARE the assertions --
+# a sanitizer that reports through the exit status would be indistinguishable
+# from a test failure. MSYS2 UCRT64's libasan is also not reliably present.
+# Adding an ASan variant means teaching the child modes to run clean under it
+# first; that has not been done.
 
 CXX = g++
 LIB_DIR = ..
