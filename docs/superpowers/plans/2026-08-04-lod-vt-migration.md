@@ -618,6 +618,39 @@ Acceptance — measured on RockGallery, 13 parts:
 
 ## M5 — MatterStore
 
+> **STATUS 2026-08-05: the standalone library is DONE; cache adoption is NOT started.**
+> Split deliberately — the library's first appearance and a change to how the engine reads
+> every artifact should not land together, least of all unattended.
+>
+> **THE BENCHMARK MISSED THE PLAN'S ≥5× CRITERION, AND ONE CASE IS A REGRESSION.**
+> Measured on this machine (`docs/asset-store-benchmark-2026-08-05.md`):
+>
+> | case | small files | packs | ratio |
+> |---|---|---|---|
+> | cold, whole corpus (400 blobs, 98.5 MiB) | 190–200 ms | 42–45 ms | 4.3–4.7× |
+> | **cold, one sector revisit (40 contiguous)** | 9.4–10.5 ms | 3.15 ms | **3.0–3.3×** |
+> | cold, scattered (40 spread wide) | 9.7–10.5 ms | 6.4–6.5 ms | 1.5–1.6× |
+> | **warm (page cache hot)** | 28.9–29.5 ms | 52.0–53.5 ms | **0.54× — the store LOSES** |
+>
+> The case the criterion actually names — sector revisit — came in at 3.0–3.3×, not ≥5×. The
+> ratio falls as the request shrinks and as locality worsens; the scattered floor of 1.5× is
+> `open`/`close` cost rather than locality. **And warm reads are roughly twice as slow through
+> the store.**
+>
+> **This is a live risk to the second half, and to R7 ("returning to an area already baked is
+> near-instant").** The store's win is on cold reads; a revisit whose pages are still hot is
+> exactly the case it loses. Before adopting it as the cache, establish which of the two a
+> real revisit actually is — if warm-hot is common, adoption needs a path that does not pay
+> the store's per-read cost on cached data, or R7 gets worse rather than better.
+>
+> Two real defects the measurement forced out (both fixed): CRC32 was a byte-at-a-time loop
+> at ~575 MB/s consuming **82 % of warm read time**, and `ReadBatch` staged then copied every
+> payload. The remaining warm gap is what is left after both.
+>
+> Caveat on method: "cold" is an unbuffered proxy — the Windows page cache cannot be dropped
+> without admin — applied identically to both paths and labelled as such.
+
+
 > **STATUS 2026-08-05: FIRST HALF DONE, SECOND HALF NOT STARTED.** The standalone
 > library landed as `23cb5fbb` (BlobStore, RefTable, ReadBatch, the suite) and
 > `a5c91892` (the benchmark and two performance fixes it forced). `libs/AssetStoreLib`
