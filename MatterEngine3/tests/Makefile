@@ -1132,6 +1132,11 @@ VIEWER_PIPELINE_CPP = $(sort $(filter-out example_world.cpp, $(EXAMPLE_CPP)) \
 # example_world/gallery_bake_tests/lighting_garden_tests could link). obj_list
 # (:261) does not dedupe, so listing it in both places causes ld to see the
 # same object twice -> "multiple definition of matter::load_world_definition".
+# NOTE: do NOT name ../src/impostor_bake.cpp in this list. VIEWER_PIPELINE_CPP
+# (below) already supplies it through EXAMPLE_CPP, and that list is $(sort ...)ed
+# while this one is not — so naming it in both puts the SAME object on the link
+# line twice and viewer_logic_tests fails with "multiple definition of
+# impostor::save". The same trap applies to anything else EXAMPLE_CPP carries.
 VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../../MatterEditor/src/camera_controller.cpp \
               ../../MatterEditor/src/streaming_anchor_controller.cpp \
@@ -1139,7 +1144,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
               ../src/render/world_state.cpp \
               ../src/provider/resolvers.cpp \
-              ../src/render/part_store.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp \
+              ../src/render/part_store.cpp ../src/warp_field.cpp \
               ../src/provider/local_provider.cpp \
               ../src/render/raster_mesh.cpp \
               ../src/tileset_phase.cpp \

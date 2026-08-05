@@ -43,6 +43,21 @@ believed.
 StreamMountain (`issues/render-normals-show-tile-lattice`) is deliberately **not** a routine
 gate: a cold-cache capture there rebakes 6547 sectors. Use it as an occasional check, warm.
 
+## The baseline goes stale when the UI changes — this is expected
+
+Capture size follows the **docked ImGui layout**, not a fixed framebuffer. Adding a control
+changes the viewport width, and `img_diff.py` then refuses the comparison outright
+(`DIFF size (1791, 784) vs (1036, 783)`). Seen twice: once when the LOD-tint and wireframe
+views added combo entries, and again when M2.5 put the resident-impostor count on the stats
+overlay.
+
+That is not a defect in the gate — it is why this directory refuses to commit golden PNGs
+and prescribes capture-both-sides-locally. When it happens, re-measure the floor on the
+current build (two captures, same binary) rather than comparing across a layout change.
+Measured floors, PomProofBrick shot 1: **0.069 %** at the pre-debug-views layout,
+**0.080 %** at the post-M2.5 layout. Pin `imgui.ini` between captures, and watch for an open
+hover tooltip — one polluted a capture with 94.5 % of its diff inside a single 29-row band.
+
 ## Evidence behind the numbers
 
 Measured 2026-08-04, PomProofBrick, five independent captures (two cold-cache, one warm, two
