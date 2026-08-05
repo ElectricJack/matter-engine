@@ -427,6 +427,17 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_surface.rchit.spv \
     build/shaders_vk/rt_lighting.rgen.spv \
     build/shaders_vk/rt_surface_test.rgen.spv: shaders_vk/vt_common.glsl
 
+# M2.5 impostors: impostor_common.glsl is the ONE place the view grid is
+# written down, and BOTH stages that touch a billboard read it -- raster.vert
+# to pick the cell, gbuffer.frag to sample it. It had no rule here, so the
+# elevation-ring change (2026-08-05) edited the grid from 4x4 to 8x8, rebuilt
+# raster.vert because that file changed too, and left gbuffer.frag.spv holding
+# the OLD divisor. That mis-samples every impostor by a quarter cell and looks
+# like a rendering bug, not a stale build. Same failure the vt_common.glsl and
+# vt_chart_types.glsl rules above exist to prevent.
+build/shaders_vk/raster.vert.spv build/shaders_vk/raster_skin.vert.spv \
+    build/shaders_vk/gbuffer.frag.spv: shaders_vk/impostor_common.glsl
+
 shaders_gen/embedded_spirv.h: $(VK_SPV) tools/embed_spirv.py
 	python3 tools/embed_spirv.py $@ $(VK_SPV)
 

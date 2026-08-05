@@ -72,7 +72,12 @@ inline constexpr uint32_t kRepresentation = 1u;
 // not mis-parse); folding them here is what makes them cache KEYS as well.
 inline constexpr uint32_t kPartFormat   = 2u;  // part_asset::kFormatVersionV2
 inline constexpr uint32_t kFlatFormat   = 9u;  // part_asset::kFormatVersionFlat
-inline constexpr uint32_t kImpostorFormat = 1u;  // impostor_bake::kFormatVersion
+// 2: elevation rings. The atlas is the same 128 KiB but the cells inside it
+// mean something different (8x8 of 16x16 holding 16 azimuths x 3 elevations,
+// was 4x4 of 32x32 holding one equator ring), so a v1 atlas read by a v2
+// shader samples a quarter of the wrong cell. Byte-identical SIZE with
+// different CONTENT is exactly the case a format version exists for.
+inline constexpr uint32_t kImpostorFormat = 2u;  // impostor_bake::kFormatVersion
 inline constexpr uint32_t kBundleFormat = 1u;  // part_bundle::kBundleFormatVersion
 
 // Reserved for M3b's content-addressed stage outputs. Zero means "no stage

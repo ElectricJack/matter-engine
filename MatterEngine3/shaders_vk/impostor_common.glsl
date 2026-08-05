@@ -5,14 +5,21 @@
 // bake that is not mirrored here fails the build rather than producing a
 // silently mis-sampled atlas.
 //
-// 16 azimuth views in a 4x4 grid of 32x32 cells, two RGBA8 layers per part
-// impostor (shade, then tint) = 128 KiB. The derivation of both numbers is in
-// MatterEngine3/src/impostor_bake.h.
+// 16 azimuth views x 3 elevation rings = 48 views in an 8x8 grid of 16x16
+// cells, two RGBA8 layers per part impostor (shade, then tint) = 128 KiB. The
+// derivation of every number is in MatterEngine3/src/impostor_bake.h; the
+// rings cost nothing because the cell resolution was never the binding
+// constraint and paid for them.
 #ifndef IMPOSTOR_COMMON_GLSL
 #define IMPOSTOR_COMMON_GLSL
 
-#define IMPOSTOR_VIEWS 16u
-#define IMPOSTOR_GRID_DIM 4u
+#define IMPOSTOR_VIEWS 48u
+#define IMPOSTOR_GRID_DIM 8u
+#define IMPOSTOR_AZIMUTHS 16u
+#define IMPOSTOR_ELEVATIONS 3u
+// Radians between elevation rings (30 degrees). Ring r is baked r steps above
+// the equator and the NEAREST is picked, so boundaries fall halfway between.
+#define IMPOSTOR_ELEV_STEP 0.52359877559829887308
 
 // The sentinel the terminal billboard rung carries in surface.x. Chosen far
 // above any legitimate chart UV (which lives in [0,1]) so the test is a plain

@@ -167,15 +167,31 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
     for (const Tri& t : tris) { reach(t.vertex0); reach(t.vertex1); reach(t.vertex2); }
     const float radius = std::sqrt(radius_sq);
     if (!(radius > 1e-6f)) return false;
-    // GUARD BAND. The quad is 10 % larger than the bounding sphere, so the
-    // silhouette stops ~1.5 texels short of the cell border on every side.
-    // Cells are packed edge to edge in one atlas layer, so a bilinear tap at
-    // the border of view v would otherwise reach into view v+1 -- a rock with
-    // a sliver of the next azimuth welded to its edge. Measured against
-    // kCellPx: a full-texel guard needs >= 1 / (1 - 2/32) = 1.067, and 1.10
-    // buys the margin back at a cost of 10 % of the cell's linear resolution,
-    // which the view count (not the cell size) already dominates.
-    const float half_extent = radius * 1.10f;
+    // GUARD BAND. Cells are packed edge to edge in one atlas layer, so a
+    // bilinear tap at the border of view v would otherwise reach into view
+    // v+1 -- a rock with a sliver of the next azimuth welded to its edge. The
+    // quad is made larger than the bounding sphere so the silhouette stops
+    // clear of the border.
+    //
+    // The margin is NOT a property of the band alone -- it is texels, so it
+    // scales with kCellPx:
+    //
+    //     margin_texels = (0.5 - 0.5 / kGuardBand) * kCellPx
+    //
+    // At the v1 32 px cell, 1.10 gave 1.45 texels. **The elevation-ring change
+    // halved the cell to 16 px, which would have taken that same 1.10 down to
+    // 0.73 texels — under one, i.e. actively bleeding.** A full-texel guard at
+    // 16 px needs >= 1 / (1 - 2/16) = 1.143; 1.20 gives 1.33 texels of margin
+    // and costs 17 % of the cell's linear resolution, leaving 13.3 px of
+    // object across a cell against the ~10 px the azimuth count allows. The
+    // view count still dominates, which is the same argument as before -- but
+    // it has less room now, so recompute this line if kCellPx ever moves
+    // again rather than assuming the constant travels.
+    constexpr float kGuardBand = 1.20f;
+    static_assert((0.5f - 0.5f / kGuardBand) * float(kCellPx) >= 1.0f,
+                  "guard band leaves under one texel: bilinear taps bleed "
+                  "into the neighbouring view");
+    const float half_extent = radius * kGuardBand;
 
     out = ClusterImpostor{};
     out.cluster_index = cluster_index;
@@ -192,10 +208,23 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
 
     for (uint32_t view = 0; view < kViews; ++view) {
         std::fill(sub.begin(), sub.end(), SubSample{});
+        // Azimuth-major: view = elevation * kAzimuths + azimuth (view_index()).
+        const uint32_t az_i = view % kAzimuths;
+        const uint32_t el_i = view / kAzimuths;
         const float angle = 6.28318530717958647692f *
-                            static_cast<float>(view) / static_cast<float>(kViews);
-        // view_z points from the object TOWARD the camera.
-        const float3 view_z = make_float3(std::sin(angle), 0.0f, std::cos(angle));
+                            static_cast<float>(az_i) / static_cast<float>(kAzimuths);
+        const float elev = static_cast<float>(el_i) * kElevationStep;
+        const float ce = std::cos(elev), se = std::sin(elev);
+        // view_z points from the object TOWARD the camera. raster.vert derives
+        // the same pair from the eye direction as azimuth = atan2(x,z) and
+        // elevation = asin(y), which is the exact inverse of this line — the
+        // two must stay inverses or the card shows a view it was not baked for.
+        const float3 view_z = make_float3(std::sin(angle) * ce, se,
+                                          std::cos(angle) * ce);
+        // Well-conditioned while |view_z.y| < 1: |cross| = cos(elev) >= 0.5 for
+        // the 60-degree top ring, so no degenerate-basis guard is needed HERE.
+        // The runtime needs one (it uses the true eye direction, which can look
+        // straight down); see raster.vert.
         const float3 right  = unit(cross3(make_float3(0.0f, 1.0f, 0.0f), view_z));
         const float3 up_v   = cross3(view_z, right);
 

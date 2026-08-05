@@ -4730,12 +4730,19 @@ void record_tileset_upload(VkCommandBuffer cmd, void* user_data) {
 
 namespace {
 // Keep the shader's view grid and the baker's in lockstep. shaders_vk/
-// impostor_common.glsl hard-codes 16 views in a 4x4 grid, and gbuffer.frag
-// indexes cells with those numbers; a bake that changed either without
-// changing the shader would sample the wrong cell and look like a rendering
-// bug rather than a constant mismatch.
-static_assert(impostor::kViews == 16u, "shaders_vk/impostor_common.glsl: IMPOSTOR_VIEWS");
-static_assert(impostor::kGridDim == 4u, "shaders_vk/impostor_common.glsl: IMPOSTOR_GRID_DIM");
+// impostor_common.glsl hard-codes the view grid, and raster.vert/gbuffer.frag
+// index cells with those numbers; a bake that changed either without changing
+// the shader would sample the wrong cell and look like a rendering bug rather
+// than a constant mismatch. The azimuth/elevation split is asserted too, not
+// just the total: 48 views could be 16x3 or 24x2, and the vertex stage's
+// `el_i * IMPOSTOR_AZIMUTHS + az_i` picks a different cell for each reading.
+static_assert(impostor::kViews == 48u, "shaders_vk/impostor_common.glsl: IMPOSTOR_VIEWS");
+static_assert(impostor::kGridDim == 8u, "shaders_vk/impostor_common.glsl: IMPOSTOR_GRID_DIM");
+static_assert(impostor::kAzimuths == 16u, "shaders_vk/impostor_common.glsl: IMPOSTOR_AZIMUTHS");
+static_assert(impostor::kElevations == 3u,
+              "shaders_vk/impostor_common.glsl: IMPOSTOR_ELEVATIONS");
+static_assert(impostor::kViews == impostor::kAzimuths * impostor::kElevations,
+              "view count must be the azimuth/elevation product");
 static_assert(impostor::kLayerBytes ==
                   static_cast<size_t>(impostor::kLayerPx) * impostor::kLayerPx * 4,
               "impostor atlas layer is RGBA8");

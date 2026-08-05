@@ -2539,6 +2539,153 @@ static void test_impostor_quad_shape() {
     printf("PASSED\n");
 }
 
+// ---------------------------------------------------------------------------
+// ELEVATION RINGS (2026-08-05, impostor_bake.h "ELEVATION ROWS").
+//
+// The atlas holds kAzimuths x kElevations views. The bake writes cell
+// (elevation, azimuth) from a direction it CONSTRUCTS; raster.vert picks that
+// same cell from a direction it MEASURES, by inverting the construction with
+// atan2/asin. If those two ever stop being inverses, every impostor samples a
+// neighbouring view — which on screen reads as a rendering bug and localises
+// nowhere near the arithmetic. The shader cannot be unit-tested from here, so
+// this asserts the property the shader's formula stands on: the inverse
+// recovers the index for every view in the atlas.
+static void test_impostor_view_index_inverse() {
+    printf("=== test_impostor_view_index_inverse ===\n");
+
+    bool all_round_trip = true;
+    uint32_t worst_view = 0;
+    for (uint32_t view = 0; view < impostor::kViews; ++view) {
+        const uint32_t az_i = view % impostor::kAzimuths;
+        const uint32_t el_i = view / impostor::kAzimuths;
+        // Exactly impostor_bake.cpp's construction.
+        const float angle = 6.28318530717958647692f *
+                            static_cast<float>(az_i) /
+                            static_cast<float>(impostor::kAzimuths);
+        const float elev = static_cast<float>(el_i) * impostor::kElevationStep;
+        const float ce = std::cos(elev), se = std::sin(elev);
+        const float vx = std::sin(angle) * ce, vy = se, vz = std::cos(angle) * ce;
+
+        // Exactly raster.vert's inverse.
+        float azimuth = std::atan2(vx, vz);
+        const float kTwoPi = 6.28318530717958647692f;
+        if (azimuth < 0.0f) azimuth += kTwoPi;
+        const uint32_t got_az =
+            static_cast<uint32_t>(std::floor(azimuth / kTwoPi *
+                                             static_cast<float>(impostor::kAzimuths) + 0.5f)) %
+            impostor::kAzimuths;
+        const float elevation = std::asin(std::fmax(-1.0f, std::fmin(1.0f, vy)));
+        const float ring = std::floor(elevation / impostor::kElevationStep + 0.5f);
+        const uint32_t got_el = static_cast<uint32_t>(
+            std::fmax(0.0f, std::fmin(ring, static_cast<float>(impostor::kElevations - 1))));
+
+        if (impostor::view_index(got_az, got_el) != view) {
+            all_round_trip = false;
+            worst_view = view;
+        }
+    }
+    CHECK(all_round_trip, "every baked view direction recovers its own view index");
+    if (!all_round_trip) printf("  first mismatch at view %u\n", worst_view);
+
+    // A camera outside the baked elevation range CLAMPS to the nearest ring
+    // rather than wrapping into a view from the other side. Straight down is
+    // the case that matters — it is where a flying camera ends up.
+    {
+        auto ring_for = [](float elev_rad) {
+            const float r = std::floor(elev_rad / impostor::kElevationStep + 0.5f);
+            return static_cast<uint32_t>(
+                std::fmax(0.0f, std::fmin(r, static_cast<float>(impostor::kElevations - 1))));
+        };
+        const float kDeg = 3.14159265358979f / 180.0f;
+        CHECK(ring_for(-45.0f * kDeg) == 0, "below the equator clamps to ring 0");
+        CHECK(ring_for(14.0f * kDeg) == 0, "just under the first boundary stays ring 0");
+        CHECK(ring_for(16.0f * kDeg) == 1, "just over it steps to ring 1");
+        CHECK(ring_for(44.0f * kDeg) == 1, "just under the second boundary stays ring 1");
+        CHECK(ring_for(46.0f * kDeg) == 2, "just over it steps to ring 2");
+        CHECK(ring_for(90.0f * kDeg) == impostor::kElevations - 1,
+              "straight down clamps to the top ring, never wraps");
+    }
+    printf("PASSED\n");
+}
+
+// The rings have to DEPICT something different, or they are 48 copies of one
+// image at three times the bake cost. A sphere cannot show this — it looks
+// identical from every elevation by construction — so the fixture is a cone,
+// which presents a triangle from the side and a disc from above.
+static void test_impostor_elevation_rings_differ() {
+    printf("=== test_impostor_elevation_rings_differ ===\n");
+
+    std::vector<Tri> cone;
+    {
+        const int segs = 24;
+        const float h = 1.0f, r = 0.6f;
+        const float3 apex = make_float3(0.0f, h, 0.0f);
+        const float3 base_c = make_float3(0.0f, -h, 0.0f);
+        for (int s = 0; s < segs; ++s) {
+            const float a0 = 6.2831853f * float(s) / float(segs);
+            const float a1 = 6.2831853f * float(s + 1) / float(segs);
+            const float3 p0 = make_float3(r * std::cos(a0), -h, r * std::sin(a0));
+            const float3 p1 = make_float3(r * std::cos(a1), -h, r * std::sin(a1));
+            cone.push_back(make_tri(apex, p0, p1));      // side
+            cone.push_back(make_tri(base_c, p1, p0));    // cap
+        }
+    }
+    std::vector<TriEx> ex = triex_for(cone, 4);
+    impostor::ClusterImpostor imp;
+    CHECK(impostor::bake_cluster(0u, cone, ex, imp), "cone impostor bakes");
+    if (imp.atlas.size() != impostor::kAtlasBytes) { printf("FAILED\n"); return; }
+
+    // Coverage per ring, over the shade layer's alpha. A cone seen edge-on
+    // covers a triangle; seen from 60 degrees up it covers more of its cell,
+    // because the circular base turns toward the camera.
+    auto ring_coverage = [&](uint32_t el_i) {
+        size_t sum = 0;
+        for (uint32_t az = 0; az < impostor::kAzimuths; ++az) {
+            const uint32_t v = impostor::view_index(az, el_i);
+            const uint32_t cx = (v % impostor::kGridDim) * impostor::kCellPx;
+            const uint32_t cy = (v / impostor::kGridDim) * impostor::kCellPx;
+            for (uint32_t y = 0; y < impostor::kCellPx; ++y)
+                for (uint32_t x = 0; x < impostor::kCellPx; ++x)
+                    sum += imp.atlas[(size_t(cy + y) * impostor::kLayerPx + cx + x) * 4 + 3];
+        }
+        return sum;
+    };
+    const size_t c0 = ring_coverage(0);
+    const size_t c2 = ring_coverage(impostor::kElevations - 1);
+    CHECK(c0 > 0 && c2 > 0, "both the equator and the top ring depict something");
+    CHECK(c0 != c2,
+          "the top ring is a different image from the equator (rings are not copies)");
+
+    // And the NORMALS differ, which is the half of this that fixes the
+    // brightness divergence: an equator cell's normals point sideways, so a
+    // card tilted toward an overhead camera would shade against the wrong
+    // hemisphere if it kept them.
+    auto ring_normal_sum = [&](uint32_t el_i) {
+        long long acc = 0;
+        for (uint32_t az = 0; az < impostor::kAzimuths; ++az) {
+            const uint32_t v = impostor::view_index(az, el_i);
+            const uint32_t cx = (v % impostor::kGridDim) * impostor::kCellPx;
+            const uint32_t cy = (v / impostor::kGridDim) * impostor::kCellPx;
+            for (uint32_t y = 0; y < impostor::kCellPx; ++y)
+                for (uint32_t x = 0; x < impostor::kCellPx; ++x) {
+                    const size_t o = (size_t(cy + y) * impostor::kLayerPx + cx + x) * 4;
+                    if (imp.atlas[o + 3] == 0) continue;
+                    acc += imp.atlas[o] + imp.atlas[o + 1];
+                }
+        }
+        return acc;
+    };
+    CHECK(ring_normal_sum(0) != ring_normal_sum(impostor::kElevations - 1),
+          "the rings carry different surface normals, not just different silhouettes");
+
+    // Byte neutrality is the whole reason this was affordable; assert it here
+    // too so a future cell-size edit that quietly grows the atlas is caught by
+    // a test and not only by a static_assert someone can delete.
+    CHECK(imp.atlas.size() == 131072,
+          "elevation rings stayed inside the original 128 KiB atlas");
+    printf("PASSED\n");
+}
+
 static void test_impostor_sidecar_failability() {
     printf("=== test_impostor_sidecar_failability ===\n");
     std::vector<Tri> tris = sphere_tris(12, 8);
@@ -2797,6 +2944,8 @@ int main() {
 
     test_impostor_eligibility();          // M2.5 terminal impostor rep
     test_impostor_bake_deterministic();
+    test_impostor_view_index_inverse();
+    test_impostor_elevation_rings_differ();
     test_impostor_quad_shape();
     test_impostor_sidecar_failability();
     test_flatten_appends_impostor_rung();

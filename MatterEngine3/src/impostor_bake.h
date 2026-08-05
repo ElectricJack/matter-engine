@@ -59,15 +59,42 @@
 // fractional coverage in the alpha channel, so the silhouette is antialiased
 // rather than stair-stepped at the size where it is actually seen.
 //
-// RING, NOT SPHERE. One azimuth ring at the object's equator, cylindrical
-// billboarding (world up preserved). Ground props are looked at from around,
-// not from above; a camera that circles an object changes azimuth continuously
-// and elevation barely. Looking straight down at an impostor rock shows its
-// side profile — at <= 10 px that is not resolvable, and it is the documented
-// v1 limit rather than an accident.
+// ELEVATION ROWS (2026-08-05). v1 baked ONE azimuth ring at the equator and
+// billboarded cylindrically, on the argument that ground props are looked at
+// from around rather than from above. Flying over StreamMountain is exactly the
+// case that argument excludes, and it fails two ways at once: a vertical card
+// seen from 60 degrees up is foreshortened to half its height while the mesh it
+// replaced is not, and the normals it hands the shader are the equator's, which
+// point sideways when the light and the eye are both above. That is the
+// impostor-vs-prefab brightness divergence, and it is structural — no amount of
+// tuning the shade fixes a card showing the wrong face.
 //
-// COST. Two RGBA8 layers of 128x128 (a 4x4 grid of 32x32 cells) per cluster:
-//   16 views * 32 * 32 texels * 8 bytes = 131,072 B = 128 KiB, disk and VRAM.
+// So: 3 elevation rings at 0 / 30 / 60 degrees, nearest-selected, and the card
+// billboards SPHERICALLY (it faces the eye instead of staying vertical). The
+// two go together — rings without a tilting card still draw the right image on
+// an edge-on quad, and a tilting card without rings draws the equator's image
+// where the top should be.
+//
+// Above 75 degrees the nearest ring is 60 and the error grows to 30 degrees at
+// straight-down. That IS the documented v1 limit now, moved from "any elevation
+// at all" to "steeper than looking down at 75 degrees".
+//
+// COST: NOTHING. The cell was never the binding constraint — 32x32 is Nyquist-
+// adequate to 32 px, three times past the ~10 px the azimuth count allows — so
+// the resolution the cells did not need pays for the rings:
+//
+//                v1                        now
+//   cells        4x4 of 32x32              8x8 of 16x16
+//   views        16 az x 1 elev = 16       16 az x 3 elev = 48
+//   layer        128 x 128                 128 x 128        (unchanged)
+//   bytes        131,072 = 128 KiB         131,072 = 128 KiB (unchanged)
+//
+// Azimuth count is deliberately UNCHANGED at 16: it is the binding constraint
+// (see VIEWS above), and spending it on elevation would trade a defect that
+// shows at every camera angle for one that shows at some. The cells are now
+// Nyquist-adequate to 16 px against the ~10 px the views allow — still not
+// binding, but no longer three times clear of it, so the next feature to want
+// atlas space should take one of the 16 unused cells rather than shrink these.
 //
 // ---------------------------------------------------------------------------
 // WHAT IS IN THE ATLAS
@@ -115,15 +142,33 @@ namespace impostor {
 // but the CACHE identity now comes from the vector through the one fold site.
 constexpr uint32_t kFormatVersion = matter_version::components::kImpostorFormat;
 
-constexpr uint32_t kViews    = 16;                    // azimuth ring
-constexpr uint32_t kCellPx   = 32;                    // per-view cell edge
-constexpr uint32_t kGridDim  = 4;                     // kGridDim^2 >= kViews
+constexpr uint32_t kAzimuths   = 16;                  // views per elevation ring
+constexpr uint32_t kElevations = 3;                   // rings, see above
+constexpr uint32_t kViews    = kAzimuths * kElevations;   // 48
+constexpr uint32_t kCellPx   = 16;                    // per-view cell edge
+constexpr uint32_t kGridDim  = 8;                     // kGridDim^2 >= kViews
 constexpr uint32_t kLayerPx  = kCellPx * kGridDim;    // 128
 constexpr uint32_t kSuperSample = 4;                  // per axis, per texel
 constexpr size_t   kLayerBytes = size_t(kLayerPx) * kLayerPx * 4;
 constexpr size_t   kAtlasBytes = kLayerBytes * 2;     // shade + tint
 
+// Ring spacing, radians. Ring r is baked at r * kElevationStep above the
+// equator; the runtime picks the NEAREST ring, so the boundaries sit halfway
+// between (15 and 45 degrees for the 0/30/60 rings). The bake and the vertex
+// stage must agree on this exactly, so it is written once here and mirrored
+// into shaders_vk/impostor_common.glsl under a static_assert.
+constexpr float kElevationStep = 0.52359877559829887308f;   // 30 degrees
+
+// The view index for one (azimuth, elevation) pair. Azimuth-major so a ring is
+// contiguous, which is what makes the runtime's index arithmetic a multiply-add
+// rather than a lookup.
+constexpr uint32_t view_index(uint32_t azimuth, uint32_t elevation) {
+    return elevation * kAzimuths + azimuth;
+}
+
 static_assert(kGridDim * kGridDim >= kViews, "view grid too small");
+static_assert(kLayerPx == 128, "atlas layer size is a format constant");
+static_assert(kAtlasBytes == 131072, "elevation rings must stay byte-neutral");
 
 // Eligibility floor: the terminal mesh rung must carry at least this many
 // triangles for a 2-triangle billboard to be worth its atlas. See the header
