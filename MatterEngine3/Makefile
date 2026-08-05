@@ -202,49 +202,19 @@ MSL_C   = $(MSL_DIR)/src/surface.c \
 MSL_C_OBJ = $(addprefix $(OBJDIR)/,surface.o spatial_hash.o \
             mem_pool.o material_registry.o fat_primitive.o)
 
-ME3_OBJ = $(addprefix $(OBJDIR)/,script_host.o dsl_state.o dsl_bindings.o dsl_animation.o \
-          pf_math.o pf_sim.o pf_fields.o pf_path_recorder.o pf_bindings.o \
-          dsl_triangle.o triangle_emit.o polygon_triangulate.o \
-          csg_lowering.o module_resolver.o world_definition_loader.o script_rng_binding.o \
-          part_asset_v2.o part_graph.o part_graph_snapshot.o \
-          live_edit.o live_edit_prod.o inotify_watcher.o \
-          lod_bake.o world_flatten.o part_flatten.o \
-          warp_field.o \
-          retopo_blacklist.o \
-          modifier_apply.o \
-          sector_grid.o lod_select.o \
-          world_lights.o \
-          world_tracer.o \
-          part_cluster.o \
-          tileset_layout.o tileset_collider.o \
-          tileset_settle.o tileset_placement.o tileset_part_collider.o tileset_bake.o \
-          tileset_phase.o \
-          tileset_metrics.o \
-          tileset_gtex.o tileset_torus_bvh.o shader_source.o \
-          raster_mesh.o indexed_part_geometry.o matrix_math.o frame_matrices.o vk_temporal.o vk_gi_math.o vk_lighting_controls.o \
-          part_store.o world_state.o \
-          lod_trace.o \
-          tileset_slicer.o bc_encode.o \
-          local_provider.o resolvers.o \
-          ecs_runtime.o simulation_control.o physics_context.o physics_shapes.o physics_systems.o streaming_systems.o transform_system.o \
-          scene_service.o scene_change_tracker.o \
-          matter_engine.o \
-          refine_controller.o \
-          async_bake.o \
-          bake_trace.o \
-          resolve_cache.o \
-          terrain_field.o \
-          terrain_mesher.o \
-          sector_streamer.o \
-          ozz_adapter.o \
-          ozz_bake.o \
-          animation_ir.o animation_validate.o animation_binding_bake.o animation_budget.o anim_asset.o anim_bundle.o animation_asset_store.o animation_runtime_asset.o animation_store.o animation_evaluator.o animation_systems.o animation_world_queries.o animation_controllers.o animation_targets.o \
-          animation_rigid_bridge.o animation_skin_bridge.o vk_animation_skinning.o vk_animation_bounds.o \
-          sector_streaming_coordinator.o \
-          dispatch_context.o subscription.o event_hub.o command.o \
-          property.o \
-          json_doc.o \
-          props.o props_file.o draw_overrides.o)
+# ME3_OBJ is DERIVED from ME3_CPP -- never hand-maintained.
+#
+# It used to be a second, parallel list of .o names, and keeping the two in sync
+# by hand failed twice in one migration: part_imposter_representation.o and then
+# impostor_bake.o were each in ME3_CPP but missing here, so the archive silently
+# shipped with the symbol unresolved. The editor still linked, because it
+# compiles those sources a second time itself -- which is exactly what makes the
+# omission invisible until something links against the archive alone.
+#
+# vpath (above) already resolves every source directory, and all ME3_CPP
+# basenames are unique, so the mapping is total and unambiguous. Adding a source
+# to ME3_CPP is now sufficient.
+ME3_OBJ = $(addprefix $(OBJDIR)/,$(notdir $(ME3_CPP:.cpp=.o)))
 
 # Vendored BC encoder objects. Explicit rules (below) rather than vpath: these
 # are third-party sources that must never be picked up by the generic %.cpp
