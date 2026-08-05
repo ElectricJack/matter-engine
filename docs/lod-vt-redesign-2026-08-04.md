@@ -249,6 +249,29 @@ At runtime none of this is special: the impostor (or vanish) is still just rep N
 table, selected by the same walk (§5). The explicitness is purely an authoring-surface
 guarantee.
 
+> **BUILT 2026-08-05 — the impostor half, minus `views`.** `LOD.impostor({ at })` is live on
+> the `static lods` surface. It desugars to `{ impostor: true, at }`, so the terminal is
+> readable off the table *without* evaluating the class, like every other entry — which is
+> what the M6.5 shadow hand-off needs from it (it has to know the impostor distance before
+> baking anything). All four validation rules are enforced fail-closed in `eval_lods` and
+> re-checked in `part_flatten` (the plan is a file, so an older binary or a hand edit can
+> present a shape the parser never approved).
+>
+> **`views` is REJECTED, not ignored.** `impostor::kViews` is a format constant that the atlas
+> layout, the vertex stage and the format version are all built around, so honouring a
+> per-part count is a real change — and silently accepting the key would read exactly as if
+> that change had been made. A ladder naming `views` fails the parse.
+>
+> **The billboard is a picture of the ladder, not a member of its bounds.** `build_quad`
+> squares the card off at 1.10× the bounding-sphere radius, so admitting it to the cluster
+> AABB would inflate a tree's *horizontal* extent to its height. `cluster_radius` is the
+> number every authored `at` is normalized against, so that would silently move every switch
+> on the ladder, including the ones written in metres. The flatten excludes it, and the test
+> asserts a declared impostor leaves the radius bit-identical to the mesh-only bake.
+>
+> Still open: `LOD.vanish`, `replaces: 'subtree'` for assemblies (the authored path is
+> single-cluster), and per-part `views`.
+
 ### 3.5 Lazy, per-rep baking
 
 `lods()` is a *declaration*, not a work order. Nothing is generated until the streamer

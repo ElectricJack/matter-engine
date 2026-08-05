@@ -28,10 +28,31 @@ globalThis.JOIN = { miter: 0, bevel: 1, round: 2 };
 // thing the default ladder uses (eps = part_radius / divisor). Exactly one of
 // the two is required. `gen: 'decimate'` (a bare string) is also accepted for
 // a generator that needs no parameters.
+//
+// `LOD.impostor({ at })` is the distinguished TERMINAL entry (§3.4): past `at`
+// the part is a camera-facing billboard, not geometry. It is a whole entry
+// rather than a `gen` because it is not a generator over LOD0 -- it takes over
+// from the coarsest mesh rung -- and because being syntactically explicit is
+// the point: reading a ladder tells you at a glance whether the part ever
+// impostors and at exactly what distance. Omitting it means the last mesh rung
+// holds at any distance; an authored ladder never grows a silent impostor.
+//
+//     static lods = [
+//       { at: 0 },
+//       { at: 18, gen: LOD.decimate({ error: 0.05 }) },
+//       LOD.impostor({ at: 140 }),                     // terminal
+//     ];
+//
+// The design doc also sketches a `views:` count. It is REJECTED rather than
+// ignored: impostor::kViews is a format constant the atlas layout, the vertex
+// stage and the format version are all built around, so honouring a per-part
+// count is a real change, and silently accepting the key would read as if it
+// had been made.
 globalThis.LOD = {
   decimate(o) { return Object.assign({ gen: 'decimate' }, o || {}); },
   // The redesign doc spells this generator `simplify`; same QEM decimation.
   simplify(o) { return Object.assign({ gen: 'decimate' }, o || {}); },
+  impostor(o) { return Object.assign({ impostor: true }, o || {}); },
 };
 globalThis.Part = class Part {
   build(p) {}

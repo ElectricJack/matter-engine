@@ -159,6 +159,11 @@ private:
         // distances and generators the file already had.
         double at = -1.0;
         std::string gen_text;             // "" or e.g. "LOD.decimate({ error: 0.05 })"
+        // §3.4's terminal impostor. Carried for exactly the reason above, and
+        // it is the one field a count-based parse-verify CANNOT catch the loss
+        // of: dropping the terminal leaves the level count unchanged and turns
+        // a part that impostors at 140 m into one that draws mesh forever.
+        bool impostor = false;
     };
     void seed_lod_authoring();
     void draw_lod_authoring_panel();

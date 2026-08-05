@@ -1019,6 +1019,29 @@ ScriptHost::LodAuthoring ScriptHost::eval_lods(const std::string& source) {
                 JS_FreeValue(ctx, atV);
             }
 
+            // The explicit terminal impostor (redesign §3.4). Entry-level
+            // rather than a `gen` value because it is not a generator over
+            // LOD0 -- it takes over FROM the coarsest mesh rung. Must be a
+            // boolean; `false` reads as "no impostor", the same as absent.
+            if (ok) {
+                JSValue impV = JS_GetPropertyStr(ctx, entry, "impostor");
+                if (!JS_IsUndefined(impV)) {
+                    if (!JS_IsBool(impV)) ok = false;
+                    else spec.impostor = (JS_ToBool(ctx, impV) == 1);
+                }
+                JS_FreeValue(ctx, impV);
+            }
+            // `views` is the design doc's sketched per-part view count.
+            // impostor::kViews is a format constant (atlas layout, vertex
+            // stage, format version), so honouring it is a real change -- and
+            // accepting the key while ignoring it would read exactly like the
+            // change had been made. Reject instead.
+            if (ok) {
+                JSValue viewsV = JS_GetPropertyStr(ctx, entry, "views");
+                if (!JS_IsUndefined(viewsV)) ok = false;
+                JS_FreeValue(ctx, viewsV);
+            }
+
             // M3: `gen` -- the named built-in generator plus its parameters.
             if (ok) {
                 JSValue genV = JS_GetPropertyStr(ctx, entry, "gen");
@@ -1061,12 +1084,25 @@ ScriptHost::LodAuthoring ScriptHost::eval_lods(const std::string& source) {
     JS_FreeContext(ctx); JS_FreeRuntime(rt);
 
     // M3: whole-TABLE validation. The per-entry loop above can only see one
-    // entry; these three rules are properties of the ladder.
+    // entry; these rules are properties of the ladder.
     if (ok && !out.empty()) {
         // Rep 0 is build() verbatim at the camera: no generator, and if it
         // names a distance at all that distance is 0.
         if (!out[0].gen.empty()) ok = false;
         if (out[0].has_at && out[0].at != 0.0) ok = false;
+        // §3.4: at most one impostor, and only in last position. A mesh rep
+        // AFTER the impostor is a bake error rather than a silent reordering,
+        // because the billboard is where the ladder ENDS -- there is no
+        // geometry to come back to.
+        for (size_t i = 0; i + 1 < out.size(); ++i)
+            if (out[i].impostor) { ok = false; break; }
+        // The impostor is a picture of the coarsest mesh rung, so it needs one
+        // to exist, and it carries no geometry recipe of its own.
+        if (ok && out.back().impostor) {
+            if (out.size() < 2) ok = false;
+            else if (!out.back().gen.empty() || out.back().has_params ||
+                     !out.back().exclude.empty()) ok = false;
+        }
         // Declared distances must strictly increase. A table that does not
         // increase names no band for at least one rep, which is never what an
         // author means, and the runtime walk (lod_distance.h select_rep) would

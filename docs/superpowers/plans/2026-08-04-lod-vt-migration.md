@@ -545,6 +545,59 @@ epsilon-search duplication tests. Tests added: stage memoization, per-rep invali
 
 ---
 
+## M3.5 — The authored impostor terminal *(the M3/M2.5 seam)*
+
+> **STATUS 2026-08-05: DONE.** M3 landed authored distances and M2.5 landed the impostor,
+> but on separate paths: the default (divisor-schedule) ladder grew a terminal billboard
+> automatically, and the authored ladder could not have one at all. That gap is why "trees
+> render geometry way out past where I'd want impostors" had no answer short of dialling the
+> global pixel budget down and dragging everything else coarse with it.
+
+Scope: `LOD.impostor({ at })` as design §3.4's explicit terminal on the `static lods`
+surface, desugaring to `{ impostor: true, at }` so it stays readable without evaluating the
+class — the property lazy per-rep baking (M3b) and the M6.5 shadow hand-off both depend on.
+
+**Four fail-closed rules**, enforced in `eval_lods` and re-checked in `part_flatten` because
+the plan is a file an older binary or a hand edit can write:
+1. At most one impostor, only in last position — a mesh rep after the billboard is an error,
+   since the billboard is where the ladder *ends*.
+2. Never rep 0: the impostor is a picture of the coarsest mesh rung, so one must exist.
+3. No `gen`, no `params`, no `exclude` — it has no geometry recipe of its own.
+4. `views` is **rejected**, not accepted-and-ignored. `impostor::kViews` is a format constant
+   the atlas layout, the vertex stage and the format version are built around.
+
+**Two things that would have been silent had they been got wrong**, both now asserted:
+
+- **The billboard must not enter the cluster AABB.** `build_quad` squares the card off at
+  1.10× the bounding-sphere radius, so a 0.4 m-wide, 6 m-tall trunk would gain a 6.6 m
+  horizontal extent. `cluster_radius` is what every authored `at` is normalized against, so
+  the ladder's authored metres would all quietly move. The test bakes the same ladder with
+  and without the terminal on a deliberately tall, thin fixture and requires the radius to
+  match bit for bit; deleting the guard fails it by ~55%.
+- **The Part Workbench's "Save lods to source" would have deleted the terminal.** Its
+  parse-verify compared level COUNT, and dropping `impostor` leaves the count unchanged —
+  the same near-miss shape as `1a9b4606`, one field later. The verify now compares CONTENT
+  (`at`, `gen`, `params`, `exclude`, `impostor`) on both the pre-write and post-write passes,
+  the renderer re-emits the terminal, and the panel offers it only where the parser would
+  accept it. A missing `, ` before `params:` in the same renderer was fixed alongside.
+
+`MATTER_IMPOSTOR=0` drops a declared terminal rather than failing the bake: the ladder ends
+at the last mesh rung, exactly as if none had been declared. Same switch, same meaning, on
+both ladders — the env-var lambda that was private to the default path is now one function
+serving both.
+
+Acceptance (all green): `run-flatten`'s `test_authored_ladder_impostor_terminal` —
+rung N is the billboard by `is_billboard_rung`, the atlas loads against the depicts-hash
+PartStore recomputes, `select_rep` flips at 139/141 m for an authored 140, the AABB is
+untouched, `MATTER_IMPOSTOR=0` degrades to mesh, and two cold bakes are byte-identical in
+both the ladder and the atlas. `run-script`'s parse cases cover all four rules plus
+`impostor: false` reading as absent.
+
+Still open: `LOD.vanish`, and `replaces: 'subtree'` for assemblies — the authored path is
+single-cluster, so a subtree impostor has nowhere to attach yet.
+
+---
+
 ## M4 — Artifact consolidation and the version vector
 
 > **STATUS 2026-08-05: DONE.** Landed as `e9d16341` (the version vector), `976ba3af` (the
@@ -742,10 +795,11 @@ into the terrain **sector's** page, which has exactly one placement.
   dark dome patches were the baked horizon queried through a per-rung, mesh-dependent basis.
   Do not add data to that channel until M6's single parameterisation makes the query
   rung-invariant, or this builds on the bug.
-- **Authorable impostor distances.** M3 landed authored `at` in metres and M2.5 landed the
-  impostor, but they do not compose yet: an authored ladder gets no terminal impostor rung.
-  The fold-in distance must BE the impostor distance, so close that gap first or the two
-  dials fight.
+- ~~**Authorable impostor distances.**~~ **MET 2026-08-05.** M3's authored `at` and M2.5's
+  impostor now compose: `LOD.impostor({ at })` is the explicit terminal entry (design §3.4),
+  and its `at` IS the impostor switch distance, readable off `static lods` without building
+  anything — which is what this milestone needs, since the fold-in decision has to be made
+  before the bake runs. See M3.5 below.
 
 Scope:
 

@@ -733,6 +733,15 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
         if (lods[i].has_at) want_at[i] = lods[i].at;
         if (!lods[i].gen.empty())
             want_gen[i] = lods[i].gen + " " + lods[i].gen_params_json;
+        // §3.4's terminal impostor rides the SAME level_gen slot as a named
+        // generator. It is not one -- it takes over from the coarsest mesh
+        // rung rather than deriving from LOD0 -- but reusing the slot means it
+        // round-trips through the plan format unchanged, it counts toward
+        // drives_ladder() (so `LOD.impostor({})` with no other M3 field is not
+        // silently dropped), and the fast path's `existing.level_gen ==
+        // want_gen` staleness check covers it for free. eval_lods has already
+        // guaranteed the entry carries no real generator.
+        if (lods[i].impostor) want_gen[i] = "impostor {}";
     }
 
     // Content-addressed fast path (mirrors bake_lod_variants): a fresh sidecar

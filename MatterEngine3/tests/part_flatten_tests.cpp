@@ -1472,6 +1472,234 @@ static void test_authored_ladder_switch_distances() {
     part_bundle::remove_section(slods, kAuthoredHash, part_bundle::kSectionPlan);
 }
 
+// ---------------------------------------------------------------------------
+// §3.4: the AUTHORED terminal impostor. An authored ladder ending in
+// `LOD.impostor({ at })` gets the billboard as its last rung, switching in at
+// the metres the author named — which is the number M6.5's baked distant
+// shadows have to hand off at, and the answer to "trees render geometry way
+// too far out" that does not require dialling the global pixel budget down.
+//
+// The fixture is deliberately TALL AND THIN (a stretched sphere, the shape of
+// the trees this exists for) because that is what makes the AABB assertion
+// below bite: build_quad squares the card off at 1.10× the bounding-sphere
+// radius, so admitting it to the cluster AABB would inflate a 0.4 m-wide
+// trunk's X extent to 6.6 m. cluster_radius is the number every authored `at`
+// is normalized against, so that would silently move every switch on the
+// ladder — including the one the author wrote in metres.
+static const uint64_t kImpostorLadderHash = 0xA110000033330003ull;
+
+static void test_authored_ladder_impostor_terminal() {
+    printf("=== test_authored_ladder_impostor_terminal ===\n");
+
+    // Tall and thin: 0.4 m across, 6 m tall.
+    std::vector<Tri> tris = sphere_tris(20, 10);
+    auto stretch = [](float3& v) { v.x *= 0.2f; v.z *= 0.2f; v.y *= 3.0f; };
+    for (Tri& t : tris) {
+        stretch(t.vertex0); stretch(t.vertex1); stretch(t.vertex2);
+        t.centroid = make_float3((t.vertex0.x + t.vertex1.x + t.vertex2.x) / 3.0f,
+                                 (t.vertex0.y + t.vertex1.y + t.vertex2.y) / 3.0f,
+                                 (t.vertex0.z + t.vertex1.z + t.vertex2.z) / 3.0f);
+    }
+    CHECK(save_fixture(kImpostorLadderHash, 5, {tris}, {}), "imp ladder: fixture written");
+
+    const std::string flat =
+        std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kImpostorLadderHash);
+    const std::string slods =
+        std::string(kCacheRoot) + "/" + part_asset::cache_path_static_lods(kImpostorLadderHash);
+    const std::string fimp =
+        std::string(kCacheRoot) + "/" + impostor::cache_path_impostor(kImpostorLadderHash);
+
+    // kCacheRoot is created but NEVER wiped, so it survives between runs of
+    // this binary. Phase (a) below asserts that no atlas exists when no
+    // terminal is declared — which the PREVIOUS run's phase (b) would satisfy
+    // from disk. Clear both sections up front so each run starts cold; without
+    // this the test passes exactly once per fresh temp directory.
+    part_bundle::remove_section(fimp, kImpostorLadderHash, part_bundle::kSectionImpostor);
+    part_bundle::remove_section(slods, kImpostorLadderHash, part_bundle::kSectionPlan);
+    part_bundle::remove_section(flat, kImpostorLadderHash, part_bundle::kSectionFlat);
+
+    // Helper: write a plan and flatten cold, returning the cluster radius the
+    // RUNTIME would derive (part_store.cpp: half the AABB diagonal).
+    auto bake = [&](const std::vector<double>& at,
+                    const std::vector<std::string>& gen,
+                    part_flatten::FlattenResult& res_out,
+                    std::vector<part_asset::FlatCluster>& clusters_out,
+                    BLASManager& blas_out) -> float {
+        part_asset::StaticLodPlan plan;
+        plan.level_hashes.assign(at.size(), kImpostorLadderHash);
+        plan.level_exclude_masks.assign(at.size(), 0u);
+        plan.level_at  = at;
+        plan.level_gen = gen;
+        if (!part_asset::save_static_lod_plan(slods, kImpostorLadderHash, plan)) return -1.0f;
+        part_bundle::remove_section(flat, kImpostorLadderHash, part_bundle::kSectionFlat);
+        res_out = part_flatten::flatten_part(kCacheRoot, kImpostorLadderHash);
+        if (!res_out.ok) return -1.0f;
+        TLASManager tlas(4);
+        if (!part_asset::load_flat_v3(flat, kImpostorLadderHash, blas_out, tlas, clusters_out))
+            return -1.0f;
+        if (clusters_out.size() != 1) return -1.0f;
+        const float dx = clusters_out[0].aabb_max[0] - clusters_out[0].aabb_min[0];
+        const float dy = clusters_out[0].aabb_max[1] - clusters_out[0].aabb_min[1];
+        const float dz = clusters_out[0].aabb_max[2] - clusters_out[0].aabb_min[2];
+        return 0.5f * std::sqrt(dx*dx + dy*dy + dz*dz);
+    };
+
+    // (a) The mesh-only reference: the same two reps, no terminal declared.
+    float mesh_radius = 0.0f;
+    {
+        part_flatten::FlattenResult r;
+        std::vector<part_asset::FlatCluster> cl;
+        BLASManager b;
+        mesh_radius = bake({0.0, 18.0}, {"", "decimate {\"divisor\":8}"}, r, cl, b);
+        CHECK(mesh_radius > 0.0f, "imp ladder: mesh-only reference bakes");
+        CHECK(r.impostors == 0, "imp ladder: no terminal declared -> no impostor");
+        CHECK(!fs::exists(fimp) ||
+                  !part_bundle::has_section(fimp, kImpostorLadderHash,
+                                            part_bundle::kSectionImpostor),
+              "imp ladder: an undeclared impostor is never implied");
+    }
+
+    // (b) The same ladder with the terminal declared at 140 m.
+    const double kImpAt = 140.0;
+    part_flatten::FlattenResult res;
+    std::vector<part_asset::FlatCluster> clusters;
+    BLASManager blas;
+    const float radius = bake({0.0, 18.0, kImpAt},
+                              {"", "decimate {\"divisor\":8}", "impostor {}"},
+                              res, clusters, blas);
+    CHECK(radius > 0.0f, "imp ladder: flatten ok");
+    if (!(radius > 0.0f)) {
+        printf("  error: %s\n", res.error.c_str());
+        part_bundle::remove_section(slods, kImpostorLadderHash, part_bundle::kSectionPlan);
+        return;
+    }
+    CHECK(res.levels == 3, "imp ladder: the impostor is a rep of the same table");
+    CHECK(res.impostors == 1, "imp ladder: one billboard baked");
+
+    // THE GUARD. Same reps, same geometry, same radius — the billboard is a
+    // picture of the ladder, not a member of its bounds. Delete the
+    // `if (!is_impostor) acc(tris)` in part_flatten and this fails by ~55%.
+    CHECK(std::fabs(radius - mesh_radius) < 1e-5f * mesh_radius,
+          "imp ladder: the billboard does not enter the cluster AABB");
+
+    const auto& lods = clusters[0].lods;
+    const auto& entries = blas.get_entries();
+    if (lods.size() != 3) {
+        printf("  SKIPPING (unexpected artifact shape)\n");
+        part_bundle::remove_section(slods, kImpostorLadderHash, part_bundle::kSectionPlan);
+        return;
+    }
+    // The terminal rung IS the billboard, by the one predicate every consumer
+    // asks (impostor::is_billboard_rung), not by triangle count alone.
+    const BLASManager::BLASEntry* term = entries[lods[2].blas_indices[0]].get();
+    CHECK(term && impostor::is_billboard_rung(term->triangles, term->tri_extra),
+          "imp ladder: rung 2 is the billboard");
+    CHECK(entries[lods[1].blas_indices[0]]->triangles.size() > 2,
+          "imp ladder: rung 1 is still mesh");
+
+    // The atlas is on disk, and it answers to the depicts-hash PartStore
+    // recomputes from the rung the billboard takes over from. This is the
+    // whole staleness contract: an atlas that does not match the mesh it
+    // depicts is rejected rather than drawn.
+    {
+        uint64_t depicts = impostor::depicts_hash_begin();
+        impostor::depicts_hash_add_cluster(
+            depicts, 0u, entries[lods[1].blas_indices[0]]->triangles);
+        impostor::PartImpostor loaded;
+        impostor::LoadFailure fail = impostor::LoadFailure::None;
+        std::string reason;
+        const bool ok = impostor::load(fimp, kImpostorLadderHash,
+                                       impostor::depicts_hash_finish(depicts),
+                                       loaded, &fail, &reason);
+        CHECK(ok && loaded.clusters.size() == 1,
+              "imp ladder: the atlas loads against the rung it depicts");
+        if (!ok) printf("  impostor load: %s (%s)\n",
+                        impostor::load_failure_text(fail), reason.c_str());
+    }
+
+    // The authored metres land where they were authored. Rung 1's threshold is
+    // rung 2's switch-IN, so this IS the impostor distance.
+    const float want_imp = radius / (float)kImpAt;
+    CHECK(std::fabs(lods[1].screen_size_threshold - want_imp) < 1e-4f * want_imp,
+          "imp ladder: rung 1's threshold is radius / at(impostor)");
+    CHECK(lods[2].screen_size_threshold == 0.0f,
+          "imp ladder: the billboard never hides");
+
+    float sw[3];
+    for (int i = 0; i < 3; ++i)
+        sw[i] = lod::normalized_switch_distance(lods[i].screen_size_threshold);
+    const float reach = lod::reach(radius, 1.0f, 1.0f);
+    CHECK(lod::select_rep(sw, 3, 139.0f, reach) == 1, "imp ladder: 139 m -> mesh");
+    CHECK(lod::select_rep(sw, 3, 141.0f, reach) == 2, "imp ladder: 141 m -> billboard");
+    CHECK(lod::select_rep(sw, 3, 9000.f, reach) == 2, "imp ladder: far away -> billboard");
+
+    // MATTER_IMPOSTOR=0 drops the declared terminal rather than failing the
+    // bake: the ladder ends at the last mesh rung, exactly as it would have
+    // had the author declared no terminal at all.
+    {
+#ifdef _WIN32
+        _putenv_s("MATTER_IMPOSTOR", "0");
+#else
+        setenv("MATTER_IMPOSTOR", "0", 1);
+#endif
+        part_flatten::FlattenResult r;
+        std::vector<part_asset::FlatCluster> cl;
+        BLASManager b;
+        const float r_off = bake({0.0, 18.0, kImpAt},
+                                 {"", "decimate {\"divisor\":8}", "impostor {}"}, r, cl, b);
+        CHECK(r_off > 0.0f && r.ok, "imp ladder: MATTER_IMPOSTOR=0 still bakes");
+        CHECK(r.levels == 2 && r.impostors == 0,
+              "imp ladder: MATTER_IMPOSTOR=0 ends the ladder at the mesh rung");
+        CHECK(cl.size() == 1 && cl[0].lods.size() == 2 &&
+                  cl[0].lods[1].screen_size_threshold == 0.0f,
+              "imp ladder: the surviving mesh rung holds at any distance");
+#ifdef _WIN32
+        _putenv_s("MATTER_IMPOSTOR", "");
+#else
+        unsetenv("MATTER_IMPOSTOR");
+#endif
+    }
+
+    // Determinism: two cold bakes of the atlas-bearing ladder are identical.
+    {
+        part_flatten::FlattenResult r;
+        std::vector<part_asset::FlatCluster> cl;
+        BLASManager b;
+        CHECK(bake({0.0, 18.0, kImpAt},
+                   {"", "decimate {\"divisor\":8}", "impostor {}"}, r, cl, b) > 0.0f,
+              "imp ladder: re-bake for the determinism gate");
+        std::vector<char> first = read_all_bytes(flat);
+        // The ATLAS specifically, not the bundle: `fimp` and `flat` are the
+        // same file (both parts/<hash>.bundle), so a whole-file compare here
+        // would just repeat the ladder check above under a different name.
+        std::vector<uint8_t> first_atlas;
+        CHECK(part_bundle::read_section(fimp, kImpostorLadderHash,
+                                        part_bundle::kSectionImpostor, first_atlas),
+              "imp ladder: the atlas section reads back");
+        part_flatten::FlattenResult r2;
+        std::vector<part_asset::FlatCluster> cl2;
+        BLASManager b2;
+        CHECK(bake({0.0, 18.0, kImpAt},
+                   {"", "decimate {\"divisor\":8}", "impostor {}"}, r2, cl2, b2) > 0.0f,
+              "imp ladder: second cold bake ok");
+        CHECK(!first.empty() && first == read_all_bytes(flat),
+              "imp ladder: two cold bakes are byte-identical");
+        std::vector<uint8_t> second_atlas;
+        CHECK(part_bundle::read_section(fimp, kImpostorLadderHash,
+                                        part_bundle::kSectionImpostor, second_atlas),
+              "imp ladder: the atlas section reads back after the second bake");
+        CHECK(!first_atlas.empty() && first_atlas == second_atlas,
+              "imp ladder: the atlas is byte-identical too");
+    }
+
+    printf("  radius=%.4f (mesh-only %.4f) thr=%.5f/%.5f/%.1f\n", radius, mesh_radius,
+           lods[0].screen_size_threshold, lods[1].screen_size_threshold,
+           lods[2].screen_size_threshold);
+    printf("  test_authored_ladder_impostor_terminal OK\n");
+
+    part_bundle::remove_section(slods, kImpostorLadderHash, part_bundle::kSectionPlan);
+}
+
 // M3 companion: a `static lods` block that names NEITHER a distance nor a
 // generator — the pre-M3 W5 surface, params/exclude only — must not touch the
 // ladder at all. Same fixture, same flatten, byte-identical artifact with and
@@ -2496,6 +2724,7 @@ int main() {
     test_ratio2_ladder_shape();
     test_budget_ladder_assembly();
     test_authored_ladder_switch_distances();
+    test_authored_ladder_impostor_terminal();
     test_w5_plan_does_not_drive_the_ladder();
     test_instance_boundary_records_refs();
     test_generous_budget_inlines();
