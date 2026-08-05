@@ -261,8 +261,21 @@ struct VkScenePartChartMesh {
     uint32_t surface_lane_count = 0;
 };
 
+// M2.5: one cluster's terminal impostor, carried from the part store to the
+// renderer. `mesh_index` is the part-local rung mesh whose two triangles are
+// the billboard -- the renderer patches their vertex tint with the atlas slot
+// it assigns, which is the only thing about the impostor that cannot be known
+// until upload time.
+struct VkScenePartImpostor {
+    uint32_t cluster = 0;
+    uint32_t ordinal = 0;   // this impostor's index within the part
+    std::vector<uint8_t> atlas;   // impostor::kAtlasBytes: shade layer, tint layer
+};
+
 struct VkScenePart {
     uint64_t part_hash = 0;
+    // Empty for every part whose ladder bottoms out above the impostor tier.
+    std::vector<VkScenePartImpostor> impostors;
     std::vector<VkSceneCluster> clusters;
     std::vector<VkRasterVertex> vertices;   // unique vertices, all LOD meshes concatenated
     // Index buffer: values are PART-LOCAL (already include each mesh's vertex
@@ -605,6 +618,12 @@ public:
 
     bool init(std::string& error);
     int ensure_part(const VkScenePart& part, std::string& error);
+
+    // M2.5: how many terminal impostors currently hold an atlas slot. On the
+    // editor stats overlay so "are any drawing?" is answerable at a glance --
+    // the single question the abandoned branch could not answer for a whole
+    // generation of artifacts.
+    uint32_t resident_impostor_count() const { return impostor_resident_; }
     // Immutable renderer-global raster range for an already registered part.
     // Animation uses this after ensure_part() so skin work references the same
     // source vertex/index arenas as the conservative bind-pose draw.
@@ -1811,6 +1830,35 @@ private:
     TilesetImage tileset_dummy_rg8_;    // normal
     TilesetImage tileset_dummy_r16_;    // height
     VkSampler tileset_sampler_ = VK_NULL_HANDLE;
+
+    // ---- M2.5 terminal impostors -----------------------------------------
+    // One 2D array image, two layers per resident impostor (shade, tint), at
+    // scene-set binding 15. Created once at tileset-infrastructure time and
+    // never recreated, so the descriptor is valid from the first frame and a
+    // part with no impostor costs nothing.
+    static constexpr uint32_t kImpostorMaxSlots = 128;
+    TilesetImage impostor_atlas_{};
+    VkSampler    impostor_sampler_ = VK_NULL_HANDLE;
+    // Bump allocator with a free list. Slots are returned on release_part, so
+    // a streaming world recycles them; exhaustion is a LOGGED load failure
+    // (once), never a silent absence.
+    std::vector<uint32_t> impostor_free_slots_;
+    uint32_t     impostor_next_slot_ = 0;
+    uint32_t     impostor_resident_ = 0;
+    bool         impostor_slots_exhausted_logged_ = false;
+    // part slot -> the atlas slots it owns, so release_part can return them.
+    std::map<uint32_t, std::vector<uint32_t>> impostor_slots_of_part_;
+
+    bool create_impostor_atlas(std::string& error);
+    void write_impostor_descriptor_for_frame(VkDescriptorSet set);
+    // Assigns atlas slots for `part`, uploads its atlases, and patches the
+    // billboard vertices already staged at `vertex_base`. Failure is reported
+    // and the part still registers -- with its impostor rungs drawing as
+    // untextured cards is NOT an option, so a failed upload logs and the
+    // vertices keep slot 0, whose layers are cleared to zero coverage and
+    // therefore discard.
+    void adopt_part_impostors(const VkScenePart& part, uint32_t part_slot,
+                              uint32_t vertex_base);
     matter::VkBufferResource tileset_params_;
     bool tileset_infra_ready_ = false;
 

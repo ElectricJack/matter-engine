@@ -6473,6 +6473,18 @@ bool build_vulkan_part(uint64_t part_hash,
     g_pub_vertexloop_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - build_t0).count();
 
+    // M2.5: carry the terminal impostors' baked atlases to the renderer. The
+    // billboard GEOMETRY needs nothing here -- it went through the vertex loop
+    // above as an ordinary two-triangle rung -- only the pixels do.
+    part.impostors.reserve(loaded.impostors.size());
+    for (const auto& imp : loaded.impostors) {
+        viewer::VkScenePartImpostor out;
+        out.cluster = imp.cluster;
+        out.ordinal = imp.ordinal;
+        out.atlas = imp.data.atlas;
+        part.impostors.push_back(std::move(out));
+    }
+
     // WP-E (chart-space VT): hand the renderer the per-rung chart tables the
     // load-time ladder bake produced, plus the CPU rung meshes the page filler
     // reads. Both are copied by the VT residency layer at registration, so
@@ -7388,6 +7400,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.clusters_culled = cull_stats.frustum_culled;
     impl_->stats.hiz_culled = cull_stats.hiz_culled;
     impl_->stats.draw_batches = cull_stats.batches;
+    impl_->stats.resident_impostors =
+        impl_->vk_scene->resident_impostor_count();
     const viewer::VkSceneUploadCounters upload_counters =
         impl_->vk_scene->upload_counters();
     impl_->stats.vk_instance_cache_expansions =

@@ -1129,6 +1129,16 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
     const char* hit_tag = s.batch_cache_hit ? " [cached]" : "";
     ImGui::Text("Raster: %d batches / %d tris  culled: %d%s",
                 s.raster_batches, s.raster_tris, s.culled_clusters, hit_tag);
+    // M2.5. Zero here with rocks on screen means the terminal tier is absent,
+    // which is exactly the state the previous impostor attempt sat in for a
+    // whole generation of artifacts without saying so anywhere.
+    ImGui::Text("Impostors resident: %d", s.resident_impostors);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Terminal impostor reps holding a view-atlas slot. A part earns "
+            "one where its mesh ladder bottoms out; 0 with impostor-eligible "
+            "parts loaded means the atlases did not load -- the reason is on "
+            "stdout, once per part.");
     if (s.gpu_cull_active) {
         ImGui::Text("GPU cull: emitted %d  frustum %d  hiz %d",
                     s.gpu_emitted, s.gpu_culled, s.gpu_culled_hiz);

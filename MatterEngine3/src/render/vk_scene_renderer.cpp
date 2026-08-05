@@ -4,6 +4,7 @@
 #include "vk_scene_renderer.h"
 
 #include "lod_distance.h"   // the one LOD selection rule (M1)
+#include "impostor_bake.h"  // M2.5 terminal impostor atlas layout
 #include "lod_trace.h"      // M1d fly-through determinism trace
 
 #include <algorithm>
@@ -1477,6 +1478,11 @@ void VkSceneRenderer::destroy_pipeline() {
         for (auto& channel : slot.channels) destroy_tileset_image(channel);
         slot = TilesetSlotGpu{};
     }
+    if (impostor_sampler_ != VK_NULL_HANDLE) {
+        vkDestroySampler(vulkan_->device(), impostor_sampler_, nullptr);
+        impostor_sampler_ = VK_NULL_HANDLE;
+    }
+    destroy_tileset_image(impostor_atlas_);
     destroy_tileset_image(tileset_dummy_rgba8_);
     destroy_tileset_image(tileset_dummy_rg8_);
     destroy_tileset_image(tileset_dummy_r16_);
@@ -1628,7 +1634,8 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     // Binding 14 (per-module draw overrides): a per-part_slot
     // {max_draw_distance, lod_bias} table, COMPUTE-only (cull.comp). Always
     // bound; a one-entry neutral table in the default state.
-    std::array<VkDescriptorSetLayoutBinding, 15> scene_bindings{};
+    // Binding 15 (M2.5): the terminal-impostor view atlas, FRAGMENT-only.
+    std::array<VkDescriptorSetLayoutBinding, 16> scene_bindings{};
     for (uint32_t i = 0; i < 6; ++i)
         scene_bindings[i] =
             descriptor_binding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1662,6 +1669,9 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
         13, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_FRAGMENT_BIT);
     scene_bindings[14] = descriptor_binding(
         14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
+    scene_bindings[15] = descriptor_binding(
+        15, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_FRAGMENT_BIT);
     VkDescriptorSetLayoutCreateInfo scene_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     scene_layout.bindingCount =
@@ -2848,9 +2858,10 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         // 27 for the scene/VT buffers above, +1 for the per-module
         // draw-override table at binding 14.
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 28},
+        // +1 for the M2.5 impostor atlas at scene binding 15.
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count *
-             (113 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
+             (114 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
               vt::kVtChannelCount)},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 34}};
     VkDescriptorPoolCreateInfo pool{
@@ -3106,6 +3117,7 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.skin_current_output);
     update_descriptor(frame.skin_descriptor_set, 6,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.skin_previous_output);
+    write_impostor_descriptor_for_frame(frame.descriptor_sets[1]);
     update_descriptor(frame.descriptor_sets[1], 9,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.vt_draw_slots);
     update_descriptor(frame.descriptor_sets[1], 14,
@@ -4668,6 +4680,399 @@ void record_tileset_upload(VkCommandBuffer cmd, void* user_data) {
 }
 }  // namespace
 
+
+// ---------------------------------------------------------------------------
+// M2.5 — the terminal impostor atlas.
+//
+// The billboard rung itself needs nothing here: it is an ordinary two-triangle
+// mesh rung with an ordinary BLAS, an ordinary indirect draw and an ordinary
+// entry in the same switch-distance table, so cull.comp selects it with the
+// walk it already had. What DOES need renderer support is its texture -- the
+// baked view atlas -- and the one fact about it that cannot be known at bake
+// time: which layer pair it landed in.
+
+namespace {
+// Keep the shader's view grid and the baker's in lockstep. shaders_vk/
+// impostor_common.glsl hard-codes 16 views in a 4x4 grid, and gbuffer.frag
+// indexes cells with those numbers; a bake that changed either without
+// changing the shader would sample the wrong cell and look like a rendering
+// bug rather than a constant mismatch.
+static_assert(impostor::kViews == 16u, "shaders_vk/impostor_common.glsl: IMPOSTOR_VIEWS");
+static_assert(impostor::kGridDim == 4u, "shaders_vk/impostor_common.glsl: IMPOSTOR_GRID_DIM");
+static_assert(impostor::kLayerBytes ==
+                  static_cast<size_t>(impostor::kLayerPx) * impostor::kLayerPx * 4,
+              "impostor atlas layer is RGBA8");
+
+struct ImpostorUploadRecord {
+    VkImage  image = VK_NULL_HANDLE;
+    VkBuffer staging = VK_NULL_HANDLE;
+    std::vector<VkBufferImageCopy> regions;
+    uint32_t layer_count = 0;
+    bool     rt_available = false;
+};
+
+void record_impostor_upload(VkCommandBuffer cmd, void* user_data) {
+    auto& rec = *static_cast<ImpostorUploadRecord*>(user_data);
+    if (rec.image == VK_NULL_HANDLE || rec.regions.empty()) return;
+    const VkPipelineStageFlags2 dst_stage =
+        vk_scene_detail::ray_depth_destination_stages(rec.rt_available);
+    // Only the layers being written are transitioned; every other layer is
+    // already SHADER_READ_ONLY_OPTIMAL from the clear at creation, and a
+    // whole-image barrier would drop those back to UNDEFINED.
+    const VkImageSubresourceRange range{
+        VK_IMAGE_ASPECT_COLOR_BIT, 0, 1,
+        rec.regions.front().imageSubresource.baseArrayLayer, rec.layer_count};
+    VkImageMemoryBarrier2 to_dst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    to_dst.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+    to_dst.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    to_dst.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    to_dst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_dst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_dst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_dst.image = rec.image;
+    to_dst.subresourceRange = range;
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &to_dst;
+    vkCmdPipelineBarrier2(cmd, &dep);
+
+    vkCmdCopyBufferToImage(cmd, rec.staging, rec.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           static_cast<uint32_t>(rec.regions.size()),
+                           rec.regions.data());
+
+    VkImageMemoryBarrier2 to_read = to_dst;
+    to_read.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    to_read.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    to_read.dstStageMask = dst_stage;
+    to_read.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDependencyInfo dep2{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep2.imageMemoryBarrierCount = 1;
+    dep2.pImageMemoryBarriers = &to_read;
+    vkCmdPipelineBarrier2(cmd, &dep2);
+}
+
+struct ImpostorClearRecord {
+    VkImage image = VK_NULL_HANDLE;
+    uint32_t layers = 0;
+    bool rt_available = false;
+};
+
+// Slot 0's layers stay ZERO for the whole session and that is load-bearing:
+// a part whose atlas upload fails keeps slot 0, and zero coverage means every
+// one of its fragments discards. The impostor then contributes nothing rather
+// than drawing an untextured white card, which is the failure mode that would
+// be mistaken for a rendering bug instead of a missing atlas.
+void record_impostor_clear(VkCommandBuffer cmd, void* user_data) {
+    const auto& rec = *static_cast<ImpostorClearRecord*>(user_data);
+    const VkPipelineStageFlags2 dst_stage =
+        vk_scene_detail::ray_depth_destination_stages(rec.rt_available);
+    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
+                                        rec.layers};
+    const VkClearColorValue zero{{0.0f, 0.0f, 0.0f, 0.0f}};
+    VkImageMemoryBarrier2 to_dst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    to_dst.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+    to_dst.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    to_dst.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    to_dst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_dst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_dst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_dst.image = rec.image;
+    to_dst.subresourceRange = range;
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &to_dst;
+    vkCmdPipelineBarrier2(cmd, &dep);
+    vkCmdClearColorImage(cmd, rec.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                         &zero, 1, &range);
+    VkImageMemoryBarrier2 to_read = to_dst;
+    to_read.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    to_read.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    to_read.dstStageMask = dst_stage;
+    to_read.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDependencyInfo dep2{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep2.imageMemoryBarrierCount = 1;
+    dep2.pImageMemoryBarriers = &to_read;
+    vkCmdPipelineBarrier2(cmd, &dep2);
+}
+}  // namespace
+
+bool VkSceneRenderer::create_impostor_atlas(std::string& error) {
+    // IDEMPOTENT, and that is load-bearing. This is called from two places --
+    // init(), and on demand from adopt_part_impostors for the parts that
+    // register before init() runs -- and a second creation would leak the
+    // first image AND reset the slot allocator, silently pointing every
+    // already-assigned slot at an image nothing samples. Observed exactly
+    // once, as two parts holding slot 1.
+    if (impostor_atlas_.image != VK_NULL_HANDLE) return true;
+    VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sampler.magFilter = VK_FILTER_LINEAR;
+    sampler.minFilter = VK_FILTER_LINEAR;
+    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    // CLAMP, not REPEAT: cells are packed edge to edge in one layer, so a
+    // wrapping tap would land in a different azimuth entirely. The bake's
+    // guard band and the shader's uv clamp are the other two belts.
+    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.maxLod = 0.0f;
+    VkResult result = vkCreateSampler(vulkan_->device(), &sampler, nullptr,
+                                      &impostor_sampler_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateSampler(impostor)", result, error);
+
+    if (!create_tileset_image(VK_FORMAT_R8G8B8A8_UNORM, impostor::kLayerPx, 1,
+                              kImpostorMaxSlots * 2, impostor_atlas_, error))
+        return false;
+    ImpostorClearRecord clear{impostor_atlas_.image, kImpostorMaxSlots * 2,
+                              vulkan_->ray_tracing_available()};
+    if (!matter::submit_immediate(*vulkan_, record_impostor_clear, &clear, error,
+                                  matter::ImmediateSubmitPhase::image_transition))
+        return false;
+    // Slot 0 is the reserved "no atlas" slot (see record_impostor_clear).
+    impostor_next_slot_ = 1;
+    return true;
+}
+
+void VkSceneRenderer::write_impostor_descriptor_for_frame(VkDescriptorSet set) {
+    if (set == VK_NULL_HANDLE || impostor_atlas_.view == VK_NULL_HANDLE) return;
+    VkDescriptorImageInfo info{impostor_sampler_, impostor_atlas_.view,
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = set;
+    write.dstBinding = 15;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &info;
+    vkUpdateDescriptorSets(vulkan_->device(), 1, &write, 0, nullptr);
+}
+
+void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
+                                           uint32_t part_slot,
+                                           uint32_t vertex_base) {
+    if (impostor_atlas_.image == VK_NULL_HANDLE) {
+        // Create it on demand. Parts register BEFORE VkSceneRenderer::init()
+        // in the production publish path -- measured on RockGallery, ten of
+        // eleven impostor-bearing parts arrived first -- so an atlas built
+        // only in init() exists for whichever parts happen to come last.
+        // That is not a race to tolerate: it silently halves the tier.
+        std::string create_error;
+        if (!create_impostor_atlas(create_error)) {
+            if (!impostor_slots_exhausted_logged_) {
+                impostor_slots_exhausted_logged_ = true;
+                std::fprintf(stderr,
+                    "[vk] impostor atlas could not be created (%s); part "
+                    "%016llx's %zu impostor(s) will not draw\n",
+                    create_error.c_str(),
+                    static_cast<unsigned long long>(part.part_hash),
+                    part.impostors.size());
+                std::fflush(stderr);
+            }
+            return;
+        }
+    }
+    if (impostor_atlas_.image == VK_NULL_HANDLE) {
+        // Never silently. A part arriving with atlases and no image to put
+        // them in is the tier being absent, and the whole point of M2.5 is
+        // that such a state announces itself.
+        if (!impostor_slots_exhausted_logged_) {
+            impostor_slots_exhausted_logged_ = true;
+            std::fprintf(stderr,
+                "[vk] impostor atlas image does not exist; part %016llx's "
+                "%zu impostor(s) will not draw\n",
+                static_cast<unsigned long long>(part.part_hash),
+                part.impostors.size());
+            std::fflush(stderr);
+        }
+        return;
+    }
+
+    std::vector<uint8_t> staging_bytes;
+    std::vector<VkBufferImageCopy> regions;
+    std::vector<uint32_t> assigned;
+    // ordinal -> slot, for the vertex patch below.
+    std::vector<uint32_t> slot_for_ordinal(part.impostors.size(), 0);
+    uint32_t first_layer = UINT32_MAX;
+
+    for (const auto& imp : part.impostors) {
+        if (imp.atlas.size() != impostor::kAtlasBytes) {
+            std::fprintf(stderr,
+                "[vk] impostor atlas for part %016llx cluster %u is %zu bytes, "
+                "expected %zu -- this impostor will not draw\n",
+                static_cast<unsigned long long>(part.part_hash), imp.cluster,
+                imp.atlas.size(), impostor::kAtlasBytes);
+            std::fflush(stderr);
+            continue;
+        }
+        uint32_t slot;
+        if (!impostor_free_slots_.empty()) {
+            slot = impostor_free_slots_.back();
+            impostor_free_slots_.pop_back();
+        } else if (impostor_next_slot_ < kImpostorMaxSlots) {
+            slot = impostor_next_slot_++;
+        } else {
+            // Exhaustion is a LOAD FAILURE and gets said out loud, once. The
+            // impostors that miss out keep slot 0 (zero coverage) and discard,
+            // so the coarsest mesh rung is what shows -- degraded, never a
+            // white card, and never silent.
+            if (!impostor_slots_exhausted_logged_) {
+                impostor_slots_exhausted_logged_ = true;
+                std::fprintf(stderr,
+                    "[vk] impostor atlas slots exhausted (%u of %u in use) at "
+                    "part %016llx -- further impostors will not draw\n",
+                    impostor_resident_, kImpostorMaxSlots,
+                    static_cast<unsigned long long>(part.part_hash));
+                std::fflush(stderr);
+            }
+            break;
+        }
+        if (imp.ordinal < slot_for_ordinal.size())
+            slot_for_ordinal[imp.ordinal] = slot;
+        assigned.push_back(slot);
+        for (uint32_t layer = 0; layer < 2; ++layer) {
+            const size_t offset = staging_bytes.size();
+            staging_bytes.insert(
+                staging_bytes.end(),
+                imp.atlas.begin() + layer * impostor::kLayerBytes,
+                imp.atlas.begin() + (layer + 1) * impostor::kLayerBytes);
+            VkBufferImageCopy region{};
+            region.bufferOffset = static_cast<VkDeviceSize>(offset);
+            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.mipLevel = 0;
+            region.imageSubresource.baseArrayLayer = slot * 2 + layer;
+            region.imageSubresource.layerCount = 1;
+            region.imageExtent = {impostor::kLayerPx, impostor::kLayerPx, 1};
+            regions.push_back(region);
+            first_layer = std::min(first_layer, slot * 2 + layer);
+        }
+    }
+    if (regions.empty()) return;
+
+    // Layers are assigned from a free list, so a part's slots need not be
+    // contiguous. The barrier covers the whole span they touch; layers inside
+    // it that belong to other parts are already SHADER_READ_ONLY and are
+    // transitioned to the same layout they were in, which is a no-op for them.
+    uint32_t last_layer = 0;
+    for (const auto& r : regions)
+        last_layer = std::max(last_layer, r.imageSubresource.baseArrayLayer);
+
+    std::string error;
+    matter::VkBufferResource staging;
+    if (!matter::create_buffer(*vulkan_,
+                               static_cast<VkDeviceSize>(staging_bytes.size()),
+                               VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging,
+                               error) ||
+        !matter::map_buffer(staging, error)) {
+        std::fprintf(stderr,
+            "[vk] impostor atlas staging failed for part %016llx: %s -- "
+            "%zu impostor(s) will not draw\n",
+            static_cast<unsigned long long>(part.part_hash), error.c_str(),
+            assigned.size());
+        std::fflush(stderr);
+        for (uint32_t slot : assigned) impostor_free_slots_.push_back(slot);
+        return;
+    }
+    std::memcpy(staging.mapped, staging_bytes.data(), staging_bytes.size());
+    if (!matter::flush_buffer(staging, 0, staging_bytes.size(), error)) {
+        std::fprintf(stderr,
+            "[vk] impostor atlas flush failed for part %016llx: %s\n",
+            static_cast<unsigned long long>(part.part_hash), error.c_str());
+        std::fflush(stderr);
+        for (uint32_t slot : assigned) impostor_free_slots_.push_back(slot);
+        return;
+    }
+    ImpostorUploadRecord upload;
+    upload.image = impostor_atlas_.image;
+    upload.staging = staging.buffer;
+    upload.regions = regions;
+    upload.layer_count = last_layer - first_layer + 1;
+    upload.rt_available = vulkan_->ray_tracing_available();
+    // The record's barrier keys off regions.front()'s layer, so sort by layer
+    // and let first_layer be the front.
+    std::sort(upload.regions.begin(), upload.regions.end(),
+              [](const VkBufferImageCopy& a, const VkBufferImageCopy& b) {
+                  return a.imageSubresource.baseArrayLayer <
+                         b.imageSubresource.baseArrayLayer;
+              });
+    if (!matter::submit_immediate(*vulkan_, record_impostor_upload, &upload,
+                                  error,
+                                  matter::ImmediateSubmitPhase::staging_upload,
+                                  {staging.lifetime})) {
+        std::fprintf(stderr,
+            "[vk] impostor atlas upload failed for part %016llx: %s -- "
+            "%zu impostor(s) will not draw\n",
+            static_cast<unsigned long long>(part.part_hash), error.c_str(),
+            assigned.size());
+        std::fflush(stderr);
+        for (uint32_t slot : assigned) impostor_free_slots_.push_back(slot);
+        return;
+    }
+
+    // Patch the STAGED vertices, not the caller's copy: the billboard's tint
+    // channel transports its atlas slot to raster.vert, and the slot is not
+    // known until now. `ordinal` (tint.b at bake time) is how a vertex names
+    // which of the part's impostors it belongs to.
+    const uint8_t marker_hi = 0;  // see the surface.x test below
+    (void)marker_hi;
+    size_t patched = 0;
+    for (size_t vi = 0; vi < part.vertices.size(); ++vi) {
+        const VkRasterVertex& src = part.vertices[vi];
+        if (!(src.surface.x > 1.0e29f)) continue;
+        const uint32_t ordinal =
+            static_cast<uint32_t>(src.tint.z * 255.0f + 0.5f);
+        const uint32_t slot =
+            ordinal < slot_for_ordinal.size() ? slot_for_ordinal[ordinal] : 0u;
+        VkRasterVertex& dst = vertex_staging_[vertex_base + vi];
+        dst.tint.x = static_cast<float>(slot & 0xFFu) / 255.0f;
+        dst.tint.y = static_cast<float>((slot >> 8) & 0xFFu) / 255.0f;
+        ++patched;
+    }
+    if (patched == 0 && !assigned.empty()) {
+        // The atlas is resident but nothing references it: the ladder and the
+        // vertex stream disagree, which is exactly the class of silent
+        // mismatch this milestone exists to make impossible.
+        std::fprintf(stderr,
+            "[vk] part %016llx carries %zu impostor atlas(es) but no billboard "
+            "vertices -- the impostor rung is missing from the vertex stream\n",
+            static_cast<unsigned long long>(part.part_hash), assigned.size());
+        std::fflush(stderr);
+    }
+    impostor_slots_of_part_[part_slot] = assigned;
+    impostor_resident_ += static_cast<uint32_t>(assigned.size());
+
+    // MATTER_IMPOSTOR_DEBUG=1: the four numbers that separate every way this
+    // tier can be present-but-invisible -- did an atlas arrive, does it have
+    // any coverage, which layer pair did it land in, and did the vertices
+    // actually take the slot.
+    static const bool debug = std::getenv("MATTER_IMPOSTOR_DEBUG") != nullptr;
+    if (debug) {
+        for (size_t k = 0; k < part.impostors.size() && k < assigned.size(); ++k) {
+            const auto& imp = part.impostors[k];
+            uint32_t max_cov = 0, covered = 0;
+            for (size_t t = 0; t + 3 < impostor::kLayerBytes; t += 4) {
+                const uint8_t a = imp.atlas[t + 3];
+                if (a > max_cov) max_cov = a;
+                if (a > 0) ++covered;
+            }
+            std::fprintf(stderr,
+                "[vk] impostor part=%016llx cluster=%u ordinal=%u slot=%u "
+                "layers=%u/%u max_coverage=%u covered_texels=%u patched_verts=%zu\n",
+                static_cast<unsigned long long>(part.part_hash), imp.cluster,
+                imp.ordinal, assigned[k], assigned[k] * 2, assigned[k] * 2 + 1,
+                max_cov, covered, patched);
+        }
+        std::fflush(stderr);
+    }
+}
+
 bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
                                         std::string& error) {
     error.clear();
@@ -5414,6 +5819,14 @@ bool VkSceneRenderer::init(std::string& error) {
         gpu_timers_supported_ = has_ts;
         timestamp_period_ns_ = has_ts ? props.limits.timestampPeriod : 0.0f;
     }
+    // M2.5: the impostor atlas is created HERE, at init, and not inside
+    // ensure_tileset_infra -- which is LAZY, fired only by the first .gtex
+    // load. RockGallery has no tileset, so hanging the atlas off that path
+    // meant its billboards drew with slot 0 (cleared to zero coverage) and
+    // discarded every fragment: the tier was selected, drawn, and invisible.
+    // That is the exact failure this milestone exists to make impossible, and
+    // it reappeared here because a lazy initialiser is easy to attach to.
+    if (!create_impostor_atlas(error)) return false;
     if (!create_pipeline(error)) {
         destroy_pipeline();
         return false;
@@ -5613,6 +6026,9 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     if (!part.vertices.empty())
         std::copy(part.vertices.begin(), part.vertices.end(),
                   vertex_staging_.begin() + vertex_base);
+    if (!part.impostors.empty())
+        adopt_part_impostors(part, static_cast<uint32_t>(parts_.size()),
+                             vertex_base);
     const uint32_t index_base =
         allocate_index_range(static_cast<uint32_t>(part.indices.size()));
     if (!part.indices.empty())
@@ -7480,6 +7896,20 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     // Covers both the erase and the `parts_[released_slot] = {}` below; nothing
     // reads the version in between (see slot_of_version_).
     ++slot_of_version_;
+    // M2.5: hand this part's atlas slots back before its geometry ranges, so
+    // a streaming world recycles impostor layers the same way it recycles
+    // vertices. Without this the slot table is a one-way bump allocator and a
+    // long session eventually reports exhaustion for no real reason.
+    {
+        const auto imp = impostor_slots_of_part_.find(released_slot);
+        if (imp != impostor_slots_of_part_.end()) {
+            for (uint32_t slot : imp->second) {
+                impostor_free_slots_.push_back(slot);
+                if (impostor_resident_ > 0) --impostor_resident_;
+            }
+            impostor_slots_of_part_.erase(imp);
+        }
+    }
     PartRecord& record = parts_[released_slot];
     // Return the geometry ranges to the recycler. No compaction and no static
     // re-upload: the bytes stay where they are, unreferenced (the instance

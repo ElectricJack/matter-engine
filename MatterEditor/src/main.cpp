@@ -3035,6 +3035,8 @@ int main() {
         stats.culled_clusters = stats.gpu_culled;
         stats.raster_tris = static_cast<int>(frame_stats.triangles);
         stats.raster_batches = static_cast<int>(frame_stats.draw_batches);
+        stats.resident_impostors =
+            static_cast<int>(frame_stats.resident_impostors);
         stats.instances_total = static_cast<int>(frame_stats.instances_total);
         stats.parts_baked = static_cast<int>(frame_stats.parts_baked);
         stats.cache_hits = static_cast<int>(frame_stats.cache_hits);

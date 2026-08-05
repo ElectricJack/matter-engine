@@ -87,6 +87,8 @@ struct ViewerStats {
     int      raster_batches = 0;
     int      raster_tris = 0;
     int      culled_clusters = 0;
+    // M2.5 terminal impostors currently holding an atlas slot.
+    int      resident_impostors = 0;
     bool     batch_cache_hit = false;
     // Raster-path CPU timing split (ms) — Stage 0 of the frame-time package.
     float    resolve_ms = 0.0f;   // SectorResolver::resolve

@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "material_common.glsl"
+#include "impostor_common.glsl"
 
 #define TILESET_SET 1
 #define TILESET_TEX_BINDING 6
@@ -55,6 +56,18 @@ layout(location = 10) in vec3 in_warp_tangent;
 // LOD debug view: the rung cull.comp selected for this draw. Location 11, not
 // the 9 the source branch used -- 9/10 are the warp field here.
 layout(location = 11) flat in uint in_selected_lod;
+// M2.5 impostor: the instance's object->world rotation basis (see raster.vert).
+// The atlas stores OBJECT-space normals so one atlas serves every placement.
+layout(location = 12) flat in vec3 in_model_basis_x;
+layout(location = 13) flat in vec3 in_model_basis_y;
+
+// M2.5 impostor atlas, scene set binding 15. Layer pairs: 2*slot is the SHADE
+// layer (rg = octahedral object-space normal, b = baked AO, a = fractional
+// coverage) and 2*slot+1 is the TINT layer (rgb = TriEx tint, a = its blend
+// strength). Deliberately NOT albedo: the impostor resolves colour through the
+// same MaterialGpu record as every other surface, so it is lit by the part's
+// material and a live material edit reaches it.
+layout(set = 1, binding = 15) uniform sampler2DArray impostorAtlas;
 
 // Must match raster.vert's block word for word (one range, both stages).
 layout(push_constant) uniform RasterDebugPushConstants {
@@ -130,6 +143,55 @@ void main() {
     float encoded_emission = min(log2(1.0 + emission), 15.875);
     float ao = in_surface.w > 0.5 ? clamp(in_surface.z, 0.0, 1.0) : 1.0;
     vec3 shading_normal = normalize(in_normal);
+
+    // ---- M2.5: the terminal impostor rep ----------------------------------
+    //
+    // raster.vert has already oriented this quad at the camera and handed over
+    // the cell uv (surface.yz), the atlas slot and the chosen view (tint.xy).
+    // All that is left is the sample.
+    //
+    // Placed HERE, before the tileset/POM and VT branches, for two reasons: the
+    // cutout discard should retire the fragment before any of that work, and
+    // the branches below must not run at all -- an impostor has no ground
+    // parameterisation to march and no chart table to sample, so both would
+    // read garbage through a uv channel this rung repurposed.
+    const bool is_impostor = in_surface.x > kImpostorMarker;
+    if (is_impostor) {
+        const uint slot = uint(in_tint.x + 0.5) | (uint(in_tint.y + 0.5) << 8);
+        const uint view = uint(in_tint.z + 0.5);
+        const vec2 cell = vec2(float(view % IMPOSTOR_GRID_DIM),
+                               float(view / IMPOSTOR_GRID_DIM));
+        // Clamp inside the cell so a bilinear tap at the quad's edge cannot
+        // reach the neighbouring view even before the bake's guard band.
+        const vec2 local = clamp(in_surface.yz, 0.0, 1.0);
+        const vec2 uv = (cell + local) / float(IMPOSTOR_GRID_DIM);
+        const vec4 shade = texture(impostorAtlas, vec3(uv, float(slot * 2u)));
+        // Alpha cutout. gl_FragDepth is already written by this shader, so
+        // early depth WRITE was off regardless; discard costs the depth TEST
+        // nothing extra here.
+        //
+        // The WIREFRAME view is exempt, and that exemption is a diagnostic
+        // rather than a nicety: wireframe exists to answer "what geometry is
+        // being drawn", and a billboard whose every fragment discards is
+        // indistinguishable from a rung that was never selected. Keeping the
+        // quad's edges visible under wireframe separates "the tier did not
+        // draw" from "the tier drew nothing" -- two failures that look
+        // identical on screen and have nothing else in common.
+        if (shade.a < 0.5 && debug_push.wireframe_enabled == 0u) discard;
+        const vec4 baked_tint = texture(impostorAtlas, vec3(uv, float(slot * 2u + 1u)));
+        base_color = resolveBaseColor(material, baked_tint);
+        ao = clamp(shade.b, 0.0, 1.0);
+        // Octahedral decode, the exact inverse of impostor_bake.cpp's encode.
+        vec2 e = shade.rg * 2.0 - 1.0;
+        vec3 n = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
+        if (n.z < 0.0)
+            n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0,
+                                            n.y >= 0.0 ? 1.0 : -1.0);
+        n = normalize(n);
+        const vec3 bz = cross(in_model_basis_x, in_model_basis_y);
+        shading_normal = normalize(in_model_basis_x * n.x +
+                                   in_model_basis_y * n.y + bz * n.z);
+    }
 
     // Depth defaults to whatever standard rasterization produced; the
     // tileset/POM branch below (Task 10) may push it further away (smaller,
@@ -291,7 +353,7 @@ void main() {
     // carries detailSlot+1 (0 = no tileset). When present, the Wang-sampled
     // ground texture replaces the material's flat base color/normal/ORM.
     int tileset_slot = tileset_detail_slot(material.flags_misc);
-    if (tileset_slot >= 0) {
+    if (tileset_slot >= 0 && !is_impostor) {
         vec3 plane_n = geo_n;
         vec3 flat_orm;
         vec3 flat_shading_normal;

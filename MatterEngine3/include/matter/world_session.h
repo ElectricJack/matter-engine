@@ -220,6 +220,11 @@ struct FrameStats {
     uint32_t hiz_culled        = 0;   // HiZ-occlusion-culled clusters
     uint32_t triangles         = 0;   // rasterized triangle count
     uint32_t draw_batches      = 0;   // indirect draw buckets with >=1 instance
+    // M2.5: terminal impostors holding an atlas slot right now. On the stats
+    // overlay because "are any drawing?" is the question the abandoned
+    // impostor tier could not answer -- it was absent for a whole generation
+    // of artifacts and reported nothing.
+    uint32_t resident_impostors = 0;
     // world/bake census (filled by request_bake / reload)
     uint32_t instances_total = 0;
     uint32_t parts_baked = 0;         // cache misses last bake
