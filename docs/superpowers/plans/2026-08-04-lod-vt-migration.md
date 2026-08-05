@@ -4,7 +4,7 @@ Date: 2026-08-04
 Design: `docs/lod-vt-redesign-2026-08-04.md`
 Audit of the starting point: `docs/lod-vt-system-walkthrough-2026-08-04.md`
 
-Ten milestones, M0–M9. Every milestone leaves the branch shippable and ends with an
+Twelve milestones, M0–M9 with M1.5 and M2.5 inserted as work reshaped them. Every milestone leaves the branch shippable and ends with an
 acceptance gate a human can run. Order was chosen to (a) honour the requirement that dead-code
 removal precedes everything, (b) deliver the user-visible wins (deterministic pops, visible
 impostors, smooth frames) early, and (c) never build migration machinery for a format that a
@@ -323,6 +323,45 @@ Three findings the design did not anticipate:
    single session the counter is self-consistent, which is all temporal reprojection and
    the instance cache need — but it is load-bearing for every identity-keyed feature the
    redesign adds, impostor hierarchy ownership included.
+
+---
+
+## M1.5 — The ladder benefit rule *(pulled forward from M3, 2026-08-04)*
+
+**Why out of order.** This is the defect Jack observed on the build and diagnosed himself,
+it is self-contained, and it produces the number M2.5 needs. Waiting for all of M3 would
+leave the engine baking rungs that provably change nothing for two more milestones.
+
+Scope — bake-side only, one decision changed:
+
+1. Replace `part_flatten.cpp`'s level-admission test. Today a rung is kept when it has merely
+   fewer triangles than the previous one (a single triangle qualifies), which is why the
+   coarse tail runs 26 -> 24 -> 22 across three rungs and one silhouette. Require a **benefit
+   floor** instead: a substantial reduction, not a non-zero one.
+2. **Record where the ladder bottomed out** in the artifact. That index is the answer M2.5's
+   `LOD.impostor` terminal otherwise has to guess at (design §3.3).
+3. Leave the `radius_divisor` sequence itself alone for now — the admission rule is the
+   defect; re-deriving the epsilon ladder is M3's measured-error work.
+
+Acceptance:
+- **Every surviving rung visibly changes the wireframe.** This is the acceptance, and the
+  debug views landed in `6b156699`/`e24de58c` are how it is checked: step a part down its
+  rungs with `lod_bias` + `pixel_budget` and confirm each step moves triangle density. A rung
+  that looks identical to its neighbour is a rung that should not exist.
+- Bake time and cache size measurably down. Record both — the wiped-cache rebake of
+  2026-08-04 gives a clean before (world_demo `.cache` was 730 MB: StreamMountain 386.3,
+  ChartVtProof 159.2, StreamMeadow 67.7, LightingGarden 57.5, PomProofBrick 48.8,
+  RockGallery 5.4, AnimatedRigGallery 3.9).
+- **A deliberate re-baseline, reviewed before it lands.** Removing rungs changes the
+  distance→rung mapping, so at some distances a coarser mesh now draws. Expect a real diff,
+  review it, and do not re-baseline silently. Do NOT assume it is visually neutral just
+  because the removed rungs were individually invisible — that reasoning covers the removed
+  rungs, not the remapping.
+- Fly-through determinism and the smoke suite green afterwards.
+
+Not in scope: close-range fidelity. Rep 0 is the raw undecimated mesh, so this milestone
+cannot add near detail — that is bounded by the part's build resolution and belongs to M3's
+recipe work (design §3.3, closing note).
 
 ---
 
