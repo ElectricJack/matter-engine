@@ -358,6 +358,32 @@ std::vector<uint32_t> dense_rt_lod_offsets(const VkScenePart& part);
 bool dense_rt_lod_index(const std::vector<uint32_t>& offsets,
                         uint32_t cluster_index, uint32_t lod_index,
                         uint32_t& record_index) noexcept;
+
+// M2.5 — is this ladder rung the terminal billboard rather than a mesh?
+// The two triangles carry impostor::kQuadMarker in surface.x (the same
+// sentinel raster.vert and gbuffer.frag branch on, and the same one
+// adopt_part_impostors patches by), so the answer is read off the geometry
+// the renderer already holds rather than a parallel table that could drift.
+bool lod_is_billboard(const VkScenePart& part, const VkSceneLod& lod) noexcept;
+
+// How many LEADING rungs of a cluster's ladder are real meshes -- the ladder
+// length with any trailing billboard rung removed.
+//
+// This is the RT lane's CUTOFF. The billboard is oriented in the VERTEX stage,
+// so its BLAS holds the quad UNROTATED: raster draws a camera-facing card
+// while a ray hits a fixed rectangle, and every traced consumer (shadows, GI,
+// reflections) sees a shape the object does not have. No amount of alpha
+// testing repairs that, because a camera-facing card cannot present the
+// light's silhouette.
+//
+// A cluster whose selected rung is at or past this count contributes NO traced
+// geometry -- see the measurement in build_ray_geometry for why the traced rung
+// is not merely clamped down to the last mesh rung instead.
+//
+// Returns 0 for a cluster with no mesh rung at all, which the same rule
+// covers: nothing is traced.
+uint32_t cluster_mesh_lod_count(const VkScenePart& part,
+                                uint32_t cluster_index) noexcept;
 std::vector<RtGeometrySelection> select_rt_instance_geometry(
     const VkScenePart& part, const matter::Mat4f& object_to_world,
     matter::Float3 camera_eye, float pixel_budget);
@@ -1191,6 +1217,13 @@ private:
         std::shared_ptr<matter::VkBufferResource> rt_index;
         std::vector<RtLodRecord> rt_lods;
         std::vector<uint32_t> rt_cluster_lod_offsets;
+        // M2.5: per cluster, the number of leading MESH rungs
+        // (vk_scene_detail::cluster_mesh_lod_count at registration time). A
+        // cluster whose RT rung pick reaches this count is at its terminal
+        // billboard and contributes NO traced geometry, so a ray never meets
+        // the billboard's unrotated quad. Entry 0 (no mesh rung at all) is the
+        // same case.
+        std::vector<uint32_t> rt_cluster_mesh_lods;
         std::vector<uint32_t> material_ids;
         bool rt_geometry_classification_dirty = false;
         // WP-E: transported vt slot per LOD rung (0 = chartless rung). Feeds

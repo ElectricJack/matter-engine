@@ -907,6 +907,32 @@ bool dense_rt_lod_index(const std::vector<uint32_t>& offsets,
     return true;
 }
 
+bool lod_is_billboard(const VkScenePart& part,
+                      const VkSceneLod& lod) noexcept {
+    // Two triangles, and the first vertex they index carries the marker.
+    // Same threshold adopt_part_impostors patches by (kQuadMarker is 1e30,
+    // the shaders compare against 1e29), so all three agree by construction.
+    if (lod.index_count != 6) return false;
+    if (part.indices.empty() || part.vertices.empty()) return false;
+    if (lod.first_index >= part.indices.size()) return false;
+    const uint32_t vertex = part.indices[lod.first_index];
+    if (vertex >= part.vertices.size()) return false;
+    return part.vertices[vertex].surface.x > 1.0e29f;
+}
+
+uint32_t cluster_mesh_lod_count(const VkScenePart& part,
+                                uint32_t cluster_index) noexcept {
+    if (cluster_index >= part.clusters.size()) return 0;
+    const std::vector<VkSceneLod>& lods = part.clusters[cluster_index].lods;
+    uint32_t count = static_cast<uint32_t>(lods.size());
+    // Trailing, not "any": part_flatten appends the billboard AFTER the mesh
+    // ladder bottoms out, so the mesh rungs are always the leading prefix.
+    // Peeling from the back keeps a hypothetical future second billboard
+    // rung out too without ever reordering the ladder.
+    while (count > 0 && lod_is_billboard(part, lods[count - 1])) --count;
+    return count;
+}
+
 std::vector<RtGeometrySelection> select_rt_instance_geometry(
     const VkScenePart& part, const matter::Mat4f& object_to_world,
     matter::Float3 camera_eye, float pixel_budget) {
@@ -916,8 +942,14 @@ std::vector<RtGeometrySelection> select_rt_instance_geometry(
          ++cluster_index) {
         const VkSceneCluster& cluster = part.clusters[cluster_index];
         if (cluster.lods.empty()) continue;
+        // M2.5: a cluster whose selected rung is the terminal billboard
+        // contributes NO traced geometry -- see build_ray_geometry for the
+        // measurement behind dropping it rather than clamping down to the
+        // last mesh rung. Same rule for a cluster with no mesh rung at all.
+        const uint32_t mesh_lods = cluster_mesh_lod_count(part, cluster_index);
         const uint32_t lod_index = select_scene_cluster_lod(
             cluster, object_to_world, camera_eye, pixel_budget);
+        if (lod_index >= mesh_lods) continue;
         const VkSceneLod& lod = cluster.lods[lod_index];
         result.push_back(
             {cluster_index, lod_index, lod.first_index, lod.index_count});
@@ -1171,6 +1203,11 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
                                planning_dy * planning_dy +
                                planning_dz * planning_dz)
             : cluster.radius;
+        // Deliberately NOT clamped to the mesh rungs the way build_ray_geometry
+        // is. This pick is not a lane of its own: it predicts what cull.comp
+        // will RASTER-select so a skin submission whose rung has moved can be
+        // dropped. Clamping here would reject the very submissions that are
+        // correct whenever the billboard is the drawn rung.
         const uint32_t selected_lod = vk_scene_detail::select_cluster_lod_view(
             {planning_bounds.min[0], planning_bounds.min[1],
              planning_bounds.min[2]},
@@ -6050,6 +6087,15 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     record.rt_index = std::move(rt_index);
     record.rt_cluster_lod_offsets =
         vk_scene_detail::dense_rt_lod_offsets(part);
+    // M2.5: the RT lane's per-cluster rung ceiling. Computed once here, off
+    // the same VkScenePart the BLAS records are built from, so the ceiling
+    // and the geometry it bounds can never disagree.
+    record.rt_cluster_mesh_lods.reserve(part.clusters.size());
+    for (uint32_t cluster_index = 0; cluster_index < part.clusters.size();
+         ++cluster_index) {
+        record.rt_cluster_mesh_lods.push_back(
+            vk_scene_detail::cluster_mesh_lod_count(part, cluster_index));
+    }
     for (uint32_t cluster_index = 0; cluster_index < part.clusters.size();
          ++cluster_index) {
         const auto& cluster = part.clusters[cluster_index];
@@ -9672,6 +9718,55 @@ bool VkSceneRenderer::build_ray_geometry(
                 planning_radius, gpu_cluster.switch_distances,
                 gpu_cluster.lod_count, object_to_world, camera_eye,
                 pixel_budget);
+            // M2.5: a cluster at its terminal IMPOSTOR rung contributes no
+            // traced geometry at all.
+            //
+            // The billboard is oriented in the VERTEX stage, so its BLAS holds
+            // the quad unrotated: raster shows a camera-facing card and a ray
+            // hits an axis-fixed rectangle. That is the rectangular shadow in
+            // the report, and alpha testing cannot repair it -- the light's
+            // silhouette of an object is not the camera's, so no single card
+            // is right for both.
+            //
+            // The obvious repair is to CLAMP the traced rung down to the last
+            // mesh rung instead of dropping the cluster, and that was tried
+            // and measured first. It fixes the silhouette and it is strictly
+            // worse to look at, because the card's DEPTH is wrong: the quad is
+            // a camera-facing plane through the object's CENTRE, so every one
+            // of its pixels reconstructs a world position INSIDE the mesh that
+            // would now be traced, and rt_shadow.rgen's sun ray leaves that
+            // origin already buried. Measured on RockGallery (one rock, one
+            // pose, sun 45 deg elevation), mean sun visibility over the card:
+            //
+            //   traced quad (the defect)   48.5 % lit   mean luminance 0.107
+            //   clamped to the mesh rung    2.6 % lit   mean luminance 0.018
+            //   the mesh rung it replaces  100.0 % lit  mean luminance 0.185
+            //
+            // So the clamp trades a wrong shadow SHAPE for a black object.
+            // Dropping the cluster instead is also what the tier was designed
+            // for: raster.vert records that "an impostor's occlusion comes
+            // from the atlas, so it is free" -- the baked AO in the shade
+            // layer IS this rung's occlusion, and a traced self-shadow on top
+            // of it is double-counting whichever way it comes out.
+            //
+            // What this gives up is the shadow the object CASTS on others
+            // while it is at this rung. That rung is selected at ~10 px on
+            // screen (impostor_bake.h's view-count derivation), so the lost
+            // shadow is about that big -- and it was the wrong shape anyway.
+            // Recovering it needs the traced mesh back plus a per-pixel signal
+            // that lets rt_shadow/rt_lighting lift an impostor ray origin
+            // clear of the depicted volume, the way pom_lift already does for
+            // parallaxed ground. That is the follow-up, not this fix.
+            //
+            // Fail closed on a cluster with no mesh rung at all: same rule, no
+            // geometry. A missing occluder reads as a soft lighting omission;
+            // a wrong-shape occluder reads as geometry (the same argument the
+            // skinned exclusion above makes).
+            const uint32_t mesh_lods =
+                cluster_index < part.rt_cluster_mesh_lods.size()
+                    ? part.rt_cluster_mesh_lods[cluster_index]
+                    : 0u;
+            if (lod_index >= mesh_lods) continue;
             uint32_t record_index = 0;
             if (!vk_scene_detail::dense_rt_lod_index(
                     part.rt_cluster_lod_offsets, cluster_index, lod_index,

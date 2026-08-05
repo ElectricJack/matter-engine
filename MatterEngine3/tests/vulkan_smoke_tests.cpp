@@ -31,6 +31,9 @@
 #include "provider/sector_resolver.h"
 #include "tileset_gtex.h"
 #include "../../MatterEditor/src/ui.h"
+// LAST on purpose: impostor_bake.h reaches precomp.h, whose `using namespace
+// std;` makes `byte` ambiguous inside any <windows.h> pulled in after it.
+#include "impostor_bake.h"   // M2.5 kQuadMarker, the billboard sentinel
 
 namespace {
 
@@ -1152,6 +1155,44 @@ void run_rt_lod_payload_contract_tests() {
               part.clusters[1].radius, switch_distances, 2, identity_matrix(),
               {0.0f, 0.0f, 10.0f}, 1.0f) == 1,
           "non-owning RT LOD view matches raster distance selection");
+
+    // M2.5: the terminal billboard is not traceable geometry. It is oriented
+    // in the vertex stage, so its BLAS holds the quad UNROTATED -- a ray that
+    // hits it sees an axis-fixed rectangle where raster drew a camera-facing
+    // card. A cluster whose selected rung is that billboard therefore
+    // contributes NOTHING to the RT payload rather than contributing the wrong
+    // shape (and rather than being clamped down to the last mesh rung, which
+    // buries the card inside the traced mesh -- see build_ray_geometry).
+    {
+        viewer::VkScenePart billboard{};
+        billboard.part_hash = 0x494d504fu;
+        // Two rungs: a 2-triangle mesh, then the 2-triangle billboard. Only
+        // the second carries the marker, so only the second is peeled.
+        billboard.clusters = {
+            {{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}, 1.0f,
+             {{0, 6, 1.0f}, {6, 6, 0.0f}}},
+        };
+        billboard.indices = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+        billboard.vertices.resize(12);
+        // surface.x carries impostor::kQuadMarker on the billboard's vertices;
+        // build_vulkan_part forwards it from TriEx::uv0.x, and raster.vert /
+        // gbuffer.frag branch on the same sentinel.
+        for (size_t i = 6; i < billboard.vertices.size(); ++i)
+            billboard.vertices[i].surface.x = impostor::kQuadMarker;
+        CHECK(viewer::vk_scene_detail::cluster_mesh_lod_count(billboard, 0) == 1,
+              "the trailing billboard rung is not counted as a mesh rung");
+        // A near camera selects rung 0 (the mesh): still traced.
+        const auto near_selection =
+            viewer::vk_scene_detail::select_rt_instance_geometry(
+                billboard, identity_matrix(), {0.0f, 0.0f, 1.0f}, 1.0f);
+        // A far camera selects rung 1 (the billboard): traced by nothing.
+        const auto far_selection =
+            viewer::vk_scene_detail::select_rt_instance_geometry(
+                billboard, identity_matrix(), {0.0f, 0.0f, 10000.0f}, 1.0f);
+        CHECK(near_selection.size() == 1 && near_selection[0].lod_index == 0 &&
+                  near_selection[0].index_count == 6 && far_selection.empty(),
+              "RT traces the mesh rung and drops the cluster at its billboard");
+    }
 }
 
 void run_raster_path(matter::VulkanDevice& vulkan) {
