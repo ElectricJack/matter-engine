@@ -2305,9 +2305,44 @@ static void test_impostor_sidecar_failability() {
     }
 
     // --- every rejection reports a distinct, named reason -------------------
+    //
+    // M4: asking THIS bundle for another part's atlas no longer reaches the
+    // atlas at all -- the bundle is keyed on the part, so it rejects first and
+    // reports Absent. That is a strictly better outcome, and it is asserted
+    // here so the change is deliberate rather than discovered later.
     CHECK(!impostor::load(path, part_hash ^ 1ull, depicts, out, &fail, &reason) &&
-              fail == impostor::LoadFailure::Identity,
-          "a sidecar for another part is rejected as Identity");
+              fail == impostor::LoadFailure::Absent,
+          "another part's bundle does not hold this part's atlas (Absent)");
+
+    // The atlas's OWN identity guard is defence in depth behind that, so it
+    // needs a case the bundle cannot answer: a bundle correctly keyed on
+    // part_hash whose IMPO payload names a different part. Only a corrupted or
+    // mis-assembled bundle looks like this, which is exactly what the guard is
+    // for.
+    {
+        const uint64_t kImposterHash = part_hash ^ 0x5A5A5A5Aull;
+        const std::string foreign_payload = path + ".foreign";
+        impostor::PartImpostor foreign;
+        foreign.clusters.resize(1);
+        impostor::bake_cluster(0, tris, ex, foreign.clusters[0]);
+        CHECK(impostor::save(foreign_payload, kImposterHash, depicts, foreign),
+              "foreign-payload atlas written under its own key");
+        std::vector<uint8_t> payload;
+        CHECK(part_bundle::read_section(foreign_payload, kImposterHash,
+                                        part_bundle::kSectionImpostor, payload),
+              "foreign atlas payload reads back");
+
+        const std::string mismatched = path + ".mismatched";
+        std::error_code mismatch_ec;
+        fs::remove(mismatched, mismatch_ec);
+        CHECK(part_bundle::write_section(mismatched, part_hash,
+                                         part_bundle::kSectionImpostor,
+                                         payload.data(), payload.size()),
+              "mismatched bundle published: keyed on this part, payload names another");
+        CHECK(!impostor::load(mismatched, part_hash, depicts, out, &fail, &reason) &&
+                  fail == impostor::LoadFailure::Identity,
+              "an atlas naming another part is rejected as Identity");
+    }
     CHECK(!impostor::load(path, part_hash, depicts ^ 1ull, out, &fail, &reason) &&
               fail == impostor::LoadFailure::Stale,
           "an atlas depicting another mesh is rejected as Stale");
