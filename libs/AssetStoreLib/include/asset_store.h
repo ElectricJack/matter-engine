@@ -250,10 +250,21 @@ public:
     size_t size() const;
     void clear();
 
-    /* Executes every queued read. Payloads are allocated from `arena` -- one
-     * allocation per delivered blob, no heap churn -- and checksummed. Returns
-     * false only if the batch could not be executed at all; per-blob failures
-     * are reported in each result's status. */
+    /* Executes every queued read.
+     *
+     * Each coalesced chunk is read STRAIGHT INTO `arena` -- one arena
+     * allocation per chunk, no staging buffer, no second copy -- checksummed
+     * where it lies, and handed out in place. Result pointers therefore alias
+     * one shared allocation; they are read-only views valid until the arena is
+     * reset or destroyed, which is the normal arena contract.
+     *
+     * The arena consequently also holds whatever fell between the requested
+     * blobs (bounded by StoreConfig::batch_gap_bytes per join). BatchStats
+     * reports bytes_read against bytes_delivered so a caller who cares can see
+     * exactly how much.
+     *
+     * Returns false only if the batch could not be executed at all; per-blob
+     * failures are reported in each result's status. */
     bool submit(MemArena* arena);
 
     /* Results are in add() order, not in the physical order they were read. */

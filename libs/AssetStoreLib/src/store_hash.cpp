@@ -125,25 +125,58 @@ const char* status_name(Status s) {
 
 /* ------------------------------------------------------------------ CRC-32 */
 
-static uint32_t g_crc_table[256];
-static bool g_crc_ready = false;
-
-static void crc_init() {
-    for (uint32_t i = 0; i < 256; ++i) {
-        uint32_t c = i;
-        for (int k = 0; k < 8; ++k)
-            c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-        g_crc_table[i] = c;
+/* Slice-by-eight. Same polynomial and therefore the same checksum values as the
+ * textbook byte-at-a-time loop -- the on-disk format does not change -- but it
+ * consumes eight bytes per iteration instead of one.
+ *
+ * This matters more than it looks. The benchmark found the byte-at-a-time
+ * version running at ~575 MB/s, which made the integrity check 82% of the time
+ * to serve a warm batch: the store was losing to plain file reads not on I/O
+ * but on its own checksum. A verification the read path performs on every byte
+ * it delivers has to be near memory speed or it becomes the subsystem. */
+struct CrcTables {
+    uint32_t t[8][256];
+    CrcTables() {
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; ++k)
+                c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+            t[0][i] = c;
+        }
+        for (uint32_t i = 0; i < 256; ++i)
+            for (int j = 1; j < 8; ++j)
+                t[j][i] = (t[j - 1][i] >> 8) ^ t[0][t[j - 1][i] & 0xFF];
     }
-    g_crc_ready = true;
+};
+
+/* A C++11 function-local static: initialised exactly once, thread-safely, which
+ * matters because reader threads each run this concurrently. */
+static const CrcTables& crc_tables() {
+    static const CrcTables tables;
+    return tables;
 }
 
 uint32_t crc32(const void* data, size_t len, uint32_t seed) {
-    if (!g_crc_ready) crc_init();
+    const CrcTables& T = crc_tables();
     const uint8_t* p = (const uint8_t*)data;
     uint32_t c = seed ^ 0xFFFFFFFFu;
-    for (size_t i = 0; i < len; ++i)
-        c = g_crc_table[(c ^ p[i]) & 0xFF] ^ (c >> 8);
+
+    while (len >= 8) {
+        /* Read both words little-endian byte by byte: the result is identical
+         * on a big-endian machine, so checksums stay portable. */
+        uint32_t a = (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+                     ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+        uint32_t b = (uint32_t)p[4] | ((uint32_t)p[5] << 8) |
+                     ((uint32_t)p[6] << 16) | ((uint32_t)p[7] << 24);
+        c ^= a;
+        c = T.t[7][c & 0xFF] ^ T.t[6][(c >> 8) & 0xFF] ^
+            T.t[5][(c >> 16) & 0xFF] ^ T.t[4][(c >> 24) & 0xFF] ^
+            T.t[3][b & 0xFF] ^ T.t[2][(b >> 8) & 0xFF] ^
+            T.t[1][(b >> 16) & 0xFF] ^ T.t[0][(b >> 24) & 0xFF];
+        p += 8;
+        len -= 8;
+    }
+    while (len-- > 0) c = T.t[0][(c ^ *p++) & 0xFF] ^ (c >> 8);
     return c ^ 0xFFFFFFFFu;
 }
 

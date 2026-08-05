@@ -27,6 +27,9 @@
  * The suite spawns itself as a child in three modes -- see main(). */
 
 #include "asset_store.h"
+/* Internal, but the checksum is the mechanism behind "corruption is a miss", so
+ * the suite verifies it directly rather than only through its effects. */
+#include "../src/store_hash.h"
 
 #include <atomic>
 #include <stdio.h>
@@ -867,9 +870,24 @@ static void test_arena_landing(const std::string& root) {
     CHECK(after.liveBytes >= before.liveBytes + 32 * 10000,
           "the arena absorbed every payload (%zu -> %zu live bytes)",
           before.liveBytes, after.liveBytes);
-    CHECK(after.totalAllocs - before.totalAllocs == 32,
-          "one arena allocation per blob, no more (%zu)",
-          after.totalAllocs - before.totalAllocs);
+    /* One allocation per coalesced CHUNK, not per blob: the chunk is read
+     * straight into the arena and the results point into it. Thirty-two
+     * contiguous blobs are one chunk, so one allocation. */
+    CHECK(after.totalAllocs - before.totalAllocs == b.stats().chunk_reads,
+          "one arena allocation per chunk read (%zu allocs, %u chunks)",
+          after.totalAllocs - before.totalAllocs, b.stats().chunk_reads);
+    CHECK(b.stats().chunk_reads == 1, "the 32 blobs coalesced into a single read (%u)",
+          b.stats().chunk_reads);
+
+    /* The payloads really are inside that one allocation, in physical order. */
+    const uint8_t* lo = b.result(0).data;
+    const uint8_t* hi = b.result(31).data;
+    CHECK(lo != nullptr && hi != nullptr, "both ends were delivered");
+    CHECK(hi > lo && (size_t)(hi - lo) < 32 * 10008 + 4096,
+          "every payload lives inside one contiguous arena chunk");
+    for (size_t i = 0; i < b.size(); ++i)
+        CHECK(hash_bytes(b.result(i).data, b.result(i).size) == b.result(i).hash,
+              "blob %zu is byte-exact where it lies", i);
 
     /* A reset frees all 32 payloads at once -- the reason arenas are the
      * landing zone in the first place. */
@@ -882,6 +900,62 @@ static void test_arena_landing(const std::string& root) {
     mem_arena_destroy(arena);
     s.reset();
     rm_tree(dir);
+}
+
+/* The checksum itself. Every "corruption is a miss" guarantee reduces to this
+ * function being right, and it was rewritten to slice-by-eight for speed after
+ * the benchmark found it dominating the read path -- so it is pinned against
+ * the published CRC-32 check value and against a from-scratch reference. */
+static void test_crc32_is_correct() {
+    printf("- crc32: slice-by-eight agrees with the reference, bit for bit\n");
+
+    CHECK(crc32("123456789", 9) == 0xCBF43926u,
+          "the standard CRC-32 check value (got 0x%08X)",
+          (unsigned)crc32("123456789", 9));
+    CHECK(crc32("", 0) == 0u, "the empty string checksums to zero");
+
+    /* A byte-at-a-time reference, written here so the fast path has something
+     * independent to be wrong against. */
+    auto reference = [](const uint8_t* p, size_t n) {
+        uint32_t table[256];
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; ++k) c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+            table[i] = c;
+        }
+        uint32_t c = 0xFFFFFFFFu;
+        for (size_t i = 0; i < n; ++i) c = table[(c ^ p[i]) & 0xFF] ^ (c >> 8);
+        return c ^ 0xFFFFFFFFu;
+    };
+
+    /* Every length from 0 to 200 covers each residue of the eight-byte stride,
+     * including all seven tail cases. */
+    std::vector<uint8_t> buf;
+    int mismatches = 0;
+    for (size_t len = 0; len <= 200; ++len) {
+        fill_payload(buf, 4242 + len, len ? len : 1);
+        if (len == 0) buf.clear();
+        if (crc32(buf.data(), len) != reference(buf.data(), len)) ++mismatches;
+    }
+    CHECK(mismatches == 0, "all 201 lengths agree with the reference (%d differ)",
+          mismatches);
+
+    /* And one large buffer, to exercise the fast loop properly. */
+    fill_payload(buf, 31337, 1 << 20);
+    CHECK(crc32(buf.data(), buf.size()) == reference(buf.data(), buf.size()),
+          "a 1 MiB buffer agrees with the reference");
+
+    /* A single flipped bit anywhere must change the checksum -- the property
+     * the corruption test depends on. */
+    fill_payload(buf, 555, 4096);
+    uint32_t base = crc32(buf.data(), buf.size());
+    int missed = 0;
+    for (size_t i = 0; i < buf.size(); i += 97) {
+        buf[i] ^= 0x01;
+        if (crc32(buf.data(), buf.size()) == base) ++missed;
+        buf[i] ^= 0x01;
+    }
+    CHECK(missed == 0, "every single-bit flip changed the checksum (%d missed)", missed);
 }
 
 /* ==================================================================== main */
@@ -910,6 +984,7 @@ int main(int argc, char** argv) {
 
     printf("AssetStoreLib tests (scratch: %s)\n\n", root.c_str());
 
+    test_crc32_is_correct();
     test_roundtrip_and_dedup(root);
     test_crash_mid_write(root);
     test_corruption_is_a_miss(root);
