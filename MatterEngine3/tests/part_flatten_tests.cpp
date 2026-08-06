@@ -2848,6 +2848,77 @@ static void test_impostor_bake_deterministic() {
     printf("PASSED\n");
 }
 
+// Edge padding (impostor format v7). Every uncovered texel within kPadTexels
+// (Chebyshev) of the silhouette must carry its covered neighbours' values so a
+// runtime bilinear tap never blends against the zero-fill; every texel beyond
+// that distance must still BE the zero-fill; and coverage alpha must be 0 on
+// all of them -- the silhouette the cutout sees does not move. The fixture
+// tint is uniform, so the padded tint is an EQUALITY assertion, not a
+// tolerance: any dilution (the pale-olive canopy wash of issue 6e0c76fc) is a
+// byte mismatch here.
+static void test_impostor_atlas_padding() {
+    printf("=== test_impostor_atlas_padding ===\n");
+    std::vector<Tri> tris = sphere_tris(12, 8);
+    std::vector<TriEx> ex = triex_for(tris, 3);   // uniform tint (0.5,0.25,0.75,1)
+    impostor::ClusterImpostor a;
+    CHECK(impostor::bake_cluster(0, tris, ex, a), "bake ok");
+    const uint32_t cell = impostor::cell_px();
+    const uint32_t edge = impostor::layer_px();
+    const size_t layer_sz = impostor::layer_bytes();
+    // View 0's cell only: its baked normals face the +z bake camera, which is
+    // what makes the "not the zero encoding" check below sound (a +z
+    // hemisphere direction can never octahedral-encode to RG == (0,0)).
+    auto shade_at = [&](uint32_t x, uint32_t y) {
+        return a.atlas.data() + (size_t(y) * edge + x) * 4;
+    };
+    auto tint_at = [&](uint32_t x, uint32_t y) {
+        return a.atlas.data() + layer_sz + (size_t(y) * edge + x) * 4;
+    };
+    // Chebyshev distance from each texel to the nearest covered texel -- the
+    // metric of an 8-neighbour dilation, so "dist <= kPadTexels" is exactly
+    // the set the padding must have filled.
+    std::vector<uint32_t> dist(size_t(cell) * cell, UINT32_MAX);
+    for (uint32_t y = 0; y < cell; ++y)
+        for (uint32_t x = 0; x < cell; ++x) {
+            if (shade_at(x, y)[3] == 0) continue;
+            for (uint32_t ty = 0; ty < cell; ++ty)
+                for (uint32_t tx = 0; tx < cell; ++tx) {
+                    const uint32_t dx = tx > x ? tx - x : x - tx;
+                    const uint32_t dy = ty > y ? ty - y : y - ty;
+                    const uint32_t d = dx > dy ? dx : dy;
+                    uint32_t& slot = dist[size_t(ty) * cell + tx];
+                    if (d < slot) slot = d;
+                }
+        }
+    const uint8_t expect_tint[4] = {128, 64, 191, 255};
+    size_t ring = 0, beyond = 0;
+    size_t wrong_tint = 0, zero_normal = 0, alpha_grown = 0, not_zero_fill = 0;
+    for (uint32_t y = 0; y < cell; ++y)
+        for (uint32_t x = 0; x < cell; ++x) {
+            const uint32_t d = dist[size_t(y) * cell + x];
+            if (d == 0 || d == UINT32_MAX) continue;   // covered, or empty cell
+            const uint8_t* sh = shade_at(x, y);
+            const uint8_t* tn = tint_at(x, y);
+            if (sh[3] != 0) ++alpha_grown;             // silhouette must not move
+            if (d <= impostor::kPadTexels) {
+                ++ring;
+                if (std::memcmp(tn, expect_tint, 4) != 0) ++wrong_tint;
+                if (sh[0] == 0 && sh[1] == 0) ++zero_normal;
+            } else {
+                ++beyond;
+                if (sh[0] || sh[1] || sh[2] || tn[0] || tn[1] || tn[2] || tn[3])
+                    ++not_zero_fill;
+            }
+        }
+    CHECK(ring > 0, "padding: the sphere has a padding ring to check");
+    CHECK(beyond > 0, "padding: and texels beyond it (the fixture is not degenerate)");
+    CHECK(alpha_grown == 0, "padding: coverage alpha untouched, silhouette identical");
+    CHECK(wrong_tint == 0, "padding: every ring texel carries the covered tint exactly");
+    CHECK(zero_normal == 0, "padding: no ring texel keeps the zero normal encoding");
+    CHECK(not_zero_fill == 0, "padding: texels beyond kPadTexels stay zero-filled");
+    printf("PASSED\n");
+}
+
 static void test_impostor_quad_shape() {
     printf("=== test_impostor_quad_shape ===\n");
     impostor::ClusterImpostor imp;
@@ -3355,6 +3426,10 @@ int main() {
         return 1;
     }
     test_impostor_cell_px_parametrized();
+    // Early on purpose: the padding assertions are the cheapest tripwire for
+    // an atlas-content regression, and a broken bake should say so before the
+    // suite spends minutes on flattens.
+    test_impostor_atlas_padding();
     test_flatten_merge();
     test_flatten_deterministic();
     test_flatten_missing_part();

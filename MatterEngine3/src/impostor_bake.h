@@ -126,6 +126,19 @@
 //                     A   = coverage (fractional, 4x4 supersampled)
 //   layer 1 "tint"  : R,G,B = TriEx tint rgb, A = tint blend strength
 //
+// EDGE PADDING (format v7). Uncovered texels used to stay zero-filled, and a
+// runtime bilinear tap near the silhouette therefore blended a covered texel
+// against tint = (0,0,0,0) and oct RG = (0,0). Neither zero is neutral:
+// resolveBaseColor treats a falling tint.a as "slide toward the voted
+// material's base colour" (the pale-olive canopy wash of issue 6e0c76fc — a
+// low-poly canopy is mostly silhouette at impostor resolution, so it hit the
+// whole crown, not a rim), and oct (0,0) DECODES to a valid slanted direction,
+// so silhouette normals came out corrupted rather than merely soft. After the
+// per-cell resolve, every covered texel's normal, depth and tint are therefore
+// dilated kPadTexels rings into the uncovered texels around it — coverage
+// alpha is NOT touched, so the silhouette the cutout sees does not move by a
+// single subsample. See pad_cluster_atlas() for why depth is padded too.
+//
 // The material INDEX is per-cluster (area-weighted mode over covered texels),
 // not per-texel: a 10 px billboard cannot resolve a material boundary, and a
 // per-texel material channel is the obvious v2 extension if a multi-material
@@ -310,6 +323,25 @@ inline bool cluster_earns_impostor(size_t terminal_tris) {
 // untouched) for an empty mesh or a degenerate extent.
 bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                   const std::vector<TriEx>& triex, ClusterImpostor& out);
+
+// How many rings of uncovered texels inherit their covered neighbours' values.
+// A runtime bilinear tap reaches exactly one texel past the sample point, so
+// one ring is the correctness minimum; the second is margin for the parallax
+// re-tap landing just outside the first. NOT more: the guard band holds the
+// silhouette only kGuardTexels (2) clear of the cell border, so a wider pad
+// would start writing rings against the border for no consumer that can reach
+// them.
+constexpr uint32_t kPadTexels = 2;
+
+// Dilate covered texels' shade RGB (octahedral normal + depth) and tint RGBA
+// into the uncovered texels around them, kPadTexels rings, per cell — the
+// edge padding described in the atlas layout note above. Coverage (shade A)
+// is never written, so the silhouette is byte-identical before and after.
+// Layout is derived from atlas.size() alone (two RGBA8 layers of an
+// 8x8 grid), so the function cannot disagree with the buffer it is handed;
+// a buffer that is not that shape is left untouched. bake_cluster calls this
+// as its last step; it is public so a test can exercise it directly.
+void pad_cluster_atlas(std::vector<uint8_t>& atlas);
 
 // The content the atlas DEPICTS, folded to one word: every terminal-rung
 // triangle's vertex bytes, in cluster order, plus the bake parameters that

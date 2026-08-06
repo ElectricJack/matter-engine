@@ -94,7 +94,14 @@ inline constexpr uint32_t kFlatFormat   = 9u;  // part_asset::kFormatVersionFlat
 // different meaning -- a v5 atlas read as v6 parallaxes against an occlusion
 // term -- and the runtime card also moved to the near bound to keep the depth
 // write inside layout(depth_less).
-inline constexpr uint32_t kImpostorFormat = 6u;  // impostor_bake::kFormatVersion
+// 7: edge padding. Uncovered texels no longer hold the zero-fill: each
+// covered texel's normal, depth and tint are dilated kPadTexels rings into
+// the silhouette's surround (coverage stays 0, the silhouette does not move).
+// A v6 atlas drawn by this engine still slides silhouette taps toward the
+// voted material's base colour (tint.a -> 0) and decodes oct (0,0) as a real
+// direction -- the pale-olive canopy wash of issue 6e0c76fc -- so v6 bytes
+// must rebake, not redraw.
+inline constexpr uint32_t kImpostorFormat = 7u;  // impostor_bake::kFormatVersion
 inline constexpr uint32_t kBundleFormat = 1u;  // part_bundle::kBundleFormatVersion
 
 // Reserved for M3b's content-addressed stage outputs. Zero means "no stage

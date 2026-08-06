@@ -55,6 +55,24 @@ inline uint8_t to_u8(float v) {
     return static_cast<uint8_t>(c * 255.0f + 0.5f);
 }
 
+// Octahedral decode, the inverse of oct_encode above and the same branch
+// structure as gbuffer.frag's decode. Used only by the edge padding, which
+// averages neighbour normals in VECTOR space rather than in encoded RG —
+// averaging the encoding directly would be wrong across the z<0 wrap seam.
+inline float3 oct_decode(float ox, float oy) {
+    float ex = ox * 2.0f - 1.0f;
+    float ey = oy * 2.0f - 1.0f;
+    const float ez = 1.0f - std::fabs(ex) - std::fabs(ey);
+    if (ez < 0.0f) {
+        const float sx = ex >= 0.0f ? 1.0f : -1.0f;
+        const float sy = ey >= 0.0f ? 1.0f : -1.0f;
+        const float tx = (1.0f - std::fabs(ey)) * sx;
+        const float ty = (1.0f - std::fabs(ex)) * sy;
+        ex = tx; ey = ty;
+    }
+    return unit(make_float3(ex, ey, ez));
+}
+
 
 // One supersample of one view: the nearest surface hit, or empty.
 struct SubSample {
@@ -363,7 +381,132 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
         }
     }
     if (best_votes == 0) out.material_index = UINT32_MAX;
+
+    // Last step: pad the silhouette so runtime bilinear taps never blend a
+    // covered texel against the zero-fill (see the layout note in the header,
+    // and the function itself for the depth decision).
+    pad_cluster_atlas(out.atlas);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Edge padding (format v7). See impostor_bake.h's atlas-layout note for what
+// this fixes; the mechanics and the one non-obvious decision live here.
+//
+// WHAT IS PADDED. shade R,G (octahedral normal), shade B (depth) and the whole
+// tint texel. Coverage (shade A) is never written: the cutout and the
+// fractional-coverage antialiasing must see exactly the silhouette the
+// rasterizer produced, or the padding would GROW the drawn impostor.
+//
+// DEPTH IS PADDED TOO, deliberately. An uncovered texel's zero decodes as
+// "surface AT the card's near-bound plane" — the frontmost value the channel
+// can carry. A bilinear tap that straddles the silhouette therefore biased its
+// depth toward the front, which under-drives the parallax re-tap AND writes
+// the rim's gl_FragDepth nearer than the surface the rim visually belongs to.
+// The neighbour's depth is the right filler, and it is SAFE by construction:
+// baked depth only ever pushes the fragment away from the camera, so no padded
+// value can violate gbuffer.frag's layout(depth_less) — the failure mode of a
+// wrong padded depth is a rim pixel sitting at its neighbour's depth instead
+// of at the card plane, which is strictly more correct.
+//
+// NORMALS ARE AVERAGED IN VECTOR SPACE (decode, sum, re-encode), not in
+// encoded RG, because the octahedral map has a wrap seam for z < 0 and a
+// byte-space average across it produces a direction unrelated to either
+// neighbour — the exact class of artifact this padding exists to remove.
+//
+// DETERMINISM. Row-major texel order, a fixed neighbour order, integer
+// averages with explicit rounding, and the same sqrt-based unit() as the
+// rasterizer. Ring N+1 reads ring N's already-written values (the mask is
+// updated only between passes, so a pass never reads what it wrote), which is
+// the ping-pong that makes the result independent of anything but the input.
+void pad_cluster_atlas(std::vector<uint8_t>& atlas) {
+    // The layout comes from the buffer itself: two RGBA8 layers of an
+    // (kGridDim * cell)^2 grid. Deriving it from atlas.size() means this
+    // function cannot disagree with the buffer it was handed even if the cell
+    // setting has moved since the buffer was made.
+    if (atlas.empty() || (atlas.size() % (kGridDim * kGridDim * 8)) != 0)
+        return;
+    const size_t texels = atlas.size() / 8;   // per layer, 4 bytes per texel
+    uint32_t layer_edge = static_cast<uint32_t>(std::sqrt(double(texels)));
+    while (static_cast<size_t>(layer_edge) * layer_edge < texels) ++layer_edge;
+    if (static_cast<size_t>(layer_edge) * layer_edge != texels ||
+        layer_edge % kGridDim != 0)
+        return;
+    const uint32_t cell = layer_edge / kGridDim;
+    const size_t layer_sz = texels * 4;
+
+    // Neighbour order is part of the byte-reproducibility contract.
+    static constexpr int kOff[8][2] = {{-1, -1}, {0, -1}, {1, -1}, {-1, 0},
+                                       {1, 0},   {-1, 1}, {0, 1},  {1, 1}};
+
+    std::vector<uint8_t> mask(static_cast<size_t>(cell) * cell);
+    std::vector<uint32_t> filled;
+    for (uint32_t gy = 0; gy < kGridDim; ++gy) {
+        for (uint32_t gx = 0; gx < kGridDim; ++gx) {
+            const uint32_t cx0 = gx * cell, cy0 = gy * cell;
+            bool any_covered = false, all_covered = true;
+            for (uint32_t cy = 0; cy < cell; ++cy) {
+                for (uint32_t cx = 0; cx < cell; ++cx) {
+                    const size_t t =
+                        (static_cast<size_t>(cy0 + cy) * layer_edge + cx0 + cx) * 4;
+                    const bool covered = atlas[t + 3] != 0;
+                    mask[static_cast<size_t>(cy) * cell + cx] = covered ? 1 : 0;
+                    any_covered |= covered;
+                    all_covered &= covered;
+                }
+            }
+            if (!any_covered || all_covered) continue;   // empty view, or no rim
+            for (uint32_t pass = 0; pass < kPadTexels; ++pass) {
+                filled.clear();
+                for (uint32_t cy = 0; cy < cell; ++cy) {
+                    for (uint32_t cx = 0; cx < cell; ++cx) {
+                        if (mask[static_cast<size_t>(cy) * cell + cx]) continue;
+                        float3 nsum = make_float3(0.0f, 0.0f, 0.0f);
+                        uint32_t depth_sum = 0;
+                        uint32_t tint_sum[4] = {0, 0, 0, 0};
+                        uint32_t count = 0;
+                        for (const auto& o : kOff) {
+                            const int nx = static_cast<int>(cx) + o[0];
+                            const int ny = static_cast<int>(cy) + o[1];
+                            if (nx < 0 || ny < 0 || nx >= static_cast<int>(cell) ||
+                                ny >= static_cast<int>(cell))
+                                continue;
+                            if (!mask[static_cast<size_t>(ny) * cell + nx]) continue;
+                            const size_t s =
+                                (static_cast<size_t>(cy0 + ny) * layer_edge +
+                                 cx0 + nx) * 4;
+                            const float3 n = oct_decode(atlas[s] / 255.0f,
+                                                        atlas[s + 1] / 255.0f);
+                            nsum = make_float3(nsum.x + n.x, nsum.y + n.y,
+                                               nsum.z + n.z);
+                            depth_sum += atlas[s + 2];
+                            const uint8_t* tn = atlas.data() + layer_sz + s;
+                            for (int k = 0; k < 4; ++k) tint_sum[k] += tn[k];
+                            ++count;
+                        }
+                        if (count == 0) continue;
+                        const size_t t =
+                            (static_cast<size_t>(cy0 + cy) * layer_edge +
+                             cx0 + cx) * 4;
+                        float ox = 0.5f, oy = 0.5f;
+                        oct_encode(nsum, ox, oy);
+                        atlas[t]     = to_u8(ox);
+                        atlas[t + 1] = to_u8(oy);
+                        atlas[t + 2] = static_cast<uint8_t>(
+                            (depth_sum + count / 2) / count);
+                        // atlas[t + 3] is coverage and stays exactly 0.
+                        uint8_t* tint = atlas.data() + layer_sz + t;
+                        for (int k = 0; k < 4; ++k)
+                            tint[k] = static_cast<uint8_t>(
+                                (tint_sum[k] + count / 2) / count);
+                        filled.push_back(cy * cell + cx);
+                    }
+                }
+                if (filled.empty()) break;
+                for (uint32_t idx : filled) mask[idx] = 1;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
