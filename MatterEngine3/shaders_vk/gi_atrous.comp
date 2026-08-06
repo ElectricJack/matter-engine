@@ -86,6 +86,12 @@ void main() {
             if (any(lessThan(q, ivec2(0))) ||
                 any(greaterThanEqual(q, ivec2(pc.extent)))) continue;
             uvec2 identity = texelFetch(identityTex, q, 0).rg;
+            // EQUALITY only, same as gi_temporal.comp: identity.x is never an
+            // index here, so gbuffer.frag's impostor bit (bit 31,
+            // impostor_common.glsl) needs no mask. It also stops the filter
+            // pulling a neighbouring mesh pixel's radiance across an
+            // impostor's edge even when both share a material, which is the
+            // behaviour this compare wants anyway.
             if (identity.x != centerIdentity.x) continue;
             vec3 signal = texelFetch(signalTex, q, 0).rgb;
             float depth = texelFetch(depthTex, q, 0).r;

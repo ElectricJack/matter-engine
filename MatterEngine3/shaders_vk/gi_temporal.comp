@@ -106,6 +106,15 @@ void main() {
             rejection = REJECT_DEPTH;
         else if (dot(normal, oldNormal) < 0.85)
             rejection = REJECT_NORMAL;
+        // EQUALITY only -- identity.x is never used as an index here, so
+        // gbuffer.frag's impostor bit (bit 31, impostor_common.glsl) needs no
+        // mask and this file deliberately does not include that header. The
+        // bit is a bonus rather than a hazard: a pixel that switched between
+        // the mesh rung and the impostor card between frames now differs in
+        // bit 31 and its history is rejected, which is correct -- the two
+        // rungs are different surfaces with different baked occlusion, and
+        // accumulating across the switch is exactly the ghosting a material
+        // change is meant to break.
         else if (identity.x != oldIdentity.x)
             rejection = REJECT_MATERIAL;
         else if (identity.y != oldIdentity.y)

@@ -846,13 +846,34 @@ uint32_t select_scene_cluster_lod(const VkSceneCluster& cluster,
         object_to_world, camera_eye, pixel_budget);
 }
 
+float cluster_distance_to_eye(const matter::Float3& aabb_min,
+                              const matter::Float3& aabb_max,
+                              const matter::Mat4f& object_to_world,
+                              matter::Float3 camera_eye) noexcept {
+    // cull.comp's `distance_to_eye`, extracted so the two questions the shader
+    // asks of it -- "is this past max_draw_distance?" and "which rung?" -- are
+    // answered from ONE expression on the CPU too. They were one expression on
+    // the GPU from the start; splitting them here would be a second rule.
+    const matter::Float3 local_center{
+        (aabb_min.x + aabb_max.x) * 0.5f,
+        (aabb_min.y + aabb_max.y) * 0.5f,
+        (aabb_min.z + aabb_max.z) * 0.5f};
+    const matter::Float3 world_center =
+        transform_point(object_to_world, local_center);
+    const float dx = world_center.x - camera_eye.x;
+    const float dy = world_center.y - camera_eye.y;
+    const float dz = world_center.z - camera_eye.z;
+    return std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 0.01f);
+}
+
 uint32_t select_cluster_lod_view(const matter::Float3& aabb_min,
                                  const matter::Float3& aabb_max,
                                  float radius, const float* switch_distances,
                                  uint32_t lod_count,
                                  const matter::Mat4f& object_to_world,
                                  matter::Float3 camera_eye,
-                                 float pixel_budget) noexcept {
+                                 float pixel_budget,
+                                 float override_lod_bias) noexcept {
     if (lod_count == 0 || switch_distances == nullptr) return 0;
     const matter::Float3 x_basis{object_to_world.m[0], object_to_world.m[4],
                                  object_to_world.m[8]};
@@ -866,23 +887,24 @@ uint32_t select_cluster_lod_view(const matter::Float3& aabb_min,
     };
     const float scale =
         (length(x_basis) + length(y_basis) + length(z_basis)) / 3.0f;
-    const matter::Float3 local_center{
-        (aabb_min.x + aabb_max.x) * 0.5f,
-        (aabb_min.y + aabb_max.y) * 0.5f,
-        (aabb_min.z + aabb_max.z) * 0.5f};
-    const matter::Float3 world_center =
-        transform_point(object_to_world, local_center);
-    const float dx = world_center.x - camera_eye.x;
-    const float dy = world_center.y - camera_eye.y;
-    const float dz = world_center.z - camera_eye.z;
     const float distance =
-        std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 0.01f);
+        cluster_distance_to_eye(aabb_min, aabb_max, object_to_world,
+                                camera_eye);
     // Must stay bit-for-bit the same rule as cull.comp's loop -- this mirror
     // exists to predict what the GPU will pick. Both now go through
     // lod_distance.h so there is one rule rather than two copies of one.
+    //
+    // The per-part lod_bias is applied to the FINISHED reach, under the same
+    // `!= 1` guard cull.comp uses, and not folded into pixel_budget. That is
+    // not fussiness: float multiplication is not associative, so
+    // (r*s*budget)*bias and r*s*(budget*bias) can differ in the last bit, and
+    // this function's whole job is to predict the GPU's answer. Under the
+    // guard the neutral case is not merely equivalent but the SAME
+    // instructions it was before overrides existed.
+    float reach = lod::reach(radius, scale, pixel_budget);
+    if (override_lod_bias != 1.0f) reach *= override_lod_bias;
     return static_cast<uint32_t>(lod::select_rep(
-        switch_distances, static_cast<int>(lod_count), distance,
-        lod::reach(radius, scale, pixel_budget)));
+        switch_distances, static_cast<int>(lod_count), distance, reach));
 }
 
 std::vector<uint32_t> dense_rt_lod_offsets(const VkScenePart& part) {
@@ -9969,6 +9991,36 @@ bool VkSceneRenderer::build_ray_geometry(
         const int found_slot = part_slot_lookup(source.part_hash);
         if (found_slot < 0) continue;
         PartRecord& part = parts_[static_cast<size_t>(found_slot)];
+        // ---- Per-module draw overrides, the RT half -------------------------
+        //
+        // cull.comp reads this same table (by cluster.part_slot, which is the
+        // parts_ index this lookup returns -- see where GpuCluster::part_slot
+        // is filled) and applies both fields in its `override_lod_bias` block,
+        // immediately before it computes `reach`. This lane read NEITHER, and
+        // that divergence is what the impostor reports were made of: dragging
+        // a part's LOD bias moved the RASTER onto the card while
+        // the traced mirror stayed on the mesh rung, so the tree's real
+        // geometry sat in the TLAS underneath its own billboard. Hence the
+        // coloured shadows cast by "impostored" foliage, and hence an impostor
+        // card catching its own tree's shadow -- the card's reconstructed
+        // pixels are inside the still-traced volume, the same pathology the
+        // 48.5 %-lit measurement below describes.
+        //
+        // ORDERING. The table is rebuilt in upload_scene_buffers() (the
+        // `part_draw_overrides_dirty_` branch), which runs from prepare_frame()
+        // -- and matter_engine.cpp calls prepare_frame() before
+        // record_cull_and_render(), which is what eventually records this
+        // function. So the table read here is this frame's, the same bytes the
+        // cull dispatch was handed. Nothing between those two points can set
+        // the dirty flag; a set_draw_overrides() from the editor lands before
+        // the next prepare_frame().
+        //
+        // The bound is a real guard, not a formality: the table is ONE neutral
+        // entry whenever no module overrides anything, so almost every part
+        // slot legitimately falls outside it and takes the neutral path.
+        matter::PartDrawOverrideGpu part_override{};
+        if (static_cast<size_t>(found_slot) < part_draw_override_table_.size())
+            part_override = part_draw_override_table_[found_slot];
         matter::Mat4f object_to_world{};
         std::memcpy(object_to_world.m, source.transform,
                     sizeof(object_to_world.m));
@@ -10025,6 +10077,50 @@ bool VkSceneRenderer::build_ray_geometry(
                 planning_radius =
                     0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
             }
+            // max_draw_distance: reject before any LOD work, on the same
+            // distance and against the same bound cull.comp uses, computed
+            // from the same planning bounds the rung choice uses below. (No
+            // stat is bumped here; cull.comp counts its rejection into
+            // frustum_culled, which is a RASTER draw statistic and would be
+            // double-counted if this lane touched it.)
+            //
+            // DECISION -- a part past its draw distance casts NO shadow, and
+            // that is deliberate. The alternative (keep tracing it so it can
+            // still cast) was rejected on three grounds:
+            //
+            //   1. `hide`, the sibling control in the same struct, is already
+            //      enforced on BOTH lanes -- draw_overrides.h spells out that a
+            //      GPU-cull-only hide "would leave the module visible in
+            //      reflections". max_draw_distance is "hide past N metres"; it
+            //      would be incoherent for the distance form of the same idea
+            //      to keep a traced copy the instant form removes.
+            //   2. A shadow with no visible caster reads as a bug, loudly. The
+            //      dial's typical use is scatter (grass, undergrowth) with a
+            //      cutoff well inside the shadow-casting range, so the artefact
+            //      would be a carpet of shadows over bare ground.
+            //   3. It is a PERFORMANCE dial. Keeping the BLAS build and the
+            //      TLAS instance alive past the cutoff spends most of what the
+            //      dial was set to save.
+            //
+            // What this gives up is the long shadow of a tall object dropped by
+            // a short cutoff. If that ever matters the fix is a separate
+            // `shadow_draw_distance` field, not a silent divergence between the
+            // lanes -- which is exactly the failure this whole change repairs.
+            const float distance_to_eye = vk_scene_detail::cluster_distance_to_eye(
+                {planning_bounds.min[0], planning_bounds.min[1],
+                 planning_bounds.min[2]},
+                {planning_bounds.max[0], planning_bounds.max[1],
+                 planning_bounds.max[2]},
+                object_to_world, camera_eye);
+            if (part_override.max_draw_distance > 0.0f &&
+                distance_to_eye > part_override.max_draw_distance)
+                continue;
+            // lod_bias rides through to the reach, exactly where cull.comp
+            // applies it (`if (override_lod_bias != 1.0) reach *= ...`).
+            // Everything else about this call already matched the shader: same
+            // planning bounds, same radius, same scale-from-basis, same
+            // switch-distance loop via lod_distance.h. Passing the bias is the
+            // last term that differed.
             const uint32_t lod_index = vk_scene_detail::select_cluster_lod_view(
                 {planning_bounds.min[0], planning_bounds.min[1],
                  planning_bounds.min[2]},
@@ -10032,7 +10128,7 @@ bool VkSceneRenderer::build_ray_geometry(
                  planning_bounds.max[2]},
                 planning_radius, gpu_cluster.switch_distances,
                 gpu_cluster.lod_count, object_to_world, camera_eye,
-                pixel_budget);
+                pixel_budget, part_override.lod_bias);
             // M2.5: a cluster at its terminal IMPOSTOR rung contributes no
             // traced geometry at all.
             //
@@ -12107,8 +12203,32 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
     pixel.visibility = {half_to_float(visibility_half[0]),
                         half_to_float(visibility_half[1]),
                         half_to_float(visibility_half[2])};
-    std::memcpy(&pixel.material_index, bytes.data() + 48,
-                sizeof(pixel.material_index));
+    // The identity attachment's .x is a material index in its low bits plus
+    // gbuffer.frag's impostor marker in bit 31. Split them here, at the CPU's
+    // only reader of that attachment, for the same reason every GPU reader
+    // masks: `material_index` must keep meaning a material index.
+    uint32_t identity_x = 0;
+    std::memcpy(&identity_x, bytes.data() + 48, sizeof(identity_x));
+    // Keep this constant in step with IMPOSTOR_IDENTITY_BIT in
+    // shaders_vk/impostor_common.glsl.
+    constexpr uint32_t kImpostorIdentityBit = 0x80000000u;
+    // UINT32_MAX is this attachment's CLEAR value in both lanes (see the
+    // render-pass setup: clearValue.color.uint32[0]/[1]), i.e. "no fragment
+    // was written here" -- NOT a material index that happens to carry the
+    // impostor bit. Masking it would turn the background into 0x7fffffff and
+    // quietly break every `material_index == UINT32_MAX` background assertion,
+    // so the sentinel passes through whole.
+    //
+    // The GPU readers need no such case: 0x7fffffff still fails every
+    // `< length()` bound the way 0xffffffff did, and rt_shadow.rgen retires
+    // background on depth before it ever fetches identity.
+    if (identity_x == UINT32_MAX) {
+        pixel.impostor = false;
+        pixel.material_index = identity_x;
+    } else {
+        pixel.impostor = (identity_x & kImpostorIdentityBit) != 0u;
+        pixel.material_index = identity_x & ~kImpostorIdentityBit;
+    }
     std::memcpy(&pixel.instance_token, bytes.data() + 52,
                 sizeof(pixel.instance_token));
     uint16_t raw_half[4]{};

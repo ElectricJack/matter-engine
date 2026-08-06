@@ -170,6 +170,12 @@ void main() {
         // early depth WRITE was off regardless; discard costs the depth TEST
         // nothing extra here.
         //
+        // kImpostorAlphaCutout is 0.25, not the customary 0.5, and
+        // impostor_common.glsl carries the measurement: at a 16 px cell a 0.5
+        // cutout erased the trunk and crown fringe of a spruce and drew 53 %
+        // of its height, which is what made tall trees appear to SHRINK at the
+        // switch. Read that comment before touching this number.
+        //
         // The WIREFRAME view is exempt, and that exemption is a diagnostic
         // rather than a nicety: wireframe exists to answer "what geometry is
         // being drawn", and a billboard whose every fragment discards is
@@ -177,7 +183,8 @@ void main() {
         // quad's edges visible under wireframe separates "the tier did not
         // draw" from "the tier drew nothing" -- two failures that look
         // identical on screen and have nothing else in common.
-        if (shade.a < 0.5 && debug_push.wireframe_enabled == 0u) discard;
+        if (shade.a < kImpostorAlphaCutout &&
+            debug_push.wireframe_enabled == 0u) discard;
         const vec4 baked_tint = texture(impostorAtlas, vec3(uv, float(slot * 2u + 1u)));
         base_color = resolveBaseColor(material, baked_tint);
         ao = clamp(shade.b, 0.0, 1.0);
@@ -1072,6 +1079,26 @@ void main() {
     out_velocity = in_velocity_valid.z > 0.5
                        ? in_velocity_valid.xy
                        : vec2(0.0);
+    // Identity attachment. .x is the material index PLUS the impostor bit
+    // (impostor_common.glsl, IMPOSTOR_IDENTITY_BIT): the only per-pixel signal
+    // in the frame that says "this fragment is a flat card, not a surface".
+    // rt_shadow.rgen forces sun visibility to 1 on it -- a shadow painted
+    // across a billboard reads as a stripe on a poster, and the card's
+    // reconstructed position is inside the volume it depicts, so the ray it
+    // would trace starts buried anyway.
+    //
+    // The bit is free: .x is R32_UINT holding an index bounded by the material
+    // count (frame.counts.z, thousands), so nothing legitimate reaches bit 31.
+    // Every other reader masks it back off -- see impostor_identity_material()
+    // and the list of call sites in impostor_common.glsl.
+    //
+    // The one gap is an INVALID index (raster.vert clears out_material_valid
+    // when in_material_index >= counts.z), which may carry bit 31 already: the
+    // OR is then a no-op and that fragment keeps the pre-fix behaviour. That is
+    // a fragment with no material at all, so there is nothing to lose and no
+    // new failure mode -- every reader fails its bounds test either way.
     out_material_instance =
-        uvec2(in_material_index, in_instance_token);
+        uvec2(in_material_index |
+                  (is_impostor ? IMPOSTOR_IDENTITY_BIT : 0u),
+              in_instance_token);
 }

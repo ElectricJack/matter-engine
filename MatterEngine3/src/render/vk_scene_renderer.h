@@ -347,13 +347,26 @@ uint32_t select_scene_cluster_lod(const VkSceneCluster& cluster,
                                   const matter::Mat4f& object_to_world,
                                   matter::Float3 camera_eye,
                                   float pixel_budget) noexcept;
+// cull.comp's `distance_to_eye`: camera to the cluster AABB's world centre,
+// floored at 1 cm. Exposed because the shader asks TWO questions of that one
+// value -- the max_draw_distance reject and the rung choice -- and the CPU
+// mirrors must not grow a second way to compute it.
+float cluster_distance_to_eye(const matter::Float3& aabb_min,
+                              const matter::Float3& aabb_max,
+                              const matter::Mat4f& object_to_world,
+                              matter::Float3 camera_eye) noexcept;
+// `override_lod_bias` is PartDrawOverride::lod_bias for the owning part slot
+// (1 = neutral). It multiplies the finished reach, exactly where and how
+// cull.comp applies it -- see the note in the definition for why it is not
+// folded into pixel_budget instead.
 uint32_t select_cluster_lod_view(const matter::Float3& aabb_min,
                                  const matter::Float3& aabb_max,
                                  float radius, const float* switch_distances,
                                  uint32_t lod_count,
                                  const matter::Mat4f& object_to_world,
                                  matter::Float3 camera_eye,
-                                 float pixel_budget) noexcept;
+                                 float pixel_budget,
+                                 float override_lod_bias = 1.0f) noexcept;
 std::vector<uint32_t> dense_rt_lod_offsets(const VkScenePart& part);
 bool dense_rt_lod_index(const std::vector<uint32_t>& offsets,
                         uint32_t cluster_index, uint32_t lod_index,
@@ -384,6 +397,12 @@ bool lod_is_billboard(const VkScenePart& part, const VkSceneLod& lod) noexcept;
 // covers: nothing is traced.
 uint32_t cluster_mesh_lod_count(const VkScenePart& part,
                                 uint32_t cluster_index) noexcept;
+// TEST-ONLY mirror of build_ray_geometry's per-cluster rule, over a
+// VkScenePart rather than the renderer's staged GPU tables. It has no owner
+// and therefore no part slot, so it cannot see the per-module draw overrides
+// (max_draw_distance / lod_bias) that build_ray_geometry now applies: it
+// models the NEUTRAL case only, which is the case its assertions are about.
+// The production RT lane is build_ray_geometry; do not grow a second one here.
 std::vector<RtGeometrySelection> select_rt_instance_geometry(
     const VkScenePart& part, const matter::Mat4f& object_to_world,
     matter::Float3 camera_eye, float pixel_budget);
@@ -431,7 +450,16 @@ struct VkRasterPixel {
     matter::Float4 normal{};
     matter::Float4 orm{};
     matter::Float3 velocity{};
+    // The identity attachment's .x, with gbuffer.frag's impostor bit already
+    // MASKED OFF -- the same contract every GPU reader honours (see
+    // shaders_vk/impostor_common.glsl). Every existing assertion of the form
+    // `pixel.material_index == kMaterial` therefore keeps meaning what it
+    // said, and an impostor pixel is identified by `impostor` below rather
+    // than by a material index that suddenly compares unequal to itself.
     uint32_t material_index = UINT32_MAX;
+    // Bit 31 of that same word: this fragment is an impostor card, not a
+    // surface. rt_shadow.rgen forces its sun visibility to 1.
+    bool impostor = false;
     uint32_t instance_token = UINT32_MAX;
     matter::Float4 hdr{};
     float depth = 1.0f;

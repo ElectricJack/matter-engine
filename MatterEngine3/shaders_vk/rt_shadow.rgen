@@ -13,6 +13,9 @@
 #define TILESET_TEX_BINDING 15
 #define TILESET_PARAMS_BINDING 16
 #include "tileset_common.glsl"
+// IMPOSTOR_IDENTITY_BIT + the mask helpers. This shader is the one that ACTS
+// on the bit; everyone else only has to mask it off.
+#include "impostor_common.glsl"
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 layout(set = 0, binding = 1) uniform sampler2D depth_texture;
@@ -106,12 +109,42 @@ void main() {
     // introduce a sideways leak. Clamping sun.y bounds the lift at grazing
     // sun angles instead of blowing up toward the horizon.
     uvec2 identity = texelFetch(identity_texture, pixel, 0).rg;
+    // An impostor fragment does not receive a traced sun shadow.
+    //
+    // The rung is a flat card standing in for a volume, so there is no surface
+    // here for a shadow to land on in the first place -- a dark band across a
+    // billboard reads as a stripe painted on a poster, not as an object in
+    // shade. And the ray this shader would trace is meaningless anyway: the
+    // quad is a camera-facing plane through the object's CENTRE, so `world`
+    // above reconstructs to a point INSIDE the volume the card depicts, which
+    // is where build_ray_geometry measured 48.5 % lit against 100 % for the
+    // mesh rung the card replaces.
+    //
+    // Forcing visibility to 1 rather than discarding keeps the fragment fully
+    // LIT: the impostor's own occlusion is already baked into the atlas shade
+    // layer (raster.vert: "an impostor's occlusion comes from the atlas, so it
+    // is free"), and multiplying a traced self-shadow on top of it would
+    // double-count. Fail-closed in the sense that matters: the worst case is
+    // an impostor missing a shadow it should have caught, which is a soft
+    // lighting omission, versus a hard black band that reads as geometry.
+    //
+    // Returning here also skips the POM roof-escape and horizon lookups below,
+    // both of which are ground-tileset machinery an impostor never wants.
+    if (impostor_identity_is_card(identity.x)) {
+        imageStore(visibility_image, pixel, vec4(1.0));
+        return;
+    }
+    // Every use of identity.x from here down is a MATERIAL INDEX and must have
+    // the impostor bit masked off. It cannot be set on this path (the early
+    // return above took it), so the mask is defence against a future edit that
+    // moves or weakens that return, not against today's control flow.
+    const uint shadow_material = impostor_identity_material(identity.x);
     // Phase 2 (horizon-map lighting): hoist the detail-slot lookup out of
     // this if block (it previously only tested `!= 0u` inline) so the
     // horizon-occlusion test below can reuse it.
     int shadow_tileset_slot = -1;
-    if (identity.x < rt_materials.length()) {
-        RtMaterialGpu roof_mat = rt_materials[identity.x];
+    if (shadow_material < rt_materials.length()) {
+        RtMaterialGpu roof_mat = rt_materials[shadow_material];
         shadow_tileset_slot = tileset_detail_slot(roof_mat.flags_misc);
         if (shadow_tileset_slot >= 0)
             world += sun * (constants.pom_lift / max(sun.y, 0.05));

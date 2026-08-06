@@ -436,8 +436,19 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_surface.rchit.spv \
 # the OLD divisor. That mis-samples every impostor by a quarter cell and looks
 # like a rendering bug, not a stale build. Same failure the vt_common.glsl and
 # vt_chart_types.glsl rules above exist to prevent.
+#
+# M6.5 added three more consumers. The header now also carries the identity
+# attachment's impostor BIT and the mask helpers, and the deferred passes that
+# read that attachment must agree with gbuffer.frag on where the bit is:
+# rt_shadow.rgen acts on it, composite.frag and rt_lighting.rgen mask it off.
+# A stale .spv here is the same silent-wrong-pixel class as the grid divisor
+# above -- an unmasked reader just fails its bounds test and drops a material
+# feature, with nothing on screen that says "stale build".
 build/shaders_vk/raster.vert.spv build/shaders_vk/raster_skin.vert.spv \
-    build/shaders_vk/gbuffer.frag.spv: shaders_vk/impostor_common.glsl
+    build/shaders_vk/gbuffer.frag.spv \
+    build/shaders_vk/rt_shadow.rgen.spv \
+    build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/composite.frag.spv: shaders_vk/impostor_common.glsl
 
 shaders_gen/embedded_spirv.h: $(VK_SPV) tools/embed_spirv.py
 	python3 tools/embed_spirv.py $@ $(VK_SPV)

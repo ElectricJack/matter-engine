@@ -2,6 +2,10 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "vol_common.glsl"
+// IMPOSTOR_IDENTITY_BIT + impostor_identity_material(). gbuffer.frag sets bit
+// 31 of the identity attachment's .x on billboard fragments; the emission /
+// subsurface lookup below uses .x as a material index and must mask it off.
+#include "impostor_common.glsl"
 
 layout(location = 0) in vec2 in_uv;
 layout(location = 0) out vec4 out_hdr;
@@ -224,8 +228,13 @@ void main() {
         }
         return;
     }
-    uint material_index = texelFetch(identity_texture,
-                                     ivec2(gl_FragCoord.xy), 0).r;
+    // Mask gbuffer.frag's impostor bit out of .x before using it as an index.
+    // Without the mask an impostor pixel fails the bounds test below and
+    // silently loses its subsurface term -- a wrong-but-plausible result, not
+    // a visible failure, which is why the mask is spelled out rather than left
+    // to the guard.
+    uint material_index = impostor_identity_material(
+        texelFetch(identity_texture, ivec2(gl_FragCoord.xy), 0).r);
     vec3 sun_response = diffuse * direct;
     if (material_index < rt_materials.length()) {
         RtMaterialGpu material = rt_materials[material_index];
