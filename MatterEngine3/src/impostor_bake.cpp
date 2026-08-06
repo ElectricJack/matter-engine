@@ -289,6 +289,7 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                 int covered = 0;
                 float3 nsum = make_float3(0.0f, 0.0f, 0.0f);
                 float ao_sum = 0.0f;
+                float depth_sum = 0.0f;
                 float tr = 0.0f, tg = 0.0f, tb = 0.0f, ta = 0.0f;
                 for (uint32_t sy2 = 0; sy2 < kSuperSample; ++sy2) {
                     for (uint32_t sx2 = 0; sx2 < kSuperSample; ++sx2) {
@@ -300,6 +301,7 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                         nsum = make_float3(nsum.x + s.normal.x, nsum.y + s.normal.y,
                                            nsum.z + s.normal.z);
                         ao_sum += s.ao;
+                        depth_sum += s.depth;
                         tr += s.tint.x; tg += s.tint.y; tb += s.tint.z; ta += s.tint.w;
                         // Bounded: a corrupt or diagnostic-offset materialId
                         // (build_indexed_part_geometry adds 1e6 for one debug
@@ -323,7 +325,24 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                 uint8_t* shade = out.atlas.data() + texel;
                 shade[0] = to_u8(ox);
                 shade[1] = to_u8(oy);
-                shade[2] = to_u8(ao_sum * inv_n);
+                // DEPTH, not AO. The AO this channel used to carry was a
+                // constant 1.0 for every DSL-built part (TriEx::ao is never
+                // populated outside the surfacing path), so eight bits were
+                // being spent transporting the number one. Depth is what the
+                // card actually lacked: without it every impostor pixel
+                // reports the plane through the object's CENTRE, which is why
+                // a shadow ray from one starts inside the volume and why
+                // rotating around a tree snaps between azimuths instead of
+                // parallaxing.
+                //
+                // Measured from the NEAR bound (sz = +half_extent) and
+                // normalized over the 2h extent, so d = 0 at the front of the
+                // bound and 1 at the back. That convention is load-bearing
+                // twice over: the runtime card sits at the near bound, so
+                // every depth write pushes AWAY from the camera and stays
+                // legal under gbuffer.frag's `layout(depth_less)`; and the
+                // parallax march is always inward, like every other POM.
+                shade[2] = to_u8((1.0f - depth_sum * inv_n * inv_h) * 0.5f);
                 shade[3] = to_u8(static_cast<float>(covered) /
                                  static_cast<float>(kSuperSample * kSuperSample));
                 uint8_t* tint = out.atlas.data() + layer_sz + texel;

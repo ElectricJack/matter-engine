@@ -109,24 +109,23 @@ void main() {
     // introduce a sideways leak. Clamping sun.y bounds the lift at grazing
     // sun angles instead of blowing up toward the horizon.
     uvec2 identity = texelFetch(identity_texture, pixel, 0).rg;
-    // An impostor DOES receive a traced sun shadow -- but the ray starts
-    // outside the volume the card depicts. impostor_common.glsl carries the
-    // derivation, the trade and why out_orm.a is the transport; the short
-    // version is that tracing from the card's own world position self-shadows
-    // (48.5 % lit against the mesh's 100 %) because that point is inside the
-    // object, and the previous fix for that was to force full sunlight, which
-    // threw away terrain shadowing along with the self-shadow.
+    // The 2r ray skip is GONE, and so is the reason for it.
+    //
+    // It existed because an impostor pixel reported the card's plane through
+    // the object's CENTRE, so the position reconstructed here sat inside the
+    // volume and the ray hit the object's own mesh -- 48.5 % lit against the
+    // mesh rung's 100 %. Skipping 2r cleared that, at the price of skipping
+    // every genuine occluder within 2r as well, including the object itself.
+    // That is what left impostors with no self-shadowing at all while mesh
+    // trees self-shadowed normally, which read on screen as "the meshes are
+    // too dark".
+    //
+    // gbuffer.frag now writes the DEPICTED SURFACE's depth, so `world` above
+    // is a real point on the tree and an ordinary bias is all it needs -- the
+    // same treatment every other surface gets. Self-shadowing comes back for
+    // free, and it comes back correct rather than approximated by a constant.
     const bool is_impostor_card = impostor_identity_is_card(identity.x);
-    float ray_start = constants.bias;
-    if (is_impostor_card) {
-        // 2r: the fragment lies at most r from the card's centre, so 2r clears
-        // the bound along ANY direction. max() keeps the ordinary depth bias
-        // as the floor for a degenerate/zero radius -- a zero skip would put
-        // us straight back inside the object.
-        const float r = impostor_sun_skip_decode(
-            texelFetch(orm_texture, pixel, 0).w);
-        ray_start = max(constants.bias, 2.0 * r);
-    }
+    const float ray_start = constants.bias;
     // Every use of identity.x from here down is a MATERIAL INDEX and must have
     // the impostor bit masked off. It cannot be set on this path (the early
     // return above took it), so the mask is defence against a future edit that

@@ -41,6 +41,10 @@ layout(location = 9) out vec4 out_warp_uv_scales;
 // The frame tangent (world space, unit-ish; re-orthogonalized against the
 // interpolated normal in the fragment shader).
 layout(location = 10) out vec3 out_warp_tangent;
+// Impostor parallax: xy = the cell-uv displacement per unit of stored depth,
+// z = the card's world-space depth extent (for the conservative depth write).
+// Zero for every non-impostor draw.
+layout(location = 14) out vec4 out_impostor_parallax;
 // LOD debug view: the rung cull.comp selected for this draw (or the direct
 // override below). Location 11 and NOT 9 -- 9/10 are the warp field on this
 // base; the branch this was ported from had no warp field and used 9, and
@@ -124,9 +128,7 @@ void main() {
     vec4 world = model * vec4(in_position, 1.0);
     vec2 impostor_uv = vec2(0.0);
     float impostor_view = 0.0;
-    // World-space radius of the card's bound, for rt_shadow.rgen's ray skip.
-    // See impostor_common.glsl.
-    float impostor_radius_world = 0.0;
+    vec4 impostor_parallax = vec4(0.0);
     if (is_impostor) {
         const float half_extent = in_surface.z;
         const uint corner = uint(in_surface.y + 0.5);
@@ -207,18 +209,36 @@ void main() {
         right_axis = right_len > 1e-4 ? right_axis / right_len
                                       : vec3(1.0, 0.0, 0.0);
         const vec3 card_up = cross(eye_obj_dir, right_axis);
-        // The LARGEST column, not column 0: this must bound the card under a
-        // non-uniform placement (trees are scale(s, s*heightScale, s)), and a
-        // radius that under-estimates would start the shadow ray inside the
-        // object. Over-estimating only costs a little reach.
-        impostor_radius_world =
-            half_extent * max(col_len.x, max(col_len.y, col_len.z));
-        // The billboard's position is BUILT rather than passed through: it is
-        // the only vertex in this shader whose placement depends on the
-        // camera, so it cannot come out of the baked position alone.
-        const vec3 corner_local = center_local +
-                                  right_axis * (sign_xy.x * half_extent) +
-                                  card_up * (sign_xy.y * half_extent);
+        // THE CARD SITS AT THE OBJECT'S NEAR BOUND, not through its centre.
+        //
+        // gbuffer.frag declares `layout(depth_less)`, so a fragment may only
+        // push its depth AWAY from the camera. The baked depth is measured
+        // from the near bound, so a card there can only ever push backward and
+        // the write is legal by construction. A card through the centre would
+        // need to pull the front half forward, which that declaration forbids
+        // -- and relaxing it would cost early-Z for every surface in the frame.
+        //
+        // Moving the card toward the eye would also make it subtend a larger
+        // angle, so the quad is scaled by (D - r) / D to land on exactly the
+        // same pixels it covered before. That is exact for a perspective
+        // projection: a quad at D-r of half-size h(D-r)/D subtends what one of
+        // half-size h subtends at D.
+        // World length of the push. The card moves along eye_obj_dir by
+        // half_extent in OBJECT space, so the distance it actually travels is
+        // the model's scale along that direction -- not the largest column.
+        // Those differ by heightScale for a tree, and using the column would
+        // over-shrink every tall one.
+        const float push_world =
+            length(mat3(model) * eye_obj_dir) * half_extent;
+        const float eye_dist = length(to_eye);
+        const float near_shrink =
+            eye_dist > 1e-4 ? clamp((eye_dist - push_world) / eye_dist,
+                                    0.05, 1.0)
+                            : 1.0;
+        const vec3 corner_local = center_local + eye_obj_dir * half_extent +
+                                  (right_axis * sign_xy.x +
+                                   card_up * sign_xy.y) *
+                                      (half_extent * near_shrink);
         world = model * vec4(corner_local, 1.0);
 
         // Which baked view. The ring was baked in OBJECT space, so the eye
@@ -242,9 +262,46 @@ void main() {
         const float ring = floor(elevation / float(IMPOSTOR_ELEV_STEP) + 0.5);
         const uint el_i = uint(clamp(ring, 0.0, float(IMPOSTOR_ELEVATIONS - 1u)));
         impostor_view = float(el_i * IMPOSTOR_AZIMUTHS + az_i);   // view_index()
-        // Cell-local uv, matching the bake's pixel mapping exactly:
+        // ---- the BAKED view's frame, rebuilt exactly as the bake built it --
+        //
+        // The card faces the EYE; the cell was rendered from the nearest
+        // QUANTISED direction. Those differ by up to half an azimuth step
+        // (11.25 degrees), and that difference is the entire source of
+        // parallax -- a camera-facing card sampled in its own frame has none
+        // by construction, which is why rotating around a tree used to snap
+        // between cells instead of sliding.
+        //
+        // So the cell uv is no longer the corner's sign pair. It is the
+        // corner PROJECTED INTO THE BAKED FRAME, which is the same mapping
+        // impostor_bake.cpp used on the geometry:
         //   px = (nx * 0.5 + 0.5) * C,  py = (0.5 - ny * 0.5) * C
-        impostor_uv = vec2(sign_xy.x * 0.5 + 0.5, 0.5 - sign_xy.y * 0.5);
+        // That also absorbs the near-bound shift above for free -- the card
+        // moved along the eye, and this projection reports where that lands
+        // in the baked image.
+        const float baked_az = float(az_i) * (kTwoPi / float(IMPOSTOR_AZIMUTHS));
+        const float baked_el = float(el_i) * float(IMPOSTOR_ELEV_STEP);
+        const float baked_ce = cos(baked_el);
+        const vec3 view_b = vec3(sin(baked_az) * baked_ce, sin(baked_el),
+                                 cos(baked_az) * baked_ce);
+        vec3 right_b = cross(vec3(0.0, 1.0, 0.0), view_b);
+        const float right_b_len = length(right_b);
+        right_b = right_b_len > 1e-4 ? right_b / right_b_len
+                                     : vec3(1.0, 0.0, 0.0);
+        const vec3 up_b = cross(view_b, right_b);
+
+        const float inv_h = half_extent > 1e-6 ? 1.0 / half_extent : 0.0;
+        const vec3 rel = corner_local - center_local;
+        impostor_uv = vec2(dot(rel, right_b) * inv_h * 0.5 + 0.5,
+                           0.5 - dot(rel, up_b) * inv_h * 0.5);
+
+        // A surface t behind the card along the EYE ray lands at
+        //   project_baked(card_point - eye * t)
+        // and t = d * 2 * half_extent for stored depth d, so the uv shift is
+        // exactly parallax_dir * d with no further scaling. The y term flips
+        // because the mapping above flips v.
+        impostor_parallax = vec4(-dot(eye_obj_dir, right_b),
+                                 dot(eye_obj_dir, up_b),
+                                 2.0 * push_world, 0.0);
     }
     vec4 current_clip = frame.world_to_clip * world;
     vec3 previous_local_position = in_position;
@@ -271,9 +328,9 @@ void main() {
     // cell uv and which view was chosen, and neither exists per-vertex before
     // the camera is known. Every other draw passes them through untouched.
     out_tint = is_impostor
-                   ? vec4(in_tint.x * 255.0, in_tint.y * 255.0, impostor_view,
-                          impostor_radius_world)
+                   ? vec4(in_tint.x * 255.0, in_tint.y * 255.0, impostor_view, 0.0)
                    : in_tint;
+    out_impostor_parallax = impostor_parallax;
     out_surface = is_impostor
                       ? vec4(in_surface.x, impostor_uv, 1.0)
                       : in_surface;

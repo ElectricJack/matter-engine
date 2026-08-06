@@ -89,7 +89,12 @@ inline constexpr uint32_t kFlatFormat   = 9u;  // part_asset::kFormatVersionFlat
 // default moved 32 -> 128 px, so the atlas is 512 KiB -> 8 MiB per slot and
 // the derived guard band moved half_extent with it. Both the pixels and the
 // quad's geometry differ from every v4 artifact on disk.
-inline constexpr uint32_t kImpostorFormat = 5u;  // impostor_bake::kFormatVersion
+// 6: the shade layer's B channel carries DEPTH from the near bound instead of
+// an AO that was constant 1.0 for every DSL-built part. Same bytes, entirely
+// different meaning -- a v5 atlas read as v6 parallaxes against an occlusion
+// term -- and the runtime card also moved to the near bound to keep the depth
+// write inside layout(depth_less).
+inline constexpr uint32_t kImpostorFormat = 6u;  // impostor_bake::kFormatVersion
 inline constexpr uint32_t kBundleFormat = 1u;  // part_bundle::kBundleFormatVersion
 
 // Reserved for M3b's content-addressed stage outputs. Zero means "no stage

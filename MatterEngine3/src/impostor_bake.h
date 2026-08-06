@@ -122,7 +122,7 @@
 // by the rock's material and a live material edit reaches it.
 //
 //   layer 0 "shade" : R,G = octahedral surface normal (object space)
-//                     B   = baked AO
+//                     B   = DEPTH from the near bound, normalized over 2h
 //                     A   = coverage (fractional, 4x4 supersampled)
 //   layer 1 "tint"  : R,G,B = TriEx tint rgb, A = tint blend strength
 //
