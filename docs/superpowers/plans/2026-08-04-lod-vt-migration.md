@@ -961,6 +961,65 @@ Acceptance:
 > the handoff distance must BE the impostor distance (M3.5 landed it); include casters
 > outside the sector bounds or shadows will not cross seams; land after M6 (done).
 
+> **DECIDED 2026-08-05: DIRECTIONAL (Jack's call, asked explicitly).** Far props must cast a
+> shadow that follows the sun, not ambient darkening wearing the name. That fixes the
+> storage question, and the survey turned up one large piece of luck and one real cost.
+>
+> **The luck: the directional CONSUMER already exists and is proven.** `gbuffer.frag` carries
+> `horizon_sun_visibility` — "the SUN's share of the same baked map… still DIRECTIONAL…
+> because the sun genuinely is a direction" — exports it through `out_orm.a`, and
+> `rt_shadow.rgen` multiplies it into traced sun visibility. It is **1.0 wherever the tileset
+> POM branch does not run**, so every VT fragment currently writes "no occlusion" and the
+> multiply is the identity. M6.5 therefore needs no new G-buffer channel, no new RT plumbing
+> and no change to how the sun is applied: it needs the VT path to WRITE that channel. The
+> "sun stays live" promise is inherited from machinery that already ships.
+>
+> **The cost: per-texel directional occlusion needs a fifth page channel.** The page pool is
+> albedo BC7 (1 B/texel) + normal BC5 (1) + ORM BC7 (1) + aux RGBA8 (4) = 7 B/texel. One byte
+> is not an honest direction — azimuth is exactly what makes a shadow move across the ground,
+> and everything that fits in a spare byte (a single elevation, an azimuth-averaged cone)
+> drops it. So: **one more BC7 channel, +1 B/texel, ~14% page-pool VRAM**, carrying
+> **bent normal (RGB) + aperture (A)**. Visibility is then a smoothstep of the angle between
+> the sun and the bent normal against the aperture — sharper than SH-L1, same storage, and
+> the encode path reuses `vt_bc_encode.comp` exactly as tier-2 already does for ORM.
+>
+> **Rejected: re-baking enrichment when the sun moves.** It would fit the spare byte with a
+> scalar, but tier-2 runs at a couple of pages per frame — a sun drag would take minutes to
+> re-converge, which is not a live property in any sense Jack would accept.
+>
+> **SLICE 1 LANDED (`777ffc30`)**: `kVtChannelDirOcc` plumbed, cleared to "no occlusion",
+> smoke suite ALL PASS with 0 validation errors on the real GPU. Nothing samples it yet.
+>
+> **SLICE 2 IS NOT "extend the TLAS" — the existing pass cannot carry this, and here is the
+> proof.** `vt_enrich_ao.comp:190` computes
+> `max_ray_dist = min(cap_texels * footprint, cap_meters)` with `cap_meters` **0.5 m**. It is
+> a CONTACT term by design ("capped at 0.5 m an open slope traces essentially nothing… only
+> real crevices, cracks and overhang contacts darken"). A canopy several metres overhead is
+> nowhere near that range. Worse, the MIP FADE means strength reaches zero once a page texel
+> exceeds the cap and **"the residency layer skips queueing pages past that entirely (so the
+> rays are never traced)"** — i.e. on exactly the coarse far-field pages where impostored
+> props live, the enricher does not run at all.
+>
+> So M6.5 needs a **second pass**, not a modified one: long-range (tens of metres) directional
+> rays, queued for the coarse pages the contact pass deliberately skips, against a CASTER SET,
+> writing `kVtChannelDirOcc`. It shares the enricher's machinery — page read-modify-write, the
+> BC re-encode, the texel-seeded determinism discipline — and none of its range policy.
+> Folding it into the existing pass would either break the contact term's careful cap or
+> inherit a skip that guarantees it never runs.
+>
+> **And it has one open dependency worth deciding before building.** The enricher builds its
+> BLAS from its own CPU copy of the variant's mesh (`vt_enrich.cpp`), so casters need either
+> (a) their own mesh copies in the enricher — simple, but it duplicates every nearby prop's
+> coarse rung into the enrich budget — or (b) references to the scene's existing BLASes, which
+> is far cheaper but couples enrichment to renderer lifetime and residency (a caster may not
+> be loaded when a far sector's page is enriched). (b) is the right long-run answer and the
+> bigger change; (a) is shippable sooner and measurable. **This is the next decision, and it
+> is Jack's** — it sets the size of the remaining work.
+>
+> Remaining slices after that: bent-normal accumulation in the new pass, then the VT path
+> writing `horizon_sun_visibility`. Only the last is visible, so everything before it lands
+> dark and is verified by census rather than pixels.
+
 An impostor cannot cast a correct shadow (design §6.5) — it is a camera-facing card whose
 plane passes through the object's centre, so a traced ray starts inside the volume it
 depicts. M2.5 therefore ships impostors as non-tracing, and a tree loses its shadow the
