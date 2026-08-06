@@ -928,6 +928,31 @@ Acceptance:
 
 ## M6.5 — Distant shadows in the receiver's horizon map
 
+> **STATUS 2026-08-05: BUILT, behind `MATTER_VT_DIROCC_PER_FRAME` (default 0 = off).**
+> `777ffc30` the channel, `2e31198b` the seam + the inverted queue, `b71ee224` caster
+> selection + `vt_dirocc.comp`, `8e094117` the enricher, harvest, drain and runtime read.
+> Green: run-vt-residency (incl. new caster cases), run-partstore, run-chart-atlas,
+> run-vk-scene-renderer, kernel, editor; Vulkan smoke ALL PASS with 0 validation errors both
+> off and at `MATTER_VT_DIROCC_PER_FRAME=4`.
+>
+> **NOT YET MEASURED, and this is the acceptance that matters**: whether 32 rays at coarse
+> page footprints resolve anything a person would call a shadow, versus soft canopy
+> darkening. The original text below says to measure that rather than promise it — that still
+> stands, and it needs a world with impostored props (StreamMountain) plus Jack's eyes. Also
+> unmeasured: the RT compute actually saved, and whether the impostor-switch and page-mip
+> bands double-darken (the runtime combines with `min()` rather than a product precisely so
+> that they cannot, but the band should still be looked at).
+>
+> **Five defects were found during implementation, and the first was mine.** "Cleared to no
+> occlusion" was written into `vt_types.h` as a property but the pool clear is a memset of
+> zeros — an all-zero BC7 block decodes to aperture 0, i.e. FULLY OCCLUDED, so every unbaked
+> page in every world would have gone to near-total sun shadow the moment the consumer
+> landed. The channel is now cleared with a constructed BC7 mode-6 block decoding to aperture
+> exactly 1.0. The others: recycled slots inherited stale shadows; `vt_stub_filler` looped
+> five channels over a four-entry offset array; MatterEditor's SPIR-V embed list was missing
+> the new shader, which would have latched the tier off *silently*; and BLAS dedup by part
+> hash alone would have collapsed distinct clusters.
+
 > **CORRECTED 2026-08-05, BEFORE ANY CODE. The title's "horizon map" is the wrong storage.**
 > `CHAN_HORIZON_A`/`B` live in the tileset `.gtex` and are sampled through
 > `tileset_sample` → `wang_resolve` — **Wang tiling**. A tile repeats across the terrain, so
