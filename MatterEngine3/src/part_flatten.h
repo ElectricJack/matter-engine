@@ -78,6 +78,24 @@ struct FlattenTargets {
     // derivations. Set false to bake a mesh-only ladder (what shipped before).
     bool impostor_terminal = true;
 
+    // How far out the terminal impostor takes over, as a multiplier on the
+    // one-more-ratio-2-step the default ladder would otherwise use. 1.0 keeps
+    // the historical placement; SMALLER brings billboards CLOSER to the camera.
+    //
+    // The switch distance scales with the rung's error epsilon, so this scales
+    // eps directly: 0.5 halves the distance at which every default-ladder part
+    // becomes a billboard, without touching any mesh rung's own distance.
+    //
+    // That independence is the point. The global dials that already existed —
+    // pixel_budget and lod_bias — move the WHOLE ladder, so pulling impostors
+    // in with them drags every mesh rung coarser at the same time, which is
+    // exactly the trade Jack rejected ("I'd have to dial back the pixel budget
+    // dramatically, which brings everything down in detail").
+    //
+    // Bake-time, so it needs a re-bake to take effect. Per-part control is
+    // `LOD.impostor({ at })` (design 3.4), which overrides this entirely.
+    float impostor_distance_scale = 1.0f;
+
     // Selection thresholds are derived from eps: a level becomes eligible when
     // its world-space error projects below pixel_budget pixels.
     // pixel_angle ~= vertical fov (rad) / vertical resolution.

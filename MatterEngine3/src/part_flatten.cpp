@@ -812,6 +812,27 @@ static FlattenResult flatten_budget_ladder(const std::string& cache_root,
 // so a test can flip it between flattens. One function, two ladders — the
 // default one and the authored one — so the switch cannot mean different things
 // on the two paths.
+// MATTER_IMPOSTOR_DISTANCE=0.5 makes every default-ladder part become a
+// billboard at HALF the distance it otherwise would, without moving any mesh
+// rung. Read per call, not cached, so it can be A/B'd across two bakes in one
+// process (the same reason impostors_enabled() is not a static).
+//
+// This is the knob the existing global dials could not be: pixel_budget and
+// lod_bias move the whole ladder, so pulling impostors in with them coarsens
+// every mesh at the same time. Per-part control is `LOD.impostor({ at })`,
+// which overrides this entirely.
+//
+// Bake-time: it changes the stored threshold, so it needs a re-bake.
+static float impostor_distance_scale() {
+    const char* v = std::getenv("MATTER_IMPOSTOR_DISTANCE");
+    if (!v || !v[0]) return 1.0f;
+    const float f = (float)atof(v);
+    // A non-positive or absurd value would silently move every switch in the
+    // world; clamp to a sane window and ignore garbage rather than trust it.
+    if (!(f > 0.0f) || f > 8.0f) return 1.0f;
+    return f;
+}
+
 static bool impostors_enabled() {
     const char* v = std::getenv("MATTER_IMPOSTOR");
     return !(v && v[0] == '0');
@@ -946,7 +967,10 @@ static FlattenResult flatten_static_lod_ladder(
                     break;
                 }
                 const auto& blas_entries = blas.get_entries();
-                const uint32_t src_idx = levels.back().blas_idx;
+                // Rep 0, not the coarsest rung -- see the default ladder's
+                // note above for why. `levels.front()` is this ladder's own
+                // rep 0 (the authored `at: 0` entry).
+                const uint32_t src_idx = levels.front().blas_idx;
                 const BLASManager::BLASEntry* src =
                     src_idx < blas_entries.size() ? blas_entries[src_idx].get() : nullptr;
                 if (!src) {
@@ -2046,7 +2070,25 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
                 // renumber every later blas_index.
                 if (level_metas.size() >= matter::kMaxSerializedLodLevels)
                     level_metas.pop_back();
-                const uint32_t src_idx = level_metas.back().blas_idx;
+                // BAKE FROM REP 0, NOT THE COARSEST RUNG.
+                //
+                // This used to source level_metas.back() -- the rung the
+                // billboard takes over from -- on the reasoning that depicting
+                // it makes the handover seamless. That reasoning is wrong at
+                // both ends. The atlas rasterizes into a 16x16 cell, so the
+                // source's triangle COUNT is irrelevant to cost; what the cell
+                // resolves is silhouette and shading, and the coarsest rung has
+                // already thrown both away. M1.5's benefit rule made this
+                // strictly worse by letting that rung be much coarser than it
+                // used to be, so the billboard was baking decimation error on
+                // top of its own.
+                //
+                // Rep 0 is the authored mesh. Same bake cost, same bytes, a
+                // more accurate picture -- and the handover is no worse,
+                // because at the ~10 px where the switch happens the two
+                // sources differ by well under a pixel by construction (that
+                // is why the coarse rung was admissible in the first place).
+                const uint32_t src_idx = level_metas.front().blas_idx;
                 const BLASManager::BLASEntry* src =
                     src_idx < blas_entries.size()
                         ? blas_entries[src_idx].get() : nullptr;
@@ -2075,9 +2117,18 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
                     // One more ratio-2 step of the divisor schedule: the
                     // impostor switches in exactly where the next mesh rung
                     // would have, had one been worth building.
-                    impostor_eps = level_metas.back().eps > 0.0f
-                                       ? level_metas.back().eps * 2.0f
-                                       : radius;
+                    // One more ratio-2 step: the impostor switches in where
+                    // the next mesh rung would have. impostor_distance_scale
+                    // moves that without touching any mesh rung's own distance
+                    // (see its note in part_flatten.h for why the global dials
+                    // cannot do this).
+                    const float scale =
+                        (targets.impostor_distance_scale > 0.0f
+                             ? targets.impostor_distance_scale : 1.0f) *
+                        impostor_distance_scale();
+                    impostor_eps = (level_metas.back().eps > 0.0f
+                                        ? level_metas.back().eps * 2.0f
+                                        : radius) * scale;
                     if (register_level(quad_tris, quad_ex, impostor_eps,
                                        level_metas)) {
                         impostor::depicts_hash_add_cluster(

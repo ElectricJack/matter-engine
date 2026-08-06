@@ -480,8 +480,17 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 if (!e || e->triangles.size() != 2 || e->tri_extra.size() != 2 ||
                     !(e->tri_extra[0].uv0.x >= impostor::kQuadMarker))
                     continue;
-                // The rung the billboard takes over from is what it depicts.
-                const auto& src = lods[lods.size() - 2].blas_indices;
+                // What the billboard DEPICTS is rep 0 -- the authored mesh --
+                // not the rung it takes over from. This used to read
+                // lods[size-2]; the bake changed to source rep 0 (see
+                // part_flatten's note: a 16x16 cell resolves silhouette and
+                // shading, and the coarsest rung has already discarded both),
+                // and this recomputation MUST follow it. If the two disagree
+                // the depicts-hash never matches and every atlas in the world
+                // is rejected as stale -- which degrades silently to
+                // mesh-only, exactly the failure that went unnoticed for a
+                // generation of artifacts on the abandoned branch.
+                const auto& src = lods[0].blas_indices;
                 if (src.size() != 1 || src[0] >= probe_entries.size()) continue;
                 impostor_rung[ci] = lods.size() - 1;
                 impostor::depicts_hash_add_cluster(

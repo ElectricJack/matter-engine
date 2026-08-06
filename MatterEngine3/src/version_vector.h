@@ -77,7 +77,11 @@ inline constexpr uint32_t kFlatFormat   = 9u;  // part_asset::kFormatVersionFlat
 // was 4x4 of 32x32 holding one equator ring), so a v1 atlas read by a v2
 // shader samples a quarter of the wrong cell. Byte-identical SIZE with
 // different CONTENT is exactly the case a format version exists for.
-inline constexpr uint32_t kImpostorFormat = 2u;  // impostor_bake::kFormatVersion
+// 3: the atlas depicts REP 0, not the coarsest mesh rung. Same layout, same
+// bytes, different picture -- and the depicts-hash is now folded over rep 0's
+// triangles, so a v2 atlas beside a v3 ladder would be rejected as stale
+// rather than mis-drawn. Bumping is what turns that rejection into a rebake.
+inline constexpr uint32_t kImpostorFormat = 3u;  // impostor_bake::kFormatVersion
 inline constexpr uint32_t kBundleFormat = 1u;  // part_bundle::kBundleFormatVersion
 
 // Reserved for M3b's content-addressed stage outputs. Zero means "no stage

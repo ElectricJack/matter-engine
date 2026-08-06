@@ -1615,9 +1615,14 @@ static void test_authored_ladder_impostor_terminal() {
     // whole staleness contract: an atlas that does not match the mesh it
     // depicts is rejected rather than drawn.
     {
+        // REP 0, not the rung the billboard takes over from. The bake sources
+        // rep 0 now (a 16x16 cell resolves silhouette and shading, and the
+        // coarsest rung has already discarded both), and PartStore folds the
+        // same rung -- this must track them or it asserts a contract nothing
+        // implements.
         uint64_t depicts = impostor::depicts_hash_begin();
         impostor::depicts_hash_add_cluster(
-            depicts, 0u, entries[lods[1].blas_indices[0]]->triangles);
+            depicts, 0u, entries[lods[0].blas_indices[0]]->triangles);
         impostor::PartImpostor loaded;
         impostor::LoadFailure fail = impostor::LoadFailure::None;
         std::string reason;
@@ -2436,6 +2441,144 @@ static std::vector<TriEx> triex_for(const std::vector<Tri>& tris, int material) 
     return ex;
 }
 
+// The impostor depicts REP 0, and the distance scale moves only the impostor.
+//
+// Both are things a screenshot cannot tell you. A billboard baked from the
+// coarsest rung looks like a billboard; it is only wrong against what it COULD
+// have depicted. And a distance knob that silently moved the mesh rungs too
+// would look exactly like one that worked.
+static void test_impostor_source_and_distance() {
+    printf("=== test_impostor_source_and_distance ===\n");
+
+    // Tall/thin so decimation has somewhere to go and rep 0 differs sharply
+    // from the coarsest rung.
+    std::vector<Tri> tris = sphere_tris(24, 12);
+    auto stretch = [](float3& v) { v.x *= 0.2f; v.z *= 0.2f; v.y *= 3.0f; };
+    for (Tri& t : tris) {
+        stretch(t.vertex0); stretch(t.vertex1); stretch(t.vertex2);
+        t.centroid = make_float3((t.vertex0.x + t.vertex1.x + t.vertex2.x) / 3.0f,
+                                 (t.vertex0.y + t.vertex1.y + t.vertex2.y) / 3.0f,
+                                 (t.vertex0.z + t.vertex1.z + t.vertex2.z) / 3.0f);
+    }
+    std::vector<TriEx> ex = triex_for(tris, 6);
+
+    // Two atlases from the SAME cluster: rep 0, and a decimated stand-in for
+    // the coarsest rung. If those came out identical the whole question would
+    // be moot, so assert they differ FIRST -- otherwise the source assertion
+    // below proves nothing.
+    {
+        impostor::ClusterImpostor from_rep0, from_coarse;
+        CHECK(impostor::bake_cluster(0u, tris, ex, from_rep0),
+              "imp src: rep 0 bakes");
+        std::vector<Tri> coarse = lod_bake::decimate_to_error(tris, 0.35f, false);
+        CHECK(!coarse.empty() && coarse.size() < tris.size(),
+              "imp src: the coarse stand-in actually decimated");
+        if (!coarse.empty()) {
+            std::vector<TriEx> cex = triex_for(coarse, 6);
+            CHECK(impostor::bake_cluster(0u, coarse, cex, from_coarse),
+                  "imp src: the coarse rung bakes");
+            CHECK(from_rep0.atlas != from_coarse.atlas,
+                  "imp src: the two sources DO produce different atlases, so "
+                  "which one the bake picks is an observable choice");
+        }
+    }
+
+    const uint64_t h = 0xA110000044440004ull;
+    CHECK(save_fixture(h, 6, {tris}, {}), "imp src: fixture written");
+    const std::string flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(h);
+    const std::string fimp = std::string(kCacheRoot) + "/" + impostor::cache_path_impostor(h);
+
+    auto bake_ladder = [&](float dist_scale, std::vector<part_asset::FlatCluster>& cl,
+                           BLASManager& blas) -> part_flatten::FlattenResult {
+        part_bundle::remove_section(flat, h, part_bundle::kSectionFlat);
+        part_bundle::remove_section(fimp, h, part_bundle::kSectionImpostor);
+        part_flatten::FlattenTargets t;
+        t.impostor_distance_scale = dist_scale;
+        auto r = part_flatten::flatten_part(kCacheRoot, h, t);
+        if (r.ok) {
+            TLASManager tl(4);
+            part_asset::load_flat_v3(flat, h, blas, tl, cl);
+        }
+        return r;
+    };
+
+    std::vector<part_asset::FlatCluster> cl1; BLASManager b1;
+    auto r1 = bake_ladder(1.0f, cl1, b1);
+    CHECK(r1.ok, "imp src: ladder bakes");
+    if (!r1.ok || cl1.empty() || cl1[0].lods.size() < 2) {
+        printf("  SKIPPING (no impostor rung on this fixture)\n");
+        return;
+    }
+    const auto& lods1 = cl1[0].lods;
+    const auto& e1 = b1.get_entries();
+    const size_t term1 = lods1.size() - 1;
+    const BLASManager::BLASEntry* bb = e1[lods1[term1].blas_indices[0]].get();
+    if (!bb || !impostor::is_billboard_rung(bb->triangles, bb->tri_extra)) {
+        printf("  SKIPPING (terminal rung is not a billboard)\n");
+        return;
+    }
+
+    // THE SOURCE ASSERTION, made exactly the way PartStore makes it: fold the
+    // depicts-hash over rep 0 and require the sidecar to accept it. If the bake
+    // and the loader disagreed here, every atlas in the world would be rejected
+    // as stale and silently fall back to mesh-only.
+    {
+        uint64_t d0 = impostor::depicts_hash_begin();
+        impostor::depicts_hash_add_cluster(
+            d0, 0u, e1[lods1[0].blas_indices[0]]->triangles);
+        impostor::PartImpostor loaded;
+        impostor::LoadFailure fail = impostor::LoadFailure::None;
+        std::string why;
+        const bool ok0 = impostor::load(fimp, h, impostor::depicts_hash_finish(d0),
+                                        loaded, &fail, &why);
+        CHECK(ok0, "imp src: the atlas answers to REP 0's depicts-hash");
+        if (!ok0)
+            printf("  load said: %s (%s)\n", impostor::load_failure_text(fail),
+                   why.c_str());
+
+        // ...and NOT to the coarsest mesh rung's, which is what it used to
+        // depict. Without this the assertion above would still pass on a
+        // ladder whose rep 0 and coarsest rung happen to be the same mesh.
+        if (lods1.size() >= 3) {
+            uint64_t dc = impostor::depicts_hash_begin();
+            impostor::depicts_hash_add_cluster(
+                dc, 0u, e1[lods1[term1 - 1].blas_indices[0]]->triangles);
+            impostor::PartImpostor other;
+            CHECK(!impostor::load(fimp, h, impostor::depicts_hash_finish(dc), other),
+                  "imp src: it does NOT answer to the coarsest rung's hash, so "
+                  "the source really moved");
+        }
+    }
+
+    // THE DISTANCE ASSERTION. Halving the scale must bring the billboard in,
+    // and must leave every MESH rung untouched -- that independence is the
+    // entire point of the knob.
+    std::vector<part_asset::FlatCluster> cl2; BLASManager b2;
+    auto r2 = bake_ladder(0.5f, cl2, b2);
+    CHECK(r2.ok && !cl2.empty(), "imp dist: half-distance ladder bakes");
+    if (r2.ok && !cl2.empty() && cl2[0].lods.size() == lods1.size()) {
+        const auto& lods2 = cl2[0].lods;
+        // The impostor's switch-IN is stored as the PREVIOUS rung's threshold;
+        // a LARGER threshold means it switches in nearer.
+        const float t1 = lods1[term1 - 1].screen_size_threshold;
+        const float t2 = lods2[term1 - 1].screen_size_threshold;
+        CHECK(t2 > t1 * 1.5f,
+              "imp dist: scale 0.5 brings the billboard substantially closer");
+        bool mesh_unchanged = true;
+        for (size_t i = 0; i + 2 < lods1.size(); ++i)
+            if (lods1[i].screen_size_threshold != lods2[i].screen_size_threshold)
+                mesh_unchanged = false;
+        CHECK(mesh_unchanged,
+              "imp dist: every MESH rung's distance is untouched, so the knob "
+              "moves only the impostor");
+        printf("  impostor switch threshold %.5f -> %.5f (larger = nearer)\n", t1, t2);
+    }
+    printf("  test_impostor_source_and_distance OK\n");
+
+    part_bundle::remove_section(flat, h, part_bundle::kSectionFlat);
+    part_bundle::remove_section(fimp, h, part_bundle::kSectionImpostor);
+}
+
 static void test_impostor_eligibility() {
     printf("=== test_impostor_eligibility ===\n");
     // The floor is an ORDER-OF-MAGNITUDE reduction (2 / N <= 0.125), not the
@@ -2868,10 +3011,17 @@ static void test_flatten_appends_impostor_rung() {
             !(last->tri_extra[0].uv0.x >= impostor::kQuadMarker))
             continue;
         ++impostor_rungs;
-        const auto& src = blas.get_entries()[lods[lods.size() - 2].blas_indices[0]];
-        terminal_mesh_tris = src->triangles.size();
+        // TWO DIFFERENT RUNGS, deliberately:
+        //   - the eligibility floor is about the rung being REPLACED, so it
+        //     still reads lods[size-2];
+        //   - what the atlas DEPICTS is rep 0, so the depicts-hash folds
+        //     lods[0]. Conflating them is what made the first run of this
+        //     change fail three tests at once.
+        const auto& replaced = blas.get_entries()[lods[lods.size() - 2].blas_indices[0]];
+        terminal_mesh_tris = replaced->triangles.size();
+        const auto& depicted = blas.get_entries()[lods[0].blas_indices[0]];
         impostor::depicts_hash_add_cluster(depicts, static_cast<uint32_t>(ci),
-                                           src->triangles);
+                                           depicted->triangles);
         // The rung the impostor takes over from now has a REAL switch
         // threshold; before M2.5 the terminal rung threshold was always 0.
         CHECK(lods[lods.size() - 2].screen_size_threshold > 0.0f,
@@ -2928,6 +3078,7 @@ int main() {
     test_budget_ladder_assembly();
     test_authored_ladder_switch_distances();
     test_authored_ladder_impostor_terminal();
+    test_impostor_source_and_distance();
     test_w5_plan_does_not_drive_the_ladder();
     test_instance_boundary_records_refs();
     test_generous_budget_inlines();
