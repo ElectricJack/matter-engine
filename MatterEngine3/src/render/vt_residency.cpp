@@ -638,12 +638,43 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
 
     const auto found = layer_of_.find(key);
     if (found != layer_of_.end()) {
-        // A sibling rung already built this parameterisation. Take a reference
-        // rather than a second layer: same pages, same indirection table, same
-        // mesh budget spent once.
-        param_key_of_rung_[alias] = key;
-        ++variants_[found->second].alias_refs;
-        return found->second + 1u;
+        VariantRung& existing = variants_[found->second];
+        // M6: WHICH RUNG'S MESH COMPOSITES THE SHARED PAGES.
+        //
+        // A layer's pages are rasterised from the mesh it was registered with,
+        // and registration is DEMAND-DRIVEN by default (matter_engine.cpp's
+        // vt_deferred_rung_mask; MATTER_VT_EAGER restores register-everything).
+        // So a sector first seen at distance registers a COARSE rung, and
+        // before this branch existed its page texels would have been baked
+        // from coarse geometry permanently — normals and materials resolved
+        // against a mesh the close-up camera is no longer drawing. That is a
+        // fidelity regression you would only ever see by flying in, which is
+        // exactly how it would have escaped a headless suite.
+        //
+        // A FINER rung therefore rebuilds the layer. Coarser or equal ones
+        // alias, so the common case (drawing away from a part) costs nothing
+        // and only the first close approach pays — never worse than the
+        // pre-M6 behaviour, where every rung switch rebuilt.
+        if (rung < existing.rung) {
+            // Every alias on this key is about to name a dead layer, so drop
+            // them all rather than leave refcounts describing a layer that no
+            // longer exists. The rungs re-register on demand and re-alias to
+            // the replacement.
+            for (auto it = param_key_of_rung_.begin();
+                 it != param_key_of_rung_.end();) {
+                if (it->second == key) it = param_key_of_rung_.erase(it);
+                else ++it;
+            }
+            release_variant_key(key);
+            // ...and fall through to build the layer from THIS rung's mesh.
+        } else {
+            // A sibling rung already built this parameterisation at equal or
+            // finer detail. Take a reference rather than a second layer: same
+            // pages, same indirection table, mesh budget spent once.
+            param_key_of_rung_[alias] = key;
+            ++existing.alias_refs;
+            return found->second + 1u;
+        }
     }
 
     VtVariantLayout layout{};
