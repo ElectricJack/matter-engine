@@ -564,6 +564,100 @@ void test_apply_chart_rung() {
     printf("PASSED\n");
 }
 
+// M6 step 2: ChartBakeOptions::unify_parameterisation makes a whole LADDER
+// share one chart table instead of charting each rung. The assertions are the
+// two halves of "rung-invariant": every rung reports the SAME parameterisation,
+// and the flag is off by default so nothing changes for callers that have not
+// opted in.
+void test_unified_ladder_parameterisation() {
+    printf("=== test_unified_ladder_parameterisation ===\n");
+    // Cylinder-overhang, NOT the cube. The cube is 12 triangles and barely
+    // decimates, so its rungs are the same mesh and chart identically with or
+    // without the flag — which makes BOTH assertions below vacuous. The
+    // failability check caught exactly that when this test was first written.
+    const std::vector<Tri> tris = build_cylinder_overhang();
+    const std::vector<TriEx> ex = face_normal_triex(tris);
+
+    auto bake = [&](bool unify, std::vector<chart_atlas::ChartAtlasRung>& charts) {
+        BLASManager blas;
+        std::vector<BLASHandle> handles;
+        lod_bake::ChartBakeOptions opts;
+        opts.unify_parameterisation = unify;
+        lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, blas, &ex, nullptr,
+                            &handles, &opts, &charts);
+    };
+
+    std::vector<chart_atlas::ChartAtlasRung> legacy, unified;
+    bake(false, legacy);
+    bake(true, unified);
+
+    CHECK(legacy.size() == unified.size(), "unify: same rung count either way");
+    CHECK(!unified.empty() && !unified[0].charts.empty(),
+          "unify: the base rung still charts");
+    if (unified.empty() || unified[0].charts.empty()) { printf("FAILED\n"); return; }
+
+    // THE PROPERTY. Every charted rung reports the base's atlas and the base's
+    // chart bases/rects. Only tri_order and the per-chart ranges may differ,
+    // because those index this rung's own triangles.
+    size_t charted_rungs = 0;
+    bool all_shared = true;
+    for (size_t r = 0; r < unified.size(); ++r) {
+        const auto& u = unified[r];
+        if (u.charts.empty()) continue;      // rung never charted; not a failure
+        ++charted_rungs;
+        if (u.atlas_w != unified[0].atlas_w || u.atlas_h != unified[0].atlas_h ||
+            u.charts.size() != unified[0].charts.size()) { all_shared = false; break; }
+        for (size_t c = 0; c < u.charts.size(); ++c) {
+            const auto& a = u.charts[c];
+            const auto& b = unified[0].charts[c];
+            if (std::memcmp(a.origin, b.origin, sizeof a.origin) != 0 ||
+                std::memcmp(a.tangent, b.tangent, sizeof a.tangent) != 0 ||
+                std::memcmp(a.bitangent, b.bitangent, sizeof a.bitangent) != 0 ||
+                a.rect_x != b.rect_x || a.rect_y != b.rect_y ||
+                a.rect_w != b.rect_w || a.rect_h != b.rect_h ||
+                a.texels_per_meter != b.texels_per_meter) { all_shared = false; break; }
+        }
+        if (!all_shared) break;
+    }
+    CHECK(charted_rungs >= 2,
+          "unify: the fixture produced at least two charted rungs to compare");
+    CHECK(all_shared,
+          "unify: every rung reports the base's atlas, chart bases and rects");
+    printf("  %zu charted rungs share one parameterisation\n", charted_rungs);
+
+    // FAILABILITY. Without the flag the rungs must NOT all agree, or the
+    // assertion above proves nothing -- a fixture whose rungs happen to chart
+    // identically would pass it either way.
+    {
+        bool legacy_differs = false;
+        for (size_t r = 1; r < legacy.size() && !legacy_differs; ++r) {
+            if (legacy[r].charts.empty() || legacy[0].charts.empty()) continue;
+            if (legacy[r].atlas_w != legacy[0].atlas_w ||
+                legacy[r].atlas_h != legacy[0].atlas_h ||
+                legacy[r].charts.size() != legacy[0].charts.size()) {
+                legacy_differs = true; break;
+            }
+            for (size_t c = 0; c < legacy[r].charts.size(); ++c) {
+                const auto& a = legacy[r].charts[c];
+                const auto& b = legacy[0].charts[c];
+                if (std::memcmp(a.origin, b.origin, sizeof a.origin) != 0 ||
+                    a.rect_x != b.rect_x || a.rect_y != b.rect_y ||
+                    a.rect_w != b.rect_w || a.rect_h != b.rect_h) {
+                    legacy_differs = true; break;
+                }
+            }
+        }
+        CHECK(legacy_differs,
+              "unify: WITHOUT the flag the rungs genuinely disagree (so the "
+              "test above is not vacuous)");
+    }
+
+    // Default-off, checked on the struct rather than inferred from behaviour.
+    CHECK(lod_bake::ChartBakeOptions{}.unify_parameterisation == false,
+          "unify: off by default, so existing callers are untouched");
+    printf("PASSED\n");
+}
+
 void test_ladder_charts() {
     const std::vector<Tri> tris = build_cube();
     const std::vector<TriEx> ex = face_normal_triex(tris);
@@ -928,6 +1022,7 @@ int main(int argc, char** argv) {
 
     test_ladder_charts();
     test_apply_chart_rung();
+    test_unified_ladder_parameterisation();
     test_sidecar_roundtrip();
     test_flat_load_charts();
 

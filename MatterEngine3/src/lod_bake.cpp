@@ -455,6 +455,10 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
     const bool reproject_usable = triex && triex->size() == tris.size();
     std::unique_ptr<MeshIndexed> src_m;
     std::unique_ptr<ReprojectSource> src_index;
+    // M6: rung 0's chart table and the mesh it was built over, kept for the
+    // coarser rungs to adopt. Empty unless ChartBakeOptions asks for it.
+    chart_atlas::ChartAtlasRung unified_base;
+    std::vector<Tri> unified_base_tris;
 
     for (size_t lvl = 0; lvl < targets.keep_ratio.size(); ++lvl) {
         BAKE_SPAN(bake_trace::kSpanLodRung);
@@ -543,11 +547,32 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
             float tpm = chart_opts->texels_per_meter;
             if (chart_opts->halve_per_rung && lvl > 0)
                 tpm /= (float)(1u << (lvl < 30 ? lvl : 30));
-            if (build_chart_rung(geo, charted_ex, tpm, chart_opts->cone_deg,
-                                 rung_charts))
+            // M6: the FIRST rung that charts establishes the parameterisation
+            // and every coarser one adopts it, so a part's page texels stop
+            // depending on which rung is selected. Keyed on "have we a base
+            // yet" rather than on lvl == 0, because the terrain ladder below
+            // can start at first_rung > 0 — testing the index there would
+            // leave the base unset and silently re-chart every rung.
+            //
+            // Falls through to an independent build whenever adoption is off,
+            // has no base, or fails, so the legacy path stays reachable rather
+            // than shipping an unparameterised rung.
+            const bool adopt = chart_opts->unify_parameterisation &&
+                               !unified_base.charts.empty();
+            if (adopt && apply_chart_rung(geo, charted_ex, unified_base_tris,
+                                          unified_base, rung_charts)) {
                 ex = charted_ex.data();
-            else
+            } else if (build_chart_rung(geo, charted_ex, tpm,
+                                        chart_opts->cone_deg, rung_charts)) {
+                ex = charted_ex.data();
+                if (chart_opts->unify_parameterisation &&
+                    unified_base.charts.empty()) {
+                    unified_base = rung_charts;
+                    unified_base_tris = geo;
+                }
+            } else {
                 rung_charts = {};
+            }
         }
         // register_triangles may deduplicate (returning an existing handle), so we
         // must NOT pre-record entries().size() as the index — it would be off-by-N
@@ -734,6 +759,11 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
     // is never drawn at close range. Every surviving rung is still decimated
     // from `surface` (the full-res, skirt-free mesh built above), so skipping
     // rung 0 costs detail nowhere except the skirts.
+    // M6: see bake_lods. Established by the first rung that charts, which on
+    // this ladder need not be rung 0 (first_rung).
+    chart_atlas::ChartAtlasRung unified_base;
+    std::vector<Tri> unified_base_tris;
+
     for (size_t lvl = first_rung; lvl < rung_count; ++lvl) {
         BAKE_SPAN(bake_trace::kSpanLodRung);
         const auto rung_t0 = std::chrono::steady_clock::now();
@@ -867,11 +897,29 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
             float tpm = chart_opts->texels_per_meter;
             if (chart_opts->halve_per_rung && lvl > 0)
                 tpm /= (float)(1u << (lvl < 30 ? lvl : 30));
-            if (build_chart_rung(geo, charted_ex, tpm, chart_opts->cone_deg,
-                                 rung_charts))
+            // M6, same rule as bake_lods: the first rung that charts sets the
+            // parameterisation and the rest adopt it. This is the site that
+            // matters most for the dome patches — a terrain sector's horizon
+            // lives in these page texels, and under halve_per_rung it was
+            // re-parameterised at every single rung. Note this loop can start
+            // at first_rung > 0, which is exactly why the base is keyed on
+            // emptiness and not on the index.
+            const bool adopt = chart_opts->unify_parameterisation &&
+                               !unified_base.charts.empty();
+            if (adopt && apply_chart_rung(geo, charted_ex, unified_base_tris,
+                                          unified_base, rung_charts)) {
                 ex = charted_ex.data();
-            else
+            } else if (build_chart_rung(geo, charted_ex, tpm,
+                                        chart_opts->cone_deg, rung_charts)) {
+                ex = charted_ex.data();
+                if (chart_opts->unify_parameterisation &&
+                    unified_base.charts.empty()) {
+                    unified_base = rung_charts;
+                    unified_base_tris = geo;
+                }
+            } else {
                 rung_charts = {};
+            }
         }
         g_ladder_chart_us[census_slot(lvl)].fetch_add(
             split_us(census_mark), std::memory_order_relaxed);

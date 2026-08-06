@@ -58,6 +58,20 @@ struct ChartBakeOptions {
     float texels_per_meter = 16.0f;
     bool  halve_per_rung   = false;
     float cone_deg         = chart_atlas::kChartNormalConeDeg;
+
+    // M6 (texture unification): chart rung 0 ONCE and have every coarser rung
+    // adopt that parameterisation (apply_chart_rung) instead of charting
+    // itself. This is what makes a part's page texels rung-INVARIANT — the
+    // property the VT variant key, the page pool and the horizon query all
+    // want, and the reason the dome patches tracked the rung split.
+    //
+    // Note it also retires `halve_per_rung` where it is on: one table means
+    // one density. That is a deliberate consequence, not an oversight — a
+    // per-rung density IS a per-rung parameterisation.
+    //
+    // Off by default so every existing caller keeps the per-rung behaviour
+    // byte-for-byte until it opts in.
+    bool  unify_parameterisation = false;
 };
 
 // Build the chart atlas for ONE rung mesh and write chart UVs into `triex`
