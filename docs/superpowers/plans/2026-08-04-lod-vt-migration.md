@@ -928,6 +928,39 @@ Acceptance:
 
 ## M6.5 — Distant shadows in the receiver's horizon map
 
+> **CORRECTED 2026-08-05, BEFORE ANY CODE. The title's "horizon map" is the wrong storage.**
+> `CHAN_HORIZON_A`/`B` live in the tileset `.gtex` and are sampled through
+> `tileset_sample` → `wang_resolve` — **Wang tiling**. A tile repeats across the terrain, so
+> folding one prop's occlusion into it would paint that prop's shadow onto every repeat of
+> that tile across the whole world. Jack's idea (bake the caster into the RECEIVER) is right;
+> my mapping of it onto that channel was not, and it would have shipped as a world-wide
+> smear that reads like a tileset bug.
+>
+> **The receiver is the sector's VT page.** Those are chart-space and per-sector — one
+> placement, which is the property this milestone actually needs. And the mechanism is
+> already built: `vt_enrich_ao.comp` traces hemisphere occlusion with `rayQueryEXT` against
+> `variant_tlas`, which `vt_enrich.cpp:723` builds with **`instance_count = 1`** — the
+> variant's own mesh and nothing else. That one line is the whole of why enrichment is
+> self-occlusion only.
+>
+> **Revised scope: extend the enricher's TLAS to carry nearby impostored casters beside the
+> receiver's own mesh.** No new channel, no `.gtex` format change, and it inherits the
+> enricher's existing correctness work (including the geometric-normal fix that stopped
+> terrain self-shadowing).
+>
+> **One promise does NOT survive the correction and must be re-established, not inherited.**
+> The original argument was "bake a horizon, not a shadow", so the sun stays runtime-applied
+> and `sun_azimuth_deg`/`sun_elevation_deg` stay live. Tier-2 AO stores *occlusion*, not an
+> elevation profile — a plain AO term is sun-independent darkening, which is a strictly
+> weaker promise. Either give the enrichment a directional form, or state plainly that far
+> props contribute ambient darkening and not a sun-angle-following shadow. **Decide that
+> before building, because it is the difference between the feature Jack asked for and a
+> cheaper thing wearing its name.**
+>
+> Unchanged from the original: measure the angular resolution rather than promise shadows;
+> the handoff distance must BE the impostor distance (M3.5 landed it); include casters
+> outside the sector bounds or shadows will not cross seams; land after M6 (done).
+
 An impostor cannot cast a correct shadow (design §6.5) — it is a camera-facing card whose
 plane passes through the object's centre, so a traced ray starts inside the volume it
 depicts. M2.5 therefore ships impostors as non-tracing, and a tree loses its shadow the

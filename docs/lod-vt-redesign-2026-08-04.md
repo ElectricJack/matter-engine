@@ -467,6 +467,37 @@ the **terrain sector's** page. A sector is its own part with **exactly one place
 world-context data is legitimately correct there. The per-variant objection applies to the
 caster and not to the receiver.
 
+> **CORRECTION 2026-08-05: the receiver storage named below is the WRONG ONE, and it would
+> have smeared shadows across the world.** `CHAN_HORIZON_A`/`B` live in the tileset `.gtex`,
+> and `tileset_common.glsl:774` samples them through `tileset_sample` → `wang_resolve` — i.e.
+> through **Wang tiling**. A tile repeats across the terrain, so folding one pine's occlusion
+> into it would paint that pine's shadow onto every repeat of that tile, everywhere. The
+> per-variant objection this section correctly raises against the caster's page applies to
+> the tileset channel just as hard: a tiled texture has no more idea *where* it is than a
+> part variant does.
+>
+> **The idea is right; the storage is the sector's VT page, not the tileset.** VT pages are
+> chart-space and per-sector — one placement, exactly as this section argues a receiver must
+> be. And the mechanism already exists: tier-2 hemisphere-AO enrichment
+> (`vt_enrich_ao.comp`) traces occlusion rays with `rayQueryEXT` against `variant_tlas`, a
+> TLAS `vt_enrich.cpp:723` builds with **`instance_count = 1`** — the variant's own mesh and
+> nothing else. That single line is what confines enrichment to self-occlusion.
+>
+> So M6.5 is: **extend the enricher's TLAS to carry nearby impostored casters alongside the
+> receiver's own mesh.** Their occlusion then lands in the terrain sector's own page texels,
+> per location, no tiling to smear it. That is smaller than what this section describes, it
+> reuses machinery that already ships (including the geometric-normal fix), and it needs no
+> new channel and no `.gtex` format change.
+>
+> What survives from the text below: every one of the four things to establish (angular
+> resolution must be measured, the handoff distance must BE the impostor distance, casters
+> outside the sector bounds must be included, and it lands after the single
+> parameterisation). What changes is only *where the occlusion is written* — and with it the
+> "bake a horizon, not a shadow" argument, since tier-2 AO stores occlusion rather than an
+> elevation profile. **Keeping the sun runtime-applied therefore has to be re-established on
+> the new storage rather than inherited**: a plain AO term is view- and sun-independent
+> darkening, which is NOT the same promise. Settle that before building.
+
 **Bake a HORIZON, not a shadow.** `.gtex` already carries a horizon map — `CHAN_HORIZON_A`
 and `CHAN_HORIZON_B`, eight azimuths (0/45/…/315°) of `sin(elevation)` per texel — and it is
 already consumed: `gbuffer.frag` resolves it into `horizon_sun_visibility`, writes it to
