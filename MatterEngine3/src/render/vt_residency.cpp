@@ -1214,6 +1214,61 @@ void VtResidency::slot_reset_tier(uint32_t slot) {
     stats_.enrich_queue_depth = static_cast<uint32_t>(enrich_queue_.size());
 }
 
+// M6.5: the DIRECTIONAL tier's queue. Deliberately a sibling of queue_enrich
+// rather than a mode of it, because its admission rule is the OPPOSITE one.
+//
+//   queue_enrich      fine pages   — footprint <  max_footprint_meters()
+//   queue_dir_occ     coarse pages — footprint >= dir_occ_min_footprint_meters()
+//
+// That inversion is the entire reason this exists. The contact pass fades to
+// zero on coarse pages and the residency layer stops queueing them, so the
+// far-field pages where impostored props live are never enriched at all — a
+// caster added to the contact pass would have been added to a pass that is
+// never dispatched there.
+void VtResidency::queue_dir_occ(uint32_t layer, VtPageKey page, uint32_t slot) {
+    if (!enricher_ || max_dir_occ_per_frame_ == 0) return;
+    if (layer >= variants_.size()) return;
+    const VariantRung& v = variants_[layer];
+    // A caster's placement is WORLD context, so it only means anything for a
+    // variant with exactly one placement. A part variant shared by many
+    // instances has no single world position to be near — and this test is
+    // also what stops one prop's shadow appearing on every copy of an
+    // instanced part, which is the per-variant trap the whole design turns on.
+    if (!v.context.surface_world_anchored) return;
+    if (v.context.caster_count == 0) return;   // nothing to cast
+    const float tpm = v.finest_texels_per_meter;
+    if (tpm > 0.0f) {
+        const float footprint_m = static_cast<float>(1u << page.mip) / tpm;
+        if (footprint_m < enricher_->dir_occ_min_footprint_meters()) {
+            ++stats_.dir_occ_skipped_fine_total;
+            return;
+        }
+    }
+    const auto found = dir_occ_queued_slot_.find(slot);
+    if (found != dir_occ_queued_slot_.end()) {
+        dir_occ_queue_[found->second] =
+            PendingEnrich{layer, page, slot, frame_index_};
+        return;
+    }
+    constexpr size_t kMaxDirOccQueue = 1024;
+    if (dir_occ_queue_.size() >= kMaxDirOccQueue) {
+        // No slot_reset_tier here, unlike queue_enrich: the directional bake
+        // OVERWRITES its channel instead of multiplying into it, so there is
+        // no once-only per-slot state to unwind — dropping a candidate simply
+        // means the page keeps its previous (or cleared) value until it is
+        // queued again. That idempotence is what makes re-baking on a caster
+        // load safe, and it costs this branch its bookkeeping.
+        dir_occ_queued_slot_.erase(dir_occ_queue_.front().slot);
+        dir_occ_queue_.erase(dir_occ_queue_.begin());
+        for (auto& entry : dir_occ_queued_slot_)
+            if (entry.second > 0) --entry.second;
+        ++stats_.dir_occ_dropped_total;
+    }
+    dir_occ_queued_slot_[slot] = dir_occ_queue_.size();
+    dir_occ_queue_.push_back(PendingEnrich{layer, page, slot, frame_index_});
+    stats_.dir_occ_queue_depth = static_cast<uint32_t>(dir_occ_queue_.size());
+}
+
 void VtResidency::queue_enrich(uint32_t layer, VtPageKey page, uint32_t slot) {
     if (!enricher_ || max_enrich_per_frame_ == 0) return;
     if (slot >= slot_tier_.size()) return;
@@ -1373,6 +1428,16 @@ void VtResidency::refresh_budgets() {
     max_tail_fills_per_frame_ =
         clamp_u32(b.tail_fills_per_frame, 1u, kMaxFillFlags);
     max_enrich_per_frame_ = clamp_u32(b.enrich_per_frame, 0u, 16u);
+    // M6.5: the directional tier's own budget, read here rather than shared
+    // with the contact tier's. One budget for both would let a burst of fine
+    // pages consume the frame and leave the far field permanently unshadowed —
+    // and "permanently", for a bake that only runs on pages the camera has
+    // already moved away from, is not a transient.
+    //
+    // Default 0 = tier off, so this whole path is inert until something both
+    // supplies casters and raises the budget. Same discipline as
+    // MATTER_VT_UNIFY: nothing ships live until it is asked for.
+    max_dir_occ_per_frame_ = clamp_u32(b.dir_occ_per_frame, 0u, 16u);
     mesh_budget_bytes_ =
         static_cast<size_t>(clamp_u32(b.mesh_budget_mb, 1u, 16384u)) * 1024u *
         1024u;

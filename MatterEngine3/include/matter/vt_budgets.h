@@ -45,6 +45,12 @@ struct VtResidencyBudgets {
     // Tier-2 hemisphere-AO enrichments per frame; 0 keeps the enricher loaded
     // but drains nothing.
     uint32_t enrich_per_frame = 2;
+    // M6.5: directional-occlusion bakes per frame (the SECOND tier — coarse
+    // far-field pages, impostored props as casters). Its own budget rather
+    // than a share of enrich_per_frame: the two tiers admit opposite page
+    // sizes, and one budget would let a burst of fine pages starve the far
+    // field indefinitely. Default 0 = tier off.
+    uint32_t dir_occ_per_frame = 0;
     // CPU mesh-copy budget. Rejections past this fall back to the legacy
     // per-material path (i.e. the authored surfaces() tape is ignored).
     uint32_t mesh_budget_mb = 1024;
@@ -127,6 +133,13 @@ inline const props::Group& vt_residency_budgets_group() {
             .env("MATTER_VT_ENRICH_PER_FRAME")
             .doc("Tier-2 AO enrichment rate. 0 disables the tier without "
                  "unloading the enricher."),
+        prop(&VtResidencyBudgets::dir_occ_per_frame, "dir_occ_per_frame")
+            .label("Dir-occ / frame").range(0.0f, 16.0f)
+            .env("MATTER_VT_DIROCC_PER_FRAME")
+            .doc("M6.5 directional-occlusion bake rate: impostored props "
+                 "cast into the terrain sector's own pages, so a tree keeps "
+                 "its shadow after it becomes a billboard. Coarse far-field "
+                 "pages only. 0 disables the tier."),
         prop(&VtResidencyBudgets::mesh_budget_mb, "mesh_budget_mb")
             .label("CPU mesh budget").range(1.0f, 16384.0f).units("MB")
             .env("MATTER_VT_MESH_BUDGET_MB"),

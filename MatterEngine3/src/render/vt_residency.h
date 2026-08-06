@@ -810,6 +810,16 @@ class VtResidency {
         // Pages never queued because their texel is coarser than the contact
         // scale tier 2 bakes (the coarse-page skip in queue_enrich).
         uint64_t enrich_skipped_coarse_total = 0;
+        // M6.5 directional tier. dir_occ_pages is the "is this running at all"
+        // number: three independent gates can starve this pass (no RT
+        // enricher, the inverted footprint skip mis-wired, an empty caster
+        // harvest), and all three fail SILENTLY. Assert it non-zero in the
+        // streamed smoke rather than trusting pixels.
+        uint32_t dir_occ_queue_depth = 0;
+        uint32_t dir_occ_last_frame = 0;
+        uint64_t dir_occ_pages = 0;
+        uint64_t dir_occ_dropped_total = 0;
+        uint64_t dir_occ_skipped_fine_total = 0;
         // --- Buffer indirection (the 2048-layer-wall replacement) ---
         uint64_t indirection_capacity_bytes = 0;  // MATTER_VT_INDIRECTION_MB
         uint64_t indirection_used_bytes = 0;      // live table blocks
@@ -1106,6 +1116,10 @@ class VtResidency {
     // twice on one fill would darken the page twice).
     void slot_reset_tier(uint32_t slot);
     void queue_enrich(uint32_t layer, VtPageKey page, uint32_t slot);
+    // M6.5: the directional tier's queue. A sibling of queue_enrich, not a
+    // mode of it — its footprint test is the INVERSE (coarse pages only), and
+    // that inversion is the whole reason the tier exists.
+    void queue_dir_occ(uint32_t layer, VtPageKey page, uint32_t slot);
     void drain_enrich(VkCommandBuffer cmd);
 
     matter::VulkanDevice* vulkan_ = nullptr;
@@ -1243,6 +1257,13 @@ class VtResidency {
         uint64_t requested_frame = 0;
     };
     std::vector<PendingEnrich> enrich_queue_;
+    // M6.5: the directional tier's own queue and budget. Separate from the
+    // contact tier's because the two admit OPPOSITE page sizes and must not
+    // starve each other -- one budget shared would let a burst of fine pages
+    // consume the frame and leave the far field permanently unshadowed.
+    std::vector<PendingEnrich> dir_occ_queue_;
+    std::map<uint32_t, size_t> dir_occ_queued_slot_;
+    uint32_t max_dir_occ_per_frame_ = 0;
     std::map<uint32_t, size_t> enrich_queued_slot_;   // slot -> queue index
     // 0 = tier-1 (or unknown), 1 = tier-2 applied. Indexed by physical slot.
     std::vector<uint8_t> slot_tier_;
