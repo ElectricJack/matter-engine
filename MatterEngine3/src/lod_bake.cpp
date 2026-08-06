@@ -12,7 +12,9 @@
 #include <atomic>   // ladder_census() backing counters
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <limits>
+#include <unordered_map>   // M6: apply_chart_rung's centroid grid
 
 namespace lod_bake {
 
@@ -117,6 +119,173 @@ std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon,
 // normals, materials, tint, AO are untouched, and downstream vertex welding
 // (indexed_part_geometry keys on the UV) performs the vertex split between
 // charts automatically.
+// M6: adopt rep 0's chart table for a coarser rung. See the header for why
+// this needs no texel transfer — the parameterisation is analytic.
+bool apply_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
+                      const std::vector<Tri>& base_tris,
+                      const chart_atlas::ChartAtlasRung& base,
+                      chart_atlas::ChartAtlasRung& out) {
+    out = {};
+    const size_t n = tris.size();
+    const size_t bn = base_tris.size();
+    if (n == 0 || triex.size() != n || bn == 0 || base.charts.empty() ||
+        base.atlas_w == 0 || base.atlas_h == 0 ||
+        base.tri_order.size() != bn)
+        return false;
+
+    // Recover rep 0's per-triangle chart id from the table's own grouping —
+    // ChartEntry::first_tri/tri_count index into tri_order, so this is the
+    // inverse of the counting sort build_chart_rung wrote. Reading it back
+    // rather than plumbing a parallel array keeps the table the single
+    // authority on which triangle is in which chart.
+    std::vector<uint32_t> base_cid(bn, UINT32_MAX);
+    for (size_t c = 0; c < base.charts.size(); ++c) {
+        const chart_atlas::ChartEntry& e = base.charts[c];
+        const uint64_t end = (uint64_t)e.first_tri + e.tri_count;
+        if (end > bn) return false;                    // table disagrees with the mesh
+        for (uint64_t i = e.first_tri; i < end; ++i) {
+            const uint32_t t = base.tri_order[(size_t)i];
+            if (t >= bn) return false;
+            base_cid[t] = (uint32_t)c;
+        }
+    }
+    for (uint32_t c : base_cid) if (c == UINT32_MAX) return false;  // unassigned triangle
+
+    // Uniform grid over rep 0's centroids for the nearest-triangle lookup.
+    // Same shape as the reprojection index's centroid grid; local here because
+    // that one is private to mesh_transform and carries donor machinery this
+    // does not need.
+    std::vector<float3> bc(bn);
+    float mn[3] = { 1e30f, 1e30f, 1e30f }, mx[3] = { -1e30f, -1e30f, -1e30f };
+    for (size_t i = 0; i < bn; ++i) {
+        const Tri& t = base_tris[i];
+        bc[i] = make_float3((t.vertex0.x + t.vertex1.x + t.vertex2.x) / 3.0f,
+                            (t.vertex0.y + t.vertex1.y + t.vertex2.y) / 3.0f,
+                            (t.vertex0.z + t.vertex1.z + t.vertex2.z) / 3.0f);
+        const float p[3] = { bc[i].x, bc[i].y, bc[i].z };
+        for (int k = 0; k < 3; ++k) {
+            mn[k] = std::fmin(mn[k], p[k]);
+            mx[k] = std::fmax(mx[k], p[k]);
+        }
+    }
+    const float span = std::fmax(mx[0] - mn[0],
+                                 std::fmax(mx[1] - mn[1], mx[2] - mn[2]));
+    // ~1 triangle per cell on average, clamped so a degenerate span cannot
+    // divide by zero or explode the cell count.
+    const float cell = std::fmax(span / std::fmax(1.0f, std::cbrt((float)bn)),
+                                 1e-6f);
+    auto cell_of = [&](const float3& p, int& cx, int& cy, int& cz) {
+        cx = (int)std::floor((p.x - mn[0]) / cell);
+        cy = (int)std::floor((p.y - mn[1]) / cell);
+        cz = (int)std::floor((p.z - mn[2]) / cell);
+    };
+    auto key_of = [](int cx, int cy, int cz) -> uint64_t {
+        return ((uint64_t)(uint32_t)cx * 0x9E3779B97F4A7C15ull) ^
+               ((uint64_t)(uint32_t)cy * 0xC2B2AE3D27D4EB4Full) ^
+               ((uint64_t)(uint32_t)cz * 0x165667B19E3779F9ull);
+    };
+    std::unordered_map<uint64_t, std::vector<uint32_t>> grid;
+    grid.reserve(bn * 2);
+    for (size_t i = 0; i < bn; ++i) {
+        int cx, cy, cz; cell_of(bc[i], cx, cy, cz);
+        grid[key_of(cx, cy, cz)].push_back((uint32_t)i);
+    }
+
+    // Nearest base triangle by centroid, widening the ring until something is
+    // found. Ties break on the LOWER index so the result is order-independent
+    // and two cold bakes agree (the .gtex double-bake discipline).
+    auto nearest_base = [&](const float3& p) -> uint32_t {
+        int cx, cy, cz; cell_of(p, cx, cy, cz);
+        uint32_t best = UINT32_MAX;
+        float best_d = 1e30f;
+        for (int r = 0; r < 64; ++r) {
+            for (int dz = -r; dz <= r; ++dz)
+                for (int dy = -r; dy <= r; ++dy)
+                    for (int dx = -r; dx <= r; ++dx) {
+                        // Shell only: the interior was covered by smaller r.
+                        if (r > 0 && std::abs(dx) != r && std::abs(dy) != r &&
+                            std::abs(dz) != r)
+                            continue;
+                        auto it = grid.find(key_of(cx + dx, cy + dy, cz + dz));
+                        if (it == grid.end()) continue;
+                        for (uint32_t i : it->second) {
+                            const float ddx = bc[i].x - p.x;
+                            const float ddy = bc[i].y - p.y;
+                            const float ddz = bc[i].z - p.z;
+                            const float d = ddx * ddx + ddy * ddy + ddz * ddz;
+                            if (d < best_d || (d == best_d && i < best)) {
+                                best_d = d; best = i;
+                            }
+                        }
+                    }
+            // One extra ring past the first hit: a nearer centroid can sit in
+            // a diagonal neighbour of the cell that produced it.
+            if (best != UINT32_MAX && r > 0) break;
+        }
+        return best;
+    };
+
+    std::vector<uint32_t> cid(n, 0);
+    for (size_t t = 0; t < n; ++t) {
+        const Tri& tr = tris[t];
+        const float3 c = make_float3(
+            (tr.vertex0.x + tr.vertex1.x + tr.vertex2.x) / 3.0f,
+            (tr.vertex0.y + tr.vertex1.y + tr.vertex2.y) / 3.0f,
+            (tr.vertex0.z + tr.vertex1.z + tr.vertex2.z) / 3.0f);
+        const uint32_t nb = nearest_base(c);
+        if (nb == UINT32_MAX) return false;
+        cid[t] = base_cid[nb];
+    }
+
+    // The shared parameterisation, verbatim. Only tri_order and the per-chart
+    // ranges are this rung's own.
+    out.atlas_w = base.atlas_w;
+    out.atlas_h = base.atlas_h;
+    out.charts = base.charts;
+
+    const size_t nc = out.charts.size();
+    std::vector<uint32_t> first(nc, 0), count(nc, 0);
+    for (size_t t = 0; t < n; ++t) count[cid[t]]++;
+    uint32_t running = 0;
+    for (size_t c = 0; c < nc; ++c) { first[c] = running; running += count[c]; }
+    out.tri_order.resize(n);
+    {
+        std::vector<uint32_t> cursor = first;
+        for (size_t t = 0; t < n; ++t) out.tri_order[cursor[cid[t]]++] = (uint32_t)t;
+    }
+    for (size_t c = 0; c < nc; ++c) {
+        out.charts[c].first_tri = first[c];
+        out.charts[c].tri_count = count[c];
+    }
+
+    // The UV write, arithmetically identical to build_chart_rung's. It states
+    // the mapping through ChartEntry rather than through the builder's locals
+    // (minU/minV live on as dot(origin, T/B), T and B being orthonormal), so
+    // this and the GPU resolve read the same fields.
+    const float inv_w = 1.0f / (float)out.atlas_w;
+    const float inv_h = 1.0f / (float)out.atlas_h;
+    const float gutter = (float)chart_atlas::kChartGutterTexels;
+    for (size_t t = 0; t < n; ++t) {
+        const chart_atlas::ChartEntry& e = out.charts[cid[t]];
+        const float3 T = make_float3(e.tangent[0], e.tangent[1], e.tangent[2]);
+        const float3 B = make_float3(e.bitangent[0], e.bitangent[1], e.bitangent[2]);
+        const float3 O = make_float3(e.origin[0], e.origin[1], e.origin[2]);
+        const float minU = dot(O, T);
+        const float minV = dot(O, B);
+        const float3* v[3] = { &tris[t].vertex0, &tris[t].vertex1, &tris[t].vertex2 };
+        float2* uv[3] = { &triex[t].uv0, &triex[t].uv1, &triex[t].uv2 };
+        for (int k = 0; k < 3; ++k) {
+            const float tx = (float)e.rect_x + gutter +
+                             (dot(*v[k], T) - minU) * e.texels_per_meter;
+            const float ty = (float)e.rect_y + gutter +
+                             (dot(*v[k], B) - minV) * e.texels_per_meter;
+            uv[k]->x = tx * inv_w;
+            uv[k]->y = ty * inv_h;
+        }
+    }
+    return true;
+}
+
 bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
                       float texels_per_meter, float cone_deg,
                       chart_atlas::ChartAtlasRung& out) {

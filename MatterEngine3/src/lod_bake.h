@@ -70,6 +70,38 @@ bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
                       float texels_per_meter, float cone_deg,
                       chart_atlas::ChartAtlasRung& out);
 
+// M6 (texture unification): give a COARSER rung the parameterisation rep 0
+// already has, instead of charting it independently.
+//
+// This is possible — and cheap — because a chart's UV is ANALYTIC in world
+// position (vt_chart_resolve.glsl:117):
+//
+//     texel = rect + gutter + (dot(p, T/B) - dot(origin, T/B)) * tpm
+//
+// so nothing has to be transferred, sampled or interpolated from rep 0's
+// texels. Each coarse triangle only needs to know WHICH chart it belongs to;
+// its three corner UVs then follow from its own positions. A decimated vertex
+// sits slightly off rep 0's surface and therefore lands on a slightly
+// different texel, which is the property this milestone is for: the texture
+// stays glued to the surface while the geometry moves under it, so a rung
+// switch pops the mesh and not the texture.
+//
+// Chart assignment is by NEAREST rep-0 triangle (centroid), because that
+// triangle covers the same piece of surface the coarse one replaced. A coarse
+// triangle straddling a chart boundary takes one side's chart and its UVs then
+// reach past that chart's packed rect into the gutter — the error is bounded
+// by the gutter and is the one approximation here worth measuring.
+//
+// `out` receives base's atlas dimensions and chart entries VERBATIM (they are
+// the shared parameterisation) with this rung's own chart-grouped `tri_order`.
+// Returns false — leaving `triex` untouched — when the inputs do not line up
+// or `base` carries no charts, so a caller fails closed to its previous
+// behaviour exactly as it does for build_chart_rung.
+bool apply_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
+                      const std::vector<Tri>& base_tris,
+                      const chart_atlas::ChartAtlasRung& base,
+                      chart_atlas::ChartAtlasRung& out);
+
 // Per-level decimation targets (keep-ratios) and matching selection thresholds.
 // Defaults: LOD0 = full (1.0), LOD1 ~ 1/10, LOD2 ~ 1/100. Thresholds are on the
 // projected-size scale (bound_radius / distance) used by lod_select: a finer

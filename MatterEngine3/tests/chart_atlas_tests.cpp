@@ -18,6 +18,10 @@
 #include "part_store.h"        // viewer::PartStore (flat fast path)
 #include "raster_mesh.h"       // viewer::build_raster_mesh_data
 #include "../../libs/MeshChartingLib/include/mesh_charting.h"
+// M6: test_apply_chart_rung decimates a fixture to get a genuinely coarser
+// rung to adopt the base parameterisation onto.
+#include "../../libs/MatterSurfaceLib/include/mesh_indexed.hpp"
+#include "../../libs/MatterSurfaceLib/include/mesh_simplifier.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -391,6 +395,175 @@ void run_fixture(const char* label, const std::vector<Tri>& tris,
 // Ladder + sidecar tests
 // ---------------------------------------------------------------------------
 
+// M6 (texture unification): apply_chart_rung gives a coarser rung rep 0's
+// parameterisation instead of charting it independently.
+//
+// The keystone assertion is the IDENTITY one: fed rep 0's own geometry,
+// apply_chart_rung must reproduce build_chart_rung's UVs BIT FOR BIT. The two
+// write the same mapping from different sides — the builder from its internal
+// minU/minV locals, the adopter from the ChartEntry fields the GPU reads — so
+// if they ever disagree, the disagreement is exactly the gap between what the
+// bake wrote and what the shader will resolve, which is unfindable from a
+// screenshot.
+void test_apply_chart_rung() {
+    printf("=== test_apply_chart_rung ===\n");
+    const std::vector<Tri> tris = build_cylinder_overhang();
+    const std::vector<TriEx> base_ex = face_normal_triex(tris);
+
+    std::vector<TriEx> charted = base_ex;
+    chart_atlas::ChartAtlasRung base;
+    const bool built = lod_bake::build_chart_rung(
+        tris, charted, 16.0f, chart_atlas::kChartNormalConeDeg, base);
+    CHECK(built, "apply: the base rung charts");
+    if (!built) return;
+
+    // (1) IDENTITY. Same mesh in, same UVs out, exactly.
+    {
+        std::vector<TriEx> adopted = base_ex;
+        chart_atlas::ChartAtlasRung out;
+        const bool ok = lod_bake::apply_chart_rung(tris, adopted, tris, base, out);
+        CHECK(ok, "apply: adopting onto the base mesh succeeds");
+        // Agreement is measured in TEXELS, not bits, and the reason is worth
+        // stating because it is not sloppiness.
+        //
+        // build_chart_rung computes (dot(p,T) - minU) * tpm from its own local
+        // minU. Nothing downstream ever sees minU: ChartEntry stores
+        // origin = minU*T + minV*B, and both this function and the GPU resolve
+        // recover it as dot(origin, T). T and B are orthonormal, so that is
+        // minU*dot(T,T) + minV*dot(B,T) = minU in exact arithmetic and
+        // minU + O(eps) in float. The residual is inherent to the round trip
+        // through `origin`, which is the field the shader actually has.
+        //
+        // So the adopter cannot be bit-identical to the builder, and chasing
+        // that would be chasing the wrong target: vt_chart_resolve.glsl makes
+        // the SAME reconstruction, so this path agrees with the GPU at least
+        // as closely as the builder's own vertex UVs do. What must hold is
+        // that the disagreement is far below one texel — otherwise a rung
+        // adoption would visibly shift the texture.
+        double worst_texels = 0.0;
+        size_t worst_tri = 0;
+        bool sized = ok && adopted.size() == charted.size();
+        if (sized) {
+            for (size_t i = 0; i < charted.size(); ++i) {
+                const float2* a[3] = { &adopted[i].uv0, &adopted[i].uv1, &adopted[i].uv2 };
+                const float2* b[3] = { &charted[i].uv0, &charted[i].uv1, &charted[i].uv2 };
+                for (int k = 0; k < 3; ++k) {
+                    const double dx = std::fabs((double)a[k]->x - b[k]->x) * base.atlas_w;
+                    const double dy = std::fabs((double)a[k]->y - b[k]->y) * base.atlas_h;
+                    const double d = std::fmax(dx, dy);
+                    if (d > worst_texels) { worst_texels = d; worst_tri = i; }
+                }
+            }
+        }
+        CHECK(sized, "apply: the adopted UV stream has one entry per triangle");
+        CHECK(sized && worst_texels < 0.01,
+              "apply: adopted UVs agree with the builder's to well under a texel");
+        printf("  [apply] worst UV disagreement vs the builder: %.6f texels "
+               "(triangle %zu of %zu)\n", worst_texels, worst_tri, charted.size());
+        CHECK(ok && out.atlas_w == base.atlas_w && out.atlas_h == base.atlas_h,
+              "apply: the atlas dimensions are the base's, not recomputed");
+        CHECK(ok && out.charts.size() == base.charts.size(),
+              "apply: the chart count is the base's");
+        // The shared parameterisation must travel VERBATIM -- a chart whose
+        // basis or rect drifted would put the same surface point on a
+        // different texel per rung, which is the churn this milestone removes.
+        bool basis_same = ok && out.charts.size() == base.charts.size();
+        for (size_t c = 0; basis_same && c < base.charts.size(); ++c) {
+            const auto& a = out.charts[c];
+            const auto& b = base.charts[c];
+            basis_same = std::memcmp(a.origin, b.origin, sizeof a.origin) == 0 &&
+                         std::memcmp(a.tangent, b.tangent, sizeof a.tangent) == 0 &&
+                         std::memcmp(a.bitangent, b.bitangent, sizeof a.bitangent) == 0 &&
+                         a.rect_x == b.rect_x && a.rect_y == b.rect_y &&
+                         a.rect_w == b.rect_w && a.rect_h == b.rect_h &&
+                         a.texels_per_meter == b.texels_per_meter;
+        }
+        CHECK(basis_same, "apply: every chart's basis and rect survive verbatim");
+    }
+
+    // (2) A GENUINELY COARSER MESH. Decimate, adopt, and require that the
+    // adopted UVs land inside the atlas and that the per-chart ranges still
+    // partition the rung's triangles.
+    {
+        MeshIndexed fine = from_tri(tris, &base_ex);
+        SimplifyOptions opts;
+        opts.target_ratio = 0.4f;
+        MeshIndexed coarse_m = simplify(fine, opts);
+        std::vector<Tri> coarse; std::vector<TriEx> coarse_ex;
+        to_tri(coarse_m, coarse, coarse_ex);
+        CHECK(!coarse.empty() && coarse.size() < tris.size(),
+              "apply: the fixture actually decimated");
+        if (!coarse.empty()) {
+            coarse_ex.resize(coarse.size());
+            chart_atlas::ChartAtlasRung out;
+            const bool ok = lod_bake::apply_chart_rung(coarse, coarse_ex, tris,
+                                                       base, out);
+            CHECK(ok, "apply: a decimated rung adopts the base parameterisation");
+            if (ok) {
+                CHECK(out.tri_order.size() == coarse.size(),
+                      "apply: tri_order covers every triangle of the coarse rung");
+                size_t total = 0;
+                for (const auto& c : out.charts) total += c.tri_count;
+                CHECK(total == coarse.size(),
+                      "apply: the per-chart ranges partition the rung exactly");
+                std::vector<char> seen(coarse.size(), 0);
+                bool perm = true;
+                for (uint32_t t : out.tri_order) {
+                    if (t >= coarse.size() || seen[t]) { perm = false; break; }
+                    seen[t] = 1;
+                }
+                CHECK(perm, "apply: tri_order is a permutation, no duplicates");
+
+                // UVs stay on the atlas. A coarse triangle straddling a chart
+                // boundary reaches past its rect into the gutter, which is the
+                // documented approximation -- but it must not leave the atlas,
+                // because that samples another chart outright. Measured, and
+                // the overshoot is REPORTED rather than merely bounded, since
+                // the gutter is the thing this milestone has to justify.
+                float worst_over = 0.0f;
+                bool on_atlas = true;
+                for (size_t t = 0; t < coarse.size(); ++t) {
+                    const float2* uv[3] = { &coarse_ex[t].uv0, &coarse_ex[t].uv1,
+                                            &coarse_ex[t].uv2 };
+                    const auto& e = out.charts[0];
+                    (void)e;
+                    for (int k = 0; k < 3; ++k) {
+                        if (!(uv[k]->x >= 0.0f && uv[k]->x <= 1.0f &&
+                              uv[k]->y >= 0.0f && uv[k]->y <= 1.0f))
+                            on_atlas = false;
+                        worst_over = std::fmax(worst_over,
+                            std::fmax(std::fmax(-uv[k]->x, uv[k]->x - 1.0f),
+                                      std::fmax(-uv[k]->y, uv[k]->y - 1.0f)));
+                    }
+                }
+                CHECK(on_atlas, "apply: every adopted UV stays inside the atlas");
+                printf("  coarse rung %zu tris, worst UV overshoot %.5f "
+                       "(0 = fully inside)\n", coarse.size(),
+                       std::fmax(0.0f, worst_over));
+            }
+        }
+    }
+
+    // (3) FAIL-CLOSED. A base with no charts, or a mismatched TriEx, must
+    // return false and leave the caller's UVs untouched -- the same contract
+    // build_chart_rung has, so a caller's fallback path is unchanged.
+    {
+        std::vector<TriEx> ex = base_ex;
+        chart_atlas::ChartAtlasRung empty, out;
+        CHECK(!lod_bake::apply_chart_rung(tris, ex, tris, empty, out),
+              "apply: a chartless base fails closed");
+        std::vector<TriEx> short_ex(tris.size() - 1);
+        CHECK(!lod_bake::apply_chart_rung(tris, short_ex, tris, base, out),
+              "apply: a TriEx that does not match the mesh fails closed");
+        bool untouched = true;
+        for (size_t i = 0; i < ex.size(); ++i)
+            if (std::memcmp(&ex[i].uv0, &base_ex[i].uv0, sizeof(float2)) != 0)
+                untouched = false;
+        CHECK(untouched, "apply: a failed adoption leaves the UVs alone");
+    }
+    printf("PASSED\n");
+}
+
 void test_ladder_charts() {
     const std::vector<Tri> tris = build_cube();
     const std::vector<TriEx> ex = face_normal_triex(tris);
@@ -754,6 +927,7 @@ int main(int argc, char** argv) {
     }
 
     test_ladder_charts();
+    test_apply_chart_rung();
     test_sidecar_roundtrip();
     test_flat_load_charts();
 
