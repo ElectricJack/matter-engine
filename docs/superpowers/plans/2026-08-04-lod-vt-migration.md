@@ -882,6 +882,38 @@ Acceptance:
 > subtlest invariants in this engine (tail gates, retirement graveyard, table generations).
 > Budget for it accordingly; it is not re-plumbing.
 
+> **STRUCTURE COMPLETE 2026-08-05, BEHIND `MATTER_VT_UNIFY=1` (default OFF).** All four
+> steps landed: `b1bd873d` (adopt rep 0's table analytically), `a3001140` + `94fea81a` (one
+> rule, all five chart sites), `6af8593a` (variant layer keyed by parameterisation, with the
+> alias refcount), `be9dd1fb` (a finer rung rebuilds the layer it would otherwise inherit).
+> Green: run-chart-atlas, run-vt-residency, run-partstore, run-flatten, run-demandbake,
+> run-vk-scene-renderer 109/109.
+>
+> **Nothing here is live until the switch is set**, which is deliberate: this milestone is a
+> visual re-baseline and the plan's own rule is not to re-baseline silently. The switch is
+> read per call, so it can be A/B'd inside one process.
+>
+> **Two defects this work created and then closed, both invisible to a headless suite:**
+> - `release_variant(hash)` walks rungs 0..31 releasing `variant_key(hash, rung)`. Under a
+>   content-derived key those are no longer keys in `layer_of_` at all, so that loop would
+>   have freed nothing and silently leaked every variant of every released part — no crash,
+>   no log. It walks the alias table now.
+> - Registration is demand-driven by default, so a sector first seen at distance registers a
+>   COARSE rung. Without step 4 that coarse mesh would composite the shared pages
+>   permanently — strictly worse than what M6 replaced, and visible only by flying in.
+>
+> **The Vulkan smoke suite is ALL PASS with the switch ON, 0 validation errors — and that
+> proves less than it sounds like.** Diffing the two runs (switch off vs on) gives ZERO
+> differing lines, which means the suite's fixtures never took the unified path: nothing in
+> them has a multi-rung charted ladder. So it is a real NO-REGRESSION gate for the refcount
+> and rebuild paths on actual GPU state (which is worth having — that is where a dangling
+> variant slot would have shown up as a validation error or a hang) and it is NOT evidence
+> that unification does anything. Do not cite it as such.
+>
+> **What is left is measurement, and it needs a world with multi-rung charted parts — i.e.
+> the GPU and Jack's eyes**: the acceptance list below is unchanged and none of it has run.
+> StreamMountain and the PomProofBrick dome repro are the two that matter.
+
 Acceptance:
 - **The dome dark patches are gone** (the standing PomProofBrick repro; boundary no longer
   tracks the rung split).
