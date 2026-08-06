@@ -999,6 +999,20 @@ class VtResidency {
         uint64_t variant_hash = 0;
         uint32_t rung = 0;
         uint32_t layer = 0;               // variant slot index
+        // M6: the key this layer is registered under, and how many (hash,rung)
+        // ALIASES resolve to it.
+        //
+        // Before M6 these were implied: the key was variant_key(hash, rung) and
+        // exactly one rung ever pointed at a layer. With one parameterisation
+        // per part, every rung of a part resolves to the SAME layer, and the
+        // renderer still releases per rung (VkSceneRenderer::evict_vt_rung off
+        // record.vt_slots[rung]). Without the refcount, evicting one rung frees
+        // a layer the others still name — a dangling variant slot, which is GPU
+        // use-after-free, in the subsystem that already produced one
+        // DEVICE_LOST investigation. The layer is torn down (graveyard and all)
+        // only when the LAST alias goes.
+        uint64_t param_key = 0;
+        uint32_t alias_refs = 0;
         VtVariantLayout layout{};
         VtIndirectionMap indirection;
         chart_atlas::ChartAtlasRung atlas;   // owned copy (borrowed by the filler)
@@ -1060,6 +1074,9 @@ class VtResidency {
     // registered. Does NOT refresh the pool-level stats lines — callers do,
     // once, after their sweep.
     bool release_variant_key(uint64_t key);
+    // M6: drop one (hash, rung) reference; tears the layer down only when it
+    // was the last. Returns true iff the layer was actually released.
+    bool release_rung_alias(uint64_t alias);
     // `force` queues a page even when the indirection already maps it —
     // the pinned tail is mapped at registration but still needs its fill.
     void queue_page(VariantRung& v, VtPageKey page, bool force = false,
@@ -1177,7 +1194,14 @@ class VtResidency {
     // Debug audit: earliest frame each variant slot's record may be mutated
     // again (populated at release when MATTER_VT_DEBUG_GENERATIONS=1).
     std::map<uint32_t, uint64_t> debug_layer_reuse_;
-    std::map<uint64_t, uint32_t> layer_of_;  // (hash, rung) key -> slot
+    std::map<uint64_t, uint32_t> layer_of_;  // param key -> slot
+    // M6: (hash, rung) -> param key. The rung-taking API (slot_for,
+    // release_variant, update_variant_surface) has no chart table to derive a
+    // param key from, so this is how a rung finds its layer. It is also what
+    // keeps release_variant(hash) working: that walks rungs 0..31, and with a
+    // content-derived key those rung keys no longer exist in layer_of_ — the
+    // whole-part release would have silently freed nothing.
+    std::map<uint64_t, uint64_t> param_key_of_rung_;
 
     // Pending fills, priority = mip distance from the currently mapped mip.
     struct PendingFill {

@@ -655,6 +655,63 @@ void test_unified_ladder_parameterisation() {
     // Default-off, checked on the struct rather than inferred from behaviour.
     CHECK(lod_bake::ChartBakeOptions{}.unify_parameterisation == false,
           "unify: off by default, so existing callers are untouched");
+
+    // M6 step 3b: the bake half and the runtime half meet at
+    // chart_atlas::parameterisation_id. VtResidency keys a variant LAYER on
+    // this, so "the rungs share a table" only becomes "the rungs share their
+    // resident pages" if the fold agrees. Asserting the two halves against
+    // each other here is what makes the runtime behaviour follow from the bake
+    // behaviour instead of merely being intended to.
+    {
+        uint64_t first_id = 0;
+        bool have_first = false, all_same = true;
+        for (const auto& r : unified) {
+            if (r.charts.empty()) continue;
+            const uint64_t id = chart_atlas::parameterisation_id(r);
+            if (!have_first) { first_id = id; have_first = true; continue; }
+            if (id != first_id) all_same = false;
+        }
+        CHECK(have_first && all_same,
+              "unify: every unified rung folds to ONE parameterisation id "
+              "(so VtResidency gives them one layer)");
+
+        bool legacy_any_differs = false;
+        uint64_t legacy_first = 0;
+        bool legacy_have = false;
+        for (const auto& r : legacy) {
+            if (r.charts.empty()) continue;
+            const uint64_t id = chart_atlas::parameterisation_id(r);
+            if (!legacy_have) { legacy_first = id; legacy_have = true; continue; }
+            if (id != legacy_first) legacy_any_differs = true;
+        }
+        CHECK(legacy_any_differs,
+              "unify: per-rung rungs fold to DIFFERENT ids (so they keep one "
+              "layer each, exactly as before)");
+
+        // tri_order must not enter the fold: it indexes a rung's own
+        // triangles, so folding it would give every rung a distinct id and
+        // silently undo the whole milestone while every other test still
+        // passed. Perturb it directly rather than trusting the comment.
+        if (have_first && !unified.empty()) {
+            chart_atlas::ChartAtlasRung perturbed = unified[0];
+            perturbed.tri_order.push_back(12345u);
+            CHECK(chart_atlas::parameterisation_id(perturbed) == first_id,
+                  "unify: tri_order does not enter the parameterisation id");
+            // ...but the MAPPING does. Move a chart's rect and the id must
+            // move, or unrelated parameterisations would collapse onto one
+            // layer and sample each other's texels.
+            chart_atlas::ChartAtlasRung moved = unified[0];
+            if (!moved.charts.empty()) {
+                moved.charts[0].rect_x += 1u;
+                CHECK(chart_atlas::parameterisation_id(moved) != first_id,
+                      "unify: moving a chart's rect DOES change the id");
+                chart_atlas::ChartAtlasRung denser = unified[0];
+                denser.charts[0].texels_per_meter *= 2.0f;
+                CHECK(chart_atlas::parameterisation_id(denser) != first_id,
+                      "unify: changing texel density DOES change the id");
+            }
+        }
+    }
     printf("PASSED\n");
 }
 
