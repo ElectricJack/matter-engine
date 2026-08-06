@@ -79,22 +79,39 @@
 // straight-down. That IS the documented v1 limit now, moved from "any elevation
 // at all" to "steeper than looking down at 75 degrees".
 //
-// COST: NOTHING. The cell was never the binding constraint — 32x32 is Nyquist-
-// adequate to 32 px, three times past the ~10 px the azimuth count allows — so
-// the resolution the cells did not need pays for the rings:
+// COST, and a correction. The elevation rings were paid for by halving the cell
+// from 32 to 16 px, on the argument that cells were not the binding constraint:
+// 32x32 is Nyquist-adequate to 32 px, three times past the ~10 px the azimuth
+// count allows. That argument was true and INSUFFICIENT. Nyquist is not the
+// only thing a cell has to do — the ALPHA CUTOUT also lives at cell resolution,
+// and it deletes any feature narrower than a texel no matter how well sampled
+// the rest is. At 16 px a spruce's trunk (0.21 m against a 0.274 m texel) could
+// never reach 50 % coverage, so the drawn impostor was 53 % of the tree's
+// height with the trunk missing entirely: the reported "tall trees shrink at
+// the impostor switch". Cutting cell resolution was not free; it cost that.
 //
-//                v1                        now
-//   cells        4x4 of 32x32              8x8 of 16x16
-//   views        16 az x 1 elev = 16       16 az x 3 elev = 48
-//   layer        128 x 128                 128 x 128        (unchanged)
-//   bytes        131,072 = 128 KiB         131,072 = 128 KiB (unchanged)
+// The cutout half is fixed at runtime (kImpostorAlphaCutout, 0.25). The cell is
+// now restored and doubled outright, because the reason it was sized for ~10 px
+// no longer holds: impostors are being pulled deliberately CLOSER (the mesh
+// rung cap, MATTER_IMPOSTOR_DISTANCE), so they are drawn much larger than the
+// handover this atlas was budgeted for.
+//
+//                v1               rings            now
+//   cells        4x4 of 32x32     8x8 of 16x16     8x8 of 32x32
+//   views        16               48               48
+//   layer        128 x 128        128 x 128        256 x 256
+//   bytes        128 KiB          128 KiB          512 KiB
+//
+// So 4x the v1 budget for 3x the views at the ORIGINAL cell resolution. That is
+// a real cost and it is deliberate: the atlas already cost more bytes than the
+// mesh it replaces (see the note above), and it is a per-PART fixed cost
+// amortised over every instance drawn, so it pays in a scatter world — which is
+// exactly where impostors are worth having at all.
 //
 // Azimuth count is deliberately UNCHANGED at 16: it is the binding constraint
-// (see VIEWS above), and spending it on elevation would trade a defect that
-// shows at every camera angle for one that shows at some. The cells are now
-// Nyquist-adequate to 16 px against the ~10 px the views allow — still not
-// binding, but no longer three times clear of it, so the next feature to want
-// atlas space should take one of the 16 unused cells rather than shrink these.
+// for ROTATION (see VIEWS above), and spending atlas on elevation or cells
+// never fixes an azimuth artefact. 16 cells of the 64 remain unused; the next
+// feature wanting atlas space should take those before touching kCellPx.
 //
 // ---------------------------------------------------------------------------
 // WHAT IS IN THE ATLAS
@@ -145,9 +162,9 @@ constexpr uint32_t kFormatVersion = matter_version::components::kImpostorFormat;
 constexpr uint32_t kAzimuths   = 16;                  // views per elevation ring
 constexpr uint32_t kElevations = 3;                   // rings, see above
 constexpr uint32_t kViews    = kAzimuths * kElevations;   // 48
-constexpr uint32_t kCellPx   = 16;                    // per-view cell edge
+constexpr uint32_t kCellPx   = 32;                    // per-view cell edge
 constexpr uint32_t kGridDim  = 8;                     // kGridDim^2 >= kViews
-constexpr uint32_t kLayerPx  = kCellPx * kGridDim;    // 128
+constexpr uint32_t kLayerPx  = kCellPx * kGridDim;    // 256
 constexpr uint32_t kSuperSample = 4;                  // per axis, per texel
 constexpr size_t   kLayerBytes = size_t(kLayerPx) * kLayerPx * 4;
 constexpr size_t   kAtlasBytes = kLayerBytes * 2;     // shade + tint
@@ -167,8 +184,8 @@ constexpr uint32_t view_index(uint32_t azimuth, uint32_t elevation) {
 }
 
 static_assert(kGridDim * kGridDim >= kViews, "view grid too small");
-static_assert(kLayerPx == 128, "atlas layer size is a format constant");
-static_assert(kAtlasBytes == 131072, "elevation rings must stay byte-neutral");
+static_assert(kLayerPx == 256, "atlas layer size is a format constant");
+static_assert(kAtlasBytes == 524288, "cell resolution is a format constant");
 
 // Eligibility floor: the terminal mesh rung must carry at least this many
 // triangles for a 2-triangle billboard to be worth its atlas. See the header

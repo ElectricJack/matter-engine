@@ -81,7 +81,11 @@ inline constexpr uint32_t kFlatFormat   = 9u;  // part_asset::kFormatVersionFlat
 // bytes, different picture -- and the depicts-hash is now folded over rep 0's
 // triangles, so a v2 atlas beside a v3 ladder would be rejected as stale
 // rather than mis-drawn. Bumping is what turns that rejection into a rebake.
-inline constexpr uint32_t kImpostorFormat = 3u;  // impostor_bake::kFormatVersion
+// 4: cell resolution 16 -> 32 px (layer 128 -> 256, atlas 128 -> 512 KiB). The
+// rings' "free" claim was wrong -- the alpha cutout binds on thin features at
+// cell resolution, which is what ate the trunks -- and impostors are now pulled
+// closer than the ~10 px handover the atlas was budgeted for.
+inline constexpr uint32_t kImpostorFormat = 4u;  // impostor_bake::kFormatVersion
 inline constexpr uint32_t kBundleFormat = 1u;  // part_bundle::kBundleFormatVersion
 
 // Reserved for M3b's content-addressed stage outputs. Zero means "no stage

@@ -3016,8 +3016,15 @@ static void test_impostor_elevation_rings_differ() {
     // Byte neutrality is the whole reason this was affordable; assert it here
     // too so a future cell-size edit that quietly grows the atlas is caught by
     // a test and not only by a static_assert someone can delete.
-    CHECK(imp.atlas.size() == 131072,
-          "elevation rings stayed inside the original 128 KiB atlas");
+    // Was 131072: the rings were paid for by halving the cell, and this
+    // asserted that trade held. The cell has since been RESTORED and doubled
+    // (16 -> 32 px) because the halving was not free -- the alpha cutout binds
+    // on thin features at cell resolution and it ate the trunks. So the
+    // assertion now pins the CURRENT budget rather than the old one, and
+    // reading kAtlasBytes keeps it honest if the constants move again.
+    CHECK(imp.atlas.size() == impostor::kAtlasBytes &&
+              impostor::kAtlasBytes == 524288,
+          "the atlas is the declared 512 KiB (8x8 grid of 32x32 cells)");
     printf("PASSED\n");
 }
 
