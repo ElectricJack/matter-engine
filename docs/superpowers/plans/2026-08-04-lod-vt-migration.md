@@ -848,6 +848,31 @@ Acceptance:
 > separated (a `param_id` alongside the rung, defaulting to it, ideally *derived from the
 > chart table's content* so a unified ladder collapses to one key with no flag to desync).
 >
+> **Step 3a landed (`94fea81a`), and it corrected step 2's own write-up.** Step 2 claimed to
+> cover the bake; it covered two of FIVE chart sites. `part_store.cpp` charts at three more
+> that `ChartBakeOptions` never reaches (`:618` flat v3 legacy-view, `:694` flat v3 cluster,
+> `:800` flat v2) — and the flat path is the one **authored props** take, so the parts this
+> whole effort is about would have kept churning while streamed sectors stopped. The rule now
+> lives once, in `lod_bake::chart_rung_unified`, and all five call it.
+> `MATTER_VT_UNIFY=1` is the switch, default off, read per call (not cached in a static) so a
+> test can A/B it inside one process — the same choice `impostors_enabled()` makes.
+>
+> **Step 3b — the runtime key — is lifetime-critical, and here is its exact shape.**
+> `register_variant` already receives the atlas, so `param_id` can be derived from the chart
+> table's CONTENT there and both callers (`vk_scene_renderer.cpp:4259`,
+> `matter_engine.cpp:3546`) need no change: equal tables collapse to one key, unequal ones
+> stay separate, with no flag to desync. The cost is that `slot_for(hash, rung)` and
+> `release_variant(hash, rung)` do not have the atlas, so they need a `(hash,rung) → key`
+> alias map.
+>
+> The dangerous part is release. `VkSceneRenderer::evict_vt_rung` (`:4192`) releases
+> **per rung**, driven by `record.vt_slots[rung]`. Under one shared variant every rung's slot
+> is the SAME slot, so evicting rung 3 would free a layer rungs 0–2 still point at — a
+> dangling variant slot, i.e. GPU use-after-free, in the subsystem that already produced one
+> DEVICE_LOST investigation. **A refcount of aliasing rungs is required, not optional**, and
+> it has to interact correctly with the retirement graveyard (`kVtRetireHorizonFrames`) rather
+> than beside it.
+>
 > **And that surfaces the real step-4 question.** With one variant shared across rungs, the
 > variant holds ONE mesh — whichever rung registered first — and pages are composited from
 > it. If a far sector registers at rung 3 first, page texels get baked from coarse geometry
