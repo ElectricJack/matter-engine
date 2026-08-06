@@ -1241,6 +1241,15 @@ private:
         uint32_t vt_rung_mask = 0;
         std::array<uint64_t, kVkMaxLod> vt_last_wanted{};
         std::array<uint64_t, kVkMaxLod> vt_last_requested{};
+        // M6.5: caster-harvest inputs, captured from the VtPartContext at VT
+        // registration (both the eager and the demand paths). Reading them
+        // from the CONTEXT rather than VkScenePart keeps the harvest's notion
+        // of "anchored receiver" identical to the residency layer's — the
+        // gate queue_dir_occ applies is context.surface_world_anchored, and a
+        // receiver the harvest fed that the queue then refused (or vice
+        // versa) would be a silent nothing-bakes bug.
+        uint32_t vt_world_anchored = 0;
+        float vt_local_to_world[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
     };
 
     struct DeviceLimits {
@@ -1771,6 +1780,14 @@ private:
     // rungs with no slot, and release variants that stayed unwanted for
     // MATTER_VT_LINGER_FRAMES. Cheap no-op while no deferred part is live.
     void update_vt_demand(matter::Float3 camera_eye, float pixel_budget);
+    // M6.5: harvest impostored-caster geometry for every world-anchored VT
+    // receiver (terrain sectors) and hand the sets to the residency layer.
+    // Runs beside update_vt_demand but only when the static instance set (or
+    // the receiver registrations) changed — the harvest is O(receivers x
+    // instance clusters) and its OUTPUT is a pure function of that set, so
+    // re-running it on an unchanged world could only reproduce the same
+    // caster_set_hash the residency layer would then discard as a no-op.
+    void update_vt_casters();
     // Releases one demand-managed (part, rung) variant: residency layer,
     // vt_slots entry, draw-slot table dirty, deferred filler-cache
     // invalidation (same retirement discipline as release_part).
@@ -1962,6 +1979,13 @@ private:
     uint64_t vt_demand_frame_ = 0;
     uint32_t vt_deferred_parts_ = 0;
     std::vector<VtRungRequest> vt_rung_requests_;
+    // M6.5 caster-harvest change detection: the instance generation the last
+    // harvest ran against, plus a dirty latch for events that add receivers
+    // WITHOUT touching the instance set (a VT rung registering on demand —
+    // its fresh layer would otherwise wait for the next streaming event to
+    // receive any casters).
+    uint64_t vt_caster_harvest_generation_ = 0;
+    bool vt_casters_dirty_ = false;
     // Working-set knobs, refreshed from matter::VtResidencyBudgets on every
     // demand pass: linger_frames (how long a variant survives unwanted before
     // its layer is reclaimed, MATTER_VT_LINGER_FRAMES) and requests_per_frame

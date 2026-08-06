@@ -105,6 +105,18 @@ struct VtEnrichSettings {
     // Cached (variant, rung) acceleration structures. Sizes the descriptor
     // pool at init, so it is not live-editable.
     uint32_t as_cache = 8;
+    // ---- M6.5 directional tier (vt_dirocc.comp) --------------------------
+    // Smallest page-texel footprint (metres) admitted to the directional
+    // bake. This is the INVERSE of the contact tier's skip: dir-occ runs on
+    // coarse far-field pages only, and the default is chosen so the tier
+    // admits exactly the pages the ~2.0 m contact fade-out rejects — the two
+    // admission rules tile the mip range with no gap and no overlap.
+    float dirocc_min_footprint = 2.0f;
+    // How far (metres) a caster's occlusion reaches. Feeds both ends: the
+    // shader's ray length AND the harvest's receiver-expansion overlap test
+    // (vt_caster_select.h), which MUST use the same number or shadows stop
+    // exactly at the boundary between "harvested" and "traced".
+    float dirocc_reach = 64.0f;
 };
 
 // The one live instance every VtResidency reads.
@@ -216,7 +228,20 @@ inline const props::Group& vt_enrich_settings_group() {
             .env("MATTER_VT_ENRICH_AS_CACHE").read_only()
             .doc("Cached (variant, rung) acceleration structures. Sizes a "
                  "descriptor pool at enricher init — set "
-                 "MATTER_VT_ENRICH_AS_CACHE before launch to change it."));
+                 "MATTER_VT_ENRICH_AS_CACHE before launch to change it."),
+        prop(&VtEnrichSettings::dirocc_min_footprint, "dirocc_min_footprint")
+            .label("Dir-occ min footprint").range(0.01f, 1000.0f).units("m")
+            .log()
+            .env("MATTER_VT_DIROCC_MIN_FOOTPRINT")
+            .doc("Smallest page-texel size the directional tier bakes. The "
+                 "INVERSE of the contact tier's coarse-page skip: dir-occ "
+                 "admits coarse far-field pages only."),
+        prop(&VtEnrichSettings::dirocc_reach, "dirocc_reach")
+            .label("Dir-occ reach").range(1.0f, 1024.0f).units("m").log()
+            .env("MATTER_VT_DIROCC_REACH")
+            .doc("Caster occlusion range: the bake's ray length and the "
+                 "harvest's cross-sector overlap expansion, which must "
+                 "agree or shadows stop at the harvest boundary."));
     return def.group();
 }
 

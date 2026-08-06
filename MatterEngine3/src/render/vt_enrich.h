@@ -95,6 +95,13 @@ class VtEnricher final : public VtPageEnricher {
     static constexpr uint32_t kMaxRequestsPerBatch = 16;
     // Distinct enrich() batches that may be in flight on the GPU at once.
     static constexpr uint32_t kMaxBatchesInFlight = 4;
+    // M6.5: casters one directional bake may reference. Sizes the TLAS
+    // instance buffer; a request whose context carries MORE is skipped whole
+    // rather than truncated — truncation would make the baked bytes depend on
+    // harvest ORDER while caster_set_hash only covers the SET, i.e. two runs
+    // could disagree under one content key. The harvest applies its own
+    // deterministic cap below this, so the skip should never fire in practice.
+    static constexpr uint32_t kMaxDirOccCasters = 128;
 
     // nullptr + err when ray tracing is unavailable, the embedded SPIR-V is
     // missing, or any resource creation fails. Callers treat that as "tier-2 is
@@ -123,6 +130,21 @@ class VtEnricher final : public VtPageEnricher {
     // kEnrichFadeSpan x MATTER_VT_ENRICH_CAP_METERS (default 4 x 0.5 = 2.0 m).
     float max_footprint_meters() const override;
 
+    // ---- M6.5: the directional tier --------------------------------------
+    // The vt_dirocc.comp pass: coarse far-field pages, a TLAS of BORROWED
+    // impostored-caster geometry, kVtChannelDirOcc overwritten with bent
+    // normal + aperture. Resources are created LAZILY on the first call, so a
+    // session that never raises MATTER_VT_DIROCC_PER_FRAME pays nothing; a
+    // creation failure latches the tier off and every request skips silently
+    // (the channel keeps its cleared "no occlusion" value, which is correct).
+    void enrich_dir_occ(VkCommandBuffer cmd, const VtEnrichRequest* batch,
+                        size_t count) override;
+    // MATTER_VT_DIROCC_MIN_FOOTPRINT (default 2.0 m): the inverse admission
+    // rule — the residency layer queues a page here only when its texel is at
+    // least this wide, i.e. exactly the pages the contact tier's fade-out
+    // rejects.
+    float dir_occ_min_footprint_meters() const override;
+
     struct Stats {
         uint64_t pages_enriched = 0;
         uint64_t requests_skipped = 0;
@@ -130,6 +152,13 @@ class VtEnricher final : public VtPageEnricher {
         uint64_t as_evictions = 0;
         uint32_t as_cached = 0;
         uint64_t as_bytes = 0;
+        // M6.5 directional tier.
+        uint64_t dir_occ_pages = 0;
+        uint64_t dir_occ_skipped = 0;
+        uint64_t dir_occ_blas_builds = 0;   // deduped caster BLAS builds
+        uint64_t dir_occ_tlas_builds = 0;   // (variant, rung, caster set) TLASes
+        uint32_t dir_occ_blas_cached = 0;
+        uint32_t dir_occ_entries_cached = 0;
     };
     const Stats& stats() const { return stats_; }
 

@@ -557,7 +557,8 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/tileset_bake_ao.comp.spv \
          build/shaders_vk/vt_composite.comp.spv \
          build/shaders_vk/vt_bc_encode.comp.spv \
-         build/shaders_vk/vt_enrich_ao.comp.spv
+         build/shaders_vk/vt_enrich_ao.comp.spv \
+         build/shaders_vk/vt_dirocc.comp.spv
 VK_EMBEDDED_HEADER = $(ME3_DIR)/shaders_gen/embedded_spirv.h
 
 build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%
@@ -603,9 +604,11 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_shadow.rgen.spv \
     build/shaders_vk/vt_composite.comp.spv: \
     $(ME3_DIR)/shaders_vk/wang_common.glsl
 
-# WP-H (chart VT): the shared chart-resolve includes both page passes consume.
+# WP-H (chart VT): the shared chart-resolve includes the page passes consume
+# (M6.5's vt_dirocc is a page pass too — same texel->surface resolve).
 build/shaders_vk/vt_composite.comp.spv \
-    build/shaders_vk/vt_enrich_ao.comp.spv: \
+    build/shaders_vk/vt_enrich_ao.comp.spv \
+    build/shaders_vk/vt_dirocc.comp.spv: \
     $(ME3_DIR)/shaders_vk/vt_chart_types.glsl \
     $(ME3_DIR)/shaders_vk/vt_chart_resolve.glsl
 

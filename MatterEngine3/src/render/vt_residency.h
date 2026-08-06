@@ -1003,6 +1003,19 @@ class VtResidency {
         return dirty;
     }
 
+    // M6.5: adopt one (variant, rung)'s harvested caster set. The residency
+    // layer OWNS a copy (like every other VtPartContext array) and repoints
+    // context.casters at it; the caller's storage may die on return. When the
+    // set hash CHANGES, every resident page of the layer is re-queued through
+    // queue_dir_occ so the bake converges on the new set — including a change
+    // TO EMPTY, which re-bakes against an empty TLAS and thereby ERASES the
+    // departed caster's shadow (the overwrite-not-multiply design is what
+    // makes that a plain re-run instead of a bookkeeping problem). Returns
+    // false when the (hash, rung) is not registered or not world-anchored.
+    bool set_variant_casters(uint64_t variant_hash, uint32_t rung,
+                             const VtCasterInstance* casters, uint32_t count,
+                             uint64_t caster_set_hash);
+
     // TEST SEAM: inject feedback requests without a GPU readback.
     void inject_feedback_for_test(const VtFeedbackRequest* requests,
                                   size_t count);
@@ -1048,6 +1061,15 @@ class VtResidency {
         // vt_types.h appends); replaced in place by update_variant_surface.
         std::vector<uint8_t> surface_weights;
         std::vector<uint32_t> surface_materials;
+        // M6.5: owned copy of the harvested caster set (set_variant_casters);
+        // context.casters is repointed here. DOUBLE ownership by design: this
+        // vector owns the elements, each element separately holds the
+        // renderer's rt_geometry/rt_index shared_ptrs — the bridge that keeps
+        // the borrowed device addresses alive between harvest and the
+        // enricher adopting its own references. Dropped whole at release
+        // (VariantRung{} reset); queued dir-occ candidates for a released
+        // layer die on drain's staleness checks before they can dereference.
+        std::vector<VtCasterInstance> casters;
         // P2: owned copies of the mode-3 payload (canonical tape text +
         // per-vertex f16 field lanes); context repointed after adoption.
         std::string surface_tape_text;
@@ -1118,9 +1140,15 @@ class VtResidency {
     void queue_enrich(uint32_t layer, VtPageKey page, uint32_t slot);
     // M6.5: the directional tier's queue. A sibling of queue_enrich, not a
     // mode of it — its footprint test is the INVERSE (coarse pages only), and
-    // that inversion is the whole reason the tier exists.
-    void queue_dir_occ(uint32_t layer, VtPageKey page, uint32_t slot);
+    // that inversion is the whole reason the tier exists. `allow_empty` is
+    // set_variant_casters' bake-to-clear path: an empty set normally means
+    // "nothing to do", but when it REPLACES a non-empty one the resident
+    // shadows must be re-baked away, and only that caller can tell the two
+    // apart.
+    void queue_dir_occ(uint32_t layer, VtPageKey page, uint32_t slot,
+                       bool allow_empty = false);
     void drain_enrich(VkCommandBuffer cmd);
+    void drain_dir_occ(VkCommandBuffer cmd);
 
     matter::VulkanDevice* vulkan_ = nullptr;
     bool ready_ = false;
@@ -1264,6 +1292,22 @@ class VtResidency {
     std::vector<PendingEnrich> dir_occ_queue_;
     std::map<uint32_t, size_t> dir_occ_queued_slot_;
     uint32_t max_dir_occ_per_frame_ = 0;
+    std::vector<VtEnrichRequest> dir_occ_batch_;
+    // M6.5: one page's worth of BC7 blocks encoding the channel's OPEN value
+    // (bent normal ~+Z, aperture 1.0). Persistent, ~18 KiB. Two consumers:
+    // the one-time pool clear (the DirOcc channel must NOT be zero-cleared —
+    // an all-zero BC7 block decodes to aperture 0, i.e. FULLY OCCLUDED, the
+    // exact opposite of the documented "cleared to no occlusion"), and the
+    // per-fill channel reset below.
+    Buffer dirocc_open_page_{};
+    // True once any directional bake has been recorded. Gates the per-fill
+    // DirOcc reset: a recycled slot may carry a previous page's baked shadow,
+    // and tier-1 fillers write only their four channels, so without the reset
+    // a FINE page (which this tier never bakes) inherits a stale coarse-page
+    // shadow. Until the first bake every slot still holds the cleared open
+    // value and the reset would be a no-op, so the flag keeps the default-off
+    // path at literally zero extra copies.
+    bool dir_occ_channel_written_ = false;
     std::map<uint32_t, size_t> enrich_queued_slot_;   // slot -> queue index
     // 0 = tier-1 (or unknown), 1 = tier-2 applied. Indexed by physical slot.
     std::vector<uint8_t> slot_tier_;

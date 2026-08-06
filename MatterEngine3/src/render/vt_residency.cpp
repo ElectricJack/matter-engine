@@ -35,6 +35,37 @@ uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+// M6.5: one hand-assembled BC7 mode-6 block decoding to a constant
+// (129, 129, 255, 255) — bent normal ~+Z, aperture EXACTLY 1.0. This is the
+// DirOcc channel's "no occlusion" value, and it must be a real encoding: the
+// zero bytes the other BC channels are scrubbed with decode (per the BC7
+// spec's invalid-mode rule) to RGBA (0,0,0,0), which in THIS channel means
+// aperture 0 = fully occluded — a world whose every unbaked page sits in
+// full shadow, the exact inverse of the documented clear.
+//
+// Layout (mode 6): 7 mode bits, 8x7-bit endpoints R0 R1 G0 G1 B0 B1 A0 A1,
+// P0, P1, 63 index bits (anchor 3 bits). Both endpoints equal, indices zero,
+// P=1 so alpha reconstructs to (127<<1)|1 = 255 exactly — the gbuffer gate
+// is `aperture < 0.999`, so only an exact 1.0 keeps the runtime multiply the
+// identity.
+void write_dirocc_open_block(uint8_t out[16]) {
+    std::memset(out, 0, 16);
+    uint32_t pos = 0;
+    const auto put_bits = [&](uint32_t value, uint32_t bits) {
+        for (uint32_t i = 0; i < bits; ++i, ++pos) {
+            if (value & (1u << i))
+                out[pos >> 3] = static_cast<uint8_t>(out[pos >> 3] |
+                                                     (1u << (pos & 7u)));
+        }
+    };
+    put_bits(0x40u, 7u);                       // mode 6
+    const uint32_t endpoints[8] = {64, 64, 64, 64, 127, 127, 127, 127};
+    for (uint32_t e : endpoints) put_bits(e, 7u);   // R0 R1 G0 G1 B0 B1 A0 A1
+    put_bits(1u, 1u);                          // P0
+    put_bits(1u, 1u);                          // P1
+    // 63 index bits stay zero: every texel is endpoint 0.
+}
+
 bool env_flag(const char* name) {
     const char* value = std::getenv(name);
     return value != nullptr && value[0] != '\0' && value[0] != '0';
@@ -380,6 +411,28 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
         std::memset(pool_zero_staging_.mapped, 0,
                     static_cast<size_t>(zero_bytes));
     }
+    // M6.5: the DirOcc channel's clear source — one page of "open" BC7
+    // blocks (see write_dirocc_open_block for why zeros would be exactly
+    // wrong for this channel). PERSISTENT, unlike the zero staging: it also
+    // backs the per-fill channel reset in record_frame, which runs for the
+    // life of the pool once any directional bake has landed.
+    {
+        const uint32_t blocks_per_axis = kVtPageStride / 4u;         // 34
+        const VkDeviceSize open_bytes =
+            static_cast<VkDeviceSize>(blocks_per_axis) * blocks_per_axis * 16u;
+        if (!create_buffer(open_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                           dirocc_open_page_, error)) {
+            shutdown();
+            return false;
+        }
+        uint8_t block[16];
+        write_dirocc_open_block(block);
+        auto* dst = static_cast<uint8_t*>(dirocc_open_page_.mapped);
+        for (VkDeviceSize offset = 0; offset < open_bytes; offset += 16u)
+            std::memcpy(dst + offset, block, 16u);
+    }
     pool_cleared_ = false;
     zero_staging_retire_ = 0;
     activation_dirty_ = false;
@@ -458,6 +511,9 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     slot_tier_.assign(pool_pages_, 0u);
     enrich_queue_.clear();
     enrich_queued_slot_.clear();
+    dir_occ_queue_.clear();
+    dir_occ_queued_slot_.clear();
+    dir_occ_channel_written_ = false;
     variants_.clear();           // grows lazily with the slot high-water mark
     layer_graveyard_.clear();
     debug_layer_reuse_.clear();
@@ -486,14 +542,15 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
         filler_ = std::move(stub);
     }
 
-    // Pool bytes: BC7 + BC5 + BC7 are 1 byte/texel, aux is 4.
+    // Pool bytes: BC7 + BC5 + BC7 are 1 byte/texel, aux is 4, and the M6.5
+    // DirOcc BC7 channel adds 1 more.
     const uint64_t layer_texels = static_cast<uint64_t>(kVtPoolLayerEdgeTexels) *
                                   kVtPoolLayerEdgeTexels;
     stats_ = Stats{};
     stats_.pool_capacity = pool_pages_;
     stats_.max_variants = max_variants_;
     stats_.mesh_budget_bytes = mesh_budget_bytes_;
-    stats_.pool_bytes = layer_texels * pool_layers * (1 + 1 + 1 + 4);
+    stats_.pool_bytes = layer_texels * pool_layers * (1 + 1 + 1 + 4 + 1);
     stats_.indirection_capacity_bytes =
         static_cast<uint64_t>(indirection_words) * 4u;
     stats_.enrich_samples = enricher_ ? enricher_->sample_count() : 0u;
@@ -520,6 +577,7 @@ void VtResidency::shutdown() {
     destroy_buffer(variant_buffer_);
     destroy_buffer(indirection_buffer_);
     destroy_buffer(pool_zero_staging_);
+    destroy_buffer(dirocc_open_page_);
     for (uint32_t i = 0; i < kFeedbackSlots; ++i)
         destroy_buffer(indirection_staging_[i]);
     for (uint32_t i = 0; i < kFeedbackSlots; ++i)
@@ -535,6 +593,10 @@ void VtResidency::shutdown() {
     enrich_queue_.clear();
     enrich_queued_slot_.clear();
     enrich_batch_.clear();
+    dir_occ_queue_.clear();
+    dir_occ_queued_slot_.clear();
+    dir_occ_batch_.clear();
+    dir_occ_channel_written_ = false;
     slot_tier_.clear();
     variant_records_.clear();
     mesh_bytes_used_ = 0;
@@ -1020,6 +1082,13 @@ uint32_t VtResidency::invalidate_all_content() {
     std::fill(slot_tier_.begin(), slot_tier_.end(), uint8_t{0});
     stats_.enriched_pages = 0;
     stats_.enrich_queue_depth = 0;
+    // M6.5: same reasoning for the directional queue — its candidates name
+    // content that just died; the re-fills queue fresh ones through the map
+    // loop's queue_dir_occ. (No per-slot tier state to unwind: overwrite.)
+    stats_.dir_occ_dropped_total += dir_occ_queue_.size();
+    dir_occ_queue_.clear();
+    dir_occ_queued_slot_.clear();
+    stats_.dir_occ_queue_depth = 0;
 
     ++stats_.invalidations_total;
     stats_.pages_dropped_total += dropped;
@@ -1225,7 +1294,8 @@ void VtResidency::slot_reset_tier(uint32_t slot) {
 // far-field pages where impostored props live are never enriched at all — a
 // caster added to the contact pass would have been added to a pass that is
 // never dispatched there.
-void VtResidency::queue_dir_occ(uint32_t layer, VtPageKey page, uint32_t slot) {
+void VtResidency::queue_dir_occ(uint32_t layer, VtPageKey page, uint32_t slot,
+                                bool allow_empty) {
     if (!enricher_ || max_dir_occ_per_frame_ == 0) return;
     if (layer >= variants_.size()) return;
     const VariantRung& v = variants_[layer];
@@ -1235,7 +1305,11 @@ void VtResidency::queue_dir_occ(uint32_t layer, VtPageKey page, uint32_t slot) {
     // also what stops one prop's shadow appearing on every copy of an
     // instanced part, which is the per-variant trap the whole design turns on.
     if (!v.context.surface_world_anchored) return;
-    if (v.context.caster_count == 0) return;   // nothing to cast
+    // Nothing to cast — EXCEPT when set_variant_casters is erasing a departed
+    // set: the resident pages then still hold the old shadows, and the only
+    // way to remove an overwrite-baked shadow is another overwrite (against
+    // an empty TLAS, which writes the channel's open value everywhere).
+    if (v.context.caster_count == 0 && !allow_empty) return;
     const float tpm = v.finest_texels_per_meter;
     if (tpm > 0.0f) {
         const float footprint_m = static_cast<float>(1u << page.mip) / tpm;
@@ -1375,6 +1449,133 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
     enricher_->enrich(cmd, enrich_batch_.data(), enrich_batch_.size());
     stats_.enrich_last_frame = static_cast<uint32_t>(enrich_batch_.size());
     stats_.enrich_total += enrich_batch_.size();
+}
+
+// M6.5: drain_enrich's directional sibling. The structural difference is what
+// is ABSENT: no slot_tier_ reads or writes anywhere. The directional bake
+// OVERWRITES its channel, so re-running it on the same fill is idempotent —
+// there is no once-only state to guard, and adding the tier bookkeeping here
+// would break the very property (re-bake on caster change) the overwrite
+// design buys.
+void VtResidency::drain_dir_occ(VkCommandBuffer cmd) {
+    stats_.dir_occ_last_frame = 0;
+    if (!enricher_ || max_dir_occ_per_frame_ == 0 || dir_occ_queue_.empty())
+        return;
+    dir_occ_batch_.clear();
+    size_t consumed = 0;
+    for (size_t i = 0; i < dir_occ_queue_.size() &&
+                       dir_occ_batch_.size() < max_dir_occ_per_frame_;
+         ++i) {
+        const PendingEnrich p = dir_occ_queue_[i];
+        consumed = i + 1;
+        if (p.layer >= variants_.size()) continue;
+        VariantRung& v = variants_[p.layer];
+        if (!v.live || p.slot >= slots_.capacity()) continue;
+        const VtSlotPool::Owner& owner = slots_.owner(p.slot);
+        // The slot must still hold exactly the page we queued. An eviction or
+        // a re-fill in between makes the candidate stale — and the re-fill's
+        // own map queued a fresh candidate, so dropping this one loses
+        // nothing.
+        if (!owner.live ||
+            owner.variant_key != v.param_key ||
+            !(owner.page == p.page)) {
+            ++stats_.dir_occ_dropped_total;
+            continue;
+        }
+        VtEnrichRequest request;
+        request.variant_hash = v.variant_hash;
+        request.rung = static_cast<uint16_t>(v.rung);
+        request.mip = static_cast<uint16_t>(p.page.mip);
+        request.page_x = static_cast<uint16_t>(p.page.px);
+        request.page_y = static_cast<uint16_t>(p.page.py);
+        request.physical_slot = p.slot;
+        request.atlas = &v.atlas;
+        request.part_context = &v.context;
+        request.pool = &pool_binding_;
+        request.frame_index = frame_index_;
+        dir_occ_batch_.push_back(request);
+    }
+    dir_occ_queue_.erase(dir_occ_queue_.begin(),
+                         dir_occ_queue_.begin() + static_cast<long>(consumed));
+    dir_occ_queued_slot_.clear();
+    for (size_t i = 0; i < dir_occ_queue_.size(); ++i)
+        dir_occ_queued_slot_[dir_occ_queue_[i].slot] = i;
+    stats_.dir_occ_queue_depth = static_cast<uint32_t>(dir_occ_queue_.size());
+    if (dir_occ_batch_.empty()) return;
+
+    // The enricher's write-back flips the DirOcc pool image to TRANSFER_DST
+    // and restores SHADER_READ_ONLY itself, so the tracked layout only needs
+    // to be true on entry (same contract as the AO pass's ORM handling).
+    PoolImage& doc = pool_[kVtChannelDirOcc];
+    if (doc.layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        barrier(cmd, doc.image, doc.layers, doc.layout,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        doc.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    enricher_->enrich_dir_occ(cmd, dir_occ_batch_.data(),
+                              dir_occ_batch_.size());
+    stats_.dir_occ_last_frame = static_cast<uint32_t>(dir_occ_batch_.size());
+    stats_.dir_occ_pages += dir_occ_batch_.size();
+    // From here on a recycled slot may carry baked shadow bytes, so every
+    // fill must reset its DirOcc rect (see record_frame). Latched, never
+    // cleared: cheaper than tracking which slots were actually written, and
+    // the reset copy is 18 KiB against a page fill's ~130 KiB.
+    dir_occ_channel_written_ = true;
+}
+
+// M6.5: adopt a harvested caster set (see the header comment). The copy
+// discipline mirrors register_variant's mesh adoption: owned vector,
+// repointed context, caller's storage free to die on return. The elements'
+// shared_ptr lifetimes ride the copy, which is the harvest->record bridge the
+// enricher then takes over from.
+bool VtResidency::set_variant_casters(uint64_t variant_hash, uint32_t rung,
+                                      const VtCasterInstance* casters,
+                                      uint32_t count,
+                                      uint64_t caster_set_hash) {
+    if (!ready_) return false;
+    const auto alias = param_key_of_rung_.find(variant_key(variant_hash, rung));
+    if (alias == param_key_of_rung_.end()) return false;
+    const auto found = layer_of_.find(alias->second);
+    if (found == layer_of_.end()) return false;
+    const uint32_t layer = found->second;
+    VariantRung& v = variants_[layer];
+    if (!v.live) return false;
+    // Same rule as queue_dir_occ: casters are world context and only a
+    // one-placement variant has a world position. Refusing here keeps a
+    // harvester bug from ever planting one prop's shadow on every copy of an
+    // instanced part.
+    if (!v.context.surface_world_anchored) return false;
+    if (v.context.caster_set_hash == caster_set_hash) return true;   // no-op
+
+    const bool had_casters = v.context.caster_count != 0;
+    if (count != 0 && casters != nullptr) {
+        v.casters.assign(casters, casters + count);
+        v.context.casters = v.casters.data();
+        v.context.caster_count = count;
+    } else {
+        v.casters.clear();
+        v.context.casters = nullptr;
+        v.context.caster_count = 0;
+    }
+    v.context.caster_set_hash = caster_set_hash;
+
+    // The set changed, so every resident page of this layer is stale.
+    // Re-queue them all (the pinned tail included — it is the coarsest page
+    // and therefore this tier's PRIME target); queue_dir_occ re-applies the
+    // footprint and budget gates per page. `allow_empty` carries the
+    // bake-to-clear case: a set that just went empty must still re-bake so
+    // the departed casters' shadows are overwritten away.
+    const bool allow_empty = had_casters && v.context.caster_count == 0;
+    for (uint32_t slot = 0; slot < slots_.capacity(); ++slot) {
+        const VtSlotPool::Owner& owner = slots_.owner(slot);
+        if (!owner.live || owner.variant_key != v.param_key) continue;
+        queue_dir_occ(layer, owner.page, slot, allow_empty);
+    }
+    return true;
 }
 
 void VtResidency::inject_feedback_for_test(const VtFeedbackRequest* requests,
@@ -1574,6 +1775,11 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
     // fill's transfer has been submitted and the layout transition below is the
     // dependency that orders them.
     drain_enrich(cmd);
+    // M6.5: the directional tier, same slot in the frame for the same two
+    // reasons — and additionally so its write-back lands BEFORE the per-fill
+    // DirOcc resets below, which must win on a slot that is both baked (old
+    // content) and re-filled (new content) in one frame.
+    drain_dir_occ(cmd);
 
     // --- pool transitions -------------------------------------------------
     for (uint32_t c = 0; c < kVtChannelCount; ++c) {
@@ -1601,6 +1807,39 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
                 vkCmdClearColorImage(cmd, pool_[c].image,
                                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                                      &zero, 1, &range);
+                continue;
+            }
+            // M6.5: the DirOcc channel must NOT be zero-scrubbed. Zero BC7
+            // blocks decode to RGBA 0 — aperture 0, FULL occlusion — so a
+            // zero clear would put every never-baked page in permanent shadow
+            // the moment gbuffer.frag started sampling the channel. It is
+            // cleared to real "open" blocks instead, one page-sized copy per
+            // slot (the open staging is page-sized because the per-fill reset
+            // below reuses it for the life of the pool).
+            if (c == kVtChannelDirOcc &&
+                dirocc_open_page_.buffer != VK_NULL_HANDLE) {
+                std::vector<VkBufferImageCopy> regions;
+                regions.reserve(kVtPagesPerLayer);
+                for (uint32_t layer = 0; layer < pool_[c].layers; ++layer) {
+                    regions.clear();
+                    for (uint32_t s = 0; s < kVtPagesPerLayer; ++s) {
+                        VkBufferImageCopy copy{};
+                        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                                 layer, 1};
+                        copy.imageOffset = {
+                            static_cast<int32_t>((s % kVtPagesPerLayerEdge) *
+                                                 kVtPageStride),
+                            static_cast<int32_t>((s / kVtPagesPerLayerEdge) *
+                                                 kVtPageStride),
+                            0};
+                        copy.imageExtent = {kVtPageStride, kVtPageStride, 1};
+                        regions.push_back(copy);
+                    }
+                    vkCmdCopyBufferToImage(
+                        cmd, dirocc_open_page_.buffer, pool_[c].image,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        static_cast<uint32_t>(regions.size()), regions.data());
+                }
                 continue;
             }
             for (uint32_t layer = 0; layer < pool_[c].layers; ++layer) {
@@ -1788,6 +2027,32 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
                 // small, permanent, and what most of a variant reads).
                 slot_reset_tier(m.slot);
                 queue_enrich(m.layer, m.page, m.slot);
+                // M6.5: the directional tier sees the same fresh pages and
+                // applies its own (opposite) footprint test — the two tiers
+                // tile the mip range between them.
+                queue_dir_occ(m.layer, m.page, m.slot);
+                // Tier-1 fillers write only their four channels, so a
+                // recycled slot's DirOcc rect still holds whatever shadow the
+                // PREVIOUS page baked there — and a fine page would keep it
+                // forever, because this tier never bakes fine pages at all.
+                // Reset the rect to the channel's open value whenever any
+                // bake has ever run (before that, every rect still holds the
+                // clear and this would be 18 KiB of no-op per fill).
+                if (dir_occ_channel_written_ &&
+                    dirocc_open_page_.buffer != VK_NULL_HANDLE) {
+                    uint32_t rl = 0, rx = 0, ry = 0;
+                    vt_slot_origin(m.slot, rl, rx, ry);
+                    VkBufferImageCopy copy{};
+                    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, rl,
+                                             1};
+                    copy.imageOffset = {static_cast<int32_t>(rx),
+                                        static_cast<int32_t>(ry), 0};
+                    copy.imageExtent = {kVtPageStride, kVtPageStride, 1};
+                    vkCmdCopyBufferToImage(
+                        cmd, dirocc_open_page_.buffer,
+                        pool_[kVtChannelDirOcc].image,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                }
                 ++mapped;
                 continue;
             }
