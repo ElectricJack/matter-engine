@@ -2488,22 +2488,30 @@ static void test_impostor_source_and_distance() {
     const std::string flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(h);
     const std::string fimp = std::string(kCacheRoot) + "/" + impostor::cache_path_impostor(h);
 
-    auto bake_ladder = [&](float dist_scale, std::vector<part_asset::FlatCluster>& cl,
+    // The scale is driven through MATTER_IMPOSTOR_DISTANCE, not through a
+    // FlattenTargets field. That is the production surface (an operator sets
+    // the env var), and it is the only surface the flat's ladder-shape
+    // identity can see: a per-call struct override writes an artifact stamped
+    // with the AMBIENT shape, which flatten_part now warns about. The env is
+    // cleared again as soon as the load is done, so it is live for exactly the
+    // bake+load pair that has to agree about it.
+    auto bake_ladder = [&](const char* dist_scale,
+                           std::vector<part_asset::FlatCluster>& cl,
                            BLASManager& blas) -> part_flatten::FlattenResult {
         part_bundle::remove_section(flat, h, part_bundle::kSectionFlat);
         part_bundle::remove_section(fimp, h, part_bundle::kSectionImpostor);
-        part_flatten::FlattenTargets t;
-        t.impostor_distance_scale = dist_scale;
-        auto r = part_flatten::flatten_part(kCacheRoot, h, t);
+        pf_set_env("MATTER_IMPOSTOR_DISTANCE", dist_scale);
+        auto r = part_flatten::flatten_part(kCacheRoot, h);
         if (r.ok) {
             TLASManager tl(4);
             part_asset::load_flat_v3(flat, h, blas, tl, cl);
         }
+        pf_set_env("MATTER_IMPOSTOR_DISTANCE", nullptr);
         return r;
     };
 
     std::vector<part_asset::FlatCluster> cl1; BLASManager b1;
-    auto r1 = bake_ladder(1.0f, cl1, b1);
+    auto r1 = bake_ladder(nullptr, cl1, b1);
     CHECK(r1.ok, "imp src: ladder bakes");
     if (!r1.ok || cl1.empty() || cl1[0].lods.size() < 2) {
         printf("  SKIPPING (no impostor rung on this fixture)\n");
@@ -2554,7 +2562,7 @@ static void test_impostor_source_and_distance() {
     // and must leave every MESH rung untouched -- that independence is the
     // entire point of the knob.
     std::vector<part_asset::FlatCluster> cl2; BLASManager b2;
-    auto r2 = bake_ladder(0.5f, cl2, b2);
+    auto r2 = bake_ladder("0.5", cl2, b2);
     CHECK(r2.ok && !cl2.empty(), "imp dist: half-distance ladder bakes");
     if (r2.ok && !cl2.empty() && cl2[0].lods.size() == lods1.size()) {
         const auto& lods2 = cl2[0].lods;
@@ -2577,6 +2585,190 @@ static void test_impostor_source_and_distance() {
 
     part_bundle::remove_section(flat, h, part_bundle::kSectionFlat);
     part_bundle::remove_section(fimp, h, part_bundle::kSectionImpostor);
+}
+
+// ===========================================================================
+// The mesh rung cap, and the staleness gate that makes it observable.
+//
+// THE REJECTION FIRING IS THE TEST. A knob that reshapes the ladder changes
+// the bytes a bake would write without changing the part hash or the format
+// version, so before the ladder-shape digest existed
+// LocalProvider::ensure_part_flattened found a "compatible" flat and returned
+// without baking -- the old ladder was served and the knob appeared to do
+// nothing. That failure only shows up on a WARM cache, which is why every
+// step below re-probes an EXISTING artifact instead of removing it first.
+// A version of this test that wiped the flat between bakes would pass against
+// the bug it exists to catch.
+// ===========================================================================
+static void test_mesh_rung_cap_and_stale_rejection() {
+    printf("=== test_mesh_rung_cap_and_stale_rejection ===\n");
+
+    // Dense enough that the uncapped ladder earns several mesh rungs, so a cap
+    // of 2 is visibly a cap and not a coincidence.
+    std::vector<Tri> tris = sphere_tris(32, 16);
+    const uint64_t h = 0xA110000055550001ull;
+    CHECK(save_fixture(h, 7, {tris}, {}), "rung cap: fixture written");
+    const std::string flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(h);
+    const std::string fimp = std::string(kCacheRoot) + "/" + impostor::cache_path_impostor(h);
+
+    // Every probe below asks EXACTLY the question local_provider asks before
+    // it decides to skip the bake.
+    auto provider_would_skip = [&]() {
+        return part_asset::is_cache_artifact_header_compatible(
+            flat, h, part_asset::kFormatVersionFlat);
+    };
+    auto levels_of = [&](std::vector<part_asset::FlatCluster>& cl) -> size_t {
+        return cl.empty() ? 0 : cl[0].lods.size();
+    };
+
+    // --- 1. cold bake at the shipped default shape --------------------------
+    part_bundle::remove_section(flat, h, part_bundle::kSectionFlat);
+    part_bundle::remove_section(fimp, h, part_bundle::kSectionImpostor);
+    auto r0 = part_flatten::flatten_part(kCacheRoot, h);
+    CHECK(r0.ok, "rung cap: default ladder bakes");
+    if (!r0.ok) { printf("  error: %s\n", r0.error.c_str()); return; }
+    std::vector<char> bytes_default;
+    CHECK(read_bytes(flat, bytes_default), "rung cap: default flat readable");
+    CHECK(provider_would_skip(),
+          "rung cap: a warm default flat is served (no pointless rebake)");
+
+    std::vector<part_asset::FlatCluster> cl0; BLASManager b0;
+    { TLASManager tl(4); part_asset::load_flat_v3(flat, h, b0, tl, cl0); }
+    const size_t levels_default = levels_of(cl0);
+    CHECK(levels_default >= 4,
+          "rung cap: the uncapped ladder has room to be capped");
+    printf("  default ladder: %zu levels\n", levels_default);
+
+    // --- 2. THE GATE. Change ONLY the env knob and re-probe the SAME file. ---
+    pf_set_env("MATTER_LOD_MAX_MESH_RUNGS", "2");
+    CHECK(!provider_would_skip(),
+          "STALE REJECTION: with the cap set, the existing flat is NOT served");
+    {
+        // ...and the full load refuses it too, so nothing downstream of the
+        // probe can pick the stale artifact up by another route.
+        BLASManager b; TLASManager tl(4);
+        std::vector<part_asset::FlatCluster> cl;
+        CHECK(!part_asset::load_flat_v3(flat, h, b, tl, cl),
+              "STALE REJECTION: load_flat_v3 refuses the stale-shape flat");
+    }
+
+    // --- 3. rebake IN PLACE (no remove_section: the warm-cache path) --------
+    auto r2 = part_flatten::flatten_part(kCacheRoot, h);
+    CHECK(r2.ok, "rung cap: capped ladder bakes over the stale one");
+    std::vector<part_asset::FlatCluster> cl2; BLASManager b2;
+    if (r2.ok) { TLASManager tl(4); part_asset::load_flat_v3(flat, h, b2, tl, cl2); }
+    const size_t levels_capped = levels_of(cl2);
+    CHECK(provider_would_skip(),
+          "rung cap: the rebaked flat now matches, so the next run is warm");
+    // 2 mesh rungs, plus at most the terminal impostor.
+    CHECK(levels_capped > 0 && levels_capped <= 3,
+          "rung cap: cap=2 publishes at most 2 mesh rungs + the impostor");
+    CHECK(levels_capped < levels_default,
+          "rung cap: the cap actually shortened the ladder");
+    std::vector<char> bytes_capped;
+    CHECK(read_bytes(flat, bytes_capped), "rung cap: capped flat readable");
+    CHECK(bytes_capped != bytes_default,
+          "rung cap: the capped artifact really is different bytes -- the "
+          "rejection was not rejecting an identical file");
+    printf("  capped ladder: %zu levels\n", levels_capped);
+
+    // The impostor needs NO cap-awareness: it steps off level_metas.back(),
+    // so a shorter mesh ladder hands over EARLIER (nearer the camera = a
+    // LARGER stored threshold on the rung before the terminal).
+    if (levels_capped >= 2 && levels_default >= 2 && !cl2.empty() && !cl0.empty()) {
+        const auto& e2 = b2.get_entries();
+        const uint32_t term = cl2[0].lods.back().blas_indices[0];
+        const bool billboard =
+            term < e2.size() &&
+            impostor::is_billboard_rung(e2[term]->triangles, e2[term]->tri_extra);
+        CHECK(billboard,
+              "rung cap: the capped ladder still terminates in a billboard, so "
+              "the part switches straight from a mesh rung to an impostor");
+        if (billboard) {
+            const float thr_capped = cl2[0].lods[levels_capped - 2].screen_size_threshold;
+            const float thr_default = cl0[0].lods[levels_default - 2].screen_size_threshold;
+            CHECK(thr_capped > thr_default,
+                  "rung cap: capping pulls the impostor IN (it takes over from "
+                  "a higher-resolution rung, which is the whole point)");
+            printf("  impostor switch threshold %.5f -> %.5f (larger = nearer)\n",
+                   thr_default, thr_capped);
+        }
+    }
+
+    // --- 4. the gate fires in BOTH directions -------------------------------
+    // Clearing the knob must reject the CAPPED flat just as firmly. A gate
+    // that only invalidated in one direction would strand every cache the
+    // moment someone tried a setting and changed their mind.
+    pf_set_env("MATTER_LOD_MAX_MESH_RUNGS", nullptr);
+    CHECK(!provider_would_skip(),
+          "STALE REJECTION: clearing the cap rejects the capped flat too");
+    auto r3 = part_flatten::flatten_part(kCacheRoot, h);
+    CHECK(r3.ok, "rung cap: default ladder re-bakes");
+    std::vector<char> bytes_back;
+    CHECK(read_bytes(flat, bytes_back), "rung cap: restored flat readable");
+    // Round trip AND determinism in one: back at the default shape the bytes
+    // are the ones the very first cold bake wrote.
+    CHECK(bytes_back == bytes_default,
+          "rung cap: returning to the default shape reproduces the default "
+          "artifact byte-for-byte");
+
+    // --- 5. fail closed ------------------------------------------------------
+    // Garbage must be IGNORED, not guessed at, and a cap at/above the
+    // serialized capacity is not a cap -- kMaxSerializedLodLevels already
+    // binds. Both must leave the warm cache alone: if either reshaped the
+    // ladder or merely moved the digest, the probe would miss here.
+    for (const char* junk : {"abc", "3x", "-1", "", "1e3", "3.5"}) {
+        pf_set_env("MATTER_LOD_MAX_MESH_RUNGS", junk);
+        const std::string why =
+            std::string("rung cap: garbage value '") + junk +
+            "' is ignored, not trusted";
+        CHECK(provider_would_skip(), why.c_str());
+    }
+    for (const char* wide : {"9", "10", "99"}) {
+        pf_set_env("MATTER_LOD_MAX_MESH_RUNGS", wide);
+        const std::string why =
+            std::string("rung cap: a cap of '") + wide +
+            "' is not a cap (kMaxSerializedLodLevels binds) and does not "
+            "invalidate the cache";
+        CHECK(provider_would_skip(), why.c_str());
+    }
+    pf_set_env("MATTER_LOD_MAX_MESH_RUNGS", nullptr);
+
+    // A cap of 1 is the degenerate end of the knob: rep 0 and the billboard,
+    // nothing between. It must still produce a VALID ladder, not an empty one.
+    pf_set_env("MATTER_LOD_MAX_MESH_RUNGS", "1");
+    CHECK(!provider_would_skip(), "rung cap: cap=1 invalidates the default flat");
+    auto r1 = part_flatten::flatten_part(kCacheRoot, h);
+    CHECK(r1.ok, "rung cap: cap=1 bakes");
+    if (r1.ok) {
+        BLASManager b1; TLASManager tl(4);
+        std::vector<part_asset::FlatCluster> cl1;
+        CHECK(part_asset::load_flat_v3(flat, h, b1, tl, cl1),
+              "rung cap: cap=1 flat loads");
+        const size_t n = levels_of(cl1);
+        CHECK(n >= 1 && n <= 2, "rung cap: cap=1 gives rep 0 (+ impostor) only");
+        printf("  cap=1 ladder: %zu levels\n", n);
+    }
+    pf_set_env("MATTER_LOD_MAX_MESH_RUNGS", nullptr);
+
+    // The digest itself: distinct shapes must not alias, and the shipped
+    // default must be the 0 sentinel (that is what keeps a default bake
+    // byte-identical to every flat already on disk).
+    CHECK(part_flatten::active_ladder_shape_digest() == 0ull,
+          "rung cap: the shipped default shape digests to the 0 sentinel");
+    {
+        part_flatten::FlattenTargets a, b;
+        a.max_mesh_rungs = 2; b.max_mesh_rungs = 3;
+        CHECK(part_flatten::ladder_shape_digest(a) != 0ull &&
+                  part_flatten::ladder_shape_digest(b) != 0ull &&
+                  part_flatten::ladder_shape_digest(a) !=
+                      part_flatten::ladder_shape_digest(b),
+              "rung cap: two different caps give two different digests");
+    }
+
+    part_bundle::remove_section(flat, h, part_bundle::kSectionFlat);
+    part_bundle::remove_section(fimp, h, part_bundle::kSectionImpostor);
+    printf("  test_mesh_rung_cap_and_stale_rejection OK\n");
 }
 
 static void test_impostor_eligibility() {
@@ -3100,6 +3292,7 @@ int main() {
     test_impostor_quad_shape();
     test_impostor_sidecar_failability();
     test_flatten_appends_impostor_rung();
+    test_mesh_rung_cap_and_stale_rejection();  // the cap + its staleness gate
 
     if (g_failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
     printf("part_flatten_tests: %d FAILURE(S)\n", g_failures);
