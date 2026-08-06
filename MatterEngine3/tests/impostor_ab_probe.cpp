@@ -1,8 +1,23 @@
 // impostor_ab_probe — the mesh-vs-impostor A/B instrument (issue e9e7397c).
 //
 // Renders the SAME cluster twice from the SAME baked view frame at the SAME
-// on-screen resolution — once as its rep-0 mesh, once as its impostor card —
+// on-screen resolution — once as a mesh rung, once as its impostor card —
 // and reports a NUMBER per G-buffer channel plus the lit/display result.
+//
+// WHICH mesh rung matters, and is the --mesh-rung flag:
+//   --mesh-rung terminal   (default) the COARSEST mesh rung — the rung the
+//                          billboard actually takes over from on screen
+//                          (part_flatten.cpp: term_idx = level_metas.back()).
+//                          This measures the on-screen switch the user sees.
+//   --mesh-rung 0          rep 0 — the rung the atlas is BAKED from
+//                          (part_flatten.cpp: src_idx = level_metas.front(),
+//                          "Rep 0, not the coarsest rung"). This measures
+//                          whether the atlas is faithful to its source.
+//   --mesh-rung N          any specific mesh rung index.
+// The card side is ALWAYS baked from rep 0, exactly as production does; the
+// flag moves only the mesh reference. The two questions are different: a card
+// can be a perfect picture of rep 0 (rung 0 diff ~ 0) and still pop against
+// the decimated rung it replaces (terminal diff >> 0).
 // Whichever channel diverges is the answer; the tool ranks them so nobody has
 // to squint at pixels. Born on the third round of "impostor trees are the
 // wrong colour", where two plausible causes in a row died on measurement:
@@ -44,6 +59,7 @@
 //   impostor_ab_probe                                   # fixture self-test
 //   impostor_ab_probe --bundle <path.bundle> --hash <16-hex>
 //                     [--cluster N] [--view N] [--px N]
+//                     [--mesh-rung {0|terminal|N}]
 //                     [--sun az_deg,el_deg] [--sun-mult M]
 //
 //   --view    baked view index 0..47 (azimuth-major, 16 per ring; rings at
@@ -624,6 +640,42 @@ bool parse_hex64(const char* s, uint64_t& out) {
     return end && *end == '\0';
 }
 
+// Concatenate one LOD level's BLAS entries into a flat (tris, triex) pair —
+// the same walk the original rep-0 gather did, now shared by every rung.
+template <typename Entries>
+void gather_level(const Entries& entries, const std::vector<uint32_t>& idxs,
+                  std::vector<Tri>& tris, std::vector<TriEx>& triex) {
+    for (uint32_t bi : idxs) {
+        if (bi >= entries.size()) continue;
+        const auto& e = entries[bi];
+        tris.insert(tris.end(), e->triangles.begin(), e->triangles.end());
+        triex.insert(triex.end(), e->tri_extra.begin(), e->tri_extra.end());
+    }
+}
+
+// One gathered mesh rung of a ladder (billboard rungs are excluded before
+// this table is built, so index i here == mesh rung i of the ladder).
+struct Rung {
+    std::vector<Tri> tris;
+    std::vector<TriEx> triex;
+};
+
+// Gather every MESH rung of a ladder, finest first. Billboard rungs (the
+// card's own two-triangle quad, part of the same ladder since M2.5) are
+// dropped: they are the B side of the A/B, not a mesh reference.
+template <typename Entries>
+void gather_mesh_rungs(const Entries& entries,
+                       const part_asset::LodLevels& lods,
+                       std::vector<Rung>& out) {
+    for (const auto& lvl : lods) {
+        Rung r;
+        gather_level(entries, lvl.blas_indices, r.tris, r.triex);
+        if (r.tris.empty() || r.triex.size() != r.tris.size()) continue;
+        if (impostor::is_billboard_rung(r.tris, r.triex)) continue;
+        out.push_back(std::move(r));
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -631,6 +683,7 @@ int main(int argc, char** argv) {
     std::string bundle;
     uint64_t hash = 0;
     int cluster_arg = -1;
+    int mesh_rung_arg = -1;   // -1 = terminal (the on-screen switch), N = rung N
     std::vector<uint32_t> views;
     int px = 32;
     Lighting L;
@@ -651,7 +704,17 @@ int main(int argc, char** argv) {
                 return 1;
             }
         } else if (a == "--cluster") cluster_arg = std::atoi(next());
-        else if (a == "--view") views.push_back(uint32_t(std::atoi(next())));
+        else if (a == "--mesh-rung") {
+            const std::string v = next();
+            if (v == "terminal") mesh_rung_arg = -1;
+            else if (!v.empty() &&
+                     v.find_first_not_of("0123456789") == std::string::npos)
+                mesh_rung_arg = std::atoi(v.c_str());
+            else {
+                fprintf(stderr, "bad --mesh-rung (want 0|terminal|N)\n");
+                return 1;
+            }
+        } else if (a == "--view") views.push_back(uint32_t(std::atoi(next())));
         else if (a == "--px") px = std::atoi(next());
         else if (a == "--sun") {
             float az = 0, el = 0;
@@ -673,16 +736,51 @@ int main(int argc, char** argv) {
     printf("impostor_ab_probe: cell_px=%u  to_sun=(%.3f,%.3f,%.3f)  sun_mult=%.2f\n",
            impostor::cell_px(), L.to_sun.x, L.to_sun.y, L.to_sun.z, L.sun_mult);
 
-    // Gather clusters to probe: (tris, triex) per cluster.
+    // Gather clusters to probe. The BAKE source (tris/triex) is ALWAYS rep 0
+    // — that is what production bakes the atlas from (part_flatten.cpp
+    // src_idx = level_metas.front()). The MESH reference (mesh_tris/
+    // mesh_triex) is the --mesh-rung selection; by default the terminal rung
+    // the billboard replaces on screen.
     struct Probe {
-        std::vector<Tri> tris;
+        std::vector<Tri> tris;         // rep 0 — the atlas bake source
         std::vector<TriEx> triex;
+        std::vector<Tri> mesh_tris;    // the mesh reference (--mesh-rung)
+        std::vector<TriEx> mesh_triex;
         std::string label;
     };
     std::vector<Probe> probes;
+    // Turn a gathered ladder into a Probe. Returns false when the ladder has
+    // no usable mesh rung.
+    auto make_probe = [&](std::vector<Rung>& rungs, const char* kind,
+                          size_t cluster_idx, Probe& p) -> bool {
+        if (rungs.empty()) return false;
+        const int n = int(rungs.size());
+        int mi = mesh_rung_arg < 0 ? n - 1 : mesh_rung_arg;
+        if (mi >= n) {
+            fprintf(stderr,
+                    "note: --mesh-rung %d out of range (ladder has %d mesh "
+                    "rungs); clamped to terminal %d\n",
+                    mi, n, n - 1);
+            mi = n - 1;
+        }
+        p.mesh_tris = rungs[size_t(mi)].tris;      // copy: rungs[0] may alias
+        p.mesh_triex = rungs[size_t(mi)].triex;
+        p.tris = std::move(rungs[0].tris);
+        p.triex = std::move(rungs[0].triex);
+        char buf[128];
+        std::snprintf(buf, sizeof buf,
+                      "%s %zu: bake rep0 (%zu tris) vs mesh rung %d/%d (%zu "
+                      "tris%s)",
+                      kind, cluster_idx, p.tris.size(), mi, n - 1,
+                      p.mesh_tris.size(), mi == n - 1 ? ", terminal" : "");
+        p.label = buf;
+        return true;
+    };
     if (bundle.empty()) {
         Probe p;
         build_fixture(p.tris, p.triex);
+        p.mesh_tris = p.tris;
+        p.mesh_triex = p.triex;
         p.label = "fixture (trunk 14 + canopy 29)";
         probes.push_back(std::move(p));
     } else {
@@ -694,22 +792,11 @@ int main(int argc, char** argv) {
             for (size_t c = 0; c < clusters.size(); ++c) {
                 if (cluster_arg >= 0 && int(c) != cluster_arg) continue;
                 if (clusters[c].lods.empty()) continue;
+                std::vector<Rung> rungs;
+                gather_mesh_rungs(entries, clusters[c].lods, rungs);
                 Probe p;
-                for (uint32_t bi : clusters[c].lods[0].blas_indices) {  // rep 0
-                    if (bi >= entries.size()) continue;
-                    const auto& e = entries[bi];
-                    p.tris.insert(p.tris.end(), e->triangles.begin(),
-                                  e->triangles.end());
-                    p.triex.insert(p.triex.end(), e->tri_extra.begin(),
-                                   e->tri_extra.end());
-                }
-                if (p.tris.empty() || p.triex.size() != p.tris.size()) continue;
-                if (impostor::is_billboard_rung(p.tris, p.triex)) continue;
-                char buf[64];
-                std::snprintf(buf, sizeof buf, "flat cluster %zu (%zu tris)", c,
-                              p.tris.size());
-                p.label = buf;
-                probes.push_back(std::move(p));
+                if (make_probe(rungs, "flat cluster", c, p))
+                    probes.push_back(std::move(p));
             }
         } else {
             // The FLAT section is salted with the ladder-shape digest, so a
@@ -736,28 +823,27 @@ int main(int argc, char** argv) {
                         "its own geometry\n",
                         children.size());
             const auto& entries = blas.get_entries();
+            std::vector<Rung> rungs;
+            if (!lods.empty()) gather_mesh_rungs(entries, lods, rungs);
+            if (rungs.empty()) {
+                // No ladder in the REP0 section: everything there is rep 0.
+                Rung r;
+                std::vector<uint32_t> all;
+                for (uint32_t i = 0; i < entries.size(); ++i) all.push_back(i);
+                gather_level(entries, all, r.tris, r.triex);
+                if (!r.tris.empty() && r.triex.size() == r.tris.size() &&
+                    !impostor::is_billboard_rung(r.tris, r.triex))
+                    rungs.push_back(std::move(r));
+                if (mesh_rung_arg != 0 && !rungs.empty())
+                    fprintf(stderr,
+                            "note: REP0 section carries no ladder — the mesh "
+                            "reference IS rep 0 here, not the terminal rung. "
+                            "For the on-screen A/B, load FLAT (reproduce the "
+                            "editor's MATTER_IMPOSTOR_* env).\n");
+            }
             Probe p;
-            std::vector<uint32_t> take;
-            if (!lods.empty() && !lods[0].blas_indices.empty())
-                take = lods[0].blas_indices;                       // rep 0
-            else
-                for (uint32_t i = 0; i < entries.size(); ++i) take.push_back(i);
-            for (uint32_t bi : take) {
-                if (bi >= entries.size()) continue;
-                const auto& e = entries[bi];
-                p.tris.insert(p.tris.end(), e->triangles.begin(),
-                              e->triangles.end());
-                p.triex.insert(p.triex.end(), e->tri_extra.begin(),
-                               e->tri_extra.end());
-            }
-            if (!p.tris.empty() && p.triex.size() == p.tris.size() &&
-                !impostor::is_billboard_rung(p.tris, p.triex)) {
-                char buf[64];
-                std::snprintf(buf, sizeof buf, "REP0 (%zu tris)",
-                              p.tris.size());
-                p.label = buf;
+            if (make_probe(rungs, "REP0", 0, p))
                 probes.push_back(std::move(p));
-            }
         }
         if (probes.empty()) {
             fprintf(stderr, "no usable clusters in %s\n", bundle.c_str());
@@ -780,8 +866,8 @@ int main(int argc, char** argv) {
         for (uint32_t v : views) {
             if (v >= impostor::kViews) continue;
             std::vector<Pixel> mesh_img, card_img;
-            render_mesh(p.tris, p.triex, center, imp.half_extent, v, px, 4, L,
-                        mesh_img);
+            render_mesh(p.mesh_tris, p.mesh_triex, center, imp.half_extent, v,
+                        px, 4, L, mesh_img);
             render_card(imp, v, px, L, card_img);
             std::vector<ChannelRow> rows;
             report(mesh_img, card_img, px, v, rows);
