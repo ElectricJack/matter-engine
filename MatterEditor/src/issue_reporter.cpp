@@ -217,13 +217,14 @@ void write_shot_json(std::ostream& out, const IssueShot& shot) {
                 << h.build_ms << "," << h.gpu_ms << "," << h.triangles << ","
                 << h.instances_drawn << "," << h.resolve_ms << ","
                 << h.draw_ms << "," << h.zone_vt_ms << "," << h.zone_cull_ms
-                << "," << h.zone_skin_ms << "," << h.zone_comp_ms << "]";
+                << "," << h.zone_skin_ms << "," << h.zone_comp_ms << ","
+                << h.zone_casters_ms << "]";
         }
         out << "\n      ],\n";
         out << "      \"history_columns\": [\"frame_ms\",\"render_ms\","
                "\"build_ms\",\"gpu_ms\",\"triangles\",\"instances_drawn\","
                "\"resolve_ms\",\"draw_ms\",\"zone_vt_ms\",\"zone_cull_ms\","
-               "\"zone_skin_ms\",\"zone_comp_ms\"],\n";
+               "\"zone_skin_ms\",\"zone_comp_ms\",\"zone_casters_ms\"],\n";
     }
     out << "      \"frame_ms\": " << shot.frame_ms
         << ", \"instances_drawn\": " << shot.instances_drawn

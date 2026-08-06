@@ -99,6 +99,7 @@ struct IssueFrameSample {
     float zone_cull_ms = 0.0f;    // cull + gbuffer + RT recording
     float zone_skin_ms = 0.0f;    // animation skinning seal
     float zone_comp_ms = 0.0f;    // composite to swapchain
+    float zone_casters_ms = 0.0f; // M6.5 caster harvest (inside zone_cull_ms)
 };
 
 struct IssueShot {

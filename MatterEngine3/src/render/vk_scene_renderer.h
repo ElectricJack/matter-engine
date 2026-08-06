@@ -639,6 +639,12 @@ struct VkSceneUploadCounters {
     uint64_t instance_uploads = 0;
     uint64_t command_uploads = 0;
     uint64_t command_layout_rebuilds = 0;
+    // PER-FRAME, unlike every cumulative counter around them: what the M6.5
+    // caster harvest cost last frame and how many receivers it serviced.
+    // Cumulative totals cannot show a spike, which is the only thing these
+    // two exist to show.
+    uint64_t caster_harvest_us = 0;
+    uint32_t caster_harvest_receivers = 0;
     // How the cluster/vertex/index staging reached the GPU: a full pass
     // recreates the buffers and rewrites every byte (O(world)); an append
     // writes only the staging tail past the already-uploaded counts
@@ -2014,6 +2020,24 @@ private:
     // receive any casters).
     uint64_t vt_caster_harvest_generation_ = 0;
     bool vt_casters_dirty_ = false;
+    // The harvest is BUDGETED: it walks `parts_` a few receivers per frame
+    // rather than all of them, and this is where it resumes. A full sweep is
+    // spread over ceil(receivers / budget) frames.
+    //
+    // WHY. The harvest is O(receivers x static instances). The gate above
+    // re-runs it whenever instance_generation_ moves, and that generation
+    // bumps on EVERY streaming publish -- so in a streaming world the "common
+    // frame" is a change frame, and the whole quadratic sweep ran per frame.
+    // A hitch capture measured 390 ms of CPU in render at 218 resident
+    // sectors and 32 k instances, against 24 ms of GPU.
+    //
+    // `parts_` can shift under a persisted index when a part is released, so
+    // the cursor can occasionally skip or repeat a receiver. That is benign:
+    // it wraps continuously and a changed generation starts a fresh sweep, so
+    // nothing is starved, and a receiver harvested twice re-derives the same
+    // set hash and is discarded as a no-op.
+    size_t vt_caster_cursor_ = 0;
+    uint64_t vt_caster_sweep_generation_ = 0;
     // Working-set knobs, refreshed from matter::VtResidencyBudgets on every
     // demand pass: linger_frames (how long a variant survives unwanted before
     // its layer is reclaimed, MATTER_VT_LINGER_FRAMES) and requests_per_frame

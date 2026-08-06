@@ -4506,6 +4506,10 @@ void vt_transform_aabb(const float* m, const float lo[3], const float hi[3],
 }  // namespace
 
 void VkSceneRenderer::update_vt_casters() {
+    // Cleared before every early return so a skipped frame reports 0 rather
+    // than last frame's cost.
+    upload_counters_.caster_harvest_us = 0;
+    upload_counters_.caster_harvest_receivers = 0;
     if (!vt_ || !vt_->available() || !vt_enricher_) return;
     // Tier off (the default) => skip the O(receivers x instance clusters)
     // sweep entirely. Same live-read discipline as the demand pass.
@@ -4516,11 +4520,20 @@ void VkSceneRenderer::update_vt_casters() {
     // registering). The harvest's output is a pure function of those, so an
     // unchanged world can only reproduce hashes set_variant_casters would
     // discard as no-ops.
-    if (!vt_casters_dirty_ &&
+    // `vt_caster_cursor_ != 0` means a sweep is mid-flight and must finish
+    // even if nothing has changed since it started.
+    if (!vt_casters_dirty_ && vt_caster_cursor_ == 0 &&
         vt_caster_harvest_generation_ == instance_generation_)
         return;
-    vt_caster_harvest_generation_ = instance_generation_;
-    vt_casters_dirty_ = false;
+    if (vt_caster_cursor_ == 0) {
+        // Starting a fresh sweep. Record what it services: if the instance
+        // set moves again before it finishes, the comparison at the bottom
+        // sees the mismatch and schedules another sweep rather than marking
+        // a half-stale world clean.
+        vt_caster_sweep_generation_ = instance_generation_;
+        vt_casters_dirty_ = false;
+    }
+    const auto harvest_start = std::chrono::steady_clock::now();
 
     matter::ensure_vt_enrich_env_applied();
     // The SAME reach the bake will trace with (vt_enrich.cpp puts it in
@@ -4542,7 +4555,54 @@ void VkSceneRenderer::update_vt_casters() {
 
     const size_t static_count =
         std::min(rt_instances_.size(), static_rt_instance_count_);
-    for (PartRecord& receiver : parts_) {
+
+    // ---- receiver-independent prefilter, built ONCE per frame ------------
+    //
+    // Every test below depends only on the caster, so running it inside the
+    // receiver loop did R identical part_slot_lookup() hash probes and R
+    // identical liveness checks per instance. Hoisting it turns the R x I
+    // probe count into I. The only receiver-dependent test -- a receiver does
+    // not cast on itself -- stays in the inner loop.
+    struct PrefilteredCaster {
+        const RtInstance* src;
+        const PartRecord* part;
+    };
+    std::vector<PrefilteredCaster> casters;
+    casters.reserve(static_count);
+    for (size_t i = 0; i < static_count; ++i) {
+        const RtInstance& src = rt_instances_[i];
+        // Animated casters are excluded: their occlusion moves every frame
+        // (see CasterCandidate).
+        if (src.animation_instance_slot != UINT32_MAX) continue;
+        const int caster_slot = part_slot_lookup(src.part_hash);
+        if (caster_slot < 0) continue;
+        const PartRecord& caster = parts_[static_cast<size_t>(caster_slot)];
+        // Fail closed per caster: no RT buffers means no borrowable
+        // addresses, so the prop simply casts nothing.
+        if (!caster.live || !caster.rt_geometry || !caster.rt_index ||
+            caster.vertex_count == 0)
+            continue;
+        casters.push_back({&src, &caster});
+    }
+
+    // ---- the per-frame receiver budget -----------------------------------
+    //
+    // Tied to the CONSUMER's rate: the enricher bakes at most
+    // dir_occ_per_frame pages per frame, so harvesting receivers faster than
+    // that produces work nothing can absorb. Before this, a 218-receiver
+    // world harvested all 218 every frame to feed a 4-per-frame queue.
+    const uint32_t receiver_budget =
+        std::max(1u, matter::vt_residency_budgets().dir_occ_per_frame);
+    const size_t part_count = parts_.size();
+    // >=, not >: if parts_ shrank to exactly the cursor the sweep would
+    // otherwise process nothing and then mark the world clean at the bottom.
+    if (vt_caster_cursor_ >= part_count) vt_caster_cursor_ = 0;
+    uint32_t processed = 0;
+    while (vt_caster_cursor_ < part_count && processed < receiver_budget) {
+        PartRecord& receiver = parts_[vt_caster_cursor_++];
+        // The skips below are O(1), so they advance the cursor without
+        // consuming budget -- otherwise a world of mostly non-receivers would
+        // take thousands of frames to sweep.
         if (!receiver.live || !receiver.vt_world_anchored) continue;
         if (receiver.cluster_count == 0) continue;
         bool any_rung = false;
@@ -4550,6 +4610,7 @@ void VkSceneRenderer::update_vt_casters() {
             if (slot != vt::kVtNoSlot) { any_rung = true; break; }
         }
         if (!any_rung) continue;
+        ++processed;
 
         // Receiver world bounds: the union of its cluster AABBs pushed
         // through its anchored placement (the same transform the residency
@@ -4580,22 +4641,12 @@ void VkSceneRenderer::update_vt_casters() {
                                  receiver.vt_local_to_world[11]};
 
         harvested.clear();
-        for (size_t i = 0; i < static_count; ++i) {
-            const RtInstance& src = rt_instances_[i];
-            // Animated casters are excluded (their occlusion moves every
-            // frame — see CasterCandidate), and the receiver never casts on
-            // itself here: self-occlusion is the CONTACT tier's job.
-            if (src.animation_instance_slot != UINT32_MAX) continue;
+        for (const PrefilteredCaster& pc : casters) {
+            const RtInstance& src = *pc.src;
+            const PartRecord& caster = *pc.part;
+            // The one receiver-dependent test: self-occlusion is the CONTACT
+            // tier's job, not this one's.
             if (src.part_hash == receiver.hash) continue;
-            const int caster_slot = part_slot_lookup(src.part_hash);
-            if (caster_slot < 0) continue;
-            const PartRecord& caster =
-                parts_[static_cast<size_t>(caster_slot)];
-            // Fail closed per caster: no RT buffers means no borrowable
-            // addresses, so the prop simply casts nothing.
-            if (!caster.live || !caster.rt_geometry || !caster.rt_index ||
-                caster.vertex_count == 0)
-                continue;
             for (uint32_t ci = 0; ci < caster.cluster_count; ++ci) {
                 const uint32_t mesh_lods =
                     ci < caster.rt_cluster_mesh_lods.size()
@@ -4703,6 +4754,21 @@ void VkSceneRenderer::update_vt_casters() {
                                      set_hash);
         }
     }
+
+    if (vt_caster_cursor_ >= part_count) {
+        // Sweep complete. Only declare the world harvested if nothing moved
+        // while we were walking it; otherwise leave the gate open so the next
+        // frame starts a fresh sweep against the newer instance set.
+        vt_caster_cursor_ = 0;
+        if (!vt_casters_dirty_ &&
+            vt_caster_sweep_generation_ == instance_generation_)
+            vt_caster_harvest_generation_ = instance_generation_;
+    }
+    upload_counters_.caster_harvest_us =
+        static_cast<uint64_t>(std::chrono::duration_cast<
+            std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - harvest_start).count());
+    upload_counters_.caster_harvest_receivers = processed;
 }
 
 // --- WP-F: surfaces()-tape live update --------------------------------------

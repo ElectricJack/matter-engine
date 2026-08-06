@@ -222,6 +222,10 @@ struct FrameStats {
     float draw_cull_render_ms = 0;   // record_cull_and_render
     float draw_skin_seal_ms = 0;     // finish_animation_skinning_frame
     float draw_composite_ms = 0;     // record_composite_to_swapchain
+    // The M6.5 caster harvest, which lives inside draw_cull_render_ms and was
+    // the whole of a 390 ms streaming frame before it was budgeted.
+    float vt_caster_harvest_ms = 0;
+    uint32_t vt_caster_receivers = 0;   // receivers serviced this frame
     // per-frame counters
     uint32_t instances_resolved = 0;  // resolver output count
     uint32_t instances_drawn   = 0;   // clusters emitted by the GPU cull

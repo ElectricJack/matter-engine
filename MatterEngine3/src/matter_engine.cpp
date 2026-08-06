@@ -7437,6 +7437,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.vk_instance_uploads = upload_counters.instance_uploads;
     impl_->stats.vk_command_layout_rebuilds =
         upload_counters.command_layout_rebuilds;
+    impl_->stats.vt_caster_harvest_ms =
+        static_cast<float>(upload_counters.caster_harvest_us) * 0.001f;
+    impl_->stats.vt_caster_receivers = upload_counters.caster_harvest_receivers;
     impl_->stats.vk_static_full_uploads = upload_counters.static_full_uploads;
     impl_->stats.vk_static_append_uploads =
         upload_counters.static_append_uploads;

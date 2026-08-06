@@ -3227,6 +3227,7 @@ int main() {
                 sample.zone_cull_ms = frame_stats.draw_cull_render_ms;
                 sample.zone_skin_ms = frame_stats.draw_skin_seal_ms;
                 sample.zone_comp_ms = frame_stats.draw_composite_ms;
+                sample.zone_casters_ms = frame_stats.vt_caster_harvest_ms;
                 if (issue_frame_history.size() < kIssueHistoryFrames)
                     issue_frame_history.push_back(sample);
                 else
