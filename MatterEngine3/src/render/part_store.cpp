@@ -581,6 +581,14 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             lp.bound_radius = 0.5f * std::sqrt(dx*dx + dy*dy + dz*dz);
         }
 
+        // M6: this ladder's shared parameterisation, established by the first
+        // rung that charts. The flat path is the one authored props take, so
+        // leaving it per-rung would have left exactly the parts the impostor
+        // and LOD work is about still churning their pages on every switch.
+        const bool unify_charts = lod_bake::unify_parameterisation_enabled();
+        chart_atlas::ChartAtlasRung chart_base;
+        std::vector<Tri> chart_base_tris;
+
         for (size_t li = 0; li < max_lods; ++li) {
             std::vector<Tri> tris;
             std::vector<TriEx> triex;
@@ -615,11 +623,10 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             bool charted_ok = false;
             if (ex && !legacy_impostor) {
                 charted.assign(triex.begin(), triex.end());
-                charted_ok = lod_bake::build_chart_rung(
+                charted_ok = lod_bake::chart_rung_unified(
                     tris, charted, 16.0f, chart_atlas::kChartNormalConeDeg,
-                    rung_table);
+                    unify_charts, chart_base, chart_base_tris, rung_table);
                 if (charted_ok) ex = charted.data();
-                else rung_table = {};
             }
             BLASHandle h = blas_.register_triangles(tris.data(), (int)tris.size(), ex);
             lp.owned_blas.push_back(h);
@@ -670,6 +677,14 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             float dz = cl_in.aabb_max[2] - cl_in.aabb_min[2];
             cl_out.radius = 0.5f * std::sqrt(dx*dx + dy*dy + dz*dz);
 
+            // M6: PER-CLUSTER, deliberately. A cluster is its own piece of
+            // surface with its own charts, so the shared parameterisation is
+            // shared down a cluster's rungs and never across clusters —
+            // hoisting these two lines out of the `ci` loop would hand one
+            // cluster's chart planes to another cluster's geometry.
+            chart_atlas::ChartAtlasRung cchart_base;
+            std::vector<Tri> cchart_base_tris;
+
             for (size_t li = 0; li < cl_in.lods.size(); ++li) {
                 const auto& lod_in = cl_in.lods[li];
                 // Gather tris from this cluster's lod level.
@@ -691,11 +706,10 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 bool ccharted_ok = false;
                 if (cex && !is_impostor) {
                     ccharted.assign(ctriex.begin(), ctriex.end());
-                    ccharted_ok = lod_bake::build_chart_rung(
+                    ccharted_ok = lod_bake::chart_rung_unified(
                         ctris, ccharted, 16.0f, chart_atlas::kChartNormalConeDeg,
-                        crung_table);
+                        unify_charts, cchart_base, cchart_base_tris, crung_table);
                     if (ccharted_ok) cex = ccharted.data();
-                    else crung_table = {};
                 }
                 BLASHandle ch = blas_.register_triangles(ctris.data(), (int)ctris.size(), cex);
                 lp.owned_blas.push_back(ch);
@@ -780,6 +794,11 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
         float mn[3] = {1e30f,1e30f,1e30f}, mx[3] = {-1e30f,-1e30f,-1e30f};
         bool aabb_set = false;
 
+        // M6: same rule, flat v2's ladder.
+        const bool unify_charts_v2 = lod_bake::unify_parameterisation_enabled();
+        chart_atlas::ChartAtlasRung chart_base_v2;
+        std::vector<Tri> chart_base_v2_tris;
+
         for (size_t li = 0; li < lods_in.size(); ++li) {
             std::vector<Tri> tris;
             std::vector<TriEx> triex;
@@ -797,11 +816,11 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             bool charted_ok = false;
             if (ex) {
                 charted.assign(triex.begin(), triex.end());
-                charted_ok = lod_bake::build_chart_rung(
+                charted_ok = lod_bake::chart_rung_unified(
                     tris, charted, 16.0f, chart_atlas::kChartNormalConeDeg,
+                    unify_charts_v2, chart_base_v2, chart_base_v2_tris,
                     rung_table);
                 if (charted_ok) ex = charted.data();
-                else rung_table = {};
             }
             BLASHandle h = blas_.register_triangles(tris.data(), (int)tris.size(), ex);
             lp.owned_blas.push_back(h);
@@ -1043,6 +1062,11 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
     lod_bake::ChartBakeOptions chart_opts;
     chart_opts.texels_per_meter = 16.0f;
     chart_opts.halve_per_rung = terrain_tile;
+    // M6: one parameterisation per part. Note this SUPERSEDES halve_per_rung
+    // when on — one table means one density, which is the point: a per-rung
+    // density is a per-rung parameterisation. Terrain sectors are the case
+    // that matters, since their horizon lives in these page texels.
+    chart_opts.unify_parameterisation = lod_bake::unify_parameterisation_enabled();
     std::vector<chart_atlas::ChartAtlasRung> rung_charts;
     staged.prep_ms = stage_split();
     // first_rung: skip ladder rungs this part can never be DRAWN at. The

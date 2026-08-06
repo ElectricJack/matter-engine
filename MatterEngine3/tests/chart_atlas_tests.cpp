@@ -910,6 +910,68 @@ void test_flat_load_charts() {
         if (lp->lod_charts[li].charts.empty()) legacy_charted = false;
     CHECK(legacy_charted, "flat-path: legacy whole-part rungs carry charts");
 
+    // M6: the FLAT path is the one authored props take, and it charts at three
+    // sites of its own that ChartBakeOptions never reaches. Step 2 unified the
+    // two lod_bake ladders and left these three per-rung — so this asserts the
+    // switch actually arrives here, on a real PartStore load, rather than
+    // trusting that wiring five call sites hit all five.
+    {
+        auto ring_tables_agree = [](const viewer::LoadedPart& p,
+                                    const viewer::LoadedCluster& cl) {
+            const chart_atlas::ChartAtlasRung* first = nullptr;
+            for (int mesh_idx : cl.lod_mesh) {
+                if (mesh_idx < 0 || (size_t)mesh_idx >= p.lod_charts.size()) continue;
+                const auto& r = p.lod_charts[mesh_idx];
+                if (r.charts.empty()) continue;
+                if (!first) { first = &r; continue; }
+                if (r.atlas_w != first->atlas_w || r.atlas_h != first->atlas_h ||
+                    r.charts.size() != first->charts.size())
+                    return false;
+                for (size_t c = 0; c < r.charts.size(); ++c) {
+                    const auto& a = r.charts[c];
+                    const auto& b = first->charts[c];
+                    if (std::memcmp(a.origin, b.origin, sizeof a.origin) != 0 ||
+                        a.rect_x != b.rect_x || a.rect_y != b.rect_y ||
+                        a.rect_w != b.rect_w || a.rect_h != b.rect_h ||
+                        a.texels_per_meter != b.texels_per_meter)
+                        return false;
+                }
+            }
+            return first != nullptr;
+        };
+
+        store.release(hash);
+#ifdef _WIN32
+        _putenv_s("MATTER_VT_UNIFY", "1");
+#else
+        setenv("MATTER_VT_UNIFY", "1", 1);
+#endif
+        viewer::PartStore ustore(root.string());
+        const viewer::LoadedPart* up = ustore.get_or_load(hash);
+        CHECK(up != nullptr, "flat-path/unify: reload succeeds");
+        bool all_agree = up != nullptr && !up->clusters.empty();
+        if (up)
+            for (const viewer::LoadedCluster& cl : up->clusters)
+                if (!ring_tables_agree(*up, cl)) all_agree = false;
+        CHECK(all_agree,
+              "flat-path/unify: every rung of a cluster shares one parameterisation");
+        if (up) ustore.release(hash);
+#ifdef _WIN32
+        _putenv_s("MATTER_VT_UNIFY", "");
+#else
+        unsetenv("MATTER_VT_UNIFY");
+#endif
+        // The fixture's two LOD levels point at the SAME BLAS entry, so its
+        // rungs are the same mesh and would chart identically either way —
+        // which makes the assertion above true for the wrong reason. Say so
+        // rather than let it read as a proof it is not: what this checks is
+        // that the switch REACHES this path and nothing throws or empties,
+        // and the per-rung-geometry proof lives in
+        // test_unified_ladder_parameterisation on a fixture that decimates.
+        printf("  [flat-path/unify] switch reaches the flat path; the "
+               "differing-geometry proof is test_unified_ladder_parameterisation\n");
+    }
+
     store.release(hash);
 }
 

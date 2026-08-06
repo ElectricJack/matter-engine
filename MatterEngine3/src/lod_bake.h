@@ -116,6 +116,37 @@ bool apply_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
                       const chart_atlas::ChartAtlasRung& base,
                       chart_atlas::ChartAtlasRung& out);
 
+// The M6 rule, in ONE place: the first rung that charts establishes the
+// parameterisation, and every rung after it adopts that table.
+//
+// There are five sites that chart a ladder — two in lod_bake (the prop and
+// terrain ladders) and three in part_store (flat v3 legacy-view rungs, flat v3
+// cluster rungs, flat v2 rungs). They had five copies of the same six lines,
+// and a rule that has to hold across all of them for pages to be rung-
+// invariant is a rule that must not exist in five copies: one site left
+// per-rung is one part whose pages still churn, and the symptom (texture
+// re-fetch on a rung switch, for SOME parts) is nearly impossible to trace
+// back to a missed call site.
+//
+// `base` / `base_tris` are the caller's carry-over state across its rung loop:
+// declare them beside the loop, zero-initialised, and pass them every rung.
+// When `unify` is false this is exactly build_chart_rung and the carry-over is
+// untouched, so a caller that has not opted in is byte-for-byte unchanged.
+//
+// Returns what build_chart_rung/apply_chart_rung returned: false means this
+// rung ships no chart table and the caller falls back to its legacy path.
+bool chart_rung_unified(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
+                        float texels_per_meter, float cone_deg, bool unify,
+                        chart_atlas::ChartAtlasRung& base,
+                        std::vector<Tri>& base_tris,
+                        chart_atlas::ChartAtlasRung& out);
+
+// Whether the engine bakes ONE parameterisation per part (M6). Read once from
+// MATTER_VT_UNIFY; default OFF while the runtime half is unproven, so the
+// milestone's visual re-baseline is opt-in and A/B-able rather than silent —
+// which is what the migration plan asks for.
+bool unify_parameterisation_enabled();
+
 // Per-level decimation targets (keep-ratios) and matching selection thresholds.
 // Defaults: LOD0 = full (1.0), LOD1 ~ 1/10, LOD2 ~ 1/100. Thresholds are on the
 // projected-size scale (bound_radius / distance) used by lod_select: a finer
