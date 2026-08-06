@@ -124,6 +124,9 @@ void main() {
     vec4 world = model * vec4(in_position, 1.0);
     vec2 impostor_uv = vec2(0.0);
     float impostor_view = 0.0;
+    // World-space radius of the card's bound, for rt_shadow.rgen's ray skip.
+    // See impostor_common.glsl.
+    float impostor_radius_world = 0.0;
     if (is_impostor) {
         const float half_extent = in_surface.z;
         const uint corner = uint(in_surface.y + 0.5);
@@ -204,6 +207,12 @@ void main() {
         right_axis = right_len > 1e-4 ? right_axis / right_len
                                       : vec3(1.0, 0.0, 0.0);
         const vec3 card_up = cross(eye_obj_dir, right_axis);
+        // The LARGEST column, not column 0: this must bound the card under a
+        // non-uniform placement (trees are scale(s, s*heightScale, s)), and a
+        // radius that under-estimates would start the shadow ray inside the
+        // object. Over-estimating only costs a little reach.
+        impostor_radius_world =
+            half_extent * max(col_len.x, max(col_len.y, col_len.z));
         // The billboard's position is BUILT rather than passed through: it is
         // the only vertex in this shader whose placement depends on the
         // camera, so it cannot come out of the baked position alone.
@@ -262,7 +271,8 @@ void main() {
     // cell uv and which view was chosen, and neither exists per-vertex before
     // the camera is known. Every other draw passes them through untouched.
     out_tint = is_impostor
-                   ? vec4(in_tint.x * 255.0, in_tint.y * 255.0, impostor_view, 0.0)
+                   ? vec4(in_tint.x * 255.0, in_tint.y * 255.0, impostor_view,
+                          impostor_radius_world)
                    : in_tint;
     out_surface = is_impostor
                       ? vec4(in_surface.x, impostor_uv, 1.0)

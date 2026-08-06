@@ -273,6 +273,18 @@ struct FrameStats {
     // count of duplicate page sets NOT being fetched.
     uint64_t vt_shared_refs_total = 0;
     uint64_t vt_finer_rebuilds_total = 0;
+    // M6.5 directional-occlusion tier -- the pass that puts a tree's shadow on
+    // the ground it stands on. vt_dir_occ_pages is the "is this running at
+    // all" number: vt_residency.h names three gates that can starve it (no RT
+    // enricher, the footprint skip mis-wired, an empty caster harvest) and
+    // says all three fail SILENTLY. It was measured but never surfaced, so a
+    // capture of a world with no tree shadows could not distinguish "baked
+    // nothing" from "baked and composited wrong". Now it can.
+    uint32_t vt_dir_occ_queue_depth = 0;
+    uint32_t vt_dir_occ_last_frame = 0;
+    uint64_t vt_dir_occ_pages = 0;
+    uint64_t vt_dir_occ_dropped_total = 0;
+    uint64_t vt_dir_occ_skipped_fine_total = 0;
     uint64_t vt_fills_total = 0;
     uint64_t vt_evictions_total = 0;
     uint64_t vt_pool_bytes = 0;

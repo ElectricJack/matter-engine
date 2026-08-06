@@ -85,4 +85,52 @@ bool impostor_identity_is_card(uint identity_x) {
     return (identity_x & IMPOSTOR_IDENTITY_BIT) != 0u;
 }
 
+// ---------------------------------------------------------------------------
+// THE SUN-RAY SKIP for impostor fragments.
+//
+// An impostor used to be forced fully lit -- rt_shadow.rgen stored 1.0 and
+// returned. The reason was real: the card is a plane through the depicted
+// object's CENTRE, so the world position reconstructed from its depth lies
+// INSIDE the volume, and a shadow ray from there hits the object's own mesh
+// (which is still in the TLAS for the caster tier). That measured 48.5 % lit
+// against 100 % for the mesh rung, i.e. a card that shadowed itself.
+//
+// But "do not trace from inside the object" was never a reason to skip
+// EXTERNAL occlusion, and forcing 1.0 threw both away. At a 5 degree sun the
+// result is a forest where every mesh tree is correctly in shade and every
+// impostor behind the handover is blazing lit -- the defect this fixes.
+//
+// So the ray now starts beyond the object's own bound. The fragment sits at
+// most r from the centre (r = the card's world half-extent), so along any
+// direction the bound is cleared by 2r; that is the skip. What the ray then
+// answers is exactly the right question -- does anything OTHER than me block
+// the sun -- while the object's own occlusion keeps coming from the atlas's
+// baked AO, so nothing is double-counted.
+//
+// THE TRADE, stated plainly: occluders nearer than 2r are skipped, so
+// near-neighbour tree-on-tree shadowing is not captured. Terrain, ridges and
+// mountains -- the dominant term at a low sun, and the whole of the reported
+// defect -- are. Tightening this needs the card's CENTRE in the G-buffer, not
+// just its radius.
+//
+// TRANSPORT. out_orm.a is R8G8B8A8_UNORM and normally carries
+// horizon_sun_visibility, which is provably 1.0 for an impostor (the branch
+// returns before every writer). rt_shadow.rgen is the ONLY reader of that
+// channel and is also the shader that tests the impostor bit, so the overload
+// is gated by the same predicate that needs it. rt_lighting.rgen and
+// composite.frag read .xyz only -- verified, not assumed.
+//
+// The +1/255 bias makes 8-bit quantisation round the skip UP. Rounding DOWN
+// would leave the ray starting inside the volume, which is the self-shadowing
+// this exists to avoid -- so the error is spent in the safe direction.
+#define IMPOSTOR_SUN_SKIP_MAX_M 64.0
+
+float impostor_sun_skip_encode(float radius_m) {
+    return min(1.0, radius_m * (1.0 / IMPOSTOR_SUN_SKIP_MAX_M) + (1.0 / 255.0));
+}
+
+float impostor_sun_skip_decode(float encoded) {
+    return encoded * IMPOSTOR_SUN_SKIP_MAX_M;
+}
+
 #endif

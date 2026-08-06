@@ -156,7 +156,10 @@ void main() {
     // parameterisation to march and no chart table to sample, so both would
     // read garbage through a uv channel this rung repurposed.
     const bool is_impostor = in_surface.x > kImpostorMarker;
+    // Carried to the out_orm.a write at the bottom; see impostor_common.glsl.
+    float impostor_radius_world = 0.0;
     if (is_impostor) {
+        impostor_radius_world = in_tint.w;
         const uint slot = uint(in_tint.x + 0.5) | (uint(in_tint.y + 0.5) << 8);
         const uint view = uint(in_tint.z + 0.5);
         const vec2 cell = vec2(float(view % IMPOSTOR_GRID_DIM),
@@ -1074,8 +1077,14 @@ void main() {
     //
     // Everything that is not parallaxed ground writes 1.0 (see the
     // declaration), so this is the identity for every other pixel.
+    // .a is horizon sun visibility for everything EXCEPT an impostor, where
+    // that value is provably 1.0 and the channel instead transports the
+    // card's bound so rt_shadow.rgen can start its ray outside the volume.
+    // The overload is read back under the same impostor bit that sets it.
     out_orm = vec4(roughness, metallic, ao,
-                   clamp(horizon_sun_visibility, 0.0, 1.0));
+                   is_impostor
+                       ? impostor_sun_skip_encode(impostor_radius_world)
+                       : clamp(horizon_sun_visibility, 0.0, 1.0));
     out_velocity = in_velocity_valid.z > 0.5
                        ? in_velocity_valid.xy
                        : vec2(0.0);

@@ -205,7 +205,13 @@ void write_shot_json(std::ostream& out, const IssueShot& shot) {
             << shot.instance_cache_expansions
             << ", \"command_layout_rebuilds\": " << shot.command_layout_rebuilds
             << ", \"immediate_submits\": " << shot.immediate_submits
-            << ", \"resident_sectors\": " << shot.resident_sectors << "},\n";
+            << ", \"resident_sectors\": " << shot.resident_sectors
+            << ", \"dir_occ_pages\": " << shot.dir_occ_pages
+            << ", \"dir_occ_queue_depth\": " << shot.dir_occ_queue_depth
+            << ", \"dir_occ_last_frame\": " << shot.dir_occ_last_frame
+            << ", \"dir_occ_dropped\": " << shot.dir_occ_dropped
+            << ", \"dir_occ_skipped_fine\": " << shot.dir_occ_skipped_fine
+            << "},\n";
         // frame, render, build, gpu, tris, instances -- one row per frame,
         // oldest first. Compact on purpose: a few hundred rows of prose-shaped
         // JSON would bury the report it is attached to.
