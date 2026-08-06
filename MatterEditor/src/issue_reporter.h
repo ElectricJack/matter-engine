@@ -80,6 +80,18 @@ struct ShotRect {
 // World and the render toggles are PER SHOT, not per report: a world switch or
 // a DLSS change between two shots would otherwise be recorded wrong for one of
 // them, and both change what the pixels look like.
+// One frame in a shot's history ring. Deliberately small and POD: the ring is
+// pushed EVERY frame on the main thread, so anything that allocates or locks
+// here would perturb the very measurement it exists to take.
+struct IssueFrameSample {
+    float frame_ms = 0.0f;
+    float render_ms = 0.0f;   // the loop's render bucket (CPU-side)
+    float build_ms = 0.0f;
+    float gpu_ms = 0.0f;      // total GPU, 0 when unsupported
+    uint32_t triangles = 0;
+    uint32_t instances_drawn = 0;
+};
+
 struct IssueShot {
     std::string file;     // "shot-1.png", relative to the report directory
     std::string caption;  // editable in the report window, after the fact
@@ -119,6 +131,31 @@ struct IssueShot {
     uint32_t instances_drawn = 0;
     uint32_t triangles = 0;
     uint32_t draw_batches = 0;
+
+    // ---- FRAME HISTORY, sampled AT CAPTURE, not at submit --------------
+    //
+    // WHY THIS EXISTS. Every hitch report filed against this engine so far has
+    // carried a CALM frame: the reporter's deep state is read when the report
+    // is SUBMITTED, which is seconds after the spike, by which time the frame
+    // has recovered. Three reports in a row recorded 29-31 ms while the user
+    // was describing 500 ms stalls, and each one sent the investigation after
+    // a phantom.
+    //
+    // So a shot carries the ring of recent frames as it stood the instant the
+    // pixels were grabbed. Press the key just after a hitch and the hitch is
+    // in the window, whatever the frame you are on by the time you type the
+    // description. `peak_*` covers the case where even the ring has rolled.
+    std::vector<IssueFrameSample> history;   // oldest first, capture-ordered
+    float peak_frame_ms = 0.0f;              // worst in the ring
+    float peak_render_ms = 0.0f;
+    float peak_build_ms = 0.0f;
+    // Cumulative counters at capture. Their DELTA against another shot is what
+    // shows work happening (e.g. command-layout rebuilds during streaming);
+    // an absolute value on its own says almost nothing.
+    uint64_t instance_cache_expansions = 0;
+    uint64_t command_layout_rebuilds = 0;
+    uint64_t immediate_submits = 0;
+    uint32_t resident_sectors = 0;
 };
 
 // What the reporter is doing right now. The capture is a two-frame handshake
