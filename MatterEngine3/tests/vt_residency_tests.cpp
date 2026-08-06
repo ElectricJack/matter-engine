@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "render/vt_residency.h"
+#include "render/vt_caster_select.h"   // M6.5
 
 using namespace vt;
 
@@ -720,6 +721,103 @@ void test_registration_gates() {
           "resolving an unreset layer is defined and points at slot 0");
 }
 
+
+// ---------------------------------------------------------------------------
+// M6.5 — caster selection and set identity
+// ---------------------------------------------------------------------------
+// The harvest itself lives in VkSceneRenderer and needs a device. These two
+// functions are the parts that can be WRONG, and both fail quietly: a shadow
+// that stops at a sector seam and one that does not look equally plausible in
+// a screenshot, and a hash that churns re-bakes forever looks like "the bake is
+// slow" rather than like a bug.
+void test_caster_selection() {
+    std::printf("== caster selection ==\n");
+    const float rmin[3] = {0.0f, 0.0f, 0.0f};
+    const float rmax[3] = {64.0f, 20.0f, 64.0f};
+
+    auto at = [](float x, float z, float half) {
+        vt::CasterCandidate c;
+        c.aabb_min[0] = x - half; c.aabb_min[1] = 0.0f;  c.aabb_min[2] = z - half;
+        c.aabb_max[0] = x + half; c.aabb_max[1] = 12.0f; c.aabb_max[2] = z + half;
+        c.part_hash = 0xABCDEF01u; c.rung = 3;
+        return c;
+    };
+
+    CHECK(vt::caster_overlaps_receiver(rmin, rmax, 0.0f, at(32.0f, 32.0f, 1.0f)),
+          "a caster inside the sector is selected");
+
+    // THE SEAM CASE, and the reason `reach` exists at all. A prop 10 m outside
+    // the sector still casts into it when the sun is low; without the
+    // expansion the shadow stops dead on the sector grid.
+    CHECK(!vt::caster_overlaps_receiver(rmin, rmax, 0.0f, at(-10.0f, 32.0f, 1.0f)),
+          "10 m outside is NOT selected with zero reach");
+    CHECK(vt::caster_overlaps_receiver(rmin, rmax, 32.0f, at(-10.0f, 32.0f, 1.0f)),
+          "...and IS selected once reach covers it (shadows cross seams)");
+    CHECK(!vt::caster_overlaps_receiver(rmin, rmax, 32.0f, at(-200.0f, 32.0f, 1.0f)),
+          "far outside stays excluded, so reach is a window and not a no-op");
+
+    // Animated casters move every frame: a baked shadow would be wrong the
+    // moment it landed AND the set hash would never settle.
+    {
+        vt::CasterCandidate a = at(32.0f, 32.0f, 1.0f);
+        a.animated = true;
+        CHECK(!vt::caster_overlaps_receiver(rmin, rmax, 32.0f, a),
+              "animated casters are excluded");
+        vt::CasterCandidate self = at(32.0f, 32.0f, 1.0f);
+        self.is_receiver = true;
+        CHECK(!vt::caster_overlaps_receiver(rmin, rmax, 32.0f, self),
+              "the receiver does not cast onto itself (that is the contact tier)");
+    }
+
+    // ---- set identity ----
+    const float origin[3] = {0.0f, 0.0f, 0.0f};
+    vt::CasterCandidate a = at(10.0f, 10.0f, 1.0f);
+    vt::CasterCandidate b = at(40.0f, 12.0f, 1.0f);
+    b.part_hash = 0x1234u;
+
+    const vt::CasterCandidate ab[2] = {a, b};
+    const vt::CasterCandidate ba[2] = {b, a};
+    const uint64_t h_ab = vt::caster_set_hash(ab, 2, origin);
+    CHECK(h_ab == vt::caster_set_hash(ba, 2, origin),
+          "set hash ignores harvest ORDER (or it re-bakes on instance churn "
+          "with nothing having moved)");
+    CHECK(h_ab != vt::caster_set_hash(ab, 1, origin),
+          "dropping a caster changes the hash");
+
+    {
+        vt::CasterCandidate moved[2] = {a, b};
+        moved[1].aabb_min[0] += 5.0f;
+        moved[1].aabb_max[0] += 5.0f;
+        CHECK(h_ab != vt::caster_set_hash(moved, 2, origin),
+              "MOVING a caster changes the hash (or a stale shadow persists)");
+    }
+    {
+        // Below the quantum: nothing visible moved, so nothing should re-bake.
+        vt::CasterCandidate jittered[2] = {a, b};
+        jittered[1].aabb_min[0] += 0.0001f;
+        jittered[1].aabb_max[0] += 0.0001f;
+        CHECK(h_ab == vt::caster_set_hash(jittered, 2, origin),
+              "sub-quantum jitter does NOT change the hash (no re-bake churn)");
+    }
+    {
+        vt::CasterCandidate rerung[2] = {a, b};
+        rerung[1].rung += 1;
+        CHECK(h_ab != vt::caster_set_hash(rerung, 2, origin),
+              "a different caster rung is a different set");
+    }
+    {
+        // Duplicates must not annihilate: an XOR combine would make two
+        // identical casters hash as zero of them.
+        const vt::CasterCandidate dup[2] = {a, a};
+        CHECK(vt::caster_set_hash(dup, 2, origin) !=
+                  vt::caster_set_hash(&a, 0, origin),
+              "duplicate casters do not cancel out");
+    }
+    CHECK(vt::caster_set_hash(nullptr, 0, origin) !=
+              vt::caster_set_hash(&a, 1, origin),
+          "an empty set differs from a one-caster set");
+}
+
 }  // namespace
 
 int main() {
@@ -734,6 +832,7 @@ int main() {
     test_entry_packing();
     test_registration_cost();
     test_registration_gates();
+    test_caster_selection();
     std::printf("vt residency tests complete\n");
     return check_summary();
 }
