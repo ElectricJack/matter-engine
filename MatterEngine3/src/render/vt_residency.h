@@ -767,7 +767,20 @@ struct VtFeedbackRequest {
 class VtResidency {
   public:
     struct Stats {
-        uint32_t variants = 0;          // registered (variant, rung)s
+        uint32_t variants = 0;          // LAYERS live (M6: not (hash,rung)s)
+        // M6: registrations that found an existing layer with the same
+        // parameterisation and took a reference instead of building a second
+        // one, and rebuilds a finer rung forced.
+        //
+        // shared_refs is the milestone's own measurement: it is how many
+        // duplicate page sets are NOT being fetched. It is nonzero even with
+        // MATTER_VT_UNIFY off, because part_store clamps a cluster with fewer
+        // levels to its last one (use_li = min(li, levels-1)) and those rungs
+        // gather identical triangles, hence an identical chart table. Those
+        // were N separate layers holding N copies of one page set before the
+        // parameterisation key collapsed them.
+        uint64_t shared_refs_total = 0;
+        uint64_t finer_rebuilds_total = 0;
         uint32_t max_variants = 0;      // MATTER_VT_MAX_VARIANTS (soft bound)
         uint64_t mesh_budget_bytes = 0; // MATTER_VT_MESH_BUDGET_MB, in bytes
         uint32_t pool_capacity = 0;

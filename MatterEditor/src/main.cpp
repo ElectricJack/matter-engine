@@ -3074,6 +3074,8 @@ int main() {
         stats.vt_variants            = frame_stats.vt_variants;
         stats.vt_max_variants        = frame_stats.vt_max_variants;
         stats.vt_rejected_variants   = frame_stats.vt_rejected_variants;
+        stats.vt_shared_refs_total    = frame_stats.vt_shared_refs_total;
+        stats.vt_finer_rebuilds_total = frame_stats.vt_finer_rebuilds_total;
         stats.vt_pool_used           = frame_stats.vt_pool_used;
         stats.vt_pool_capacity       = frame_stats.vt_pool_capacity;
         stats.vt_pool_pinned         = frame_stats.vt_pool_pinned;

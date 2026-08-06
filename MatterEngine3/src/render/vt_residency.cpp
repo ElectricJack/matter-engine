@@ -666,6 +666,7 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
                 else ++it;
             }
             release_variant_key(key);
+            ++stats_.finer_rebuilds_total;
             // ...and fall through to build the layer from THIS rung's mesh.
         } else {
             // A sibling rung already built this parameterisation at equal or
@@ -673,6 +674,7 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
             // pages, same indirection table, mesh budget spent once.
             param_key_of_rung_[alias] = key;
             ++existing.alias_refs;
+            ++stats_.shared_refs_total;
             return found->second + 1u;
         }
     }

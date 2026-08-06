@@ -255,6 +255,11 @@ struct FrameStats {
     uint32_t vt_requests_last_frame = 0;
     uint32_t vt_queue_depth = 0;
     uint32_t vt_rejected_variants = 0; // fell back to legacy (budget/layers)
+    // M6: registrations that reused an existing layer because it had the same
+    // parameterisation, and rebuilds a finer rung forced. shared_refs is the
+    // count of duplicate page sets NOT being fetched.
+    uint64_t vt_shared_refs_total = 0;
+    uint64_t vt_finer_rebuilds_total = 0;
     uint64_t vt_fills_total = 0;
     uint64_t vt_evictions_total = 0;
     uint64_t vt_pool_bytes = 0;

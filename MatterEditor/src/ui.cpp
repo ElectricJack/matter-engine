@@ -1109,6 +1109,28 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
                     static_cast<double>(s.vt_mesh_bytes) / (1024.0 * 1024.0),
                     static_cast<double>(s.vt_mesh_budget_bytes) /
                         (1024.0 * 1024.0));
+        // M6: how many duplicate page sets are NOT being fetched. Nonzero even
+        // with MATTER_VT_UNIFY off, because part_store clamps a cluster with
+        // fewer levels to its last one and those rungs gather identical
+        // triangles — an identical chart table, which the parameterisation key
+        // now collapses onto one layer instead of N.
+        if (s.vt_shared_refs_total > 0 || s.vt_finer_rebuilds_total > 0) {
+            ImGui::Text("VT: %llu rung%s share a parameterisation, %llu finer rebuild%s",
+                        (unsigned long long)s.vt_shared_refs_total,
+                        s.vt_shared_refs_total == 1 ? "" : "s",
+                        (unsigned long long)s.vt_finer_rebuilds_total,
+                        s.vt_finer_rebuilds_total == 1 ? "" : "s");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "M6 texture unification. Each shared ref is a rung that "
+                    "reused an existing layer instead of building a duplicate "
+                    "page set, so switching to it costs no page fetch. A finer "
+                    "rebuild is a close approach replacing a layer whose pages "
+                    "were composited from coarser geometry.\n\n"
+                    "MATTER_VT_UNIFY=1 makes a whole ladder share one "
+                    "parameterisation; without it only rungs that already "
+                    "chart identically collapse.");
+        }
         if (s.vt_rejected_variants > 0) {
             ImGui::TextColored(
                 ImVec4(1.0f, 0.35f, 0.30f, 1.0f),

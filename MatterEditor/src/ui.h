@@ -185,6 +185,10 @@ struct ViewerStats {
     uint32_t vt_variants = 0;
     uint32_t vt_max_variants = 0;
     uint32_t vt_rejected_variants = 0;
+    // M6: rungs that reused an existing layer with the same parameterisation
+    // (i.e. duplicate page sets NOT fetched), and rebuilds a finer rung forced.
+    uint64_t vt_shared_refs_total = 0;
+    uint64_t vt_finer_rebuilds_total = 0;
     uint32_t vt_pool_used = 0;
     uint32_t vt_pool_capacity = 0;
     uint32_t vt_pool_pinned = 0;

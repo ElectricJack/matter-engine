@@ -7442,6 +7442,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->stats.vt_requests_last_frame = vt_stats.requests_last_frame;
         impl_->stats.vt_queue_depth = vt_stats.queue_depth;
         impl_->stats.vt_rejected_variants = vt_stats.rejected_variants;
+        impl_->stats.vt_shared_refs_total = vt_stats.shared_refs_total;
+        impl_->stats.vt_finer_rebuilds_total = vt_stats.finer_rebuilds_total;
         impl_->stats.vt_fills_total = vt_stats.fills_total;
         impl_->stats.vt_evictions_total = vt_stats.evictions_total;
         impl_->stats.vt_pool_bytes = vt_stats.pool_bytes;
