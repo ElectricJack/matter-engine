@@ -4736,6 +4736,15 @@ namespace {
 // than a constant mismatch. The azimuth/elevation split is asserted too, not
 // just the total: 48 views could be 16x3 or 24x2, and the vertex stage's
 // `el_i * IMPOSTOR_AZIMUTHS + az_i` picks a different cell for each reading.
+// M6.5: vt_common.glsl declares `uniform sampler2DArray vt_pool[N]` with a
+// literal N, and this file binds descriptorCount = kVtChannelCount at bindings
+// 10 and 17. They must agree: a shader declaring fewer than the descriptor
+// count is a validation error, and one declaring more reads a binding nothing
+// wrote. The literal cannot be derived from the enum across the GLSL boundary,
+// so it is pinned here instead.
+static_assert(vt::kVtChannelCount == 5u,
+              "shaders_vk/vt_common.glsl: uniform sampler2DArray vt_pool[5]");
+
 static_assert(impostor::kViews == 48u, "shaders_vk/impostor_common.glsl: IMPOSTOR_VIEWS");
 static_assert(impostor::kGridDim == 8u, "shaders_vk/impostor_common.glsl: IMPOSTOR_GRID_DIM");
 static_assert(impostor::kAzimuths == 16u, "shaders_vk/impostor_common.glsl: IMPOSTOR_AZIMUTHS");

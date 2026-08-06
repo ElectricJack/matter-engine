@@ -44,7 +44,25 @@ enum VtChannel : uint32_t {
     kVtChannelNormal = 1,   // BC5_UNORM_BLOCK  (tangent-space XY)
     kVtChannelOrm    = 2,   // BC7_UNORM_BLOCK  (occlusion/roughness/metal)
     kVtChannelAux    = 3,   // R8G8B8A8_UNORM   (dominant/secondary mat + blend)
-    kVtChannelCount  = 4,
+    // M6.5: DIRECTIONAL occlusion from impostored casters — BC7_UNORM_BLOCK,
+    // RGB = bent normal (the average unoccluded direction, object space,
+    // remapped from [-1,1]), A = aperture (the cone half-angle around it, as
+    // cos). Sun visibility at runtime is a smoothstep of the angle between the
+    // sun and the bent normal against that aperture, which is why the sun
+    // stays a live property instead of being baked in.
+    //
+    // Why a whole channel rather than the spare byte in ORM: azimuth is
+    // exactly what makes a shadow move across the ground, and every encoding
+    // that fits in one byte (a single elevation, an azimuth-averaged cone)
+    // throws azimuth away. BC7 keeps the cost to 1 byte/texel against the
+    // pool's existing 7.
+    //
+    // CLEARED TO "NO OCCLUSION" (bent normal = +Z, aperture = fully open) so a
+    // page nothing has enriched reads as unshadowed and the runtime multiply is
+    // the identity — the same discipline that makes gbuffer.frag's
+    // horizon_sun_visibility free for every fragment that does not write it.
+    kVtChannelDirOcc = 4,   // BC7_UNORM_BLOCK  (bent normal RGB + aperture A)
+    kVtChannelCount  = 5,
 };
 
 // Top-left texel of a page slot inside its array layer, border included.

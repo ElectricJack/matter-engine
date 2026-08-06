@@ -11,7 +11,8 @@
 //
 // Include contract — define BEFORE including:
 //   VT_SET                 descriptor set index
-//   VT_POOL_BINDING        sampler2DArray vt_pool[4]   (albedo, normal, ORM, aux)
+//   VT_POOL_BINDING        sampler2DArray vt_pool[5]   (albedo, normal, ORM, aux,
+//                                                     dir-occ)
 //   VT_INDIRECTION_BINDING readonly storage buffer of packed u32 entries
 //   VT_VARIANTS_BINDING    readonly buffer of VtVariantRecord
 // Optionally define VT_FEEDBACK_BINDING (a uimage2D) to enable
@@ -64,9 +65,18 @@
 #define VT_CHANNEL_NORMAL 1
 #define VT_CHANNEL_ORM    2
 #define VT_CHANNEL_AUX    3
+// M6.5: directional occlusion from impostored casters. RGB = bent normal
+// (object space, [-1,1] remapped), A = aperture as a cosine. Cleared to "no
+// occlusion" so an unenriched page multiplies to the identity.
+#define VT_CHANNEL_DIR_OCC 4
 
+// THE ARRAY LENGTH MUST EQUAL vt::kVtChannelCount. The C++ side sizes its
+// descriptor array from that constant (vk_scene_renderer.cpp binds
+// descriptorCount = kVtChannelCount at bindings 10 and 17), so a shader that
+// declares fewer is a descriptor-count mismatch -- a validation error at best
+// and a read of an unwritten binding at worst.
 layout(set = VT_SET, binding = VT_POOL_BINDING)
-uniform sampler2DArray vt_pool[4];
+uniform sampler2DArray vt_pool[5];
 layout(set = VT_SET, binding = VT_INDIRECTION_BINDING, std430)
 readonly buffer VtIndirection {
     uint vt_indirection[];

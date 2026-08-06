@@ -332,7 +332,8 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
 
     const VkFormat formats[kVtChannelCount] = {
         VK_FORMAT_BC7_UNORM_BLOCK, VK_FORMAT_BC5_UNORM_BLOCK,
-        VK_FORMAT_BC7_UNORM_BLOCK, VK_FORMAT_R8G8B8A8_UNORM};
+        VK_FORMAT_BC7_UNORM_BLOCK, VK_FORMAT_R8G8B8A8_UNORM,
+        VK_FORMAT_BC7_UNORM_BLOCK};   // M6.5 kVtChannelDirOcc
     for (uint32_t c = 0; c < kVtChannelCount; ++c) {
         VkFormatProperties format_properties{};
         vkGetPhysicalDeviceFormatProperties(vulkan.physical_device(), formats[c],
