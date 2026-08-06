@@ -5139,9 +5139,10 @@ static_assert(impostor::kElevations == 3u,
               "shaders_vk/impostor_common.glsl: IMPOSTOR_ELEVATIONS");
 static_assert(impostor::kViews == impostor::kAzimuths * impostor::kElevations,
               "view count must be the azimuth/elevation product");
-static_assert(impostor::kLayerBytes ==
-                  static_cast<size_t>(impostor::kLayerPx) * impostor::kLayerPx * 4,
-              "impostor atlas layer is RGBA8");
+// The cell RESOLUTION is a runtime setting (impostor_bake.h), so this one
+// cannot be a static_assert any more -- but no shader sees it: the atlas uv is
+// (cell + local) / GRID_DIM, normalized. What must still hold is the LAYOUT
+// the shader does mirror, and that is asserted above.
 
 struct ImpostorUploadRecord {
     VkImage  image = VK_NULL_HANDLE;
@@ -5267,7 +5268,23 @@ bool VkSceneRenderer::create_impostor_atlas(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateSampler(impostor)", result, error);
 
-    if (!create_tileset_image(VK_FORMAT_R8G8B8A8_UNORM, impostor::kLayerPx, 1,
+    // LATCHED. A Vulkan image cannot be resized, so whatever resolution this
+    // process baked with is the resolution the atlas is stuck at for its
+    // lifetime. impostor::cell_px() reads the environment on every call (so a
+    // test can bake at two resolutions inside one process); recording what the
+    // IMAGE was built for is what turns a mid-process change from a silent
+    // mis-sample into the rejection in adopt_part_impostors.
+    impostor_layer_px_ = impostor::layer_px();
+    impostor_atlas_bytes_ = impostor::atlas_bytes();
+    const double atlas_mib =
+        double(impostor_atlas_bytes_) * double(kImpostorMaxSlots) / 1048576.0;
+    std::fprintf(stderr,
+                 "[vk] impostor atlas: %u slots x 2 layers of %ux%u RGBA8 "
+                 "(cell %u px) = %.0f MiB\n",
+                 kImpostorMaxSlots, impostor_layer_px_, impostor_layer_px_,
+                 impostor::cell_px(), atlas_mib);
+    std::fflush(stderr);
+    if (!create_tileset_image(VK_FORMAT_R8G8B8A8_UNORM, impostor_layer_px_, 1,
                               kImpostorMaxSlots * 2, impostor_atlas_, error))
         return false;
     ImpostorClearRecord clear{impostor_atlas_.image, kImpostorMaxSlots * 2,
@@ -5341,12 +5358,17 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
     uint32_t first_layer = UINT32_MAX;
 
     for (const auto& imp : part.impostors) {
-        if (imp.atlas.size() != impostor::kAtlasBytes) {
+        // Compared against the LATCH (what the image was created with), not a
+        // fresh impostor::atlas_bytes(): those differ exactly when the
+        // resolution changed after init, which is the case this catches.
+        if (imp.atlas.size() != impostor_atlas_bytes_) {
             std::fprintf(stderr,
                 "[vk] impostor atlas for part %016llx cluster %u is %zu bytes, "
-                "expected %zu -- this impostor will not draw\n",
+                "expected %zu (atlas built for cell %u px) -- this impostor "
+                "will not draw\n",
                 static_cast<unsigned long long>(part.part_hash), imp.cluster,
-                imp.atlas.size(), impostor::kAtlasBytes);
+                imp.atlas.size(), impostor_atlas_bytes_,
+                impostor_layer_px_ / impostor::kGridDim);
             std::fflush(stderr);
             continue;
         }
@@ -5379,15 +5401,15 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
             const size_t offset = staging_bytes.size();
             staging_bytes.insert(
                 staging_bytes.end(),
-                imp.atlas.begin() + layer * impostor::kLayerBytes,
-                imp.atlas.begin() + (layer + 1) * impostor::kLayerBytes);
+                imp.atlas.begin() + layer * (impostor_atlas_bytes_ / 2),
+                imp.atlas.begin() + (layer + 1) * (impostor_atlas_bytes_ / 2));
             VkBufferImageCopy region{};
             region.bufferOffset = static_cast<VkDeviceSize>(offset);
             region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             region.imageSubresource.mipLevel = 0;
             region.imageSubresource.baseArrayLayer = slot * 2 + layer;
             region.imageSubresource.layerCount = 1;
-            region.imageExtent = {impostor::kLayerPx, impostor::kLayerPx, 1};
+            region.imageExtent = {impostor_layer_px_, impostor_layer_px_, 1};
             regions.push_back(region);
             first_layer = std::min(first_layer, slot * 2 + layer);
         }
@@ -5497,7 +5519,7 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         for (size_t k = 0; k < part.impostors.size() && k < assigned.size(); ++k) {
             const auto& imp = part.impostors[k];
             uint32_t max_cov = 0, covered = 0;
-            for (size_t t = 0; t + 3 < impostor::kLayerBytes; t += 4) {
+            for (size_t t = 0; t + 3 < impostor_atlas_bytes_ / 2; t += 4) {
                 const uint8_t a = imp.atlas[t + 3];
                 if (a > max_cov) max_cov = a;
                 if (a > 0) ++covered;

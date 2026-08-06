@@ -2754,8 +2754,15 @@ static void test_mesh_rung_cap_and_stale_rejection() {
     // The digest itself: distinct shapes must not alias, and the shipped
     // default must be the 0 sentinel (that is what keeps a default bake
     // byte-identical to every flat already on disk).
+    // The SHIPPED shape means no overrides at all -- including the cell
+    // resolution main() pins for bake speed, which is an override like any
+    // other and legitimately digests away from the sentinel. Clear it for the
+    // length of this one assertion, exactly as the rung cap above is cleared,
+    // then put it back for the tests that follow.
+    pf_set_env("MATTER_IMPOSTOR_CELL_PX", nullptr);
     CHECK(part_flatten::active_ladder_shape_digest() == 0ull,
           "rung cap: the shipped default shape digests to the 0 sentinel");
+    pf_set_env("MATTER_IMPOSTOR_CELL_PX", "32");
     {
         part_flatten::FlattenTargets a, b;
         a.max_mesh_rungs = 2; b.max_mesh_rungs = 3;
@@ -2792,7 +2799,7 @@ static void test_impostor_bake_deterministic() {
     impostor::ClusterImpostor a, b;
     CHECK(impostor::bake_cluster(0, tris, ex, a), "bake_cluster succeeds");
     CHECK(impostor::bake_cluster(0, tris, ex, b), "bake_cluster succeeds twice");
-    CHECK(a.atlas.size() == impostor::kAtlasBytes, "atlas is the declared size");
+    CHECK(a.atlas.size() == impostor::atlas_bytes(), "atlas is the declared size");
     CHECK(a.atlas == b.atlas, "two bakes produce a byte-identical atlas");
     CHECK(a.half_extent > 0.0f && a.half_extent == b.half_extent,
           "half extent is positive and reproducible");
@@ -2803,17 +2810,17 @@ static void test_impostor_bake_deterministic() {
     // borders stay clear (the 2 % margin) so bilinear filtering cannot bleed a
     // neighbouring view in.
     size_t covered = 0;
-    for (size_t t = 0; t < impostor::kLayerPx * impostor::kLayerPx; ++t)
+    for (size_t t = 0; t < impostor::layer_px() * impostor::layer_px(); ++t)
         if (a.atlas[t * 4 + 3] > 0) ++covered;
-    CHECK(covered > impostor::kLayerPx * impostor::kLayerPx / 4,
+    CHECK(covered > impostor::layer_px() * impostor::layer_px() / 4,
           "the baked silhouette covers a substantial share of the atlas");
     bool border_clear = true;
     for (uint32_t v = 0; v < impostor::kViews; ++v) {
-        const uint32_t cx = (v % impostor::kGridDim) * impostor::kCellPx;
-        const uint32_t cy = (v / impostor::kGridDim) * impostor::kCellPx;
-        for (uint32_t k = 0; k < impostor::kCellPx; ++k) {
-            const size_t top = (size_t(cy) * impostor::kLayerPx + cx + k) * 4;
-            const size_t left = (size_t(cy + k) * impostor::kLayerPx + cx) * 4;
+        const uint32_t cx = (v % impostor::kGridDim) * impostor::cell_px();
+        const uint32_t cy = (v / impostor::kGridDim) * impostor::cell_px();
+        for (uint32_t k = 0; k < impostor::cell_px(); ++k) {
+            const size_t top = (size_t(cy) * impostor::layer_px() + cx + k) * 4;
+            const size_t left = (size_t(cy + k) * impostor::layer_px() + cx) * 4;
             if (a.atlas[top + 3] != 0 || a.atlas[left + 3] != 0) border_clear = false;
         }
     }
@@ -2823,7 +2830,7 @@ static void test_impostor_bake_deterministic() {
     // Fractional coverage is what antialiases the silhouette: a hard 0/255
     // cutout would leave every covered texel at 255.
     bool any_partial = false;
-    for (size_t t = 0; t < impostor::kLayerPx * impostor::kLayerPx; ++t) {
+    for (size_t t = 0; t < impostor::layer_px() * impostor::layer_px(); ++t) {
         const uint8_t cov = a.atlas[t * 4 + 3];
         if (cov > 0 && cov < 255) { any_partial = true; break; }
     }
@@ -2968,7 +2975,7 @@ static void test_impostor_elevation_rings_differ() {
     std::vector<TriEx> ex = triex_for(cone, 4);
     impostor::ClusterImpostor imp;
     CHECK(impostor::bake_cluster(0u, cone, ex, imp), "cone impostor bakes");
-    if (imp.atlas.size() != impostor::kAtlasBytes) { printf("FAILED\n"); return; }
+    if (imp.atlas.size() != impostor::atlas_bytes()) { printf("FAILED\n"); return; }
 
     // Coverage per ring, over the shade layer's alpha. A cone seen edge-on
     // covers a triangle; seen from 60 degrees up it covers more of its cell,
@@ -2977,11 +2984,11 @@ static void test_impostor_elevation_rings_differ() {
         size_t sum = 0;
         for (uint32_t az = 0; az < impostor::kAzimuths; ++az) {
             const uint32_t v = impostor::view_index(az, el_i);
-            const uint32_t cx = (v % impostor::kGridDim) * impostor::kCellPx;
-            const uint32_t cy = (v / impostor::kGridDim) * impostor::kCellPx;
-            for (uint32_t y = 0; y < impostor::kCellPx; ++y)
-                for (uint32_t x = 0; x < impostor::kCellPx; ++x)
-                    sum += imp.atlas[(size_t(cy + y) * impostor::kLayerPx + cx + x) * 4 + 3];
+            const uint32_t cx = (v % impostor::kGridDim) * impostor::cell_px();
+            const uint32_t cy = (v / impostor::kGridDim) * impostor::cell_px();
+            for (uint32_t y = 0; y < impostor::cell_px(); ++y)
+                for (uint32_t x = 0; x < impostor::cell_px(); ++x)
+                    sum += imp.atlas[(size_t(cy + y) * impostor::layer_px() + cx + x) * 4 + 3];
         }
         return sum;
     };
@@ -2999,11 +3006,11 @@ static void test_impostor_elevation_rings_differ() {
         long long acc = 0;
         for (uint32_t az = 0; az < impostor::kAzimuths; ++az) {
             const uint32_t v = impostor::view_index(az, el_i);
-            const uint32_t cx = (v % impostor::kGridDim) * impostor::kCellPx;
-            const uint32_t cy = (v / impostor::kGridDim) * impostor::kCellPx;
-            for (uint32_t y = 0; y < impostor::kCellPx; ++y)
-                for (uint32_t x = 0; x < impostor::kCellPx; ++x) {
-                    const size_t o = (size_t(cy + y) * impostor::kLayerPx + cx + x) * 4;
+            const uint32_t cx = (v % impostor::kGridDim) * impostor::cell_px();
+            const uint32_t cy = (v / impostor::kGridDim) * impostor::cell_px();
+            for (uint32_t y = 0; y < impostor::cell_px(); ++y)
+                for (uint32_t x = 0; x < impostor::cell_px(); ++x) {
+                    const size_t o = (size_t(cy + y) * impostor::layer_px() + cx + x) * 4;
                     if (imp.atlas[o + 3] == 0) continue;
                     acc += imp.atlas[o] + imp.atlas[o + 1];
                 }
@@ -3016,15 +3023,101 @@ static void test_impostor_elevation_rings_differ() {
     // Byte neutrality is the whole reason this was affordable; assert it here
     // too so a future cell-size edit that quietly grows the atlas is caught by
     // a test and not only by a static_assert someone can delete.
-    // Was 131072: the rings were paid for by halving the cell, and this
-    // asserted that trade held. The cell has since been RESTORED and doubled
-    // (16 -> 32 px) because the halving was not free -- the alpha cutout binds
-    // on thin features at cell resolution and it ate the trunks. So the
-    // assertion now pins the CURRENT budget rather than the old one, and
-    // reading kAtlasBytes keeps it honest if the constants move again.
-    CHECK(imp.atlas.size() == impostor::kAtlasBytes &&
-              impostor::kAtlasBytes == 524288,
-          "the atlas is the declared 512 KiB (8x8 grid of 32x32 cells)");
+    //
+    // This used to pin a literal byte count (131072, then 524288). It cannot
+    // any more: the cell resolution is a runtime setting. So it pins the
+    // RELATIONSHIP instead, which is the thing that would actually be wrong if
+    // the layout drifted -- the atlas is two RGBA8 layers of an 8x8 grid of
+    // cell_px cells, whatever cell_px currently is. main() pins cell_px itself
+    // for this suite.
+    const size_t expect_atlas =
+        size_t(impostor::kGridDim) * impostor::cell_px() *
+        impostor::kGridDim * impostor::cell_px() * 4u * 2u;
+    CHECK(imp.atlas.size() == impostor::atlas_bytes() &&
+              impostor::atlas_bytes() == expect_atlas,
+          "the atlas is two RGBA8 layers of an 8x8 grid of cell_px cells");
+    printf("PASSED\n");
+}
+
+// The cell resolution is a SETTING, and every gate that keeps a stale atlas
+// off the screen has to notice when it moves. This bakes the same mesh at two
+// resolutions inside ONE process (which is exactly why impostor::cell_px()
+// caches nothing in a static) and proves four things, each of which would let
+// a wrong-resolution atlas be drawn if it silently stopped holding.
+static void test_impostor_cell_px_parametrized() {
+    printf("=== test_impostor_cell_px_parametrized ===\n");
+    std::vector<Tri> tris = sphere_tris(12, 8);
+    std::vector<TriEx> ex = triex_for(tris, 2);
+
+    // Two SMALL sizes on purpose: the bake is O(cell_px^2) per view, so
+    // running this at the 128 px default would cost 16x what the whole rest of
+    // the suite does and prove nothing extra.
+    pf_set_env("MATTER_IMPOSTOR_CELL_PX", "16");
+    const uint32_t cell_a = impostor::cell_px();
+    const size_t bytes_a = impostor::atlas_bytes();
+    const float band_a = impostor::guard_band();
+    const uint64_t ladder_a = part_flatten::active_ladder_shape_digest();
+    impostor::PartImpostor part_a;
+    part_a.clusters.resize(1);
+    CHECK(impostor::bake_cluster(0, tris, ex, part_a.clusters[0]), "bake at 16 px");
+    uint64_t ha = impostor::depicts_hash_begin();
+    impostor::depicts_hash_add_cluster(ha, 0, tris);
+    const uint64_t depicts_a = impostor::depicts_hash_finish(ha);
+
+    pf_set_env("MATTER_IMPOSTOR_CELL_PX", "32");
+    const uint32_t cell_b = impostor::cell_px();
+    const size_t bytes_b = impostor::atlas_bytes();
+    const float band_b = impostor::guard_band();
+    const uint64_t ladder_b = part_flatten::active_ladder_shape_digest();
+    impostor::PartImpostor part_b;
+    part_b.clusters.resize(1);
+    CHECK(impostor::bake_cluster(0, tris, ex, part_b.clusters[0]), "bake at 32 px");
+    uint64_t hb = impostor::depicts_hash_begin();
+    impostor::depicts_hash_add_cluster(hb, 0, tris);
+    const uint64_t depicts_b = impostor::depicts_hash_finish(hb);
+
+    // 1. The setting reaches the bake at all.
+    CHECK(cell_a == 16u && cell_b == 32u, "the env value reaches cell_px()");
+    CHECK(bytes_b == bytes_a * 4u, "atlas bytes scale as cell_px^2");
+    CHECK(part_a.clusters[0].atlas.size() == bytes_a &&
+              part_b.clusters[0].atlas.size() == bytes_b,
+          "each bake produced its own resolution's atlas");
+
+    // 2. The guard band tracks it, holding the margin CONSTANT in texels --
+    //    the invariant a fixed band silently broke every time the cell moved.
+    const float margin_a = (0.5f - 0.5f / band_a) * float(cell_a);
+    const float margin_b = (0.5f - 0.5f / band_b) * float(cell_b);
+    CHECK(band_a > band_b, "a smaller cell needs a wider band");
+    CHECK(margin_a > 1.0f && std::fabs(margin_a - margin_b) < 0.01f,
+          "the guard margin is the same texel count at both resolutions");
+
+    // 3. Both cache identities move, so nothing baked at one size can be
+    //    served at the other: the atlas (depicts) and the FLAT (ladder shape,
+    //    which matters because the band above changes the quad's half_extent).
+    CHECK(depicts_a != depicts_b, "depicts-hash separates the two resolutions");
+    CHECK(ladder_a != ladder_b, "ladder-shape digest separates them too");
+
+    // 4. And the sidecar gate actually rejects, rather than mis-decoding an
+    //    atlas of the wrong size. Written at 32 px, read back at 16 px.
+    const uint64_t part_hash = 0x5150C0DE12345678ull;
+    const std::string path =
+        std::string(kCacheRoot) + "/" + impostor::cache_path_impostor(part_hash);
+    CHECK(impostor::save(path, part_hash, depicts_b, part_b),
+          "32 px sidecar written");
+    pf_set_env("MATTER_IMPOSTOR_CELL_PX", "16");
+    impostor::PartImpostor out;
+    impostor::LoadFailure fail = impostor::LoadFailure::None;
+    std::string reason;
+    const bool loaded = impostor::load(path, part_hash, depicts_b, out, &fail,
+                                       &reason);
+    CHECK(!loaded, "a 32 px atlas does not load into a 16 px engine");
+    CHECK(fail == impostor::LoadFailure::Version ||
+              fail == impostor::LoadFailure::Stale,
+          "and it is rejected as a format/staleness mismatch, not swallowed");
+    CHECK(out.clusters.empty(), "nothing is handed back on rejection");
+
+    // Restore the suite's pinned resolution for whatever runs after this.
+    pf_set_env("MATTER_IMPOSTOR_CELL_PX", "32");
     printf("PASSED\n");
 }
 
@@ -3251,10 +3344,17 @@ int main() {
     // Unbuffered: an abort deep in a bake must not swallow the log that
     // says which test was running when it happened.
     setvbuf(stdout, nullptr, _IONBF, 0);
+    // PIN THE CELL RESOLUTION for this suite. The impostor bake is O(cell_px^2)
+    // per view, so inheriting the 128 px default would make every impostor test
+    // here 16x slower -- this suite already runs for minutes -- while testing
+    // nothing the 32 px path does not. test_impostor_cell_px_parametrized is
+    // where the setting itself is exercised, and it restores this value.
+    pf_set_env("MATTER_IMPOSTOR_CELL_PX", "32");
     if (!write_fixtures()) {
         printf("FAIL: could not write fixture parts under %s\n", kCacheRoot);
         return 1;
     }
+    test_impostor_cell_px_parametrized();
     test_flatten_merge();
     test_flatten_deterministic();
     test_flatten_missing_part();

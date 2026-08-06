@@ -142,6 +142,7 @@
 #include "tri.h"
 
 #include <cstddef>
+#include <cstdlib>
 #include <cstdint>
 
 #include "version_vector.h"   // M4: the single version-vector fold
@@ -162,12 +163,101 @@ constexpr uint32_t kFormatVersion = matter_version::components::kImpostorFormat;
 constexpr uint32_t kAzimuths   = 16;                  // views per elevation ring
 constexpr uint32_t kElevations = 3;                   // rings, see above
 constexpr uint32_t kViews    = kAzimuths * kElevations;   // 48
-constexpr uint32_t kCellPx   = 32;                    // per-view cell edge
 constexpr uint32_t kGridDim  = 8;                     // kGridDim^2 >= kViews
-constexpr uint32_t kLayerPx  = kCellPx * kGridDim;    // 256
 constexpr uint32_t kSuperSample = 4;                  // per axis, per texel
-constexpr size_t   kLayerBytes = size_t(kLayerPx) * kLayerPx * 4;
-constexpr size_t   kAtlasBytes = kLayerBytes * 2;     // shade + tint
+
+// ---------------------------------------------------------------------------
+// CELL RESOLUTION IS A SETTING, not a constant.
+//
+// The view LAYOUT above is fixed -- the shader mirrors kViews/kGridDim as
+// #defines and the C++ side static_asserts them, because a grid mismatch
+// samples the wrong cell. The cell's RESOLUTION is different: gbuffer.frag
+// computes
+//     uv = (cell + local) / IMPOSTOR_GRID_DIM
+// which is normalized, so nothing in any shader depends on how many texels
+// are behind it. That is what makes this tunable at all, and it is why
+// raising it needs no shader change.
+//
+// WHAT IT COSTS. The GPU atlas is ONE image array, sized
+// kImpostorMaxSlots (128) x 2 layers x layer_px^2 x RGBA8, allocated up front
+// whether one slot is used or all of them. It is a per-WORLD cost, not a
+// per-instance one -- every instance of a part samples the same layer, which
+// is the entire point of an impostor:
+//
+//     cell_px    layer_px    atlas VRAM (128 slots)
+//        32         256              64 MiB
+//        64         512             256 MiB
+//       128        1024            1024 MiB     <-- default
+//       256        2048            4096 MiB
+//
+// The default trades memory for sharpness deliberately: impostors are pulled
+// in CLOSE here (the mesh rung cap and MATTER_IMPOSTOR_DISTANCE), so they are
+// drawn far larger than the ~10 px handover the original 32 px cell was
+// budgeted for. A machine with less VRAM turns it down; nothing else changes.
+//
+// CHANGING IT INVALIDATES BAKED ATLASES, by three independent paths, and that
+// is intended: an atlas baked at one cell size decoded at another is not
+// merely blurry, it is the wrong picture.
+//   1. depicts_hash_begin() folds cell_px, so a loaded atlas reports Stale.
+//   2. The sidecar header records cell_px and load() rejects a mismatch.
+//   3. ladder_shape_raw() folds it, so the FLAT rebakes too -- necessary
+//      because guard_band() below moves half_extent, i.e. the quad's
+//      geometry, not just its texels.
+constexpr uint32_t kDefaultCellPx = 128;
+
+// Power of two in [16, 256]. Power-of-two keeps layer_px (cell * 8) a power of
+// two, which is what every GPU wants for a sampled image; the ceiling is the
+// 4 GiB atlas above, which is already past useful.
+constexpr bool valid_cell_px(long v) {
+    return v >= 16 && v <= 256 && (v & (v - 1)) == 0;
+}
+
+// Read per call and cached in NO static, the same discipline (and for the same
+// reason) as part_flatten.h's env readers: a test must be able to bake twice
+// at two resolutions inside ONE process, which is the only way to prove the
+// staleness gates above actually fire. A malformed or out-of-range value falls
+// back to the default rather than half-applying.
+//
+// The renderer LATCHES the value it built its atlas from and rejects uploads
+// that disagree -- that is where a mid-process change would otherwise become a
+// silent mis-sample instead of a loud failure.
+inline uint32_t cell_px() {
+    const char* v = std::getenv("MATTER_IMPOSTOR_CELL_PX");
+    if (!v || !v[0]) return kDefaultCellPx;
+    char* end = nullptr;
+    const long parsed = std::strtol(v, &end, 10);
+    if (!end || end == v || *end != '\0' || !valid_cell_px(parsed))
+        return kDefaultCellPx;
+    return static_cast<uint32_t>(parsed);
+}
+
+inline uint32_t layer_px()    { return cell_px() * kGridDim; }
+inline size_t   layer_bytes() { return size_t(layer_px()) * layer_px() * 4; }
+inline size_t   atlas_bytes() { return layer_bytes() * 2; }   // shade + tint
+
+// GUARD BAND, derived so the margin is CONSTANT IN TEXELS.
+//
+// Cells are packed edge to edge in one layer, so a bilinear tap at a cell
+// border would otherwise reach into the next azimuth -- a rock with a sliver
+// of another view welded to its edge. The quad is made larger than the
+// bounding sphere so the silhouette stops clear of the border.
+//
+// The margin a band buys is NOT a property of the band:
+//     margin_texels = (0.5 - 0.5 / band) * cell_px
+// so one fixed constant means a different margin at every resolution. That is
+// exactly the trap the old fixed 1.20 left: it gave 1.45 texels at the
+// original 32 px cell and would have given 0.73 -- actively bleeding -- when
+// the elevation rings halved the cell to 16. It was then raised to 1.20 with
+// a static_assert and a comment saying "recompute this if kCellPx ever moves".
+// Now that kCellPx moves at RUNTIME, a comment is not a mechanism. Deriving
+// the band from the margin makes the invariant hold at every resolution by
+// construction, and costs less of the cell at high ones: 1.032 at 128 px
+// against the 1.20 that would have thrown away 17 % of every edge.
+constexpr float kGuardTexels = 2.0f;
+inline float guard_band() {
+    const float c = static_cast<float>(cell_px());
+    return c / (c - 2.0f * kGuardTexels);
+}
 
 // Ring spacing, radians. Ring r is baked at r * kElevationStep above the
 // equator; the runtime picks the NEAREST ring, so the boundaries sit halfway
@@ -184,8 +274,11 @@ constexpr uint32_t view_index(uint32_t azimuth, uint32_t elevation) {
 }
 
 static_assert(kGridDim * kGridDim >= kViews, "view grid too small");
-static_assert(kLayerPx == 256, "atlas layer size is a format constant");
-static_assert(kAtlasBytes == 524288, "cell resolution is a format constant");
+static_assert(valid_cell_px(kDefaultCellPx), "default cell size is out of range");
+// The margin derivation is only >= 1 texel while the band's denominator stays
+// positive and the cell is large enough to spend 2 texels an edge on. Both
+// hold across the whole valid range; this pins the bottom of it.
+static_assert(16 > 2 * 2, "guard band derivation degenerates at this cell size");
 
 // Eligibility floor: the terminal mesh rung must carry at least this many
 // triangles for a 2-triangle billboard to be worth its atlas. See the header
@@ -199,7 +292,7 @@ struct ClusterImpostor {
     float    half_extent   = 0.0f;        // part-local half-size of the square quad
     uint32_t material_index = 0;          // dominant material over covered texels
     uint32_t source_tris   = 0;           // terminal mesh rung's triangle count
-    std::vector<uint8_t> atlas;           // kAtlasBytes: layer 0 then layer 1
+    std::vector<uint8_t> atlas;           // atlas_bytes(): layer 0 then layer 1
 };
 
 struct PartImpostor {

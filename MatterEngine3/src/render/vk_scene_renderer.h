@@ -1926,6 +1926,11 @@ private:
     // part with no impostor costs nothing.
     static constexpr uint32_t kImpostorMaxSlots = 128;
     TilesetImage impostor_atlas_{};
+    // What impostor_atlas_ was CREATED with. A Vulkan image cannot be resized
+    // and impostor::cell_px() is a live env read, so these latch the
+    // resolution at creation; every upload is validated against them.
+    uint32_t impostor_layer_px_ = 0;
+    size_t   impostor_atlas_bytes_ = 0;
     VkSampler    impostor_sampler_ = VK_NULL_HANDLE;
     // Bump allocator with a free list. Slots are returned on release_part, so
     // a streaming world recycles them; exhaustion is a LOGGED load failure

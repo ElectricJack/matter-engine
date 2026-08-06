@@ -85,7 +85,11 @@ inline constexpr uint32_t kFlatFormat   = 9u;  // part_asset::kFormatVersionFlat
 // rings' "free" claim was wrong -- the alpha cutout binds on thin features at
 // cell resolution, which is what ate the trunks -- and impostors are now pulled
 // closer than the ~10 px handover the atlas was budgeted for.
-inline constexpr uint32_t kImpostorFormat = 4u;  // impostor_bake::kFormatVersion
+// 5: cell resolution became a SETTING (MATTER_IMPOSTOR_CELL_PX) and its
+// default moved 32 -> 128 px, so the atlas is 512 KiB -> 8 MiB per slot and
+// the derived guard band moved half_extent with it. Both the pixels and the
+// quad's geometry differ from every v4 artifact on disk.
+inline constexpr uint32_t kImpostorFormat = 5u;  // impostor_bake::kFormatVersion
 inline constexpr uint32_t kBundleFormat = 1u;  // part_bundle::kBundleFormatVersion
 
 // Reserved for M3b's content-addressed stage outputs. Zero means "no stage

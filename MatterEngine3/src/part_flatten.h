@@ -10,6 +10,7 @@
 // GL-free: consumes .part files from the cache and writes one back.
 
 #include "matter/lod_contract.h"   // kMaxSerializedLodLevels (the rung cap clamp)
+#include "impostor_bake.h"        // cell_px(): the ladder shape folds it
 
 #include <cmath>
 #include <cstdint>
@@ -312,7 +313,8 @@ inline uint64_t ladder_shape_raw(const std::vector<float>& divisors,
                                  float min_level_benefit, int min_level_tris,
                                  uint32_t max_mesh_rungs,
                                  float impostor_distance_scale,
-                                 bool impostor_terminal) {
+                                 bool impostor_terminal,
+                                 uint32_t impostor_cell_px) {
     uint64_t h = 0x4C41444445523031ull;   // "LADDER01"
     h = ladder_shape_mix(h, divisors.size());
     for (float d : divisors) h = ladder_shape_mix(h, ladder_shape_float_bits(d));
@@ -322,6 +324,11 @@ inline uint64_t ladder_shape_raw(const std::vector<float>& divisors,
     h = ladder_shape_mix(h, max_mesh_rungs);
     h = ladder_shape_mix(h, ladder_shape_float_bits(impostor_distance_scale));
     h = ladder_shape_mix(h, impostor_terminal ? 1ull : 0ull);
+    // The cell resolution reaches the FLAT, not just the atlas: guard_band()
+    // is derived from it and scales half_extent, which is the billboard quad's
+    // actual geometry. An atlas-only invalidation would leave a quad sized for
+    // the old band.
+    h = ladder_shape_mix(h, impostor_cell_px);
     return h;
 }
 
@@ -330,7 +337,7 @@ inline uint64_t ladder_shape_digest(const FlattenTargets& t) {
         ladder_shape_raw(t.radius_divisor, t.min_level_benefit,
                          t.min_level_tris, effective_max_mesh_rungs(t),
                          effective_impostor_distance_scale(t),
-                         effective_impostor_terminal(t));
+                         effective_impostor_terminal(t), impostor::cell_px());
     // The reference is the PRISTINE default -- the struct's own initializers,
     // with no env applied -- because that is the shape every flat already on
     // disk was baked with. Recomputed rather than cached in a static: the
@@ -340,7 +347,8 @@ inline uint64_t ladder_shape_digest(const FlattenTargets& t) {
     const uint64_t shipped =
         ladder_shape_raw(d.radius_divisor, d.min_level_benefit,
                          d.min_level_tris, d.max_mesh_rungs,
-                         d.impostor_distance_scale, d.impostor_terminal);
+                         d.impostor_distance_scale, d.impostor_terminal,
+                         impostor::kDefaultCellPx);
     if (raw == shipped) return 0;
     return raw ? raw : 1ull;   // never land on the sentinel by accident
 }

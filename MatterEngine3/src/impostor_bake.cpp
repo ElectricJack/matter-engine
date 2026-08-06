@@ -55,7 +55,6 @@ inline uint8_t to_u8(float v) {
     return static_cast<uint8_t>(c * 255.0f + 0.5f);
 }
 
-constexpr uint32_t kSubEdge = kCellPx * kSuperSample;   // 128 subsamples/axis
 
 // One supersample of one view: the nearest surface hit, or empty.
 struct SubSample {
@@ -109,7 +108,9 @@ uint64_t depicts_hash_begin() {
     // version vector, which depicts_hash_finish folds in one place for the
     // whole engine. Only the atlas LAYOUT constants (which are not versions)
     // stay in this stream.
-    const uint32_t params[3] = {kViews, kCellPx, kSuperSample};
+    // cell_px() is in this stream, so a resolution change makes every existing
+    // atlas report Stale rather than decoding at the wrong scale.
+    const uint32_t params[3] = {kViews, cell_px(), kSuperSample};
     const auto* b = reinterpret_cast<const uint8_t*>(params);
     for (size_t i = 0; i < sizeof(params); ++i) { h ^= b[i]; h *= 1099511628211ull; }
     return h;
@@ -167,43 +168,30 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
     for (const Tri& t : tris) { reach(t.vertex0); reach(t.vertex1); reach(t.vertex2); }
     const float radius = std::sqrt(radius_sq);
     if (!(radius > 1e-6f)) return false;
-    // GUARD BAND. Cells are packed edge to edge in one atlas layer, so a
-    // bilinear tap at the border of view v would otherwise reach into view
-    // v+1 -- a rock with a sliver of the next azimuth welded to its edge. The
-    // quad is made larger than the bounding sphere so the silhouette stops
-    // clear of the border.
-    //
-    // The margin is NOT a property of the band alone -- it is texels, so it
-    // scales with kCellPx:
-    //
-    //     margin_texels = (0.5 - 0.5 / kGuardBand) * kCellPx
-    //
-    // At the v1 32 px cell, 1.10 gave 1.45 texels. **The elevation-ring change
-    // halved the cell to 16 px, which would have taken that same 1.10 down to
-    // 0.73 texels — under one, i.e. actively bleeding.** A full-texel guard at
-    // 16 px needs >= 1 / (1 - 2/16) = 1.143; 1.20 gives 1.33 texels of margin
-    // and costs 17 % of the cell's linear resolution, leaving 13.3 px of
-    // object across a cell against the ~10 px the azimuth count allows. The
-    // view count still dominates, which is the same argument as before -- but
-    // it has less room now, so recompute this line if kCellPx ever moves
-    // again rather than assuming the constant travels.
-    constexpr float kGuardBand = 1.20f;
-    static_assert((0.5f - 0.5f / kGuardBand) * float(kCellPx) >= 1.0f,
-                  "guard band leaves under one texel: bilinear taps bleed "
-                  "into the neighbouring view");
-    const float half_extent = radius * kGuardBand;
+    // GUARD BAND: derived from the cell size so the margin is a constant
+    // number of TEXELS at every resolution. See impostor_bake.h -- a fixed
+    // band buys a different margin at every cell size, which is the trap the
+    // old hard-coded 1.20 (plus a comment asking the next person to recompute
+    // it) left behind now that the cell size is a runtime setting.
+    const float half_extent = radius * guard_band();
 
     out = ClusterImpostor{};
     out.cluster_index = cluster_index;
     out.center[0] = center.x; out.center[1] = center.y; out.center[2] = center.z;
     out.half_extent = half_extent;
     out.source_tris = static_cast<uint32_t>(tris.size());
-    out.atlas.assign(kAtlasBytes, 0);
+    // Every size below is derived from the cell resolution ONCE, here, so a
+    // getenv between two of them cannot produce an atlas whose halves disagree.
+    const uint32_t cell = cell_px();
+    const uint32_t sub_edge = cell * kSuperSample;
+    const uint32_t layer_edge = layer_px();
+    const size_t   layer_sz = layer_bytes();
+    out.atlas.assign(atlas_bytes(), 0);
 
     // Dominant material, area-weighted over covered subsamples.
     std::vector<uint64_t> material_votes;
 
-    std::vector<SubSample> sub(static_cast<size_t>(kSubEdge) * kSubEdge);
+    std::vector<SubSample> sub(static_cast<size_t>(sub_edge) * sub_edge);
     const float inv_h = 1.0f / half_extent;
 
     for (uint32_t view = 0; view < kViews; ++view) {
@@ -239,8 +227,8 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                 // [-1,1] -> subsample grid coordinates.
                 const float nx = dot3(rel, right) * inv_h;
                 const float ny = dot3(rel, up_v) * inv_h;
-                sx[c] = (nx * 0.5f + 0.5f) * static_cast<float>(kSubEdge);
-                sy[c] = (0.5f - ny * 0.5f) * static_cast<float>(kSubEdge);
+                sx[c] = (nx * 0.5f + 0.5f) * static_cast<float>(sub_edge);
+                sy[c] = (0.5f - ny * 0.5f) * static_cast<float>(sub_edge);
                 sz[c] = dot3(rel, view_z);
             }
             const float area = (sx[1] - sx[0]) * (sy[2] - sy[0]) -
@@ -253,8 +241,8 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
             int y0 = static_cast<int>(std::floor(std::fmin(sy[0], std::fmin(sy[1], sy[2]))));
             int y1 = static_cast<int>(std::ceil (std::fmax(sy[0], std::fmax(sy[1], sy[2]))));
             x0 = std::max(x0, 0); y0 = std::max(y0, 0);
-            x1 = std::min(x1, static_cast<int>(kSubEdge) - 1);
-            y1 = std::min(y1, static_cast<int>(kSubEdge) - 1);
+            x1 = std::min(x1, static_cast<int>(sub_edge) - 1);
+            y1 = std::min(y1, static_cast<int>(sub_edge) - 1);
 
             for (int py = y0; py <= y1; ++py) {
                 const float fy = static_cast<float>(py) + 0.5f;
@@ -267,7 +255,7 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                     const float w0 = 1.0f - w1 - w2;
                     if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;
                     const float depth = w0 * sz[0] + w1 * sz[1] + w2 * sz[2];
-                    SubSample& s = sub[static_cast<size_t>(py) * kSubEdge + px];
+                    SubSample& s = sub[static_cast<size_t>(py) * sub_edge + px];
                     // Strict >: the FIRST triangle wins an exact tie, which is
                     // what makes coplanar geometry order-deterministic.
                     if (s.hit && !(depth > s.depth)) continue;
@@ -294,10 +282,10 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
         }
 
         // Resolve the view's subsamples into its cell of both layers.
-        const uint32_t cell_x = (view % kGridDim) * kCellPx;
-        const uint32_t cell_y = (view / kGridDim) * kCellPx;
-        for (uint32_t cy = 0; cy < kCellPx; ++cy) {
-            for (uint32_t cx = 0; cx < kCellPx; ++cx) {
+        const uint32_t cell_x = (view % kGridDim) * cell;
+        const uint32_t cell_y = (view / kGridDim) * cell;
+        for (uint32_t cy = 0; cy < cell; ++cy) {
+            for (uint32_t cx = 0; cx < cell; ++cx) {
                 int covered = 0;
                 float3 nsum = make_float3(0.0f, 0.0f, 0.0f);
                 float ao_sum = 0.0f;
@@ -305,7 +293,7 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                 for (uint32_t sy2 = 0; sy2 < kSuperSample; ++sy2) {
                     for (uint32_t sx2 = 0; sx2 < kSuperSample; ++sx2) {
                         const SubSample& s =
-                            sub[static_cast<size_t>(cy * kSuperSample + sy2) * kSubEdge +
+                            sub[static_cast<size_t>(cy * kSuperSample + sy2) * sub_edge +
                                 (cx * kSuperSample + sx2)];
                         if (!s.hit) continue;
                         ++covered;
@@ -327,7 +315,7 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                     }
                 }
                 const size_t texel =
-                    (static_cast<size_t>(cell_y + cy) * kLayerPx + (cell_x + cx)) * 4;
+                    (static_cast<size_t>(cell_y + cy) * layer_edge + (cell_x + cx)) * 4;
                 if (covered == 0) continue;   // atlas was zero-filled
                 const float inv_n = 1.0f / static_cast<float>(covered);
                 float ox = 0.5f, oy = 0.5f;
@@ -338,7 +326,7 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                 shade[2] = to_u8(ao_sum * inv_n);
                 shade[3] = to_u8(static_cast<float>(covered) /
                                  static_cast<float>(kSuperSample * kSuperSample));
-                uint8_t* tint = out.atlas.data() + kLayerBytes + texel;
+                uint8_t* tint = out.atlas.data() + layer_sz + texel;
                 tint[0] = to_u8(tr * inv_n);
                 tint[1] = to_u8(tg * inv_n);
                 tint[2] = to_u8(tb * inv_n);
@@ -445,9 +433,9 @@ bool save(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
     if (in.clusters.empty()) return false;
 
     std::vector<uint8_t> payload;
-    payload.reserve(in.clusters.size() * (kRecordFixed + kAtlasBytes));
+    payload.reserve(in.clusters.size() * (kRecordFixed + atlas_bytes()));
     for (const auto& c : in.clusters) {
-        if (c.atlas.size() != kAtlasBytes) return false;
+        if (c.atlas.size() != atlas_bytes()) return false;
         put(payload, c.cluster_index);
         put(payload, c.center[0]); put(payload, c.center[1]); put(payload, c.center[2]);
         put(payload, c.half_extent);
@@ -460,7 +448,7 @@ bool save(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
     std::memcpy(h.magic, kMagic, 4);
     h.version = kFormatVersion;
     h.views = kViews;
-    h.cell_px = kCellPx;
+    h.cell_px = cell_px();
     h.grid_dim = kGridDim;
     h.supersample = kSuperSample;
     h.part_hash = part_hash;
@@ -507,12 +495,13 @@ bool load(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
         return reject(LoadFailure::Header, load_failure_text(LoadFailure::Header));
     }
     if (h.version != kFormatVersion || h.views != kViews ||
-        h.cell_px != kCellPx || h.grid_dim != kGridDim ||
+        h.cell_px != cell_px() || h.grid_dim != kGridDim ||
         h.supersample != kSuperSample) {
         char buf[160];
         std::snprintf(buf, sizeof(buf),
                       "format v%u/%uview/%upx, engine wants v%u/%uview/%upx",
-                      h.version, h.views, h.cell_px, kFormatVersion, kViews, kCellPx);
+                      h.version, h.views, h.cell_px, kFormatVersion, kViews,
+                      cell_px());
         return reject(LoadFailure::Version, buf);
     }
     if (h.part_hash != part_hash) {
@@ -533,7 +522,7 @@ bool load(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
         return reject(LoadFailure::Malformed, "zero clusters");
     }
     const uint64_t expect_bytes =
-        static_cast<uint64_t>(h.cluster_count) * (kRecordFixed + kAtlasBytes);
+        static_cast<uint64_t>(h.cluster_count) * (kRecordFixed + atlas_bytes());
     if (h.payload_bytes != expect_bytes) {
         char buf[128];
         std::snprintf(buf, sizeof(buf), "payload declares %llu bytes, expected %llu",
@@ -558,7 +547,7 @@ bool load(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
         std::memcpy(&c.half_extent, p, 4); p += 4;
         std::memcpy(&c.material_index, p, 4); p += 4;
         std::memcpy(&c.source_tris, p, 4); p += 4;
-        c.atlas.assign(p, p + kAtlasBytes); p += kAtlasBytes;
+        c.atlas.assign(p, p + atlas_bytes()); p += atlas_bytes();
         if (!(c.half_extent > 0.0f) || !std::isfinite(c.half_extent) ||
             !std::isfinite(c.center[0]) || !std::isfinite(c.center[1]) ||
             !std::isfinite(c.center[2])) {
