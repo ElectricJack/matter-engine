@@ -84,12 +84,21 @@ struct ShotRect {
 // pushed EVERY frame on the main thread, so anything that allocates or locks
 // here would perturb the very measurement it exists to take.
 struct IssueFrameSample {
-    float frame_ms = 0.0f;
+    float frame_ms = 0.0f;    // RAW cadence, never the HUD's EMA
     float render_ms = 0.0f;   // the loop's render bucket (CPU-side)
     float build_ms = 0.0f;
     float gpu_ms = 0.0f;      // total GPU, 0 when unsupported
     uint32_t triangles = 0;
     uint32_t instances_drawn = 0;
+    // The CPU render span, attributed. The first hitch capture showed
+    // render_ms at 390 ms with build_ms at 19 -- enough to prove the cost is
+    // CPU-side and not the GPU, and not enough to say which span owns it.
+    float resolve_ms = 0.0f;
+    float draw_ms = 0.0f;
+    float zone_vt_ms = 0.0f;      // VT rung registration
+    float zone_cull_ms = 0.0f;    // cull + gbuffer + RT recording
+    float zone_skin_ms = 0.0f;    // animation skinning seal
+    float zone_comp_ms = 0.0f;    // composite to swapchain
 };
 
 struct IssueShot {

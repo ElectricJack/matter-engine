@@ -7362,13 +7362,15 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // demand pass asked for, so this frame's vt_draw_slots table already
     // carries them (their tail fills record inside record_cull_and_render).
     impl_->service_vt_rung_requests();
-    impl_->draw_vt_requests.add(zone_split());
+    const uint64_t zone_vt_us = zone_split();
+    impl_->draw_vt_requests.add(zone_vt_us);
     if (!impl_->vk_scene->record_cull_and_render(
             frame, matrices, cam.position, budget, err)) {
         impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
         return false;
     }
-    impl_->draw_cull_render.add(zone_split());
+    const uint64_t zone_cull_us = zone_split();
+    impl_->draw_cull_render.add(zone_cull_us);
     if (animation_skin_queue_pending_seal &&
         !impl_->vk_scene->finish_animation_skinning_frame(frame.frame_slot,
                                                            frame.serial)) {
@@ -7376,12 +7378,14 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         err = "animation skin frame queue failed to seal after GPU record";
         return false;
     }
-    impl_->draw_skin_seal.add(zone_split());
+    const uint64_t zone_skin_us = zone_split();
+    impl_->draw_skin_seal.add(zone_skin_us);
     if (!impl_->vk_scene->record_composite_to_swapchain(frame, err)) {
         impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
         return false;
     }
-    impl_->draw_composite.add(zone_split());
+    const uint64_t zone_comp_us = zone_split();
+    impl_->draw_composite.add(zone_comp_us);
     if (impl_->vk_scene->consume_dlss_history_reset())
         impl_->vk_temporal.invalidate();
     const auto draw_end = std::chrono::steady_clock::now();
@@ -7392,6 +7396,14 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         std::chrono::duration<float, std::milli>(build_end - build_start).count();
     impl_->stats.draw_ms =
         std::chrono::duration<float, std::milli>(draw_end - draw_start).count();
+    // Per-frame zone split. The DrawZone accumulators above keep totals for the
+    // periodic log; these are this frame's values, which is what a hitch
+    // capture needs -- a total averaged over thousands of calm frames cannot
+    // show a spike.
+    impl_->stats.draw_vt_requests_ms = (float)zone_vt_us * 0.001f;
+    impl_->stats.draw_cull_render_ms = (float)zone_cull_us * 0.001f;
+    impl_->stats.draw_skin_seal_ms   = (float)zone_skin_us * 0.001f;
+    impl_->stats.draw_composite_ms   = (float)zone_comp_us * 0.001f;
     impl_->stats.instances_resolved = static_cast<uint32_t>(instances.size());
     // Cross-thread mirror for the [stream.frame] line: the streaming worker
     // renders the fill telemetry and needs the render thread's per-FRAME cost,

@@ -3208,12 +3208,25 @@ int main() {
             // this runs on the main thread inside the frame it measures.
             {
                 viewer::IssueFrameSample sample;
-                sample.frame_ms = static_cast<float>(hud_frame_ms);
+                // RAW cadence, NOT hud_frame_ms. The HUD value is a 0.9/0.1
+                // EMA, and the first capture proved why that matters: its
+                // "peak frame" read 258 ms while the raw frames behind it were
+                // 400 ms, and peak_render (which was already raw) came out
+                // LARGER than peak_frame -- an impossibility that only makes
+                // sense once you know one of the two was smoothed. Recording a
+                // filtered signal in a spike recorder defeats the recorder.
+                sample.frame_ms = static_cast<float>(perf_frame_cadence_ms);
                 sample.render_ms = static_cast<float>(phase.render);
                 sample.build_ms = frame_stats.build_ms;
                 sample.gpu_ms = frame_stats.gpu_total_ms;
                 sample.triangles = frame_stats.triangles;
                 sample.instances_drawn = frame_stats.instances_drawn;
+                sample.resolve_ms = frame_stats.resolve_ms;
+                sample.draw_ms = frame_stats.draw_ms;
+                sample.zone_vt_ms = frame_stats.draw_vt_requests_ms;
+                sample.zone_cull_ms = frame_stats.draw_cull_render_ms;
+                sample.zone_skin_ms = frame_stats.draw_skin_seal_ms;
+                sample.zone_comp_ms = frame_stats.draw_composite_ms;
                 if (issue_frame_history.size() < kIssueHistoryFrames)
                     issue_frame_history.push_back(sample);
                 else
