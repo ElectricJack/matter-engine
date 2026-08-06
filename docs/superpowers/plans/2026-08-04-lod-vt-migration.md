@@ -1020,6 +1020,63 @@ Acceptance:
 > writing `horizon_sun_visibility`. Only the last is visible, so everything before it lands
 > dark and is verified by census rather than pixels.
 
+> **DECIDED 2026-08-05 by investigation (delegated): (b)-CORRECTED, and (a) is skipped.**
+> Literal (b) — "reference the scene's BLASes" — **would have silently baked nothing,
+> forever**, and that is the finding that matters.
+>
+> "Scene BLAS" names two unrelated things here. `BLASManager::BLASEntry`
+> (`blas_manager.hpp:50-63`) is a **CPU-side BVH** (`unique_ptr<BVH>` + triangle arrays) that
+> no GPU ray query can reference. The real Vulkan acceleration structures are
+> `RtLodRecord::blas` (`vk_scene_renderer.h:1198`) — and they are **demand-built**, created
+> only when that exact (cluster, rung) is selected for tracing. An impostored cluster is
+> explicitly excluded from tracing (`vk_scene_renderer.cpp:9785`, `lod_index >= mesh_lods`).
+> So for a far impostored tree — *precisely* the caster M6.5 exists to handle — no scene AS
+> exists and none will ever be built while it stays impostored. A change that compiles, looks
+> right, and does nothing.
+>
+> **What works instead:** reference the scene's `rt_geometry` / `rt_index` BUFFERS
+> (`vk_scene_renderer.cpp:6034-6072`), which exist for every registered part whenever RT is
+> available and carry per-(cluster, rung) index ranges regardless of whether a BLAS was ever
+> built. The new pass builds its own caster BLASes from those device addresses — the same
+> setup the renderer uses at `:9817-9827` — so still **zero CPU mesh copies**, which was (b)'s
+> whole point.
+>
+> Two further findings worth keeping:
+> - `vt_enrich.h:19-27`'s stated reason for never borrowing renderer BLASes ("the chart
+>   table's tri_order indexes THIS mesh") applies only to the RECEIVER. Casters need no chart
+>   table: `occludeQuery` is terminate-on-first-hit and reads no per-triangle attributes.
+> - The DirOcc pass should **overwrite** its channel, unlike the AO pass's multiply-in-place
+>   (which is what forced the fragile once-only `slot_tier_` bookkeeping). Re-running then
+>   becomes always-safe and convergent, which is what makes "re-enrich when a caster loads"
+>   tractable at all.
+>
+> **(a) is throwaway, not de-risking.** It routes caster meshes through the CPU mesh budget
+> whose rejection path already fires on StreamMountain, and it still builds the same BLASes on
+> the same schedule — so it de-risks only the lifetime discipline, which is the part with
+> established tested patterns (`retain_for_frame`, the graveyard, retire serials). Everything
+> but the geometry-sourcing line would be rewritten.
+>
+> Determinism is preserved by KEYING rather than by avoidance: fold a caster-set hash (sorted
+> caster `part_hash` + coarse-rung id + quantized relative transform) into the page content
+> identity the way `vt_page_content_salt` folds mode+version. Loaded-set dependence then is
+> not nondeterminism, it is a different key.
+>
+> Ordered steps, each verifiable alone: (1) `vt_types.h` seam — `VtCasterInstance` +
+> per-variant caster fields + optional `enrich_dir_occ()` virtual; (2) caster harvest in
+> `update_vt_demand` with the hash, reach-expanded AABB test (expansion is what carries
+> shadows across sector seams), animated + self excluded; (3) a second queue/drain in
+> `vt_residency` with the footprint skip INVERTED relative to the contact pass, own budget;
+> (4) caster BLAS/TLAS cache in `vt_enrich.cpp` holding the scene buffers' `lifetime`
+> shared_ptrs — **that retention is the whole defence against the streaming use-after-free**;
+> (5) `vt_dirocc.comp`; (6) `gbuffer.frag` multiplies into `horizon_sun_visibility`.
+>
+> Named invisible risks: three independent gates can starve the pass (no RT enricher, the
+> inverted skip mis-wired, an empty harvest from a wrong AABB test) — assert a non-zero
+> `dir_occ_pages` census in the StreamMountain smoke rather than trusting pixels; bent normal
+> in the wrong space produces a shadow that looks real on the wrong side, catchable only by an
+> azimuth assertion; and the impostor-switch / page-mip bands can double-darken, in which case
+> combine with `min()` rather than a product.
+
 An impostor cannot cast a correct shadow (design §6.5) — it is a camera-facing card whose
 plane passes through the object's centre, so a traced ray starts inside the volume it
 depicts. M2.5 therefore ships impostors as non-tracing, and a tree loses its shadow the
