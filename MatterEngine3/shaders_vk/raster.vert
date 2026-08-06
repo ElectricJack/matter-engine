@@ -138,56 +138,85 @@ void main() {
         const vec3 center_world = (model * vec4(center_local, 1.0)).xyz;
         const vec3 to_eye = frame.camera_eye_pixel_budget.xyz - center_world;
 
+        // THE CARD IS BUILT IN OBJECT SPACE, then transformed by `model`.
+        //
+        // It used to be built in world space and sized by
+        //     half_extent * length(model[0].xyz)
+        // -- column 0, the X scale, under an explicit uniform-scale
+        // assumption. That assumption is false for the content impostors
+        // exist to serve: alpine trees are placed with
+        // scale(s, s * heightScale, s) (WorldSector.js), so a tree 1.4x
+        // taller than base drew its MESH 1.4x tall and its IMPOSTOR at 1.0x.
+        // The tree visibly shrank at the handover.
+        //
+        // Building in object space removes the assumption rather than
+        // patching it: the card is half_extent-sized in the object's own
+        // frame, and `model` then stretches it by exactly the matrix that
+        // stretches the mesh it replaces -- so the two agree by construction
+        // for ANY linear placement, not just the ones someone remembered.
+        // Non-uniform scale shears the card off perpendicular-to-eye, which
+        // is correct: the geometry it stands in for is sheared identically.
+        //
+        // world -> object for a DIRECTION needs inverse(mat3(model)), and
+        // transpose is the inverse only for an orthonormal basis. With
+        // model = R * S the columns carry the scales, so peel them off:
+        // inverse(R * S) = S^-1 * transpose(R). The old code used transpose
+        // alone, which under scale(s, s*h, s) left the elevation off by h^2
+        // and picked the wrong ring for exactly the trees it mis-sized.
+        const vec3 col_len = vec3(length(model[0].xyz), length(model[1].xyz),
+                                  length(model[2].xyz));
+        const vec3 inv_col = vec3(col_len.x > 1e-8 ? 1.0 / col_len.x : 0.0,
+                                  col_len.y > 1e-8 ? 1.0 / col_len.y : 0.0,
+                                  col_len.z > 1e-8 ? 1.0 / col_len.z : 0.0);
+        const mat3 rot = mat3(model[0].xyz * inv_col.x,
+                              model[1].xyz * inv_col.y,
+                              model[2].xyz * inv_col.z);
+        // `v * m` is transpose(m) * v in GLSL; the component-wise inv_col
+        // that follows is the S^-1.
+        const vec3 eye_obj = (to_eye * rot) * inv_col;
+        const float eye_obj_len = length(eye_obj);
+        const vec3 eye_obj_dir = eye_obj_len > 1e-5 ? eye_obj / eye_obj_len
+                                                    : vec3(0.0, 0.0, 1.0);
+
         // SPHERICAL billboarding: the card faces the eye outright, tilting as
         // the camera rises. It was cylindrical when the atlas held one equator
-        // ring — a tilting card would have drawn the equator's image where the
-        // top belonged — and the two changed together (impostor_bake.h,
+        // ring -- a tilting card would have drawn the equator's image where
+        // the top belonged -- and the two changed together (impostor_bake.h,
         // "ELEVATION ROWS"). A vertical card seen from 60 degrees up is
         // foreshortened to half the height of the mesh it replaced; this is
         // the half of that fix that lives in the geometry.
         //
-        // The frame is built exactly as the bake builds its own — right from
-        // cross(up, view_z), up from cross(view_z, right) — so the card's
+        // The frame is built exactly as the bake builds its own -- right from
+        // cross(up, view_z), up from cross(view_z, right) -- so the card's
         // frame and the cell's frame differ only by the view quantisation,
-        // which is the same approximation the azimuth ring always made.
-        const vec3 up_world = vec3(0.0, 1.0, 0.0);
-        const float to_eye_len = length(to_eye);
-        const vec3 view_dir = to_eye_len > 1e-5 ? to_eye / to_eye_len
-                                                : vec3(0.0, 0.0, 1.0);
-        // Degenerate when the eye is straight overhead: cross(up, view_dir)
+        // which is the same approximation the azimuth ring always made. It is
+        // built around OBJECT up, because that is the axis the bake's rings
+        // were swept about.
+        const vec3 up_obj = vec3(0.0, 1.0, 0.0);
+        // Degenerate when the eye is straight overhead: cross(up, eye)
         // vanishes and the card would collapse. The bake never hits this (its
         // top ring is 60 degrees, where |cross| is still 0.5) but the eye is
         // not quantised, so the runtime must handle it. Fall back to a fixed
-        // azimuth — at straight-down the choice is arbitrary by definition,
+        // azimuth -- at straight-down the choice is arbitrary by definition,
         // and an arbitrary card beats a NaN one.
-        vec3 right_axis = cross(up_world, view_dir);
+        vec3 right_axis = cross(up_obj, eye_obj_dir);
         const float right_len = length(right_axis);
         right_axis = right_len > 1e-4 ? right_axis / right_len
                                       : vec3(1.0, 0.0, 0.0);
-        const vec3 right_world = right_axis;
-        const vec3 card_up = cross(view_dir, right_world);
-
-        // Model scale: column length of the linear part. Uniform-scale
-        // assumption, the same one part_flatten::transform_uniform_scale makes.
-        const float model_scale = length(model[0].xyz);
-        const float half_world = half_extent * model_scale;
-        // card_up, not up_world: that substitution IS the spherical billboard.
-        const vec3 world_corner = center_world +
-                                  right_world * (sign_xy.x * half_world) +
-                                  card_up * (sign_xy.y * half_world);
-        // The billboard's world position is BUILT rather than transformed:
-        // it is the only vertex in this shader whose placement depends on the
-        // camera, so it cannot come out of the model matrix.
-        world = vec4(world_corner, 1.0);
+        const vec3 card_up = cross(eye_obj_dir, right_axis);
+        // The billboard's position is BUILT rather than passed through: it is
+        // the only vertex in this shader whose placement depends on the
+        // camera, so it cannot come out of the baked position alone.
+        const vec3 corner_local = center_local +
+                                  right_axis * (sign_xy.x * half_extent) +
+                                  card_up * (sign_xy.y * half_extent);
+        world = model * vec4(corner_local, 1.0);
 
         // Which baked view. The ring was baked in OBJECT space, so the eye
-        // direction has to come back through the model rotation before its
-        // azimuth means anything -- otherwise a rotated placement shows the
-        // wrong face of the rock.
-        const vec3 eye_obj = to_eye * mat3(model);   // = transpose(mat3) * to_eye
-        const float eye_obj_len = length(eye_obj);
-        const vec3 eye_obj_dir = eye_obj_len > 1e-5 ? eye_obj / eye_obj_len
-                                                    : vec3(0.0, 0.0, 1.0);
+        // direction had to come back through the placement before its azimuth
+        // meant anything -- otherwise a rotated placement shows the wrong face
+        // of the rock. eye_obj_dir above is that direction.
+        //
         // The exact inverse of the bake's
         //   view_z = (sin(a)*cos(e), sin(e), cos(a)*cos(e))
         // atan2(x,z) ignores y, so the azimuth is unaffected by elevation.
