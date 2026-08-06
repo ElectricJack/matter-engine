@@ -826,6 +826,37 @@ Acceptance:
 >
 > Item 2 is the only step with a genuine unknown. Items 1, 3 and 4 are re-plumbing.
 
+> **PROGRESS 2026-08-05: steps 1 and 2 landed (`b1bd873d`, `a3001140`).**
+> `lod_bake::apply_chart_rung` gives a coarser rung rep 0's table analytically, and
+> `ChartBakeOptions::unify_parameterisation` applies that across a whole ladder on both
+> `bake_lods` and `bake_terrain_lods`. Off by default. Measured on the way:
+> - Adopted UVs agree with the builder's to **0.000046 texels**. They cannot be bit-identical:
+>   the builder uses its local `minU`, while `ChartEntry` stores only `origin`, so this code
+>   *and the GPU* recover `minU` as `dot(origin,T)` — exact in real arithmetic, `minU+O(eps)`
+>   in float. Bit-identity was the wrong target; this path matches the shader at least as
+>   closely as the builder's own vertex UVs do.
+> - **The straddling-triangle risk measured ZERO** on cylinder-overhang at 40% decimation:
+>   worst UV overshoot 0.00000, every adopted UV inside the atlas. One fixture, one ratio —
+>   not yet a general result, but the gutter is not obviously the problem the survey feared.
+> - The unification test was **vacuous on its first fixture** and the failability control
+>   caught it: a 12-triangle cube barely decimates, so its rungs chart identically with or
+>   without the flag and the positive assertion alone would have read as proof.
+>
+> **Step 3 is NOT the one-line key change it looks like.** `variant_key(hash, rung)` mixes the
+> rung in, but `rung` is *also* a real index — `matter_engine.cpp:3546` uses it to select
+> `lod_charts[rung]` and `lod_mesh_data[rung]`. So the key and the mesh selector have to be
+> separated (a `param_id` alongside the rung, defaulting to it, ideally *derived from the
+> chart table's content* so a unified ladder collapses to one key with no flag to desync).
+>
+> **And that surfaces the real step-4 question.** With one variant shared across rungs, the
+> variant holds ONE mesh — whichever rung registered first — and pages are composited from
+> it. If a far sector registers at rung 3 first, page texels get baked from coarse geometry
+> and a later close-up shows them. So a finer rung arriving for an existing variant has to
+> UPGRADE the variant's mesh and re-composite. That upgrade path is the substance of "page
+> pool becomes a per-part mip chain", and it lands in `VtResidency` — the subsystem with the
+> subtlest invariants in this engine (tail gates, retirement graveyard, table generations).
+> Budget for it accordingly; it is not re-plumbing.
+
 Acceptance:
 - **The dome dark patches are gone** (the standing PomProofBrick repro; boundary no longer
   tracks the rung split).
