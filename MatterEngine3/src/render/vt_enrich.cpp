@@ -1007,7 +1007,17 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
     if (!batch || count == 0) return;
 
     const uint64_t frame_index = batch[0].frame_index;
-    im.last_frame_index = frame_index;
+    // MONOTONIC, never a plain assignment. invalidate_part() has no frame of its
+    // own and stamps its deferred graveyard retirement with last_frame_index;
+    // if that value can regress, a page is retired before the batch that last
+    // referenced it completes, the part loses its enrichment, and it falls back
+    // to a flat impostor card. The feature/representation merge (e6879292)
+    // resolved a vt_enrich conflict to HEAD, which had dropped this std::max on
+    // the reasoning that removing the M6.5 directional tier left one writer with
+    // a monotonic frame_index. That is empirically false: it turned every
+    // StreamMountain part near the camera into an all-impostor field (issue
+    // 63346109). Bisected to this one line; the std::max is load-bearing.
+    im.last_frame_index = std::max(im.last_frame_index, frame_index);
     im.retire(frame_index);
 
     // One read for the whole batch: every request in it must be enriched with

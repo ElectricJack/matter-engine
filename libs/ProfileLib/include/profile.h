@@ -199,6 +199,16 @@ private:
 
 #define PROFILE_FRAME() ::matter::profile::frame_mark()
 
+// A named scope for sequential regions where a plain block won't do (variables
+// declared in one region are used in the next). Declare it, then call
+// `var.stop()` at the region boundary; the next PROFILE_SCOPE_NAMED opens as a
+// sibling under the same parent. On an early return/throw the RAII dtor stops it
+// anyway. Compiles out to an empty Scope (no zone string, no register_zone).
+#define PROFILE_SCOPE_NAMED(var, name)                                    \
+    static const int MATTER_PROFILE_CONCAT(_prof_nz_, var) =              \
+        ::matter::profile::register_zone(name);                           \
+    ::matter::profile::Scope var(MATTER_PROFILE_CONCAT(_prof_nz_, var))
+
 #define PROFILE_COUNT(name, n)                                            \
     do {                                                                  \
         static const int MATTER_PROFILE_CONCAT(_prof_ctr_, __LINE__) =    \
@@ -212,6 +222,7 @@ private:
 
 #define PROFILE_SCOPE(name) ((void)0)
 #define PROFILE_SCOPE_ID(zone) ((void)0)
+#define PROFILE_SCOPE_NAMED(var, name) ::matter::profile::Scope var(0)
 #define PROFILE_FRAME() ((void)0)
 #define PROFILE_COUNT(name, n) ((void)0)
 

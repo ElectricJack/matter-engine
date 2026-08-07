@@ -1,4 +1,5 @@
 #include "part_store.h"
+#include "profile.h"
 #include "animation/anim_bundle.h"
 #include "animation/animation_binding_bake.h"
 #include "matrix_math.h"
@@ -1503,8 +1504,10 @@ const LoadedPart* PartStore::commit_staged(StagedPart staged) {
     auto existing = loaded_.find(part_hash);
     if (existing != loaded_.end()) return &existing->second;
     {
+        PROFILE_SCOPE("commit.adopt");
         std::unordered_map<BLASHandle, BLASHandle> remap;
         blas_.adopt_from(*staged.staging, remap);
+        PROFILE_COUNT("adopt_entries", remap.size());
         auto patch = [&remap](std::vector<BLASHandle>& handles) {
             for (BLASHandle& h : handles) {
                 auto it = remap.find(h);
@@ -1527,16 +1530,31 @@ const LoadedPart* PartStore::commit_staged(StagedPart staged) {
     staged.lp.fine_cluster_count = (uint32_t)staged.lp.clusters.size();
 
     auto ins = loaded_.emplace(part_hash, std::move(staged.lp));
-    // Build expansion into a local vector first (see flat path comment above).
-    std::vector<ExpandedNode> exp;
-    build_expansion(part_hash, [this](uint64_t h){ return get_or_load(h); }, exp);
-    loaded_[part_hash].expansion = std::move(exp);
+    {
+        PROFILE_SCOPE("commit.expansion");
+        // Build expansion into a local vector first (see flat path comment).
+        std::vector<ExpandedNode> exp;
+        build_expansion(part_hash, [this](uint64_t h){ return get_or_load(h); },
+                        exp);
+        // Deep-vs-wide discriminator: expansion.nodes is the total instance
+        // paths the walk visited (huge => uncollapsed subtree); expansion.direct
+        // is the sector's own child count (small => the fan-out is below it).
+        PROFILE_COUNT("expansion.nodes", exp.size());
+        PROFILE_COUNT("expansion.direct", loaded_[part_hash].children.size());
+        loaded_[part_hash].expansion = std::move(exp);
+    }
     return &ins.first->second;
 }
 
 const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     auto cached = loaded_.find(part_hash);
     if (cached != loaded_.end()) return &cached->second;
+    // A cold decode. On the render thread (via build_expansion during a publish)
+    // this is the hitch the install-time child pre-warm exists to eliminate; the
+    // counter is the observable invariant (must read 0 per render frame during a
+    // cold fill once pre-warm is in). During install/pre-warm it fires freely --
+    // that's the point, moving the cost there.
+    PROFILE_COUNT("expansion.coldload", 1);
 
     // A flat artifact is an acceleration of an ANLK-free canonical Part, not
     // an independently selectable cache entry.  Select the `.part` root
@@ -1549,9 +1567,21 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
             selected_root + "/" + part_asset::cache_path_resolved(part_hash);
         uint64_t canonical_fingerprint = 0;
         LoadedPart flat;
-        if (part_asset::load_static_part_snapshot(canonical_part, part_hash,
-                                                  canonical_fingerprint) &&
-            load_flat(part_hash, selected_root, flat)) {
+        // MATTER_FLAT_GATE_LOG: which admission gate rejects a written flat.
+        // Fable's hypothesis is that installed variants are LINKED, so gate #1
+        // (load_static_part_snapshot) fails and the coherent path with its full
+        // child subtree runs instead -- the uncollapsed walk.
+        static const bool flat_gate_log =
+            std::getenv("MATTER_FLAT_GATE_LOG") != nullptr;
+        const bool snap_ok = part_asset::load_static_part_snapshot(
+            canonical_part, part_hash, canonical_fingerprint);
+        const bool flat_ok = snap_ok && load_flat(part_hash, selected_root, flat);
+        if (flat_gate_log && !flat_ok)
+            std::fprintf(stderr,
+                         "[flatgate] %016llx REJECT snapshot=%d load_flat=%d\n",
+                         (unsigned long long)part_hash, snap_ok ? 1 : 0,
+                         snap_ok ? (flat_ok ? 1 : 0) : -1);
+        if (flat_ok) {
 #ifdef MATTER_TEST_CACHE_VALIDATION_HOOK
             if (flat_admission_hook_for_tests_) flat_admission_hook_for_tests_();
 #endif
