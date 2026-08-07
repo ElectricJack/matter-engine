@@ -617,8 +617,25 @@ void build_fixture(std::vector<Tri>& tris, std::vector<TriEx>& triex) {
         push(a, b, c);
         push(a, c, d);
     };
-    const float4 bark = make_float4(0.23f, 0.15f, 0.075f, 1.f);
-    const float4 leaf = make_float4(0.075f, 0.28f, 0.105f, 1.f);
+    // The fixture's vertex tint IS its material's registry albedo, and that
+    // equality is load-bearing for this probe rather than cosmetic.
+    //
+    // The card's tint layer is baked from the MATERIAL albedo now (impostor
+    // format v8) because that is what the VT page carries for a slotless
+    // material, while this probe's mesh reference models resolveBaseColor --
+    // the FLAT path, which returns the vertex tint. This file has no virtual
+    // texture and cannot have one, so authoring the two differently would make
+    // "mesh albedo vs card albedo" measure the gap between two colour
+    // authorities instead of the thing this probe exists for: whether the
+    // atlas round-trips a colour faithfully through baking, padding and
+    // sampling. Tying them together removes that confound; a real divergence
+    // in sampling or padding still shows up exactly as before.
+    const auto mat_tint = [](int id) {
+        const MaterialDef* m = MaterialRegistryGet(id);
+        return make_float4(m->albedo[0], m->albedo[1], m->albedo[2], 1.f);
+    };
+    const float4 bark = mat_tint(14);
+    const float4 leaf = mat_tint(29);
     // trunk: a 0.2 m square column, 2 m tall (4 side faces)
     const float r = 0.1f;
     for (int s = 0; s < 4; ++s) {

@@ -349,8 +349,16 @@ void pad_cluster_atlas(std::vector<uint8_t>& atlas);
 // whose depicts-hash does not match the ladder it is loaded beside is stale by
 // definition, and is rejected (and logged) rather than drawn.
 uint64_t depicts_hash_begin();
+// `triex` is REQUIRED, not optional, and the parameter is not defaulted on
+// purpose: the tint layer is baked from the material registry's albedo, so
+// both the writer (part_flatten) and the reader (part_store, which recomputes
+// this hash to decide whether a cached sidecar is fresh) must fold the same
+// material colours. A default would let one side silently omit them and
+// validate a stale atlas as fresh; making it required puts that mistake in
+// front of the compiler instead.
 void     depicts_hash_add_cluster(uint64_t& h, uint32_t cluster_index,
-                                  const std::vector<Tri>& tris);
+                                  const std::vector<Tri>& tris,
+                                  const std::vector<TriEx>& triex);
 uint64_t depicts_hash_finish(uint64_t h);
 
 // "parts/<16-hex>.bundle" — the IMPO section of the part's bundle, same

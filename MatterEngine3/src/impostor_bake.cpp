@@ -3,6 +3,7 @@
 
 #include "part_asset.h"   // part_asset::fnv1a64, replace_file_atomic lives in v2
 #include "part_asset_v2.h"
+#include "material_registry.h"   // MaterialDef::albedo -- the VT path's albedo
 
 #include <algorithm>
 #include <cmath>
@@ -135,7 +136,8 @@ uint64_t depicts_hash_begin() {
 }
 
 void depicts_hash_add_cluster(uint64_t& h, uint32_t cluster_index,
-                              const std::vector<Tri>& tris) {
+                              const std::vector<Tri>& tris,
+                              const std::vector<TriEx>& triex) {
     const auto fold = [&h](const void* data, size_t len) {
         const auto* b = static_cast<const uint8_t*>(data);
         for (size_t i = 0; i < len; ++i) { h ^= b[i]; h *= 1099511628211ull; }
@@ -151,9 +153,124 @@ void depicts_hash_add_cluster(uint64_t& h, uint32_t cluster_index,
                             t.vertex2.x, t.vertex2.y, t.vertex2.z};
         fold(v, sizeof(v));
     }
+
+    // The tint layer is now baked from the MATERIAL REGISTRY's albedo (see
+    // AlbedoLut), so the registry is an input to the pixels and therefore has
+    // to be an input to the identity. Without this, recolouring a material
+    // leaves every existing card showing the old colour, and the sidecar
+    // reports Fresh while doing it -- the same class of bug part_flatten.h's
+    // ladder_shape_digest note describes: "the bake configuration and the
+    // artifact's identity must be derived from ONE set of readers, or a knob
+    // can change the ladder without changing the identity".
+    //
+    // Only the materials this cluster actually REFERENCES are folded, so an
+    // unrelated material edit does not invalidate this part. Sorted and
+    // uniqued first: triangle order must not change the digest.
+    //
+    // `present` is folded beside each colour so that "material 29 is absent
+    // from the registry" and "material 29 is black" are different identities.
+    // They bake differently -- absent falls back to the vertex tint -- so
+    // colliding them would let a part baked before its world's dynamic
+    // materials were defined validate against one baked after.
+    std::vector<int> ids;
+    if (triex.size() == tris.size()) {
+        ids.reserve(triex.size());
+        for (const TriEx& e : triex)
+            if (e.materialId >= 0 && e.materialId < 4096)
+                ids.push_back(e.materialId);
+        std::sort(ids.begin(), ids.end());
+        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    }
+    const uint64_t id_count = ids.size();
+    fold(&id_count, sizeof(id_count));
+    const int registry_count = MaterialRegistryCount();
+    for (int id : ids) {
+        fold(&id, sizeof(id));
+        // `id < registry_count`, not a NULL test: MaterialRegistryGet hands
+        // back a default gray for an out-of-range id rather than nothing, so
+        // the pointer can never report absence. Same rule AlbedoLut uses --
+        // they have to agree, or the identity would claim a colour the bake
+        // did not use.
+        const bool present = id < registry_count;
+        const MaterialDef* def = present ? MaterialRegistryGet(id) : nullptr;
+        const uint8_t present_byte = present ? 1u : 0u;
+        fold(&present_byte, sizeof(present_byte));
+        const float rgb[3] = {def ? def->albedo[0] : 0.0f,
+                              def ? def->albedo[1] : 0.0f,
+                              def ? def->albedo[2] : 0.0f};
+        fold(rgb, sizeof(rgb));
+    }
 }
 
 uint64_t depicts_hash_finish(uint64_t h) { return matter_version::fold(h); }
+
+// ---------------------------------------------------------------------------
+// THE CARD'S ALBEDO MUST BE THE VIRTUAL TEXTURE'S ALBEDO, NOT THE VERTEX TINT.
+//
+// gbuffer.frag shades a mesh two different ways depending on whether its rung
+// reached a VT page, and the two disagree about where colour comes from:
+//
+//   VT path    vt_composite.comp sample_material(): a material with no detail
+//              tileset slot -- which every prop material is; the only slots
+//              are the five ground tilesets -- takes `s.albedo = m.albedo.rgb`,
+//              filled from MaterialGpuRecord::base_roughness.
+//   flat path  resolveBaseColor() = mix(base_roughness.rgb, tint.rgb, tint.a),
+//              and DSL geometry authors tint.a = 1, so it returns the VERTEX
+//              TINT and the material's own colour is never consulted.
+//
+// Those are two independently authored numbers that nothing reconciles; on
+// world_demo's conifers they differ by ~3x. The impostor bake sampled TriEx
+// tint, so a card was always on the flat side of that split -- and once the
+// mesh rungs were fixed to reach their pages (a6331fba), the cards were the
+// only thing left showing the pale value, which is what made them stand out.
+//
+// So resolve the same albedo the compositor would: the material's registry
+// albedo, per subsample, AVERAGED rather than voted. Averaging is what makes
+// a bark/foliage boundary antialias inside a texel exactly as the tint
+// average did; a dominant-material pick would harden every such boundary.
+//
+// The alpha written alongside is 1.0, which makes resolveBaseColor return
+// these bytes unchanged -- so this needs no shader change at all.
+//
+// FALLBACK is the old behaviour, deliberately: a material the registry does
+// not know (id < 0, past the table, or a diagnostic-offset id) keeps its
+// vertex tint rather than baking black. That covers the have_ex == false path
+// and any part baked before its world's dynamic materials were defined.
+struct AlbedoLut {
+    // Indexed by materialId. `known` distinguishes "registry gave us a colour"
+    // from "id absent", which is what selects the tint fallback per subsample.
+    std::vector<float3> albedo;
+    std::vector<uint8_t> known;
+
+    void build(const std::vector<TriEx>& triex) {
+        int hi = -1;
+        for (const TriEx& e : triex)
+            if (e.materialId >= 0 && e.materialId < 4096)
+                hi = std::max(hi, e.materialId);
+        if (hi < 0) return;
+        albedo.assign(static_cast<size_t>(hi) + 1, make_float3(0, 0, 0));
+        known.assign(static_cast<size_t>(hi) + 1, 0u);
+        // The `id < count` test is the ONLY thing separating a real material
+        // from an unknown one: MaterialRegistryGet never returns NULL -- an
+        // out-of-range id gets a default GRAY back. Testing the pointer would
+        // bake that gray into the card and look like a shading bug rather
+        // than a missing material.
+        const int count = MaterialRegistryCount();
+        for (int id = 0; id <= hi && id < count; ++id) {
+            const MaterialDef* def = MaterialRegistryGet(id);
+            albedo[static_cast<size_t>(id)] =
+                make_float3(def->albedo[0], def->albedo[1], def->albedo[2]);
+            known[static_cast<size_t>(id)] = 1u;
+        }
+    }
+
+    bool lookup(int id, float3& out) const {
+        if (id < 0 || static_cast<size_t>(id) >= known.size()) return false;
+        if (!known[static_cast<size_t>(id)]) return false;
+        out = albedo[static_cast<size_t>(id)];
+        return true;
+    }
+};
 
 // ---------------------------------------------------------------------------
 // The bake.
@@ -162,6 +279,8 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                   const std::vector<TriEx>& triex, ClusterImpostor& out) {
     if (tris.empty()) return false;
     const bool have_ex = triex.size() == tris.size();
+    AlbedoLut albedo_lut;
+    if (have_ex) albedo_lut.build(triex);
 
     // Centre: the midpoint of the vertex AABB. Half-extent: the radius of the
     // bounding SPHERE about that centre, so one square quad of that size
@@ -286,8 +405,15 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                             w0 * e.N0.y + w1 * e.N1.y + w2 * e.N2.y,
                             w0 * e.N0.z + w1 * e.N1.z + w2 * e.N2.z);
                         s.ao = w0 * e.ao0 + w1 * e.ao1 + w2 * e.ao2;
-                        s.tint = e.tint;
                         s.material = e.materialId;
+                        // The VT path's albedo where the registry knows this
+                        // material; the authored tint where it does not. See
+                        // AlbedoLut above for why this is not the tint.
+                        float3 ma{};
+                        if (albedo_lut.lookup(e.materialId, ma))
+                            s.tint = make_float4(ma.x, ma.y, ma.z, 1.0f);
+                        else
+                            s.tint = e.tint;
                     } else {
                         s.normal = unit(cross3(t.vertex1 - t.vertex0,
                                                t.vertex2 - t.vertex0));

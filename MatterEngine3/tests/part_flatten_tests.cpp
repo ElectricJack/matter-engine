@@ -16,6 +16,7 @@
 #include "part_cluster.h"
 #include "render/lod_distance.h"   // M3: the ONE selection rule, asserted against
                                    // the authored ladder's own metres
+#include "../../libs/MatterSurfaceLib/include/material_registry.h"
 #include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
 #include "../../libs/MatterSurfaceLib/include/mesh_simplifier.hpp"
@@ -1622,7 +1623,8 @@ static void test_authored_ladder_impostor_terminal() {
         // implements.
         uint64_t depicts = impostor::depicts_hash_begin();
         impostor::depicts_hash_add_cluster(
-            depicts, 0u, entries[lods[0].blas_indices[0]]->triangles);
+            depicts, 0u, entries[lods[0].blas_indices[0]]->triangles,
+            entries[lods[0].blas_indices[0]]->tri_extra);
         impostor::PartImpostor loaded;
         impostor::LoadFailure fail = impostor::LoadFailure::None;
         std::string reason;
@@ -2533,7 +2535,8 @@ static void test_impostor_source_and_distance() {
     {
         uint64_t d0 = impostor::depicts_hash_begin();
         impostor::depicts_hash_add_cluster(
-            d0, 0u, e1[lods1[0].blas_indices[0]]->triangles);
+            d0, 0u, e1[lods1[0].blas_indices[0]]->triangles,
+            e1[lods1[0].blas_indices[0]]->tri_extra);
         impostor::PartImpostor loaded;
         impostor::LoadFailure fail = impostor::LoadFailure::None;
         std::string why;
@@ -2550,7 +2553,8 @@ static void test_impostor_source_and_distance() {
         if (lods1.size() >= 3) {
             uint64_t dc = impostor::depicts_hash_begin();
             impostor::depicts_hash_add_cluster(
-                dc, 0u, e1[lods1[term1 - 1].blas_indices[0]]->triangles);
+                dc, 0u, e1[lods1[term1 - 1].blas_indices[0]]->triangles,
+                e1[lods1[term1 - 1].blas_indices[0]]->tri_extra);
             impostor::PartImpostor other;
             CHECK(!impostor::load(fimp, h, impostor::depicts_hash_finish(dc), other),
                   "imp src: it does NOT answer to the coarsest rung's hash, so "
@@ -2859,7 +2863,22 @@ static void test_impostor_bake_deterministic() {
 static void test_impostor_atlas_padding() {
     printf("=== test_impostor_atlas_padding ===\n");
     std::vector<Tri> tris = sphere_tris(12, 8);
-    std::vector<TriEx> ex = triex_for(tris, 3);   // uniform tint (0.5,0.25,0.75,1)
+    // The card's colour now comes from the MATERIAL, not TriEx::tint, so the
+    // fixture needs a material whose albedo is EXACTLY representable -- this
+    // assertion is a byte equality and to_u8 rounds at .5.
+    //
+    // Builtin 3 (the previous fixture material) is 0.8,0.7,0.3, and 0.7*255 is
+    // exactly 178.5: dead on the rounding boundary, so the subsample average's
+    // last-bit wobble flips covered texels between 178 and 179 and the
+    // equality fails for reasons that have nothing to do with padding. These
+    // three values are the same ones the old vertex tint carried, so the
+    // expected bytes below are unchanged and the assertion stays strict.
+    MaterialDef pad_mat{};
+    MaterialRegistryDefaultDynamicDef(&pad_mat);
+    pad_mat.albedo[0] = 0.5f; pad_mat.albedo[1] = 0.25f; pad_mat.albedo[2] = 0.75f;
+    const int pad_id = MaterialRegistryDefineDynamic(&pad_mat, "pf_pad_fixture");
+    CHECK(pad_id >= 0, "padding: fixture material defined");
+    std::vector<TriEx> ex = triex_for(tris, pad_id >= 0 ? pad_id : 3);
     impostor::ClusterImpostor a;
     CHECK(impostor::bake_cluster(0, tris, ex, a), "bake ok");
     const uint32_t cell = impostor::cell_px();
@@ -2890,6 +2909,9 @@ static void test_impostor_atlas_padding() {
                     if (d < slot) slot = d;
                 }
         }
+    // Unchanged from before the albedo switch: 0.5/0.25/0.75 -> 128/64/191,
+    // now sourced from the fixture material above instead of TriEx::tint.
+    // Alpha is 255 because a resolved material albedo writes tint.a = 1.
     const uint8_t expect_tint[4] = {128, 64, 191, 255};
     size_t ring = 0, beyond = 0;
     size_t wrong_tint = 0, zero_normal = 0, alpha_grown = 0, not_zero_fill = 0;
@@ -2916,6 +2938,9 @@ static void test_impostor_atlas_padding() {
     CHECK(wrong_tint == 0, "padding: every ring texel carries the covered tint exactly");
     CHECK(zero_normal == 0, "padding: no ring texel keeps the zero normal encoding");
     CHECK(not_zero_fill == 0, "padding: texels beyond kPadTexels stay zero-filled");
+    // Leave the registry as we found it: dynamic entries are per-world, and a
+    // fixture material outliving its test would shift every later test's ids.
+    MaterialRegistryResetDynamic();
     printf("PASSED\n");
 }
 
@@ -3132,7 +3157,7 @@ static void test_impostor_cell_px_parametrized() {
     part_a.clusters.resize(1);
     CHECK(impostor::bake_cluster(0, tris, ex, part_a.clusters[0]), "bake at 16 px");
     uint64_t ha = impostor::depicts_hash_begin();
-    impostor::depicts_hash_add_cluster(ha, 0, tris);
+    impostor::depicts_hash_add_cluster(ha, 0, tris, ex);
     const uint64_t depicts_a = impostor::depicts_hash_finish(ha);
 
     pf_set_env("MATTER_IMPOSTOR_CELL_PX", "32");
@@ -3144,7 +3169,7 @@ static void test_impostor_cell_px_parametrized() {
     part_b.clusters.resize(1);
     CHECK(impostor::bake_cluster(0, tris, ex, part_b.clusters[0]), "bake at 32 px");
     uint64_t hb = impostor::depicts_hash_begin();
-    impostor::depicts_hash_add_cluster(hb, 0, tris);
+    impostor::depicts_hash_add_cluster(hb, 0, tris, ex);
     const uint64_t depicts_b = impostor::depicts_hash_finish(hb);
 
     // 1. The setting reaches the bake at all.
@@ -3192,6 +3217,94 @@ static void test_impostor_cell_px_parametrized() {
     printf("PASSED\n");
 }
 
+// The card's tint layer must carry the MATERIAL REGISTRY's albedo -- the same
+// number vt_composite.comp uses for a slotless material -- and NOT TriEx::tint.
+// Those are two independently authored colours; before this, a mesh rung that
+// reached its VT page and the card that replaces it disagreed by whatever the
+// content happened to author (~3x on world_demo's conifers).
+//
+// Also gates the IDENTITY: baking a registry value in means recolouring that
+// material has to invalidate the card, or every existing atlas keeps the old
+// colour while reporting Fresh.
+static void test_impostor_bakes_material_albedo() {
+    printf("=== test_impostor_bakes_material_albedo ===\n");
+    const int kMat = 6;
+    std::vector<Tri> tris = sphere_tris(12, 8);
+    std::vector<TriEx> ex = triex_for(tris, kMat);   // fixture tint 0.5,0.25,0.75
+
+    impostor::ClusterImpostor imp;
+    CHECK(impostor::bake_cluster(0, tris, ex, imp), "bake ok");
+
+    const MaterialDef* def = MaterialRegistryGet(kMat);
+    CHECK(def != nullptr, "registry has the fixture's material");
+
+    // First well-covered texel. Coverage lives in the SHADE layer's alpha;
+    // the tint layer is the second layer at the same texel offset.
+    const size_t layer = impostor::layer_bytes();
+    const std::vector<uint8_t>& a = imp.atlas;
+    CHECK(a.size() >= layer * 2, "atlas has both layers");
+    size_t found = SIZE_MAX;
+    for (size_t t = 0; t + 3 < layer; t += 4)
+        if (a[t + 3] > 200u) { found = t; break; }
+    CHECK(found != SIZE_MAX, "the bake covered at least one texel");
+
+    if (found != SIZE_MAX) {
+        const auto u8 = [](float v) {
+            return int(v <= 0.f ? 0.f : (v >= 1.f ? 255.f : v * 255.f + 0.5f));
+        };
+        const int got[3] = {a[layer + found + 0], a[layer + found + 1],
+                            a[layer + found + 2]};
+        const int want[3] = {u8(def->albedo[0]), u8(def->albedo[1]),
+                             u8(def->albedo[2])};
+        // +-2 absorbs the supersample average and the pad dilation; the claim
+        // is "this is the material's colour", not a bit-exact round trip.
+        CHECK(std::abs(got[0] - want[0]) <= 2 &&
+              std::abs(got[1] - want[1]) <= 2 &&
+              std::abs(got[2] - want[2]) <= 2,
+              "the tint layer carries the MATERIAL's registry albedo");
+        // And is demonstrably NOT the vertex tint the fixture authored, which
+        // is what it used to be. Without this the check above would pass on a
+        // material whose albedo happened to resemble the tint.
+        const int tint_u8[3] = {u8(0.5f), u8(0.25f), u8(0.75f)};
+        CHECK(std::abs(got[0] - tint_u8[0]) > 2 ||
+              std::abs(got[1] - tint_u8[1]) > 2 ||
+              std::abs(got[2] - tint_u8[2]) > 2,
+              "and NOT TriEx::tint (the pre-fix behaviour)");
+        CHECK(a[layer + found + 3] >= 253u,
+              "tint alpha is 1, so resolveBaseColor returns these bytes as-is");
+    }
+
+    // ---- identity failability -------------------------------------------
+    // Same geometry, same material id, DIFFERENT registry albedo => different
+    // depicts hash. Recolouring a material must invalidate the cards that
+    // depict it; if this ever stops firing, stale cards validate as fresh.
+    MaterialDef dyn{};
+    MaterialRegistryDefaultDynamicDef(&dyn);
+    dyn.albedo[0] = 0.11f; dyn.albedo[1] = 0.22f; dyn.albedo[2] = 0.33f;
+    const int id_a = MaterialRegistryDefineDynamic(&dyn, "pf_albedo_probe");
+    CHECK(id_a >= 0, "dynamic material defined");
+    if (id_a >= 0) {
+        std::vector<TriEx> dex = triex_for(tris, id_a);
+        uint64_t h1 = impostor::depicts_hash_begin();
+        impostor::depicts_hash_add_cluster(h1, 0, tris, dex);
+        const uint64_t depicts_a = impostor::depicts_hash_finish(h1);
+
+        MaterialRegistryResetDynamic();
+        dyn.albedo[0] = 0.91f; dyn.albedo[1] = 0.92f; dyn.albedo[2] = 0.93f;
+        const int id_b = MaterialRegistryDefineDynamic(&dyn, "pf_albedo_probe");
+        CHECK(id_b == id_a, "the recoloured material reuses its id");
+        uint64_t h2 = impostor::depicts_hash_begin();
+        impostor::depicts_hash_add_cluster(h2, 0, tris, dex);
+        const uint64_t depicts_b = impostor::depicts_hash_finish(h2);
+
+        CHECK(depicts_a != depicts_b,
+              "recolouring a material changes the depicts hash, so its cards "
+              "rebake instead of validating stale");
+        MaterialRegistryResetDynamic();
+    }
+    printf("PASSED\n");
+}
+
 static void test_impostor_sidecar_failability() {
     printf("=== test_impostor_sidecar_failability ===\n");
     std::vector<Tri> tris = sphere_tris(12, 8);
@@ -3201,7 +3314,7 @@ static void test_impostor_sidecar_failability() {
     CHECK(impostor::bake_cluster(0, tris, ex, part.clusters[0]), "bake ok");
 
     uint64_t h = impostor::depicts_hash_begin();
-    impostor::depicts_hash_add_cluster(h, 0, tris);
+    impostor::depicts_hash_add_cluster(h, 0, tris, ex);
     const uint64_t depicts = impostor::depicts_hash_finish(h);
     const uint64_t part_hash = 0xABCDEF0123456789ull;
     const std::string path =
@@ -3384,7 +3497,8 @@ static void test_flatten_appends_impostor_rung() {
         terminal_mesh_tris = replaced->triangles.size();
         const auto& depicted = blas.get_entries()[lods[0].blas_indices[0]];
         impostor::depicts_hash_add_cluster(depicts, static_cast<uint32_t>(ci),
-                                           depicted->triangles);
+                                           depicted->triangles,
+                                           depicted->tri_extra);
         // The rung the impostor takes over from now has a REAL switch
         // threshold; before M2.5 the terminal rung threshold was always 0.
         CHECK(lods[lods.size() - 2].screen_size_threshold > 0.0f,
@@ -3472,6 +3586,7 @@ int main() {
     test_impostor_view_index_inverse();
     test_impostor_elevation_rings_differ();
     test_impostor_quad_shape();
+    test_impostor_bakes_material_albedo();
     test_impostor_sidecar_failability();
     test_flatten_appends_impostor_rung();
     test_mesh_rung_cap_and_stale_rejection();  // the cap + its staleness gate

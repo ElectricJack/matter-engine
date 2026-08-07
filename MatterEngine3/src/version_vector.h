@@ -112,7 +112,17 @@ inline constexpr uint32_t kFlatFormat   = 9u;  // part_asset::kFormatVersionFlat
 // voted material's base colour (tint.a -> 0) and decodes oct (0,0) as a real
 // direction -- the pale-olive canopy wash of issue 6e0c76fc -- so v6 bytes
 // must rebake, not redraw.
-inline constexpr uint32_t kImpostorFormat = 7u;  // impostor_bake::kFormatVersion
+// 8: the tint layer carries the MATERIAL REGISTRY's albedo, not TriEx::tint.
+// gbuffer.frag shades a charted mesh rung from the VT page (which, for a
+// material with no detail tileset slot, is MaterialGpuRecord::base_roughness)
+// and an unrouted one from resolveBaseColor's vertex tint -- two independently
+// authored colours that differ ~3x on world_demo's conifers. Cards were always
+// on the tint side, so once a6331fba routed the mesh rungs to their pages the
+// cards were the only pale thing left. A v7 atlas decodes structurally fine
+// and simply shows the old colour, so v7 bytes must rebake, not redraw.
+// depicts_hash_add_cluster now folds the referenced materials' albedos too, so
+// recolouring a material invalidates the cards that depict it.
+inline constexpr uint32_t kImpostorFormat = 8u;  // impostor_bake::kFormatVersion
 inline constexpr uint32_t kBundleFormat = 1u;  // part_bundle::kBundleFormatVersion
 
 // Reserved for M3b's content-addressed stage outputs. Zero means "no stage

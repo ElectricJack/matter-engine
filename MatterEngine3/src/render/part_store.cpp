@@ -493,9 +493,18 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 const auto& src = lods[0].blas_indices;
                 if (src.size() != 1 || src[0] >= probe_entries.size()) continue;
                 impostor_rung[ci] = lods.size() - 1;
+                // tri_extra alongside triangles, and from the SAME entry: the
+                // hash now folds the referenced materials' registry albedos
+                // (the tint layer is baked from them), so reader and writer
+                // must present identical material sets. Feeding triangles
+                // without their tri_extra would fold an empty material list
+                // here and a populated one in part_flatten, rejecting every
+                // atlas in the world as stale -- the silent mesh-only
+                // degradation this block's comment above already warns about.
                 impostor::depicts_hash_add_cluster(
                     depicts, static_cast<uint32_t>(ci),
-                    probe_entries[src[0]]->triangles);
+                    probe_entries[src[0]]->triangles,
+                    probe_entries[src[0]]->tri_extra);
                 any_rung = true;
             }
             if (any_rung) {

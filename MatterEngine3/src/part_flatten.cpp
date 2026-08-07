@@ -975,8 +975,10 @@ static FlattenResult flatten_static_lod_ladder(
                 // the renderer reads the channel unconditionally.
                 for (TriEx& e : own_ex)
                     e.tint = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-                impostor::depicts_hash_add_cluster(impostor_depicts, imp.cluster_index,
-                                                   src->triangles);
+                impostor::depicts_hash_add_cluster(impostor_depicts,
+                                                   imp.cluster_index,
+                                                   src->triangles,
+                                                   src->tri_extra);
                 part_impostor.clusters.push_back(std::move(imp));
                 tp = &own_tris; ep = &own_ex;
             } else if (name != "decimate") {
@@ -2152,7 +2154,8 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
                     if (register_level(quad_tris, quad_ex, impostor_eps,
                                        level_metas)) {
                         impostor::depicts_hash_add_cluster(
-                            impostor_depicts, imp.cluster_index, src->triangles);
+                            impostor_depicts, imp.cluster_index, src->triangles,
+                            src->tri_extra);
                         part_impostor.clusters.push_back(std::move(imp));
                     } else {
                         return res;
