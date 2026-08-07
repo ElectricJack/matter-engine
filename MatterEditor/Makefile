@@ -1253,14 +1253,17 @@ build/test_issue_reporter.exe: tests/test_issue_reporter.cpp src/issue_reporter.
                                src/console_log.cpp src/issue_reporter.h \
                                $(ME3_DIR)/src/props/props.cpp \
                                $(ME3_DIR)/src/util/json_doc.cpp \
+                               $(PROFILE_DIR)/src/profile.cpp \
                                build/windows/obj/flecs.o
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) tests/test_issue_reporter.cpp src/issue_reporter.cpp \
 	    src/console_log.cpp $(ME3_DIR)/src/props/props.cpp \
-	    $(ME3_DIR)/src/util/json_doc.cpp build/windows/obj/flecs.o -o $@ \
+	    $(ME3_DIR)/src/util/json_doc.cpp $(PROFILE_DIR)/src/profile.cpp \
+	    build/windows/obj/flecs.o -o $@ \
 	    -std=c++17 -Wall -Isrc -I../MatterEngine3/include -I../MatterEngine3/src \
 	    -I../libs/MatterSurfaceLib/include -I../libs/SpatialQueryLib/include \
 	    -I../libs/MemoryLib/include -I../libs/MathLib/include \
+	    -I$(PROFILE_DIR)/include \
 	    -I../third_party/imgui -I../third_party/ImGuizmo \
 	    -I../third_party/Vulkan-Headers/include -I../third_party/flecs \
 	    -I../libs/ParticleFlowLib/include -I../third_party/box3d/include \

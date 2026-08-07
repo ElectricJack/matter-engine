@@ -119,6 +119,43 @@ int main() {
               "smoothness in [0,1]");
     }
 
+    // --- chrome trace dump ----------------------------------------------
+    {
+        // Record a render zone, a bake zone, and a counter, then a frame.
+        const int rz = register_zone("ui.loop");
+        const int bz = register_zone("bake.stagemem");
+        add_ns(rz, 2000);
+        add_ns(bz, 8000);
+        add_count(register_counter("layout_rebuilds"), 3);
+        frame_mark();
+        const char* path = "profile_trace_test.json";
+        CHECK(dump_chrome_trace(path), "dump_chrome_trace writes a file");
+        std::FILE* rf = std::fopen(path, "rb");
+        CHECK(rf != nullptr, "trace file is readable");
+        if (rf) {
+            std::string body;
+            char buf[4096];
+            size_t got;
+            while ((got = std::fread(buf, 1, sizeof(buf), rf)) > 0)
+                body.append(buf, got);
+            std::fclose(rf);
+            CHECK(body.find("\"traceEvents\"") != std::string::npos,
+                  "trace has traceEvents array");
+            CHECK(body.find("bake.stagemem") != std::string::npos,
+                  "trace includes the bake zone");
+            CHECK(body.find("\"tid\":2") != std::string::npos,
+                  "bake zone lands on the bake lane (tid 2)");
+            CHECK(body.find("frame_ms") != std::string::npos,
+                  "trace emits the frame_ms counter track");
+            CHECK(body.find("layout_rebuilds") != std::string::npos,
+                  "trace emits the layout_rebuilds counter");
+            CHECK(!body.empty() && body[0] == '{' &&
+                      body.find_last_of('}') != std::string::npos,
+                  "trace is brace-delimited JSON");
+        }
+        std::remove(path);
+    }
+
     if (g_failures == 0)
         std::printf("ALL PASS (ProfileLib P0)\n");
     else

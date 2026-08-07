@@ -320,5 +320,74 @@ FrameStats frame_stats(double budget_ms) {
     return stats;
 }
 
+namespace {
+// A zone belongs to the "bake" worker lane if its name starts with "bake.";
+// everything else is render-thread work. tid 1 = render, 2 = bake.
+int zone_lane(const char* name) {
+    return (std::strncmp(name, "bake.", 5) == 0) ? 2 : 1;
+}
+}  // namespace
+
+bool dump_chrome_trace(const char* path) {
+    if (path == nullptr) return false;
+    std::FILE* f = std::fopen(path, "wb");
+    if (f == nullptr) return false;
+
+    std::vector<FrameRecord> frames(kFrameHistory);
+    const int n = copy_recent(frames.data(), kFrameHistory);
+    const int zones = zone_count();
+    const int counters = counter_count();
+
+    std::fprintf(f, "{\"displayTimeUnit\":\"ms\",\"traceEvents\":[\n");
+    // Lane + process names.
+    std::fprintf(f,
+                 "{\"ph\":\"M\",\"name\":\"process_name\",\"pid\":1,\"tid\":0,"
+                 "\"args\":{\"name\":\"MatterEngine\"}},\n"
+                 "{\"ph\":\"M\",\"name\":\"thread_name\",\"pid\":1,\"tid\":1,"
+                 "\"args\":{\"name\":\"render\"}},\n"
+                 "{\"ph\":\"M\",\"name\":\"thread_name\",\"pid\":1,\"tid\":2,"
+                 "\"args\":{\"name\":\"bake worker\"}}");
+
+    // Synthetic timeline: frames laid end to end by wall time. Within a frame,
+    // each lane stacks its zones from the frame start -- an approximation (true
+    // intra-frame offsets need per-thread event capture, a later refinement),
+    // but it makes per-frame composition and frame-to-frame drift explorable.
+    double frame_start_us = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const FrameRecord& r = frames[i];
+        double lane_off_us[3] = {frame_start_us, frame_start_us, frame_start_us};
+        for (int z = 0; z < zones; ++z) {
+            if (r.zone_ns[z] == 0) continue;
+            const char* name = zone_name(z);
+            const int lane = zone_lane(name);
+            const double dur_us = r.zone_ns[z] / 1000.0;
+            std::fprintf(f,
+                         ",\n{\"ph\":\"X\",\"pid\":1,\"tid\":%d,\"name\":\"%s\","
+                         "\"cat\":\"%s\",\"ts\":%.3f,\"dur\":%.3f}",
+                         lane, name, lane == 2 ? "bake" : "render",
+                         lane_off_us[lane], dur_us);
+            lane_off_us[lane] += dur_us;
+        }
+        // frame_ms counter track (wall time) + each named counter.
+        std::fprintf(f,
+                     ",\n{\"ph\":\"C\",\"pid\":1,\"tid\":0,\"name\":\"frame_ms\","
+                     "\"ts\":%.3f,\"args\":{\"ms\":%.3f}}",
+                     frame_start_us, r.wall_ns / 1.0e6);
+        for (int c = 0; c < counters; ++c) {
+            if (r.counter[c] == 0) continue;
+            std::fprintf(f,
+                         ",\n{\"ph\":\"C\",\"pid\":1,\"tid\":0,\"name\":\"%s\","
+                         "\"ts\":%.3f,\"args\":{\"n\":%llu}}",
+                         counter_name(c), frame_start_us,
+                         (unsigned long long)r.counter[c]);
+        }
+        // Advance by the real frame wall time so the axis reads in ms.
+        frame_start_us += r.wall_ns / 1000.0;
+    }
+    std::fprintf(f, "\n]}\n");
+    std::fclose(f);
+    return true;
+}
+
 }  // namespace matter::profile
 }  // namespace matter

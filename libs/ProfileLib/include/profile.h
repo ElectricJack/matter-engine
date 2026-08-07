@@ -119,6 +119,15 @@ struct FrameStats {
 };
 FrameStats frame_stats(double budget_ms);
 
+// Serialize the resident FrameRecord history to a Chrome-trace / Perfetto JSON
+// file (loads directly in chrome://tracing). Zones are laid out per frame on a
+// synthetic timeline built from wall_ns, split across a "render" lane and a
+// "bake" lane (by zone-name prefix), with frame_ms and each counter emitted as
+// counter tracks so jitter/spikes are visible. Returns false if the file cannot
+// be opened. Safe when compiled out / never enabled -- it just writes an empty
+// trace. This is the tail persisted with each issue-report screenshot.
+bool dump_chrome_trace(const char* path);
+
 // ---------------------------------------------------------------------------
 // RAII scope. Construction snapshots the clock iff enabled; destruction adds the
 // elapsed ns to the zone. Non-copyable, non-movable.
