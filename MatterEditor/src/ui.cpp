@@ -4,11 +4,14 @@
 #include <cmath>
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
+#include <vector>
 #include <filesystem>
 #include <system_error>
 
 #include "imgui.h"
 #include "imgui_internal.h"
+#include "profile.h"
 #include "ImGuizmo.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
@@ -763,6 +766,115 @@ void Ui::draw_performance_panel(matter::WorldSession* session,
     }
 
     draw_streaming_lod_section(session, props, commands, camera);
+    ImGui::End();
+}
+
+void Ui::draw_profiler_panel() {
+    namespace prof = matter::profile;
+    if (!ImGui::Begin("Profiler")) {
+        ImGui::End();
+        return;
+    }
+
+    bool capture = prof::enabled();
+    if (ImGui::Checkbox("Capture", &capture)) prof::set_enabled(capture);
+    ImGui::SameLine();
+    static float budget_ms = 16.6f;
+    ImGui::SetNextItemWidth(80.0f);
+    ImGui::InputFloat("budget (ms)", &budget_ms, 0.0f, 0.0f, "%.1f");
+
+    const prof::FrameStats st = prof::frame_stats(budget_ms);
+    ImGui::Separator();
+    ImGui::Text("frame   last %.2f   min %.2f   max %.2f   avg %.2f  ms",
+                st.last_ms, st.min_ms, st.max_ms, st.mean_ms);
+    // Smoothness: 1.0 = perfectly even; red as it degrades.
+    const ImVec4 smooth_col = st.smoothness > 0.75f
+                                  ? ImVec4(0.5f, 0.9f, 0.5f, 1.0f)
+                                  : (st.smoothness > 0.4f
+                                         ? ImVec4(0.95f, 0.8f, 0.3f, 1.0f)
+                                         : ImVec4(0.95f, 0.45f, 0.45f, 1.0f));
+    ImGui::Text("jitter  stddev %.2f ms   p99 %.2f ms   over-budget %d/%d",
+                st.stddev_ms, st.p99_ms, st.over_budget, st.samples);
+    ImGui::TextColored(smooth_col, "smoothness %.2f", st.smoothness);
+
+    // Frame-time history graph.
+    static std::vector<prof::FrameRecord> ring;
+    ring.resize(prof::kFrameHistory);
+    const int n = prof::copy_recent(ring.data(), prof::kFrameHistory);
+    static std::vector<float> ms_series;
+    ms_series.resize(n > 0 ? n : 1);
+    for (int i = 0; i < n; ++i)
+        ms_series[i] = static_cast<float>(ring[i].wall_ns / 1.0e6);
+    if (n > 0) {
+        char overlay[48];
+        std::snprintf(overlay, sizeof overlay, "%.1f ms  (~%.0f fps)",
+                      st.last_ms, st.last_ms > 0.0 ? 1000.0 / st.last_ms : 0.0);
+        const float top =
+            static_cast<float>(std::max(st.max_ms, budget_ms * 1.5));
+        ImGui::PlotLines("##frames", ms_series.data(), n, 0, overlay, 0.0f, top,
+                         ImVec2(-1.0f, 64.0f));
+    }
+
+    // Per-zone breakdown, AVERAGED over the resident window (a single frame's
+    // zones are noisy -- bake zones are only nonzero on frames a bake landed).
+    ImGui::Separator();
+    ImGui::TextDisabled("avg ms/frame over %d frames", n);
+    if (n > 0) {
+        const int zones = prof::zone_count();
+        std::vector<double> avg(zones, 0.0);
+        for (int i = 0; i < n; ++i)
+            for (int z = 0; z < zones; ++z)
+                avg[z] += ring[i].zone_ns[z] / 1.0e6;
+        std::vector<int> order;
+        order.reserve(zones);
+        for (int z = 0; z < zones; ++z)
+            if (avg[z] > 0.0) order.push_back(z);
+        std::sort(order.begin(), order.end(),
+                  [&](int a, int b) { return avg[a] > avg[b]; });
+        if (ImGui::BeginTable("prof_zones", 3,
+                              ImGuiTableFlags_RowBg |
+                                  ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("zone");
+            ImGui::TableSetupColumn("ms/frame");
+            ImGui::TableSetupColumn("lane");
+            ImGui::TableHeadersRow();
+            for (int z : order) {
+                const char* name = prof::zone_name(z);
+                const bool bake = std::strncmp(name, "bake.", 5) == 0;
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(name);
+                ImGui::TableSetColumnIndex(1);
+                ImGui::Text("%.3f", avg[z] / n);
+                ImGui::TableSetColumnIndex(2);
+                ImGui::TextDisabled(bake ? "bake" : "render");
+            }
+            ImGui::EndTable();
+        }
+        const int counters = prof::counter_count();
+        for (int c = 0; c < counters; ++c) {
+            double sum = 0.0;
+            for (int i = 0; i < n; ++i) sum += ring[i].counter[c];
+            if (sum == 0.0) continue;
+            ImGui::Text("#%-16s %.2f /frame", prof::counter_name(c), sum / n);
+        }
+    }
+
+    ImGui::Separator();
+    static char dump_status[160] = "";
+    if (ImGui::Button("Dump trace now")) {
+        if (prof::dump_chrome_trace("profile_trace.json"))
+            std::snprintf(dump_status, sizeof dump_status,
+                          "wrote profile_trace.json (chrome://tracing)");
+        else
+            std::snprintf(dump_status, sizeof dump_status,
+                          "failed to write profile_trace.json");
+    }
+    if (dump_status[0]) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", dump_status);
+    }
+
     ImGui::End();
 }
 
