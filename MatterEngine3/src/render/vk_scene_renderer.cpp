@@ -9941,6 +9941,39 @@ bool VkSceneRenderer::build_ray_geometry(
     return true;
 }
 
+// The RT hit shader counts every part record it rejects, but the only reader
+// was a test-only readback compiled out of shipping builds -- so in a real
+// session a rejection was invisible. A rejection is exactly the signal that
+// says whether the stale-rt_parts-tail clear below is doing anything. Called
+// once per frame from prepare_frame, where this slot's fence has already been
+// waited on, so the value belongs to the slot's PREVIOUS submission (the
+// counter is zeroed per frame in emit_ray_instances). Logged on change only:
+// a steady count would otherwise spam every frame.
+void VkSceneRenderer::report_rt_trace_counters(uint32_t frame_slot) {
+    if (frame_slot >= frames_.size()) return;
+    FrameResources& selected = frames_[frame_slot];
+    if (selected.rt_error_counter.buffer == VK_NULL_HANDLE) return;
+    std::string error;
+    if (!matter::map_buffer(selected.rt_error_counter, error) ||
+        !matter::invalidate_buffer(selected.rt_error_counter, 0,
+                                   sizeof(GpuRtCounters), error))
+        return;
+    const auto* gpu =
+        static_cast<const GpuRtCounters*>(selected.rt_error_counter.mapped);
+    const uint32_t invalid = gpu->invalid_part_records;
+    if (invalid == rt_invalid_part_records_last_) return;
+    rt_invalid_part_records_last_ = invalid;
+    if (invalid == 0) return;
+    rt_invalid_part_records_total_ += invalid;
+    std::fprintf(stderr,
+                 "[vk] RT rejected %u part record(s) last frame (%llu total) -- "
+                 "a rejected record is a stale or unwritten rt_parts slot\n",
+                 invalid,
+                 static_cast<unsigned long long>(
+                     rt_invalid_part_records_total_));
+    std::fflush(stderr);
+}
+
 bool VkSceneRenderer::emit_ray_instances(
     const matter::VulkanFrame& frame,
     PFN_vkGetAccelerationStructureBuildSizesKHR get_sizes,
@@ -10025,8 +10058,21 @@ bool VkSceneRenderer::emit_ray_instances(
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error) ||
         !matter::map_buffer(selected.rt_parts, error) ||
         !matter::map_buffer(selected.rt_error_counter, error)) return false;
+    // Clear the whole ALLOCATION, not just the bytes this frame needs.
+    // ensure_buffer never shrinks and grows by a factor, so the buffer's
+    // capacity is the session high-water mark -- and rt_parts[] is an unsized
+    // SSBO array, so its length in the shader is that capacity. Clearing only
+    // part_bytes leaves records from a denser frame readable in the tail, and
+    // a stale record is structurally VALID (valid=1, vertex_stride=88, a real
+    // primitive_count) while its vertex/index addresses point at part geometry
+    // that has since been freed -- so load_rt_surface's guards pass and it
+    // dereferences a dangling device address. Same trap as the cull.comp
+    // lod_bias table. Zeroing the tail makes those guards effective: a stale
+    // slot now reads valid==0, counts into invalid_part_records, and returns
+    // an invalid surface instead of faulting the device.
+    const VkDeviceSize part_clear_bytes = selected.rt_parts.size;
     std::memset(selected.rt_parts.mapped, 0,
-                static_cast<size_t>(part_bytes));
+                static_cast<size_t>(part_clear_bytes));
     if (!part_records.empty())
         std::memcpy(selected.rt_parts.mapped, part_records.data(),
                     part_records.size() * sizeof(GpuRtPartRecord));
@@ -10041,7 +10087,7 @@ bool VkSceneRenderer::emit_ray_instances(
                               18 * sizeof(uint32_t),
                               2 * sizeof(uint32_t), error)) return false;
 #endif
-    if (!matter::flush_buffer(selected.rt_parts, 0, part_bytes, error) ||
+    if (!matter::flush_buffer(selected.rt_parts, 0, part_clear_bytes, error) ||
         !matter::flush_buffer(selected.rt_error_counter, 0,
                               sizeof(GpuRtCounters),
                               error)) return false;
@@ -10638,6 +10684,7 @@ bool VkSceneRenderer::record_cull_and_render(
     // ensure_raster_targets() above has already published raster_extent_,
     // which is what sizes the feedback target.
     vt_begin_frame(selected, frame.frame_slot);
+    report_rt_trace_counters(frame.frame_slot);
     update_composite_descriptor(selected);
     // prepare_frame owns the existing scene resources for this slot. Newly
     // created/replaced attachments are retained here before commands reference

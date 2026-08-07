@@ -22,7 +22,17 @@ struct VkAccelerationStructureAllocation;
 // against every tracked device-addressable range — buffers created with
 // SHADER_DEVICE_ADDRESS usage and acceleration structures — both live and
 // recently destroyed. Returns a human-readable summary of the matches.
-std::string debug_describe_device_address(uint64_t address);
+// `span` is the fault's addressPrecision: the driver reports the address with
+// its low bits cleared, so the true faulting address is anywhere in
+// [address, address + span) and every range INTERSECTING that window is a
+// candidate -- not just the ones containing the reported base.
+std::string debug_describe_device_address(uint64_t address, uint64_t span = 1);
+
+// Advances the frame counter those reports quote ages in. Wall-clock ages are
+// ambiguous across a stall -- a device-lost fence wait blocks indefinitely --
+// so "freed 3 frames before the fault" and "freed 3000 frames before" have to
+// be distinguishable. Called once per begin_frame.
+void debug_advance_device_address_frame();
 
 struct VkBufferResource {
     VkDevice device = VK_NULL_HANDLE;

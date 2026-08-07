@@ -67,7 +67,10 @@
 //     residency layer's own layout tracking stays true.
 //   * At most kMaxBatchesInFlight enrich() batches may be unretired at once;
 //     batches must be submitted to one queue in record order.
-//   * invalidate_part() only while the device is idle w.r.t. prior enrichments.
+//   * invalidate_part() is safe at any point outside a recording: it defers
+//     destruction through the same graveyard evict_lru uses, so an entry built
+//     only a frame ago -- whose acceleration-structure build may still be
+//     writing its scratch -- outlives the batch that referenced it.
 
 #include <cstdint>
 #include <memory>
@@ -114,8 +117,9 @@ class VtEnricher final : public VtPageEnricher {
                 size_t count) override;
 
     // Drop the cached chart/triangle streams AND acceleration structures for a
-    // variant (all rungs). Call on part unload / content-key change. Device
-    // must be idle w.r.t. prior enrichments.
+    // variant (all rungs). Call on part unload / content-key change. The GPU
+    // resources are retired through the deferred-destroy graveyard, so this
+    // does NOT require the device to be idle.
     void invalidate_part(uint64_t variant_hash) override;
 
     // Rays per texel (MATTER_VT_ENRICH_SAMPLES, default 32, clamped 8..64).

@@ -902,6 +902,15 @@ public:
     bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
                                        std::string& error);
     VkRasterAttachments raster_attachments() const;
+    // Logs when the RT hit shader rejects a part record. A rejection means a
+    // stale or unwritten rt_parts slot was traced, which is the signal that
+    // confirms (or refutes) the stale-tail clear in emit_ray_instances. The
+    // shader has always counted these, but the only reader was a test-only
+    // readback compiled out of shipping builds, so in a real session the
+    // count was invisible. Deliberately NOT inside the test guard.
+    void report_rt_trace_counters(uint32_t frame_slot);
+    uint32_t rt_invalid_part_records_last_ = 0;
+    uint64_t rt_invalid_part_records_total_ = 0;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     void test_force_rt_unavailable(bool unavailable) {
         test_force_rt_unavailable_ = unavailable;

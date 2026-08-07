@@ -30,6 +30,13 @@ struct DeviceAddressRange {
     uint64_t base = 0;
     uint64_t size = 0;
     const char* kind = "";
+    // Return address of whoever called create_buffer /
+    // create_acceleration_structure, so a fault names the allocation SITE and
+    // not merely the resource class. Resolve the printed +0x<rva> against an
+    // unstripped relink of the same build.
+    const void* site = nullptr;
+    uint64_t created_frame = 0;
+    uint64_t freed_frame = 0;
     std::chrono::steady_clock::time_point created{};
     std::chrono::steady_clock::time_point freed{};
 };
@@ -37,14 +44,28 @@ struct DeviceAddressRange {
 std::mutex g_device_address_mutex;
 std::unordered_map<uint64_t, DeviceAddressRange> g_live_device_addresses;
 std::deque<DeviceAddressRange> g_freed_device_addresses;
-constexpr size_t kMaxFreedDeviceAddressRecords = 8192;
+// Sized so the ring spans minutes of streaming churn, not seconds: a fault
+// whose address matched nothing has to mean "never tracked", never "the
+// evidence aged out". ~64 bytes a record, so this is a few MB.
+constexpr size_t kMaxFreedDeviceAddressRecords = 262144;
+// Records discarded because the ring was full. Non-zero turns a "no match"
+// report from a conclusion into an unknown, so it is always printed.
+uint64_t g_dropped_device_address_records = 0;
+// Presented-frame counter, advanced by the swapchain loop. Wall-clock ages are
+// ambiguous across a stall (a device-lost fence wait can block for a minute),
+// so retirement questions -- "was this freed two frames or two thousand frames
+// before the fault?" -- are answered in frames, not milliseconds.
+std::atomic<uint64_t> g_device_address_frame{0};
 
-void register_device_address(uint64_t base, uint64_t size, const char* kind) {
+void register_device_address(uint64_t base, uint64_t size, const char* kind,
+                             const void* site) {
     if (base == 0 || size == 0) return;
     DeviceAddressRange range;
     range.base = base;
     range.size = size;
     range.kind = kind;
+    range.site = site;
+    range.created_frame = g_device_address_frame.load(std::memory_order_relaxed);
     range.created = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(g_device_address_mutex);
     g_live_device_addresses[base] = range;
@@ -57,24 +78,55 @@ void release_device_address(uint64_t base) {
     if (found == g_live_device_addresses.end()) return;
     DeviceAddressRange freed = found->second;
     freed.freed = std::chrono::steady_clock::now();
+    freed.freed_frame = g_device_address_frame.load(std::memory_order_relaxed);
     g_live_device_addresses.erase(found);
     g_freed_device_addresses.push_back(freed);
-    if (g_freed_device_addresses.size() > kMaxFreedDeviceAddressRecords)
+    if (g_freed_device_addresses.size() > kMaxFreedDeviceAddressRecords) {
         g_freed_device_addresses.pop_front();
+        ++g_dropped_device_address_records;
+    }
+}
+
+#ifdef _WIN32
+// Declared rather than pulling in <windows.h>, which would drag min/max and a
+// few thousand macros into a header-light translation unit.
+extern "C" __declspec(dllimport) void* __stdcall GetModuleHandleW(
+    const wchar_t*);
+#endif
+
+// The allocation site as a module-relative offset: absolute addresses move with
+// ASLR, RVAs match `nm`/`addr2line` output directly.
+uint64_t site_rva(const void* site) {
+    if (!site) return 0;
+    const uintptr_t absolute = reinterpret_cast<uintptr_t>(site);
+#ifdef _WIN32
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (base != 0 && absolute >= base) return absolute - base;
+#endif
+    return absolute;
 }
 
 }  // namespace
 
-std::string debug_describe_device_address(uint64_t address) {
+void debug_advance_device_address_frame() {
+    g_device_address_frame.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::string debug_describe_device_address(uint64_t address, uint64_t span) {
     const auto now = std::chrono::steady_clock::now();
     const auto age_ms = [&](std::chrono::steady_clock::time_point then) {
         return std::chrono::duration_cast<std::chrono::milliseconds>(now -
                                                                      then)
             .count();
     };
-    const auto in_range = [address](const DeviceAddressRange& range) {
-        return address >= range.base && address - range.base < range.size;
+    // Half-open intersection with the precision window. A range need not
+    // contain the reported base to be the culprit -- with precision 0x1000 the
+    // real access is anywhere in the page.
+    const uint64_t window = span == 0 ? 1 : span;
+    const auto in_range = [address, window](const DeviceAddressRange& range) {
+        return range.base < address + window && address < range.base + range.size;
     };
+    const uint64_t frame = g_device_address_frame.load(std::memory_order_relaxed);
     std::ostringstream out;
     out << std::hex;
     size_t matches = 0;
@@ -83,26 +135,47 @@ std::string debug_describe_device_address(uint64_t address) {
         const DeviceAddressRange& range = entry.second;
         if (!in_range(range)) continue;
         out << "live " << range.kind << " [0x" << range.base << " +0x"
-            << range.size << "), created " << std::dec << age_ms(range.created)
-            << " ms ago" << std::hex << "; ";
+            << range.size << ") from +0x" << site_rva(range.site)
+            << ", created " << std::dec << age_ms(range.created) << " ms ago ("
+            << (frame - range.created_frame) << " frames)" << std::hex << "; ";
         ++matches;
     }
     // Newest-first: with VA reuse the most recent tenant of the range is the
     // interesting one.
     for (auto it = g_freed_device_addresses.rbegin();
-         it != g_freed_device_addresses.rend() && matches < 8; ++it) {
+         it != g_freed_device_addresses.rend() && matches < 16; ++it) {
         if (!in_range(*it)) continue;
         out << "FREED " << it->kind << " [0x" << it->base << " +0x" << it->size
-            << "), destroyed " << std::dec << age_ms(it->freed)
-            << " ms ago (lived "
+            << ") from +0x" << site_rva(it->site) << ", destroyed " << std::dec
+            << age_ms(it->freed) << " ms ago (" << (frame - it->freed_frame)
+            << " frames), lived "
             << std::chrono::duration_cast<std::chrono::milliseconds>(
                    it->freed - it->created)
                    .count()
-            << " ms)" << std::hex << "; ";
+            << " ms" << std::hex << "; ";
         ++matches;
     }
-    if (matches == 0)
-        return "no tracked device-address range covers this address";
+    if (matches == 0) {
+        // A miss is only evidence if the ring actually still holds the window
+        // the fault could have come from. Say how far back it reaches, and
+        // whether anything was evicted, so "untracked memory" and "aged out"
+        // stay distinguishable.
+        std::ostringstream miss;
+        miss << "no tracked device-address range covers this address ("
+             << std::dec << g_live_device_addresses.size() << " live, "
+             << g_freed_device_addresses.size() << " freed records";
+        if (!g_freed_device_addresses.empty()) {
+            miss << " reaching back "
+                 << age_ms(g_freed_device_addresses.front().freed) << " ms / "
+                 << (frame - g_freed_device_addresses.front().freed_frame)
+                 << " frames";
+        }
+        if (g_dropped_device_address_records != 0)
+            miss << ", " << g_dropped_device_address_records
+                 << " DROPPED - ring overflowed, a match may have aged out";
+        miss << ")";
+        return miss.str();
+    }
     return out.str();
 }
 
@@ -448,7 +521,8 @@ bool create_acceleration_structure(
         return false;
     }
     candidate.lifetime->device_address = candidate.address;
-    register_device_address(candidate.address, size, "acceleration structure");
+    register_device_address(candidate.address, size, "acceleration structure",
+                            __builtin_return_address(0));
     output = std::move(candidate);
     return true;
 }
@@ -558,7 +632,7 @@ bool create_buffer(VulkanDevice& vulkan, VkDeviceSize size,
     if (candidate.address != 0) {
         candidate.lifetime->device_address = candidate.address;
         register_device_address(candidate.address, candidate.allocation_size,
-                                "buffer");
+                                "buffer", __builtin_return_address(0));
     }
     output = std::move(candidate);
     return true;

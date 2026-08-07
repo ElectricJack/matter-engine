@@ -223,6 +223,10 @@ struct VtEnricher::Impl {
     // pool at init (variant_sets = as_cache_cap + 32), so a later change would
     // desync the cap from the pool it was allocated against. ReadOnly.
     uint32_t as_cache_cap = 8;
+    // Frame index of the most recent enrich() batch. invalidate_part has no
+    // frame of its own, and stamping a retirement with anything older than the
+    // last recorded batch would retire it before that batch can complete.
+    uint64_t last_frame_index = 0;
 
     struct Ring {
         matter::VkBufferResource requests;
@@ -961,7 +965,18 @@ float VtEnricher::max_footprint_meters() const {
 void VtEnricher::invalidate_part(uint64_t variant_hash) {
     for (auto it = impl_->variants.begin(); it != impl_->variants.end();) {
         if (it->first.first == variant_hash) {
-            impl_->free_variant_set(it->second);
+            // Deferred, exactly as evict_lru does it. Destroying here instead
+            // was a GPU use-after-free: the caller's retirement horizon is
+            // measured from when the PART was released, but a variant can be
+            // (re)built after that -- a queued page request serviced in the
+            // intervening frames -- and such an entry is one frame old with an
+            // acceleration-structure build still writing its scratch. Device
+            // fault reports caught exactly that: an invalid WRITE to a buffer
+            // that had lived 27 ms and been freed 12 ms earlier, which no
+            // graveyard-routed entry could ever be (kRetireFrames guarantees
+            // several more frames of life).
+            impl_->graveyard.push_back(
+                Impl::Retired{std::move(it->second), impl_->last_frame_index});
             it = impl_->variants.erase(it);
         } else {
             ++it;
@@ -977,6 +992,7 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
     if (!batch || count == 0) return;
 
     const uint64_t frame_index = batch[0].frame_index;
+    im.last_frame_index = frame_index;
     im.retire(frame_index);
 
     // One read for the whole batch: every request in it must be enriched with

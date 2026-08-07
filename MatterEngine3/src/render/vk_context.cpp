@@ -439,10 +439,17 @@ struct VulkanDevice::Impl {
             counts.addressInfoCount);
         std::vector<VkDeviceFaultVendorInfoEXT> vendors(
             counts.vendorInfoCount);
-        counts.vendorBinarySize = 0;
+        // The vendor binary is the GPU crash dump. On NVIDIA it carries the
+        // warp/shader attribution the bare instruction-pointer fault address
+        // cannot give us, so it is captured rather than discarded -- which is
+        // what setting vendorBinarySize to 0 here used to do.
+        std::vector<uint8_t> vendor_binary(
+            static_cast<size_t>(counts.vendorBinarySize));
         VkDeviceFaultInfoEXT info{VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT};
         info.pAddressInfos = addresses.empty() ? nullptr : addresses.data();
         info.pVendorInfos = vendors.empty() ? nullptr : vendors.data();
+        info.pVendorBinaryData =
+            vendor_binary.empty() ? nullptr : vendor_binary.data();
         result = get_device_fault_info(device, &counts, &info);
         if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
             report << "vkGetDeviceFaultInfoEXT failed: "
@@ -462,7 +469,8 @@ struct VulkanDevice::Impl {
                 static_cast<unsigned long long>(address.addressPrecision));
             report << line;
             report << "    -> "
-                   << debug_describe_device_address(address.reportedAddress)
+                   << debug_describe_device_address(address.reportedAddress,
+                                                    address.addressPrecision)
                    << "\n";
         }
         for (uint32_t i = 0; i < counts.vendorInfoCount; ++i) {
@@ -475,7 +483,31 @@ struct VulkanDevice::Impl {
                 static_cast<unsigned long long>(vendor.vendorFaultData));
             report << line;
         }
+        if (!vendor_binary.empty()) {
+            const std::string path = write_vendor_crash_dump(vendor_binary);
+            report << "  vendor crash dump: " << vendor_binary.size()
+                   << " bytes -> "
+                   << (path.empty() ? "COULD NOT BE WRITTEN" : path) << "\n";
+        }
         emit_device_fault_report(report.str());
+    }
+
+    // The blob is opaque to us; it exists so NVIDIA's Aftermath tooling can
+    // resolve the faulting warp back to a shader. One file per fault, named
+    // for the time so repeated crashes never overwrite each other.
+    std::string write_vendor_crash_dump(const std::vector<uint8_t>& blob) {
+        char stamp[32] = "unknown";
+        const std::time_t now = std::time(nullptr);
+        if (const std::tm* local = std::localtime(&now))
+            std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", local);
+        const std::string path =
+            std::string("vulkan_device_fault-") + stamp + ".nv-gpudmp";
+        std::FILE* file = std::fopen(path.c_str(), "wb");
+        if (!file) return std::string();
+        const size_t written =
+            std::fwrite(blob.data(), 1, blob.size(), file);
+        std::fclose(file);
+        return written == blob.size() ? path : std::string();
     }
 
     // stderr is gone the moment the process exits when the editor was not
@@ -1649,6 +1681,10 @@ struct VulkanDevice::Impl {
         }
         if (!ensure_frame_resources(error)) return false;
 
+        // Stamped before the wait: the wait is where a lost device is noticed,
+        // and the fault report wants the frame number of the work that was in
+        // flight, not of the frame that never started.
+        debug_advance_device_address_frame();
         FrameSlot& slot = frames[frame_slot];
         if (!vk_ok(vkWaitForFences(device, 1, &slot.fence, VK_TRUE,
                                    std::numeric_limits<uint64_t>::max()),
