@@ -35,7 +35,6 @@
 #include "tileset_slicer.h"
 #include "vk_volumetrics.h"
 #include "tileset_bake_vk.h"
-#include "vt_caster_select.h"   // M6.5: caster overlap test + set hash
 
 namespace viewer {
 namespace {
@@ -4204,19 +4203,6 @@ void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
         record.vt_slots[rung] = slot;
         if (slot != vt::kVtNoSlot) {
             vt_draw_slots_dirty_ = true;
-            // M6.5: a world-anchored variant is a caster RECEIVER. Capture
-            // the harvest inputs from the same context the residency layer
-            // stored (so the two sides agree on what "anchored" means) and
-            // ask for a harvest pass — the instance set may not change when
-            // a receiver appears, so generation tracking alone would leave a
-            // fresh sector shadow-less until the next streaming event.
-            if (context.surface_world_anchored) {
-                record.vt_world_anchored = 1;
-                std::memcpy(record.vt_local_to_world,
-                            context.surface_local_to_world,
-                            sizeof(record.vt_local_to_world));
-                vt_casters_dirty_ = true;
-            }
         }
     }
 }
@@ -4301,16 +4287,6 @@ bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
     record.vt_slots[rung] = slot;
     if (slot != vt::kVtNoSlot) {
         vt_draw_slots_dirty_ = true;
-        // M6.5: same receiver capture as the eager path — see
-        // register_vt_variants for why this reads the CONTEXT and dirties the
-        // harvest.
-        if (context.surface_world_anchored) {
-            record.vt_world_anchored = 1;
-            std::memcpy(record.vt_local_to_world,
-                        context.surface_local_to_world,
-                        sizeof(record.vt_local_to_world));
-            vt_casters_dirty_ = true;
-        }
     }
     return slot != vt::kVtNoSlot;
 }
@@ -4435,343 +4411,6 @@ void VkSceneRenderer::update_vt_demand(matter::Float3 camera_eye,
                 evict_vt_rung(record, r);
         }
     }
-}
-
-// --- M6.5: impostored-caster harvest ----------------------------------------
-// Row-major 3x4 affine helpers, file-local: the harvest works in row-major
-// throughout because that is what both ends speak — RtInstance::transform is
-// row-major (emit_ray_instances copies it straight into VkTransformMatrixKHR)
-// and VtCasterInstance::to_receiver is documented row-major 3x4.
-
-namespace {
-
-// Inverse of a row-major 3x4 affine (adjugate 3x3, then t' = -R^-1 t). False
-// on a near-singular linear part; the caller skips that receiver rather than
-// baking against a garbage frame.
-bool vt_invert_affine_3x4(const float m[12], float out[12]) {
-    const float a = m[0], b = m[1], c = m[2];
-    const float d = m[4], e = m[5], f = m[6];
-    const float g = m[8], h = m[9], i = m[10];
-    const float c11 = e * i - f * h;
-    const float c12 = f * g - d * i;
-    const float c13 = d * h - e * g;
-    const float det = a * c11 + b * c12 + c * c13;
-    if (std::fabs(det) < 1e-12f) return false;
-    const float inv = 1.0f / det;
-    out[0] = c11 * inv;
-    out[1] = (c * h - b * i) * inv;
-    out[2] = (b * f - c * e) * inv;
-    out[4] = c12 * inv;
-    out[5] = (a * i - c * g) * inv;
-    out[6] = (c * d - a * f) * inv;
-    out[8] = c13 * inv;
-    out[9] = (b * g - a * h) * inv;
-    out[10] = (a * e - b * d) * inv;
-    const float tx = m[3], ty = m[7], tz = m[11];
-    out[3] = -(out[0] * tx + out[1] * ty + out[2] * tz);
-    out[7] = -(out[4] * tx + out[5] * ty + out[6] * tz);
-    out[11] = -(out[8] * tx + out[9] * ty + out[10] * tz);
-    return true;
-}
-
-// out = a (3x4) * b (4x4 with implicit last row 0 0 0 1), both row-major.
-void vt_compose_affine(const float a[12], const float b[16], float out[12]) {
-    for (int row = 0; row < 3; ++row) {
-        for (int col = 0; col < 4; ++col) {
-            float sum = a[row * 4 + 0] * b[0 * 4 + col] +
-                        a[row * 4 + 1] * b[1 * 4 + col] +
-                        a[row * 4 + 2] * b[2 * 4 + col];
-            if (col == 3) sum += a[row * 4 + 3];
-            out[row * 4 + col] = sum;
-        }
-    }
-}
-
-// Transform an AABB by the first three rows of a row-major matrix (works for
-// 3x4 and 4x4 alike — both store row r at m[r*4..r*4+3]). Standard min/max
-// per-component method.
-void vt_transform_aabb(const float* m, const float lo[3], const float hi[3],
-                       float out_lo[3], float out_hi[3]) {
-    for (int row = 0; row < 3; ++row) {
-        float lo_r = m[row * 4 + 3];
-        float hi_r = lo_r;
-        for (int k = 0; k < 3; ++k) {
-            const float p = m[row * 4 + k] * lo[k];
-            const float q = m[row * 4 + k] * hi[k];
-            lo_r += std::min(p, q);
-            hi_r += std::max(p, q);
-        }
-        out_lo[row] = lo_r;
-        out_hi[row] = hi_r;
-    }
-}
-
-}  // namespace
-
-void VkSceneRenderer::update_vt_casters() {
-    // Cleared before every early return so a skipped frame reports 0 rather
-    // than last frame's cost.
-    upload_counters_.caster_harvest_us = 0;
-    upload_counters_.caster_harvest_receivers = 0;
-    if (!vt_ || !vt_->available() || !vt_enricher_) return;
-    // Tier off (the default) => skip the O(receivers x instance clusters)
-    // sweep entirely. Same live-read discipline as the demand pass.
-    matter::ensure_vt_residency_env_applied();
-    if (matter::vt_residency_budgets().dir_occ_per_frame == 0) return;
-    // Re-harvest only when the inputs could have changed: the static
-    // instance set (streaming, edits) or the receiver roster (a VT rung
-    // registering). The harvest's output is a pure function of those, so an
-    // unchanged world can only reproduce hashes set_variant_casters would
-    // discard as no-ops.
-    // `vt_caster_cursor_ != 0` means a sweep is mid-flight and must finish
-    // even if nothing has changed since it started.
-    if (!vt_casters_dirty_ && vt_caster_cursor_ == 0 &&
-        vt_caster_harvest_generation_ == instance_generation_)
-        return;
-    if (vt_caster_cursor_ == 0) {
-        // Starting a fresh sweep. Record what it services: if the instance
-        // set moves again before it finishes, the comparison at the bottom
-        // sees the mismatch and schedules another sweep rather than marking
-        // a half-stale world clean.
-        vt_caster_sweep_generation_ = instance_generation_;
-        vt_casters_dirty_ = false;
-    }
-    const auto harvest_start = std::chrono::steady_clock::now();
-
-    matter::ensure_vt_enrich_env_applied();
-    // The SAME reach the bake will trace with (vt_enrich.cpp puts it in
-    // req.d.x). Using any other number here would make shadows stop exactly
-    // at the harvest boundary — the seam-shaped artifact the expansion in
-    // caster_overlaps_receiver exists to prevent.
-    const float reach =
-        std::min(std::max(matter::vt_enrich_settings().dirocc_reach, 1.0f),
-                 1024.0f);
-
-    struct Harvested {
-        vt::CasterCandidate cand;
-        vt::VtCasterInstance inst;
-        float dist2 = 0.0f;
-    };
-    std::vector<Harvested> harvested;
-    std::vector<vt::CasterCandidate> cands;
-    std::vector<vt::VtCasterInstance> insts;
-
-    const size_t static_count =
-        std::min(rt_instances_.size(), static_rt_instance_count_);
-
-    // ---- receiver-independent prefilter, built ONCE per frame ------------
-    //
-    // Every test below depends only on the caster, so running it inside the
-    // receiver loop did R identical part_slot_lookup() hash probes and R
-    // identical liveness checks per instance. Hoisting it turns the R x I
-    // probe count into I. The only receiver-dependent test -- a receiver does
-    // not cast on itself -- stays in the inner loop.
-    struct PrefilteredCaster {
-        const RtInstance* src;
-        const PartRecord* part;
-    };
-    std::vector<PrefilteredCaster> casters;
-    casters.reserve(static_count);
-    for (size_t i = 0; i < static_count; ++i) {
-        const RtInstance& src = rt_instances_[i];
-        // Animated casters are excluded: their occlusion moves every frame
-        // (see CasterCandidate).
-        if (src.animation_instance_slot != UINT32_MAX) continue;
-        const int caster_slot = part_slot_lookup(src.part_hash);
-        if (caster_slot < 0) continue;
-        const PartRecord& caster = parts_[static_cast<size_t>(caster_slot)];
-        // Fail closed per caster: no RT buffers means no borrowable
-        // addresses, so the prop simply casts nothing.
-        if (!caster.live || !caster.rt_geometry || !caster.rt_index ||
-            caster.vertex_count == 0)
-            continue;
-        casters.push_back({&src, &caster});
-    }
-
-    // ---- the per-frame receiver budget -----------------------------------
-    //
-    // Tied to the CONSUMER's rate: the enricher bakes at most
-    // dir_occ_per_frame pages per frame, so harvesting receivers faster than
-    // that produces work nothing can absorb. Before this, a 218-receiver
-    // world harvested all 218 every frame to feed a 4-per-frame queue.
-    const uint32_t receiver_budget =
-        std::max(1u, matter::vt_residency_budgets().dir_occ_per_frame);
-    const size_t part_count = parts_.size();
-    // >=, not >: if parts_ shrank to exactly the cursor the sweep would
-    // otherwise process nothing and then mark the world clean at the bottom.
-    if (vt_caster_cursor_ >= part_count) vt_caster_cursor_ = 0;
-    uint32_t processed = 0;
-    while (vt_caster_cursor_ < part_count && processed < receiver_budget) {
-        PartRecord& receiver = parts_[vt_caster_cursor_++];
-        // The skips below are O(1), so they advance the cursor without
-        // consuming budget -- otherwise a world of mostly non-receivers would
-        // take thousands of frames to sweep.
-        if (!receiver.live || !receiver.vt_world_anchored) continue;
-        if (receiver.cluster_count == 0) continue;
-        bool any_rung = false;
-        for (uint32_t slot : receiver.vt_slots) {
-            if (slot != vt::kVtNoSlot) { any_rung = true; break; }
-        }
-        if (!any_rung) continue;
-        ++processed;
-
-        // Receiver world bounds: the union of its cluster AABBs pushed
-        // through its anchored placement (the same transform the residency
-        // layer stored as surface_local_to_world, i.e. the frame the pages
-        // are baked in).
-        float local_lo[3] = {std::numeric_limits<float>::max(),
-                             std::numeric_limits<float>::max(),
-                             std::numeric_limits<float>::max()};
-        float local_hi[3] = {std::numeric_limits<float>::lowest(),
-                             std::numeric_limits<float>::lowest(),
-                             std::numeric_limits<float>::lowest()};
-        for (uint32_t ci = 0; ci < receiver.cluster_count; ++ci) {
-            const GpuCluster& gc = cluster_staging_[receiver.cluster_start + ci];
-            for (int k = 0; k < 3; ++k) {
-                local_lo[k] = std::min(local_lo[k], gc.aabb_min[k]);
-                local_hi[k] = std::max(local_hi[k], gc.aabb_max[k]);
-            }
-        }
-        float rlo[3], rhi[3];
-        vt_transform_aabb(receiver.vt_local_to_world, local_lo, local_hi, rlo,
-                          rhi);
-        float world_to_receiver[12];
-        if (!vt_invert_affine_3x4(receiver.vt_local_to_world,
-                                  world_to_receiver))
-            continue;
-        const float origin[3] = {receiver.vt_local_to_world[3],
-                                 receiver.vt_local_to_world[7],
-                                 receiver.vt_local_to_world[11]};
-
-        harvested.clear();
-        for (const PrefilteredCaster& pc : casters) {
-            const RtInstance& src = *pc.src;
-            const PartRecord& caster = *pc.part;
-            // The one receiver-dependent test: self-occlusion is the CONTACT
-            // tier's job, not this one's.
-            if (src.part_hash == receiver.hash) continue;
-            for (uint32_t ci = 0; ci < caster.cluster_count; ++ci) {
-                const uint32_t mesh_lods =
-                    ci < caster.rt_cluster_mesh_lods.size()
-                        ? caster.rt_cluster_mesh_lods[ci]
-                        : 0u;
-                if (mesh_lods == 0) continue;
-                const GpuCluster& gc =
-                    cluster_staging_[caster.cluster_start + ci];
-                vt::CasterCandidate cand;
-                vt_transform_aabb(src.transform, gc.aabb_min, gc.aabb_max,
-                                  cand.aabb_min, cand.aabb_max);
-                cand.part_hash = caster.hash;
-                // The COARSEST mesh rung: the bake serves pages the camera is
-                // far from, the coarse rung is the cheapest BLAS that still
-                // has the right silhouette — and it is also the rung that
-                // EXISTS for an impostored cluster, which is the whole point
-                // (the impostor rung itself has no traceable geometry).
-                cand.rung = mesh_lods - 1u;
-                if (!vt::caster_overlaps_receiver(rlo, rhi, reach, cand))
-                    continue;
-                uint32_t record_index = 0;
-                if (!vk_scene_detail::dense_rt_lod_index(
-                        caster.rt_cluster_lod_offsets, ci, mesh_lods - 1u,
-                        record_index))
-                    continue;
-                const RtLodRecord& lod = caster.rt_lods[record_index];
-                if (lod.primitive_count == 0) continue;
-                Harvested h;
-                h.cand = cand;
-                // Caster object space -> receiver object space, because the
-                // receiver's frame is where its page texels and bent normals
-                // live.
-                vt_compose_affine(world_to_receiver, src.transform,
-                                  h.inst.to_receiver);
-                // The BORROWED addresses — the same fields, from the same
-                // buffers, as the renderer's own BLAS setup (build_ray_*:
-                // vertex base + VkRasterVertex stride, index address
-                // pre-offset by the rung's part-local first_index).
-                h.inst.vertex_address = caster.rt_geometry->address;
-                h.inst.index_address =
-                    caster.rt_index->address +
-                    static_cast<uint64_t>(lod.first_index) * sizeof(uint32_t);
-                h.inst.vertex_stride = sizeof(VkRasterVertex);
-                h.inst.max_vertex = caster.vertex_count - 1u;
-                h.inst.primitive_count = lod.primitive_count;
-                // Folds the cluster + rung in beside the hash word: a part is
-                // many clusters, each with its own index range, and a dedup
-                // key that ignored that would collapse distinct geometry.
-                h.inst.part_hash_low =
-                    static_cast<uint32_t>(caster.hash) ^
-                    (ci * 0x9E3779B9u) ^ ((mesh_lods - 1u) * 0x85EBCA6Bu);
-                // THE LIFETIME RULE (vt_types.h): the addresses above are
-                // numbers; these two shared_ptrs are what keeps them meaning
-                // anything when release_part drops the renderer's own
-                // reference between this harvest and the enricher's record.
-                h.inst.geometry_lifetime = caster.rt_geometry;
-                h.inst.index_lifetime = caster.rt_index;
-                const float cx =
-                    0.5f * (cand.aabb_min[0] + cand.aabb_max[0]) - origin[0];
-                const float cy =
-                    0.5f * (cand.aabb_min[1] + cand.aabb_max[1]) - origin[1];
-                const float cz =
-                    0.5f * (cand.aabb_min[2] + cand.aabb_max[2]) - origin[2];
-                h.dist2 = cx * cx + cy * cy + cz * cz;
-                harvested.push_back(std::move(h));
-            }
-        }
-
-        // Deterministic cap under the enricher's hard batch limit (which
-        // SKIPS oversized sets rather than truncating them — see
-        // kMaxDirOccCasters). Selection must be a pure function of the SET,
-        // not of instance-walk order, or the caster_set_hash would wobble
-        // across runs of an identical world: nearest first, part hash as the
-        // tie-break.
-        if (harvested.size() > vt::VtEnricher::kMaxDirOccCasters) {
-            std::stable_sort(harvested.begin(), harvested.end(),
-                             [](const Harvested& a, const Harvested& b) {
-                                 if (a.dist2 != b.dist2)
-                                     return a.dist2 < b.dist2;
-                                 return a.cand.part_hash < b.cand.part_hash;
-                             });
-            harvested.resize(vt::VtEnricher::kMaxDirOccCasters);
-        }
-
-        cands.clear();
-        insts.clear();
-        cands.reserve(harvested.size());
-        insts.reserve(harvested.size());
-        for (Harvested& h : harvested) {
-            cands.push_back(h.cand);
-            insts.push_back(std::move(h.inst));
-        }
-        const uint64_t set_hash =
-            vt::caster_set_hash(cands.data(), cands.size(), origin);
-        // Every registered rung of the receiver gets the same set (the
-        // residency layer's M6 unification usually collapses them onto one
-        // layer, whose hash check makes the repeats free). It owns the copy
-        // and requeues resident dir-occ pages when the hash changed.
-        const size_t rung_count =
-            std::min<size_t>(receiver.vt_slots.size(), kVkMaxChartRung);
-        for (uint32_t r = 0; r < rung_count; ++r) {
-            if (receiver.vt_slots[r] == vt::kVtNoSlot) continue;
-            vt_->set_variant_casters(receiver.hash, r, insts.data(),
-                                     static_cast<uint32_t>(insts.size()),
-                                     set_hash);
-        }
-    }
-
-    if (vt_caster_cursor_ >= part_count) {
-        // Sweep complete. Only declare the world harvested if nothing moved
-        // while we were walking it; otherwise leave the gate open so the next
-        // frame starts a fresh sweep against the newer instance set.
-        vt_caster_cursor_ = 0;
-        if (!vt_casters_dirty_ &&
-            vt_caster_sweep_generation_ == instance_generation_)
-            vt_caster_harvest_generation_ = instance_generation_;
-    }
-    upload_counters_.caster_harvest_us =
-        static_cast<uint64_t>(std::chrono::duration_cast<
-            std::chrono::microseconds>(
-                std::chrono::steady_clock::now() - harvest_start).count());
-    upload_counters_.caster_harvest_receivers = processed;
 }
 
 // --- WP-F: surfaces()-tape live update --------------------------------------
@@ -4921,6 +4560,7 @@ void VkSceneRenderer::dump_vt_route_census() const {
                  (unsigned long long)vt_route_census_[kVtRouteUnregistered].load(),
                  (unsigned long long)vt_route_census_[kVtRouteTailGate].load());
     for (auto& c : vt_route_census_) c.store(0, std::memory_order_relaxed);
+
 }
 
 void VkSceneRenderer::rebuild_vt_draw_slots() {
@@ -5164,14 +4804,15 @@ namespace {
 // than a constant mismatch. The azimuth/elevation split is asserted too, not
 // just the total: 48 views could be 16x3 or 24x2, and the vertex stage's
 // `el_i * IMPOSTOR_AZIMUTHS + az_i` picks a different cell for each reading.
-// M6.5: vt_common.glsl declares `uniform sampler2DArray vt_pool[N]` with a
-// literal N, and this file binds descriptorCount = kVtChannelCount at bindings
-// 10 and 17. They must agree: a shader declaring fewer than the descriptor
-// count is a validation error, and one declaring more reads a binding nothing
-// wrote. The literal cannot be derived from the enum across the GLSL boundary,
-// so it is pinned here instead.
-static_assert(vt::kVtChannelCount == 5u,
-              "shaders_vk/vt_common.glsl: uniform sampler2DArray vt_pool[5]");
+// vt_common.glsl declares `uniform sampler2DArray vt_pool[N]` with a literal
+// N, and this file binds descriptorCount = kVtChannelCount at bindings 10 and
+// 17. They must agree: a shader declaring fewer than the descriptor count is a
+// validation error, and one declaring more reads a binding nothing wrote. The
+// literal cannot be derived from the enum across the GLSL boundary, so it is
+// pinned here instead. (4 since the M6.5 dir-occ channel was removed — this
+// assertion is what caught the shader half of that removal.)
+static_assert(vt::kVtChannelCount == 4u,
+              "shaders_vk/vt_common.glsl: uniform sampler2DArray vt_pool[4]");
 
 static_assert(impostor::kViews == 48u, "shaders_vk/impostor_common.glsl: IMPOSTOR_VIEWS");
 static_assert(impostor::kGridDim == 8u, "shaders_vk/impostor_common.glsl: IMPOSTOR_GRID_DIM");
@@ -11187,12 +10828,6 @@ bool VkSceneRenderer::record_cull_and_render(
     // render call) and reclaim lingering variants. Before prepare_frame so a
     // release lands in this frame's vt_draw_slots upload.
     update_vt_demand(camera_eye, pixel_budget);
-    // M6.5: refresh the impostored-caster sets for world-anchored receivers.
-    // Deliberately NOT inside update_vt_demand — that pass no-ops for worlds
-    // with no deferred parts, and eagerly-registered terrain must still
-    // receive casters. Change-gated internally, so this is a few branch tests
-    // on the common frame.
-    update_vt_casters();
     const VkExtent2D internal_extent =
         temporal_frame_.internal_extent.width != 0
             ? temporal_frame_.internal_extent

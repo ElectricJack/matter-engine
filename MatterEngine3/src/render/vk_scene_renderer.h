@@ -664,12 +664,6 @@ struct VkSceneUploadCounters {
     uint64_t instance_uploads = 0;
     uint64_t command_uploads = 0;
     uint64_t command_layout_rebuilds = 0;
-    // PER-FRAME, unlike every cumulative counter around them: what the M6.5
-    // caster harvest cost last frame and how many receivers it serviced.
-    // Cumulative totals cannot show a spike, which is the only thing these
-    // two exist to show.
-    uint64_t caster_harvest_us = 0;
-    uint32_t caster_harvest_receivers = 0;
     // How the cluster/vertex/index staging reached the GPU: a full pass
     // recreates the buffers and rewrites every byte (O(world)); an append
     // writes only the staging tail past the already-uploaded counts
@@ -1310,15 +1304,6 @@ private:
         // Indexed by CHART RUNG, not LOD index — see kVkMaxChartRung.
         std::array<uint64_t, kVkMaxChartRung> vt_last_wanted{};
         std::array<uint64_t, kVkMaxChartRung> vt_last_requested{};
-        // M6.5: caster-harvest inputs, captured from the VtPartContext at VT
-        // registration (both the eager and the demand paths). Reading them
-        // from the CONTEXT rather than VkScenePart keeps the harvest's notion
-        // of "anchored receiver" identical to the residency layer's — the
-        // gate queue_dir_occ applies is context.surface_world_anchored, and a
-        // receiver the harvest fed that the queue then refused (or vice
-        // versa) would be a silent nothing-bakes bug.
-        uint32_t vt_world_anchored = 0;
-        float vt_local_to_world[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
     };
 
     struct DeviceLimits {
@@ -1849,14 +1834,6 @@ private:
     // rungs with no slot, and release variants that stayed unwanted for
     // MATTER_VT_LINGER_FRAMES. Cheap no-op while no deferred part is live.
     void update_vt_demand(matter::Float3 camera_eye, float pixel_budget);
-    // M6.5: harvest impostored-caster geometry for every world-anchored VT
-    // receiver (terrain sectors) and hand the sets to the residency layer.
-    // Runs beside update_vt_demand but only when the static instance set (or
-    // the receiver registrations) changed — the harvest is O(receivers x
-    // instance clusters) and its OUTPUT is a pure function of that set, so
-    // re-running it on an unchanged world could only reproduce the same
-    // caster_set_hash the residency layer would then discard as a no-op.
-    void update_vt_casters();
     // Releases one demand-managed (part, rung) variant: residency layer,
     // vt_slots entry, draw-slot table dirty, deferred filler-cache
     // invalidation (same retirement discipline as release_part).
@@ -2053,31 +2030,6 @@ private:
     uint64_t vt_demand_frame_ = 0;
     uint32_t vt_deferred_parts_ = 0;
     std::vector<VtRungRequest> vt_rung_requests_;
-    // M6.5 caster-harvest change detection: the instance generation the last
-    // harvest ran against, plus a dirty latch for events that add receivers
-    // WITHOUT touching the instance set (a VT rung registering on demand —
-    // its fresh layer would otherwise wait for the next streaming event to
-    // receive any casters).
-    uint64_t vt_caster_harvest_generation_ = 0;
-    bool vt_casters_dirty_ = false;
-    // The harvest is BUDGETED: it walks `parts_` a few receivers per frame
-    // rather than all of them, and this is where it resumes. A full sweep is
-    // spread over ceil(receivers / budget) frames.
-    //
-    // WHY. The harvest is O(receivers x static instances). The gate above
-    // re-runs it whenever instance_generation_ moves, and that generation
-    // bumps on EVERY streaming publish -- so in a streaming world the "common
-    // frame" is a change frame, and the whole quadratic sweep ran per frame.
-    // A hitch capture measured 390 ms of CPU in render at 218 resident
-    // sectors and 32 k instances, against 24 ms of GPU.
-    //
-    // `parts_` can shift under a persisted index when a part is released, so
-    // the cursor can occasionally skip or repeat a receiver. That is benign:
-    // it wraps continuously and a changed generation starts a fresh sweep, so
-    // nothing is starved, and a receiver harvested twice re-derives the same
-    // set hash and is discarded as a no-op.
-    size_t vt_caster_cursor_ = 0;
-    uint64_t vt_caster_sweep_generation_ = 0;
     // Working-set knobs, refreshed from matter::VtResidencyBudgets on every
     // demand pass: linger_frames (how long a variant survives unwanted before
     // its layer is reclaimed, MATTER_VT_LINGER_FRAMES) and requests_per_frame

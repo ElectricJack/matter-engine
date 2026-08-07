@@ -45,12 +45,6 @@ struct VtResidencyBudgets {
     // Tier-2 hemisphere-AO enrichments per frame; 0 keeps the enricher loaded
     // but drains nothing.
     uint32_t enrich_per_frame = 2;
-    // M6.5: directional-occlusion bakes per frame (the SECOND tier — coarse
-    // far-field pages, impostored props as casters). Its own budget rather
-    // than a share of enrich_per_frame: the two tiers admit opposite page
-    // sizes, and one budget would let a burst of fine pages starve the far
-    // field indefinitely. Default 0 = tier off.
-    uint32_t dir_occ_per_frame = 0;
     // CPU mesh-copy budget. Rejections past this fall back to the legacy
     // per-material path (i.e. the authored surfaces() tape is ignored).
     uint32_t mesh_budget_mb = 1024;
@@ -105,18 +99,6 @@ struct VtEnrichSettings {
     // Cached (variant, rung) acceleration structures. Sizes the descriptor
     // pool at init, so it is not live-editable.
     uint32_t as_cache = 8;
-    // ---- M6.5 directional tier (vt_dirocc.comp) --------------------------
-    // Smallest page-texel footprint (metres) admitted to the directional
-    // bake. This is the INVERSE of the contact tier's skip: dir-occ runs on
-    // coarse far-field pages only, and the default is chosen so the tier
-    // admits exactly the pages the ~2.0 m contact fade-out rejects — the two
-    // admission rules tile the mip range with no gap and no overlap.
-    float dirocc_min_footprint = 2.0f;
-    // How far (metres) a caster's occlusion reaches. Feeds both ends: the
-    // shader's ray length AND the harvest's receiver-expansion overlap test
-    // (vt_caster_select.h), which MUST use the same number or shadows stop
-    // exactly at the boundary between "harvested" and "traced".
-    float dirocc_reach = 64.0f;
 };
 
 // The one live instance every VtResidency reads.
@@ -145,13 +127,6 @@ inline const props::Group& vt_residency_budgets_group() {
             .env("MATTER_VT_ENRICH_PER_FRAME")
             .doc("Tier-2 AO enrichment rate. 0 disables the tier without "
                  "unloading the enricher."),
-        prop(&VtResidencyBudgets::dir_occ_per_frame, "dir_occ_per_frame")
-            .label("Dir-occ / frame").range(0.0f, 16.0f)
-            .env("MATTER_VT_DIROCC_PER_FRAME")
-            .doc("M6.5 directional-occlusion bake rate: impostored props "
-                 "cast into the terrain sector's own pages, so a tree keeps "
-                 "its shadow after it becomes a billboard. Coarse far-field "
-                 "pages only. 0 disables the tier."),
         prop(&VtResidencyBudgets::mesh_budget_mb, "mesh_budget_mb")
             .label("CPU mesh budget").range(1.0f, 16384.0f).units("MB")
             .env("MATTER_VT_MESH_BUDGET_MB"),
@@ -228,20 +203,7 @@ inline const props::Group& vt_enrich_settings_group() {
             .env("MATTER_VT_ENRICH_AS_CACHE").read_only()
             .doc("Cached (variant, rung) acceleration structures. Sizes a "
                  "descriptor pool at enricher init — set "
-                 "MATTER_VT_ENRICH_AS_CACHE before launch to change it."),
-        prop(&VtEnrichSettings::dirocc_min_footprint, "dirocc_min_footprint")
-            .label("Dir-occ min footprint").range(0.01f, 1000.0f).units("m")
-            .log()
-            .env("MATTER_VT_DIROCC_MIN_FOOTPRINT")
-            .doc("Smallest page-texel size the directional tier bakes. The "
-                 "INVERSE of the contact tier's coarse-page skip: dir-occ "
-                 "admits coarse far-field pages only."),
-        prop(&VtEnrichSettings::dirocc_reach, "dirocc_reach")
-            .label("Dir-occ reach").range(1.0f, 1024.0f).units("m").log()
-            .env("MATTER_VT_DIROCC_REACH")
-            .doc("Caster occlusion range: the bake's ray length and the "
-                 "harvest's cross-sector overlap expansion, which must "
-                 "agree or shadows stop at the harvest boundary."));
+                 "MATTER_VT_ENRICH_AS_CACHE before launch to change it."));
     return def.group();
 }
 

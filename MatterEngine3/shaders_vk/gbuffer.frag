@@ -888,58 +888,6 @@ void main() {
             vec3 vt_normal_ts =
                 vt_decode_normal(vt_sample_channel(vt, VT_CHANNEL_NORMAL));
 
-            // ---- M6.5: directional occlusion from impostored casters -----
-            //
-            // A tree that has become a billboard stops casting a traced
-            // shadow (an impostor cannot cast a correct one — its plane runs
-            // through the object's centre). vt_dirocc.comp baked its occlusion
-            // into THIS surface's pages instead: RGB = the mean unoccluded
-            // direction, A = how open that cone is.
-            //
-            // The sun is applied HERE, at runtime, which is the entire reason
-            // the bake stores an occluder geometry term and not a shadow.
-            // sun_azimuth_deg / sun_elevation_deg stay live draggable
-            // properties and the shadow follows them.
-            //
-            // Feeds horizon_sun_visibility, which out_orm.a exports and
-            // rt_shadow.rgen already multiplies into traced sun visibility —
-            // so no new G-buffer channel and no new RT plumbing. An unbaked
-            // page reads aperture 1.0 (the channel's cleared "no occlusion"
-            // value) and this whole block is the identity.
-            {
-                vec4 dir_occ = vt_sample_channel(vt, VT_CHANNEL_DIR_OCC);
-                float aperture = dir_occ.a;
-                if (aperture < 0.999) {
-                    vec3 bent = dir_occ.rgb * 2.0 - 1.0;
-                    float bent_len = length(bent);
-                    if (bent_len > 1e-4) {
-                        bent /= bent_len;
-                        vec3 to_sun = tileset.sun_dir_intensity.xyz;
-                        // aperture is the unoccluded FRACTION of the
-                        // hemisphere; as a cone half-angle that is
-                        // cos(theta) = 1 - 2*aperture over the hemisphere's
-                        // solid angle. Compare the sun against that cone.
-                        float cos_open = 1.0 - 2.0 * clamp(aperture, 0.0, 1.0);
-                        float cos_sun = dot(normalize(to_sun), bent);
-                        // Soft edge, matching the tileset horizon's 0.05 band,
-                        // so the two baked-occlusion sources fade alike rather
-                        // than one showing a hard step where the other does
-                        // not.
-                        float vis = smoothstep(cos_open - 0.05,
-                                               cos_open + 0.05, cos_sun);
-                        // min(), NOT a product, against whatever the tileset
-                        // horizon already said. Both terms describe the SAME
-                        // sun being blocked, so multiplying them double-counts
-                        // an occluder that both happen to see — which is
-                        // exactly the transition-band darkening to watch for
-                        // where the impostor switch and the page-mip curve
-                        // disagree.
-                        horizon_sun_visibility =
-                            min(horizon_sun_visibility, vis);
-                    }
-                }
-            }
-
             // Near band: aux.r carries the page's dominant material id; its
             // detail slot is the Wang tileset that rides on the VT base. When
             // that slot is the one the draw already sampled, the live sample

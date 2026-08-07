@@ -16,7 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <memory>   // M6.5: VtCasterInstance's borrowed-buffer lifetimes
+#include <memory>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
@@ -46,25 +46,7 @@ enum VtChannel : uint32_t {
     kVtChannelNormal = 1,   // BC5_UNORM_BLOCK  (tangent-space XY)
     kVtChannelOrm    = 2,   // BC7_UNORM_BLOCK  (occlusion/roughness/metal)
     kVtChannelAux    = 3,   // R8G8B8A8_UNORM   (dominant/secondary mat + blend)
-    // M6.5: DIRECTIONAL occlusion from impostored casters — BC7_UNORM_BLOCK,
-    // RGB = bent normal (the average unoccluded direction, object space,
-    // remapped from [-1,1]), A = aperture (the cone half-angle around it, as
-    // cos). Sun visibility at runtime is a smoothstep of the angle between the
-    // sun and the bent normal against that aperture, which is why the sun
-    // stays a live property instead of being baked in.
-    //
-    // Why a whole channel rather than the spare byte in ORM: azimuth is
-    // exactly what makes a shadow move across the ground, and every encoding
-    // that fits in one byte (a single elevation, an azimuth-averaged cone)
-    // throws azimuth away. BC7 keeps the cost to 1 byte/texel against the
-    // pool's existing 7.
-    //
-    // CLEARED TO "NO OCCLUSION" (bent normal = +Z, aperture = fully open) so a
-    // page nothing has enriched reads as unshadowed and the runtime multiply is
-    // the identity — the same discipline that makes gbuffer.frag's
-    // horizon_sun_visibility free for every fragment that does not write it.
-    kVtChannelDirOcc = 4,   // BC7_UNORM_BLOCK  (bent normal RGB + aperture A)
-    kVtChannelCount  = 5,
+    kVtChannelCount  = 4,
 };
 
 // Top-left texel of a page slot inside its array layer, border included.
@@ -97,47 +79,6 @@ struct VtPoolBinding {
     // residency layer records the transitions around fill(); the filler never
     // transitions the pool itself.
     bool transfer_dst_layout = true;
-};
-
-// M6.5 — one caster whose occlusion is baked into a RECEIVER's pages.
-//
-// The receiver is a terrain sector's VT variant (chart-space, per-sector, one
-// placement — which is what makes world-context data legitimately correct
-// there, unlike a part variant shared by every instance). The caster is a
-// nearby prop that has switched to its impostor and therefore stopped casting
-// a traced shadow.
-//
-// GEOMETRY IS BORROWED FROM THE SCENE, NOT COPIED. `vertex_address` /
-// `index_address` point into the renderer's `rt_geometry` / `rt_index` buffers
-// — the ones that exist for every registered part whenever RT is available,
-// independent of whether a scene BLAS was ever built for that rung. That
-// independence is the whole point: an impostored cluster is excluded from
-// tracing (vk_scene_renderer.cpp, `lod_index >= mesh_lods`), so it HAS no
-// scene acceleration structure, and a design that waited for one would bake
-// nothing for exactly the casters this feature exists to serve.
-//
-// LIFETIME IS THE DANGEROUS PART. A device address is a number; it does not
-// keep its buffer alive. `release_part` drops the renderer's shared_ptrs, and
-// a caster harvested one frame can be freed before the batch that references
-// it is recorded — a use-after-free that only appears under streaming, which
-// is the class that already cost this project a DEVICE_LOST investigation.
-// `geometry_lifetime` / `index_lifetime` therefore hold the SAME shared_ptrs
-// the renderer holds, and every cache and graveyard entry that stores a
-// VtCasterInstance must keep them until the entry retires.
-struct VtCasterInstance {
-    // Caster object space -> RECEIVER object space, row-major 3x4. The bake
-    // works in the receiver's frame because that is the frame its page texels
-    // and its bent normals live in.
-    float    to_receiver[12] = {1,0,0,0, 0,1,0,0, 0,0,1,0};
-    uint64_t vertex_address = 0;    // VkDeviceAddress into rt_geometry
-    uint64_t index_address  = 0;    // VkDeviceAddress into rt_index (pre-offset)
-    uint32_t vertex_stride  = 0;    // sizeof(VkRasterVertex)
-    uint32_t max_vertex     = 0;
-    uint32_t primitive_count = 0;
-    uint32_t part_hash_low  = 0;    // low word of the caster's part hash, for
-                                    // BLAS dedup across sectors that share it
-    std::shared_ptr<void> geometry_lifetime;   // see the note above
-    std::shared_ptr<void> index_lifetime;
 };
 
 // ---------------------------------------------------------------------------
@@ -249,31 +190,6 @@ struct VtPartContext {
     const uint16_t* surface_lanes = nullptr;
     uint32_t        surface_lane_count = 0;
 
-    // ---- M6.5: the casters whose occlusion is baked into this receiver ----
-    //
-    // Appended, per the APPEND-ONLY rule at the top of this struct: an older
-    // filler keeps compiling and simply never looks at them.
-    //
-    // Borrowed like every other pointer here, and owned by the residency
-    // layer's per-variant record — but note the ownership is DOUBLE. The
-    // residency layer owns the vector; each element separately holds
-    // shared_ptrs to the renderer's scene buffers, because a device address
-    // does not keep its buffer alive and `release_part` can drop the
-    // renderer's own reference between harvest and record.
-    //
-    // Meaningful only when surface_world_anchored: a caster's placement is
-    // world context, and a part variant shared by many instances has no single
-    // world position to be near. Empty for those, which is also why an
-    // instanced prop can never accidentally receive one prop's shadow on all
-    // its copies.
-    const VtCasterInstance* casters = nullptr;
-    uint32_t caster_count = 0;
-    // Identity of the caster SET (sorted part hashes + coarse-rung ids +
-    // quantized relative transforms). This is what keeps the bake a pure
-    // function of its inputs while depending on what happens to be loaded:
-    // a different loaded set is a different KEY, not nondeterminism. Folded
-    // into the page content identity beside the mode/version salt.
-    uint64_t caster_set_hash = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -439,38 +355,6 @@ class VtPageEnricher {
     // to opt out of the skip.
     virtual float max_footprint_meters() const = 0;
 
-    // ---- M6.5: the DIRECTIONAL tier -------------------------------------
-    //
-    // A SECOND pass, not a mode of the one above, and the distinction is not
-    // stylistic. `enrich()` is a CONTACT term: it caps rays at ~0.5 m and its
-    // strength fades to zero once a page texel exceeds that cap — at which
-    // point the residency layer stops queueing those pages entirely. Coarse
-    // far-field pages, which are exactly where impostored props live, are
-    // therefore never enriched at all. Folding long-range caster occlusion
-    // into that pass would either break the contact cap or inherit a skip that
-    // guarantees it never runs.
-    //
-    // The two are queued by OPPOSITE rules:
-    //   enrich()          fine pages,   footprint <= max_footprint_meters()
-    //   enrich_dir_occ()  coarse pages, footprint >= dir_occ_min_footprint_meters()
-    //
-    // It writes kVtChannelDirOcc (bent normal + aperture) by OVERWRITE, not by
-    // multiply-in-place. Deliberate: the AO pass's read-modify-write is what
-    // forces its once-only per-slot tier bookkeeping, whereas an overwrite is
-    // idempotent and convergent — which is what makes "re-bake when a caster
-    // streams in" tractable rather than a correctness problem.
-    //
-    // Default no-op, so the tier is optional: an enricher that does not
-    // implement it reports no usable minimum footprint, the residency layer
-    // queues nothing, and every page keeps reading the channel's cleared
-    // "no occlusion" value.
-    virtual void enrich_dir_occ(VkCommandBuffer /*cmd*/,
-                                const VtEnrichRequest* /*batch*/,
-                                size_t /*count*/) {}
-    // Smallest page-texel size (metres) worth a directional bake, or a huge
-    // value meaning "no directional tier" (the default, which makes the
-    // residency skip unconditional).
-    virtual float dir_occ_min_footprint_meters() const { return 1e30f; }
 };
 
 }  // namespace vt

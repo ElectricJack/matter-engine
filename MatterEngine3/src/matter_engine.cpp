@@ -7470,9 +7470,6 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.vk_instance_uploads = upload_counters.instance_uploads;
     impl_->stats.vk_command_layout_rebuilds =
         upload_counters.command_layout_rebuilds;
-    impl_->stats.vt_caster_harvest_ms =
-        static_cast<float>(upload_counters.caster_harvest_us) * 0.001f;
-    impl_->stats.vt_caster_receivers = upload_counters.caster_harvest_receivers;
     impl_->stats.vk_static_full_uploads = upload_counters.static_full_uploads;
     impl_->stats.vk_static_append_uploads =
         upload_counters.static_append_uploads;
@@ -7492,12 +7489,6 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->stats.vt_rejected_variants = vt_stats.rejected_variants;
         impl_->stats.vt_shared_refs_total = vt_stats.shared_refs_total;
         impl_->stats.vt_finer_rebuilds_total = vt_stats.finer_rebuilds_total;
-        impl_->stats.vt_dir_occ_queue_depth = vt_stats.dir_occ_queue_depth;
-        impl_->stats.vt_dir_occ_last_frame = vt_stats.dir_occ_last_frame;
-        impl_->stats.vt_dir_occ_pages = vt_stats.dir_occ_pages;
-        impl_->stats.vt_dir_occ_dropped_total = vt_stats.dir_occ_dropped_total;
-        impl_->stats.vt_dir_occ_skipped_fine_total =
-            vt_stats.dir_occ_skipped_fine_total;
         impl_->stats.vt_fills_total = vt_stats.fills_total;
         impl_->stats.vt_evictions_total = vt_stats.evictions_total;
         impl_->stats.vt_pool_bytes = vt_stats.pool_bytes;

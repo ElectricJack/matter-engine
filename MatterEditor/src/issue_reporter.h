@@ -99,7 +99,6 @@ struct IssueFrameSample {
     float zone_cull_ms = 0.0f;    // cull + gbuffer + RT recording
     float zone_skin_ms = 0.0f;    // animation skinning seal
     float zone_comp_ms = 0.0f;    // composite to swapchain
-    float zone_casters_ms = 0.0f; // M6.5 caster harvest (inside zone_cull_ms)
 };
 
 struct IssueShot {
@@ -166,14 +165,6 @@ struct IssueShot {
     uint64_t command_layout_rebuilds = 0;
     uint64_t immediate_submits = 0;
     uint32_t resident_sectors = 0;
-    // M6.5 directional tier. dir_occ_pages == 0 in a world that should have
-    // tree shadows means the pass never ran, which is a different bug from
-    // "ran and looks wrong" and is otherwise indistinguishable on screen.
-    uint32_t dir_occ_queue_depth = 0;
-    uint32_t dir_occ_last_frame = 0;
-    uint64_t dir_occ_pages = 0;
-    uint64_t dir_occ_dropped = 0;
-    uint64_t dir_occ_skipped_fine = 0;
 };
 
 // What the reporter is doing right now. The capture is a two-frame handshake

@@ -213,14 +213,6 @@ class VtStubFiller final : public VtPageFiller {
                 offset + kBcPageBytes * 3u};
             for (uint32_t c = 0; c < kVtChannelCount; ++c) {
                 if (pool.image[c] == VK_NULL_HANDLE) continue;
-                // M6.5: this filler stages no DirOcc bytes — the array above
-                // has four real offsets, and before this skip existed the
-                // value-initialized fifth entry (0) silently copied request
-                // 0's ALBEDO block over the channel. The residency layer owns
-                // that channel's content (open-cleared at init, reset per
-                // fill, overwritten by the directional bake); a tier-1 filler
-                // must leave it alone.
-                if (c == kVtChannelDirOcc) continue;
                 VkBufferImageCopy copy{};
                 copy.bufferOffset = channel_offsets[c];
                 copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};

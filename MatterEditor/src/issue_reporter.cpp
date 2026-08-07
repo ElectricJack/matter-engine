@@ -206,11 +206,6 @@ void write_shot_json(std::ostream& out, const IssueShot& shot) {
             << ", \"command_layout_rebuilds\": " << shot.command_layout_rebuilds
             << ", \"immediate_submits\": " << shot.immediate_submits
             << ", \"resident_sectors\": " << shot.resident_sectors
-            << ", \"dir_occ_pages\": " << shot.dir_occ_pages
-            << ", \"dir_occ_queue_depth\": " << shot.dir_occ_queue_depth
-            << ", \"dir_occ_last_frame\": " << shot.dir_occ_last_frame
-            << ", \"dir_occ_dropped\": " << shot.dir_occ_dropped
-            << ", \"dir_occ_skipped_fine\": " << shot.dir_occ_skipped_fine
             << "},\n";
         // frame, render, build, gpu, tris, instances -- one row per frame,
         // oldest first. Compact on purpose: a few hundred rows of prose-shaped
@@ -223,8 +218,8 @@ void write_shot_json(std::ostream& out, const IssueShot& shot) {
                 << h.build_ms << "," << h.gpu_ms << "," << h.triangles << ","
                 << h.instances_drawn << "," << h.resolve_ms << ","
                 << h.draw_ms << "," << h.zone_vt_ms << "," << h.zone_cull_ms
-                << "," << h.zone_skin_ms << "," << h.zone_comp_ms << ","
-                << h.zone_casters_ms << "]";
+                << "," << h.zone_skin_ms << "," << h.zone_comp_ms
+                << "]";
         }
         out << "\n      ],\n";
         out << "      \"history_columns\": [\"frame_ms\",\"render_ms\","

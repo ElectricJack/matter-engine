@@ -2474,12 +2474,6 @@ int main() {
                                 fs.vk_command_layout_rebuilds;
                             shot.immediate_submits = fs.vk_immediate_submits;
                             shot.resident_sectors = fs.resident_sectors;
-                            shot.dir_occ_queue_depth = fs.vt_dir_occ_queue_depth;
-                            shot.dir_occ_last_frame = fs.vt_dir_occ_last_frame;
-                            shot.dir_occ_pages = fs.vt_dir_occ_pages;
-                            shot.dir_occ_dropped = fs.vt_dir_occ_dropped_total;
-                            shot.dir_occ_skipped_fine =
-                                fs.vt_dir_occ_skipped_fine_total;
                             attach_preview(shot, cropped, shot.width, shot.height);
                             viewer::record_shot(issue_state, shot);
                             std::printf("issue shot written to %s\n", path.c_str());
@@ -3233,7 +3227,6 @@ int main() {
                 sample.zone_cull_ms = frame_stats.draw_cull_render_ms;
                 sample.zone_skin_ms = frame_stats.draw_skin_seal_ms;
                 sample.zone_comp_ms = frame_stats.draw_composite_ms;
-                sample.zone_casters_ms = frame_stats.vt_caster_harvest_ms;
                 if (issue_frame_history.size() < kIssueHistoryFrames)
                     issue_frame_history.push_back(sample);
                 else
@@ -3329,15 +3322,6 @@ int main() {
                             frame_stats.vk_command_layout_rebuilds;
                         shot.immediate_submits = frame_stats.vk_immediate_submits;
                         shot.resident_sectors = frame_stats.resident_sectors;
-                        shot.dir_occ_queue_depth =
-                            frame_stats.vt_dir_occ_queue_depth;
-                        shot.dir_occ_last_frame =
-                            frame_stats.vt_dir_occ_last_frame;
-                        shot.dir_occ_pages = frame_stats.vt_dir_occ_pages;
-                        shot.dir_occ_dropped =
-                            frame_stats.vt_dir_occ_dropped_total;
-                        shot.dir_occ_skipped_fine =
-                            frame_stats.vt_dir_occ_skipped_fine_total;
                         attach_preview(shot, cropped, shot.width, shot.height);
                         viewer::record_shot(issue_state, shot);
                         std::printf("issue shot written to %s\n", path.c_str());
