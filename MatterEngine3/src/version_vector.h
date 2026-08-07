@@ -54,7 +54,18 @@ namespace components {
 //   2 -> 3 : (see above; numbering as recorded in tileset_gtex.h)
 //   3 -> 4 : tileset_bake_ao.comp traces around the geometric normal.
 //   4 -> 5 : assemble_torus_bvh registers EVERY BLAS entry a part draws.
-inline constexpr uint32_t kEngineBake = 5u;
+//   5 -> 6 : reproject_triex(SampleSource) keeps faceted authored fields
+//            faceted: a rung whose corner donors all author N0=N1=N2 = their
+//            geometric face normal now takes its OWN face normal instead of
+//            interpolating between facet constants. Found while investigating
+//            issue 7b64dc27 (whose visible pale/dark split measured out as an
+//            ALBEDO difference, tracked separately); what THIS fixes is the
+//            manufactured smooth gradient on coarse rungs of faceted DSL
+//            geometry — AlpineDeciduous terminal rung: facet fraction 0.00,
+//            composite lit-factor mean +11.4% and contrast loss vs rep 0,
+//            now facet 1.00 / +5.5% (lod_normal_consistency_tests).
+//            Every reprojected ladder rung's TriEx bytes can differ.
+inline constexpr uint32_t kEngineBake = 6u;
 
 // The physics library. A settle that lands differently is different content.
 inline constexpr uint32_t kBox3d = 1u;

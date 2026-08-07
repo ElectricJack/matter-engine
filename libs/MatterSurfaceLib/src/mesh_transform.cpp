@@ -257,6 +257,30 @@ void ReprojectSource::build_donor_machinery() {
         src_face_n.reserve(src_tri_count);
         for (size_t i = 0; i < src_tri_count; ++i)
             src_face_n.push_back(face_normal_of(source, i));
+        // Classify each source triangle's authored shading: GEOMETRIC-FACETED
+        // means all three authored corner normals are one constant equal to
+        // the triangle's own geometric face normal — the field DSL
+        // triangle_emit authors for every beginShape(SHAPE.triangles) part
+        // (N0=N1=N2 = face normal). Sampling such a piecewise-constant field
+        // at three target corners and letting the rasterizer interpolate
+        // manufactures a smooth gradient the author never wrote: on the
+        // AlpineDeciduous terminal rung the reprojected canopy came out with
+        // facet fraction 0.00 (every triangle a gradient), +11.4% composite
+        // lit-factor mean and collapsed shading contrast against rep 0's
+        // hard facets (lod_normal_consistency_tests). The corner tolerance
+        // is tight (the authored values are literally copies); the
+        // vs-geometric tolerance absorbs the 1e-4 weld moving vertices.
+        src_geo_facet.resize(src_tri_count);
+        for (size_t i = 0; i < src_tri_count; ++i) {
+            const TriEx& ex = source.triex[i];
+            const float3& fn = src_face_n[i];
+            auto close = [](const float3& a, const float3& b, float min_dot) {
+                return a.x * b.x + a.y * b.y + a.z * b.z >= min_dot;
+            };
+            src_geo_facet[i] =
+                close(ex.N0, ex.N1, 0.9999f) && close(ex.N1, ex.N2, 0.9999f) &&
+                close(ex.N0, fn, 0.999f);
+        }
         overlap_grid.reserve(src_tri_count);
         for (size_t i = 0; i < src_tri_count; ++i) {
             const float3* vs[3] = {
@@ -433,10 +457,33 @@ void reproject_triex(const ReprojectSource& index, MeshIndexed& target) {
             const float3 ftgt = face_normal_of(target, ti);
             const float3 corners[3] = { a, b, cc };
             float3* out_n[3] = { &ex.N0, &ex.N1, &ex.N2 };
+            int si_k[3];
+            bool all_geo_facet = true;
             for (int k = 0; k < 3; ++k) {
                 int si = nearest_donor(corners[k], ftgt);
                 if (si < 0) si = (int)match;   // no compatible donor: keep locality
-                *out_n[k] = sample_source_normal(source, (size_t)si, corners[k], ftgt);
+                si_k[k] = si;
+                all_geo_facet = all_geo_facet && index.src_geo_facet[(size_t)si];
+            }
+            if (all_geo_facet) {
+                // FACETED authored field (donor N0=N1=N2 = its own geometric
+                // face normal). Inheriting that character means applying the
+                // same RULE to the rung — the rung triangle's own geometric
+                // face normal, constant per face — not sampling three
+                // different facet constants and interpolating between them.
+                // On a flat region (a box face) every corner sampled the same
+                // plane anyway, so this is identical to the sampling path and
+                // hard 90-degree edges stay hard (issue ef7053be's guard
+                // still holds). Where the target spans multiple facets — a
+                // decimated canopy shelf — this keeps the rung faceted, with
+                // rep 0's lit brightness and contrast, instead of a smooth
+                // gradient the author never wrote.
+                ex.N0 = ex.N1 = ex.N2 = ftgt;
+            } else {
+                for (int k = 0; k < 3; ++k) {
+                    *out_n[k] = sample_source_normal(source, (size_t)si_k[k],
+                                                     corners[k], ftgt);
+                }
             }
         }
         target.triex.push_back(ex);

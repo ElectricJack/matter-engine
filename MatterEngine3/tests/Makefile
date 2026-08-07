@@ -983,6 +983,9 @@ GALLERY_CPP = gallery_bake_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_C
 TREEBAKE_TARGET = build/tree_bake_check
 TREEBAKE_CPP = tree_bake_check.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
+LODNORMCONS_TARGET = build/lod_normal_consistency_tests
+LODNORMCONS_CPP = lod_normal_consistency_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
+
 ROCKPROF_TARGET = build/rock_bake_profile
 ROCKPROF_CPP = rock_bake_profile.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
@@ -1389,6 +1392,7 @@ sh_CPP_SRCS := $(sort \
     $(EXAMPLE_CPP) \
     $(GALLERY_CPP) \
     $(TREEBAKE_CPP) \
+    $(LODNORMCONS_CPP) \
     $(ROCKPROF_CPP) \
     $(SLABPROBE_CPP) \
     $(SECTORPROF_CPP) \
@@ -1559,6 +1563,7 @@ GRAPH_INT_OBJS = $(call obj_list,sh_test,$(GRAPH_INT_CPP)) $(call obj_list,mslc,
 EXAMPLE_OBJS = $(call obj_list,sh,$(EXAMPLE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 GALLERY_OBJS = $(call obj_list,sh,$(GALLERY_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 TREEBAKE_OBJS = $(call obj_list,sh,$(TREEBAKE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
+LODNORMCONS_OBJS = $(call obj_list,sh,$(LODNORMCONS_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 ROCKPROF_OBJS = $(call obj_list,sh,$(ROCKPROF_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 SLABPROBE_OBJS = $(call obj_list,sh,$(SLABPROBE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 AONORMPROBE_OBJS = $(call obj_list,sh,$(AONORMPROBE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
@@ -2062,6 +2067,16 @@ $(TREEBAKE_TARGET): $(TREEBAKE_OBJS)
 
 run-treebake: $(TREEBAKE_TARGET)
 	./$(TREEBAKE_TARGET)
+
+# Mesh rung N vs rung 0 shading-normal consistency (issue 7b64dc27). Fixture
+# gate by default; `./build/lod_normal_consistency_tests --tree [form]` is the
+# real-AlpineDeciduous instrument.
+$(LODNORMCONS_TARGET): $(LODNORMCONS_OBJS)
+	$(CC) $(LODNORMCONS_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
+
+run-lod-normal-consistency: $(LODNORMCONS_TARGET)
+	./$(LODNORMCONS_TARGET)
 
 # Rock bake profiling harness (cold bake per variant, wall time).
 $(ROCKPROF_TARGET): $(ROCKPROF_OBJS)

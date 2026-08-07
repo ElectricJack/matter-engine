@@ -60,7 +60,14 @@
 //   impostor_ab_probe --bundle <path.bundle> --hash <16-hex>
 //                     [--cluster N] [--view N] [--px N]
 //                     [--mesh-rung {0|terminal|N}]
+//                     [--rung-vs A,B]
 //                     [--sun az_deg,el_deg] [--sun-mult M]
+//
+//   --rung-vs A,B  MESH-vs-MESH mode (issue 7b64dc27): no impostor at all.
+//             Renders mesh rung A into the "mesh" column and mesh rung B into
+//             the "card" column of the same report, from the same frame — the
+//             direct rung-N-vs-rung-M diff for LOD shading discontinuities.
+//             `t` means the terminal rung (e.g. --rung-vs 0,t).
 //
 //   --view    baked view index 0..47 (azimuth-major, 16 per ring; rings at
 //             0/30/60 deg). Default probes 0, 20 and 40 — one per ring.
@@ -684,6 +691,8 @@ int main(int argc, char** argv) {
     uint64_t hash = 0;
     int cluster_arg = -1;
     int mesh_rung_arg = -1;   // -1 = terminal (the on-screen switch), N = rung N
+    bool rung_vs = false;     // --rung-vs A,B mesh-vs-mesh mode
+    int rung_a = 0, rung_b = -1;   // -1 = terminal
     std::vector<uint32_t> views;
     int px = 32;
     Lighting L;
@@ -714,6 +723,17 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "bad --mesh-rung (want 0|terminal|N)\n");
                 return 1;
             }
+        } else if (a == "--rung-vs") {
+            const std::string v = next();
+            const size_t comma = v.find(',');
+            if (comma == std::string::npos) {
+                fprintf(stderr, "bad --rung-vs (want A,B; B may be t)\n");
+                return 1;
+            }
+            rung_a = std::atoi(v.c_str());
+            const std::string b2 = v.substr(comma + 1);
+            rung_b = (b2 == "t" || b2 == "terminal") ? -1 : std::atoi(b2.c_str());
+            rung_vs = true;
         } else if (a == "--view") views.push_back(uint32_t(std::atoi(next())));
         else if (a == "--px") px = std::atoi(next());
         else if (a == "--sun") {
@@ -755,6 +775,24 @@ int main(int argc, char** argv) {
                           size_t cluster_idx, Probe& p) -> bool {
         if (rungs.empty()) return false;
         const int n = int(rungs.size());
+        if (rung_vs) {
+            // MESH-vs-MESH: rung A -> the "mesh" column, rung B -> the "card"
+            // column. No impostor is baked or sampled in this mode.
+            const int ai = std::min(std::max(rung_a, 0), n - 1);
+            const int bi = rung_b < 0 ? n - 1 : std::min(rung_b, n - 1);
+            p.tris = rungs[size_t(ai)].tris;
+            p.triex = rungs[size_t(ai)].triex;
+            p.mesh_tris = rungs[size_t(bi)].tris;
+            p.mesh_triex = rungs[size_t(bi)].triex;
+            char buf[128];
+            std::snprintf(buf, sizeof buf,
+                          "%s %zu: MESH rung %d (%zu tris) vs MESH rung %d/%d "
+                          "(%zu tris%s)",
+                          kind, cluster_idx, ai, p.tris.size(), bi, n - 1,
+                          p.mesh_tris.size(), bi == n - 1 ? ", terminal" : "");
+            p.label = buf;
+            return true;
+        }
         int mi = mesh_rung_arg < 0 ? n - 1 : mesh_rung_arg;
         if (mi >= n) {
             fprintf(stderr,
@@ -853,6 +891,40 @@ int main(int argc, char** argv) {
 
     for (const Probe& p : probes) {
         printf("\n==== %s ====\n", p.label.c_str());
+        if (rung_vs) {
+            // Shared orthographic frame from the FINE rung's AABB (the union
+            // is dominated by it; both sides use the same centre/extent so a
+            // per-pixel diff is meaningful).
+            float mn[3] = {3.4e38f, 3.4e38f, 3.4e38f};
+            float mx[3] = {-3.4e38f, -3.4e38f, -3.4e38f};
+            for (const Tri& t : p.tris) {
+                for (const float3* v : {&t.vertex0, &t.vertex1, &t.vertex2}) {
+                    mn[0] = std::min(mn[0], v->x); mx[0] = std::max(mx[0], v->x);
+                    mn[1] = std::min(mn[1], v->y); mx[1] = std::max(mx[1], v->y);
+                    mn[2] = std::min(mn[2], v->z); mx[2] = std::max(mx[2], v->z);
+                }
+            }
+            const float3 center = make_float3((mn[0] + mx[0]) * 0.5f,
+                                              (mn[1] + mx[1]) * 0.5f,
+                                              (mn[2] + mx[2]) * 0.5f);
+            float half = 0.f;
+            for (int k = 0; k < 3; ++k)
+                half = std::max(half, (mx[k] - mn[k]) * 0.5f);
+            half *= 1.10f;   // margin so silhouettes don't clip
+            printf("frame: center=(%.2f,%.2f,%.2f) half_extent=%.3f\n",
+                   center.x, center.y, center.z, half);
+            for (uint32_t v : views) {
+                if (v >= impostor::kViews) continue;
+                std::vector<Pixel> a_img, b_img;
+                render_mesh(p.tris, p.triex, center, half, v, px, 4, L, a_img);
+                render_mesh(p.mesh_tris, p.mesh_triex, center, half, v, px, 4,
+                            L, b_img);
+                std::vector<ChannelRow> rows;
+                printf("(columns: mesh = rung A, card = rung B)\n");
+                report(a_img, b_img, px, v, rows);
+            }
+            continue;
+        }
         impostor::ClusterImpostor imp;
         if (!impostor::bake_cluster(0, p.tris, p.triex, imp)) {
             printf("bake_cluster failed\n");

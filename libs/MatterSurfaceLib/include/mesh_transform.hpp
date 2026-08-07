@@ -21,6 +21,16 @@ enum class ReprojectNormals {
     // interpolation). Inherits the source's shading character: a box's
     // per-face normals stay hard, an isosurface's smooth field stays smooth.
     // Right for LOD ladders, where the rung must shade like the authored mesh.
+    //
+    // Faceted authored fields get the character, not the samples: when all
+    // three corner donors author N0=N1=N2 = their own geometric face normal
+    // (every DSL beginShape(SHAPE.triangles) part), the target triangle takes
+    // ITS own geometric face normal, constant per face. Corner-sampling a
+    // piecewise-constant field and letting the raster interpolate would
+    // manufacture a smooth gradient that never existed — coarse canopy rungs
+    // measured facet fraction 0.00 with brightness/contrast drift against
+    // rep 0 (lod_normal_consistency_tests). On flat regions the two
+    // constructions coincide, so hard box edges are unaffected.
     SampleSource,
 };
 
@@ -72,6 +82,12 @@ private:
 
     // SampleSource donor machinery; empty in SmoothTarget mode.
     std::vector<float3> src_face_n;
+    // Per source triangle: authored normals are one constant equal to the
+    // triangle's own geometric face normal (DSL triangle_emit's faceted
+    // authoring). Targets whose corner donors are all flagged keep the
+    // faceted character (their own face normal) instead of interpolating
+    // between facet constants — see reproject_triex.
+    std::vector<uint8_t> src_geo_facet;
     std::unordered_map<uint64_t, std::vector<uint32_t>> overlap_grid;
     float vmn[3] = {0, 0, 0};
     float cell_ov = 1.0f;
