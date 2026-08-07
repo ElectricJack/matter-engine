@@ -4,11 +4,15 @@
 #include <cmath>
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
+#include <functional>
+#include <vector>
 #include <filesystem>
 #include <system_error>
 
 #include "imgui.h"
 #include "imgui_internal.h"
+#include "profile.h"
 #include "ImGuizmo.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
@@ -766,6 +770,191 @@ void Ui::draw_performance_panel(matter::WorldSession* session,
     ImGui::End();
 }
 
+void Ui::draw_profiler_panel(const ViewerStats& s) {
+    namespace prof = matter::profile;
+    if (!ImGui::Begin("Profiler")) {
+        ImGui::End();
+        return;
+    }
+
+    bool capture = prof::enabled();
+    if (ImGui::Checkbox("Capture", &capture)) prof::set_enabled(capture);
+    ImGui::SameLine();
+    static float budget_ms = 16.6f;
+    ImGui::SetNextItemWidth(80.0f);
+    ImGui::InputFloat("budget (ms)", &budget_ms, 0.0f, 0.0f, "%.1f");
+
+    const prof::FrameStats st = prof::frame_stats(budget_ms);
+    ImGui::Separator();
+    ImGui::Text("frame   last %.2f   min %.2f   max %.2f   avg %.2f  ms",
+                st.last_ms, st.min_ms, st.max_ms, st.mean_ms);
+    // Smoothness: 1.0 = perfectly even; red as it degrades.
+    const ImVec4 smooth_col = st.smoothness > 0.75f
+                                  ? ImVec4(0.5f, 0.9f, 0.5f, 1.0f)
+                                  : (st.smoothness > 0.4f
+                                         ? ImVec4(0.95f, 0.8f, 0.3f, 1.0f)
+                                         : ImVec4(0.95f, 0.45f, 0.45f, 1.0f));
+    ImGui::Text("jitter  stddev %.2f ms   p99 %.2f ms   over-budget %d/%d",
+                st.stddev_ms, st.p99_ms, st.over_budget, st.samples);
+    ImGui::TextColored(smooth_col, "smoothness %.2f", st.smoothness);
+
+    // Frame-time history graph.
+    static std::vector<prof::FrameRecord> ring;
+    ring.resize(prof::kFrameHistory);
+    const int n = prof::copy_recent(ring.data(), prof::kFrameHistory);
+    static std::vector<float> ms_series;
+    ms_series.resize(n > 0 ? n : 1);
+    for (int i = 0; i < n; ++i)
+        ms_series[i] = static_cast<float>(ring[i].wall_ns / 1.0e6);
+    if (n > 0) {
+        char overlay[48];
+        std::snprintf(overlay, sizeof overlay, "%.1f ms  (~%.0f fps)",
+                      st.last_ms, st.last_ms > 0.0 ? 1000.0 / st.last_ms : 0.0);
+        const float top =
+            static_cast<float>(std::max(st.max_ms, budget_ms * 1.5));
+        ImGui::PlotLines("##frames", ms_series.data(), n, 0, overlay, 0.0f, top,
+                         ImVec2(-1.0f, 64.0f));
+    }
+
+    // Per-zone breakdown, AVERAGED over the resident window (a single frame's
+    // zones are noisy -- bake zones are only nonzero on frames a bake landed).
+    ImGui::Separator();
+    ImGui::TextDisabled("avg ms/frame over %d frames (%% of avg frame)", n);
+    if (n > 0) {
+        const int zones = prof::zone_count();
+        std::vector<double> msf(zones, 0.0);
+        for (int i = 0; i < n; ++i)
+            for (int z = 0; z < zones; ++z)
+                msf[z] += ring[i].zone_ns[z] / 1.0e6;
+        for (int z = 0; z < zones; ++z) msf[z] /= n;
+
+        // Build the parent->children tree from the recorded nesting. A child
+        // whose parent also has time this window nests under it; otherwise it's
+        // a root. So when bake.stagemem gets sub-scopes, they appear beneath it.
+        std::vector<std::vector<int>> children(zones);
+        std::vector<int> roots;
+        for (int z = 0; z < zones; ++z) {
+            if (msf[z] <= 0.0) continue;
+            const int parent = prof::zone_parent(z);
+            if (parent >= 0 && parent < zones && msf[parent] > 0.0)
+                children[parent].push_back(z);
+            else
+                roots.push_back(z);
+        }
+        const auto by_cost = [&](int a, int b) { return msf[a] > msf[b]; };
+        std::sort(roots.begin(), roots.end(), by_cost);
+        for (auto& kids : children) std::sort(kids.begin(), kids.end(), by_cost);
+
+        const double frame = st.mean_ms > 0.0 ? st.mean_ms : 1.0;
+        if (ImGui::BeginTable("prof_zones", 4,
+                              ImGuiTableFlags_RowBg |
+                                  ImGuiTableFlags_BordersInnerV |
+                                  ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("zone");
+            ImGui::TableSetupColumn("ms/frame", ImGuiTableColumnFlags_WidthFixed,
+                                    72.0f);
+            ImGui::TableSetupColumn("% frame", ImGuiTableColumnFlags_WidthFixed,
+                                    62.0f);
+            ImGui::TableSetupColumn("lane", ImGuiTableColumnFlags_WidthFixed,
+                                    56.0f);
+            ImGui::TableHeadersRow();
+            std::function<void(int)> draw_row = [&](int z) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                const bool has_kids = !children[z].empty();
+                ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanFullWidth |
+                                           ImGuiTreeNodeFlags_DefaultOpen;
+                if (!has_kids)
+                    flags |= ImGuiTreeNodeFlags_Leaf |
+                             ImGuiTreeNodeFlags_NoTreePushOnOpen |
+                             ImGuiTreeNodeFlags_Bullet;
+                const char* name = prof::zone_name(z);
+                const bool open = ImGui::TreeNodeEx(name, flags);
+                ImGui::TableSetColumnIndex(1);
+                ImGui::Text("%.3f", msf[z]);
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("%.1f%%", 100.0 * msf[z] / frame);
+                ImGui::TableSetColumnIndex(3);
+                ImGui::TextDisabled(
+                    std::strncmp(name, "bake.", 5) == 0 ? "bake" : "render");
+                if (has_kids && open) {
+                    for (int c : children[z]) draw_row(c);
+                    ImGui::TreePop();
+                }
+            };
+            for (int z : roots) draw_row(z);
+            ImGui::EndTable();
+        }
+        const int counters = prof::counter_count();
+        for (int c = 0; c < counters; ++c) {
+            double sum = 0.0;
+            for (int i = 0; i < n; ++i) sum += ring[i].counter[c];
+            if (sum == 0.0) continue;
+            ImGui::Text("#%-16s %.2f /frame", prof::counter_name(c), sum / n);
+        }
+    }
+
+    // Engine frame timing (moved here from Viewer Debug). Complements the
+    // ProfileLib zones above: the GPU pass breakdown (from VkQueryPool) and the
+    // coarse main-loop attribution that the per-zone view doesn't cover.
+    ImGui::Separator();
+    if (ImGui::CollapsingHeader("Frame timing (engine stats)",
+                                ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("FPS: %.1f  (%.2f ms)", s.fps, s.frame_ms);
+        if (s.gpu_timers_supported) {
+            const float gpu_sum = s.gpu_cull_ms + s.gpu_gbuffer_ms +
+                                  s.gpu_blas_ms + s.gpu_tlas_ms + s.gpu_rt_ms +
+                                  s.gpu_denoise_ms + s.gpu_dlss_ms +
+                                  s.gpu_composite_ms + s.gpu_vol_ms;
+            ImGui::Text("GPU %.1f ms total", s.gpu_total_ms);
+            ImGui::Text("  Cull %.1f  GBuf %.1f  BLAS %.1f  TLAS %.1f  RT %.1f",
+                        s.gpu_cull_ms, s.gpu_gbuffer_ms, s.gpu_blas_ms,
+                        s.gpu_tlas_ms, s.gpu_rt_ms);
+            ImGui::Text("  Den %.1f  DLSS %.1f  Comp %.1f  Vol %.1f  (other %.1f)",
+                        s.gpu_denoise_ms, s.gpu_dlss_ms, s.gpu_composite_ms,
+                        s.gpu_vol_ms, s.gpu_total_ms - gpu_sum);
+        } else {
+            ImGui::TextDisabled("GPU timers unavailable");
+        }
+        ImGui::Text("CPU: resolve %.2f  build %.2f  draw %.2f ms", s.resolve_ms,
+                    s.build_ms, s.draw_ms);
+        // Main-loop attribution: partitions the same window frame_ms covers, so
+        // `other` is genuinely unmeasured code, not clock skew. `render` already
+        // contains the resolve/build/draw line -- don't double-count.
+        const float loop_sum = s.loop_poll_ms + s.loop_acquire_ms +
+                               s.loop_ui_ms + s.loop_tick_ms + s.loop_pump_ms +
+                               s.loop_lab_ms + s.loop_render_ms +
+                               s.loop_present_ms;
+        ImGui::Text("Loop: poll %.2f  acq %.2f  ui %.2f  tick %.2f",
+                    s.loop_poll_ms, s.loop_acquire_ms, s.loop_ui_ms,
+                    s.loop_tick_ms);
+        ImGui::Text("      pump %.2f  lab %.2f  render %.2f  present %.2f",
+                    s.loop_pump_ms, s.loop_lab_ms, s.loop_render_ms,
+                    s.loop_present_ms);
+        ImGui::Text("      sum %.2f  other %.2f ms", loop_sum,
+                    s.frame_ms - loop_sum);
+        ImGui::Text("      peak: pump %.2f  acq %.2f ms", s.loop_peak_pump_ms,
+                    s.loop_peak_acquire_ms);
+    }
+
+    ImGui::Separator();
+    static char dump_status[160] = "";
+    if (ImGui::Button("Dump trace now")) {
+        if (prof::dump_chrome_trace("profile_trace.json"))
+            std::snprintf(dump_status, sizeof dump_status,
+                          "wrote profile_trace.json (chrome://tracing)");
+        else
+            std::snprintf(dump_status, sizeof dump_status,
+                          "failed to write profile_trace.json");
+    }
+    if (dump_status[0]) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", dump_status);
+    }
+
+    ImGui::End();
+}
+
 void Ui::draw_streaming_lod_section(matter::WorldSession* session,
                                     EditorProps& props,
                                     const ViewerCommands& commands,
@@ -1054,22 +1243,9 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
                           EditorProps& props) {
     ImGui::Begin("Viewer Debug");
 
-    ImGui::Text("FPS: %.1f  (%.2f ms)", s.fps, s.frame_ms);
-    if (s.gpu_timers_supported) {
-        const float sum = s.gpu_cull_ms + s.gpu_gbuffer_ms + s.gpu_blas_ms +
-                          s.gpu_tlas_ms + s.gpu_rt_ms + s.gpu_denoise_ms +
-                          s.gpu_dlss_ms + s.gpu_composite_ms + s.gpu_vol_ms;
-        const float unaccounted = s.gpu_total_ms - sum;
-        ImGui::Text("GPU %.1fms | Cull %.1f GBuf %.1f BLAS %.1f TLAS %.1f RT %.1f Den %.1f DLSS %.1f Comp %.1f Vol %.1f (other %.1f)",
-                    s.gpu_total_ms, s.gpu_cull_ms,
-                    s.gpu_gbuffer_ms, s.gpu_blas_ms, s.gpu_tlas_ms, s.gpu_rt_ms,
-                    s.gpu_denoise_ms, s.gpu_dlss_ms, s.gpu_composite_ms,
-                    s.gpu_vol_ms, unaccounted);
-    } else {
-        ImGui::TextDisabled("GPU timers unavailable");
-    }
-    ImGui::Text("CPU: resolve %.2f  build %.2f  draw %.2f ms",
-                s.resolve_ms, s.build_ms, s.draw_ms);
+    // Frame timing (FPS/GPU/CPU/main-loop) moved to the Profiler window's
+    // "Frame timing (engine stats)" section -- it belongs with profiling, not
+    // the view-debug toggles.
     ImGui::Text("Camera: %.1f, %.1f, %.1f", s.cam_pos[0], s.cam_pos[1], s.cam_pos[2]);
     ImGui::Separator();
 
@@ -1080,26 +1256,6 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
     ImGui::Text("Provider: %s", s.connected ? "connected" : "disconnected");
     ImGui::Text("Last connect: %d baked, %d cache hits", s.parts_baked, s.cache_hits);
     ImGui::Text("Last reconcile want: %d", s.last_want_count);
-    ImGui::Separator();
-
-    // Main-loop attribution. These partition the same window `frame_ms` covers,
-    // so `other` is genuinely unmeasured code, not clock skew. `render` already
-    // contains the resolve/build/draw line above it — don't double-count them.
-    {
-        const float loop_sum = s.loop_poll_ms + s.loop_acquire_ms + s.loop_ui_ms +
-                               s.loop_tick_ms + s.loop_pump_ms + s.loop_lab_ms +
-                               s.loop_render_ms + s.loop_present_ms;
-        ImGui::Text("Loop: poll %.2f  acq %.2f  ui %.2f  tick %.2f",
-                    s.loop_poll_ms, s.loop_acquire_ms, s.loop_ui_ms,
-                    s.loop_tick_ms);
-        ImGui::Text("      pump %.2f  lab %.2f  render %.2f  present %.2f",
-                    s.loop_pump_ms, s.loop_lab_ms, s.loop_render_ms,
-                    s.loop_present_ms);
-        ImGui::Text("      sum %.2f  other %.2f ms", loop_sum,
-                    s.frame_ms - loop_sum);
-        ImGui::Text("      peak: pump %.2f  acq %.2f ms",
-                    s.loop_peak_pump_ms, s.loop_peak_acquire_ms);
-    }
     ImGui::Separator();
 
     if (s.vt_active) {

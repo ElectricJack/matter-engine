@@ -15,6 +15,7 @@
 #include <sstream>
 
 #include "console_panel.h"
+#include "profile.h"
 #include "ui.h"  // ViewerStats + matter::FrameStats (via world_session.h)
 
 namespace viewer {
@@ -647,6 +648,12 @@ std::string write_issue_report(IssueReporterState& state,
         state.status_is_error = true;
         return {};
     }
+    // Profiler tail: the recent FrameRecord history as a Chrome-trace, so every
+    // filed report carries the timing (and any spike) that led up to the shot.
+    // Best-effort -- a profiler-disabled build or empty ring just skips it and
+    // must not block filing an otherwise-complete report.
+    matter::profile::dump_chrome_trace(
+        (dir / "profile_tail.json").string().c_str());
 
     state.status = "filed " + state.id;
     state.status_is_error = false;

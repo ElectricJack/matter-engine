@@ -6,6 +6,7 @@
 //
 // Task 7 will implement raycast/instance_count/instance_info (currently stubs).
 
+#include "profile.h"
 #include "matter/engine_context.h"
 #include "matter/world_session.h"
 #include "matter/world_props.h"
@@ -4353,6 +4354,10 @@ void WorldSession::Impl::bake_and_stage_sector(
         const size_t sector_first_rung =
             (first_rung_policy && matter_stream::variant_scatter(req.rung) < 2)
                 ? 1u : 0u;
+        // Parent zone for the per-sector worker bake: bake.stagemem and
+        // bake.prebuild below nest under it, so the Profiler tree shows the
+        // sector total and its two halves.
+        PROFILE_SCOPE("bake.sector");
         const auto stage_t0 = std::chrono::steady_clock::now();
         // Warp field (VT Phase 2): the streaming caller is the one place the
         // sector's world placement is known, so it supplies the anchor the
@@ -4369,6 +4374,9 @@ void WorldSession::Impl::bake_and_stage_sector(
             // what the error-bounded terrain ladder exists for. Asserted here
             // rather than sniffed from the mesh -- the skirt fringe that used
             // to give it away is gone (terrain_mesher.cpp, 2026-07-30).
+            // The LOD-ladder cost of the streaming fill's staging path (distinct
+            // from the disk-decode bake.stageload below).
+            PROFILE_SCOPE("bake.stagemem");
             auto from_memory = std::make_shared<viewer::PartStore::StagedPart>(
                 store->stage_from_bake(sector_hash, *br.geometry,
                                        sector_first_rung,
@@ -4384,6 +4392,10 @@ void WorldSession::Impl::bake_and_stage_sector(
         // exact behaviour.
         const bool staged_from_memory = static_cast<bool>(staged_load);
         if (!staged_load) {
+            // The previously-unmeasured "rebuilding closer clusters" cost: the
+            // LOD ladder inside stage_load. Runs on the bake worker; ProfileLib
+            // attributes it to the frame current when it ends.
+            PROFILE_SCOPE("bake.stageload");
             staged_load = std::make_shared<viewer::PartStore::StagedPart>(
                 store->stage_load(sector_hash, sector_first_rung,
                                   /*terrain_sector=*/true, warp_anchor));
@@ -4487,6 +4499,8 @@ void WorldSession::Impl::bake_and_stage_sector(
         }();
         const auto prebuild_t0 = std::chrono::steady_clock::now();
         if (staged_load->ok && prebuild_enabled && !diagnostic_material_override) {
+            // The other unmeasured half: the VkScenePart prebuild.
+            PROFILE_SCOPE("bake.prebuild");
             VtSurfaceClassifier sector_surface;
             const VtSurfaceClassifier* surface_ptr = nullptr;
             if (world_surface) {

@@ -85,6 +85,7 @@ SQL_DIR     = ../libs/SpatialQueryLib
 MEMLIB_DIR  = ../libs/MemoryLib
 MATHLIB_DIR = ../libs/MathLib
 MCL_DIR     = ../libs/MeshChartingLib
+PROFILE_DIR = ../libs/ProfileLib
 OZZ_DIR     = ../third_party/ozz-animation
 OZZ_BUILD_DIR = $(OZZ_DIR)/build/matter
 OZZ_INCLUDE = $(OZZ_DIR)/include
@@ -107,6 +108,7 @@ INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(MSL_DIR)/include -I$(MSL_DIR)/src \
                 -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include \
                 -I$(MATHLIB_DIR)/include \
+                -I$(PROFILE_DIR)/include \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
                 -I$(BC7ENC_DIR) \
                 -I$(PFL_DIR)/include \
@@ -237,6 +239,10 @@ ME3_OBJ = $(addprefix $(OBJDIR)/,$(notdir $(ME3_CPP:.cpp=.o)))
 # are third-party sources that must never be picked up by the generic %.cpp
 # rule's source search.
 BC7ENC_OBJ = $(addprefix $(OBJDIR)/,bc7enc.o rgbcx.o)
+
+# ProfileLib (libs/ProfileLib): the shared engine profiler. Explicit rule +
+# archive member, same self-contained model as mem_pool.o / spatial_hash.o.
+PROFILE_OBJ = $(OBJDIR)/profile.o
 
 # MSL C++ object names (basenames; same flat-object model as ME3_OBJ).
 MSL_OBJ = $(addprefix $(OBJDIR)/,cluster.o cell.o mesh_simplifier.o mesh_indexed.o mesh_smooth.o mesh_transform.o \
@@ -481,6 +487,9 @@ $(OBJDIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(OBJDIR)
 $(OBJDIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(OBJDIR)
 	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
 
+$(OBJDIR)/profile.o: $(PROFILE_DIR)/src/profile.cpp | $(OBJDIR)
+	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS)
+
 # Vendored BC encoders. Always -O2 (an -O0 bc7enc is ~30x slower, which would
 # show up directly as world-connect stall time) and -w: these are unmodified
 # upstream sources, so their warnings are not this project's to fix or to read
@@ -511,7 +520,7 @@ $(OBJDIR)/%.o: %.cpp | $(OBJDIR)
 $(BOX3D_LIB):
 	$(MAKE) -C $(BOX3D_DIR)
 
-$(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BC7ENC_OBJ) $(BOX3D_LIB) | check-me3-source-basenames
+$(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BC7ENC_OBJ) $(PROFILE_OBJ) $(BOX3D_LIB) | check-me3-source-basenames
 # `ar rcs` REPLACES the members it is given and leaves every other member in
 # place, so an object whose source was deleted (and whose name was dropped from
 # ME3_OBJ) keeps being served out of a stale archive forever -- linking dead
@@ -519,7 +528,7 @@ $(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BC7ENC_OBJ)
 # bit the far-field-impostor work twice (a deleted impostor_root_ledger.o, then
 # M0's world_composer.o / tileset_provider.o). Rebuild the archive from scratch.
 	rm -f $(LIB)
-	ar rcs $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BC7ENC_OBJ)
+	ar rcs $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BC7ENC_OBJ) $(PROFILE_OBJ)
 
 # Delegate to the test suite (headless, GL-free host + raylib-linked BLAS path).
 test:

@@ -19,6 +19,7 @@
 #include "editor_props.h"
 #include "image_preview.h"
 #include "issue_reporter.h"
+#include "profile.h"
 #include "shot_replay.h"
 // M1d fly-through determinism trace. Deliberately the only engine render header
 // main.cpp reaches for: it is Vulkan-free, so the editor gates the trace without
@@ -2428,6 +2429,7 @@ int main() {
                                      selection_pivot_valid, selection_pivot);
                 ui.draw_performance_panel(session.get(), editor_props,
                                           viewer_commands, camera);
+                ui.draw_profiler_panel(stats);
                 // Issue reporter (F9 region / F10 viewport). Drawn last so the
                 // selection overlay and the window sit above the panels they
                 // might be reporting on.
@@ -3670,6 +3672,18 @@ int main() {
     if (fifo_path) unlink(fifo_path);
 #endif
     if (camera_capture) camera_controller.set_capture(window, false, false);
+    // MATTER_PROFILE_TRACE=<path>: on exit, dump the profiler's FrameRecord tail
+    // as a Chrome-trace (loads in chrome://tracing). Headless capture path for
+    // the same data every issue report embeds as profile_tail.json.
+    if (const char* trace_path = std::getenv("MATTER_PROFILE_TRACE")) {
+        if (trace_path[0] != '\0') {
+            if (matter::profile::dump_chrome_trace(trace_path))
+                std::printf("profile: wrote trace to %s\n", trace_path);
+            else
+                std::fprintf(stderr, "profile: could not write trace to %s\n",
+                             trace_path);
+        }
+    }
     // Flush a debounced User-scope autosave that the last frames did not reach.
     // World scope stays explicit-save (plus the automatic flush at every
     // world-change seam) — a save-on-exit prompt is Stage 3.

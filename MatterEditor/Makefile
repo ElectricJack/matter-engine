@@ -50,6 +50,7 @@ BOX3D_LIB   = $(BOX3D_DIR)/libbox3d.a
 WIN_BOX3D_LIB = $(BOX3D_DIR)/build-mingw/libbox3d.a
 ME3_DIR     = ../MatterEngine3
 MSL_DIR     = ../libs/MatterSurfaceLib
+PROFILE_DIR = ../libs/ProfileLib
 FLECS_DIR   = ../third_party/flecs
 # Shared source-of-truth libraries (compiled from source, not copied).
 SQL_DIR     = ../libs/SpatialQueryLib
@@ -77,6 +78,7 @@ INCLUDE_PATHS = -I$(ME3_DIR)/include \
                 -I$(MSL_DIR)/include \
                 -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include \
                 -I$(MATHLIB_DIR)/include \
+                -I$(PROFILE_DIR)/include \
                 -I$(RAYLIB_PATH) \
                 -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends \
                 -I$(IMGUIZMO_PATH) \
@@ -343,13 +345,13 @@ ifeq ($(HAVE_STREAMLINE),1)
 endif
 
 # Windows object set: full direct-source compile.
-WIN_ALL_CPP_SRC = $(APP_SRC) $(WIN_ME3_CPP) $(WIN_MSL_CPP) $(IMGUI_SRC_WIN)
+WIN_ALL_CPP_SRC = $(APP_SRC) $(WIN_ME3_CPP) $(WIN_MSL_CPP) $(IMGUI_SRC_WIN) $(PROFILE_DIR)/src/profile.cpp
 CPP_NAMES_WIN_ALL = $(notdir $(WIN_ALL_CPP_SRC))
 QJS_NAMES = $(notdir $(QJS_C))
 PIPC_NAMES_WIN = $(notdir $(WIN_PIPELINE_C))
 FLECS_NAME = $(notdir $(FLECS_C))
 
-vpath %.cpp src $(ME3_DIR)/src $(ME3_DIR)/src/animation $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs \
+vpath %.cpp src $(PROFILE_DIR)/src $(ME3_DIR)/src $(ME3_DIR)/src/animation $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs \
              $(ME3_DIR)/src/streaming $(ME3_DIR)/src/script $(ME3_DIR)/src/event \
              $(ME3_DIR)/src/scene $(ME3_DIR)/src/util $(ME3_DIR)/src/props \
              $(MSL_DIR)/src $(SQL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
@@ -707,6 +709,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
 	    $(ME3_DIR)/src/render/matrix_math.cpp \
 	    $(ME3_DIR)/src/render/lod_trace.cpp \
+	    $(PROFILE_DIR)/src/profile.cpp \
 	    $(GLFW_WIN_LIB) $(W_FLECS_OBJ) $(W_BC7ENC_OBJ) -o $@ \
 	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
 	    -ffunction-sections -Wl,--gc-sections \
@@ -716,6 +719,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    -DMATTER_HAVE_STREAMLINE=$(HAVE_STREAMLINE) \
 	    -DMATTER_VK_TEST_LAYER_PATH='"$(VULKAN_RUNTIME_DIR)"' \
 	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
+	    -I$(PROFILE_DIR)/include \
 	    -I$(BC7ENC_DIR) \
 	    -I../third_party/raylib/src \
 	    -I../libs/MatterSurfaceLib/include \
@@ -1249,14 +1253,17 @@ build/test_issue_reporter.exe: tests/test_issue_reporter.cpp src/issue_reporter.
                                src/console_log.cpp src/issue_reporter.h \
                                $(ME3_DIR)/src/props/props.cpp \
                                $(ME3_DIR)/src/util/json_doc.cpp \
+                               $(PROFILE_DIR)/src/profile.cpp \
                                build/windows/obj/flecs.o
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) tests/test_issue_reporter.cpp src/issue_reporter.cpp \
 	    src/console_log.cpp $(ME3_DIR)/src/props/props.cpp \
-	    $(ME3_DIR)/src/util/json_doc.cpp build/windows/obj/flecs.o -o $@ \
+	    $(ME3_DIR)/src/util/json_doc.cpp $(PROFILE_DIR)/src/profile.cpp \
+	    build/windows/obj/flecs.o -o $@ \
 	    -std=c++17 -Wall -Isrc -I../MatterEngine3/include -I../MatterEngine3/src \
 	    -I../libs/MatterSurfaceLib/include -I../libs/SpatialQueryLib/include \
 	    -I../libs/MemoryLib/include -I../libs/MathLib/include \
+	    -I$(PROFILE_DIR)/include \
 	    -I../third_party/imgui -I../third_party/ImGuizmo \
 	    -I../third_party/Vulkan-Headers/include -I../third_party/flecs \
 	    -I../libs/ParticleFlowLib/include -I../third_party/box3d/include \
