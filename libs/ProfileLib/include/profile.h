@@ -65,6 +65,15 @@ int zone_count();
 // directly; the RAII Scope is the common path.
 void add_ns(int zone, uint64_t ns);
 
+// Scope nesting. scope_enter records `zone`'s parent as whatever scope is
+// currently open on THIS thread (tracked in a thread-local stack) and returns
+// the previous open zone so scope_exit can restore it. A zone's parent is
+// recorded once, on first sight. zone_parent returns -1 for a root zone. This
+// is what makes a PROFILE_SCOPE opened inside another render as its child.
+int scope_enter(int zone);
+void scope_exit(int previous);
+int zone_parent(int zone);
+
 // Counters: per-frame event tallies (layout rebuilds, draw calls, jobs run),
 // distinct from time zones. Same intern-once model as zones.
 int register_counter(const char* name);
@@ -136,13 +145,17 @@ class Scope {
 public:
 #if MATTER_PROFILE_ENABLED
     explicit Scope(int zone) : zone_(zone), active_(enabled()) {
-        if (active_) start_ = now_ns();
+        if (active_) {
+            start_ = now_ns();
+            prev_ = scope_enter(zone);
+        }
     }
     ~Scope() { stop(); }
     void stop() {
         if (!active_) return;
         active_ = false;
         add_ns(zone_, now_ns() - start_);
+        scope_exit(prev_);
     }
 #else
     explicit Scope(int) {}
@@ -156,6 +169,7 @@ private:
     int zone_ = 0;
     bool active_ = false;
     uint64_t start_ = 0;
+    int prev_ = -1;
 #endif
 };
 

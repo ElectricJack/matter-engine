@@ -252,7 +252,7 @@ public:
     // global profiler state, needs no session/props. Shows last-frame wall
     // stats, jitter/smoothness, a frame-time graph, a per-zone breakdown
     // averaged over the resident window, and a "dump trace" button.
-    void draw_profiler_panel();
+    void draw_profiler_panel(const ViewerStats& stats);
     // Viewport banner shown while vt_rejected_variants != 0. Drawn on the
     // foreground draw list (like the simulation border tint) so it is visible
     // even when the Viewer Debug window is collapsed or buried — a rejected

@@ -2429,7 +2429,7 @@ int main() {
                                      selection_pivot_valid, selection_pivot);
                 ui.draw_performance_panel(session.get(), editor_props,
                                           viewer_commands, camera);
-                ui.draw_profiler_panel();
+                ui.draw_profiler_panel(stats);
                 // Issue reporter (F9 region / F10 viewport). Drawn last so the
                 // selection overlay and the window sit above the panels they
                 // might be reporting on.

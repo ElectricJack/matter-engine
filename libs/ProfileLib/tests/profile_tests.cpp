@@ -119,6 +119,28 @@ int main() {
               "smoothness in [0,1]");
     }
 
+    // --- scope nesting (parent/child) -----------------------------------
+    {
+        const int parent = register_zone("outer");
+        const int child = register_zone("inner");
+        const int sibling = register_zone("after");
+        {
+            Scope p(parent);
+            spin_one_tick();
+            {
+                Scope c(child);
+                spin_one_tick();
+            }
+        }
+        {
+            Scope s2(sibling);  // opened at top level, not under a parent
+            spin_one_tick();
+        }
+        CHECK(zone_parent(parent) == -1, "top-level scope has no parent");
+        CHECK(zone_parent(child) == parent, "nested scope records its parent");
+        CHECK(zone_parent(sibling) == -1, "a later top-level scope stays root");
+    }
+
     // --- chrome trace dump ----------------------------------------------
     {
         // Record a render zone, a bake zone, and a counter, then a frame.

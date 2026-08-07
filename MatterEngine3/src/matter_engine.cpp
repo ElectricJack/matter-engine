@@ -4354,6 +4354,10 @@ void WorldSession::Impl::bake_and_stage_sector(
         const size_t sector_first_rung =
             (first_rung_policy && matter_stream::variant_scatter(req.rung) < 2)
                 ? 1u : 0u;
+        // Parent zone for the per-sector worker bake: bake.stagemem and
+        // bake.prebuild below nest under it, so the Profiler tree shows the
+        // sector total and its two halves.
+        PROFILE_SCOPE("bake.sector");
         const auto stage_t0 = std::chrono::steady_clock::now();
         // Warp field (VT Phase 2): the streaming caller is the one place the
         // sector's world placement is known, so it supplies the anchor the

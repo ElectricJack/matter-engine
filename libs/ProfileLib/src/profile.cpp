@@ -35,6 +35,10 @@ struct Registry {
     // exchanges to 0 on the render thread.
     std::atomic<uint64_t> zone_ns[kMaxZones] = {};
 
+    // Static zone->parent map for the nesting tree, recorded once per zone on
+    // first sight (CAS from -1). Display metadata only; never per-frame data.
+    std::atomic<int> zone_parent[kMaxZones];
+
     // Counters: per-frame event tallies, same intern-once model as zones.
     char counter_names[kMaxCounters][64] = {};
     std::atomic<int> counter_n{0};
@@ -130,6 +134,8 @@ void log_accumulate_and_maybe_print(Registry& r, const FrameRecord& record,
 Registry& reg() {
     static Registry* r = [] {
         Registry* fresh = new Registry();
+        for (int i = 0; i < kMaxZones; ++i)
+            fresh->zone_parent[i].store(-1, std::memory_order_relaxed);
         const char* env = std::getenv("MATTER_PROFILE");
         const bool on = env == nullptr || env[0] == '\0' || env[0] != '0';
         fresh->enabled_flag.store(on, std::memory_order_relaxed);
@@ -180,6 +186,31 @@ int zone_count() { return reg().count.load(std::memory_order_acquire); }
 void add_ns(int zone, uint64_t ns) {
     if (zone < 0 || zone >= kMaxZones) return;
     reg().zone_ns[zone].fetch_add(ns, std::memory_order_relaxed);
+}
+
+// Per-thread open-scope cursor: the zone currently being timed on this thread,
+// so a nested Scope can record it as its parent. Thread-local, so render and
+// bake-worker nesting never cross.
+thread_local int t_open_zone = -1;
+
+int scope_enter(int zone) {
+    const int previous = t_open_zone;
+    if (zone >= 0 && zone < kMaxZones && previous != zone) {
+        int expected = -1;
+        // Record the parent once, on first sight. Different call sites of the
+        // same zone under different parents keep the first-seen parent.
+        reg().zone_parent[zone].compare_exchange_strong(
+            expected, previous, std::memory_order_relaxed);
+    }
+    t_open_zone = zone;
+    return previous;
+}
+
+void scope_exit(int previous) { t_open_zone = previous; }
+
+int zone_parent(int zone) {
+    if (zone < 0 || zone >= kMaxZones) return -1;
+    return reg().zone_parent[zone].load(std::memory_order_relaxed);
 }
 
 int register_counter(const char* name) {
