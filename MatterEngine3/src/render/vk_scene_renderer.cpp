@@ -4862,14 +4862,27 @@ uint32_t VkSceneRenderer::vt_slot_for_lod(const PartRecord& record,
     //
     // A cluster's ladder position is not its rung index: VkSceneLod::chart_rung
     // names the rung the step actually draws.
-    if (record.vt_slots.empty()) return vt::kVtNoSlot;
-    if (global_cluster >= cluster_lods_.size()) return vt::kVtNoSlot;
+    // MATTER_VT_CHART_LOG=1: census of WHICH early-out sends a draw down the
+    // legacy flat-tint path. Seven distinct reasons reach the same `return
+    // kVtNoSlot`, and downstream they are indistinguishable -- the fragment
+    // just silently shades from the vertex tint. Issue 6e1b444f needed this
+    // because chart coverage measured complete (charts == ladder on every
+    // part) while ~80% of canopy pixels still never sampled a page, and
+    // nothing in between reported why.
+    vt_route_census_[kVtRouteTotal].fetch_add(1, std::memory_order_relaxed);
+    auto miss = [this](VtRouteReason r) {
+        vt_route_census_[r].fetch_add(1, std::memory_order_relaxed);
+        return vt::kVtNoSlot;
+    };
+    if (record.vt_slots.empty()) return miss(kVtRouteNoSlots);
+    if (global_cluster >= cluster_lods_.size())
+        return miss(kVtRouteClusterOob);
     const std::vector<VkSceneLod>& lods = cluster_lods_[global_cluster];
-    if (lod_index >= lods.size()) return vt::kVtNoSlot;
+    if (lod_index >= lods.size()) return miss(kVtRouteLodOob);
     const uint32_t rung = lods[lod_index].chart_rung;
-    if (rung >= record.vt_slots.size()) return vt::kVtNoSlot;
+    if (rung >= record.vt_slots.size()) return miss(kVtRouteRungOob);
     const uint32_t slot = record.vt_slots[rung];
-    if (slot == vt::kVtNoSlot) return vt::kVtNoSlot;
+    if (slot == vt::kVtNoSlot) return miss(kVtRouteUnregistered);
     // TAIL GATE (streaming black-flash fix): a freshly registered variant's
     // pinned tail is MAPPED immediately but FILLED through the bounded fill
     // queue — potentially frames later under a streaming burst. Until the
@@ -4879,8 +4892,32 @@ uint32_t VkSceneRenderer::vt_slot_for_lod(const PartRecord& record,
     // one). vt_begin_frame republishes this table the frame a tail becomes
     // ready (consume_activation_dirty), so the gate lifts within a frame of
     // the fill landing.
-    if (!vt_ || !vt_->slot_active(slot)) return vt::kVtNoSlot;
+    if (!vt_ || !vt_->slot_active(slot)) return miss(kVtRouteTailGate);
+    vt_route_census_[kVtRouteOk].fetch_add(1, std::memory_order_relaxed);
     return slot;
+}
+
+// Dumped from rebuild_vt_draw_slots once the table is rebuilt, so the numbers
+// describe one complete pass over every (cluster, lod) the frame considered.
+void VkSceneRenderer::dump_vt_route_census() const {
+    static const bool chart_log = std::getenv("MATTER_VT_CHART_LOG") != nullptr;
+    if (!chart_log) return;
+    const uint64_t total = vt_route_census_[kVtRouteTotal].load();
+    if (total == 0) return;
+    static uint64_t dumps = 0;
+    if (++dumps % 60 != 1) return;   // ~1 line/second, not 1/frame
+    std::fprintf(stderr,
+                 "[vt-route] draws=%llu ok=%llu | no_slots=%llu cluster_oob=%llu "
+                 "lod_oob=%llu rung_oob=%llu unregistered=%llu tail_gate=%llu\n",
+                 (unsigned long long)total,
+                 (unsigned long long)vt_route_census_[kVtRouteOk].load(),
+                 (unsigned long long)vt_route_census_[kVtRouteNoSlots].load(),
+                 (unsigned long long)vt_route_census_[kVtRouteClusterOob].load(),
+                 (unsigned long long)vt_route_census_[kVtRouteLodOob].load(),
+                 (unsigned long long)vt_route_census_[kVtRouteRungOob].load(),
+                 (unsigned long long)vt_route_census_[kVtRouteUnregistered].load(),
+                 (unsigned long long)vt_route_census_[kVtRouteTailGate].load());
+    for (auto& c : vt_route_census_) c.store(0, std::memory_order_relaxed);
 }
 
 void VkSceneRenderer::rebuild_vt_draw_slots() {
@@ -4906,6 +4943,7 @@ void VkSceneRenderer::rebuild_vt_draw_slots() {
                                 static_cast<uint32_t>(lod));
         }
     }
+    dump_vt_route_census();
     vt_draw_slots_dirty_ = false;
 }
 
@@ -10440,6 +10478,39 @@ bool VkSceneRenderer::build_ray_geometry(
     return true;
 }
 
+// The RT hit shader counts every part record it rejects, but the only reader
+// was a test-only readback compiled out of shipping builds -- so in a real
+// session a rejection was invisible. A rejection is exactly the signal that
+// says whether the stale-rt_parts-tail clear below is doing anything. Called
+// once per frame from prepare_frame, where this slot's fence has already been
+// waited on, so the value belongs to the slot's PREVIOUS submission (the
+// counter is zeroed per frame in emit_ray_instances). Logged on change only:
+// a steady count would otherwise spam every frame.
+void VkSceneRenderer::report_rt_trace_counters(uint32_t frame_slot) {
+    if (frame_slot >= frames_.size()) return;
+    FrameResources& selected = frames_[frame_slot];
+    if (selected.rt_error_counter.buffer == VK_NULL_HANDLE) return;
+    std::string error;
+    if (!matter::map_buffer(selected.rt_error_counter, error) ||
+        !matter::invalidate_buffer(selected.rt_error_counter, 0,
+                                   sizeof(GpuRtCounters), error))
+        return;
+    const auto* gpu =
+        static_cast<const GpuRtCounters*>(selected.rt_error_counter.mapped);
+    const uint32_t invalid = gpu->invalid_part_records;
+    if (invalid == rt_invalid_part_records_last_) return;
+    rt_invalid_part_records_last_ = invalid;
+    if (invalid == 0) return;
+    rt_invalid_part_records_total_ += invalid;
+    std::fprintf(stderr,
+                 "[vk] RT rejected %u part record(s) last frame (%llu total) -- "
+                 "a rejected record is a stale or unwritten rt_parts slot\n",
+                 invalid,
+                 static_cast<unsigned long long>(
+                     rt_invalid_part_records_total_));
+    std::fflush(stderr);
+}
+
 bool VkSceneRenderer::emit_ray_instances(
     const matter::VulkanFrame& frame,
     PFN_vkGetAccelerationStructureBuildSizesKHR get_sizes,
@@ -10524,8 +10595,21 @@ bool VkSceneRenderer::emit_ray_instances(
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error) ||
         !matter::map_buffer(selected.rt_parts, error) ||
         !matter::map_buffer(selected.rt_error_counter, error)) return false;
+    // Clear the whole ALLOCATION, not just the bytes this frame needs.
+    // ensure_buffer never shrinks and grows by a factor, so the buffer's
+    // capacity is the session high-water mark -- and rt_parts[] is an unsized
+    // SSBO array, so its length in the shader is that capacity. Clearing only
+    // part_bytes leaves records from a denser frame readable in the tail, and
+    // a stale record is structurally VALID (valid=1, vertex_stride=88, a real
+    // primitive_count) while its vertex/index addresses point at part geometry
+    // that has since been freed -- so load_rt_surface's guards pass and it
+    // dereferences a dangling device address. Same trap as the cull.comp
+    // lod_bias table. Zeroing the tail makes those guards effective: a stale
+    // slot now reads valid==0, counts into invalid_part_records, and returns
+    // an invalid surface instead of faulting the device.
+    const VkDeviceSize part_clear_bytes = selected.rt_parts.size;
     std::memset(selected.rt_parts.mapped, 0,
-                static_cast<size_t>(part_bytes));
+                static_cast<size_t>(part_clear_bytes));
     if (!part_records.empty())
         std::memcpy(selected.rt_parts.mapped, part_records.data(),
                     part_records.size() * sizeof(GpuRtPartRecord));
@@ -10540,7 +10624,7 @@ bool VkSceneRenderer::emit_ray_instances(
                               18 * sizeof(uint32_t),
                               2 * sizeof(uint32_t), error)) return false;
 #endif
-    if (!matter::flush_buffer(selected.rt_parts, 0, part_bytes, error) ||
+    if (!matter::flush_buffer(selected.rt_parts, 0, part_clear_bytes, error) ||
         !matter::flush_buffer(selected.rt_error_counter, 0,
                               sizeof(GpuRtCounters),
                               error)) return false;
@@ -11143,6 +11227,7 @@ bool VkSceneRenderer::record_cull_and_render(
     // ensure_raster_targets() above has already published raster_extent_,
     // which is what sizes the feedback target.
     vt_begin_frame(selected, frame.frame_slot);
+    report_rt_trace_counters(frame.frame_slot);
     update_composite_descriptor(selected);
     // prepare_frame owns the existing scene resources for this slot. Newly
     // created/replaced attachments are retained here before commands reference

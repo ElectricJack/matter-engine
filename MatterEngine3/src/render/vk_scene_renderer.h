@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
@@ -936,6 +937,15 @@ public:
     bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
                                        std::string& error);
     VkRasterAttachments raster_attachments() const;
+    // Logs when the RT hit shader rejects a part record. A rejection means a
+    // stale or unwritten rt_parts slot was traced, which is the signal that
+    // confirms (or refutes) the stale-tail clear in emit_ray_instances. The
+    // shader has always counted these, but the only reader was a test-only
+    // readback compiled out of shipping builds, so in a real session the
+    // count was invisible. Deliberately NOT inside the test guard.
+    void report_rt_trace_counters(uint32_t frame_slot);
+    uint32_t rt_invalid_part_records_last_ = 0;
+    uint64_t rt_invalid_part_records_total_ = 0;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     void test_force_rt_unavailable(bool unavailable) {
         test_force_rt_unavailable_ = unavailable;
@@ -2168,6 +2178,17 @@ private:
     uint64_t material_geometry_revision_ = 0;
     uint64_t material_generation_ = 1;
     bool gi_history_reset_pending_ = false;
+    // MATTER_VT_CHART_LOG route census: which of vt_slot_for_lod's seven
+    // early-outs sent a draw to the legacy flat-tint path. Mutable + atomic
+    // because vt_slot_for_lod is const and reached from the record path.
+    enum VtRouteReason {
+        kVtRouteTotal = 0, kVtRouteOk, kVtRouteNoSlots, kVtRouteClusterOob,
+        kVtRouteLodOob, kVtRouteRungOob, kVtRouteUnregistered,
+        kVtRouteTailGate, kVtRouteCount
+    };
+    mutable std::atomic<uint64_t> vt_route_census_[kVtRouteCount] = {};
+    void dump_vt_route_census() const;
+
     matter::GeometryDebugView geometry_debug_view_ =
         matter::GeometryDebugView::None;
     // Requested, not necessarily honoured: select_raster_pipelines is what

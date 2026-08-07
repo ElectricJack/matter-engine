@@ -6546,14 +6546,47 @@ bool build_vulkan_part(uint64_t part_hash,
                 uint32_t rung_mask = 0;
                 const size_t mask_rungs =
                     std::min<size_t>(loaded.lod_charts.size(), 32u);
+                // MATTER_VT_CHART_LOG=1: the per-rung verdict, which is the
+                // number that decides whether a rung EVER renders through VT.
+                // A rung missing from this mask takes the legacy flat-tint
+                // path forever -- not for a frame, not until a budget frees
+                // up -- and nothing downstream reports it. Issue 6e1b444f's
+                // pale canopies were exactly that, and they were only
+                // diagnosable by A/B-ing MATTER_VT_DISABLE against pixels.
+                // Three distinct reasons land a rung outside the mask, so
+                // name which one fired rather than just the mask.
+                static const bool chart_log =
+                    std::getenv("MATTER_VT_CHART_LOG") != nullptr;
                 for (size_t mi = 0; mi < mask_rungs; ++mi) {
-                    if (loaded.lod_charts[mi].charts.empty()) continue;
-                    if (mi >= loaded.lod_mesh_data.size()) continue;
-                    const auto& mesh = loaded.lod_mesh_data[mi];
-                    if (mesh.vertex_count <= 0 || mesh.indices.empty())
-                        continue;
+                    const bool no_charts = loaded.lod_charts[mi].charts.empty();
+                    const bool no_mesh_slot = mi >= loaded.lod_mesh_data.size();
+                    const bool empty_mesh =
+                        !no_mesh_slot &&
+                        (loaded.lod_mesh_data[mi].vertex_count <= 0 ||
+                         loaded.lod_mesh_data[mi].indices.empty());
+                    if (chart_log)
+                        std::fprintf(
+                            stderr,
+                            "[vt-mask] part %016llx rung %zu: %s%s%s%s\n",
+                            (unsigned long long)part.part_hash, mi,
+                            no_charts ? "NO CHART TABLE " : "",
+                            no_mesh_slot ? "NO MESH SLOT " : "",
+                            empty_mesh ? "EMPTY MESH " : "",
+                            (!no_charts && !no_mesh_slot && !empty_mesh)
+                                ? "eligible" : "-> LEGACY FLAT PATH");
+                    if (no_charts || no_mesh_slot || empty_mesh) continue;
                     rung_mask |= 1u << mi;
                 }
+                if (chart_log)
+                    // charts=N vs ladder=M is the whole question: the loop
+                    // above only runs to lod_charts.size(), so every ladder
+                    // rung at or beyond that index gets no mask bit, no log
+                    // line, and no VT -- silently, forever.
+                    std::fprintf(stderr,
+                                 "[vt-mask] part %016llx charts=%zu ladder=%zu "
+                                 "mask=0x%x\n",
+                                 (unsigned long long)part.part_hash, mask_rungs,
+                                 loaded.lod_mesh_data.size(), rung_mask);
                 part.vt_deferred_rung_mask = rung_mask;
             } else {
                 part.lod_charts = loaded.lod_charts;

@@ -135,17 +135,55 @@ bool chart_rung_unified(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
                         chart_atlas::ChartAtlasRung& base,
                         std::vector<Tri>& base_tris,
                         chart_atlas::ChartAtlasRung& out) {
+    // MATTER_VT_CHART_LOG=1: one line per rung charted, through every one of
+    // the five callers (this function is the only funnel). A rung that ends
+    // here with charts=0 is a rung that will never enter vt_rung_mask
+    // (matter_engine.cpp's mask loop skips empty tables), never register a VT
+    // variant, and therefore render for the rest of its life through the
+    // legacy flat-tint path -- which is issue 6e1b444f's pale canopies. The
+    // failure is silent by design ("fail-closed: ships an empty table"), so
+    // without this the difference between "charted" and "gave up" is not
+    // observable anywhere downstream.
+    static const bool chart_log = std::getenv("MATTER_VT_CHART_LOG") != nullptr;
+
     // Adopt when a base exists. Keyed on "have we a base yet" and NOT on a
     // rung index, because two of the five callers can start their loop above
     // rung 0 — testing the index there leaves the base unset and silently
     // re-charts every rung, which looks exactly like the feature not working.
-    if (unify && !base.charts.empty() &&
+    const bool base_present = !base.charts.empty();
+    bool adopted = false;
+    if (unify && base_present &&
         apply_chart_rung(tris, triex, base_tris, base, out))
+        adopted = true;
+    if (adopted) {
+        if (chart_log)
+            std::fprintf(stderr,
+                         "[vt-chart] tris=%zu unify=1 base=1 ADOPTED "
+                         "charts=%zu atlas=%ux%u\n",
+                         tris.size(), out.charts.size(), out.atlas_w,
+                         out.atlas_h);
         return true;
-    if (!build_chart_rung(tris, triex, texels_per_meter, cone_deg, out)) {
+    }
+    const bool built = build_chart_rung(tris, triex, texels_per_meter,
+                                        cone_deg, out);
+    if (!built) {
+        if (chart_log)
+            std::fprintf(stderr,
+                         "[vt-chart] tris=%zu unify=%d base=%d adopt=%s "
+                         "BUILD FAILED -> charts=0 (this rung is stuck on the "
+                         "legacy flat-tint path)\n",
+                         tris.size(), unify ? 1 : 0, base_present ? 1 : 0,
+                         (unify && base_present) ? "no" : "n/a");
         out = {};
         return false;
     }
+    if (chart_log)
+        std::fprintf(stderr,
+                     "[vt-chart] tris=%zu unify=%d base=%d adopt=%s BUILT "
+                     "charts=%zu atlas=%ux%u\n",
+                     tris.size(), unify ? 1 : 0, base_present ? 1 : 0,
+                     (unify && base_present) ? "no" : "n/a",
+                     out.charts.size(), out.atlas_w, out.atlas_h);
     if (unify && base.charts.empty()) {
         base = out;
         base_tris = tris;
