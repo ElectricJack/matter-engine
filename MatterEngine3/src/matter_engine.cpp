@@ -6,6 +6,7 @@
 //
 // Task 7 will implement raycast/instance_count/instance_info (currently stubs).
 
+#include "profile.h"
 #include "matter/engine_context.h"
 #include "matter/world_session.h"
 #include "matter/world_props.h"
@@ -4384,6 +4385,10 @@ void WorldSession::Impl::bake_and_stage_sector(
         // exact behaviour.
         const bool staged_from_memory = static_cast<bool>(staged_load);
         if (!staged_load) {
+            // The previously-unmeasured "rebuilding closer clusters" cost: the
+            // LOD ladder inside stage_load. Runs on the bake worker; ProfileLib
+            // attributes it to the frame current when it ends.
+            PROFILE_SCOPE("bake.stageload");
             staged_load = std::make_shared<viewer::PartStore::StagedPart>(
                 store->stage_load(sector_hash, sector_first_rung,
                                   /*terrain_sector=*/true, warp_anchor));
@@ -4487,6 +4492,8 @@ void WorldSession::Impl::bake_and_stage_sector(
         }();
         const auto prebuild_t0 = std::chrono::steady_clock::now();
         if (staged_load->ok && prebuild_enabled && !diagnostic_material_override) {
+            // The other unmeasured half: the VkScenePart prebuild.
+            PROFILE_SCOPE("bake.prebuild");
             VtSurfaceClassifier sector_surface;
             const VtSurfaceClassifier* surface_ptr = nullptr;
             if (world_surface) {

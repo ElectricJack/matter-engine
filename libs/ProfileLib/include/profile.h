@@ -38,6 +38,7 @@ namespace profile {
 // persisted with reports and the window the stats are computed over.
 // ---------------------------------------------------------------------------
 constexpr int kMaxZones = 128;
+constexpr int kMaxCounters = 32;
 constexpr int kFrameHistory = 512;
 
 // One monotonic source for CPU scopes, the frame clock, and (P2) GPU/worker
@@ -64,6 +65,13 @@ int zone_count();
 // directly; the RAII Scope is the common path.
 void add_ns(int zone, uint64_t ns);
 
+// Counters: per-frame event tallies (layout rebuilds, draw calls, jobs run),
+// distinct from time zones. Same intern-once model as zones.
+int register_counter(const char* name);
+const char* counter_name(int counter);
+int counter_count();
+void add_count(int counter, uint64_t n);
+
 // ---------------------------------------------------------------------------
 // FrameRecord: what one frame cost, produced by frame_mark() from the swept
 // accumulators. zone_ns is indexed by zone id. wall_ns is the real time between
@@ -74,7 +82,8 @@ struct FrameRecord {
     uint64_t frame_index = 0;
     uint64_t wall_ns = 0;
     uint64_t zone_ns[kMaxZones] = {};
-    // Scene scale tags (optional; set via PROFILE_TAG-style counters at P1).
+    uint64_t counter[kMaxCounters] = {};
+    // Scene scale tags (optional; set via set_frame_counts).
     uint64_t instances = 0;
     uint64_t clusters = 0;
     uint64_t parts = 0;
@@ -167,10 +176,20 @@ private:
 
 #define PROFILE_FRAME() ::matter::profile::frame_mark()
 
+#define PROFILE_COUNT(name, n)                                            \
+    do {                                                                  \
+        static const int MATTER_PROFILE_CONCAT(_prof_ctr_, __LINE__) =    \
+            ::matter::profile::register_counter(name);                    \
+        ::matter::profile::add_count(                                     \
+            MATTER_PROFILE_CONCAT(_prof_ctr_, __LINE__),                  \
+            static_cast<uint64_t>(n));                                    \
+    } while (0)
+
 #else
 
 #define PROFILE_SCOPE(name) ((void)0)
 #define PROFILE_SCOPE_ID(zone) ((void)0)
 #define PROFILE_FRAME() ((void)0)
+#define PROFILE_COUNT(name, n) ((void)0)
 
 #endif

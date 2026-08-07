@@ -6,7 +6,8 @@
 #include <utility>
 
 #include "matrix_math.h"
-#include "vk_build_profile.h"
+#include "engine_profile_zones.h"
+#include "vk_perf.h"
 
 namespace viewer {
 namespace {
@@ -321,7 +322,7 @@ const TemporalFrame& TemporalState::begin(
                    presented_.transforms.unique &&
                    presented_.transforms.ids.size() == instances.size();
     if (aligned) {
-        vk_build_profile::Scope align_scope(vk_build_profile::kTemporalAlign);
+        matter::profile::Scope align_scope(engine_prof::id(engine_prof::kTemporalAlign));
         for (std::size_t index = 0; index < instances.size(); ++index) {
             if (presented_.transforms.ids[index] !=
                 instances[index].instance_id) {
@@ -332,7 +333,7 @@ const TemporalFrame& TemporalState::begin(
     }
 
     {
-        vk_build_profile::Scope fill_scope(vk_build_profile::kTemporalFill);
+        matter::profile::Scope fill_scope(engine_prof::id(engine_prof::kTemporalFill));
         vk_perf::resize_geometric(next.transforms.ids, instances.size());
         vk_perf::resize_geometric(next.transforms.values, instances.size());
         for (std::size_t index = 0; index < instances.size(); ++index) {
@@ -350,7 +351,7 @@ const TemporalFrame& TemporalState::begin(
         // Keyed path: presented_ may have reached here through a run of fast
         // frames, so its map is materialised on demand (identical contents —
         // build_map() replays the same in-order assignments).
-        vk_build_profile::Scope map_scope(vk_build_profile::kTemporalMap);
+        matter::profile::Scope map_scope(engine_prof::id(engine_prof::kTemporalMap));
         presented_.transforms.build_map();
         next.transforms.build_map();
     }
@@ -396,8 +397,8 @@ const TemporalFrame& TemporalState::begin(
     const std::size_t presented_count = presented_.transforms.ids.size();
     std::size_t cursor = 0;
     {
-        vk_build_profile::Scope history_scope(
-            vk_build_profile::kTemporalHistory);
+        matter::profile::Scope history_scope(
+            engine_prof::id(engine_prof::kTemporalHistory));
         for (std::size_t index = 0; index < instances.size(); ++index) {
             const TemporalInstance& instance = instances[index];
             const matter::Mat4f* previous = nullptr;

@@ -23,7 +23,8 @@
 
 #include "gpu_matrix_pack.h"
 #include "matrix_math.h"
-#include "vk_build_profile.h"
+#include "engine_profile_zones.h"
+#include "vk_perf.h"
 #include "matter/vulkan_device.h"
 #include "matter/vt_budgets.h"
 #include "matter/world_definition.h"
@@ -8149,8 +8150,8 @@ void VkSceneRenderer::set_temporal_frame(const TemporalFrame& frame) {
     // update_instances() calls are covered.
     if (!temporal_copy_fuse_enabled()) {
         if (!temporal_history_changed_) {
-            vk_build_profile::Scope compare_scope(
-                vk_build_profile::kSetTemporalCompare);
+            matter::profile::Scope compare_scope(
+                engine_prof::id(engine_prof::kSetTemporalCompare));
             bool same = temporal_frame_.reset == frame.reset;
             // When both frames are reset the history contributes nothing to the
             // output in either case, so the per-entry data cannot matter.
@@ -8175,8 +8176,8 @@ void VkSceneRenderer::set_temporal_frame(const TemporalFrame& frame) {
             if (!same) temporal_history_changed_ = true;
         }
         {
-            vk_build_profile::Scope copy_scope(
-                vk_build_profile::kSetTemporalCopy);
+            matter::profile::Scope copy_scope(
+                engine_prof::id(engine_prof::kSetTemporalCopy));
             temporal_frame_ = frame;
         }
         return;
@@ -8199,7 +8200,7 @@ void VkSceneRenderer::set_temporal_frame(const TemporalFrame& frame) {
         same = false;
     const bool per_entry_compare = history_matters && same;
     {
-        vk_build_profile::Scope copy_scope(vk_build_profile::kSetTemporalCopy);
+        matter::profile::Scope copy_scope(engine_prof::id(engine_prof::kSetTemporalCopy));
         // Grow first so every destination entry exists. When the sizes differ
         // `same` is already settled, so the stale tail is never compared.
         vk_perf::resize_geometric(temporal_frame_.instances, count);
@@ -8334,7 +8335,7 @@ bool VkSceneRenderer::update_instances(
     // exactly the same thing, minus ~24 MB of per-frame allocation (candidate
     // instances/slots/RT plus one hash-map node per instance).
     {
-        vk_build_profile::Scope fast_scope(vk_build_profile::kUiFastPath);
+        matter::profile::Scope fast_scope(engine_prof::id(engine_prof::kUiFastPath));
         if (instance_snapshot_valid_ && !temporal_history_changed_ &&
             instance_generation_ == instance_snapshot_generation_ &&
             instance_part_slots_.size() == instance_staging_.size() &&
@@ -8398,7 +8399,7 @@ bool VkSceneRenderer::update_instances(
         const auto found = temporal_by_id.find(stable_id);
         return found != temporal_by_id.end() ? found->second : nullptr;
     };
-    vk_build_profile::Scope build_scope(vk_build_profile::kUiBuildLoop);
+    matter::profile::Scope build_scope(engine_prof::id(engine_prof::kUiBuildLoop));
     for (size_t source_index = 0; source_index < instances.size();
          ++source_index) {
         const VkSceneInstance& source = instances[source_index];
@@ -8442,7 +8443,7 @@ bool VkSceneRenderer::update_instances(
         candidate_rt.push_back(rt);
     }
     build_scope.stop();
-    vk_build_profile::Scope compare_scope(vk_build_profile::kUiCompare);
+    matter::profile::Scope compare_scope(engine_prof::id(engine_prof::kUiCompare));
     // One slots compare, not two: `identical` and `layout_changed` asked the
     // same O(instances) question and both used to walk the array.
     const bool slots_equal = candidate_slots == instance_part_slots_;
@@ -8455,7 +8456,7 @@ bool VkSceneRenderer::update_instances(
                    });
     compare_scope.stop();
     if (identical) {
-        vk_build_profile::Scope snapshot_scope(vk_build_profile::kUiSnapshot);
+        matter::profile::Scope snapshot_scope(engine_prof::id(engine_prof::kUiSnapshot));
         snapshot_instance_inputs(instances);
         return true;
     }
@@ -8471,7 +8472,7 @@ bool VkSceneRenderer::update_instances(
         static_instance_count_ = instance_staging_.size();
         static_rt_instance_count_ = rt_instances_.size();
         ++instance_generation_;
-        vk_build_profile::Scope snapshot_scope(vk_build_profile::kUiSnapshot);
+        matter::profile::Scope snapshot_scope(engine_prof::id(engine_prof::kUiSnapshot));
         snapshot_instance_inputs(instances);
         return true;
     }
@@ -8489,7 +8490,7 @@ bool VkSceneRenderer::update_instances(
     instance_part_slots_ = std::move(candidate_slots);
     rt_instances_ = std::move(candidate_rt);
     max_clusters_per_instance_ = candidate_max_clusters;
-    vk_build_profile::Scope layout_scope(vk_build_profile::kUiLayout);
+    matter::profile::Scope layout_scope(engine_prof::id(engine_prof::kUiLayout));
     if (layout_changed && !rebuild_command_template(error)) {
         instance_staging_ = std::move(old_instances);
         instance_part_slots_ = std::move(old_slots);
@@ -8510,10 +8511,10 @@ bool VkSceneRenderer::update_instances(
     ++instance_generation_;
     if (layout_changed) {
         note_command_layout_rebuild();
-        vk_build_profile::note_layout_rebuild();
+        PROFILE_COUNT("layout_rebuilds", 1);
     }
     {
-        vk_build_profile::Scope snapshot_scope(vk_build_profile::kUiSnapshot);
+        matter::profile::Scope snapshot_scope(engine_prof::id(engine_prof::kUiSnapshot));
         snapshot_instance_inputs(instances);
     }
     // Recycle the retired staging as next call's scratch capacity. (The
@@ -8933,7 +8934,7 @@ bool VkSceneRenderer::upload_scene_buffers(
         if (material_command_buffer != VK_NULL_HANDLE)
             record_material_upload(material_command_buffer, frame);
     }
-    vk_build_profile::Scope static_scope(vk_build_profile::kPfUploadStatic);
+    matter::profile::Scope static_scope(engine_prof::id(engine_prof::kPfUploadStatic));
     const auto su_append_t0 = std::chrono::steady_clock::now();
     if (static_upload_dirty_ == StaticUpload::kAppend) {
         // Streaming fast path. Every static mutation since the last upload
@@ -9124,7 +9125,7 @@ bool VkSceneRenderer::upload_scene_buffers(
     // uint32) and uploaded unconditionally each frame — a stale table would
     // hand a draw the wrong variant's pages, which is exactly the kind of bug
     // that only shows up under streaming.
-    vk_build_profile::Scope vt_slots_scope(vk_build_profile::kPfVtSlots);
+    matter::profile::Scope vt_slots_scope(engine_prof::id(engine_prof::kPfVtSlots));
     if (vt_draw_slots_dirty_) rebuild_vt_draw_slots();
     const VkDeviceSize vt_slot_bytes =
         static_cast<VkDeviceSize>(vt_draw_slot_table_.size()) * sizeof(uint32_t);
@@ -9201,8 +9202,8 @@ bool VkSceneRenderer::upload_scene_buffers(
     vt_slots_scope.stop();
 
     {
-        vk_build_profile::Scope instances_scope(
-            vk_build_profile::kPfUploadInstances);
+        matter::profile::Scope instances_scope(
+            engine_prof::id(engine_prof::kPfUploadInstances));
         if (frame.instance_generation != instance_generation_) {
             if (!upload(frame.instances, instance_staging_.data(),
                         instance_bytes))
@@ -9241,7 +9242,7 @@ bool VkSceneRenderer::upload_scene_buffers(
                                    tail_offset, error))
             return false;
     }
-    vk_build_profile::Scope commands_scope(vk_build_profile::kPfUploadCommands);
+    matter::profile::Scope commands_scope(engine_prof::id(engine_prof::kPfUploadCommands));
     if (frame.command_generation != command_generation_)
         frame.command_generation = command_generation_;
     // Unconditional by design: cull.comp writes instance_count into these
@@ -9269,7 +9270,7 @@ bool VkSceneRenderer::upload_scene_buffers(
     // already current and the per-frame deep copy can be skipped.
     if (uploaded_rt_instances_generation_ != instance_generation_ ||
         uploaded_rt_instances_.size() != rt_instances_.size()) {
-        vk_build_profile::Scope rt_scope(vk_build_profile::kPfUploadOther);
+        matter::profile::Scope rt_scope(engine_prof::id(engine_prof::kPfUploadOther));
         vk_perf::reserve_geometric(uploaded_rt_instances_,
                                    rt_instances_.size());
         uploaded_rt_instances_ = rt_instances_;
@@ -9362,7 +9363,7 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     // Deferred registrations (register_part) must materialise their command
     // template before apply_dynamic_command_layout or the uploads read it.
     {
-        vk_build_profile::Scope flush_scope(vk_build_profile::kPfFlushTemplate);
+        matter::profile::Scope flush_scope(engine_prof::id(engine_prof::kPfFlushTemplate));
         if (!flush_command_template(error)) return false;
     }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -9417,7 +9418,7 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     // The dynamic tails are stripped at the start of the next update_instances()
     // and defensively here, so repeated prepare_frame() calls cannot stack
     // duplicate tails.
-    vk_build_profile::Scope dynamic_scope(vk_build_profile::kPfDynamic);
+    matter::profile::Scope dynamic_scope(engine_prof::id(engine_prof::kPfDynamic));
     if (instance_staging_.size() > static_instance_count_)
         instance_staging_.resize(static_instance_count_);
     if (rt_instances_.size() > static_rt_instance_count_)
@@ -9463,7 +9464,7 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         dynamic_command_layout_applied_ = dynamic_instance_count_ > 0;
     }
     dynamic_scope.stop();
-    vk_build_profile::Scope anim_scope(vk_build_profile::kPfAnimBounds);
+    matter::profile::Scope anim_scope(engine_prof::id(engine_prof::kPfAnimBounds));
     // Bounds are resolved from the immutable current/previous pose pair before
     // this frame's cull dispatch. An empty set still uploads one inert record
     // so the storage descriptor remains valid on implementations that reject
@@ -9505,13 +9506,13 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     if (!upload_scene_buffers(selected, frame.command_buffer, false, error))
         return false;
     {
-        vk_build_profile::Scope constants_scope(
-            vk_build_profile::kPfUploadOther);
+        matter::profile::Scope constants_scope(
+            engine_prof::id(engine_prof::kPfUploadOther));
         if (!upload_frame_constants(selected, matrices, camera_eye,
                                     pixel_budget, error))
             return false;
     }
-    vk_build_profile::Scope stats_scope(vk_build_profile::kPfStats);
+    matter::profile::Scope stats_scope(engine_prof::id(engine_prof::kPfStats));
     if (!matter::map_buffer(selected.stats, error)) return poison(error);
     if (selected.stats_valid) {
         if (!matter::invalidate_buffer(selected.stats, 0, sizeof(VkCullStats),
@@ -9529,7 +9530,7 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         return poison(error);
     stats_scope.stop();
     active_frame_index_ = frame.frame_slot;
-    vk_build_profile::Scope retain_scope(vk_build_profile::kPfRetain);
+    matter::profile::Scope retain_scope(engine_prof::id(engine_prof::kPfRetain));
     std::vector<std::shared_ptr<void>> resources{
         clusters_.lifetime,
         vertices_.lifetime,
@@ -9562,9 +9563,10 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     // Last statement of the build region the engine times as stats.build_ms.
     // Renders at most one aggregate line per interval, and only under
     // MATTER_VK_BUILD_PROFILE=1.
-    vk_build_profile::frame_end(instance_staging_.size(),
-                                cluster_staging_.size(), parts_.size(),
-                                command_template_.size());
+    matter::profile::set_frame_counts(
+        instance_staging_.size(), cluster_staging_.size(), parts_.size(),
+        command_template_.size());
+    PROFILE_FRAME();
     return retained;
 }
 

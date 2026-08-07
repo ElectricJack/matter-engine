@@ -57,6 +57,7 @@ endif
 # headers, then raylib.
 INCLUDE_PATHS = -I../include -I../src -I../src/render -I../src/provider -I../../libs/MatterSurfaceLib/include -I../../libs/SpatialQueryLib/include -I../../libs/MemoryLib/include -I../../libs/MathLib/include -I$(RAYLIB_PATH) -I../../third_party/raylib/src -I../../libs/ParticleFlowLib/include -I../../third_party/Vulkan-Headers/include -I$(BOX3D_DIR)/include
 INCLUDE_PATHS += -I$(FLECS_DIR)
+INCLUDE_PATHS += -I../../libs/ProfileLib/include
 OZZ_DIR = ../../third_party/ozz-animation
 OZZ_BUILD_DIR = $(OZZ_DIR)/build/matter
 OZZ_INCLUDE = $(OZZ_DIR)/include
@@ -1275,6 +1276,7 @@ GPU_ANIMATION_RUNTIME_CPP = \
     ../src/render/indexed_part_geometry.cpp
 GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
               $(GPU_ANIMATION_RUNTIME_CPP) \
+              ../../libs/ProfileLib/src/profile.cpp \
               ../src/render/vk_animation_bounds.cpp \
               ../src/ecs/scene_registry.cpp \
               ../src/animation/animation_systems.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
