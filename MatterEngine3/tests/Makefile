@@ -524,7 +524,7 @@ CHARTATLAS_TARGET = build/chart_atlas_tests
 CHARTATLAS_CPP = chart_atlas_tests.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
                  ../src/part_asset_v2.cpp \
                  ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp \
-                 ../src/render/part_store.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
+                 ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
                  ../src/lod_select.cpp ../src/sector_grid.cpp \
                  ../src/animation/animation_asset_store.cpp ../src/animation/anim_asset.cpp \
                  ../src/animation/anim_bundle.cpp ../src/animation/animation_binding_bake.cpp \
@@ -887,7 +887,7 @@ SECTORPROF_CPP = sector_setup_profile.cpp $(filter-out sector_bake_tests.cpp,$(S
 SECTORPROF_C = $(COMMON_MSL_C)
 
 PARTSTORE_TARGET = build/partstore_tests
-PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp \
+PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp \
                 ../src/render/matrix_math.cpp \
                 ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
@@ -951,7 +951,7 @@ GRAPH_INT_TARGET = build/part_graph_integration_tests
 # carries the animation-authoring closure this suite now needs. The extra
 # render/LOD sources below are the A8 additions (part_store.h consumers).
 GRAPH_INT_CPP = part_graph_integration_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP)) \
-                ../src/render/part_store.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
+                ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
                 ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/animation/animation_asset_store.cpp
 GRAPH_INT_C   = $(COMMON_MSL_C)
@@ -1158,7 +1158,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
               ../src/render/world_state.cpp \
               ../src/provider/resolvers.cpp \
-              ../src/render/part_store.cpp ../src/warp_field.cpp \
+              ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/warp_field.cpp \
               ../src/provider/local_provider.cpp \
               ../src/render/raster_mesh.cpp \
               ../src/tileset_phase.cpp \
@@ -1212,7 +1212,7 @@ GPU_RENDER_CPP = \
     ../src/render/vk_animation_skinning.cpp \
     ../src/bake_trace.cpp \
     ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
-    ../src/render/raster_mesh.cpp ../src/render/part_store.cpp ../src/warp_field.cpp \
+    ../src/render/raster_mesh.cpp ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/warp_field.cpp \
     ../src/render/world_state.cpp \
     ../src/provider/local_provider.cpp ../src/provider/resolvers.cpp \
     ../src/matter_engine.cpp \
