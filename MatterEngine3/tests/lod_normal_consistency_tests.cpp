@@ -27,8 +27,9 @@
 //     shading normal and the source's authored normal at the nearest source
 //     surface point, sampled over each rung triangle.
 //   * lit mean: area-weighted mean of the composite direct+ambient shading
-//     factor (unit albedo) under the engine-default sun; the number the
-//     screenshot's pale-vs-dark split IS.
+//     factor (unit albedo) under the engine-default sun. NOT the screenshot's
+//     pale-vs-dark split — see the ALBEDO note at the top; this is the
+//     brightness the normals alone account for.
 //   * facet fraction: fraction of rung triangles whose three corner normals
 //     agree (a faceted output triangle).
 //
@@ -239,6 +240,65 @@ RungMetrics measure_rung(const std::vector<Tri>& rung_tris,
         m.own_face_fraction = ownface_sum / facet_n;
     }
     return m;
+}
+
+// ---------------------------------------------------------------------------
+// ALBEDO per rung. Separate from everything above on purpose: the metrics up
+// there are all about the NORMAL, and issue 7b64dc27's visible hue split was
+// measured (unlit G-buffer, Pearson 0.96 against the lit image) to live in the
+// albedo instead. gbuffer.frag builds that albedo as
+//     mix(material.base_roughness.rgb, tint.rgb, clamp(tint.a, 0, 1))
+// from TriEx::materialId and TriEx::tint, and reproject_triex carries BOTH by
+// nearest-source-centroid (`TriEx ex = source.triex[match]`) — a pick, not a
+// blend. A pick can still MIGRATE: as decimation grows triangles, a canopy
+// triangle's centroid can land nearest a trunk donor and inherit its material
+// and tint wholesale. This reports whether that happens and how far.
+struct AlbedoMix {
+    // Area fraction per materialId, biggest first.
+    std::vector<std::pair<int, double>> by_material;
+    double tint_r = 0, tint_g = 0, tint_b = 0, tint_a = 0;  // area-weighted
+    double area = 0;
+};
+
+AlbedoMix measure_albedo(const std::vector<Tri>& tris,
+                         const std::vector<TriEx>& ex) {
+    AlbedoMix m;
+    std::vector<std::pair<int, double>> acc;
+    for (size_t i = 0; i < tris.size(); ++i) {
+        const float area = tri_area(tris[i]);
+        if (!(area > 0)) continue;
+        const TriEx& e = ex[i];
+        m.area += area;
+        m.tint_r += double(e.tint.x) * area;
+        m.tint_g += double(e.tint.y) * area;
+        m.tint_b += double(e.tint.z) * area;
+        m.tint_a += double(e.tint.w) * area;
+        bool found = false;
+        for (auto& p : acc)
+            if (p.first == int(e.materialId)) { p.second += area; found = true; break; }
+        if (!found) acc.push_back({int(e.materialId), double(area)});
+    }
+    if (m.area > 0) {
+        m.tint_r /= m.area; m.tint_g /= m.area;
+        m.tint_b /= m.area; m.tint_a /= m.area;
+        for (auto& p : acc) p.second /= m.area;
+    }
+    std::sort(acc.begin(), acc.end(),
+              [](const std::pair<int, double>& a, const std::pair<int, double>& b) {
+                  return a.second > b.second;
+              });
+    m.by_material = acc;
+    return m;
+}
+
+void print_albedo(size_t rung, const AlbedoMix& m) {
+    printf("  rung %zu albedo: tint %.3f %.3f %.3f a=%.3f  R/G=%.3f  mats:",
+           rung, m.tint_r, m.tint_g, m.tint_b, m.tint_a,
+           m.tint_g > 1e-6 ? m.tint_r / m.tint_g : 0.0);
+    for (size_t i = 0; i < m.by_material.size() && i < 5; ++i)
+        printf(" %d=%.1f%%", m.by_material[i].first,
+               m.by_material[i].second * 100.0);
+    printf("\n");
 }
 
 // Production ladder step: decimate then reproject, exactly as bake_lods /
@@ -626,6 +686,7 @@ int run_tree(int form) {
             measure_rung(rt[0], re[0], rt[0], re[0], kToSun, 29);
         print_metrics("all", 0, base, base);
         print_metrics("foliage", 0, base_fol, base_fol);
+        print_albedo(0, measure_albedo(rt[0], re[0]));
         for (size_t l = 1; l < lods.size(); ++l) {
             if (rt[l].empty() || re[l].size() != rt[l].size()) continue;
             // Billboard rung: 2 triangles — skip, it's not a mesh rung.
@@ -640,6 +701,7 @@ int run_tree(int form) {
                 measure_rung(rt[l], re[l], rt[0], re[0], kToSun, 29);
             print_metrics("all", l, m, base);
             print_metrics("foliage", l, mf, base_fol);
+            print_albedo(l, measure_albedo(rt[l], re[l]));
         }
     }
     return 0;
