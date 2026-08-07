@@ -217,6 +217,39 @@ small.
   Original steps 1-3 below stand but are RE-AIMED: the render-thread cost was
   inside the "already solved" staged-commit path (a redundant copy at the seam),
   not the coordinator or the sector-level fallback.
+
+- **RESOLVED 2026-08-07.** Four hypotheses died to measurement before the real
+  cause held (my coordinator guess, Fable's adopt-copy, Fable's deep-walk, my
+  "walk is the cost" — the last one because my first pre-warm attempt was placed
+  in `install_world`, which runs BEFORE the reset job creates `store`, so it
+  was a silent no-op; the `prewarm=0` anomaly exposed it). The true cause: a
+  sector has ~1640 direct placements of ~92 distinct child variants, and the
+  FIRST streamed sector cold-decodes those ~92 on the render thread inside
+  `commit_staged` → `build_expansion` → `get_or_load` (109 us/node = decode, not
+  walk). The variants load as flats (walk leaves), so it is neither a deep walk
+  nor a flat-admission failure.
+
+  **The fix (shipped):** pre-warm the child-variant catalog into the store inside
+  the GL-thread reset job, right after `store.swap` (matter_engine.cpp), over the
+  `sector_child_hashes` that `install_world` populated. Gated to the world-kind
+  streaming publish via `PublishPipelineParams::prewarm_child_catalog` (a
+  Fable-review finding: the shared `publish_pipeline` would otherwise warm a
+  stale catalog into closed-world/cone stores and pin it resident); plus a
+  cancel-token check in the loop.
+
+  **Measured:** `commit.expansion` 469 ms → 2.9 ms total (max 152 ms → 0.07 ms);
+  `expansion.coldload` during fill → 0; worst `frame_ms` 220 ms → 48 ms; no
+  validation errors / device-lost. Fable code-review: thread-safety, ordering,
+  fallback, render-equivalence all PASS.
+
+  **Next ceiling:** `publish.vulkan` (`ensure_part`/`register_vulkan_part`) at
+  ~21 ms max / 120 ms total — the ORIGINAL PreparedPart target (original step 2
+  below). Deferred follow-up (Fable): the reset pre-warm serializes ~92 disk
+  decodes on the GL thread; staging them on a worker (`stage_load` is
+  worker-safe) and committing O(entries) on the GL thread would shrink the
+  reset cost — worth it only if connect latency becomes a concern (it is a
+  loading screen today). The deferred expansion-rebuild cascade (issues/bfb5f13e)
+  remains uninstrumented and is the next thing to look at after `publish.vulkan`.
 - **Step 1 — kill the fallback-on-render-thread paths + split the job.**
   (a) When `prebuilt_part` is null for a *streamed* sector, don't build in-job —
   fail the publication back to the streamer for re-request (or route the build to

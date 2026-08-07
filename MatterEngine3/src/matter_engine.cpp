@@ -959,6 +959,15 @@ struct WorldSession::Impl {
         // onto the tail of publish_order. Null for cone (cone re-bake via
         // LiveEditSession; all artifacts pre-exist).
         std::shared_ptr<viewer::LocalProvider> provider_ref;
+        // World-kind only: pre-warm the child-variant catalog (sector_child_hashes,
+        // populated by install_world) into the freshly-created store inside the
+        // reset job, so streamed sectors don't cold-decode variants on the render
+        // thread. Set true ONLY on the streaming publish (the install_world path);
+        // false for closed-world and cone rebakes, whose stores never reference
+        // that catalog -- warming it there would decode a stale foreign catalog
+        // into a fresh store and hold it resident for the session (no eviction
+        // path releases non-sector loaded_ entries).
+        bool prewarm_child_catalog = false;
     };
 
     // Shared publish flow: steps 4-8 (reset job → reconcile → per-part publish
@@ -2055,6 +2064,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         pp.fault_hook            = cfg.test_fault_hook;
         pp.load_msg_include_hash = true;
         pp.provider_ref          = provider;
+        pp.prewarm_child_catalog = true;   // streaming path only (install_world ran)
         {
             BAKE_SPAN(bake_trace::kSpanPublish);   // same region publish_ms measures
             publish_pipeline(token, std::move(empty_manifest), pp);
@@ -2193,7 +2203,7 @@ void WorldSession::Impl::publish_pipeline(
     matter_async::GpuJob reset_job;
     reset_job.name  = pfx + ".reset";
     reset_job.token = token;
-    reset_job.fn = [this, reset_out, new_manifest, p, pfx](std::string& err) -> bool {
+    reset_job.fn = [this, reset_out, new_manifest, p, pfx, token](std::string& err) -> bool {
         matter_async::assert_gl_thread((pfx + ".reset").c_str());
         connected.store(false, std::memory_order_release);
 
@@ -2212,6 +2222,31 @@ void WorldSession::Impl::publish_pipeline(
         state.reset(viewer::WorldManifest{});
         reset_runtime_animation();
         store.swap(reset_out->new_store);
+
+        // Pre-warm the child-variant catalog into the freshly-swapped store, on
+        // the GL thread that owns it. install_world (which ran before this reset
+        // job) baked the variants and populated sector_child_hashes. Without
+        // this, the FIRST streamed sector's build_expansion cold-decodes each of
+        // the ~N distinct child variants on the render thread -- the measured
+        // commit.expansion spike (152-179 ms). Warming them here converts that
+        // per-fill render hitch into one-time reset cost; every later sector's
+        // walk is a loaded_ cache hit. A failed warm just leaves the old
+        // render-thread cold path, so it cannot regress correctness. Invariant:
+        // expansion.coldload reads ~0 per render frame during a cold fill.
+        // Gated to the world-kind streaming publish (PublishPipelineParams):
+        // closed-world and cone-rebake stores never reference this catalog, and
+        // sector_child_hashes is only cleared in install_world, so warming it on
+        // those paths would decode a stale foreign catalog into a fresh store
+        // and pin it resident for the session.
+        if (p.prewarm_child_catalog) {
+            size_t prewarmed = 0;
+            for (uint64_t h : sector_child_hashes) {
+                if (token && token->is_cancelled()) break;  // disconnect courtesy
+                if (store->get_or_load(h)) ++prewarmed;
+            }
+            fprintf(stderr, "[stream] pre-warmed %zu/%zu child variants\n",
+                    prewarmed, sector_child_hashes.size());
+        }
 
 
         auto tonemap_sky = [](float c) -> float {
@@ -3301,6 +3336,11 @@ bool WorldSession::Impl::install_world(
         }
     }
 
+    // NOTE: the child-catalog pre-warm does NOT belong here -- install_world
+    // runs BEFORE the reset job creates `store` (store.swap), so `store` is null
+    // or stale at this point. The pre-warm lives in the reset job, right after
+    // store.swap, where the new store exists and sector_child_hashes (populated
+    // just above) is ready.
     fprintf(stderr, "[stream] asset install complete: %zu child hashes, "
             "field_hash=%s, sector_size=%.1f, sea_level=%.2f\n",
             sector_child_hashes.size(), world_field_hash.c_str(),
