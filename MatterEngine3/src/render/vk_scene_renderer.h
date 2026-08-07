@@ -61,6 +61,30 @@ constexpr uint32_t kVkMaxLod =
 static_assert(kVkMaxLod == 9u,
               "update shaders_vk/cull.comp MAX_LOD with the shared capacity");
 
+// CHART RUNGS ARE NOT LOD INDICES, and conflating the two is what issue
+// 6e1b444f turned out to be.
+//
+// kVkMaxLod bounds the LOD index WITHIN ONE CLUSTER -- it is cull.comp's
+// MAX_LOD and the stride of the command/vt_draw_slot tables. A part's chart
+// rungs, by contrast, are numbered across ALL of its clusters end to end:
+// VkSceneLod::chart_rung indexes lod_charts, which part_store builds one
+// entry per (cluster, rung). A two-cluster tree with six rungs each has
+// chart rungs 0..11.
+//
+// vt_slots and the demand bookkeeping were sized kVkMaxLod, so every chart
+// rung >= 9 was unreachable: vt_rung_mask (a uint32, filled to
+// min(lod_charts.size(), 32)) marked it ELIGIBLE, register_vt_rung then
+// refused it on its own `rung >= kVkMaxLod` guard, and vt_slot_for_lod
+// rejected it as out of range -- so the draw fell to the legacy flat-tint
+// path permanently and silently. That was 23.2% of draw-slot lookups in
+// StreamMountain, and on screen it was the pale canopies.
+//
+// 32 because that is the mask's width; the mask is what declares a rung
+// registrable, so nothing downstream of it may be narrower.
+constexpr uint32_t kVkMaxChartRung = 32u;
+static_assert(kVkMaxChartRung >= kVkMaxLod,
+              "a chart rung numbering is at least as wide as one cluster's");
+
 inline uint32_t vulkan_history_token(uint64_t instance_id) {
     const uint32_t folded = static_cast<uint32_t>(instance_id) ^
                             static_cast<uint32_t>(instance_id >> 32);
@@ -1283,8 +1307,9 @@ private:
         // vt_last_requested[r] throttles duplicate registration requests
         // while one is already in flight to the engine.
         uint32_t vt_rung_mask = 0;
-        std::array<uint64_t, kVkMaxLod> vt_last_wanted{};
-        std::array<uint64_t, kVkMaxLod> vt_last_requested{};
+        // Indexed by CHART RUNG, not LOD index — see kVkMaxChartRung.
+        std::array<uint64_t, kVkMaxChartRung> vt_last_wanted{};
+        std::array<uint64_t, kVkMaxChartRung> vt_last_requested{};
         // M6.5: caster-harvest inputs, captured from the VtPartContext at VT
         // registration (both the eager and the demand paths). Reading them
         // from the CONTEXT rather than VkScenePart keeps the harvest's notion

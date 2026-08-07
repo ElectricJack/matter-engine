@@ -4098,7 +4098,7 @@ void VkSceneRenderer::drain_vt_invalidations(uint64_t serial) {
 void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
     if (part_slot < 0 || static_cast<size_t>(part_slot) >= parts_.size()) return;
     PartRecord& record = parts_[part_slot];
-    record.vt_slots.assign(kVkMaxLod, vt::kVtNoSlot);
+    record.vt_slots.assign(kVkMaxChartRung, vt::kVtNoSlot);
     // Demand-driven path: the part declares which rungs COULD carry a VT
     // variant and ships no payload. Nothing registers here — the per-frame
     // demand pass surfaces (part, rung) requests when a rung is actually
@@ -4131,7 +4131,8 @@ void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
                                     material_stride)
             : 0u;
 
-    const size_t rungs = std::min<size_t>(part.lod_charts.size(), kVkMaxLod);
+    const size_t rungs =
+        std::min<size_t>(part.lod_charts.size(), kVkMaxChartRung);
     for (size_t rung = 0; rung < rungs; ++rung) {
         const chart_atlas::ChartAtlasRung& atlas = part.lod_charts[rung];
         if (atlas.charts.empty()) continue;
@@ -4249,10 +4250,11 @@ bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
     const auto found = slot_of_.find(part_hash);
     if (found == slot_of_.end()) return false;   // part unloaded since request
     PartRecord& record = parts_[found->second];
-    if (rung >= kVkMaxLod || ((record.vt_rung_mask >> rung) & 1u) == 0u)
+    if (rung >= kVkMaxChartRung ||
+        ((record.vt_rung_mask >> rung) & 1u) == 0u)
         return false;
-    if (record.vt_slots.size() < kVkMaxLod)
-        record.vt_slots.assign(kVkMaxLod, vt::kVtNoSlot);
+    if (record.vt_slots.size() < kVkMaxChartRung)
+        record.vt_slots.assign(kVkMaxChartRung, vt::kVtNoSlot);
     if (record.vt_slots[rung] != vt::kVtNoSlot) return true;   // already live
     std::string error;
     if (!ensure_vt_runtime(error)) return false;
@@ -4278,7 +4280,8 @@ bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
         for (PartRecord& candidate : parts_) {
             if (!candidate.live || candidate.vt_rung_mask == 0u) continue;
             const size_t rung_count =
-                std::min<size_t>(candidate.vt_slots.size(), kVkMaxLod);
+                std::min<size_t>(candidate.vt_slots.size(),
+                                 kVkMaxChartRung);
             for (uint32_t r = 0; r < rung_count; ++r) {
                 if (candidate.vt_slots[r] == vt::kVtNoSlot) continue;
                 const uint64_t stamp = candidate.vt_last_wanted[r];
@@ -4384,7 +4387,7 @@ void VkSceneRenderer::update_vt_demand(matter::Float3 camera_eye,
             const std::vector<VkSceneLod>& lods = cluster_lods_[c];
             if (lod >= lods.size()) continue;
             const uint32_t rung = lods[lod].chart_rung;
-            if (rung >= kVkMaxLod ||
+            if (rung >= kVkMaxChartRung ||
                 ((record.vt_rung_mask >> rung) & 1u) == 0u)
                 continue;
             record.vt_last_wanted[rung] = vt_demand_frame_;
@@ -4424,7 +4427,7 @@ void VkSceneRenderer::update_vt_demand(matter::Float3 camera_eye,
     for (PartRecord& record : parts_) {
         if (!record.live || record.vt_rung_mask == 0u) continue;
         const size_t rung_count =
-            std::min<size_t>(record.vt_slots.size(), kVkMaxLod);
+            std::min<size_t>(record.vt_slots.size(), kVkMaxChartRung);
         for (uint32_t r = 0; r < rung_count; ++r) {
             if (record.vt_slots[r] == vt::kVtNoSlot) continue;
             if (vt_demand_frame_ - record.vt_last_wanted[r] >
@@ -4746,7 +4749,7 @@ void VkSceneRenderer::update_vt_casters() {
         // layer, whose hash check makes the repeats free). It owns the copy
         // and requeues resident dir-occ pages when the hash changed.
         const size_t rung_count =
-            std::min<size_t>(receiver.vt_slots.size(), kVkMaxLod);
+            std::min<size_t>(receiver.vt_slots.size(), kVkMaxChartRung);
         for (uint32_t r = 0; r < rung_count; ++r) {
             if (receiver.vt_slots[r] == vt::kVtNoSlot) continue;
             vt_->set_variant_casters(receiver.hash, r, insts.data(),
