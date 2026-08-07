@@ -937,11 +937,16 @@ static FlattenResult flatten_static_lod_ladder(
                     return res;
                 }
                 is_impostor = true;
-                if (!env_impostors_enabled()) {
-                    // MATTER_IMPOSTOR=0: the ladder simply ends at the last
-                    // mesh rung, which is what it would have done had the
-                    // author not declared a terminal at all.
-                    if (ladder_log) ladder_line += " [impostor:off]";
+                if (!env_impostors_enabled() || plan.no_impostor) {
+                    // MATTER_IMPOSTOR=0, or this part's own `static noImpostor`
+                    // opt-out: the ladder simply ends at the last mesh rung,
+                    // which is what it would have done had the author not
+                    // declared a terminal at all. The per-part flag wins over a
+                    // `LOD.impostor({})` terminal in the SAME source — opting
+                    // out is the stronger, more specific statement.
+                    if (ladder_log)
+                        ladder_line += plan.no_impostor ? " [impostor:opted-out]"
+                                                        : " [impostor:off]";
                     break;
                 }
                 const auto& blas_entries = blas.get_entries();
@@ -1720,13 +1725,17 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
     // detected alongside the budget sidecar and takes the same full-gather
     // path. `drives_ladder()` is what keeps a pre-M3 params/exclude-only block
     // on the default ladder, byte-for-byte.
+    // Loaded UNCONDITIONALLY (not folded into the has_authored_ladder && chain
+    // below) because slod_plan carries the per-part impostor opt-out
+    // (StaticLodPlan::no_impostor), which the DEFAULT-ladder path further down
+    // consults even when the plan does not drive a ladder. When the section is
+    // absent slod_plan stays default-constructed (no_impostor = false).
     part_asset::StaticLodPlan slod_plan;
+    const bool have_static_plan = part_asset::load_static_lod_plan(
+        cache_root + "/" + part_asset::cache_path_static_lods(root_hash),
+        root_hash, slod_plan);
     const bool has_authored_ladder =
-        !has_variants &&
-        part_asset::load_static_lod_plan(
-            cache_root + "/" + part_asset::cache_path_static_lods(root_hash),
-            root_hash, slod_plan) &&
-        slod_plan.drives_ladder();
+        !has_variants && have_static_plan && slod_plan.drives_ladder();
 
     if (has_variants || has_authored_ladder) {
         if (!g.gather(root_hash, kIdentity, 0, res.error)) return res;
@@ -1828,8 +1837,11 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
     uint64_t impostor_depicts = impostor::depicts_hash_begin();
     // MATTER_IMPOSTOR=0 bakes a mesh-only ladder, so the tier can be A/B'd
     // against itself on one cache without a rebuild. Read once per flatten
-    // (not static) so a test can flip it between calls.
-    const bool impostors_on = env_impostors_enabled();
+    // (not static) so a test can flip it between calls. slod_plan.no_impostor
+    // is the per-part opt-out (`static noImpostor`): it forces the SAME
+    // mesh-only ladder for this one part while every other part keeps its
+    // billboard, which the global env flag cannot express.
+    const bool impostors_on = env_impostors_enabled() && !slod_plan.no_impostor;
 
     // The mesh rung cap (FlattenTargets::max_mesh_rungs, env-overridable).
     // Read once per flatten for the same reason. 0 = unlimited.

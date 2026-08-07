@@ -1747,6 +1747,94 @@ static void test_authored_ladder_impostor_terminal() {
     part_bundle::remove_section(slods, kImpostorLadderHash, part_bundle::kSectionPlan);
 }
 
+// kRepresentation 1->2: the per-part `static noImpostor` opt-out. This is the
+// DEFAULT-ladder case the flag exists for (LightingGarden's iso objects author
+// no `static lods`, so the only thing that gives them a billboard is the global
+// impostor_terminal). The flag reaches flatten as StaticLodPlan::no_impostor —
+// bake_static_lods writes a LEVELLESS plan carrying only the flag for a part
+// that opts out without authoring a ladder — so this test writes exactly that
+// plan directly, the same way the sibling impostor test writes its plan, and
+// asserts the terminal billboard is present without it and gone with it.
+static const uint64_t kNoImpostorHash = 0xA110000044440004ull;
+
+static void test_no_impostor_optout_terminal() {
+    printf("=== test_no_impostor_optout_terminal ===\n");
+
+    // Phase (a) below needs impostors globally ON to have a billboard to drop.
+    // A diagnostic run with MATTER_IMPOSTOR=0 can't establish that, so skip
+    // rather than report a red that says nothing about this code (mirrors
+    // test_authored_ladder_impostor_terminal).
+    {
+        const char* v = std::getenv("MATTER_IMPOSTOR");
+        if (v && v[0] == '0') { printf("  SKIPPED (MATTER_IMPOSTOR=0)\n"); return; }
+    }
+
+    // A plain part with no authored ladder: enough triangles that its coarsest
+    // default rung clears kMinTerminalTris (16) and earns a billboard.
+    std::vector<Tri> tris = sphere_tris(20, 10);
+    CHECK(save_fixture(kNoImpostorHash, 5, {tris}, {}), "no-imp: fixture written");
+
+    const std::string flat =
+        std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kNoImpostorHash);
+    const std::string slods =
+        std::string(kCacheRoot) + "/" + part_asset::cache_path_static_lods(kNoImpostorHash);
+    const std::string fimp =
+        std::string(kCacheRoot) + "/" + impostor::cache_path_impostor(kNoImpostorHash);
+
+    // Cold start: kCacheRoot survives between runs, so a prior run's artifacts
+    // would let phase (a) pass without re-baking. Clear all three sections.
+    auto reset_cold = [&]() {
+        part_bundle::remove_section(flat,  kNoImpostorHash, part_bundle::kSectionFlat);
+        part_bundle::remove_section(slods, kNoImpostorHash, part_bundle::kSectionPlan);
+        part_bundle::remove_section(fimp,  kNoImpostorHash, part_bundle::kSectionImpostor);
+    };
+
+    // (a) UNFLAGGED — no plan at all. The default ladder appends its terminal
+    //     billboard, and the atlas lands on disk.
+    reset_cold();
+    part_flatten::FlattenResult a = part_flatten::flatten_part(kCacheRoot, kNoImpostorHash);
+    CHECK(a.ok, "no-imp: unflagged flatten ok");
+    if (!a.ok) { printf("  error: %s\n", a.error.c_str()); return; }
+    CHECK(a.impostors == 1, "no-imp: unflagged default ladder grows a billboard");
+    CHECK(part_bundle::has_section(fimp, kNoImpostorHash, part_bundle::kSectionImpostor),
+          "no-imp: unflagged bake writes an impostor atlas");
+    const size_t unflagged_levels = a.levels;
+
+    // (b) FLAGGED — a LEVELLESS plan carrying only no_impostor, exactly what
+    //     bake_static_lods writes for `static noImpostor = true` on a part with
+    //     no `static lods`. Same geometry, same hash; only the flag differs.
+    reset_cold();
+    {
+        part_asset::StaticLodPlan plan;
+        plan.no_impostor = true;                 // no levels — just the opt-out
+        CHECK(part_asset::save_static_lod_plan(slods, kNoImpostorHash, plan),
+              "no-imp: levelless opt-out plan written");
+        part_asset::StaticLodPlan rt;
+        CHECK(part_asset::load_static_lod_plan(slods, kNoImpostorHash, rt),
+              "no-imp: a levelless plan is a VALID plan (round-trips)");
+        CHECK(rt.no_impostor && rt.level_hashes.empty() && !rt.drives_ladder(),
+              "no-imp: it carries the flag, no levels, and does not drive a ladder");
+    }
+    part_flatten::FlattenResult b = part_flatten::flatten_part(kCacheRoot, kNoImpostorHash);
+    CHECK(b.ok, "no-imp: flagged flatten ok");
+    if (!b.ok) { printf("  error: %s\n", b.error.c_str()); return; }
+
+    // THE GUARD. Drop `&& !slod_plan.no_impostor` in part_flatten's impostors_on
+    // and this becomes 1 — the billboard reappears on the flagged part.
+    CHECK(b.impostors == 0, "no-imp: flagged part bakes NO billboard");
+    CHECK(!part_bundle::has_section(fimp, kNoImpostorHash, part_bundle::kSectionImpostor),
+          "no-imp: flagged part writes NO impostor atlas");
+    // The billboard was one extra rung; without it the ladder is one shorter and
+    // terminates at the coarsest MESH rung.
+    CHECK(b.levels == unflagged_levels - 1,
+          "no-imp: the ladder ends one rung earlier — at the coarsest mesh rung");
+
+    printf("  unflagged: levels=%zu impostors=%zu | flagged: levels=%zu impostors=%zu\n",
+           a.levels, a.impostors, b.levels, b.impostors);
+    printf("  test_no_impostor_optout_terminal OK\n");
+    part_bundle::remove_section(slods, kNoImpostorHash, part_bundle::kSectionPlan);
+}
+
 // M3 companion: a `static lods` block that names NEITHER a distance nor a
 // generator — the pre-M3 W5 surface, params/exclude only — must not touch the
 // ladder at all. Same fixture, same flatten, byte-identical artifact with and
@@ -3566,6 +3654,7 @@ int main() {
     test_budget_ladder_assembly();
     test_authored_ladder_switch_distances();
     test_authored_ladder_impostor_terminal();
+    test_no_impostor_optout_terminal();   // kRepresentation 1->2: static noImpostor
     test_impostor_source_and_distance();
     test_w5_plan_does_not_drive_the_ladder();
     test_instance_boundary_records_refs();

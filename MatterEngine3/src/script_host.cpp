@@ -876,6 +876,47 @@ ScriptHost::LodBudgetSpec ScriptHost::eval_lod_budgets(const std::string& source
     return out;
 }
 
+// Per-part impostor opt-out (`static noImpostor = true`, kRepresentation 1->2).
+// Structurally identical to eval_lod_budgets: no-build static read of one class
+// field, same module-fold scaffolding, same fail-closed default. Fail-closed
+// here is "keep the impostor" — only a field that is STRICTLY boolean true opts
+// out; absent, false, or a non-boolean value all return false so a malformed
+// opt-out can never silently strip a part's terminal billboard.
+bool ScriptHost::eval_no_impostor(const std::string& source) {
+    std::string className = find_part_class_name(source);
+    if (className.empty()) return false;
+
+    ModuleStore store;
+    bool use_module = false;
+    if (!shared_lib_roots_.empty()) {
+        module_resolver::FoldResult fr;
+        std::string ferr;
+        if (!fold_sources_cached(source, fr, ferr)) return false;
+        if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
+    }
+
+    JSRuntime* rt = nullptr; JSContext* ctx = nullptr;
+    BakeError eerr;
+    if (!eval_part_publish_class(source, className, use_module ? &store : nullptr,
+                                 rt, ctx, eerr))
+        return false;
+
+    bool out = false;
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
+    JS_FreeValue(ctx, global);
+    if (JS_IsFunction(ctx, authored)) {
+        JSValue v = JS_GetPropertyStr(ctx, authored, "noImpostor");
+        // JS_IsBool gates out a truthy non-boolean (e.g. `= 1`), which reads as
+        // "author meant something we do not honour" rather than a silent opt-out.
+        if (JS_IsBool(v)) out = (JS_ToBool(ctx, v) == 1);
+        JS_FreeValue(ctx, v);
+    }
+    JS_FreeValue(ctx, authored);
+    JS_FreeContext(ctx); JS_FreeRuntime(rt);
+    return out;
+}
+
 // W5 (Part Workbench): static discovery of `static lods` WITHOUT building.
 // Same restricted intrinsics / no-build discipline as eval_lod_budgets and
 // eval_requires. Fail-closed: any shape violation clears the whole list.

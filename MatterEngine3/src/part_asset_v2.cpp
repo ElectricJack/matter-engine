@@ -230,6 +230,13 @@ bool load_lod_sidecar(const std::string& path, uint64_t resolved_hash,
 //
 // A two-token line is the pre-M3 form and still loads, with at = -1 and no
 // generator -- which is exactly "this plan does not drive the ladder".
+//
+// One OPTIONAL first line, `!noimp`, records the per-part impostor opt-out
+// (StaticLodPlan::no_impostor, kRepresentation 1->2). It leads the section so a
+// reader can classify the plan before touching the level records, it begins
+// with '!' (a level line always begins with a 16-hex hash, so the two grammars
+// never collide), and a plan that carries ONLY this line — an opt-out on a part
+// with no other authored levels — is valid and has zero level records.
 bool save_static_lod_plan(const std::string& path, uint64_t resolved_hash,
                           const StaticLodPlan& plan) {
     const size_t n = plan.level_hashes.size();
@@ -237,6 +244,7 @@ bool save_static_lod_plan(const std::string& path, uint64_t resolved_hash,
     if (!plan.level_at.empty()  && plan.level_at.size()  != n) return false;
     if (!plan.level_gen.empty() && plan.level_gen.size() != n) return false;
     std::ostringstream out;
+    if (plan.no_impostor) out << "!noimp\n";
     for (size_t i = 0; i < n; ++i) {
         char hhex[17], mhex[9];
         snprintf(hhex, sizeof hhex, "%016llx", (unsigned long long)plan.level_hashes[i]);
@@ -263,6 +271,7 @@ bool load_static_lod_plan(const std::string& path, uint64_t resolved_hash,
     std::string line;
     while (std::getline(in, line)) {
         if (line.empty()) continue;
+        if (line == "!noimp") { plan.no_impostor = true; continue; }
         std::istringstream ls(line);
         std::string hhex, mhex, atstr, gen;
         if (!(ls >> hhex >> mhex)) return false;
@@ -279,7 +288,10 @@ bool load_static_lod_plan(const std::string& path, uint64_t resolved_hash,
             plan.level_gen.push_back(std::string());
         }
     }
-    if (plan.level_hashes.empty()) return false;
+    // A plan with no level records is valid ONLY when it carries the opt-out
+    // flag (the one thing a levelless plan can express); otherwise an empty
+    // section is a corrupt/absent plan and callers should fall back.
+    if (plan.level_hashes.empty() && !plan.no_impostor) return false;
     out = std::move(plan);
     return true;
 }

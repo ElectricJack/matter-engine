@@ -140,6 +140,18 @@ struct StaticLodPlan {
     std::vector<double>      level_at;
     std::vector<std::string> level_gen;
 
+    // Per-part impostor opt-out (`static noImpostor = true`, kRepresentation
+    // 1->2). When set, the flatten stage bakes NO impostor atlas for this part
+    // and appends NO terminal billboard rung: the ladder ends at its coarsest
+    // mesh rung instead. It is carried on THIS sidecar rather than a new one
+    // because the plan is already the "authoring metadata that is not geometry"
+    // record, is loaded unconditionally at flatten, and is keyed by the same
+    // resolved hash. Independent of level_at/level_gen, so it does NOT make the
+    // plan drive a ladder (see drives_ladder): a part that ONLY opts out keeps
+    // the default ladder in every respect but the terminal billboard. When true
+    // this is the one plan that may carry ZERO levels (nothing else authored).
+    bool no_impostor = false;
+
     // True when at least one level carries an M3 field. The flatten path uses
     // this to decide whether the plan DRIVES a ladder (authored distances /
     // named generators) or is merely the W5 params+exclude record it has

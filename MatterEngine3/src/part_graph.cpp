@@ -710,7 +710,31 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
                                  const std::vector<std::string>& child_params,
                                  uint64_t resolved_hash) {
     script_host::ScriptHost::LodAuthoring lods = host_.eval_lods(source);
-    if (lods.empty()) return true;  // not opted in
+
+    // Per-part impostor opt-out (`static noImpostor = true`, kRepresentation
+    // 1->2). Read once here so both the levelless fast-out and the normal plan
+    // below carry it. It is orthogonal to `static lods`: a part may opt out
+    // WITHOUT authoring any levels, in which case the only thing the plan
+    // records is the flag.
+    const bool no_impostor = host_.eval_no_impostor(source);
+
+    if (lods.empty()) {
+        // Nothing authored at all: the classic pre-M3 early-out. Only a bare
+        // opt-out keeps us here — write a levelless plan carrying just the flag
+        // so the flatten stage sees it, then stop.
+        if (!no_impostor) return true;  // not opted into anything
+        const std::string base_dir =
+            is_transient(current_module_) ? transient_dir_ : parts_dir_;
+        const std::string sidecar =
+            base_dir + "/" + part_asset::cache_path_static_lods(resolved_hash);
+        part_asset::StaticLodPlan existing;
+        if (part_asset::load_static_lod_plan(sidecar, resolved_hash, existing) &&
+            existing.no_impostor && existing.level_hashes.empty())
+            return true;  // already current (content-addressed fast path)
+        part_asset::StaticLodPlan plan;
+        plan.no_impostor = true;
+        return part_asset::save_static_lod_plan(sidecar, resolved_hash, plan);
+    }
     if (lods.size() > matter::kMaxSerializedLodLevels) {
         std::fprintf(stderr,
             "HostBaker: static lods (%zu levels) exceeds the %zu-level serialized "
@@ -801,6 +825,7 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
     }
 
     part_asset::StaticLodPlan plan;
+    plan.no_impostor = no_impostor;   // opt-out rides the authored plan too
     plan.level_hashes.resize(lods.size());
     plan.level_exclude_masks.assign(lods.size(), 0u);
     // M3: the authored switch distance and the named generator ride through to

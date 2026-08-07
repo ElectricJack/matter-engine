@@ -1049,6 +1049,44 @@ static void test_eval_lod_budgets() {
     printf("  test_eval_lod_budgets OK\n");
 }
 
+// kRepresentation 1->2: ScriptHost::eval_no_impostor — the no-build read of the
+// per-part `static noImpostor` opt-out. Mirrors test_eval_lod_budgets's shape.
+// Fail-closed here is "keep the impostor", so every non-`true` form returns
+// false — the opposite polarity from a malformed opt-out silently firing.
+static void test_eval_no_impostor() {
+    script_host::ScriptHost host;
+
+    // Strict boolean true: opted out.
+    const char* opted =
+        "class G extends Part {\n"
+        "  static noImpostor = true;\n"
+        "  build(p) {}\n"
+        "}\n";
+    assert(host.eval_no_impostor(opted) == true);
+
+    // Absent: the pre-existing behaviour, keep the impostor.
+    const char* absent =
+        "class P extends Part { static params = {}; build(p) {} }\n";
+    assert(host.eval_no_impostor(absent) == false);
+
+    // Explicit false: not an opt-out.
+    const char* off =
+        "class F extends Part { static noImpostor = false; build(p) {} }\n";
+    assert(host.eval_no_impostor(off) == false);
+
+    // Truthy NON-boolean (a `= 1` typo): NOT honoured — fail closed so a
+    // mistyped opt-out never silently strips a billboard.
+    const char* typo =
+        "class N extends Part { static noImpostor = 1; build(p) {} }\n";
+    assert(host.eval_no_impostor(typo) == false);
+
+    // Unparseable source: false.
+    const char* broken = "not even javascript {{{";
+    assert(host.eval_no_impostor(broken) == false);
+
+    printf("  test_eval_no_impostor OK\n");
+}
+
 // W5 (Part Workbench): ScriptHost::eval_lods schema parsing — mirrors
 // test_eval_lod_budgets's shape (opted-in / plain / malformed variants).
 static void test_eval_lods_schema_parsing() {
@@ -2265,6 +2303,7 @@ int main() {
     test_g8_sphere_box_polymorphic();
     test_extrude_dispatch_and_polygon();
     test_eval_lod_budgets();
+    test_eval_no_impostor();
     test_eval_lods_schema_parsing();
     test_eval_lods_authored_ladder();
     test_bake_seed_invariance_per_lod_params();

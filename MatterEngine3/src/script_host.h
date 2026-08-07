@@ -269,6 +269,17 @@ public:
     // best-effort parse) so a malformed block can't silently half-apply.
     LodAuthoring eval_lods(const std::string& source);
 
+    // Reads the part class's `static noImpostor` boolean WITHOUT building, with
+    // the same restricted-intrinsics / no-build discipline as eval_lod_budgets.
+    // Returns true ONLY when the field is present and STRICTLY the boolean true;
+    // anything else — absent, false, or a non-boolean (a typo like `= 1`) —
+    // returns false. Fail-closed here means "keep the impostor": a malformed
+    // opt-out must not silently strip a part's billboard, so the conservative
+    // default is the pre-existing behaviour. When true, HostBaker::bake_static_lods
+    // records it on the part's StaticLodPlan and the flatten stage bakes a
+    // mesh-only ladder (no atlas, no terminal billboard rung).
+    bool eval_no_impostor(const std::string& source);
+
     // Thin public wrapper around merge_params_canonical for callers (e.g.
     // HostBaker::bake_static_lods) that need the base (LOD0) canonical merged
     // params JSON to implement the seeding rule, without duplicating the

@@ -48,6 +48,26 @@ globalThis.JOIN = { miter: 0, bevel: 1, round: 2 };
 // stage and the format version are all built around, so honouring a per-part
 // count is a real change, and silently accepting the key would read as if it
 // had been made.
+//
+// `static noImpostor = true` (kRepresentation 1->2) is the per-part opt-OUT.
+// The DEFAULT ladder appends a terminal billboard to any part whose coarsest
+// mesh rung earns one, with no way for the author to say "not this one" short
+// of hand-writing a full `static lods` ladder that omits the terminal. This
+// flag is that missing statement: a part carrying it bakes NO impostor atlas
+// and its ladder ends at the coarsest MESH rung — exactly what an authored
+// ladder with no `LOD.impostor` entry does, but without authoring the ladder.
+// It is the clean inverse of `LOD.impostor`, and it WINS over a `LOD.impostor`
+// terminal declared in the same source (opting out is the stronger statement).
+// Use it for objects whose look a flat card cannot stand in for — complex-lit
+// isosurfaces, translucent or emissive pieces — e.g.:
+//
+//     class GlowOrb extends Part {
+//       static noImpostor = true;   // never collapse this to a billboard
+//       build(p) { /* ... */ }
+//     }
+//
+// Only the strict boolean `true` opts out; absent / false / a non-boolean all
+// keep the impostor (fail-closed: a typo must never silently strip a billboard).
 globalThis.LOD = {
   decimate(o) { return Object.assign({ gen: 'decimate' }, o || {}); },
   // The redesign doc spells this generator `simplify`; same QEM decimation.

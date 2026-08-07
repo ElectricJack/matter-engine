@@ -76,7 +76,17 @@ inline constexpr uint32_t kBox3d = 1u;
 // of change this covers — both moved baked ladders while every part hash and
 // every format version stayed put, which is why they had to be smuggled into
 // kFormatVersionFlat instead.
-inline constexpr uint32_t kRepresentation = 1u;
+//   1 -> 2 : the per-part `static noImpostor` opt-out. A flagged part's default
+//            (and authored) ladder now TERMINATES at its coarsest mesh rung
+//            instead of appending the two-triangle billboard, and bakes no
+//            impostor atlas. The part hash already distinguishes a flagged
+//            authoring from an unflagged one (the flag lives in the source the
+//            resolved hash folds), so this bump is not what separates them; it
+//            is what forces every EXISTING flat on disk — baked under the old
+//            "every eligible default ladder grows an impostor" rule — to rebake
+//            under the new rule so a flag added to a cached part actually drops
+//            the billboard rather than being served the stale one.
+inline constexpr uint32_t kRepresentation = 2u;
 
 // On-disk layout versions. These are ALSO written into their file headers as a
 // self-describing guard (a truncated or mismatched file must fail to parse,
