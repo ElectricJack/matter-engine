@@ -1,4 +1,5 @@
 #include "part_store.h"
+#include "profile.h"
 #include "animation/anim_bundle.h"
 #include "animation/animation_binding_bake.h"
 #include "matrix_math.h"
@@ -1503,8 +1504,10 @@ const LoadedPart* PartStore::commit_staged(StagedPart staged) {
     auto existing = loaded_.find(part_hash);
     if (existing != loaded_.end()) return &existing->second;
     {
+        PROFILE_SCOPE("commit.adopt");
         std::unordered_map<BLASHandle, BLASHandle> remap;
         blas_.adopt_from(*staged.staging, remap);
+        PROFILE_COUNT("adopt_entries", remap.size());
         auto patch = [&remap](std::vector<BLASHandle>& handles) {
             for (BLASHandle& h : handles) {
                 auto it = remap.find(h);
@@ -1527,10 +1530,14 @@ const LoadedPart* PartStore::commit_staged(StagedPart staged) {
     staged.lp.fine_cluster_count = (uint32_t)staged.lp.clusters.size();
 
     auto ins = loaded_.emplace(part_hash, std::move(staged.lp));
-    // Build expansion into a local vector first (see flat path comment above).
-    std::vector<ExpandedNode> exp;
-    build_expansion(part_hash, [this](uint64_t h){ return get_or_load(h); }, exp);
-    loaded_[part_hash].expansion = std::move(exp);
+    {
+        PROFILE_SCOPE("commit.expansion");
+        // Build expansion into a local vector first (see flat path comment).
+        std::vector<ExpandedNode> exp;
+        build_expansion(part_hash, [this](uint64_t h){ return get_or_load(h); },
+                        exp);
+        loaded_[part_hash].expansion = std::move(exp);
+    }
     return &ins.first->second;
 }
 

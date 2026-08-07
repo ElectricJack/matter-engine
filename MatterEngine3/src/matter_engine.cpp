@@ -4670,10 +4670,14 @@ void WorldSession::Impl::bake_and_stage_sector(
                     // Commit the worker's staged result: adopt its BLAS entries,
                     // remap handles, insert, expand. O(entries), no BVH rebuilt.
                     PROFILE_SCOPE_NAMED(pub_load, "publish.load");
-                    const viewer::LoadedPart* loaded =
-                        staged_load->ok
-                            ? store->commit_staged(std::move(*staged_load))
-                            : store->get_or_load(sector_hash);
+                    const viewer::LoadedPart* loaded = nullptr;
+                    if (staged_load->ok) {
+                        PROFILE_SCOPE("publish.load.commit");
+                        loaded = store->commit_staged(std::move(*staged_load));
+                    } else {
+                        PROFILE_SCOPE("publish.load.fallback");
+                        loaded = store->get_or_load(sector_hash);
+                    }
                     t_load = pub_split();
                     pub_load.stop();
                     if (!loaded) {
