@@ -58,6 +58,20 @@ struct ChartBakeOptions {
     float texels_per_meter = 16.0f;
     bool  halve_per_rung   = false;
     float cone_deg         = chart_atlas::kChartNormalConeDeg;
+
+    // M6 (texture unification): chart rung 0 ONCE and have every coarser rung
+    // adopt that parameterisation (apply_chart_rung) instead of charting
+    // itself. This is what makes a part's page texels rung-INVARIANT — the
+    // property the VT variant key, the page pool and the horizon query all
+    // want, and the reason the dome patches tracked the rung split.
+    //
+    // Note it also retires `halve_per_rung` where it is on: one table means
+    // one density. That is a deliberate consequence, not an oversight — a
+    // per-rung density IS a per-rung parameterisation.
+    //
+    // Off by default so every existing caller keeps the per-rung behaviour
+    // byte-for-byte until it opts in.
+    bool  unify_parameterisation = false;
 };
 
 // Build the chart atlas for ONE rung mesh and write chart UVs into `triex`
@@ -69,6 +83,69 @@ struct ChartBakeOptions {
 bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
                       float texels_per_meter, float cone_deg,
                       chart_atlas::ChartAtlasRung& out);
+
+// M6 (texture unification): give a COARSER rung the parameterisation rep 0
+// already has, instead of charting it independently.
+//
+// This is possible — and cheap — because a chart's UV is ANALYTIC in world
+// position (vt_chart_resolve.glsl:117):
+//
+//     texel = rect + gutter + (dot(p, T/B) - dot(origin, T/B)) * tpm
+//
+// so nothing has to be transferred, sampled or interpolated from rep 0's
+// texels. Each coarse triangle only needs to know WHICH chart it belongs to;
+// its three corner UVs then follow from its own positions. A decimated vertex
+// sits slightly off rep 0's surface and therefore lands on a slightly
+// different texel, which is the property this milestone is for: the texture
+// stays glued to the surface while the geometry moves under it, so a rung
+// switch pops the mesh and not the texture.
+//
+// Chart assignment is by NEAREST rep-0 triangle (centroid), because that
+// triangle covers the same piece of surface the coarse one replaced. A coarse
+// triangle straddling a chart boundary takes one side's chart and its UVs then
+// reach past that chart's packed rect into the gutter — the error is bounded
+// by the gutter and is the one approximation here worth measuring.
+//
+// `out` receives base's atlas dimensions and chart entries VERBATIM (they are
+// the shared parameterisation) with this rung's own chart-grouped `tri_order`.
+// Returns false — leaving `triex` untouched — when the inputs do not line up
+// or `base` carries no charts, so a caller fails closed to its previous
+// behaviour exactly as it does for build_chart_rung.
+bool apply_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
+                      const std::vector<Tri>& base_tris,
+                      const chart_atlas::ChartAtlasRung& base,
+                      chart_atlas::ChartAtlasRung& out);
+
+// The M6 rule, in ONE place: the first rung that charts establishes the
+// parameterisation, and every rung after it adopts that table.
+//
+// There are five sites that chart a ladder — two in lod_bake (the prop and
+// terrain ladders) and three in part_store (flat v3 legacy-view rungs, flat v3
+// cluster rungs, flat v2 rungs). They had five copies of the same six lines,
+// and a rule that has to hold across all of them for pages to be rung-
+// invariant is a rule that must not exist in five copies: one site left
+// per-rung is one part whose pages still churn, and the symptom (texture
+// re-fetch on a rung switch, for SOME parts) is nearly impossible to trace
+// back to a missed call site.
+//
+// `base` / `base_tris` are the caller's carry-over state across its rung loop:
+// declare them beside the loop, zero-initialised, and pass them every rung.
+// When `unify` is false this is exactly build_chart_rung and the carry-over is
+// untouched, so a caller that has not opted in is byte-for-byte unchanged.
+//
+// Returns what build_chart_rung/apply_chart_rung returned: false means this
+// rung ships no chart table and the caller falls back to its legacy path.
+bool chart_rung_unified(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
+                        float texels_per_meter, float cone_deg, bool unify,
+                        chart_atlas::ChartAtlasRung& base,
+                        std::vector<Tri>& base_tris,
+                        chart_atlas::ChartAtlasRung& out);
+
+// Whether the engine bakes ONE parameterisation per part (M6). Read once from
+// MATTER_VT_UNIFY; default OFF while the runtime half is unproven, so the
+// milestone's visual re-baseline is opt-in and A/B-able rather than silent —
+// which is what the migration plan asks for.
+bool unify_parameterisation_enabled();
 
 // Per-level decimation targets (keep-ratios) and matching selection thresholds.
 // Defaults: LOD0 = full (1.0), LOD1 ~ 1/10, LOD2 ~ 1/100. Thresholds are on the

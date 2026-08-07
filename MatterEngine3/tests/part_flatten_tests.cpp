@@ -5,6 +5,7 @@
 // (parts/<hash>.part), then flatten_part() merges them and we verify the flat
 // artifact via load_v2.
 #include "part_flatten.h"
+#include "matter/lod_contract.h"   // kMaxSerializedLodLevels (the over-cap guard)
 #include "impostor_bake.h"
 #include "part_asset_v2.h"
 #include "part_bundle.h"   // M4: sections, not sibling files
@@ -15,6 +16,7 @@
 #include "part_cluster.h"
 #include "render/lod_distance.h"   // M3: the ONE selection rule, asserted against
                                    // the authored ladder's own metres
+#include "../../libs/MatterSurfaceLib/include/material_registry.h"
 #include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
 #include "../../libs/MatterSurfaceLib/include/mesh_simplifier.hpp"
@@ -1472,6 +1474,279 @@ static void test_authored_ladder_switch_distances() {
     part_bundle::remove_section(slods, kAuthoredHash, part_bundle::kSectionPlan);
 }
 
+// ---------------------------------------------------------------------------
+// §3.4: the AUTHORED terminal impostor. An authored ladder ending in
+// `LOD.impostor({ at })` gets the billboard as its last rung, switching in at
+// the metres the author named — which is the number M6.5's baked distant
+// shadows have to hand off at, and the answer to "trees render geometry way
+// too far out" that does not require dialling the global pixel budget down.
+//
+// The fixture is deliberately TALL AND THIN (a stretched sphere, the shape of
+// the trees this exists for) because that is what makes the AABB assertion
+// below bite: build_quad squares the card off at 1.10× the bounding-sphere
+// radius, so admitting it to the cluster AABB would inflate a 0.4 m-wide
+// trunk's X extent to 6.6 m. cluster_radius is the number every authored `at`
+// is normalized against, so that would silently move every switch on the
+// ladder — including the one the author wrote in metres.
+static const uint64_t kImpostorLadderHash = 0xA110000033330003ull;
+
+static void test_authored_ladder_impostor_terminal() {
+    printf("=== test_authored_ladder_impostor_terminal ===\n");
+
+    // This test drives MATTER_IMPOSTOR itself for one phase. If the whole
+    // process was already started with impostors off (a diagnostic run), the
+    // "one billboard baked" phase cannot hold and the failure would say
+    // nothing about the code. Skip rather than report a false red.
+    {
+        const char* v = std::getenv("MATTER_IMPOSTOR");
+        if (v && v[0] == '0') {
+            printf("  SKIPPED (MATTER_IMPOSTOR=0 in the environment)\n");
+            return;
+        }
+    }
+
+    // Tall and thin: 0.4 m across, 6 m tall.
+    std::vector<Tri> tris = sphere_tris(20, 10);
+    auto stretch = [](float3& v) { v.x *= 0.2f; v.z *= 0.2f; v.y *= 3.0f; };
+    for (Tri& t : tris) {
+        stretch(t.vertex0); stretch(t.vertex1); stretch(t.vertex2);
+        t.centroid = make_float3((t.vertex0.x + t.vertex1.x + t.vertex2.x) / 3.0f,
+                                 (t.vertex0.y + t.vertex1.y + t.vertex2.y) / 3.0f,
+                                 (t.vertex0.z + t.vertex1.z + t.vertex2.z) / 3.0f);
+    }
+    CHECK(save_fixture(kImpostorLadderHash, 5, {tris}, {}), "imp ladder: fixture written");
+
+    const std::string flat =
+        std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kImpostorLadderHash);
+    const std::string slods =
+        std::string(kCacheRoot) + "/" + part_asset::cache_path_static_lods(kImpostorLadderHash);
+    const std::string fimp =
+        std::string(kCacheRoot) + "/" + impostor::cache_path_impostor(kImpostorLadderHash);
+
+    // kCacheRoot is created but NEVER wiped, so it survives between runs of
+    // this binary. Phase (a) below asserts that no atlas exists when no
+    // terminal is declared — which the PREVIOUS run's phase (b) would satisfy
+    // from disk. Clear both sections up front so each run starts cold; without
+    // this the test passes exactly once per fresh temp directory.
+    part_bundle::remove_section(fimp, kImpostorLadderHash, part_bundle::kSectionImpostor);
+    part_bundle::remove_section(slods, kImpostorLadderHash, part_bundle::kSectionPlan);
+    part_bundle::remove_section(flat, kImpostorLadderHash, part_bundle::kSectionFlat);
+
+    // Helper: write a plan and flatten cold, returning the cluster radius the
+    // RUNTIME would derive (part_store.cpp: half the AABB diagonal).
+    auto bake = [&](const std::vector<double>& at,
+                    const std::vector<std::string>& gen,
+                    part_flatten::FlattenResult& res_out,
+                    std::vector<part_asset::FlatCluster>& clusters_out,
+                    BLASManager& blas_out) -> float {
+        part_asset::StaticLodPlan plan;
+        plan.level_hashes.assign(at.size(), kImpostorLadderHash);
+        plan.level_exclude_masks.assign(at.size(), 0u);
+        plan.level_at  = at;
+        plan.level_gen = gen;
+        if (!part_asset::save_static_lod_plan(slods, kImpostorLadderHash, plan)) return -1.0f;
+        part_bundle::remove_section(flat, kImpostorLadderHash, part_bundle::kSectionFlat);
+        res_out = part_flatten::flatten_part(kCacheRoot, kImpostorLadderHash);
+        if (!res_out.ok) return -1.0f;
+        TLASManager tlas(4);
+        if (!part_asset::load_flat_v3(flat, kImpostorLadderHash, blas_out, tlas, clusters_out))
+            return -1.0f;
+        if (clusters_out.size() != 1) return -1.0f;
+        const float dx = clusters_out[0].aabb_max[0] - clusters_out[0].aabb_min[0];
+        const float dy = clusters_out[0].aabb_max[1] - clusters_out[0].aabb_min[1];
+        const float dz = clusters_out[0].aabb_max[2] - clusters_out[0].aabb_min[2];
+        return 0.5f * std::sqrt(dx*dx + dy*dy + dz*dz);
+    };
+
+    // (a) The mesh-only reference: the same two reps, no terminal declared.
+    float mesh_radius = 0.0f;
+    {
+        part_flatten::FlattenResult r;
+        std::vector<part_asset::FlatCluster> cl;
+        BLASManager b;
+        mesh_radius = bake({0.0, 18.0}, {"", "decimate {\"divisor\":8}"}, r, cl, b);
+        CHECK(mesh_radius > 0.0f, "imp ladder: mesh-only reference bakes");
+        CHECK(r.impostors == 0, "imp ladder: no terminal declared -> no impostor");
+        CHECK(!fs::exists(fimp) ||
+                  !part_bundle::has_section(fimp, kImpostorLadderHash,
+                                            part_bundle::kSectionImpostor),
+              "imp ladder: an undeclared impostor is never implied");
+    }
+
+    // (b) The same ladder with the terminal declared at 140 m.
+    const double kImpAt = 140.0;
+    part_flatten::FlattenResult res;
+    std::vector<part_asset::FlatCluster> clusters;
+    BLASManager blas;
+    const float radius = bake({0.0, 18.0, kImpAt},
+                              {"", "decimate {\"divisor\":8}", "impostor {}"},
+                              res, clusters, blas);
+    CHECK(radius > 0.0f, "imp ladder: flatten ok");
+    if (!(radius > 0.0f)) {
+        printf("  error: %s\n", res.error.c_str());
+        part_bundle::remove_section(slods, kImpostorLadderHash, part_bundle::kSectionPlan);
+        return;
+    }
+    CHECK(res.levels == 3, "imp ladder: the impostor is a rep of the same table");
+    CHECK(res.impostors == 1, "imp ladder: one billboard baked");
+
+    // THE GUARD. Same reps, same geometry, same radius — the billboard is a
+    // picture of the ladder, not a member of its bounds. Delete the
+    // `if (!is_impostor) acc(tris)` in part_flatten and this fails by ~55%.
+    CHECK(std::fabs(radius - mesh_radius) < 1e-5f * mesh_radius,
+          "imp ladder: the billboard does not enter the cluster AABB");
+
+    const auto& lods = clusters[0].lods;
+    const auto& entries = blas.get_entries();
+    if (lods.size() != 3) {
+        printf("  SKIPPING (unexpected artifact shape)\n");
+        part_bundle::remove_section(slods, kImpostorLadderHash, part_bundle::kSectionPlan);
+        return;
+    }
+    // The terminal rung IS the billboard, by the one predicate every consumer
+    // asks (impostor::is_billboard_rung), not by triangle count alone.
+    const BLASManager::BLASEntry* term = entries[lods[2].blas_indices[0]].get();
+    CHECK(term && impostor::is_billboard_rung(term->triangles, term->tri_extra),
+          "imp ladder: rung 2 is the billboard");
+    CHECK(entries[lods[1].blas_indices[0]]->triangles.size() > 2,
+          "imp ladder: rung 1 is still mesh");
+
+    // The atlas is on disk, and it answers to the depicts-hash PartStore
+    // recomputes from the rung the billboard takes over from. This is the
+    // whole staleness contract: an atlas that does not match the mesh it
+    // depicts is rejected rather than drawn.
+    {
+        // REP 0, not the rung the billboard takes over from. The bake sources
+        // rep 0 now (a 16x16 cell resolves silhouette and shading, and the
+        // coarsest rung has already discarded both), and PartStore folds the
+        // same rung -- this must track them or it asserts a contract nothing
+        // implements.
+        uint64_t depicts = impostor::depicts_hash_begin();
+        impostor::depicts_hash_add_cluster(
+            depicts, 0u, entries[lods[0].blas_indices[0]]->triangles,
+            entries[lods[0].blas_indices[0]]->tri_extra);
+        impostor::PartImpostor loaded;
+        impostor::LoadFailure fail = impostor::LoadFailure::None;
+        std::string reason;
+        const bool ok = impostor::load(fimp, kImpostorLadderHash,
+                                       impostor::depicts_hash_finish(depicts),
+                                       loaded, &fail, &reason);
+        CHECK(ok && loaded.clusters.size() == 1,
+              "imp ladder: the atlas loads against the rung it depicts");
+        if (!ok) printf("  impostor load: %s (%s)\n",
+                        impostor::load_failure_text(fail), reason.c_str());
+    }
+
+    // The authored metres land where they were authored. Rung 1's threshold is
+    // rung 2's switch-IN, so this IS the impostor distance.
+    const float want_imp = radius / (float)kImpAt;
+    CHECK(std::fabs(lods[1].screen_size_threshold - want_imp) < 1e-4f * want_imp,
+          "imp ladder: rung 1's threshold is radius / at(impostor)");
+    CHECK(lods[2].screen_size_threshold == 0.0f,
+          "imp ladder: the billboard never hides");
+
+    float sw[3];
+    for (int i = 0; i < 3; ++i)
+        sw[i] = lod::normalized_switch_distance(lods[i].screen_size_threshold);
+    const float reach = lod::reach(radius, 1.0f, 1.0f);
+    CHECK(lod::select_rep(sw, 3, 139.0f, reach) == 1, "imp ladder: 139 m -> mesh");
+    CHECK(lod::select_rep(sw, 3, 141.0f, reach) == 2, "imp ladder: 141 m -> billboard");
+    CHECK(lod::select_rep(sw, 3, 9000.f, reach) == 2, "imp ladder: far away -> billboard");
+
+    // MATTER_IMPOSTOR=0 drops the declared terminal rather than failing the
+    // bake: the ladder ends at the last mesh rung, exactly as it would have
+    // had the author declared no terminal at all.
+    {
+#ifdef _WIN32
+        _putenv_s("MATTER_IMPOSTOR", "0");
+#else
+        setenv("MATTER_IMPOSTOR", "0", 1);
+#endif
+        part_flatten::FlattenResult r;
+        std::vector<part_asset::FlatCluster> cl;
+        BLASManager b;
+        const float r_off = bake({0.0, 18.0, kImpAt},
+                                 {"", "decimate {\"divisor\":8}", "impostor {}"}, r, cl, b);
+        CHECK(r_off > 0.0f && r.ok, "imp ladder: MATTER_IMPOSTOR=0 still bakes");
+        CHECK(r.levels == 2 && r.impostors == 0,
+              "imp ladder: MATTER_IMPOSTOR=0 ends the ladder at the mesh rung");
+        CHECK(cl.size() == 1 && cl[0].lods.size() == 2 &&
+                  cl[0].lods[1].screen_size_threshold == 0.0f,
+              "imp ladder: the surviving mesh rung holds at any distance");
+#ifdef _WIN32
+        _putenv_s("MATTER_IMPOSTOR", "");
+#else
+        unsetenv("MATTER_IMPOSTOR");
+#endif
+    }
+
+    // Determinism: two cold bakes of the atlas-bearing ladder are identical.
+    {
+        part_flatten::FlattenResult r;
+        std::vector<part_asset::FlatCluster> cl;
+        BLASManager b;
+        CHECK(bake({0.0, 18.0, kImpAt},
+                   {"", "decimate {\"divisor\":8}", "impostor {}"}, r, cl, b) > 0.0f,
+              "imp ladder: re-bake for the determinism gate");
+        std::vector<char> first = read_all_bytes(flat);
+        // The ATLAS specifically, not the bundle: `fimp` and `flat` are the
+        // same file (both parts/<hash>.bundle), so a whole-file compare here
+        // would just repeat the ladder check above under a different name.
+        std::vector<uint8_t> first_atlas;
+        CHECK(part_bundle::read_section(fimp, kImpostorLadderHash,
+                                        part_bundle::kSectionImpostor, first_atlas),
+              "imp ladder: the atlas section reads back");
+        part_flatten::FlattenResult r2;
+        std::vector<part_asset::FlatCluster> cl2;
+        BLASManager b2;
+        CHECK(bake({0.0, 18.0, kImpAt},
+                   {"", "decimate {\"divisor\":8}", "impostor {}"}, r2, cl2, b2) > 0.0f,
+              "imp ladder: second cold bake ok");
+        CHECK(!first.empty() && first == read_all_bytes(flat),
+              "imp ladder: two cold bakes are byte-identical");
+        std::vector<uint8_t> second_atlas;
+        CHECK(part_bundle::read_section(fimp, kImpostorLadderHash,
+                                        part_bundle::kSectionImpostor, second_atlas),
+              "imp ladder: the atlas section reads back after the second bake");
+        CHECK(!first_atlas.empty() && first_atlas == second_atlas,
+              "imp ladder: the atlas is byte-identical too");
+    }
+
+    // A plan longer than the serialized cap would TRUNCATE, and the terminal
+    // is by definition the last entry — so the impostor would vanish and the
+    // result would look like a deliberate mesh-only ladder. bake_static_lods
+    // refuses to write such a plan, but a plan is a file. Prove the guard
+    // fires rather than trusting that it would.
+    {
+        const size_t over = matter::kMaxSerializedLodLevels + 1;
+        std::vector<double> at(over, -1.0);
+        std::vector<std::string> gen(over);
+        at[0] = 0.0;
+        for (size_t i = 1; i + 1 < over; ++i) {
+            at[i] = 10.0 * (double)i;
+            gen[i] = "decimate {\"divisor\":8}";
+        }
+        at[over - 1] = 500.0;
+        gen[over - 1] = "impostor {}";
+        part_flatten::FlattenResult r;
+        std::vector<part_asset::FlatCluster> cl;
+        BLASManager b;
+        const float got = bake(at, gen, r, cl, b);
+        CHECK(got < 0.0f && !r.ok,
+              "imp ladder: an over-cap plan whose terminal falls off the end fails");
+        CHECK(r.error.find("impostor terminal falls outside") != std::string::npos,
+              "imp ladder: ...and says so, rather than baking a mesh-only ladder");
+        if (r.ok) printf("  UNEXPECTED: over-cap plan baked %zu levels\n", r.levels);
+    }
+
+    printf("  radius=%.4f (mesh-only %.4f) thr=%.5f/%.5f/%.1f\n", radius, mesh_radius,
+           lods[0].screen_size_threshold, lods[1].screen_size_threshold,
+           lods[2].screen_size_threshold);
+    printf("  test_authored_ladder_impostor_terminal OK\n");
+
+    part_bundle::remove_section(slods, kImpostorLadderHash, part_bundle::kSectionPlan);
+}
+
 // M3 companion: a `static lods` block that names NEITHER a distance nor a
 // generator — the pre-M3 W5 surface, params/exclude only — must not touch the
 // ladder at all. Same fixture, same flatten, byte-identical artifact with and
@@ -1771,10 +2046,26 @@ static void test_flatten_segmented() {
     CHECK(write_seg_child(), "seg child fixture written");
     CHECK(write_seg_parent(kSegParentHash), "seg parent fixture written");
 
-    // Hints sidecar: inline both children below 64 px.
+    // Hints sidecar: inline both children below 8 px.
+    //
+    // This was 64 px, and M1.5's ladder BENEFIT RULE invalidated that number
+    // (2026-08-05). The seg child's ladder now reads
+    //   512:360- 256:360- 128:332- 64:312- 32:280- 16:156+ 8:90+ 4:54+ 2:28+
+    // — every rung down to divisor 32 REJECTED, because decimating 360 tris to
+    // 332 / 312 / 280 never buys the 30% the benefit rule requires. Those
+    // near-duplicate rungs used to exist (rungs were admitted on any reduction
+    // at all), and a 64 px hint landed on one of them.
+    //
+    // With them gone the child's first real switch is a 16 px-equivalent, so
+    // at 64 px the child correctly still wants LOD 0 — `src = min(C,E)` picks
+    // 0 and the coarse segment inlines full-res, which made `coarse L0 <
+    // trunk + 2 * child full-res` fail by exactly zero (722 vs 722). The
+    // mechanism under test was never broken; the fixture stopped exercising
+    // it. 8 px lands inside the child's ADMITTED ladder (the 156-tri rung),
+    // which is what this test exists to prove gets sourced.
     part_asset::FlattenHints h;
-    h.child_px[0] = 64.0f;
-    h.child_px[1] = 64.0f;
+    h.child_px[0] = 8.0f;
+    h.child_px[1] = 8.0f;
     CHECK(part_asset::save_flatten_hints(
               std::string(kCacheRoot) + "/" + part_asset::cache_path_hints(kSegParentHash),
               kSegParentHash, h),
@@ -2152,6 +2443,345 @@ static std::vector<TriEx> triex_for(const std::vector<Tri>& tris, int material) 
     return ex;
 }
 
+// The impostor depicts REP 0, and the distance scale moves only the impostor.
+//
+// Both are things a screenshot cannot tell you. A billboard baked from the
+// coarsest rung looks like a billboard; it is only wrong against what it COULD
+// have depicted. And a distance knob that silently moved the mesh rungs too
+// would look exactly like one that worked.
+static void test_impostor_source_and_distance() {
+    printf("=== test_impostor_source_and_distance ===\n");
+
+    // Tall/thin so decimation has somewhere to go and rep 0 differs sharply
+    // from the coarsest rung.
+    std::vector<Tri> tris = sphere_tris(24, 12);
+    auto stretch = [](float3& v) { v.x *= 0.2f; v.z *= 0.2f; v.y *= 3.0f; };
+    for (Tri& t : tris) {
+        stretch(t.vertex0); stretch(t.vertex1); stretch(t.vertex2);
+        t.centroid = make_float3((t.vertex0.x + t.vertex1.x + t.vertex2.x) / 3.0f,
+                                 (t.vertex0.y + t.vertex1.y + t.vertex2.y) / 3.0f,
+                                 (t.vertex0.z + t.vertex1.z + t.vertex2.z) / 3.0f);
+    }
+    std::vector<TriEx> ex = triex_for(tris, 6);
+
+    // Two atlases from the SAME cluster: rep 0, and a decimated stand-in for
+    // the coarsest rung. If those came out identical the whole question would
+    // be moot, so assert they differ FIRST -- otherwise the source assertion
+    // below proves nothing.
+    {
+        impostor::ClusterImpostor from_rep0, from_coarse;
+        CHECK(impostor::bake_cluster(0u, tris, ex, from_rep0),
+              "imp src: rep 0 bakes");
+        std::vector<Tri> coarse = lod_bake::decimate_to_error(tris, 0.35f, false);
+        CHECK(!coarse.empty() && coarse.size() < tris.size(),
+              "imp src: the coarse stand-in actually decimated");
+        if (!coarse.empty()) {
+            std::vector<TriEx> cex = triex_for(coarse, 6);
+            CHECK(impostor::bake_cluster(0u, coarse, cex, from_coarse),
+                  "imp src: the coarse rung bakes");
+            CHECK(from_rep0.atlas != from_coarse.atlas,
+                  "imp src: the two sources DO produce different atlases, so "
+                  "which one the bake picks is an observable choice");
+        }
+    }
+
+    const uint64_t h = 0xA110000044440004ull;
+    CHECK(save_fixture(h, 6, {tris}, {}), "imp src: fixture written");
+    const std::string flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(h);
+    const std::string fimp = std::string(kCacheRoot) + "/" + impostor::cache_path_impostor(h);
+
+    // The scale is driven through MATTER_IMPOSTOR_DISTANCE, not through a
+    // FlattenTargets field. That is the production surface (an operator sets
+    // the env var), and it is the only surface the flat's ladder-shape
+    // identity can see: a per-call struct override writes an artifact stamped
+    // with the AMBIENT shape, which flatten_part now warns about. The env is
+    // cleared again as soon as the load is done, so it is live for exactly the
+    // bake+load pair that has to agree about it.
+    auto bake_ladder = [&](const char* dist_scale,
+                           std::vector<part_asset::FlatCluster>& cl,
+                           BLASManager& blas) -> part_flatten::FlattenResult {
+        part_bundle::remove_section(flat, h, part_bundle::kSectionFlat);
+        part_bundle::remove_section(fimp, h, part_bundle::kSectionImpostor);
+        pf_set_env("MATTER_IMPOSTOR_DISTANCE", dist_scale);
+        auto r = part_flatten::flatten_part(kCacheRoot, h);
+        if (r.ok) {
+            TLASManager tl(4);
+            part_asset::load_flat_v3(flat, h, blas, tl, cl);
+        }
+        pf_set_env("MATTER_IMPOSTOR_DISTANCE", nullptr);
+        return r;
+    };
+
+    std::vector<part_asset::FlatCluster> cl1; BLASManager b1;
+    auto r1 = bake_ladder(nullptr, cl1, b1);
+    CHECK(r1.ok, "imp src: ladder bakes");
+    if (!r1.ok || cl1.empty() || cl1[0].lods.size() < 2) {
+        printf("  SKIPPING (no impostor rung on this fixture)\n");
+        return;
+    }
+    const auto& lods1 = cl1[0].lods;
+    const auto& e1 = b1.get_entries();
+    const size_t term1 = lods1.size() - 1;
+    const BLASManager::BLASEntry* bb = e1[lods1[term1].blas_indices[0]].get();
+    if (!bb || !impostor::is_billboard_rung(bb->triangles, bb->tri_extra)) {
+        printf("  SKIPPING (terminal rung is not a billboard)\n");
+        return;
+    }
+
+    // THE SOURCE ASSERTION, made exactly the way PartStore makes it: fold the
+    // depicts-hash over rep 0 and require the sidecar to accept it. If the bake
+    // and the loader disagreed here, every atlas in the world would be rejected
+    // as stale and silently fall back to mesh-only.
+    {
+        uint64_t d0 = impostor::depicts_hash_begin();
+        impostor::depicts_hash_add_cluster(
+            d0, 0u, e1[lods1[0].blas_indices[0]]->triangles,
+            e1[lods1[0].blas_indices[0]]->tri_extra);
+        impostor::PartImpostor loaded;
+        impostor::LoadFailure fail = impostor::LoadFailure::None;
+        std::string why;
+        const bool ok0 = impostor::load(fimp, h, impostor::depicts_hash_finish(d0),
+                                        loaded, &fail, &why);
+        CHECK(ok0, "imp src: the atlas answers to REP 0's depicts-hash");
+        if (!ok0)
+            printf("  load said: %s (%s)\n", impostor::load_failure_text(fail),
+                   why.c_str());
+
+        // ...and NOT to the coarsest mesh rung's, which is what it used to
+        // depict. Without this the assertion above would still pass on a
+        // ladder whose rep 0 and coarsest rung happen to be the same mesh.
+        if (lods1.size() >= 3) {
+            uint64_t dc = impostor::depicts_hash_begin();
+            impostor::depicts_hash_add_cluster(
+                dc, 0u, e1[lods1[term1 - 1].blas_indices[0]]->triangles,
+                e1[lods1[term1 - 1].blas_indices[0]]->tri_extra);
+            impostor::PartImpostor other;
+            CHECK(!impostor::load(fimp, h, impostor::depicts_hash_finish(dc), other),
+                  "imp src: it does NOT answer to the coarsest rung's hash, so "
+                  "the source really moved");
+        }
+    }
+
+    // THE DISTANCE ASSERTION. Halving the scale must bring the billboard in,
+    // and must leave every MESH rung untouched -- that independence is the
+    // entire point of the knob.
+    std::vector<part_asset::FlatCluster> cl2; BLASManager b2;
+    auto r2 = bake_ladder("0.5", cl2, b2);
+    CHECK(r2.ok && !cl2.empty(), "imp dist: half-distance ladder bakes");
+    if (r2.ok && !cl2.empty() && cl2[0].lods.size() == lods1.size()) {
+        const auto& lods2 = cl2[0].lods;
+        // The impostor's switch-IN is stored as the PREVIOUS rung's threshold;
+        // a LARGER threshold means it switches in nearer.
+        const float t1 = lods1[term1 - 1].screen_size_threshold;
+        const float t2 = lods2[term1 - 1].screen_size_threshold;
+        CHECK(t2 > t1 * 1.5f,
+              "imp dist: scale 0.5 brings the billboard substantially closer");
+        bool mesh_unchanged = true;
+        for (size_t i = 0; i + 2 < lods1.size(); ++i)
+            if (lods1[i].screen_size_threshold != lods2[i].screen_size_threshold)
+                mesh_unchanged = false;
+        CHECK(mesh_unchanged,
+              "imp dist: every MESH rung's distance is untouched, so the knob "
+              "moves only the impostor");
+        printf("  impostor switch threshold %.5f -> %.5f (larger = nearer)\n", t1, t2);
+    }
+    printf("  test_impostor_source_and_distance OK\n");
+
+    part_bundle::remove_section(flat, h, part_bundle::kSectionFlat);
+    part_bundle::remove_section(fimp, h, part_bundle::kSectionImpostor);
+}
+
+// ===========================================================================
+// The mesh rung cap, and the staleness gate that makes it observable.
+//
+// THE REJECTION FIRING IS THE TEST. A knob that reshapes the ladder changes
+// the bytes a bake would write without changing the part hash or the format
+// version, so before the ladder-shape digest existed
+// LocalProvider::ensure_part_flattened found a "compatible" flat and returned
+// without baking -- the old ladder was served and the knob appeared to do
+// nothing. That failure only shows up on a WARM cache, which is why every
+// step below re-probes an EXISTING artifact instead of removing it first.
+// A version of this test that wiped the flat between bakes would pass against
+// the bug it exists to catch.
+// ===========================================================================
+static void test_mesh_rung_cap_and_stale_rejection() {
+    printf("=== test_mesh_rung_cap_and_stale_rejection ===\n");
+
+    // Dense enough that the uncapped ladder earns several mesh rungs, so a cap
+    // of 2 is visibly a cap and not a coincidence.
+    std::vector<Tri> tris = sphere_tris(32, 16);
+    const uint64_t h = 0xA110000055550001ull;
+    CHECK(save_fixture(h, 7, {tris}, {}), "rung cap: fixture written");
+    const std::string flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(h);
+    const std::string fimp = std::string(kCacheRoot) + "/" + impostor::cache_path_impostor(h);
+
+    // Every probe below asks EXACTLY the question local_provider asks before
+    // it decides to skip the bake.
+    auto provider_would_skip = [&]() {
+        return part_asset::is_cache_artifact_header_compatible(
+            flat, h, part_asset::kFormatVersionFlat);
+    };
+    auto levels_of = [&](std::vector<part_asset::FlatCluster>& cl) -> size_t {
+        return cl.empty() ? 0 : cl[0].lods.size();
+    };
+
+    // --- 1. cold bake at the shipped default shape --------------------------
+    part_bundle::remove_section(flat, h, part_bundle::kSectionFlat);
+    part_bundle::remove_section(fimp, h, part_bundle::kSectionImpostor);
+    auto r0 = part_flatten::flatten_part(kCacheRoot, h);
+    CHECK(r0.ok, "rung cap: default ladder bakes");
+    if (!r0.ok) { printf("  error: %s\n", r0.error.c_str()); return; }
+    std::vector<char> bytes_default;
+    CHECK(read_bytes(flat, bytes_default), "rung cap: default flat readable");
+    CHECK(provider_would_skip(),
+          "rung cap: a warm default flat is served (no pointless rebake)");
+
+    std::vector<part_asset::FlatCluster> cl0; BLASManager b0;
+    { TLASManager tl(4); part_asset::load_flat_v3(flat, h, b0, tl, cl0); }
+    const size_t levels_default = levels_of(cl0);
+    CHECK(levels_default >= 4,
+          "rung cap: the uncapped ladder has room to be capped");
+    printf("  default ladder: %zu levels\n", levels_default);
+
+    // --- 2. THE GATE. Change ONLY the env knob and re-probe the SAME file. ---
+    pf_set_env("MATTER_LOD_MAX_MESH_RUNGS", "2");
+    CHECK(!provider_would_skip(),
+          "STALE REJECTION: with the cap set, the existing flat is NOT served");
+    {
+        // ...and the full load refuses it too, so nothing downstream of the
+        // probe can pick the stale artifact up by another route.
+        BLASManager b; TLASManager tl(4);
+        std::vector<part_asset::FlatCluster> cl;
+        CHECK(!part_asset::load_flat_v3(flat, h, b, tl, cl),
+              "STALE REJECTION: load_flat_v3 refuses the stale-shape flat");
+    }
+
+    // --- 3. rebake IN PLACE (no remove_section: the warm-cache path) --------
+    auto r2 = part_flatten::flatten_part(kCacheRoot, h);
+    CHECK(r2.ok, "rung cap: capped ladder bakes over the stale one");
+    std::vector<part_asset::FlatCluster> cl2; BLASManager b2;
+    if (r2.ok) { TLASManager tl(4); part_asset::load_flat_v3(flat, h, b2, tl, cl2); }
+    const size_t levels_capped = levels_of(cl2);
+    CHECK(provider_would_skip(),
+          "rung cap: the rebaked flat now matches, so the next run is warm");
+    // 2 mesh rungs, plus at most the terminal impostor.
+    CHECK(levels_capped > 0 && levels_capped <= 3,
+          "rung cap: cap=2 publishes at most 2 mesh rungs + the impostor");
+    CHECK(levels_capped < levels_default,
+          "rung cap: the cap actually shortened the ladder");
+    std::vector<char> bytes_capped;
+    CHECK(read_bytes(flat, bytes_capped), "rung cap: capped flat readable");
+    CHECK(bytes_capped != bytes_default,
+          "rung cap: the capped artifact really is different bytes -- the "
+          "rejection was not rejecting an identical file");
+    printf("  capped ladder: %zu levels\n", levels_capped);
+
+    // The impostor needs NO cap-awareness: it steps off level_metas.back(),
+    // so a shorter mesh ladder hands over EARLIER (nearer the camera = a
+    // LARGER stored threshold on the rung before the terminal).
+    if (levels_capped >= 2 && levels_default >= 2 && !cl2.empty() && !cl0.empty()) {
+        const auto& e2 = b2.get_entries();
+        const uint32_t term = cl2[0].lods.back().blas_indices[0];
+        const bool billboard =
+            term < e2.size() &&
+            impostor::is_billboard_rung(e2[term]->triangles, e2[term]->tri_extra);
+        CHECK(billboard,
+              "rung cap: the capped ladder still terminates in a billboard, so "
+              "the part switches straight from a mesh rung to an impostor");
+        if (billboard) {
+            const float thr_capped = cl2[0].lods[levels_capped - 2].screen_size_threshold;
+            const float thr_default = cl0[0].lods[levels_default - 2].screen_size_threshold;
+            CHECK(thr_capped > thr_default,
+                  "rung cap: capping pulls the impostor IN (it takes over from "
+                  "a higher-resolution rung, which is the whole point)");
+            printf("  impostor switch threshold %.5f -> %.5f (larger = nearer)\n",
+                   thr_default, thr_capped);
+        }
+    }
+
+    // --- 4. the gate fires in BOTH directions -------------------------------
+    // Clearing the knob must reject the CAPPED flat just as firmly. A gate
+    // that only invalidated in one direction would strand every cache the
+    // moment someone tried a setting and changed their mind.
+    pf_set_env("MATTER_LOD_MAX_MESH_RUNGS", nullptr);
+    CHECK(!provider_would_skip(),
+          "STALE REJECTION: clearing the cap rejects the capped flat too");
+    auto r3 = part_flatten::flatten_part(kCacheRoot, h);
+    CHECK(r3.ok, "rung cap: default ladder re-bakes");
+    std::vector<char> bytes_back;
+    CHECK(read_bytes(flat, bytes_back), "rung cap: restored flat readable");
+    // Round trip AND determinism in one: back at the default shape the bytes
+    // are the ones the very first cold bake wrote.
+    CHECK(bytes_back == bytes_default,
+          "rung cap: returning to the default shape reproduces the default "
+          "artifact byte-for-byte");
+
+    // --- 5. fail closed ------------------------------------------------------
+    // Garbage must be IGNORED, not guessed at, and a cap at/above the
+    // serialized capacity is not a cap -- kMaxSerializedLodLevels already
+    // binds. Both must leave the warm cache alone: if either reshaped the
+    // ladder or merely moved the digest, the probe would miss here.
+    for (const char* junk : {"abc", "3x", "-1", "", "1e3", "3.5"}) {
+        pf_set_env("MATTER_LOD_MAX_MESH_RUNGS", junk);
+        const std::string why =
+            std::string("rung cap: garbage value '") + junk +
+            "' is ignored, not trusted";
+        CHECK(provider_would_skip(), why.c_str());
+    }
+    for (const char* wide : {"9", "10", "99"}) {
+        pf_set_env("MATTER_LOD_MAX_MESH_RUNGS", wide);
+        const std::string why =
+            std::string("rung cap: a cap of '") + wide +
+            "' is not a cap (kMaxSerializedLodLevels binds) and does not "
+            "invalidate the cache";
+        CHECK(provider_would_skip(), why.c_str());
+    }
+    pf_set_env("MATTER_LOD_MAX_MESH_RUNGS", nullptr);
+
+    // A cap of 1 is the degenerate end of the knob: rep 0 and the billboard,
+    // nothing between. It must still produce a VALID ladder, not an empty one.
+    pf_set_env("MATTER_LOD_MAX_MESH_RUNGS", "1");
+    CHECK(!provider_would_skip(), "rung cap: cap=1 invalidates the default flat");
+    auto r1 = part_flatten::flatten_part(kCacheRoot, h);
+    CHECK(r1.ok, "rung cap: cap=1 bakes");
+    if (r1.ok) {
+        BLASManager b1; TLASManager tl(4);
+        std::vector<part_asset::FlatCluster> cl1;
+        CHECK(part_asset::load_flat_v3(flat, h, b1, tl, cl1),
+              "rung cap: cap=1 flat loads");
+        const size_t n = levels_of(cl1);
+        CHECK(n >= 1 && n <= 2, "rung cap: cap=1 gives rep 0 (+ impostor) only");
+        printf("  cap=1 ladder: %zu levels\n", n);
+    }
+    pf_set_env("MATTER_LOD_MAX_MESH_RUNGS", nullptr);
+
+    // The digest itself: distinct shapes must not alias, and the shipped
+    // default must be the 0 sentinel (that is what keeps a default bake
+    // byte-identical to every flat already on disk).
+    // The SHIPPED shape means no overrides at all -- including the cell
+    // resolution main() pins for bake speed, which is an override like any
+    // other and legitimately digests away from the sentinel. Clear it for the
+    // length of this one assertion, exactly as the rung cap above is cleared,
+    // then put it back for the tests that follow.
+    pf_set_env("MATTER_IMPOSTOR_CELL_PX", nullptr);
+    CHECK(part_flatten::active_ladder_shape_digest() == 0ull,
+          "rung cap: the shipped default shape digests to the 0 sentinel");
+    pf_set_env("MATTER_IMPOSTOR_CELL_PX", "32");
+    {
+        part_flatten::FlattenTargets a, b;
+        a.max_mesh_rungs = 2; b.max_mesh_rungs = 3;
+        CHECK(part_flatten::ladder_shape_digest(a) != 0ull &&
+                  part_flatten::ladder_shape_digest(b) != 0ull &&
+                  part_flatten::ladder_shape_digest(a) !=
+                      part_flatten::ladder_shape_digest(b),
+              "rung cap: two different caps give two different digests");
+    }
+
+    part_bundle::remove_section(flat, h, part_bundle::kSectionFlat);
+    part_bundle::remove_section(fimp, h, part_bundle::kSectionImpostor);
+    printf("  test_mesh_rung_cap_and_stale_rejection OK\n");
+}
+
 static void test_impostor_eligibility() {
     printf("=== test_impostor_eligibility ===\n");
     // The floor is an ORDER-OF-MAGNITUDE reduction (2 / N <= 0.125), not the
@@ -2173,7 +2803,7 @@ static void test_impostor_bake_deterministic() {
     impostor::ClusterImpostor a, b;
     CHECK(impostor::bake_cluster(0, tris, ex, a), "bake_cluster succeeds");
     CHECK(impostor::bake_cluster(0, tris, ex, b), "bake_cluster succeeds twice");
-    CHECK(a.atlas.size() == impostor::kAtlasBytes, "atlas is the declared size");
+    CHECK(a.atlas.size() == impostor::atlas_bytes(), "atlas is the declared size");
     CHECK(a.atlas == b.atlas, "two bakes produce a byte-identical atlas");
     CHECK(a.half_extent > 0.0f && a.half_extent == b.half_extent,
           "half extent is positive and reproducible");
@@ -2184,17 +2814,17 @@ static void test_impostor_bake_deterministic() {
     // borders stay clear (the 2 % margin) so bilinear filtering cannot bleed a
     // neighbouring view in.
     size_t covered = 0;
-    for (size_t t = 0; t < impostor::kLayerPx * impostor::kLayerPx; ++t)
+    for (size_t t = 0; t < impostor::layer_px() * impostor::layer_px(); ++t)
         if (a.atlas[t * 4 + 3] > 0) ++covered;
-    CHECK(covered > impostor::kLayerPx * impostor::kLayerPx / 4,
+    CHECK(covered > impostor::layer_px() * impostor::layer_px() / 4,
           "the baked silhouette covers a substantial share of the atlas");
     bool border_clear = true;
     for (uint32_t v = 0; v < impostor::kViews; ++v) {
-        const uint32_t cx = (v % impostor::kGridDim) * impostor::kCellPx;
-        const uint32_t cy = (v / impostor::kGridDim) * impostor::kCellPx;
-        for (uint32_t k = 0; k < impostor::kCellPx; ++k) {
-            const size_t top = (size_t(cy) * impostor::kLayerPx + cx + k) * 4;
-            const size_t left = (size_t(cy + k) * impostor::kLayerPx + cx) * 4;
+        const uint32_t cx = (v % impostor::kGridDim) * impostor::cell_px();
+        const uint32_t cy = (v / impostor::kGridDim) * impostor::cell_px();
+        for (uint32_t k = 0; k < impostor::cell_px(); ++k) {
+            const size_t top = (size_t(cy) * impostor::layer_px() + cx + k) * 4;
+            const size_t left = (size_t(cy + k) * impostor::layer_px() + cx) * 4;
             if (a.atlas[top + 3] != 0 || a.atlas[left + 3] != 0) border_clear = false;
         }
     }
@@ -2204,7 +2834,7 @@ static void test_impostor_bake_deterministic() {
     // Fractional coverage is what antialiases the silhouette: a hard 0/255
     // cutout would leave every covered texel at 255.
     bool any_partial = false;
-    for (size_t t = 0; t < impostor::kLayerPx * impostor::kLayerPx; ++t) {
+    for (size_t t = 0; t < impostor::layer_px() * impostor::layer_px(); ++t) {
         const uint8_t cov = a.atlas[t * 4 + 3];
         if (cov > 0 && cov < 255) { any_partial = true; break; }
     }
@@ -2219,6 +2849,98 @@ static void test_impostor_bake_deterministic() {
     impostor::ClusterImpostor c;
     CHECK(impostor::bake_cluster(0, other, triex_for(other, 3), c), "squashed bake ok");
     CHECK(c.atlas != a.atlas, "a different shape produces a different atlas");
+    printf("PASSED\n");
+}
+
+// Edge padding (impostor format v7). Every uncovered texel within kPadTexels
+// (Chebyshev) of the silhouette must carry its covered neighbours' values so a
+// runtime bilinear tap never blends against the zero-fill; every texel beyond
+// that distance must still BE the zero-fill; and coverage alpha must be 0 on
+// all of them -- the silhouette the cutout sees does not move. The fixture
+// tint is uniform, so the padded tint is an EQUALITY assertion, not a
+// tolerance: any dilution (the pale-olive canopy wash of issue 6e0c76fc) is a
+// byte mismatch here.
+static void test_impostor_atlas_padding() {
+    printf("=== test_impostor_atlas_padding ===\n");
+    std::vector<Tri> tris = sphere_tris(12, 8);
+    // The card's colour now comes from the MATERIAL, not TriEx::tint, so the
+    // fixture needs a material whose albedo is EXACTLY representable -- this
+    // assertion is a byte equality and to_u8 rounds at .5.
+    //
+    // Builtin 3 (the previous fixture material) is 0.8,0.7,0.3, and 0.7*255 is
+    // exactly 178.5: dead on the rounding boundary, so the subsample average's
+    // last-bit wobble flips covered texels between 178 and 179 and the
+    // equality fails for reasons that have nothing to do with padding. These
+    // three values are the same ones the old vertex tint carried, so the
+    // expected bytes below are unchanged and the assertion stays strict.
+    MaterialDef pad_mat{};
+    MaterialRegistryDefaultDynamicDef(&pad_mat);
+    pad_mat.albedo[0] = 0.5f; pad_mat.albedo[1] = 0.25f; pad_mat.albedo[2] = 0.75f;
+    const int pad_id = MaterialRegistryDefineDynamic(&pad_mat, "pf_pad_fixture");
+    CHECK(pad_id >= 0, "padding: fixture material defined");
+    std::vector<TriEx> ex = triex_for(tris, pad_id >= 0 ? pad_id : 3);
+    impostor::ClusterImpostor a;
+    CHECK(impostor::bake_cluster(0, tris, ex, a), "bake ok");
+    const uint32_t cell = impostor::cell_px();
+    const uint32_t edge = impostor::layer_px();
+    const size_t layer_sz = impostor::layer_bytes();
+    // View 0's cell only: its baked normals face the +z bake camera, which is
+    // what makes the "not the zero encoding" check below sound (a +z
+    // hemisphere direction can never octahedral-encode to RG == (0,0)).
+    auto shade_at = [&](uint32_t x, uint32_t y) {
+        return a.atlas.data() + (size_t(y) * edge + x) * 4;
+    };
+    auto tint_at = [&](uint32_t x, uint32_t y) {
+        return a.atlas.data() + layer_sz + (size_t(y) * edge + x) * 4;
+    };
+    // Chebyshev distance from each texel to the nearest covered texel -- the
+    // metric of an 8-neighbour dilation, so "dist <= kPadTexels" is exactly
+    // the set the padding must have filled.
+    std::vector<uint32_t> dist(size_t(cell) * cell, UINT32_MAX);
+    for (uint32_t y = 0; y < cell; ++y)
+        for (uint32_t x = 0; x < cell; ++x) {
+            if (shade_at(x, y)[3] == 0) continue;
+            for (uint32_t ty = 0; ty < cell; ++ty)
+                for (uint32_t tx = 0; tx < cell; ++tx) {
+                    const uint32_t dx = tx > x ? tx - x : x - tx;
+                    const uint32_t dy = ty > y ? ty - y : y - ty;
+                    const uint32_t d = dx > dy ? dx : dy;
+                    uint32_t& slot = dist[size_t(ty) * cell + tx];
+                    if (d < slot) slot = d;
+                }
+        }
+    // Unchanged from before the albedo switch: 0.5/0.25/0.75 -> 128/64/191,
+    // now sourced from the fixture material above instead of TriEx::tint.
+    // Alpha is 255 because a resolved material albedo writes tint.a = 1.
+    const uint8_t expect_tint[4] = {128, 64, 191, 255};
+    size_t ring = 0, beyond = 0;
+    size_t wrong_tint = 0, zero_normal = 0, alpha_grown = 0, not_zero_fill = 0;
+    for (uint32_t y = 0; y < cell; ++y)
+        for (uint32_t x = 0; x < cell; ++x) {
+            const uint32_t d = dist[size_t(y) * cell + x];
+            if (d == 0 || d == UINT32_MAX) continue;   // covered, or empty cell
+            const uint8_t* sh = shade_at(x, y);
+            const uint8_t* tn = tint_at(x, y);
+            if (sh[3] != 0) ++alpha_grown;             // silhouette must not move
+            if (d <= impostor::kPadTexels) {
+                ++ring;
+                if (std::memcmp(tn, expect_tint, 4) != 0) ++wrong_tint;
+                if (sh[0] == 0 && sh[1] == 0) ++zero_normal;
+            } else {
+                ++beyond;
+                if (sh[0] || sh[1] || sh[2] || tn[0] || tn[1] || tn[2] || tn[3])
+                    ++not_zero_fill;
+            }
+        }
+    CHECK(ring > 0, "padding: the sphere has a padding ring to check");
+    CHECK(beyond > 0, "padding: and texels beyond it (the fixture is not degenerate)");
+    CHECK(alpha_grown == 0, "padding: coverage alpha untouched, silhouette identical");
+    CHECK(wrong_tint == 0, "padding: every ring texel carries the covered tint exactly");
+    CHECK(zero_normal == 0, "padding: no ring texel keeps the zero normal encoding");
+    CHECK(not_zero_fill == 0, "padding: texels beyond kPadTexels stay zero-filled");
+    // Leave the registry as we found it: dynamic entries are per-world, and a
+    // fixture material outliving its test would shift every later test's ids.
+    MaterialRegistryResetDynamic();
     printf("PASSED\n");
 }
 
@@ -2255,6 +2977,334 @@ static void test_impostor_quad_shape() {
     printf("PASSED\n");
 }
 
+// ---------------------------------------------------------------------------
+// ELEVATION RINGS (2026-08-05, impostor_bake.h "ELEVATION ROWS").
+//
+// The atlas holds kAzimuths x kElevations views. The bake writes cell
+// (elevation, azimuth) from a direction it CONSTRUCTS; raster.vert picks that
+// same cell from a direction it MEASURES, by inverting the construction with
+// atan2/asin. If those two ever stop being inverses, every impostor samples a
+// neighbouring view — which on screen reads as a rendering bug and localises
+// nowhere near the arithmetic. The shader cannot be unit-tested from here, so
+// this asserts the property the shader's formula stands on: the inverse
+// recovers the index for every view in the atlas.
+static void test_impostor_view_index_inverse() {
+    printf("=== test_impostor_view_index_inverse ===\n");
+
+    bool all_round_trip = true;
+    uint32_t worst_view = 0;
+    for (uint32_t view = 0; view < impostor::kViews; ++view) {
+        const uint32_t az_i = view % impostor::kAzimuths;
+        const uint32_t el_i = view / impostor::kAzimuths;
+        // Exactly impostor_bake.cpp's construction.
+        const float angle = 6.28318530717958647692f *
+                            static_cast<float>(az_i) /
+                            static_cast<float>(impostor::kAzimuths);
+        const float elev = static_cast<float>(el_i) * impostor::kElevationStep;
+        const float ce = std::cos(elev), se = std::sin(elev);
+        const float vx = std::sin(angle) * ce, vy = se, vz = std::cos(angle) * ce;
+
+        // Exactly raster.vert's inverse.
+        float azimuth = std::atan2(vx, vz);
+        const float kTwoPi = 6.28318530717958647692f;
+        if (azimuth < 0.0f) azimuth += kTwoPi;
+        const uint32_t got_az =
+            static_cast<uint32_t>(std::floor(azimuth / kTwoPi *
+                                             static_cast<float>(impostor::kAzimuths) + 0.5f)) %
+            impostor::kAzimuths;
+        const float elevation = std::asin(std::fmax(-1.0f, std::fmin(1.0f, vy)));
+        const float ring = std::floor(elevation / impostor::kElevationStep + 0.5f);
+        const uint32_t got_el = static_cast<uint32_t>(
+            std::fmax(0.0f, std::fmin(ring, static_cast<float>(impostor::kElevations - 1))));
+
+        if (impostor::view_index(got_az, got_el) != view) {
+            all_round_trip = false;
+            worst_view = view;
+        }
+    }
+    CHECK(all_round_trip, "every baked view direction recovers its own view index");
+    if (!all_round_trip) printf("  first mismatch at view %u\n", worst_view);
+
+    // A camera outside the baked elevation range CLAMPS to the nearest ring
+    // rather than wrapping into a view from the other side. Straight down is
+    // the case that matters — it is where a flying camera ends up.
+    {
+        auto ring_for = [](float elev_rad) {
+            const float r = std::floor(elev_rad / impostor::kElevationStep + 0.5f);
+            return static_cast<uint32_t>(
+                std::fmax(0.0f, std::fmin(r, static_cast<float>(impostor::kElevations - 1))));
+        };
+        const float kDeg = 3.14159265358979f / 180.0f;
+        CHECK(ring_for(-45.0f * kDeg) == 0, "below the equator clamps to ring 0");
+        CHECK(ring_for(14.0f * kDeg) == 0, "just under the first boundary stays ring 0");
+        CHECK(ring_for(16.0f * kDeg) == 1, "just over it steps to ring 1");
+        CHECK(ring_for(44.0f * kDeg) == 1, "just under the second boundary stays ring 1");
+        CHECK(ring_for(46.0f * kDeg) == 2, "just over it steps to ring 2");
+        CHECK(ring_for(90.0f * kDeg) == impostor::kElevations - 1,
+              "straight down clamps to the top ring, never wraps");
+    }
+    printf("PASSED\n");
+}
+
+// The rings have to DEPICT something different, or they are 48 copies of one
+// image at three times the bake cost. A sphere cannot show this — it looks
+// identical from every elevation by construction — so the fixture is a cone,
+// which presents a triangle from the side and a disc from above.
+static void test_impostor_elevation_rings_differ() {
+    printf("=== test_impostor_elevation_rings_differ ===\n");
+
+    std::vector<Tri> cone;
+    {
+        const int segs = 24;
+        const float h = 1.0f, r = 0.6f;
+        const float3 apex = make_float3(0.0f, h, 0.0f);
+        const float3 base_c = make_float3(0.0f, -h, 0.0f);
+        for (int s = 0; s < segs; ++s) {
+            const float a0 = 6.2831853f * float(s) / float(segs);
+            const float a1 = 6.2831853f * float(s + 1) / float(segs);
+            const float3 p0 = make_float3(r * std::cos(a0), -h, r * std::sin(a0));
+            const float3 p1 = make_float3(r * std::cos(a1), -h, r * std::sin(a1));
+            cone.push_back(make_tri(apex, p0, p1));      // side
+            cone.push_back(make_tri(base_c, p1, p0));    // cap
+        }
+    }
+    std::vector<TriEx> ex = triex_for(cone, 4);
+    impostor::ClusterImpostor imp;
+    CHECK(impostor::bake_cluster(0u, cone, ex, imp), "cone impostor bakes");
+    if (imp.atlas.size() != impostor::atlas_bytes()) { printf("FAILED\n"); return; }
+
+    // Coverage per ring, over the shade layer's alpha. A cone seen edge-on
+    // covers a triangle; seen from 60 degrees up it covers more of its cell,
+    // because the circular base turns toward the camera.
+    auto ring_coverage = [&](uint32_t el_i) {
+        size_t sum = 0;
+        for (uint32_t az = 0; az < impostor::kAzimuths; ++az) {
+            const uint32_t v = impostor::view_index(az, el_i);
+            const uint32_t cx = (v % impostor::kGridDim) * impostor::cell_px();
+            const uint32_t cy = (v / impostor::kGridDim) * impostor::cell_px();
+            for (uint32_t y = 0; y < impostor::cell_px(); ++y)
+                for (uint32_t x = 0; x < impostor::cell_px(); ++x)
+                    sum += imp.atlas[(size_t(cy + y) * impostor::layer_px() + cx + x) * 4 + 3];
+        }
+        return sum;
+    };
+    const size_t c0 = ring_coverage(0);
+    const size_t c2 = ring_coverage(impostor::kElevations - 1);
+    CHECK(c0 > 0 && c2 > 0, "both the equator and the top ring depict something");
+    CHECK(c0 != c2,
+          "the top ring is a different image from the equator (rings are not copies)");
+
+    // And the NORMALS differ, which is the half of this that fixes the
+    // brightness divergence: an equator cell's normals point sideways, so a
+    // card tilted toward an overhead camera would shade against the wrong
+    // hemisphere if it kept them.
+    auto ring_normal_sum = [&](uint32_t el_i) {
+        long long acc = 0;
+        for (uint32_t az = 0; az < impostor::kAzimuths; ++az) {
+            const uint32_t v = impostor::view_index(az, el_i);
+            const uint32_t cx = (v % impostor::kGridDim) * impostor::cell_px();
+            const uint32_t cy = (v / impostor::kGridDim) * impostor::cell_px();
+            for (uint32_t y = 0; y < impostor::cell_px(); ++y)
+                for (uint32_t x = 0; x < impostor::cell_px(); ++x) {
+                    const size_t o = (size_t(cy + y) * impostor::layer_px() + cx + x) * 4;
+                    if (imp.atlas[o + 3] == 0) continue;
+                    acc += imp.atlas[o] + imp.atlas[o + 1];
+                }
+        }
+        return acc;
+    };
+    CHECK(ring_normal_sum(0) != ring_normal_sum(impostor::kElevations - 1),
+          "the rings carry different surface normals, not just different silhouettes");
+
+    // Byte neutrality is the whole reason this was affordable; assert it here
+    // too so a future cell-size edit that quietly grows the atlas is caught by
+    // a test and not only by a static_assert someone can delete.
+    //
+    // This used to pin a literal byte count (131072, then 524288). It cannot
+    // any more: the cell resolution is a runtime setting. So it pins the
+    // RELATIONSHIP instead, which is the thing that would actually be wrong if
+    // the layout drifted -- the atlas is two RGBA8 layers of an 8x8 grid of
+    // cell_px cells, whatever cell_px currently is. main() pins cell_px itself
+    // for this suite.
+    const size_t expect_atlas =
+        size_t(impostor::kGridDim) * impostor::cell_px() *
+        impostor::kGridDim * impostor::cell_px() * 4u * 2u;
+    CHECK(imp.atlas.size() == impostor::atlas_bytes() &&
+              impostor::atlas_bytes() == expect_atlas,
+          "the atlas is two RGBA8 layers of an 8x8 grid of cell_px cells");
+    printf("PASSED\n");
+}
+
+// The cell resolution is a SETTING, and every gate that keeps a stale atlas
+// off the screen has to notice when it moves. This bakes the same mesh at two
+// resolutions inside ONE process (which is exactly why impostor::cell_px()
+// caches nothing in a static) and proves four things, each of which would let
+// a wrong-resolution atlas be drawn if it silently stopped holding.
+static void test_impostor_cell_px_parametrized() {
+    printf("=== test_impostor_cell_px_parametrized ===\n");
+    std::vector<Tri> tris = sphere_tris(12, 8);
+    std::vector<TriEx> ex = triex_for(tris, 2);
+
+    // Two SMALL sizes on purpose: the bake is O(cell_px^2) per view, so
+    // running this at the 128 px default would cost 16x what the whole rest of
+    // the suite does and prove nothing extra.
+    pf_set_env("MATTER_IMPOSTOR_CELL_PX", "16");
+    const uint32_t cell_a = impostor::cell_px();
+    const size_t bytes_a = impostor::atlas_bytes();
+    const float band_a = impostor::guard_band();
+    const uint64_t ladder_a = part_flatten::active_ladder_shape_digest();
+    impostor::PartImpostor part_a;
+    part_a.clusters.resize(1);
+    CHECK(impostor::bake_cluster(0, tris, ex, part_a.clusters[0]), "bake at 16 px");
+    uint64_t ha = impostor::depicts_hash_begin();
+    impostor::depicts_hash_add_cluster(ha, 0, tris, ex);
+    const uint64_t depicts_a = impostor::depicts_hash_finish(ha);
+
+    pf_set_env("MATTER_IMPOSTOR_CELL_PX", "32");
+    const uint32_t cell_b = impostor::cell_px();
+    const size_t bytes_b = impostor::atlas_bytes();
+    const float band_b = impostor::guard_band();
+    const uint64_t ladder_b = part_flatten::active_ladder_shape_digest();
+    impostor::PartImpostor part_b;
+    part_b.clusters.resize(1);
+    CHECK(impostor::bake_cluster(0, tris, ex, part_b.clusters[0]), "bake at 32 px");
+    uint64_t hb = impostor::depicts_hash_begin();
+    impostor::depicts_hash_add_cluster(hb, 0, tris, ex);
+    const uint64_t depicts_b = impostor::depicts_hash_finish(hb);
+
+    // 1. The setting reaches the bake at all.
+    CHECK(cell_a == 16u && cell_b == 32u, "the env value reaches cell_px()");
+    CHECK(bytes_b == bytes_a * 4u, "atlas bytes scale as cell_px^2");
+    CHECK(part_a.clusters[0].atlas.size() == bytes_a &&
+              part_b.clusters[0].atlas.size() == bytes_b,
+          "each bake produced its own resolution's atlas");
+
+    // 2. The guard band tracks it, holding the margin CONSTANT in texels --
+    //    the invariant a fixed band silently broke every time the cell moved.
+    const float margin_a = (0.5f - 0.5f / band_a) * float(cell_a);
+    const float margin_b = (0.5f - 0.5f / band_b) * float(cell_b);
+    CHECK(band_a > band_b, "a smaller cell needs a wider band");
+    CHECK(margin_a > 1.0f && std::fabs(margin_a - margin_b) < 0.01f,
+          "the guard margin is the same texel count at both resolutions");
+
+    // 3. Both cache identities move, so nothing baked at one size can be
+    //    served at the other: the atlas (depicts) and the FLAT (ladder shape,
+    //    which matters because the band above changes the quad's half_extent).
+    CHECK(depicts_a != depicts_b, "depicts-hash separates the two resolutions");
+    CHECK(ladder_a != ladder_b, "ladder-shape digest separates them too");
+
+    // 4. And the sidecar gate actually rejects, rather than mis-decoding an
+    //    atlas of the wrong size. Written at 32 px, read back at 16 px.
+    const uint64_t part_hash = 0x5150C0DE12345678ull;
+    const std::string path =
+        std::string(kCacheRoot) + "/" + impostor::cache_path_impostor(part_hash);
+    CHECK(impostor::save(path, part_hash, depicts_b, part_b),
+          "32 px sidecar written");
+    pf_set_env("MATTER_IMPOSTOR_CELL_PX", "16");
+    impostor::PartImpostor out;
+    impostor::LoadFailure fail = impostor::LoadFailure::None;
+    std::string reason;
+    const bool loaded = impostor::load(path, part_hash, depicts_b, out, &fail,
+                                       &reason);
+    CHECK(!loaded, "a 32 px atlas does not load into a 16 px engine");
+    CHECK(fail == impostor::LoadFailure::Version ||
+              fail == impostor::LoadFailure::Stale,
+          "and it is rejected as a format/staleness mismatch, not swallowed");
+    CHECK(out.clusters.empty(), "nothing is handed back on rejection");
+
+    // Restore the suite's pinned resolution for whatever runs after this.
+    pf_set_env("MATTER_IMPOSTOR_CELL_PX", "32");
+    printf("PASSED\n");
+}
+
+// The card's tint layer must carry the MATERIAL REGISTRY's albedo -- the same
+// number vt_composite.comp uses for a slotless material -- and NOT TriEx::tint.
+// Those are two independently authored colours; before this, a mesh rung that
+// reached its VT page and the card that replaces it disagreed by whatever the
+// content happened to author (~3x on world_demo's conifers).
+//
+// Also gates the IDENTITY: baking a registry value in means recolouring that
+// material has to invalidate the card, or every existing atlas keeps the old
+// colour while reporting Fresh.
+static void test_impostor_bakes_material_albedo() {
+    printf("=== test_impostor_bakes_material_albedo ===\n");
+    const int kMat = 6;
+    std::vector<Tri> tris = sphere_tris(12, 8);
+    std::vector<TriEx> ex = triex_for(tris, kMat);   // fixture tint 0.5,0.25,0.75
+
+    impostor::ClusterImpostor imp;
+    CHECK(impostor::bake_cluster(0, tris, ex, imp), "bake ok");
+
+    const MaterialDef* def = MaterialRegistryGet(kMat);
+    CHECK(def != nullptr, "registry has the fixture's material");
+
+    // First well-covered texel. Coverage lives in the SHADE layer's alpha;
+    // the tint layer is the second layer at the same texel offset.
+    const size_t layer = impostor::layer_bytes();
+    const std::vector<uint8_t>& a = imp.atlas;
+    CHECK(a.size() >= layer * 2, "atlas has both layers");
+    size_t found = SIZE_MAX;
+    for (size_t t = 0; t + 3 < layer; t += 4)
+        if (a[t + 3] > 200u) { found = t; break; }
+    CHECK(found != SIZE_MAX, "the bake covered at least one texel");
+
+    if (found != SIZE_MAX) {
+        const auto u8 = [](float v) {
+            return int(v <= 0.f ? 0.f : (v >= 1.f ? 255.f : v * 255.f + 0.5f));
+        };
+        const int got[3] = {a[layer + found + 0], a[layer + found + 1],
+                            a[layer + found + 2]};
+        const int want[3] = {u8(def->albedo[0]), u8(def->albedo[1]),
+                             u8(def->albedo[2])};
+        // +-2 absorbs the supersample average and the pad dilation; the claim
+        // is "this is the material's colour", not a bit-exact round trip.
+        CHECK(std::abs(got[0] - want[0]) <= 2 &&
+              std::abs(got[1] - want[1]) <= 2 &&
+              std::abs(got[2] - want[2]) <= 2,
+              "the tint layer carries the MATERIAL's registry albedo");
+        // And is demonstrably NOT the vertex tint the fixture authored, which
+        // is what it used to be. Without this the check above would pass on a
+        // material whose albedo happened to resemble the tint.
+        const int tint_u8[3] = {u8(0.5f), u8(0.25f), u8(0.75f)};
+        CHECK(std::abs(got[0] - tint_u8[0]) > 2 ||
+              std::abs(got[1] - tint_u8[1]) > 2 ||
+              std::abs(got[2] - tint_u8[2]) > 2,
+              "and NOT TriEx::tint (the pre-fix behaviour)");
+        CHECK(a[layer + found + 3] >= 253u,
+              "tint alpha is 1, so resolveBaseColor returns these bytes as-is");
+    }
+
+    // ---- identity failability -------------------------------------------
+    // Same geometry, same material id, DIFFERENT registry albedo => different
+    // depicts hash. Recolouring a material must invalidate the cards that
+    // depict it; if this ever stops firing, stale cards validate as fresh.
+    MaterialDef dyn{};
+    MaterialRegistryDefaultDynamicDef(&dyn);
+    dyn.albedo[0] = 0.11f; dyn.albedo[1] = 0.22f; dyn.albedo[2] = 0.33f;
+    const int id_a = MaterialRegistryDefineDynamic(&dyn, "pf_albedo_probe");
+    CHECK(id_a >= 0, "dynamic material defined");
+    if (id_a >= 0) {
+        std::vector<TriEx> dex = triex_for(tris, id_a);
+        uint64_t h1 = impostor::depicts_hash_begin();
+        impostor::depicts_hash_add_cluster(h1, 0, tris, dex);
+        const uint64_t depicts_a = impostor::depicts_hash_finish(h1);
+
+        MaterialRegistryResetDynamic();
+        dyn.albedo[0] = 0.91f; dyn.albedo[1] = 0.92f; dyn.albedo[2] = 0.93f;
+        const int id_b = MaterialRegistryDefineDynamic(&dyn, "pf_albedo_probe");
+        CHECK(id_b == id_a, "the recoloured material reuses its id");
+        uint64_t h2 = impostor::depicts_hash_begin();
+        impostor::depicts_hash_add_cluster(h2, 0, tris, dex);
+        const uint64_t depicts_b = impostor::depicts_hash_finish(h2);
+
+        CHECK(depicts_a != depicts_b,
+              "recolouring a material changes the depicts hash, so its cards "
+              "rebake instead of validating stale");
+        MaterialRegistryResetDynamic();
+    }
+    printf("PASSED\n");
+}
+
 static void test_impostor_sidecar_failability() {
     printf("=== test_impostor_sidecar_failability ===\n");
     std::vector<Tri> tris = sphere_tris(12, 8);
@@ -2264,7 +3314,7 @@ static void test_impostor_sidecar_failability() {
     CHECK(impostor::bake_cluster(0, tris, ex, part.clusters[0]), "bake ok");
 
     uint64_t h = impostor::depicts_hash_begin();
-    impostor::depicts_hash_add_cluster(h, 0, tris);
+    impostor::depicts_hash_add_cluster(h, 0, tris, ex);
     const uint64_t depicts = impostor::depicts_hash_finish(h);
     const uint64_t part_hash = 0xABCDEF0123456789ull;
     const std::string path =
@@ -2437,10 +3487,18 @@ static void test_flatten_appends_impostor_rung() {
             !(last->tri_extra[0].uv0.x >= impostor::kQuadMarker))
             continue;
         ++impostor_rungs;
-        const auto& src = blas.get_entries()[lods[lods.size() - 2].blas_indices[0]];
-        terminal_mesh_tris = src->triangles.size();
+        // TWO DIFFERENT RUNGS, deliberately:
+        //   - the eligibility floor is about the rung being REPLACED, so it
+        //     still reads lods[size-2];
+        //   - what the atlas DEPICTS is rep 0, so the depicts-hash folds
+        //     lods[0]. Conflating them is what made the first run of this
+        //     change fail three tests at once.
+        const auto& replaced = blas.get_entries()[lods[lods.size() - 2].blas_indices[0]];
+        terminal_mesh_tris = replaced->triangles.size();
+        const auto& depicted = blas.get_entries()[lods[0].blas_indices[0]];
         impostor::depicts_hash_add_cluster(depicts, static_cast<uint32_t>(ci),
-                                           src->triangles);
+                                           depicted->triangles,
+                                           depicted->tri_extra);
         // The rung the impostor takes over from now has a REAL switch
         // threshold; before M2.5 the terminal rung threshold was always 0.
         CHECK(lods[lods.size() - 2].screen_size_threshold > 0.0f,
@@ -2471,10 +3529,21 @@ int main() {
     // Unbuffered: an abort deep in a bake must not swallow the log that
     // says which test was running when it happened.
     setvbuf(stdout, nullptr, _IONBF, 0);
+    // PIN THE CELL RESOLUTION for this suite. The impostor bake is O(cell_px^2)
+    // per view, so inheriting the 128 px default would make every impostor test
+    // here 16x slower -- this suite already runs for minutes -- while testing
+    // nothing the 32 px path does not. test_impostor_cell_px_parametrized is
+    // where the setting itself is exercised, and it restores this value.
+    pf_set_env("MATTER_IMPOSTOR_CELL_PX", "32");
     if (!write_fixtures()) {
         printf("FAIL: could not write fixture parts under %s\n", kCacheRoot);
         return 1;
     }
+    test_impostor_cell_px_parametrized();
+    // Early on purpose: the padding assertions are the cheapest tripwire for
+    // an atlas-content regression, and a broken bake should say so before the
+    // suite spends minutes on flattens.
+    test_impostor_atlas_padding();
     test_flatten_merge();
     test_flatten_deterministic();
     test_flatten_missing_part();
@@ -2496,6 +3565,8 @@ int main() {
     test_ratio2_ladder_shape();
     test_budget_ladder_assembly();
     test_authored_ladder_switch_distances();
+    test_authored_ladder_impostor_terminal();
+    test_impostor_source_and_distance();
     test_w5_plan_does_not_drive_the_ladder();
     test_instance_boundary_records_refs();
     test_generous_budget_inlines();
@@ -2512,9 +3583,13 @@ int main() {
 
     test_impostor_eligibility();          // M2.5 terminal impostor rep
     test_impostor_bake_deterministic();
+    test_impostor_view_index_inverse();
+    test_impostor_elevation_rings_differ();
     test_impostor_quad_shape();
+    test_impostor_bakes_material_albedo();
     test_impostor_sidecar_failability();
     test_flatten_appends_impostor_rung();
+    test_mesh_rung_cap_and_stale_rejection();  // the cap + its staleness gate
 
     if (g_failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
     printf("part_flatten_tests: %d FAILURE(S)\n", g_failures);

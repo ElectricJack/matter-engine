@@ -1162,6 +1162,64 @@ static void test_eval_lods_authored_ladder() {
         CHECK(M[2].has_at && M[2].at == 60.0, "mixed rep 2: distance, no generator");
     }
 
+    // §3.4: the explicit TERMINAL impostor. Its `at` is the impostor distance
+    // -- the one number that says where geometry stops and the billboard
+    // starts -- and it is readable off the table without building anything,
+    // which is what M6.5's shadow hand-off needs from it.
+    const char* term =
+        "class I extends Part { static lods = ["
+        "{at:0}, {at:18, gen:LOD.decimate({error:0.05})}, LOD.impostor({at:140})];"
+        " build(p){} }\n";
+    auto I = host.eval_lods(term);
+    CHECK(I.size() == 3, "impostor ladder: three reps");
+    if (I.size() == 3) {
+        CHECK(!I[0].impostor && !I[1].impostor, "mesh reps are not impostors");
+        CHECK(I[2].impostor, "terminal rep is the impostor");
+        CHECK(I[2].has_at && I[2].at == 140.0, "impostor distance is authored");
+        CHECK(I[2].gen.empty() && !I[2].has_params,
+              "impostor carries no geometry recipe");
+    }
+
+    // An impostor is never implied. A ladder that declares none stays mesh all
+    // the way down, and `impostor: false` says so explicitly.
+    const char* no_imp =
+        "class N extends Part { static lods = [{at:0},{at:20,impostor:false}];"
+        " build(p){} }\n";
+    auto N = host.eval_lods(no_imp);
+    CHECK(N.size() == 2 && !N[0].impostor && !N[1].impostor,
+          "impostor:false reads as no impostor");
+
+    // Fail-closed rules for the terminal, each discarding the whole block.
+    struct ICase { const char* src; const char* why; };
+    const ICase bad_imp[] = {
+        {"class A extends Part { static lods = [{at:0},LOD.impostor({at:50}),{at:90}];"
+         " build(p){} }",
+         "a mesh rep after the impostor -> empty"},
+        {"class A extends Part { static lods = [{at:0},LOD.impostor({at:50}),"
+         "LOD.impostor({at:90})]; build(p){} }",
+         "two impostors -> empty"},
+        {"class A extends Part { static lods = [LOD.impostor({at:0})]; build(p){} }",
+         "impostor with no mesh rung to depict -> empty"},
+        {"class A extends Part { static lods = [{at:0},"
+         "{at:50,impostor:true,gen:'decimate',error:1}]; build(p){} }",
+         "impostor with a generator -> empty"},
+        {"class A extends Part { static lods = [{at:0},"
+         "{at:50,impostor:true,params:{seed:1}}]; build(p){} }",
+         "impostor with params -> empty"},
+        {"class A extends Part { static lods = [{at:0},"
+         "{at:50,impostor:true,exclude:['Trunk']}]; build(p){} }",
+         "impostor with exclude -> empty"},
+        // `views` is in the design doc's sketch but kViews is a format
+        // constant. Rejecting is the honest answer; accepting-and-ignoring
+        // would read exactly like the feature had been built.
+        {"class A extends Part { static lods = [{at:0},LOD.impostor({at:50,views:24})];"
+         " build(p){} }",
+         "views on an impostor -> empty (kViews is a format constant)"},
+        {"class A extends Part { static lods = [{at:0},{at:50,impostor:1}]; build(p){} }",
+         "impostor not a boolean -> empty"},
+    };
+    for (const auto& c : bad_imp) CHECK(host.eval_lods(c.src).empty(), c.why);
+
     // Fail-closed, one violation per source. Each discards the WHOLE block.
     struct Case { const char* src; const char* why; };
     const Case bad[] = {

@@ -52,6 +52,52 @@ struct ChartAtlasRung {
     std::vector<uint32_t>   tri_order;         // triangle indices grouped by chart
 };
 
+// M6 (texture unification): the identity of a PARAMETERISATION — the mapping
+// from a surface point to an atlas texel — folded from the table's content.
+//
+// VtResidency keys a variant layer on this instead of on the rung, which is
+// what lets every rung of a part share one layer (and therefore one set of
+// resident pages) when the bake gave them one table. Deriving it from CONTENT
+// rather than from a flag is what makes that self-correcting: a unified ladder
+// folds to one value and collapses; a per-rung ladder folds to different
+// values and stays split, exactly as before. There is nothing to keep in sync
+// with the bake, and no way for a half-unified part to alias two different
+// parameterisations onto one layer.
+//
+// `tri_order` is DELIBERATELY EXCLUDED. It indexes one rung's own triangles,
+// so folding it would give every rung a different id and defeat the whole
+// purpose. What has to match is the surface-point-to-texel mapping, which is
+// exactly the fields below.
+inline uint64_t parameterisation_id(const ChartAtlasRung& atlas) {
+    auto mix = [](uint64_t h, uint64_t v) {
+        h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+        return h;
+    };
+    auto mixf = [&](uint64_t h, float f) {
+        uint32_t bits;
+        std::memcpy(&bits, &f, sizeof bits);
+        // -0.0f and +0.0f are the same parameterisation; normalise so two
+        // tables differing only in a zero's sign bit still collapse.
+        if (bits == 0x80000000u) bits = 0u;
+        return mix(h, bits);
+    };
+    uint64_t h = 0xcbf29ce484222325ull;
+    h = mix(h, atlas.atlas_w);
+    h = mix(h, atlas.atlas_h);
+    h = mix(h, atlas.charts.size());
+    for (const ChartEntry& c : atlas.charts) {
+        for (int i = 0; i < 3; ++i) {
+            h = mixf(h, c.origin[i]);
+            h = mixf(h, c.tangent[i]);
+            h = mixf(h, c.bitangent[i]);
+        }
+        h = mix(h, c.rect_x); h = mix(h, c.rect_y);
+        h = mix(h, c.rect_w); h = mix(h, c.rect_h);
+        h = mixf(h, c.texels_per_meter);
+    }
+    return h;
+}
+
 // ---------------------------------------------------------------------------
 // Serialization (used by the .part "CHRT" trailer and by tests).
 // Layout (little-endian, after the caller's own tag/size framing):

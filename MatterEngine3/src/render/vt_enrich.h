@@ -98,7 +98,6 @@ class VtEnricher final : public VtPageEnricher {
     static constexpr uint32_t kMaxRequestsPerBatch = 16;
     // Distinct enrich() batches that may be in flight on the GPU at once.
     static constexpr uint32_t kMaxBatchesInFlight = 4;
-
     // nullptr + err when ray tracing is unavailable, the embedded SPIR-V is
     // missing, or any resource creation fails. Callers treat that as "tier-2 is
     // off": tier-1 pages are already correct, enrichment is purely additive.

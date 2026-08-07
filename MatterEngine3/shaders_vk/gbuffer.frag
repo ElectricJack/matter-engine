@@ -53,6 +53,7 @@ layout(location = 8) flat in uint in_vt_slot;
 // the shipped world-XZ addressing.
 layout(location = 9) in vec4 in_warp_uv_scales;
 layout(location = 10) in vec3 in_warp_tangent;
+layout(location = 14) in vec4 in_impostor_parallax;
 // LOD debug view: the rung cull.comp selected for this draw. Location 11, not
 // the 9 the source branch used -- 9/10 are the warp field here.
 layout(location = 11) flat in uint in_selected_lod;
@@ -156,6 +157,10 @@ void main() {
     // parameterisation to march and no chart table to sample, so both would
     // read garbage through a uv channel this rung repurposed.
     const bool is_impostor = in_surface.x > kImpostorMarker;
+    // Set by the impostor branch and applied after frag_depth is initialised.
+    // Negative means "no impostor depth", which is how a non-impostor draw and
+    // a degenerate projection both opt out.
+    float impostor_frag_depth = -1.0;
     if (is_impostor) {
         const uint slot = uint(in_tint.x + 0.5) | (uint(in_tint.y + 0.5) << 8);
         const uint view = uint(in_tint.z + 0.5);
@@ -163,12 +168,47 @@ void main() {
                                float(view / IMPOSTOR_GRID_DIM));
         // Clamp inside the cell so a bilinear tap at the quad's edge cannot
         // reach the neighbouring view even before the bake's guard band.
-        const vec2 local = clamp(in_surface.yz, 0.0, 1.0);
+        // ---- PARALLAX -------------------------------------------------
+        //
+        // The cell was baked from a QUANTISED direction; the card faces the
+        // real eye. raster.vert hands over the cell-uv displacement per unit
+        // of stored depth, so a surface d behind the card is found at
+        // base_uv + parallax * d. Two taps: one to read the depth under the
+        // fragment, one to re-read it at the corrected position. That second
+        // step is what stops a silhouette from smearing when the first sample
+        // lands on background -- one step alone is visibly wrong at grazing
+        // angles, and a full march costs 8-32 taps for a rung whose entire
+        // purpose is to be cheap.
+        //
+        // CLAMPED TO THE CELL, and that clamp is load-bearing: cells are
+        // packed edge to edge with only a two-texel guard band, while a
+        // parallax offset can reach ~20 % of a cell at the widest intra-cell
+        // angle. Unclamped it would sample the neighbouring azimuth outright.
+        // The cost of clamping is a smear where the offset would have left the
+        // cell, which is bounded and local; the cost of not clamping is
+        // another view's geometry welded to this one.
+        const vec2 base_uv = clamp(in_surface.yz, 0.0, 1.0);
+        const vec2 parallax = in_impostor_parallax.xy;
+        vec2 local = base_uv;
+        float probe = texture(impostorAtlas,
+                              vec3((cell + local) / float(IMPOSTOR_GRID_DIM),
+                                   float(slot * 2u))).b;
+        local = clamp(base_uv + parallax * probe, 0.0, 1.0);
+        probe = texture(impostorAtlas,
+                        vec3((cell + local) / float(IMPOSTOR_GRID_DIM),
+                             float(slot * 2u))).b;
+        local = clamp(base_uv + parallax * probe, 0.0, 1.0);
         const vec2 uv = (cell + local) / float(IMPOSTOR_GRID_DIM);
         const vec4 shade = texture(impostorAtlas, vec3(uv, float(slot * 2u)));
         // Alpha cutout. gl_FragDepth is already written by this shader, so
         // early depth WRITE was off regardless; discard costs the depth TEST
         // nothing extra here.
+        //
+        // kImpostorAlphaCutout is 0.25, not the customary 0.5, and
+        // impostor_common.glsl carries the measurement: at a 16 px cell a 0.5
+        // cutout erased the trunk and crown fringe of a spruce and drew 53 %
+        // of its height, which is what made tall trees appear to SHRINK at the
+        // switch. Read that comment before touching this number.
         //
         // The WIREFRAME view is exempt, and that exemption is a diagnostic
         // rather than a nicety: wireframe exists to answer "what geometry is
@@ -177,10 +217,35 @@ void main() {
         // quad's edges visible under wireframe separates "the tier did not
         // draw" from "the tier drew nothing" -- two failures that look
         // identical on screen and have nothing else in common.
-        if (shade.a < 0.5 && debug_push.wireframe_enabled == 0u) discard;
+        if (shade.a < kImpostorAlphaCutout &&
+            debug_push.wireframe_enabled == 0u) discard;
         const vec4 baked_tint = texture(impostorAtlas, vec3(uv, float(slot * 2u + 1u)));
         base_color = resolveBaseColor(material, baked_tint);
-        ao = clamp(shade.b, 0.0, 1.0);
+        // The B channel is DEPTH now, not AO (it was a constant 1.0 for every
+        // DSL-built part). Leaving `ao` at the vertex default keeps ambient
+        // exactly where it was rather than multiplying it by a depth.
+        ao = 1.0;
+
+        // ---- CONSERVATIVE DEPTH ----------------------------------------
+        //
+        // Every impostor pixel used to report the card's plane. That single
+        // fact is why a shadow ray from one started INSIDE the volume, why
+        // trunks did not meet the ground, and why anything depth-derived
+        // treated a tree as a sheet. The card now sits at the near bound and
+        // this pushes each pixel back to the surface it actually depicts.
+        //
+        // Only ever backwards: the depth is measured from the near bound the
+        // card sits on, so this satisfies `layout(depth_less)` by
+        // construction rather than by clamping.
+        const vec3 view_ray = in_world_pos - frame.camera_eye_pixel_budget.xyz;
+        const float view_len = length(view_ray);
+        if (view_len > 1e-5) {
+            const vec3 surface_world =
+                in_world_pos + (view_ray / view_len) *
+                                   (shade.b * in_impostor_parallax.z);
+            const vec4 clip = frame.world_to_clip * vec4(surface_world, 1.0);
+            if (clip.w > 0.0) impostor_frag_depth = clip.z / clip.w;
+        }
         // Octahedral decode, the exact inverse of impostor_bake.cpp's encode.
         vec2 e = shade.rg * 2.0 - 1.0;
         vec3 n = vec3(e.xy, 1.0 - abs(e.x) - abs(e.y));
@@ -199,6 +264,11 @@ void main() {
     // Every path through main() writes this exactly once, at the bottom, so
     // the non-tileset branch is covered too.
     float frag_depth = gl_FragCoord.z;
+    // Applied here rather than inside the branch above: `frag_depth` does not
+    // exist yet there, and every path through main() writes gl_FragDepth from
+    // this one variable at the bottom.
+    if (is_impostor && impostor_frag_depth >= 0.0)
+        frag_depth = impostor_frag_depth;
 
     // World-position derivatives, computed ONCE at quad-uniform scope.
     //
@@ -1020,6 +1090,26 @@ void main() {
     out_velocity = in_velocity_valid.z > 0.5
                        ? in_velocity_valid.xy
                        : vec2(0.0);
+    // Identity attachment. .x is the material index PLUS the impostor bit
+    // (impostor_common.glsl, IMPOSTOR_IDENTITY_BIT): the only per-pixel signal
+    // in the frame that says "this fragment is a flat card, not a surface".
+    // rt_shadow.rgen forces sun visibility to 1 on it -- a shadow painted
+    // across a billboard reads as a stripe on a poster, and the card's
+    // reconstructed position is inside the volume it depicts, so the ray it
+    // would trace starts buried anyway.
+    //
+    // The bit is free: .x is R32_UINT holding an index bounded by the material
+    // count (frame.counts.z, thousands), so nothing legitimate reaches bit 31.
+    // Every other reader masks it back off -- see impostor_identity_material()
+    // and the list of call sites in impostor_common.glsl.
+    //
+    // The one gap is an INVALID index (raster.vert clears out_material_valid
+    // when in_material_index >= counts.z), which may carry bit 31 already: the
+    // OR is then a no-op and that fragment keeps the pre-fix behaviour. That is
+    // a fragment with no material at all, so there is nothing to lose and no
+    // new failure mode -- every reader fails its bounds test either way.
     out_material_instance =
-        uvec2(in_material_index, in_instance_token);
+        uvec2(in_material_index |
+                  (is_impostor ? IMPOSTOR_IDENTITY_BIT : 0u),
+              in_instance_token);
 }

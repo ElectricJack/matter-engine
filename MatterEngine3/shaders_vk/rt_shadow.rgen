@@ -13,6 +13,9 @@
 #define TILESET_TEX_BINDING 15
 #define TILESET_PARAMS_BINDING 16
 #include "tileset_common.glsl"
+// IMPOSTOR_IDENTITY_BIT + the mask helpers. This shader is the one that ACTS
+// on the bit; everyone else only has to mask it off.
+#include "impostor_common.glsl"
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 layout(set = 0, binding = 1) uniform sampler2D depth_texture;
@@ -106,12 +109,34 @@ void main() {
     // introduce a sideways leak. Clamping sun.y bounds the lift at grazing
     // sun angles instead of blowing up toward the horizon.
     uvec2 identity = texelFetch(identity_texture, pixel, 0).rg;
+    // The 2r ray skip is GONE, and so is the reason for it.
+    //
+    // It existed because an impostor pixel reported the card's plane through
+    // the object's CENTRE, so the position reconstructed here sat inside the
+    // volume and the ray hit the object's own mesh -- 48.5 % lit against the
+    // mesh rung's 100 %. Skipping 2r cleared that, at the price of skipping
+    // every genuine occluder within 2r as well, including the object itself.
+    // That is what left impostors with no self-shadowing at all while mesh
+    // trees self-shadowed normally, which read on screen as "the meshes are
+    // too dark".
+    //
+    // gbuffer.frag now writes the DEPICTED SURFACE's depth, so `world` above
+    // is a real point on the tree and an ordinary bias is all it needs -- the
+    // same treatment every other surface gets. Self-shadowing comes back for
+    // free, and it comes back correct rather than approximated by a constant.
+    const bool is_impostor_card = impostor_identity_is_card(identity.x);
+    const float ray_start = constants.bias;
+    // Every use of identity.x from here down is a MATERIAL INDEX and must have
+    // the impostor bit masked off. It cannot be set on this path (the early
+    // return above took it), so the mask is defence against a future edit that
+    // moves or weakens that return, not against today's control flow.
+    const uint shadow_material = impostor_identity_material(identity.x);
     // Phase 2 (horizon-map lighting): hoist the detail-slot lookup out of
     // this if block (it previously only tested `!= 0u` inline) so the
     // horizon-occlusion test below can reuse it.
     int shadow_tileset_slot = -1;
-    if (identity.x < rt_materials.length()) {
-        RtMaterialGpu roof_mat = rt_materials[identity.x];
+    if (shadow_material < rt_materials.length()) {
+        RtMaterialGpu roof_mat = rt_materials[shadow_material];
         shadow_tileset_slot = tileset_detail_slot(roof_mat.flags_misc);
         if (shadow_tileset_slot >= 0)
             world += sun * (constants.pom_lift / max(sun.y, 0.05));
@@ -158,7 +183,12 @@ void main() {
     // no-horizon-data and no-tileset cases the old guard handled -- so the
     // slot test is only kept to skip the fetch, not to make it safe.
     float horizon_visibility = 1.0;
-    if (shadow_tileset_slot >= 0)
+    // NOT for an impostor: .w carries the ray skip there, not a visibility.
+    // An impostor should never resolve a tileset slot in the first place, so
+    // this is belt-and-braces against a future edit that lets one through --
+    // and the failure it prevents is silent (a radius read as a visibility is
+    // a plausible-looking number).
+    if (shadow_tileset_slot >= 0 && !is_impostor_card)
         horizon_visibility = clamp(texelFetch(orm_texture, pixel, 0).w,
                                    0.0, 1.0);
     vec3 tangent = normalize(abs(sun.y) < 0.99
@@ -192,12 +222,12 @@ void main() {
         payload.layers = 0u;
         traceRayEXT(scene, gl_RayFlagsTerminateOnFirstHitEXT |
                             gl_RayFlagsOpaqueEXT,
-                    0x01, 0, 0, 0, world + sun * constants.bias,
-                    constants.bias, direction, constants.max_distance, 0);
+                    0x01, 0, 0, 0, world + sun * ray_start,
+                    ray_start, direction, constants.max_distance, 0);
         if (max(payload.visibility.r,
                 max(payload.visibility.g, payload.visibility.b)) >= 0.01) {
             traceRayEXT(scene, gl_RayFlagsNoneEXT, 0x02, 0, 0, 0,
-                        world + sun * constants.bias, constants.bias,
+                        world + sun * ray_start, ray_start,
                         direction, constants.max_distance, 0);
         }
         sum += payload.visibility;

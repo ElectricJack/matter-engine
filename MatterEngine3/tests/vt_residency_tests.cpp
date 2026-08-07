@@ -720,6 +720,7 @@ void test_registration_gates() {
           "resolving an unreset layer is defined and points at slot 0");
 }
 
+
 }  // namespace
 
 int main() {

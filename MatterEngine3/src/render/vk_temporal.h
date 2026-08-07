@@ -62,6 +62,12 @@ struct GiTemporalSurface {
     matter::Float3 radiance{};
     float depth = 1.0f;
     matter::Float3 normal{};
+    // The identity attachment's .x AS WRITTEN, impostor bit and all -- not a
+    // masked material index, despite the name. Nothing here ever indexes the
+    // material table; accumulate() only compares this against the history's
+    // copy, the same equality gi_temporal.comp does, so masking would be
+    // wrong as well as unnecessary: it would merge a mesh rung and its
+    // impostor card into one surface and accumulate GI across the switch.
     std::uint32_t material_index = UINT32_MAX;
     std::uint32_t instance_token = UINT32_MAX;
 };

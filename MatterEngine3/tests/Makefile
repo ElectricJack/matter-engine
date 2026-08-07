@@ -547,6 +547,16 @@ FLATTEN_CPP = part_flatten_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp
               $(COMMON_MSL_BLAS_SRC)
 FLATTEN_C   = $(MSL)/material_registry.c
 
+# Mesh-vs-impostor A/B instrument (issue e9e7397c): renders one cluster both
+# ways from the same baked view frame and prints a per-G-buffer-channel diff.
+# Fixture mode is a regression test; --bundle mode probes real cached parts.
+AB_PROBE_TARGET = build/impostor_ab_probe
+AB_PROBE_CPP = impostor_ab_probe.cpp \
+               ../src/impostor_bake.cpp \
+               ../src/part_asset_v2.cpp \
+               $(COMMON_MSL_BLAS_SRC)
+AB_PROBE_C   = $(MSL)/material_registry.c
+
 TILESETTORUSBVH_TARGET = build/tileset_torus_bvh_tests
 TILESETTORUSBVH_CPP    = tileset_torus_bvh_tests.cpp ../src/tileset_torus_bvh.cpp \
                          ../src/part_asset_v2.cpp \
@@ -973,6 +983,9 @@ GALLERY_CPP = gallery_bake_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_C
 TREEBAKE_TARGET = build/tree_bake_check
 TREEBAKE_CPP = tree_bake_check.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
+LODNORMCONS_TARGET = build/lod_normal_consistency_tests
+LODNORMCONS_CPP = lod_normal_consistency_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
+
 ROCKPROF_TARGET = build/rock_bake_profile
 ROCKPROF_CPP = rock_bake_profile.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
@@ -1329,6 +1342,7 @@ def_CPP_SRCS := $(sort \
     $(COMP_CPP) \
     $(CHARTATLAS_CPP) \
     $(FLATTEN_CPP) \
+    $(AB_PROBE_CPP) \
     $(TILESETTORUSBVH_CPP) \
     $(WARPFIELD_CPP) \
     $(ISO_CPP) \
@@ -1378,6 +1392,7 @@ sh_CPP_SRCS := $(sort \
     $(EXAMPLE_CPP) \
     $(GALLERY_CPP) \
     $(TREEBAKE_CPP) \
+    $(LODNORMCONS_CPP) \
     $(ROCKPROF_CPP) \
     $(SLABPROBE_CPP) \
     $(SECTORPROF_CPP) \
@@ -1500,6 +1515,7 @@ TRIVAR_OBJS = $(call obj_list,def,$(TRIVAR_CPP)) $(call obj_list,mslc,$(TRIVAR_C
 COMP_OBJS   = $(call obj_list,def,$(COMP_CPP)) $(call obj_list,mslc,$(COMP_C))
 CHARTATLAS_OBJS = $(call obj_list,def,$(CHARTATLAS_CPP)) $(call obj_list,mslc,$(CHARTATLAS_C))
 FLATTEN_OBJS = $(call obj_list,def,$(FLATTEN_CPP)) $(call obj_list,mslc,$(FLATTEN_C))
+AB_PROBE_OBJS = $(call obj_list,def,$(AB_PROBE_CPP)) $(call obj_list,mslc,$(AB_PROBE_C))
 TILESETTORUSBVH_OBJS = $(call obj_list,def,$(TILESETTORUSBVH_CPP)) $(call obj_list,mslc,$(TILESETTORUSBVH_C))
 WARPFIELD_OBJS = $(call obj_list,def,$(WARPFIELD_CPP)) $(call obj_list,mslc,$(WARPFIELD_C))
 TILESETMEADOWMANIFEST_OBJS = $(call obj_list,qjs,$(TILESETMEADOWMANIFEST_CPP)) $(call obj_list,mslc,$(TILESETMEADOWMANIFEST_C)) $(qjsc_C_OBJS)
@@ -1547,6 +1563,7 @@ GRAPH_INT_OBJS = $(call obj_list,sh_test,$(GRAPH_INT_CPP)) $(call obj_list,mslc,
 EXAMPLE_OBJS = $(call obj_list,sh,$(EXAMPLE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 GALLERY_OBJS = $(call obj_list,sh,$(GALLERY_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 TREEBAKE_OBJS = $(call obj_list,sh,$(TREEBAKE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
+LODNORMCONS_OBJS = $(call obj_list,sh,$(LODNORMCONS_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 ROCKPROF_OBJS = $(call obj_list,sh,$(ROCKPROF_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 SLABPROBE_OBJS = $(call obj_list,sh,$(SLABPROBE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 AONORMPROBE_OBJS = $(call obj_list,sh,$(AONORMPROBE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
@@ -1569,7 +1586,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sector-profile run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sector-profile run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -2003,6 +2020,15 @@ $(FLATTEN_TARGET): $(FLATTEN_OBJS)
 run-flatten: $(FLATTEN_TARGET)
 	./$(FLATTEN_TARGET)
 
+$(AB_PROBE_TARGET): $(AB_PROBE_OBJS)
+	$(CC) $(AB_PROBE_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+# Fixture self-test. For real parts:
+#   ./build/impostor_ab_probe --bundle <parts/hash.bundle> --hash <hex> \
+#       [--view 0..47] [--px N] [--sun az,el] [--sun-mult M]
+run-impostor-ab: $(AB_PROBE_TARGET)
+	./$(AB_PROBE_TARGET)
+
 # Phase 5 Task 14 — end-to-end retopo integration test.
 $(RETOPO_INT_TARGET): $(RETOPO_INT_OBJS)
 	$(CC) $(RETOPO_INT_OBJS) -o $@ \
@@ -2041,6 +2067,16 @@ $(TREEBAKE_TARGET): $(TREEBAKE_OBJS)
 
 run-treebake: $(TREEBAKE_TARGET)
 	./$(TREEBAKE_TARGET)
+
+# Mesh rung N vs rung 0 shading-normal consistency (issue 7b64dc27). Fixture
+# gate by default; `./build/lod_normal_consistency_tests --tree [form]` is the
+# real-AlpineDeciduous instrument.
+$(LODNORMCONS_TARGET): $(LODNORMCONS_OBJS)
+	$(CC) $(LODNORMCONS_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
+
+run-lod-normal-consistency: $(LODNORMCONS_TARGET)
+	./$(LODNORMCONS_TARGET)
 
 # Rock bake profiling harness (cold bake per variant, wall time).
 $(ROCKPROF_TARGET): $(ROCKPROF_OBJS)

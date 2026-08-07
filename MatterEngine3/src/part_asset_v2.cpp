@@ -2,6 +2,11 @@
 #include "matter/lod_contract.h"
 #include "version_vector.h"   // M4: the one fold site for cache keys
 #include "part_bundle.h"      // M4: the one file a part owns
+// The FLAT section IS part_flatten's output, so its identity is part_flatten's
+// business: active_ladder_shape_digest() names the ladder shape this process
+// bakes. Header-only (inline), so this costs no link dependency from the
+// serializer onto the baker.
+#include "part_flatten.h"     // active_ladder_shape_digest (flat identity)
 
 #include <cstdio>
 #include <cstring>
@@ -407,6 +412,34 @@ static uint32_t bundle_tag_for_format(uint32_t format_version) {
                                                 : part_bundle::kSectionRep0;
 }
 
+// LADDER-SHAPE SALT — the flat's staleness gate.
+//
+// The artifact header already scrambles the resolved hash with the format
+// version so a body cannot be read under the wrong version. A flat needs one
+// more term: the SHAPE of the ladder it holds. A knob like
+// MATTER_LOD_MAX_MESH_RUNGS or MATTER_IMPOSTOR_DISTANCE changes what a bake
+// would write without changing either the part hash or the format version, so
+// without this term LocalProvider::ensure_part_flattened finds a "compatible"
+// flat and skips the bake — and the knob does nothing, on a warm cache only.
+// part_flatten.h's ladder_shape_digest carries the full reasoning.
+//
+// It is a SALT on the identity rather than a new header field on purpose: no
+// new bytes, no new format version, and the existing bounded prefix probe
+// (is_cache_artifact_header_compatible) rejects a stale flat without reading
+// any more of the file than it already did. The digest of the shipped default
+// shape is 0, so a default bake is byte-identical to what shipped.
+//
+// REP0 IS DELIBERATELY UNSALTED: a .part is the authored geometry, which no
+// ladder knob touches. Only the FLAT section carries a ladder.
+//
+// The bundle-level address (part_bundle::write_section / read_section) keeps
+// using the UNSALTED hash, so a reshaped bake OVERWRITES the stale flat in
+// place instead of accumulating a second section beside it.
+static uint64_t flat_identity_salt(uint32_t format_version) {
+    if (format_version != kFormatVersionFlat) return 0;
+    return part_flatten::active_ladder_shape_digest();
+}
+
 // Serialize the 40-byte artifact header + body and publish it as one bundle
 // section. THE SECTION PAYLOAD IS EXACTLY WHAT THE STANDALONE FILE HELD: the
 // header stays, so a section still validates its own magic, format version,
@@ -420,7 +453,8 @@ static bool write_file_atomic(const std::string& path,
     payload.reserve(40 + body.size());
     put<uint32_t>(payload, kMagic);
     put<uint32_t>(payload, version);
-    put<uint64_t>(payload, resolved_hash ^ static_cast<uint64_t>(version));
+    put<uint64_t>(payload, resolved_hash ^ static_cast<uint64_t>(version) ^
+                               flat_identity_salt(version));
     put<uint32_t>(payload, static_cast<uint32_t>(sizeof(Tri)));
     put<uint32_t>(payload, static_cast<uint32_t>(sizeof(TriEx)));
     put<uint32_t>(payload, static_cast<uint32_t>(sizeof(BVHNode)));
@@ -472,8 +506,36 @@ static uint32_t read_and_validate_header(Reader& r,
     if (s_triex != sizeof(TriEx))           return 0;
     if (s_node  != sizeof(BVHNode))         return 0;
     if (s_child != sizeof(ChildInstance))   return 0;
-    const uint64_t resolved = rhash_x ^ static_cast<uint64_t>(version);
-    if (resolved != expected_resolved_hash) return 0;
+    const uint64_t salt = flat_identity_salt(version);
+    const uint64_t resolved = rhash_x ^ static_cast<uint64_t>(version) ^ salt;
+    if (resolved != expected_resolved_hash) {
+        // Say WHY, for a flat. Every other rejection in this function is
+        // silent because it guards against a file that should never have been
+        // offered; this one is routine and expected — it is what makes a knob
+        // change re-bake — so it reports itself the way impostor_bake reports
+        // a rejected atlas instead of drawing it. Without the line a
+        // knob-driven rebake is indistinguishable from an unexplained miss.
+        //
+        // For a FLAT section this is UNAMBIGUOUS: the bundle layer already
+        // matched the part's resolved hash in its own header (part_bundle's
+        // parse / read_section_prefix both require rhash == resolved_hash)
+        // before this payload was handed over. So a flat that reaches here
+        // with the wrong artifact-header identity is the right part under a
+        // different ladder shape — in either direction, a shaped flat found by
+        // a default run or the reverse.
+        if (version == kFormatVersionFlat) {
+            const uint64_t on_disk =
+                rhash_x ^ static_cast<uint64_t>(version) ^ expected_resolved_hash;
+            std::fprintf(stderr,
+                         "  part_asset: flat %016llx carries ladder shape "
+                         "%016llx, this bake is %016llx; rejecting it as stale "
+                         "(it will be re-flattened).\n",
+                         (unsigned long long)expected_resolved_hash,
+                         (unsigned long long)on_disk,
+                         (unsigned long long)salt);
+        }
+        return 0;
+    }
     content_hash_out = content;
     return version;
 }

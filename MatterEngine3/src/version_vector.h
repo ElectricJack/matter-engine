@@ -54,7 +54,18 @@ namespace components {
 //   2 -> 3 : (see above; numbering as recorded in tileset_gtex.h)
 //   3 -> 4 : tileset_bake_ao.comp traces around the geometric normal.
 //   4 -> 5 : assemble_torus_bvh registers EVERY BLAS entry a part draws.
-inline constexpr uint32_t kEngineBake = 5u;
+//   5 -> 6 : reproject_triex(SampleSource) keeps faceted authored fields
+//            faceted: a rung whose corner donors all author N0=N1=N2 = their
+//            geometric face normal now takes its OWN face normal instead of
+//            interpolating between facet constants. Found while investigating
+//            issue 7b64dc27 (whose visible pale/dark split measured out as an
+//            ALBEDO difference, tracked separately); what THIS fixes is the
+//            manufactured smooth gradient on coarse rungs of faceted DSL
+//            geometry — AlpineDeciduous terminal rung: facet fraction 0.00,
+//            composite lit-factor mean +11.4% and contrast loss vs rep 0,
+//            now facet 1.00 / +5.5% (lod_normal_consistency_tests).
+//            Every reprojected ladder rung's TriEx bytes can differ.
+inline constexpr uint32_t kEngineBake = 6u;
 
 // The physics library. A settle that lands differently is different content.
 inline constexpr uint32_t kBox3d = 1u;
@@ -72,7 +83,46 @@ inline constexpr uint32_t kRepresentation = 1u;
 // not mis-parse); folding them here is what makes them cache KEYS as well.
 inline constexpr uint32_t kPartFormat   = 2u;  // part_asset::kFormatVersionV2
 inline constexpr uint32_t kFlatFormat   = 9u;  // part_asset::kFormatVersionFlat
-inline constexpr uint32_t kImpostorFormat = 1u;  // impostor_bake::kFormatVersion
+// 2: elevation rings. The atlas is the same 128 KiB but the cells inside it
+// mean something different (8x8 of 16x16 holding 16 azimuths x 3 elevations,
+// was 4x4 of 32x32 holding one equator ring), so a v1 atlas read by a v2
+// shader samples a quarter of the wrong cell. Byte-identical SIZE with
+// different CONTENT is exactly the case a format version exists for.
+// 3: the atlas depicts REP 0, not the coarsest mesh rung. Same layout, same
+// bytes, different picture -- and the depicts-hash is now folded over rep 0's
+// triangles, so a v2 atlas beside a v3 ladder would be rejected as stale
+// rather than mis-drawn. Bumping is what turns that rejection into a rebake.
+// 4: cell resolution 16 -> 32 px (layer 128 -> 256, atlas 128 -> 512 KiB). The
+// rings' "free" claim was wrong -- the alpha cutout binds on thin features at
+// cell resolution, which is what ate the trunks -- and impostors are now pulled
+// closer than the ~10 px handover the atlas was budgeted for.
+// 5: cell resolution became a SETTING (MATTER_IMPOSTOR_CELL_PX) and its
+// default moved 32 -> 128 px, so the atlas is 512 KiB -> 8 MiB per slot and
+// the derived guard band moved half_extent with it. Both the pixels and the
+// quad's geometry differ from every v4 artifact on disk.
+// 6: the shade layer's B channel carries DEPTH from the near bound instead of
+// an AO that was constant 1.0 for every DSL-built part. Same bytes, entirely
+// different meaning -- a v5 atlas read as v6 parallaxes against an occlusion
+// term -- and the runtime card also moved to the near bound to keep the depth
+// write inside layout(depth_less).
+// 7: edge padding. Uncovered texels no longer hold the zero-fill: each
+// covered texel's normal, depth and tint are dilated kPadTexels rings into
+// the silhouette's surround (coverage stays 0, the silhouette does not move).
+// A v6 atlas drawn by this engine still slides silhouette taps toward the
+// voted material's base colour (tint.a -> 0) and decodes oct (0,0) as a real
+// direction -- the pale-olive canopy wash of issue 6e0c76fc -- so v6 bytes
+// must rebake, not redraw.
+// 8: the tint layer carries the MATERIAL REGISTRY's albedo, not TriEx::tint.
+// gbuffer.frag shades a charted mesh rung from the VT page (which, for a
+// material with no detail tileset slot, is MaterialGpuRecord::base_roughness)
+// and an unrouted one from resolveBaseColor's vertex tint -- two independently
+// authored colours that differ ~3x on world_demo's conifers. Cards were always
+// on the tint side, so once a6331fba routed the mesh rungs to their pages the
+// cards were the only pale thing left. A v7 atlas decodes structurally fine
+// and simply shows the old colour, so v7 bytes must rebake, not redraw.
+// depicts_hash_add_cluster now folds the referenced materials' albedos too, so
+// recolouring a material invalidates the cards that depict it.
+inline constexpr uint32_t kImpostorFormat = 8u;  // impostor_bake::kFormatVersion
 inline constexpr uint32_t kBundleFormat = 1u;  // part_bundle::kBundleFormatVersion
 
 // Reserved for M3b's content-addressed stage outputs. Zero means "no stage

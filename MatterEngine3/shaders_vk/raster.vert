@@ -41,6 +41,10 @@ layout(location = 9) out vec4 out_warp_uv_scales;
 // The frame tangent (world space, unit-ish; re-orthogonalized against the
 // interpolated normal in the fragment shader).
 layout(location = 10) out vec3 out_warp_tangent;
+// Impostor parallax: xy = the cell-uv displacement per unit of stored depth,
+// z = the card's world-space depth extent (for the conservative depth write).
+// Zero for every non-impostor draw.
+layout(location = 14) out vec4 out_impostor_parallax;
 // LOD debug view: the rung cull.comp selected for this draw (or the direct
 // override below). Location 11 and NOT 9 -- 9/10 are the warp field on this
 // base; the branch this was ported from had no warp field and used 9, and
@@ -124,6 +128,7 @@ void main() {
     vec4 world = model * vec4(in_position, 1.0);
     vec2 impostor_uv = vec2(0.0);
     float impostor_view = 0.0;
+    vec4 impostor_parallax = vec4(0.0);
     if (is_impostor) {
         const float half_extent = in_surface.z;
         const uint corner = uint(in_surface.y + 0.5);
@@ -138,43 +143,165 @@ void main() {
         const vec3 center_world = (model * vec4(center_local, 1.0)).xyz;
         const vec3 to_eye = frame.camera_eye_pixel_budget.xyz - center_world;
 
-        // CYLINDRICAL billboarding: world up is preserved and only the
-        // azimuth turns. That is not a simplification of a spherical card --
-        // it is the same parameterisation the atlas was baked in (one azimuth
-        // ring at the object's equator), so the quad's frame and the cell's
-        // frame are the same frame by construction. A spherical card would
-        // need elevation rows the atlas does not have.
-        vec3 horizon = vec3(to_eye.x, 0.0, to_eye.z);
-        const float horizon_len = length(horizon);
-        horizon = horizon_len > 1e-5 ? horizon / horizon_len : vec3(0.0, 0.0, 1.0);
-        const vec3 up_world = vec3(0.0, 1.0, 0.0);
-        const vec3 right_world = normalize(cross(up_world, horizon));
+        // THE CARD IS BUILT IN OBJECT SPACE, then transformed by `model`.
+        //
+        // It used to be built in world space and sized by
+        //     half_extent * length(model[0].xyz)
+        // -- column 0, the X scale, under an explicit uniform-scale
+        // assumption. That assumption is false for the content impostors
+        // exist to serve: alpine trees are placed with
+        // scale(s, s * heightScale, s) (WorldSector.js), so a tree 1.4x
+        // taller than base drew its MESH 1.4x tall and its IMPOSTOR at 1.0x.
+        // The tree visibly shrank at the handover.
+        //
+        // Building in object space removes the assumption rather than
+        // patching it: the card is half_extent-sized in the object's own
+        // frame, and `model` then stretches it by exactly the matrix that
+        // stretches the mesh it replaces -- so the two agree by construction
+        // for ANY linear placement, not just the ones someone remembered.
+        // Non-uniform scale shears the card off perpendicular-to-eye, which
+        // is correct: the geometry it stands in for is sheared identically.
+        //
+        // world -> object for a DIRECTION needs inverse(mat3(model)), and
+        // transpose is the inverse only for an orthonormal basis. With
+        // model = R * S the columns carry the scales, so peel them off:
+        // inverse(R * S) = S^-1 * transpose(R). The old code used transpose
+        // alone, which under scale(s, s*h, s) left the elevation off by h^2
+        // and picked the wrong ring for exactly the trees it mis-sized.
+        const vec3 col_len = vec3(length(model[0].xyz), length(model[1].xyz),
+                                  length(model[2].xyz));
+        const vec3 inv_col = vec3(col_len.x > 1e-8 ? 1.0 / col_len.x : 0.0,
+                                  col_len.y > 1e-8 ? 1.0 / col_len.y : 0.0,
+                                  col_len.z > 1e-8 ? 1.0 / col_len.z : 0.0);
+        const mat3 rot = mat3(model[0].xyz * inv_col.x,
+                              model[1].xyz * inv_col.y,
+                              model[2].xyz * inv_col.z);
+        // `v * m` is transpose(m) * v in GLSL; the component-wise inv_col
+        // that follows is the S^-1.
+        const vec3 eye_obj = (to_eye * rot) * inv_col;
+        const float eye_obj_len = length(eye_obj);
+        const vec3 eye_obj_dir = eye_obj_len > 1e-5 ? eye_obj / eye_obj_len
+                                                    : vec3(0.0, 0.0, 1.0);
 
-        // Model scale: column length of the linear part. Uniform-scale
-        // assumption, the same one part_flatten::transform_uniform_scale makes.
-        const float model_scale = length(model[0].xyz);
-        const float half_world = half_extent * model_scale;
-        const vec3 world_corner = center_world +
-                                  right_world * (sign_xy.x * half_world) +
-                                  up_world * (sign_xy.y * half_world);
-        // The billboard's world position is BUILT rather than transformed:
-        // it is the only vertex in this shader whose placement depends on the
-        // camera, so it cannot come out of the model matrix.
-        world = vec4(world_corner, 1.0);
+        // SPHERICAL billboarding: the card faces the eye outright, tilting as
+        // the camera rises. It was cylindrical when the atlas held one equator
+        // ring -- a tilting card would have drawn the equator's image where
+        // the top belonged -- and the two changed together (impostor_bake.h,
+        // "ELEVATION ROWS"). A vertical card seen from 60 degrees up is
+        // foreshortened to half the height of the mesh it replaced; this is
+        // the half of that fix that lives in the geometry.
+        //
+        // The frame is built exactly as the bake builds its own -- right from
+        // cross(up, view_z), up from cross(view_z, right) -- so the card's
+        // frame and the cell's frame differ only by the view quantisation,
+        // which is the same approximation the azimuth ring always made. It is
+        // built around OBJECT up, because that is the axis the bake's rings
+        // were swept about.
+        const vec3 up_obj = vec3(0.0, 1.0, 0.0);
+        // Degenerate when the eye is straight overhead: cross(up, eye)
+        // vanishes and the card would collapse. The bake never hits this (its
+        // top ring is 60 degrees, where |cross| is still 0.5) but the eye is
+        // not quantised, so the runtime must handle it. Fall back to a fixed
+        // azimuth -- at straight-down the choice is arbitrary by definition,
+        // and an arbitrary card beats a NaN one.
+        vec3 right_axis = cross(up_obj, eye_obj_dir);
+        const float right_len = length(right_axis);
+        right_axis = right_len > 1e-4 ? right_axis / right_len
+                                      : vec3(1.0, 0.0, 0.0);
+        const vec3 card_up = cross(eye_obj_dir, right_axis);
+        // THE CARD SITS AT THE OBJECT'S NEAR BOUND, not through its centre.
+        //
+        // gbuffer.frag declares `layout(depth_less)`, so a fragment may only
+        // push its depth AWAY from the camera. The baked depth is measured
+        // from the near bound, so a card there can only ever push backward and
+        // the write is legal by construction. A card through the centre would
+        // need to pull the front half forward, which that declaration forbids
+        // -- and relaxing it would cost early-Z for every surface in the frame.
+        //
+        // Moving the card toward the eye would also make it subtend a larger
+        // angle, so the quad is scaled by (D - r) / D to land on exactly the
+        // same pixels it covered before. That is exact for a perspective
+        // projection: a quad at D-r of half-size h(D-r)/D subtends what one of
+        // half-size h subtends at D.
+        // World length of the push. The card moves along eye_obj_dir by
+        // half_extent in OBJECT space, so the distance it actually travels is
+        // the model's scale along that direction -- not the largest column.
+        // Those differ by heightScale for a tree, and using the column would
+        // over-shrink every tall one.
+        const float push_world =
+            length(mat3(model) * eye_obj_dir) * half_extent;
+        const float eye_dist = length(to_eye);
+        const float near_shrink =
+            eye_dist > 1e-4 ? clamp((eye_dist - push_world) / eye_dist,
+                                    0.05, 1.0)
+                            : 1.0;
+        const vec3 corner_local = center_local + eye_obj_dir * half_extent +
+                                  (right_axis * sign_xy.x +
+                                   card_up * sign_xy.y) *
+                                      (half_extent * near_shrink);
+        world = model * vec4(corner_local, 1.0);
 
         // Which baked view. The ring was baked in OBJECT space, so the eye
-        // direction has to come back through the model rotation before its
-        // azimuth means anything -- otherwise a rotated placement shows the
-        // wrong face of the rock.
-        const vec3 eye_obj = to_eye * mat3(model);   // = transpose(mat3) * to_eye
-        float azimuth = atan(eye_obj.x, eye_obj.z);  // bake: view_z = (sin a, 0, cos a)
+        // direction had to come back through the placement before its azimuth
+        // meant anything -- otherwise a rotated placement shows the wrong face
+        // of the rock. eye_obj_dir above is that direction.
+        //
+        // The exact inverse of the bake's
+        //   view_z = (sin(a)*cos(e), sin(e), cos(a)*cos(e))
+        // atan2(x,z) ignores y, so the azimuth is unaffected by elevation.
+        float azimuth = atan(eye_obj_dir.x, eye_obj_dir.z);
         const float kTwoPi = 6.28318530717958647692;
         if (azimuth < 0.0) azimuth += kTwoPi;
-        impostor_view = float(uint(floor(azimuth / kTwoPi * float(IMPOSTOR_VIEWS)
-                                         + 0.5)) % uint(IMPOSTOR_VIEWS));
-        // Cell-local uv, matching the bake's pixel mapping exactly:
+        const uint az_i = uint(floor(azimuth / kTwoPi * float(IMPOSTOR_AZIMUTHS)
+                                     + 0.5)) % IMPOSTOR_AZIMUTHS;
+        // NEAREST ring. Below the equator and above the top ring both clamp:
+        // the rings cover 0..60 degrees and a camera outside that range gets
+        // the closest one it has, which is the documented limit rather than a
+        // wrap into the wrong hemisphere.
+        const float elevation = asin(clamp(eye_obj_dir.y, -1.0, 1.0));
+        const float ring = floor(elevation / float(IMPOSTOR_ELEV_STEP) + 0.5);
+        const uint el_i = uint(clamp(ring, 0.0, float(IMPOSTOR_ELEVATIONS - 1u)));
+        impostor_view = float(el_i * IMPOSTOR_AZIMUTHS + az_i);   // view_index()
+        // ---- the BAKED view's frame, rebuilt exactly as the bake built it --
+        //
+        // The card faces the EYE; the cell was rendered from the nearest
+        // QUANTISED direction. Those differ by up to half an azimuth step
+        // (11.25 degrees), and that difference is the entire source of
+        // parallax -- a camera-facing card sampled in its own frame has none
+        // by construction, which is why rotating around a tree used to snap
+        // between cells instead of sliding.
+        //
+        // So the cell uv is no longer the corner's sign pair. It is the
+        // corner PROJECTED INTO THE BAKED FRAME, which is the same mapping
+        // impostor_bake.cpp used on the geometry:
         //   px = (nx * 0.5 + 0.5) * C,  py = (0.5 - ny * 0.5) * C
-        impostor_uv = vec2(sign_xy.x * 0.5 + 0.5, 0.5 - sign_xy.y * 0.5);
+        // That also absorbs the near-bound shift above for free -- the card
+        // moved along the eye, and this projection reports where that lands
+        // in the baked image.
+        const float baked_az = float(az_i) * (kTwoPi / float(IMPOSTOR_AZIMUTHS));
+        const float baked_el = float(el_i) * float(IMPOSTOR_ELEV_STEP);
+        const float baked_ce = cos(baked_el);
+        const vec3 view_b = vec3(sin(baked_az) * baked_ce, sin(baked_el),
+                                 cos(baked_az) * baked_ce);
+        vec3 right_b = cross(vec3(0.0, 1.0, 0.0), view_b);
+        const float right_b_len = length(right_b);
+        right_b = right_b_len > 1e-4 ? right_b / right_b_len
+                                     : vec3(1.0, 0.0, 0.0);
+        const vec3 up_b = cross(view_b, right_b);
+
+        const float inv_h = half_extent > 1e-6 ? 1.0 / half_extent : 0.0;
+        const vec3 rel = corner_local - center_local;
+        impostor_uv = vec2(dot(rel, right_b) * inv_h * 0.5 + 0.5,
+                           0.5 - dot(rel, up_b) * inv_h * 0.5);
+
+        // A surface t behind the card along the EYE ray lands at
+        //   project_baked(card_point - eye * t)
+        // and t = d * 2 * half_extent for stored depth d, so the uv shift is
+        // exactly parallax_dir * d with no further scaling. The y term flips
+        // because the mapping above flips v.
+        impostor_parallax = vec4(-dot(eye_obj_dir, right_b),
+                                 dot(eye_obj_dir, up_b),
+                                 2.0 * push_world, 0.0);
     }
     vec4 current_clip = frame.world_to_clip * world;
     vec3 previous_local_position = in_position;
@@ -203,6 +330,7 @@ void main() {
     out_tint = is_impostor
                    ? vec4(in_tint.x * 255.0, in_tint.y * 255.0, impostor_view, 0.0)
                    : in_tint;
+    out_impostor_parallax = impostor_parallax;
     out_surface = is_impostor
                       ? vec4(in_surface.x, impostor_uv, 1.0)
                       : in_surface;

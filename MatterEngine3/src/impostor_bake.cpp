@@ -3,6 +3,7 @@
 
 #include "part_asset.h"   // part_asset::fnv1a64, replace_file_atomic lives in v2
 #include "part_asset_v2.h"
+#include "material_registry.h"   // MaterialDef::albedo -- the VT path's albedo
 
 #include <algorithm>
 #include <cmath>
@@ -55,7 +56,24 @@ inline uint8_t to_u8(float v) {
     return static_cast<uint8_t>(c * 255.0f + 0.5f);
 }
 
-constexpr uint32_t kSubEdge = kCellPx * kSuperSample;   // 128 subsamples/axis
+// Octahedral decode, the inverse of oct_encode above and the same branch
+// structure as gbuffer.frag's decode. Used only by the edge padding, which
+// averages neighbour normals in VECTOR space rather than in encoded RG —
+// averaging the encoding directly would be wrong across the z<0 wrap seam.
+inline float3 oct_decode(float ox, float oy) {
+    float ex = ox * 2.0f - 1.0f;
+    float ey = oy * 2.0f - 1.0f;
+    const float ez = 1.0f - std::fabs(ex) - std::fabs(ey);
+    if (ez < 0.0f) {
+        const float sx = ex >= 0.0f ? 1.0f : -1.0f;
+        const float sy = ey >= 0.0f ? 1.0f : -1.0f;
+        const float tx = (1.0f - std::fabs(ey)) * sx;
+        const float ty = (1.0f - std::fabs(ex)) * sy;
+        ex = tx; ey = ty;
+    }
+    return unit(make_float3(ex, ey, ez));
+}
+
 
 // One supersample of one view: the nearest surface hit, or empty.
 struct SubSample {
@@ -109,14 +127,17 @@ uint64_t depicts_hash_begin() {
     // version vector, which depicts_hash_finish folds in one place for the
     // whole engine. Only the atlas LAYOUT constants (which are not versions)
     // stay in this stream.
-    const uint32_t params[3] = {kViews, kCellPx, kSuperSample};
+    // cell_px() is in this stream, so a resolution change makes every existing
+    // atlas report Stale rather than decoding at the wrong scale.
+    const uint32_t params[3] = {kViews, cell_px(), kSuperSample};
     const auto* b = reinterpret_cast<const uint8_t*>(params);
     for (size_t i = 0; i < sizeof(params); ++i) { h ^= b[i]; h *= 1099511628211ull; }
     return h;
 }
 
 void depicts_hash_add_cluster(uint64_t& h, uint32_t cluster_index,
-                              const std::vector<Tri>& tris) {
+                              const std::vector<Tri>& tris,
+                              const std::vector<TriEx>& triex) {
     const auto fold = [&h](const void* data, size_t len) {
         const auto* b = static_cast<const uint8_t*>(data);
         for (size_t i = 0; i < len; ++i) { h ^= b[i]; h *= 1099511628211ull; }
@@ -132,9 +153,124 @@ void depicts_hash_add_cluster(uint64_t& h, uint32_t cluster_index,
                             t.vertex2.x, t.vertex2.y, t.vertex2.z};
         fold(v, sizeof(v));
     }
+
+    // The tint layer is now baked from the MATERIAL REGISTRY's albedo (see
+    // AlbedoLut), so the registry is an input to the pixels and therefore has
+    // to be an input to the identity. Without this, recolouring a material
+    // leaves every existing card showing the old colour, and the sidecar
+    // reports Fresh while doing it -- the same class of bug part_flatten.h's
+    // ladder_shape_digest note describes: "the bake configuration and the
+    // artifact's identity must be derived from ONE set of readers, or a knob
+    // can change the ladder without changing the identity".
+    //
+    // Only the materials this cluster actually REFERENCES are folded, so an
+    // unrelated material edit does not invalidate this part. Sorted and
+    // uniqued first: triangle order must not change the digest.
+    //
+    // `present` is folded beside each colour so that "material 29 is absent
+    // from the registry" and "material 29 is black" are different identities.
+    // They bake differently -- absent falls back to the vertex tint -- so
+    // colliding them would let a part baked before its world's dynamic
+    // materials were defined validate against one baked after.
+    std::vector<int> ids;
+    if (triex.size() == tris.size()) {
+        ids.reserve(triex.size());
+        for (const TriEx& e : triex)
+            if (e.materialId >= 0 && e.materialId < 4096)
+                ids.push_back(e.materialId);
+        std::sort(ids.begin(), ids.end());
+        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    }
+    const uint64_t id_count = ids.size();
+    fold(&id_count, sizeof(id_count));
+    const int registry_count = MaterialRegistryCount();
+    for (int id : ids) {
+        fold(&id, sizeof(id));
+        // `id < registry_count`, not a NULL test: MaterialRegistryGet hands
+        // back a default gray for an out-of-range id rather than nothing, so
+        // the pointer can never report absence. Same rule AlbedoLut uses --
+        // they have to agree, or the identity would claim a colour the bake
+        // did not use.
+        const bool present = id < registry_count;
+        const MaterialDef* def = present ? MaterialRegistryGet(id) : nullptr;
+        const uint8_t present_byte = present ? 1u : 0u;
+        fold(&present_byte, sizeof(present_byte));
+        const float rgb[3] = {def ? def->albedo[0] : 0.0f,
+                              def ? def->albedo[1] : 0.0f,
+                              def ? def->albedo[2] : 0.0f};
+        fold(rgb, sizeof(rgb));
+    }
 }
 
 uint64_t depicts_hash_finish(uint64_t h) { return matter_version::fold(h); }
+
+// ---------------------------------------------------------------------------
+// THE CARD'S ALBEDO MUST BE THE VIRTUAL TEXTURE'S ALBEDO, NOT THE VERTEX TINT.
+//
+// gbuffer.frag shades a mesh two different ways depending on whether its rung
+// reached a VT page, and the two disagree about where colour comes from:
+//
+//   VT path    vt_composite.comp sample_material(): a material with no detail
+//              tileset slot -- which every prop material is; the only slots
+//              are the five ground tilesets -- takes `s.albedo = m.albedo.rgb`,
+//              filled from MaterialGpuRecord::base_roughness.
+//   flat path  resolveBaseColor() = mix(base_roughness.rgb, tint.rgb, tint.a),
+//              and DSL geometry authors tint.a = 1, so it returns the VERTEX
+//              TINT and the material's own colour is never consulted.
+//
+// Those are two independently authored numbers that nothing reconciles; on
+// world_demo's conifers they differ by ~3x. The impostor bake sampled TriEx
+// tint, so a card was always on the flat side of that split -- and once the
+// mesh rungs were fixed to reach their pages (a6331fba), the cards were the
+// only thing left showing the pale value, which is what made them stand out.
+//
+// So resolve the same albedo the compositor would: the material's registry
+// albedo, per subsample, AVERAGED rather than voted. Averaging is what makes
+// a bark/foliage boundary antialias inside a texel exactly as the tint
+// average did; a dominant-material pick would harden every such boundary.
+//
+// The alpha written alongside is 1.0, which makes resolveBaseColor return
+// these bytes unchanged -- so this needs no shader change at all.
+//
+// FALLBACK is the old behaviour, deliberately: a material the registry does
+// not know (id < 0, past the table, or a diagnostic-offset id) keeps its
+// vertex tint rather than baking black. That covers the have_ex == false path
+// and any part baked before its world's dynamic materials were defined.
+struct AlbedoLut {
+    // Indexed by materialId. `known` distinguishes "registry gave us a colour"
+    // from "id absent", which is what selects the tint fallback per subsample.
+    std::vector<float3> albedo;
+    std::vector<uint8_t> known;
+
+    void build(const std::vector<TriEx>& triex) {
+        int hi = -1;
+        for (const TriEx& e : triex)
+            if (e.materialId >= 0 && e.materialId < 4096)
+                hi = std::max(hi, e.materialId);
+        if (hi < 0) return;
+        albedo.assign(static_cast<size_t>(hi) + 1, make_float3(0, 0, 0));
+        known.assign(static_cast<size_t>(hi) + 1, 0u);
+        // The `id < count` test is the ONLY thing separating a real material
+        // from an unknown one: MaterialRegistryGet never returns NULL -- an
+        // out-of-range id gets a default GRAY back. Testing the pointer would
+        // bake that gray into the card and look like a shading bug rather
+        // than a missing material.
+        const int count = MaterialRegistryCount();
+        for (int id = 0; id <= hi && id < count; ++id) {
+            const MaterialDef* def = MaterialRegistryGet(id);
+            albedo[static_cast<size_t>(id)] =
+                make_float3(def->albedo[0], def->albedo[1], def->albedo[2]);
+            known[static_cast<size_t>(id)] = 1u;
+        }
+    }
+
+    bool lookup(int id, float3& out) const {
+        if (id < 0 || static_cast<size_t>(id) >= known.size()) return false;
+        if (!known[static_cast<size_t>(id)]) return false;
+        out = albedo[static_cast<size_t>(id)];
+        return true;
+    }
+};
 
 // ---------------------------------------------------------------------------
 // The bake.
@@ -143,6 +279,8 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                   const std::vector<TriEx>& triex, ClusterImpostor& out) {
     if (tris.empty()) return false;
     const bool have_ex = triex.size() == tris.size();
+    AlbedoLut albedo_lut;
+    if (have_ex) albedo_lut.build(triex);
 
     // Centre: the midpoint of the vertex AABB. Half-extent: the radius of the
     // bounding SPHERE about that centre, so one square quad of that size
@@ -167,35 +305,51 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
     for (const Tri& t : tris) { reach(t.vertex0); reach(t.vertex1); reach(t.vertex2); }
     const float radius = std::sqrt(radius_sq);
     if (!(radius > 1e-6f)) return false;
-    // GUARD BAND. The quad is 10 % larger than the bounding sphere, so the
-    // silhouette stops ~1.5 texels short of the cell border on every side.
-    // Cells are packed edge to edge in one atlas layer, so a bilinear tap at
-    // the border of view v would otherwise reach into view v+1 -- a rock with
-    // a sliver of the next azimuth welded to its edge. Measured against
-    // kCellPx: a full-texel guard needs >= 1 / (1 - 2/32) = 1.067, and 1.10
-    // buys the margin back at a cost of 10 % of the cell's linear resolution,
-    // which the view count (not the cell size) already dominates.
-    const float half_extent = radius * 1.10f;
+    // GUARD BAND: derived from the cell size so the margin is a constant
+    // number of TEXELS at every resolution. See impostor_bake.h -- a fixed
+    // band buys a different margin at every cell size, which is the trap the
+    // old hard-coded 1.20 (plus a comment asking the next person to recompute
+    // it) left behind now that the cell size is a runtime setting.
+    const float half_extent = radius * guard_band();
 
     out = ClusterImpostor{};
     out.cluster_index = cluster_index;
     out.center[0] = center.x; out.center[1] = center.y; out.center[2] = center.z;
     out.half_extent = half_extent;
     out.source_tris = static_cast<uint32_t>(tris.size());
-    out.atlas.assign(kAtlasBytes, 0);
+    // Every size below is derived from the cell resolution ONCE, here, so a
+    // getenv between two of them cannot produce an atlas whose halves disagree.
+    const uint32_t cell = cell_px();
+    const uint32_t sub_edge = cell * kSuperSample;
+    const uint32_t layer_edge = layer_px();
+    const size_t   layer_sz = layer_bytes();
+    out.atlas.assign(atlas_bytes(), 0);
 
     // Dominant material, area-weighted over covered subsamples.
     std::vector<uint64_t> material_votes;
 
-    std::vector<SubSample> sub(static_cast<size_t>(kSubEdge) * kSubEdge);
+    std::vector<SubSample> sub(static_cast<size_t>(sub_edge) * sub_edge);
     const float inv_h = 1.0f / half_extent;
 
     for (uint32_t view = 0; view < kViews; ++view) {
         std::fill(sub.begin(), sub.end(), SubSample{});
+        // Azimuth-major: view = elevation * kAzimuths + azimuth (view_index()).
+        const uint32_t az_i = view % kAzimuths;
+        const uint32_t el_i = view / kAzimuths;
         const float angle = 6.28318530717958647692f *
-                            static_cast<float>(view) / static_cast<float>(kViews);
-        // view_z points from the object TOWARD the camera.
-        const float3 view_z = make_float3(std::sin(angle), 0.0f, std::cos(angle));
+                            static_cast<float>(az_i) / static_cast<float>(kAzimuths);
+        const float elev = static_cast<float>(el_i) * kElevationStep;
+        const float ce = std::cos(elev), se = std::sin(elev);
+        // view_z points from the object TOWARD the camera. raster.vert derives
+        // the same pair from the eye direction as azimuth = atan2(x,z) and
+        // elevation = asin(y), which is the exact inverse of this line — the
+        // two must stay inverses or the card shows a view it was not baked for.
+        const float3 view_z = make_float3(std::sin(angle) * ce, se,
+                                          std::cos(angle) * ce);
+        // Well-conditioned while |view_z.y| < 1: |cross| = cos(elev) >= 0.5 for
+        // the 60-degree top ring, so no degenerate-basis guard is needed HERE.
+        // The runtime needs one (it uses the true eye direction, which can look
+        // straight down); see raster.vert.
         const float3 right  = unit(cross3(make_float3(0.0f, 1.0f, 0.0f), view_z));
         const float3 up_v   = cross3(view_z, right);
 
@@ -210,8 +364,8 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                 // [-1,1] -> subsample grid coordinates.
                 const float nx = dot3(rel, right) * inv_h;
                 const float ny = dot3(rel, up_v) * inv_h;
-                sx[c] = (nx * 0.5f + 0.5f) * static_cast<float>(kSubEdge);
-                sy[c] = (0.5f - ny * 0.5f) * static_cast<float>(kSubEdge);
+                sx[c] = (nx * 0.5f + 0.5f) * static_cast<float>(sub_edge);
+                sy[c] = (0.5f - ny * 0.5f) * static_cast<float>(sub_edge);
                 sz[c] = dot3(rel, view_z);
             }
             const float area = (sx[1] - sx[0]) * (sy[2] - sy[0]) -
@@ -224,8 +378,8 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
             int y0 = static_cast<int>(std::floor(std::fmin(sy[0], std::fmin(sy[1], sy[2]))));
             int y1 = static_cast<int>(std::ceil (std::fmax(sy[0], std::fmax(sy[1], sy[2]))));
             x0 = std::max(x0, 0); y0 = std::max(y0, 0);
-            x1 = std::min(x1, static_cast<int>(kSubEdge) - 1);
-            y1 = std::min(y1, static_cast<int>(kSubEdge) - 1);
+            x1 = std::min(x1, static_cast<int>(sub_edge) - 1);
+            y1 = std::min(y1, static_cast<int>(sub_edge) - 1);
 
             for (int py = y0; py <= y1; ++py) {
                 const float fy = static_cast<float>(py) + 0.5f;
@@ -238,7 +392,7 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                     const float w0 = 1.0f - w1 - w2;
                     if (w0 < 0.0f || w1 < 0.0f || w2 < 0.0f) continue;
                     const float depth = w0 * sz[0] + w1 * sz[1] + w2 * sz[2];
-                    SubSample& s = sub[static_cast<size_t>(py) * kSubEdge + px];
+                    SubSample& s = sub[static_cast<size_t>(py) * sub_edge + px];
                     // Strict >: the FIRST triangle wins an exact tie, which is
                     // what makes coplanar geometry order-deterministic.
                     if (s.hit && !(depth > s.depth)) continue;
@@ -251,8 +405,15 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                             w0 * e.N0.y + w1 * e.N1.y + w2 * e.N2.y,
                             w0 * e.N0.z + w1 * e.N1.z + w2 * e.N2.z);
                         s.ao = w0 * e.ao0 + w1 * e.ao1 + w2 * e.ao2;
-                        s.tint = e.tint;
                         s.material = e.materialId;
+                        // The VT path's albedo where the registry knows this
+                        // material; the authored tint where it does not. See
+                        // AlbedoLut above for why this is not the tint.
+                        float3 ma{};
+                        if (albedo_lut.lookup(e.materialId, ma))
+                            s.tint = make_float4(ma.x, ma.y, ma.z, 1.0f);
+                        else
+                            s.tint = e.tint;
                     } else {
                         s.normal = unit(cross3(t.vertex1 - t.vertex0,
                                                t.vertex2 - t.vertex0));
@@ -265,24 +426,26 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
         }
 
         // Resolve the view's subsamples into its cell of both layers.
-        const uint32_t cell_x = (view % kGridDim) * kCellPx;
-        const uint32_t cell_y = (view / kGridDim) * kCellPx;
-        for (uint32_t cy = 0; cy < kCellPx; ++cy) {
-            for (uint32_t cx = 0; cx < kCellPx; ++cx) {
+        const uint32_t cell_x = (view % kGridDim) * cell;
+        const uint32_t cell_y = (view / kGridDim) * cell;
+        for (uint32_t cy = 0; cy < cell; ++cy) {
+            for (uint32_t cx = 0; cx < cell; ++cx) {
                 int covered = 0;
                 float3 nsum = make_float3(0.0f, 0.0f, 0.0f);
                 float ao_sum = 0.0f;
+                float depth_sum = 0.0f;
                 float tr = 0.0f, tg = 0.0f, tb = 0.0f, ta = 0.0f;
                 for (uint32_t sy2 = 0; sy2 < kSuperSample; ++sy2) {
                     for (uint32_t sx2 = 0; sx2 < kSuperSample; ++sx2) {
                         const SubSample& s =
-                            sub[static_cast<size_t>(cy * kSuperSample + sy2) * kSubEdge +
+                            sub[static_cast<size_t>(cy * kSuperSample + sy2) * sub_edge +
                                 (cx * kSuperSample + sx2)];
                         if (!s.hit) continue;
                         ++covered;
                         nsum = make_float3(nsum.x + s.normal.x, nsum.y + s.normal.y,
                                            nsum.z + s.normal.z);
                         ao_sum += s.ao;
+                        depth_sum += s.depth;
                         tr += s.tint.x; tg += s.tint.y; tb += s.tint.z; ta += s.tint.w;
                         // Bounded: a corrupt or diagnostic-offset materialId
                         // (build_indexed_part_geometry adds 1e6 for one debug
@@ -298,7 +461,7 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                     }
                 }
                 const size_t texel =
-                    (static_cast<size_t>(cell_y + cy) * kLayerPx + (cell_x + cx)) * 4;
+                    (static_cast<size_t>(cell_y + cy) * layer_edge + (cell_x + cx)) * 4;
                 if (covered == 0) continue;   // atlas was zero-filled
                 const float inv_n = 1.0f / static_cast<float>(covered);
                 float ox = 0.5f, oy = 0.5f;
@@ -306,10 +469,27 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                 uint8_t* shade = out.atlas.data() + texel;
                 shade[0] = to_u8(ox);
                 shade[1] = to_u8(oy);
-                shade[2] = to_u8(ao_sum * inv_n);
+                // DEPTH, not AO. The AO this channel used to carry was a
+                // constant 1.0 for every DSL-built part (TriEx::ao is never
+                // populated outside the surfacing path), so eight bits were
+                // being spent transporting the number one. Depth is what the
+                // card actually lacked: without it every impostor pixel
+                // reports the plane through the object's CENTRE, which is why
+                // a shadow ray from one starts inside the volume and why
+                // rotating around a tree snaps between azimuths instead of
+                // parallaxing.
+                //
+                // Measured from the NEAR bound (sz = +half_extent) and
+                // normalized over the 2h extent, so d = 0 at the front of the
+                // bound and 1 at the back. That convention is load-bearing
+                // twice over: the runtime card sits at the near bound, so
+                // every depth write pushes AWAY from the camera and stays
+                // legal under gbuffer.frag's `layout(depth_less)`; and the
+                // parallax march is always inward, like every other POM.
+                shade[2] = to_u8((1.0f - depth_sum * inv_n * inv_h) * 0.5f);
                 shade[3] = to_u8(static_cast<float>(covered) /
                                  static_cast<float>(kSuperSample * kSuperSample));
-                uint8_t* tint = out.atlas.data() + kLayerBytes + texel;
+                uint8_t* tint = out.atlas.data() + layer_sz + texel;
                 tint[0] = to_u8(tr * inv_n);
                 tint[1] = to_u8(tg * inv_n);
                 tint[2] = to_u8(tb * inv_n);
@@ -327,7 +507,132 @@ bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
         }
     }
     if (best_votes == 0) out.material_index = UINT32_MAX;
+
+    // Last step: pad the silhouette so runtime bilinear taps never blend a
+    // covered texel against the zero-fill (see the layout note in the header,
+    // and the function itself for the depth decision).
+    pad_cluster_atlas(out.atlas);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Edge padding (format v7). See impostor_bake.h's atlas-layout note for what
+// this fixes; the mechanics and the one non-obvious decision live here.
+//
+// WHAT IS PADDED. shade R,G (octahedral normal), shade B (depth) and the whole
+// tint texel. Coverage (shade A) is never written: the cutout and the
+// fractional-coverage antialiasing must see exactly the silhouette the
+// rasterizer produced, or the padding would GROW the drawn impostor.
+//
+// DEPTH IS PADDED TOO, deliberately. An uncovered texel's zero decodes as
+// "surface AT the card's near-bound plane" — the frontmost value the channel
+// can carry. A bilinear tap that straddles the silhouette therefore biased its
+// depth toward the front, which under-drives the parallax re-tap AND writes
+// the rim's gl_FragDepth nearer than the surface the rim visually belongs to.
+// The neighbour's depth is the right filler, and it is SAFE by construction:
+// baked depth only ever pushes the fragment away from the camera, so no padded
+// value can violate gbuffer.frag's layout(depth_less) — the failure mode of a
+// wrong padded depth is a rim pixel sitting at its neighbour's depth instead
+// of at the card plane, which is strictly more correct.
+//
+// NORMALS ARE AVERAGED IN VECTOR SPACE (decode, sum, re-encode), not in
+// encoded RG, because the octahedral map has a wrap seam for z < 0 and a
+// byte-space average across it produces a direction unrelated to either
+// neighbour — the exact class of artifact this padding exists to remove.
+//
+// DETERMINISM. Row-major texel order, a fixed neighbour order, integer
+// averages with explicit rounding, and the same sqrt-based unit() as the
+// rasterizer. Ring N+1 reads ring N's already-written values (the mask is
+// updated only between passes, so a pass never reads what it wrote), which is
+// the ping-pong that makes the result independent of anything but the input.
+void pad_cluster_atlas(std::vector<uint8_t>& atlas) {
+    // The layout comes from the buffer itself: two RGBA8 layers of an
+    // (kGridDim * cell)^2 grid. Deriving it from atlas.size() means this
+    // function cannot disagree with the buffer it was handed even if the cell
+    // setting has moved since the buffer was made.
+    if (atlas.empty() || (atlas.size() % (kGridDim * kGridDim * 8)) != 0)
+        return;
+    const size_t texels = atlas.size() / 8;   // per layer, 4 bytes per texel
+    uint32_t layer_edge = static_cast<uint32_t>(std::sqrt(double(texels)));
+    while (static_cast<size_t>(layer_edge) * layer_edge < texels) ++layer_edge;
+    if (static_cast<size_t>(layer_edge) * layer_edge != texels ||
+        layer_edge % kGridDim != 0)
+        return;
+    const uint32_t cell = layer_edge / kGridDim;
+    const size_t layer_sz = texels * 4;
+
+    // Neighbour order is part of the byte-reproducibility contract.
+    static constexpr int kOff[8][2] = {{-1, -1}, {0, -1}, {1, -1}, {-1, 0},
+                                       {1, 0},   {-1, 1}, {0, 1},  {1, 1}};
+
+    std::vector<uint8_t> mask(static_cast<size_t>(cell) * cell);
+    std::vector<uint32_t> filled;
+    for (uint32_t gy = 0; gy < kGridDim; ++gy) {
+        for (uint32_t gx = 0; gx < kGridDim; ++gx) {
+            const uint32_t cx0 = gx * cell, cy0 = gy * cell;
+            bool any_covered = false, all_covered = true;
+            for (uint32_t cy = 0; cy < cell; ++cy) {
+                for (uint32_t cx = 0; cx < cell; ++cx) {
+                    const size_t t =
+                        (static_cast<size_t>(cy0 + cy) * layer_edge + cx0 + cx) * 4;
+                    const bool covered = atlas[t + 3] != 0;
+                    mask[static_cast<size_t>(cy) * cell + cx] = covered ? 1 : 0;
+                    any_covered |= covered;
+                    all_covered &= covered;
+                }
+            }
+            if (!any_covered || all_covered) continue;   // empty view, or no rim
+            for (uint32_t pass = 0; pass < kPadTexels; ++pass) {
+                filled.clear();
+                for (uint32_t cy = 0; cy < cell; ++cy) {
+                    for (uint32_t cx = 0; cx < cell; ++cx) {
+                        if (mask[static_cast<size_t>(cy) * cell + cx]) continue;
+                        float3 nsum = make_float3(0.0f, 0.0f, 0.0f);
+                        uint32_t depth_sum = 0;
+                        uint32_t tint_sum[4] = {0, 0, 0, 0};
+                        uint32_t count = 0;
+                        for (const auto& o : kOff) {
+                            const int nx = static_cast<int>(cx) + o[0];
+                            const int ny = static_cast<int>(cy) + o[1];
+                            if (nx < 0 || ny < 0 || nx >= static_cast<int>(cell) ||
+                                ny >= static_cast<int>(cell))
+                                continue;
+                            if (!mask[static_cast<size_t>(ny) * cell + nx]) continue;
+                            const size_t s =
+                                (static_cast<size_t>(cy0 + ny) * layer_edge +
+                                 cx0 + nx) * 4;
+                            const float3 n = oct_decode(atlas[s] / 255.0f,
+                                                        atlas[s + 1] / 255.0f);
+                            nsum = make_float3(nsum.x + n.x, nsum.y + n.y,
+                                               nsum.z + n.z);
+                            depth_sum += atlas[s + 2];
+                            const uint8_t* tn = atlas.data() + layer_sz + s;
+                            for (int k = 0; k < 4; ++k) tint_sum[k] += tn[k];
+                            ++count;
+                        }
+                        if (count == 0) continue;
+                        const size_t t =
+                            (static_cast<size_t>(cy0 + cy) * layer_edge +
+                             cx0 + cx) * 4;
+                        float ox = 0.5f, oy = 0.5f;
+                        oct_encode(nsum, ox, oy);
+                        atlas[t]     = to_u8(ox);
+                        atlas[t + 1] = to_u8(oy);
+                        atlas[t + 2] = static_cast<uint8_t>(
+                            (depth_sum + count / 2) / count);
+                        // atlas[t + 3] is coverage and stays exactly 0.
+                        uint8_t* tint = atlas.data() + layer_sz + t;
+                        for (int k = 0; k < 4; ++k)
+                            tint[k] = static_cast<uint8_t>(
+                                (tint_sum[k] + count / 2) / count);
+                        filled.push_back(cy * cell + cx);
+                    }
+                }
+                if (filled.empty()) break;
+                for (uint32_t idx : filled) mask[idx] = 1;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -416,9 +721,9 @@ bool save(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
     if (in.clusters.empty()) return false;
 
     std::vector<uint8_t> payload;
-    payload.reserve(in.clusters.size() * (kRecordFixed + kAtlasBytes));
+    payload.reserve(in.clusters.size() * (kRecordFixed + atlas_bytes()));
     for (const auto& c : in.clusters) {
-        if (c.atlas.size() != kAtlasBytes) return false;
+        if (c.atlas.size() != atlas_bytes()) return false;
         put(payload, c.cluster_index);
         put(payload, c.center[0]); put(payload, c.center[1]); put(payload, c.center[2]);
         put(payload, c.half_extent);
@@ -431,7 +736,7 @@ bool save(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
     std::memcpy(h.magic, kMagic, 4);
     h.version = kFormatVersion;
     h.views = kViews;
-    h.cell_px = kCellPx;
+    h.cell_px = cell_px();
     h.grid_dim = kGridDim;
     h.supersample = kSuperSample;
     h.part_hash = part_hash;
@@ -478,12 +783,13 @@ bool load(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
         return reject(LoadFailure::Header, load_failure_text(LoadFailure::Header));
     }
     if (h.version != kFormatVersion || h.views != kViews ||
-        h.cell_px != kCellPx || h.grid_dim != kGridDim ||
+        h.cell_px != cell_px() || h.grid_dim != kGridDim ||
         h.supersample != kSuperSample) {
         char buf[160];
         std::snprintf(buf, sizeof(buf),
                       "format v%u/%uview/%upx, engine wants v%u/%uview/%upx",
-                      h.version, h.views, h.cell_px, kFormatVersion, kViews, kCellPx);
+                      h.version, h.views, h.cell_px, kFormatVersion, kViews,
+                      cell_px());
         return reject(LoadFailure::Version, buf);
     }
     if (h.part_hash != part_hash) {
@@ -504,7 +810,7 @@ bool load(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
         return reject(LoadFailure::Malformed, "zero clusters");
     }
     const uint64_t expect_bytes =
-        static_cast<uint64_t>(h.cluster_count) * (kRecordFixed + kAtlasBytes);
+        static_cast<uint64_t>(h.cluster_count) * (kRecordFixed + atlas_bytes());
     if (h.payload_bytes != expect_bytes) {
         char buf[128];
         std::snprintf(buf, sizeof(buf), "payload declares %llu bytes, expected %llu",
@@ -529,7 +835,7 @@ bool load(const std::string& path, uint64_t part_hash, uint64_t depicts_hash,
         std::memcpy(&c.half_extent, p, 4); p += 4;
         std::memcpy(&c.material_index, p, 4); p += 4;
         std::memcpy(&c.source_tris, p, 4); p += 4;
-        c.atlas.assign(p, p + kAtlasBytes); p += kAtlasBytes;
+        c.atlas.assign(p, p + atlas_bytes()); p += atlas_bytes();
         if (!(c.half_extent > 0.0f) || !std::isfinite(c.half_extent) ||
             !std::isfinite(c.center[0]) || !std::isfinite(c.center[1]) ||
             !std::isfinite(c.center[2])) {

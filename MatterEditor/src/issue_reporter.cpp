@@ -193,6 +193,40 @@ void write_shot_json(std::ostream& out, const IssueShot& shot) {
         << ", \"debug_view\": " << shot.debug_view_mode
         << ", \"ui_visible\": " << (shot.ui_visible ? "true" : "false")
         << "},\n";
+    // The history ring, sampled when the pixels were grabbed. Written before
+    // the scalars so a reader hits the timeline first -- it is the thing that
+    // answers "what was happening", where the scalars only say "what was
+    // happening at one instant that may not be the interesting one".
+    if (!shot.history.empty()) {
+        out << "      \"peak_ms\": {\"frame\": " << shot.peak_frame_ms
+            << ", \"render\": " << shot.peak_render_ms
+            << ", \"build\": " << shot.peak_build_ms << "},\n";
+        out << "      \"at_capture\": {\"instance_cache_expansions\": "
+            << shot.instance_cache_expansions
+            << ", \"command_layout_rebuilds\": " << shot.command_layout_rebuilds
+            << ", \"immediate_submits\": " << shot.immediate_submits
+            << ", \"resident_sectors\": " << shot.resident_sectors
+            << "},\n";
+        // frame, render, build, gpu, tris, instances -- one row per frame,
+        // oldest first. Compact on purpose: a few hundred rows of prose-shaped
+        // JSON would bury the report it is attached to.
+        out << "      \"history\": [";
+        for (size_t i = 0; i < shot.history.size(); ++i) {
+            const viewer::IssueFrameSample& h = shot.history[i];
+            if (i) out << ",";
+            out << "\n        [" << h.frame_ms << "," << h.render_ms << ","
+                << h.build_ms << "," << h.gpu_ms << "," << h.triangles << ","
+                << h.instances_drawn << "," << h.resolve_ms << ","
+                << h.draw_ms << "," << h.zone_vt_ms << "," << h.zone_cull_ms
+                << "," << h.zone_skin_ms << "," << h.zone_comp_ms
+                << "]";
+        }
+        out << "\n      ],\n";
+        out << "      \"history_columns\": [\"frame_ms\",\"render_ms\","
+               "\"build_ms\",\"gpu_ms\",\"triangles\",\"instances_drawn\","
+               "\"resolve_ms\",\"draw_ms\",\"zone_vt_ms\",\"zone_cull_ms\","
+               "\"zone_skin_ms\",\"zone_comp_ms\",\"zone_casters_ms\"],\n";
+    }
     out << "      \"frame_ms\": " << shot.frame_ms
         << ", \"instances_drawn\": " << shot.instances_drawn
         << ", \"triangles\": " << shot.triangles

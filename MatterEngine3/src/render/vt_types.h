@@ -16,6 +16,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
+#include <vector>
 
 #include <vulkan/vulkan_core.h>
 
@@ -187,6 +189,7 @@ struct VtPartContext {
     // Null/0 when the tape reads no field-derived inputs (or is absent).
     const uint16_t* surface_lanes = nullptr;
     uint32_t        surface_lane_count = 0;
+
 };
 
 // ---------------------------------------------------------------------------
@@ -351,6 +354,7 @@ class VtPageEnricher {
     // full hemisphere trace that is then multiplied by 0. Return a huge value
     // to opt out of the skip.
     virtual float max_footprint_meters() const = 0;
+
 };
 
 }  // namespace vt

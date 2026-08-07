@@ -18,6 +18,10 @@
 #include "part_store.h"        // viewer::PartStore (flat fast path)
 #include "raster_mesh.h"       // viewer::build_raster_mesh_data
 #include "../../libs/MeshChartingLib/include/mesh_charting.h"
+// M6: test_apply_chart_rung decimates a fixture to get a genuinely coarser
+// rung to adopt the base parameterisation onto.
+#include "../../libs/MatterSurfaceLib/include/mesh_indexed.hpp"
+#include "../../libs/MatterSurfaceLib/include/mesh_simplifier.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -391,6 +395,326 @@ void run_fixture(const char* label, const std::vector<Tri>& tris,
 // Ladder + sidecar tests
 // ---------------------------------------------------------------------------
 
+// M6 (texture unification): apply_chart_rung gives a coarser rung rep 0's
+// parameterisation instead of charting it independently.
+//
+// The keystone assertion is the IDENTITY one: fed rep 0's own geometry,
+// apply_chart_rung must reproduce build_chart_rung's UVs BIT FOR BIT. The two
+// write the same mapping from different sides — the builder from its internal
+// minU/minV locals, the adopter from the ChartEntry fields the GPU reads — so
+// if they ever disagree, the disagreement is exactly the gap between what the
+// bake wrote and what the shader will resolve, which is unfindable from a
+// screenshot.
+void test_apply_chart_rung() {
+    printf("=== test_apply_chart_rung ===\n");
+    const std::vector<Tri> tris = build_cylinder_overhang();
+    const std::vector<TriEx> base_ex = face_normal_triex(tris);
+
+    std::vector<TriEx> charted = base_ex;
+    chart_atlas::ChartAtlasRung base;
+    const bool built = lod_bake::build_chart_rung(
+        tris, charted, 16.0f, chart_atlas::kChartNormalConeDeg, base);
+    CHECK(built, "apply: the base rung charts");
+    if (!built) return;
+
+    // (1) IDENTITY. Same mesh in, same UVs out, exactly.
+    {
+        std::vector<TriEx> adopted = base_ex;
+        chart_atlas::ChartAtlasRung out;
+        const bool ok = lod_bake::apply_chart_rung(tris, adopted, tris, base, out);
+        CHECK(ok, "apply: adopting onto the base mesh succeeds");
+        // Agreement is measured in TEXELS, not bits, and the reason is worth
+        // stating because it is not sloppiness.
+        //
+        // build_chart_rung computes (dot(p,T) - minU) * tpm from its own local
+        // minU. Nothing downstream ever sees minU: ChartEntry stores
+        // origin = minU*T + minV*B, and both this function and the GPU resolve
+        // recover it as dot(origin, T). T and B are orthonormal, so that is
+        // minU*dot(T,T) + minV*dot(B,T) = minU in exact arithmetic and
+        // minU + O(eps) in float. The residual is inherent to the round trip
+        // through `origin`, which is the field the shader actually has.
+        //
+        // So the adopter cannot be bit-identical to the builder, and chasing
+        // that would be chasing the wrong target: vt_chart_resolve.glsl makes
+        // the SAME reconstruction, so this path agrees with the GPU at least
+        // as closely as the builder's own vertex UVs do. What must hold is
+        // that the disagreement is far below one texel — otherwise a rung
+        // adoption would visibly shift the texture.
+        double worst_texels = 0.0;
+        size_t worst_tri = 0;
+        bool sized = ok && adopted.size() == charted.size();
+        if (sized) {
+            for (size_t i = 0; i < charted.size(); ++i) {
+                const float2* a[3] = { &adopted[i].uv0, &adopted[i].uv1, &adopted[i].uv2 };
+                const float2* b[3] = { &charted[i].uv0, &charted[i].uv1, &charted[i].uv2 };
+                for (int k = 0; k < 3; ++k) {
+                    const double dx = std::fabs((double)a[k]->x - b[k]->x) * base.atlas_w;
+                    const double dy = std::fabs((double)a[k]->y - b[k]->y) * base.atlas_h;
+                    const double d = std::fmax(dx, dy);
+                    if (d > worst_texels) { worst_texels = d; worst_tri = i; }
+                }
+            }
+        }
+        CHECK(sized, "apply: the adopted UV stream has one entry per triangle");
+        CHECK(sized && worst_texels < 0.01,
+              "apply: adopted UVs agree with the builder's to well under a texel");
+        printf("  [apply] worst UV disagreement vs the builder: %.6f texels "
+               "(triangle %zu of %zu)\n", worst_texels, worst_tri, charted.size());
+        CHECK(ok && out.atlas_w == base.atlas_w && out.atlas_h == base.atlas_h,
+              "apply: the atlas dimensions are the base's, not recomputed");
+        CHECK(ok && out.charts.size() == base.charts.size(),
+              "apply: the chart count is the base's");
+        // The shared parameterisation must travel VERBATIM -- a chart whose
+        // basis or rect drifted would put the same surface point on a
+        // different texel per rung, which is the churn this milestone removes.
+        bool basis_same = ok && out.charts.size() == base.charts.size();
+        for (size_t c = 0; basis_same && c < base.charts.size(); ++c) {
+            const auto& a = out.charts[c];
+            const auto& b = base.charts[c];
+            basis_same = std::memcmp(a.origin, b.origin, sizeof a.origin) == 0 &&
+                         std::memcmp(a.tangent, b.tangent, sizeof a.tangent) == 0 &&
+                         std::memcmp(a.bitangent, b.bitangent, sizeof a.bitangent) == 0 &&
+                         a.rect_x == b.rect_x && a.rect_y == b.rect_y &&
+                         a.rect_w == b.rect_w && a.rect_h == b.rect_h &&
+                         a.texels_per_meter == b.texels_per_meter;
+        }
+        CHECK(basis_same, "apply: every chart's basis and rect survive verbatim");
+    }
+
+    // (2) A GENUINELY COARSER MESH. Decimate, adopt, and require that the
+    // adopted UVs land inside the atlas and that the per-chart ranges still
+    // partition the rung's triangles.
+    {
+        MeshIndexed fine = from_tri(tris, &base_ex);
+        SimplifyOptions opts;
+        opts.target_ratio = 0.4f;
+        MeshIndexed coarse_m = simplify(fine, opts);
+        std::vector<Tri> coarse; std::vector<TriEx> coarse_ex;
+        to_tri(coarse_m, coarse, coarse_ex);
+        CHECK(!coarse.empty() && coarse.size() < tris.size(),
+              "apply: the fixture actually decimated");
+        if (!coarse.empty()) {
+            coarse_ex.resize(coarse.size());
+            chart_atlas::ChartAtlasRung out;
+            const bool ok = lod_bake::apply_chart_rung(coarse, coarse_ex, tris,
+                                                       base, out);
+            CHECK(ok, "apply: a decimated rung adopts the base parameterisation");
+            if (ok) {
+                CHECK(out.tri_order.size() == coarse.size(),
+                      "apply: tri_order covers every triangle of the coarse rung");
+                size_t total = 0;
+                for (const auto& c : out.charts) total += c.tri_count;
+                CHECK(total == coarse.size(),
+                      "apply: the per-chart ranges partition the rung exactly");
+                std::vector<char> seen(coarse.size(), 0);
+                bool perm = true;
+                for (uint32_t t : out.tri_order) {
+                    if (t >= coarse.size() || seen[t]) { perm = false; break; }
+                    seen[t] = 1;
+                }
+                CHECK(perm, "apply: tri_order is a permutation, no duplicates");
+
+                // UVs stay on the atlas. A coarse triangle straddling a chart
+                // boundary reaches past its rect into the gutter, which is the
+                // documented approximation -- but it must not leave the atlas,
+                // because that samples another chart outright. Measured, and
+                // the overshoot is REPORTED rather than merely bounded, since
+                // the gutter is the thing this milestone has to justify.
+                float worst_over = 0.0f;
+                bool on_atlas = true;
+                for (size_t t = 0; t < coarse.size(); ++t) {
+                    const float2* uv[3] = { &coarse_ex[t].uv0, &coarse_ex[t].uv1,
+                                            &coarse_ex[t].uv2 };
+                    const auto& e = out.charts[0];
+                    (void)e;
+                    for (int k = 0; k < 3; ++k) {
+                        if (!(uv[k]->x >= 0.0f && uv[k]->x <= 1.0f &&
+                              uv[k]->y >= 0.0f && uv[k]->y <= 1.0f))
+                            on_atlas = false;
+                        worst_over = std::fmax(worst_over,
+                            std::fmax(std::fmax(-uv[k]->x, uv[k]->x - 1.0f),
+                                      std::fmax(-uv[k]->y, uv[k]->y - 1.0f)));
+                    }
+                }
+                CHECK(on_atlas, "apply: every adopted UV stays inside the atlas");
+                printf("  coarse rung %zu tris, worst UV overshoot %.5f "
+                       "(0 = fully inside)\n", coarse.size(),
+                       std::fmax(0.0f, worst_over));
+            }
+        }
+    }
+
+    // (3) FAIL-CLOSED. A base with no charts, or a mismatched TriEx, must
+    // return false and leave the caller's UVs untouched -- the same contract
+    // build_chart_rung has, so a caller's fallback path is unchanged.
+    {
+        std::vector<TriEx> ex = base_ex;
+        chart_atlas::ChartAtlasRung empty, out;
+        CHECK(!lod_bake::apply_chart_rung(tris, ex, tris, empty, out),
+              "apply: a chartless base fails closed");
+        std::vector<TriEx> short_ex(tris.size() - 1);
+        CHECK(!lod_bake::apply_chart_rung(tris, short_ex, tris, base, out),
+              "apply: a TriEx that does not match the mesh fails closed");
+        bool untouched = true;
+        for (size_t i = 0; i < ex.size(); ++i)
+            if (std::memcmp(&ex[i].uv0, &base_ex[i].uv0, sizeof(float2)) != 0)
+                untouched = false;
+        CHECK(untouched, "apply: a failed adoption leaves the UVs alone");
+    }
+    printf("PASSED\n");
+}
+
+// M6 step 2: ChartBakeOptions::unify_parameterisation makes a whole LADDER
+// share one chart table instead of charting each rung. The assertions are the
+// two halves of "rung-invariant": every rung reports the SAME parameterisation,
+// and the flag is off by default so nothing changes for callers that have not
+// opted in.
+void test_unified_ladder_parameterisation() {
+    printf("=== test_unified_ladder_parameterisation ===\n");
+    // Cylinder-overhang, NOT the cube. The cube is 12 triangles and barely
+    // decimates, so its rungs are the same mesh and chart identically with or
+    // without the flag — which makes BOTH assertions below vacuous. The
+    // failability check caught exactly that when this test was first written.
+    const std::vector<Tri> tris = build_cylinder_overhang();
+    const std::vector<TriEx> ex = face_normal_triex(tris);
+
+    auto bake = [&](bool unify, std::vector<chart_atlas::ChartAtlasRung>& charts) {
+        BLASManager blas;
+        std::vector<BLASHandle> handles;
+        lod_bake::ChartBakeOptions opts;
+        opts.unify_parameterisation = unify;
+        lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, blas, &ex, nullptr,
+                            &handles, &opts, &charts);
+    };
+
+    std::vector<chart_atlas::ChartAtlasRung> legacy, unified;
+    bake(false, legacy);
+    bake(true, unified);
+
+    CHECK(legacy.size() == unified.size(), "unify: same rung count either way");
+    CHECK(!unified.empty() && !unified[0].charts.empty(),
+          "unify: the base rung still charts");
+    if (unified.empty() || unified[0].charts.empty()) { printf("FAILED\n"); return; }
+
+    // THE PROPERTY. Every charted rung reports the base's atlas and the base's
+    // chart bases/rects. Only tri_order and the per-chart ranges may differ,
+    // because those index this rung's own triangles.
+    size_t charted_rungs = 0;
+    bool all_shared = true;
+    for (size_t r = 0; r < unified.size(); ++r) {
+        const auto& u = unified[r];
+        if (u.charts.empty()) continue;      // rung never charted; not a failure
+        ++charted_rungs;
+        if (u.atlas_w != unified[0].atlas_w || u.atlas_h != unified[0].atlas_h ||
+            u.charts.size() != unified[0].charts.size()) { all_shared = false; break; }
+        for (size_t c = 0; c < u.charts.size(); ++c) {
+            const auto& a = u.charts[c];
+            const auto& b = unified[0].charts[c];
+            if (std::memcmp(a.origin, b.origin, sizeof a.origin) != 0 ||
+                std::memcmp(a.tangent, b.tangent, sizeof a.tangent) != 0 ||
+                std::memcmp(a.bitangent, b.bitangent, sizeof a.bitangent) != 0 ||
+                a.rect_x != b.rect_x || a.rect_y != b.rect_y ||
+                a.rect_w != b.rect_w || a.rect_h != b.rect_h ||
+                a.texels_per_meter != b.texels_per_meter) { all_shared = false; break; }
+        }
+        if (!all_shared) break;
+    }
+    CHECK(charted_rungs >= 2,
+          "unify: the fixture produced at least two charted rungs to compare");
+    CHECK(all_shared,
+          "unify: every rung reports the base's atlas, chart bases and rects");
+    printf("  %zu charted rungs share one parameterisation\n", charted_rungs);
+
+    // FAILABILITY. Without the flag the rungs must NOT all agree, or the
+    // assertion above proves nothing -- a fixture whose rungs happen to chart
+    // identically would pass it either way.
+    {
+        bool legacy_differs = false;
+        for (size_t r = 1; r < legacy.size() && !legacy_differs; ++r) {
+            if (legacy[r].charts.empty() || legacy[0].charts.empty()) continue;
+            if (legacy[r].atlas_w != legacy[0].atlas_w ||
+                legacy[r].atlas_h != legacy[0].atlas_h ||
+                legacy[r].charts.size() != legacy[0].charts.size()) {
+                legacy_differs = true; break;
+            }
+            for (size_t c = 0; c < legacy[r].charts.size(); ++c) {
+                const auto& a = legacy[r].charts[c];
+                const auto& b = legacy[0].charts[c];
+                if (std::memcmp(a.origin, b.origin, sizeof a.origin) != 0 ||
+                    a.rect_x != b.rect_x || a.rect_y != b.rect_y ||
+                    a.rect_w != b.rect_w || a.rect_h != b.rect_h) {
+                    legacy_differs = true; break;
+                }
+            }
+        }
+        CHECK(legacy_differs,
+              "unify: WITHOUT the flag the rungs genuinely disagree (so the "
+              "test above is not vacuous)");
+    }
+
+    // Default-off, checked on the struct rather than inferred from behaviour.
+    CHECK(lod_bake::ChartBakeOptions{}.unify_parameterisation == false,
+          "unify: off by default, so existing callers are untouched");
+
+    // M6 step 3b: the bake half and the runtime half meet at
+    // chart_atlas::parameterisation_id. VtResidency keys a variant LAYER on
+    // this, so "the rungs share a table" only becomes "the rungs share their
+    // resident pages" if the fold agrees. Asserting the two halves against
+    // each other here is what makes the runtime behaviour follow from the bake
+    // behaviour instead of merely being intended to.
+    {
+        uint64_t first_id = 0;
+        bool have_first = false, all_same = true;
+        for (const auto& r : unified) {
+            if (r.charts.empty()) continue;
+            const uint64_t id = chart_atlas::parameterisation_id(r);
+            if (!have_first) { first_id = id; have_first = true; continue; }
+            if (id != first_id) all_same = false;
+        }
+        CHECK(have_first && all_same,
+              "unify: every unified rung folds to ONE parameterisation id "
+              "(so VtResidency gives them one layer)");
+
+        bool legacy_any_differs = false;
+        uint64_t legacy_first = 0;
+        bool legacy_have = false;
+        for (const auto& r : legacy) {
+            if (r.charts.empty()) continue;
+            const uint64_t id = chart_atlas::parameterisation_id(r);
+            if (!legacy_have) { legacy_first = id; legacy_have = true; continue; }
+            if (id != legacy_first) legacy_any_differs = true;
+        }
+        CHECK(legacy_any_differs,
+              "unify: per-rung rungs fold to DIFFERENT ids (so they keep one "
+              "layer each, exactly as before)");
+
+        // tri_order must not enter the fold: it indexes a rung's own
+        // triangles, so folding it would give every rung a distinct id and
+        // silently undo the whole milestone while every other test still
+        // passed. Perturb it directly rather than trusting the comment.
+        if (have_first && !unified.empty()) {
+            chart_atlas::ChartAtlasRung perturbed = unified[0];
+            perturbed.tri_order.push_back(12345u);
+            CHECK(chart_atlas::parameterisation_id(perturbed) == first_id,
+                  "unify: tri_order does not enter the parameterisation id");
+            // ...but the MAPPING does. Move a chart's rect and the id must
+            // move, or unrelated parameterisations would collapse onto one
+            // layer and sample each other's texels.
+            chart_atlas::ChartAtlasRung moved = unified[0];
+            if (!moved.charts.empty()) {
+                moved.charts[0].rect_x += 1u;
+                CHECK(chart_atlas::parameterisation_id(moved) != first_id,
+                      "unify: moving a chart's rect DOES change the id");
+                chart_atlas::ChartAtlasRung denser = unified[0];
+                denser.charts[0].texels_per_meter *= 2.0f;
+                CHECK(chart_atlas::parameterisation_id(denser) != first_id,
+                      "unify: changing texel density DOES change the id");
+            }
+        }
+    }
+    printf("PASSED\n");
+}
+
 void test_ladder_charts() {
     const std::vector<Tri> tris = build_cube();
     const std::vector<TriEx> ex = face_normal_triex(tris);
@@ -643,6 +967,68 @@ void test_flat_load_charts() {
         if (lp->lod_charts[li].charts.empty()) legacy_charted = false;
     CHECK(legacy_charted, "flat-path: legacy whole-part rungs carry charts");
 
+    // M6: the FLAT path is the one authored props take, and it charts at three
+    // sites of its own that ChartBakeOptions never reaches. Step 2 unified the
+    // two lod_bake ladders and left these three per-rung — so this asserts the
+    // switch actually arrives here, on a real PartStore load, rather than
+    // trusting that wiring five call sites hit all five.
+    {
+        auto ring_tables_agree = [](const viewer::LoadedPart& p,
+                                    const viewer::LoadedCluster& cl) {
+            const chart_atlas::ChartAtlasRung* first = nullptr;
+            for (int mesh_idx : cl.lod_mesh) {
+                if (mesh_idx < 0 || (size_t)mesh_idx >= p.lod_charts.size()) continue;
+                const auto& r = p.lod_charts[mesh_idx];
+                if (r.charts.empty()) continue;
+                if (!first) { first = &r; continue; }
+                if (r.atlas_w != first->atlas_w || r.atlas_h != first->atlas_h ||
+                    r.charts.size() != first->charts.size())
+                    return false;
+                for (size_t c = 0; c < r.charts.size(); ++c) {
+                    const auto& a = r.charts[c];
+                    const auto& b = first->charts[c];
+                    if (std::memcmp(a.origin, b.origin, sizeof a.origin) != 0 ||
+                        a.rect_x != b.rect_x || a.rect_y != b.rect_y ||
+                        a.rect_w != b.rect_w || a.rect_h != b.rect_h ||
+                        a.texels_per_meter != b.texels_per_meter)
+                        return false;
+                }
+            }
+            return first != nullptr;
+        };
+
+        store.release(hash);
+#ifdef _WIN32
+        _putenv_s("MATTER_VT_UNIFY", "1");
+#else
+        setenv("MATTER_VT_UNIFY", "1", 1);
+#endif
+        viewer::PartStore ustore(root.string());
+        const viewer::LoadedPart* up = ustore.get_or_load(hash);
+        CHECK(up != nullptr, "flat-path/unify: reload succeeds");
+        bool all_agree = up != nullptr && !up->clusters.empty();
+        if (up)
+            for (const viewer::LoadedCluster& cl : up->clusters)
+                if (!ring_tables_agree(*up, cl)) all_agree = false;
+        CHECK(all_agree,
+              "flat-path/unify: every rung of a cluster shares one parameterisation");
+        if (up) ustore.release(hash);
+#ifdef _WIN32
+        _putenv_s("MATTER_VT_UNIFY", "");
+#else
+        unsetenv("MATTER_VT_UNIFY");
+#endif
+        // The fixture's two LOD levels point at the SAME BLAS entry, so its
+        // rungs are the same mesh and would chart identically either way —
+        // which makes the assertion above true for the wrong reason. Say so
+        // rather than let it read as a proof it is not: what this checks is
+        // that the switch REACHES this path and nothing throws or empties,
+        // and the per-rung-geometry proof lives in
+        // test_unified_ladder_parameterisation on a fixture that decimates.
+        printf("  [flat-path/unify] switch reaches the flat path; the "
+               "differing-geometry proof is test_unified_ladder_parameterisation\n");
+    }
+
     store.release(hash);
 }
 
@@ -754,6 +1140,8 @@ int main(int argc, char** argv) {
     }
 
     test_ladder_charts();
+    test_apply_chart_rung();
+    test_unified_ladder_parameterisation();
     test_sidecar_roundtrip();
     test_flat_load_charts();
 

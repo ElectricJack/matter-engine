@@ -246,6 +246,14 @@ public:
         // no generator (the level's geometry is LOD0, or its `params` rebuild).
         std::string gen;                 // "" or a validated built-in name
         std::string gen_params_json;     // canonical JSON object; "{}" if none
+
+        // The explicit TERMINAL impostor (design §3.4). This rep is not
+        // geometry the ladder produces: it is the camera-facing billboard that
+        // takes over from the coarsest mesh rung, so it carries no `gen`, no
+        // `params` and no `exclude`, and its `at` IS the impostor distance --
+        // which is also the distance M6.5's baked distant shadows have to hand
+        // off at. At most one per table, and only in last position.
+        bool impostor = false;
     };
     using LodAuthoring = std::vector<LodLevelSpec>;
 

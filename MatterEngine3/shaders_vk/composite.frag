@@ -2,6 +2,10 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "vol_common.glsl"
+// IMPOSTOR_IDENTITY_BIT + impostor_identity_material(). gbuffer.frag sets bit
+// 31 of the identity attachment's .x on billboard fragments; the emission /
+// subsurface lookup below uses .x as a material index and must mask it off.
+#include "impostor_common.glsl"
 
 layout(location = 0) in vec2 in_uv;
 layout(location = 0) out vec4 out_hdr;
@@ -224,10 +228,39 @@ void main() {
         }
         return;
     }
-    uint material_index = texelFetch(identity_texture,
-                                     ivec2(gl_FragCoord.xy), 0).r;
+    // Mask gbuffer.frag's impostor bit out of .x before using it as an index.
+    // Without the mask an impostor pixel fails the bounds test below and
+    // silently loses its subsurface term -- a wrong-but-plausible result, not
+    // a visible failure, which is why the mask is spelled out rather than left
+    // to the guard.
+    uint material_index = impostor_identity_material(
+        texelFetch(identity_texture, ivec2(gl_FragCoord.xy), 0).r);
     vec3 sun_response = diffuse * direct;
-    if (material_index < rt_materials.length()) {
+    // AN IMPOSTOR CARD GETS NO SUBSURFACE TERM.
+    //
+    // A card depicts a WHOLE OBJECT, and the atlas carries one voted material
+    // for all of it (impostor_bake.cpp's per-cluster vote) -- a conifer is
+    // MAT.bark plus MAT.foliageThin, and foliageThin wins. Applying that one
+    // material's translucency to every pixel of the card therefore applies
+    // FOLIAGE scattering to the BARK, and foliageThin is thin-walled with
+    // scattering (0.25, 0.65, 0.12): bright green.
+    //
+    // That is not subtle. In issue eb9f2981 the camera faces the trees' shadow
+    // side, so card normals point away from the sun, `backlit` fires hard, and
+    // the green additive lands at roughly ten times the bark's ambient. It is
+    // why impostor trunks render bright green while mesh trunks -- which carry
+    // material 14, subsurface 0 -- render dim brown. Simulating this pixel
+    // end to end gave (66,111,30) with the term and (17,12,6) without; the
+    // measured impostor trunks are (90,148,45) and the mesh trunks (34,29,23).
+    //
+    // Cards lose genuine backlit foliage glow as a result. That is the right
+    // trade: the glow is a subtle effect at impostor distances, and the
+    // alternative on offer is green tree trunks. A per-texel material channel
+    // would fix it properly and is the obvious v2 (impostor_bake.h says so);
+    // this costs one bit test and no baked bytes.
+    const bool impostor_card = impostor_identity_is_card(
+        texelFetch(identity_texture, ivec2(gl_FragCoord.xy), 0).r);
+    if (!impostor_card && material_index < rt_materials.length()) {
         RtMaterialGpu material = rt_materials[material_index];
         float subsurface = clamp(material.scattering.w, 0.0, 1.0);
         if (subsurface > 0.0) {

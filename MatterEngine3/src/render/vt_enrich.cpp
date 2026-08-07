@@ -7,6 +7,7 @@
 #include "vt_enrich.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
@@ -318,6 +319,7 @@ struct VtEnricher::Impl {
     void record_init(VkCommandBuffer cmd);
     void retire(uint64_t frame_index);
     void evict_lru(uint64_t frame_index, Stats& stats);
+
 };
 
 bool VtEnricher::Impl::create_pipeline(const char* spirv_name,
@@ -929,6 +931,10 @@ void VtEnricher::Impl::record_init(VkCommandBuffer cmd) {
 }
 
 // ---------------------------------------------------------------------------
+// M6.5 directional tier
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 VtEnricher::VtEnricher(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -963,6 +969,15 @@ float VtEnricher::max_footprint_meters() const {
 }
 
 void VtEnricher::invalidate_part(uint64_t variant_hash) {
+    // Both sweeps retire through their graveyards rather than destroying in
+    // place. The old "device is idle per this method's contract" reasoning did
+    // not hold: the caller's horizon is measured from when the PART was
+    // released, but a variant can be rebuilt AFTER that -- a queued page
+    // request serviced in the intervening frames -- leaving an entry one frame
+    // old whose acceleration-structure build is still writing its scratch.
+    // Device fault reports caught exactly that: an invalid WRITE to a buffer
+    // that had lived 27 ms and been freed 12 ms earlier, a lifetime no
+    // graveyard-routed entry can have (kRetireFrames guarantees more).
     for (auto it = impl_->variants.begin(); it != impl_->variants.end();) {
         if (it->first.first == variant_hash) {
             // Deferred, exactly as evict_lru does it. Destroying here instead

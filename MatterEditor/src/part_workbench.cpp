@@ -821,6 +821,7 @@ void PartWorkbench::seed_lod_authoring() {
         // the parser, so splicing the name in front of the canonical params is
         // a faithful round-trip.
         if (L.has_at) ui.at = L.at;
+        ui.impostor = L.impostor;
         if (!L.gen.empty()) {
             std::string p = L.gen_params_json;   // canonical, e.g. {"error":0.05}
             ui.gen_text = "{\"gen\":\"" + L.gen + "\"";
@@ -852,7 +853,16 @@ std::string PartWorkbench::render_lods_block() const {
             out << "gen: " << L.gen_text;
             wrote = true;
         }
+        // §3.4's terminal. Re-emitted so a save round-trips it; without this
+        // line the level count is preserved and the impostor is not, which is
+        // precisely what the parse-verify below cannot see.
+        if (L.impostor) {
+            if (wrote) out << ", ";
+            out << "impostor: true";
+            wrote = true;
+        }
         if (L.has_params) {
+            if (wrote) out << ", ";   // was missing: `at: 140params: {...}`
             out << "params: " << (L.params_text.empty() ? "{}" : L.params_text);
             wrote = true;
         }
@@ -876,7 +886,9 @@ std::string PartWorkbench::render_lods_block() const {
             out << buf;
         }
         if (!L.gen_text.empty()) out << "generated, ";
-        if (L.has_params && !L.exclude.empty())
+        if (L.impostor)
+            out << "IMPOSTOR (terminal: the billboard, no geometry past here)";
+        else if (L.has_params && !L.exclude.empty())
             out << "regenerated, excludes " << L.exclude.size() << " module(s)";
         else if (L.has_params)
             out << "regenerated with param overrides";
@@ -939,7 +951,28 @@ bool PartWorkbench::write_lods_to_source(std::string& err) {
     script_host::ScriptHost verify_host;
     verify_host.set_shared_lib_roots(host_ ? host_->host.shared_lib_roots()
                                            : std::vector<std::string>{});
-    if (verify_host.eval_lods(new_source).size() != lod_authoring_.size()) {
+
+    // The check compares CONTENT, not level count. Count alone approves any
+    // edit that loses a field while keeping the shape -- and §3.4's `impostor`
+    // is exactly such a field: drop it and a part that becomes a billboard at
+    // 140 m silently becomes one that draws mesh at any distance, with the
+    // count unchanged and the save reported as successful.
+    auto round_trips = [&](const std::string& src) {
+        const auto got = verify_host.eval_lods(src);
+        if (got.size() != lod_authoring_.size()) return false;
+        for (size_t i = 0; i < got.size(); ++i) {
+            const auto& g = got[i];
+            const LodAuthLevelUI& w = lod_authoring_[i];
+            if (g.impostor != w.impostor) return false;
+            if (g.has_params != w.has_params) return false;
+            if (g.exclude != w.exclude) return false;
+            if (g.has_at != (w.at >= 0.0)) return false;
+            if (g.has_at && g.at != w.at) return false;
+            if (g.gen.empty() != w.gen_text.empty()) return false;
+        }
+        return true;
+    };
+    if (!round_trips(new_source)) {
         err = "parse-verify failed: the edited static lods block did not "
               "round-trip through eval_lods (check for a JS syntax error)";
         return false;
@@ -970,7 +1003,7 @@ bool PartWorkbench::write_lods_to_source(std::string& err) {
     // in-memory pre-check above cannot see.
     bool read_ok = false;
     const std::string reread = read_file(source_path, read_ok);
-    if (!read_ok || verify_host.eval_lods(reread).size() != lod_authoring_.size() ||
+    if (!read_ok || !round_trips(reread) ||
         verify_host.resolve_hash(reread, "{}") == 0) {
         write_file(source_path, previous_bytes);
         err = "post-write verification failed on the file just written; restored the previous source";
@@ -1048,6 +1081,29 @@ void PartWorkbench::draw_lod_authoring_panel() {
             ImGui::SameLine();
             ImGui::TextDisabled("gen %s", L.gen_text.c_str());
         }
+        // §3.4's terminal. Only offered on the LAST level and never on level 0
+        // -- the two rules eval_lods enforces -- so the panel cannot author a
+        // block the parser will reject wholesale.
+        if (i > 0 && i + 1 == lod_authoring_.size()) {
+            ImGui::SameLine();
+            if (ImGui::Checkbox("impostor (terminal)", &L.impostor) && L.impostor) {
+                L.has_params = false;      // the billboard has no geometry recipe
+                L.exclude.clear();
+                L.gen_text.clear();
+            }
+            if (L.impostor) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("(billboard past %s)",
+                                    L.at >= 0.0 ? "the distance above"
+                                                : "the derived distance");
+            }
+        } else if (L.impostor) {
+            // The level stopped being last (a level was appended below it).
+            // Clearing it here rather than at save time keeps the panel and
+            // the file in agreement about what will be written.
+            L.impostor = false;
+        }
+        ImGui::BeginDisabled(L.impostor);
         ImGui::SameLine();
         ImGui::Checkbox("params override", &L.has_params);
         if (L.has_params) {
@@ -1073,6 +1129,7 @@ void PartWorkbench::draw_lod_authoring_panel() {
                 }
             }
         }
+        ImGui::EndDisabled();   // paired with BeginDisabled(L.impostor) above
         ImGui::PopID();
         ImGui::Separator();
     }

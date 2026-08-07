@@ -213,6 +213,15 @@ struct TickDesc {
 struct FrameStats {
     // per-frame timings (ms)
     float resolve_ms = 0, build_ms = 0, draw_ms = 0;
+    // Split of draw_ms into the four spans that make it up. These were already
+    // measured for the periodic [draw.zones] log line; surfacing them per-frame
+    // is what lets a hitch report say WHICH span ate the frame instead of only
+    // that the frame was long. A hitch capture showed draw dominating a 400 ms
+    // frame with no way to attribute it further.
+    float draw_vt_requests_ms = 0;   // service_vt_rung_requests
+    float draw_cull_render_ms = 0;   // record_cull_and_render
+    float draw_skin_seal_ms = 0;     // finish_animation_skinning_frame
+    float draw_composite_ms = 0;     // record_composite_to_swapchain
     // per-frame counters
     uint32_t instances_resolved = 0;  // resolver output count
     uint32_t instances_drawn   = 0;   // clusters emitted by the GPU cull
@@ -255,6 +264,11 @@ struct FrameStats {
     uint32_t vt_requests_last_frame = 0;
     uint32_t vt_queue_depth = 0;
     uint32_t vt_rejected_variants = 0; // fell back to legacy (budget/layers)
+    // M6: registrations that reused an existing layer because it had the same
+    // parameterisation, and rebuilds a finer rung forced. shared_refs is the
+    // count of duplicate page sets NOT being fetched.
+    uint64_t vt_shared_refs_total = 0;
+    uint64_t vt_finer_rebuilds_total = 0;
     uint64_t vt_fills_total = 0;
     uint64_t vt_evictions_total = 0;
     uint64_t vt_pool_bytes = 0;

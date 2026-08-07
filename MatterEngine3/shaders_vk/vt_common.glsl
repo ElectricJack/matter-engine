@@ -65,6 +65,11 @@
 #define VT_CHANNEL_ORM    2
 #define VT_CHANNEL_AUX    3
 
+// THE ARRAY LENGTH MUST EQUAL vt::kVtChannelCount. The C++ side sizes its
+// descriptor array from that constant (vk_scene_renderer.cpp binds
+// descriptorCount = kVtChannelCount at bindings 10 and 17), so a shader that
+// declares fewer is a descriptor-count mismatch -- a validation error at best
+// and a read of an unwritten binding at worst.
 layout(set = VT_SET, binding = VT_POOL_BINDING)
 uniform sampler2DArray vt_pool[4];
 layout(set = VT_SET, binding = VT_INDIRECTION_BINDING, std430)

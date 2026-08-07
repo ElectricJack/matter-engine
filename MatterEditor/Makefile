@@ -603,7 +603,7 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_shadow.rgen.spv \
     build/shaders_vk/vt_composite.comp.spv: \
     $(ME3_DIR)/shaders_vk/wang_common.glsl
 
-# WP-H (chart VT): the shared chart-resolve includes both page passes consume.
+# WP-H (chart VT): the shared chart-resolve includes the page passes consume.
 build/shaders_vk/vt_composite.comp.spv \
     build/shaders_vk/vt_enrich_ao.comp.spv: \
     $(ME3_DIR)/shaders_vk/vt_chart_types.glsl \

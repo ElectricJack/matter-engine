@@ -845,13 +845,34 @@ uint32_t select_scene_cluster_lod(const VkSceneCluster& cluster,
         object_to_world, camera_eye, pixel_budget);
 }
 
+float cluster_distance_to_eye(const matter::Float3& aabb_min,
+                              const matter::Float3& aabb_max,
+                              const matter::Mat4f& object_to_world,
+                              matter::Float3 camera_eye) noexcept {
+    // cull.comp's `distance_to_eye`, extracted so the two questions the shader
+    // asks of it -- "is this past max_draw_distance?" and "which rung?" -- are
+    // answered from ONE expression on the CPU too. They were one expression on
+    // the GPU from the start; splitting them here would be a second rule.
+    const matter::Float3 local_center{
+        (aabb_min.x + aabb_max.x) * 0.5f,
+        (aabb_min.y + aabb_max.y) * 0.5f,
+        (aabb_min.z + aabb_max.z) * 0.5f};
+    const matter::Float3 world_center =
+        transform_point(object_to_world, local_center);
+    const float dx = world_center.x - camera_eye.x;
+    const float dy = world_center.y - camera_eye.y;
+    const float dz = world_center.z - camera_eye.z;
+    return std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 0.01f);
+}
+
 uint32_t select_cluster_lod_view(const matter::Float3& aabb_min,
                                  const matter::Float3& aabb_max,
                                  float radius, const float* switch_distances,
                                  uint32_t lod_count,
                                  const matter::Mat4f& object_to_world,
                                  matter::Float3 camera_eye,
-                                 float pixel_budget) noexcept {
+                                 float pixel_budget,
+                                 float override_lod_bias) noexcept {
     if (lod_count == 0 || switch_distances == nullptr) return 0;
     const matter::Float3 x_basis{object_to_world.m[0], object_to_world.m[4],
                                  object_to_world.m[8]};
@@ -865,23 +886,24 @@ uint32_t select_cluster_lod_view(const matter::Float3& aabb_min,
     };
     const float scale =
         (length(x_basis) + length(y_basis) + length(z_basis)) / 3.0f;
-    const matter::Float3 local_center{
-        (aabb_min.x + aabb_max.x) * 0.5f,
-        (aabb_min.y + aabb_max.y) * 0.5f,
-        (aabb_min.z + aabb_max.z) * 0.5f};
-    const matter::Float3 world_center =
-        transform_point(object_to_world, local_center);
-    const float dx = world_center.x - camera_eye.x;
-    const float dy = world_center.y - camera_eye.y;
-    const float dz = world_center.z - camera_eye.z;
     const float distance =
-        std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 0.01f);
+        cluster_distance_to_eye(aabb_min, aabb_max, object_to_world,
+                                camera_eye);
     // Must stay bit-for-bit the same rule as cull.comp's loop -- this mirror
     // exists to predict what the GPU will pick. Both now go through
     // lod_distance.h so there is one rule rather than two copies of one.
+    //
+    // The per-part lod_bias is applied to the FINISHED reach, under the same
+    // `!= 1` guard cull.comp uses, and not folded into pixel_budget. That is
+    // not fussiness: float multiplication is not associative, so
+    // (r*s*budget)*bias and r*s*(budget*bias) can differ in the last bit, and
+    // this function's whole job is to predict the GPU's answer. Under the
+    // guard the neutral case is not merely equivalent but the SAME
+    // instructions it was before overrides existed.
+    float reach = lod::reach(radius, scale, pixel_budget);
+    if (override_lod_bias != 1.0f) reach *= override_lod_bias;
     return static_cast<uint32_t>(lod::select_rep(
-        switch_distances, static_cast<int>(lod_count), distance,
-        lod::reach(radius, scale, pixel_budget)));
+        switch_distances, static_cast<int>(lod_count), distance, reach));
 }
 
 std::vector<uint32_t> dense_rt_lod_offsets(const VkScenePart& part) {
@@ -4075,7 +4097,7 @@ void VkSceneRenderer::drain_vt_invalidations(uint64_t serial) {
 void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
     if (part_slot < 0 || static_cast<size_t>(part_slot) >= parts_.size()) return;
     PartRecord& record = parts_[part_slot];
-    record.vt_slots.assign(kVkMaxLod, vt::kVtNoSlot);
+    record.vt_slots.assign(kVkMaxChartRung, vt::kVtNoSlot);
     // Demand-driven path: the part declares which rungs COULD carry a VT
     // variant and ships no payload. Nothing registers here — the per-frame
     // demand pass surfaces (part, rung) requests when a rung is actually
@@ -4108,7 +4130,8 @@ void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
                                     material_stride)
             : 0u;
 
-    const size_t rungs = std::min<size_t>(part.lod_charts.size(), kVkMaxLod);
+    const size_t rungs =
+        std::min<size_t>(part.lod_charts.size(), kVkMaxChartRung);
     for (size_t rung = 0; rung < rungs; ++rung) {
         const chart_atlas::ChartAtlasRung& atlas = part.lod_charts[rung];
         if (atlas.charts.empty()) continue;
@@ -4178,7 +4201,9 @@ void VkSceneRenderer::register_vt_part(int part_slot, const VkScenePart& part) {
         const uint32_t slot = vt_->register_variant(
             part.part_hash, static_cast<uint32_t>(rung), atlas, context);
         record.vt_slots[rung] = slot;
-        if (slot != vt::kVtNoSlot) vt_draw_slots_dirty_ = true;
+        if (slot != vt::kVtNoSlot) {
+            vt_draw_slots_dirty_ = true;
+        }
     }
 }
 
@@ -4211,10 +4236,11 @@ bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
     const auto found = slot_of_.find(part_hash);
     if (found == slot_of_.end()) return false;   // part unloaded since request
     PartRecord& record = parts_[found->second];
-    if (rung >= kVkMaxLod || ((record.vt_rung_mask >> rung) & 1u) == 0u)
+    if (rung >= kVkMaxChartRung ||
+        ((record.vt_rung_mask >> rung) & 1u) == 0u)
         return false;
-    if (record.vt_slots.size() < kVkMaxLod)
-        record.vt_slots.assign(kVkMaxLod, vt::kVtNoSlot);
+    if (record.vt_slots.size() < kVkMaxChartRung)
+        record.vt_slots.assign(kVkMaxChartRung, vt::kVtNoSlot);
     if (record.vt_slots[rung] != vt::kVtNoSlot) return true;   // already live
     std::string error;
     if (!ensure_vt_runtime(error)) return false;
@@ -4240,7 +4266,8 @@ bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
         for (PartRecord& candidate : parts_) {
             if (!candidate.live || candidate.vt_rung_mask == 0u) continue;
             const size_t rung_count =
-                std::min<size_t>(candidate.vt_slots.size(), kVkMaxLod);
+                std::min<size_t>(candidate.vt_slots.size(),
+                                 kVkMaxChartRung);
             for (uint32_t r = 0; r < rung_count; ++r) {
                 if (candidate.vt_slots[r] == vt::kVtNoSlot) continue;
                 const uint64_t stamp = candidate.vt_last_wanted[r];
@@ -4258,7 +4285,9 @@ bool VkSceneRenderer::register_vt_rung(uint64_t part_hash, uint32_t rung,
 
     const uint32_t slot = vt_->register_variant(part_hash, rung, atlas, context);
     record.vt_slots[rung] = slot;
-    if (slot != vt::kVtNoSlot) vt_draw_slots_dirty_ = true;
+    if (slot != vt::kVtNoSlot) {
+        vt_draw_slots_dirty_ = true;
+    }
     return slot != vt::kVtNoSlot;
 }
 
@@ -4334,7 +4363,7 @@ void VkSceneRenderer::update_vt_demand(matter::Float3 camera_eye,
             const std::vector<VkSceneLod>& lods = cluster_lods_[c];
             if (lod >= lods.size()) continue;
             const uint32_t rung = lods[lod].chart_rung;
-            if (rung >= kVkMaxLod ||
+            if (rung >= kVkMaxChartRung ||
                 ((record.vt_rung_mask >> rung) & 1u) == 0u)
                 continue;
             record.vt_last_wanted[rung] = vt_demand_frame_;
@@ -4374,7 +4403,7 @@ void VkSceneRenderer::update_vt_demand(matter::Float3 camera_eye,
     for (PartRecord& record : parts_) {
         if (!record.live || record.vt_rung_mask == 0u) continue;
         const size_t rung_count =
-            std::min<size_t>(record.vt_slots.size(), kVkMaxLod);
+            std::min<size_t>(record.vt_slots.size(), kVkMaxChartRung);
         for (uint32_t r = 0; r < rung_count; ++r) {
             if (record.vt_slots[r] == vt::kVtNoSlot) continue;
             if (vt_demand_frame_ - record.vt_last_wanted[r] >
@@ -4475,14 +4504,27 @@ uint32_t VkSceneRenderer::vt_slot_for_lod(const PartRecord& record,
     //
     // A cluster's ladder position is not its rung index: VkSceneLod::chart_rung
     // names the rung the step actually draws.
-    if (record.vt_slots.empty()) return vt::kVtNoSlot;
-    if (global_cluster >= cluster_lods_.size()) return vt::kVtNoSlot;
+    // MATTER_VT_CHART_LOG=1: census of WHICH early-out sends a draw down the
+    // legacy flat-tint path. Seven distinct reasons reach the same `return
+    // kVtNoSlot`, and downstream they are indistinguishable -- the fragment
+    // just silently shades from the vertex tint. Issue 6e1b444f needed this
+    // because chart coverage measured complete (charts == ladder on every
+    // part) while ~80% of canopy pixels still never sampled a page, and
+    // nothing in between reported why.
+    vt_route_census_[kVtRouteTotal].fetch_add(1, std::memory_order_relaxed);
+    auto miss = [this](VtRouteReason r) {
+        vt_route_census_[r].fetch_add(1, std::memory_order_relaxed);
+        return vt::kVtNoSlot;
+    };
+    if (record.vt_slots.empty()) return miss(kVtRouteNoSlots);
+    if (global_cluster >= cluster_lods_.size())
+        return miss(kVtRouteClusterOob);
     const std::vector<VkSceneLod>& lods = cluster_lods_[global_cluster];
-    if (lod_index >= lods.size()) return vt::kVtNoSlot;
+    if (lod_index >= lods.size()) return miss(kVtRouteLodOob);
     const uint32_t rung = lods[lod_index].chart_rung;
-    if (rung >= record.vt_slots.size()) return vt::kVtNoSlot;
+    if (rung >= record.vt_slots.size()) return miss(kVtRouteRungOob);
     const uint32_t slot = record.vt_slots[rung];
-    if (slot == vt::kVtNoSlot) return vt::kVtNoSlot;
+    if (slot == vt::kVtNoSlot) return miss(kVtRouteUnregistered);
     // TAIL GATE (streaming black-flash fix): a freshly registered variant's
     // pinned tail is MAPPED immediately but FILLED through the bounded fill
     // queue — potentially frames later under a streaming burst. Until the
@@ -4492,8 +4534,33 @@ uint32_t VkSceneRenderer::vt_slot_for_lod(const PartRecord& record,
     // one). vt_begin_frame republishes this table the frame a tail becomes
     // ready (consume_activation_dirty), so the gate lifts within a frame of
     // the fill landing.
-    if (!vt_ || !vt_->slot_active(slot)) return vt::kVtNoSlot;
+    if (!vt_ || !vt_->slot_active(slot)) return miss(kVtRouteTailGate);
+    vt_route_census_[kVtRouteOk].fetch_add(1, std::memory_order_relaxed);
     return slot;
+}
+
+// Dumped from rebuild_vt_draw_slots once the table is rebuilt, so the numbers
+// describe one complete pass over every (cluster, lod) the frame considered.
+void VkSceneRenderer::dump_vt_route_census() const {
+    static const bool chart_log = std::getenv("MATTER_VT_CHART_LOG") != nullptr;
+    if (!chart_log) return;
+    const uint64_t total = vt_route_census_[kVtRouteTotal].load();
+    if (total == 0) return;
+    static uint64_t dumps = 0;
+    if (++dumps % 60 != 1) return;   // ~1 line/second, not 1/frame
+    std::fprintf(stderr,
+                 "[vt-route] draws=%llu ok=%llu | no_slots=%llu cluster_oob=%llu "
+                 "lod_oob=%llu rung_oob=%llu unregistered=%llu tail_gate=%llu\n",
+                 (unsigned long long)total,
+                 (unsigned long long)vt_route_census_[kVtRouteOk].load(),
+                 (unsigned long long)vt_route_census_[kVtRouteNoSlots].load(),
+                 (unsigned long long)vt_route_census_[kVtRouteClusterOob].load(),
+                 (unsigned long long)vt_route_census_[kVtRouteLodOob].load(),
+                 (unsigned long long)vt_route_census_[kVtRouteRungOob].load(),
+                 (unsigned long long)vt_route_census_[kVtRouteUnregistered].load(),
+                 (unsigned long long)vt_route_census_[kVtRouteTailGate].load());
+    for (auto& c : vt_route_census_) c.store(0, std::memory_order_relaxed);
+
 }
 
 void VkSceneRenderer::rebuild_vt_draw_slots() {
@@ -4519,6 +4586,7 @@ void VkSceneRenderer::rebuild_vt_draw_slots() {
                                 static_cast<uint32_t>(lod));
         }
     }
+    dump_vt_route_census();
     vt_draw_slots_dirty_ = false;
 }
 
@@ -4730,15 +4798,33 @@ void record_tileset_upload(VkCommandBuffer cmd, void* user_data) {
 
 namespace {
 // Keep the shader's view grid and the baker's in lockstep. shaders_vk/
-// impostor_common.glsl hard-codes 16 views in a 4x4 grid, and gbuffer.frag
-// indexes cells with those numbers; a bake that changed either without
-// changing the shader would sample the wrong cell and look like a rendering
-// bug rather than a constant mismatch.
-static_assert(impostor::kViews == 16u, "shaders_vk/impostor_common.glsl: IMPOSTOR_VIEWS");
-static_assert(impostor::kGridDim == 4u, "shaders_vk/impostor_common.glsl: IMPOSTOR_GRID_DIM");
-static_assert(impostor::kLayerBytes ==
-                  static_cast<size_t>(impostor::kLayerPx) * impostor::kLayerPx * 4,
-              "impostor atlas layer is RGBA8");
+// impostor_common.glsl hard-codes the view grid, and raster.vert/gbuffer.frag
+// index cells with those numbers; a bake that changed either without changing
+// the shader would sample the wrong cell and look like a rendering bug rather
+// than a constant mismatch. The azimuth/elevation split is asserted too, not
+// just the total: 48 views could be 16x3 or 24x2, and the vertex stage's
+// `el_i * IMPOSTOR_AZIMUTHS + az_i` picks a different cell for each reading.
+// vt_common.glsl declares `uniform sampler2DArray vt_pool[N]` with a literal
+// N, and this file binds descriptorCount = kVtChannelCount at bindings 10 and
+// 17. They must agree: a shader declaring fewer than the descriptor count is a
+// validation error, and one declaring more reads a binding nothing wrote. The
+// literal cannot be derived from the enum across the GLSL boundary, so it is
+// pinned here instead. (4 since the M6.5 dir-occ channel was removed — this
+// assertion is what caught the shader half of that removal.)
+static_assert(vt::kVtChannelCount == 4u,
+              "shaders_vk/vt_common.glsl: uniform sampler2DArray vt_pool[4]");
+
+static_assert(impostor::kViews == 48u, "shaders_vk/impostor_common.glsl: IMPOSTOR_VIEWS");
+static_assert(impostor::kGridDim == 8u, "shaders_vk/impostor_common.glsl: IMPOSTOR_GRID_DIM");
+static_assert(impostor::kAzimuths == 16u, "shaders_vk/impostor_common.glsl: IMPOSTOR_AZIMUTHS");
+static_assert(impostor::kElevations == 3u,
+              "shaders_vk/impostor_common.glsl: IMPOSTOR_ELEVATIONS");
+static_assert(impostor::kViews == impostor::kAzimuths * impostor::kElevations,
+              "view count must be the azimuth/elevation product");
+// The cell RESOLUTION is a runtime setting (impostor_bake.h), so this one
+// cannot be a static_assert any more -- but no shader sees it: the atlas uv is
+// (cell + local) / GRID_DIM, normalized. What must still hold is the LAYOUT
+// the shader does mirror, and that is asserted above.
 
 struct ImpostorUploadRecord {
     VkImage  image = VK_NULL_HANDLE;
@@ -4864,7 +4950,23 @@ bool VkSceneRenderer::create_impostor_atlas(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateSampler(impostor)", result, error);
 
-    if (!create_tileset_image(VK_FORMAT_R8G8B8A8_UNORM, impostor::kLayerPx, 1,
+    // LATCHED. A Vulkan image cannot be resized, so whatever resolution this
+    // process baked with is the resolution the atlas is stuck at for its
+    // lifetime. impostor::cell_px() reads the environment on every call (so a
+    // test can bake at two resolutions inside one process); recording what the
+    // IMAGE was built for is what turns a mid-process change from a silent
+    // mis-sample into the rejection in adopt_part_impostors.
+    impostor_layer_px_ = impostor::layer_px();
+    impostor_atlas_bytes_ = impostor::atlas_bytes();
+    const double atlas_mib =
+        double(impostor_atlas_bytes_) * double(kImpostorMaxSlots) / 1048576.0;
+    std::fprintf(stderr,
+                 "[vk] impostor atlas: %u slots x 2 layers of %ux%u RGBA8 "
+                 "(cell %u px) = %.0f MiB\n",
+                 kImpostorMaxSlots, impostor_layer_px_, impostor_layer_px_,
+                 impostor::cell_px(), atlas_mib);
+    std::fflush(stderr);
+    if (!create_tileset_image(VK_FORMAT_R8G8B8A8_UNORM, impostor_layer_px_, 1,
                               kImpostorMaxSlots * 2, impostor_atlas_, error))
         return false;
     ImpostorClearRecord clear{impostor_atlas_.image, kImpostorMaxSlots * 2,
@@ -4938,12 +5040,17 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
     uint32_t first_layer = UINT32_MAX;
 
     for (const auto& imp : part.impostors) {
-        if (imp.atlas.size() != impostor::kAtlasBytes) {
+        // Compared against the LATCH (what the image was created with), not a
+        // fresh impostor::atlas_bytes(): those differ exactly when the
+        // resolution changed after init, which is the case this catches.
+        if (imp.atlas.size() != impostor_atlas_bytes_) {
             std::fprintf(stderr,
                 "[vk] impostor atlas for part %016llx cluster %u is %zu bytes, "
-                "expected %zu -- this impostor will not draw\n",
+                "expected %zu (atlas built for cell %u px) -- this impostor "
+                "will not draw\n",
                 static_cast<unsigned long long>(part.part_hash), imp.cluster,
-                imp.atlas.size(), impostor::kAtlasBytes);
+                imp.atlas.size(), impostor_atlas_bytes_,
+                impostor_layer_px_ / impostor::kGridDim);
             std::fflush(stderr);
             continue;
         }
@@ -4976,15 +5083,15 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
             const size_t offset = staging_bytes.size();
             staging_bytes.insert(
                 staging_bytes.end(),
-                imp.atlas.begin() + layer * impostor::kLayerBytes,
-                imp.atlas.begin() + (layer + 1) * impostor::kLayerBytes);
+                imp.atlas.begin() + layer * (impostor_atlas_bytes_ / 2),
+                imp.atlas.begin() + (layer + 1) * (impostor_atlas_bytes_ / 2));
             VkBufferImageCopy region{};
             region.bufferOffset = static_cast<VkDeviceSize>(offset);
             region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             region.imageSubresource.mipLevel = 0;
             region.imageSubresource.baseArrayLayer = slot * 2 + layer;
             region.imageSubresource.layerCount = 1;
-            region.imageExtent = {impostor::kLayerPx, impostor::kLayerPx, 1};
+            region.imageExtent = {impostor_layer_px_, impostor_layer_px_, 1};
             regions.push_back(region);
             first_layer = std::min(first_layer, slot * 2 + layer);
         }
@@ -5094,7 +5201,7 @@ void VkSceneRenderer::adopt_part_impostors(const VkScenePart& part,
         for (size_t k = 0; k < part.impostors.size() && k < assigned.size(); ++k) {
             const auto& imp = part.impostors[k];
             uint32_t max_cov = 0, covered = 0;
-            for (size_t t = 0; t + 3 < impostor::kLayerBytes; t += 4) {
+            for (size_t t = 0; t + 3 < impostor_atlas_bytes_ / 2; t += 4) {
                 const uint8_t a = imp.atlas[t + 3];
                 if (a > max_cov) max_cov = a;
                 if (a > 0) ++covered;
@@ -9654,6 +9761,36 @@ bool VkSceneRenderer::build_ray_geometry(
         const int found_slot = part_slot_lookup(source.part_hash);
         if (found_slot < 0) continue;
         PartRecord& part = parts_[static_cast<size_t>(found_slot)];
+        // ---- Per-module draw overrides, the RT half -------------------------
+        //
+        // cull.comp reads this same table (by cluster.part_slot, which is the
+        // parts_ index this lookup returns -- see where GpuCluster::part_slot
+        // is filled) and applies both fields in its `override_lod_bias` block,
+        // immediately before it computes `reach`. This lane read NEITHER, and
+        // that divergence is what the impostor reports were made of: dragging
+        // a part's LOD bias moved the RASTER onto the card while
+        // the traced mirror stayed on the mesh rung, so the tree's real
+        // geometry sat in the TLAS underneath its own billboard. Hence the
+        // coloured shadows cast by "impostored" foliage, and hence an impostor
+        // card catching its own tree's shadow -- the card's reconstructed
+        // pixels are inside the still-traced volume, the same pathology the
+        // 48.5 %-lit measurement below describes.
+        //
+        // ORDERING. The table is rebuilt in upload_scene_buffers() (the
+        // `part_draw_overrides_dirty_` branch), which runs from prepare_frame()
+        // -- and matter_engine.cpp calls prepare_frame() before
+        // record_cull_and_render(), which is what eventually records this
+        // function. So the table read here is this frame's, the same bytes the
+        // cull dispatch was handed. Nothing between those two points can set
+        // the dirty flag; a set_draw_overrides() from the editor lands before
+        // the next prepare_frame().
+        //
+        // The bound is a real guard, not a formality: the table is ONE neutral
+        // entry whenever no module overrides anything, so almost every part
+        // slot legitimately falls outside it and takes the neutral path.
+        matter::PartDrawOverrideGpu part_override{};
+        if (static_cast<size_t>(found_slot) < part_draw_override_table_.size())
+            part_override = part_draw_override_table_[found_slot];
         matter::Mat4f object_to_world{};
         std::memcpy(object_to_world.m, source.transform,
                     sizeof(object_to_world.m));
@@ -9710,6 +9847,50 @@ bool VkSceneRenderer::build_ray_geometry(
                 planning_radius =
                     0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
             }
+            // max_draw_distance: reject before any LOD work, on the same
+            // distance and against the same bound cull.comp uses, computed
+            // from the same planning bounds the rung choice uses below. (No
+            // stat is bumped here; cull.comp counts its rejection into
+            // frustum_culled, which is a RASTER draw statistic and would be
+            // double-counted if this lane touched it.)
+            //
+            // DECISION -- a part past its draw distance casts NO shadow, and
+            // that is deliberate. The alternative (keep tracing it so it can
+            // still cast) was rejected on three grounds:
+            //
+            //   1. `hide`, the sibling control in the same struct, is already
+            //      enforced on BOTH lanes -- draw_overrides.h spells out that a
+            //      GPU-cull-only hide "would leave the module visible in
+            //      reflections". max_draw_distance is "hide past N metres"; it
+            //      would be incoherent for the distance form of the same idea
+            //      to keep a traced copy the instant form removes.
+            //   2. A shadow with no visible caster reads as a bug, loudly. The
+            //      dial's typical use is scatter (grass, undergrowth) with a
+            //      cutoff well inside the shadow-casting range, so the artefact
+            //      would be a carpet of shadows over bare ground.
+            //   3. It is a PERFORMANCE dial. Keeping the BLAS build and the
+            //      TLAS instance alive past the cutoff spends most of what the
+            //      dial was set to save.
+            //
+            // What this gives up is the long shadow of a tall object dropped by
+            // a short cutoff. If that ever matters the fix is a separate
+            // `shadow_draw_distance` field, not a silent divergence between the
+            // lanes -- which is exactly the failure this whole change repairs.
+            const float distance_to_eye = vk_scene_detail::cluster_distance_to_eye(
+                {planning_bounds.min[0], planning_bounds.min[1],
+                 planning_bounds.min[2]},
+                {planning_bounds.max[0], planning_bounds.max[1],
+                 planning_bounds.max[2]},
+                object_to_world, camera_eye);
+            if (part_override.max_draw_distance > 0.0f &&
+                distance_to_eye > part_override.max_draw_distance)
+                continue;
+            // lod_bias rides through to the reach, exactly where cull.comp
+            // applies it (`if (override_lod_bias != 1.0) reach *= ...`).
+            // Everything else about this call already matched the shader: same
+            // planning bounds, same radius, same scale-from-basis, same
+            // switch-distance loop via lod_distance.h. Passing the bias is the
+            // last term that differed.
             const uint32_t lod_index = vk_scene_detail::select_cluster_lod_view(
                 {planning_bounds.min[0], planning_bounds.min[1],
                  planning_bounds.min[2]},
@@ -9717,7 +9898,7 @@ bool VkSceneRenderer::build_ray_geometry(
                  planning_bounds.max[2]},
                 planning_radius, gpu_cluster.switch_distances,
                 gpu_cluster.lod_count, object_to_world, camera_eye,
-                pixel_budget);
+                pixel_budget, part_override.lod_bias);
             // M2.5: a cluster at its terminal IMPOSTOR rung contributes no
             // traced geometry at all.
             //
@@ -11833,8 +12014,32 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
     pixel.visibility = {half_to_float(visibility_half[0]),
                         half_to_float(visibility_half[1]),
                         half_to_float(visibility_half[2])};
-    std::memcpy(&pixel.material_index, bytes.data() + 48,
-                sizeof(pixel.material_index));
+    // The identity attachment's .x is a material index in its low bits plus
+    // gbuffer.frag's impostor marker in bit 31. Split them here, at the CPU's
+    // only reader of that attachment, for the same reason every GPU reader
+    // masks: `material_index` must keep meaning a material index.
+    uint32_t identity_x = 0;
+    std::memcpy(&identity_x, bytes.data() + 48, sizeof(identity_x));
+    // Keep this constant in step with IMPOSTOR_IDENTITY_BIT in
+    // shaders_vk/impostor_common.glsl.
+    constexpr uint32_t kImpostorIdentityBit = 0x80000000u;
+    // UINT32_MAX is this attachment's CLEAR value in both lanes (see the
+    // render-pass setup: clearValue.color.uint32[0]/[1]), i.e. "no fragment
+    // was written here" -- NOT a material index that happens to carry the
+    // impostor bit. Masking it would turn the background into 0x7fffffff and
+    // quietly break every `material_index == UINT32_MAX` background assertion,
+    // so the sentinel passes through whole.
+    //
+    // The GPU readers need no such case: 0x7fffffff still fails every
+    // `< length()` bound the way 0xffffffff did, and rt_shadow.rgen retires
+    // background on depth before it ever fetches identity.
+    if (identity_x == UINT32_MAX) {
+        pixel.impostor = false;
+        pixel.material_index = identity_x;
+    } else {
+        pixel.impostor = (identity_x & kImpostorIdentityBit) != 0u;
+        pixel.material_index = identity_x & ~kImpostorIdentityBit;
+    }
     std::memcpy(&pixel.instance_token, bytes.data() + 52,
                 sizeof(pixel.instance_token));
     uint16_t raw_half[4]{};

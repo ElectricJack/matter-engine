@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #include "matter/vt_budgets.h"
 #include "matter/vulkan_device.h"
@@ -491,7 +492,7 @@ bool VtResidency::init(matter::VulkanDevice& vulkan, std::string& error) {
     stats_.pool_capacity = pool_pages_;
     stats_.max_variants = max_variants_;
     stats_.mesh_budget_bytes = mesh_budget_bytes_;
-    stats_.pool_bytes = layer_texels * pool_layers * (1 + 1 + 1 + 4);
+    stats_.pool_bytes = layer_texels * pool_layers * (1 + 1 + 1 + 4 + 1);
     stats_.indirection_capacity_bytes =
         static_cast<uint64_t>(indirection_words) * 4u;
     stats_.enrich_samples = enricher_ ? enricher_->sample_count() : 0u;
@@ -527,6 +528,7 @@ void VtResidency::shutdown() {
     layer_graveyard_.clear();
     debug_layer_reuse_.clear();
     layer_of_.clear();
+    param_key_of_rung_.clear();   // M6: alias table dies with the layers
     queue_.clear();
     queued_keys_.clear();
     enrich_queue_.clear();
@@ -615,9 +617,67 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
     if (!ready_) return kVtNoSlot;
     if (atlas.charts.empty() || atlas.atlas_w == 0 || atlas.atlas_h == 0)
         return kVtNoSlot;
-    const uint64_t key = variant_key(variant_hash, rung);
+    // M6: the layer is keyed by the PARAMETERISATION, not by the rung. Rungs
+    // of one part that share a chart table therefore share a layer — which is
+    // the whole point: the pages stop being re-fetched when the rung switches.
+    const uint64_t key = variant_key(variant_hash, chart_atlas::parameterisation_id(atlas));
+    const uint64_t alias = variant_key(variant_hash, rung);
+
+    // This rung already resolves somewhere. Same layer: idempotent, hand it
+    // back. DIFFERENT layer: the part re-baked into another parameterisation
+    // under the same (hash, rung), so drop the old alias first or its refcount
+    // leaks and the old layer is never reclaimed.
+    if (const auto prior = param_key_of_rung_.find(alias);
+        prior != param_key_of_rung_.end()) {
+        if (prior->second == key) {
+            const auto same = layer_of_.find(key);
+            if (same != layer_of_.end()) return same->second + 1u;
+        }
+        release_rung_alias(alias);
+    }
+
     const auto found = layer_of_.find(key);
-    if (found != layer_of_.end()) return found->second + 1u;
+    if (found != layer_of_.end()) {
+        VariantRung& existing = variants_[found->second];
+        // M6: WHICH RUNG'S MESH COMPOSITES THE SHARED PAGES.
+        //
+        // A layer's pages are rasterised from the mesh it was registered with,
+        // and registration is DEMAND-DRIVEN by default (matter_engine.cpp's
+        // vt_deferred_rung_mask; MATTER_VT_EAGER restores register-everything).
+        // So a sector first seen at distance registers a COARSE rung, and
+        // before this branch existed its page texels would have been baked
+        // from coarse geometry permanently — normals and materials resolved
+        // against a mesh the close-up camera is no longer drawing. That is a
+        // fidelity regression you would only ever see by flying in, which is
+        // exactly how it would have escaped a headless suite.
+        //
+        // A FINER rung therefore rebuilds the layer. Coarser or equal ones
+        // alias, so the common case (drawing away from a part) costs nothing
+        // and only the first close approach pays — never worse than the
+        // pre-M6 behaviour, where every rung switch rebuilt.
+        if (rung < existing.rung) {
+            // Every alias on this key is about to name a dead layer, so drop
+            // them all rather than leave refcounts describing a layer that no
+            // longer exists. The rungs re-register on demand and re-alias to
+            // the replacement.
+            for (auto it = param_key_of_rung_.begin();
+                 it != param_key_of_rung_.end();) {
+                if (it->second == key) it = param_key_of_rung_.erase(it);
+                else ++it;
+            }
+            release_variant_key(key);
+            ++stats_.finer_rebuilds_total;
+            // ...and fall through to build the layer from THIS rung's mesh.
+        } else {
+            // A sibling rung already built this parameterisation at equal or
+            // finer detail. Take a reference rather than a second layer: same
+            // pages, same indirection table, mesh budget spent once.
+            param_key_of_rung_[alias] = key;
+            ++existing.alias_refs;
+            ++stats_.shared_refs_total;
+            return found->second + 1u;
+        }
+    }
 
     VtVariantLayout layout{};
     if (!vt_build_layout(atlas.atlas_w, atlas.atlas_h, layout))
@@ -688,6 +748,13 @@ uint32_t VtResidency::register_variant(uint64_t variant_hash, uint32_t rung,
     v.variant_hash = variant_hash;
     v.rung = rung;
     v.layer = layer;
+    // M6: the layer's own identity, and its first referencing rung. Every
+    // later site that needs "which key owns this slot" reads param_key rather
+    // than recomputing variant_key(hash, rung) — under unification that
+    // recomputation names a key this layer is NOT registered under.
+    v.param_key = key;
+    v.alias_refs = 1;
+    param_key_of_rung_[alias] = key;
     v.layout = layout;
     v.atlas = atlas;                 // owned copy: the filler borrows this
     v.context = context;
@@ -858,10 +925,34 @@ bool VtResidency::release_variant_key(uint64_t key) {
     return true;
 }
 
+// M6: drop ONE (hash, rung) reference. The layer itself is torn down only when
+// the last rung referencing it goes — see VariantRung::alias_refs. Returns true
+// when the layer was actually released, so the callers below know whether the
+// stats they refresh could have changed.
+bool VtResidency::release_rung_alias(uint64_t alias) {
+    const auto it = param_key_of_rung_.find(alias);
+    if (it == param_key_of_rung_.end()) return false;
+    const uint64_t key = it->second;
+    param_key_of_rung_.erase(it);
+
+    const auto found = layer_of_.find(key);
+    if (found == layer_of_.end()) return false;   // already gone; alias was stale
+    VariantRung& v = variants_[found->second];
+    if (v.alias_refs > 1) {
+        --v.alias_refs;
+        return false;      // other rungs still draw through this layer
+    }
+    return release_variant_key(key);
+}
+
 void VtResidency::release_variant(uint64_t variant_hash) {
     if (!ready_) return;
+    // Walks rung aliases, NOT layer keys. Under M6 a part's layer is keyed by
+    // its parameterisation, so variant_key(hash, rung) is no longer a key in
+    // layer_of_ at all — this loop used to find them directly and would now
+    // free nothing, silently leaking every variant of every released part.
     for (uint32_t rung = 0; rung < 32u; ++rung)
-        release_variant_key(variant_key(variant_hash, rung));
+        release_rung_alias(variant_key(variant_hash, rung));
     stats_.pool_used = slots_.used();
     stats_.pool_pinned = slots_.pinned();
     stats_.queue_depth = static_cast<uint32_t>(queue_.size());
@@ -869,7 +960,7 @@ void VtResidency::release_variant(uint64_t variant_hash) {
 
 void VtResidency::release_variant(uint64_t variant_hash, uint32_t rung) {
     if (!ready_) return;
-    if (!release_variant_key(variant_key(variant_hash, rung))) return;
+    if (!release_rung_alias(variant_key(variant_hash, rung))) return;
     stats_.pool_used = slots_.used();
     stats_.pool_pinned = slots_.pinned();
     stats_.queue_depth = static_cast<uint32_t>(queue_.size());
@@ -928,7 +1019,6 @@ uint32_t VtResidency::invalidate_all_content() {
     std::fill(slot_tier_.begin(), slot_tier_.end(), uint8_t{0});
     stats_.enriched_pages = 0;
     stats_.enrich_queue_depth = 0;
-
     ++stats_.invalidations_total;
     stats_.pages_dropped_total += dropped;
     stats_.pool_used = slots_.used();
@@ -938,7 +1028,12 @@ uint32_t VtResidency::invalidate_all_content() {
 }
 
 uint32_t VtResidency::slot_for(uint64_t variant_hash, uint32_t rung) const {
-    const auto found = layer_of_.find(variant_key(variant_hash, rung));
+    // M6: two hops. The rung names an alias; the alias names the
+    // parameterisation key; that key owns the layer. Looking the rung up in
+    // layer_of_ directly would miss every unified part.
+    const auto alias = param_key_of_rung_.find(variant_key(variant_hash, rung));
+    if (alias == param_key_of_rung_.end()) return kVtNoSlot;
+    const auto found = layer_of_.find(alias->second);
     return found == layer_of_.end() ? kVtNoSlot : found->second + 1u;
 }
 
@@ -952,7 +1047,9 @@ bool VtResidency::update_variant_surface(uint64_t variant_hash, uint32_t rung,
                                          const uint16_t* lanes,
                                          uint32_t lane_count) {
     if (!ready_) return false;
-    const auto found = layer_of_.find(variant_key(variant_hash, rung));
+    const auto alias = param_key_of_rung_.find(variant_key(variant_hash, rung));
+    if (alias == param_key_of_rung_.end()) return false;
+    const auto found = layer_of_.find(alias->second);
     if (found == layer_of_.end()) return false;
     VariantRung& v = variants_[found->second];
     if (!v.live) return false;
@@ -1170,7 +1267,7 @@ void VtResidency::drain_enrich(VkCommandBuffer cmd) {
         // re-fill in between makes the candidate stale: the re-fill queued its
         // own candidate, so dropping this one loses nothing.
         if (!owner.live ||
-            owner.variant_key != variant_key(v.variant_hash, v.rung) ||
+            owner.variant_key != v.param_key ||
             !(owner.page == p.page)) {
             ++stats_.enrich_dropped_total;
             continue;
@@ -1274,6 +1371,12 @@ void VtResidency::refresh_budgets() {
     max_tail_fills_per_frame_ =
         clamp_u32(b.tail_fills_per_frame, 1u, kMaxFillFlags);
     max_enrich_per_frame_ = clamp_u32(b.enrich_per_frame, 0u, 16u);
+    // M6.5: the directional tier's own budget, read here rather than shared
+    // with the contact tier's. One budget for both would let a burst of fine
+    // pages consume the frame and leave the far field permanently unshadowed —
+    // and "permanently", for a bake that only runs on pages the camera has
+    // already moved away from, is not a transient.
+    //
     mesh_budget_bytes_ =
         static_cast<size_t>(clamp_u32(b.mesh_budget_mb, 1u, 16384u)) * 1024u *
         1024u;
@@ -1410,7 +1513,6 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
     // fill's transfer has been submitted and the layout transition below is the
     // dependency that orders them.
     drain_enrich(cmd);
-
     // --- pool transitions -------------------------------------------------
     for (uint32_t c = 0; c < kVtChannelCount; ++c) {
         if (pool_[c].layout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
@@ -1531,7 +1633,7 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
             uint32_t slot = p.preassigned_slot;
             if (!is_tail) {
                 VtSlotPool::Owner evicted;
-                if (!slots_.acquire(variant_key(v.variant_hash, v.rung),
+                if (!slots_.acquire(v.param_key,
                                     p.page, /*pinned=*/false, frame_index_,
                                     slot, evicted)) {
                     // Pool exhausted: everything is pinned or protected by

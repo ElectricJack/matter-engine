@@ -1359,6 +1359,31 @@ int main() {
     // report. Declared AFTER `vulkan` so the preview textures are torn down
     // before the device that owns them.
     viewer::IssueReporterState issue_state;
+    // ~8 s at 30 fps. Long enough that a hitch is still in the window by the
+    // time a human reacts and presses the key, short enough to stay small in
+    // the report (6 floats/ints per row).
+    static constexpr size_t kIssueHistoryFrames = 240;
+    std::vector<viewer::IssueFrameSample> issue_frame_history;
+    size_t issue_history_cursor = 0;
+    // Copies the ring into a shot in CAPTURE ORDER (oldest first) and derives
+    // the peaks. Defined as a lambda beside the ring so the two cannot drift.
+    auto fill_shot_history = [&](viewer::IssueShot& shot) {
+        const size_t n = issue_frame_history.size();
+        shot.history.clear();
+        shot.history.reserve(n);
+        for (size_t i = 0; i < n; ++i) {
+            // Full ring: start at the cursor (the oldest slot). Partial ring:
+            // it has not wrapped, so slot order IS capture order.
+            const size_t idx =
+                (n == kIssueHistoryFrames) ? (issue_history_cursor + i) % n : i;
+            shot.history.push_back(issue_frame_history[idx]);
+        }
+        for (const viewer::IssueFrameSample& h : shot.history) {
+            shot.peak_frame_ms = std::max(shot.peak_frame_ms, h.frame_ms);
+            shot.peak_render_ms = std::max(shot.peak_render_ms, h.render_ms);
+            shot.peak_build_ms = std::max(shot.peak_build_ms, h.build_ms);
+        }
+    };
     viewer::ImagePreviewCache issue_previews;
     issue_previews.configure(vulkan.get());
     // Resolve now, once, and say where: a report written somewhere unexpected
@@ -2442,6 +2467,13 @@ int main() {
                             shot.instances_drawn = fs.instances_drawn;
                             shot.triangles = fs.triangles;
                             shot.draw_batches = fs.draw_batches;
+                            fill_shot_history(shot);
+                            shot.instance_cache_expansions =
+                                fs.vk_instance_cache_expansions;
+                            shot.command_layout_rebuilds =
+                                fs.vk_command_layout_rebuilds;
+                            shot.immediate_submits = fs.vk_immediate_submits;
+                            shot.resident_sectors = fs.resident_sectors;
                             attach_preview(shot, cropped, shot.width, shot.height);
                             viewer::record_shot(issue_state, shot);
                             std::printf("issue shot written to %s\n", path.c_str());
@@ -3074,6 +3106,8 @@ int main() {
         stats.vt_variants            = frame_stats.vt_variants;
         stats.vt_max_variants        = frame_stats.vt_max_variants;
         stats.vt_rejected_variants   = frame_stats.vt_rejected_variants;
+        stats.vt_shared_refs_total    = frame_stats.vt_shared_refs_total;
+        stats.vt_finer_rebuilds_total = frame_stats.vt_finer_rebuilds_total;
         stats.vt_pool_used           = frame_stats.vt_pool_used;
         stats.vt_pool_capacity       = frame_stats.vt_pool_capacity;
         stats.vt_pool_pinned         = frame_stats.vt_pool_pinned;
@@ -3154,6 +3188,52 @@ int main() {
                 std::max((float)phase.pump, stats.loop_peak_pump_ms * 0.98f);
             stats.loop_peak_acquire_ms =
                 std::max((float)phase.acquire, stats.loop_peak_acquire_ms * 0.98f);
+
+            // ---- ISSUE-REPORT FRAME HISTORY ----------------------------
+            //
+            // Pushed EVERY frame so a shot can carry the seconds leading up
+            // to it. The reporter's deep state is read when the report is
+            // SUBMITTED -- seconds after any hitch -- and three hitch reports
+            // in a row recorded 29-31 ms while the user was describing 500 ms
+            // stalls. A capture-time ring is the difference between an
+            // instrument that can see the defect and one that cannot.
+            //
+            // HERE, not beside stats.frame_ms: `phase` is where the loop's
+            // real per-frame render time lives, and it is not computed until
+            // this point. Sampling the EMA earlier would have recorded a
+            // smoothed number, which is exactly the averaging that hid the
+            // spike in the first place.
+            //
+            // Fixed capacity, no allocation after the first frames, no locks:
+            // this runs on the main thread inside the frame it measures.
+            {
+                viewer::IssueFrameSample sample;
+                // RAW cadence, NOT hud_frame_ms. The HUD value is a 0.9/0.1
+                // EMA, and the first capture proved why that matters: its
+                // "peak frame" read 258 ms while the raw frames behind it were
+                // 400 ms, and peak_render (which was already raw) came out
+                // LARGER than peak_frame -- an impossibility that only makes
+                // sense once you know one of the two was smoothed. Recording a
+                // filtered signal in a spike recorder defeats the recorder.
+                sample.frame_ms = static_cast<float>(perf_frame_cadence_ms);
+                sample.render_ms = static_cast<float>(phase.render);
+                sample.build_ms = frame_stats.build_ms;
+                sample.gpu_ms = frame_stats.gpu_total_ms;
+                sample.triangles = frame_stats.triangles;
+                sample.instances_drawn = frame_stats.instances_drawn;
+                sample.resolve_ms = frame_stats.resolve_ms;
+                sample.draw_ms = frame_stats.draw_ms;
+                sample.zone_vt_ms = frame_stats.draw_vt_requests_ms;
+                sample.zone_cull_ms = frame_stats.draw_cull_render_ms;
+                sample.zone_skin_ms = frame_stats.draw_skin_seal_ms;
+                sample.zone_comp_ms = frame_stats.draw_composite_ms;
+                if (issue_frame_history.size() < kIssueHistoryFrames)
+                    issue_frame_history.push_back(sample);
+                else
+                    issue_frame_history[issue_history_cursor] = sample;
+                issue_history_cursor =
+                    (issue_history_cursor + 1u) % kIssueHistoryFrames;
+            }
         }
         if (!frame_completed) {
             std::fprintf(stderr, "FATAL: end_frame: %s\n", error.c_str());
@@ -3235,6 +3315,13 @@ int main() {
                         shot.instances_drawn = frame_stats.instances_drawn;
                         shot.triangles = frame_stats.triangles;
                         shot.draw_batches = frame_stats.draw_batches;
+                        fill_shot_history(shot);
+                        shot.instance_cache_expansions =
+                            frame_stats.vk_instance_cache_expansions;
+                        shot.command_layout_rebuilds =
+                            frame_stats.vk_command_layout_rebuilds;
+                        shot.immediate_submits = frame_stats.vk_immediate_submits;
+                        shot.resident_sectors = frame_stats.resident_sectors;
                         attach_preview(shot, cropped, shot.width, shot.height);
                         viewer::record_shot(issue_state, shot);
                         std::printf("issue shot written to %s\n", path.c_str());

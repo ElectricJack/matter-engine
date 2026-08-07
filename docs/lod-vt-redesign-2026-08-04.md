@@ -249,6 +249,29 @@ At runtime none of this is special: the impostor (or vanish) is still just rep N
 table, selected by the same walk (§5). The explicitness is purely an authoring-surface
 guarantee.
 
+> **BUILT 2026-08-05 — the impostor half, minus `views`.** `LOD.impostor({ at })` is live on
+> the `static lods` surface. It desugars to `{ impostor: true, at }`, so the terminal is
+> readable off the table *without* evaluating the class, like every other entry — which is
+> what the M6.5 shadow hand-off needs from it (it has to know the impostor distance before
+> baking anything). All four validation rules are enforced fail-closed in `eval_lods` and
+> re-checked in `part_flatten` (the plan is a file, so an older binary or a hand edit can
+> present a shape the parser never approved).
+>
+> **`views` is REJECTED, not ignored.** `impostor::kViews` is a format constant that the atlas
+> layout, the vertex stage and the format version are all built around, so honouring a
+> per-part count is a real change — and silently accepting the key would read exactly as if
+> that change had been made. A ladder naming `views` fails the parse.
+>
+> **The billboard is a picture of the ladder, not a member of its bounds.** `build_quad`
+> squares the card off at 1.10× the bounding-sphere radius, so admitting it to the cluster
+> AABB would inflate a tree's *horizontal* extent to its height. `cluster_radius` is the
+> number every authored `at` is normalized against, so that would silently move every switch
+> on the ladder, including the ones written in metres. The flatten excludes it, and the test
+> asserts a declared impostor leaves the radius bit-identical to the mesh-only bake.
+>
+> Still open: `LOD.vanish`, `replaces: 'subtree'` for assemblies (the authored path is
+> single-cluster), and per-part `views`.
+
 ### 3.5 Lazy, per-rep baking
 
 `lods()` is a *declaration*, not a work order. Nothing is generated until the streamer
@@ -427,6 +450,89 @@ instantly (the proxy was always resident), then detail pouring in nearest-first.
 
 Optional and v1-deferred: the proxy's BLAS can stand in for far geometry in RT, giving
 distant shadows and GI something to hit beyond the streamed rings.
+
+### 6.5 Distant shadows: bake the caster into the RECEIVER's page
+
+An impostor cannot cast a correct shadow. It is a camera-facing card, so the silhouette the
+light sees is not the silhouette the camera sees, and its plane passes through the object's
+centre so a traced ray starts inside the volume it depicts (measured: clamping RT to the
+mesh rung instead darkened the card 10x, 100 % lit → 2.6 %). M2.5 therefore ships impostors
+as non-tracing, and a tree loses its shadow the moment it impostors.
+
+**The resolution is to move the bake to the other end of the shadow.** Do not bake a
+shadow into the *pine's* page — pages are keyed per part VARIANT (`variant_hash` =
+`resolved_hash`), so every pine in the world would share one shadow, which is precisely why
+tier-2 enrichment is restricted to part-local self-occlusion. Bake the pine's occlusion into
+the **terrain sector's** page. A sector is its own part with **exactly one placement**, so
+world-context data is legitimately correct there. The per-variant objection applies to the
+caster and not to the receiver.
+
+> **CORRECTION 2026-08-05: the receiver storage named below is the WRONG ONE, and it would
+> have smeared shadows across the world.** `CHAN_HORIZON_A`/`B` live in the tileset `.gtex`,
+> and `tileset_common.glsl:774` samples them through `tileset_sample` → `wang_resolve` — i.e.
+> through **Wang tiling**. A tile repeats across the terrain, so folding one pine's occlusion
+> into it would paint that pine's shadow onto every repeat of that tile, everywhere. The
+> per-variant objection this section correctly raises against the caster's page applies to
+> the tileset channel just as hard: a tiled texture has no more idea *where* it is than a
+> part variant does.
+>
+> **The idea is right; the storage is the sector's VT page, not the tileset.** VT pages are
+> chart-space and per-sector — one placement, exactly as this section argues a receiver must
+> be. And the mechanism already exists: tier-2 hemisphere-AO enrichment
+> (`vt_enrich_ao.comp`) traces occlusion rays with `rayQueryEXT` against `variant_tlas`, a
+> TLAS `vt_enrich.cpp:723` builds with **`instance_count = 1`** — the variant's own mesh and
+> nothing else. That single line is what confines enrichment to self-occlusion.
+>
+> So M6.5 is: **extend the enricher's TLAS to carry nearby impostored casters alongside the
+> receiver's own mesh.** Their occlusion then lands in the terrain sector's own page texels,
+> per location, no tiling to smear it. That is smaller than what this section describes, it
+> reuses machinery that already ships (including the geometric-normal fix), and it needs no
+> new channel and no `.gtex` format change.
+>
+> What survives from the text below: every one of the four things to establish (angular
+> resolution must be measured, the handoff distance must BE the impostor distance, casters
+> outside the sector bounds must be included, and it lands after the single
+> parameterisation). What changes is only *where the occlusion is written* — and with it the
+> "bake a horizon, not a shadow" argument, since tier-2 AO stores occlusion rather than an
+> elevation profile. **Keeping the sun runtime-applied therefore has to be re-established on
+> the new storage rather than inherited**: a plain AO term is view- and sun-independent
+> darkening, which is NOT the same promise. Settle that before building.
+
+**Bake a HORIZON, not a shadow.** `.gtex` already carries a horizon map — `CHAN_HORIZON_A`
+and `CHAN_HORIZON_B`, eight azimuths (0/45/…/315°) of `sin(elevation)` per texel — and it is
+already consumed: `gbuffer.frag` resolves it into `horizon_sun_visibility`, writes it to
+`out_orm.w`, and `rt_shadow.rgen` multiplies it into traced sun visibility. A horizon map
+stores the *occluding geometry's elevation profile*, not the lighting, so **the sun angle is
+applied at runtime**. `sun_azimuth_deg` and `sun_elevation_deg` stay live draggable
+properties and the shadows still come for free. That is what makes this a bake worth doing:
+it does not freeze the thing you would most regret freezing.
+
+So: **when a sector's props become impostors, fold their occlusion into that sector's
+horizon map.** The props stop casting RT rays and the terrain keeps receiving their shadow.
+Near the camera, RT; far, the horizon map; the handoff is the impostor switch itself.
+
+**Four things to establish before this is promised, not after.**
+
+- **Angular resolution.** Eight azimuth bins are 45° apart and the map is quarter-resolution.
+  That is ample for a ridgeline and coarse for a trunk. The honest expectation is a soft
+  darkening under a canopy rather than a recognisable trunk shadow — which at impostor
+  distance is probably right, but it must be *measured* before anyone is told to expect
+  shadows.
+- **The handoff distance is the impostor distance.** Fold props in nearer and their RT shadow
+  and their baked horizon double up; farther and there is a gap with no shadow at all. This
+  therefore wants authorable impostor distances (§3.4 composed with §3.1), or the two dials
+  fight each other.
+- **Sector boundaries.** A prop near an edge casts onto its neighbour, so the bake must
+  consider casters outside the sector's own bounds — otherwise there is a seam exactly where
+  the shadow should cross.
+- **It must come AFTER §7's single parameterisation.** The horizon channel has already
+  produced one hard visual defect in this engine: the dark dome patches were the baked
+  horizon interrogated through a per-rung, mesh-dependent basis. Adding data to a channel
+  that is still asked in the wrong frame would build on the bug. §7 makes the query
+  rung-invariant; this belongs after it.
+
+Credit where due: this is Jack's proposal, and the horizon framing is what makes it
+sun-independent rather than a lighting bake.
 
 ---
 

@@ -4,6 +4,10 @@
 
 #include "rt_surface_common.glsl"
 #include "sky_common.glsl"
+// IMPOSTOR_IDENTITY_BIT + impostor_identity_material(). gbuffer.frag sets bit
+// 31 of the identity attachment's .x on billboard fragments, so every use of
+// it as a material index here has to mask first.
+#include "impostor_common.glsl"
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 layout(set = 0, binding = 1) uniform sampler2D depth_texture;
@@ -397,6 +401,14 @@ void main() {
     float normal_length_squared = dot(normal_sample, normal_sample);
     vec3 orm = texelFetch(orm_texture, source_pixel, 0).xyz;
     uvec2 identity = texelFetch(identity_texture, source_pixel, 0).rg;
+    // .x carries the material index in its low bits and gbuffer.frag's impostor
+    // marker in bit 31. Derive the index ONCE here; every rt_materials[] lookup
+    // below uses this and never identity.x directly. Reading the raw word would
+    // not crash -- the `< rt_materials.length()` guards would simply all fail --
+    // it would quietly drop subsurface, the POM roof escape, the reflection
+    // lane, the metal floor and transmission on impostor pixels, which is the
+    // kind of wrong that looks like a plausible material instead of a bug.
+    const uint material_id = impostor_identity_material(identity.x);
     // Reversed-Z: far/cleared background is now 0.0 (was 1.0 under standard-Z).
     if (depth <= 0.0 || albedo.a <= 0.0 || normal_length_squared < 0.5) {
         imageStore(raw_diffuse_image, pixel, vec4(0.0));
@@ -439,8 +451,8 @@ void main() {
     // had the same bug along the SUN, where it was worth 0.81 m; see the long
     // note there.
     vec3 shading_world = world;
-    if (identity.x < rt_materials.length()) {
-        RtMaterialGpu roof_mat = rt_materials[identity.x];
+    if (material_id < rt_materials.length()) {
+        RtMaterialGpu roof_mat = rt_materials[material_id];
         ground_tileset_slot = tileset_detail_slot(roof_mat.flags_misc);
         if (ground_tileset_slot >= 0 && tileset.pom_a.x > 0.0)
             world += normal * (tileset.pom_b.z + 0.02);
@@ -597,9 +609,9 @@ void main() {
     // bit-identical to the pre-metal-fold arithmetic (the dielectric
     // regression gate).
     float texel_metallic = clamp(orm.y, 0.0, 1.0);
-    if (identity.x < rt_materials.length() && orm.x <=
+    if (material_id < rt_materials.length() && orm.x <=
         constants.max_reflection_roughness) {
-        RtMaterialGpu primary = rt_materials[identity.x];
+        RtMaterialGpu primary = rt_materials[material_id];
         vec3 base_color = mix(primary.base_roughness.rgb, albedo.rgb,
                               clamp(albedo.a, 0.0, 1.0));
         float base_roughness = clamp(primary.base_roughness.w, 0.02, 1.0);
@@ -679,7 +691,7 @@ void main() {
                                     ? hit.surface.hit_t : constants.max_distance,
                                 roughness);
         }
-    } else if (identity.x < rt_materials.length() && texel_metallic > 0.0) {
+    } else if (material_id < rt_materials.length() && texel_metallic > 0.0) {
         // Reflection lane capped off (orm.x > max_reflection_roughness) but
         // the texel is metallic: diffuse is killed by orm.y everywhere, so
         // without this the texel goes black. Tier-1 floor, no rays: the same
@@ -688,7 +700,7 @@ void main() {
         // continuously at metalness 0 (where skipping the lane is the
         // legitimate legacy behaviour). primary_view was computed above off
         // the (possibly POM-lifted) shading point.
-        RtMaterialGpu primary = rt_materials[identity.x];
+        RtMaterialGpu primary = rt_materials[material_id];
         vec3 base_color = mix(primary.base_roughness.rgb, albedo.rgb,
                               clamp(albedo.a, 0.0, 1.0));
         float n_dot_v = max(dot(normal, primary_view), 1e-4);
@@ -708,8 +720,8 @@ void main() {
     // Denoiser aux lane: (hit distance, lobe roughness), same contract as
     // specular_aux above. Stays (0, 0) for pixels with no transmission.
     vec2 transmission_aux = vec2(0.0);
-    if (identity.x < rt_materials.length()) {
-        RtMaterialGpu trans_material = rt_materials[identity.x];
+    if (material_id < rt_materials.length()) {
+        RtMaterialGpu trans_material = rt_materials[material_id];
         transmission_weight = clamp(trans_material.transmission.x, 0.0, 1.0);
         if (transmission_weight > 0.0) {
             float ior = max(trans_material.transmission.y, 1.0001);

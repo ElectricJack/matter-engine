@@ -59,15 +59,59 @@
 // fractional coverage in the alpha channel, so the silhouette is antialiased
 // rather than stair-stepped at the size where it is actually seen.
 //
-// RING, NOT SPHERE. One azimuth ring at the object's equator, cylindrical
-// billboarding (world up preserved). Ground props are looked at from around,
-// not from above; a camera that circles an object changes azimuth continuously
-// and elevation barely. Looking straight down at an impostor rock shows its
-// side profile — at <= 10 px that is not resolvable, and it is the documented
-// v1 limit rather than an accident.
+// ELEVATION ROWS (2026-08-05). v1 baked ONE azimuth ring at the equator and
+// billboarded cylindrically, on the argument that ground props are looked at
+// from around rather than from above. Flying over StreamMountain is exactly the
+// case that argument excludes, and it fails two ways at once: a vertical card
+// seen from 60 degrees up is foreshortened to half its height while the mesh it
+// replaced is not, and the normals it hands the shader are the equator's, which
+// point sideways when the light and the eye are both above. That is the
+// impostor-vs-prefab brightness divergence, and it is structural — no amount of
+// tuning the shade fixes a card showing the wrong face.
 //
-// COST. Two RGBA8 layers of 128x128 (a 4x4 grid of 32x32 cells) per cluster:
-//   16 views * 32 * 32 texels * 8 bytes = 131,072 B = 128 KiB, disk and VRAM.
+// So: 3 elevation rings at 0 / 30 / 60 degrees, nearest-selected, and the card
+// billboards SPHERICALLY (it faces the eye instead of staying vertical). The
+// two go together — rings without a tilting card still draw the right image on
+// an edge-on quad, and a tilting card without rings draws the equator's image
+// where the top should be.
+//
+// Above 75 degrees the nearest ring is 60 and the error grows to 30 degrees at
+// straight-down. That IS the documented v1 limit now, moved from "any elevation
+// at all" to "steeper than looking down at 75 degrees".
+//
+// COST, and a correction. The elevation rings were paid for by halving the cell
+// from 32 to 16 px, on the argument that cells were not the binding constraint:
+// 32x32 is Nyquist-adequate to 32 px, three times past the ~10 px the azimuth
+// count allows. That argument was true and INSUFFICIENT. Nyquist is not the
+// only thing a cell has to do — the ALPHA CUTOUT also lives at cell resolution,
+// and it deletes any feature narrower than a texel no matter how well sampled
+// the rest is. At 16 px a spruce's trunk (0.21 m against a 0.274 m texel) could
+// never reach 50 % coverage, so the drawn impostor was 53 % of the tree's
+// height with the trunk missing entirely: the reported "tall trees shrink at
+// the impostor switch". Cutting cell resolution was not free; it cost that.
+//
+// The cutout half is fixed at runtime (kImpostorAlphaCutout, 0.25). The cell is
+// now restored and doubled outright, because the reason it was sized for ~10 px
+// no longer holds: impostors are being pulled deliberately CLOSER (the mesh
+// rung cap, MATTER_IMPOSTOR_DISTANCE), so they are drawn much larger than the
+// handover this atlas was budgeted for.
+//
+//                v1               rings            now
+//   cells        4x4 of 32x32     8x8 of 16x16     8x8 of 32x32
+//   views        16               48               48
+//   layer        128 x 128        128 x 128        256 x 256
+//   bytes        128 KiB          128 KiB          512 KiB
+//
+// So 4x the v1 budget for 3x the views at the ORIGINAL cell resolution. That is
+// a real cost and it is deliberate: the atlas already cost more bytes than the
+// mesh it replaces (see the note above), and it is a per-PART fixed cost
+// amortised over every instance drawn, so it pays in a scatter world — which is
+// exactly where impostors are worth having at all.
+//
+// Azimuth count is deliberately UNCHANGED at 16: it is the binding constraint
+// for ROTATION (see VIEWS above), and spending atlas on elevation or cells
+// never fixes an azimuth artefact. 16 cells of the 64 remain unused; the next
+// feature wanting atlas space should take those before touching kCellPx.
 //
 // ---------------------------------------------------------------------------
 // WHAT IS IN THE ATLAS
@@ -78,9 +122,22 @@
 // by the rock's material and a live material edit reaches it.
 //
 //   layer 0 "shade" : R,G = octahedral surface normal (object space)
-//                     B   = baked AO
+//                     B   = DEPTH from the near bound, normalized over 2h
 //                     A   = coverage (fractional, 4x4 supersampled)
 //   layer 1 "tint"  : R,G,B = TriEx tint rgb, A = tint blend strength
+//
+// EDGE PADDING (format v7). Uncovered texels used to stay zero-filled, and a
+// runtime bilinear tap near the silhouette therefore blended a covered texel
+// against tint = (0,0,0,0) and oct RG = (0,0). Neither zero is neutral:
+// resolveBaseColor treats a falling tint.a as "slide toward the voted
+// material's base colour" (the pale-olive canopy wash of issue 6e0c76fc — a
+// low-poly canopy is mostly silhouette at impostor resolution, so it hit the
+// whole crown, not a rim), and oct (0,0) DECODES to a valid slanted direction,
+// so silhouette normals came out corrupted rather than merely soft. After the
+// per-cell resolve, every covered texel's normal, depth and tint are therefore
+// dilated kPadTexels rings into the uncovered texels around it — coverage
+// alpha is NOT touched, so the silhouette the cutout sees does not move by a
+// single subsample. See pad_cluster_atlas() for why depth is padded too.
 //
 // The material INDEX is per-cluster (area-weighted mode over covered texels),
 // not per-texel: a 10 px billboard cannot resolve a material boundary, and a
@@ -98,6 +155,7 @@
 #include "tri.h"
 
 #include <cstddef>
+#include <cstdlib>
 #include <cstdint>
 
 #include "version_vector.h"   // M4: the single version-vector fold
@@ -115,15 +173,125 @@ namespace impostor {
 // but the CACHE identity now comes from the vector through the one fold site.
 constexpr uint32_t kFormatVersion = matter_version::components::kImpostorFormat;
 
-constexpr uint32_t kViews    = 16;                    // azimuth ring
-constexpr uint32_t kCellPx   = 32;                    // per-view cell edge
-constexpr uint32_t kGridDim  = 4;                     // kGridDim^2 >= kViews
-constexpr uint32_t kLayerPx  = kCellPx * kGridDim;    // 128
+constexpr uint32_t kAzimuths   = 16;                  // views per elevation ring
+constexpr uint32_t kElevations = 3;                   // rings, see above
+constexpr uint32_t kViews    = kAzimuths * kElevations;   // 48
+constexpr uint32_t kGridDim  = 8;                     // kGridDim^2 >= kViews
 constexpr uint32_t kSuperSample = 4;                  // per axis, per texel
-constexpr size_t   kLayerBytes = size_t(kLayerPx) * kLayerPx * 4;
-constexpr size_t   kAtlasBytes = kLayerBytes * 2;     // shade + tint
+
+// ---------------------------------------------------------------------------
+// CELL RESOLUTION IS A SETTING, not a constant.
+//
+// The view LAYOUT above is fixed -- the shader mirrors kViews/kGridDim as
+// #defines and the C++ side static_asserts them, because a grid mismatch
+// samples the wrong cell. The cell's RESOLUTION is different: gbuffer.frag
+// computes
+//     uv = (cell + local) / IMPOSTOR_GRID_DIM
+// which is normalized, so nothing in any shader depends on how many texels
+// are behind it. That is what makes this tunable at all, and it is why
+// raising it needs no shader change.
+//
+// WHAT IT COSTS. The GPU atlas is ONE image array, sized
+// kImpostorMaxSlots (128) x 2 layers x layer_px^2 x RGBA8, allocated up front
+// whether one slot is used or all of them. It is a per-WORLD cost, not a
+// per-instance one -- every instance of a part samples the same layer, which
+// is the entire point of an impostor:
+//
+//     cell_px    layer_px    atlas VRAM (128 slots)
+//        32         256              64 MiB
+//        64         512             256 MiB
+//       128        1024            1024 MiB     <-- default
+//       256        2048            4096 MiB
+//
+// The default trades memory for sharpness deliberately: impostors are pulled
+// in CLOSE here (the mesh rung cap and MATTER_IMPOSTOR_DISTANCE), so they are
+// drawn far larger than the ~10 px handover the original 32 px cell was
+// budgeted for. A machine with less VRAM turns it down; nothing else changes.
+//
+// CHANGING IT INVALIDATES BAKED ATLASES, by three independent paths, and that
+// is intended: an atlas baked at one cell size decoded at another is not
+// merely blurry, it is the wrong picture.
+//   1. depicts_hash_begin() folds cell_px, so a loaded atlas reports Stale.
+//   2. The sidecar header records cell_px and load() rejects a mismatch.
+//   3. ladder_shape_raw() folds it, so the FLAT rebakes too -- necessary
+//      because guard_band() below moves half_extent, i.e. the quad's
+//      geometry, not just its texels.
+constexpr uint32_t kDefaultCellPx = 128;
+
+// Power of two in [16, 256]. Power-of-two keeps layer_px (cell * 8) a power of
+// two, which is what every GPU wants for a sampled image; the ceiling is the
+// 4 GiB atlas above, which is already past useful.
+constexpr bool valid_cell_px(long v) {
+    return v >= 16 && v <= 256 && (v & (v - 1)) == 0;
+}
+
+// Read per call and cached in NO static, the same discipline (and for the same
+// reason) as part_flatten.h's env readers: a test must be able to bake twice
+// at two resolutions inside ONE process, which is the only way to prove the
+// staleness gates above actually fire. A malformed or out-of-range value falls
+// back to the default rather than half-applying.
+//
+// The renderer LATCHES the value it built its atlas from and rejects uploads
+// that disagree -- that is where a mid-process change would otherwise become a
+// silent mis-sample instead of a loud failure.
+inline uint32_t cell_px() {
+    const char* v = std::getenv("MATTER_IMPOSTOR_CELL_PX");
+    if (!v || !v[0]) return kDefaultCellPx;
+    char* end = nullptr;
+    const long parsed = std::strtol(v, &end, 10);
+    if (!end || end == v || *end != '\0' || !valid_cell_px(parsed))
+        return kDefaultCellPx;
+    return static_cast<uint32_t>(parsed);
+}
+
+inline uint32_t layer_px()    { return cell_px() * kGridDim; }
+inline size_t   layer_bytes() { return size_t(layer_px()) * layer_px() * 4; }
+inline size_t   atlas_bytes() { return layer_bytes() * 2; }   // shade + tint
+
+// GUARD BAND, derived so the margin is CONSTANT IN TEXELS.
+//
+// Cells are packed edge to edge in one layer, so a bilinear tap at a cell
+// border would otherwise reach into the next azimuth -- a rock with a sliver
+// of another view welded to its edge. The quad is made larger than the
+// bounding sphere so the silhouette stops clear of the border.
+//
+// The margin a band buys is NOT a property of the band:
+//     margin_texels = (0.5 - 0.5 / band) * cell_px
+// so one fixed constant means a different margin at every resolution. That is
+// exactly the trap the old fixed 1.20 left: it gave 1.45 texels at the
+// original 32 px cell and would have given 0.73 -- actively bleeding -- when
+// the elevation rings halved the cell to 16. It was then raised to 1.20 with
+// a static_assert and a comment saying "recompute this if kCellPx ever moves".
+// Now that kCellPx moves at RUNTIME, a comment is not a mechanism. Deriving
+// the band from the margin makes the invariant hold at every resolution by
+// construction, and costs less of the cell at high ones: 1.032 at 128 px
+// against the 1.20 that would have thrown away 17 % of every edge.
+constexpr float kGuardTexels = 2.0f;
+inline float guard_band() {
+    const float c = static_cast<float>(cell_px());
+    return c / (c - 2.0f * kGuardTexels);
+}
+
+// Ring spacing, radians. Ring r is baked at r * kElevationStep above the
+// equator; the runtime picks the NEAREST ring, so the boundaries sit halfway
+// between (15 and 45 degrees for the 0/30/60 rings). The bake and the vertex
+// stage must agree on this exactly, so it is written once here and mirrored
+// into shaders_vk/impostor_common.glsl under a static_assert.
+constexpr float kElevationStep = 0.52359877559829887308f;   // 30 degrees
+
+// The view index for one (azimuth, elevation) pair. Azimuth-major so a ring is
+// contiguous, which is what makes the runtime's index arithmetic a multiply-add
+// rather than a lookup.
+constexpr uint32_t view_index(uint32_t azimuth, uint32_t elevation) {
+    return elevation * kAzimuths + azimuth;
+}
 
 static_assert(kGridDim * kGridDim >= kViews, "view grid too small");
+static_assert(valid_cell_px(kDefaultCellPx), "default cell size is out of range");
+// The margin derivation is only >= 1 texel while the band's denominator stays
+// positive and the cell is large enough to spend 2 texels an edge on. Both
+// hold across the whole valid range; this pins the bottom of it.
+static_assert(16 > 2 * 2, "guard band derivation degenerates at this cell size");
 
 // Eligibility floor: the terminal mesh rung must carry at least this many
 // triangles for a 2-triangle billboard to be worth its atlas. See the header
@@ -137,7 +305,7 @@ struct ClusterImpostor {
     float    half_extent   = 0.0f;        // part-local half-size of the square quad
     uint32_t material_index = 0;          // dominant material over covered texels
     uint32_t source_tris   = 0;           // terminal mesh rung's triangle count
-    std::vector<uint8_t> atlas;           // kAtlasBytes: layer 0 then layer 1
+    std::vector<uint8_t> atlas;           // atlas_bytes(): layer 0 then layer 1
 };
 
 struct PartImpostor {
@@ -156,14 +324,41 @@ inline bool cluster_earns_impostor(size_t terminal_tris) {
 bool bake_cluster(uint32_t cluster_index, const std::vector<Tri>& tris,
                   const std::vector<TriEx>& triex, ClusterImpostor& out);
 
+// How many rings of uncovered texels inherit their covered neighbours' values.
+// A runtime bilinear tap reaches exactly one texel past the sample point, so
+// one ring is the correctness minimum; the second is margin for the parallax
+// re-tap landing just outside the first. NOT more: the guard band holds the
+// silhouette only kGuardTexels (2) clear of the cell border, so a wider pad
+// would start writing rings against the border for no consumer that can reach
+// them.
+constexpr uint32_t kPadTexels = 2;
+
+// Dilate covered texels' shade RGB (octahedral normal + depth) and tint RGBA
+// into the uncovered texels around them, kPadTexels rings, per cell — the
+// edge padding described in the atlas layout note above. Coverage (shade A)
+// is never written, so the silhouette is byte-identical before and after.
+// Layout is derived from atlas.size() alone (two RGBA8 layers of an
+// 8x8 grid), so the function cannot disagree with the buffer it is handed;
+// a buffer that is not that shape is left untouched. bake_cluster calls this
+// as its last step; it is public so a test can exercise it directly.
+void pad_cluster_atlas(std::vector<uint8_t>& atlas);
+
 // The content the atlas DEPICTS, folded to one word: every terminal-rung
 // triangle's vertex bytes, in cluster order, plus the bake parameters that
 // decide what the rasterizer produces. This is the cache identity — an atlas
 // whose depicts-hash does not match the ladder it is loaded beside is stale by
 // definition, and is rejected (and logged) rather than drawn.
 uint64_t depicts_hash_begin();
+// `triex` is REQUIRED, not optional, and the parameter is not defaulted on
+// purpose: the tint layer is baked from the material registry's albedo, so
+// both the writer (part_flatten) and the reader (part_store, which recomputes
+// this hash to decide whether a cached sidecar is fresh) must fold the same
+// material colours. A default would let one side silently omit them and
+// validate a stale atlas as fresh; making it required puts that mistake in
+// front of the compiler instead.
 void     depicts_hash_add_cluster(uint64_t& h, uint32_t cluster_index,
-                                  const std::vector<Tri>& tris);
+                                  const std::vector<Tri>& tris,
+                                  const std::vector<TriEx>& triex);
 uint64_t depicts_hash_finish(uint64_t h);
 
 // "parts/<16-hex>.bundle" — the IMPO section of the part's bundle, same

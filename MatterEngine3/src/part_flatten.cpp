@@ -807,6 +807,15 @@ static FlattenResult flatten_budget_ladder(const std::string& cache_root,
 // exclude only — does not come here at all (StaticLodPlan::drives_ladder), so
 // a part written before M3 flattens down the identical code path it always did.
 
+// MATTER_IMPOSTOR / MATTER_IMPOSTOR_DISTANCE / MATTER_LOD_MAX_MESH_RUNGS now
+// live in part_flatten.h as env_impostors_enabled(),
+// effective_impostor_distance_scale() and effective_max_mesh_rungs(), with
+// their reasoning. They moved out of this file because part_asset_v2 has to
+// reach them to compute a flat's cache identity (ladder_shape_digest) — the
+// bake configuration and the artifact's identity must be derived from ONE set
+// of readers, or a knob can change the ladder without changing the identity,
+// which is the exact defect that fix closes.
+
 // Read one number out of a canonical params JSON object ("{"error":0.05}").
 // Canonical JSON here is written by eval_lods: sorted keys, no whitespace, and
 // number values only (any other value type already failed the parse), so a
@@ -838,6 +847,20 @@ static FlattenResult flatten_static_lod_ladder(
                               matter::kMaxSerializedLodLevels);
     if (n == 0) { res.error = "flatten: empty static-lod plan"; return res; }
 
+    // The clamp above would TRUNCATE an over-long plan, and §3.4's terminal is
+    // by definition the last entry — so a plan longer than the cap would drop
+    // the impostor and bake a mesh-only ladder that looks entirely intentional.
+    // bake_static_lods refuses to write such a plan, but a plan is a file, and
+    // silently losing the terminal is the exact failure the workbench's
+    // count-only parse-verify used to allow. Fail loudly instead.
+    for (size_t i = n; i < plan.level_gen.size(); ++i) {
+        if (plan.level_gen[i].compare(0, 8, "impostor") == 0) {
+            res.error = "flatten: static-lod plan exceeds the serialized level "
+                        "cap and its impostor terminal falls outside it";
+            return res;
+        }
+    }
+
     // Per-level record: the BLAS slot, and the world-space error the level was
     // produced at (0 = none, i.e. verbatim geometry). eps is what supplies the
     // DERIVED default distance for a level that declared no `at` — R5's
@@ -867,6 +890,14 @@ static FlattenResult flatten_static_lod_ladder(
         ladder_line = hdr;
     }
 
+    // §3.4's terminal impostor, when the ladder declares one. The authored
+    // path is single-cluster, so this holds at most one billboard — but it
+    // goes through the same PartImpostor sidecar the default ladder writes,
+    // because the loader, the depicts-hash staleness check and the renderer's
+    // slot assignment are all keyed off that one artifact.
+    impostor::PartImpostor part_impostor;
+    uint64_t impostor_depicts = impostor::depicts_hash_begin();
+
     for (size_t i = 0; i < n; ++i) {
         const std::string gen = i < plan.level_gen.size() ? plan.level_gen[i]
                                                           : std::string();
@@ -875,6 +906,14 @@ static FlattenResult flatten_static_lod_ladder(
         const std::vector<Tri>*  tp = nullptr;
         const std::vector<TriEx>* ep = nullptr;
         float eps = 0.0f;
+        // The billboard is a PICTURE of the ladder, not a member of its
+        // geometry: it must not enter the cluster AABB (build_quad squares the
+        // card off about the mesh's largest extent, so a tall thin part would
+        // gain half its height in X and Y — inflating cluster_radius, which is
+        // the very number every authored `at` is normalized against, and
+        // silently moving every switch on the ladder), and it must not be
+        // reported as the coarsest mesh rung.
+        bool is_impostor = false;
 
         if (!gen.empty()) {
             // Named generator over LOD0. `decimate` is the only built-in: the
@@ -884,36 +923,93 @@ static FlattenResult flatten_static_lod_ladder(
             const std::string name = gen.substr(0, sp);
             const std::string pjson =
                 sp == std::string::npos ? std::string("{}") : gen.substr(sp + 1);
-            if (name != "decimate") {
+            if (name == "impostor") {
+                // §3.4's explicit terminal. eval_lods already enforced "at most
+                // one, last position only", but the plan is a FILE — one an
+                // older binary or a hand edit can have written — so the
+                // structural rules are re-checked here rather than assumed.
+                if (i + 1 != n) {
+                    res.error = "flatten: impostor rep is not the terminal rep";
+                    return res;
+                }
+                if (levels.empty()) {
+                    res.error = "flatten: impostor rep with no mesh rung to depict";
+                    return res;
+                }
+                is_impostor = true;
+                if (!env_impostors_enabled()) {
+                    // MATTER_IMPOSTOR=0: the ladder simply ends at the last
+                    // mesh rung, which is what it would have done had the
+                    // author not declared a terminal at all.
+                    if (ladder_log) ladder_line += " [impostor:off]";
+                    break;
+                }
+                const auto& blas_entries = blas.get_entries();
+                // Rep 0, not the coarsest rung -- see the default ladder's
+                // note above for why. `levels.front()` is this ladder's own
+                // rep 0 (the authored `at: 0` entry).
+                const uint32_t src_idx = levels.front().blas_idx;
+                const BLASManager::BLASEntry* src =
+                    src_idx < blas_entries.size() ? blas_entries[src_idx].get() : nullptr;
+                if (!src) {
+                    res.error = "flatten: impostor source rung missing";
+                    return res;
+                }
+                // Same eligibility floor the default ladder applies. An
+                // authored `at` says WHERE the billboard takes over, not that a
+                // 4-triangle rung is worth replacing with a 2-triangle card —
+                // so a declared impostor under the floor drops the rung rather
+                // than baking an atlas that buys nothing.
+                if (!impostor::cluster_earns_impostor(src->triangles.size())) {
+                    if (ladder_log) ladder_line += " [impostor:under-floor]";
+                    break;
+                }
+                impostor::ClusterImpostor imp;
+                if (!impostor::bake_cluster(0u, src->triangles, src->tri_extra, imp)) {
+                    if (ladder_log) ladder_line += " [impostor:bake-failed]";
+                    break;
+                }
+                impostor::build_quad(imp, own_tris, own_ex);
+                // Ordinal 0: the authored ladder is single-cluster, so this
+                // part has exactly one billboard. Written explicitly anyway —
+                // the renderer reads the channel unconditionally.
+                for (TriEx& e : own_ex)
+                    e.tint = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+                impostor::depicts_hash_add_cluster(impostor_depicts,
+                                                   imp.cluster_index,
+                                                   src->triangles,
+                                                   src->tri_extra);
+                part_impostor.clusters.push_back(std::move(imp));
+                tp = &own_tris; ep = &own_ex;
+            } else if (name != "decimate") {
                 res.error = "flatten: unknown lods generator '" + name + "'";
                 return res;
-            }
-            double err_m = 0.0, divisor = 0.0;
-            if (gen_param(pjson, "error", err_m)) {
-                eps = (float)err_m;
-            } else if (gen_param(pjson, "divisor", divisor) && divisor > 0.0) {
-                eps = radius / (float)divisor;
             } else {
-                res.error = "flatten: decimate needs error or divisor";
-                return res;
-            }
-            own_tris = lod_bake::decimate_to_error(g0.tris(), eps,
-                                                   /*use_aabb_bounds=*/false);
-            if (own_tris.empty()) {
-                res.error = "flatten: authored level decimated to nothing";
-                return res;
-            }
-            // Same shading-inheritance rule the default ladder uses: sample the
-            // source's authored normals rather than recomputing smooth ones
-            // over the decimated mesh (issue ef7053be).
-            {
+                double err_m = 0.0, divisor = 0.0;
+                if (gen_param(pjson, "error", err_m)) {
+                    eps = (float)err_m;
+                } else if (gen_param(pjson, "divisor", divisor) && divisor > 0.0) {
+                    eps = radius / (float)divisor;
+                } else {
+                    res.error = "flatten: decimate needs error or divisor";
+                    return res;
+                }
+                own_tris = lod_bake::decimate_to_error(g0.tris(), eps,
+                                                       /*use_aabb_bounds=*/false);
+                if (own_tris.empty()) {
+                    res.error = "flatten: authored level decimated to nothing";
+                    return res;
+                }
+                // Same shading-inheritance rule the default ladder uses: sample
+                // the source's authored normals rather than recomputing smooth
+                // ones over the decimated mesh (issue ef7053be).
                 MeshIndexed src_m = from_tri(g0.tris(), &g0.triex());
                 MeshIndexed tgt_m = from_tri(own_tris, nullptr);
                 ::reproject_triex(src_m, tgt_m, ReprojectNormals::SampleSource);
                 std::vector<Tri> ignored;
                 to_tri(tgt_m, ignored, own_ex);
+                tp = &own_tris; ep = &own_ex;
             }
-            tp = &own_tris; ep = &own_ex;
         } else if (plan.level_hashes[i] != root_hash) {
             // A `params` level: its own fresh build, already on disk.
             Gatherer gi(cache_root, targets);
@@ -928,7 +1024,7 @@ static FlattenResult flatten_static_lod_ladder(
         const std::vector<Tri>&  tris = *tp;
         const std::vector<TriEx>& ex  = *ep;
         if (tris.empty()) { res.error = "flatten: empty authored level"; return res; }
-        acc(tris);
+        if (!is_impostor) acc(tris);   // see is_impostor's declaration
 
         const TriEx* exp = ex.empty() ? nullptr : ex.data();
         BLASHandle h = blas.register_triangles(const_cast<Tri*>(tris.data()),
@@ -940,7 +1036,7 @@ static FlattenResult flatten_static_lod_ladder(
         if (idx == UINT32_MAX) { res.error = "flatten: BLAS registration failed"; return res; }
 
         levels.push_back({idx, eps});
-        res.coarsest_tris = tris.size();
+        if (!is_impostor) res.coarsest_tris = tris.size();
         if (ladder_log) {
             char rec[80];
             std::snprintf(rec, sizeof(rec), " [%zu]%zu@%g", i, tris.size(),
@@ -1011,6 +1107,22 @@ static FlattenResult flatten_static_lod_ladder(
 
     res.levels   = levels.size();
     res.clusters = 1;
+
+    // Sidecar first, ladder second — the same publish ORDER the default path
+    // uses, and for the same reason: a torn publish must only ever be able to
+    // leave an atlas with no ladder (harmless, nothing references it), never a
+    // ladder whose billboard rung has no atlas to draw.
+    if (!part_impostor.empty()) {
+        const std::string imp_path =
+            cache_root + "/" + impostor::cache_path_impostor(root_hash);
+        res.impostors = part_impostor.clusters.size();
+        if (!impostor::save(imp_path, root_hash,
+                            impostor::depicts_hash_finish(impostor_depicts),
+                            part_impostor)) {
+            res.error = "flatten: impostor sidecar write failed for " + imp_path;
+            return res;
+        }
+    }
 
     const std::string out_path = cache_root + "/" + part_asset::cache_path_flat(root_hash);
     if (!part_asset::save_flat_v3(out_path, blas, tlas, clusters,
@@ -1380,6 +1492,20 @@ static FlattenResult flatten_segmented(const std::string& cache_root,
     struct LevelMeta { float eps; uint32_t blas_idx; };
 
     bool seg_error = false;
+    // The mesh rung cap applies HERE TOO. The segmented builder is a second,
+    // independent copy of the ladder rule (benefit floor, min_level_tris,
+    // kMaxSerializedLodLevels) — capping only the classic loop would make a
+    // segmented flat silently disagree with an unsegmented one about how many
+    // rungs a part has, and nothing in the artifact records which builder
+    // produced it, so the divergence would be invisible.
+    //
+    // The unit is one CLUSTER'S ladder, the same unit kMaxSerializedLodLevels
+    // uses. A segmented flat emits its fine (trunk) and coarse (merged)
+    // clusters as separate FlatClusters over disjoint divisor ranges, and each
+    // carries its own ladder starting at its own rep 0 — so each is capped
+    // independently. The cap bounds what any one cluster publishes, which is
+    // what the renderer selects from.
+    const uint32_t max_mesh_rungs = effective_max_mesh_rungs(targets);
     auto build_segment = [&](const std::vector<Tri>& tris,
                              const std::vector<TriEx>& triex,
                              int div_lo, int div_hi,
@@ -1443,6 +1569,7 @@ static FlattenResult flatten_segmented(const std::string& cache_root,
             size_t last_kept_count = ctris.size();
             for (int di = div_lo; di < div_hi; ++di) {
                 if (level_metas.size() >= matter::kMaxSerializedLodLevels) break;
+                if (max_mesh_rungs && level_metas.size() >= max_mesh_rungs) break;
                 const float eps_total = radius / targets.radius_divisor[di];
                 const float eps_qem = eps_total - eps_base;
                 if (eps_qem <= 0.0f) continue;   // skip: budget already spent by child
@@ -1702,10 +1829,11 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
     // MATTER_IMPOSTOR=0 bakes a mesh-only ladder, so the tier can be A/B'd
     // against itself on one cache without a rebuild. Read once per flatten
     // (not static) so a test can flip it between calls.
-    const bool impostors_enabled = [] {
-        const char* v = std::getenv("MATTER_IMPOSTOR");
-        return !(v && v[0] == '0');
-    }();
+    const bool impostors_on = env_impostors_enabled();
+
+    // The mesh rung cap (FlattenTargets::max_mesh_rungs, env-overridable).
+    // Read once per flatten for the same reason. 0 = unlimited.
+    const uint32_t max_mesh_rungs = effective_max_mesh_rungs(targets);
 
     size_t max_levels = 0;
     size_t coarsest_tris = 0;
@@ -1861,6 +1989,12 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
         size_t last_kept_count = ctris.size();
         for (float div : targets.radius_divisor) {
             if (level_metas.size() >= matter::kMaxSerializedLodLevels) break;
+            // MESH RUNG CAP. level_metas holds only mesh rungs at this point
+            // (the impostor is appended below, after the loop), so this counts
+            // exactly what the knob names — reps including rep 0. Break, not
+            // continue: unlike the benefit floor, a cap says nothing about the
+            // rung's quality and every coarser divisor is equally excluded.
+            if (max_mesh_rungs && level_metas.size() >= max_mesh_rungs) break;
             // Use global radius so epsilon is consistent across clusters.
             const float eps = radius / div;
             // use_aabb_bounds=false: only topological boundary lock (open edges =
@@ -1926,7 +2060,7 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
         // (impostor::build_quad), which the vertex stage reads to face it at
         // the camera.
         float impostor_eps = 0.0f;
-        if (targets.impostor_terminal && impostors_enabled && !level_metas.empty()) {
+        if (targets.impostor_terminal && impostors_on && !level_metas.empty()) {
             const auto& blas_entries = blas.get_entries();
             const uint32_t term_idx = level_metas.back().blas_idx;
             const size_t term_tris =
@@ -1941,7 +2075,25 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
                 // renumber every later blas_index.
                 if (level_metas.size() >= matter::kMaxSerializedLodLevels)
                     level_metas.pop_back();
-                const uint32_t src_idx = level_metas.back().blas_idx;
+                // BAKE FROM REP 0, NOT THE COARSEST RUNG.
+                //
+                // This used to source level_metas.back() -- the rung the
+                // billboard takes over from -- on the reasoning that depicting
+                // it makes the handover seamless. That reasoning is wrong at
+                // both ends. The atlas rasterizes into a 16x16 cell, so the
+                // source's triangle COUNT is irrelevant to cost; what the cell
+                // resolves is silhouette and shading, and the coarsest rung has
+                // already thrown both away. M1.5's benefit rule made this
+                // strictly worse by letting that rung be much coarser than it
+                // used to be, so the billboard was baking decimation error on
+                // top of its own.
+                //
+                // Rep 0 is the authored mesh. Same bake cost, same bytes, a
+                // more accurate picture -- and the handover is no worse,
+                // because at the ~10 px where the switch happens the two
+                // sources differ by well under a pixel by construction (that
+                // is why the coarse rung was admissible in the first place).
+                const uint32_t src_idx = level_metas.front().blas_idx;
                 const BLASManager::BLASEntry* src =
                     src_idx < blas_entries.size()
                         ? blas_entries[src_idx].get() : nullptr;
@@ -1970,13 +2122,40 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
                     // One more ratio-2 step of the divisor schedule: the
                     // impostor switches in exactly where the next mesh rung
                     // would have, had one been worth building.
-                    impostor_eps = level_metas.back().eps > 0.0f
-                                       ? level_metas.back().eps * 2.0f
-                                       : radius;
+                    // impostor_distance_scale moves that without touching any
+                    // mesh rung's own distance (see its note in part_flatten.h
+                    // for why the global dials cannot do this).
+                    //
+                    // NOTE THIS IS ALSO WHAT MAKES max_mesh_rungs WORK. The
+                    // step is taken from level_metas.back() — whatever rung
+                    // the loop above left last, for whatever reason it stopped.
+                    // Cap the mesh ladder and the billboard follows the cap in,
+                    // one ratio-2 step past the last KEPT rung, with no second
+                    // placement rule to keep in sync.
+                    //
+                    // THE ONE CORNER WHERE THAT IS NOT TRUE, named rather than
+                    // quietly fixed: the `: radius` fallback below. It exists
+                    // for a ladder that admitted NO rung at all, where rep 0
+                    // has eps 0 and there is nothing to double — and `radius`
+                    // is the right answer there, because "nothing was worth
+                    // building" means the ladder already ran past its coarsest
+                    // divisor (radius/2, doubled = radius). max_mesh_rungs=1
+                    // reaches the same fallback for the OPPOSITE reason (we cut
+                    // the ladder off at rep 0), and radius is far coarser than
+                    // any rung eps, so at that one setting the billboard moves
+                    // FARTHER out instead of nearer. Left alone deliberately:
+                    // changing the fallback would move every small part's
+                    // impostor on a DEFAULT bake, which is the one thing this
+                    // change must not do. Caps of 2 and up behave as designed.
+                    const float scale = effective_impostor_distance_scale(targets);
+                    impostor_eps = (level_metas.back().eps > 0.0f
+                                        ? level_metas.back().eps * 2.0f
+                                        : radius) * scale;
                     if (register_level(quad_tris, quad_ex, impostor_eps,
                                        level_metas)) {
                         impostor::depicts_hash_add_cluster(
-                            impostor_depicts, imp.cluster_index, src->triangles);
+                            impostor_depicts, imp.cluster_index, src->triangles,
+                            src->tri_extra);
                         part_impostor.clusters.push_back(std::move(imp));
                     } else {
                         return res;
@@ -2102,6 +2281,21 @@ FlattenResult flatten_part(const std::string& cache_root, uint64_t root_hash,
     // (BOUNDARY-child pre-bake) nest naturally as child flatten spans.
     // Observation-only; no-op without a current collector.
     BAKE_SPAN(bake_trace::kSpanFlatten);
+    // A flat's cache identity carries the AMBIENT ladder shape (compiled
+    // defaults + env), because that is the only shape a READER of the artifact
+    // can reconstruct — see ladder_shape_digest in part_flatten.h. A caller
+    // that overrides a SHAPE field in its own FlattenTargets therefore writes
+    // an artifact labelled with a shape it does not have, and the staleness
+    // gate cannot protect it. Nothing in the engine does this; say so out loud
+    // rather than let a future caller discover it as wrong pixels.
+    if (ladder_shape_digest(targets) != active_ladder_shape_digest()) {
+        std::fprintf(stderr,
+                     "  part_flatten: WARNING root=%016llx baked with per-call "
+                     "ladder-shape overrides; the flat is stamped with the "
+                     "AMBIENT shape and will not be rejected as stale. Drive "
+                     "shape from the env knobs instead.\n",
+                     (unsigned long long)root_hash);
+    }
     try {
         FlattenResult res = flatten_part_impl(cache_root, root_hash, targets);
         BAKE_COUNT("levels",        (double)res.levels);

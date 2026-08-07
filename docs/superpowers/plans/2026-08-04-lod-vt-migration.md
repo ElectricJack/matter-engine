@@ -370,6 +370,29 @@ Not in scope: close-range fidelity. Rep 0 is the raw undecimated mesh, so this m
 cannot add near detail — that is bounded by the part's build resolution and belongs to M3's
 recipe work (design §3.3, closing note).
 
+> **A downstream consumer this rule silently invalidated, found 2026-08-05.** The benefit
+> floor does not only delete rungs — it moves where a ladder's FIRST switch happens, and
+> anything that picks a rung by pixel size feels that. `test_flatten_segmented` had been red
+> on this branch (cold cache and warm, with and without `MATTER_IMPOSTOR`) on
+> `coarse L0 < trunk + 2 * child full-res`, failing by exactly zero: 722 vs 722.
+>
+> The seg child's ladder now reads
+> `512:360- 256:360- 128:332- 64:312- 32:280- 16:156+ 8:90+ 4:54+ 2:28+` — every rung down to
+> divisor 32 rejected, because 360 → 332 → 312 → 280 never buys 30%. Those near-duplicate
+> rungs used to exist, and the fixture's 64 px hint landed on one. With them gone the child's
+> first real switch is a 16 px-equivalent, so at 64 px `select_level_local` correctly returns
+> level 0, `src = min(C,E)` is 0, and the coarse segment inlines full-res.
+>
+> **The mechanism was never broken; the fixture stopped exercising it.** The hint moved to
+> 8 px, which lands inside the admitted ladder (the 156-tri rung) — the thing the test exists
+> to prove gets sourced. The ladder listing and the reasoning are in the test so the next
+> person to move a benefit floor sees what it costs downstream.
+>
+> **Not a production regression:** no schema in the repo passes `inlineBelowPx` (checked
+> across `projects/` and `MatterEditor/`), so the segmented coarse path has no live caller —
+> this test is its only consumer today. Worth remembering when one appears: a hint px chosen
+> against a pre-M1.5 ladder can now select full-res.
+
 ---
 
 ## M2 — Atomic switches
@@ -545,6 +568,59 @@ epsilon-search duplication tests. Tests added: stage memoization, per-rep invali
 
 ---
 
+## M3.5 — The authored impostor terminal *(the M3/M2.5 seam)*
+
+> **STATUS 2026-08-05: DONE.** M3 landed authored distances and M2.5 landed the impostor,
+> but on separate paths: the default (divisor-schedule) ladder grew a terminal billboard
+> automatically, and the authored ladder could not have one at all. That gap is why "trees
+> render geometry way out past where I'd want impostors" had no answer short of dialling the
+> global pixel budget down and dragging everything else coarse with it.
+
+Scope: `LOD.impostor({ at })` as design §3.4's explicit terminal on the `static lods`
+surface, desugaring to `{ impostor: true, at }` so it stays readable without evaluating the
+class — the property lazy per-rep baking (M3b) and the M6.5 shadow hand-off both depend on.
+
+**Four fail-closed rules**, enforced in `eval_lods` and re-checked in `part_flatten` because
+the plan is a file an older binary or a hand edit can write:
+1. At most one impostor, only in last position — a mesh rep after the billboard is an error,
+   since the billboard is where the ladder *ends*.
+2. Never rep 0: the impostor is a picture of the coarsest mesh rung, so one must exist.
+3. No `gen`, no `params`, no `exclude` — it has no geometry recipe of its own.
+4. `views` is **rejected**, not accepted-and-ignored. `impostor::kViews` is a format constant
+   the atlas layout, the vertex stage and the format version are built around.
+
+**Two things that would have been silent had they been got wrong**, both now asserted:
+
+- **The billboard must not enter the cluster AABB.** `build_quad` squares the card off at
+  1.10× the bounding-sphere radius, so a 0.4 m-wide, 6 m-tall trunk would gain a 6.6 m
+  horizontal extent. `cluster_radius` is what every authored `at` is normalized against, so
+  the ladder's authored metres would all quietly move. The test bakes the same ladder with
+  and without the terminal on a deliberately tall, thin fixture and requires the radius to
+  match bit for bit; deleting the guard fails it by ~55%.
+- **The Part Workbench's "Save lods to source" would have deleted the terminal.** Its
+  parse-verify compared level COUNT, and dropping `impostor` leaves the count unchanged —
+  the same near-miss shape as `1a9b4606`, one field later. The verify now compares CONTENT
+  (`at`, `gen`, `params`, `exclude`, `impostor`) on both the pre-write and post-write passes,
+  the renderer re-emits the terminal, and the panel offers it only where the parser would
+  accept it. A missing `, ` before `params:` in the same renderer was fixed alongside.
+
+`MATTER_IMPOSTOR=0` drops a declared terminal rather than failing the bake: the ladder ends
+at the last mesh rung, exactly as if none had been declared. Same switch, same meaning, on
+both ladders — the env-var lambda that was private to the default path is now one function
+serving both.
+
+Acceptance (all green): `run-flatten`'s `test_authored_ladder_impostor_terminal` —
+rung N is the billboard by `is_billboard_rung`, the atlas loads against the depicts-hash
+PartStore recomputes, `select_rep` flips at 139/141 m for an authored 140, the AABB is
+untouched, `MATTER_IMPOSTOR=0` degrades to mesh, and two cold bakes are byte-identical in
+both the ladder and the atlas. `run-script`'s parse cases cover all four rules plus
+`impostor: false` reading as absent.
+
+Still open: `LOD.vanish`, and `replaces: 'subtree'` for assemblies — the authored path is
+single-cluster, so a subtree impostor has nowhere to attach yet.
+
+---
+
 ## M4 — Artifact consolidation and the version vector
 
 > **STATUS 2026-08-05: DONE.** Landed as `e9d16341` (the version vector), `976ba3af` (the
@@ -710,11 +786,133 @@ Acceptance:
 
 ## M6 — Texture unification *(second deliberate visual re-baseline)*
 
-Scope: one parameterisation per part (chart rep 0, reproject other reps at bake); page pool
-becomes a per-part mip chain composited per `(part, mip)`; horizon sampled in the tile frame
-via the rung-invariant basis; occlusion reduced to the two-term contract; warp solved once
-per sector on rep 0, per-rung reprojection deleted. M2's commit gate switches from per-rung
-pages to mip residency.
+> **SURVEYED 2026-08-05, and the scope is SMALLER than this milestone assumed.** The plan
+> says "chart rep 0, **reproject** other reps at bake", which reads as a closest-point UV
+> transfer — the expensive, seam-fragile kind. It is not needed, because **the
+> parameterisation is already analytic**.
+>
+> `build_chart_rung` (`lod_bake.cpp:120`) segments charts by normal cone, gives each chart a
+> planar basis from its area-weighted average normal, and emits a `ChartEntry` carrying
+> `origin`, `tangent`, `bitangent`, `rect_*` and `tpm`. `vt_chart_resolve.glsl:117` states
+> the mapping outright:
+>
+>     texel = rect + gutter + (dot(p, T/B) - dot(origin, T/B)) * tpm
+>
+> A point's UV is therefore a pure function of its WORLD POSITION and its chart — not of the
+> mesh it belongs to. So a coarser rung does not need reprojected UVs at all; it needs a
+> **chart id per triangle**, and the UV falls out of the same formula. A decimated vertex
+> sits slightly off rep 0's surface and lands on a slightly different texel, which is the
+> behaviour we want: the texture stays glued to the surface while the geometry moves under it.
+>
+> **`reproject_triex` is NOT the tool here, contrary to first appearances.** Its doc comment
+> says it carries "materialId/tint/uv/AO", but the implementation does
+> `TriEx ex = source.triex[match]` — it copies the nearest source triangle's TriEx *wholesale*,
+> including all three corner UVs verbatim. Correct for per-triangle constants, wrong for a
+> per-corner UV: a large coarse triangle would inherit a small source triangle's UV range
+> stretched across it. Do not reach for it.
+>
+> **Revised scope**, in dependency order:
+> 1. Build the chart table ONCE per part from rep 0; store it per part, not per rung.
+> 2. Assign every coarser rung's triangles a chart id (nearest rep-0 chart by face normal +
+>    centroid). A coarse triangle spanning two charts takes one of them; its UVs then reach
+>    outside that chart's packed rect, so the gutter/clamp policy is what bounds the error —
+>    **measure it, it is the one real risk left.**
+> 3. Key the VT variant on `part_hash` alone (`variant_key(variant_hash, rung)` at
+>    `vt_residency.cpp:618` is the per-rung churn, and `register_variant`'s `rung` parameter
+>    is the whole of it).
+> 4. Composite pages from rep 0's mesh — one authority, so page texels stop depending on the
+>    selected rung. This is what makes the horizon query rung-invariant and is the actual fix
+>    for the dome patches.
+>
+> Item 2 is the only step with a genuine unknown. Items 1, 3 and 4 are re-plumbing.
+
+> **PROGRESS 2026-08-05: steps 1 and 2 landed (`b1bd873d`, `a3001140`).**
+> `lod_bake::apply_chart_rung` gives a coarser rung rep 0's table analytically, and
+> `ChartBakeOptions::unify_parameterisation` applies that across a whole ladder on both
+> `bake_lods` and `bake_terrain_lods`. Off by default. Measured on the way:
+> - Adopted UVs agree with the builder's to **0.000046 texels**. They cannot be bit-identical:
+>   the builder uses its local `minU`, while `ChartEntry` stores only `origin`, so this code
+>   *and the GPU* recover `minU` as `dot(origin,T)` — exact in real arithmetic, `minU+O(eps)`
+>   in float. Bit-identity was the wrong target; this path matches the shader at least as
+>   closely as the builder's own vertex UVs do.
+> - **The straddling-triangle risk measured ZERO** on cylinder-overhang at 40% decimation:
+>   worst UV overshoot 0.00000, every adopted UV inside the atlas. One fixture, one ratio —
+>   not yet a general result, but the gutter is not obviously the problem the survey feared.
+> - The unification test was **vacuous on its first fixture** and the failability control
+>   caught it: a 12-triangle cube barely decimates, so its rungs chart identically with or
+>   without the flag and the positive assertion alone would have read as proof.
+>
+> **Step 3 is NOT the one-line key change it looks like.** `variant_key(hash, rung)` mixes the
+> rung in, but `rung` is *also* a real index — `matter_engine.cpp:3546` uses it to select
+> `lod_charts[rung]` and `lod_mesh_data[rung]`. So the key and the mesh selector have to be
+> separated (a `param_id` alongside the rung, defaulting to it, ideally *derived from the
+> chart table's content* so a unified ladder collapses to one key with no flag to desync).
+>
+> **Step 3a landed (`94fea81a`), and it corrected step 2's own write-up.** Step 2 claimed to
+> cover the bake; it covered two of FIVE chart sites. `part_store.cpp` charts at three more
+> that `ChartBakeOptions` never reaches (`:618` flat v3 legacy-view, `:694` flat v3 cluster,
+> `:800` flat v2) — and the flat path is the one **authored props** take, so the parts this
+> whole effort is about would have kept churning while streamed sectors stopped. The rule now
+> lives once, in `lod_bake::chart_rung_unified`, and all five call it.
+> `MATTER_VT_UNIFY=1` is the switch, default off, read per call (not cached in a static) so a
+> test can A/B it inside one process — the same choice `impostors_enabled()` makes.
+>
+> **Step 3b — the runtime key — is lifetime-critical, and here is its exact shape.**
+> `register_variant` already receives the atlas, so `param_id` can be derived from the chart
+> table's CONTENT there and both callers (`vk_scene_renderer.cpp:4259`,
+> `matter_engine.cpp:3546`) need no change: equal tables collapse to one key, unequal ones
+> stay separate, with no flag to desync. The cost is that `slot_for(hash, rung)` and
+> `release_variant(hash, rung)` do not have the atlas, so they need a `(hash,rung) → key`
+> alias map.
+>
+> The dangerous part is release. `VkSceneRenderer::evict_vt_rung` (`:4192`) releases
+> **per rung**, driven by `record.vt_slots[rung]`. Under one shared variant every rung's slot
+> is the SAME slot, so evicting rung 3 would free a layer rungs 0–2 still point at — a
+> dangling variant slot, i.e. GPU use-after-free, in the subsystem that already produced one
+> DEVICE_LOST investigation. **A refcount of aliasing rungs is required, not optional**, and
+> it has to interact correctly with the retirement graveyard (`kVtRetireHorizonFrames`) rather
+> than beside it.
+>
+> **And that surfaces the real step-4 question.** With one variant shared across rungs, the
+> variant holds ONE mesh — whichever rung registered first — and pages are composited from
+> it. If a far sector registers at rung 3 first, page texels get baked from coarse geometry
+> and a later close-up shows them. So a finer rung arriving for an existing variant has to
+> UPGRADE the variant's mesh and re-composite. That upgrade path is the substance of "page
+> pool becomes a per-part mip chain", and it lands in `VtResidency` — the subsystem with the
+> subtlest invariants in this engine (tail gates, retirement graveyard, table generations).
+> Budget for it accordingly; it is not re-plumbing.
+
+> **STRUCTURE COMPLETE 2026-08-05, BEHIND `MATTER_VT_UNIFY=1` (default OFF).** All four
+> steps landed: `b1bd873d` (adopt rep 0's table analytically), `a3001140` + `94fea81a` (one
+> rule, all five chart sites), `6af8593a` (variant layer keyed by parameterisation, with the
+> alias refcount), `be9dd1fb` (a finer rung rebuilds the layer it would otherwise inherit).
+> Green: run-chart-atlas, run-vt-residency, run-partstore, run-flatten, run-demandbake,
+> run-vk-scene-renderer 109/109.
+>
+> **Nothing here is live until the switch is set**, which is deliberate: this milestone is a
+> visual re-baseline and the plan's own rule is not to re-baseline silently. The switch is
+> read per call, so it can be A/B'd inside one process.
+>
+> **Two defects this work created and then closed, both invisible to a headless suite:**
+> - `release_variant(hash)` walks rungs 0..31 releasing `variant_key(hash, rung)`. Under a
+>   content-derived key those are no longer keys in `layer_of_` at all, so that loop would
+>   have freed nothing and silently leaked every variant of every released part — no crash,
+>   no log. It walks the alias table now.
+> - Registration is demand-driven by default, so a sector first seen at distance registers a
+>   COARSE rung. Without step 4 that coarse mesh would composite the shared pages
+>   permanently — strictly worse than what M6 replaced, and visible only by flying in.
+>
+> **The Vulkan smoke suite is ALL PASS with the switch ON, 0 validation errors — and that
+> proves less than it sounds like.** Diffing the two runs (switch off vs on) gives ZERO
+> differing lines, which means the suite's fixtures never took the unified path: nothing in
+> them has a multi-rung charted ladder. So it is a real NO-REGRESSION gate for the refcount
+> and rebuild paths on actual GPU state (which is worth having — that is where a dangling
+> variant slot would have shown up as a validation error or a hang) and it is NOT evidence
+> that unification does anything. Do not cite it as such.
+>
+> **What is left is measurement, and it needs a world with multi-rung charted parts — i.e.
+> the GPU and Jack's eyes**: the acceptance list below is unchanged and none of it has run.
+> StreamMountain and the PomProofBrick dome repro are the two that matter.
 
 Acceptance:
 - **The dome dark patches are gone** (the standing PomProofBrick repro; boundary no longer
@@ -725,6 +923,239 @@ Acceptance:
 - Occlusion ablation: exactly two contributors (bake one to white → only the RT term
   remains; disable RT → only the baked term).
 - Replay re-baselined with before/after evidence.
+
+---
+
+## M6.5 — Distant shadows in the receiver's horizon map
+
+> **STATUS 2026-08-05: BUILT, behind `MATTER_VT_DIROCC_PER_FRAME` (default 0 = off).**
+> `777ffc30` the channel, `2e31198b` the seam + the inverted queue, `b71ee224` caster
+> selection + `vt_dirocc.comp`, `8e094117` the enricher, harvest, drain and runtime read.
+> Green: run-vt-residency (incl. new caster cases), run-partstore, run-chart-atlas,
+> run-vk-scene-renderer, kernel, editor; Vulkan smoke ALL PASS with 0 validation errors both
+> off and at `MATTER_VT_DIROCC_PER_FRAME=4`.
+>
+> **NOT YET MEASURED, and this is the acceptance that matters**: whether 32 rays at coarse
+> page footprints resolve anything a person would call a shadow, versus soft canopy
+> darkening. The original text below says to measure that rather than promise it — that still
+> stands, and it needs a world with impostored props (StreamMountain) plus Jack's eyes. Also
+> unmeasured: the RT compute actually saved, and whether the impostor-switch and page-mip
+> bands double-darken (the runtime combines with `min()` rather than a product precisely so
+> that they cannot, but the band should still be looked at).
+>
+> **Five defects were found during implementation, and the first was mine.** "Cleared to no
+> occlusion" was written into `vt_types.h` as a property but the pool clear is a memset of
+> zeros — an all-zero BC7 block decodes to aperture 0, i.e. FULLY OCCLUDED, so every unbaked
+> page in every world would have gone to near-total sun shadow the moment the consumer
+> landed. The channel is now cleared with a constructed BC7 mode-6 block decoding to aperture
+> exactly 1.0. The others: recycled slots inherited stale shadows; `vt_stub_filler` looped
+> five channels over a four-entry offset array; MatterEditor's SPIR-V embed list was missing
+> the new shader, which would have latched the tier off *silently*; and BLAS dedup by part
+> hash alone would have collapsed distinct clusters.
+
+> **CORRECTED 2026-08-05, BEFORE ANY CODE. The title's "horizon map" is the wrong storage.**
+> `CHAN_HORIZON_A`/`B` live in the tileset `.gtex` and are sampled through
+> `tileset_sample` → `wang_resolve` — **Wang tiling**. A tile repeats across the terrain, so
+> folding one prop's occlusion into it would paint that prop's shadow onto every repeat of
+> that tile across the whole world. Jack's idea (bake the caster into the RECEIVER) is right;
+> my mapping of it onto that channel was not, and it would have shipped as a world-wide
+> smear that reads like a tileset bug.
+>
+> **The receiver is the sector's VT page.** Those are chart-space and per-sector — one
+> placement, which is the property this milestone actually needs. And the mechanism is
+> already built: `vt_enrich_ao.comp` traces hemisphere occlusion with `rayQueryEXT` against
+> `variant_tlas`, which `vt_enrich.cpp:723` builds with **`instance_count = 1`** — the
+> variant's own mesh and nothing else. That one line is the whole of why enrichment is
+> self-occlusion only.
+>
+> **Revised scope: extend the enricher's TLAS to carry nearby impostored casters beside the
+> receiver's own mesh.** No new channel, no `.gtex` format change, and it inherits the
+> enricher's existing correctness work (including the geometric-normal fix that stopped
+> terrain self-shadowing).
+>
+> **One promise does NOT survive the correction and must be re-established, not inherited.**
+> The original argument was "bake a horizon, not a shadow", so the sun stays runtime-applied
+> and `sun_azimuth_deg`/`sun_elevation_deg` stay live. Tier-2 AO stores *occlusion*, not an
+> elevation profile — a plain AO term is sun-independent darkening, which is a strictly
+> weaker promise. Either give the enrichment a directional form, or state plainly that far
+> props contribute ambient darkening and not a sun-angle-following shadow. **Decide that
+> before building, because it is the difference between the feature Jack asked for and a
+> cheaper thing wearing its name.**
+>
+> Unchanged from the original: measure the angular resolution rather than promise shadows;
+> the handoff distance must BE the impostor distance (M3.5 landed it); include casters
+> outside the sector bounds or shadows will not cross seams; land after M6 (done).
+
+> **DECIDED 2026-08-05: DIRECTIONAL (Jack's call, asked explicitly).** Far props must cast a
+> shadow that follows the sun, not ambient darkening wearing the name. That fixes the
+> storage question, and the survey turned up one large piece of luck and one real cost.
+>
+> **The luck: the directional CONSUMER already exists and is proven.** `gbuffer.frag` carries
+> `horizon_sun_visibility` — "the SUN's share of the same baked map… still DIRECTIONAL…
+> because the sun genuinely is a direction" — exports it through `out_orm.a`, and
+> `rt_shadow.rgen` multiplies it into traced sun visibility. It is **1.0 wherever the tileset
+> POM branch does not run**, so every VT fragment currently writes "no occlusion" and the
+> multiply is the identity. M6.5 therefore needs no new G-buffer channel, no new RT plumbing
+> and no change to how the sun is applied: it needs the VT path to WRITE that channel. The
+> "sun stays live" promise is inherited from machinery that already ships.
+>
+> **The cost: per-texel directional occlusion needs a fifth page channel.** The page pool is
+> albedo BC7 (1 B/texel) + normal BC5 (1) + ORM BC7 (1) + aux RGBA8 (4) = 7 B/texel. One byte
+> is not an honest direction — azimuth is exactly what makes a shadow move across the ground,
+> and everything that fits in a spare byte (a single elevation, an azimuth-averaged cone)
+> drops it. So: **one more BC7 channel, +1 B/texel, ~14% page-pool VRAM**, carrying
+> **bent normal (RGB) + aperture (A)**. Visibility is then a smoothstep of the angle between
+> the sun and the bent normal against the aperture — sharper than SH-L1, same storage, and
+> the encode path reuses `vt_bc_encode.comp` exactly as tier-2 already does for ORM.
+>
+> **Rejected: re-baking enrichment when the sun moves.** It would fit the spare byte with a
+> scalar, but tier-2 runs at a couple of pages per frame — a sun drag would take minutes to
+> re-converge, which is not a live property in any sense Jack would accept.
+>
+> **SLICE 1 LANDED (`777ffc30`)**: `kVtChannelDirOcc` plumbed, cleared to "no occlusion",
+> smoke suite ALL PASS with 0 validation errors on the real GPU. Nothing samples it yet.
+>
+> **SLICE 2 IS NOT "extend the TLAS" — the existing pass cannot carry this, and here is the
+> proof.** `vt_enrich_ao.comp:190` computes
+> `max_ray_dist = min(cap_texels * footprint, cap_meters)` with `cap_meters` **0.5 m**. It is
+> a CONTACT term by design ("capped at 0.5 m an open slope traces essentially nothing… only
+> real crevices, cracks and overhang contacts darken"). A canopy several metres overhead is
+> nowhere near that range. Worse, the MIP FADE means strength reaches zero once a page texel
+> exceeds the cap and **"the residency layer skips queueing pages past that entirely (so the
+> rays are never traced)"** — i.e. on exactly the coarse far-field pages where impostored
+> props live, the enricher does not run at all.
+>
+> So M6.5 needs a **second pass**, not a modified one: long-range (tens of metres) directional
+> rays, queued for the coarse pages the contact pass deliberately skips, against a CASTER SET,
+> writing `kVtChannelDirOcc`. It shares the enricher's machinery — page read-modify-write, the
+> BC re-encode, the texel-seeded determinism discipline — and none of its range policy.
+> Folding it into the existing pass would either break the contact term's careful cap or
+> inherit a skip that guarantees it never runs.
+>
+> **And it has one open dependency worth deciding before building.** The enricher builds its
+> BLAS from its own CPU copy of the variant's mesh (`vt_enrich.cpp`), so casters need either
+> (a) their own mesh copies in the enricher — simple, but it duplicates every nearby prop's
+> coarse rung into the enrich budget — or (b) references to the scene's existing BLASes, which
+> is far cheaper but couples enrichment to renderer lifetime and residency (a caster may not
+> be loaded when a far sector's page is enriched). (b) is the right long-run answer and the
+> bigger change; (a) is shippable sooner and measurable. **This is the next decision, and it
+> is Jack's** — it sets the size of the remaining work.
+>
+> Remaining slices after that: bent-normal accumulation in the new pass, then the VT path
+> writing `horizon_sun_visibility`. Only the last is visible, so everything before it lands
+> dark and is verified by census rather than pixels.
+
+> **DECIDED 2026-08-05 by investigation (delegated): (b)-CORRECTED, and (a) is skipped.**
+> Literal (b) — "reference the scene's BLASes" — **would have silently baked nothing,
+> forever**, and that is the finding that matters.
+>
+> "Scene BLAS" names two unrelated things here. `BLASManager::BLASEntry`
+> (`blas_manager.hpp:50-63`) is a **CPU-side BVH** (`unique_ptr<BVH>` + triangle arrays) that
+> no GPU ray query can reference. The real Vulkan acceleration structures are
+> `RtLodRecord::blas` (`vk_scene_renderer.h:1198`) — and they are **demand-built**, created
+> only when that exact (cluster, rung) is selected for tracing. An impostored cluster is
+> explicitly excluded from tracing (`vk_scene_renderer.cpp:9785`, `lod_index >= mesh_lods`).
+> So for a far impostored tree — *precisely* the caster M6.5 exists to handle — no scene AS
+> exists and none will ever be built while it stays impostored. A change that compiles, looks
+> right, and does nothing.
+>
+> **What works instead:** reference the scene's `rt_geometry` / `rt_index` BUFFERS
+> (`vk_scene_renderer.cpp:6034-6072`), which exist for every registered part whenever RT is
+> available and carry per-(cluster, rung) index ranges regardless of whether a BLAS was ever
+> built. The new pass builds its own caster BLASes from those device addresses — the same
+> setup the renderer uses at `:9817-9827` — so still **zero CPU mesh copies**, which was (b)'s
+> whole point.
+>
+> Two further findings worth keeping:
+> - `vt_enrich.h:19-27`'s stated reason for never borrowing renderer BLASes ("the chart
+>   table's tri_order indexes THIS mesh") applies only to the RECEIVER. Casters need no chart
+>   table: `occludeQuery` is terminate-on-first-hit and reads no per-triangle attributes.
+> - The DirOcc pass should **overwrite** its channel, unlike the AO pass's multiply-in-place
+>   (which is what forced the fragile once-only `slot_tier_` bookkeeping). Re-running then
+>   becomes always-safe and convergent, which is what makes "re-enrich when a caster loads"
+>   tractable at all.
+>
+> **(a) is throwaway, not de-risking.** It routes caster meshes through the CPU mesh budget
+> whose rejection path already fires on StreamMountain, and it still builds the same BLASes on
+> the same schedule — so it de-risks only the lifetime discipline, which is the part with
+> established tested patterns (`retain_for_frame`, the graveyard, retire serials). Everything
+> but the geometry-sourcing line would be rewritten.
+>
+> Determinism is preserved by KEYING rather than by avoidance: fold a caster-set hash (sorted
+> caster `part_hash` + coarse-rung id + quantized relative transform) into the page content
+> identity the way `vt_page_content_salt` folds mode+version. Loaded-set dependence then is
+> not nondeterminism, it is a different key.
+>
+> Ordered steps, each verifiable alone: (1) `vt_types.h` seam — `VtCasterInstance` +
+> per-variant caster fields + optional `enrich_dir_occ()` virtual; (2) caster harvest in
+> `update_vt_demand` with the hash, reach-expanded AABB test (expansion is what carries
+> shadows across sector seams), animated + self excluded; (3) a second queue/drain in
+> `vt_residency` with the footprint skip INVERTED relative to the contact pass, own budget;
+> (4) caster BLAS/TLAS cache in `vt_enrich.cpp` holding the scene buffers' `lifetime`
+> shared_ptrs — **that retention is the whole defence against the streaming use-after-free**;
+> (5) `vt_dirocc.comp`; (6) `gbuffer.frag` multiplies into `horizon_sun_visibility`.
+>
+> Named invisible risks: three independent gates can starve the pass (no RT enricher, the
+> inverted skip mis-wired, an empty harvest from a wrong AABB test) — assert a non-zero
+> `dir_occ_pages` census in the StreamMountain smoke rather than trusting pixels; bent normal
+> in the wrong space produces a shadow that looks real on the wrong side, catchable only by an
+> azimuth assertion; and the impostor-switch / page-mip bands can double-darken, in which case
+> combine with `min()` rather than a product.
+
+An impostor cannot cast a correct shadow (design §6.5) — it is a camera-facing card whose
+plane passes through the object's centre, so a traced ray starts inside the volume it
+depicts. M2.5 therefore ships impostors as non-tracing, and a tree loses its shadow the
+moment it impostors. This milestone gives the shadow back by baking it at the **receiving**
+end: not into the pine's page (keyed per VARIANT — every pine would share one shadow) but
+into the terrain **sector's** page, which has exactly one placement.
+
+**Prerequisites, both hard:**
+- **M6.** The horizon channel has already produced one visual defect in this engine — the
+  dark dome patches were the baked horizon queried through a per-rung, mesh-dependent basis.
+  Do not add data to that channel until M6's single parameterisation makes the query
+  rung-invariant, or this builds on the bug.
+- ~~**Authorable impostor distances.**~~ **MET 2026-08-05.** M3's authored `at` and M2.5's
+  impostor now compose: `LOD.impostor({ at })` is the explicit terminal entry (design §3.4),
+  and its `at` IS the impostor switch distance, readable off `static lods` without building
+  anything — which is what this milestone needs, since the fold-in decision has to be made
+  before the bake runs. See M3.5 below.
+
+Scope:
+
+1. Extend the sector horizon bake to treat impostored props as occluders, writing into the
+   sector's own `CHAN_HORIZON_A`/`CHAN_HORIZON_B` — 8 azimuths of `sin(elevation)` per texel,
+   already consumed by `gbuffer.frag` → `out_orm.w` → `rt_shadow.rgen`. **A horizon stores
+   the occluder's elevation profile, not the lighting**, so the sun angle is applied at
+   runtime and stays a live property. That is the whole reason to bake a horizon rather than
+   a shadow.
+2. Gate it on the prop's impostor switch distance: a prop is either casting RT rays or folded
+   into the horizon, never both and never neither.
+3. Include casters slightly **outside** the sector bounds, or shadows will not cross sector
+   seams.
+4. Fold the new dependencies into the version vector (`version_vector.h`; `fold()` is the
+   only entry point) — horizon content now depends on prop placement and on the impostor
+   distance, which it did not before.
+
+Acceptance:
+- **Measure the angular-resolution question BEFORE claiming shadows.** 45° azimuth bins at
+  quarter resolution will render a canopy as soft darkening, not as trunk shadows. Capture a
+  sector with and without the fold-in and report what is actually resolvable. If it reads as
+  ambient darkening, say so — that may well be right at impostor distance, but it must be
+  described honestly rather than sold as shadows.
+- **No double-darkening at the handoff and no gap.** Fly the switch distance; sun visibility
+  must be continuous across it.
+- **The sun stays live.** Drag `sun_azimuth_deg` / `sun_elevation_deg` and show the baked
+  occlusion responds correctly. This is the one property that must not regress — freezing it
+  would defeat the entire design.
+- **No seam** where a prop straddles a sector boundary.
+- Double-bake determinism; the fly-through determinism gate green; replay gates re-baselined
+  deliberately (this is a visual change by intent).
+- **Measure the RT compute actually saved.** The claim is that far-field shadow rays go away;
+  if the saving is small, that is a finding.
+
+Not in scope: near-field shadows. A horizon map is a coarse directional approximation and
+contact shadows are exactly what 45° bins cannot represent. Near stays RT — this is the far
+half of a hybrid, and the switch is the impostor distance.
 
 ---
 
