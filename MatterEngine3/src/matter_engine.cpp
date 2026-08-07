@@ -4370,6 +4370,9 @@ void WorldSession::Impl::bake_and_stage_sector(
             // what the error-bounded terrain ladder exists for. Asserted here
             // rather than sniffed from the mesh -- the skirt fringe that used
             // to give it away is gone (terrain_mesher.cpp, 2026-07-30).
+            // The LOD-ladder cost of the streaming fill's staging path (distinct
+            // from the disk-decode bake.stageload below).
+            PROFILE_SCOPE("bake.stagemem");
             auto from_memory = std::make_shared<viewer::PartStore::StagedPart>(
                 store->stage_from_bake(sector_hash, *br.geometry,
                                        sector_first_rung,
