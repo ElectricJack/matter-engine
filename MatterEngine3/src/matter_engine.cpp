@@ -4541,6 +4541,13 @@ void WorldSession::Impl::bake_and_stage_sector(
                  completion_index, staged_load,
                  prebuilt_part](std::string&) noexcept -> bool {
                 matter_async::assert_gl_thread("stream.publish");
+                // Step 0.5 instrumentation: attribute EVERY region of the
+                // publish job (the app-thread cost). MATTER_STREAM_PUBLISH_PROFILE
+                // only times load/state/tracer/vulkan/cache and misses ~96% of
+                // the steady-state cost -- these nested scopes cover the gaps
+                // (reserve, ledger, commit, and everything between).
+                PROFILE_SCOPE("publish");
+                PROFILE_SCOPE_NAMED(pub_begin, "publish.begin");
                 PublicationCompletion* completion =
                     start_publication_completion(completion_index);
                 if (!completion) return true;
@@ -4577,13 +4584,17 @@ void WorldSession::Impl::bake_and_stage_sector(
                     return true;
                 };
 
+                pub_begin.stop();
                 auto& app_coordinator = ecs_runtime.streaming_coordinator();
+                PROFILE_SCOPE_NAMED(pub_reserve, "publish.reserve");
                 if (!app_coordinator.begin_publication(request)) {
                     return fail_publication(
                         "sector publication reservation failed");
                 }
+                pub_reserve.stop();
 
                 try {
+                    PROFILE_SCOPE_NAMED(pub_ledger, "publish.ledger");
                     const SectorKey key{
                         request.sector.tx,
                         request.sector.tz,
@@ -4654,19 +4665,23 @@ void WorldSession::Impl::bake_and_stage_sector(
                     double t_load = 0, t_state = 0, t_tracer = 0;
                     double t_culler = 0, t_vulkan = 0, t_cache = 0;
 
+                    pub_ledger.stop();
                     published.resources.store_attempted = true;
                     // Commit the worker's staged result: adopt its BLAS entries,
                     // remap handles, insert, expand. O(entries), no BVH rebuilt.
+                    PROFILE_SCOPE_NAMED(pub_load, "publish.load");
                     const viewer::LoadedPart* loaded =
                         staged_load->ok
                             ? store->commit_staged(std::move(*staged_load))
                             : store->get_or_load(sector_hash);
                     t_load = pub_split();
+                    pub_load.stop();
                     if (!loaded) {
                         return fail_publication(
                             "sector PartStore load failed");
                     }
 
+                    PROFILE_SCOPE_NAMED(pub_apply, "publish.apply");
                     viewer::WorldManifestEntry instance;
                     instance.instance_id = published.instance_id;
                     instance.part_hash = sector_hash;
@@ -4690,7 +4705,9 @@ void WorldSession::Impl::bake_and_stage_sector(
                     tracer_dirty = true;
                     tracer.reset();
                     t_tracer = pub_split();
+                    pub_apply.stop();
 
+                    PROFILE_SCOPE_NAMED(pub_vulkan, "publish.vulkan");
 #ifdef MATTER_VULKAN_VIEWER
                     if (vk_scene) {
                         published.resources.vulkan_attempted = true;
@@ -4805,6 +4822,8 @@ void WorldSession::Impl::bake_and_stage_sector(
                         }
                     }
                     t_vulkan = pub_split();
+                    pub_vulkan.stop();
+                    PROFILE_SCOPE_NAMED(pub_cache, "publish.cache");
                     // A publish only ADDS a sector; nothing is released or
                     // unregistered here, so every existing source's expansion
                     // stays valid. Drop only the flat set so the next frame
@@ -4818,6 +4837,7 @@ void WorldSession::Impl::bake_and_stage_sector(
                     // (issues/render-dlss-not-applied).
                     vk_instance_cache.invalidate_expansion();
                     t_cache = pub_split();
+                    pub_cache.stop();
 #endif
                     if (pub_prof) {
                         std::fprintf(stderr,
@@ -4832,6 +4852,7 @@ void WorldSession::Impl::bake_and_stage_sector(
                             t_vulkan, g_pub_cpu_ms, g_pub_vertexloop_ms,
                             g_pub_classify_ms, g_pub_gpu_ms, t_cache);
                     }
+                    PROFILE_SCOPE_NAMED(pub_commit, "publish.commit");
                     published.resident = true;
                     const bool committed = transaction.commit();
                     settle_publication_completion(*completion, committed);
