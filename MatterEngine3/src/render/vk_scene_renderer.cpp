@@ -9163,17 +9163,59 @@ bool VkSceneRenderer::upload_scene_buffers(
             // this change for the GPU-copy growth path and the dirty-range
             // ordering hazard it has to solve first.
             ++upload_counters_.static_capacity_overflows;
+            // STAGING vs LIVE vs FREE is the whole diagnosis, and the reason
+            // this prints three numbers per buffer rather than one.
+            //
+            // FreeRangeList::allocate() returns "no fit" whenever no recycled
+            // range of the right size exists, and the caller then EXTENDS THE
+            // TAIL. The tail never shrinks. So churn can march staging upward
+            // monotonically while the live set stays small and free space piles
+            // up in the middle -- fragmentation turning into permanent growth.
+            //
+            // Read it this way:
+            //   live ~= staging          -> the world genuinely needs this much;
+            //                               raise the reservation.
+            //   live << staging, free big -> fragmented tail growth; no
+            //                               reservation size fixes it, the
+            //                               allocator has to reuse the middle.
+            const auto sum_free = [](const FreeRangeList& l) {
+                uint64_t n = 0;
+                for (const auto& r : l.free_ranges) n += r.count;
+                for (const auto& p : l.pending) n += p.range.count;
+                return n;
+            };
+            uint64_t live_clusters = 0, live_vertices = 0, live_indices = 0;
+            for (const PartRecord& p : parts_) {
+                live_clusters += p.cluster_count;
+                live_vertices += p.vertex_count;
+                live_indices += p.index_count;
+            }
             std::fprintf(stderr,
-                "[vk] STATIC CAPACITY OVERFLOW -- full O(world) rewrite ahead. "
-                "clusters %llu/%llu  vertices %llu/%llu  indices %llu/%llu "
-                "bytes. Raise MATTER_VK_STATIC_RESERVE_{CLUSTER,VERTEX,INDEX}"
-                "_MB above the largest of these.\n",
+                "[vk] STATIC CAPACITY OVERFLOW -- full O(world) rewrite ahead.\n"
+                "     bytes    clusters %llu/%llu  vertices %llu/%llu  "
+                "indices %llu/%llu\n"
+                "     elements clusters staging %llu live %llu free %llu | "
+                "vertices staging %llu live %llu free %llu | "
+                "indices staging %llu live %llu free %llu  (parts %llu)\n"
+                "     live ~= staging -> raise MATTER_VK_STATIC_RESERVE_"
+                "{CLUSTER,VERTEX,INDEX}_MB. live << staging with large free "
+                "-> fragmented tail growth, a bigger reserve only delays it.\n",
                 (unsigned long long)cluster_bytes,
                 (unsigned long long)clusters_.size,
                 (unsigned long long)vertex_bytes,
                 (unsigned long long)vertices_.size,
                 (unsigned long long)index_bytes,
-                (unsigned long long)indices_.size);
+                (unsigned long long)indices_.size,
+                (unsigned long long)cluster_staging_.size(),
+                (unsigned long long)live_clusters,
+                (unsigned long long)sum_free(free_clusters_),
+                (unsigned long long)vertex_staging_.size(),
+                (unsigned long long)live_vertices,
+                (unsigned long long)sum_free(free_vertices_),
+                (unsigned long long)index_staging_.size(),
+                (unsigned long long)live_indices,
+                (unsigned long long)sum_free(free_indices_),
+                (unsigned long long)parts_.size());
             std::fflush(stderr);
             static_upload_dirty_ = StaticUpload::kFull;
         }

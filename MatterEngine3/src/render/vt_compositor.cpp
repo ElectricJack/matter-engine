@@ -11,6 +11,7 @@
 #include <deque>
 #include <iterator>
 
+#include "profile.h"
 #include "shaders_gen/embedded_spirv.h"
 // GpuChart / GpuTri and the stream builder: shared with WP-H's enricher so the
 // two page passes can never disagree about a texel's owning triangle.
@@ -1244,9 +1245,25 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
             continue;
         }
         const char* why = "unknown";
-        Impl::MeshEntry* entry = im.get_or_build_mesh_entry(
-            req.variant_hash, req.rung, req.atlas, ctx, stats_, ring_index,
-            why);
+        // The suspect. A 2026-08-08 capture caught a single fill() at 348.9 ms
+        // with vt.fill_batch <= 4 -- roughly 87 ms per page, which is far too
+        // much for compositing and points at mesh-entry CONSTRUCTION instead:
+        // chart/tri buffer creation and upload, descriptor allocation, or the
+        // allocation-pressure retry this function falls into when the cache is
+        // full of in-flight entries. Split out so the next capture says which.
+        Impl::MeshEntry* entry = nullptr;
+        {
+            PROFILE_SCOPE("vt.mesh_entry");
+            // A cache HIT is a map lookup; a MISS builds buffers and a
+            // descriptor set. This counter is what separates "the cache is
+            // thrashing" from "one entry is genuinely enormous".
+            const uint64_t builds_before = stats_.mesh_cache_builds;
+            entry = im.get_or_build_mesh_entry(req.variant_hash, req.rung,
+                                               req.atlas, ctx, stats_,
+                                               ring_index, why);
+            PROFILE_COUNT("vt.mesh_builds",
+                          stats_.mesh_cache_builds - builds_before);
+        }
         if (!entry) {
             ++stats_.requests_skipped;
             log_skip(req, why);
@@ -1260,8 +1277,13 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
         // so both passes resolve a texel against the same candidate set.
         const uint32_t cand_offset = cand_cursor;
         im.scratch_cands.clear();
-        vt_page_candidate_charts(*req.atlas, req.page_x, req.page_y, req.mip,
-                                 im.scratch_cands);
+        {
+            // Per-page chart search over the variant's rect table. Scales with
+            // chart count, so a heavily-charted variant pays here every page.
+            PROFILE_SCOPE("vt.candidates");
+            vt_page_candidate_charts(*req.atlas, req.page_x, req.page_y,
+                                     req.mip, im.scratch_cands);
+        }
         const uint32_t cand_count =
             static_cast<uint32_t>(im.scratch_cands.size());
         if (cand_count == 0 ||
