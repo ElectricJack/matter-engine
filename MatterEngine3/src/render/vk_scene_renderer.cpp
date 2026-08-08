@@ -9083,19 +9083,84 @@ bool VkSceneRenderer::upload_scene_buffers(
                         std::chrono::microseconds>(
                         std::chrono::steady_clock::now() - su_append_t0).count());
         } else {
-            // A buffer outgrew its capacity: take the recreate + full-rewrite
-            // path. Capacity doubles there, so this happens O(log N) times
-            // over a streaming load.
+            // A buffer outgrew its capacity.
+            //
+            // THIS IS THE PATH WE ARE TRYING TO MAKE UNREACHABLE. It escalates
+            // to the recreate + full-rewrite below, which allocates three fresh
+            // host-visible buffers and memcpys the ENTIRE resident world into
+            // them on the render thread. A 2026-08-08 capture caught it at
+            // 366 ms in one frame -- the largest single render-thread event in
+            // the trace, against a 32 ms median.
+            //
+            // The intended answer is the reservation applied in
+            // static_reserve_bytes() below: size the buffers once, generously,
+            // at first allocation, so a streaming load never crosses a capacity
+            // boundary mid-flight. This branch is what tells you the
+            // reservation was too small -- loudly, with the numbers needed to
+            // pick a better one, instead of silently eating a third of a
+            // second.
+            //
+            // It is NOT commented out yet, and deliberately so: doing that
+            // without a growth path in place converts a hitch into either a
+            // dead frame or geometry reading uninitialised memory, which in
+            // this subsystem means a device fault. See the report accompanying
+            // this change for the GPU-copy growth path and the dirty-range
+            // ordering hazard it has to solve first.
+            ++upload_counters_.static_capacity_overflows;
+            std::fprintf(stderr,
+                "[vk] STATIC CAPACITY OVERFLOW -- full O(world) rewrite ahead. "
+                "clusters %llu/%llu  vertices %llu/%llu  indices %llu/%llu "
+                "bytes. Raise MATTER_VK_STATIC_RESERVE_{CLUSTER,VERTEX,INDEX}"
+                "_MB above the largest of these.\n",
+                (unsigned long long)cluster_bytes,
+                (unsigned long long)clusters_.size,
+                (unsigned long long)vertex_bytes,
+                (unsigned long long)vertices_.size,
+                (unsigned long long)index_bytes,
+                (unsigned long long)indices_.size);
+            std::fflush(stderr);
             static_upload_dirty_ = StaticUpload::kFull;
         }
     }
     const auto su_full_t0 = std::chrono::steady_clock::now();
     if (static_upload_dirty_ == StaticUpload::kFull) {
+        // RESERVE UP FRONT. The first allocation of each static buffer takes a
+        // generous floor rather than "exactly what fits today", so a streaming
+        // load settles inside its reservation and never crosses a capacity
+        // boundary mid-flight -- which is the only thing that drags a running
+        // frame back through this O(world) rewrite.
+        //
+        // Applied on FIRST allocation only (current == 0). Growing an existing
+        // buffer keeps the doubling policy; the floor is about never needing to
+        // grow, not about how to grow.
+        //
+        // This is HOST-VISIBLE memory and it is committed for the process, so
+        // the defaults are deliberately modest -- large enough to cover a
+        // sector-streaming world's steady state, small enough not to be a
+        // surprise on a smaller machine. Tune per world from the overflow
+        // diagnostic above, which prints the byte counts that were actually
+        // needed.
+        const auto reserve_bytes = [](const char* var, VkDeviceSize fallback_mb) {
+            const char* v = std::getenv(var);
+            VkDeviceSize mb = fallback_mb;
+            if (v && v[0] != '\0') {
+                const long long parsed = std::atoll(v);
+                if (parsed >= 0) mb = static_cast<VkDeviceSize>(parsed);
+            }
+            return mb * 1024ull * 1024ull;
+        };
         const auto replacement_capacity = [&](VkDeviceSize current,
                                               VkDeviceSize required,
                                               const char* label,
+                                              VkDeviceSize reserve,
                                               VkDeviceSize& capacity) {
             required = std::max<VkDeviceSize>(required, 1);
+            if (current == 0) {
+                // First allocation: take the reservation floor, clamped to what
+                // the device will actually give us.
+                required = std::max(required,
+                                    std::min(reserve, limits_.max_buffer_size));
+            }
             if (current >= required) {
                 capacity = current;
                 return true;
@@ -9107,12 +9172,18 @@ bool VkSceneRenderer::upload_scene_buffers(
         VkDeviceSize cluster_capacity = 0;
         VkDeviceSize vertex_capacity = 0;
         VkDeviceSize index_capacity = 0;
-        if (!replacement_capacity(clusters_.size, cluster_bytes, "cluster buffer",
-                                  cluster_capacity) ||
-            !replacement_capacity(vertices_.size, vertex_bytes, "vertex buffer",
-                                  vertex_capacity) ||
-            !replacement_capacity(indices_.size, index_bytes, "index buffer",
-                                  index_capacity)) {
+        if (!replacement_capacity(
+                clusters_.size, cluster_bytes, "cluster buffer",
+                reserve_bytes("MATTER_VK_STATIC_RESERVE_CLUSTER_MB", 32),
+                cluster_capacity) ||
+            !replacement_capacity(
+                vertices_.size, vertex_bytes, "vertex buffer",
+                reserve_bytes("MATTER_VK_STATIC_RESERVE_VERTEX_MB", 256),
+                vertex_capacity) ||
+            !replacement_capacity(
+                indices_.size, index_bytes, "index buffer",
+                reserve_bytes("MATTER_VK_STATIC_RESERVE_INDEX_MB", 128),
+                index_capacity)) {
             return false;
         }
         matter::VkBufferResource next_clusters;

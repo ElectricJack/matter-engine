@@ -671,6 +671,11 @@ struct VkSceneUploadCounters {
     // count that climbs with resident parts is the O(N^2) load regression.
     uint64_t static_full_uploads = 0;
     uint64_t static_append_uploads = 0;
+    // Times the append path found a buffer too small and had to escalate to the
+    // O(world) rewrite. The reservation floor in upload_scene_buffers exists to
+    // hold this at ZERO after the initial allocation; a non-zero value in a
+    // steady-state world means the reservation is too small for it.
+    uint64_t static_capacity_overflows = 0;
 };
 
 struct PartCommandRange {
@@ -1099,7 +1104,13 @@ public:
     // WP-E: the VT page-fill pass (residency uploads + the tier-1 compositor's
     // dispatches and pool copies), recorded just before the G-buffer zone.
     static constexpr uint32_t kGpuZoneVt           = 10;
-    static constexpr uint32_t kGpuZoneCount        = 11;
+    // The RT pass is two dispatches: kGpuZoneRt now brackets ONLY the primary/
+    // shadow trace (full-res cmd_trace), and this zone brackets the separate GI/
+    // reflection trace (rt_lighting raygen at raw_diffuse_extent), which only
+    // runs when GI is enabled. Splitting them tells primary-ray BLAS traversal
+    // cost (dense foliage) apart from the GI bounce cost.
+    static constexpr uint32_t kGpuZoneRtGi         = 11;
+    static constexpr uint32_t kGpuZoneCount        = 12;
     bool gpu_timers_supported() const { return gpu_timers_supported_; }
     float gpu_zone_ms(uint32_t zone) const {
         return zone < kGpuZoneCount ? gpu_smoothed_ms_[zone] : 0.0f;
