@@ -1581,6 +1581,30 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
                          "[flatgate] %016llx REJECT snapshot=%d load_flat=%d\n",
                          (unsigned long long)part_hash, snap_ok ? 1 : 0,
                          snap_ok ? (flat_ok ? 1 : 0) : -1);
+        // Same question as MATTER_FLAT_GATE_LOG, as a counter rather than a
+        // console line -- a rejection rate is what matters here, not each
+        // individual hash, and per-item stderr has measurably distorted this
+        // engine's own profiling before.
+        //
+        // WHY THIS IS THE SUSPECT: a rejected flat falls through to the
+        // coherent loader, which walks the part's FULL CHILD SUBTREE instead of
+        // the collapsed flat. Same part, same sector -- more instances. A
+        // 2026-08-08 capture had resident_sectors pinned at ~2105 and
+        // cull.clusters at ~1105 while cull.instances climbed 81830 -> 105934
+        // in 17 s, i.e. 39 -> 50 instances per sector with nothing new
+        // arriving. An uncollapsed walk is the only mechanism found so far that
+        // produces exactly that shape.
+        //
+        // Two separate call sites on purpose: PROFILE_COUNT caches the
+        // interned counter id in a function-local static, so a ternary on the
+        // NAME would register once with whichever branch ran first and bucket
+        // every later count into it.
+        if (flat_ok) {
+            PROFILE_COUNT("partstore.flat_ok", 1);
+        } else {
+            PROFILE_COUNT("partstore.flat_reject", 1);
+        }
+        if (!snap_ok) PROFILE_COUNT("partstore.flat_no_snapshot", 1);
         if (flat_ok) {
 #ifdef MATTER_TEST_CACHE_VALIDATION_HOOK
             if (flat_admission_hook_for_tests_) flat_admission_hook_for_tests_();
@@ -1590,9 +1614,17 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
             // newly linked generation) invalidates this static acceleration;
             // fall through and re-probe the normal coherent loader instead.
             uint64_t final_fingerprint = 0;
-            if (part_asset::load_static_part_snapshot(canonical_part, part_hash,
-                                                       final_fingerprint) &&
-                final_fingerprint == canonical_fingerprint) {
+            const bool fingerprint_stable =
+                part_asset::load_static_part_snapshot(canonical_part, part_hash,
+                                                      final_fingerprint) &&
+                final_fingerprint == canonical_fingerprint;
+            // The SECOND way a flat is abandoned: it loaded fine, but the part
+            // was replaced (a newly linked generation) between the two
+            // snapshots, so this falls through to the coherent loader too.
+            // Counted apart from flat_reject because the remedies differ --
+            // a rejection is a gate problem, a re-link is a churn problem.
+            if (!fingerprint_stable) PROFILE_COUNT("partstore.flat_relinked", 1);
+            if (fingerprint_stable) {
                 // Insert the parent FIRST (before any recursive child loads) to prevent
                 // re-entrancy: if a child transitively references the same parent hash,
                 // the early-out at the top of get_or_load will return the already-inserted
