@@ -3,7 +3,8 @@ param(
     [string]$World = 'StressForest50k',
     [double]$WarmupSeconds = 10,
     [double]$SampleSeconds = 20,
-    [double]$MinimumFps = 55
+    [double]$MinimumFps = 55,
+    [switch]$Validate
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,21 +23,29 @@ $runRoot = Join-Path $env:TEMP ("matter-vulkan-instancing-perf-" +
 $result = Join-Path $runRoot 'result.json'
 
 try {
-    $layerCandidates = @()
-    if ($env:VULKAN_SDK) { $layerCandidates += (Join-Path $env:VULKAN_SDK 'Bin') }
-    $layerCandidates += 'C:\msys64\ucrt64\bin'
-    $layerCandidates += 'C:\msys64\ucrt64\share\vulkan\explicit_layer.d'
-    $layerDir = $layerCandidates | Where-Object {
-        Test-Path (Join-Path $_ 'VkLayer_khronos_validation.json')
-    } | Select-Object -First 1
-    if (-not $layerDir) {
-        throw 'Vulkan validation layer unavailable; install MSYS2 vulkan-validation-layers'
+    # Validation is OPT-IN here. This script gates on median FPS, and the
+    # layer costs real frame time -- with a vk_layer_settings.txt in the
+    # viewer's working directory turning on GPU-assisted validation, enough to
+    # miss the threshold on timing alone and report a regression that does not
+    # exist. Correctness-with-validation is smoke_vulkan_viewer.ps1's job.
+    # Pass -Validate to run this gate under the layer anyway.
+    if ($Validate) {
+        $layerCandidates = @()
+        if ($env:VULKAN_SDK) { $layerCandidates += (Join-Path $env:VULKAN_SDK 'Bin') }
+        $layerCandidates += 'C:\msys64\ucrt64\bin'
+        $layerCandidates += 'C:\msys64\ucrt64\share\vulkan\explicit_layer.d'
+        $layerDir = $layerCandidates | Where-Object {
+            Test-Path (Join-Path $_ 'VkLayer_khronos_validation.json')
+        } | Select-Object -First 1
+        if (-not $layerDir) {
+            throw 'Vulkan validation layer unavailable; install MSYS2 vulkan-validation-layers'
+        }
+        $env:VK_LAYER_PATH = $layerDir
+        $env:MATTER_VK_VALIDATION = '1'
     }
-    $env:VK_LAYER_PATH = $layerDir
     $msysBin = 'C:\msys64\ucrt64\bin'
     if (Test-Path $msysBin) { $env:PATH = "$msysBin;$env:PATH" }
     New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
-    $env:MATTER_VK_VALIDATION = '1'
     $env:MATTER_WORLD = $World
     $env:MATTER_CAM = '0,18,45,0,8,0'
     $env:MATTER_CACHE_ROOT = Join-Path $runRoot 'cache'

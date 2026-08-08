@@ -1,0 +1,43 @@
+# Core-validation pass for the VK_ERROR_DEVICE_LOST investigation.
+#
+# This is the CHEAP counterpart to the GPU-AV config (stash@{0}, "vk_layer_settings
+# -- this is for looking for vulkan errors"). That one instruments every shader and
+# bounds-checks every buffer_reference dereference; it is accurate and far too slow
+# to fly with -- a 2026-08-08 capture measured ~135 ms frames, ~118 ms of which was
+# the render thread blocked on the GPU.
+#
+# This file inverts that trade: core object-lifetime/usage checks plus synchronisation
+# hazards, no shader instrumentation. Fast enough to fly for the minutes the repro
+# needs, and it catches the class of bug the fault signature points at -- a resource
+# freed or rewritten while still referenced by an in-flight command buffer.
+#
+# DELIBERATELY NOT IN THE VIEWER'S CWD. The loader auto-loads any vk_layer_settings.txt
+# it finds in the working directory, which is how GPU-AV silently ended up in a
+# profiling run. This one only takes effect when you point at it explicitly:
+#
+#   $env:VK_LAYER_SETTINGS_PATH = "$PWD\tools\vk_layer_settings.core.txt"
+#   $env:MATTER_VK_VALIDATION = '1'
+#   .\build\windows\editor.exe 2>&1 | Tee-Object -FilePath vk_console.log
+#
+# MATTER_VK_VALIDATION is the switch that loads the layer at all (main.cpp:814);
+# this file only configures it once loaded. Both are needed.
+
+khronos_validation.validate_core = true
+
+# Hazard tracking: WAR/RAW/WAW across queue submissions and within command buffers.
+# This is the check most likely to name the offending resource directly. If it costs
+# too much to reach the repro, set it false and keep validate_core alone.
+khronos_validation.validate_sync = true
+
+khronos_validation.validate_best_practices = false
+
+# No shader instrumentation. This is the whole point of this file.
+khronos_validation.gpuav_enable = false
+
+# Log to a file as well as the debugger. The 2026-08-08 loss printed 20 validation
+# errors to a console that was never captured, and they were lost with the scrollback
+# -- the single most useful artefact of that run. Do not rely on the console again.
+khronos_validation.debug_action = VK_DBG_LAYER_ACTION_LOG_MSG,VK_DBG_LAYER_ACTION_DEBUG_OUTPUT
+khronos_validation.log_filename = vk_validation_core.log
+khronos_validation.report_flags = error,warn
+khronos_validation.message_format_display_application_name = true

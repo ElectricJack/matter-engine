@@ -1482,6 +1482,10 @@ size_t WorldSession::Impl::bake_pool_outstanding() {
 }
 
 void WorldSession::Impl::bake_pool_loop() {
+    // Declare this executor's lane so ProfileLib attributes its bake.* scopes to
+    // the background worker lane, not the frame. Up to a dozen of these threads
+    // run in parallel; their summed time is off-thread cost, not frame cost.
+    ::matter::profile::set_thread_lane(::matter::profile::kLaneWorker);
     for (;;) {
         SectorBakeTask task;
         {
@@ -1587,6 +1591,10 @@ void WorldSession::Impl::shutdown_bake_pool() {
 }
 
 void WorldSession::Impl::worker_loop() {
+    // The streaming worker/dispatcher thread (and, in the serial 1-worker mode,
+    // the thread that bakes sectors itself). Either way it is not the render
+    // thread, so its scopes belong to the background worker lane.
+    ::matter::profile::set_thread_lane(::matter::profile::kLaneWorker);
     struct ExitMarker {
         Impl* owner;
         ~ExitMarker() {
@@ -7082,7 +7090,13 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     const float3 camera_pos =
         make_float3(cam.position.x, cam.position.y, cam.position.z);
     const auto resolve_start = std::chrono::steady_clock::now();
+    // Render-lane ProfileLib zones mirroring the resolve/build/draw chrono spans,
+    // so the frame table attributes this render-thread CPU instead of dumping it
+    // into the "off critical path" remainder. Named scopes stop at the exact
+    // span boundary; an early return unwinds them via the dtor.
+    PROFILE_SCOPE_NAMED(z_resolve, "resolve");
     const auto resolved = resolver.resolve(impl_->state, impl_->lods, camera_pos);
+    z_resolve.stop();
     const auto resolve_end = std::chrono::steady_clock::now();
 
     // Bake Lab W4 (part-workbench.md SS-I.5): LOD Inspector debug overrides.
@@ -7247,6 +7261,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     }
 
     const auto build_start = std::chrono::steady_clock::now();
+    PROFILE_SCOPE_NAMED(z_build, "build");
     // Perf: this is a pure projection of `instances`, so it only has to be
     // rebuilt when `instances` itself is replaced. VulkanInstanceCache::store()
     // is the only writer of the vector `instances` refers to and bumps
@@ -7257,58 +7272,88 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // (The reverse is not true — a rebuild that reproduces the same set still
     // bumps — which only costs a redundant rebuild here.)
     const uint64_t expansion = impl_->vk_instance_cache.expansion_count();
-    if (impl_->vk_temporal_instances_expansion != expansion ||
-        impl_->vk_temporal_instances.size() != instances.size()) {
-        impl_->vk_temporal_instances.clear();
-        impl_->vk_temporal_instances.reserve(instances.size());
-        for (size_t index = 0; index < instances.size(); ++index) {
-            impl_->vk_temporal_instances.push_back(
-                {instances[index].instance_id,
-                 instances[index].object_to_world});
+    {
+        // O(instances) rebuild, gated on the expansion counter above -- so this
+        // is either ~free or the full projection, never in between. The counter
+        // tells the two cases apart in a capture.
+        PROFILE_SCOPE("build.temporal_mirror");
+        PROFILE_COUNT("build.instances", instances.size());
+        if (impl_->vk_temporal_instances_expansion != expansion ||
+            impl_->vk_temporal_instances.size() != instances.size()) {
+            PROFILE_COUNT("build.mirror_rebuilds", 1);
+            impl_->vk_temporal_instances.clear();
+            impl_->vk_temporal_instances.reserve(instances.size());
+            for (size_t index = 0; index < instances.size(); ++index) {
+                impl_->vk_temporal_instances.push_back(
+                    {instances[index].instance_id,
+                     instances[index].object_to_world});
+            }
+            impl_->vk_temporal_instances_expansion = expansion;
         }
-        impl_->vk_temporal_instances_expansion = expansion;
     }
     const std::vector<viewer::TemporalInstance>& temporal_instances =
         impl_->vk_temporal_instances;
+    PROFILE_SCOPE_NAMED(z_begin_temporal, "build.begin_temporal");
     const viewer::TemporalFrame& temporal = begin_temporal(temporal_instances);
+    z_begin_temporal.stop();
     const viewer::FrameMatrices& matrices = temporal.current_jittered;
     bool animation_skin_queue_pending_seal = false;
-    impl_->vk_scene->set_temporal_frame(temporal);
-    if (!impl_->vk_scene->update_instances(instances, err)) {
-        impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
-        return false;
+    {
+        PROFILE_SCOPE("build.set_temporal");
+        impl_->vk_scene->set_temporal_frame(temporal);
+    }
+    {
+        PROFILE_SCOPE("build.update_instances");
+        if (!impl_->vk_scene->update_instances(instances, err)) {
+            impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
+            return false;
+        }
     }
     // Dynamic entity bridge: reconcile ECS entities with renderer slots.
     // Drop Bind changes whose part can't be loaded yet (next frame retries).
     {
         // I.11: hub-backed adapter — bridge per-entity errors are republished
         // as immediate error.part_instance{,_clear} on the session hub.
+        PROFILE_SCOPE("build.dynamic");
         scene::BridgeErrorSink sink = scene::make_hub_error_sink(impl_->hub_);
         std::string bridge_err;
         // The Vulkan submission serial is distinct from the fixed/frame ECS
         // counter.  Make an explicit renderer-facing snapshot publication so
         // articulated expansion can require this exact serial.
-        impl_->ecs_runtime.animation_systems().publish_presentation_for_render(
-            frame.serial);
-        impl_->dynamic_bridge.set_animation_pose_snapshots(
-            &impl_->ecs_runtime.animation_systems().pose_snapshots());
-        impl_->dynamic_bridge.reconcile(impl_->ecs_runtime.world(), sink, bridge_err,
-                                        frame.serial);
+        {
+            PROFILE_SCOPE("dyn.reconcile");
+            impl_->ecs_runtime.animation_systems()
+                .publish_presentation_for_render(frame.serial);
+            impl_->dynamic_bridge.set_animation_pose_snapshots(
+                &impl_->ecs_runtime.animation_systems().pose_snapshots());
+            impl_->dynamic_bridge.reconcile(impl_->ecs_runtime.world(), sink,
+                                            bridge_err, frame.serial);
+        }
         auto changes = impl_->dynamic_bridge.drain();
         std::vector<render::DynamicSlotChange> valid;
         valid.reserve(changes.size());
-        for (auto& c : changes) {
-            if (c.kind == render::DynamicSlotChangeKind::Bind) {
-                const viewer::LoadedPart* lp = impl_->store->get_or_load(c.part_hash);
-                if (!lp) continue;
-                bool drawable = false;
-                if (!ensure_vulkan_part(*impl_->vk_scene, c.part_hash, *lp, drawable, err))
-                    continue;
-                if (!drawable) continue;
+        {
+            // Each Bind may hit the part store and build Vulkan resources, so
+            // this is bounded by CHANGES, not by the resident set -- a large
+            // number here means the bridge is churning binds every frame.
+            PROFILE_SCOPE("dyn.bind_parts");
+            PROFILE_COUNT("dyn.changes", changes.size());
+            for (auto& c : changes) {
+                if (c.kind == render::DynamicSlotChangeKind::Bind) {
+                    const viewer::LoadedPart* lp =
+                        impl_->store->get_or_load(c.part_hash);
+                    if (!lp) continue;
+                    bool drawable = false;
+                    if (!ensure_vulkan_part(*impl_->vk_scene, c.part_hash, *lp,
+                                            drawable, err))
+                        continue;
+                    if (!drawable) continue;
+                }
+                valid.push_back(std::move(c));
             }
-            valid.push_back(std::move(c));
         }
         if (!valid.empty()) {
+            PROFILE_SCOPE("dyn.update_instances");
             std::string dyn_err;
             if (!impl_->vk_scene->update_dynamic_instances(
                     valid.data(), static_cast<uint32_t>(valid.size()),
@@ -7328,7 +7373,10 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                            range.vertex_count, range.index_start,
                            range.index_count);
             };
-        impl_->reconcile_runtime_animation_skinning();
+        {
+            PROFILE_SCOPE("dyn.skin_reconcile");
+            impl_->reconcile_runtime_animation_skinning();
+        }
 
         // C2 uses the same conservative scene visibility/transform lane as
         // the root dynamic instance.  Animation has already published an
@@ -7338,6 +7386,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         std::vector<viewer::VkAnimationBoundsInstance> rejected_skin_bounds;
         bool skin_assets_ok = true;
         std::set<uint64_t> active_bounds_assets;
+        PROFILE_SCOPE_NAMED(z_skin_query, "dyn.skin_query");
         impl_->ecs_runtime.world().each(
             [this, &skin_assets_ok, &active_bounds_assets](flecs::entity,
                                     const render::AnimationSkinnedBinding& binding) {
@@ -7361,16 +7410,20 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 (void)impl_->vk_scene->unregister_animation_bounds_asset(retired);
         }
         impl_->vk_animation_bounds_assets = std::move(active_bounds_assets);
+        z_skin_query.stop();
         // Collect even after asset registration rejects.  The bridge provides
         // full generational slots for every live animated owner so the
         // renderer can clear any old dynamic bound before its empty fallback
         // queue reaches culling.
-        if (!impl_->dynamic_bridge.collect_animation_skinning(
-                impl_->ecs_runtime.world(), skin_submissions,
-                rejected_skin_bounds, bridge_err, frame.serial)) {
-            skin_assets_ok = false;
-            fprintf(stderr, "animation skin bridge error (non-fatal): %s\n",
-                    bridge_err.c_str());
+        {
+            PROFILE_SCOPE("dyn.skin_collect");
+            if (!impl_->dynamic_bridge.collect_animation_skinning(
+                    impl_->ecs_runtime.world(), skin_submissions,
+                    rejected_skin_bounds, bridge_err, frame.serial)) {
+                skin_assets_ok = false;
+                fprintf(stderr, "animation skin bridge error (non-fatal): %s\n",
+                        bridge_err.c_str());
+            }
         }
         // begin/submit publish an unsealed frame transaction even for
         // rejection. The queue remains replaceable until the fallible GPU
@@ -7391,10 +7444,15 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             animation_skin_queue_pending_seal = true;
         }
     }
-    if (!impl_->vk_scene->prepare_frame(frame, matrices, cam.position, budget,
-                                        err)) {
-        impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
-        return false;
+    {
+        // Parent of the pf.* zones; the gap between this and their sum is
+        // prepare_frame's own unscoped work.
+        PROFILE_SCOPE("build.prepare_frame");
+        if (!impl_->vk_scene->prepare_frame(frame, matrices, cam.position,
+                                            budget, err)) {
+            impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
+            return false;
+        }
     }
     viewer::VkSceneLighting lighting{};
     const auto controls =
@@ -7458,8 +7516,12 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->vk_scene->set_lighting(lighting);
     impl_->vk_scene->set_display_exposure(controls.exposure_ev);
     impl_->vk_scene->set_composite_debug_view(controls.composite_debug_view);
+    z_build.stop();
     const auto build_end = std::chrono::steady_clock::now();
     const auto draw_start = std::chrono::steady_clock::now();
+    // Parent render-lane zone for the draw region; the four child scopes below
+    // nest under it in the profiler tree, matching the DrawZone chrono splits.
+    PROFILE_SCOPE_NAMED(z_draw, "draw");
     // Per-zone attribution for the draw region. `zone_mark` advances like the
     // publish job's pub_split(): each call returns microseconds since the last.
     auto zone_mark = draw_start;
@@ -7473,33 +7535,46 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // Demand-driven VT: register the (part, rung) variants last frame's
     // demand pass asked for, so this frame's vt_draw_slots table already
     // carries them (their tail fills record inside record_cull_and_render).
-    impl_->service_vt_rung_requests();
+    {
+        PROFILE_SCOPE("draw.vt_requests");
+        impl_->service_vt_rung_requests();
+    }
     const uint64_t zone_vt_us = zone_split();
     impl_->draw_vt_requests.add(zone_vt_us);
-    if (!impl_->vk_scene->record_cull_and_render(
-            frame, matrices, cam.position, budget, err)) {
-        impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
-        return false;
+    {
+        PROFILE_SCOPE("draw.cull_render");
+        if (!impl_->vk_scene->record_cull_and_render(
+                frame, matrices, cam.position, budget, err)) {
+            impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
+            return false;
+        }
     }
     const uint64_t zone_cull_us = zone_split();
     impl_->draw_cull_render.add(zone_cull_us);
-    if (animation_skin_queue_pending_seal &&
-        !impl_->vk_scene->finish_animation_skinning_frame(frame.frame_slot,
-                                                           frame.serial)) {
-        impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
-        err = "animation skin frame queue failed to seal after GPU record";
-        return false;
+    {
+        PROFILE_SCOPE("draw.skin_seal");
+        if (animation_skin_queue_pending_seal &&
+            !impl_->vk_scene->finish_animation_skinning_frame(frame.frame_slot,
+                                                              frame.serial)) {
+            impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
+            err = "animation skin frame queue failed to seal after GPU record";
+            return false;
+        }
     }
     const uint64_t zone_skin_us = zone_split();
     impl_->draw_skin_seal.add(zone_skin_us);
-    if (!impl_->vk_scene->record_composite_to_swapchain(frame, err)) {
-        impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
-        return false;
+    {
+        PROFILE_SCOPE("draw.composite");
+        if (!impl_->vk_scene->record_composite_to_swapchain(frame, err)) {
+            impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
+            return false;
+        }
     }
     const uint64_t zone_comp_us = zone_split();
     impl_->draw_composite.add(zone_comp_us);
     if (impl_->vk_scene->consume_dlss_history_reset())
         impl_->vk_temporal.invalidate();
+    z_draw.stop();
     const auto draw_end = std::chrono::steady_clock::now();
 
     impl_->stats.resolve_ms =
@@ -7603,6 +7678,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.gpu_blas_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneBlas);
     impl_->stats.gpu_tlas_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneTlas);
     impl_->stats.gpu_rt_ms               = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneRt);
+    impl_->stats.gpu_rt_gi_ms            = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneRtGi);
     impl_->stats.gpu_denoise_ms          = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneDenoise);
     impl_->stats.gpu_dlss_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneDlss);
     impl_->stats.gpu_composite_ms        = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneComposite);
