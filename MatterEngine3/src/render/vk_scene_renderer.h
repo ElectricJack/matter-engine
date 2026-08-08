@@ -1299,6 +1299,22 @@ private:
 
     struct PartRecord {
         uint64_t hash = 0;
+        // RT instance-level early-out, precomputed once at registration so
+        // build_ray_geometry can reject a whole instance before the part
+        // lookup's scattered cluster_staging_ fetch and the per-cluster LOD
+        // work. See the use site for the derivation.
+        //
+        // rt_mesh_span: max over clusters of (that cluster's last MESH rung's
+        //   normalized switch distance x its radius). Multiply by
+        //   scale * pixel_budget * lod_bias and it is the furthest distance at
+        //   which ANY cluster of this part still traces real geometry.
+        //   INFINITY means "never skip" -- the safe default, and what an open
+        //   rung (threshold <= 0) legitimately produces.
+        // rt_center_extent: object-space distance from the part origin to the
+        //   furthest cluster centre, so a bound on how much closer a cluster
+        //   can be than the instance origin.
+        float rt_mesh_span = std::numeric_limits<float>::infinity();
+        float rt_center_extent = 0.0f;
         uint32_t cluster_start = 0;
         uint32_t cluster_count = 0;
         uint32_t vertex_start = 0;   // kept for Task 4 vertexOffset; NOT folded into lod offsets

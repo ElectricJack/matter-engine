@@ -6348,6 +6348,42 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         record.rt_cluster_mesh_lods.push_back(
             vk_scene_detail::cluster_mesh_lod_count(part, cluster_index));
     }
+    // M2.5 follow-up: the instance-level RT early-out's two constants. Folded
+    // here, from the same VkScenePart the ceiling above comes from, so they
+    // cannot describe a different part than the rung ceiling they gate.
+    {
+        float span = 0.0f;
+        bool span_open = false;
+        float center_extent = 0.0f;
+        for (uint32_t cluster_index = 0; cluster_index < part.clusters.size();
+             ++cluster_index) {
+            const VkSceneCluster& cluster = part.clusters[cluster_index];
+            // Centre extent over EVERY cluster, mesh-bearing or not: it only
+            // widens the bound, and a wider bound skips less. Conservative in
+            // the direction that cannot lose a shadow.
+            const float cx = (cluster.aabb_min.x + cluster.aabb_max.x) * 0.5f;
+            const float cy = (cluster.aabb_min.y + cluster.aabb_max.y) * 0.5f;
+            const float cz = (cluster.aabb_min.z + cluster.aabb_max.z) * 0.5f;
+            center_extent = std::max(
+                center_extent, std::sqrt(cx * cx + cy * cy + cz * cz));
+            const uint32_t mesh_lods = record.rt_cluster_mesh_lods[cluster_index];
+            if (mesh_lods == 0) continue;   // billboard-only: never traced
+            // The LAST mesh rung is the one with the widest switch distance
+            // (they increase), so it alone decides whether ANY mesh rung of
+            // this cluster still qualifies -- exactly the question select_rep's
+            // loop answers. Same normalisation the GpuCluster upload uses.
+            const float sd = lod::normalized_switch_distance(
+                cluster.lods[mesh_lods - 1].threshold);
+            if (std::isinf(sd)) {
+                span_open = true;   // an always-qualifying rung: never skip
+                continue;
+            }
+            span = std::max(span, sd * cluster.radius);
+        }
+        record.rt_mesh_span =
+            span_open ? std::numeric_limits<float>::infinity() : span;
+        record.rt_center_extent = center_extent;
+    }
     for (uint32_t cluster_index = 0; cluster_index < part.clusters.size();
          ++cluster_index) {
         const auto& cluster = part.clusters[cluster_index];
@@ -10000,6 +10036,10 @@ bool VkSceneRenderer::build_ray_geometry(
     // against. Fetched once: gpu_records() materializes a vector.
     const std::vector<VkAnimationBoundsGpuRecord> rt_planning_bounds =
         animation_bounds_.gpu_records();
+    // Instances rejected by the billboard-only early-out below. Reported as a
+    // counter so the win is measurable and a regression (it silently stopping
+    // firing) is visible rather than merely slow.
+    uint64_t rt_instances_skipped = 0;
     for (const RtInstance& source : rt_instances_) {
         // Same flat mirror update_instances() uses -- this WAS a per-instance
         // std::map descent (slot_of_.find()); part_slot_lookup answers the
@@ -10042,6 +10082,60 @@ bool VkSceneRenderer::build_ray_geometry(
         matter::Mat4f object_to_world{};
         std::memcpy(object_to_world.m, source.transform,
                     sizeof(object_to_world.m));
+        // ---- INSTANCE-LEVEL EARLY-OUT -----------------------------------
+        //
+        // Every cluster whose selected rung is the terminal billboard already
+        // contributes nothing (the `lod_index >= mesh_lods` skip below). But
+        // that verdict was reached only AFTER the scattered cluster_staging_
+        // fetch, the planning-bounds build and the full LOD selection -- per
+        // cluster, per instance, per frame. With ~88k vegetation instances a
+        // capture measured build_ray_geometry at 5.8 ms of render-thread time
+        // doing overwhelmingly that.
+        //
+        // If the NEAREST point any of this part's clusters can occupy is still
+        // beyond the FURTHEST distance at which any of them keeps a mesh rung,
+        // then every cluster is billboard-only and the whole instance can be
+        // rejected before touching cluster data at all.
+        //
+        // Conservative on both terms, so it can never drop a caster:
+        //   - rt_mesh_span takes the MAX over clusters, and the last mesh
+        //     rung's switch distance, so it over-estimates the mesh range.
+        //   - the distance bound subtracts the centre extent scaled by the
+        //     LARGEST basis length, not the average, so it under-estimates how
+        //     far the closest cluster is.
+        // INFINITY (an open rung anywhere in the part) skips the test.
+        //
+        // Same rule, not a second one: the reach goes through lod::reach with
+        // the same average-basis scale and the same `!= 1` lod_bias guard
+        // select_cluster_lod_view uses.
+        if (std::isfinite(part.rt_mesh_span)) {
+            const auto basis_len = [&](int c0, int c1, int c2) {
+                const float a = object_to_world.m[c0];
+                const float b = object_to_world.m[c1];
+                const float c = object_to_world.m[c2];
+                return std::sqrt(a * a + b * b + c * c);
+            };
+            const float lx = basis_len(0, 4, 8);
+            const float ly = basis_len(1, 5, 9);
+            const float lz = basis_len(2, 6, 10);
+            const float scale = (lx + ly + lz) / 3.0f;
+            const float dx = object_to_world.m[12] - camera_eye.x;
+            const float dy = object_to_world.m[13] - camera_eye.y;
+            const float dz = object_to_world.m[14] - camera_eye.z;
+            const float origin_distance =
+                std::sqrt(dx * dx + dy * dy + dz * dz);
+            const float nearest_cluster =
+                origin_distance -
+                part.rt_center_extent * std::max(lx, std::max(ly, lz));
+            float span_reach =
+                lod::reach(part.rt_mesh_span, scale, pixel_budget);
+            if (part_override.lod_bias != 1.0f)
+                span_reach *= part_override.lod_bias;
+            if (nearest_cluster > span_reach) {
+                ++rt_instances_skipped;
+                continue;
+            }
+        }
         for (uint32_t cluster_index = 0;
              cluster_index < part.cluster_count; ++cluster_index) {
             // The raster lanes already treat an accepted skin draw as the sole
@@ -10367,6 +10461,7 @@ bool VkSceneRenderer::build_ray_geometry(
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     test_last_rt_blas_build_count_ = static_cast<uint32_t>(pending.size());
 #endif
+    PROFILE_COUNT("rt.instances_skipped", rt_instances_skipped);
     return true;
 }
 
