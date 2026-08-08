@@ -6145,7 +6145,13 @@ bool VkSceneRenderer::init(std::string& error) {
         static_reserve_bytes("MATTER_VK_STATIC_RESERVE_CLUSTER_MB", 32));
     const VkDeviceSize vertex_reserve = std::max<VkDeviceSize>(
         sizeof(VkRasterVertex),
-        static_reserve_bytes("MATTER_VK_STATIC_RESERVE_VERTEX_MB", 1024));
+        // 512, deliberately BELOW the ~716 MiB StreamMountain was measured
+        // needing. This buffer and the VT compositor's mesh entries draw on the
+        // same HOST_VISIBLE budget, and reserving 1 GiB here starved the
+        // compositor into its allocation-failure path. Trading a cheap static
+        // capacity overflow for compositor headroom is the better side of that
+        // deal now that an overflow no longer wipes the whole mesh cache.
+        static_reserve_bytes("MATTER_VK_STATIC_RESERVE_VERTEX_MB", 512));
     const VkDeviceSize index_reserve = std::max<VkDeviceSize>(
         sizeof(uint32_t),
         static_reserve_bytes("MATTER_VK_STATIC_RESERVE_INDEX_MB", 256));
