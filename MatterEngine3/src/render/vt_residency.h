@@ -1152,9 +1152,14 @@ class VtResidency {
         VkDeviceSize size = 0;
         void* mapped = nullptr;
     };
+    // `preferred` (0 = same as `properties`) is a soft request: find_memory_type
+    // takes the first type that has it and falls back to any type meeting
+    // `properties` alone. Used to ask for HOST_CACHED on buffers the CPU READS,
+    // which is not optional for performance -- see ensure_feedback.
     bool create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
                        VkMemoryPropertyFlags properties, Buffer& out,
-                       std::string& error);
+                       std::string& error,
+                       VkMemoryPropertyFlags preferred = 0);
     void destroy_buffer(Buffer& b);
 
     Buffer variant_buffer_{};        // host-visible storage buffer

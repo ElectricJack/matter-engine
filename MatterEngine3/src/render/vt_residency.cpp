@@ -116,7 +116,9 @@ VtResidency::~VtResidency() { shutdown(); }
 
 bool VtResidency::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
                                 VkMemoryPropertyFlags properties, Buffer& out,
-                                std::string& error) {
+                                std::string& error,
+                                VkMemoryPropertyFlags preferred) {
+    if (preferred == 0) preferred = properties;
     destroy_buffer(out);
     if (size == 0) return true;
     const VkDevice device = vulkan_->device();
@@ -134,7 +136,7 @@ bool VtResidency::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
     VkMemoryPropertyFlags selected = 0;
     if (!matter::find_memory_type(vulkan_->physical_device(),
                                   requirements.memoryTypeBits, properties,
-                                  properties, type, selected, error)) {
+                                  preferred, type, selected, error)) {
         destroy_buffer(out);
         return false;
     }
@@ -1528,10 +1530,24 @@ bool VtResidency::ensure_feedback(uint32_t raster_width, uint32_t raster_height,
     feedback_.layout = VK_IMAGE_LAYOUT_UNDEFINED;
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(w) * h * 8u;
     for (uint32_t i = 0; i < kFeedbackSlots; ++i) {
+        // HOST_CACHED IS THE WHOLE POINT HERE. This is the one buffer the CPU
+        // READS every frame -- drain_feedback scans all w*h texels of it. Asked
+        // for HOST_VISIBLE|HOST_COHERENT alone, a driver is free to hand back
+        // uncached write-combined memory, where every read is an uncached fetch
+        // across PCIe. A 2026-08-08 capture measured that scan at 11.1 ms for
+        // 29150 texels -- 381 ns per 8-byte read, roughly 200x what reading
+        // cached memory costs, and 96% of drain_feedback.
+        //
+        // COHERENT stays REQUIRED so no vkInvalidateMappedMemoryRanges is
+        // needed; CACHED is preferred, and find_memory_type falls back to the
+        // required pair on a device that cannot offer both.
         if (!create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                           feedback_readback_[i], error)) {
+                           feedback_readback_[i], error,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                               VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) {
             return false;
         }
     }
