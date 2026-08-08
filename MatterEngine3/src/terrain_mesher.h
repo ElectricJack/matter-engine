@@ -34,7 +34,14 @@ struct SectorMesh {
 //   Normals are gradient normals (from the density field).
 //   No border skirts: the [1..n] ownership rule makes any LOD pair watertight
 //   on its own (removed 2026-07-30; see the note at the end of mesh_sector).
-// Returns false + err on degenerate config (rung outside 0..3, sector_size <= 0,
+// `rung` is a power-of-two voxel ladder about a 2 m base, in BOTH directions:
+//   3 -> 0.25 m, 2 -> 0.5 m, 1 -> 1 m, 0 -> 2 m, -1 -> 4 m ... -5 -> 64 m.
+// The negative half lets the terrain ladder stay voxel at distance instead of
+// switching to the heightfield mesher below, which is what produced a visible
+// seam between near and far terrain -- two different surfaces rather than two
+// resolutions of one. Coarsening needs no stitching: the [1..n] ownership rule
+// makes any LOD pair watertight on its own.
+// Returns false + err on degenerate config (rung outside -5..3, sector_size <= 0,
 // y_min >= y_max).
 bool mesh_sector(const terrain_field::FieldRuntime& field,
                  int64_t tx, int64_t tz, int rung,

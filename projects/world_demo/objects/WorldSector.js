@@ -9,8 +9,8 @@ import {
 // from the world definition. Geometry is sector-local in x/z, world y.
 //
 // p.rung is a SCATTER DETAIL TIER (see matter_engine.cpp rings), NOT a mesh
-// resolution: terrainVolume always meshes at voxel rung 0 so the terrain mesh
-// and its locked border rims are identical at every tier.
+// resolution -- that is p.terrainLod, which now selects a VOXEL rung rather
+// than choosing between two different terrain representations.
 //   tier 0 (far):  trees + landmark boulders
 //   tier 1 (mid):  + rocks and pebbles
 //   tier 2 (near): + grass
@@ -134,12 +134,29 @@ class WorldSector extends Part {
     const terrainMaterials = oneDirtMaterial
       ? [MAT.dirt, MAT.dirt, MAT.dirt, MAT.dirt]
       : [MAT.grass, MAT.dirt, MAT.rock, MAT.snow];
+    // ALL-VOXEL TERRAIN LADDER.
+    //
+    // terrainLod used to select a REPRESENTATION: 5 meshed the world field as
+    // voxels, 4..0 dropped to a regular height grid. That switch was the seam
+    // between near and far terrain -- the two sides were different surfaces,
+    // not different resolutions of one, so no band tuning could line them up,
+    // and the heightfield could not express anything the field does that a
+    // height grid cannot (overhangs, arches, caves).
+    //
+    // Now every rung is the same voxel mesher, coarsening 2x per step:
+    //   terrainLod 5 -> voxel rung  0 ->  2 m   (unchanged near appearance)
+    //   terrainLod 4 -> voxel rung -1 ->  4 m
+    //   terrainLod 3 -> voxel rung -2 ->  8 m
+    //   terrainLod 2 -> voxel rung -3 -> 16 m
+    //   terrainLod 1 -> voxel rung -4 -> 32 m
+    //   terrainLod 0 -> voxel rung -5 -> 64 m   (one cell per sector)
+    //
+    // edgeMask is no longer consulted. It existed to stitch a heightfield
+    // sector to a coarser neighbour; the voxel path's [1..n] ownership rule
+    // makes any LOD pair watertight without it.
     const terrainLod = p.terrainLod === undefined ? 5 : (p.terrainLod | 0);
-    if (terrainLod < 5)
-      this.terrainHeightfield(p.tx, p.tz, terrainLod, p.edgeMask | 0,
-                              terrainMaterials);
-    else
-      this.terrainVolume(p.tx, p.tz, 0, terrainMaterials);
+    const voxelRung = Math.max(-5, Math.min(0, terrainLod - 5));
+    this.terrainVolume(p.tx, p.tz, voxelRung, terrainMaterials);
     if (!table) return;   // no biome table -> terrain only
 
     const ox = p.tx * SECTOR, oz = p.tz * SECTOR;

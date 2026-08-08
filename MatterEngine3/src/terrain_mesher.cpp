@@ -45,8 +45,27 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
                  int64_t tx, int64_t tz, int rung,
                  float sector_size, float y_min, float y_max,
                  SectorMesh& out, std::string& err) {
-    if (rung < 0 || rung > 3) {
-        err = "terrain_mesher: rung out of 0..3";
+    // Rung is a power-of-two voxel ladder around a 2 m base, extending in BOTH
+    // directions:
+    //   rung  3 -> 0.25 m      rung  0 -> 2 m (the base)
+    //   rung  2 -> 0.5  m      rung -1 -> 4 m
+    //   rung  1 -> 1    m      rung -2 -> 8 m ... rung -5 -> 64 m
+    //
+    // The negative half is new. It exists so the terrain ladder can stay VOXEL
+    // all the way out instead of switching representation to a heightfield at
+    // distance: that switch was the visible seam between near voxel terrain and
+    // the far field, and no amount of band tuning could hide it because the two
+    // sides were different surfaces, not different resolutions of one.
+    //
+    // Coarsening is safe across rungs by construction -- the [1..n] ownership
+    // rule below already makes any LOD pair watertight, which is why the border
+    // skirts could be deleted in 2026-07. Nothing extra is needed to stitch a
+    // 4 m sector to a 2 m one.
+    //
+    // -5 is the floor because a 64 m sector at 64 m voxels is a single cell;
+    // anything coarser has no lattice left to march.
+    if (rung < -5 || rung > 3) {
+        err = "terrain_mesher: rung out of -5..3";
         return false;
     }
     if (sector_size <= 0.0f || y_min >= y_max) {
@@ -54,7 +73,8 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
         return false;
     }
 
-    const float voxel = 2.0f / float(1 << rung);
+    const float voxel = rung >= 0 ? 2.0f / float(1 << rung)
+                                  : 2.0f * float(1 << -rung);
     const int   n     = int(std::lround(double(sector_size) / double(voxel)));
     const double ox   = double(tx) * double(sector_size);
     const double oz   = double(tz) * double(sector_size);
