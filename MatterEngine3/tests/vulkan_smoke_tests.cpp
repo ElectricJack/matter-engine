@@ -6689,17 +6689,28 @@ void run_static_append_upload_tests(matter::VulkanDevice& vulkan) {
             renderer.cluster_buffer_size() > cluster_capacity ||
             renderer.raster_vertex_buffer_size() > vertex_capacity ||
             renderer.raster_index_buffer_size() > index_capacity;
-        CHECK(full_delta == 0 || capacity_grew,
-              "full static re-uploads happen only when a buffer must grow");
-        CHECK(capacity_grew || append_delta == 1,
+        // The first upload of a renderer's life is a full by construction:
+        // static_upload_dirty_ starts at kFull because nothing has been
+        // uploaded yet. The static buffers are now RESERVED at init(), so that
+        // seeding full no longer coincides with a growth and has to be excused
+        // explicitly instead of being inferred from capacity_grew.
+        const bool seeding_upload = before.static_full_uploads == 0;
+        CHECK(full_delta == 0 || capacity_grew || seeding_upload,
+              "full static re-uploads happen only to seed the buffers, or when "
+              "one must grow");
+        CHECK(capacity_grew || seeding_upload || append_delta == 1,
               "a registration that fits existing capacity appends in place");
         fulls += full_delta;
         appends += append_delta;
     }
-    // Capacity doubles per buffer, so across 16 single-part registrations each
-    // of the three buffers can force at most ~4 growth re-uploads; the rest
-    // must take the append path regardless of exact struct sizes.
+    // With the buffers reserved at init(), a fixture this size never crosses a
+    // capacity boundary, so exactly ONE full upload should occur -- the seeding
+    // one -- and every subsequent registration appends. This is the assertion
+    // that fails if the reservation regresses: before it, the same fixture
+    // reported 6 appends / 10 fulls as each buffer climbed the doubling ladder.
     CHECK(appends >= 4, "append path carries the streaming steady state");
+    CHECK(fulls <= 1,
+          "reserved static buffers take a full upload only to seed");
     std::printf("streamed static uploads: %llu appends / %llu fulls\n",
                 static_cast<unsigned long long>(appends),
                 static_cast<unsigned long long>(fulls));
@@ -7305,7 +7316,12 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
     const VkDeviceSize stable_command_bytes = renderer.command_buffer_size();
     const VkDeviceSize stable_transform_bytes =
         renderer.draw_transform_buffer_size();
-    CHECK(stable_cluster_bytes > initial_cluster_bytes &&
+    // The CLUSTER buffer is reserved at init() and deliberately does not grow
+    // for a fixture this size -- that is the reservation working, so it is
+    // asserted stable rather than growing. The command and transform buffers
+    // carry no reservation and still exercise the reallocation path, which is
+    // what this check is actually about.
+    CHECK(stable_cluster_bytes >= initial_cluster_bytes &&
               stable_command_bytes > initial_command_bytes &&
               stable_transform_bytes > initial_transform_bytes,
           "scene buffers grow safely across reallocations");
