@@ -108,9 +108,22 @@ struct RasterDebugPushConstants {
     uint32_t direct_lod_valid = 0;
     uint32_t lod_tint_enabled = 0;
     uint32_t wireframe_enabled = 0;
+    // Intra-cell impostor parallax (gbuffer.frag): the two extra atlas taps
+    // that offset the sample by in_impostor_parallax.xy to fake depth as the
+    // view moves off the baked axis, plus its shade modulation. Default ON --
+    // this is a toggle for judging whether the effect earns its cost, not a
+    // behaviour change.
+    //
+    // NOTE: distinct from tileset POM, which already excludes impostors
+    // outright (`tileset_slot >= 0 && !is_impostor`).
+    uint32_t impostor_parallax_enabled = 1;
 };
-static_assert(sizeof(RasterDebugPushConstants) == 16,
-              "raster debug push constants must remain four uint32_t words");
+// FIVE words now. The GLSL block is declared identically in BOTH gbuffer.frag
+// and raster.vert; all three must be changed together, and the shaders need
+// `make -C MatterEngine3 vulkan-spirv` -- a plain build silently keeps the old
+// SPIR-V and the new word reads as garbage.
+static_assert(sizeof(RasterDebugPushConstants) == 20,
+              "raster debug push constants must remain five uint32_t words");
 
 // Keep raster-pipeline choice atomic: an unavailable or partially created line
 // variant must never produce a mixed fill/line frame, and must never leave the
@@ -161,10 +174,12 @@ inline VkPipelineRasterizationStateCreateInfo make_wireframe_rasterization(
 inline RasterDebugPushConstants make_raster_debug_push_constants(
     uint32_t direct_lod, bool direct_lod_valid,
     matter::GeometryDebugView geometry_debug_view,
-    bool wireframe_enabled) noexcept {
+    bool wireframe_enabled,
+    bool impostor_parallax_enabled = true) noexcept {
     return {direct_lod, direct_lod_valid ? 1u : 0u,
             geometry_debug_view == matter::GeometryDebugView::LodTint ? 1u : 0u,
-            wireframe_enabled ? 1u : 0u};
+            wireframe_enabled ? 1u : 0u,
+            impostor_parallax_enabled ? 1u : 0u};
 }
 
 // Emission is stored as log2(1 + strength) in the alpha channel of the
@@ -930,6 +945,11 @@ public:
     void set_composite_debug_view(float mode) { composite_debug_override_ = mode; }
     void set_geometry_debug_view(matter::GeometryDebugView view);
     void set_wireframe(bool enabled);
+    // Rides the raster debug push constant, so it takes effect on the next
+    // recorded frame with no pipeline rebuild.
+    void set_impostor_parallax(bool enabled) noexcept {
+        impostor_parallax_ = enabled;
+    }
     // True only when the device enabled fillModeNonSolid AND both line
     // pipelines were created. Callers that surface a wireframe control must
     // ask this rather than assume; a false here is the honest "cannot".
@@ -2182,6 +2202,7 @@ private:
     // Requested, not necessarily honoured: select_raster_pipelines is what
     // turns this into an actually-recorded line frame.
     bool wireframe_ = false;
+    bool impostor_parallax_ = true;
     uint32_t uploaded_vertex_count_ = 0;
     uint32_t uploaded_index_count_ = 0;
     uint32_t raster_draw_command_count_ = 0;

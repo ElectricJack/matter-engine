@@ -123,6 +123,14 @@ struct RenderOptions {
     // VulkanLightingOverrides::composite_debug_view; None is inert.
     GeometryDebugView geometry_debug_view = GeometryDebugView::None;
     bool  wireframe       = false;
+    // Intra-cell impostor parallax: the two extra atlas taps in gbuffer.frag
+    // that offset the sample by the stored displacement so a card fakes depth
+    // as the view moves off its baked axis. Default ON (the shipped look);
+    // turn off to measure what those taps buy. Distinct from tileset POM,
+    // which already excludes impostors entirely. The card's gl_FragDepth
+    // push-back is NOT affected -- that places the card at the depth it
+    // depicts and is a correctness term, not an appearance one.
+    bool  impostor_parallax = true;
     bool  hiz_occlusion   = false;    // default OFF (known false-positive issue)
     float pixel_budget    = 0.0f;     // 0 = default (1.0); clamped to [0.05, 4.0]
     float active_radius   = 0.0f;     // SectorLod knob; 0 = default (64.0)
@@ -299,7 +307,8 @@ struct FrameStats {
     float gpu_gbuffer_ms        = 0;
     float gpu_blas_ms           = 0;
     float gpu_tlas_ms           = 0;
-    float gpu_rt_ms             = 0;
+    float gpu_rt_ms             = 0;   // primary/shadow trace only
+    float gpu_rt_gi_ms          = 0;   // GI/reflection trace (0 when GI off)
     float gpu_denoise_ms        = 0;
     float gpu_dlss_ms           = 0;
     float gpu_composite_ms      = 0;

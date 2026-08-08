@@ -87,6 +87,10 @@ layout(push_constant) uniform RasterDebugPushConstants {
     uint direct_lod_valid;
     uint lod_tint_enabled;
     uint wireframe_enabled;
+    // Intra-cell impostor parallax toggle. Declared in BOTH gbuffer.frag and
+    // raster.vert and in RasterDebugPushConstants (vk_scene_renderer.h); the
+    // three must stay identical.
+    uint impostor_parallax_enabled;
 } debug_push;
 
 layout(set = 1, binding = 3, std430) readonly buffer DrawTransforms {

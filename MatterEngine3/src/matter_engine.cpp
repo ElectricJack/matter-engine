@@ -6928,6 +6928,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     }
     impl_->vk_scene->set_geometry_debug_view(opts.geometry_debug_view);
     impl_->vk_scene->set_wireframe(opts.wireframe);
+    impl_->vk_scene->set_impostor_parallax(opts.impostor_parallax);
     // Stage value-owned presentation observations now, but expose them to
     // animation only after this submission is reported presented. This makes
     // LOD consume prior completed scene state and prevents a failed render

@@ -696,7 +696,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                     record.raster_debug_push.lod_tint_enabled != 0u
                         ? matter::GeometryDebugView::LodTint
                         : matter::GeometryDebugView::None,
-                    record.raster_debug_push.wireframe_enabled != 0u);
+                    record.raster_debug_push.wireframe_enabled != 0u,
+                    record.raster_debug_push.impostor_parallax_enabled != 0u);
             vkCmdPushConstants(command_buffer, record.raster_layout,
                                VK_SHADER_STAGE_VERTEX_BIT |
                                    VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -11308,7 +11309,8 @@ bool VkSceneRenderer::record_cull_and_render(
                         {selected.descriptor_sets[0], selected.descriptor_sets[1]},
                         make_raster_debug_push_constants(
                             0u, false, geometry_debug_view_,
-                            raster_pipelines.wireframe_enabled),
+                            raster_pipelines.wireframe_enabled,
+                            impostor_parallax_),
                         composite_pipeline_,
                         composite_pipeline_layout_,
                         selected.composite_descriptor_set,
@@ -11829,7 +11831,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     record.raster_sets[1] = selected.descriptor_sets[1];
     record.raster_debug_push = make_raster_debug_push_constants(
         0u, false, geometry_debug_view_,
-        raster_pipelines.wireframe_enabled);
+        raster_pipelines.wireframe_enabled, impostor_parallax_);
     record.composite_pipeline = composite_pipeline_;
     record.composite_layout = composite_pipeline_layout_;
     record.composite_set = selected.composite_descriptor_set;

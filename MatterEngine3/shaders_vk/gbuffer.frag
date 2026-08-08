@@ -76,6 +76,10 @@ layout(push_constant) uniform RasterDebugPushConstants {
     uint direct_lod_valid;
     uint lod_tint_enabled;
     uint wireframe_enabled;
+    // Intra-cell impostor parallax toggle. Declared in BOTH gbuffer.frag and
+    // raster.vert and in RasterDebugPushConstants (vk_scene_renderer.h); the
+    // three must stay identical.
+    uint impostor_parallax_enabled;
 } debug_push;
 
 layout(location = 0) out vec4 out_albedo;
@@ -187,17 +191,27 @@ void main() {
         // The cost of clamping is a smear where the offset would have left the
         // cell, which is bounded and local; the cost of not clamping is
         // another view's geometry welded to this one.
+        //
+        // TOGGLE (debug_push.impostor_parallax_enabled, default 1). Off skips
+        // both depth taps and samples the cell straight -- the card reads as a
+        // flat billboard of its baked view. That is the honest comparison for
+        // deciding whether the two taps earn their cost; it is NOT a correctness
+        // fix, and off is visibly flatter at grazing angles.
         const vec2 base_uv = clamp(in_surface.yz, 0.0, 1.0);
-        const vec2 parallax = in_impostor_parallax.xy;
+        const vec2 parallax = debug_push.impostor_parallax_enabled != 0u
+                                  ? in_impostor_parallax.xy
+                                  : vec2(0.0);
         vec2 local = base_uv;
-        float probe = texture(impostorAtlas,
-                              vec3((cell + local) / float(IMPOSTOR_GRID_DIM),
-                                   float(slot * 2u))).b;
-        local = clamp(base_uv + parallax * probe, 0.0, 1.0);
-        probe = texture(impostorAtlas,
-                        vec3((cell + local) / float(IMPOSTOR_GRID_DIM),
-                             float(slot * 2u))).b;
-        local = clamp(base_uv + parallax * probe, 0.0, 1.0);
+        if (debug_push.impostor_parallax_enabled != 0u) {
+            float probe = texture(impostorAtlas,
+                                  vec3((cell + local) / float(IMPOSTOR_GRID_DIM),
+                                       float(slot * 2u))).b;
+            local = clamp(base_uv + parallax * probe, 0.0, 1.0);
+            probe = texture(impostorAtlas,
+                            vec3((cell + local) / float(IMPOSTOR_GRID_DIM),
+                                 float(slot * 2u))).b;
+            local = clamp(base_uv + parallax * probe, 0.0, 1.0);
+        }
         const vec2 uv = (cell + local) / float(IMPOSTOR_GRID_DIM);
         const vec4 shade = texture(impostorAtlas, vec3(uv, float(slot * 2u)));
         // Alpha cutout. gl_FragDepth is already written by this shader, so
