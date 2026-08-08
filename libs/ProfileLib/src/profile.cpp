@@ -39,6 +39,16 @@ struct Registry {
     // first sight (CAS from -1). Display metadata only; never per-frame data.
     std::atomic<int> zone_parent[kMaxZones];
 
+    // Static zone->lane map, recorded once per zone on first sight (CAS from -1)
+    // from the depositing thread's lane. Display metadata only. Lets the panel
+    // and trace split render/critical-path zones from background worker zones by
+    // the thread they actually ran on, not by a "bake." name prefix.
+    std::atomic<int> zone_lane[kMaxZones];
+    // Count of distinct threads that have declared each lane, so the panel can
+    // label the background section "N worker threads" and reason about the fact
+    // that a worker lane's summed ms is spread across that many cores.
+    std::atomic<int> lane_threads[kLaneCount] = {};
+
     // Counters: per-frame event tallies, same intern-once model as zones.
     char counter_names[kMaxCounters][64] = {};
     std::atomic<int> counter_n{0};
@@ -134,8 +144,10 @@ void log_accumulate_and_maybe_print(Registry& r, const FrameRecord& record,
 Registry& reg() {
     static Registry* r = [] {
         Registry* fresh = new Registry();
-        for (int i = 0; i < kMaxZones; ++i)
+        for (int i = 0; i < kMaxZones; ++i) {
             fresh->zone_parent[i].store(-1, std::memory_order_relaxed);
+            fresh->zone_lane[i].store(-1, std::memory_order_relaxed);
+        }
         const char* env = std::getenv("MATTER_PROFILE");
         const bool on = env == nullptr || env[0] == '\0' || env[0] != '0';
         fresh->enabled_flag.store(on, std::memory_order_relaxed);
@@ -183,9 +195,42 @@ const char* zone_name(int zone) {
 
 int zone_count() { return reg().count.load(std::memory_order_acquire); }
 
+// Per-thread lane, declared once via set_thread_lane. Defaults to the render
+// lane so the app/render thread (and any thread that never calls in) needs no
+// setup -- its work is frame work until told otherwise.
+thread_local int t_lane = kLaneRender;
+thread_local bool t_lane_counted = false;
+
+void set_thread_lane(int lane) {
+    if (lane < 0 || lane >= kLaneCount) lane = kLaneRender;
+    t_lane = lane;
+    if (!t_lane_counted) {
+        t_lane_counted = true;
+        reg().lane_threads[lane].fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+int zone_lane(int zone) {
+    if (zone < 0 || zone >= kMaxZones) return kLaneRender;
+    const int v = reg().zone_lane[zone].load(std::memory_order_relaxed);
+    return v < 0 ? kLaneRender : v;
+}
+
+int lane_thread_count(int lane) {
+    if (lane < 0 || lane >= kLaneCount) return 0;
+    return reg().lane_threads[lane].load(std::memory_order_relaxed);
+}
+
 void add_ns(int zone, uint64_t ns) {
     if (zone < 0 || zone >= kMaxZones) return;
-    reg().zone_ns[zone].fetch_add(ns, std::memory_order_relaxed);
+    Registry& r = reg();
+    // Record the depositing thread's lane once, on first sight. add_ns is the
+    // common sink for every path (RAII Scope exit and direct GPU-zone deposits),
+    // and it always runs on the thread that did the work, so t_lane is correct.
+    int expected = -1;
+    r.zone_lane[zone].compare_exchange_strong(expected, t_lane,
+                                              std::memory_order_relaxed);
+    r.zone_ns[zone].fetch_add(ns, std::memory_order_relaxed);
 }
 
 // Per-thread open-scope cursor: the zone currently being timed on this thread,
@@ -352,10 +397,13 @@ FrameStats frame_stats(double budget_ms) {
 }
 
 namespace {
-// A zone belongs to the "bake" worker lane if its name starts with "bake.";
-// everything else is render-thread work. tid 1 = render, 2 = bake.
-int zone_lane(const char* name) {
-    return (std::strncmp(name, "bake.", 5) == 0) ? 2 : 1;
+// Map a zone's recorded lane to a Chrome-trace tid. tid 1 = render, 2 = the
+// (aggregate) worker lane. Driven by the lane the zone actually ran on, not a
+// name prefix, so a background zone lands on the worker track even if it isn't
+// named "bake.*", and a render-thread "publish.*" zone correctly stays on the
+// frame track.
+int zone_trace_tid(int zone) {
+    return zone_lane(zone) == kLaneWorker ? 2 : 1;
 }
 }  // namespace
 
@@ -377,7 +425,7 @@ bool dump_chrome_trace(const char* path) {
                  "{\"ph\":\"M\",\"name\":\"thread_name\",\"pid\":1,\"tid\":1,"
                  "\"args\":{\"name\":\"render\"}},\n"
                  "{\"ph\":\"M\",\"name\":\"thread_name\",\"pid\":1,\"tid\":2,"
-                 "\"args\":{\"name\":\"bake worker\"}}");
+                 "\"args\":{\"name\":\"bake workers (aggregate)\"}}");
 
     // Synthetic timeline: frames laid end to end by wall time. Within a frame,
     // each lane stacks its zones from the frame start -- an approximation (true
@@ -390,7 +438,7 @@ bool dump_chrome_trace(const char* path) {
         for (int z = 0; z < zones; ++z) {
             if (r.zone_ns[z] == 0) continue;
             const char* name = zone_name(z);
-            const int lane = zone_lane(name);
+            const int lane = zone_trace_tid(z);
             const double dur_us = r.zone_ns[z] / 1000.0;
             std::fprintf(f,
                          ",\n{\"ph\":\"X\",\"pid\":1,\"tid\":%d,\"name\":\"%s\","

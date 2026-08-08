@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace matter::profile;
@@ -141,13 +142,43 @@ int main() {
         CHECK(zone_parent(sibling) == -1, "a later top-level scope stays root");
     }
 
+    // --- lane attribution -----------------------------------------------
+    {
+        const int render_zone = register_zone("render.only");
+        const int worker_zone = register_zone("worker.only");
+        add_ns(render_zone, 1000);  // deposited on this (default render) thread
+        std::thread worker([&] {
+            set_thread_lane(kLaneWorker);
+            add_ns(worker_zone, 1000);
+        });
+        worker.join();
+        frame_mark();
+        CHECK(zone_lane(render_zone) == kLaneRender,
+              "a zone first seen on the render thread is render-lane");
+        CHECK(zone_lane(worker_zone) == kLaneWorker,
+              "a zone first seen on a worker thread is worker-lane");
+        CHECK(lane_thread_count(kLaneWorker) >= 1,
+              "worker-lane thread count reflects the tagged thread");
+        // Lane is sticky: a later deposit from the render thread must not move an
+        // already-worker zone back to render (first-sight wins, like the parent).
+        add_ns(worker_zone, 500);
+        frame_mark();
+        CHECK(zone_lane(worker_zone) == kLaneWorker,
+              "recorded lane is sticky (first-sight wins)");
+    }
+
     // --- chrome trace dump ----------------------------------------------
     {
-        // Record a render zone, a bake zone, and a counter, then a frame.
+        // Record a render zone, a bake zone, and a counter, then a frame. The
+        // bake zone is deposited from a WORKER-tagged thread so the trace places
+        // it on the worker lane by recorded thread, not by its name prefix.
         const int rz = register_zone("ui.loop");
         const int bz = register_zone("bake.stagemem");
         add_ns(rz, 2000);
-        add_ns(bz, 8000);
+        std::thread([&] {
+            set_thread_lane(kLaneWorker);
+            add_ns(bz, 8000);
+        }).join();
         add_count(register_counter("layout_rebuilds"), 3);
         frame_mark();
         const char* path = "profile_trace_test.json";

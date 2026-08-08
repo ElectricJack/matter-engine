@@ -74,6 +74,26 @@ int scope_enter(int zone);
 void scope_exit(int previous);
 int zone_parent(int zone);
 
+// ---------------------------------------------------------------------------
+// Lane attribution -- which THREAD a zone's time was spent on.
+//
+// Every thread that records scopes belongs to a lane: the render/critical-path
+// lane (the frame's real cost) or the background worker lane (the bake pool --
+// up to a dozen threads whose SUMMED time is emphatically not frame time). A
+// thread declares its lane once at startup with set_thread_lane; an untagged
+// thread defaults to the render lane, so the app/render thread needs no call.
+//
+// A zone's lane is recorded once, on first sight, from the lane of the thread
+// that runs it -- exactly like zone_parent. Because scope nesting is
+// thread-local, a zone and its parent always share a lane, so the display can
+// cleanly split the frame tree (render) from the background tree (workers)
+// instead of guessing from the "bake." name prefix. This is what lets the panel
+// stop reporting 12 parallel worker threads' summed CPU as ">100% of a frame".
+enum Lane { kLaneRender = 0, kLaneWorker = 1, kLaneCount = 2 };
+void set_thread_lane(int lane);
+int zone_lane(int zone);          // recorded lane; kLaneRender if never seen
+int lane_thread_count(int lane);  // distinct threads that tagged this lane
+
 // Counters: per-frame event tallies (layout rebuilds, draw calls, jobs run),
 // distinct from time zones. Same intern-once model as zones.
 int register_counter(const char* name);

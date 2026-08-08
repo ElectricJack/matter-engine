@@ -1277,6 +1277,43 @@ struct VulkanDevice::Impl {
             rt_features2.features.fragmentStoresAndAtomics;
         features2.pNext = &features12;
 
+        // MATTER_VK_ROBUSTNESS=1: turn every out-of-bounds buffer access into
+        // a defined zero read instead of whatever the hardware does with an
+        // unmapped page. This exists as a DEVICE_LOST experiment, not as a
+        // shipping default. The 30-minute GPU-AV run that produced no crash
+        // also had validation silently forcing robustBufferAccess,
+        // robustBufferAccess2, robustImageAccess2 and nullDescriptor on -- so
+        // "no crash under validation" could mean the bug was masked rather
+        // than absent, and the two are only separable by enabling robustness
+        // WITHOUT the validation slowdown. The engine otherwise requests no
+        // robustness at all, so an out-of-bounds read today faults the device.
+        VkPhysicalDeviceRobustness2FeaturesEXT robustness2{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
+        const bool want_robustness =
+            std::getenv("MATTER_VK_ROBUSTNESS") != nullptr;
+        bool robustness2_available = false;
+        if (want_robustness) {
+            robustness2_available =
+                available_extensions.count(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME) != 0;
+            // Core robustBufferAccess covers descriptor-bound buffers and is
+            // always available; robustness2 additionally defines out-of-bounds
+            // behaviour rather than leaving it merely "not a crash".
+            features2.features.robustBufferAccess = VK_TRUE;
+            if (robustness2_available) {
+                robustness2.robustBufferAccess2 = VK_TRUE;
+                robustness2.robustImageAccess2 = VK_TRUE;
+                robustness2.nullDescriptor = VK_TRUE;
+                robustness2.pNext = features2.pNext;
+                features2.pNext = &robustness2;
+                extensions.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+            }
+            std::fprintf(stderr,
+                         "[vk] MATTER_VK_ROBUSTNESS set: robustBufferAccess on"
+                         ", robustness2 %s\n",
+                         robustness2_available ? "on" : "UNAVAILABLE");
+            std::fflush(stderr);
+        }
+
         VkDeviceCreateInfo create{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
         create.pNext = &features2;
         create.queueCreateInfoCount = 1;
