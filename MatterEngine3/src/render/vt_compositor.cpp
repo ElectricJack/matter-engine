@@ -977,16 +977,44 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
         // by a rebuild of everything still wanted. vt.mesh_cache_wipes counts
         // the trips and vt.mesh_shed counts what each one destroyed; a spike in
         // either alongside a spike in vt.mesh_alloc confirms it.
+        // SHED INCREMENTALLY, retrying as we go. This loop used to destroy the
+        // ENTIRE evictable cache and then retry once, which a 2026-08-08
+        // capture caught costing 352.9 ms in a single call -- it shed 498 of
+        // 512 entries to make room for one, then every variant still on screen
+        // had to be rebuilt over the following frames. That was the largest
+        // hitch in the trace by a factor of 28.
+        //
+        // Freeing enough is almost always a handful of entries (an entry is
+        // charts + tris, a few hundred KB at the observed ~5k triangles), so
+        // retrying in small batches turns a whole-cache wipe into a few
+        // evictions. The batch keeps the failed-allocation retries bounded too:
+        // a failing vkAllocateMemory is not cheap, so this does not retry after
+        // every single eviction.
         PROFILE_COUNT("vt.mesh_cache_wipes", 1);
         destroy_raw_buffer(device, entry.charts);
         destroy_raw_buffer(device, entry.tris);
+        constexpr uint32_t kShedBatch = 8;
         uint64_t shed = 0;
-        while (evict_lru_mesh_entry(ring_index)) {
-            ++stats.mesh_cache_evictions;
-            ++shed;
+        bool created = false;
+        while (!created) {
+            uint32_t batch = 0;
+            while (batch < kShedBatch && evict_lru_mesh_entry(ring_index)) {
+                ++stats.mesh_cache_evictions;
+                ++shed;
+                ++batch;
+            }
+            if (batch == 0) break;   // nothing left to give up
+            if (try_create_buffers()) {
+                created = true;
+                break;
+            }
+            // Partial success leaks the first buffer; clear both before the
+            // next attempt (try_create_buffers is short-circuiting).
+            destroy_raw_buffer(device, entry.charts);
+            destroy_raw_buffer(device, entry.tris);
         }
         PROFILE_COUNT("vt.mesh_shed", shed);
-        if (!try_create_buffers()) {
+        if (!created) {
             destroy_raw_buffer(device, entry.charts);
             destroy_raw_buffer(device, entry.tris);
             tape_slot_release(entry.tape_slot);
