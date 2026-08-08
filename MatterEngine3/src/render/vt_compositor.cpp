@@ -1129,14 +1129,33 @@ void VtCompositor::set_weight_mode(WeightMode mode, uint32_t debug_mat_a,
 }
 
 void VtCompositor::invalidate_part(uint64_t variant_hash) {
+    // DEFERRED, never in place. This runs from drain_vt_invalidations() inside
+    // vt_begin_frame() -- on the render thread, with earlier frames' command
+    // buffers still executing. Destroying here freed descriptor sets, chart/tri
+    // buffers and tape slots that an unretired fill() batch was still reading:
+    //
+    //   vkFreeDescriptorSets(): pDescriptorSets[0] can't be called on
+    //   VkDescriptorSet ... that is currently in use by VkCommandBuffer ...
+    //   (VUID-vkFreeDescriptorSets-pDescriptorSets-00309)
+    //
+    // followed by VK_ERROR_DEVICE_LOST. The two sibling paths in this file both
+    // already carry the proof this one lacked: evict_lru_mesh_entry() refuses
+    // any entry inside the in-flight window, and one-shot entries park in
+    // mesh_retire[] until their ring comes round again. VtEnricher::invalidate_
+    // part() was moved onto the same discipline in an earlier pass; the
+    // compositor half was missed even though drain_vt_invalidations() calls
+    // both, back to back, at the same point in the frame.
+    //
+    // The retire list is keyed to the ring of the MOST RECENT batch, which is
+    // the one behind ring_cursor -- fill() flushes a ring just before reusing
+    // it, so parking here buys exactly kMaxBatchesInFlight batches, the same
+    // window the one-shot path relies on. Parking under ring_cursor itself
+    // would be freed by the very next fill().
+    const uint32_t retire_ring =
+        (impl_->ring_cursor + kMaxBatchesInFlight - 1u) % kMaxBatchesInFlight;
     for (auto it = impl_->mesh_cache.begin(); it != impl_->mesh_cache.end();) {
         if (it->first.first == variant_hash) {
-            if (it->second.set)
-                vkFreeDescriptorSets(impl_->device, impl_->descriptor_pool, 1,
-                                     &it->second.set);
-            destroy_raw_buffer(impl_->device, it->second.charts);
-            destroy_raw_buffer(impl_->device, it->second.tris);
-            impl_->tape_slot_release(it->second.tape_slot);
+            impl_->mesh_retire[retire_ring].push_back(std::move(it->second));
             it = impl_->mesh_cache.erase(it);
         } else {
             ++it;
