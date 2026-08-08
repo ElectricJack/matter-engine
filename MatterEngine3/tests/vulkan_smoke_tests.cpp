@@ -6887,12 +6887,31 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
           error.empty() ? "queue fake DLSS output readback" : error.c_str());
     CHECK(matter::immediate_submit_count() == immediate_before,
           "production Vulkan record path performs no immediate submissions");
+    // Adjacent parts now COALESCE into one multi-draw (record_raster), so the
+    // recorded count is no longer one-per-part. The property this test has
+    // always been about survives and is asserted directly: commands are grouped
+    // into far fewer calls than there are commands, and the calls cover the
+    // command span in order without gaps or overlaps.
     const auto ranges = renderer.test_recorded_draw_ranges();
-    CHECK(ranges.size() == 2,
-          "one grouped indirect range per active part");
-    CHECK(ranges.size() == 2 && ranges[0].command_count > 1 &&
-              ranges[1].command_count > 1,
+    uint32_t recorded_commands = 0;
+    bool ordered_and_disjoint = !ranges.empty();
+    for (size_t i = 0; i < ranges.size(); ++i) {
+        recorded_commands += ranges[i].command_count;
+        ordered_and_disjoint = ordered_and_disjoint &&
+                               ranges[i].command_count != 0;
+        if (i != 0)
+            ordered_and_disjoint =
+                ordered_and_disjoint &&
+                ranges[i].first_command == ranges[i - 1].first_command +
+                                               ranges[i - 1].command_count;
+    }
+    CHECK(!ranges.empty() && ranges.size() <= 2,
+          "two active parts record at most one indirect call each, fewer when "
+          "their command spans are adjacent");
+    CHECK(recorded_commands > ranges.size(),
           "cluster LOD commands are grouped instead of submitted individually");
+    CHECK(ordered_and_disjoint,
+          "recorded indirect ranges are ordered, non-empty and non-overlapping");
     CHECK(vulkan.end_frame(frame, error),
           error.empty() ? "submit asynchronous Vulkan record frame"
                         : error.c_str());
@@ -7012,24 +7031,32 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
               renderer.record_cull_and_render(frame, scene.frame, scene.eye,
                                               1.0f, error),
           error.empty() ? "record capped grouped indirect ranges" : error.c_str());
+    // Coalescing merges the two parts' adjacent spans into one run, which is
+    // then split by maxDrawIndirectCount (3 here) -- so ranges can no longer be
+    // bucketed by part_slot, and part_slot on a merged range names only the
+    // run's first part. The invariant that actually matters is stronger and is
+    // asserted directly: every recorded call respects the device cap, and the
+    // calls together cover BOTH parts' commands, [kVkMaxLod, 3*kVkMaxLod),
+    // contiguously -- no gap, no overlap, nothing dropped.
     const auto capped_ranges = renderer.test_recorded_draw_ranges();
     bool capped_and_contiguous = !capped_ranges.empty();
-    uint32_t first_offset = std::numeric_limits<uint32_t>::max();
-    uint32_t second_offset = std::numeric_limits<uint32_t>::max();
+    const uint32_t coverage_start =
+        capped_ranges.empty() ? UINT32_MAX : capped_ranges.front().first_command;
+    uint32_t cursor = coverage_start;
     for (const auto& range : capped_ranges) {
         capped_and_contiguous = capped_and_contiguous &&
-                                range.command_count <= 3;
-        uint32_t& expected =
-            range.part_slot == 0 ? first_offset : second_offset;
-        if (expected == std::numeric_limits<uint32_t>::max())
-            expected = range.first_command;
-        capped_and_contiguous = capped_and_contiguous &&
-                                range.first_command == expected;
-        expected += range.command_count;
+                                range.command_count != 0 &&
+                                range.command_count <= 3 &&
+                                range.first_command == cursor;
+        cursor = range.first_command + range.command_count;
     }
-    CHECK(capped_and_contiguous && first_offset == viewer::kVkMaxLod &&
-              second_offset == 2 * viewer::kVkMaxLod,
-          "capped grouped ranges cover each active part contiguously");
+    // Both parts' commands occupy [0, 2 * kVkMaxLod): the pre-coalescing
+    // version of this test accumulated per part_slot and ended with
+    // first_offset == kVkMaxLod, second_offset == 2 * kVkMaxLod, i.e. one
+    // kVkMaxLod-sized block each, back to back from zero.
+    CHECK(capped_and_contiguous && coverage_start == 0 &&
+              cursor == 2 * viewer::kVkMaxLod,
+          "capped grouped ranges cover both active parts contiguously");
     CHECK(vulkan.end_frame(frame, error),
           error.empty() ? "submit capped grouped indirect ranges" : error.c_str());
     renderer.reset();

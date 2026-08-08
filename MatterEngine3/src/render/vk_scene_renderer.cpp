@@ -433,6 +433,10 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                draw.output_vertex <= static_cast<uint32_t>(INT32_MAX) &&
                draw.source_vertex <= static_cast<uint32_t>(INT32_MAX);
     };
+    // Recording cost only -- every scope in this function measures how long the
+    // CPU takes to build the command buffer, never how long the GPU runs it.
+    // GPU time for the same passes comes from the kGpuZone* timestamps.
+    PROFILE_SCOPE_NAMED(z_gbuffer, "raster.gbuffer");
     matter::VkImageResource* colors[] = {record.albedo, record.normal,
                                          record.orm, record.velocity,
                                          record.material_instance};
@@ -505,7 +509,10 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         write_ts(command_buffer, record.ts_pool, record.vt_zone, false);
         record.ts_written[record.vt_zone] |= 1u;
     }
-    if (record.vt_hooks) record.vt_hooks->vt_record_pre_pass(command_buffer);
+    if (record.vt_hooks) {
+        PROFILE_SCOPE("raster.vt_pre");
+        record.vt_hooks->vt_record_pre_pass(command_buffer);
+    }
     if (time_vt) {
         write_ts(command_buffer, record.ts_pool, record.vt_zone, true);
         record.ts_written[record.vt_zone] |= 2u;
@@ -530,49 +537,97 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                            &vertex_offset);
     vkCmdBindIndexBuffer(command_buffer, record.index_buffer, 0,
                          VK_INDEX_TYPE_UINT32);
-    for (uint32_t i = 0; i < record.draw_range_count; ++i) {
-        const PartCommandRange& range = record.draw_ranges[i];
-        if (range.first_command > record.static_command_count ||
-            range.command_count > record.static_command_count - range.first_command)
-            continue;
-        // Skin-raster instances are removed individually by cull.comp before
-        // this command's instance_count is finalized, so every command in the
-        // range is recorded unconditionally: that preserves bind fallbacks and
-        // ordinary instances which share the same immutable mesh range.
-        //
-        // Because nothing is skipped per command any more, the range is issued
-        // as one multi-draw rather than one call per cluster/LOD slot. It was
-        // temporarily split into drawCount=1 calls when this loop still had to
-        // drop individual commands replaced by compute-skinned output; that
-        // filter moved into cull.comp (uses_skin_raster) and the grouping was
-        // never restored, leaving kVkMaxLod draw calls per part where one does.
-        // drawCount stays clamped to maxDrawIndirectCount; max(1) only keeps a
-        // degenerate limit from spinning here -- the caller already refuses to
-        // record when the device reports less than one.
+    // Skin-raster instances are removed individually by cull.comp before a
+    // command's instance_count is finalized, so every command in a range is
+    // recorded unconditionally: that preserves bind fallbacks and ordinary
+    // instances which share the same immutable mesh range.
+    //
+    // Because nothing is skipped per command, a part's whole range issues as
+    // one multi-draw. ADJACENT PARTS COALESCE TOO: a range is just an offset
+    // and a count into one indirect buffer with a uniform stride, and every
+    // draw here shares one pipeline, one descriptor set, one push-constant
+    // block and the same vertex/index bindings -- all bound before this loop --
+    // so nothing distinguishes "part A's commands" from "part B's" at record
+    // time. Merging runs whose spans touch issues the identical commands in the
+    // identical order; only the number of vkCmd calls changes.
+    //
+    // A 2026-08-08 capture recorded 2175 ranges in 7.2 ms of render-thread
+    // time. Ranges are `cluster_start * kVkMaxLod` (see the two builders in
+    // rebuild_command_template / apply_dynamic_command_layout), so parts whose
+    // clusters were allocated consecutively produce touching spans; holes left
+    // by FreeRangeList recycling break a run, which is exactly when a separate
+    // call is genuinely required.
+    //
+    // Deliberately NOT sorted first. Sorting would merge more, but it reorders
+    // the draws, and that is a rasterization-order change this optimisation has
+    // no business making silently. Merging in place is order-preserving.
+    //
+    // drawCount stays clamped to maxDrawIndirectCount; max(1) only keeps a
+    // degenerate limit from spinning here -- the caller already refuses to
+    // record when the device reports less than one.
+    PROFILE_SCOPE_NAMED(z_static, "raster.draw_static");
+    PROFILE_COUNT("raster.draw_ranges", record.draw_range_count);
+    {
         const uint32_t max_per_call =
             std::max(1u, record.max_draw_indirect_count);
-        uint32_t remaining = range.command_count;
-        uint32_t first = range.first_command;
-        while (remaining != 0) {
-            const uint32_t count = std::min(remaining, max_per_call);
-            vkCmdDrawIndexedIndirect(command_buffer, record.indirect_buffer,
-                                     static_cast<VkDeviceSize>(first) *
-                                         sizeof(DrawCommand),
-                                     count, sizeof(DrawCommand));
-            if (record.recorded_draw_ranges) {
-                record.recorded_draw_ranges->push_back(
-                    {first, count, range.part_slot});
+        uint32_t run_first = 0, run_count = 0, run_part = 0;
+        uint32_t issued = 0;
+        const auto flush_run = [&]() {
+            uint32_t first = run_first;
+            uint32_t remaining = run_count;
+            while (remaining != 0) {
+                const uint32_t count = std::min(remaining, max_per_call);
+                vkCmdDrawIndexedIndirect(command_buffer, record.indirect_buffer,
+                                         static_cast<VkDeviceSize>(first) *
+                                             sizeof(DrawCommand),
+                                         count, sizeof(DrawCommand));
+                ++issued;
+                if (record.recorded_draw_ranges) {
+                    // part_slot of the run's FIRST range. Under coalescing a
+                    // recorded range can span several parts, so this field is
+                    // no longer a per-part identity -- it is only a debug hint.
+                    // recorded_draw_ranges_ has no engine consumer; the smoke
+                    // suite is the only reader.
+                    record.recorded_draw_ranges->push_back(
+                        {first, count, run_part});
+                }
+                first += count;
+                remaining -= count;
             }
-            first += count;
-            remaining -= count;
+            run_count = 0;
+        };
+        for (uint32_t i = 0; i < record.draw_range_count; ++i) {
+            const PartCommandRange& range = record.draw_ranges[i];
+            if (range.first_command > record.static_command_count ||
+                range.command_count >
+                    record.static_command_count - range.first_command)
+                continue;
+            if (range.command_count == 0) continue;
+            // Extend the open run when this range starts exactly where it ends
+            // and the merged span still fits one call.
+            if (run_count != 0 &&
+                run_first + run_count == range.first_command &&
+                range.command_count <= max_per_call - run_count) {
+                run_count += range.command_count;
+                continue;
+            }
+            if (run_count != 0) flush_run();
+            run_first = range.first_command;
+            run_count = range.command_count;
+            run_part = range.part_slot;
         }
+        if (run_count != 0) flush_run();
+        // The merge ratio, measurable directly against raster.draw_ranges.
+        PROFILE_COUNT("raster.draw_calls", issued);
     }
+    z_static.stop();
     // Accepted skin work is drawn from the per-frame compute output, never
     // from the immutable bind-pose arena.  Each draw carries the exact
     // visibility-selected index span plus the source/output rebase.  Every
     // field is range-checked below, so a stale mapping cannot turn into an
     // out-of-bounds vertex fetch.
     if (record.skinned_raster_pipeline != VK_NULL_HANDLE) {
+        PROFILE_SCOPE("raster.draw_skin");
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           record.skinned_raster_pipeline);
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -639,7 +694,10 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     vkCmdEndRendering(command_buffer);
     // WP-E: copy the 1/8-res feedback target into this frame slot's readback
     // buffer; it is consumed at the next begin_frame on the same slot.
-    if (record.vt_hooks) record.vt_hooks->vt_record_post_pass(command_buffer);
+    if (record.vt_hooks) {
+        PROFILE_SCOPE("raster.vt_post");
+        record.vt_hooks->vt_record_post_pass(command_buffer);
+    }
     if (record.ts_pool != VK_NULL_HANDLE && record.ts_written) {
         write_ts(command_buffer, record.ts_pool, record.gbuffer_zone, true);
         record.ts_written[record.gbuffer_zone] |= 2u;
@@ -665,8 +723,10 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         vk_scene_detail::ray_depth_destination_stages(
             record.native_ray_tracing_available),
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
+    z_gbuffer.stop();
 
     if (record.renderer) {
+        PROFILE_SCOPE("raster.rt");
         *record.ray_trace_ok = record.renderer->record_ray_traced_shadows(
             *record.frame, *record.matrices, record.camera_eye,
             record.pixel_budget, record.extent, *record.error);
@@ -693,6 +753,7 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         record.tlas && record.tlas->handle != VK_NULL_HANDLE &&
         (!record.renderer || record.renderer->rt_effective_observed());
     if (volumetrics_ready) {
+        PROFILE_SCOPE("raster.vol");
         if (record.ts_pool != VK_NULL_HANDLE && record.ts_written) {
             write_ts(command_buffer, record.ts_pool, record.volumetrics_zone, false);
             record.ts_written[record.volumetrics_zone] |= 1u;
@@ -713,6 +774,7 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         record.lighting.vol_enabled = 0.0f;
     }
 
+    PROFILE_SCOPE("raster.composite");
     VkRenderingAttachmentInfo hdr_attachment{
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     hdr_attachment.imageView = record.hdr->view;
@@ -4000,11 +4062,19 @@ bool VkSceneRenderer::ensure_vt_runtime(std::string& error) {
 
 void VkSceneRenderer::push_vt_compositor_inputs() {
     if (!vt_compositor_ || !vt_inputs_dirty_) return;
+    // How often this whole path actually runs. The comment below asserts it is
+    // a world-load / live-edit event; the counter is what proves or disproves
+    // that in a streaming world, where update_materials() sets the dirty bit on
+    // every publish that grows the material table.
+    PROFILE_COUNT("vt.input_pushes", 1);
     // Both setters require the device to be idle with respect to this
     // compositor's prior fills (vt_compositor.h). Tileset loads and material
     // table changes are world-load / live-edit events, not per-frame ones, so
     // paying a wait_idle here is cheap and unambiguously correct.
-    vulkan_->wait_idle();
+    {
+        PROFILE_SCOPE("vt.wait_idle");
+        vulkan_->wait_idle();
+    }
 
     vt::VtTilesetSlotViews slots[tileset::kMaxTilesetSlots]{};
     for (int slot = 0; slot < tileset::kMaxTilesetSlots; ++slot) {
@@ -4070,8 +4140,13 @@ void VkSceneRenderer::push_vt_compositor_inputs() {
     //
     // Skipped on the first push (the one inside ensure_vt_runtime): nothing is
     // resident yet, so it could only duplicate registration-time tail fills.
-    if (vt_inputs_pushed_ && vt_ && vt_->available())
-        vt_->invalidate_all_content();
+    if (vt_inputs_pushed_ && vt_ && vt_->available()) {
+        PROFILE_SCOPE("vt.invalidate_all");
+        // Returns the resident pages dropped. Each one is a page the compositor
+        // has to bake again, so this number is the size of the fill burst that
+        // lands in vt.fill over the following frames.
+        PROFILE_COUNT("vt.pages_invalidated", vt_->invalidate_all_content());
+    }
     vt_inputs_pushed_ = true;
 }
 
@@ -4694,24 +4769,39 @@ void VkSceneRenderer::vt_begin_frame(FrameResources& frame,
     // Both of these must run OUTSIDE any active command-buffer recording and
     // while no fill can still be unretired -- this hook is the one place per
     // frame that is true.
-    push_vt_compositor_inputs();
-    drain_vt_invalidations(vt_frame_serial_);
-    vt_->begin_frame(vt_frame_serial_, frame_slot);
+    {
+        PROFILE_SCOPE("vt.push_inputs");
+        push_vt_compositor_inputs();
+    }
+    {
+        PROFILE_SCOPE("vt.invalidations");
+        drain_vt_invalidations(vt_frame_serial_);
+    }
+    {
+        PROFILE_SCOPE("vt.residency_begin");
+        vt_->begin_frame(vt_frame_serial_, frame_slot);
+    }
     // Tail-gate activations: variants whose tail fill landed last frame may
     // now enter the VT path, so the (cluster, lod) -> vt_slot table must be
     // republished (it is otherwise only rebuilt on registration/release).
     if (vt_->consume_activation_dirty()) vt_draw_slots_dirty_ = true;
     std::string error;
-    if (raster_extent_.width != 0 && raster_extent_.height != 0 &&
-        !vt_->ensure_feedback(raster_extent_.width, raster_extent_.height,
-                              error)) {
-        // Feedback is an optimization: without it nothing new becomes
-        // resident, but every variant still samples its pinned tail.
-        std::fprintf(stderr, "[vk] VT feedback target unavailable: %s\n",
-                     error.c_str());
-        std::fflush(stderr);
+    {
+        PROFILE_SCOPE("vt.feedback_target");
+        if (raster_extent_.width != 0 && raster_extent_.height != 0 &&
+            !vt_->ensure_feedback(raster_extent_.width, raster_extent_.height,
+                                  error)) {
+            // Feedback is an optimization: without it nothing new becomes
+            // resident, but every variant still samples its pinned tail.
+            std::fprintf(stderr, "[vk] VT feedback target unavailable: %s\n",
+                         error.c_str());
+            std::fflush(stderr);
+        }
     }
-    write_vt_descriptors_for_frame(frame);
+    {
+        PROFILE_SCOPE("vt.descriptors");
+        write_vt_descriptors_for_frame(frame);
+    }
 }
 
 void VkSceneRenderer::vt_record_pre_pass(VkCommandBuffer command_buffer) {
@@ -9719,22 +9809,34 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     const VkDeviceSize scratch_alignment = std::max<VkDeviceSize>(
         1, vulkan_->ray_tracing_properties()
                .min_acceleration_structure_scratch_offset_alignment);
-    if (!build_ray_geometry(frame, camera_eye, pixel_budget,
-                            get_sizes, cmd_build,
-                            selected_geometry, pending, error))
-        return false;
+    {
+        PROFILE_SCOPE("rt.geometry");
+        if (!build_ray_geometry(frame, camera_eye, pixel_budget,
+                                get_sizes, cmd_build,
+                                selected_geometry, pending, error))
+            return false;
+    }
     bool instances_empty = false;
-    if (!emit_ray_instances(frame, get_sizes, cmd_build, scratch_alignment,
-                            selected_geometry, pending,
-                            instances_empty, error))
-        return false;
+    {
+        // The per-frame TLAS instance rebuild. Sized by rt_instances_, so this
+        // is the zone that grows with scene population rather than resolution.
+        PROFILE_SCOPE("rt.instances");
+        PROFILE_COUNT("rt.instance_count", rt_instances_.size());
+        if (!emit_ray_instances(frame, get_sizes, cmd_build, scratch_alignment,
+                                selected_geometry, pending,
+                                instances_empty, error))
+            return false;
+    }
     if (instances_empty) {
         clear_visibility();
         return true;
     }
-    if (!record_ray_trace_dispatch(frame, matrices, trace_extent,
-                                   cmd_trace, error))
-        return false;
+    {
+        PROFILE_SCOPE("rt.dispatch");
+        if (!record_ray_trace_dispatch(frame, matrices, trace_extent,
+                                       cmd_trace, error))
+            return false;
+    }
     for (auto& item : pending)
         item.lod->candidate_serial = frame.serial;
     return true;
@@ -9758,8 +9860,11 @@ bool VkSceneRenderer::build_ray_geometry(
     const std::vector<VkAnimationBoundsGpuRecord> rt_planning_bounds =
         animation_bounds_.gpu_records();
     for (const RtInstance& source : rt_instances_) {
-        // Same flat mirror update_instances() uses -- this is the other
-        // per-instance std::map descent in the frame (draw_ms's share).
+        // Same flat mirror update_instances() uses -- this WAS a per-instance
+        // std::map descent (slot_of_.find()); part_slot_lookup answers the
+        // identical question in one open-addressed probe. The per-frame cost of
+        // this loop is the O(instances x clusters) re-derivation below, NOT this
+        // lookup (see the sibling note at update_instances()).
         const int found_slot = part_slot_lookup(source.part_hash);
         if (found_slot < 0) continue;
         PartRecord& part = parts_[static_cast<size_t>(found_slot)];
@@ -10333,7 +10438,13 @@ bool VkSceneRenderer::emit_ray_instances(
     VkAccelerationStructureBuildGeometryInfoKHR tlas_build{
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
     tlas_build.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-    tlas_build.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    // A TLAS is a shallow one-level structure, so FAST_TRACE's traversal-quality
+    // benefit is marginal while its build cost is high. FAST_BUILD cuts the
+    // per-frame rebuild ~2-3x with negligible trace impact (a StreamMountain
+    // capture measured RT trace ~1ms against a 14.76ms TLAS rebuild). The BLAS
+    // build (bottom-level, per-part) keeps PREFER_FAST_TRACE -- deep traversal is
+    // where that flag actually pays off.
+    tlas_build.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
     tlas_build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     tlas_build.geometryCount = 1;
     tlas_build.pGeometries = &tlas_geometry;
@@ -10646,7 +10757,11 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     write_gpu_timestamp(frame.command_buffer, kGpuZoneRt, false, rt_frame_slot);
     cmd_trace(frame.command_buffer, &raygen, &miss, &hit, &callable,
               trace_extent.width, trace_extent.height, 1);
+    // End the primary/shadow zone here; the GI trace below is timed separately.
+    write_gpu_timestamp(frame.command_buffer, kGpuZoneRt, true, rt_frame_slot);
     if (gi_settings_.enabled) {
+        write_gpu_timestamp(frame.command_buffer, kGpuZoneRtGi, false,
+                            rt_frame_slot);
         const VkClearColorValue dispatch_zero{{0.0f, 0.0f, 0.0f, 0.0f}};
         clear_color_image_for_use(
             frame.command_buffer, raw_diffuse_, dispatch_zero,
@@ -10703,8 +10818,9 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         cmd_trace(frame.command_buffer, &gi_raygen, &miss, &hit, &callable,
                   raw_diffuse_extent_.width, raw_diffuse_extent_.height, 1);
         ++last_rt_trace_dispatches_;
+        write_gpu_timestamp(frame.command_buffer, kGpuZoneRtGi, true,
+                            rt_frame_slot);
     }
-    write_gpu_timestamp(frame.command_buffer, kGpuZoneRt, true, rt_frame_slot);
     if (gi_settings_.enabled) {
         write_gpu_timestamp(frame.command_buffer, kGpuZoneDenoise, false,
                             rt_frame_slot);
@@ -10829,14 +10945,24 @@ bool VkSceneRenderer::record_cull_and_render(
     // surface registration requests (the engine drains them before its next
     // render call) and reclaim lingering variants. Before prepare_frame so a
     // release lands in this frame's vt_draw_slots upload.
-    update_vt_demand(camera_eye, pixel_budget);
+    {
+        // O(static instances x clusters) CPU mirror of cull.comp's LOD pick.
+        // The counters are what tell a slow frame here apart from a big one.
+        PROFILE_SCOPE("cull.vt_demand");
+        PROFILE_COUNT("cull.instances", instance_staging_.size());
+        PROFILE_COUNT("cull.clusters", cluster_staging_.size());
+        update_vt_demand(camera_eye, pixel_budget);
+    }
     const VkExtent2D internal_extent =
         temporal_frame_.internal_extent.width != 0
             ? temporal_frame_.internal_extent
             : frame.extent;
-    if (!ensure_raster_targets(internal_extent.width, internal_extent.height,
-                               error))
-        return false;
+    {
+        PROFILE_SCOPE("cull.targets");
+        if (!ensure_raster_targets(internal_extent.width,
+                                   internal_extent.height, error))
+            return false;
+    }
 
     FrameResources& selected = frames_[frame.frame_slot];
     const bool native_gi_effective = gi_settings_.enabled &&
@@ -10866,12 +10992,16 @@ bool VkSceneRenderer::record_cull_and_render(
     // than next to the raster record where the immediate path keeps it.
     // ensure_raster_targets() above has already published raster_extent_,
     // which is what sizes the feedback target.
-    vt_begin_frame(selected, frame.frame_slot);
-    report_rt_trace_counters(frame.frame_slot);
-    update_composite_descriptor(selected);
+    {
+        PROFILE_SCOPE("cull.vt_begin");
+        vt_begin_frame(selected, frame.frame_slot);
+        report_rt_trace_counters(frame.frame_slot);
+        update_composite_descriptor(selected);
+    }
     // prepare_frame owns the existing scene resources for this slot. Newly
     // created/replaced attachments are retained here before commands reference
     // them, preserving the frame-lifetime contract.
+    PROFILE_SCOPE_NAMED(z_retain, "cull.retain");
     std::vector<std::shared_ptr<void>> attachments{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
         material_instance_.lifetime, selected.materials.lifetime,
@@ -10900,10 +11030,12 @@ bool VkSceneRenderer::record_cull_and_render(
     }
     if (!vulkan_->retain_for_frame(frame, std::move(attachments), error))
         return false;
+    z_retain.stop();
 
     // Resolve/record skin work before culling. Only draws whose source and
     // output ranges survived renderer validation may be removed from the
     // static indirect path.
+    PROFILE_SCOPE_NAMED(z_skin, "cull.skin_record");
     if (!record_animation_skinning(frame, selected, error)) return false;
     std::vector<VkAnimationBoundsGpuRecord> animation_bound_records =
         animation_bounds_.gpu_records();
@@ -10921,6 +11053,7 @@ bool VkSceneRenderer::record_cull_and_render(
             0, error)) {
         return false;
     }
+    z_skin.stop();
 
     uint32_t group_count = 0;
     if (!vk_scene_detail::checked_dispatch_groups(
@@ -10930,6 +11063,7 @@ bool VkSceneRenderer::record_cull_and_render(
         return false;
     }
     if (group_count != 0) {
+        PROFILE_SCOPE("cull.dispatch");
         write_gpu_timestamp(frame.command_buffer, kGpuZoneCull, false, selected);
         const CullDispatchRecord dispatch{
             pipeline_, pipeline_layout_,
@@ -10939,6 +11073,10 @@ bool VkSceneRenderer::record_cull_and_render(
         write_gpu_timestamp(frame.command_buffer, kGpuZoneCull, true, selected);
     }
 
+    // Scalar frame-lighting derivation plus the RasterRecord assembly. Expected
+    // to be noise; scoped so the children below sum to the parent instead of
+    // leaving unattributed slack that looks like a missing zone.
+    PROFILE_SCOPE_NAMED(z_setup, "cull.setup");
     bool ray_trace_ok = true;
     VkSceneLighting frame_lighting = lighting_;
     frame_lighting.diffuse_rt_multiplier = gi_settings_.enabled &&
@@ -11077,7 +11215,11 @@ bool VkSceneRenderer::record_cull_and_render(
     // (vt_begin_frame ran near the top of this function — see the note there:
     // it rewrites scene set 1, which the cull dispatch has already bound by
     // the time control reaches here.)
-    record_raster(frame.command_buffer, &record);
+    z_setup.stop();
+    {
+        PROFILE_SCOPE("cull.raster");
+        record_raster(frame.command_buffer, &record);
+    }
     if (!ray_trace_ok) return false;
     raster_attachments_ready_ = true;
     selected.stats_valid = true;
@@ -11095,6 +11237,7 @@ bool VkSceneRenderer::record_cull_and_render(
     // describes the part set this frame culled. See FrameResources for why the
     // global slot is not a run-stable key.
     if (selected.lod_trace_valid) {
+        PROFILE_SCOPE("cull.lod_trace");
         std::vector<uint32_t>& local = selected.lod_trace_local_cluster;
         size_t span = cluster_staging_.size();
         for (const PartRecord& part : parts_)
