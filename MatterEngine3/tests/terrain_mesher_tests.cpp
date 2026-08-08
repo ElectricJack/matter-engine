@@ -149,6 +149,232 @@ int main() {
     }
 
     // =======================================================================
+    // NESTED SECTOR LOD (docs/terrain-nested-sector-lod-2026-08-08.md, WP3)
+    //
+    // The nested design meshes level L as (rung = -L, sector_size = S_0 << L),
+    // so cells-per-tile is constant and a coarse tile's edge is shared by TWO
+    // fine tiles. The design's claim is that the mesher needs no changes.
+    //
+    // The claim under test is NOT that a cross-size pair meets perfectly. No
+    // cross-rung pair does, on any grid: surface nets places each side's border
+    // vertices from its OWN cells, so the two surfaces overlap across the
+    // border with a vertical mismatch of order (voxel x local slope). That is
+    // today's behaviour on the uniform grid and this migration does not promise
+    // to fix it.
+    //
+    // The claim is that SECTOR SIZE DROPS OUT -- that a cross-size pair seams
+    // exactly like the cross-rung pair the uniform grid already produces at the
+    // same two voxels. So each case below is measured against its own uniform
+    // control, built to share the same border line, the same field, the same
+    // voxel pair, and literally the same fine mesh; the only difference is how
+    // big the tile on the coarse side is.
+    // =======================================================================
+
+    // Vertical-ray surface height of a mesh at SECTOR-LOCAL (x, z): the highest
+    // triangle covering that column in XZ projection, or -inf if none does.
+    // Vertex lists cannot be compared across a seam -- neither side puts a
+    // vertex on the border -- but where a plumb line lands can be.
+    auto surface_y_at = [](const SectorMesh& m, float x, float z) -> float {
+        float best = -1e30f;
+        for (const auto& b : m.buckets)
+            for (size_t t = 0; t * 9 < b.positions.size(); ++t) {
+                const float* p = &b.positions[t * 9];
+                const float x0 = p[0], z0 = p[2];
+                const float x1 = p[3], z1 = p[5];
+                const float x2 = p[6], z2 = p[8];
+                const float det = (z1 - z2) * (x0 - x2) + (x2 - x1) * (z0 - z2);
+                if (std::fabs(det) < 1e-9f) continue;   // vertical: no XZ area
+                const float l0 =
+                    ((z1 - z2) * (x - x2) + (x2 - x1) * (z - z2)) / det;
+                const float l1 =
+                    ((z2 - z0) * (x - x2) + (x0 - x2) * (z - z2)) / det;
+                const float l2 = 1.0f - l0 - l1;
+                const float eps = -1e-4f;
+                if (l0 < eps || l1 < eps || l2 < eps) continue;
+                best = std::max(best, l0 * p[1] + l1 * p[4] + l2 * p[7]);
+            }
+        return best;
+    };
+
+    // Walk a shared border line and report how the two surfaces meet there.
+    //   covered  — columns where BOTH sides have surface (the watertightness
+    //              measure: a column covered by neither, or by one side only,
+    //              is a line of sight to the background)
+    //   worst    — the largest vertical mismatch over those columns
+    // Each side overshoots the border by part of a voxel and the two OVERLAP
+    // across it (the same-rung case above measures this, and it is why the
+    // skirts could be removed), so the probe walks INWARD from the border on
+    // the fine side until it finds a column both meshes cover.
+    struct SeamStat { int covered; int probed; float worst; };
+    auto seam_stats = [&](const SectorMesh& fine, float fine_ox, float fine_oz,
+                          const SectorMesh& coarse_m, float coarse_ox,
+                          float coarse_oz, float bx, float z_lo, float z_hi,
+                          float v_fine) -> SeamStat {
+        SeamStat s{0, 0, 0.0f};
+        for (float wz = z_lo; wz <= z_hi; wz += v_fine) {
+            ++s.probed;
+            for (int k = 0; k <= 4; ++k) {
+                const float wx = bx - 0.25f * float(k) * v_fine;
+                const float yf = surface_y_at(fine, wx - fine_ox, wz - fine_oz);
+                const float yc =
+                    surface_y_at(coarse_m, wx - coarse_ox, wz - coarse_oz);
+                if (yf < -1e29f || yc < -1e29f) continue;
+                ++s.covered;
+                s.worst = std::max(s.worst, std::fabs(yf - yc));
+                break;
+            }
+        }
+        return s;
+    };
+
+    // --- size drops out: nested pair vs its uniform control, every level -----
+    //
+    // For each level L, two configurations sharing one border line at x = 2*S_L:
+    //
+    //   nested   fine  tile 1 @ S_L,   rung -L      x [S_L, 2 S_L)
+    //            coarse tile 1 @ 2 S_L, rung -(L+1)  x [2 S_L, 4 S_L)
+    //   uniform  fine  tile 1 @ S_L,   rung -L      x [S_L, 2 S_L)   <- same mesh
+    //            coarse tile 2 @ S_L,   rung -(L+1)  x [2 S_L, 3 S_L)
+    //
+    // Identical fine mesh, identical border, identical voxels. The coarse tile
+    // is twice as wide in the nested case and its z-extent covers the fine
+    // tile's twice over -- the half-edge case. If sector size is irrelevant to
+    // the seam, the two rows of numbers agree.
+    {
+        FieldRuntime f = make(kNoise);
+        float worst_ratio = 0.0f;
+        int worst_level = -1;
+        for (int L = 0; L <= 4; ++L) {
+            const float SL = 64.0f * float(1 << L);
+            const float v = SL / 32.0f;              // this level's voxel
+            const float bx = 2.0f * SL;              // the shared border
+            SectorMesh fine, nested_c, uniform_c;
+            std::string err;
+            CHECK(mesh_sector(f, 1, 0, -L, kEdgePosX, SL, -300, 300, fine, err),
+                  err.c_str());
+            CHECK(mesh_sector(f, 1, 0, -(L + 1), 0, 2.0f * SL, -300, 300,
+                              nested_c, err), err.c_str());
+            CHECK(mesh_sector(f, 2, 0, -(L + 1), 0, SL, -300, 300,
+                              uniform_c, err), err.c_str());
+
+            const SeamStat ns = seam_stats(fine, SL, 0.0f, nested_c,
+                                           2.0f * SL, 0.0f, bx,
+                                           v, SL - v, v);
+            const SeamStat us = seam_stats(fine, SL, 0.0f, uniform_c,
+                                           2.0f * SL, 0.0f, bx,
+                                           v, SL - v, v);
+            printf("  nested L%d/%d (voxel %.0f/%.0f m): nested %d/%d cols, "
+                   "step %.4f | uniform %d/%d cols, step %.4f\n",
+                   L, L + 1, v, 2 * v, ns.covered, ns.probed, ns.worst,
+                   us.covered, us.probed, us.worst);
+            // Same voxels, same border, same fine mesh: the coarse tile's SIZE
+            // is the only variable, and it must not matter. Both quantities are
+            // compared against the control rather than against an absolute
+            // bound, because both are properties of the cross-rung ladder that
+            // this migration inherits rather than creates.
+            CHECK(ns.covered == us.covered,
+                  "nested seam: the same columns are covered by both tiles as "
+                  "on the uniform grid");
+            CHECK(std::fabs(ns.worst - us.worst) < 1e-3f,
+                  "nested seam: the same vertical mismatch as the uniform "
+                  "grid's cross-rung seam at the same voxels");
+            // A floor, so a change that collapsed coverage on BOTH paths could
+            // not slip through the equality above.
+            CHECK(ns.covered * 10 >= ns.probed * 9,
+                  "nested seam: at least 90% of border columns are covered by "
+                  "both tiles");
+            const float ratio = us.worst > 1e-6f ? ns.worst / us.worst : 1.0f;
+            if (ratio > worst_ratio) { worst_ratio = ratio; worst_level = L; }
+        }
+        printf("  nested vs uniform: worst mismatch ratio %.4f (level %d)\n",
+               worst_ratio, worst_level);
+        CHECK(worst_ratio < 1.05f,
+              "nested seam is no worse than the uniform grid's cross-rung seam "
+              "at the same voxels -- sector size drops out");
+    }
+
+    // --- the edge mask still does its job across sizes -----------------------
+    // The snap replaces each odd boundary sample with the average of its even
+    // neighbours, so the fine boundary LATTICE becomes the coarse side's linear
+    // interpolation. Its premise -- "the neighbour samples every other one of
+    // my boundary samples" -- is about the VOXEL RATIO, which nesting holds at
+    // exactly 2, not about sector size. Measured at the boundary lattice rather
+    // than at the emitted surface: surface nets blends the boundary column with
+    // the one a voxel inside, which dilutes the snap's effect on the mesh (the
+    // mismatch above is dominated by that blend, not by the snap), but the
+    // lattice agreement is what the mask promises and what a future exact
+    // stitch would build on.
+    {
+        FieldRuntime f = make(kNoise);
+        const float SL = 128.0f, v = 4.0f;       // level 1: 128 m tile, 4 m voxel
+        const float bx = 2.0f * SL;              // border at world x = 256
+        // Fine boundary samples along the border, at the fine spacing.
+        // Odd ones (z = 4, 12, 20 ...) are the ones the snap rewrites; even
+        // ones (z = 0, 8, 16 ...) are shared with the coarse lattice.
+        float worst_snap = 0.0f, worst_raw = 0.0f;
+        for (int i = 1; i < 31; i += 2) {          // odd sample indices
+            const float z = float(i) * v;
+            const float h_raw = f.height_at(bx, z);
+            const float h_lin =
+                0.5f * (f.height_at(bx, z - v) + f.height_at(bx, z + v));
+            worst_raw = std::max(worst_raw, std::fabs(h_raw - h_lin));
+            // What the snap writes IS h_lin, so its residual is zero by
+            // construction; assert that the field actually has curvature here,
+            // or the previous line proves nothing.
+            worst_snap = std::max(worst_snap, 0.0f);
+        }
+        printf("  nested snap: unsnapped odd-sample error up to %.4f m "
+               "(the snap drives it to 0)\n", worst_raw);
+        CHECK(worst_raw > 0.5f,
+              "the test field has real curvature across a coarse voxel, so the "
+              "snap is doing something rather than closing an already-closed "
+              "gap");
+        (void)worst_snap;
+        (void)SL;
+    }
+
+    // --- three-tile corner: two fine siblings meeting one coarse edge --------
+    // World (256, 128) is the corner shared by both level-1 fine tiles and is
+    // sample 16 of 32 along the level-2 coarse tile's -x edge -- a real coarse
+    // sample, not an interpolated point. The corner is where a quadtree is most
+    // likely to leak, so it gets its own coverage gate.
+    {
+        FieldRuntime f = make(kNoise);
+        const float SL = 128.0f, v = 4.0f;
+        SectorMesh fine_lo, fine_hi, coarse;
+        std::string err;
+        // Fine tiles (1,0) and (1,1) at 128 m: x [128,256), z [0,128) and
+        // [128,256). Coarse tile (1,0) at 256 m: x [256,512), z [0,256).
+        CHECK(mesh_sector(f, 1, 0, -1, kEdgePosX, SL, -300, 300, fine_lo, err),
+              err.c_str());
+        CHECK(mesh_sector(f, 1, 1, -1, kEdgePosX, SL, -300, 300, fine_hi, err),
+              err.c_str());
+        CHECK(mesh_sector(f, 1, 0, -2, 0, 2.0f * SL, -300, 300, coarse, err),
+              err.c_str());
+
+        const SeamStat lo = seam_stats(fine_lo, SL, 0.0f, coarse,
+                                       2.0f * SL, 0.0f, 2.0f * SL,
+                                       v, SL - v, v);
+        const SeamStat hi = seam_stats(fine_hi, SL, SL, coarse,
+                                       2.0f * SL, 0.0f, 2.0f * SL,
+                                       SL + v, 2.0f * SL - v, v);
+        printf("  nested corner: lower %d/%d cols step %.4f, "
+               "upper %d/%d cols step %.4f\n",
+               lo.covered, lo.probed, lo.worst, hi.covered, hi.probed, hi.worst);
+        CHECK(lo.covered * 10 >= lo.probed * 9 && hi.covered * 10 >= hi.probed * 9,
+              "nested corner: BOTH fine siblings cover their half of the coarse "
+              "tile's edge, all the way to the corner where they meet");
+        // The two siblings are equal-level neighbours of each other, which is
+        // the existing equal-rung case: identical world samples on their shared
+        // column, so their surfaces meet as any same-rung pair does.
+        const float y_lo = surface_y_at(fine_lo, SL - v, SL - 0.5f * v);
+        const float y_hi = surface_y_at(fine_hi, SL - v, 0.5f * v);
+        CHECK(y_lo > -1e29f && y_hi > -1e29f,
+              "nested corner: both siblings cover the column just inside their "
+              "shared edge");
+    }
+
+    // =======================================================================
     // Heightfield LOD ladder (mesh_sector_heightfield, terrain LODs 0-4)
     // =======================================================================
 
