@@ -400,6 +400,10 @@ void apply_world_resolver_defaults(const std::string& world_name,
         min_projected_size = 0.0f;
         stats.resolver_choice = 0;
     }
+    // Seed the live slider from the world's default. From here the Debug View
+    // control owns the value, so a world switch re-seeds it rather than
+    // fighting it -- and RenderOptions reads the slider, not this local.
+    stats.min_projected_size = min_projected_size;
 }
 
 // The windowed placement saved on the way into presentation mode, so leaving
@@ -740,6 +744,28 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            // exactly that problem.
            << ",\"gpu_total_ms\":" << frame_stats.gpu_total_ms
            << ",\"gpu_volumetrics_ms\":" << frame_stats.gpu_vol_ms
+           // Full per-pass GPU zone breakdown (last sampled frame). rt is the
+           // primary/shadow trace; rt_gi is the separate GI/reflection trace.
+           // Added so a fly-through capture can attribute a heavy RT frame to
+           // primary-ray traversal (dense foliage) vs the GI bounce.
+           << ",\"gpu_cull_ms\":" << frame_stats.gpu_cull_ms
+           << ",\"gpu_gbuffer_ms\":" << frame_stats.gpu_gbuffer_ms
+           << ",\"gpu_blas_ms\":" << frame_stats.gpu_blas_ms
+           << ",\"gpu_tlas_ms\":" << frame_stats.gpu_tlas_ms
+           << ",\"gpu_rt_ms\":" << frame_stats.gpu_rt_ms
+           << ",\"gpu_rt_gi_ms\":" << frame_stats.gpu_rt_gi_ms
+           << ",\"gpu_denoise_ms\":" << frame_stats.gpu_denoise_ms
+           << ",\"gpu_dlss_ms\":" << frame_stats.gpu_dlss_ms
+           << ",\"gpu_composite_ms\":" << frame_stats.gpu_composite_ms
+           << ",\"gpu_vt_ms\":" << frame_stats.gpu_vt_ms
+           // CPU render-thread split (last sampled frame).
+           << ",\"cpu_resolve_ms\":" << frame_stats.resolve_ms
+           << ",\"cpu_build_ms\":" << frame_stats.build_ms
+           << ",\"cpu_draw_ms\":" << frame_stats.draw_ms
+           << ",\"cpu_draw_vt_requests_ms\":" << frame_stats.draw_vt_requests_ms
+           << ",\"cpu_draw_cull_render_ms\":" << frame_stats.draw_cull_render_ms
+           << ",\"cpu_draw_skin_seal_ms\":" << frame_stats.draw_skin_seal_ms
+           << ",\"cpu_draw_composite_ms\":" << frame_stats.draw_composite_ms
            << ",\"validation_errors\":" << validation_errors << "}\n";
     if (!output) {
         error = "failed while writing MATTER_PERF_OUTPUT '" + config.output_path + "'";
@@ -2889,13 +2915,17 @@ int main() {
         options.wireframe = viewer::resolve_wireframe_request(
             stats.wireframe, stats.debug_view_mode, /*wireframe_view_index=*/6,
             stats.wireframe_available);
+        options.impostor_parallax = stats.impostor_parallax;
+        static const bool force_lod_tint =
+            std::getenv("MATTER_FORCE_LOD_TINT") != nullptr;
         options.geometry_debug_view =
-            stats.debug_view_mode == 5 ? matter::GeometryDebugView::LodTint
-                                       : matter::GeometryDebugView::None;
+            (stats.debug_view_mode == 5 || force_lod_tint)
+                ? matter::GeometryDebugView::LodTint
+                : matter::GeometryDebugView::None;
         options.hiz_occlusion = false;
         options.pixel_budget = stats.pixel_budget;
         options.active_radius = active_radius;
-        options.min_projected_size = min_projected_size;
+        options.min_projected_size = stats.min_projected_size;
         options.dlss_mode = selected_dlss_mode();
         options.vulkan_lighting = stats.lighting;
         // ViewerStats index -> composite.frag mode. The two numberings differ
@@ -3101,6 +3131,7 @@ int main() {
         stats.gpu_blas_ms            = frame_stats.gpu_blas_ms;
         stats.gpu_tlas_ms            = frame_stats.gpu_tlas_ms;
         stats.gpu_rt_ms              = frame_stats.gpu_rt_ms;
+        stats.gpu_rt_gi_ms           = frame_stats.gpu_rt_gi_ms;
         stats.gpu_denoise_ms         = frame_stats.gpu_denoise_ms;
         stats.gpu_dlss_ms            = frame_stats.gpu_dlss_ms;
         stats.gpu_composite_ms       = frame_stats.gpu_composite_ms;

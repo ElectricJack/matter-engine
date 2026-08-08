@@ -137,7 +137,8 @@ struct ViewerStats {
     float gpu_gbuffer_ms        = 0.0f;
     float gpu_blas_ms           = 0.0f;
     float gpu_tlas_ms           = 0.0f;
-    float gpu_rt_ms             = 0.0f;
+    float gpu_rt_ms             = 0.0f;  // primary/shadow trace only
+    float gpu_rt_gi_ms          = 0.0f;  // GI/reflection trace (0 when GI off)
     float gpu_denoise_ms        = 0.0f;
     float gpu_dlss_ms           = 0.0f;
     float gpu_composite_ms      = 0.0f;
@@ -151,6 +152,16 @@ struct ViewerStats {
     // string is shown rather than swallowed, because a wireframe view that
     // silently renders solid is worse than an absent one.
     bool  wireframe             = false;
+    // Intra-cell impostor parallax (Debug View panel). Default ON = the
+    // shipped look; off is a measurement aid, not a fix.
+    bool  impostor_parallax     = true;
+    // Sub-pixel floor cull (RenderOptions::min_projected_size). A part whose
+    // projected size falls below this is floor-culled at RESOLVE time, so its
+    // instances are never created -- they never reach cull.instances, the
+    // temporal mirror, update_instances or the RT lane. 0 = off, which is the
+    // StreamMountain default; Meadow ships 0.0015. Seeded per world by
+    // apply_world_resolver_defaults, then live-overridable here.
+    float min_projected_size    = 0.0f;
     bool  wireframe_available   = false;
     std::string wireframe_unavailable_reason;
     // Viewer-local diagnostic toggles.  These are deliberately not part of

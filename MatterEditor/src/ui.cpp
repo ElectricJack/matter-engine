@@ -819,7 +819,7 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
     // Per-zone breakdown, AVERAGED over the resident window (a single frame's
     // zones are noisy -- bake zones are only nonzero on frames a bake landed).
     ImGui::Separator();
-    ImGui::TextDisabled("avg ms/frame over %d frames (%% of avg frame)", n);
+    ImGui::TextDisabled("avg over %d frames", n);
     if (n > 0) {
         const int zones = prof::zone_count();
         std::vector<double> msf(zones, 0.0);
@@ -845,8 +845,57 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
         std::sort(roots.begin(), roots.end(), by_cost);
         for (auto& kids : children) std::sort(kids.begin(), kids.end(), by_cost);
 
+        // Split roots by the lane the zone actually ran on. Scope nesting is
+        // thread-local, so a zone and its parent always share a lane -- the two
+        // root lists are therefore two disjoint trees: the frame's critical path
+        // (render thread) and the off-thread background (the bake worker pool).
+        std::vector<int> render_roots, worker_roots;
+        double render_sum = 0.0;
+        for (int z : roots) {
+            if (prof::zone_lane(z) == prof::kLaneWorker) {
+                worker_roots.push_back(z);
+            } else {
+                render_roots.push_back(z);
+                render_sum += msf[z];
+            }
+        }
+
         const double frame = st.mean_ms > 0.0 ? st.mean_ms : 1.0;
-        if (ImGui::BeginTable("prof_zones", 4,
+
+        // Recursive tree row. show_pct controls the third column: a share of the
+        // frame (meaningful only for render-lane zones) vs a blank for anything
+        // a "% of frame" would misrepresent.
+        std::function<void(int, bool)> draw_row = [&](int z, bool show_pct) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            const bool has_kids = !children[z].empty();
+            ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanFullWidth |
+                                       ImGuiTreeNodeFlags_DefaultOpen;
+            if (!has_kids)
+                flags |= ImGuiTreeNodeFlags_Leaf |
+                         ImGuiTreeNodeFlags_NoTreePushOnOpen |
+                         ImGuiTreeNodeFlags_Bullet;
+            const bool open = ImGui::TreeNodeEx(prof::zone_name(z), flags);
+            ImGui::TableSetColumnIndex(1);
+            ImGui::Text("%.3f", msf[z]);
+            ImGui::TableSetColumnIndex(2);
+            if (show_pct)
+                ImGui::Text("%.1f%%", 100.0 * msf[z] / frame);
+            else
+                ImGui::TextDisabled("--");
+            if (has_kids && open) {
+                for (int c : children[z]) draw_row(c, show_pct);
+                ImGui::TreePop();
+            }
+        };
+
+        // --- Frame: what actually costs render-thread / critical-path time.
+        // These sum toward the frame; the trailing row is the wall time NOT
+        // attributed to any render zone (GPU present, vsync, waits), so the
+        // section reconciles to the real frame time instead of hiding it.
+        ImGui::TextDisabled("frame -- render thread  (%% of %.2f ms frame)",
+                            st.mean_ms);
+        if (ImGui::BeginTable("prof_frame", 3,
                               ImGuiTableFlags_RowBg |
                                   ImGuiTableFlags_BordersInnerV |
                                   ImGuiTableFlags_SizingStretchProp)) {
@@ -855,36 +904,72 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
                                     72.0f);
             ImGui::TableSetupColumn("% frame", ImGuiTableColumnFlags_WidthFixed,
                                     62.0f);
-            ImGui::TableSetupColumn("lane", ImGuiTableColumnFlags_WidthFixed,
-                                    56.0f);
             ImGui::TableHeadersRow();
-            std::function<void(int)> draw_row = [&](int z) {
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                const bool has_kids = !children[z].empty();
-                ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanFullWidth |
-                                           ImGuiTreeNodeFlags_DefaultOpen;
-                if (!has_kids)
-                    flags |= ImGuiTreeNodeFlags_Leaf |
-                             ImGuiTreeNodeFlags_NoTreePushOnOpen |
-                             ImGuiTreeNodeFlags_Bullet;
-                const char* name = prof::zone_name(z);
-                const bool open = ImGui::TreeNodeEx(name, flags);
-                ImGui::TableSetColumnIndex(1);
-                ImGui::Text("%.3f", msf[z]);
-                ImGui::TableSetColumnIndex(2);
-                ImGui::Text("%.1f%%", 100.0 * msf[z] / frame);
-                ImGui::TableSetColumnIndex(3);
-                ImGui::TextDisabled(
-                    std::strncmp(name, "bake.", 5) == 0 ? "bake" : "render");
-                if (has_kids && open) {
-                    for (int c : children[z]) draw_row(c);
-                    ImGui::TreePop();
-                }
-            };
-            for (int z : roots) draw_row(z);
+            for (int z : render_roots) draw_row(z, /*show_pct=*/true);
+            const double off_path = std::max(0.0, st.mean_ms - render_sum);
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextDisabled("off critical path (GPU / present / wait)");
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextDisabled("%.3f", off_path);
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextDisabled("%.1f%%", 100.0 * off_path / frame);
             ImGui::EndTable();
         }
+
+        // --- Background: bake-pool work, off the render thread. Its ms is the
+        // SUMMED cost across every worker thread, so a "% of frame" would be
+        // nonsense -- a dozen parallel threads routinely sum past one frame. It
+        // is shown for fill-throughput insight and is explicitly NOT frame cost:
+        // baking is allowed to take as long as it needs here.
+        if (!worker_roots.empty()) {
+            const int nthr =
+                std::max(1, prof::lane_thread_count(prof::kLaneWorker));
+            if (ImGui::CollapsingHeader(
+                    "Background -- bake workers (off render thread)")) {
+                ImGui::TextDisabled(
+                    "summed across %d worker thread%s -- NOT frame time",
+                    nthr, nthr == 1 ? "" : "s");
+                if (ImGui::BeginTable("prof_bg", 3,
+                                      ImGuiTableFlags_RowBg |
+                                          ImGuiTableFlags_BordersInnerV |
+                                          ImGuiTableFlags_SizingStretchProp)) {
+                    ImGui::TableSetupColumn("zone");
+                    ImGui::TableSetupColumn("ms/f (all thr)",
+                                            ImGuiTableColumnFlags_WidthFixed,
+                                            92.0f);
+                    ImGui::TableSetupColumn("ms/thr",
+                                            ImGuiTableColumnFlags_WidthFixed,
+                                            56.0f);
+                    ImGui::TableHeadersRow();
+                    std::function<void(int)> bg_row = [&](int z) {
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        const bool has_kids = !children[z].empty();
+                        ImGuiTreeNodeFlags flags =
+                            ImGuiTreeNodeFlags_SpanFullWidth |
+                            ImGuiTreeNodeFlags_DefaultOpen;
+                        if (!has_kids)
+                            flags |= ImGuiTreeNodeFlags_Leaf |
+                                     ImGuiTreeNodeFlags_NoTreePushOnOpen |
+                                     ImGuiTreeNodeFlags_Bullet;
+                        const bool open =
+                            ImGui::TreeNodeEx(prof::zone_name(z), flags);
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::Text("%.3f", msf[z]);
+                        ImGui::TableSetColumnIndex(2);
+                        ImGui::Text("%.3f", msf[z] / nthr);
+                        if (has_kids && open) {
+                            for (int c : children[z]) bg_row(c);
+                            ImGui::TreePop();
+                        }
+                    };
+                    for (int z : worker_roots) bg_row(z);
+                    ImGui::EndTable();
+                }
+            }
+        }
+
         const int counters = prof::counter_count();
         for (int c = 0; c < counters; ++c) {
             double sum = 0.0;
@@ -904,14 +989,17 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
         if (s.gpu_timers_supported) {
             const float gpu_sum = s.gpu_cull_ms + s.gpu_gbuffer_ms +
                                   s.gpu_blas_ms + s.gpu_tlas_ms + s.gpu_rt_ms +
-                                  s.gpu_denoise_ms + s.gpu_dlss_ms +
-                                  s.gpu_composite_ms + s.gpu_vol_ms;
+                                  s.gpu_rt_gi_ms + s.gpu_denoise_ms +
+                                  s.gpu_dlss_ms + s.gpu_composite_ms +
+                                  s.gpu_vol_ms;
             ImGui::Text("GPU %.1f ms total", s.gpu_total_ms);
-            ImGui::Text("  Cull %.1f  GBuf %.1f  BLAS %.1f  TLAS %.1f  RT %.1f",
+            ImGui::Text("  Cull %.1f  GBuf %.1f  BLAS %.1f  TLAS %.1f",
                         s.gpu_cull_ms, s.gpu_gbuffer_ms, s.gpu_blas_ms,
-                        s.gpu_tlas_ms, s.gpu_rt_ms);
-            ImGui::Text("  Den %.1f  DLSS %.1f  Comp %.1f  Vol %.1f  (other %.1f)",
-                        s.gpu_denoise_ms, s.gpu_dlss_ms, s.gpu_composite_ms,
+                        s.gpu_tlas_ms);
+            ImGui::Text("  RT-prim %.1f  RT-GI %.1f  Den %.1f",
+                        s.gpu_rt_ms, s.gpu_rt_gi_ms, s.gpu_denoise_ms);
+            ImGui::Text("  DLSS %.1f  Comp %.1f  Vol %.1f  (other %.1f)",
+                        s.gpu_dlss_ms, s.gpu_composite_ms,
                         s.gpu_vol_ms, s.gpu_total_ms - gpu_sum);
         } else {
             ImGui::TextDisabled("GPU timers unavailable");
@@ -1388,6 +1476,33 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
                 : s.wireframe_unavailable_reason.c_str());
         if (s.debug_view_mode == 6) ImGui::TextDisabled("(view has no effect)");
     }
+    // Sub-pixel floor cull. Deliberately a RESOLVE-time knob rather than a
+    // frustum test: projected size depends on distance and size, not view
+    // direction, so nothing pops when the camera turns, temporal history
+    // survives, and geometry behind the camera keeps casting its shadows.
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::SliderFloat("Sub-pixel cull", &s.min_projected_size, 0.0f, 0.02f,
+                       s.min_projected_size <= 0.0f ? "off" : "%.4f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Parts whose projected size falls below this are floor-culled at "
+            "RESOLVE time -- their instances are never created at all, so they "
+            "cost nothing in cull, the temporal mirror, update_instances or "
+            "ray tracing.\n\n"
+            "0 = off (the StreamMountain default). Meadow ships 0.0015.\n"
+            "Raise it and watch cull.instances and frame_ms fall together; "
+            "back off when vegetation visibly thins.\n\n"
+            "Unlike a frustum cull this is stable under rotation, so turning "
+            "around costs nothing and shadows from behind the camera survive.");
+    ImGui::Checkbox("Impostor parallax", &s.impostor_parallax);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Two extra atlas taps per impostor pixel that offset the sample so "
+            "a card fakes depth as the view moves off its baked axis.\n"
+            "Off samples the cell straight -- flatter at grazing angles, and "
+            "the honest way to judge what those taps buy.\n"
+            "Separate from tileset POM, which never runs on impostors. The "
+            "card's depth push-back is unaffected.");
     if (s.debug_view_mode == 5) {
         ImGui::TextDisabled("Tinted by the rung the GPU cull selected.");
         for (uint32_t lod = 0; lod < matter::kLodDebugColorCount; ++lod) {
