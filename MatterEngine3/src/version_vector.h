@@ -65,7 +65,18 @@ namespace components {
 //            composite lit-factor mean +11.4% and contrast loss vs rep 0,
 //            now facet 1.00 / +5.5% (lod_normal_consistency_tests).
 //            Every reprojected ladder rung's TriEx bytes can differ.
-inline constexpr uint32_t kEngineBake = 6u;
+//   6 -> 7 : the BLAS table serializes Tri through zeroed staging. Tri's four
+//            union{float3;__m128} slots each leave 4 bytes a float3 assignment
+//            never touches, and those were written verbatim — so every .part
+//            and .flat.part carried 16 bytes of allocator garbage per triangle
+//            and two processes baking identical geometry produced different
+//            bytes. NOT a format bump: the layout, the field order and the
+//            reader are all unchanged, and a pre-fix artifact still parses to
+//            the same geometry. What changed is the BYTES a bake emits, which
+//            is precisely what this component means. Every part artifact must
+//            miss so the cache holds only reproducible bytes — otherwise the
+//            cross-process gate diffs a new bake against a garbage-padded one.
+inline constexpr uint32_t kEngineBake = 7u;
 
 // The physics library. A settle that lands differently is different content.
 inline constexpr uint32_t kBox3d = 1u;

@@ -121,8 +121,21 @@ static void test_cache_path_resolved() {
           "cache_path_resolved full-width hex");
 }
 
+// A CANONICAL fixture triangle: zeroed first, so its four union padding lanes
+// (bytes 12-15 of each 16-byte union{float3;__m128} slot, which no float3
+// assignment writes) hold zero rather than whatever was on the stack.
+//
+// This matters because the round-trip checks below memcmp all 64 bytes of a Tri
+// against the same triangle loaded back from an artifact, and the v2 serializer
+// canonicalizes those lanes to zero on the way out (part_asset_v2.cpp's
+// put_canonical_tris — copying them verbatim made two processes bake the same
+// geometry to different bytes). A fixture built over dirty storage would
+// therefore differ from its own round-trip in bytes nothing ever wrote. Zeroing
+// here keeps the comparison at full byte width, and makes it assert the
+// stronger property: EVERY byte of a triangle survives save/load.
 static Tri ptri(float ox, float oy) {
     Tri t;
+    std::memset(&t, 0, sizeof t);
     t.vertex0 = make_float3(ox + 0.0f, oy + 0.0f, 0.0f);
     t.vertex1 = make_float3(ox + 1.0f, oy + 0.0f, 0.0f);
     t.vertex2 = make_float3(ox + 0.0f, oy + 1.0f, 0.0f);

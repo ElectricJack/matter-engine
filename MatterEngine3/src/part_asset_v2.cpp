@@ -43,6 +43,20 @@
 static_assert(sizeof(TriEx) == 96, "TriEx layout changed: serializer pad/size assumptions broken");
 static_assert(offsetof(TriEx, ao2) == 88, "TriEx trailing member moved: named-member extent (92) is stale");
 
+// Pin the consumed Tri layout the same way. Tri is ALIGN(64) with four
+// union{float3; __m128} slots at 0/16/32/48, and put_canonical_tris below
+// zero-fills the destination and copies sizeof(float3) == 12 bytes into each
+// slot. That is the whole of the written data only while the slots really are
+// 16 apart and float3 really is 12 bytes; if tri.h or precomp.h reshapes
+// either, these fire rather than letting the zero-fill silently eat vertex
+// bytes on the way to disk.
+static_assert(sizeof(Tri) == 64, "Tri layout changed: canonical-triangle writer assumptions broken");
+static_assert(sizeof(float3) == 12, "float3 is no longer 12 bytes: Tri union padding assumption stale");
+static_assert(offsetof(Tri, vertex0)  ==  0, "Tri slot 0 moved");
+static_assert(offsetof(Tri, vertex1)  == 16, "Tri slot 1 moved");
+static_assert(offsetof(Tri, vertex2)  == 32, "Tri slot 2 moved");
+static_assert(offsetof(Tri, centroid) == 48, "Tri slot 3 moved");
+
 namespace {
 template <class T>
 void put(std::vector<uint8_t>& b, const T& v) {
@@ -53,6 +67,42 @@ void put_bytes(std::vector<uint8_t>& b, const void* d, size_t n) {
     const uint8_t* p = static_cast<const uint8_t*>(d);
     b.insert(b.end(), p, p + n);
 }
+
+// Append `count` triangles with their union padding ZEROED.
+//
+// Tri's four slots are union{float3 vertexN; __m128 vN} — 16 bytes each, of
+// which a float3 assignment writes 12. Bytes 12-15 of every slot are therefore
+// whatever the producing allocation happened to hold, and nothing in the engine
+// ever writes them: meshers, transforms and simplifiers all assign the float3
+// member. Nothing READS them either — BLASManager::calculate_hash folds the
+// named floats one at a time and impostor::depicts_hash_add_cluster copies the
+// nine vertex components out, both for exactly this reason.
+//
+// But writing the array verbatim copied that garbage into the artifact: 16 of
+// every 64 triangle bytes, plus every checksum computed downstream of them. Two
+// processes baking the SAME geometry under the SAME settings produced bundles
+// differing in thousands of bytes, which destroys the property the
+// content-addressed cache is built on (same settings -> same bytes) and
+// silently defeats any cross-process byte-diff used to verify a bake change.
+// The in-suite gates never saw it because they save twice from one in-memory
+// BLAS inside one process, so the same garbage went down both times; the gate
+// that can actually fail is part_flatten_tests' two-child-process compare.
+//
+// This is the same defect and the same fix as the TriEx staging in
+// append_common_body — where the comment used to assert Tri had no such gap.
+// It does; four of them.
+void put_canonical_tris(std::vector<uint8_t>& b, const Tri* tris, size_t count) {
+    const size_t base = b.size();
+    b.resize(base + count * sizeof(Tri), 0u);  // padding is zero by construction
+    uint8_t* dst = b.data() + base;
+    for (size_t i = 0; i < count; ++i, dst += sizeof(Tri)) {
+        std::memcpy(dst + offsetof(Tri, vertex0),  &tris[i].vertex0,  sizeof(float3));
+        std::memcpy(dst + offsetof(Tri, vertex1),  &tris[i].vertex1,  sizeof(float3));
+        std::memcpy(dst + offsetof(Tri, vertex2),  &tris[i].vertex2,  sizeof(float3));
+        std::memcpy(dst + offsetof(Tri, centroid), &tris[i].centroid, sizeof(float3));
+    }
+}
+
 void ensure_parent_dir(const std::string& path) {
     auto pos = path.find_last_of('/');
     if (pos == std::string::npos) return;
@@ -360,7 +410,12 @@ static bool append_common_body(std::vector<uint8_t>& body,
         put<uint32_t>(body, tri_count);
         put<uint32_t>(body, nodes_used);
         put<uint32_t>(body, has_triex);
-        put_bytes(body, e->triangles.data(), tri_count * sizeof(Tri));
+        // Both geometry tables go out through zeroed staging: Tri has FOUR
+        // 4-byte union gaps (put_canonical_tris) and TriEx one trailing gap
+        // (below). Neither is ever written by a producer, and writing either
+        // verbatim makes otherwise-identical bakes byte-differ across
+        // processes.
+        put_canonical_tris(body, e->triangles.data(), tri_count);
         if (has_triex) {
             // Serialize TriEx through a staging copy whose trailing alignment
             // padding (the 4 bytes after ao2, since sizeof(TriEx)==96 but the named
@@ -371,8 +426,7 @@ static bool append_common_body(std::vector<uint8_t>& body,
             // them verbatim made otherwise-identical bakes byte-differ and broke the
             // content-addressed cache (the resolved-hash path re-bakes and expects
             // identical bytes). Zeroing the padding here normalizes that without
-            // touching the read-only mesher. Tri has no such gap in its serialized
-            // form, so it is written directly above.
+            // touching the read-only mesher.
             constexpr size_t kTriExPad = 92; // bytes occupied by named members
             for (uint32_t t = 0; t < tri_count; ++t) {
                 TriEx staged;

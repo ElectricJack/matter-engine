@@ -26,29 +26,51 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>   // std::system — the cross-process determinism gate
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <set>
 #include <string>
+#include <system_error>
 #include <vector>
+#ifndef _WIN32
+#include <sys/wait.h>   // WIFEXITED/WEXITSTATUS on the same gate's children
+#endif
 
 #include "check.h"
 
 namespace fs = std::filesystem;
 
-static const std::string kCacheRootStorage =
+// Not const: the --bake-child mode (see the cross-process gate below) retargets
+// the whole suite's cache at a private directory before anything touches it.
+static std::string kCacheRootStorage =
     (fs::temp_directory_path() / "part_flatten_tests_cache").string();
 static const char* kCacheRoot = kCacheRootStorage.c_str();
+
+static void set_cache_root(const std::string& dir) {
+    kCacheRootStorage = dir;
+    kCacheRoot = kCacheRootStorage.c_str();  // re-take: assignment may reallocate
+}
 
 static const uint64_t kChildHash  = 0x1111000011110000ull;
 static const uint64_t kParentHash = 0x2222000022220000ull;
 
+// The byte every fixture triangle's storage is poisoned with before its four
+// float3s are assigned. Tri's union slots are 16 bytes and a float3 writes 12,
+// so this byte IS what lands in the four padding lanes — the cross-process gate
+// runs its two children with different values so "the same geometry from
+// differently-poisoned storage" is a controlled input rather than a matter of
+// what the allocator happened to hand out. 0 in every other run.
+static uint8_t g_tri_poison = 0x00;
+
 // ---------------------------------------------------------------- fixtures --
 
 static Tri make_tri(float3 a, float3 b, float3 c) {
-    Tri t; t.vertex0 = a; t.vertex1 = b; t.vertex2 = c;
+    Tri t;
+    std::memset(&t, g_tri_poison, sizeof(Tri));
+    t.vertex0 = a; t.vertex1 = b; t.vertex2 = c;
     t.centroid = make_float3((a.x+b.x+c.x)/3, (a.y+b.y+c.y)/3, (a.z+b.z+c.z)/3);
     return t;
 }
@@ -246,6 +268,151 @@ static void test_flatten_deterministic() {
     CHECK(b.ok && read_bytes(flat_path(), bytes_b), "second flatten written (v3)");
 
     CHECK(bytes_a == bytes_b, "re-flatten is byte-identical (deterministic)");
+}
+
+// ---------------------------------------------------------------------------
+// CROSS-PROCESS determinism gate.
+//
+// WHY A SECOND PROCESS. Every determinism gate above this line saves twice from
+// the SAME in-memory BLAS inside ONE process (test_flatten_deterministic,
+// test_v2_byte_stability, test_flatten_retain_budget_identical). That shape
+// cannot fail on the bug class it is meant to catch: if the serializer copies
+// uninitialized bytes out of a triangle, both saves copy the SAME uninitialized
+// bytes and the compare passes. It did pass, for as long as the v2 writer sent
+// Tri's four union padding lanes to disk verbatim — 16 of every 64 triangle
+// bytes — while two cold bakes of the same geometry in different processes
+// produced bundles differing in thousands of bytes.
+//
+// SO: fork two children, each with its own cold cache directory, each baking
+// the identical fixture, and diff every file they wrote. The children are given
+// DIFFERENT poison bytes for the storage their fixture triangles are built over
+// (--bake-child's third argument). That makes the gate deterministic rather
+// than dependent on two processes happening to hold different garbage: any byte
+// of a triangle that the serializer copies instead of writing is guaranteed to
+// differ between the two children, and nothing a producer actually writes can.
+//
+// A failure here is not cosmetic. It means "two bakes with the same settings
+// are byte-identical" is false, which is the assumption the content-addressed
+// cache and every bake-verification byte-diff rest on.
+// ---------------------------------------------------------------------------
+
+// argv[0], made absolute, so the parent can re-run itself.
+static std::string g_exe_path;
+
+// Bake the standard fixture set into `dir` and flatten the parent. Returns a
+// process exit code: 0 on success.
+static int run_bake_child_inproc(const std::string& dir, uint8_t poison) {
+    set_cache_root(dir);
+    g_tri_poison = poison;
+    if (!write_fixtures()) {
+        printf("bake-child: could not write fixtures under %s\n", kCacheRoot);
+        return 1;
+    }
+    part_flatten::FlattenResult r = part_flatten::flatten_part(kCacheRoot, kParentHash);
+    if (!r.ok) {
+        printf("bake-child: flatten failed: %s\n", r.error.c_str());
+        return 1;
+    }
+    // Prove the child actually produced the artifact we are about to diff --
+    // two children that both wrote nothing would compare equal.
+    if (part_asset::peek_format_version(flat_path()) != part_asset::kFormatVersionFlat) {
+        printf("bake-child: no flat section at %s\n", flat_path().c_str());
+        return 1;
+    }
+    return 0;
+}
+
+static int spawn_bake_child(const fs::path& dir, uint8_t poison) {
+    char inner[2048];
+    std::snprintf(inner, sizeof inner, "\"%s\" --bake-child \"%s\" %02x",
+                  g_exe_path.c_str(), dir.string().c_str(), (unsigned)poison);
+#ifdef _WIN32
+    // system() runs `cmd /c <string>`. With more than one quoted token cmd
+    // strips quotes from the wrong places unless the whole line is wrapped in
+    // one more pair -- and this repo's path has spaces in it.
+    char cmd[2100];
+    std::snprintf(cmd, sizeof cmd, "\"%s\"", inner);
+    return std::system(cmd);
+#else
+    const int rc = std::system(inner);
+    return (rc != -1 && WIFEXITED(rc)) ? WEXITSTATUS(rc) : rc;
+#endif
+}
+
+// Every regular file under `root`, keyed by its path relative to root.
+static std::map<std::string, std::vector<char>> read_tree(const fs::path& root) {
+    std::map<std::string, std::vector<char>> out;
+    if (!fs::exists(root)) return out;
+    for (const auto& de : fs::recursive_directory_iterator(root)) {
+        if (!de.is_regular_file()) continue;
+        out[fs::relative(de.path(), root).generic_string()] =
+            read_all_bytes(de.path().string());
+    }
+    return out;
+}
+
+static void test_cross_process_byte_identical() {
+    printf("=== test_cross_process_byte_identical ===\n");
+
+    const fs::path base  = fs::path(kCacheRoot) / "xproc";
+    const fs::path dir_a = base / "a";
+    const fs::path dir_b = base / "b";
+    // COLD, both of them: a surviving bundle would be served back instead of
+    // baked, and two skipped bakes compare equal for the wrong reason.
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    fs::create_directories(dir_a);
+    fs::create_directories(dir_b);
+
+    const int rc_a = spawn_bake_child(dir_a, 0x00);
+    const int rc_b = spawn_bake_child(dir_b, 0xCD);
+    CHECK(rc_a == 0, "xproc: child A baked successfully");
+    CHECK(rc_b == 0, "xproc: child B baked successfully");
+    if (rc_a != 0 || rc_b != 0) {
+        printf("  child exit codes: A=%d B=%d (exe: %s)\n", rc_a, rc_b, g_exe_path.c_str());
+        return;
+    }
+
+    const auto tree_a = read_tree(dir_a);
+    const auto tree_b = read_tree(dir_b);
+    CHECK(!tree_a.empty(), "xproc: child A wrote artifacts");
+    CHECK(tree_a.size() == tree_b.size(), "xproc: both children wrote the same file set");
+
+    char msg[512];
+    size_t files_compared = 0;
+    for (const auto& [name, a] : tree_a) {
+        auto it = tree_b.find(name);
+        if (it == tree_b.end()) {
+            std::snprintf(msg, sizeof msg,
+                          "xproc: '%s' written by A but not by B", name.c_str());
+            CHECK(false, msg);
+            continue;
+        }
+        const std::vector<char>& b = it->second;
+        if (a.size() != b.size()) {
+            std::snprintf(msg, sizeof msg,
+                          "xproc: '%s' differs in SIZE (%zu vs %zu bytes)",
+                          name.c_str(), a.size(), b.size());
+            CHECK(false, msg);
+            continue;
+        }
+        size_t first = a.size(), ndiff = 0;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (a[i] != b[i]) { if (ndiff == 0) first = i; ++ndiff; }
+        if (ndiff) {
+            std::snprintf(msg, sizeof msg,
+                          "xproc: '%s' differs in %zu of %zu bytes (first at offset "
+                          "%zu) -- two processes baked identical geometry to "
+                          "different bytes; a serializer is copying storage it did "
+                          "not write",
+                          name.c_str(), ndiff, a.size(), first);
+            CHECK(false, msg);
+        }
+        CHECK(!a.empty(), "xproc: compared artifact is non-empty");
+        ++files_compared;
+    }
+    CHECK(files_compared > 0, "xproc: at least one artifact was compared");
+    printf("  compared %zu artifact file(s) across two processes\n", files_compared);
 }
 
 static void test_flatten_missing_part() {
@@ -3613,7 +3780,7 @@ static void test_flatten_appends_impostor_rung() {
     printf("PASSED\n");
 }
 
-int main() {
+int main(int argc, char** argv) {
     // Unbuffered: an abort deep in a bake must not swallow the log that
     // says which test was running when it happened.
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -3622,7 +3789,35 @@ int main() {
     // here 16x slower -- this suite already runs for minutes -- while testing
     // nothing the 32 px path does not. test_impostor_cell_px_parametrized is
     // where the setting itself is exercised, and it restores this value.
+    //
+    // AHEAD of the --bake-child dispatch below on purpose: a gate child bakes
+    // the same fixture and must pin the same value itself, rather than trusting
+    // that it inherited the parent's environment across the spawn.
     pf_set_env("MATTER_IMPOSTOR_CELL_PX", "32");
+
+    // Re-entry point for the cross-process determinism gate: bake the fixtures
+    // into a private cache with a given padding poison and exit. Handled before
+    // anything else so a child shares no state with the suite proper.
+    //   argv: --bake-child <cache_dir> <poison_hex>
+    if (argc >= 4 && std::string(argv[1]) == "--bake-child") {
+        const uint8_t poison =
+            static_cast<uint8_t>(std::strtoul(argv[3], nullptr, 16));
+        return run_bake_child_inproc(argv[2], poison);
+    }
+
+    // fs::absolute keeps the "./build/..." the Makefile invokes us with usable
+    // from a child's own working directory; MinGW appends .exe at link time, so
+    // the name we were invoked by may not be the name on disk.
+    {
+        fs::path self = fs::absolute(argv[0]).lexically_normal();
+        if (!fs::exists(self)) {
+            fs::path with_exe = self;
+            with_exe += ".exe";
+            if (fs::exists(with_exe)) self = with_exe;
+        }
+        g_exe_path = self.string();
+    }
+
     if (!write_fixtures()) {
         printf("FAIL: could not write fixture parts under %s\n", kCacheRoot);
         return 1;
@@ -3634,6 +3829,7 @@ int main() {
     test_impostor_atlas_padding();
     test_flatten_merge();
     test_flatten_deterministic();
+    test_cross_process_byte_identical();
     test_flatten_missing_part();
     test_error_bound_calibration();
     test_open_grid_border_preserved();
