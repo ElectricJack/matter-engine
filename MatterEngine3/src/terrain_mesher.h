@@ -32,8 +32,16 @@ struct SectorMesh {
 //   tx, tz: sector tile indices (world origin = tx * sector_size, tz * sector_size)
 //   Positions are sector-local (subtract sector origin from world); y is world-absolute.
 //   Normals are gradient normals (from the density field).
-//   No border skirts: the [1..n] ownership rule makes any LOD pair watertight
-//   on its own (removed 2026-07-30; see the note at the end of mesh_sector).
+//   No border skirts: the [1..n] ownership rule makes an EQUAL-rung pair
+//   watertight on its own (skirts removed 2026-07-30; see the note at the end
+//   of mesh_sector).
+//   edge_mask closes the UNEQUAL-rung case, which that rule does not cover and
+//   which no caller exercised while every sector meshed at rung 0. Bits match
+//   mesh_sector_heightfield (0 = +x, 1 = -x, 2 = +z, 3 = -z) and mark a
+//   neighbour exactly ONE rung coarser; each masked face has its odd boundary
+//   samples replaced by the average of their even neighbours, so the fine
+//   boundary polyline IS the coarse side's linear interpolation. 0 = no
+//   coarser neighbour, which is also the correct value for a uniform ladder.
 // `rung` is a power-of-two voxel ladder about a 2 m base, in BOTH directions:
 //   3 -> 0.25 m, 2 -> 0.5 m, 1 -> 1 m, 0 -> 2 m, -1 -> 4 m ... -5 -> 64 m.
 // The negative half lets the terrain ladder stay voxel at distance instead of
@@ -44,7 +52,7 @@ struct SectorMesh {
 // Returns false + err on degenerate config (rung outside -5..3, sector_size <= 0,
 // y_min >= y_max).
 bool mesh_sector(const terrain_field::FieldRuntime& field,
-                 int64_t tx, int64_t tz, int rung,
+                 int64_t tx, int64_t tz, int rung, int edge_mask,
                  float sector_size, float y_min, float y_max,
                  SectorMesh& out, std::string& err);
 

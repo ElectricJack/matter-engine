@@ -1206,20 +1206,26 @@ static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* 
         st->set_error("terrainVolume: no world bound — set BakeOptions.world before baking a terrain sector");
         return JS_UNDEFINED;
     }
-    if (n < 3) { st->set_error("terrainVolume: requires (tx, tz, rung[, mats])"); return JS_UNDEFINED; }
+    if (n < 3) { st->set_error("terrainVolume: requires (tx, tz, rung[, edgeMask][, mats])"); return JS_UNDEFINED; }
 
     int64_t tx = 0, tz = 0;
     JS_ToInt64(c, &tx, a[0]);
     JS_ToInt64(c, &tz, a[1]);
     int32_t rung = 0;
     JS_ToInt32(c, &rung, a[2]);
+    // Cardinal neighbours exactly one rung COARSER, same bit layout as
+    // terrainHeightfield (0 = +x, 1 = -x, 2 = +z, 3 = -z). Optional and 0 by
+    // default, which is correct for a uniform ladder; the argument order now
+    // matches terrainHeightfield's so the two verbs read alike.
+    int32_t edge_mask = 0;
+    if (n >= 4) JS_ToInt32(c, &edge_mask, a[3]);
 
     // Optional material array: up to 4 entries [grass, dirt, rock, snow].
     // Defaults to 0..3 if not supplied.
     uint32_t mat[4] = {0, 1, 2, 3};
-    if (n >= 4 && JS_IsArray(a[3])) {
+    if (n >= 5 && JS_IsArray(a[4])) {
         for (int i = 0; i < 4; ++i) {
-            JSValue v = JS_GetPropertyUint32(c, a[3], (uint32_t)i);
+            JSValue v = JS_GetPropertyUint32(c, a[4], (uint32_t)i);
             if (!JS_IsUndefined(v)) {
                 int32_t m = 0; JS_ToInt32(c, &m, v);
                 mat[i] = (uint32_t)m;
@@ -1232,7 +1238,7 @@ static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* 
     std::string err;
     {
         VerbTimer _vt(g_volume_us, g_volume_calls);
-        if (!terrain_mesher::mesh_sector(*w.field, tx, tz, rung,
+        if (!terrain_mesher::mesh_sector(*w.field, tx, tz, rung, edge_mask,
                                           w.sector_size, w.y_min, w.y_max, mesh, err)) {
             st->set_error("terrainVolume: " + err);
             return JS_UNDEFINED;

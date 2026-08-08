@@ -37,7 +37,7 @@ int main() {
     {
         FieldRuntime f = make(kFlat5);
         SectorMesh m; std::string err;
-        CHECK(mesh_sector(f, 0, 0, 0, 16.0f, -64.0f, 192.0f, m, err), err.c_str());
+        CHECK(mesh_sector(f, 0, 0, 0, 0, 16.0f, -64.0f, 192.0f, m, err), err.c_str());
         size_t up    = count_tris(m, [](float, float ny, float){ return ny >  0.9f; });
         // Border skirts were removed on 2026-07-30 (see terrain_mesher.cpp): a
         // flat sector is surface and nothing else. This was 64 -- 4 sides x 8
@@ -66,8 +66,8 @@ int main() {
     {
         FieldRuntime f = make(kFlat5);
         SectorMesh m0, m1; std::string err;
-        CHECK(mesh_sector(f, 0, 0, 0, 16.0f, -64, 192, m0, err), "rung0");
-        CHECK(mesh_sector(f, 0, 0, 1, 16.0f, -64, 192, m1, err), "rung1");
+        CHECK(mesh_sector(f, 0, 0, 0, 0, 16.0f, -64, 192, m0, err), "rung0");
+        CHECK(mesh_sector(f, 0, 0, 1, 0, 16.0f, -64, 192, m1, err), "rung1");
         size_t up0 = count_tris(m0, [](float,float ny,float){ return ny > 0.9f; });
         size_t up1 = count_tris(m1, [](float,float ny,float){ return ny > 0.9f; });
         CHECK(up1 == 4 * up0, "rung1 surface = 4x rung0");
@@ -76,8 +76,8 @@ int main() {
     {
         FieldRuntime f = make(kNoise);
         SectorMesh a, b; std::string err;
-        CHECK(mesh_sector(f, 3, -2, 2, 16.0f, -64, 192, a, err), "a");
-        CHECK(mesh_sector(f, 3, -2, 2, 16.0f, -64, 192, b, err), "b");
+        CHECK(mesh_sector(f, 3, -2, 2, 0, 16.0f, -64, 192, a, err), "a");
+        CHECK(mesh_sector(f, 3, -2, 2, 0, 16.0f, -64, 192, b, err), "b");
         CHECK(a.buckets.size() == b.buckets.size(), "same bucket count");
         bool same = true;
         for (size_t i = 0; i < a.buckets.size(); ++i)
@@ -101,8 +101,8 @@ int main() {
     {
         FieldRuntime f = make(kNoise);
         SectorMesh a, b; std::string err;
-        CHECK(mesh_sector(f, 0, 0, 1, 16.0f, -64, 192, a, err), "a");
-        CHECK(mesh_sector(f, 1, 0, 1, 16.0f, -64, 192, b, err), "b");
+        CHECK(mesh_sector(f, 0, 0, 1, 0, 16.0f, -64, 192, a, err), "a");
+        CHECK(mesh_sector(f, 1, 0, 1, 0, 16.0f, -64, 192, b, err), "b");
         // Neither sector's surface stops AT the border: the shared border cell
         // row (world x in [15,16] at rung 1) is emitted by BOTH sectors, from
         // the same world samples. Measured: A spans local x -0.5000..15.6741
@@ -144,8 +144,8 @@ int main() {
     {
         FieldRuntime f = make(kFlat5);
         SectorMesh m; std::string err;
-        CHECK(!mesh_sector(f, 0, 0, 4, 16.0f, -64, 192, m, err), "rung 4 rejected");
-        CHECK(!mesh_sector(f, 0, 0, 0, 16.0f, 10, -10, m, err), "bad slab rejected");
+        CHECK(!mesh_sector(f, 0, 0, 4, 0, 16.0f, -64, 192, m, err), "rung 4 rejected");
+        CHECK(!mesh_sector(f, 0, 0, 0, 0, 16.0f, 10, -10, m, err), "bad slab rejected");
     }
 
     // =======================================================================

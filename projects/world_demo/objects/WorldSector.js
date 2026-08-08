@@ -151,12 +151,15 @@ class WorldSector extends Part {
     //   terrainLod 1 -> voxel rung -4 -> 32 m
     //   terrainLod 0 -> voxel rung -5 -> 64 m   (one cell per sector)
     //
-    // edgeMask is no longer consulted. It existed to stitch a heightfield
-    // sector to a coarser neighbour; the voxel path's [1..n] ownership rule
-    // makes any LOD pair watertight without it.
+    // edgeMask still matters, and for the same reason it always did. The
+    // [1..n] ownership rule only makes EQUAL-rung neighbours watertight; across
+    // rungs the coarse side interpolates between every other sample while the
+    // fine side follows the field, and the two part company. That never showed
+    // before because terrainVolume was always called at rung 0 -- one rung
+    // everywhere, so no unequal pair existed to crack.
     const terrainLod = p.terrainLod === undefined ? 5 : (p.terrainLod | 0);
     const voxelRung = Math.max(-5, Math.min(0, terrainLod - 5));
-    this.terrainVolume(p.tx, p.tz, voxelRung, terrainMaterials);
+    this.terrainVolume(p.tx, p.tz, voxelRung, p.edgeMask | 0, terrainMaterials);
     if (!table) return;   // no biome table -> terrain only
 
     const ox = p.tx * SECTOR, oz = p.tz * SECTOR;

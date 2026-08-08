@@ -116,13 +116,28 @@ class StreamMountain extends World {
   // going to 10095 on the heightfield rungs, which is where the sightlines
   // actually come from.
   static streaming = {
+    // THE RINGS BOUND RESIDENCY, not just scatter density. A sector past the
+    // OUTERMOST ring gets desired_rung -1 from desired_rung_for_dist, and
+    // sector_streamer skips it entirely -- it is never requested, never baked,
+    // never resident. So the terrain bands below could name radii out to
+    // 10 km and nothing beyond the last ring here would ever be built; the
+    // world simply stopped about 1 km out (plus hysteresis) no matter what
+    // the bands or the resolver's activation radius said.
+    //
+    // The outer ring now reaches the last terrain band so the two agree. Rung
+    // 0 is the cheapest scatter tier (landmark boulders and trees only), so
+    // extending it costs residency bookkeeping and terrain, not dense scatter
+    // -- the dense tiers still stop at 150 m and 500 m exactly as before.
     rings: [
       { radius: 150.0, rung: 2 },
       { radius: 500.0, rung: 1 },
-      { radius: 1000.0, rung: 0 },
+      { radius: 10095.0, rung: 0 },
     ],
-    // Heightfield terrain LOD bands (radius -> LOD, 5 = native voxel mesh,
-    // 0 = one quad). Hand-tuned in the editor's LOD Settings window.
+    // Terrain LOD bands (radius -> LOD). ALL VOXEL as of the all-voxel ladder:
+    // LOD 5 meshes at 2 m voxels and each step down doubles the voxel, to 64 m
+    // at LOD 0. These used to select a heightfield representation for 4..0,
+    // which is what put a seam between near and far terrain.
+    // Hand-tuned in the editor's LOD Settings window.
     //
     // Retuned 2026-07-30 (was 961/1486/2120/2862/5943/10095). The native-voxel
     // band pulls in hard, 961 -> 318, and everything from LOD 3 out pushes

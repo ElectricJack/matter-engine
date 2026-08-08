@@ -260,7 +260,22 @@ LadderCensus ladder_census();
 struct TerrainBakeTargets {
     // Per-level world-space QEM error bound as a fraction of bound_radius.
     // Level 0 must be 0 (full detail).
-    std::vector<float> eps_ratio = {0.0f, 0.015f, 0.05f};
+    //
+    // TIGHTENED from {0, 0.015, 0.05} once the terrain ladder became all-voxel.
+    // There are now TWO independent simplifications stacked on every distant
+    // sector: the streaming rung already halves the isosurface resolution per
+    // step (2 m -> 4 m -> ... -> 64 m voxels), and then this decimates what
+    // that produced. At 1.5% and 5% of the sector's bound radius the QEM pass
+    // was the dominant one, and QEM on an already-coarse surface nets mesh is
+    // what gives distant terrain its melted, smeared look -- edge collapses
+    // cut across the isosurface rather than following it.
+    //
+    // The coarser isosurface is meant to be the driver. These bounds are now
+    // tight enough to remove genuinely redundant coplanar triangles and little
+    // else. Raise them again if bake time or triangle counts demand it, but
+    // prefer coarsening a terrain BAND first -- that is the axis that keeps
+    // the surface's shape.
+    std::vector<float> eps_ratio = {0.0f, 0.004f, 0.012f};
     std::vector<float> threshold  = {0.20f, 0.05f, 0.0125f};
 
     // Index of the finest rung to actually bake. Rungs below this are skipped

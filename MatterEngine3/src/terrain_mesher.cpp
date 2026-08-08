@@ -42,7 +42,7 @@ const int kEdges[12][6] = {
 } // namespace
 
 bool mesh_sector(const terrain_field::FieldRuntime& field,
-                 int64_t tx, int64_t tz, int rung,
+                 int64_t tx, int64_t tz, int rung, int edge_mask,
                  float sector_size, float y_min, float y_max,
                  SectorMesh& out, std::string& err) {
     // Rung is a power-of-two voxel ladder around a 2 m base, extending in BOTH
@@ -66,6 +66,10 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     // anything coarser has no lattice left to march.
     if (rung < -5 || rung > 3) {
         err = "terrain_mesher: rung out of -5..3";
+        return false;
+    }
+    if (edge_mask < 0 || edge_mask > 15) {
+        err = "terrain_mesher: edge mask out of 0..15";
         return false;
     }
     if (sector_size <= 0.0f || y_min >= y_max) {
@@ -103,6 +107,45 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
             h_max = std::max(h_max, h);
         }
     }
+    // ---- Cross-rung seam closure ------------------------------------------
+    //
+    // The density below is h(x,z) - y, so the surface this mesher traces is
+    // exactly the sampled height lattice. Two sectors at the SAME rung share
+    // their boundary samples and meet exactly -- that is the [1..n] ownership
+    // rule, and why the skirts could go. Across DIFFERENT rungs they do not:
+    // the coarse side interpolates linearly between every OTHER sample, while
+    // the fine side follows h at each one, so the two polylines diverge by up
+    // to the field's curvature over a coarse voxel. That is the grid of cracks
+    // an all-voxel ladder shows and a single-rung world never could.
+    //
+    // Fix on the FINE side, matching what the heightfield mesher does with the
+    // same mask: on a face whose neighbour is one rung coarser, replace each
+    // odd boundary sample with the average of its two even neighbours. The
+    // fine boundary polyline then IS the coarse neighbour's linear
+    // interpolation, so the two agree by construction rather than by luck.
+    //
+    // edge_mask bits match mesh_sector_heightfield exactly (0 = +x, 1 = -x,
+    // 2 = +z, 3 = -z) so the streamer's existing masks carry over unchanged.
+    //
+    // Boundary sample indices: hat(i,k) is sampled at ox + (i-1)*voxel, so the
+    // sector's own edges are i == 1 (x = ox) and i == n+1 (x = ox + S), and
+    // likewise for k. Interior samples are untouched -- this only moves the one
+    // row or column that has to agree with someone else.
+    {
+        const auto snap_column = [&](int i) {          // vary k, fixed i
+            for (int k = 2; k <= n; k += 2)            // odd offsets: (k-1) odd
+                hat(i, k) = 0.5f * (hat(i, k - 1) + hat(i, k + 1));
+        };
+        const auto snap_row = [&](int k) {             // vary i, fixed k
+            for (int i = 2; i <= n; i += 2)
+                hat(i, k) = 0.5f * (hat(i - 1, k) + hat(i + 1, k));
+        };
+        if (edge_mask & kEdgeNegX) snap_column(1);
+        if (edge_mask & kEdgePosX) snap_column(n + 1);
+        if (edge_mask & kEdgeNegZ) snap_row(1);
+        if (edge_mask & kEdgePosZ) snap_row(n + 1);
+    }
+
     if (h_min < y_min || h_max > y_max) {
         err = "terrain_mesher: sampled height outside authored Y range";
         return false;
