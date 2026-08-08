@@ -7104,6 +7104,11 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->sec.set_active_radius(active_radius);
     impl_->sec.set_min_projected_size(opts.min_projected_size);
     impl_->sec.set_pixel_budget(budget);
+    // BOTH resolvers, not just SectorLod. Routing the floor only to `sec` is
+    // what made the editor's sub-pixel slider a no-op on StreamMountain, which
+    // runs PassThrough -- the knob moved, nothing downstream ever saw it.
+    impl_->pass.set_min_projected_size(opts.min_projected_size);
+    impl_->pass.set_pixel_budget(budget);
     viewer::SectorResolver& resolver =
         opts.resolver == ResolverKind::SectorLod
             ? static_cast<viewer::SectorResolver&>(impl_->sec)

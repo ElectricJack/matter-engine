@@ -36,6 +36,18 @@ public:
     std::vector<ResolvedInstance>
         resolve(const WorldState&, const lod_select::PartLodTable&, const float3&) override;
     const char* name() const override { return "PassThrough"; }
+    // Sub-pixel floor, same meaning and same units as SectorLodResolver's.
+    //
+    // This resolver used to emit EVERY world entry unconditionally, which is
+    // why the editor's sub-pixel slider appeared to do nothing on
+    // StreamMountain: the knob was only ever applied to SectorLodResolver, and
+    // StreamMountain runs PassThrough (resolver_choice 0). 0 = off.
+    void set_min_projected_size(float v) { min_projected_size_ = v; }
+    void set_pixel_budget(float b) { pixel_budget_ = b; }
+
+private:
+    float min_projected_size_ = 0.0f;
+    float pixel_budget_ = 1.0f;
 };
 
 // Bins instances into sectors, picks per-sector LOD via lod_select, and
