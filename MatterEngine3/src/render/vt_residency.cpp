@@ -7,6 +7,7 @@
 
 #include "matter/vt_budgets.h"
 #include "matter/vulkan_device.h"
+#include "profile.h"
 #include "vk_resources.h"
 
 namespace vt {
@@ -1334,14 +1335,65 @@ void VtResidency::drain_feedback(uint32_t frame_slot) {
             static_cast<const uint16_t*>(feedback_readback_[frame_slot].mapped);
         const size_t count = static_cast<size_t>(feedback_w_) * feedback_h_;
         requests.reserve(requests.size() + count / 8);
+        // DEDUP AT THE SOURCE. The feedback target is per-TEXEL, but a VT page
+        // covers a large screen region, so a page is named by hundreds of
+        // adjacent texels. Feeding every one to queue_page() re-did the same
+        // in_range / is_mapped / resolve / touch / hash-find work per texel: a
+        // 2026-08-08 capture measured 4550 calls per frame of which ~2 queued
+        // anything new, at 4.5 ms of render-thread time.
+        //
+        // Equivalence: queue_page() is idempotent for a repeated key. The
+        // duplicate path only raises `priority` (identical for every texel
+        // naming the same page and mip -- it is derived from the page's own
+        // served mip, not from the texel), restamps requested_frame with this
+        // same frame_index_, and calls slots_.touch() with this same
+        // frame_index_. Collapsing N identical keys to one is therefore
+        // bit-identical in effect, not an approximation.
+        //
+        // The run-length guard alone removes the bulk, because the scan is
+        // row-major and page coverage is contiguous in screen space; the sort
+        // below catches a page reappearing on a later scanline.
+        uint64_t last_packed = UINT64_MAX;
         for (size_t i = 0; i < count; ++i) {
             const uint16_t* t = texels + i * 4;
             if (t[0] == 0) continue;
+            const uint64_t packed = (static_cast<uint64_t>(t[0]) << 48) |
+                                    (static_cast<uint64_t>(t[3]) << 32) |
+                                    (static_cast<uint64_t>(t[2]) << 16) |
+                                    static_cast<uint64_t>(t[1]);
+            if (packed == last_packed) continue;
+            last_packed = packed;
             requests.push_back(VtFeedbackRequest{static_cast<uint32_t>(t[0] - 1u),
                                                  t[3], t[1], t[2]});
         }
         feedback_slot_written_[frame_slot] = false;
     }
+    // Full dedup across scanlines. Sorting a few hundred POD entries costs far
+    // less than the queue_page() calls it removes, and it groups the survivors
+    // by layer, so the loop below walks variants_ with locality instead of
+    // jumping across the table per texel.
+    {
+        const auto packed = [](const VtFeedbackRequest& r) {
+            return (static_cast<uint64_t>(r.layer) << 48) |
+                   (static_cast<uint64_t>(r.mip) << 32) |
+                   (static_cast<uint64_t>(r.py) << 16) |
+                   static_cast<uint64_t>(r.px);
+        };
+        std::sort(requests.begin(), requests.end(),
+                  [&](const VtFeedbackRequest& a, const VtFeedbackRequest& b) {
+                      return packed(a) < packed(b);
+                  });
+        requests.erase(
+            std::unique(requests.begin(), requests.end(),
+                        [&](const VtFeedbackRequest& a,
+                            const VtFeedbackRequest& b) {
+                            return packed(a) == packed(b);
+                        }),
+            requests.end());
+    }
+    // DISTINCT pages now, not raw texel hits -- which is what this counter
+    // always should have meant. Compare against captures from before
+    // 2026-08-08 with that in mind.
     stats_.requests_last_frame = static_cast<uint32_t>(requests.size());
     // Feedback is 2-3 frames stale by construction. A request naming a variant
     // slot released since is dropped by the live check; one naming a slot
@@ -1394,6 +1446,7 @@ void VtResidency::begin_frame(uint64_t frame_index, uint32_t frame_slot) {
     // the caller's frame fences guarantee anything submitted that many frames
     // ago has retired on the GPU (the same guarantee the feedback readback and
     // the compositor's cache retirement already ride).
+    PROFILE_SCOPE_NAMED(z_collect, "vt.collect");
     slots_.collect(frame_index_);
     tables_.collect(frame_index_);
     if (pool_zero_staging_.buffer != VK_NULL_HANDLE && pool_cleared_ &&
@@ -1418,7 +1471,15 @@ void VtResidency::begin_frame(uint64_t frame_index, uint32_t frame_slot) {
         layer_graveyard_.resize(keep);
     }
     refresh_indirection_stats();
-    drain_feedback(frame_slot_);
+    z_collect.stop();
+    {
+        // Full CPU scan of the 1/8-res feedback readback (raster/8 x raster/8
+        // texels) plus a queue_page hash insert per non-zero hit, so this grows
+        // with resolution AND with how much of the screen is VT-shaded.
+        PROFILE_SCOPE("vt.drain_feedback");
+        drain_feedback(frame_slot_);
+        PROFILE_COUNT("vt.feedback_requests", stats_.requests_last_frame);
+    }
 }
 
 bool VtResidency::ensure_feedback(uint32_t raster_width, uint32_t raster_height,
@@ -1512,7 +1573,10 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
     // wrote it -- the earliest it can run is the next frame, by which point the
     // fill's transfer has been submitted and the layout transition below is the
     // dependency that orders them.
-    drain_enrich(cmd);
+    {
+        PROFILE_SCOPE("vt.enrich");
+        drain_enrich(cmd);
+    }
     // --- pool transitions -------------------------------------------------
     for (uint32_t c = 0; c < kVtChannelCount; ++c) {
         if (pool_[c].layout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
@@ -1599,7 +1663,9 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
     // map or roll back.
     batch_.clear();
     pending_map_.clear();
+    PROFILE_COUNT("vt.queue_depth", queue_.size());
     if (!queue_.empty() && filler_) {
+        PROFILE_SCOPE("vt.fill_select");
         // Highest priority first; ties by insertion order (stable).
         std::stable_sort(queue_.begin(), queue_.end(),
                          [](const PendingFill& a, const PendingFill& b) {
@@ -1698,7 +1764,15 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
             fill_flags_[i] = false;
             batch_[i].out_filled = &fill_flags_[i];
         }
-        filler_->fill(cmd, batch_.data(), batch_.size());
+        {
+            // Tier-1 page bake: the compositor samples the tileset slots and
+            // encodes BC blocks per page. Cost scales with batch size, which
+            // the per-frame fill budgets bound -- so a large vt.fill means the
+            // budgets are being hit every frame, not that one page is slow.
+            PROFILE_SCOPE("vt.fill");
+            PROFILE_COUNT("vt.fill_batch", batch_.size());
+            filler_->fill(cmd, batch_.data(), batch_.size());
+        }
 
         // --- map or roll back, per request --------------------------------
         uint32_t mapped = 0;
@@ -1761,6 +1835,10 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
     // frame. Dirty re-uploads follow; either kind that misses the window
     // stays dirty and retries next frame.
     {
+        // Two full scans over variants_ every frame, regardless of how many
+        // tables are actually dirty.
+        PROFILE_SCOPE("vt.table_upload");
+        PROFILE_COUNT("vt.variants", variants_.size());
         Buffer& staging = indirection_staging_[frame_slot_];
         VkDeviceSize staging_offset = 0;
         const auto upload_table = [&](VariantRung& v) -> bool {
