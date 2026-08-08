@@ -162,6 +162,12 @@ struct ViewerStats {
     // StreamMountain default; Meadow ships 0.0015. Seeded per world by
     // apply_world_resolver_defaults, then live-overridable here.
     float min_projected_size    = 0.0f;
+    // SectorLod activation radius, metres. Sectors whose centre is beyond this
+    // emit nothing. The resolver's own default is 64 m against a 16 m sector
+    // pitch -- about four sectors -- which is why SectorLod looks broken on a
+    // world whose fog wall is 2.5 km. Seeded per world, live-overridable.
+    // Inert while resolver_choice is 0 (PassThrough).
+    float active_radius         = 64.0f;
     bool  wireframe_available   = false;
     std::string wireframe_unavailable_reason;
     // Viewer-local diagnostic toggles.  These are deliberately not part of

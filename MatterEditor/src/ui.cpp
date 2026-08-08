@@ -1436,6 +1436,28 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
         props.note_panel_home(b->schema().path, "Viewer Debug");
     const char* resolvers[] = { "PassThrough", "SectorLod" };
     ImGui::Combo("Resolver", &s.resolver_choice, resolvers, 2);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "PassThrough: every world entry becomes an instance; all LOD and "
+            "culling are left to the GPU cull.\n"
+            "SectorLod: bins into sectors, picks one rung per (sector, part) "
+            "from that sector's CLOSEST instance, and emits nothing for "
+            "sectors outside the activation radius below.");
+    if (s.resolver_choice == 1) {
+        // SectorLod's activation radius. Its built-in default is 64 m against
+        // a 16 m sector pitch -- roughly four sectors -- which is why the
+        // resolver looks empty on a world whose fog wall is 2.5 km. It was
+        // previously fixed per world by name with no way to adjust it, so the
+        // resolver could not be evaluated at all on StreamMountain.
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::SliderFloat("Activation radius", &s.active_radius, 16.0f,
+                           4096.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Sectors whose centre is beyond this emit no instances.\n"
+                "Raise it until the horizon fills in, then compare "
+                "cull.instances and frame_ms against PassThrough.");
+    }
     if (ImGui::Button("Reload world") && commands.reload) commands.reload();
 
     ImGui::SeparatorText("Debug View");

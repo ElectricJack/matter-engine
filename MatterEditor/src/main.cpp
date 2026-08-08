@@ -404,6 +404,7 @@ void apply_world_resolver_defaults(const std::string& world_name,
     // control owns the value, so a world switch re-seeds it rather than
     // fighting it -- and RenderOptions reads the slider, not this local.
     stats.min_projected_size = min_projected_size;
+    stats.active_radius = active_radius;
 }
 
 // The windowed placement saved on the way into presentation mode, so leaving
@@ -2924,7 +2925,7 @@ int main() {
                 : matter::GeometryDebugView::None;
         options.hiz_occlusion = false;
         options.pixel_budget = stats.pixel_budget;
-        options.active_radius = active_radius;
+        options.active_radius = stats.active_radius;
         options.min_projected_size = stats.min_projected_size;
         options.dlss_mode = selected_dlss_mode();
         options.vulkan_lighting = stats.lighting;
