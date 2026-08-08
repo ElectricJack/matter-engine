@@ -566,6 +566,40 @@ partial failure); `terrain_mesher_tests.cpp` gains the cross-*size* seam case
 `sectorSize` and asserts determinism (double-bake cmp); `world_stream_tests`
 gains a nested end-to-end settle.
 
+## WP0 baseline, measured (2026-08-08)
+
+The counts above were derived by a script over the authored bands. Running the
+real `SectorStreamer` with StreamMountain's authored config (rings
+150/500/10,095, bands 318/1,186/2,605/4,702/7,753/10,095, `sector_size` 64,
+`hysteresis` 16, `max_inflight` 64) to settle at anchor (32, 32), with bakes
+stubbed to publish instantly:
+
+| quantity | measured |
+|---|---|
+| resident sectors at settle | **78,161** |
+| publishes to fill | 78,161 |
+| `update()` tick, settled | **5.37 ms** |
+| streamer-only settle wall | 34.8 s (bookkeeping alone — no bakes, no publishes) |
+
+Residency by terrain LOD: 32,064 / 29,136 / 11,768 / 4,108 / 1,016 / 69 for
+LOD 0…5 — i.e. **78.4% in the two coarsest bands**, matching the derived 78.3%
+to within the balance pass's edge effects (the derivation predicted 78,168;
+the balance and hysteresis passes move a handful of tiles between bands).
+
+Two things the derivation understated:
+
+- **`update()` costs 5.37 ms per tick at settle.** This is not bake cost or
+  publish cost — it is the desired-set scan plus the three `assign_terrain_lods`
+  passes over a 78k-entry map, run every tick, on the thread that calls it. The
+  design predicted this shape (≈99,856 distance evaluations plus three map
+  walks) but not its size; at 5.37 ms it is a third of a 60 Hz frame spent
+  deciding which sectors are wanted.
+- **34.8 s of pure streamer bookkeeping to fill**, with every bake, stage and
+  publish removed. The real fill cost is this plus all of that.
+
+These are the numbers WP7 compares against. Harness: `wp0_baseline.cpp` in the
+session scratchpad (links `sector_streamer.cpp` directly; no engine, no GPU).
+
 ## Rejected alternatives (summary)
 
 | alternative | rejected because |
