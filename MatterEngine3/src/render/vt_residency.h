@@ -800,6 +800,10 @@ class VtResidency {
         // rollback path in record_frame). Nonzero means pages are NOT going
         // black, but something upstream is refusing work -- watch it.
         uint64_t fills_failed_total = 0;
+        // Page requests discarded by the queue_cap trim. Expected to be
+        // non-zero -- that is the cap doing its job. A value that dwarfs
+        // requests_last_frame means the cap is too tight for the working set.
+        uint64_t requests_dropped_total = 0;
         // --- WP-H: tier-2 hemisphere enrichment ---
         uint32_t enrich_samples = 0;        // rays/texel; 0 = no enricher
         uint32_t enrich_last_frame = 0;     // pages enriched in the last frame
@@ -1183,6 +1187,9 @@ class VtResidency {
     // them renders legacy-flat until its single tail page is filled — so
     // tails must never queue behind feedback-driven sharpening fills.
     uint32_t max_tail_fills_per_frame_ = 16;
+    // Ceiling on queue_, applied after each frame's selection. See
+    // VtResidencyBudgets::queue_cap for why dropping the tail is safe.
+    uint32_t max_queue_ = 256;
     bool activation_dirty_ = false;
     uint32_t max_variants_ = 0;
     size_t mesh_budget_bytes_ = 0;

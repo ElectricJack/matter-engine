@@ -74,6 +74,25 @@ struct VtResidencyBudgets {
     // requests START, never how long one takes — at least one is always
     // serviced, so the VT cannot stall. 0 restores service-everything.
     float request_budget_ms = 4.0f;
+    // Hard ceiling on the pending page-fill queue, applied after each frame's
+    // selection, keeping the highest-priority entries.
+    //
+    // The queue used to be unbounded. Because drain_feedback re-derives the
+    // wanted set from the feedback buffer EVERY frame, entries accumulated far
+    // faster than fills_per_frame could retire them: measured depths of 28920,
+    // 45082 and 66701 across three successive sessions, still climbing, while
+    // only ~2.7 fills happened per frame. record_frame stable_sorts that queue
+    // and rebuilds a hash map of it once per frame, so the per-frame cost grew
+    // without bound with time flown -- 14.3 ms of a 35.3 ms frame by the last
+    // capture.
+    //
+    // Dropping is safe precisely because feedback regenerates: anything still
+    // visible is re-requested next frame. A dropped entry costs at most one
+    // frame of latency on a page that was tens of thousands of frames from
+    // being serviced anyway. Watch the vt.requests_dropped counter -- it should
+    // be non-zero (that is the cap working), but a value that dwarfs
+    // vt.feedback_requests means the cap is too tight for the working set.
+    uint32_t queue_cap = 256;
 };
 
 // Tier-2 hemisphere-AO enrichment settings (vt_enrich.cpp). Six MATTER_VT_
@@ -164,7 +183,15 @@ inline const props::Group& vt_residency_budgets_group() {
             .env("MATTER_VT_REQUEST_BUDGET_MS")
             .doc("Per-frame time budget for SERVICING registration requests. "
                  "Bounds how many start, never how long one takes; 0 services "
-                 "the whole queue."));
+                 "the whole queue."),
+        prop(&VtResidencyBudgets::queue_cap, "queue_cap")
+            .label("Fill queue cap").range(16.0f, 65536.0f).log()
+            .env("MATTER_VT_QUEUE_CAP")
+            .doc("Ceiling on the pending page-fill queue, keeping the "
+                 "highest-priority entries. Feedback re-derives the wanted set "
+                 "every frame, so dropping the tail costs at most one frame of "
+                 "latency; without a cap the queue's per-frame sort grows "
+                 "without bound with time flown."));
     return def.group();
 }
 

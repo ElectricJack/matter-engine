@@ -1423,6 +1423,7 @@ void VtResidency::refresh_budgets() {
     max_tail_fills_per_frame_ =
         clamp_u32(b.tail_fills_per_frame, 1u, kMaxFillFlags);
     max_enrich_per_frame_ = clamp_u32(b.enrich_per_frame, 0u, 16u);
+    max_queue_ = clamp_u32(b.queue_cap, 16u, 65536u);
     // M6.5: the directional tier's own budget, read here rather than shared
     // with the contact tier's. One budget for both would let a burst of fine
     // pages consume the frame and leave the far field permanently unshadowed —
@@ -1741,6 +1742,28 @@ bool VtResidency::record_frame(VkCommandBuffer cmd, std::string& error) {
         for (size_t i = 0; i < queue_.size(); ++i)
             if (!taken[i]) queue_[keep++] = queue_[i];
         queue_.resize(keep);
+        // CAP. queue_ is still in the priority order the stable_sort above put
+        // it in (the compaction preserves relative order), so truncating keeps
+        // the most starved pages and drops the least.
+        //
+        // Without this the queue only ever grew: drain_feedback re-derives the
+        // wanted set every frame while ~2.7 fills retire, so measured depths
+        // ran 28920 -> 45082 -> 66701 across three sessions and were still
+        // climbing. The sort and the queued_keys_ rebuild below are both O(n)
+        // or worse per frame, which is how a 35 ms frame ended up spending
+        // 14.3 ms in fill_select alone -- a cost that scaled with time flown
+        // rather than with anything on screen.
+        //
+        // Dropping is safe BECAUSE feedback regenerates: a page still visible
+        // is re-requested next frame. What is lost is at most one frame of
+        // latency on a page that, at this drain rate, was tens of thousands of
+        // frames from being serviced anyway.
+        if (queue_.size() > max_queue_) {
+            const uint64_t dropped = queue_.size() - max_queue_;
+            stats_.requests_dropped_total += dropped;
+            PROFILE_COUNT("vt.requests_dropped", dropped);
+            queue_.resize(max_queue_);
+        }
         queued_keys_.clear();
         for (size_t i = 0; i < queue_.size(); ++i)
             queued_keys_[page_key(queue_[i].layer, queue_[i].page)] = i;
