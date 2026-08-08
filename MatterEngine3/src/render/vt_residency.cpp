@@ -1353,6 +1353,9 @@ void VtResidency::drain_feedback(uint32_t frame_slot) {
         // The run-length guard alone removes the bulk, because the scan is
         // row-major and page coverage is contiguous in screen space; the sort
         // below catches a page reappearing on a later scanline.
+        PROFILE_SCOPE("vt.fb_scan");
+        PROFILE_COUNT("vt.fb_texels", count);
+        uint64_t raw_hits = 0;
         uint64_t last_packed = UINT64_MAX;
         for (size_t i = 0; i < count; ++i) {
             const uint16_t* t = texels + i * 4;
@@ -1361,11 +1364,18 @@ void VtResidency::drain_feedback(uint32_t frame_slot) {
                                     (static_cast<uint64_t>(t[3]) << 32) |
                                     (static_cast<uint64_t>(t[2]) << 16) |
                                     static_cast<uint64_t>(t[1]);
+            ++raw_hits;
             if (packed == last_packed) continue;
             last_packed = packed;
             requests.push_back(VtFeedbackRequest{static_cast<uint32_t>(t[0] - 1u),
                                                  t[3], t[1], t[2]});
         }
+        // Raw non-zero texels vs what survived the run-length guard. If these
+        // are close, adjacent texels are NOT naming the same page (interleaved
+        // variants across a scanline) and the guard is not earning its keep --
+        // which would make the sort below the dominant cost.
+        PROFILE_COUNT("vt.fb_hits_raw", raw_hits);
+        PROFILE_COUNT("vt.fb_hits_runlength", requests.size());
         feedback_slot_written_[frame_slot] = false;
     }
     // Full dedup across scanlines. Sorting a few hundred POD entries costs far
@@ -1373,6 +1383,10 @@ void VtResidency::drain_feedback(uint32_t frame_slot) {
     // by layer, so the loop below walks variants_ with locality instead of
     // jumping across the table per texel.
     {
+        // O(n log n) on whatever the run-length guard let through. Split out
+        // because if the guard is ineffective this becomes the whole cost of
+        // drain_feedback, and the fix would be a hash set rather than a sort.
+        PROFILE_SCOPE("vt.fb_dedup");
         const auto packed = [](const VtFeedbackRequest& r) {
             return (static_cast<uint64_t>(r.layer) << 48) |
                    (static_cast<uint64_t>(r.mip) << 32) |
@@ -1400,11 +1414,16 @@ void VtResidency::drain_feedback(uint32_t frame_slot) {
     // already recycled (impossible inside the retirement horizon, which is
     // wider than the readback ring) would at worst queue a spurious-but-valid
     // fill for the NEW variant.
-    for (const VtFeedbackRequest& r : requests) {
-        if (r.layer >= variants_.size()) continue;
-        VariantRung& v = variants_[r.layer];
-        if (!v.live) continue;
-        queue_page(v, VtPageKey{r.mip, r.px, r.py});
+    {
+        // Per distinct page: in_range / is_mapped / resolve / slots_.touch /
+        // hash find, each hopping through a different variant's indirection.
+        PROFILE_SCOPE("vt.fb_queue");
+        for (const VtFeedbackRequest& r : requests) {
+            if (r.layer >= variants_.size()) continue;
+            VariantRung& v = variants_[r.layer];
+            if (!v.live) continue;
+            queue_page(v, VtPageKey{r.mip, r.px, r.py});
+        }
     }
 }
 
