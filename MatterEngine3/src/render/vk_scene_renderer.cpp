@@ -6354,6 +6354,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     {
         float span = 0.0f;
         bool span_open = false;
+        bool any_mesh = false;
         float center_extent = 0.0f;
         for (uint32_t cluster_index = 0; cluster_index < part.clusters.size();
              ++cluster_index) {
@@ -6368,6 +6369,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
                 center_extent, std::sqrt(cx * cx + cy * cy + cz * cz));
             const uint32_t mesh_lods = record.rt_cluster_mesh_lods[cluster_index];
             if (mesh_lods == 0) continue;   // billboard-only: never traced
+            any_mesh = true;
             // The LAST mesh rung is the one with the widest switch distance
             // (they increase), so it alone decides whether ANY mesh rung of
             // this cluster still qualifies -- exactly the question select_rep's
@@ -6380,8 +6382,23 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
             }
             span = std::max(span, sd * cluster.radius);
         }
-        record.rt_mesh_span =
-            span_open ? std::numeric_limits<float>::infinity() : span;
+        // THREE outcomes, and conflating the last two cost real shadows.
+        //   open rung anywhere      -> INFINITY, never skip (as before)
+        //   no mesh rung at all     -> 0, always skip: correct, the part is
+        //                              billboard-only by construction
+        //   mesh rungs but no
+        //   positive span           -> INFINITY. This is "could not compute a
+        //                              bound", NOT "nothing to trace", and the
+        //                              first version treated it as the latter:
+        //                              span stayed 0, so span_reach was 0, so
+        //                              EVERY instance of that part was skipped
+        //                              at any distance and it stopped casting
+        //                              shadows entirely. Never skip on a bound
+        //                              we could not establish.
+        if (span_open || (any_mesh && !(span > 0.0f)))
+            record.rt_mesh_span = std::numeric_limits<float>::infinity();
+        else
+            record.rt_mesh_span = span;
         record.rt_center_extent = center_extent;
     }
     for (uint32_t cluster_index = 0; cluster_index < part.clusters.size();
@@ -10108,7 +10125,17 @@ bool VkSceneRenderer::build_ray_geometry(
         // Same rule, not a second one: the reach goes through lod::reach with
         // the same average-basis scale and the same `!= 1` lod_bias guard
         // select_cluster_lod_view uses.
-        if (std::isfinite(part.rt_mesh_span)) {
+        //
+        // STATIC INSTANCES ONLY. An animated instance resolves its rung from
+        // the animation bounds UNION (planning_radius below), which is larger
+        // than the static cluster radius rt_mesh_span was folded from -- often
+        // much larger, since the union covers skin and every rigid segment. The
+        // early-out would then under-estimate its reach and skip a mesh that
+        // does still trace, which is a skinned character silently losing its
+        // shadow. The vegetation this optimisation exists for is all static, so
+        // excluding animated instances costs nothing measurable.
+        if (source.animation_instance_slot == UINT32_MAX &&
+            std::isfinite(part.rt_mesh_span)) {
             const auto basis_len = [&](int c0, int c1, int c2) {
                 const float a = object_to_world.m[c0];
                 const float b = object_to_world.m[c1];
