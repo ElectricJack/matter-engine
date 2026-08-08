@@ -906,12 +906,18 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
     // per-vertex f16 field lanes instead of the u8 weight columns.
     std::vector<GpuChart> gcharts;
     std::vector<GpuTri> gtris;
-    if (!vt_build_chart_gpu_streams(*atlas, *ctx, gcharts, gtris,
-                                    mode3 ? ctx->surface_lanes : nullptr,
-                                    mode3 ? ctx->surface_lane_count : 0u)) {
-        why = "chart GPU stream build failed";
-        return nullptr;
+    {
+        // O(triangles) repack of the variant's whole mesh. If ONE variant is
+        // simply enormous, the cost lands here and vt.mesh_tris says so.
+        PROFILE_SCOPE("vt.chart_streams");
+        if (!vt_build_chart_gpu_streams(*atlas, *ctx, gcharts, gtris,
+                                        mode3 ? ctx->surface_lanes : nullptr,
+                                        mode3 ? ctx->surface_lane_count : 0u)) {
+            why = "chart GPU stream build failed";
+            return nullptr;
+        }
     }
+    PROFILE_COUNT("vt.mesh_tris", gtris.size());
 
     MeshEntry entry;
     if (mode3) {
@@ -957,12 +963,29 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
                                  entry.tris, err);
     };
+    PROFILE_SCOPE_NAMED(z_mesh_alloc, "vt.mesh_alloc");
     if (!try_create_buffers()) {
         // Host-visible memory pressure: shed every evictable cache entry and
         // retry once before giving up on this fill.
+        //
+        // PRIME SUSPECT for the 364.5 ms single-call outlier a 2026-08-08
+        // capture caught (37% of all mesh-entry time in ONE call, next largest
+        // 13.2 ms). This loop destroys buffers and frees descriptor sets for up
+        // to kMaxMeshEntries = 512 entries in one go, and the cache is heavily
+        // oversubscribed -- that capture had 2150 live variants against 512
+        // slots -- so a single trip through here is a whole-cache wipe followed
+        // by a rebuild of everything still wanted. vt.mesh_cache_wipes counts
+        // the trips and vt.mesh_shed counts what each one destroyed; a spike in
+        // either alongside a spike in vt.mesh_alloc confirms it.
+        PROFILE_COUNT("vt.mesh_cache_wipes", 1);
         destroy_raw_buffer(device, entry.charts);
         destroy_raw_buffer(device, entry.tris);
-        while (evict_lru_mesh_entry(ring_index)) ++stats.mesh_cache_evictions;
+        uint64_t shed = 0;
+        while (evict_lru_mesh_entry(ring_index)) {
+            ++stats.mesh_cache_evictions;
+            ++shed;
+        }
+        PROFILE_COUNT("vt.mesh_shed", shed);
         if (!try_create_buffers()) {
             destroy_raw_buffer(device, entry.charts);
             destroy_raw_buffer(device, entry.tris);
@@ -971,8 +994,15 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
             return nullptr;
         }
     }
-    std::memcpy(entry.charts.mapped, gcharts.data(), charts_bytes);
-    std::memcpy(entry.tris.mapped, gtris.data(), tris_bytes);
+    z_mesh_alloc.stop();
+    {
+        // First touch of freshly mapped host-visible memory, so this is page
+        // faults as much as copy bandwidth -- worth separating from the
+        // allocation itself.
+        PROFILE_SCOPE("vt.mesh_upload");
+        std::memcpy(entry.charts.mapped, gcharts.data(), charts_bytes);
+        std::memcpy(entry.tris.mapped, gtris.data(), tris_bytes);
+    }
     entry.chart_count = static_cast<uint32_t>(gcharts.size());
     entry.last_used_batch = batch_counter;
 
