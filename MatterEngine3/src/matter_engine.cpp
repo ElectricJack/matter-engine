@@ -3807,6 +3807,13 @@ bool WorldSession::Impl::apply_sector_evictions(
     const std::vector<streaming::detail::TaggedEviction>& evictions,
     std::string& err) {
     matter_async::assert_gl_thread("stream.apply_evictions");
+    // Evictions the streamer ASKED for, and the subset that actually removed a
+    // sector. They differ whenever the publication-tag guard below drops one,
+    // and a persistent gap between them is itself the bug: requested-but-never-
+    // applied evictions leave residency climbing while the streamer believes it
+    // has already shed those sectors.
+    PROFILE_COUNT("stream.evictions_requested", evictions.size());
+    uint64_t evictions_applied = 0;
     bool ok = true;
     for (const auto& eviction : evictions) {
         const SectorKey key{
@@ -3823,10 +3830,12 @@ bool WorldSession::Impl::apply_sector_evictions(
 
         if (release_sector_entry(found->second, err)) {
             sector_map.erase(found);
+            ++evictions_applied;
         } else {
             ok = false;
         }
     }
+    PROFILE_COUNT("stream.evictions_applied", evictions_applied);
     return ok;
 }
 
@@ -4163,6 +4172,17 @@ void WorldSession::Impl::publish_streaming_snapshot() {
         streaming_status_copy = snapshot.status;
         stats.resident_sectors = snapshot.status.resident_sectors;
     }
+    // Residency, in the trace rather than only in the status line. Paired with
+    // stream.evictions_applied this separates the two ways instance count can
+    // climb while cluster and variant counts stay pinned:
+    //
+    //   sectors climbing, evictions ~0  -> eviction is not firing at all
+    //   sectors climbing, evictions > 0 -> it fires but loading outruns it
+    //   sectors FLAT, instances climbing -> not a residency problem; the same
+    //                                       sectors are expanding to more
+    //                                       instances, which is a different bug
+    PROFILE_COUNT("stream.resident_sectors", snapshot.status.resident_sectors);
+    PROFILE_COUNT("stream.inflight_sectors", snapshot.status.inflight_sectors);
 
     flecs::world& world = ecs_runtime.world();
     streaming::detail::publish_streaming_snapshot(world, snapshot);
