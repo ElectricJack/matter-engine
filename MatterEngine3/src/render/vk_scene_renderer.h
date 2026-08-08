@@ -2284,7 +2284,16 @@ private:
     // to kFull, because in-flight frames read the live buffers and only a
     // disjoint tail write is safe in place.
     enum class StaticUpload : uint8_t { kClean, kAppend, kFull };
-    StaticUpload static_upload_dirty_ = StaticUpload::kFull;
+    // kCLEAN, not kFull. The buffers are RESERVED at init(), so seeding is just
+    // an append of every registered range -- register_part is the only writer
+    // of the static staging and records its exact ranges, so at seed time the
+    // dirty lists ARE all the data. Starting at kFull instead spent one
+    // O(world) recreate + memcpy on a buffer that was already big enough.
+    //
+    // This must be kClean specifically: mark_static_append() below only
+    // escalates from kClean, so a kFull start could never be downgraded and the
+    // seed would take the full path no matter what.
+    StaticUpload static_upload_dirty_ = StaticUpload::kClean;
     // A registration appended clusters but the O(clusters x LODs) command
     // template fill was deferred, so several parts landing in one frame pay
     // for one rebuild. Set by register_part; cleared by any successful

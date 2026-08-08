@@ -8215,6 +8215,15 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     // Disable the freed clusters CPU-side so the next command-template
     // rebuild emits nothing for them. The stale GPU copies are never visited
     // (no live instance spans the range) and are rewritten on reuse.
+    //
+    // NOTE: these zeroes are NOT recorded as a dirty range, so they never reach
+    // the GPU at all -- a full upload used to carry them incidentally, and the
+    // seed/reset paths no longer take one. The freed slot therefore keeps its
+    // old bytes in the buffer until something reuses the range. That is safe
+    // only because every consumer reaches the cluster buffer through a LIVE
+    // part: cull.comp is dispatched over instance_staging_ and the CPU mirrors
+    // iterate parts_, so nothing walks the buffer by capacity. Any future pass
+    // that does must either zero through a dirty range or skip dead slots.
     for (uint32_t i = 0; i < record.cluster_count; ++i) {
         cluster_staging_[record.cluster_start + i] = GpuCluster{};
         cluster_lods_[record.cluster_start + i].clear();
@@ -12359,8 +12368,24 @@ int VkSceneRenderer::fill_rt_instances(
 
 void VkSceneRenderer::reset() {
     const bool full_reset = poisoned();
+    // ALWAYS idle, not just on the poisoned path.
+    //
+    // This used to be safe by accident: reset() left static_upload_dirty_ at
+    // kFull, and kFull allocates NEW buffers and moves them in, so frames still
+    // in flight kept reading the old ones through the lifetimes they retained
+    // at record time. Now that reset seeds through the append path, the next
+    // registration allocates from a cleared free list -- offset 0 -- and the
+    // ranged writes land IN PLACE in the very buffer those frames are reading.
+    //
+    // The invariant is the one stated above StaticUpload in the header:
+    // kAppend is only valid while every write is either past what any recorded
+    // frame reads, or into a range quarantined for a full in-flight window. A
+    // cleared free list satisfies neither. reset() is a world switch, so
+    // paying the stall here is the cheap and unambiguous fix; the alternative
+    // is routing the whole pre-reset extent through FreeRangeList::pending at
+    // static_frame_serial_ (which does survive this function).
+    if (vulkan_) vulkan_->wait_idle();
     if (full_reset) {
-        if (vulkan_) vulkan_->wait_idle();
         destroy_pipeline();
         clusters_.reset();
         vertices_.reset();
@@ -12438,7 +12463,13 @@ void VkSceneRenderer::reset() {
     raster_attachments_ready_ = false;
     ++static_generation_;
     ++instance_generation_;
-    static_upload_dirty_ = StaticUpload::kFull;
+    // kClean, matching the constructor: everything that was resident is gone,
+    // and whatever the next world registers records its own dirty ranges. The
+    // wait_idle at the top of this function is what makes writing them in place
+    // legal. A poisoned reset destroyed the buffers outright, so its next
+    // upload runs after init() re-creates them at the reservation -- also from
+    // kClean, also an append.
+    static_upload_dirty_ = StaticUpload::kClean;
     std::string ignored_error;
     if (rebuild_command_template(ignored_error)) note_command_layout_rebuild();
     poison_reason_.clear();
