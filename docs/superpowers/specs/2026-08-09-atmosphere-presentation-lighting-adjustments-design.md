@@ -2,7 +2,7 @@
 
 ## Summary
 
-This focused follow-up to `2026-08-08-physical-atmosphere-volumetric-clouds-design.md` fixes sky presentation and separates it from world lighting. It retains the physical atmosphere, keeps the `192x108` sky-view LUT initially, adds static final-display dither, lowers noon sky ambient, and introduces a shared direct-world-light sunset curve.
+This focused follow-up to `2026-08-08-physical-atmosphere-volumetric-clouds-design.md` fixes sky presentation and separates it from world lighting. It retains the physical atmosphere, keeps the `192x108` sky-view LUT initially, adds static scene-display dither, lowers noon sky ambient, and introduces a shared direct-world-light sunset curve.
 
 It does not add auto exposure, a full time-of-day profile, a legacy sky, a new atmosphere model, or a larger LUT unless the prescribed metrics fail.
 
@@ -127,12 +127,15 @@ Let `d = day_ambient_multiplier` and `t = twilight_ambient_multiplier`, after sa
 ```text
 twilight_mix(e)       = 1 - smoothstep(-6, 5, e)
 sky_ambient_ratio(e)  = mix(d, t, twilight_mix(e))
-sky_irradiance_rgb    = physical_sky_irradiance_rgb * sky_ambient_ratio(e)
+sky_irradiance_modifier_rgb = authored_irradiance_chroma_rgb
+                              * sky_ambient_ratio(e)
+sky_irradiance_rgb(direction) = evaluate_9sh(direction)
+                                   * sky_irradiance_modifier_rgb
 ```
 
 At and above `+5°`, ambient is 25% of today's effective sky ambient. The `+5°` to `-6°` range smoothly transfers to twilight ambient. At `-5°`, direct world light is exactly zero, while physically derived sky irradiance remains positive and becomes primary light for upward surfaces and fog. Below `-6°`, the multiplier remains user-selected but is not a floor: physical atmosphere irradiance must continue to fade naturally through deep night. Do not inject a constant night term or compensate with auto exposure.
 
-The same resolved ambient RGB is used by raster, RT/GI, and volumetrics; twilight cannot light one of these paths differently from the others.
+`evaluate_9sh(direction)` always evaluates the committed physical nine-coefficient field; it is never replaced by one flat RGB. Raster diffuse uses its shading normal, diffuse GI uses its incident/environment direction, and fog/cloud ambient uses its phase/integration direction. All share the same committed `sky_irradiance_modifier_rgb`, so twilight cannot light one path differently from another.
 
 ## Controls, Sanitization, and Compatibility
 
@@ -154,9 +157,13 @@ Older worlds/property state omit the new fields and receive these defaults. Exis
 
 Atmosphere coefficient and sun-direction changes use an explicit candidate transaction. A candidate contains the complete LUT image set, its settings and normalized sun direction, its 9 SH coefficients, `direct_base_rgb`, both sky modifiers, resolved ambient ratio, and direct ratio. Generate/validate all of it off the currently committed descriptor set. Only after successful generation and descriptor publication may the renderer atomically replace the committed transaction and its direction. Every consumer then sees the new direction and all new light values together. If an ambient/direct/display control changes while an atmosphere candidate is pending, fold its current sanitized value into that candidate before publication; until then, retain the complete committed transaction rather than mixing old LUTs with new controls.
 
-On candidate generation, validation, allocation, or descriptor-publication failure, retain the entire last-valid transaction: old atmosphere LUTs, old direction, old direct RGB/ratio, old ambient ratio/modifier, and old environment descriptors. Do not advance one light direction while retaining LUTs from another direction, and do not partially dim direct light. Report the failure; do not reset any history. On successful atomic commit only, increment atmosphere generation serial and request exactly one diffuse-GI and volumetric-history reset. This replaces any partial dirty/reset behavior for atmosphere-linked updates.
+On candidate generation, validation, allocation, or descriptor-publication failure, retain the entire last-valid atmosphere transaction: old atmosphere LUTs, old direction, and old environment descriptors. Do not advance one light direction while retaining LUTs from another direction, and do not partially dim direct light. Immediately after recording the failure, resolve the *current sanitized non-atmosphere controls* (`sky_display_modifier_rgb`, day/twilight ambient controls, and `sunset_direct_ratio`) against that last-valid committed atmosphere direction/SH/direct base in a separate constants-only transaction. It may update display, ambient, or direct-ratio constants, but never LUT handles, atmosphere direction, or coefficients.
 
-- Day ambient, twilight ambient, and Sunset direct edits update resolved constants without regenerating the LUT, request one diffuse-GI reset, and invalidate volumetric temporal scatter history. They do not invalidate cloud density/optical-depth history.
+The constants-only transaction follows normal narrow replay rules: ambient or sunset-direct changes request one diffuse-GI reset and invalidate volumetric history; a display-modifier change invalidates reflection/miss history only. It does not increment atmosphere generation serial. An atmosphere failure by itself resets no history. On successful full atmosphere commit only, increment atmosphere generation serial and request exactly one diffuse-GI and volumetric-history reset. This replaces any partial dirty/reset behavior for atmosphere-linked updates.
+
+FIFO `set render.lighting.*` and `get render.lighting.*` always expose the requested, sanitized property value, including a newly requested sun elevation that has not committed. The read-only status fields defined in **CLI/FIFO captures** expose only the currently resolved transaction. Thus after a failed LUT candidate the requested elevation can differ from `viewer.atmosphere_status.resolved_elevation_deg`, while current ambient/direct/display controls are visible in both their requested values and their last-valid-atmosphere resolved result.
+
+- When no atmosphere candidate is pending, day ambient, twilight ambient, and Sunset direct edits update resolved constants without regenerating the LUT, request one diffuse-GI reset, and invalidate volumetric temporal scatter history. While a candidate is pending or has failed, they follow the candidate/constants-only rules above. They do not invalidate cloud density/optical-depth history.
 - Display-modifier edits follow the narrow reflection/miss history rule in **Lighting Split**; output dither changes no lighting history. Neither changes exposure.
 - Create/bind the dedicated sampler transactionally with environment descriptors and retain it through the normal frame-resource fence. Failure reports an error and retains the previous valid descriptor/sampler; it is not silently accepted as nearest filtering.
 - Raster, RT, and volumetrics receive one committed snapshot per frame. RT secondary direct and fog/cloud direct use `direct_world_sun_rgb`; raster diffuse/diffuse GI/fog/cloud ambient evaluate 9 SH then apply `sky_irradiance_modifier_rgb`; background, RT misses, and reflections apply `sky_display_modifier_rgb`.
@@ -183,7 +190,34 @@ On candidate generation, validation, allocation, or descriptor-publication failu
 
 ### CLI/FIFO captures
 
-Extend the existing one-process atmosphere shot harness; do not add a protocol. It loads `AtmospherePresentationFixture`, selects 1280x720, waits for `viewer: bake ready` and `MATTER_CMD_FIFO: listening`, uses `cam 0 2 12 0 1 0`, runs three warm-up frames and one forced history reset for each path/elevation, and holds exposure fixed. Run the complete matrix once with raster and once with native RT; unavailable RT is a failed acceptance fixture. For each `90`, `5`, `0`, `-5`, and `-12` degree capture issue:
+Implementation scope adds the following read-only session properties to the existing property registry; they are `get`-only, never serialized, and are formatted by the existing `get: <path> = <value>` grammar:
+
+| Read-only property | Type / exact value |
+|---|---|
+| `viewer.session.render_path` | enum string: `raster`, `native_rt`, or `native_rt_unavailable` |
+| `viewer.session.presented_frame_serial` | unsigned integer, incremented only after successful present |
+| `viewer.session.native_rt_available` | boolean |
+| `viewer.atmosphere_status.generation_serial` | unsigned committed-atmosphere generation serial |
+| `viewer.atmosphere_status.resolved_elevation_deg` | committed atmosphere direction elevation, decimal degrees |
+| `viewer.atmosphere_status.direct_world_ratio` | resolved scalar |
+| `viewer.atmosphere_status.direct_base_rgb` | resolved RGB triple, `(r,g,b)` |
+| `viewer.atmosphere_status.direct_world_sun_rgb` | resolved RGB triple, `(r,g,b)` |
+| `viewer.atmosphere_status.sky_ambient_ratio` | resolved scalar |
+| `viewer.atmosphere_status.sky_display_modifier_rgb` | resolved RGB triple, `(r,g,b)` |
+| `viewer.atmosphere_status.sky_irradiance_modifier_rgb` | resolved RGB triple, `(r,g,b)` |
+
+Implementation scope also adds these typed FIFO commands alongside existing `cam`, `set`, `get`, `stats`, and `shot`; their success lines are part of the harness protocol:
+
+```text
+render_path raster|native_rt
+history_reset
+wait_frames <positive-integer>
+shot_now <absolute-png-path>
+```
+
+`render_path native_rt` fails with `render_path: native_rt unavailable` unless `viewer.session.native_rt_available = true`; the harness treats that line as failure, never a skip. `history_reset` prints `history_reset: requested` after queuing the one-shot temporal reset. `wait_frames N` completes only after N successful presents and prints `wait_frames: complete N frame_serial=<M>`; it is the sole frame-wait mechanism. `shot_now` writes the next successfully presented viewport image without its own warm-up, then writes the existing `<png>.done` sentinel. Existing `shot <path>` keeps its compatibility settle behavior and is not used by this acceptance fixture.
+
+Extend the existing one-process atmosphere shot harness using these commands; do not add another control protocol. It loads `AtmospherePresentationFixture`, selects 1280x720, waits for `viewer: bake ready` and `MATTER_CMD_FIFO: listening`, uses `cam 0 2 12 0 1 0`, and holds exposure fixed. Run the complete matrix once with `render_path raster` and once with `render_path native_rt`. Before each elevation, read `viewer.atmosphere_status.generation_serial` as `S0`, then use this exact ordering:
 
 ```text
 set render.lighting.exposure_ev -2
@@ -191,21 +225,29 @@ set render.lighting.day_ambient_multiplier 0.25
 set render.lighting.twilight_ambient_multiplier 1
 set render.lighting.sunset_direct_ratio 0.25
 set render.lighting.sun_elevation_deg <elevation>
-get render.lighting.day_ambient_multiplier
-get render.lighting.twilight_ambient_multiplier
-get render.lighting.sunset_direct_ratio
-get resolved.sun_elevation_deg
-get resolved.direct_world_ratio
-get resolved.direct_base_rgb
-get resolved.direct_world_sun_rgb
-get resolved.sky_ambient_ratio
-get resolved.sky_display_modifier_rgb
-get resolved.sky_irradiance_modifier_rgb
-stats atmosphere-presentation-<elevation>
-shot <absolute-png-path>
+wait_frames 1
+get viewer.atmosphere_status.generation_serial
+get viewer.atmosphere_status.resolved_elevation_deg
 ```
 
-Wait for `<png>.done` before compare/inspection, measure the named ROIs/tolerances above, send `quit`, and retain a kill trap only as cleanup. Store transient output in `MatterEditor/build/validation/atmosphere-presentation/`; commit test assertions/metadata rather than captures.
+Repeat `wait_frames 1` followed by the two atmosphere-status `get` commands until `generation_serial > S0` and `abs(resolved_elevation_deg - requested_elevation_deg) <= 1e-4`; only then issue this second, ordered block:
+
+```text
+history_reset
+wait_frames 3
+get viewer.session.render_path
+get viewer.session.presented_frame_serial
+get viewer.atmosphere_status.direct_world_ratio
+get viewer.atmosphere_status.direct_base_rgb
+get viewer.atmosphere_status.direct_world_sun_rgb
+get viewer.atmosphere_status.sky_ambient_ratio
+get viewer.atmosphere_status.sky_display_modifier_rgb
+get viewer.atmosphere_status.sky_irradiance_modifier_rgb
+stats atmosphere-presentation-<elevation>
+shot_now <absolute-png-path>
+```
+
+The harness first sends `render_path <path>` and then requires `get viewer.session.render_path` to echo that path; for `native_rt` it also requires `get viewer.session.native_rt_available = true` before any elevation work. It parses all other `get:` values exactly as the types above, records requested `render.lighting.*` values separately from `viewer.atmosphere_status.*` resolved values, and fails on a timeout of 240 such polls. It waits for `<png>.done` before compare/inspection, measures the named ROIs/tolerances above, sends `quit`, and retains a kill trap only as cleanup. Store transient output in `MatterEditor/build/validation/atmosphere-presentation/`; commit test assertions/metadata rather than captures.
 
 ## Acceptance Criteria
 
