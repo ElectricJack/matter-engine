@@ -161,6 +161,19 @@ int main() {
         CHECK(rs.error.ok, rs.error.message.c_str());
         // rung is folded into the hash, so rung-2 must differ from rung-0
         CHECK(rs.resolved_hash != r0.resolved_hash, "scatter-rung hash differs from terrain-only rung");
+        // Printed with its path because together they are the handle for the
+        // scatter sub-celling bitwise gate (WP5): run this binary against two
+        // versions of WorldSector.js and `cmp` the two artifacts.
+        //
+        // Compare the ARTIFACTS, not these hashes. The part hash covers the
+        // module SOURCE -- adding one comment line to WorldSector.js moves it,
+        // measured -- so it can tell you two bakes differ but never that two
+        // bakes agree. The 2026-08-08 sub-celling run: both bundles 42,684
+        // bytes, differing in 32 bytes at offsets 9-88, which is four copies of
+        // the 8-byte content hash in the header and section table. Every byte
+        // of geometry and of the child placement table was identical.
+        printf("  scatter bake hash: %016llx  path: %s\n",
+               (unsigned long long)rs.resolved_hash, rs.written_path.c_str());
     }
 
     // --- nested sector LOD: a tile that is not S_0 across --------------------
@@ -235,6 +248,82 @@ int main() {
         CHECK(small.error.ok && big.error.ok, "both nested bakes succeeded");
         CHECK(small.resolved_hash != big.resolved_hash,
               "nested: sectorSize participates in the part hash");
+    }
+
+    // --- nested scatter: a big tile IS its four small ones -------------------
+    // WP5. Scatter is computed per fixed 64 m cell rather than per tile, so a
+    // level-1 tile must emit exactly what its four level-0 tiles emit, in the
+    // cell loop's order. This is the invariant that keeps placements stable
+    // across a level transition: without it every `r`-driven placement -- the
+    // rock scatter, every rotation, the grass -- reshuffles the moment a tile
+    // changes size, at the ranges where that is most visible.
+    //
+    // Module-for-module and in order. Positions are not compared here (the
+    // bake does not hand them back), but they derive from the same cell
+    // coordinates that produce this sequence, and any reshuffle changes the
+    // sequence: the RNG stream drives which variant each call draws.
+    {
+        auto canon = [](const std::string& raw) {
+            return raw.empty() ? std::string()
+                : part_graph::params_to_json(part_graph::params_from_json(raw));
+        };
+        std::vector<std::string> mods, cparams;
+        std::vector<uint64_t> hashes;
+        auto add = [&](const char* module, const std::string& raw) {
+            mods.push_back(module);
+            cparams.push_back(canon(raw));
+            hashes.push_back(0x1000ull + hashes.size());
+        };
+        for (int s = 0; s < 8; ++s) add("Rock", "{\"seed\":" + std::to_string(s) + "}");
+        for (const char* sz : {"2.5", "4.0"})
+            for (int s = 0; s < 4; ++s)
+                add("Rock", "{\"seed\":" + std::to_string(s) + ",\"size\":" + sz + "}");
+        for (int s = 0; s < 6; ++s) add("Pebble", "{\"seed\":" + std::to_string(s) + "}");
+        for (int s = 0; s < 5; ++s) add("Grass", "{\"seed\":" + std::to_string(s) + "}");
+        for (int s = 0; s < 3; ++s) add("Tree", "{\"seed\":" + std::to_string(s) + "}");
+
+        const char* biomes =
+            R"(,"worldSeed":42,"fieldHash":"abc","biomes":)"
+            R"("{\"meadow\":{\"rocks\":4,\"pebbles\":4,\"grass\":5},)"
+            R"(\"foothills\":{\"rocks\":4,\"pebbles\":4,\"grass\":5},)"
+            R"(\"mountains\":{\"rocks\":4,\"pebbles\":4,\"grass\":5}}"})";
+        auto scatter_bake = [&](const std::string& head) {
+            BakeOptions opts;
+            opts.parts_dir = parts_dir;
+            opts.world.field = &field;
+            return host.bake_source(src, (head + biomes).c_str(), opts,
+                                    hashes.data(), hashes.size(),
+                                    mods.data(), cparams.data());
+        };
+
+        // One level-1 tile at (2, 4): 128 m, covering level-0 cells
+        // (4,8) (5,8) (4,9) (5,9).
+        BakeResult big = scatter_bake(
+            R"({"tx":2,"tz":4,"rung":2,"terrainLod":4,"sectorSize":128)");
+        CHECK(big.error.ok, big.error.message.c_str());
+
+        std::vector<std::string> union_mods;
+        bool small_ok = true;
+        // Cell loop order: cz outer, cx inner.
+        const int cells[4][2] = {{4, 8}, {5, 8}, {4, 9}, {5, 9}};
+        for (const auto& c : cells) {
+            BakeResult one = scatter_bake(
+                "{\"tx\":" + std::to_string(c[0]) +
+                ",\"tz\":" + std::to_string(c[1]) +
+                R"(,"rung":2,"terrainLod":5,"sectorSize":64)");
+            if (!one.error.ok) { small_ok = false; break; }
+            union_mods.insert(union_mods.end(),
+                              one.child_modules_placed.begin(),
+                              one.child_modules_placed.end());
+        }
+        CHECK(small_ok, "all four level-0 cells baked");
+        printf("  nested scatter: level-1 tile placed %zu children, its four "
+               "level-0 cells %zu\n",
+               big.child_modules_placed.size(), union_mods.size());
+        CHECK(!union_mods.empty(), "the cells actually scattered something");
+        CHECK(big.child_modules_placed == union_mods,
+              "nested scatter: a level-1 tile emits exactly what its four "
+              "level-0 cells emit, in the same order");
     }
 
     return check_summary();

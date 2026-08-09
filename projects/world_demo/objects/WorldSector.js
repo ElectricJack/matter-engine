@@ -172,21 +172,57 @@ class WorldSector extends Part {
     this.terrainVolume(p.tx, p.tz, voxelRung, p.edgeMask | 0, terrainMaterials);
     if (!table) return;   // no biome table -> terrain only
 
-    // TILE extent. Scatter below still works in 64 m cells; only the tile's
-    // own origin and span scale with the level.
-    const TILE = p.sectorSize > 0 ? p.sectorSize : SECTOR;
-    const ox = p.tx * TILE, oz = p.tz * TILE;
-    const counts = table[this.biomeAt(ox + TILE / 2, oz + TILE / 2)] || {};
+    // ---- SCATTER RUNS PER FIXED 64 m CELL, NOT PER TILE --------------------
+    //
+    // Terrain meshes as one whole tile above; scatter does not. A level-L tile
+    // covers 4^L of the 64 m cells the world has always scattered in, and the
+    // loop at the end of build() walks them one at a time with exactly the
+    // arguments a level-0 bake would have used: the cell's own origin, its own
+    // biome lookup, its own RNG seeded from its own cell coordinates, its own
+    // candidate rects, its own caps.
+    //
+    // That is what keeps placements STABLE ACROSS LEVEL TRANSITIONS. The
+    // candidate grids are world-keyed and would have survived on their own, but
+    // `r` is seeded from tile coordinates and drives the rock scatter, every
+    // rotation and the grass -- so a tile that changed size would reshuffle all
+    // of it, at the ranges (<= 500 m) where a rock teleporting is exactly what
+    // the eye catches. Sub-celling makes that impossible rather than unlikely,
+    // because the cell grid never changes.
+    //
+    // It also keeps COST linear in area: planAlpineSector runs an O(viable^2)
+    // exclusion loop per call, and `viable` is tens per 64 m cell but thousands
+    // over a 2 km level-5 tile. And it keeps CAPS meaning what they mean --
+    // FAMILY_CAPS and the biome counts are per-64-m densities, so applying them
+    // per tile would thin the far field by 4^L.
+    const TILE   = p.sectorSize > 0 ? p.sectorSize : SECTOR;
+    const cells  = Math.max(1, Math.round(TILE / SECTOR));
+    const tileOx = p.tx * TILE, tileOz = p.tz * TILE;
+    const baseCx = p.tx * cells, baseCz = p.tz * cells;
     const seed = p.worldSeed >>> 0;
     const GROVE = (seed ^ 0xA51) >>> 0;   // tree groves,   wavelength ~110
     const SCREE = (seed ^ 0xB62) >>> 0;   // rock fields,   wavelength ~70
     const TUFT  = (seed ^ 0xC73) >>> 0;   // grass clumps,  wavelength ~30
-    const r = rng((seed ^ Math.imul(p.tx | 0, 73856093)
-                        ^ Math.imul(p.tz | 0, 19349663)) >>> 0);
 
+    // One 64 m cell. A function rather than an inlined loop body so the tier
+    // gates below stay `return`s -- they read as "this cell is done", and
+    // rewriting them as `continue` is the kind of edit that quietly changes
+    // which of them still guards what.
+    //
+    // At cells === 1 -- every level-0 tile, and every tile in uniform mode --
+    // the cell coordinates ARE the tile coordinates and every expression below
+    // is the one that ran before this change, so the emitted placement list is
+    // bitwise identical. That is this change's acceptance gate.
+    const scatterCell = (cellTx, cellTz) => {
+    const ox = cellTx * SECTOR, oz = cellTz * SECTOR;
+    const counts = table[this.biomeAt(ox + SECTOR / 2, oz + SECTOR / 2)] || {};
+    const r = rng((seed ^ Math.imul(cellTx | 0, 73856093)
+                        ^ Math.imul(cellTz | 0, 19349663)) >>> 0);
+
+    // Placements are TILE-local (the part's own frame) while scatter reasons in
+    // world space off the CELL -- hence tileOx here against ox above.
     const put = (module, params, wx, wz, s, sinkY) => {
       this.pushMatrix();
-      this.translate(wx - ox, this.heightAt(wx, wz) - sinkY, wz - oz);
+      this.translate(wx - tileOx, this.heightAt(wx, wz) - sinkY, wz - tileOz);
       this.rotateY(r.range(0, Math.PI * 2));
       this.scale(s, s, s);
       this.placeChild(module, params);
@@ -196,21 +232,22 @@ class WorldSector extends Part {
       x, z, rotation, scale, heightScale = 1, sinkY, module, params,
     }) => {
       this.pushMatrix();
-      this.translate(x - ox, this.heightAt(x, z) - sinkY, z - oz);
+      this.translate(x - tileOx, this.heightAt(x, z) - sinkY, z - tileOz);
       this.rotateY(rotation);
       this.scale(scale, scale * heightScale, scale);
       this.placeChild(module, params);
       this.popMatrix();
     };
-    const inSector = () => [ox + r.range(0, TILE), oz + r.range(0, TILE)];
+    const inSector = () => [ox + r.range(0, SECTOR), oz + r.range(0, SECTOR)];
 
     // ---- every tier: landmark boulders --------------------------------------
-    for (const c of candidatesInRect(seed, 2, BOULDER_MIN_DIST, ox, oz, TILE, TILE)) {
+    for (const c of candidatesInRect(seed, 2, BOULDER_MIN_DIST, ox, oz, SECTOR, SECTOR)) {
       if (this.biomeAt(c.x, c.z) === 'ocean') continue;
       const sz = BOULDER_SIZES[(c.u * BOULDER_SIZES.length) | 0];
       const s = (0.8 + 0.4 * c.v) * BOULDER_SCALE;
       this.pushMatrix();
-      this.translate(c.x - ox, this.heightAt(c.x, c.z) - 0.15 * sz * s, c.z - oz);
+      this.translate(c.x - tileOx, this.heightAt(c.x, c.z) - 0.15 * sz * s,
+                     c.z - tileOz);
       this.rotateY(c.rot);
       this.scale(s, s, s);
       this.placeChild('Rock', { seed: (c.u * 16 | 0) % BOULDER_SEEDS, size: sz });
@@ -233,7 +270,7 @@ class WorldSector extends Part {
     if (isAlpineProfile(table)) {
       if (p.rung >= 1) scatterRocks();
       for (const placement of planAlpineSector({
-        rung: p.rung, worldSeed: seed, ox, oz, sectorSize: TILE,
+        rung: p.rung, worldSeed: seed, ox, oz, sectorSize: SECTOR,
         heightAt: this.heightAt.bind(this), slopeAt: this.slopeAt.bind(this),
         candidatesInRect, biomeAt: this.biomeAt.bind(this),
       })) putPlanned(placement);
@@ -243,7 +280,7 @@ class WorldSector extends Part {
     // ---- every tier: tree groves (cross-sector deterministic) --------------
     // Candidate grid gives even in-grove spacing; the grove channel gates
     // which candidates exist, ramping density toward the grove core.
-    for (const c of candidatesInRect(seed, 3, TREE_MIN_DIST, ox, oz, TILE, TILE)) {
+    for (const c of candidatesInRect(seed, 3, TREE_MIN_DIST, ox, oz, SECTOR, SECTOR)) {
       const treeCap = (table[this.biomeAt(c.x, c.z)] || {}).trees | 0;
       if (!treeCap) continue;                       // no trees in this biome
       const g = patch(c.x, c.z, GROVE, 1 / 110);
@@ -254,7 +291,8 @@ class WorldSector extends Part {
       const gN = Math.min(1, Math.max(0, (g - 0.10) / 0.90));
       const s  = 1 + 2 * Math.pow(0.65 * c.v + 0.35 * gN, 1.7);
       this.pushMatrix();
-      this.translate(c.x - ox, this.heightAt(c.x, c.z) - 0.4 * s, c.z - oz);
+      this.translate(c.x - tileOx, this.heightAt(c.x, c.z) - 0.4 * s,
+                     c.z - tileOz);
       this.rotateY(c.rot);
       this.scale(s, s, s);
       this.placeChild('Tree', { seed: (c.u * 16 | 0) % TREE_VARIANTS });
@@ -287,5 +325,10 @@ class WorldSector extends Part {
       put('Grass', { seed: r.int(GRASS_VARIANTS) }, wx, wz, gs, 0.02);
       ++placed;
     }
+    };
+
+    for (let cz = 0; cz < cells; ++cz)
+      for (let cx = 0; cx < cells; ++cx)
+        scatterCell(baseCx + cx, baseCz + cz);
   }
 }
