@@ -3,6 +3,7 @@
 #include "check.h"
 
 #include <cstdint>
+#include <limits>
 
 namespace {
 
@@ -98,6 +99,14 @@ void test_froxel_memory_accounts_for_four_rgba16f_images_and_optional_density() 
     }
 }
 
+void test_froxel_memory_saturates_instead_of_wrapping_for_unrepresentable_dimensions() {
+    const matter::FroxelGridDimensions enormous{
+        std::numeric_limits<uint32_t>::max(), std::numeric_limits<uint32_t>::max(),
+        std::numeric_limits<uint32_t>::max()};
+    CHECK(matter::estimate_froxel_bytes(enormous, true) == std::numeric_limits<uint64_t>::max(),
+          "unrepresentable enhanced froxel memory saturates instead of wrapping");
+}
+
 struct ExpectedPreset {
     matter::VolumetricQualityPreset preset;
     matter::VulkanVolumetricsSettings volumetrics;
@@ -168,6 +177,7 @@ int main() {
     test_froxel_grid_resolves_every_discrete_combination();
     test_froxel_grid_sanitizes_invalid_enums_to_current_cost();
     test_froxel_memory_accounts_for_four_rgba16f_images_and_optional_density();
+    test_froxel_memory_saturates_instead_of_wrapping_for_unrepresentable_dimensions();
     test_presets_apply_and_identify_exact_fixed_table_values();
     test_enhanced_lighting_derives_from_any_enhanced_feature();
     return check_summary();

@@ -34,6 +34,10 @@ void test_improved_clipmap_dimensions_and_persistent_memory() {
         (256ull * 256ull * 32ull + 128ull * 128ull * 24ull);
     CHECK(matter::estimate_cloud_shadow_bytes(shadows) == expected,
           "persistent clipmap memory includes density scratch and cumulative ping-pong R16F images");
+    matter::apply_volumetric_quality_preset(matter::VolumetricQualityPreset::CurrentCost,
+                                            volumetrics, shadows);
+    CHECK(!shadows.enabled && matter::estimate_cloud_shadow_bytes(shadows) == 0,
+          "disabled Current cost clipmaps allocate no persistent cloud-shadow bytes");
 }
 
 void test_sun_frame_is_orthonormal_and_camera_center_maps_to_lateral_uv_center() {
@@ -65,6 +69,14 @@ void test_history_invalidation_threshold_and_nonfinite_fail_closed() {
         level, {std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f}, {0.0f, -1.0f, 0.0f});
     CHECK(!invalid.valid && matter::cloud_shadow_requires_full_invalidation(previous, invalid, 0.0f),
           "non-finite input produces an invalid frame and fails closed");
+    auto nan_transform = previous;
+    nan_transform.world_to_uvw.m[0] = std::numeric_limits<float>::quiet_NaN();
+    CHECK(nan_transform.valid && matter::cloud_shadow_requires_full_invalidation(nan_transform, next, 0.0f),
+          "non-finite stored transform fails closed even when its valid flag is stale");
+    auto infinite_transform = next;
+    infinite_transform.uvw_to_world.m[10] = std::numeric_limits<float>::infinity();
+    CHECK(infinite_transform.valid && matter::cloud_shadow_requires_full_invalidation(previous, infinite_transform, 0.0f),
+          "infinite stored transform fails closed even when its valid flag is stale");
 }
 
 } // namespace

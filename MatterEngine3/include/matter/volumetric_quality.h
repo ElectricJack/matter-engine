@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 namespace matter {
 
@@ -43,8 +44,13 @@ inline FroxelGridDimensions resolve_froxel_grid(const VulkanVolumetricsSettings&
 }
 
 inline uint64_t estimate_froxel_bytes(FroxelGridDimensions dimensions, bool enhanced_clouds) {
-    const uint64_t voxels = static_cast<uint64_t>(dimensions.width) * dimensions.height * dimensions.depth;
-    return voxels * (4ull * 8ull + (enhanced_clouds ? 2ull : 0ull));
+    const auto saturating_multiply = [](uint64_t left, uint64_t right) {
+        constexpr uint64_t maximum = std::numeric_limits<uint64_t>::max();
+        return left != 0 && right > maximum / left ? maximum : left * right;
+    };
+    const uint64_t voxels = saturating_multiply(
+        saturating_multiply(static_cast<uint64_t>(dimensions.width), dimensions.height), dimensions.depth);
+    return saturating_multiply(voxels, 4ull * 8ull + (enhanced_clouds ? 2ull : 0ull));
 }
 
 bool enhanced_cloud_lighting(const VulkanVolumetricsSettings&, const CloudShadowSettings&);

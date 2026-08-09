@@ -93,6 +93,7 @@ inline std::array<CloudShadowLevelDesc, 2> resolve_cloud_shadow_levels(
 }
 
 inline uint64_t estimate_cloud_shadow_bytes(const CloudShadowSettings& settings) {
+    if (!settings.enabled) return 0;
     const auto levels = resolve_cloud_shadow_levels(settings);
     uint64_t voxels = 0;
     for (const auto& level : levels) {
