@@ -93,6 +93,12 @@ public:
     // The integration output -- sampled by the composite fragment shader.
     matter::VkImageResource& vol_integrated() { return active_bundle_.integrated; }
     const matter::VkImageResource& vol_integrated() const { return active_bundle_.integrated; }
+    const matter::VkImageResource& cloud_density_or_dummy() const {
+        return active_bundle_.enhanced_clouds ? active_bundle_.cloud_density : cloud_density_dummy_;
+    }
+    matter::VkImageResource& cloud_density_or_dummy() {
+        return active_bundle_.enhanced_clouds ? active_bundle_.cloud_density : cloud_density_dummy_;
+    }
     matter::FroxelGridDimensions dimensions() const { return active_bundle_.dimensions; }
     matter::FroxelXyScale effective_xy_scale() const;
     matter::FroxelDepthSlices effective_depth_slices() const;
@@ -109,7 +115,17 @@ public:
     void set_fail_next_bundle_descriptor_allocation_for_test(bool enabled) {
         fail_next_bundle_descriptor_allocation_for_test_ = enabled;
     }
-
+    // Real-device Task 9 assertions.  These report the active production
+    // bundle; the 1^3 stable descriptor dummy is intentionally excluded from
+    // grid accounting.
+    uint32_t grid_rgba16f_volume_count_for_test() const;
+    bool cloud_density_allocated_for_test() const;
+    matter::FroxelGridDimensions cloud_density_dimensions_for_test() const;
+    uint64_t grid_bytes_for_test() const;
+    bool readback_density_voxel_for_test(uint32_t x, uint32_t y, uint32_t z,
+                                         matter::Float4& media,
+                                         float& cloud_density,
+                                         std::string& error);
     // Whether volumetrics is currently active (enabled + ray query available).
     bool active() const { return enabled_ && ray_query_available_; }
 
@@ -196,6 +212,9 @@ private:
     bool last_scatter_history_was_valid_ = false;
     matter::VulkanDevice* vulkan_ = nullptr;
     matter::VkImageResource noise_texture_;
+    // Stable binding-4 backing for Current cost; excluded from grid accounting.
+    matter::VkImageResource cloud_density_dummy_;
+    bool enhanced_clouds_requested_ = false;
 
     // Emitter SSBO: uint32 count at offset 0, then GpuVolumeEmitter[256]
     // starting at offset 16 (std430 alignment).
@@ -220,7 +239,7 @@ private:
     // straight by it. Built up front in create_density_pipeline: five compute
     // compiles at startup beats a driver compile in the frame a layer is
     // switched on, and it means every permutation is validated on every run.
-    VkPipeline density_pipelines_[matter::kMaxCloudLayers + 1] = {};
+    VkPipeline density_pipelines_[matter::kMaxCloudLayers + 1][2] = {};
 
     // Scatter pass resources (2 descriptor sets for ping-pong).
     VkDescriptorSetLayout scatter_set_layout_ = VK_NULL_HANDLE;

@@ -43,6 +43,7 @@ capture() {
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE/../../MatterEditor"
+EDITOR_EXE="${MATTER_EDITOR_EXE:-./build/windows/editor.exe}"
 if [ "$WINDOWS_COMMAND_FILE" = 1 ]; then
   : > "$FIFO"
 else
@@ -97,7 +98,7 @@ MATTER_HIDE_UI="${MATTER_HIDE_UI:-1}" \
 MATTER_PERF_OUTPUT="$PERF_OUTPUT_ENV" \
 MATTER_PERF_WARMUP_SECONDS="$PERF_WARMUP_SECONDS" \
 MATTER_PERF_SAMPLE_SECONDS="${MATTER_PERF_SAMPLE_SECONDS:-1}" \
-stdbuf -oL ./build/windows/editor.exe > "$LOG" 2>&1 &
+stdbuf -oL "$EDITOR_EXE" > "$LOG" 2>&1 &
 PID=$!
 
 # Both markers matter: baking can finish before the command transport is ready.
@@ -169,6 +170,7 @@ case "$SUITE" in
     send "set render.volumetrics.multiple_scattering_orders 1"
     send "set render.volumetrics.multiple_scattering_strength 0"
     send "set render.volumetrics.powder_strength 0"
+    send "set render.volumetrics.temporal_blend 0"
     send "set render.cloud_shadows.enabled false"
     for property in \
       render.volumetrics.froxel_xy_scale \
@@ -298,7 +300,111 @@ case "$SUITE" in
       exit 1
     }
     ;;
-  cloud-lighting|cloud-shadows|final)
+  cloud-lighting)
+    [ "$WORLD" = StreamMountain ] || {
+      echo "ERROR: cloud-lighting suite requires StreamMountain" >&2
+      exit 2
+    }
+    # Pin the same deterministic physical-daylight / Current-cost baseline as
+    # Task 8 before comparing density code.  This avoids inherited overrides
+    # accidentally allocating the enhanced R16F image for the parity shot.
+    send "set render.volumetrics.enabled true"
+    send "set render.volumetrics.froxel_xy_scale 1x"
+    send "set render.volumetrics.froxel_depth_slices 128"
+    send "set render.volumetrics.local_sun_march_steps 0"
+    send "set render.volumetrics.local_sun_march_distance_m 250"
+    send "set render.volumetrics.multiple_scattering_orders 1"
+    send "set render.volumetrics.multiple_scattering_strength 0"
+    send "set render.volumetrics.powder_strength 0"
+    send "set render.volumetrics.temporal_blend 0"
+    send "set render.cloud_shadows.enabled false"
+    send "set render.lighting.exposure_ev 0"
+    send "set render.lighting.sun_azimuth_deg -14"
+    send "set render.lighting.sun_elevation_deg 90"
+    # Keep every newly introduced layer control neutral for Current parity.
+    for layer in 0 1 2 3; do
+      send "set render.clouds.layer${layer}_wind 0,0,0"
+      send "set render.clouds.layer${layer}_weather_scale 0.00025"
+      send "set render.clouds.layer${layer}_weather_influence 0"
+      send "set render.clouds.layer${layer}_detail_scale 0.012"
+      send "set render.clouds.layer${layer}_detail_erosion 0"
+      send "set render.clouds.layer${layer}_shape_bias 0"
+      for control in weather_scale weather_influence detail_scale detail_erosion shape_bias; do
+        send "get render.clouds.layer${layer}_${control}"
+      done
+    done
+    for property in \
+      render.volumetrics.froxel_xy_scale \
+      render.volumetrics.froxel_depth_slices \
+      render.volumetrics.local_sun_march_steps \
+      render.volumetrics.local_sun_march_distance_m \
+      render.volumetrics.multiple_scattering_orders \
+      render.volumetrics.multiple_scattering_strength \
+      render.volumetrics.powder_strength \
+      render.cloud_shadows.enabled \
+      render.lighting.exposure_ev \
+      render.lighting.sun_azimuth_deg \
+      render.lighting.sun_elevation_deg; do
+      send "get $property"
+    done
+    send "cam 20 760 350 0 420 0"
+    for _ in $(seq 1 300); do
+      grep -q 'bake-timing.*world-kind' "$LOG" 2>/dev/null && break
+      sleep 1
+    done
+    grep -q 'bake-timing.*world-kind' "$LOG" 2>/dev/null || {
+      echo "ERROR: StreamMountain sectors did not publish" >&2
+      exit 1
+    }
+    sleep 4
+    send "set viewer.debug.vol_debug_view 0"
+    capture "cloud_current_parity" "${LABEL}_current-parity"
+    # One same-process, unchanged-settings frame establishes the temporal
+    # floor before comparing against the accepted Task 7 control.
+    sleep 1
+    capture "cloud_current_repeat" "${LABEL}_current-repeat"
+    send "set viewer.debug.vol_debug_view 4"
+    capture "cloud_current_density" "${LABEL}_current-density-black"
+    # Improved owns the R16F cloud-density image.  The density debug image is
+    # intentionally captured separately from the parity comparison.
+    send "set render.volumetrics.local_sun_march_steps 8"
+    send "get render.volumetrics.local_sun_march_steps"
+    sleep 4
+    capture "cloud_improved_density" "${LABEL}_improved-density"
+    send "set viewer.debug.vol_debug_view 0"
+    CLOUD_CURRENT_BASELINE="${MATTER_CLOUD_CURRENT_BASELINE:-$HERE/../../MatterEditor/build/validation/atmosphere-clouds/task7/physical-sky_current-cost.png}"
+    [ -f "$CLOUD_CURRENT_BASELINE" ] || {
+      echo "ERROR: accepted Current-cost baseline missing: $CLOUD_CURRENT_BASELINE" >&2
+      exit 1
+    }
+    # Allow a hermetic capture runner to supply its image-capable Python;
+    # otherwise use the first locally available interpreter with Pillow.
+    IMAGE_PYTHON="${MATTER_IMAGE_PYTHON:-}"
+    if [ -z "$IMAGE_PYTHON" ]; then
+      for candidate in python3 python; do
+        if command -v "$candidate" >/dev/null 2>&1 && \
+           "$candidate" -c 'from PIL import Image' >/dev/null 2>&1; then
+          IMAGE_PYTHON="$candidate"
+          break
+        fi
+      done
+    fi
+    [ -n "$IMAGE_PYTHON" ] && \
+      "$IMAGE_PYTHON" -c 'from PIL import Image' >/dev/null 2>&1 || {
+      echo "ERROR: img_diff requires Pillow; set MATTER_IMAGE_PYTHON to a Python interpreter with PIL" >&2
+      exit 1
+    }
+    "$IMAGE_PYTHON" "$HERE/img_diff.py" "$CLOUD_CURRENT_BASELINE" \
+      "$OUT/${LABEL}_current-parity.png" --max-diff-pct 0.5
+    "$IMAGE_PYTHON" "$HERE/img_diff.py" "$OUT/${LABEL}_current-parity.png" \
+      "$OUT/${LABEL}_current-repeat.png" --max-diff-pct 0.5
+    for _ in $(seq 1 30); do [ -s "$PERF_OUTPUT" ] && break; sleep 1; done
+    [ -s "$PERF_OUTPUT" ] || {
+      echo "ERROR: telemetry timed out: $PERF_OUTPUT" >&2
+      exit 1
+    }
+    ;;
+  cloud-shadows|final)
     echo "ERROR: suite '$SUITE' is reserved for a later milestone" >&2
     exit 2
     ;;

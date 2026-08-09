@@ -499,6 +499,45 @@ void test_sanitize_clamps_the_cost_dials() {
     CHECK(!degenerate.enabled, "an inverted layer is switched off, not kept");
 }
 
+void test_task9_shared_density_and_optional_r16f_contract() {
+    std::ifstream density("../shaders_vk/cloud_density.glsl", std::ios::binary);
+    const std::string shared((std::istreambuf_iterator<char>(density)),
+                             std::istreambuf_iterator<char>());
+    std::ifstream shader("../shaders_vk/vol_density.comp", std::ios::binary);
+    const std::string volume((std::istreambuf_iterator<char>(shader)),
+                             std::istreambuf_iterator<char>());
+    std::ifstream host("../src/render/vk_volumetrics.cpp", std::ios::binary);
+    const std::string vk((std::istreambuf_iterator<char>(host)),
+                         std::istreambuf_iterator<char>());
+    std::ifstream composite_file("../shaders_vk/composite.frag", std::ios::binary);
+    const std::string composite((std::istreambuf_iterator<char>(composite_file)),
+                                std::istreambuf_iterator<char>());
+    CHECK(shared.find("CloudDensitySample evaluate_cloud_density") != std::string::npos &&
+              volume.find("ENHANCED_CLOUDS") != std::string::npos &&
+              volume.find("vol_cloud_density") != std::string::npos &&
+              vk.find("VK_FORMAT_R16_SFLOAT") != std::string::npos &&
+              vk.find("density_pipelines_[count][enhanced]") != std::string::npos &&
+              vk.find("cloud_density_dummy_") != std::string::npos,
+          "Task 9 shares cloud density and only allocates R16F extinction for enhanced clouds");
+    const size_t cloud_debug = composite.find("Cloud density must precede every GBuffer/sky early-out");
+    const size_t sky_early_out = composite.find("if (normal_length_squared <= 1e-20)");
+    CHECK(cloud_debug != std::string::npos && sky_early_out != std::string::npos &&
+              cloud_debug < sky_early_out &&
+              composite.find("for (int z = 0; z < depth_slices; ++z)") != std::string::npos &&
+              volume.find("fog_albedo * non_cloud_extinction + vec3(0.99) * cloud_extinction") !=
+                  std::string::npos,
+          "Task 9 debug covers full sky rays and enhanced scattering excludes cloud double-counting");
+    CHECK(shared.find("if (L.weather_scale_influence_detail_scale_detail_erosion.y > 0.0)") !=
+              std::string::npos &&
+              shared.find("if (L.shape_bias_padding.x != 0.0)") !=
+                  std::string::npos &&
+              shared.find("result.full = profile * L.max_density * full_shape;") !=
+                  std::string::npos &&
+              shared.find("if (L.weather_scale_influence_detail_scale_detail_erosion.w > 0.0)") !=
+                  std::string::npos,
+          "neutral density preserves the authored full-octave multiplication before optional controls");
+}
+
 }  // namespace
 
 int main() {
@@ -518,5 +557,6 @@ int main() {
     test_gpu_packing_round_trip();
     test_gpu_cloud_layer_shader_layout_contract();
     test_sanitize_clamps_the_cost_dials();
+    test_task9_shared_density_and_optional_r16f_contract();
     return check_summary();
 }

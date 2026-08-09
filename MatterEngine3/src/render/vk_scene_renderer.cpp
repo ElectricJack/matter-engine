@@ -5984,7 +5984,9 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
                                           &visibility_, diffuse, specular,
                                           &material_instance_,
                                           transmission,
-                                          vol_active ? &volumetrics_->vol_integrated()
+                                          vol_active ? (volumetrics_debug_view_ > 3.5f
+                                                ? &volumetrics_->cloud_density_or_dummy()
+                                                : &volumetrics_->vol_integrated())
                                                      : &vol_dummy_3d_,
                                           &depth_};
     const uint32_t sampled_slots[] = {0, 1, 2, 3, 4, 5, 6, 8, 9, 10};
@@ -5994,7 +5996,15 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
         image_infos[i].sampler = (i == 8) ? vol_linear_sampler_
                                           : composite_sampler_;
         image_infos[i].imageView = sampled[i]->view;
-        image_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        // The Current-cost path binds its stable zero-valued cloud-density
+        // dummy through a storage-image descriptor, so it remains GENERAL.
+        // A combined sampler may likewise name GENERAL; the Improved grid is
+        // transitioned to shader-read-only after the density dispatch.
+        image_infos[i].imageLayout =
+            (i == 8 && vol_active && volumetrics_debug_view_ > 3.5f &&
+             !volumetrics_->cloud_density_allocated_for_test())
+                ? VK_IMAGE_LAYOUT_GENERAL
+                : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = frame.composite_descriptor_set;
         writes[i].dstBinding = sampled_slots[i];
@@ -8365,6 +8375,30 @@ void VkSceneRenderer::set_fail_next_froxel_bundle_descriptor_allocation_for_test
         bool enabled) {
     if (volumetrics_)
         volumetrics_->set_fail_next_bundle_descriptor_allocation_for_test(enabled);
+}
+uint32_t VkSceneRenderer::volumetrics_grid_rgba16f_volume_count_for_test() const {
+    return volumetrics_ ? volumetrics_->grid_rgba16f_volume_count_for_test() : 0u;
+}
+bool VkSceneRenderer::volumetrics_cloud_density_allocated_for_test() const {
+    return volumetrics_ && volumetrics_->cloud_density_allocated_for_test();
+}
+matter::FroxelGridDimensions
+VkSceneRenderer::volumetrics_cloud_density_dimensions_for_test() const {
+    return volumetrics_ ? volumetrics_->cloud_density_dimensions_for_test()
+                        : matter::FroxelGridDimensions{};
+}
+uint64_t VkSceneRenderer::volumetrics_grid_bytes_for_test() const {
+    return volumetrics_ ? volumetrics_->grid_bytes_for_test() : 0u;
+}
+bool VkSceneRenderer::readback_volumetrics_density_voxel_for_test(
+    uint32_t x, uint32_t y, uint32_t z, matter::Float4& media,
+    float& cloud_density, std::string& error) {
+    if (!volumetrics_) {
+        error = "volumetrics are unavailable for density readback";
+        return false;
+    }
+    return volumetrics_->readback_density_voxel_for_test(
+        x, y, z, media, cloud_density, error);
 }
 
 void VkSceneRenderer::set_tileset_pom_settings(
@@ -11549,8 +11583,11 @@ bool VkSceneRenderer::record_cull_and_render(
         gi_atrous_[0].lifetime, gi_atrous_[1].lifetime,
         gi_spec_atrous_[0].lifetime, gi_spec_atrous_[1].lifetime,
         gi_trans_atrous_[0].lifetime, gi_trans_atrous_[1].lifetime};
-    if (volumetrics_ && volumetrics_->active())
+    if (volumetrics_ && volumetrics_->active()) {
         attachments.push_back(volumetrics_->vol_integrated().lifetime);
+        if (volumetrics_debug_view_ > 3.5f)
+            attachments.push_back(volumetrics_->cloud_density_or_dummy().lifetime);
+    }
     for (auto* histories : {&gi_history_, &gi_spec_history_,
                             &gi_trans_history_}) {
         for (auto& history : *histories) {

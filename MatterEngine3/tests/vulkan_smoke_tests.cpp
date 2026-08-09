@@ -5032,6 +5032,122 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
     CHECK(warm_rt_tlas() && warm_rt_tlas() && renderer.rt_effective_observed(),
           error.empty() ? "commit isolated traceable TLAS before froxel resize"
                         : error.c_str());
+
+    // Task 9: exercise the production bundle swap, density dispatch, and
+    // readback path with a cloud deck that is constant over every froxel this
+    // fixture can see.  Ground fog and emitters stay clear, so enhanced
+    // media.rgb has only the cloud's documented 0.99 scattering term.
+    matter::FogSettings cloud_fog{};
+    cloud_fog.cloud_count = 1;
+    cloud_fog.clouds[0].enabled = true;
+    cloud_fog.clouds[0].min_height = -10000.0f;
+    cloud_fog.clouds[0].max_height = 10000.0f;
+    cloud_fog.clouds[0].max_density = 0.02f;
+    cloud_fog.clouds[0].coverage = 1.0f;
+    cloud_fog.clouds[0].falloff_min = 0.0f;
+    cloud_fog.clouds[0].falloff_max = 0.0f;
+    cloud_fog.clouds[0].octaves = 1;
+    cloud_fog.color[0] = 0.0f;
+    cloud_fog.color[1] = 0.0f;
+    cloud_fog.color[2] = 0.0f;
+    matter::VulkanVolumetricsSettings current_clouds{};
+    current_clouds.enabled = true;
+    current_clouds.local_sun_march_steps = 0;
+    current_clouds.multiple_scattering_orders = 1;
+    current_clouds.multiple_scattering_strength = 0.0f;
+    current_clouds.powder_strength = 0.0f;
+    renderer.set_volumetrics_settings(current_clouds, cloud_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "render Current-cost cloud density"
+                                        : error.c_str());
+    CHECK(renderer.volumetrics_grid_rgba16f_volume_count_for_test() == 4u &&
+              !renderer.volumetrics_cloud_density_allocated_for_test() &&
+              renderer.volumetrics_cloud_density_dimensions_for_test().width == 1u &&
+              renderer.volumetrics_cloud_density_dimensions_for_test().height == 1u &&
+              renderer.volumetrics_cloud_density_dimensions_for_test().depth == 1u &&
+              renderer.volumetrics_grid_bytes_for_test() == 58982400u,
+          "Current cost owns four RGBA16F grids and only a non-accounted R16F dummy");
+
+    // Exercise the composite cloud-density debug view on the Current path as
+    // well: its stable dummy stays GENERAL because it is also the unused
+    // storage-image binding of the Current specialization.
+    current_clouds.vol_debug_view = 4.0f;
+    renderer.set_volumetrics_settings(current_clouds, cloud_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "render Current cloud-density debug"
+                                        : error.c_str());
+    CHECK(vulkan.validation_error_count() == 0,
+          "Current cloud-density debug samples the stable GENERAL dummy without validation errors");
+    current_clouds.vol_debug_view = 0.0f;
+
+    matter::VulkanVolumetricsSettings improved_clouds = current_clouds;
+    improved_clouds.local_sun_march_steps = 1;
+    renderer.set_volumetrics_settings(improved_clouds, cloud_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "render Improved cloud density"
+                                        : error.c_str());
+    matter::Float4 cloud_media{};
+    float cloud_density = 0.0f;
+    CHECK(renderer.volumetrics_cloud_density_allocated_for_test() &&
+              renderer.volumetrics_cloud_density_dimensions_for_test().width == 160u &&
+              renderer.volumetrics_cloud_density_dimensions_for_test().height == 90u &&
+              renderer.volumetrics_cloud_density_dimensions_for_test().depth == 128u &&
+              renderer.volumetrics_grid_rgba16f_volume_count_for_test() == 4u &&
+              renderer.volumetrics_grid_bytes_for_test() == 62668800u &&
+              renderer.readback_volumetrics_density_voxel_for_test(
+                  80u, 45u, 64u, cloud_media, cloud_density, error) &&
+              std::isfinite(cloud_density) && cloud_density > 0.0f &&
+              std::fabs(cloud_media.w - cloud_density) < 2e-4f &&
+              std::fabs(cloud_media.x - 0.99f * cloud_density) < 2e-4f &&
+              std::fabs(cloud_media.y - 0.99f * cloud_density) < 2e-4f &&
+              std::fabs(cloud_media.z - 0.99f * cloud_density) < 2e-4f,
+          error.empty() ? "Improved cloud grid records extinction and near-white scattering"
+                        : error.c_str());
+
+    // RED/GREEN guard for the enhanced composition: establish a nonzero fog
+    // baseline, then add the same constant cloud.  Only the cloud delta may
+    // contribute near-white scattering; multiplying fog_albedo by total
+    // extinction would double-count it here.
+    matter::FogSettings fog_plus_cloud = cloud_fog;
+    fog_plus_cloud.density = 0.004f;
+    fog_plus_cloud.floor = -10000.0f;
+    fog_plus_cloud.falloff = 100000.0f;
+    fog_plus_cloud.color[0] = 0.21f;
+    fog_plus_cloud.color[1] = 0.37f;
+    fog_plus_cloud.color[2] = 0.58f;
+    // Keep the one-layer specialization stable; zero density makes the
+    // baseline cloud-free without relying on a pipeline-count swap.
+    fog_plus_cloud.clouds[0].max_density = 0.0f;
+    renderer.set_volumetrics_settings(improved_clouds, fog_plus_cloud);
+    CHECK(warm_rt_tlas() && warm_rt_tlas(), error.empty() ? "render nonzero fog baseline" : error.c_str());
+    matter::Float4 fog_media{};
+    float no_cloud_density = 0.0f;
+    CHECK(renderer.readback_volumetrics_density_voxel_for_test(
+              80u, 45u, 64u, fog_media, no_cloud_density, error),
+          error.empty() ? "read nonzero fog baseline" : error.c_str());
+    fog_plus_cloud.clouds[0].max_density = cloud_fog.clouds[0].max_density;
+    renderer.set_volumetrics_settings(improved_clouds, fog_plus_cloud);
+    CHECK(warm_rt_tlas() && warm_rt_tlas(), error.empty() ? "render nonzero fog plus cloud" : error.c_str());
+    matter::Float4 combined_media{};
+    float combined_cloud_density = 0.0f;
+    const bool combined_read = renderer.readback_volumetrics_density_voxel_for_test(
+              80u, 45u, 64u, combined_media, combined_cloud_density, error);
+    if (combined_read) std::fprintf(stderr,
+        "task9 fog/cloud: base=(%.6f,%.6f,%.6f,%.6f) combined=(%.6f,%.6f,%.6f,%.6f) cloud=%.6f\n",
+        fog_media.x, fog_media.y, fog_media.z, fog_media.w, combined_media.x,
+        combined_media.y, combined_media.z, combined_media.w, combined_cloud_density);
+    CHECK(combined_read &&
+              std::fabs((combined_media.w - fog_media.w) - combined_cloud_density) < 2e-4f &&
+              std::fabs((combined_media.x - fog_media.x) - 0.99f * combined_cloud_density) < 2e-4f &&
+              std::fabs((combined_media.y - fog_media.y) - 0.99f * combined_cloud_density) < 2e-4f &&
+              std::fabs((combined_media.z - fog_media.z) - 0.99f * combined_cloud_density) < 2e-4f,
+          error.empty() ? "enhanced cloud delta preserves nonzero fog and adds only 0.99 cloud scattering"
+                        : error.c_str());
+
+    renderer.set_volumetrics_settings(current_clouds, cloud_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "retire Improved cloud density"
+                                        : error.c_str());
+    CHECK(!renderer.volumetrics_cloud_density_allocated_for_test() &&
+              renderer.volumetrics_grid_bytes_for_test() == 58982400u &&
+              vulkan.validation_error_count() == 0,
+          "Current-cost toggle retires cloud density without validation errors");
     rt_scenario_froxel_resize(vulkan, renderer, matrices, camera, error);
     CHECK(vulkan.validation_error_count() == 0,
           "isolated RT froxel resize has no Vulkan validation errors");

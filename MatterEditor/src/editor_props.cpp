@@ -616,7 +616,7 @@ const char* const kDebugViewLabels[] = {"None", "Normals", "Depth",
                                         "Sun visibility", "Raw albedo",
                                         "LOD levels", "Wireframe"};
 const char* const kVolDebugLabels[] = {"Off", "Density", "Scatter",
-                                       "Integrated"};
+                                       "Integrated", "Cloud density"};
 
 const auto s_viewer_debug = matter::props::group<ViewerStats>(
     "viewer.debug", "Viewer Debug Views",
@@ -633,7 +633,7 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
              "\"LOD levels\" view. Forced off, and reported as such, on "
              "devices without VkPhysicalDeviceFeatures::fillModeNonSolid."),
     prop(&ViewerStats::vol_debug_view, "vol_debug_view")
-        .label("Volumetric view").enums(kVolDebugLabels, 4)
+        .label("Volumetric view").enums(kVolDebugLabels, 5)
         .doc("Only meaningful while volumetrics are enabled."));
 
 // ---- render.gpu ----------------------------------------------------------

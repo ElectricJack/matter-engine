@@ -407,6 +407,8 @@ build/shaders_vk/vol_density.comp.spv build/shaders_vk/vol_scatter.comp.spv \
     build/shaders_vk/composite.frag.spv: \
     shaders_vk/vol_common.glsl
 
+build/shaders_vk/vol_density.comp.spv: shaders_vk/cloud_density.glsl shaders_vk/vt_noise.glsl
+
 build/shaders_vk/vol_scatter.comp.spv: shaders_vk/environment_common.glsl
 
 # WP-D (chart VT): the Wang cell machinery moved into wang_common.glsl, which

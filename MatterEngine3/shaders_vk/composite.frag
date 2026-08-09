@@ -142,6 +142,19 @@ float integrated_slice_at_depth(float depth) {
 }
 
 void main() {
+    // Cloud density must precede every GBuffer/sky early-out.  Binding 9 is
+    // the initialized 1x1x1 Current dummy or the Improved R16F extinction
+    // grid, so this full-ray maximum is black for Current and independent of
+    // terrain silhouettes for Improved.
+    if (lighting.vol_debug_view > 3.5) {
+        int depth_slices = textureSize(vol_integrated_texture, 0).z;
+        float cloud_density = 0.0;
+        for (int z = 0; z < depth_slices; ++z)
+            cloud_density = max(cloud_density, texture(vol_integrated_texture,
+                vec3(in_uv, (float(z) + 0.5) / float(depth_slices))).r);
+        out_hdr = vec4(vec3(cloud_density), 1.0);
+        return;
+    }
     // Ahead of the sky early-out below, so the depth view covers the whole
     // frame (sky reads hw depth 0 -> camera_far -> t = 1) rather than being
     // punched through by the physical sky wherever the gbuffer normal is empty.
