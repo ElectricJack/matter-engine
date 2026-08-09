@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <string>
@@ -782,6 +783,26 @@ void run_atmosphere_lut_smoke(matter::VulkanDevice& vulkan) {
               atmosphere.generated_this_frame(),
           "atmosphere coefficient change advances generation serial once");
     atmosphere.destroy();
+}
+
+void test_atmosphere_irradiance_dispatch_contract() {
+    std::ifstream shader("MatterEngine3/shaders_vk/atmosphere_irradiance.comp",
+                         std::ios::binary);
+    const std::string source((std::istreambuf_iterator<char>(shader)),
+                             std::istreambuf_iterator<char>());
+    CHECK(shader.good() || !source.empty(),
+          "atmosphere irradiance shader source is readable from smoke cwd");
+    CHECK(source.find("gl_GlobalInvocationID.y * 3u + gl_GlobalInvocationID.x") !=
+              std::string::npos &&
+              source.find("if (coefficient >= 9u) return;") != std::string::npos,
+          "irradiance shader assigns exactly one row-major SH coefficient per invocation");
+    std::ifstream implementation("MatterEngine3/src/render/vk_atmosphere.cpp",
+                                std::ios::binary);
+    const std::string implementation_source(
+        (std::istreambuf_iterator<char>(implementation)), std::istreambuf_iterator<char>());
+    CHECK(implementation_source.find("bind_dispatch(irradiance_pass_, 3, 3)") !=
+              std::string::npos,
+          "atmosphere records one irradiance dispatch group for each SH coefficient");
 }
 
 struct FixedCullScene {
@@ -8604,6 +8625,7 @@ int main() {
             return check_summary();
         }
         if (smoke_mode && std::string(smoke_mode) == "atmosphere") {
+            test_atmosphere_irradiance_dispatch_contract();
             run_atmosphere_lut_smoke(*vulkan);
             std::printf("validation errors: %u\n", vulkan->validation_error_count());
             finish_vulkan_test(vulkan);

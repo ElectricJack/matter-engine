@@ -334,7 +334,7 @@ bool VkAtmosphere::record_dispatches(VkCommandBuffer command_buffer,
         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
-    bind_dispatch(irradiance_pass_, 1, 1);
+    bind_dispatch(irradiance_pass_, 3, 3);
     matter::record_image_transition(command_buffer, irradiance_sh_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
