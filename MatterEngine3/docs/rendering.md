@@ -283,3 +283,18 @@ echo "quit"                > /tmp/viewer.fifo
 Commands (one per line): `cam <px> <py> <pz> <tx> <ty> <tz>`, `shot <path>`,
 `reload`, `quit`. After `shot`, the viewer touches `<path>.done` so a driver can
 poll for a fully-written file.
+
+### Atmosphere and cloud capture baseline
+
+`tools/atmosphere_cloud_shots.sh <suite> <label> <out-dir>` drives all captures
+for one suite through a single editor process. The current executable suite is
+`baseline`; the stable names `atmosphere`, `froxel`, `cloud-lighting`,
+`cloud-shadows`, and `final` are reserved for their respective milestones.
+
+The driver waits for both `viewer: bake ready` and `MATTER_CMD_FIFO: listening`
+before sending any FIFO command, records every command in
+`<label>_commands.log`, and waits for each `<png>.done` marker before proceeding.
+It writes `<label>_viewer.log`, positional `STATS,` rows to
+`<label>_stats.log`, and telemetry rows containing `gpu_volumetrics_ms` to
+`<label>_metrics.log`. It always sends `quit`, waits for the one editor process,
+and removes its FIFO, including on an error path.
