@@ -331,7 +331,9 @@ bool VkAtmosphere::record_dispatches(VkCommandBuffer command_buffer,
     bind_dispatch(sky_view_pass_, (kSkyViewWidth + 7) / 8, (kSkyViewHeight + 7) / 8);
     matter::record_image_transition(command_buffer, sky_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
     matter::record_image_transition(command_buffer, irradiance_sh_, VK_IMAGE_LAYOUT_GENERAL,
         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,

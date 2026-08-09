@@ -407,6 +407,8 @@ build/shaders_vk/vol_density.comp.spv build/shaders_vk/vol_scatter.comp.spv \
     build/shaders_vk/composite.frag.spv: \
     shaders_vk/vol_common.glsl
 
+build/shaders_vk/vol_scatter.comp.spv: shaders_vk/environment_common.glsl
+
 # WP-D (chart VT): the Wang cell machinery moved into wang_common.glsl, which
 # tileset_common.glsl now includes; every tileset_common consumer therefore
 # also depends on it, and the VT compositor includes it directly.

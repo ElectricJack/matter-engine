@@ -3249,6 +3249,14 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
             return false;
         }
+        // EnvironmentBlock is host-visible by construction, but create_buffer
+        // deliberately does not map every allocation. Map it transactionally
+        // before the initial neutral write; VkBufferResource lifetime owns the
+        // matching unmap/reset if a later frame-slot allocation fails.
+        if (!matter::map_buffer(frame.environment_constants, error)) {
+            vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
+            return false;
+        }
         update_frame_descriptors(frame);
         update_environment_descriptor(frame);
         if (gpu_timers_supported_) {

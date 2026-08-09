@@ -78,6 +78,40 @@ int main() {
     const std::string atmosphere_host = read_shader("../src/render/vk_atmosphere.cpp");
     assert(atmosphere_host.find("VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR") !=
            std::string::npos);
+    // Review regressions: sky-view must be visible to every Task 7 consumer,
+    // and the environment UBO must be mapped before its neutral std140 bytes
+    // are initialized. These source contracts complement the real raster
+    // readback because neither property is uniquely observable in one pixel.
+    const size_t sky_transition = atmosphere_host.find(
+        "record_image_transition(command_buffer, sky_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL");
+    assert(sky_transition != std::string::npos);
+    const std::string sky_tail = atmosphere_host.substr(sky_transition, 520);
+    assert(sky_tail.find("VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |") !=
+           std::string::npos &&
+           sky_tail.find("VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR") !=
+               std::string::npos);
+    assert(renderer.find("matter::map_buffer(frame.environment_constants, error)") !=
+           std::string::npos &&
+           renderer.find("environment_constants.mapped == nullptr") ==
+               std::string::npos);
+    const size_t neutral_environment_block = renderer.find("float block[40]{};");
+    assert(neutral_environment_block != std::string::npos);
+    const std::string neutral_environment_tail =
+        renderer.substr(neutral_environment_block, 1200);
+    assert(neutral_environment_tail.find("block[0] = block[5] = block[10] = block[15] = 1.0f;") !=
+               std::string::npos &&
+           neutral_environment_tail.find("block[16] = block[21] = block[26] = block[31] = 1.0f;") !=
+               std::string::npos &&
+           neutral_environment_tail.find("std::memcpy(frame.environment_constants.mapped") !=
+               std::string::npos &&
+           neutral_environment_tail.find("matter::flush_buffer(frame.environment_constants,") !=
+               std::string::npos);
+    const std::string engine_make = read_shader("../Makefile");
+    const std::string editor_make = read_shader("../../MatterEditor/Makefile");
+    assert(engine_make.find("build/shaders_vk/vol_scatter.comp.spv: shaders_vk/environment_common.glsl") !=
+           std::string::npos);
+    assert(editor_make.find("build/shaders_vk/vol_scatter.comp.spv: $(ME3_DIR)/shaders_vk/environment_common.glsl") !=
+           std::string::npos);
     printf("shader_source_tests: all passed\n");
     return 0;
 }
