@@ -1149,6 +1149,16 @@ struct WorldSession::Impl {
         std::shared_ptr<viewer::LocalProvider> provider_ref;
         streaming::detail::PublicationResources resources{};
         bool resident = false;
+        // ---- deferred visibility (nested sector LOD) ------------------------
+        // A published sector is loaded, registered and acknowledged, but NOT
+        // yet in the drawn world: its footprint is still covered by a visible
+        // tile at a different level. See park_or_apply_sector() for why.
+        //
+        // The manifest entry is kept rather than recomputed, so unparking is a
+        // pure hand-off with no chance of the two constructions drifting.
+        bool parked = false;
+        std::chrono::steady_clock::time_point parked_at{};
+        viewer::WorldManifestEntry pending_instance{};
     };
     struct SectorKey {
         int64_t tx, tz; int rung;
@@ -1163,6 +1173,79 @@ struct WorldSession::Impl {
         }
     };
     std::unordered_map<SectorKey, SectorEntry, SectorKeyHash> sector_map;
+
+    // ---- Deferred visibility for nested-LOD transitions ---------------------
+    //
+    // A split replaces one tile with four, and the four are four INDEPENDENT
+    // bakes that finish seconds apart. The streamer already refuses to evict
+    // the parent until every replacement is resident -- that is what stops a
+    // hole opening -- but the engine draws each child the instant its own bake
+    // lands. So from the first child's publish until one step after the last
+    // one's, the parent and its children are BOTH in the drawn world: doubled
+    // terrain, z-fighting, for as long as the slowest sibling takes.
+    //
+    // Zero-hole and zero-overlap cannot both be had at a layer where
+    // "published" means "drawn"; something has to hold finished bakes
+    // invisible until the whole group is ready. That is this. A publication
+    // whose footprint is still covered by a VISIBLE entry at a different level
+    // is parked -- fully loaded, registered and acknowledged, just not applied
+    // to the world state -- and unparks when the blocker leaves.
+    //
+    // Nested mode only. The footprint arithmetic below assumes a level-L tile
+    // is S_0 << L across, which is exactly what nesting means and exactly what
+    // the uniform ladder does NOT do: there every tile is S_0 regardless of
+    // rung, so two rungs of the same tile would test as overlapping tiles of
+    // different sizes and a plain rung swap would park itself.
+    static int sector_level_of(int rung) {
+        return matter_stream::variant_level(rung);
+    }
+    // Do these two tiles cover any common ground? Distinct levels only: two
+    // tiles at the SAME level are either the same tile or disjoint.
+    static bool sector_footprints_overlap(const SectorKey& a,
+                                          const SectorKey& b) {
+        const int la = sector_level_of(a.rung), lb = sector_level_of(b.rung);
+        if (la == lb) return false;
+        // The finer tile lies inside the coarser one iff shifting its
+        // coordinates up by the level difference lands on the coarser tile.
+        const int sh = (la < lb) ? (lb - la) : (la - lb);
+        const SectorKey& fine   = (la < lb) ? a : b;
+        const SectorKey& coarse = (la < lb) ? b : a;
+        return (fine.tx >> sh) == coarse.tx && (fine.tz >> sh) == coarse.tz;
+    }
+    // Is some VISIBLE entry at another level still sitting on this footprint?
+    // Parked entries do not block -- if they did, a parent parked behind its
+    // children and children parked behind their parent would deadlock each
+    // other into permanent invisibility.
+    bool sector_blocked_by_visible(const SectorKey& key) const {
+        for (const auto& [other_key, other] : sector_map) {
+            if (other_key == key) continue;
+            if (other.parked) continue;
+            if (!other.resources.world_state_attempted) continue;
+            if (sector_footprints_overlap(key, other_key)) return true;
+        }
+        return false;
+    }
+    // How long a publication may stay parked before it is shown anyway. The
+    // park is an optimisation against a cosmetic artifact; a park that never
+    // released would be a permanent HOLE, which is strictly worse, so if the
+    // invariant ever breaks this fails towards the lesser artifact.
+    //
+    // WALL TIME, not steps. The first version counted sweeps -- one per stream
+    // step, so roughly one per frame -- and 240 of those is about four
+    // seconds. A group legitimately waits on FOUR sector bakes that each take
+    // seconds, so the valve fired constantly during an ordinary flight (279
+    // times in one 50-second fly-through) and every firing was an overlap
+    // shown on purpose. A step count cannot express "longer than a bake ought
+    // to take" because it has no fixed relationship to time.
+    //
+    // 30 s is far beyond any real group's wait and still self-heals a genuine
+    // stuck park inside a few seconds of noticing.
+    static constexpr std::chrono::seconds kMaxParkedTime{30};
+    // How many entries are currently parked. Maintained rather than counted so
+    // a step with nothing parked -- which is almost every step -- pays a single
+    // int compare instead of walking the ledger and scheduling a GpuJob.
+    int parked_sectors = 0;
+    void unpark_ready_sectors();
 
     // Instance id for a streamed sector placement: CONTENT-DERIVED, never an
     // allocation counter.
@@ -3916,6 +3999,76 @@ bool WorldSession::Impl::release_sector_entry(
         !entry.resources.transient_artifact;
 }
 
+// Show every parked publication whose blocker has left.
+//
+// Runs on the app/GL thread right after evictions are applied, so the removal
+// of a superseded parent and the appearance of its children land in the SAME
+// frame -- the swap is atomic to the eye even though it is two world-state
+// applies, because nothing renders between them.
+//
+// Swept rather than signalled. A parked entry could be waiting on a blocker
+// that leaves by any route (eviction, world reload, a transition the camera
+// abandoned), and a sweep over ~1,200 nested entries costs nothing next to the
+// eviction work it follows. Signalling would need every one of those routes to
+// remember to poke it, and the failure mode of forgetting is an invisible
+// sector that never comes back.
+//
+// Repeats until nothing more unparks: showing one entry can unblock nothing
+// (parked entries never block), but an eviction batch can free several
+// independent groups at once and a single pass over an unordered_map would
+// otherwise depend on iteration order.
+void WorldSession::Impl::unpark_ready_sectors() {
+    matter_async::assert_gl_thread("stream.unpark_sectors");
+    if (!world_nested_sectors || parked_sectors <= 0) return;
+    for (;;) {
+        viewer::WorldDelta delta;
+        std::vector<SectorEntry*> shown;
+        for (auto& [key, entry] : sector_map) {
+            if (!entry.parked) continue;
+            // The safety valve. A park is an optimisation against a cosmetic
+            // artifact; a park that never releases is a permanent hole, which
+            // is worse. If this ever fires, the overlap it was avoiding is the
+            // better of the two outcomes.
+            const auto parked_for = std::chrono::steady_clock::now() -
+                                    entry.parked_at;
+            const bool stuck = parked_for > kMaxParkedTime;
+            if (!stuck && sector_blocked_by_visible(key)) continue;
+            if (stuck) {
+                fprintf(stderr,
+                        "[stream] sector (%lld,%lld r%d) parked %.1f s "
+                        "without its blocker leaving -- showing it anyway "
+                        "(overlap beats a hole)\n",
+                        (long long)key.tx, (long long)key.tz, key.rung,
+                        std::chrono::duration<double>(parked_for).count());
+            }
+            delta.added.push_back(entry.pending_instance);
+            shown.push_back(&entry);
+        }
+        if (shown.empty()) return;
+        // MATTER_STREAM_PARK_PROFILE=1: one line per swap. The thing worth
+        // watching is that shown and still-parked both return to 0 -- a
+        // still-parked count that never drains is a hole in the making, and
+        // the only other symptom would be terrain quietly missing.
+        static const bool park_profile =
+            std::getenv("MATTER_STREAM_PARK_PROFILE") != nullptr;
+        if (park_profile) {
+            fprintf(stderr, "[stream.park] unparked %zu, still parked %d\n",
+                    shown.size(), parked_sectors - (int)shown.size());
+        }
+        // Mark before applying: world_state_attempted is what the release path
+        // reads to decide whether a removal is owed, and an exception out of
+        // apply must not leave an entry that is drawn but believed invisible.
+        for (SectorEntry* e : shown) {
+            e->parked = false;
+            e->resources.world_state_attempted = true;
+            --parked_sectors;
+        }
+        state.apply(delta);
+        tracer_dirty = true;
+        tracer.reset();
+    }
+}
+
 bool WorldSession::Impl::apply_sector_evictions(
     const std::vector<streaming::detail::TaggedEviction>& evictions,
     std::string& err) {
@@ -3942,6 +4095,11 @@ bool WorldSession::Impl::apply_sector_evictions(
         }
 
         if (release_sector_entry(found->second, err)) {
+            // A parked entry can be evicted before it is ever shown -- an
+            // abandoned transition, or a group whose parent was reinstated.
+            // Its slot in the count goes with it, or the counter leaks and the
+            // sweep runs forever on entries that no longer exist.
+            if (found->second.parked && parked_sectors > 0) --parked_sectors;
             sector_map.erase(found);
             ++evictions_applied;
         } else {
@@ -3949,6 +4107,9 @@ bool WorldSession::Impl::apply_sector_evictions(
         }
     }
     PROFILE_COUNT("stream.evictions_applied", evictions_applied);
+    // Same frame as the removals above: the parent leaves and its children
+    // appear without anything rendering in between.
+    unpark_ready_sectors();
     return ok;
 }
 
@@ -4190,6 +4351,7 @@ void WorldSession::Impl::terminal_streaming_teardown_noexcept() noexcept {
         release_sector_entry(pair.second, ignored);
     }
     sector_map.clear();
+    parked_sectors = 0;
     pending_sector_evictions.abandon_noexcept();
     streaming_profile_activation.finish_clear();
     ecs_runtime.streaming_coordinator().terminal_clear();
@@ -4232,6 +4394,25 @@ bool WorldSession::Impl::drain_sector_evictions(
 
     if (pending_sector_evictions.empty()) {
         static const std::vector<streaming::detail::TaggedEviction> empty;
+        // A step with no evictions still has to sweep: a parked entry's
+        // blocker can leave by routes other than this batch, and the
+        // stuck-park safety valve only advances when something looks at it.
+        // Gated on the counter so the overwhelmingly common case -- nothing
+        // parked -- costs one comparison and schedules no job at all.
+        if (!require_empty && parked_sectors > 0) {
+            matter_async::GpuJob sweep;
+            sweep.name = "stream.unpark_sectors";
+            sweep.fn = [this](std::string&) {
+                unpark_ready_sectors();
+                return true;
+            };
+            std::string sweep_error;
+            if (!gpu_jobs.run_blocking(std::move(sweep), sweep_error)) {
+                if (err.empty()) err = sweep_error;
+                return false;
+            }
+            return true;
+        }
         return !require_empty || endpoint(empty, err);
     }
 
@@ -4899,13 +5080,34 @@ void WorldSession::Impl::bake_and_stage_sector(
                     instance.transform[11] =
                         static_cast<float>(request.sector.tz) * sector_size;
 
-                    viewer::WorldDelta delta;
-                    delta.added.push_back(instance);
-                    published.resources.world_state_attempted = true;
-                    state.apply(delta);
+                    // PARK instead of drawing when this tile's footprint is
+                    // still covered by a visible tile at another level -- the
+                    // split/merge transition. Everything else about the
+                    // publication has already happened (store load, ledger,
+                    // and the Vulkan registration below still runs), so
+                    // unparking later is a single world-state add with no work
+                    // left to do and no chance of failing halfway.
+                    //
+                    // The acknowledgement path is deliberately untouched: the
+                    // streamer must still be told this sector is published, or
+                    // its hold rule would wait forever for a child that has
+                    // already baked and the parent would never be released.
+                    published.pending_instance = instance;
+                    const bool park = world_nested_sectors &&
+                                      sector_blocked_by_visible(key);
+                    if (park) {
+                        published.parked = true;
+                        published.parked_at = std::chrono::steady_clock::now();
+                        ++parked_sectors;
+                    } else {
+                        viewer::WorldDelta delta;
+                        delta.added.push_back(instance);
+                        published.resources.world_state_attempted = true;
+                        state.apply(delta);
+                        tracer_dirty = true;
+                        tracer.reset();
+                    }
                     t_state = pub_split();
-                    tracer_dirty = true;
-                    tracer.reset();
                     t_tracer = pub_split();
                     pub_apply.stop();
 
@@ -4936,6 +5138,13 @@ void WorldSession::Impl::bake_and_stage_sector(
                                 uint32_t refs = 0;
                                 for (const auto& e : state.entries())
                                     if (e.part_hash == sector_hash) ++refs;
+                                // A PARKED publication is not in world state
+                                // yet, but the worker classified it as though
+                                // it were -- parking defers only visibility,
+                                // never identity. Count it here too, or this
+                                // verify reports a mismatch that parking
+                                // invented rather than one the prebuild made.
+                                if (park) ++refs;
                                 ref_surface.world_anchored =
                                     terrain_field::surface_variant_world_anchored(
                                         refs);
