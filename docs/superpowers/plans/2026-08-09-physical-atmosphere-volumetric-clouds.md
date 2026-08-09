@@ -273,7 +273,7 @@ Run sequentially from the repository root:
 ```powershell
 $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
 C:\msys64\usr\bin\make.exe -C MatterEngine3 CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
-C:\msys64\usr\bin\make.exe -C MatterEditor windows WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor windows CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 C:\msys64\usr\bin\bash.exe MatterEngine3/tools/atmosphere_cloud_shots.sh baseline pre-atmosphere MatterEditor/build/validation/atmosphere-clouds/baseline
 ```
 
@@ -709,7 +709,7 @@ Extend `reset_world_scope_controls` and post-bake adoption for the two new struc
 $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
 C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-props CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-property-editor CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
-C:\msys64\usr\bin\make.exe -C MatterEditor windows WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor windows CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 ```
 
 Expected: tests PASS and editor builds. Start the editor once and use FIFO `set/get` for all seven commands from Step 1; verify the `get` responses in the log without using the mouse.
@@ -755,7 +755,7 @@ Append the four `.spv` outputs to `VK_SPV`, add include dependencies on `atmosph
 ```powershell
 $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
 C:\msys64\usr\bin\make.exe -C MatterEngine3 vulkan-spirv CC=C:/msys64/ucrt64/bin/g++.exe
-C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 ```
 
 Expected: FAIL until the module/shaders exist.
@@ -811,7 +811,7 @@ Allocate both a valid neutral emergency set and the physical LUT set at init. At
 $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
 C:\msys64\usr\bin\make.exe -C MatterEngine3 vulkan-spirv CC=C:/msys64/ucrt64/bin/g++.exe
 C:\msys64\usr\bin\make.exe -C MatterEngine3 CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
-C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 & MatterEditor/build/windows/vulkan_smoke_tests.exe
 ```
 
@@ -916,7 +916,7 @@ C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-atmosphere CC=C:/msys64/uc
 C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-shader-source CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 C:\msys64\usr\bin\make.exe -C MatterEngine3 vulkan-spirv CC=C:/msys64/ucrt64/bin/g++.exe
 C:\msys64\usr\bin\make.exe -C MatterEngine3 CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
-C:\msys64\usr\bin\make.exe -C MatterEditor windows WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor windows CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 & MatterEditor/build/windows/vulkan_smoke_tests.exe
 ```
 
@@ -988,7 +988,7 @@ After each successful swap, assert image extents, descriptor image views, dispat
 ```powershell
 $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
 C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-volumetric-quality CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
-C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 ```
 
 Expected: FAIL on fixed `VOL_W/H/D` and missing bundle swap/status API.
@@ -1047,7 +1047,7 @@ $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
 C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-volumetric-quality CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 C:\msys64\usr\bin\make.exe -C MatterEngine3 vulkan-spirv CC=C:/msys64/ucrt64/bin/g++.exe
 C:\msys64\usr\bin\make.exe -C MatterEngine3 CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
-C:\msys64\usr\bin\make.exe -C MatterEditor windows WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor windows CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 & MatterEditor/build/windows/vulkan_smoke_tests.exe
 ```
 
@@ -1104,7 +1104,7 @@ Assert Current cost creates exactly four grid-sized RGBA16F volumes, leaves `Fro
 ```powershell
 $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
 C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-cloud-layers CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
-C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 ```
 
 Expected: FAIL because density is still private to `vol_density.comp` and no cloud-only image exists.
@@ -1143,7 +1143,7 @@ $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
 C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-cloud-layers CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 C:\msys64\usr\bin\make.exe -C MatterEngine3 vulkan-spirv CC=C:/msys64/ucrt64/bin/g++.exe
 C:\msys64\usr\bin\make.exe -C MatterEngine3 CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
-C:\msys64\usr\bin\make.exe -C MatterEditor windows WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor windows CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 & MatterEditor/build/windows/vulkan_smoke_tests.exe
 ```
 
@@ -1200,7 +1200,7 @@ Initialize Improved and assert each level owns one density image plus two cumula
 ```powershell
 $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
 C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-cloud-shadows CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
-C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 ```
 
 Expected: FAIL because the module/resources do not exist.
@@ -1264,7 +1264,7 @@ $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
 C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-cloud-shadows CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 C:\msys64\usr\bin\make.exe -C MatterEngine3 vulkan-spirv CC=C:/msys64/ucrt64/bin/g++.exe
 C:\msys64\usr\bin\make.exe -C MatterEngine3 CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
-C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 & MatterEditor/build/windows/vulkan_smoke_tests.exe
 ```
 
@@ -1310,7 +1310,7 @@ Render a known checker density, move the camera by one snapped voxel, and assert
 
 ```powershell
 $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
-C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 & MatterEditor/build/windows/vulkan_smoke_tests.exe
 ```
 
@@ -1355,7 +1355,7 @@ barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
 $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
 C:\msys64\usr\bin\make.exe -C MatterEngine3 vulkan-spirv CC=C:/msys64/ucrt64/bin/g++.exe
 C:\msys64\usr\bin\make.exe -C MatterEngine3 CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
-C:\msys64\usr\bin\make.exe -C MatterEditor windows WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor windows CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-cloud-shadows CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 & MatterEditor/build/windows/vulkan_smoke_tests.exe
 ```
@@ -1411,7 +1411,7 @@ With fixed direct/ambient inputs, assert orders `2`, `3`, and `4` monotonically 
 ```powershell
 $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
 C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-cloud-shadows CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
-C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 ```
 
 Expected: FAIL because enhanced scatter does not exist.
@@ -1460,7 +1460,7 @@ Compile two scatter pipelines against one superset layout: Current cost binds th
 $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
 C:\msys64\usr\bin\make.exe -C MatterEngine3 vulkan-spirv CC=C:/msys64/ucrt64/bin/g++.exe
 C:\msys64\usr\bin\make.exe -C MatterEngine3 CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
-C:\msys64\usr\bin\make.exe -C MatterEditor windows WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor windows CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-cloud-shadows CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 & MatterEditor/build/windows/vulkan_smoke_tests.exe
 ```
@@ -1511,7 +1511,7 @@ Create a deterministic overhead constant cloud slab and receivers at ground, ins
 
 ```powershell
 $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
-C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 & MatterEditor/build/windows/vulkan_smoke_tests.exe
 ```
 
@@ -1557,7 +1557,7 @@ vec3 fog_ambient = fog_emitter_scattering *
 $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
 C:\msys64\usr\bin\make.exe -C MatterEngine3 vulkan-spirv CC=C:/msys64/ucrt64/bin/g++.exe
 C:\msys64\usr\bin\make.exe -C MatterEngine3 CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
-C:\msys64\usr\bin\make.exe -C MatterEditor windows WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor windows CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 & MatterEditor/build/windows/vulkan_smoke_tests.exe
 ```
 
@@ -1626,7 +1626,7 @@ Add tests that the five new values appear in `FrameStats`, `ViewerStats`, Lighti
 ```powershell
 $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP
 C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-property-editor CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
-C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 ```
 
 Expected: FAIL on missing zones/stat fields.
@@ -1678,7 +1678,7 @@ C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-shader-source CC=C:/msys64
 C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-vk-scene-renderer CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 C:\msys64\usr\bin\make.exe -C MatterEngine3 vulkan-spirv CC=C:/msys64/ucrt64/bin/g++.exe
 C:\msys64\usr\bin\make.exe -C MatterEngine3 CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
-C:\msys64\usr\bin\make.exe -C MatterEditor windows WIN_CXX=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
+C:\msys64\usr\bin\make.exe -C MatterEditor windows CC=C:/msys64/ucrt64/bin/g++.exe GRAPHICS=GRAPHICS_API_OPENGL_43
 & MatterEditor/build/windows/vulkan_smoke_tests.exe
 ```
 

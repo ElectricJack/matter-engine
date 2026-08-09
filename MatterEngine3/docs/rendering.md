@@ -297,8 +297,17 @@ The driver waits for both `viewer: bake ready` and command transport readiness
 (`MATTER_CMD_FIFO: listening` on POSIX, or `MATTER_CMD_FIFO: polling command
 file` on Windows) before sending any command, records every command in
 `<label>_commands.log`, and waits for each `<png>.done` marker before proceeding.
-It writes `<label>_viewer.log`, positional `STATS,` rows to
-`<label>_stats.log`, a one-second telemetry sample to `<label>_telemetry.json`,
-and its `gpu_volumetrics_ms` row to `<label>_metrics.log`. UI is hidden for
-unobscured captures. It always sends `quit`, waits for the one editor process,
-and removes its FIFO/command file, including on an error path.
+Before launch it removes prior label-matched PNG/`.done`, viewer/command,
+STATS, metrics, and telemetry outputs; it then fails if the new STATS or
+`gpu_volumetrics_ms` metrics file is empty. It writes `<label>_viewer.log`,
+positional `STATS,` rows to `<label>_stats.log`, a one-second telemetry sample
+to `<label>_telemetry.json`, and its `gpu_volumetrics_ms` row to
+`<label>_metrics.log`. For StreamMountain, the driver applies the
+volumetrics/camera batch immediately after readiness, before waiting for sector
+publish, then settles and captures. The existing performance lifecycle cannot
+leave `WaitingForBake` until a drawable instance exists, so its 20-second
+warm-up and sample structurally follow that configuration; the resulting
+telemetry therefore follows the settled configuration and shot.
+UI is hidden for unobscured captures. It always sends `quit`, bounds the POSIX
+FIFO writer/child wait, and removes its FIFO/command file, including on an
+error path.

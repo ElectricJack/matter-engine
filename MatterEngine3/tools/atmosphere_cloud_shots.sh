@@ -46,14 +46,33 @@ if [ "$WINDOWS_COMMAND_FILE" = 1 ]; then
 else
   mkfifo "$FIFO"
 fi
+rm -f "$LOG" "$COMMANDS" "$PERF_OUTPUT" \
+  "$OUT/${LABEL}_stats.log" "$OUT/${LABEL}_metrics.log" \
+  "$OUT/${LABEL}_"*.png "$OUT/${LABEL}_"*.png.done
 : > "$COMMANDS"
-rm -f "$PERF_OUTPUT"
 PID=""
 cleanup() {
   if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-    send "quit" || true
-    wait "$PID" || true
+    if [ "$WINDOWS_COMMAND_FILE" = 1 ]; then
+      send "quit" || true
+    else
+      (send "quit") &
+      local quit_pid=$!
+      for _ in $(seq 1 5); do
+        kill -0 "$quit_pid" 2>/dev/null || break
+        sleep 1
+      done
+      kill "$quit_pid" 2>/dev/null || true
+      wait "$quit_pid" 2>/dev/null || true
+    fi
+    for _ in $(seq 1 30); do
+      kill -0 "$PID" 2>/dev/null || break
+      sleep 1
+    done
+    if kill -0 "$PID" 2>/dev/null; then kill "$PID" 2>/dev/null || true; fi
+    wait "$PID" 2>/dev/null || true
   fi
+  PID=""
   rm -f "$FIFO"
 }
 trap cleanup EXIT INT TERM
@@ -65,7 +84,7 @@ TMP="${TMP:?TMP must be set for the Windows editor}" \
 TEMP="${TEMP:?TEMP must be set for the Windows editor}" \
 MATTER_HIDE_UI="${MATTER_HIDE_UI:-1}" \
 MATTER_PERF_OUTPUT="$PERF_OUTPUT_ENV" \
-MATTER_PERF_WARMUP_SECONDS=5 \
+MATTER_PERF_WARMUP_SECONDS=20 \
 MATTER_PERF_SAMPLE_SECONDS=1 \
 stdbuf -oL ./build/windows/editor.exe > "$LOG" 2>&1 &
 PID=$!
@@ -93,8 +112,13 @@ fi
 case "$SUITE" in
   baseline)
     if [ "$WORLD" = StreamMountain ]; then
+      # Configure before streaming creates the first drawable frame: perf
+      # cannot leave WaitingForBake until instances_drawn is nonzero.
+      send "set render.volumetrics.enabled true"
+      send "get render.volumetrics.enabled"
+      send "cam 20 760 350 0 420 0"
       # Streaming worlds announce bake readiness before their first sectors
-      # publish; wait for that publish before a camera/shot batch.
+      # publish; wait for that publish before the settled screenshot.
       for _ in $(seq 1 300); do
         grep -q 'bake-timing.*world-kind' "$LOG" 2>/dev/null && break
         sleep 1
@@ -103,9 +127,6 @@ case "$SUITE" in
         echo "ERROR: StreamMountain sectors did not publish" >&2
         exit 1
       }
-      send "set render.volumetrics.enabled true"
-      send "get render.volumetrics.enabled"
-      send "cam 20 760 350 0 420 0"
     else
       send "get render.volumetrics.enabled"
       send "cam 128 260 -40 128 0 128"
@@ -131,12 +152,17 @@ case "$SUITE" in
     ;;
 esac
 
-send "quit"
-wait "$PID"
-PID=""
-rm -f "$FIFO"
+cleanup
 trap - EXIT INT TERM
 
 grep '^STATS,' "$LOG" > "$OUT/${LABEL}_stats.log" || true
+[ -s "$OUT/${LABEL}_stats.log" ] || {
+  echo "ERROR: no positional STATS rows in $LOG" >&2
+  exit 1
+}
 grep '"gpu_volumetrics_ms"' "$PERF_OUTPUT" > "$OUT/${LABEL}_metrics.log" || true
+[ -s "$OUT/${LABEL}_metrics.log" ] || {
+  echo "ERROR: no gpu_volumetrics_ms telemetry in $PERF_OUTPUT" >&2
+  exit 1
+}
 echo "--- $LABEL: $SUITE capture and telemetry in $OUT"
