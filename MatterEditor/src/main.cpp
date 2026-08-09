@@ -3490,13 +3490,11 @@ int main() {
                     screenshot_failures = 0;
                     std::printf("screenshot written to %s\n",
                                 capture_path.c_str());
-#ifndef _WIN32
                     if (capture_path == shot_path) {
                         const std::string done = shot_path + ".done";
                         if (FILE* file = std::fopen(done.c_str(), "w"))
                             std::fclose(file);
                     }
-#endif
                     if (capture_path == screenshot_path) quit_requested = true;
                 }
             }

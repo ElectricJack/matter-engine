@@ -6,16 +6,34 @@ SUITE="${1:?usage: atmosphere_cloud_shots.sh <suite> <label> <out-dir>}"
 LABEL="${2:?usage: atmosphere_cloud_shots.sh <suite> <label> <out-dir>}"
 OUT="${3:?usage: atmosphere_cloud_shots.sh <suite> <label> <out-dir>}"
 mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"
 FIFO="/tmp/matter_atmosphere_clouds_$$.fifo"
 LOG="$OUT/${LABEL}_viewer.log"
 COMMANDS="$OUT/${LABEL}_commands.log"
+PERF_OUTPUT="$OUT/${LABEL}_telemetry.json"
+WINDOWS_COMMAND_FILE=0
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) WINDOWS_COMMAND_FILE=1 ;; esac
+PERF_OUTPUT_ENV="$PERF_OUTPUT"
+if [ "$WINDOWS_COMMAND_FILE" = 1 ]; then
+  PERF_OUTPUT_ENV="$(cygpath -w "$PERF_OUTPUT")"
+fi
 
-send() { printf '%s\n' "$*" | tee -a "$COMMANDS" > "$FIFO"; }
+send() {
+  if [ "$WINDOWS_COMMAND_FILE" = 1 ]; then
+    printf '%s\n' "$*" | tee -a "$COMMANDS" >> "$FIFO"
+  else
+    printf '%s\n' "$*" | tee -a "$COMMANDS" > "$FIFO"
+  fi
+}
 capture() {
-  local name="$1" png="$OUT/${LABEL}_${1}.png"
+  local name="$1" png="$OUT/${LABEL}_${1}.png" shot_path
+  shot_path="$png"
+  if [ "$WINDOWS_COMMAND_FILE" = 1 ]; then
+    shot_path="$(cygpath -w "$png")"
+  fi
   rm -f "$png" "${png}.done"
   send "stats $name"
-  send "shot $png"
+  send "shot $shot_path"
   for _ in $(seq 1 60); do [ -e "${png}.done" ] && return; sleep 1; done
   echo "ERROR: screenshot timed out: $png" >&2
   exit 1
@@ -23,7 +41,11 @@ capture() {
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE/../../MatterEditor"
-mkfifo "$FIFO"
+if [ "$WINDOWS_COMMAND_FILE" = 1 ]; then
+  : > "$FIFO"
+else
+  mkfifo "$FIFO"
+fi
 : > "$COMMANDS"
 PID=""
 cleanup() {
@@ -39,22 +61,28 @@ MATTER_WORLD="${MATTER_WORLD:-meadow}" \
 MATTER_CMD_FIFO="$FIFO" \
 TMP="${TMP:?TMP must be set for the Windows editor}" \
 TEMP="${TEMP:?TEMP must be set for the Windows editor}" \
+MATTER_HIDE_UI="${MATTER_HIDE_UI:-1}" \
+MATTER_PERF_OUTPUT="$PERF_OUTPUT_ENV" \
+MATTER_PERF_WARMUP_SECONDS=5 \
+MATTER_PERF_SAMPLE_SECONDS=1 \
 stdbuf -oL ./build/windows/editor.exe > "$LOG" 2>&1 &
 PID=$!
 
-# Both markers matter: baking can finish before the command transport listens.
+# Both markers matter: baking can finish before the command transport is ready.
+# Native Windows polls an append-only command file; POSIX listens on the FIFO.
 READY=0
 for _ in $(seq 1 300); do
   if ! kill -0 "$PID" 2>/dev/null; then break; fi
   if grep -q 'viewer: bake ready' "$LOG" 2>/dev/null && \
-     grep -q 'MATTER_CMD_FIFO: listening' "$LOG" 2>/dev/null; then
+     { grep -q 'MATTER_CMD_FIFO: listening' "$LOG" 2>/dev/null || \
+       grep -q 'MATTER_CMD_FIFO: polling command file' "$LOG" 2>/dev/null; }; then
     READY=1
     break
   fi
   sleep 1
 done
 if [ "$READY" != 1 ]; then
-  echo "ERROR: viewer did not report bake and FIFO readiness. Log tail:" >&2
+  echo "ERROR: viewer did not report bake and command readiness. Log tail:" >&2
   tail -n 20 "$LOG" >&2 || true
   exit 1
 fi
@@ -66,6 +94,14 @@ case "$SUITE" in
     send "cam 128 260 -40 128 0 128"
     sleep 2
     capture procedural_sky
+    for _ in $(seq 1 30); do
+      [ -s "$PERF_OUTPUT" ] && break
+      sleep 1
+    done
+    [ -s "$PERF_OUTPUT" ] || {
+      echo "ERROR: telemetry timed out: $PERF_OUTPUT" >&2
+      exit 1
+    }
     ;;
   atmosphere|froxel|cloud-lighting|cloud-shadows|final)
     echo "ERROR: suite '$SUITE' is reserved for a later milestone" >&2
@@ -84,5 +120,5 @@ rm -f "$FIFO"
 trap - EXIT INT TERM
 
 grep '^STATS,' "$LOG" > "$OUT/${LABEL}_stats.log" || true
-grep '"gpu_volumetrics_ms"' "$LOG" > "$OUT/${LABEL}_metrics.log" || true
+grep '"gpu_volumetrics_ms"' "$PERF_OUTPUT" > "$OUT/${LABEL}_metrics.log" || true
 echo "--- $LABEL: $SUITE capture and telemetry in $OUT"

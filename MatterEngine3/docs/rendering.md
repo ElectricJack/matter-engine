@@ -291,10 +291,12 @@ for one suite through a single editor process. The current executable suite is
 `baseline`; the stable names `atmosphere`, `froxel`, `cloud-lighting`,
 `cloud-shadows`, and `final` are reserved for their respective milestones.
 
-The driver waits for both `viewer: bake ready` and `MATTER_CMD_FIFO: listening`
-before sending any FIFO command, records every command in
+The driver waits for both `viewer: bake ready` and command transport readiness
+(`MATTER_CMD_FIFO: listening` on POSIX, or `MATTER_CMD_FIFO: polling command
+file` on Windows) before sending any command, records every command in
 `<label>_commands.log`, and waits for each `<png>.done` marker before proceeding.
 It writes `<label>_viewer.log`, positional `STATS,` rows to
-`<label>_stats.log`, and telemetry rows containing `gpu_volumetrics_ms` to
-`<label>_metrics.log`. It always sends `quit`, waits for the one editor process,
-and removes its FIFO, including on an error path.
+`<label>_stats.log`, a one-second telemetry sample to `<label>_telemetry.json`,
+and its `gpu_volumetrics_ms` row to `<label>_metrics.log`. UI is hidden for
+unobscured captures. It always sends `quit`, waits for the one editor process,
+and removes its FIFO/command file, including on an error path.
