@@ -1190,7 +1190,21 @@ struct WorldSession::Impl {
     }
 
     // Sector size from the eval_world result (world units per sector tile).
+    // This is S_0 -- the LEVEL 0 tile size -- and stays the grid pitch the
+    // rings and bands are authored against.
     float world_sector_size = 16.0f;
+    // Nested sector LOD (docs/terrain-nested-sector-lod-2026-08-08.md): the
+    // streamer hands out tiles at level L, whose size is S_0 << L, and L rides
+    // the packed variant as 5 - terrain_lod. With nesting OFF every request is
+    // level 0 and sector_size_for() returns S_0, which is what makes all the
+    // per-request size plumbing inert until the flag is set.
+    bool world_nested_sectors = false;
+    float sector_size_for(int rung) const {
+        return world_nested_sectors
+            ? world_sector_size *
+                  float(1 << matter_stream::variant_level(rung))
+            : world_sector_size;
+    }
     viewer::ProceduralWorldProfile world_profile{};
 
     // Cached sector source text (WorldSector.js read once at install_world time).
@@ -3125,6 +3139,7 @@ bool WorldSession::Impl::install_world(
             true, provider->world_settings(),
             legacy_settings);
     world_sector_size = runtime_profile.sector_size;
+    world_nested_sectors = runtime_profile.nested_sectors;
     world_profile = runtime_profile;
     {
         char hbuf[32];
@@ -3454,10 +3469,13 @@ void WorldSession::Impl::schedule_vt_surface_reclassify() {
                         if (e.part_hash == entry.part_hash) ++refs;
                     classifier.world_anchored =
                         terrain_field::surface_variant_world_anchored(refs);
+                    // Per-level: the SectorKey's rung is the packed variant,
+                    // so the tile's size comes out of the key itself.
+                    const float key_size = sector_size_for(kv.first.rung);
                     classifier.local_to_world[3] =
-                        static_cast<float>(kv.first.tx) * world_sector_size;
+                        static_cast<float>(kv.first.tx) * key_size;
                     classifier.local_to_world[11] =
-                        static_cast<float>(kv.first.tz) * world_sector_size;
+                        static_cast<float>(kv.first.tz) * key_size;
                     for (uint32_t k = 0; k < world_surface->material_count();
                          ++k)
                         materials.push_back(static_cast<uint32_t>(
@@ -3545,11 +3563,12 @@ void WorldSession::Impl::service_vt_rung_requests() {
         sector_by_hash.reserve(sector_map.size());
         for (const auto& kv : sector_map) {
             if (!kv.second.resident || kv.second.part_hash == 0) continue;
+            const float key_size = sector_size_for(kv.first.rung);
             sector_by_hash.emplace(
                 kv.second.part_hash,
                 std::make_pair(
-                    static_cast<float>(kv.first.tx) * world_sector_size,
-                    static_cast<float>(kv.first.tz) * world_sector_size));
+                    static_cast<float>(kv.first.tx) * key_size,
+                    static_cast<float>(kv.first.tz) * key_size));
         }
     }
 
@@ -4228,6 +4247,10 @@ void WorldSession::Impl::bake_and_stage_sector(
         TrackedRequestGuard tracked_guard{this, completion_index};
 
         const matter_stream::SectorRequest& req = request.sector;
+        // This request's tile size. S_0 in uniform mode; S_0 << level when
+        // nesting is on, with the level decoded from the packed variant. Every
+        // world placement below derives from this one value.
+        const float sector_size = sector_size_for(req.rung);
         // Build params JSON for WorldSector bake.
         // biomes_json needs to be escaped for embedding in a JSON string value.
         std::string biomes_escaped;
@@ -4245,11 +4268,12 @@ void WorldSession::Impl::bake_and_stage_sector(
         // across terrain LOD changes.
         char params_buf[1024];
         std::snprintf(params_buf, sizeof(params_buf),
-            R"({"tx":%lld,"tz":%lld,"rung":%d,"terrainLod":%d,"edgeMask":%d,"worldSeed":%llu,"fieldHash":"%s","biomes":"%s"})",
+            R"({"tx":%lld,"tz":%lld,"rung":%d,"terrainLod":%d,"edgeMask":%d,"sectorSize":%.6g,"worldSeed":%llu,"fieldHash":"%s","biomes":"%s"})",
             (long long)req.tx, (long long)req.tz,
             matter_stream::variant_scatter(req.rung),
             matter_stream::variant_terrain_lod(req.rung),
             matter_stream::variant_edge_mask(req.rung),
+            (double)sector_size,
             (unsigned long long)world_seed, world_field_hash.c_str(),
             biomes_escaped.c_str());
         std::string sector_params(params_buf);
@@ -4259,6 +4283,12 @@ void WorldSession::Impl::bake_and_stage_sector(
         opts.parts_dir = provider_ref->transient_dir();
         opts.world.field       = world_field.get();
         world_profile.apply(opts.world);
+        // The profile carries S_0; this request may be a coarser, larger tile.
+        // Each streamed bake builds its own BakeOptions and its own ScriptHost,
+        // so overriding here is request-local and touches no shared state --
+        // this is what makes terrainVolume mesh a level-L tile at (rung -L,
+        // sector_size S_0 << L) with no change to the mesher at all.
+        opts.world.sector_size = sector_size;
         // Keep the geometry save_v2 is about to serialize, so the staging step
         // below can consume it instead of decoding the .part straight back off
         // disk. The write still happens exactly as before -- see
@@ -4383,7 +4413,6 @@ void WorldSession::Impl::bake_and_stage_sector(
         // proof run, not something to leave on.
         static const bool stage_verify =
             std::getenv("MATTER_STREAM_STAGE_VERIFY") != nullptr;
-        const float sector_size = world_sector_size;
         // Skip ladder rungs this sector can never be DRAWN at. lod_select picks
         // by projected size = bound_radius / distance, and rung 0's threshold is
         // 0.20 -- so a sector of radius r stops selecting rung 0 beyond 5r,
@@ -4433,9 +4462,12 @@ void WorldSession::Impl::bake_and_stage_sector(
         // shared with every neighbour).
         viewer::PartStore::WarpAnchor warp_anchor;
         warp_anchor.valid = true;
-        warp_anchor.x = double(req.tx) * double(world_sector_size);
-        warp_anchor.z = double(req.tz) * double(world_sector_size);
-        warp_anchor.sector_size = world_sector_size;
+        warp_anchor.x = double(req.tx) * double(sector_size);
+        warp_anchor.z = double(req.tz) * double(sector_size);
+        warp_anchor.sector_size = sector_size;
+        // S_0, so the chart-density policy can tell what LEVEL this tile is
+        // from the ratio of the two. Equal in uniform mode.
+        warp_anchor.base_sector_size = world_sector_size;
         std::shared_ptr<viewer::PartStore::StagedPart> staged_load;
         if (stage_from_memory && br.geometry) {
             // terrain_sector=true: this is the streamed sector part, which is

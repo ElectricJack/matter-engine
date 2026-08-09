@@ -306,6 +306,10 @@ struct VtNearBandSettings {
 };
 
 struct WorldSettings {
+    // Nested sector LOD (streaming.nestedSectors). Off = today's uniform grid,
+    // which is the rollback position. On, sector_size below is the LEVEL 0
+    // tile and the terrain bands are reinterpreted as per-level annuli.
+    bool nested_sectors = false;
     float sector_size = 16.0f;
     float y_min = -64.0f;
     float y_max = 192.0f;

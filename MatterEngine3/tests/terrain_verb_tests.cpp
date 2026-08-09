@@ -5,9 +5,30 @@
 #include "../src/part_asset_v2.h"
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
+#include <system_error>
+
+// Sandbox under the platform temp dir rather than a hardcoded POSIX "/tmp".
+// The literal made this suite unrunnable on Windows -- every bake failed with
+// errno=2 and the failures read like artifact bugs -- so it was red on main for
+// a reason that had nothing to do with what it tests. Same fix async_bake_tests
+// already carries.
+static std::string sandbox_dir(const char* name) {
+    namespace fs = std::filesystem;
+    const auto stamp = std::chrono::high_resolution_clock::now()
+                           .time_since_epoch().count();
+    const fs::path dir =
+        fs::temp_directory_path() / (std::string(name) + "_" +
+                                     std::to_string(stamp));
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    return dir.string();
+}
 
 using namespace script_host;
 
@@ -28,12 +49,12 @@ int main() {
         prog, err), err.c_str());
     terrain_field::FieldRuntime field(std::move(prog));
 
-    system("rm -rf /tmp/terrain_verb_parts && mkdir -p /tmp/terrain_verb_parts");
+    const std::string parts_dir = sandbox_dir("me3_terrain_verb");
     ScriptHost host;
 
     // No world bound -> loud error
     {
-        BakeOptions opts; opts.parts_dir = "/tmp/terrain_verb_parts";
+        BakeOptions opts; opts.parts_dir = parts_dir;
         BakeResult r = host.bake_source(kSector, "{}", opts);
         CHECK(!r.error.ok, "terrainVolume without world binding must fail");
         CHECK(r.error.message.find("terrainVolume") != std::string::npos, "names the verb");
@@ -42,7 +63,7 @@ int main() {
     // 64 border skirt) until skirts were removed on 2026-07-30; see
     // terrain_mesher.cpp.
     {
-        BakeOptions opts; opts.parts_dir = "/tmp/terrain_verb_parts";
+        BakeOptions opts; opts.parts_dir = parts_dir;
         opts.world.field = &field;   // sector_size / y bounds = defaults (16, -64, 192)
         BakeResult r = host.bake_source(kSector, "{}", opts);
         CHECK(r.error.ok, r.error.message.c_str());

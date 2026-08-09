@@ -206,7 +206,13 @@ void build_expansion(uint64_t root_hash,
 struct WarpAnchor {
     bool valid = false;
     double x = 0.0, z = 0.0;
+    // This tile's own size. Under nested sector LOD a level-L tile is
+    // S_0 << L across; base_sector_size is S_0, so the ratio between them is
+    // the tile's level, which is all the chart-density policy needs to keep
+    // texels-per-TILE constant instead of texels-per-metre. Equal by default,
+    // which is exactly uniform-grid behaviour.
     float sector_size = 64.0f;
+    float base_sector_size = 0.0f;   // 0 = "same as sector_size"
 };
 
 class PartStore {

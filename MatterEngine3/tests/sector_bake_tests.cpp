@@ -3,12 +3,35 @@
 #include "../src/script_host.h"
 #include "../src/terrain_field.h"
 #include "../src/part_graph.h"
+#include "../src/terrain_mesher.h"
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
+#include <filesystem>
+#include <system_error>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
+
+// Sandbox under the platform temp dir rather than a hardcoded POSIX "/tmp".
+// The literal made this suite unrunnable on Windows -- every bake failed with
+// errno=2 and the failures read like artifact bugs -- so it was red on main for
+// a reason that had nothing to do with what it tests. Same fix async_bake_tests
+// already carries.
+static std::string sandbox_dir(const char* name) {
+    namespace fs = std::filesystem;
+    const auto stamp = std::chrono::high_resolution_clock::now()
+                           .time_since_epoch().count();
+    const fs::path dir =
+        fs::temp_directory_path() / (std::string(name) + "_" +
+                                     std::to_string(stamp));
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    return dir.string();
+}
 
 using namespace script_host;
 
@@ -29,7 +52,14 @@ int main() {
     CHECK(!src.empty(), "WorldSector.js readable");
 
     ScriptHost host;
-    host.set_shared_lib_root("../shared-lib");  // tests run from MatterEngine3/tests
+    // BOTH roots. WorldSector.js imports rng/scatter_grid from the engine's
+    // shared-lib and alpine_ecology from the project's, so the single engine
+    // root this used to set could never resolve a WorldSector bake -- every
+    // case after `requires` failed with "module not found" and read like a
+    // bake bug. Project root first, matching the resolver order the engine
+    // itself uses (shared_lib_tests.cpp covers that precedence).
+    host.set_shared_lib_roots({"../../projects/world_demo/shared-lib",
+                               "../shared-lib"});  // run from MatterEngine3/tests
 
     // requires: fixed asset list, independent of tx/tz
     {
@@ -37,14 +67,27 @@ int main() {
         auto req_b = host.eval_requires(src, R"({"tx":900,"tz":-77,"rung":0})");
         CHECK(!req_a.empty(), "requires non-empty");
         CHECK(req_a.size() == req_b.size(), "requires independent of tx/tz");
-        // 8 rocks + 8 boulders + 6 pebbles + 5 grass + 3 trees = 30
-        CHECK(req_a.size() == 30, "full variant list");
+        // Composition rather than a bare total: the count has drifted twice
+        // (pebbles commented out of WorldSector.js, trees made conditional on
+        // the biome table) and each time this line failed for a reason that
+        // had nothing to do with sector baking.
+        size_t rocks = 0, grass = 0, trees = 0;
+        for (const auto& r : req_a) {
+            if (r.module_specifier == "Rock")  ++rocks;
+            if (r.module_specifier == "Grass") ++grass;
+            if (r.module_specifier == "Tree")  ++trees;
+        }
+        CHECK(rocks == 16, "8 rock seeds + 8 boulder variants");
+        CHECK(grass == 5,  "5 grass variants");
+        CHECK(trees == 3,  "3 tree variants (no biome table -> fail-open)");
+        CHECK(req_a.size() == rocks + grass + trees,
+              "variant list is exactly rocks + grass + trees");
     }
 
-    system("rm -rf /tmp/sector_bake_parts && mkdir -p /tmp/sector_bake_parts");
+    const std::string parts_dir = sandbox_dir("me3_sector_bake");
     auto bake = [&](const char* params) {
         BakeOptions opts;
-        opts.parts_dir = "/tmp/sector_bake_parts";
+        opts.parts_dir = parts_dir;
         opts.world.field = &field;
         return host.bake_source(src, params, opts);
     };
@@ -106,7 +149,7 @@ int main() {
         CHECK(mods.size() == 30, "installed full declared variant table");
 
         BakeOptions opts;
-        opts.parts_dir = "/tmp/sector_bake_parts";
+        opts.parts_dir = parts_dir;
         opts.world.field = &field;
         const char* p_scatter =
             R"({"tx":0,"tz":0,"rung":2,"worldSeed":42,"fieldHash":"abc","biomes":)"
@@ -118,6 +161,80 @@ int main() {
         CHECK(rs.error.ok, rs.error.message.c_str());
         // rung is folded into the hash, so rung-2 must differ from rung-0
         CHECK(rs.resolved_hash != r0.resolved_hash, "scatter-rung hash differs from terrain-only rung");
+    }
+
+    // --- nested sector LOD: a tile that is not S_0 across --------------------
+    // WP2 of docs/superpowers/plans/2026-08-08-nested-sector-lod-migration.md.
+    // A level-L request is (terrainLod 5-L, sectorSize S_0<<L), so the tile is
+    // wider AND coarser by the same factor and the triangle count is unchanged.
+    // The engine sends `sectorSize` per request because only the streamer knows
+    // a request's level; everything below is what WorldSector must do with it.
+    {
+        // The bake path used above writes .part files but does not hand back
+        // geometry, so extent is asserted through terrainVolume's own mesher
+        // instead -- the same call WorldSector.build() makes, with the same
+        // arguments the engine now supplies per request.
+        auto tile = [&](int64_t tx, int64_t tz, int rung, float size,
+                        terrain_mesher::SectorMesh& out) {
+            std::string e;
+            return terrain_mesher::mesh_sector(field, tx, tz, rung, 0, size,
+                                               -300.0f, 300.0f, out, e);
+        };
+        terrain_mesher::SectorMesh l0, l1, l2;
+        CHECK(tile(1, 0, 0, 64.0f, l0),   "level 0: 64 m tile at rung 0");
+        CHECK(tile(1, 0, -1, 128.0f, l1), "level 1: 128 m tile at rung -1");
+        CHECK(tile(1, 0, -2, 256.0f, l2), "level 2: 256 m tile at rung -2");
+        // Constant cells-per-tile is the whole design: four times the ground
+        // for about the same triangles is where the 65x fewer parts comes from.
+        //
+        // "About", not "exactly". The lattice is 32x32 at every level, so the
+        // horizontal surface is the same count; what varies is the VERTICAL
+        // faces surface nets emits where the field falls faster than one voxel
+        // per cell, and a coarser voxel meets that condition in different
+        // places. The gate is that the count stays within a small factor --
+        // i.e. that it tracks the lattice and not the area, which is the claim
+        // the part-count win rests on. Area grows 4x and 16x here.
+        printf("  nested tris: L0=%zu L1=%zu L2=%zu (lattice 32x32 at each)\n",
+               l0.triangle_count(), l1.triangle_count(), l2.triangle_count());
+        CHECK(l1.triangle_count() < 2 * l0.triangle_count() &&
+              l2.triangle_count() < 2 * l0.triangle_count(),
+              "nested: a coarser level covers 4x the ground WITHOUT 4x the "
+              "triangles -- the count tracks the lattice, not the area");
+        // Extent: positions are tile-local, so a level-1 tile must reach twice
+        // as far as a level-0 one.
+        auto span = [](const terrain_mesher::SectorMesh& m) {
+            float lo = 1e30f, hi = -1e30f;
+            for (const auto& b : m.buckets)
+                for (size_t i = 0; i + 2 < b.positions.size(); i += 3) {
+                    lo = std::min(lo, b.positions[i]);
+                    hi = std::max(hi, b.positions[i]);
+                }
+            return hi - lo;
+        };
+        CHECK(span(l1) > 1.9f * span(l0) && span(l1) < 2.1f * span(l0),
+              "nested: a level-1 tile spans twice a level-0 tile");
+        // Determinism at a non-default size -- the property the whole streaming
+        // cache rests on, asserted where the size is NOT the world scalar.
+        terrain_mesher::SectorMesh again;
+        CHECK(tile(1, 0, -1, 128.0f, again), "re-mesh the level-1 tile");
+        bool identical = again.buckets.size() == l1.buckets.size();
+        for (size_t i = 0; identical && i < l1.buckets.size(); ++i)
+            identical = again.buckets[i].positions == l1.buckets[i].positions;
+        CHECK(identical, "nested: double-mesh at a non-default size is "
+                         "byte-identical");
+
+        // And the param reaches JS: a bake whose ONLY difference is sectorSize
+        // must resolve to a different part, or a level change would silently
+        // reuse the wrong geometry.
+        BakeResult small = bake(
+            R"({"tx":0,"tz":0,"rung":0,"terrainLod":5,"sectorSize":64,)"
+            R"("worldSeed":42,"fieldHash":"abc","biomes":""})");
+        BakeResult big = bake(
+            R"({"tx":0,"tz":0,"rung":0,"terrainLod":4,"sectorSize":128,)"
+            R"("worldSeed":42,"fieldHash":"abc","biomes":""})");
+        CHECK(small.error.ok && big.error.ok, "both nested bakes succeeded");
+        CHECK(small.resolved_hash != big.resolved_hash,
+              "nested: sectorSize participates in the part hash");
     }
 
     return check_summary();

@@ -1080,6 +1080,20 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
     // whose chart build fails ships an empty table (charts = 0, legacy path).
     lod_bake::ChartBakeOptions chart_opts;
     chart_opts.texels_per_meter = 16.0f;
+    // Nested sector LOD: a level-L terrain tile is 2^L times wider than a
+    // level-0 one for the SAME triangle count, so a fixed texels-per-metre
+    // would ask for 2^L times the texels across -- a 2 km level-5 tile would
+    // want ~32k texels wide, far past the atlas and the 2048-layer array cap.
+    // Scaling the base density down by the tile's size ratio keeps
+    // texels-per-TILE constant and texels-per-metre matched to the voxel,
+    // which is the same ratio a level-0 sector has today. Density at a given
+    // DISTANCE is therefore unchanged, because level replaces exactly the
+    // per-rung halving it displaces. Inert at level 0 (ratio 1).
+    if (terrain_tile && warp.valid && warp.sector_size > 0.0f &&
+        warp.base_sector_size > 0.0f) {
+        const float ratio = warp.base_sector_size / warp.sector_size;
+        if (ratio > 0.0f && ratio < 1.0f) chart_opts.texels_per_meter *= ratio;
+    }
     chart_opts.halve_per_rung = terrain_tile;
     // M6: one parameterisation per part. Note this SUPERSEDES halve_per_rung
     // when on — one table means one density, which is the point: a per-rung

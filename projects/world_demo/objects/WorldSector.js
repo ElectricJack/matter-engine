@@ -21,6 +21,10 @@ import {
 // only on worldSeed + world position, never on the tier, so placements are
 // stable as tiers change underfoot.
 
+// The SCATTER CELL, and the level-0 tile size. Under nested sector LOD a tile
+// may be 2^level of these across (p.sectorSize), but scatter is always
+// computed per 64 m cell so a placement does not move when its carrier tile
+// changes size -- see the cell loop in build().
 const SECTOR = 64.0;
 const ROCK_VARIANTS    = 8, PEBBLE_VARIANTS = 6, GRASS_VARIANTS = 5;
 const TREE_VARIANTS    = 3;
@@ -117,7 +121,13 @@ class WorldSector extends Part {
   // cardinal neighbors exactly one LOD coarser (bit 0 = +x, 1 = -x, 2 = +z,
   // 3 = -z); the mesher stitches those borders 2:1. Defaults keep older
   // engines (which send neither) on the voxel path.
+  // sectorSize: the TILE's own width. Under nested sector LOD a level-L tile
+  // is 64 << L metres across and meshes at voxel rung -L, so cells-per-tile is
+  // constant; the engine sends the size because only the streamer knows a
+  // request's level. Defaults to 64 so an older engine (which sends neither
+  // this nor terrainLod) still bakes a level-0 tile.
   static params = { tx: 0, tz: 0, rung: 0, terrainLod: 5, edgeMask: 0,
+                    sectorSize: SECTOR,
                     worldSeed: 0, fieldHash: '', biomes: '' };
   // FIXED variant list — independent of tx/tz so the whole asset set installs
   // once at world load and every sector bake hits the same child hashes.
@@ -162,8 +172,11 @@ class WorldSector extends Part {
     this.terrainVolume(p.tx, p.tz, voxelRung, p.edgeMask | 0, terrainMaterials);
     if (!table) return;   // no biome table -> terrain only
 
-    const ox = p.tx * SECTOR, oz = p.tz * SECTOR;
-    const counts = table[this.biomeAt(ox + SECTOR / 2, oz + SECTOR / 2)] || {};
+    // TILE extent. Scatter below still works in 64 m cells; only the tile's
+    // own origin and span scale with the level.
+    const TILE = p.sectorSize > 0 ? p.sectorSize : SECTOR;
+    const ox = p.tx * TILE, oz = p.tz * TILE;
+    const counts = table[this.biomeAt(ox + TILE / 2, oz + TILE / 2)] || {};
     const seed = p.worldSeed >>> 0;
     const GROVE = (seed ^ 0xA51) >>> 0;   // tree groves,   wavelength ~110
     const SCREE = (seed ^ 0xB62) >>> 0;   // rock fields,   wavelength ~70
@@ -189,10 +202,10 @@ class WorldSector extends Part {
       this.placeChild(module, params);
       this.popMatrix();
     };
-    const inSector = () => [ox + r.range(0, SECTOR), oz + r.range(0, SECTOR)];
+    const inSector = () => [ox + r.range(0, TILE), oz + r.range(0, TILE)];
 
     // ---- every tier: landmark boulders --------------------------------------
-    for (const c of candidatesInRect(seed, 2, BOULDER_MIN_DIST, ox, oz, SECTOR, SECTOR)) {
+    for (const c of candidatesInRect(seed, 2, BOULDER_MIN_DIST, ox, oz, TILE, TILE)) {
       if (this.biomeAt(c.x, c.z) === 'ocean') continue;
       const sz = BOULDER_SIZES[(c.u * BOULDER_SIZES.length) | 0];
       const s = (0.8 + 0.4 * c.v) * BOULDER_SCALE;
@@ -220,7 +233,7 @@ class WorldSector extends Part {
     if (isAlpineProfile(table)) {
       if (p.rung >= 1) scatterRocks();
       for (const placement of planAlpineSector({
-        rung: p.rung, worldSeed: seed, ox, oz, sectorSize: SECTOR,
+        rung: p.rung, worldSeed: seed, ox, oz, sectorSize: TILE,
         heightAt: this.heightAt.bind(this), slopeAt: this.slopeAt.bind(this),
         candidatesInRect, biomeAt: this.biomeAt.bind(this),
       })) putPlanned(placement);
@@ -230,7 +243,7 @@ class WorldSector extends Part {
     // ---- every tier: tree groves (cross-sector deterministic) --------------
     // Candidate grid gives even in-grove spacing; the grove channel gates
     // which candidates exist, ramping density toward the grove core.
-    for (const c of candidatesInRect(seed, 3, TREE_MIN_DIST, ox, oz, SECTOR, SECTOR)) {
+    for (const c of candidatesInRect(seed, 3, TREE_MIN_DIST, ox, oz, TILE, TILE)) {
       const treeCap = (table[this.biomeAt(c.x, c.z)] || {}).trees | 0;
       if (!treeCap) continue;                       // no trees in this biome
       const g = patch(c.x, c.z, GROVE, 1 / 110);

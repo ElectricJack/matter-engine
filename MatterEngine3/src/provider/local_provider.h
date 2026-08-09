@@ -186,6 +186,12 @@ struct ProceduralWorldProfile {
     float sector_size = 16.0f;
     float y_min = -64.0f;
     float y_max = 192.0f;
+    // Nested sector LOD: sector_size above is S_0, the LEVEL 0 tile, and a
+    // streamed request may be a coarser level whose tile is S_0 << level. The
+    // flag does not reach `apply` -- a world binding still gets one size, and
+    // the streaming caller overrides it per bake, because it is the only place
+    // that knows which level a request is.
+    bool nested_sectors = false;
 
     template <typename WorldBinding>
     void apply(WorldBinding& binding) const {
@@ -200,7 +206,8 @@ inline ProceduralWorldProfile select_procedural_world_profile(
     const matter::WorldSettings& authored,
     const matter::WorldSettings& legacy) {
     const matter::WorldSettings& selected = project_layout ? authored : legacy;
-    return {selected.sector_size, selected.y_min, selected.y_max};
+    return {selected.sector_size, selected.y_min, selected.y_max,
+            selected.nested_sectors};
 }
 
 inline ProviderWorldDefinition adapt_world_definition(
