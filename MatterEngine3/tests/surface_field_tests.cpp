@@ -798,5 +798,159 @@ int main() {
               "the same directive text hashes identically");
     }
 
+    // =======================================================================
+    // HABITAT TAPES (docs/habitat-tape-sketch-2026-08-08.md)
+    //
+    // Same op set, same register machine, same parser -- only the OUTPUT
+    // directives differ. channels_at is the third reader of eval_regs, after
+    // weights_at and appearance_at.
+    // =======================================================================
+    using terrain_field::TapeMode;
+    auto parse_habitat = [](const std::string& text, SurfaceProgram& out,
+                            std::string& e) {
+        return SurfaceProgram::parse(text, out, e, TapeMode::Habitat);
+    };
+
+    // --- the two modes are genuinely separate, both fail closed ------------
+    {
+        SurfaceProgram p; std::string e;
+        CHECK(!parse_habitat("const 0.5\n", p, e),
+              "a habitat tape declaring no channel is rejected");
+        CHECK(e.find("no channels") != std::string::npos, e.c_str());
+        CHECK(!parse_habitat("const 0.5\nmaterial 3 r0\n", p, e),
+              "a habitat tape cannot declare materials");
+        CHECK(!parse_tape("const 0.5\nchannel 0 r0\n", p, e),
+              "a surfaces tape cannot declare channels");
+        CHECK(parse_tape("const 0.5\nmaterial 3 r0\n", p, e), e.c_str());
+        CHECK(parse_habitat("const 0.5\nchannel 0 r0\n", p, e), e.c_str());
+    }
+
+    // --- channel directives: bounds, duplicates, backward refs -------------
+    {
+        SurfaceProgram p; std::string e;
+        CHECK(!parse_habitat("const 0.5\nchannel 99 r0\n", p, e),
+              "channel index past the cap is rejected");
+        CHECK(!parse_habitat("const 0.5\nchannel -1 r0\n", p, e),
+              "negative channel index is rejected");
+        CHECK(!parse_habitat("const 0.5\nchannel 0 r0\nchannel 0 r0\n", p, e),
+              "the same channel declared twice is rejected");
+        CHECK(!parse_habitat("channel 0 r0\nconst 0.5\n", p, e),
+              "a forward register ref is rejected, as for a material");
+        CHECK(parse_habitat("const 0.25\nconst 0.75\n"
+                            "channel 0 r0\nchannel 3 r1\n", p, e), e.c_str());
+        CHECK(p.channel_count == 2, "two channels declared");
+    }
+
+    // --- channels_at reads the declared registers, undeclared read 0 -------
+    {
+        SurfaceProgram p; std::string e;
+        CHECK(parse_habitat("const 0.25\nconst 0.75\n"
+                            "channel 0 r0\nchannel 3 r1\n", p, e), e.c_str());
+        SurfaceRuntime rt(p);
+        float ch[terrain_field::kMaxHabitatChannels] = {};
+        rt.channels_at(123.0f, -456.0f, nullptr, ch);
+        CHECK(std::fabs(ch[0] - 0.25f) < 1e-6f, "channel 0 reads its register");
+        CHECK(std::fabs(ch[3] - 0.75f) < 1e-6f, "channel 3 reads its register");
+        CHECK(ch[1] == 0.0f && ch[2] == 0.0f,
+              "an undeclared channel reads 0 rather than garbage");
+        CHECK(rt.channel_count() == 2, "runtime reports the declared count");
+    }
+
+    // --- a habitat sample IS a world position ------------------------------
+    // channels_at feeds an identity local_to_world, so worldX/worldZ inputs and
+    // world noise must see the coordinates the caller passed. If that wiring
+    // were wrong every ecology would silently sample the world origin -- which
+    // is exactly the failure mode the non-anchored surfaces fallback has, so it
+    // would look plausible.
+    {
+        SurfaceProgram p; std::string e;
+        CHECK(parse_habitat("input wx\ninput wz\nchannel 0 r0\nchannel 1 r1\n",
+                            p, e), e.c_str());
+        SurfaceRuntime rt(p);
+        float ch[terrain_field::kMaxHabitatChannels] = {};
+        rt.channels_at(1234.5f, -678.25f, nullptr, ch);
+        CHECK(std::fabs(ch[0] - 1234.5f) < 1e-3f,
+              "worldX input sees the sampled x");
+        CHECK(std::fabs(ch[1] + 678.25f) < 1e-3f,
+              "worldZ input sees the sampled z");
+    }
+
+    // --- world noise varies with position, and is deterministic ------------
+    {
+        SurfaceProgram p; std::string e;
+        CHECK(parse_habitat("noise2w 11 0.00333 3 0.5 2\nchannel 0 r0\n", p, e),
+              e.c_str());
+        SurfaceRuntime rt(p);
+        float a[terrain_field::kMaxHabitatChannels] = {};
+        float b[terrain_field::kMaxHabitatChannels] = {};
+        float again[terrain_field::kMaxHabitatChannels] = {};
+        rt.channels_at(0.0f, 0.0f, nullptr, a);
+        rt.channels_at(900.0f, 400.0f, nullptr, b);
+        rt.channels_at(0.0f, 0.0f, nullptr, again);
+        CHECK(std::fabs(a[0] - b[0]) > 1e-4f,
+              "world noise varies across the world -- it is not pinned to the "
+              "origin the way a non-anchored surfaces tape is");
+        CHECK(a[0] == again[0], "the same sample is bit-identical on re-read");
+    }
+
+    // --- terrain inputs come from the bound field ---------------------------
+    // kSurfInHeight (8) and kSurfInFieldSlope (12) are the two the scatter
+    // planner queries per candidate today; folding them into the tape is what
+    // removes those crossings.
+    {
+        FieldProgram fp; std::string fe;
+        CHECK(FieldProgram::parse(
+                  "noise2 42 0.005 4 0.5 2.0\nconst 60\nmul r0 r1\n"
+                  "const 0.6\nconst 0.3\nheight r2\nmoisture r3\nrelief r4\n"
+                  "seaLevel -80\nbiome 0.65 0.35\n", fp, fe), fe.c_str());
+        FieldRuntime field(std::move(fp));
+
+        SurfaceProgram p; std::string e;
+        CHECK(parse_habitat("input height\ninput fslope\n"
+                            "channel 0 r0\nchannel 1 r1\n", p, e), e.c_str());
+        SurfaceRuntime rt(p);
+        float ch[terrain_field::kMaxHabitatChannels] = {};
+        rt.channels_at(310.0f, -220.0f, &field, ch);
+        CHECK(std::fabs(ch[0] - field.height_at(310.0f, -220.0f)) < 1e-3f,
+              "the height input matches the field's own height_at -- the same "
+              "call the tree planner makes per candidate");
+        CHECK(std::fabs(ch[1] - field.slope_at(310.0f, -220.0f)) < 1e-3f,
+              "the field-slope input matches slope_at");
+    }
+
+    // --- the arithmetic an ecology needs is all already there ---------------
+    // A miniature of the real habitat maths: saturate(a + w*noise), a
+    // smoothstep band, and an inverted edge via sub/abs/oneminus. If the
+    // vocabulary were short of anything, it shows up here rather than three
+    // work packages later.
+    {
+        SurfaceProgram p; std::string e;
+        const char* text =
+            "noise2w 31 0.0019 4 0.5 2\n"        // r0: forest signal
+            "const 0.72\n"                        // r1
+            "mul r0 r1\n"                         // r2
+            "smoothstep 0.40 0.61 r2\n"           // r3: forest
+            "const 0.505\n"                       // r4
+            "sub r2 r4\n"                         // r5
+            "abs r5\n"                            // r6
+            "smoothstep 0.045 0.145 r6\n"         // r7
+            "oneminus r7\n"                       // r8: forestEdge
+            "channel 0 r3\nchannel 1 r8\n";
+        CHECK(parse_habitat(text, p, e), e.c_str());
+        SurfaceRuntime rt(p);
+        float ch[terrain_field::kMaxHabitatChannels] = {};
+        bool in_range = true, saw_variation = false;
+        float first = -1.0f;
+        for (int i = 0; i < 64; ++i) {
+            rt.channels_at(float(i) * 37.0f, float(i) * -19.0f, nullptr, ch);
+            for (int c = 0; c < 2; ++c)
+                if (!(ch[c] >= 0.0f && ch[c] <= 1.0f)) in_range = false;
+            if (first < 0) first = ch[0];
+            else if (std::fabs(ch[0] - first) > 1e-4f) saw_variation = true;
+        }
+        CHECK(in_range, "smoothstep/oneminus channels stay in [0,1]");
+        CHECK(saw_variation, "the forest channel actually varies across space");
+    }
+
     return check_summary();
 }

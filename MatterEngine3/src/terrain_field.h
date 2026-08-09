@@ -197,6 +197,27 @@ inline bool surface_variant_world_anchored(uint32_t instance_count) {
     return instance_count == 1;
 }
 
+// Hard cap on declared habitat channels. Habitat tapes are read per scatter
+// CANDIDATE at bake time, so the cost that matters is the crossing, not the
+// channel count; this exists to bound the fixed-size output buffer callers put
+// on the stack rather than because more would be expensive.
+constexpr int kMaxHabitatChannels = 16;
+
+// Which OUTPUT directives a tape may declare. The op set, the register machine
+// and every arithmetic rule are identical either way -- this only decides what
+// the program is allowed to emit at the end, and therefore what "a valid tape"
+// means.
+//
+//   Surfaces  material / tint / roughbias / wetness / metallic. Must declare
+//             at least one material: a classifier that classifies nothing is a
+//             bug, and failing closed on it is a deliberate diagnostic.
+//   Habitat   `channel <index> r<reg>` only. Must declare at least one
+//             channel, for the same reason.
+//
+// Two modes rather than one permissive parse, so neither mode's fail-closed
+// diagnostic is weakened by the other's existence.
+enum class TapeMode { Surfaces, Habitat };
+
 struct SurfaceProgram {
     // Parse canonical text: op lines (const/noise2/ridge2/noise2w/ridge2w/
     // noise3/ridge3/noise3w/ridge3w/curv/add/sub/mul/min/max/clamp/blend/
@@ -215,7 +236,8 @@ struct SurfaceProgram {
     // recorder emitted). Identical `const` lines are deduplicated at parse
     // time — refs are remapped, so duplicates cost no register budget and the
     // kMaxOps cap applies to the DEDUPLICATED op count.
-    static bool parse(const std::string& text, SurfaceProgram& out, std::string& err);
+    static bool parse(const std::string& text, SurfaceProgram& out,
+                      std::string& err, TapeMode mode = TapeMode::Surfaces);
 
     // FNV-1a 64-bit hash over the canonical program text bytes. Folds into the
     // VT page/tail content key so an edited tape invalidates resident pages.
@@ -238,6 +260,13 @@ struct SurfaceProgram {
 
     std::vector<Op> ops;
     std::vector<MaterialSlot> materials;
+
+    // Habitat mode: the register each declared channel reads, indexed by the
+    // channel INDEX the author used. -1 = never declared, which the runtime
+    // reports as 0 rather than as an error -- an ecology that does not model
+    // (say) flowerPatch should not have to declare it.
+    std::vector<int> channel_regs;
+    int channel_count = 0;   // declared channels, not the vector's size
 
     // P3 appearance lanes: the register each directive reads, -1 when the
     // directive is absent (identity). tint_reg[0] < 0 means "no tint" — the
@@ -298,6 +327,22 @@ public:
     // biome = 1 — deterministic, never instance-dependent).
     void weights_at(const float pos[3], const float nrm[3],
                     const SurfaceWorldContext* world, float* out_weights) const;
+
+    // Habitat channels for one WORLD (x, z) sample. The third reader of the
+    // same registers weights_at and appearance_at read -- eval_regs does the
+    // work, this only decides which registers come back out.
+    //
+    // World-space entry point on purpose: a habitat tape is evaluated at a
+    // scatter CANDIDATE's world position, not at a mesh vertex, so there is no
+    // part-local frame to transform through. `field` supplies height / slope /
+    // moisture / relief / biome inputs; null makes every world input read its
+    // deterministic fallback, exactly as weights_at does with a null context.
+    //
+    // out_channels must have room for kMaxHabitatChannels. Undeclared channels
+    // read 0.
+    void channels_at(float world_x, float world_z, const FieldRuntime* field,
+                     float* out_channels) const;
+    int channel_count() const { return prog_.channel_count; }
 
     // P3 appearance lanes for one sample, CLAMPED to their documented ranges
     // (tint [0, kSurfaceTintMax], rough_bias +-kSurfaceRoughBiasLimit, wetness

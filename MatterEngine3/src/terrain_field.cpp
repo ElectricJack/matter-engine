@@ -648,7 +648,7 @@ float surface_op_fbm3(const Op& op, float x, float y, float z, bool ridged) {
 }
 
 bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
-                           std::string& err) {
+                           std::string& err, TapeMode mode) {
     out = SurfaceProgram();
     out.text_ = text;
 
@@ -678,8 +678,45 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
         if (toks.empty()) continue;
         const std::string& op = toks[0];
 
+        // ---- `channel <index> r<reg>` directive (habitat tapes) ----
+        // The habitat analogue of `material`: same backward-ref rule, same
+        // source-ordinal resolution, and like a material it is an OUTPUT
+        // directive so it never perturbs register numbering.
+        if (op == "channel") {
+            if (mode != TapeMode::Habitat) {
+                err = "channel: only a habitat tape declares channels";
+                return false;
+            }
+            if (toks.size() < 3) { err = "channel: expected <index> r<reg>"; return false; }
+            int index = -1;
+            try { index = std::stoi(toks[1]); }
+            catch (...) { err = "channel: invalid index"; return false; }
+            if (index < 0 || index >= kMaxHabitatChannels) {
+                err = "channel: index out of 0.." +
+                      std::to_string(kMaxHabitatChannels - 1);
+                return false;
+            }
+            const int reg = resolve_reg(toks[2]);
+            if (reg < 0) {
+                err = "channel: expected backward register ref"; return false;
+            }
+            if (out.channel_regs.empty())
+                out.channel_regs.assign(kMaxHabitatChannels, -1);
+            if (out.channel_regs[index] >= 0) {
+                err = "channel: index " + toks[1] + " declared twice";
+                return false;
+            }
+            out.channel_regs[index] = reg;
+            ++out.channel_count;
+            continue;
+        }
+
         // ---- `material <handle> r<reg>` directive ----
         if (op == "material") {
+            if (mode != TapeMode::Surfaces) {
+                err = "material: a habitat tape declares channels, not materials";
+                return false;
+            }
             if (toks.size() < 3) { err = "material: expected <handle> r<reg>"; return false; }
             MaterialSlot slot;
             try { slot.handle = std::stoi(toks[1]); }
@@ -929,6 +966,17 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
         out.ops.push_back(o);
     }
 
+    // Each mode fails closed on declaring nothing, for the same reason: a tape
+    // with no outputs computed a pile of noise and threw it away, which is
+    // always a bug and never a intent.
+    if (mode == TapeMode::Habitat) {
+        if (out.channel_count == 0) {
+            err = "habitat() declared no channels (missing 'channel' "
+                  "directives)";
+            return false;
+        }
+        return true;
+    }
     if (out.materials.empty()) {
         err = "surfaces() declared no materials (missing 'material' directives)";
         return false;
@@ -1122,6 +1170,33 @@ void SurfaceRuntime::weights_at(const float pos[3], const float nrm[3],
     eval_regs(pos, nrm, world, regs);
     for (size_t k = 0; k < prog_.materials.size(); ++k)
         out_weights[k] = std::max(0.0f, regs[prog_.materials[k].reg]);
+}
+
+void SurfaceRuntime::channels_at(float world_x, float world_z,
+                                 const FieldRuntime* field,
+                                 float* out_channels) const {
+    for (int i = 0; i < kMaxHabitatChannels; ++i) out_channels[i] = 0.0f;
+    if (prog_.channel_regs.empty()) return;
+
+    // A habitat sample IS a world position, so the part-local frame is the
+    // identity and the "normal" is up. eval_regs derives worldX/worldZ by
+    // transforming pos through local_to_world; an identity transform makes the
+    // two the same, which is exactly what we want and avoids a second code
+    // path through the register machine.
+    static const float kIdentity[16] = {
+        1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1};
+    const float pos[3] = {world_x, 0.0f, world_z};
+    const float nrm[3] = {0.0f, 1.0f, 0.0f};
+    SurfaceWorldContext ctx;
+    ctx.field = field;
+    ctx.local_to_world = kIdentity;
+
+    float regs[kMaxOps] = {};
+    eval_regs(pos, nrm, &ctx, regs);
+    for (int i = 0; i < kMaxHabitatChannels; ++i) {
+        const int reg = prog_.channel_regs[i];
+        if (reg >= 0) out_channels[i] = regs[reg];
+    }
 }
 
 void SurfaceRuntime::appearance_at(const float pos[3], const float nrm[3],
