@@ -357,6 +357,9 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/vol_density.comp.spv \
          build/shaders_vk/vol_scatter.comp.spv \
          build/shaders_vk/vol_integrate.comp.spv \
+         build/shaders_vk/cloud_shadow_reproject.comp.spv \
+         build/shaders_vk/cloud_shadow_density.comp.spv \
+         build/shaders_vk/cloud_shadow_integrate.comp.spv \
          build/shaders_vk/tileset_bake_primary.comp.spv \
          build/shaders_vk/tileset_bake_ao.comp.spv \
          build/shaders_vk/vt_composite.comp.spv \
@@ -408,6 +411,9 @@ build/shaders_vk/vol_density.comp.spv build/shaders_vk/vol_scatter.comp.spv \
     shaders_vk/vol_common.glsl
 
 build/shaders_vk/vol_density.comp.spv: shaders_vk/cloud_density.glsl shaders_vk/vt_noise.glsl
+
+build/shaders_vk/cloud_shadow_density.comp.spv: shaders_vk/cloud_density.glsl \
+    shaders_vk/vol_common.glsl shaders_vk/vt_noise.glsl
 
 build/shaders_vk/vol_scatter.comp.spv: shaders_vk/environment_common.glsl shaders_vk/cloud_shadow_common.glsl
 

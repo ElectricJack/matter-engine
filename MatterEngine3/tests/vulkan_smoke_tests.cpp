@@ -31,6 +31,7 @@
 #include "render/vk_scene_renderer.h"
 #include "render/vk_volumetrics.h"
 #include "render/vk_atmosphere.h"
+#include "render/vk_cloud_shadows.h"
 #include "provider/sector_resolver.h"
 #include "tileset_gtex.h"
 #include "../../MatterEditor/src/ui.h"
@@ -5280,6 +5281,146 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
           error.empty() ? "retire cloud-shadow bundle after both frame slots complete"
                         : error.c_str());
 
+    // Task 11 numerical path: use a separate small real module so the test
+    // can inject an analytical density without weakening authored cloud math.
+    viewer::VkCloudShadows task11_clouds;
+    CHECK(task11_clouds.init(vulkan, error),
+          error.empty() ? "initialize analytical Task 11 cloud-shadow module"
+                        : error.c_str());
+    matter::CloudShadowSettings task11_settings{};
+    task11_settings.enabled = true;
+    task11_settings.near_resolution = 0;
+    task11_settings.near_depth_slices = 0;
+    task11_settings.near_coverage_m = 160.0f;
+    task11_settings.far_resolution = 0;
+    task11_settings.far_depth_slices = 0;
+    task11_settings.far_coverage_m = 160.0f;
+    task11_settings.update_fraction = 1.0f;
+    task11_clouds.request_settings(task11_settings);
+    task11_clouds.set_density_override_for_test(0.02f, -1, 0.02f, true);
+    const matter::Float3 task11_camera{0.0f, 0.0f, 0.0f};
+    const matter::Float3 task11_daylight{0.0f, -1.0f, 0.0f};
+    CHECK(task11_clouds.generate_for_test(
+              0, task11_camera, task11_daylight, 0.0f, error),
+          error.empty() ? "generate analytical constant cloud-shadow slab"
+                        : error.c_str());
+    const uint32_t slab_ping = task11_clouds.level(0).active_index;
+    bool slab_matches = task11_clouds.last_generation_dispatch_count_for_test() == 6u;
+    float previous_tau = -1.0f;
+    for (uint32_t z = 0; z < 16; ++z) {
+        float tau = 0.0f;
+        uint16_t raw = 0;
+        slab_matches = slab_matches &&
+            task11_clouds.readback_cumulative_voxel_for_test(
+                0, slab_ping, 64, 64, z, tau, raw, error) &&
+            raw != 0u && std::isfinite(tau) && tau >= previous_tau &&
+            std::fabs(tau - static_cast<float>(z + 1u) * 0.2f) < 0.005f &&
+            std::isfinite(std::exp(-tau)) && std::exp(-tau) >= 0.0f &&
+            std::exp(-tau) <= 1.0f;
+        previous_tau = tau;
+    }
+    CHECK(slab_matches,
+          error.empty() ? "R16F GPU prefix matches the constant analytical slab"
+                        : error.c_str());
+
+    task11_clouds.set_density_override_for_test(0.02f, 2, 0.02f, true);
+    CHECK(task11_clouds.generate_for_test(
+              1, task11_camera, task11_daylight, 1.0f, error),
+          error.empty() ? "generate slab with one non-finite density slice"
+                        : error.c_str());
+    const uint32_t nan_ping = task11_clouds.level(0).active_index;
+    float tau_before_nan = 0.0f, tau_at_nan = 0.0f, tau_after_nan = 0.0f;
+    uint16_t raw_before_nan = 0, raw_at_nan = 0, raw_after_nan = 0;
+    CHECK(task11_clouds.readback_cumulative_voxel_for_test(
+              0, nan_ping, 64, 64, 1, tau_before_nan, raw_before_nan, error) &&
+              task11_clouds.readback_cumulative_voxel_for_test(
+                  0, nan_ping, 64, 64, 2, tau_at_nan, raw_at_nan, error) &&
+              task11_clouds.readback_cumulative_voxel_for_test(
+                  0, nan_ping, 64, 64, 3, tau_after_nan, raw_after_nan, error) &&
+              std::fabs(tau_before_nan - 0.4f) < 0.005f &&
+              std::fabs(tau_at_nan - 0.4f) < 0.005f &&
+              std::fabs(tau_after_nan - 0.6f) < 0.005f,
+          error.empty() ? "GPU prefix treats one NaN density sample as clear"
+                        : error.c_str());
+
+    // Quarter scheduling changes a selected tile while a non-selected tile
+    // retains the reprojected value. The phase helper independently locates
+    // representative columns for frame phase 1.
+    task11_settings.update_fraction = 0.25f;
+    task11_clouds.request_settings(task11_settings);
+    task11_clouds.set_density_override_for_test(0.01f, -1, 0.01f, true);
+    CHECK(task11_clouds.generate_for_test(
+              0, task11_camera, task11_daylight, 2.0f, error),
+          error.empty() ? "seed Task 11 quarter-scheduler history"
+                        : error.c_str());
+    std::array<uint32_t, 2> selected_column{0, 0};
+    std::array<uint32_t, 2> retained_column{0, 0};
+    bool found_selected = false, found_retained = false;
+    for (uint32_t y = 0; y < 128 && (!found_selected || !found_retained); y += 8)
+        for (uint32_t x = 0; x < 128 && (!found_selected || !found_retained); x += 8) {
+            const bool selected = viewer::cloud_shadow_column_selected(
+                true, false, {x, y}, 0, 3, 0.25f);
+            if (selected && !found_selected) {
+                selected_column = {x, y}; found_selected = true;
+            } else if (!selected && !found_retained) {
+                retained_column = {x, y}; found_retained = true;
+            }
+        }
+    task11_clouds.set_density_override_for_test(0.02f, -1, 0.02f, false);
+    CHECK(task11_clouds.generate_for_test(
+              1, task11_camera, task11_daylight, 3.0f, error),
+          error.empty() ? "advance one rotating Task 11 quarter"
+                        : error.c_str());
+    const uint32_t quarter_ping = task11_clouds.level(0).active_index;
+    float selected_tau = 0.0f, retained_tau = 0.0f;
+    uint16_t selected_raw = 0, retained_raw = 0;
+    CHECK(found_selected && found_retained &&
+              task11_clouds.readback_cumulative_voxel_for_test(
+                  0, quarter_ping, selected_column[0], selected_column[1], 0,
+                  selected_tau, selected_raw, error) &&
+              task11_clouds.readback_cumulative_voxel_for_test(
+                  0, quarter_ping, retained_column[0], retained_column[1], 0,
+                  retained_tau, retained_raw, error) &&
+              std::fabs(selected_tau - 0.2f) < 0.005f &&
+              std::fabs(retained_tau - 0.1f) < 0.005f,
+          error.empty() ? "GPU updates one deterministic quarter and retains reprojected tiles"
+                        : error.c_str());
+
+    task11_clouds.set_density_override_for_test(0.02f, -1, 0.02f, false);
+    const auto before_move = task11_clouds.level(0).current_frame;
+    matter::Float3 task11_lateral{
+        before_move.uvw_to_world.m[0] / task11_settings.near_coverage_m,
+        before_move.uvw_to_world.m[4] / task11_settings.near_coverage_m,
+        before_move.uvw_to_world.m[8] / task11_settings.near_coverage_m};
+    const matter::Float3 moved_camera{
+        task11_lateral.x * before_move.voxel_xy_m,
+        task11_lateral.y * before_move.voxel_xy_m,
+        task11_lateral.z * before_move.voxel_xy_m};
+    CHECK(task11_clouds.generate_for_test(
+              0, moved_camera, task11_daylight, 4.0f, error),
+          error.empty() ? "reproject one snapped voxel and refresh exposed border"
+                        : error.c_str());
+    const uint32_t moved_ping = task11_clouds.level(0).active_index;
+    float overlap_tau = 0.0f, border_tau = 0.0f;
+    uint16_t overlap_raw = 0, border_raw = 0;
+    CHECK(task11_clouds.readback_cumulative_voxel_for_test(
+              0, moved_ping, 63, 64, 0, overlap_tau, overlap_raw, error) &&
+              task11_clouds.readback_cumulative_voxel_for_test(
+                  0, moved_ping, 127, 64, 0, border_tau, border_raw, error) &&
+              std::fabs(overlap_tau - 0.2f) < 0.005f &&
+              std::fabs(border_tau - 0.2f) < 0.005f,
+          error.empty() ? "world-overlap survives reprojection and new border refreshes immediately"
+                        : error.c_str());
+
+    CHECK(task11_clouds.generate_for_test(
+              1, task11_camera, {0.0f, 0.1f, 1.0f}, 5.0f, error) &&
+              task11_clouds.last_generation_dispatch_count_for_test() == 0u &&
+              task11_clouds.environment_block()[32] == 0.0f &&
+              task11_clouds.environment_image_is_clear_for_test(0, error),
+          error.empty() ? "below-horizon sun publishes clear without generation dispatches"
+                        : error.c_str());
+    task11_clouds.destroy();
+
     // Task 9: exercise the production bundle swap, density dispatch, and
     // readback path with a cloud deck that is constant over every froxel this
     // fixture can see.  Ground fog and emitters stay clear, so enhanced
@@ -5348,6 +5489,13 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
     CHECK(renderer.volumetrics_cloud_density_allocated_for_test() &&
               renderer.volumetrics_grid_bytes_for_test() == 62668800u,
           "cloud shadows alone allocate the enhanced R16F density grid");
+    const uint32_t task11_initial_ping =
+        renderer.cloud_shadow_active_ping(0);
+    CHECK(!renderer.cloud_shadow_environment_image_is_clear_for_test(
+              task11_initial_ping, error),
+          error.empty()
+              ? "authored cloud extinction generates nonzero sun-space optical depth"
+              : error.c_str());
     renderer.set_volumetrics_settings(current_clouds, cloud_fog,
                                       no_cloud_shadows);
     CHECK(warm_rt_tlas() &&

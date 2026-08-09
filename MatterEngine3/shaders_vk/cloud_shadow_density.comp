@@ -1,0 +1,82 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "vol_common.glsl"
+#include "cloud_density.glsl"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(r16f, set = 0, binding = 0) uniform writeonly image3D cloud_density;
+layout(std430, set = 0, binding = 3) readonly buffer CloudSSBO {
+    GpuCloudLayer cloud_layers[];
+};
+layout(std140, set = 0, binding = 4) uniform GenerationConstants {
+    mat4 current_uvw_to_world;
+    mat4 previous_world_to_uvw;
+    uvec4 dimensions_level;
+    vec4 scheduling;
+    uvec4 controls;
+    vec4 density_override;
+} pc;
+
+bool finite3(vec3 value) {
+    return all(not(isnan(value))) && all(not(isinf(value)));
+}
+
+uint tile_hash(uvec2 column) {
+    uint hash = (column.x / 8u) * 0x8da6b343u ^
+                (column.y / 8u) * 0xd8163841u ^
+                pc.dimensions_level.w * 0xcb1ab31fu;
+    hash ^= hash >> 16u;
+    hash *= 0x7feb352du;
+    hash ^= hash >> 15u;
+    return hash;
+}
+
+bool previous_column_out_of_bounds(uvec2 column) {
+    for (uint z = 0u; z < pc.dimensions_level.z; ++z) {
+        vec3 uvw = (vec3(column, z) + vec3(0.5)) /
+                   vec3(pc.dimensions_level.xyz);
+        vec3 world = (pc.current_uvw_to_world * vec4(uvw, 1.0)).xyz;
+        vec3 previous_uvw =
+            (pc.previous_world_to_uvw * vec4(world, 1.0)).xyz;
+        if (!finite3(previous_uvw) ||
+            any(lessThan(previous_uvw, vec3(0.0))) ||
+            any(greaterThanEqual(previous_uvw, vec3(1.0)))) return true;
+    }
+    return false;
+}
+
+bool selected(uvec2 column) {
+    if (pc.scheduling.w <= 0.5 || previous_column_out_of_bounds(column))
+        return true;
+    float fraction = clamp(pc.scheduling.x, 0.0625, 1.0);
+    uint phase_count = uint(round(1.0 / fraction));
+    phase_count = clamp(phase_count, 1u, 16u);
+    return tile_hash(column) % phase_count ==
+           pc.controls.x % phase_count;
+}
+
+void main() {
+    uvec2 column = gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(column, pc.dimensions_level.xy)) ||
+        !selected(column)) return;
+    for (uint z = 0u; z < pc.dimensions_level.z; ++z) {
+        float sigma = 0.0;
+        if (pc.controls.y != 0u) {
+            sigma = ((tile_hash(column) & 1u) == 0u)
+                ? pc.density_override.x : pc.density_override.y;
+            if (int(z) == int(pc.controls.z))
+                sigma = uintBitsToFloat(0x7fc00000u);
+        } else {
+            vec3 uvw = (vec3(column, z) + vec3(0.5)) /
+                       vec3(pc.dimensions_level.xyz);
+            vec3 world = (pc.current_uvw_to_world * vec4(uvw, 1.0)).xyz;
+            for (uint layer = 0u; layer < pc.controls.w; ++layer)
+                sigma += evaluate_cloud_density(
+                    cloud_layers[layer], world, pc.scheduling.y).coarse;
+        }
+        imageStore(cloud_density, ivec3(column, z),
+                   vec4(sigma, 0.0, 0.0, 0.0));
+    }
+}

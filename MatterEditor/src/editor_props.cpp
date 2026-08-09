@@ -616,7 +616,8 @@ const char* const kDebugViewLabels[] = {"None", "Normals", "Depth",
                                         "Sun visibility", "Raw albedo",
                                         "LOD levels", "Wireframe"};
 const char* const kVolDebugLabels[] = {"Off", "Density", "Scatter",
-                                       "Integrated", "Cloud density"};
+                                       "Integrated", "Cloud density",
+                                       "Cloud shadow transmittance"};
 
 const auto s_viewer_debug = matter::props::group<ViewerStats>(
     "viewer.debug", "Viewer Debug Views",

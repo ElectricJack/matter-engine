@@ -559,6 +559,9 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/vol_density.comp.spv \
          build/shaders_vk/vol_scatter.comp.spv \
          build/shaders_vk/vol_integrate.comp.spv \
+         build/shaders_vk/cloud_shadow_reproject.comp.spv \
+         build/shaders_vk/cloud_shadow_density.comp.spv \
+         build/shaders_vk/cloud_shadow_integrate.comp.spv \
          build/shaders_vk/tileset_bake_primary.comp.spv \
          build/shaders_vk/tileset_bake_ao.comp.spv \
          build/shaders_vk/vt_composite.comp.spv \
@@ -601,6 +604,11 @@ build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
     $(ME3_DIR)/shaders_vk/environment_common.glsl $(ME3_DIR)/shaders_vk/cloud_shadow_common.glsl
 
 build/shaders_vk/vol_scatter.comp.spv: $(ME3_DIR)/shaders_vk/environment_common.glsl $(ME3_DIR)/shaders_vk/cloud_shadow_common.glsl
+
+build/shaders_vk/cloud_shadow_density.comp.spv: \
+    $(ME3_DIR)/shaders_vk/cloud_density.glsl \
+    $(ME3_DIR)/shaders_vk/vol_common.glsl \
+    $(ME3_DIR)/shaders_vk/vt_noise.glsl
 
 build/shaders_vk/gi_temporal.comp.spv build/shaders_vk/gi_atrous.comp.spv: \
     $(ME3_DIR)/shaders_vk/gi_common.glsl

@@ -83,12 +83,16 @@ trap cleanup EXIT INT TERM
 
 WORLD="${MATTER_WORLD:-StreamMountain}"
 FROXEL_PERF_WARMUP_SECONDS=140
+CLOUD_SHADOW_PERF_WARMUP_SECONDS=90
 PERF_WARMUP_SECONDS="${MATTER_PERF_WARMUP_SECONDS:-20}"
 # The one-process froxel lane spends 25 seconds on the matrix, then settles
 # and captures four representatives.  Do not let the editor's perf timer end
 # the process halfway through that required proof.
 if [ "$SUITE" = "froxel" ] && [ "$PERF_WARMUP_SECONDS" -lt "$FROXEL_PERF_WARMUP_SECONDS" ]; then
   PERF_WARMUP_SECONDS="$FROXEL_PERF_WARMUP_SECONDS"
+fi
+if [ "$SUITE" = "cloud-shadows" ] && [ "$PERF_WARMUP_SECONDS" -lt "$CLOUD_SHADOW_PERF_WARMUP_SECONDS" ]; then
+  PERF_WARMUP_SECONDS="$CLOUD_SHADOW_PERF_WARMUP_SECONDS"
 fi
 MATTER_WORLD="$WORLD" \
 MATTER_CMD_FIFO="$FIFO" \
@@ -409,7 +413,114 @@ case "$SUITE" in
       exit 1
     }
     ;;
-  cloud-shadows|final)
+  cloud-shadows)
+    [ "$WORLD" = StreamMountain ] || {
+      echo "ERROR: cloud-shadows suite requires StreamMountain" >&2
+      exit 2
+    }
+    [ "$LABEL" = optical-depth ] || {
+      echo "ERROR: cloud-shadows suite label must be optical-depth" >&2
+      exit 2
+    }
+    send "set render.volumetrics.enabled true"
+    send "set render.volumetrics.local_sun_march_steps 8"
+    send "set render.cloud_shadows.enabled true"
+    send "set render.cloud_shadows.near_resolution 256"
+    send "set render.cloud_shadows.near_depth_slices 32"
+    send "set render.cloud_shadows.near_coverage_m 1800"
+    send "set render.cloud_shadows.far_resolution 128"
+    send "set render.cloud_shadows.far_depth_slices 24"
+    send "set render.cloud_shadows.far_coverage_m 4000"
+    send "set render.cloud_shadows.filter_scale 1"
+    send "set render.cloud_shadows.update_fraction 0.25"
+    send "set render.lighting.sun_azimuth_deg -14"
+    send "set render.lighting.sun_elevation_deg 45"
+    send "set render.lighting.exposure_ev 0"
+    send "set viewer.debug.vol_debug_view 5"
+    for layer in 0 1 2 3; do
+      send "set render.clouds.layer${layer}_wind 0,0,0"
+      send "get render.clouds.layer${layer}_wind"
+    done
+    for property in \
+      render.cloud_shadows.enabled \
+      render.cloud_shadows.near_resolution \
+      render.cloud_shadows.near_depth_slices \
+      render.cloud_shadows.near_coverage_m \
+      render.cloud_shadows.far_resolution \
+      render.cloud_shadows.far_depth_slices \
+      render.cloud_shadows.far_coverage_m \
+      render.cloud_shadows.filter_scale \
+      render.cloud_shadows.update_fraction \
+      render.lighting.sun_azimuth_deg \
+      render.lighting.sun_elevation_deg \
+      viewer.debug.vol_debug_view; do
+      send "get $property"
+    done
+    send "cam 20 760 350 0 420 0"
+    for _ in $(seq 1 300); do
+      grep -q 'bake-timing.*world-kind' "$LOG" 2>/dev/null && break
+      sleep 1
+    done
+    grep -q 'bake-timing.*world-kind' "$LOG" 2>/dev/null || {
+      echo "ERROR: StreamMountain sectors did not publish" >&2
+      exit 1
+    }
+    sleep 5
+    capture centered
+    send "cam 650 760 350 630 420 0"
+    sleep 4
+    capture translated
+    send "cam 850 760 350 830 420 0"
+    sleep 4
+    capture boundary
+    send "cam 20 760 350 0 420 0"
+    send "set render.clouds.layer0_wind 25,0,0"
+    send "get render.clouds.layer0_wind"
+    for frame in 0 1 2 3; do
+      sleep 2
+      capture "moving_${frame}"
+    done
+    IMAGE_PYTHON="${MATTER_IMAGE_PYTHON:-}"
+    if [ -z "$IMAGE_PYTHON" ]; then
+      for candidate in python3 python; do
+        if command -v "$candidate" >/dev/null 2>&1 && \
+           "$candidate" -c 'from PIL import Image' >/dev/null 2>&1; then
+          IMAGE_PYTHON="$candidate"
+          break
+        fi
+      done
+    fi
+    [ -n "$IMAGE_PYTHON" ] || {
+      echo "ERROR: cloud-shadow diffs require Pillow" >&2
+      exit 1
+    }
+    DIFF_LOG="$OUT/${LABEL}_diffs.log"
+    : > "$DIFF_LOG"
+    for pair in "centered translated" "moving_0 moving_1" \
+                "moving_1 moving_2" "moving_2 moving_3"; do
+      set -- $pair
+      a="$OUT/${LABEL}_$1.png"; b="$OUT/${LABEL}_$2.png"
+      "$IMAGE_PYTHON" "$HERE/img_diff.py" "$a" "$b" \
+        --max-diff-pct 100 | tee -a "$DIFF_LOG"
+      "$IMAGE_PYTHON" - "$a" "$b" <<'PY' | tee -a "$DIFF_LOG"
+from PIL import Image
+import sys
+a = Image.open(sys.argv[1]).convert("RGB")
+b = Image.open(sys.argv[2]).convert("RGB")
+d = [abs(x-y) for x,y in zip(a.tobytes(), b.tobytes())]
+print(f"MEAN_MAX {sys.argv[1]} {sys.argv[2]} mean={sum(d)/len(d):.4f} max={max(d)}")
+PY
+    done
+    for _ in $(seq 1 $((CLOUD_SHADOW_PERF_WARMUP_SECONDS + 30))); do
+      [ -s "$PERF_OUTPUT" ] && break
+      sleep 1
+    done
+    [ -s "$PERF_OUTPUT" ] || {
+      echo "ERROR: telemetry timed out: $PERF_OUTPUT" >&2
+      exit 1
+    }
+    ;;
+  final)
     echo "ERROR: suite '$SUITE' is reserved for a later milestone" >&2
     exit 2
     ;;

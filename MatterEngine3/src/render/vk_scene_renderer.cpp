@@ -8314,7 +8314,10 @@ void VkSceneRenderer::set_volumetrics_settings(
     const matter::FogSettings& fog,
     const matter::CloudShadowSettings& shadows) {
     cloud_shadow_settings_ = shadows;
-    if (cloud_shadows_) cloud_shadows_->request_settings(cloud_shadow_settings_);
+    if (cloud_shadows_) {
+        cloud_shadows_->request_settings(cloud_shadow_settings_);
+        cloud_shadows_->request_cloud_layers(fog);
+    }
     volumetrics_enabled_ = s.enabled;
     volumetrics_debug_view_ = s.vol_debug_view;
     // The composite pass skips froxel integration entirely for a ray whose
@@ -11716,6 +11719,8 @@ bool VkSceneRenderer::record_cull_and_render(
         if (volumetrics_debug_view_ > 3.5f)
             attachments.push_back(volumetrics_->cloud_density_or_dummy().lifetime);
     }
+    if (cloud_shadows_)
+        cloud_shadows_->append_frame_lifetimes(frame.frame_slot, attachments);
     for (auto* histories : {&gi_history_, &gi_spec_history_,
                             &gi_trans_history_}) {
         for (auto& history : *histories) {

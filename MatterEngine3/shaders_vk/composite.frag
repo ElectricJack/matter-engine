@@ -142,6 +142,35 @@ float integrated_slice_at_depth(float depth) {
 }
 
 void main() {
+    // Session-only Task 11 diagnostic. Sky is unambiguously clear (white);
+    // depth-covered receivers reconstruct a world position from the snapped
+    // near-clipmap center and display filtered near/far transmittance only.
+    // This never multiplies production direct lighting (Task 13 owns that).
+    if (lighting.vol_debug_view > 4.5) {
+        float hw_depth = texture(depth_texture, in_uv).r;
+        if (hw_depth <= 0.0 || environment.cloud_state.x <= 0.0) {
+            out_hdr = vec4(1.0);
+            return;
+        }
+        float linear_depth = composite_linear_depth(hw_depth);
+        vec3 view_ray = compute_view_ray(in_uv);
+        vec3 camera_forward = normalize(vec3(
+            lighting.camera_fwd_x, lighting.camera_fwd_y,
+            lighting.camera_fwd_z));
+        float ray_distance = linear_depth /
+            max(dot(view_ray, camera_forward), 1e-4);
+        mat4 near_uvw_to_world = inverse(environment.cloud_world_to_uvw[0]);
+        vec3 camera = (near_uvw_to_world * vec4(0.5, 0.5, 0.5, 1.0)).xyz;
+        camera.y = lighting.camera_y;
+        vec3 world_pos = camera + view_ray * ray_distance;
+        vec3 to_sun = normalize(-lighting.sun_direction);
+        float receiver_distance = max(lighting.vol_cloud_top - world_pos.y, 0.0) /
+            max(to_sun.y, 1e-3);
+        float transmittance = sample_cloud_transmittance(
+            world_pos, receiver_distance);
+        out_hdr = vec4(vec3(transmittance), 1.0);
+        return;
+    }
     // Cloud density must precede every GBuffer/sky early-out.  Binding 9 is
     // the initialized 1x1x1 Current dummy or the Improved R16F extinction
     // grid, so this full-ray maximum is black for Current and independent of

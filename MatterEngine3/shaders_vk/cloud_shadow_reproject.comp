@@ -1,0 +1,35 @@
+#version 460
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 1) uniform sampler3D previous_cumulative;
+layout(r16f, set = 0, binding = 2) uniform writeonly image3D cumulative_out;
+layout(std140, set = 0, binding = 4) uniform GenerationConstants {
+    mat4 current_uvw_to_world;
+    mat4 previous_world_to_uvw;
+    uvec4 dimensions_level;
+    vec4 scheduling;
+    uvec4 controls;
+    vec4 density_override;
+} pc;
+
+bool finite3(vec3 value) {
+    return all(not(isnan(value))) && all(not(isinf(value)));
+}
+
+void main() {
+    uvec3 voxel = gl_GlobalInvocationID;
+    if (any(greaterThanEqual(voxel, pc.dimensions_level.xyz))) return;
+    vec3 current_uvw = (vec3(voxel) + vec3(0.5)) /
+                       vec3(pc.dimensions_level.xyz);
+    vec3 world = (pc.current_uvw_to_world * vec4(current_uvw, 1.0)).xyz;
+    vec3 previous_uvw =
+        (pc.previous_world_to_uvw * vec4(world, 1.0)).xyz;
+    bool inside = pc.scheduling.w > 0.5 && finite3(previous_uvw) &&
+                  all(greaterThanEqual(previous_uvw, vec3(0.0))) &&
+                  all(lessThan(previous_uvw, vec3(1.0)));
+    float tau = inside ? texture(previous_cumulative, previous_uvw).r : 0.0;
+    if (isnan(tau) || isinf(tau)) tau = 0.0;
+    imageStore(cumulative_out, ivec3(voxel),
+               vec4(clamp(tau, 0.0, 80.0), 0.0, 0.0, 0.0));
+}

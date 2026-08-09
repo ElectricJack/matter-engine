@@ -227,6 +227,100 @@ void test_task10_edge_blend_filter_and_fail_closed_reference() {
           "near clipmap blends into far transmittance across its lateral guard band");
 }
 
+void test_task11_prefix_integrates_sunward_density_fail_closed() {
+    const std::array<float, 6> slab{{0.02f, 0.02f, 0.02f,
+                                     0.02f, 0.02f, 0.02f}};
+    const auto slab_tau = viewer::cloud_shadow_prefix_integrate(slab, 10.0f);
+    bool slab_ok = true;
+    for (size_t z = 0; z < slab_tau.size(); ++z) {
+        const float expected_tau = static_cast<float>(z + 1u) * 0.2f;
+        const float transmittance = std::exp(-slab_tau[z]);
+        slab_ok = slab_ok &&
+            std::fabs(slab_tau[z] - expected_tau) < 1.0e-6f &&
+            (z == 0 || slab_tau[z] >= slab_tau[z - 1]) &&
+            std::fabs(transmittance - std::exp(-expected_tau)) < 0.01f &&
+            transmittance >= 0.0f && transmittance <= 1.0f;
+    }
+    CHECK(slab_ok,
+          "constant extinction integrates monotonically from the sunward boundary");
+
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const std::array<float, 6> punctured{{0.02f, 0.02f, nan,
+                                          0.02f, 0.02f, 0.02f}};
+    const auto punctured_tau =
+        viewer::cloud_shadow_prefix_integrate(punctured, 10.0f);
+    CHECK(std::fabs(punctured_tau[0] - 0.2f) < 1.0e-6f &&
+              std::fabs(punctured_tau[1] - 0.4f) < 1.0e-6f &&
+              std::fabs(punctured_tau[2] - 0.4f) < 1.0e-6f &&
+              std::fabs(punctured_tau[5] - 1.0f) < 1.0e-6f,
+          "a non-finite density sample contributes zero without blacking later slices");
+
+    const std::array<float, 5> separated{{0.03f, 0.0f, 0.0f, 0.02f, 0.0f}};
+    const auto separated_tau =
+        viewer::cloud_shadow_prefix_integrate(separated, 10.0f);
+    CHECK(std::fabs(separated_tau[0] - 0.3f) < 1.0e-6f &&
+              std::fabs(separated_tau[2] - 0.3f) < 1.0e-6f &&
+              std::fabs(separated_tau[3] - 0.5f) < 1.0e-6f &&
+              std::fabs(separated_tau[4] - 0.5f) < 1.0e-6f,
+          "receivers above between and below separated layers see the sunward subset");
+}
+
+void test_task11_reprojection_maps_world_overlap_and_exposed_border() {
+    const matter::CloudShadowLevelDesc level{16, 16, 8, 160.0f};
+    const matter::Float3 sun_direction{0.0f, -1.0f, 0.0f};
+    const auto previous = matter::make_cloud_shadow_frame(
+        level, {0.0f, 0.0f, 0.0f}, sun_direction);
+    matter::Float3 lateral{previous.uvw_to_world.m[0] / level.coverage_m,
+                           previous.uvw_to_world.m[4] / level.coverage_m,
+                           previous.uvw_to_world.m[8] / level.coverage_m};
+    const auto current = matter::make_cloud_shadow_frame(
+        level,
+        {lateral.x * previous.voxel_xy_m,
+         lateral.y * previous.voxel_xy_m,
+         lateral.z * previous.voxel_xy_m},
+        sun_direction);
+    const matter::Float3 overlap =
+        viewer::cloud_shadow_previous_uvw_for_voxel(
+            current, previous, level, 7, 5, 3);
+    const matter::Float3 exposed =
+        viewer::cloud_shadow_previous_uvw_for_voxel(
+            current, previous, level, 15, 5, 3);
+    CHECK(std::fabs(overlap.x - 8.5f / 16.0f) < 1.0e-6f &&
+              std::fabs(overlap.y - 5.5f / 16.0f) < 1.0e-6f &&
+              std::fabs(overlap.z - 3.5f / 8.0f) < 1.0e-6f,
+          "one-voxel camera motion reprojects overlapping world positions to shifted texels");
+    CHECK(!viewer::cloud_shadow_uvw_inside(exposed) && exposed.x > 1.0f,
+          "only the newly exposed border maps outside previous history");
+}
+
+void test_task11_rotating_tile_scheduler_and_horizon_contract() {
+    CHECK(viewer::cloud_shadow_phase_count(0.25f) == 4u &&
+              viewer::cloud_shadow_phase_count(1.0f) == 1u &&
+              viewer::cloud_shadow_phase_count(0.0f) == 16u &&
+              viewer::cloud_shadow_phase_count(
+                  std::numeric_limits<float>::quiet_NaN()) == 16u,
+          "update fractions sanitize to a finite one-through-sixteen phase count");
+    uint32_t refreshes = 0;
+    for (uint32_t frame = 0; frame < 4; ++frame) {
+        refreshes += viewer::cloud_shadow_column_selected(
+            true, false, {24, 40}, 0, frame, 0.25f) ? 1u : 0u;
+    }
+    CHECK(refreshes == 1u,
+          "an existing 8x8 tile refreshes exactly once over four quarter phases");
+    bool border_always = true;
+    for (uint32_t frame = 0; frame < 4; ++frame) {
+        border_always = border_always && viewer::cloud_shadow_column_selected(
+            true, true, {24, 40}, 0, frame, 0.25f);
+    }
+    CHECK(border_always && viewer::cloud_shadow_column_selected(
+              false, false, {24, 40}, 0, 3, 0.25f),
+          "newly exposed and invalid-history columns refresh independent of phase");
+    CHECK(viewer::cloud_shadow_direct_sun_visible({0.0f, -1.0f, 0.0f}) &&
+              !viewer::cloud_shadow_direct_sun_visible({0.0f, 0.0f, 1.0f}) &&
+              !viewer::cloud_shadow_direct_sun_visible({0.0f, 0.1f, 1.0f}),
+          "incoming/from-sun direction is negated once for the geometric horizon");
+}
+
 } // namespace
 
 int main() {
@@ -236,5 +330,8 @@ int main() {
     test_task10_sun_space_round_trip_and_stable_snapping();
     test_task10_near_up_basis_and_engine_direction_convention();
     test_task10_edge_blend_filter_and_fail_closed_reference();
+    test_task11_prefix_integrates_sunward_density_fail_closed();
+    test_task11_reprojection_maps_world_overlap_and_exposed_border();
+    test_task11_rotating_tile_scheduler_and_horizon_contract();
     return check_summary();
 }
