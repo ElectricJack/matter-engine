@@ -1110,13 +1110,32 @@ bool extract_streaming(JSContext* context,
                     "World.streaming must be an object");
     }
 
+    // Nested sector LOD (docs/terrain-nested-sector-lod-2026-08-08.md). Read
+    // BEFORE the rings early-out below: nesting reinterprets `terrainBands` as
+    // per-level annuli and makes the outermost BAND (not the outermost ring)
+    // bound residency, so a world can legitimately declare nesting and bands
+    // without declaring rings at all, and parsing this after the early return
+    // would silently drop the flag for exactly those worlds.
+    {
+        JSValue nested =
+            JS_GetPropertyStr(context, streaming, "nestedSectors");
+        if (!JS_IsUndefined(nested))
+            definition.settings.nested_sectors =
+                JS_ToBool(context, nested) != 0;
+        JS_FreeValue(context, nested);
+    }
+
+    // Rings are OPTIONAL, and an absent `rings` used to return from this whole
+    // function -- taking `terrainBands` with it. A world that authored bands
+    // and no rings therefore lost its band table silently. That was survivable
+    // while the outermost ring bounded residency (no rings, nothing streamed
+    // anyway); under nested sector LOD the outermost BAND bounds residency, so
+    // such a world is meaningful and must keep its bands.
     JSValue rings = JS_GetPropertyStr(context, streaming, "rings");
     if (JS_IsUndefined(rings)) {
         JS_FreeValue(context, rings);
-        JS_FreeValue(context, streaming);
-        return true;
-    }
-
+        rings = JS_UNDEFINED;
+    } else {
     std::uint32_t count = 0;
     if (!array_length(context, rings, count) || count == 0) {
         JS_FreeValue(context, rings);
@@ -1172,6 +1191,7 @@ bool extract_streaming(JSContext* context,
 
     definition.settings.streaming_rings = std::move(parsed);
     JS_FreeValue(context, rings);
+    }
 
     // Optional heightfield terrain LOD bands: same shape/ordering contract
     // as rings ({radius, lod}, increasing radii, consecutive descending

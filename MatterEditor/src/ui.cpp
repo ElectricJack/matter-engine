@@ -1095,6 +1095,10 @@ void Ui::draw_streaming_lod_section(matter::WorldSession* session,
                                     : decode_rings(draft->terrain_bands);
     }
     st.edit.sector_size = active.sector_size;
+    // From the ACTIVE profile, never from the draft: nesting is not an override
+    // the panel can set. Switching tiling mid-session would strand every
+    // resident tile under a keyspace the streamer no longer uses.
+    st.edit.nested_sectors = active.nested_sectors;
 
     // Schema fields (the ladder toggle plus the two ring strings, which show
     // exactly what will be written to the world props file).
@@ -1218,6 +1222,19 @@ void Ui::draw_streaming_lod_section(matter::WorldSession* session,
                                st.drag_scatter);
     ImGui::Spacing();
     if (st.edit.terrain_lod_enabled) {
+        // Nested sector LOD reads the SAME band table as per-level annuli, so
+        // the bar below means something different and the panel has to say so:
+        // band LOD l is where level 5-l tiles live, a level-L tile is
+        // sector_size << L across at voxel 2<<L, and cells-per-tile is
+        // constant. Read-only -- switching tiling mid-session would strand
+        // every resident tile under a keyspace the streamer no longer uses.
+        if (st.edit.nested_sectors) {
+            ImGui::TextUnformatted(
+                "Terrain LOD -- NESTED (band 5 = 1x tiles ... band 0 = 32x)");
+            ImGui::TextDisabled(
+                "Level L: %.0f m tiles at %.0f m voxels, 32x32 cells each.",
+                st.edit.sector_size, 2.0f);
+        } else
         ImGui::TextUnformatted(
             "Terrain LOD (5 native voxel ... 0 one quad)");
         rings_changed |= transition_bar("##bands_bar", st.edit.terrain_bands,
@@ -1237,8 +1254,11 @@ void Ui::draw_streaming_lod_section(matter::WorldSession* session,
                 "the streamer.",
                 2.0f * st.edit.sector_size);
         // The streamed area is bounded by the outer SCATTER ring; terrain
-        // bands beyond it exist but no sector out there is resident.
-        if (!st.edit.scatter_rings.empty() &&
+        // bands beyond it exist but no sector out there is resident. NOT under
+        // nesting, where the outermost BAND bounds residency and the rings only
+        // grade scatter -- so the warning would be exactly backwards there.
+        if (!st.edit.nested_sectors &&
+            !st.edit.scatter_rings.empty() &&
             !st.edit.terrain_bands.empty() &&
             st.edit.terrain_bands.back().radius >
                 st.edit.scatter_rings.back().radius + 1.0f)

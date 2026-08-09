@@ -392,6 +392,35 @@ matter_stream::Config make_streaming_profile(
         for (const auto& band : world_settings.terrain_bands)
             profile.terrain_bands.push_back({band.radius, band.rung});
     }
+    // Nested sector LOD: level L tiles are S_0 << L across and mesh at rung -L,
+    // so cells-per-tile is constant and each annulus holds a near-constant tile
+    // count instead of the uniform grid's O(R^2). The bands above are
+    // REINTERPRETED as per-level annuli (band LOD l -> level 5 - l); the same
+    // authored table drives both modes.
+    //
+    // Two consequences worth stating where the profile is built, because they
+    // change what an existing world's numbers mean:
+    //   * the outermost BAND bounds residency, not the outermost ring. Today a
+    //     sector past the last ring is never requested no matter what the bands
+    //     say -- the trap StreamMountain's own comment documents. Rings become
+    //     scatter-tier-only.
+    //   * a tile is desired if ANY of it is within reach, not if its centre is.
+    //     That is what makes the desired set a hole-free quadtree.
+    profile.nested_sectors = world_settings.nested_sectors;
+    // MATTER_NESTED_SECTORS forces it either way for a headless A/B, alongside
+    // the rest of the MATTER_STREAM_* family. "0" disables even for a world
+    // that authored it, which is the kill switch.
+    if (const char* nested_env = std::getenv("MATTER_NESTED_SECTORS")) {
+        profile.nested_sectors = nested_env[0] != '0';
+        std::fprintf(stderr,
+                     "[stream] MATTER_NESTED_SECTORS=%s: nested sector LOD "
+                     "%s\n",
+                     nested_env,
+                     profile.nested_sectors ? "ON" : "OFF");
+    }
+    // Nesting IS the terrain ladder expressed as tile size; MATTER_TERRAIN_LOD=0
+    // would otherwise leave the streamer with no bands to build levels from.
+    if (profile.nested_sectors) profile.terrain_lod_enabled = true;
     return profile;
 }
 
@@ -3370,6 +3399,21 @@ bool WorldSession::Impl::install_world(
             world_sector_size, world_sea_level);
     matter_stream::Config profile =
         make_streaming_profile(world_sector_size, provider->world_settings());
+    // Which TILING this world connected with, and how far it reaches. Logged
+    // because the two modes look identical from outside until you count parts,
+    // and a run that silently fell back to the uniform grid -- a band table
+    // with a gap in it, MATTER_NESTED_SECTORS=0 -- would otherwise be
+    // indistinguishable from one that nested.
+    if (profile.nested_sectors) {
+        const float nested_reach = profile.terrain_bands.empty()
+            ? 0.0f : profile.terrain_bands.back().radius;
+        fprintf(stderr,
+                "[stream] NESTED sector LOD: level 0 = %.0f m tiles, %zu "
+                "levels, reach %.0f m (the outermost BAND bounds residency; "
+                "rings grade scatter only)\n",
+                profile.sector_size, profile.terrain_bands.size(),
+                nested_reach);
+    }
     {
         // Editor LOD Settings overrides (set on the app thread; this connect
         // path runs on the worker) applied over world JS + env, then the
@@ -7974,6 +8018,7 @@ bool WorldSession::streaming_lod_config(StreamingLodConfig& out) const {
     for (const auto& band : profile.terrain_bands)
         out.terrain_bands.push_back({band.radius, band.rung});
     out.terrain_lod_enabled = profile.terrain_lod_enabled;
+    out.nested_sectors = profile.nested_sectors;
     out.sector_size = profile.sector_size;
     out.hysteresis = profile.hysteresis;
     out.max_inflight = profile.max_inflight;

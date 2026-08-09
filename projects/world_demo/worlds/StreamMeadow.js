@@ -15,6 +15,37 @@ class StreamMeadow extends World {
   static params = { worldSeed: 20260722 };
   static world  = { sectorSize: 64, yMin: -32, yMax: 96 };
 
+  // NESTED SECTOR LOD — enabled here FIRST, deliberately, before StreamMountain
+  // (docs/superpowers/plans/2026-08-08-nested-sector-lod-migration.md, WP6).
+  // This world is small, flat and fast to fill, which makes it the right place
+  // to find out whether nested tiling renders at all.
+  //
+  // Level L tiles are 64<<L metres across at a 2<<L voxel, so cells-per-tile is
+  // a constant 32x32 and each annulus holds a near-constant tile count -- where
+  // the uniform grid puts 78% of its sectors in the two coarsest bands drawing
+  // one to four quads apiece.
+  //
+  // The bands below are the SAME table shape the uniform ladder uses; nesting
+  // only reinterprets it (band LOD l = the annulus where level 5-l tiles live).
+  // Each annulus is authored comfortably wider than one tile of the next
+  // coarser level -- 192/384/768/1536/3072/4096 against tiles of
+  // 128/256/512/1024/2048 -- so the restriction pass has nothing to fix and the
+  // ladder is 2:1 by construction rather than by repair.
+  //
+  // No `rings` here: under nesting the outermost BAND bounds residency and
+  // rings only grade scatter, so the engine's sector-scaled defaults are fine.
+  static streaming = {
+    nestedSectors: true,
+    terrainBands: [
+      { radius:   192, lod: 5 },   // level 0:   64 m tiles,  2 m voxels
+      { radius:   576, lod: 4 },   // level 1:  128 m tiles,  4 m
+      { radius:  1344, lod: 3 },   // level 2:  256 m tiles,  8 m
+      { radius:  2880, lod: 2 },   // level 3:  512 m tiles, 16 m
+      { radius:  5952, lod: 1 },   // level 4: 1024 m tiles, 32 m
+      { radius: 10048, lod: 0 },   // level 5: 2048 m tiles, 64 m
+    ],
+  };
+
   // Thresholds above the [0,1] noise range: relief never reaches Mountains and
   // moisture never reaches the rocky cutoff, so biome_at returns Foothills
   // everywhere above sea level. material_at then gives MAT.dirt on flats

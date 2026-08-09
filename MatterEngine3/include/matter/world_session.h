@@ -377,6 +377,14 @@ public:
         // of the active profile, but a `false` here read as "the ladder is off"
         // while the engine had it on.
         bool terrain_lod_enabled = true;
+        // Nested sector LOD. Informational in the panel: level L tiles are
+        // sector_size << L across, so the SAME terrain_bands above are read as
+        // per-level annuli rather than as per-sector LODs, and the outermost
+        // band bounds residency instead of the outermost scatter ring. Read
+        // back from the active profile; not settable as an override, because
+        // switching tiling mid-session would strand every resident tile under
+        // a keyspace the streamer no longer uses.
+        bool nested_sectors = false;
         // Informational (filled by streaming_lod_config, ignored by
         // set_streaming_lod_overrides): the world's sector size, for UI
         // spacing hints.

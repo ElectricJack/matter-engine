@@ -901,6 +901,59 @@ class StreamingWorld extends World {
           "world streaming ring values preserve authored order");
 }
 
+void test_nested_sectors_flag() {
+    Fixture fixture;
+    // Defaults OFF, and stays off for a world that says nothing -- that is the
+    // rollback position, so it gets an assertion rather than an assumption.
+    {
+        const fs::path path = fixture.write("PlainStreamWorld.js", R"JS(
+class PlainStreamWorld extends World {
+  static roots = [{ module: 'Root' }];
+  static streaming = { rings: [{ radius: 128, rung: 0 }] };
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(!definition.settings.nested_sectors,
+              "nestedSectors defaults off");
+    }
+    // Authored on, WITHOUT rings. Nesting makes the outermost terrain BAND
+    // bound residency, so a world can legitimately declare bands and no rings
+    // -- and the flag is parsed before the rings early-out precisely so that
+    // world does not silently lose it.
+    {
+        const fs::path path = fixture.write("NestedWorld.js", R"JS(
+class NestedWorld extends World {
+  static roots = [{ module: 'Root' }];
+  static world = { sectorSize: 64, yMin: -96, yMax: 704 };
+  static streaming = {
+    nestedSectors: true,
+    terrainBands: [
+      { radius: 318, lod: 5 },
+      { radius: 1186, lod: 4 },
+      { radius: 2605, lod: 3 },
+      { radius: 4702, lod: 2 },
+      { radius: 7753, lod: 1 },
+      { radius: 10095, lod: 0 },
+    ],
+  };
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(definition.settings.nested_sectors,
+              "nestedSectors parsed with no rings declared");
+        CHECK(definition.settings.terrain_bands.size() == 6,
+              "the band table a nested world is tiled by survives with it");
+        CHECK(definition.settings.streaming_rings.empty(),
+              "a nested world needs no rings");
+    }
+}
+
 void test_vulkan_volumetrics_settings_defaults() {
     matter::VulkanVolumetricsSettings vol{};
     CHECK(vol.enabled == false, "volumetrics disabled by default");
@@ -1529,6 +1582,7 @@ int main() {
     test_fog_extraction_with_authored_values();
     test_fog_defaults_when_absent();
     test_streaming_ring_extraction();
+    test_nested_sectors_flag();
     test_vulkan_volumetrics_settings_defaults();
     test_legacy_fog_multipliers_fold_into_authored_fog();
     test_legacy_fog_multipliers_fold_into_height_layer();

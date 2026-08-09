@@ -1497,6 +1497,16 @@ int main() {
             if (parsed > 0) settle_frames = parsed;
         }
     }
+    // MATTER_SCREENSHOT_SETTLE: the same dial for a plain screenshot run.
+    // Three frames is enough for a world that is fully built at bake time, but
+    // a STREAMED world has barely started at that point -- the disc fills over
+    // seconds -- so an un-tunable 3 photographs an empty horizon and reads
+    // exactly like a renderer that dropped the far field. Applies whether or
+    // not this is a replay, so it can also shorten one.
+    if (const char* value = std::getenv("MATTER_SCREENSHOT_SETTLE")) {
+        const int parsed = std::atoi(value);
+        if (parsed > 0) settle_frames = parsed;
+    }
     const char* screenshot_env = std::getenv("MATTER_SCREENSHOT");
     // A replay run IS a screenshot run: it reuses the settle/readback/quit path
     // wholesale, and only differs in cropping the result to the recorded rect.
