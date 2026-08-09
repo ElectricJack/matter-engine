@@ -208,14 +208,24 @@ constexpr int kMaxHabitatChannels = 16;
 // The 96 that bounds a surfaces tape is a GPU constraint: it mirrors the
 // shader's VT_TAPE_MAX_OPS register file and the compositor's arena slot, and
 // raising it means touching both. A habitat tape never reaches the GPU -- it is
-// evaluated on the CPU at bake time, per scatter candidate -- so it is bounded
-// only by the register array the evaluator puts on the stack, and 256 floats is
-// a kilobyte.
+// evaluated on the CPU at bake time -- so none of that applies.
 //
-// This is not theoretical headroom: StreamMountain's alpine ecology is ~100 ops
-// and did not fit under 96, which is what prompted separating the two caps
-// rather than trimming an ecology to satisfy a shader's register file.
-constexpr int kMaxHabitatOps = 256;
+// WHAT ACTUALLY BOUNDS IT, and why it is a compile-time constant at all: the
+// evaluator puts the register file on the STACK, one array per channels_at
+// call. It has to. A SurfaceRuntime is shared by every bake worker (a dozen
+// threads on this machine), so a mutable scratch member would be a data race,
+// and heap-allocating per call would cost more than the evaluation it serves.
+//
+// So the cap is a stack budget, and stack is cheap: 1024 floats is 4 KB per
+// call against worker stacks measured in megabytes. It is set here well above
+// any ecology anyone has written -- StreamMountain's alpine tape, the largest
+// in the tree, is ~100 ops -- so that an author never trims an ecology to fit a
+// number, which is exactly what the 96 was forcing before the caps were split.
+//
+// Raising it further is a one-line change with no downstream mirror to keep in
+// sync; the only question to ask is whether 4 KB x (recursion depth of 1) still
+// looks small next to the thread's stack.
+constexpr int kMaxHabitatOps = 1024;
 
 // Which OUTPUT directives a tape may declare. The op set, the register machine
 // and every arithmetic rule are identical either way -- this only decides what
