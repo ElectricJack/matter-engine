@@ -61,6 +61,28 @@ void test_reference_transmittance_is_finite_bounded_and_monotonic_with_path_leng
           "longer atmospheric paths do not increase transmittance");
 }
 
+void test_invalid_reference_inputs_return_clear_invalid_transmittance() {
+    const matter::AtmosphereSettings settings{};
+    const matter::Float3 up{0.0f, 1.0f, 0.0f};
+    const matter::Float3 nan_direction{std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f};
+    const matter::Float3 non_finite_optical_direction{std::numeric_limits<float>::infinity(), 0.0f, 0.0f};
+    const auto invalid_observer = matter::atmosphere_transmittance_reference(
+        settings, std::numeric_limits<double>::infinity(), up);
+    const auto invalid_direction = matter::atmosphere_transmittance_reference(settings, 0.0, nan_direction);
+    const auto invalid_optical_input = matter::atmosphere_transmittance_reference(
+        settings, 0.0, non_finite_optical_direction);
+
+    CHECK(!invalid_observer.valid && invalid_observer.transmittance.x == 1.0f &&
+              invalid_observer.transmittance.y == 1.0f && invalid_observer.transmittance.z == 1.0f,
+          "non-finite observer returns clear invalid transmittance");
+    CHECK(!invalid_direction.valid && invalid_direction.transmittance.x == 1.0f &&
+              invalid_direction.transmittance.y == 1.0f && invalid_direction.transmittance.z == 1.0f,
+          "non-finite ray direction returns clear invalid transmittance");
+    CHECK(!invalid_optical_input.valid && invalid_optical_input.transmittance.x == 1.0f &&
+              invalid_optical_input.transmittance.y == 1.0f && invalid_optical_input.transmittance.z == 1.0f,
+          "non-finite optical direction length returns clear invalid transmittance");
+}
+
 void test_direct_sun_changes_with_elevation() {
     matter::AtmosphereSettings s{};
     const auto noon = matter::atmosphere_direct_sun_transmittance(s, 0.0, 90.0);
@@ -72,6 +94,21 @@ void test_direct_sun_changes_with_elevation() {
           "low sun is dimmer than noon");
     CHECK(down.x == 0.0f && down.y == 0.0f && down.z == 0.0f,
           "planet occludes below-horizon direct sun at sea level");
+}
+
+void test_direct_sun_vector_uses_engine_sun_direction_convention() {
+    const matter::AtmosphereSettings settings{};
+    const matter::Float3 noon_sun_direction{0.0f, -1.0f, 0.0f};
+    const matter::Float3 below_horizon_sun_direction{0.0f, 1.0f, 0.0f};
+    const matter::Float3 noon =
+        matter::atmosphere_direct_sun_transmittance(settings, 0.0, noon_sun_direction);
+    const matter::Float3 below_horizon =
+        matter::atmosphere_direct_sun_transmittance(settings, 0.0, below_horizon_sun_direction);
+
+    CHECK(noon.x > 0.0f && noon.y > 0.0f && noon.z > 0.0f,
+          "noon engine sun direction is transmitted");
+    CHECK(below_horizon.x == 0.0f && below_horizon.y == 0.0f && below_horizon.z == 0.0f,
+          "below-horizon engine sun direction is planet-occluded");
 }
 
 void test_elevated_observer_extends_the_direct_sun_horizon() {
@@ -86,14 +123,14 @@ void test_elevated_observer_extends_the_direct_sun_horizon() {
 
 void test_direct_sun_rgb_applies_all_authored_modifiers_once() {
     const matter::AtmosphereSettings settings{};
-    const matter::Float3 to_sun = matter::atmosphere_to_sun_from_elevation_deg(45.0);
+    const matter::Float3 engine_sun_direction{-0.70710678f, -0.70710678f, 0.0f};
     const matter::Float3 authored{0.5f, 0.75f, 1.25f};
     const matter::Float3 tint{0.8f, 1.5f, 0.25f};
     const float multiplier = 1.6f;
     const matter::Float3 transmittance =
-        matter::atmosphere_direct_sun_transmittance(settings, 0.0, to_sun);
+        matter::atmosphere_direct_sun_transmittance(settings, 0.0, engine_sun_direction);
     const matter::Float3 rgb = matter::atmosphere_direct_sun_rgb(
-        settings, 0.0, to_sun, authored, tint, multiplier);
+        settings, 0.0, engine_sun_direction, authored, tint, multiplier);
 
     CHECK(nearly_equal(rgb.x, transmittance.x * authored.x * tint.x * multiplier) &&
               nearly_equal(rgb.y, transmittance.y * authored.y * tint.y * multiplier) &&
@@ -106,7 +143,9 @@ void test_direct_sun_rgb_applies_all_authored_modifiers_once() {
 int main() {
     test_sanitize_atmosphere_is_finite_and_bounded();
     test_reference_transmittance_is_finite_bounded_and_monotonic_with_path_length();
+    test_invalid_reference_inputs_return_clear_invalid_transmittance();
     test_direct_sun_changes_with_elevation();
+    test_direct_sun_vector_uses_engine_sun_direction_convention();
     test_elevated_observer_extends_the_direct_sun_horizon();
     test_direct_sun_rgb_applies_all_authored_modifiers_once();
     return check_summary();

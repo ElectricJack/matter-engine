@@ -162,11 +162,13 @@ inline Float3 atmosphere_to_sun_from_elevation_deg(double elevation_deg) {
 
 inline Float3 atmosphere_direct_sun_transmittance(
     const AtmosphereSettings& settings, double observer_world_y,
-    const Float3& to_sun, int sample_count = 256) {
+    const Float3& sun_direction, int sample_count = 256) {
     const AtmosphereSettings clean = sanitize_atmosphere(settings);
     if (!std::isfinite(observer_world_y)) return {};
+    // The engine stores a ray travelling from the sun toward the scene; the
+    // atmosphere integral instead marches from the observer toward the sun.
     detail::AtmosphereDouble3 direction{
-        static_cast<double>(to_sun.x), static_cast<double>(to_sun.y), static_cast<double>(to_sun.z)};
+        -static_cast<double>(sun_direction.x), -static_cast<double>(sun_direction.y), -static_cast<double>(sun_direction.z)};
     if (!detail::normalize(direction)) return {};
     const double height = std::clamp(observer_world_y - static_cast<double>(clean.sea_level_y), 0.0, 100000.0);
     const detail::AtmosphereDouble3 origin{0.0, kAtmospherePlanetRadiusM + height, 0.0};
@@ -174,20 +176,23 @@ inline Float3 atmosphere_direct_sun_transmittance(
     const double atmosphere_distance = detail::ray_sphere_exit_distance(origin, direction, kAtmosphereTopRadiusM);
     if ((height <= 0.0 && detail::dot(origin, direction) < 0.0) ||
         (planet_distance > 0.0 && planet_distance < atmosphere_distance)) return {};
-    return atmosphere_transmittance_reference(clean, observer_world_y, to_sun, sample_count).transmittance;
+    return atmosphere_transmittance_reference(
+        clean, observer_world_y, {static_cast<float>(direction.x), static_cast<float>(direction.y),
+                                   static_cast<float>(direction.z)}, sample_count).transmittance;
 }
 
 inline Float3 atmosphere_direct_sun_transmittance(
     const AtmosphereSettings& settings, double observer_world_y,
     double elevation_deg, int sample_count = 256) {
-    return atmosphere_direct_sun_transmittance(
-        settings, observer_world_y, atmosphere_to_sun_from_elevation_deg(elevation_deg), sample_count);
+    const Float3 to_sun = atmosphere_to_sun_from_elevation_deg(elevation_deg);
+    const Float3 sun_direction{-to_sun.x, -to_sun.y, -to_sun.z};
+    return atmosphere_direct_sun_transmittance(settings, observer_world_y, sun_direction, sample_count);
 }
 
 inline Float3 atmosphere_direct_sun_rgb(
-    const AtmosphereSettings& settings, double observer_world_y, const Float3& to_sun,
+    const AtmosphereSettings& settings, double observer_world_y, const Float3& sun_direction,
     const Float3& authored_modifier, const Float3& live_tint, float live_multiplier) {
-    const Float3 transmittance = atmosphere_direct_sun_transmittance(settings, observer_world_y, to_sun);
+    const Float3 transmittance = atmosphere_direct_sun_transmittance(settings, observer_world_y, sun_direction);
     return {
         static_cast<float>(kExtraterrestrialSolarRgb[0]) * transmittance.x * authored_modifier.x * live_tint.x * live_multiplier,
         static_cast<float>(kExtraterrestrialSolarRgb[1]) * transmittance.y * authored_modifier.y * live_tint.y * live_multiplier,
