@@ -290,6 +290,8 @@ poll for a fully-written file.
 for one suite through a single editor process. The current executable suite is
 `baseline`; the stable names `atmosphere`, `froxel`, `cloud-lighting`,
 `cloud-shadows`, and `final` are reserved for their respective milestones.
+The baseline defaults to `MATTER_WORLD=StreamMountain`, the shipped world with
+working volumetrics; callers can explicitly override `MATTER_WORLD`.
 
 The driver waits for both `viewer: bake ready` and command transport readiness
 (`MATTER_CMD_FIFO: listening` on POSIX, or `MATTER_CMD_FIFO: polling command

@@ -47,6 +47,7 @@ else
   mkfifo "$FIFO"
 fi
 : > "$COMMANDS"
+rm -f "$PERF_OUTPUT"
 PID=""
 cleanup() {
   if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
@@ -57,7 +58,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-MATTER_WORLD="${MATTER_WORLD:-meadow}" \
+WORLD="${MATTER_WORLD:-StreamMountain}"
+MATTER_WORLD="$WORLD" \
 MATTER_CMD_FIFO="$FIFO" \
 TMP="${TMP:?TMP must be set for the Windows editor}" \
 TEMP="${TEMP:?TEMP must be set for the Windows editor}" \
@@ -90,8 +92,24 @@ fi
 # Keep suite names stable; subsequent milestones add their property batches here.
 case "$SUITE" in
   baseline)
-    send "get render.volumetrics.enabled"
-    send "cam 128 260 -40 128 0 128"
+    if [ "$WORLD" = StreamMountain ]; then
+      # Streaming worlds announce bake readiness before their first sectors
+      # publish; wait for that publish before a camera/shot batch.
+      for _ in $(seq 1 300); do
+        grep -q 'bake-timing.*world-kind' "$LOG" 2>/dev/null && break
+        sleep 1
+      done
+      grep -q 'bake-timing.*world-kind' "$LOG" 2>/dev/null || {
+        echo "ERROR: StreamMountain sectors did not publish" >&2
+        exit 1
+      }
+      send "set render.volumetrics.enabled true"
+      send "get render.volumetrics.enabled"
+      send "cam 20 760 350 0 420 0"
+    else
+      send "get render.volumetrics.enabled"
+      send "cam 128 260 -40 128 0 128"
+    fi
     sleep 2
     capture procedural_sky
     for _ in $(seq 1 30); do
