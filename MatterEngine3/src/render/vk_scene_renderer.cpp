@@ -35,6 +35,7 @@
 #include "tileset_gtex.h"
 #include "tileset_slicer.h"
 #include "vk_volumetrics.h"
+#include "vk_atmosphere.h"
 #include "tileset_bake_vk.h"
 
 namespace viewer {
@@ -1563,6 +1564,10 @@ void VkSceneRenderer::destroy_pipeline() {
     if (volumetrics_) {
         volumetrics_->destroy();
         volumetrics_.reset();
+    }
+    if (atmosphere_) {
+        atmosphere_->destroy();
+        atmosphere_.reset();
     }
     const VkDevice device = vulkan_->device();
     rt_sbt_.reset();
@@ -6124,6 +6129,17 @@ bool VkSceneRenderer::init(std::string& error) {
             std::fflush(stderr);
         }
     }
+    if (!atmosphere_) {
+        auto atmosphere = std::make_unique<VkAtmosphere>();
+        std::string atmosphere_error;
+        if (!atmosphere->init(*vulkan_, atmosphere_error)) {
+            error = "atmosphere LUT init failed: " + atmosphere_error;
+            destroy_pipeline();
+            return false;
+        }
+        atmosphere->request_settings(atmosphere_settings_);
+        atmosphere_ = std::move(atmosphere);
+    }
     if (sizeof(FrameConstants) >
         std::min(limits_.max_uniform_buffer_range, limits_.max_buffer_size)) {
         error = "uniform buffer range exceeds Vulkan device limit";
@@ -8075,6 +8091,12 @@ void VkSceneRenderer::set_lighting(const VkSceneLighting& lighting) {
     // ensure_tileset_infra() has run, and re-derives the (cheap) slot table
     // from tileset_slots_ each call, so this stays a plain memcpy+flush.
     if (source_changed) write_tileset_params_buffer();
+}
+
+void VkSceneRenderer::set_atmosphere_settings(
+    const matter::AtmosphereSettings& settings) {
+    atmosphere_settings_ = matter::sanitize_atmosphere(settings);
+    if (atmosphere_) atmosphere_->request_settings(atmosphere_settings_);
 }
 
 void VkSceneRenderer::set_display_exposure(float exposure_ev) {
@@ -11198,6 +11220,15 @@ bool VkSceneRenderer::record_cull_and_render(
         frame.frame_slot != active_frame_index_) {
         error = "record_cull_and_render requires prepared acquired frame resources";
         return false;
+    }
+    if (atmosphere_) {
+        const matter::Float3 to_sun{-lighting_.sun_direction.x,
+                                    -lighting_.sun_direction.y,
+                                    -lighting_.sun_direction.z};
+        if (!atmosphere_->record(frame.command_buffer, camera_eye.y, to_sun, error)) {
+            error = "atmosphere LUT generation failed: " + error;
+            return false;
+        }
     }
     if (limits_.max_draw_indirect_count < 1) {
         error = "Vulkan maxDrawIndirectCount cannot support grouped indirect draws";

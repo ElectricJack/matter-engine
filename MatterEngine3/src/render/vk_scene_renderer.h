@@ -55,6 +55,7 @@ struct BakeInputs;
 namespace viewer {
 
 class VkVolumetrics;
+class VkAtmosphere;
 
 constexpr uint32_t kVkMaxLod =
     static_cast<uint32_t>(matter::kMaxSerializedLodLevels);
@@ -941,6 +942,7 @@ public:
     void set_part_draw_overrides(
         const std::vector<matter::PartDrawOverrideEntry>& entries);
     void set_lighting(const VkSceneLighting& lighting);
+    void set_atmosphere_settings(const matter::AtmosphereSettings& settings);
     void set_display_exposure(float exposure_ev);
     void set_composite_debug_view(float mode) { composite_debug_override_ = mode; }
     void set_geometry_debug_view(matter::GeometryDebugView view);
@@ -2251,6 +2253,8 @@ private:
     matter::VulkanRayTracingSettings ray_tracing_settings_{};
     matter::VulkanGiSettings gi_settings_{};
     std::unique_ptr<VkVolumetrics> volumetrics_;
+    std::unique_ptr<VkAtmosphere> atmosphere_;
+    matter::AtmosphereSettings atmosphere_settings_{};
     bool volumetrics_enabled_ = false;
     float volumetrics_debug_view_ = 0.0f;
     bool volumetrics_height_layer_ = false;

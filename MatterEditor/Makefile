@@ -246,7 +246,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/vt_stub_filler.cpp \
               $(BC7ENC_DIR)/bc7enc.cpp $(BC7ENC_DIR)/rgbcx.cpp \
               $(ME3_DIR)/src/render/tileset_bake_vk.cpp \
-              $(ME3_DIR)/src/render/vk_volumetrics.cpp $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
+              $(ME3_DIR)/src/render/vk_volumetrics.cpp $(ME3_DIR)/src/render/vk_atmosphere.cpp $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
               $(ME3_DIR)/src/render/vk_instance_cache.cpp \
               $(ME3_DIR)/src/render/vulkan_only_compat.cpp \
               $(ME3_DIR)/src/render/frame_matrices.cpp $(ME3_DIR)/src/render/matrix_math.cpp \
@@ -531,6 +531,10 @@ $(GLFW_WIN_LIB): $(GLFW_WIN_OBJ)
 	$(WIN_AR) rcs $@ $^
 
 VK_SPV = build/shaders_vk/transform_probe.comp.spv \
+         build/shaders_vk/atmosphere_transmittance.comp.spv \
+         build/shaders_vk/atmosphere_multiscatter.comp.spv \
+         build/shaders_vk/atmosphere_sky_view.comp.spv \
+         build/shaders_vk/atmosphere_irradiance.comp.spv \
          build/shaders_vk/animation_skin.comp.spv \
          build/shaders_vk/cull.comp.spv \
          build/shaders_vk/raster.vert.spv \
@@ -568,6 +572,12 @@ build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%
 
 build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
     $(ME3_DIR)/shaders_vk/material_common.glsl
+
+build/shaders_vk/atmosphere_transmittance.comp.spv \
+    build/shaders_vk/atmosphere_multiscatter.comp.spv \
+    build/shaders_vk/atmosphere_sky_view.comp.spv \
+    build/shaders_vk/atmosphere_irradiance.comp.spv: \
+    $(ME3_DIR)/shaders_vk/atmosphere_common.glsl
 
 # C2 uses the same source and descriptor ABI as raster.vert; a compile-time
 # specialization adds location 5 for the previous skinned position.
@@ -642,6 +652,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_pipeline.h \
         $(ME3_DIR)/src/render/vk_scene_renderer.h \
         $(ME3_DIR)/src/render/vk_volumetrics.h \
+        $(ME3_DIR)/src/render/vk_atmosphere.h \
         $(ME3_DIR)/src/render/vk_emitter_gather.h \
         $(ME3_DIR)/src/render/vk_instance_cache.h \
         $(ME3_DIR)/src/render/vk_instance_cache.cpp \
@@ -669,6 +680,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/tests/vulkan_smoke_tileset_bake_stub.cpp \
         $(ME3_DIR)/src/tileset_gtex.cpp \
         $(ME3_DIR)/src/render/vk_volumetrics.cpp \
+        $(ME3_DIR)/src/render/vk_atmosphere.cpp \
         $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
         $(ME3_DIR)/src/render/raster_mesh.cpp $(ME3_DIR)/src/render/indexed_part_geometry.cpp \
         $(ME3_DIR)/src/render/frame_matrices.cpp \
@@ -700,6 +712,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/tests/vulkan_smoke_tileset_bake_stub.cpp \
 	    $(ME3_DIR)/src/tileset_gtex.cpp \
 	    $(ME3_DIR)/src/render/vk_volumetrics.cpp \
+	    $(ME3_DIR)/src/render/vk_atmosphere.cpp \
 	    $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
 	    $(ME3_DIR)/src/render/raster_mesh.cpp $(ME3_DIR)/src/render/indexed_part_geometry.cpp \
 	    $(ME3_DIR)/src/render/vk_instance_cache.cpp \

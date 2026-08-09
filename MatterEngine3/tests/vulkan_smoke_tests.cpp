@@ -28,6 +28,7 @@
 #include "render/vk_pipeline.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
+#include "render/vk_atmosphere.h"
 #include "provider/sector_resolver.h"
 #include "tileset_gtex.h"
 #include "../../MatterEditor/src/ui.h"
@@ -706,6 +707,81 @@ void run_vulkan_only_handle_diagnostic(matter::VulkanDevice& vulkan) {
     trace("Vulkan-only submit+fence wait");
     image.reset();
     trace("Vulkan-only image destroy");
+}
+
+struct AtmosphereRecordRequest {
+    viewer::VkAtmosphere* atmosphere = nullptr;
+    float camera_world_y = 0.0f;
+    matter::Float3 to_sun{};
+    bool recorded = false;
+    std::string error;
+};
+
+void record_atmosphere_luts(VkCommandBuffer command_buffer, void* user_data) {
+    auto& request = *static_cast<AtmosphereRecordRequest*>(user_data);
+    request.recorded = request.atmosphere->record(
+        command_buffer, request.camera_world_y, request.to_sun, request.error);
+}
+
+void run_atmosphere_lut_smoke(matter::VulkanDevice& vulkan) {
+    viewer::VkAtmosphere atmosphere;
+    std::string error;
+    CHECK(atmosphere.init(vulkan, error),
+          error.empty() ? "atmosphere LUT init" : error.c_str());
+    if (!error.empty()) return;
+
+    const matter::AtmosphereSettings settings{};
+    atmosphere.request_settings(settings);
+    const matter::Float3 to_sun{0.0f, 1.0f, 0.0f};
+    auto record = [&](float altitude) {
+        AtmosphereRecordRequest request{&atmosphere, altitude, to_sun};
+        std::string submit_error;
+        const bool submitted = matter::submit_immediate(
+            vulkan, record_atmosphere_luts, &request, submit_error,
+            matter::ImmediateSubmitPhase::compute_dispatch);
+        CHECK(submitted && request.recorded,
+              !submit_error.empty() ? submit_error.c_str() : request.error.c_str());
+    };
+    record(0.0f);
+
+    const auto check_sample = [&](uint32_t x, uint32_t y, const char* label) {
+        matter::Float3 actual{};
+        std::string read_error;
+        CHECK(atmosphere.readback_transmittance_for_test(
+                  vulkan, x, y, actual, read_error),
+              read_error.empty() ? label : read_error.c_str());
+        const float mu = -1.0f + 2.0f * static_cast<float>(x) / 255.0f;
+        const float altitude = 100000.0f * static_cast<float>(y) / 63.0f;
+        const float horizontal = std::sqrt(std::max(0.0f, 1.0f - mu * mu));
+        const matter::Float3 expected = matter::atmosphere_transmittance_reference(
+            settings, altitude, {horizontal, mu, 0.0f}, 256).transmittance;
+        const bool finite = std::isfinite(actual.x) && std::isfinite(actual.y) &&
+                            std::isfinite(actual.z);
+        const bool bounded = actual.x >= 0.0f && actual.x <= 1.0f &&
+                             actual.y >= 0.0f && actual.y <= 1.0f &&
+                             actual.z >= 0.0f && actual.z <= 1.0f;
+        const bool close = std::fabs(actual.x - expected.x) <= 0.025f &&
+                           std::fabs(actual.y - expected.y) <= 0.025f &&
+                           std::fabs(actual.z - expected.z) <= 0.025f;
+        CHECK(finite && bounded && close, label);
+    };
+    check_sample(255, 0, "atmosphere sea-level zenith transmittance matches CPU");
+    check_sample(128, 0, "atmosphere sea-level near-horizon transmittance matches CPU");
+    check_sample(255, 16, "atmosphere 25 km zenith transmittance matches CPU");
+
+    const uint64_t first_generation = atmosphere.generation_serial();
+    record(0.0f);
+    CHECK(atmosphere.generation_serial() == first_generation &&
+              !atmosphere.generated_this_frame(),
+          "unchanged atmosphere frame does not regenerate LUTs");
+    matter::AtmosphereSettings changed = settings;
+    changed.mie_scale = 1.25f;
+    atmosphere.request_settings(changed);
+    record(0.0f);
+    CHECK(atmosphere.generation_serial() == first_generation + 1 &&
+              atmosphere.generated_this_frame(),
+          "atmosphere coefficient change advances generation serial once");
+    atmosphere.destroy();
 }
 
 struct FixedCullScene {
@@ -8522,6 +8598,14 @@ int main() {
         }
         if (smoke_mode && std::string(smoke_mode) == "handle-diag-vulkan") {
             run_vulkan_only_handle_diagnostic(*vulkan);
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "atmosphere") {
+            run_atmosphere_lut_smoke(*vulkan);
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
             finish_vulkan_test(vulkan);
             if (window) glfwDestroyWindow(window);
             glfwTerminate();

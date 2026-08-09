@@ -162,7 +162,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/tileset_gtex.cpp src/tileset_torus_bvh.cpp \
           src/shader_source.cpp \
           src/render/raster_mesh.cpp src/render/indexed_part_geometry.cpp \
-          src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp \
+          src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp src/render/vk_atmosphere.cpp \
           src/render/part_store.cpp src/render/world_state.cpp \
           src/render/lod_trace.cpp \
           src/render/tileset_slicer.cpp src/render/bc_encode.cpp \
@@ -329,6 +329,10 @@ shaders_gen/embedded_shaders.h: tools/embed_shaders.py $(SHADER_FILES)
 
 GLSLC ?= glslc
 VK_SPV = build/shaders_vk/transform_probe.comp.spv \
+         build/shaders_vk/atmosphere_transmittance.comp.spv \
+         build/shaders_vk/atmosphere_multiscatter.comp.spv \
+         build/shaders_vk/atmosphere_sky_view.comp.spv \
+         build/shaders_vk/atmosphere_irradiance.comp.spv \
          build/shaders_vk/animation_skin.comp.spv \
          build/shaders_vk/cull.comp.spv \
          build/shaders_vk/raster.vert.spv \
@@ -365,6 +369,12 @@ build/shaders_vk/%.spv: shaders_vk/%
 
 build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
     shaders_vk/material_common.glsl
+
+build/shaders_vk/atmosphere_transmittance.comp.spv \
+    build/shaders_vk/atmosphere_multiscatter.comp.spv \
+    build/shaders_vk/atmosphere_sky_view.comp.spv \
+    build/shaders_vk/atmosphere_irradiance.comp.spv: \
+    shaders_vk/atmosphere_common.glsl
 
 # C2 uses the same source and descriptor ABI as raster.vert, but a compile
 # time specialization adds location 5 for the previous skinned position.
