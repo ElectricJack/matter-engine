@@ -2818,6 +2818,35 @@ clean: clean-atmosphere
 clean-atmosphere:
 	rm -f $(ATMOSPHERE_TARGET)
 
+# Header-only volumetric quality and sun-space cloud-shadow contracts.
+VOLUMETRICQUALITY_TARGET = build/volumetric_quality_tests
+VOLUMETRICQUALITY_CPP = volumetric_quality_tests.cpp
+
+$(VOLUMETRICQUALITY_TARGET): $(VOLUMETRICQUALITY_CPP) ../include/matter/volumetric_quality.h ../include/matter/cloud_shadow_settings.h ../include/matter/math_types.h check.h | build
+	$(CC) -std=c++17 -Wall -Wextra -Wno-missing-braces -O2 -I../include -o $@ $(VOLUMETRICQUALITY_CPP)
+
+run-volumetric-quality: $(VOLUMETRICQUALITY_TARGET)
+	./$(VOLUMETRICQUALITY_TARGET)
+
+.PHONY: run-volumetric-quality clean-volumetric-quality
+clean: clean-volumetric-quality
+clean-volumetric-quality:
+	rm -f $(VOLUMETRICQUALITY_TARGET)
+
+CLOUDSHADOW_TARGET = build/cloud_shadow_tests
+CLOUDSHADOW_CPP = cloud_shadow_tests.cpp
+
+$(CLOUDSHADOW_TARGET): $(CLOUDSHADOW_CPP) ../include/matter/cloud_shadow_settings.h ../include/matter/math_types.h check.h | build
+	$(CC) -std=c++17 -Wall -Wextra -Wno-missing-braces -O2 -I../include -o $@ $(CLOUDSHADOW_CPP)
+
+run-cloud-shadows: $(CLOUDSHADOW_TARGET)
+	./$(CLOUDSHADOW_TARGET)
+
+.PHONY: run-cloud-shadows clean-cloud-shadows
+clean: clean-cloud-shadows
+clean-cloud-shadows:
+	rm -f $(CLOUDSHADOW_TARGET)
+
 # ---------------------------------------------------------------------------
 # WP-F — surfaces() tape GPU test: the vt-surfaces smoke mode of the Vulkan
 # smoke executable (MatterEditor cross-build owns the exe, like vulkan-smoke /
