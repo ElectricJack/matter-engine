@@ -8310,6 +8310,15 @@ void VkSceneRenderer::set_display_exposure(float exposure_ev) {
 void VkSceneRenderer::set_volumetrics_settings(
     const matter::VulkanVolumetricsSettings& s,
     const matter::FogSettings& fog) {
+    matter::CloudShadowSettings shadows{};
+    shadows.enabled = false;
+    set_volumetrics_settings(s, fog, shadows);
+}
+
+void VkSceneRenderer::set_volumetrics_settings(
+    const matter::VulkanVolumetricsSettings& s,
+    const matter::FogSettings& fog,
+    const matter::CloudShadowSettings& shadows) {
     volumetrics_enabled_ = s.enabled;
     volumetrics_debug_view_ = s.vol_debug_view;
     // The composite pass skips froxel integration entirely for a ray whose
@@ -8335,7 +8344,7 @@ void VkSceneRenderer::set_volumetrics_settings(
     volumetrics_height_layer_ = enabled > 0 && fog.density <= 0.0f;
     volumetrics_cloud_top_ = ceiling;
     if (volumetrics_)
-        volumetrics_->update_settings(s, fog);
+        volumetrics_->update_settings(s, fog, shadows);
 }
 
 matter::FroxelGridDimensions VkSceneRenderer::volumetrics_dimensions() const {

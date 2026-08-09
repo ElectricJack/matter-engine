@@ -700,6 +700,10 @@ void test_task9_shared_density_and_optional_r16f_contract() {
               shared.find("if (L.weather_scale_influence_detail_scale_detail_erosion.w > 0.0)") !=
                   std::string::npos,
           "neutral density preserves the authored full-octave multiplication before optional controls");
+    CHECK(vk.find("enhanced_clouds_requested_ =\n"
+                  "        matter::enhanced_cloud_lighting(vol, shadows);") !=
+              std::string::npos,
+          "Task 9 runtime allocation uses the canonical enhanced-cloud predicate");
 }
 
 matter::GpuCloudLayer task9_numerical_layer(int index = 0) {

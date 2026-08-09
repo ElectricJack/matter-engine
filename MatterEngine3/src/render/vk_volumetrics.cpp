@@ -911,14 +911,14 @@ bool VkVolumetrics::create_integrate_pipeline(matter::VulkanDevice& vulkan,
 
 void VkVolumetrics::update_settings(
     const matter::VulkanVolumetricsSettings& vol,
-    const matter::FogSettings& fog) {
+    const matter::FogSettings& fog,
+    const matter::CloudShadowSettings& shadows) {
     enabled_ = vol.enabled;
     temporal_blend_ = vol.temporal_blend;
     phase_g_ = vol.phase_g;
     requested_dimensions_ = matter::resolve_froxel_grid(vol);
-    enhanced_clouds_requested_ = vol.local_sun_march_steps > 0 ||
-        vol.multiple_scattering_orders > 1 || vol.multiple_scattering_strength > 0.0f ||
-        vol.powder_strength > 0.0f;
+    enhanced_clouds_requested_ =
+        matter::enhanced_cloud_lighting(vol, shadows);
 
     fog_density_ = fog.density;
     fog_floor_ = fog.floor;

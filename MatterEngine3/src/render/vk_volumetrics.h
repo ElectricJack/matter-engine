@@ -35,6 +35,7 @@ struct VkSceneLighting;
 namespace matter {
 
 struct FogSettings;
+struct CloudShadowSettings;
 struct VulkanVolumetricsSettings;
 
 }  // namespace matter
@@ -68,7 +69,8 @@ public:
 
     // Latch the per-frame settings from the UI / world definition.
     void update_settings(const matter::VulkanVolumetricsSettings& vol,
-                         const matter::FogSettings& fog);
+                         const matter::FogSettings& fog,
+                         const matter::CloudShadowSettings& shadows);
 
     // Upload the gathered emitter list for the current frame.
     void update_emitters(matter::VulkanDevice& vulkan,

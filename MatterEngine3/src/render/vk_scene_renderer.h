@@ -967,6 +967,9 @@ public:
     }
     void set_volumetrics_settings(const matter::VulkanVolumetricsSettings& s,
                                   const matter::FogSettings& fog);
+    void set_volumetrics_settings(const matter::VulkanVolumetricsSettings& s,
+                                  const matter::FogSettings& fog,
+                                  const matter::CloudShadowSettings& shadows);
     matter::FroxelGridDimensions volumetrics_dimensions() const;
     matter::FroxelXyScale volumetrics_effective_xy_scale() const;
     matter::FroxelDepthSlices volumetrics_effective_depth_slices() const;

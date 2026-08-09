@@ -5194,6 +5194,36 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
           "Current cloud-density debug samples the stable GENERAL dummy without validation errors");
     current_clouds.vol_debug_view = 0.0f;
 
+    // Custom-state predicate coverage: strength is a weighting control, not
+    // an enhanced feature by itself, while cloud shadows consume the shared
+    // density even when every volumetric enhanced dial remains neutral.
+    matter::CloudShadowSettings no_cloud_shadows{};
+    no_cloud_shadows.enabled = false;
+    matter::VulkanVolumetricsSettings strength_only = current_clouds;
+    strength_only.multiple_scattering_strength = 0.85f;
+    renderer.set_volumetrics_settings(strength_only, cloud_fog,
+                                      no_cloud_shadows);
+    CHECK(warm_rt_tlas(), error.empty() ? "render strength-only custom cloud state"
+                                        : error.c_str());
+    CHECK(!renderer.volumetrics_cloud_density_allocated_for_test() &&
+              renderer.volumetrics_grid_bytes_for_test() == 58982400u,
+          "multiple-scattering strength alone keeps the Current R16F dummy");
+
+    matter::CloudShadowSettings shadows_only{};
+    shadows_only.enabled = true;
+    renderer.set_volumetrics_settings(current_clouds, cloud_fog, shadows_only);
+    CHECK(warm_rt_tlas(), error.empty() ? "render shadows-only custom cloud state"
+                                        : error.c_str());
+    CHECK(renderer.volumetrics_cloud_density_allocated_for_test() &&
+              renderer.volumetrics_grid_bytes_for_test() == 62668800u,
+          "cloud shadows alone allocate the enhanced R16F density grid");
+    renderer.set_volumetrics_settings(current_clouds, cloud_fog,
+                                      no_cloud_shadows);
+    CHECK(warm_rt_tlas() &&
+              !renderer.volumetrics_cloud_density_allocated_for_test(),
+          error.empty() ? "shadows-only density retires safely when disabled"
+                        : error.c_str());
+
     matter::VulkanVolumetricsSettings improved_clouds = current_clouds;
     improved_clouds.local_sun_march_steps = 1;
     renderer.set_volumetrics_settings(improved_clouds, cloud_fog);

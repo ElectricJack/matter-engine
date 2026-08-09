@@ -7022,7 +7022,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // with no reload, exactly like the volumetrics multipliers beside it.
     impl_->vk_scene->set_volumetrics_settings(
         opts.volumetrics,
-        opts.use_fog_override ? opts.fog_override : impl_->authored_fog_);
+        opts.use_fog_override ? opts.fog_override : impl_->authored_fog_,
+        opts.cloud_shadows);
     impl_->vk_scene->set_tileset_pom_settings(opts.vulkan_tileset_pom);
     impl_->vk_scene->set_vt_near_band_settings(opts.vulkan_vt_near_band);
     const int material_count = MaterialRegistryCount();
