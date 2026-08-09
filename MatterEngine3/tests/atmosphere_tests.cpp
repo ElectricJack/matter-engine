@@ -1,0 +1,113 @@
+#include "matter/atmosphere.h"
+#include "check.h"
+
+#include <cmath>
+#include <limits>
+
+namespace {
+
+bool finite_rgb(const matter::Float3& value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
+bool in_unit_interval(const matter::Float3& value) {
+    return value.x >= 0.0f && value.x <= 1.0f &&
+           value.y >= 0.0f && value.y <= 1.0f &&
+           value.z >= 0.0f && value.z <= 1.0f;
+}
+
+bool nearly_equal(float a, float b) {
+    return std::fabs(a - b) <= 1.0e-6f;
+}
+
+void test_sanitize_atmosphere_is_finite_and_bounded() {
+    matter::AtmosphereSettings invalid{};
+    invalid.sea_level_y = std::numeric_limits<float>::quiet_NaN();
+    invalid.rayleigh_scale = std::numeric_limits<float>::infinity();
+    invalid.mie_scale = -1.0f;
+    invalid.mie_anisotropy = 2.0f;
+    invalid.ozone_scale = std::numeric_limits<float>::quiet_NaN();
+    invalid.ground_albedo = -1.0f;
+
+    const matter::AtmosphereSettings clean = matter::sanitize_atmosphere(invalid);
+    CHECK(std::isfinite(clean.sea_level_y), "sea level sanitizes non-finite input");
+    CHECK(clean.rayleigh_scale >= 0.0f && clean.rayleigh_scale <= 4.0f,
+          "Rayleigh scale sanitizes into its supported range");
+    CHECK(clean.mie_scale >= 0.0f && clean.mie_scale <= 4.0f,
+          "Mie scale sanitizes into its supported range");
+    CHECK(clean.mie_anisotropy >= -0.99f && clean.mie_anisotropy <= 0.99f,
+          "Mie anisotropy sanitizes into its supported range");
+    CHECK(clean.ozone_scale >= 0.0f && clean.ozone_scale <= 4.0f,
+          "ozone scale sanitizes into its supported range");
+    CHECK(clean.ground_albedo >= 0.0f && clean.ground_albedo <= 1.0f,
+          "ground albedo sanitizes into its supported range");
+}
+
+void test_reference_transmittance_is_finite_bounded_and_monotonic_with_path_length() {
+    const matter::AtmosphereSettings settings{};
+    const auto short_path = matter::atmosphere_transmittance_reference(
+        settings, 0.0, matter::atmosphere_to_sun_from_elevation_deg(90.0));
+    const auto long_path = matter::atmosphere_transmittance_reference(
+        settings, 0.0, matter::atmosphere_to_sun_from_elevation_deg(5.0));
+
+    CHECK(short_path.valid && long_path.valid, "atmosphere integration succeeds for upward paths");
+    CHECK(finite_rgb(short_path.transmittance) && finite_rgb(long_path.transmittance),
+          "atmosphere transmittance remains finite");
+    CHECK(in_unit_interval(short_path.transmittance) && in_unit_interval(long_path.transmittance),
+          "atmosphere transmittance stays in the unit interval");
+    CHECK(long_path.transmittance.x <= short_path.transmittance.x &&
+              long_path.transmittance.y <= short_path.transmittance.y &&
+              long_path.transmittance.z <= short_path.transmittance.z,
+          "longer atmospheric paths do not increase transmittance");
+}
+
+void test_direct_sun_changes_with_elevation() {
+    matter::AtmosphereSettings s{};
+    const auto noon = matter::atmosphere_direct_sun_transmittance(s, 0.0, 90.0);
+    const auto low  = matter::atmosphere_direct_sun_transmittance(s, 0.0, 5.0);
+    const auto down = matter::atmosphere_direct_sun_transmittance(s, 0.0, -5.0);
+    CHECK(noon.x > 0.0f && noon.z > 0.0f, "noon sun survives atmosphere");
+    CHECK(low.x / low.z > noon.x / noon.z, "low sun is warmer than noon");
+    CHECK(low.x + low.y + low.z < noon.x + noon.y + noon.z,
+          "low sun is dimmer than noon");
+    CHECK(down.x == 0.0f && down.y == 0.0f && down.z == 0.0f,
+          "planet occludes below-horizon direct sun at sea level");
+}
+
+void test_elevated_observer_extends_the_direct_sun_horizon() {
+    const matter::AtmosphereSettings settings{};
+    const auto sea_level = matter::atmosphere_direct_sun_transmittance(settings, 0.0, -1.0);
+    const auto elevated = matter::atmosphere_direct_sun_transmittance(settings, 20000.0, -1.0);
+    CHECK(sea_level.x == 0.0f && sea_level.y == 0.0f && sea_level.z == 0.0f,
+          "sea-level observer cannot see a sun below the geometric horizon");
+    CHECK(elevated.x > 0.0f && elevated.y > 0.0f && elevated.z > 0.0f,
+          "elevated observer sees beyond the sea-level horizon");
+}
+
+void test_direct_sun_rgb_applies_all_authored_modifiers_once() {
+    const matter::AtmosphereSettings settings{};
+    const matter::Float3 to_sun = matter::atmosphere_to_sun_from_elevation_deg(45.0);
+    const matter::Float3 authored{0.5f, 0.75f, 1.25f};
+    const matter::Float3 tint{0.8f, 1.5f, 0.25f};
+    const float multiplier = 1.6f;
+    const matter::Float3 transmittance =
+        matter::atmosphere_direct_sun_transmittance(settings, 0.0, to_sun);
+    const matter::Float3 rgb = matter::atmosphere_direct_sun_rgb(
+        settings, 0.0, to_sun, authored, tint, multiplier);
+
+    CHECK(nearly_equal(rgb.x, transmittance.x * authored.x * tint.x * multiplier) &&
+              nearly_equal(rgb.y, transmittance.y * authored.y * tint.y * multiplier) &&
+              nearly_equal(rgb.z, transmittance.z * authored.z * tint.z * multiplier),
+          "direct sun RGB applies extraterrestrial spectrum, atmosphere, modifier, tint, and multiplier per component");
+}
+
+} // namespace
+
+int main() {
+    test_sanitize_atmosphere_is_finite_and_bounded();
+    test_reference_transmittance_is_finite_bounded_and_monotonic_with_path_length();
+    test_direct_sun_changes_with_elevation();
+    test_elevated_observer_extends_the_direct_sun_horizon();
+    test_direct_sun_rgb_applies_all_authored_modifiers_once();
+    return check_summary();
+}
