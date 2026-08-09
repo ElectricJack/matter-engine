@@ -22,12 +22,170 @@
 #include "matter/cloud_layers.h"
 #include "matter/world_definition.h"
 
+#include <array>
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
+#include <cstdint>
 #include <fstream>
 #include <iterator>
 #include <string>
 
 namespace {
+
+struct CpuCloudPoint { float x, y, z; };
+struct CpuCloudDensity { float coarse, full; };
+
+CpuCloudDensity evaluate_old_cloud_density_for_test(
+    const matter::GpuCloudLayer& layer, CpuCloudPoint world_pos,
+    float time_seconds);
+CpuCloudDensity evaluate_new_cloud_density_for_test(
+    const matter::GpuCloudLayer& layer, CpuCloudPoint world_pos,
+    float time_seconds);
+
+float task9_clamp01(float value) {
+    return value < 0.0f ? 0.0f : value > 1.0f ? 1.0f : value;
+}
+
+float task9_smoothstep(float edge0, float edge1, float value) {
+    const float t = task9_clamp01((value - edge0) / (edge1 - edge0));
+    return t * t * (3.0f - 2.0f * t);
+}
+
+uint32_t task9_hash3i(int32_t ix, int32_t iy, int32_t iz, uint32_t seed) {
+    uint32_t h = static_cast<uint32_t>(ix) * 374761393u +
+                 static_cast<uint32_t>(iy) * 3266489917u +
+                 static_cast<uint32_t>(iz) * 668265263u + seed * 2246822519u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return h ^ (h >> 16);
+}
+
+float task9_rand01_3(int32_t ix, int32_t iy, int32_t iz, uint32_t seed) {
+    return static_cast<float>(task9_hash3i(ix, iy, iz, seed) & 0xffffffu) /
+           16777216.0f;
+}
+
+float task9_smooth5(float t) {
+    return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
+float task9_value_noise3(float x, float y, float z, uint32_t seed) {
+    const float fx0 = std::floor(x), fy0 = std::floor(y), fz0 = std::floor(z);
+    const int32_t ix = static_cast<int32_t>(fx0);
+    const int32_t iy = static_cast<int32_t>(fy0);
+    const int32_t iz = static_cast<int32_t>(fz0);
+    const float fx = x - fx0, fy = y - fy0, fz = z - fz0;
+    const float c000 = task9_rand01_3(ix,     iy,     iz,     seed);
+    const float c100 = task9_rand01_3(ix + 1, iy,     iz,     seed);
+    const float c010 = task9_rand01_3(ix,     iy + 1, iz,     seed);
+    const float c110 = task9_rand01_3(ix + 1, iy + 1, iz,     seed);
+    const float c001 = task9_rand01_3(ix,     iy,     iz + 1, seed);
+    const float c101 = task9_rand01_3(ix + 1, iy,     iz + 1, seed);
+    const float c011 = task9_rand01_3(ix,     iy + 1, iz + 1, seed);
+    const float c111 = task9_rand01_3(ix + 1, iy + 1, iz + 1, seed);
+    const float u = task9_smooth5(fx), v = task9_smooth5(fy), w = task9_smooth5(fz);
+    const float x00 = c000 + (c100 - c000) * u;
+    const float x10 = c010 + (c110 - c010) * u;
+    const float x01 = c001 + (c101 - c001) * u;
+    const float x11 = c011 + (c111 - c011) * u;
+    const float y0 = x00 + (x10 - x00) * v;
+    const float y1 = x01 + (x11 - x01) * v;
+    return y0 + (y1 - y0) * w;
+}
+
+float task9_fbm3(CpuCloudPoint p, uint32_t seed, int octaves, float gain,
+                 float lacunarity) {
+    float amplitude = 1.0f, sum = 0.0f, normalization = 0.0f, frequency = 1.0f;
+    for (int octave = 0; octave < octaves; ++octave) {
+        float noise = task9_value_noise3(p.x * frequency, p.y * frequency,
+                                         p.z * frequency,
+                                         seed + static_cast<uint32_t>(octave) * 131u);
+        noise = noise * 2.0f - 1.0f;
+        sum += noise * amplitude;
+        normalization += amplitude;
+        amplitude *= gain;
+        frequency *= lacunarity;
+    }
+    return sum / normalization;
+}
+
+float task9_height_profile(const matter::GpuCloudLayer& layer, float y) {
+    const float lo = layer.min_height, hi = layer.max_height;
+    if (!(hi > lo) || y <= lo || y >= hi) return 0.0f;
+    const float thickness = hi - lo;
+    const float f_lo = std::clamp(layer.falloff_min, 0.0f, thickness);
+    const float f_hi = std::clamp(layer.falloff_max, 0.0f, thickness);
+    const float rise = f_lo > 0.0f ? task9_smoothstep(lo, lo + f_lo, y) : 1.0f;
+    const float fall = f_hi > 0.0f ? 1.0f - task9_smoothstep(hi - f_hi, hi, y) : 1.0f;
+    return rise < fall ? rise : fall;
+}
+
+float task9_cloud_fbm(const matter::GpuCloudLayer& layer, CpuCloudPoint p,
+                      int octaves) {
+    return task9_fbm3(p, static_cast<uint32_t>(layer.seed), octaves,
+                      layer.gain, layer.lacunarity) * 0.5f + 0.5f;
+}
+
+CpuCloudDensity evaluate_old_cloud_density_for_test(
+    const matter::GpuCloudLayer& layer, CpuCloudPoint world_pos,
+    float time_seconds) {
+    const float profile = task9_height_profile(layer, world_pos.y);
+    if (profile <= 0.0f || layer.coverage <= 0.0f) return {};
+    const CpuCloudPoint p{
+        (world_pos.x + layer.wind[0] * time_seconds) * layer.noise_scale,
+        (world_pos.y + layer.wind[1] * time_seconds) * layer.noise_scale,
+        (world_pos.z + layer.wind[2] * time_seconds) * layer.noise_scale};
+    const float threshold = 1.0f - layer.coverage;
+    const float shape = task9_smoothstep(
+        threshold - matter::kCloudCoverageEdge,
+        threshold + matter::kCloudCoverageEdge,
+        task9_cloud_fbm(layer, p, static_cast<int>(layer.octaves)));
+    return {0.0f, profile * layer.max_density * shape};
+}
+
+CpuCloudDensity evaluate_new_cloud_density_for_test(
+    const matter::GpuCloudLayer& layer, CpuCloudPoint world_pos,
+    float time_seconds) {
+    CpuCloudDensity result{};
+    const float profile = task9_height_profile(layer, world_pos.y);
+    if (profile <= 0.0f) return result;
+    const CpuCloudPoint p{
+        (world_pos.x + layer.wind[0] * time_seconds) * layer.noise_scale,
+        (world_pos.y + layer.wind[1] * time_seconds) * layer.noise_scale,
+        (world_pos.z + layer.wind[2] * time_seconds) * layer.noise_scale};
+    float coverage = layer.coverage;
+    if (layer.weather_influence > 0.0f) {
+        const float weather = task9_cloud_fbm(
+            layer, {world_pos.x * layer.weather_scale,
+                    world_pos.z * layer.weather_scale, 0.0f}, 2);
+        coverage = task9_clamp01(coverage + (weather - 0.5f) * 2.0f *
+                                layer.weather_influence);
+    }
+    if (coverage <= 0.0f) return result;
+    const float threshold = 1.0f - coverage;
+    const int authored_octaves = static_cast<int>(layer.octaves);
+    float full_shape = task9_smoothstep(
+        threshold - matter::kCloudCoverageEdge,
+        threshold + matter::kCloudCoverageEdge,
+        task9_cloud_fbm(layer, p, authored_octaves));
+    const float coarse_shape = task9_smoothstep(
+        threshold - matter::kCloudCoverageEdge,
+        threshold + matter::kCloudCoverageEdge,
+        task9_cloud_fbm(layer, p, authored_octaves < 2 ? authored_octaves : 2));
+    result.coarse = profile * layer.max_density * coarse_shape;
+    if (layer.shape_bias != 0.0f)
+        full_shape = task9_clamp01(full_shape + layer.shape_bias);
+    result.full = profile * layer.max_density * full_shape;
+    if (layer.detail_erosion > 0.0f) {
+        const float detail01 = task9_cloud_fbm(
+            layer, {world_pos.x * layer.detail_scale,
+                    world_pos.y * layer.detail_scale,
+                    world_pos.z * layer.detail_scale}, 3);
+        const float detail = task9_smoothstep(0.2f, 0.8f, detail01);
+        result.full *= 1.0f + (detail - 1.0f) * layer.detail_erosion;
+    }
+    return result;
+}
 
 bool nearly_equal(float a, float b, float tol = 1e-4f) {
     const float d = a - b;
@@ -544,6 +702,100 @@ void test_task9_shared_density_and_optional_r16f_contract() {
           "neutral density preserves the authored full-octave multiplication before optional controls");
 }
 
+matter::GpuCloudLayer task9_numerical_layer(int index = 0) {
+    matter::CloudLayer layer = make_layer(100.0f, 300.0f, 0.0375f, 20.0f, 30.0f);
+    layer.noise_scale = 0.00425f;
+    layer.coverage = 0.58f;
+    layer.lacunarity = 2.03f;
+    layer.gain = 0.5f;
+    layer.octaves = 4;
+    layer.wind[0] = 1.25f;
+    layer.wind[1] = -0.1f;
+    layer.wind[2] = -0.75f;
+    layer.weather_scale = 0.0013f;
+    layer.detail_scale = 0.017f;
+    matter::GpuCloudLayer gpu{};
+    matter::pack_cloud_layer(layer, index, gpu);
+    return gpu;
+}
+
+void test_task9_neutral_density_numerical_parity() {
+    const matter::GpuCloudLayer layer = task9_numerical_layer();
+    constexpr std::array<CpuCloudPoint, 5> positions{{
+        {13.25f, 125.0f, -44.75f}, {240.5f, 150.0f, 91.0f},
+        {-333.0f, 200.0f, 612.0f}, {999.25f, 250.0f, -721.5f},
+        {-75.5f, 285.0f, 18.25f}}};
+    for (CpuCloudPoint p : positions) {
+        const CpuCloudDensity old_density =
+            evaluate_old_cloud_density_for_test(layer, p, 17.25f);
+        const CpuCloudDensity new_density =
+            evaluate_new_cloud_density_for_test(layer, p, 17.25f);
+        CHECK(std::fabs(old_density.full - new_density.full) <= 1e-6f,
+              "neutral Task 9 full density preserves the authored evaluator");
+        CHECK(std::isfinite(new_density.coarse) &&
+                  std::isfinite(new_density.full) &&
+                  new_density.coarse >= 0.0f && new_density.full >= 0.0f,
+              "coarse and full numerical cloud density stay finite and nonnegative");
+    }
+}
+
+void test_task9_density_semantics() {
+    const CpuCloudPoint inside{240.5f, 200.0f, 91.0f};
+    matter::GpuCloudLayer layer = task9_numerical_layer();
+    CHECK(evaluate_new_cloud_density_for_test(layer, {inside.x, 100.0f, inside.z}, 0.0f).full == 0.0f &&
+              evaluate_new_cloud_density_for_test(layer, {inside.x, 300.0f, inside.z}, 0.0f).full == 0.0f,
+          "full density is zero at and outside the cloud height bounds");
+
+    layer.coverage = 0.0f;
+    const CpuCloudDensity clear = evaluate_new_cloud_density_for_test(layer, inside, 0.0f);
+    layer.coverage = 1.0f;
+    const CpuCloudDensity filled = evaluate_new_cloud_density_for_test(layer, inside, 0.0f);
+    CHECK(clear.coarse == 0.0f && clear.full == 0.0f,
+          "coverage zero clears coarse and full density");
+    CHECK(filled.coarse > 0.0f && filled.full > 0.0f &&
+              std::fabs(filled.coarse - layer.max_density) <= 1e-6f &&
+              std::fabs(filled.full - layer.max_density) <= 1e-6f,
+          "coverage one produces bounded maximally filled cloud density");
+    layer.coverage = 0.0f;
+    layer.detail_erosion = 1.0f;
+    const CpuCloudDensity clear_eroded =
+        evaluate_new_cloud_density_for_test(layer, inside, 0.0f);
+    CHECK(clear_eroded.coarse == 0.0f && clear_eroded.full == 0.0f,
+          "detail erosion cannot create density in a clear base body");
+
+    layer = task9_numerical_layer();
+    layer.weather_influence = 0.8f;
+    const CpuCloudDensity weather_a = evaluate_new_cloud_density_for_test(layer, inside, 11.0f);
+    const CpuCloudDensity weather_b = evaluate_new_cloud_density_for_test(layer, inside, 11.0f);
+    CHECK(weather_a.coarse == weather_b.coarse && weather_a.full == weather_b.full &&
+              weather_a.coarse >= 0.0f && weather_a.coarse <= layer.max_density &&
+              weather_a.full >= 0.0f && weather_a.full <= layer.max_density,
+          "weather modulation is deterministic and density-bounded");
+
+    layer.weather_influence = 0.0f;
+    layer.detail_erosion = 0.0f;
+    const CpuCloudDensity uneroded = evaluate_new_cloud_density_for_test(layer, inside, 11.0f);
+    layer.detail_erosion = 1.0f;
+    const CpuCloudDensity eroded = evaluate_new_cloud_density_for_test(layer, inside, 11.0f);
+    CHECK(eroded.full <= uneroded.full + 1e-7f &&
+              (uneroded.full != 0.0f || eroded.full == 0.0f),
+          "detail erosion never creates or increases cloud density");
+}
+
+void test_task9_derived_seeds_decorrelate_density_samples() {
+    const matter::GpuCloudLayer first = task9_numerical_layer(0);
+    const matter::GpuCloudLayer second = task9_numerical_layer(1);
+    bool differs = false;
+    for (CpuCloudPoint p : std::array<CpuCloudPoint, 4>{{
+             {13.0f, 180.0f, 29.0f}, {171.0f, 200.0f, -85.0f},
+             {-241.0f, 220.0f, 377.0f}, {790.0f, 250.0f, -633.0f}}}) {
+        const float a = evaluate_new_cloud_density_for_test(first, p, 3.0f).full;
+        const float b = evaluate_new_cloud_density_for_test(second, p, 3.0f).full;
+        differs = differs || std::fabs(a - b) > 1e-6f;
+    }
+    CHECK(differs, "derived cloud-layer seeds decorrelate otherwise identical samples");
+}
+
 }  // namespace
 
 int main() {
@@ -564,5 +816,8 @@ int main() {
     test_gpu_cloud_layer_shader_layout_contract();
     test_sanitize_clamps_the_cost_dials();
     test_task9_shared_density_and_optional_r16f_contract();
+    test_task9_neutral_density_numerical_parity();
+    test_task9_density_semantics();
+    test_task9_derived_seeds_decorrelate_density_samples();
     return check_summary();
 }

@@ -119,6 +119,8 @@ void main() {
         // Slices closer than the camera near plane have no valid NDC mapping.
         if (depth < pc.camera_near) {
             imageStore(vol_media, ivec3(voxel.xy, z), vec4(0.0));
+            if (ENHANCED_CLOUDS)
+                imageStore(vol_cloud_density, ivec3(voxel.xy, z), vec4(0.0));
             continue;
         }
 

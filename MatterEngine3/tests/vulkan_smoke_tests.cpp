@@ -4994,6 +4994,122 @@ static void rt_scenario_froxel_resize(
           "RT injected descriptor allocation failure retains live view, dimensions, and generation");
 }
 
+struct Task9CloudPoint { float x, y, z; };
+
+static uint32_t task9_cloud_hash3i(int32_t ix, int32_t iy, int32_t iz,
+                                   uint32_t seed) {
+    uint32_t h = static_cast<uint32_t>(ix) * 374761393u +
+                 static_cast<uint32_t>(iy) * 3266489917u +
+                 static_cast<uint32_t>(iz) * 668265263u + seed * 2246822519u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return h ^ (h >> 16);
+}
+
+static float task9_cloud_rand01(int32_t ix, int32_t iy, int32_t iz,
+                                uint32_t seed) {
+    return static_cast<float>(task9_cloud_hash3i(ix, iy, iz, seed) & 0xffffffu) /
+           16777216.0f;
+}
+
+static float task9_cloud_smooth5(float t) {
+    return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
+static float task9_cloud_value_noise3(float x, float y, float z,
+                                      uint32_t seed) {
+    const float fx0 = std::floor(x), fy0 = std::floor(y), fz0 = std::floor(z);
+    const int32_t ix = static_cast<int32_t>(fx0);
+    const int32_t iy = static_cast<int32_t>(fy0);
+    const int32_t iz = static_cast<int32_t>(fz0);
+    const float fx = x - fx0, fy = y - fy0, fz = z - fz0;
+    const float c000 = task9_cloud_rand01(ix,     iy,     iz,     seed);
+    const float c100 = task9_cloud_rand01(ix + 1, iy,     iz,     seed);
+    const float c010 = task9_cloud_rand01(ix,     iy + 1, iz,     seed);
+    const float c110 = task9_cloud_rand01(ix + 1, iy + 1, iz,     seed);
+    const float c001 = task9_cloud_rand01(ix,     iy,     iz + 1, seed);
+    const float c101 = task9_cloud_rand01(ix + 1, iy,     iz + 1, seed);
+    const float c011 = task9_cloud_rand01(ix,     iy + 1, iz + 1, seed);
+    const float c111 = task9_cloud_rand01(ix + 1, iy + 1, iz + 1, seed);
+    const float u = task9_cloud_smooth5(fx), v = task9_cloud_smooth5(fy);
+    const float w = task9_cloud_smooth5(fz);
+    const float x00 = c000 + (c100 - c000) * u;
+    const float x10 = c010 + (c110 - c010) * u;
+    const float x01 = c001 + (c101 - c001) * u;
+    const float x11 = c011 + (c111 - c011) * u;
+    const float y0 = x00 + (x10 - x00) * v;
+    const float y1 = x01 + (x11 - x01) * v;
+    return y0 + (y1 - y0) * w;
+}
+
+static float task9_cloud_fbm3(Task9CloudPoint p, uint32_t seed, int octaves,
+                              float gain, float lacunarity) {
+    float amplitude = 1.0f, sum = 0.0f, normalization = 0.0f, frequency = 1.0f;
+    for (int octave = 0; octave < octaves; ++octave) {
+        float noise = task9_cloud_value_noise3(
+            p.x * frequency, p.y * frequency, p.z * frequency,
+            seed + static_cast<uint32_t>(octave) * 131u);
+        noise = noise * 2.0f - 1.0f;
+        sum += noise * amplitude;
+        normalization += amplitude;
+        amplitude *= gain;
+        frequency *= lacunarity;
+    }
+    return sum / normalization;
+}
+
+static float task9_cloud_smoothstep(float edge0, float edge1, float value) {
+    const float t = std::clamp((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+static float task9_cloud_density_cpu(const matter::GpuCloudLayer& layer,
+                                     Task9CloudPoint world_pos,
+                                     float time_seconds) {
+    const float lo = layer.min_height, hi = layer.max_height;
+    if (!(hi > lo) || world_pos.y <= lo || world_pos.y >= hi) return 0.0f;
+    const float thickness = hi - lo;
+    const float f_lo = std::clamp(layer.falloff_min, 0.0f, thickness);
+    const float f_hi = std::clamp(layer.falloff_max, 0.0f, thickness);
+    const float rise = f_lo > 0.0f
+        ? task9_cloud_smoothstep(lo, lo + f_lo, world_pos.y) : 1.0f;
+    const float fall = f_hi > 0.0f
+        ? 1.0f - task9_cloud_smoothstep(hi - f_hi, hi, world_pos.y) : 1.0f;
+    const float profile = std::min(rise, fall);
+    if (profile <= 0.0f || layer.coverage <= 0.0f) return 0.0f;
+    const Task9CloudPoint p{
+        (world_pos.x + layer.wind[0] * time_seconds) * layer.noise_scale,
+        (world_pos.y + layer.wind[1] * time_seconds) * layer.noise_scale,
+        (world_pos.z + layer.wind[2] * time_seconds) * layer.noise_scale};
+    const float normalized = task9_cloud_fbm3(
+        p, static_cast<uint32_t>(layer.seed), static_cast<int>(layer.octaves),
+        layer.gain, layer.lacunarity) * 0.5f + 0.5f;
+    const float threshold = 1.0f - layer.coverage;
+    const float shape = task9_cloud_smoothstep(
+        threshold - matter::kCloudCoverageEdge,
+        threshold + matter::kCloudCoverageEdge, normalized);
+    return profile * layer.max_density * shape;
+}
+
+static Task9CloudPoint task9_froxel_world_position(
+    const viewer::FrameMatrices& matrices, uint32_t x, uint32_t y, uint32_t z) {
+    constexpr float froxel_near = 0.1f;
+    constexpr float froxel_far = 3000.0f;
+    constexpr float width = 160.0f, height = 90.0f, slices = 128.0f;
+    const float depth = froxel_near * std::pow(
+        froxel_far / froxel_near, (static_cast<float>(z) + 0.5f) / slices);
+    const float camera_near = matrices.view_to_clip.m[11] /
+                              (matrices.view_to_clip.m[10] + 1.0f);
+    const float camera_far = matrices.view_to_clip.m[11] / matrices.view_to_clip.m[10];
+    const float ndc_z = camera_near * (camera_far - depth) /
+                        ((camera_far - camera_near) * depth);
+    const matter::Float3 world = viewer::unproject_ndc(
+        matrices.clip_to_world,
+        {(static_cast<float>(x) + 0.5f) / width * 2.0f - 1.0f,
+         1.0f - (static_cast<float>(y) + 0.5f) / height * 2.0f,
+         ndc_z});
+    return {world.x, world.y, world.z};
+}
+
 // Isolated real-device lane for Task 8. It deliberately creates a new
 // renderer before the broad legacy RT scenarios: their intentional descriptor
 // stress must not obscure a resize validation failure.
@@ -5085,6 +5201,13 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
                                         : error.c_str());
     matter::Float4 cloud_media{};
     float cloud_density = 0.0f;
+    constexpr uint32_t task9_x = 80u, task9_y = 45u, task9_z = 64u;
+    const Task9CloudPoint task9_world =
+        task9_froxel_world_position(matrices, task9_x, task9_y, task9_z);
+    matter::GpuCloudLayer task9_packed{};
+    matter::pack_cloud_layer(cloud_fog.clouds[0], 0, task9_packed);
+    const float task9_cpu_density =
+        task9_cloud_density_cpu(task9_packed, task9_world, 1.0f);
     CHECK(renderer.volumetrics_cloud_density_allocated_for_test() &&
               renderer.volumetrics_cloud_density_dimensions_for_test().width == 160u &&
               renderer.volumetrics_cloud_density_dimensions_for_test().height == 90u &&
@@ -5092,14 +5215,93 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
               renderer.volumetrics_grid_rgba16f_volume_count_for_test() == 4u &&
               renderer.volumetrics_grid_bytes_for_test() == 62668800u &&
               renderer.readback_volumetrics_density_voxel_for_test(
-                  80u, 45u, 64u, cloud_media, cloud_density, error) &&
+                  task9_x, task9_y, task9_z, cloud_media, cloud_density, error) &&
               std::isfinite(cloud_density) && cloud_density > 0.0f &&
+              std::fabs(cloud_density - task9_cpu_density) < 2e-4f &&
               std::fabs(cloud_media.w - cloud_density) < 2e-4f &&
               std::fabs(cloud_media.x - 0.99f * cloud_density) < 2e-4f &&
               std::fabs(cloud_media.y - 0.99f * cloud_density) < 2e-4f &&
               std::fabs(cloud_media.z - 0.99f * cloud_density) < 2e-4f,
           error.empty() ? "Improved cloud grid records extinction and near-white scattering"
                         : error.c_str());
+
+    // Fixed-voxel semantic coverage uses the same binary32 hash/value-noise/
+    // FBM order as the shader oracle above.  These cases catch a missing
+    // coverage/height branch and a seed/index packing regression, rather than
+    // merely proving that some cloud voxel is nonzero.
+    matter::FogSettings semantic_fog = cloud_fog;
+    semantic_fog.clouds[0].coverage = 0.0f;
+    renderer.set_volumetrics_settings(improved_clouds, semantic_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "render coverage-zero cloud fixture"
+                                        : error.c_str());
+    matter::Float4 semantic_media{};
+    float semantic_density = -1.0f;
+    CHECK(renderer.readback_volumetrics_density_voxel_for_test(
+              task9_x, task9_y, task9_z, semantic_media, semantic_density, error) &&
+              semantic_density == 0.0f && semantic_media.w == 0.0f,
+          error.empty() ? "coverage zero clears the fixed GPU cloud voxel"
+                        : error.c_str());
+
+    semantic_fog.clouds[0].coverage = 1.0f;
+    semantic_fog.clouds[0].min_height = 100.0f;
+    semantic_fog.clouds[0].max_height = 300.0f;
+    renderer.set_volumetrics_settings(improved_clouds, semantic_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "render outside-height cloud fixture"
+                                        : error.c_str());
+    CHECK(renderer.readback_volumetrics_density_voxel_for_test(
+              task9_x, task9_y, task9_z, semantic_media, semantic_density, error) &&
+              semantic_density == 0.0f && semantic_media.w == 0.0f,
+          error.empty() ? "outside-height fixed GPU cloud voxel is clear"
+                        : error.c_str());
+
+    matter::CloudLayer shaped = cloud_fog.clouds[0];
+    shaped.min_height = -100.0f;
+    shaped.max_height = 100.0f;
+    shaped.coverage = 0.58f;
+    shaped.noise_scale = 0.017f;
+    shaped.octaves = 4;
+    shaped.lacunarity = 2.03f;
+    shaped.gain = 0.5f;
+    semantic_fog.cloud_count = 1;
+    semantic_fog.clouds[0] = shaped;
+    renderer.set_volumetrics_settings(improved_clouds, semantic_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "render seed-zero shaped cloud fixture"
+                                        : error.c_str());
+    float seed_zero_density = 0.0f;
+    matter::GpuCloudLayer seed_zero_layer{};
+    matter::pack_cloud_layer(shaped, 0, seed_zero_layer);
+    const float seed_zero_cpu = task9_cloud_density_cpu(
+        seed_zero_layer, task9_world, 1.0f);
+    CHECK(renderer.readback_volumetrics_density_voxel_for_test(
+              task9_x, task9_y, task9_z, semantic_media, seed_zero_density, error) &&
+              std::isfinite(seed_zero_density) && seed_zero_density >= 0.0f &&
+              std::fabs(seed_zero_density - seed_zero_cpu) < 2e-4f,
+          error.empty() ? "seed-zero fixed R16 voxel matches the CPU cloud evaluator"
+                        : error.c_str());
+
+    semantic_fog.cloud_count = 2;
+    semantic_fog.clouds[0] = shaped;
+    semantic_fog.clouds[0].max_density = 0.0f;
+    semantic_fog.clouds[1] = shaped;
+    renderer.set_volumetrics_settings(improved_clouds, semantic_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "render seed-one shaped cloud fixture"
+                                        : error.c_str());
+    float seed_one_density = 0.0f;
+    matter::GpuCloudLayer seed_one_layer{};
+    matter::pack_cloud_layer(shaped, 1, seed_one_layer);
+    const float seed_one_cpu = task9_cloud_density_cpu(
+        seed_one_layer, task9_world, 1.0f);
+    CHECK(renderer.readback_volumetrics_density_voxel_for_test(
+              task9_x, task9_y, task9_z, semantic_media, seed_one_density, error) &&
+              std::isfinite(seed_one_density) && seed_one_density >= 0.0f &&
+              std::fabs(seed_one_density - seed_one_cpu) < 2e-4f &&
+              std::fabs(seed_one_density - seed_zero_density) > 2e-4f,
+          error.empty() ? "derived seeds decorrelate fixed GPU cloud samples"
+                        : error.c_str());
+
+    renderer.set_volumetrics_settings(improved_clouds, cloud_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "restore constant cloud fixture"
+                                        : error.c_str());
 
     // RED/GREEN guard for the enhanced composition: establish a nonzero fog
     // baseline, then add the same constant cloud.  Only the cloud delta may
@@ -5139,6 +5341,33 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
               std::fabs((combined_media.y - fog_media.y) - 0.99f * combined_cloud_density) < 2e-4f &&
               std::fabs((combined_media.z - fog_media.z) - 0.99f * combined_cloud_density) < 2e-4f,
           error.empty() ? "enhanced cloud delta preserves nonzero fog and adds only 0.99 cloud scattering"
+                        : error.c_str());
+
+    // Regression: the same enhanced bundle first writes a positive low-z
+    // voxel with a permissive camera near, then must clear it when that slice
+    // becomes invalid under a higher near plane.  Reallocation would hide the
+    // stale-write bug, so only matrices change between the two dispatches.
+    const viewer::FrameMatrices base_matrices = matrices;
+    camera.near_plane = 0.01f;
+    CHECK(viewer::build_frame_matrices(camera, 160, 100, matrices, error) &&
+              warm_rt_tlas(),
+          error.empty() ? "write permissive-near enhanced cloud voxel"
+                        : error.c_str());
+    matter::Float4 near_media{};
+    float near_density = 0.0f;
+    CHECK(renderer.readback_volumetrics_density_voxel_for_test(
+              task9_x, task9_y, 0u, near_media, near_density, error) &&
+              near_density > 0.0f,
+          error.empty() ? "permissive near writes positive low-z enhanced density"
+                        : error.c_str());
+    camera.near_plane = 1.0f;
+    matrices = base_matrices;
+    CHECK(warm_rt_tlas(), error.empty() ? "clear high-near enhanced cloud voxel"
+                                        : error.c_str());
+    CHECK(renderer.readback_volumetrics_density_voxel_for_test(
+              task9_x, task9_y, 0u, near_media, near_density, error) &&
+              near_density == 0.0f && near_media.w == 0.0f,
+          error.empty() ? "high near clears stale enhanced cloud density in-place"
                         : error.c_str());
 
     renderer.set_volumetrics_settings(current_clouds, cloud_fog);
