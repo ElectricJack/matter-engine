@@ -326,5 +326,91 @@ int main() {
               "level-0 cells emit, in the same order");
     }
 
+    // --- vegetation stops where it cannot be resolved -----------------------
+    // WorldSector plants nothing past VEGETATION_MIN_LOD. That gate is ~99% of
+    // a far sector's bake: measured at 334 ms per 64 m cell at the far scatter
+    // tier, over ~90,000 cells inside StreamMountain's authored 10 km reach.
+    // The far tier is NOT the cheap one -- familiesForRung(<=0) is ['tree'],
+    // and the tree planner runs an O(viable^2) exclusion pass with three field
+    // queries per candidate, while grass (gated to the nearest tier) is a flat
+    // loop. The gating was backwards with respect to cost.
+    //
+    // Landmark boulders are deliberately ABOVE the gate: 25-40 m across, still
+    // several pixels at 5 km, and nearly free at a 180 m minimum distance.
+    {
+        auto canon = [](const std::string& raw) {
+            return raw.empty() ? std::string()
+                : part_graph::params_to_json(part_graph::params_from_json(raw));
+        };
+        std::vector<std::string> mods, cparams;
+        std::vector<uint64_t> hashes;
+        auto add = [&](const char* module, const std::string& raw) {
+            mods.push_back(module);
+            cparams.push_back(canon(raw));
+            hashes.push_back(0x1000ull + hashes.size());
+        };
+        for (int s = 0; s < 8; ++s) add("Rock", "{\"seed\":" + std::to_string(s) + "}");
+        for (const char* sz : {"2.5", "4.0"})
+            for (int s = 0; s < 4; ++s)
+                add("Rock", "{\"seed\":" + std::to_string(s) + ",\"size\":" + sz + "}");
+        for (int s = 0; s < 6; ++s) add("Pebble", "{\"seed\":" + std::to_string(s) + "}");
+        for (int s = 0; s < 5; ++s) add("Grass", "{\"seed\":" + std::to_string(s) + "}");
+        for (int s = 0; s < 3; ++s) add("Tree", "{\"seed\":" + std::to_string(s) + "}");
+
+        const char* biomes =
+            R"(,"worldSeed":42,"fieldHash":"abc","biomes":)"
+            R"("{\"meadow\":{\"rocks\":4,\"pebbles\":4,\"grass\":5,\"trees\":6},)"
+            R"(\"foothills\":{\"rocks\":4,\"pebbles\":4,\"grass\":5,\"trees\":6},)"
+            R"(\"mountains\":{\"rocks\":4,\"pebbles\":4,\"grass\":5,\"trees\":6}}"})";
+        auto bake_band = [&](int tx, int terrain_lod) {
+            BakeOptions opts;
+            opts.parts_dir = parts_dir;
+            opts.world.field = &field;
+            const std::string params =
+                std::string(R"({"tx":)") + std::to_string(tx) +
+                R"(,"tz":0,"rung":2,"terrainLod":)" +
+                std::to_string(terrain_lod) + R"(,"sectorSize":64)" + biomes;
+            return host.bake_source(src, params.c_str(), opts,
+                                    hashes.data(), hashes.size(),
+                                    mods.data(), cparams.data());
+        };
+        auto count_of = [](const BakeResult& r, const char* module) {
+            size_t n = 0;
+            for (const auto& m : r.child_modules_placed) if (m == module) ++n;
+            return n;
+        };
+
+        // Both properties are checked over a SCAN, not a fixed tile. Placement
+        // is world-position-keyed, so most individual cells contain neither a
+        // boulder nor a tree -- a fixed tile lets this pass by being empty,
+        // which is exactly how the first version of it "passed".
+        //
+        // Past the gate a Rock can only be a landmark boulder: the scree-rock
+        // scatter sits BELOW the gate, and child_modules_placed carries module
+        // names without params, so the two are otherwise indistinguishable.
+        // That is what makes the band-2 rock count a clean boulder probe.
+        size_t veg_near = 0, veg_far = 0, boulders_far = 0, tiles = 0;
+        for (int tx = 0; tx < 40; ++tx) {
+            BakeResult near = bake_band(tx, 3);
+            BakeResult far  = bake_band(tx, 2);
+            if (!near.error.ok || !far.error.ok) continue;
+            ++tiles;
+            veg_near += count_of(near, "Tree") + count_of(near, "Grass");
+            veg_far  += count_of(far, "Tree") + count_of(far, "Grass");
+            boulders_far += count_of(far, "Rock");
+        }
+        printf("  vegetation gate: over %zu tiles -- band 3 planted %zu, "
+               "band 2 planted %zu and kept %zu landmark boulders\n",
+               tiles, veg_near, veg_far, boulders_far);
+        CHECK(tiles > 30, "the gate scan actually baked its tiles");
+        CHECK(veg_near > 0,
+              "the near band still plants -- otherwise this proves nothing");
+        CHECK(veg_far == 0,
+              "past the gate a sector plants no vegetation at all");
+        CHECK(boulders_far > 0,
+              "landmark boulders sit ABOVE the gate and still place at range "
+              "-- they are large, visible and nearly free");
+    }
+
     return check_summary();
 }

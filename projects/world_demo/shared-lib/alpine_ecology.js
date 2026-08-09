@@ -337,9 +337,7 @@ export function selectAlpineAsset(family, habitat, identity) {
   const [module, form, seed, size, sinkY] = row;
   const { altitude, slope, dryness } = habitat;
   // These final gates cannot be overridden by otherwise strong habitat fields.
-  if (!isWithinVegetationCeiling(altitude) || !finite(slope) ||
-    (family === 'tree' && altitude > 455) || slope > FAMILY_SLOPE_MAX[family])
-    return null;
+  if (!withinTerrainGates(family, altitude, slope)) return null;
   const [scaleMinimum, scaleMaximum] = FAMILY_SCALE_RANGE[family];
   const scaleIdentity = identityChannel(identity, 3);
   // A power curve keeps most plants plausible while still allowing rare,
@@ -393,13 +391,48 @@ function placementIdentity(worldSeed, kind, x, z, purpose) {
 
 export const TREE_NEIGHBOR_PADDING = 16;
 
+// The gates that depend only on the TERRAIN under a candidate, not on its
+// habitat. Extracted so plannedCandidate can apply them before paying for a
+// habitat sample and selectAlpineAsset can still apply them where it always
+// did -- one predicate, two callers, no chance of the two drifting apart.
+// These are final: no habitat field, however strong, overrides them.
+function withinTerrainGates(family, altitude, slope) {
+  return isWithinVegetationCeiling(altitude) && finite(slope) &&
+    !(family === 'tree' && altitude > 455) &&
+    !(slope > FAMILY_SLOPE_MAX[family]);
+}
+
 function plannedCandidate({
   family, candidate, worldSeed, kind, heightAt, slopeAt, biomeAt,
 }) {
   if (typeof biomeAt === 'function' &&
     biomeAt(candidate.x, candidate.z) === 'ocean') return null;
+  // ---- REJECT ON THE CHEAP TESTS FIRST -----------------------------------
+  //
+  // sampleHabitat below is the expensive call by a wide margin -- 14 fbm at
+  // 3-4 octaves each, roughly 180 interpreted hash evaluations per candidate --
+  // and the tree planner runs it about 3,385 times per 64 m cell (1.65 m
+  // candidate spacing over a rect padded by 16 m on every side). Measured at
+  // ~332 ms of scatter per cell on StreamMountain, which is ~99% of a far
+  // sector's bake.
+  //
+  // The gates that reject most of those candidates are the terrain ones --
+  // above the tree line, or too steep -- and they used to run inside
+  // selectAlpineAsset, i.e. AFTER the habitat sample they make pointless. On a
+  // world whose peaks reach 650 m against a 455 m tree cap, and whose median
+  // slope is ~35 degrees, that is most of the work thrown away at the last
+  // step.
+  //
+  // Hoisting them changes nothing about WHICH candidates survive: the
+  // predicate is identical and selectAlpineAsset still applies it, so this is
+  // an evaluation-order change with a bitwise-identical placement list.
+  // Ordered heightAt -> altitude, then slopeAt -> slope, because slopeAt
+  // finite-differences the field and so costs several heightAt calls.
   const altitude = heightAt(candidate.x, candidate.z);
+  if (!isWithinVegetationCeiling(altitude) ||
+      (family === 'tree' && altitude > 455)) return null;
   const slope = slopeAt(candidate.x, candidate.z);
+  if (!withinTerrainGates(family, altitude, slope)) return null;
   const habitat = sampleHabitat({
     x: candidate.x, z: candidate.z, altitude, slope, worldSeed,
   });

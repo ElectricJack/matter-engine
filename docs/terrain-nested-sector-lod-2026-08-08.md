@@ -649,6 +649,84 @@ it is a prerequisite for the frame-ms / TLAS-instance / peak-memory numbers the
 plan also asks for. The part-count and tick-cost numbers above need none of it:
 they come from the real streamer with the real config.
 
+## Follow-on: scatter, not VT, is the bake (2026-08-08)
+
+The question "what is taking so long baking the large distant tiles, is it all
+VT generation?" turned out to expose two things: an instrumentation gap, and a
+cost the migration inherited and made worse.
+
+**The profiler cannot see the bake.** `PROFILE_SCOPE("bake.sector")` opens at the
+STAGING step, after `bake_host.bake_source()` has returned, so the entire JS
+bake — terrain meshing and all scatter — sits outside every zone in the chrome
+trace. The trace shows `bake.stagemem` (76%) and `bake.prebuild` (24%), and
+`prebuild` is where the VT classifier lives, so the trace reads VT-heavy. It is
+an artefact of what got instrumented. `stagemem` also bundles the QEM ladder,
+the chart build and the warp solve into one zone, so even the staging quarter
+cannot be split without new zones.
+
+**Where the time actually goes.** Measured per level (terrain and scatter timed
+separately, same tile, same field):
+
+| level | tile | terrain | scatter |
+|---|---|---|---|
+| 0 | 64 m | 50.3 ms | 1,079.9 ms |
+| 1 | 128 m | 40.8 ms | 4,574.2 ms |
+| 2 | 256 m | 42.5 ms | 20,383.1 ms |
+
+Terrain is flat across levels — constant cells-per-tile does exactly what this
+design claims. Scatter is ~99% of the bake and scales 4.2-4.5x per level, i.e.
+linearly in the 4^L virtual cells the sub-celling walks.
+
+**Why a 64 m cell costs ~332 ms.** `planTrees` evaluates ~3,385 candidates per
+cell (1.65 m spacing over a rect padded 16 m on each side — 2.25x the cell's
+area, so over half the candidate work is duplicated between neighbours). Each
+candidate paid, before anything could reject it: three native field queries
+(`biomeAt`/`heightAt`/`slopeAt`, the last finite-differencing the field), then
+`sampleHabitat`'s 14 `fbm` calls at 3-4 octaves — roughly 180 interpreted
+`hash2` evaluations — then asset selection. ~98 us per candidate.
+
+**And the far tier is not the cheap one.** `familiesForRung(rung <= 0)` is
+`['tree']`, and the tree planner is the expensive family (quadratic exclusion,
+three field queries per candidate); grass, the family everyone assumes is
+costly, is a flat loop already gated to the nearest tier. StreamMountain's ring
+table extends tier 0 to 10,095 m on the stated premise that "rung 0 is the
+cheapest scatter tier ... extending it costs residency bookkeeping and terrain,
+not dense scatter". That premise is false, and it is what put ~90,000 cells of
+tree planning — about 8 CPU-hours — inside the authored reach. The uniform grid
+pays the same total; nesting only concentrated it into indivisible per-tile jobs
+so that a level-5 tile became a single ~2-minute bake and the far field never
+arrived at all.
+
+**Two fixes, both measured.**
+
+1. `VEGETATION_MIN_LOD` in `WorldSector.js`: vegetation stops past terrain band
+   3 (~2.6 km on this world's table). `p.terrainLod` is the distance band in
+   BOTH tiling modes, so this helps the uniform grid identically. Landmark
+   boulders stay above the gate — 25-40 m across, still several pixels at 5 km,
+   and nearly free at a 180 m minimum distance. Level-3 tiles went 16 s -> 49 ms,
+   level-4 48 s -> 58 ms, and both levels now bake at all.
+2. Early rejection in `plannedCandidate`: the terrain gates (tree line, slope,
+   vegetation ceiling) hoisted ahead of `sampleHabitat`, extracted into
+   `withinTerrainGates` so the two call sites cannot drift. Evaluation order
+   only — placement lists are bitwise identical — and worth 11-15% on the real
+   world at every level that still plants.
+
+Together: **17,737 s -> 2,163 s of JS bake for the disc (8.2x), ~25 min -> ~3 min
+wall at 12 workers.**
+
+**This corrects the WP7 visual acceptance above.** Those screenshots were taken
+with only levels 0-2 resident: in an 81-second run the profile shows `lod=3,4,5`
+only — not one 512 m, 1024 m or 2048 m tile ever baked. The far field was absent,
+not continuous, and the acceptance as written was not sound. It is sound with
+the gate in place, which is what makes those levels reachable.
+
+**Still open.** The remaining 36 CPU-minutes is levels 0-2, and it is dominated
+by `sampleHabitat` running interpreted noise for candidates that pass the terrain
+gates. Ranked: a native `fbm` binding (largest, but a bit-identical port is
+unlikely so it costs a re-baseline); a per-tile candidate memo (output-identical,
+~30-50% at level 2, where the 16 cells share padded borders); spatial-hashing the
+O(viable^2) exclusion (output-identical); density tuning per band (visible).
+
 ## Rejected alternatives (summary)
 
 | alternative | rejected because |

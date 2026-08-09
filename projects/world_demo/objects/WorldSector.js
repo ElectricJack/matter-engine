@@ -38,6 +38,12 @@ const BOULDER_MIN_DIST = 180.0;
 const TREE_MIN_DIST    = 9.0;
 const GRASS_SLOPE_MAX  = 0.5;
 const TREE_SLOPE_MAX   = 0.5;
+// The farthest terrain band that still plants vegetation. p.terrainLod counts
+// DOWN with distance (5 = nearest), so this is "bands 5,4,3 plant; 2,1,0 do
+// not". See the long note at the gate in build() for why this exists and why
+// landmark boulders sit above it. Bands 5..3 are the near ~2.6 km on
+// StreamMountain's authored table.
+const VEGETATION_MIN_LOD = 3;
 
 // ---- patch noise: value-noise FBM in [-1, 1], world-space ------------------
 function hash2(ix, iz, seed) {
@@ -253,6 +259,38 @@ class WorldSector extends Part {
       this.placeChild('Rock', { seed: (c.u * 16 | 0) % BOULDER_SEEDS, size: sz });
       this.popMatrix();
     }
+
+    // ---- VEGETATION STOPS WHERE IT CANNOT BE RESOLVED ----------------------
+    //
+    // Everything below this line is planted vegetation, and it is ~99% of a
+    // sector bake. Measured on StreamMountain: 334 ms per 64 m cell at the FAR
+    // scatter tier, which the ring table extends to 10,095 m -- about 90,000
+    // cells, so roughly 8 CPU-hours of planting per world fill.
+    //
+    // The far tier is not the cheap one, which is the assumption that let this
+    // happen. `familiesForRung(rung <= 0)` is ['tree'], and the tree planner is
+    // the expensive family: a candidate grid over the cell plus 16 m of padding,
+    // three field queries (heightAt / slopeAt / biomeAt) per candidate, then an
+    // O(viable^2) exclusion pass, capped at 1080 trees per cell. Grass -- the
+    // family everyone thinks of as the expensive one -- is a flat loop with no
+    // exclusion pass, and is already gated to the nearest tier. The gating was
+    // backwards with respect to cost.
+    //
+    // p.terrainLod is the DISTANCE BAND and is the right handle in both tiling
+    // modes: under nested sectors it is 5 - level, and on the uniform grid it
+    // is the terrain band the sector fell in. Both mean "how far away".
+    //
+    // A tree here is 6-15 m tall, so it subtends roughly 15 px at 1.2 km, 7 px
+    // at 2.6 km, 4 px at 4.7 km and under 2 px at 10 km. Band 3 keeps them
+    // wherever they still read as a forest and drops them where they are
+    // speckle. Raise this to spend more; lower it to spend less.
+    //
+    // LANDMARK BOULDERS ARE DELIBERATELY ABOVE THIS GATE. They are 25-40 m
+    // across -- still ~9 px at 4.7 km -- and nearly free: a 180 m minimum
+    // distance puts about 0.13 candidates in a 64 m cell, so they cost a couple
+    // of field queries rather than a planner. They are exactly what should
+    // survive at range.
+    if (terrainLod < VEGETATION_MIN_LOD) return;
 
     const scatterRocks = () => {
       // ---- tier >= 1: rocks (scree fields) and pebbles ----------------------
