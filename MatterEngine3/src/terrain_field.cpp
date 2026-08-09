@@ -14,6 +14,10 @@
 // File-scope constants shared between parse (static fn) and eval.
 // ---------------------------------------------------------------------------
 static constexpr int kMaxOps = 96;
+// The register file every tape evaluator puts on the stack. Sized for the
+// LARGER of the two caps: a surfaces tape is bounded at kMaxOps because the
+// GPU mirrors it, a habitat tape at kMaxHabitatOps because nothing does.
+static constexpr int kMaxTapeRegs = terrain_field::kMaxHabitatOps;
 
 // ---------------------------------------------------------------------------
 // Internal noise core (file-scope anonymous namespace).
@@ -543,7 +547,7 @@ void FieldRuntime::eval_regs(float regs[], int count, float x, float z) const {
 }
 
 float FieldRuntime::eval_reg(int target, float x, float z) const {
-    float regs[kMaxOps] = {};
+    float regs[kMaxTapeRegs] = {};
     eval_regs(regs, target + 1, x, z);
     return regs[target];
 }
@@ -958,9 +962,14 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
             return false;
         }
 
-        // Cap applies to EMITTED ops (dedup'd consts already continued above).
-        if ((int)out.ops.size() >= kMaxOps) {
-            err = "too many ops (max 64)"; return false;
+        // Cap applies to EMITTED ops (dedup'd consts already continued above),
+        // and is PER MODE: a surfaces tape is bounded by the shader's register
+        // file, a habitat tape only by the evaluator's stack array.
+        const int op_cap =
+            (mode == TapeMode::Habitat) ? kMaxHabitatOps : kMaxOps;
+        if ((int)out.ops.size() >= op_cap) {
+            err = "too many ops (max " + std::to_string(op_cap) + ")";
+            return false;
         }
         src_map.push_back((int)out.ops.size());
         out.ops.push_back(o);
@@ -1166,7 +1175,7 @@ void SurfaceRuntime::eval_regs(const float pos[3], const float nrm[3],
 void SurfaceRuntime::weights_at(const float pos[3], const float nrm[3],
                                 const SurfaceWorldContext* world,
                                 float* out_weights) const {
-    float regs[kMaxOps] = {};
+    float regs[kMaxTapeRegs] = {};
     eval_regs(pos, nrm, world, regs);
     for (size_t k = 0; k < prog_.materials.size(); ++k)
         out_weights[k] = std::max(0.0f, regs[prog_.materials[k].reg]);
@@ -1191,7 +1200,7 @@ void SurfaceRuntime::channels_at(float world_x, float world_z,
     ctx.field = field;
     ctx.local_to_world = kIdentity;
 
-    float regs[kMaxOps] = {};
+    float regs[kMaxTapeRegs] = {};
     eval_regs(pos, nrm, &ctx, regs);
     for (int i = 0; i < kMaxHabitatChannels; ++i) {
         const int reg = prog_.channel_regs[i];
@@ -1204,7 +1213,7 @@ void SurfaceRuntime::appearance_at(const float pos[3], const float nrm[3],
                                    SurfaceAppearance& out) const {
     out = SurfaceAppearance{};   // identity for every absent directive
     if (!prog_.has_appearance()) return;
-    float regs[kMaxOps] = {};
+    float regs[kMaxTapeRegs] = {};
     eval_regs(pos, nrm, world, regs);
     auto clamp_to = [](float v, float lo, float hi) {
         return std::max(lo, std::min(hi, v));

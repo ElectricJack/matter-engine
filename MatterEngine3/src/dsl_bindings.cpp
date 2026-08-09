@@ -1178,6 +1178,17 @@ static JSValue j_slopeAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
 // One crossing replaces what was ~14 interpreted fbm calls (~105 us measured);
 // the native evaluation behind it is close to free -- __heightAt evaluating a
 // 4-octave field costs the same as __moistureAt reading a constant.
+// __hasHabitat() — is a habitat tape bound? A PREDICATE, not a failed read.
+//
+// habitatAt reports a missing tape by setting the DSL error, which is sticky
+// and harvested at the end of the bake -- a JS try/catch cannot see it, so
+// "call it and catch" is not a way to ask. A script that legitimately wants to
+// know (WorldSector picking between the tape and the interpreted fallback)
+// needs to ask without arming that error.
+static JSValue j_hasHabitat(JSContext* c, JSValueConst, int, JSValueConst*) {
+    DslState* st = state_of(c);
+    return JS_NewBool(c, st->world().habitat != nullptr);
+}
 static JSValue j_habitatAt(JSContext* c, JSValueConst, int argc,
                            JSValueConst* a) {
     VerbTimer _vt(g_height_us, g_height_calls);
@@ -1466,6 +1477,7 @@ void install_bindings(JSContext* ctx) {
     bind("__moistureAt",j_moistureAt,2);
     bind("__biomeAt",j_biomeAt,2);
     bind("__habitatAt",j_habitatAt,3);
+    bind("__hasHabitat",j_hasHabitat,0);
     // Tileset verb bindings.
     bind("__dsl_ts_tile",j_ts_tile,5); bind("__dsl_ts_base",j_ts_base,2);
     bind("__dsl_ts_layer",j_ts_layer,2); bind("__dsl_ts_dropChild",j_ts_dropChild,2);

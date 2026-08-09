@@ -160,6 +160,9 @@ globalThis.Part = class Part {
   // `out` array; returns the channel count. The array is reused across
   // calls on purpose -- this runs once per scatter candidate.
   habitatAt(x,z,out) { return __habitatAt(x,z,out); }
+  // Ask WITHOUT arming habitatAt's error: a missing tape is reported by
+  // setting the sticky DSL error, which a try/catch cannot see.
+  hasHabitat() { return __hasHabitat(); }
   biomeAt(x,z)    { return __biomeAt(x,z); }
 };
 )JS";

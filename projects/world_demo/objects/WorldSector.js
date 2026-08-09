@@ -218,6 +218,13 @@ class WorldSector extends Part {
     // the cell coordinates ARE the tile coordinates and every expression below
     // is the one that ran before this change, so the emitted placement list is
     // bitwise identical. That is this change's acceptance gate.
+    // Is a habitat tape bound? Asked once per bake with the PREDICATE, not by
+    // calling habitatAt and catching: a missing tape arms the sticky DSL error,
+    // which a JS try/catch cannot see and which fails the bake at the end. A
+    // world with no habitat() keeps the interpreted sampleHabitat and behaves
+    // exactly as it did -- adopting the tape is opting in, not a dependency.
+    const hasHabitat = this.hasHabitat();
+
     const scatterCell = (cellTx, cellTz) => {
     const ox = cellTx * SECTOR, oz = cellTz * SECTOR;
     const counts = table[this.biomeAt(ox + SECTOR / 2, oz + SECTOR / 2)] || {};
@@ -311,6 +318,7 @@ class WorldSector extends Part {
         rung: p.rung, worldSeed: seed, ox, oz, sectorSize: SECTOR,
         heightAt: this.heightAt.bind(this), slopeAt: this.slopeAt.bind(this),
         candidatesInRect, biomeAt: this.biomeAt.bind(this),
+        habitatAt: hasHabitat ? this.habitatAt.bind(this) : undefined,
       })) putPlanned(placement);
       return;
     }

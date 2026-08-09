@@ -441,6 +441,15 @@ class TapePlain extends World {
         ss << in.rdbuf();
         const std::string mountain_source = ss.str();
 
+        // StreamMountain imports its ECOLOGY (habitat(h) delegates to
+        // shared-lib/alpine_ecology), so resolving imports is now part of
+        // evaluating it. Without roots the import fails, the eval fails, and
+        // every downstream assertion here reads an empty tape -- which surfaces
+        // as an out-of-range materials[0] rather than as "the world did not
+        // load", so it is worth stating why the roots are here.
+        host.set_shared_lib_roots({"../../projects/world_demo/shared-lib",
+                                   "../shared-lib"});
+
         MaterialRegistryResetDynamic();
         MaterialDef def{};
         MaterialRegistryDefaultDynamicDef(&def);

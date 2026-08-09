@@ -158,6 +158,110 @@ export function environmentalDryness({ moisture, exposure, altitude, slope }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// THE HABITAT TAPE (docs/habitat-tape-sketch-2026-08-08.md)
+//
+// sampleHabitat below is ~99% of a sector bake: 14 fbm at 3-4 octaves, roughly
+// 180 interpreted hash evaluations, ~105 us per scatter candidate, against
+// ~3,385 candidates per 64 m cell. Measured, a JS fbm costs 7,488 ns and a
+// native boundary crossing 567 ns -- so evaluating this as a native tape is a
+// ~50x win on the dominant cost of the whole streaming fill.
+//
+// It stays ECOLOGY, not engine: the tape is data the world ships, the kernel
+// only evaluates registers, and the channel names below are this module's
+// contract with its consumers.
+//
+// RANGE. The tape's noise2World is ~[-1, 1] (terrain_field.cpp fbm2 remaps each
+// octave with n*2-1); the JS fbm above is [0, 1] (valueNoise is already [0, 1]
+// and is never remapped). Every constant here is tuned for the [0, 1] form, so
+// a literal transcription would leave forestSignal near 0 and
+// smoothstep(0.40, 0.61) would return 0 EVERYWHERE -- a world with no forest,
+// failing silently. The conversion folds away exactly and costs no ops:
+//
+//     sum_i w_i * fbm01_i  ==  sum_i (w_i/2) * tape_i  +  (sum_i w_i)/2
+//
+// so every weight below is HALF its counterpart in sampleHabitat and the
+// halves' total rides in the leading constant. Check any pair against each
+// other and they will look wrong until you apply that identity.
+//
+// The underlying hashes still differ (JS hash2 vs the tape's xxHash-prime
+// hash2i), so this is a deliberate re-authoring: placements move once. That is
+// the accepted cost, recorded in the sketch.
+export const HABITAT = Object.freeze({
+  altitude: 0, slope: 1, moisture: 2, exposure: 3, dryness: 4,
+  forest: 5, forestEdge: 6, treeCluster: 7, shrubPatch: 8,
+  meadowPatch: 9, flowerPatch: 10, groundCoverPatch: 11,
+});
+export const HABITAT_CHANNEL_COUNT = 12;
+
+export function alpineHabitat(h, worldSeed) {
+  const seed = worldSeed >>> 0;
+  const n = (s, freq, oct) => h.noise2World((seed + s) >>> 0, freq, oct);
+
+  // altitude and slope are CHANNELS, not separate queries: folding them in is
+  // what lets plannedCandidate replace heightAt + slopeAt + sampleHabitat with
+  // a single crossing.
+  const altitude = h.height;
+  const slope = h.fieldSlope;
+
+  const moisture = h.value(0.59)                    // 0.18 + (0.62+0.20)/2
+    .add(n(11, 1 / 300).mul(0.31))
+    .add(n(17, 1 / 55).mul(0.10))
+    .clamp(0, 1);
+  const exposure = h.value(0.50)                    // 0.10 + 0.80/2
+    .add(n(23, 1 / 340).mul(0.40))
+    .clamp(0, 1);
+
+  // Broad signal establishes whole forest regions; finer signals break their
+  // edges and cut natural clearings.
+  const forestSignal = h.value(0.5)                 // (0.72+0.23+0.05)/2
+    .add(n(31, 1 / 520, 4).mul(0.36))
+    .add(n(37, 1 / 140).mul(0.115))
+    .add(n(39, 1 / 55, 2).mul(0.025));
+  const forest = forestSignal.smoothstep(0.40, 0.61);
+  const forestEdge =
+    forestSignal.sub(0.505).abs().smoothstep(0.045, 0.145).oneMinus();
+
+  const groveSignal = h.value(0.5)                  // (0.68+0.32)/2
+    .add(n(83, 1 / 95, 3).mul(0.34))
+    .add(n(89, 1 / 34, 2).mul(0.16));
+  const treeCluster = forestSignal.mul(0.55)
+    .add(groveSignal.mul(0.45))
+    .smoothstep(0.42, 0.60);
+
+  const shrubSignal = h.value(0.5)
+    .add(n(41, 1 / 190).mul(0.31))
+    .add(n(47, 1 / 62).mul(0.19));
+  const meadowSignal = h.value(0.5)
+    .add(n(53, 1 / 240, 4).mul(0.38))
+    .add(n(59, 1 / 75).mul(0.12));
+  // meadowSignal is ALREADY in [0,1] form, so only the raw noise term needs
+  // the half-and-offset treatment here.
+  const flowerSignal = meadowSignal.mul(0.68)
+    .add(n(67, 1 / 52).mul(0.16)).add(0.16);
+  const groundCoverSignal = forestSignal.mul(0.58)
+    .add(n(79, 1 / 48).mul(0.21)).add(0.21);
+
+  const dryness = moisture.oneMinus().mul(0.45)
+    .add(exposure.mul(0.25))
+    .add(altitude.sub(100).mul(1 / 420).clamp(0, 1).mul(0.20))
+    .add(slope.mul(1 / 0.8).clamp(0, 1).mul(0.10))
+    .clamp(0, 1);
+
+  h.channel('altitude', altitude);
+  h.channel('slope', slope);
+  h.channel('moisture', moisture);
+  h.channel('exposure', exposure);
+  h.channel('dryness', dryness);
+  h.channel('forest', forest);
+  h.channel('forestEdge', forestEdge);
+  h.channel('treeCluster', treeCluster);
+  h.channel('shrubPatch', shrubSignal.smoothstep(0.38, 0.67));
+  h.channel('meadowPatch', meadowSignal.smoothstep(0.37, 0.64));
+  h.channel('flowerPatch', flowerSignal.smoothstep(0.45, 0.70));
+  h.channel('groundCoverPatch', groundCoverSignal.smoothstep(0.39, 0.67));
+}
+
 export function sampleHabitat({ x, z, altitude, slope, worldSeed }) {
   if (![x, z, altitude, slope, worldSeed].every(finite)) {
     return {
@@ -402,8 +506,19 @@ function withinTerrainGates(family, altitude, slope) {
     !(slope > FAMILY_SLOPE_MAX[family]);
 }
 
+// Reused across candidates on purpose. This runs ~3,385 times per 64 m cell,
+// and allocating a channel array and a habitat object per call would hand back
+// a good part of what evaluating the tape natively buys. Nothing downstream
+// retains either: selectAlpineAsset SPREADS the habitat into a fresh object.
+const HABITAT_OUT = [];
+const HABITAT_SCRATCH = {
+  valid: true, moisture: 0, exposure: 0, dryness: 0, forest: 0, forestEdge: 0,
+  treeCluster: 0, shrubPatch: 0, meadowPatch: 0, flowerPatch: 0,
+  groundCoverPatch: 0,
+};
+
 function plannedCandidate({
-  family, candidate, worldSeed, kind, heightAt, slopeAt, biomeAt,
+  family, candidate, worldSeed, kind, heightAt, slopeAt, biomeAt, habitatAt,
 }) {
   if (typeof biomeAt === 'function' &&
     biomeAt(candidate.x, candidate.z) === 'ocean') return null;
@@ -428,14 +543,40 @@ function plannedCandidate({
   // an evaluation-order change with a bitwise-identical placement list.
   // Ordered heightAt -> altitude, then slopeAt -> slope, because slopeAt
   // finite-differences the field and so costs several heightAt calls.
-  const altitude = heightAt(candidate.x, candidate.z);
-  if (!isWithinVegetationCeiling(altitude) ||
-      (family === 'tree' && altitude > 455)) return null;
-  const slope = slopeAt(candidate.x, candidate.z);
-  if (!withinTerrainGates(family, altitude, slope)) return null;
-  const habitat = sampleHabitat({
-    x: candidate.x, z: candidate.z, altitude, slope, worldSeed,
-  });
+  let altitude;
+  let slope;
+  let habitat;
+  if (typeof habitatAt === 'function') {
+    // ONE crossing for what used to be heightAt + slopeAt + 14 interpreted
+    // fbm: altitude and slope are channels of the same tape, so the terrain
+    // gates below cost nothing extra to evaluate.
+    habitatAt(candidate.x, candidate.z, HABITAT_OUT);
+    altitude = HABITAT_OUT[HABITAT.altitude];
+    slope = HABITAT_OUT[HABITAT.slope];
+    if (!withinTerrainGates(family, altitude, slope)) return null;
+    HABITAT_SCRATCH.moisture = HABITAT_OUT[HABITAT.moisture];
+    HABITAT_SCRATCH.exposure = HABITAT_OUT[HABITAT.exposure];
+    HABITAT_SCRATCH.dryness = HABITAT_OUT[HABITAT.dryness];
+    HABITAT_SCRATCH.forest = HABITAT_OUT[HABITAT.forest];
+    HABITAT_SCRATCH.forestEdge = HABITAT_OUT[HABITAT.forestEdge];
+    HABITAT_SCRATCH.treeCluster = HABITAT_OUT[HABITAT.treeCluster];
+    HABITAT_SCRATCH.shrubPatch = HABITAT_OUT[HABITAT.shrubPatch];
+    HABITAT_SCRATCH.meadowPatch = HABITAT_OUT[HABITAT.meadowPatch];
+    HABITAT_SCRATCH.flowerPatch = HABITAT_OUT[HABITAT.flowerPatch];
+    HABITAT_SCRATCH.groundCoverPatch = HABITAT_OUT[HABITAT.groundCoverPatch];
+    habitat = HABITAT_SCRATCH;
+  } else {
+    // JS fallback, kept: a world without a habitat() tape (and any consumer of
+    // planAlpineSector that predates one) still plans exactly as before.
+    altitude = heightAt(candidate.x, candidate.z);
+    if (!isWithinVegetationCeiling(altitude) ||
+        (family === 'tree' && altitude > 455)) return null;
+    slope = slopeAt(candidate.x, candidate.z);
+    if (!withinTerrainGates(family, altitude, slope)) return null;
+    habitat = sampleHabitat({
+      x: candidate.x, z: candidate.z, altitude, slope, worldSeed,
+    });
+  }
   const asset = selectAlpineAsset(family, { ...habitat, altitude, slope },
     placementIdentity(worldSeed, kind, candidate.x, candidate.z, 1));
   if (!asset) return null;
@@ -464,6 +605,7 @@ function higherTreePriority(a, b) {
 
 function planTrees({
   worldSeed, ox, oz, sectorSize, heightAt, slopeAt, candidatesInRect, biomeAt,
+  habitatAt,
 }) {
   const { kind, minDistance } = FAMILY_SCATTER.tree;
   const candidates = candidatesInRect(
@@ -476,6 +618,7 @@ function planTrees({
   for (const candidate of candidates) {
     const placement = plannedCandidate({
       family: 'tree', candidate, worldSeed, kind, heightAt, slopeAt, biomeAt,
+      habitatAt,
     });
     if (!placement) continue;
     viable.push({
@@ -512,7 +655,7 @@ function planTrees({
 
 export function planAlpineSector({
   rung, worldSeed, ox, oz, sectorSize,
-  heightAt, slopeAt, candidatesInRect, biomeAt,
+  heightAt, slopeAt, candidatesInRect, biomeAt, habitatAt,
 }) {
   if (![worldSeed, ox, oz, sectorSize].every(finite) ||
     typeof heightAt !== 'function' || typeof slopeAt !== 'function' ||
@@ -523,7 +666,7 @@ export function planAlpineSector({
     if (family === 'tree') {
       placements.push(...planTrees({
         worldSeed, ox, oz, sectorSize, heightAt, slopeAt,
-        candidatesInRect, biomeAt,
+        candidatesInRect, biomeAt, habitatAt,
       }));
       continue;
     }
@@ -535,6 +678,7 @@ export function planAlpineSector({
       if (placed >= FAMILY_CAPS[family]) break;
       const placement = plannedCandidate({
         family, candidate, worldSeed, kind, heightAt, slopeAt, biomeAt,
+        habitatAt,
       });
       if (!placement) continue;
       placements.push(placement);

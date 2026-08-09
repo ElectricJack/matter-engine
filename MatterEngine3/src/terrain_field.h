@@ -203,6 +203,20 @@ inline bool surface_variant_world_anchored(uint32_t instance_count) {
 // on the stack rather than because more would be expensive.
 constexpr int kMaxHabitatChannels = 16;
 
+// Op cap for a HABITAT tape, distinct from the surfaces cap.
+//
+// The 96 that bounds a surfaces tape is a GPU constraint: it mirrors the
+// shader's VT_TAPE_MAX_OPS register file and the compositor's arena slot, and
+// raising it means touching both. A habitat tape never reaches the GPU -- it is
+// evaluated on the CPU at bake time, per scatter candidate -- so it is bounded
+// only by the register array the evaluator puts on the stack, and 256 floats is
+// a kilobyte.
+//
+// This is not theoretical headroom: StreamMountain's alpine ecology is ~100 ops
+// and did not fit under 96, which is what prompted separating the two caps
+// rather than trimming an ecology to satisfy a shader's register file.
+constexpr int kMaxHabitatOps = 256;
+
 // Which OUTPUT directives a tape may declare. The op set, the register machine
 // and every arithmetic rule are identical either way -- this only decides what
 // the program is allowed to emit at the end, and therefore what "a valid tape"

@@ -77,6 +77,8 @@ const ALPINE_MEADOW = defineMaterial("AlpineMeadow", {
   detail: "AlpineMeadowDetail",
 });
 
+import { alpineHabitat } from 'shared-lib/alpine_ecology';
+
 class StreamMountain extends World {
   static params = { worldSeed: 20260722 };
   static world = { sectorSize: 64, yMin: -96, yMax: 704 };
@@ -689,6 +691,21 @@ class StreamMountain extends World {
     // radius (a second field lane, cap 8) is the obvious next term — a wide
     // radius-24 probe would separate "valley" from "gully" and let the meadow
     // classifier prefer real basins over every incidental swale.
+  }
+
+  // -------------------------------------------------------------------------
+  // The HABITAT tape (docs/habitat-tape-sketch-2026-08-08.md). Same op set and
+  // same register machine as surfaces() above; it differs in declaring CHANNELS
+  // instead of material weights, and in being read on the CPU per scatter
+  // candidate at bake time rather than per texel on the GPU.
+  //
+  // The ecology itself lives in shared-lib/alpine_ecology.js -- this only binds
+  // it to the world's seed. That is the point of expressing it as a tape: the
+  // engine evaluates registers and never learns what a forest is, and the
+  // ecology stays shareable between worlds.
+  // -------------------------------------------------------------------------
+  habitat(h) {
+    alpineHabitat(h, StreamMountain.params.worldSeed);
   }
 
   biomes() {
