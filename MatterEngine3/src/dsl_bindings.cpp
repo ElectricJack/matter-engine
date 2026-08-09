@@ -1167,6 +1167,39 @@ static JSValue j_slopeAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
     if (!w.field) { st->set_error("slopeAt: no world field bound"); return JS_UNDEFINED; }
     return JS_NewFloat64(c, w.field->slope_at((float)argd(c, a[0]), (float)argd(c, a[1])));
 }
+// __habitatAt(x, z, out) — evaluate the world's habitat tape at a world (x, z)
+// and fill `out[i]` with channel i, returning the channel count.
+//
+// Fills a CALLER-OWNED array rather than returning a fresh object: this is the
+// scatter hot path (one call per candidate, thousands per 64 m cell), and
+// allocating an object per call would hand back a good part of what moving the
+// ecology native buys. The caller keeps one array and reuses it.
+//
+// One crossing replaces what was ~14 interpreted fbm calls (~105 us measured);
+// the native evaluation behind it is close to free -- __heightAt evaluating a
+// 4-octave field costs the same as __moistureAt reading a constant.
+static JSValue j_habitatAt(JSContext* c, JSValueConst, int argc,
+                           JSValueConst* a) {
+    VerbTimer _vt(g_height_us, g_height_calls);
+    DslState* st = state_of(c);
+    const WorldBinding& w = st->world();
+    if (!w.habitat) {
+        st->set_error("habitatAt: no habitat tape bound — the world must "
+                      "declare habitat(h)");
+        return JS_UNDEFINED;
+    }
+    if (argc < 3 || !JS_IsArray(a[2])) {
+        st->set_error("habitatAt: expected (x, z, outArray)");
+        return JS_UNDEFINED;
+    }
+    float ch[terrain_field::kMaxHabitatChannels];
+    w.habitat->channels_at((float)argd(c, a[0]), (float)argd(c, a[1]),
+                           w.field, ch);
+    const int count = w.habitat->channel_count();
+    for (int i = 0; i < count && i < terrain_field::kMaxHabitatChannels; ++i)
+        JS_SetPropertyUint32(c, a[2], (uint32_t)i, JS_NewFloat64(c, ch[i]));
+    return JS_NewInt32(c, count);
+}
 static JSValue j_moistureAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
     VerbTimer _vt(g_biome_us, g_biome_calls);
     DslState* st = state_of(c);
@@ -1432,6 +1465,7 @@ void install_bindings(JSContext* ctx) {
     bind("__slopeAt",j_slopeAt,2);
     bind("__moistureAt",j_moistureAt,2);
     bind("__biomeAt",j_biomeAt,2);
+    bind("__habitatAt",j_habitatAt,3);
     // Tileset verb bindings.
     bind("__dsl_ts_tile",j_ts_tile,5); bind("__dsl_ts_base",j_ts_base,2);
     bind("__dsl_ts_layer",j_ts_layer,2); bind("__dsl_ts_dropChild",j_ts_dropChild,2);

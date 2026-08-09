@@ -97,6 +97,24 @@ globalThis.__surface_mats = [];
 // one "at most one of each" rule, enforced in one place.
 globalThis.__surface_matlines = [];
 globalThis.__surface_applines = [[], [], [], []];
+// ---------------------------------------------------------------------------
+// habitat() tape (docs/habitat-tape-sketch-2026-08-08.md).
+//
+// The SAME op vocabulary, recorder and register machine as surfaces() -- only
+// the output directive differs (`channel` instead of `material`/`tint`/...).
+// It exists so an ECOLOGY can be data: sampleHabitat was ~99% of a sector bake
+// as interpreted JS noise (14 fbm, ~180 hash evaluations per scatter
+// candidate, ~105 us), and moving that native is only defensible if the engine
+// does not learn what a forest is. It does not -- it learns to evaluate a tape.
+//
+// Separate op array from __surface_ops on purpose: register numbers are
+// positions within a tape, so sharing the array would make one tape's ops
+// renumber the other's. __tape_ops selects which one __semit is currently
+// recording into.
+globalThis.__habitat_ops = [];
+globalThis.__habitat_chans = [];   // `channel <i> r<reg>` output directives
+globalThis.__habitat_names = [];   // declaration-order names; index = position
+globalThis.__tape_ops = globalThis.__surface_ops;
 function __sflush() {
   const out = globalThis.__surface_mats;
   out.length = 0;
@@ -111,7 +129,7 @@ function __sflush() {
 }
 function __smat(line) { globalThis.__surface_matlines.push(line); __sflush(); }
 function __sapp(slot, line) { globalThis.__surface_applines[slot].push(line); __sflush(); }
-function __semit(line) { globalThis.__surface_ops.push(line); return globalThis.__surface_ops.length - 1; }
+function __semit(line) { globalThis.__tape_ops.push(line); return globalThis.__tape_ops.length - 1; }
 function __sreg(v) {
   if (v instanceof SurfaceNode) return v.r;
   return __semit('const ' + (+v));
@@ -137,7 +155,10 @@ class SurfaceNode {
   smoothstep(e0, e1) { return new SurfaceNode(__semit('smoothstep ' + (+e0) + ' ' + (+e1) + ' r' + this.r)); }
   fract() { return new SurfaceNode(__semit('fract r' + this.r)); }
 }
-function __surfaceArg() {
+// `targetOps` selects which tape __semit records into; absent means the
+// surfaces() tape, which is what the host's zero-argument call gets.
+function __surfaceArg(targetOps) {
+  globalThis.__tape_ops = targetOps || globalThis.__surface_ops;
   const s = {
     // fbm noise over PART-LOCAL (x, z) — usable on any variant.
     noise2(seed, freq, octaves, gain, lacunarity) {
@@ -278,6 +299,37 @@ function __surfaceArg() {
   // slope-tuned classifiers hold steady across the LOD ladder.
   lazyInput('fieldSlope', 'fslope');
   return s;
+}
+// habitat() argument: __surfaceArg's whole vocabulary — every noise op, every
+// SurfaceNode method, every lazy input — recording into the habitat tape, with
+// the output directives swapped.
+//
+// `h.channel(name, node)` assigns indices in DECLARATION ORDER and reports the
+// names back to the host, so the channel set is the ECOLOGY's contract and not
+// the engine's. The engine never learns what "forest" means; it evaluates
+// register N and hands back a number.
+function __habitatArg() {
+  const h = __surfaceArg(globalThis.__habitat_ops);
+  h.channel = (name, node) => {
+    const key = String(name);
+    let index = globalThis.__habitat_names.indexOf(key);
+    if (index < 0) {
+      index = globalThis.__habitat_names.length;
+      globalThis.__habitat_names.push(key);
+    }
+    globalThis.__habitat_chans.push('channel ' + index + ' r' + __sreg(node));
+  };
+  // A habitat tape has no materials and no appearance lanes. Removing them
+  // here rather than letting SurfaceProgram::parse reject the emitted line
+  // gives the author the error at the call, naming the method they used.
+  for (const absent of ['weight', 'tint', 'roughnessBias', 'wetness',
+                        'metallic']) {
+    h[absent] = () => {
+      throw new TypeError('habitat(): ' + absent + '() belongs to surfaces() '
+                          + '— a habitat tape declares h.channel(name, node)');
+    };
+  }
+  return h;
 }
 // defineMaterial in the FIELD-compilation context (chart-VT spec Phase 3).
 //

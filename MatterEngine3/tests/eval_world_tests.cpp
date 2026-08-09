@@ -539,5 +539,151 @@ class TapePlain extends World {
         MaterialRegistryResetDynamic();
     }
 
+    // =======================================================================
+    // habitat() tape round-trip (docs/habitat-tape-sketch-2026-08-08.md)
+    //
+    // Same record/readback/compile shape as surfaces() above, and the point of
+    // it: an ECOLOGY expressed as data, so the engine can evaluate it natively
+    // without learning what a forest is.
+    // =======================================================================
+    {
+        // A world with no habitat() emits no tape -- opt-in, unlike surfaces()
+        // whose absence is also fine but whose presence must declare weights.
+        CHECK(r.habitat_program.empty(),
+              "no habitat() => empty habitat program");
+        CHECK(r.habitat_channels.empty(), "and no channel names");
+    }
+    static const char* kHabWorld = R"JS(
+class HabWorld extends World {
+  static params = { worldSeed: 7 };
+  field(p) {
+    const height = noise2(p.worldSeed ^ 3, 1/160, 4).mul(30);
+    const zero = blend(0.0, 0.0, 0.0);
+    return { density: heightToDensity(height), moisture: zero, relief: zero,
+             seaLevel: 0.0 };
+  }
+  habitat(h) {
+    const moisture = h.value(0.18)
+      .add(h.noise2World(11, 1 / 300).mul(0.62))
+      .add(h.noise2World(17, 1 / 55).mul(0.20))
+      .clamp(0, 1);
+    const forestSignal = h.noise2World(31, 1 / 520, 4).mul(0.72)
+      .add(h.noise2World(37, 1 / 140).mul(0.23));
+    // dryness reads the TERRAIN inputs -- the two the scatter planner calls
+    // heightAt/slopeAt for today, folded into the same evaluation.
+    const dryness = moisture.oneMinus().mul(0.45)
+      .add(h.height.sub(100).mul(1 / 420).clamp(0, 1).mul(0.20))
+      .add(h.fieldSlope.mul(1 / 0.8).clamp(0, 1).mul(0.10))
+      .clamp(0, 1);
+    h.channel('moisture', moisture);
+    h.channel('forest', forestSignal.smoothstep(0.40, 0.61));
+    h.channel('dryness', dryness);
+  }
+}
+)JS";
+    {
+        WorldEvalResult rh = host.eval_world(kHabWorld, "{}");
+        CHECK(rh.ok, rh.message.c_str());
+        CHECK(!rh.habitat_program.empty(), "habitat() emits a tape");
+        CHECK(rh.surface_program.empty(),
+              "a habitat tape is not mistaken for a surfaces tape");
+        CHECK(rh.habitat_program.find("noise2w") != std::string::npos,
+              "world noise reached the habitat tape");
+        CHECK(rh.field_program.find("channel ") == std::string::npos,
+              "channel directives do not leak into the field program");
+
+        // Channel NAMES are the ecology's contract, in declaration order.
+        CHECK(rh.habitat_channels.size() == 3, "three channels reported");
+        CHECK(rh.habitat_channels[0] == "moisture" &&
+                  rh.habitat_channels[1] == "forest" &&
+                  rh.habitat_channels[2] == "dryness",
+              "channel names come back in declaration order");
+
+        terrain_field::SurfaceProgram hp;
+        std::string herr;
+        CHECK(terrain_field::SurfaceProgram::parse(
+                  rh.habitat_program, hp, herr,
+                  terrain_field::TapeMode::Habitat), herr.c_str());
+        CHECK(hp.channel_count == 3, "3 declared channels survive readback");
+
+        // And it evaluates: bound to the world's own field, every channel is a
+        // finite [0,1] value that varies across the world. A tape that pinned
+        // to the origin -- the failure the surfaces fallback has by design --
+        // would show up as no variation.
+        terrain_field::FieldProgram fp;
+        std::string ferr;
+        CHECK(terrain_field::FieldProgram::parse(rh.field_program, fp, ferr),
+              ferr.c_str());
+        terrain_field::FieldRuntime field(std::move(fp));
+        terrain_field::SurfaceRuntime hrt(std::move(hp));
+        float ch[terrain_field::kMaxHabitatChannels] = {};
+        float first[3] = {-1, -1, -1};
+        bool in_range = true, varies = false;
+        for (int i = 0; i < 40; ++i) {
+            hrt.channels_at(float(i) * 53.0f, float(i) * -31.0f, &field, ch);
+            for (int c = 0; c < 3; ++c) {
+                if (!(ch[c] >= 0.0f && ch[c] <= 1.0f)) in_range = false;
+                if (first[c] < 0) first[c] = ch[c];
+                else if (std::fabs(ch[c] - first[c]) > 1e-4f) varies = true;
+            }
+        }
+        CHECK(in_range, "every habitat channel stays in [0,1]");
+        CHECK(varies, "habitat channels vary across the world");
+
+        // Seed wiring: a habitat tape is part of the world's program, so a
+        // different world seed must not silently produce the same ecology when
+        // the author threads the seed through (this one hardcodes its seeds, so
+        // the tape is deliberately seed-INdependent -- assert that rather than
+        // leave it ambiguous).
+        WorldEvalResult rh2 = host.eval_world(kHabWorld, "{\"worldSeed\":99}");
+        CHECK(rh2.ok, rh2.message.c_str());
+        CHECK(rh2.habitat_program == rh.habitat_program,
+              "a habitat tape with literal seeds is seed-independent, as "
+              "written");
+    }
+
+    // --- the two tapes coexist without renumbering each other --------------
+    // Register numbers are positions WITHIN a tape. If both recorded into one
+    // array, the second tape's refs would point into the first's ops -- so a
+    // world declaring both is the case that catches it.
+    {
+        static const char* kBoth = R"JS(
+class BothWorld extends World {
+  static params = { worldSeed: 5 };
+  field(p) {
+    const height = noise2(p.worldSeed ^ 3, 1/160, 4).mul(30);
+    const zero = blend(0.0, 0.0, 0.0);
+    return { density: heightToDensity(height), moisture: zero, relief: zero,
+             seaLevel: 0.0 };
+  }
+  surfaces(s) {
+    const steep = s.slope.smoothstep(0.3, 0.6);
+    s.weight(31, steep);
+    s.weight(32, steep.oneMinus());
+  }
+  habitat(h) {
+    h.channel('forest', h.noise2World(31, 1 / 520, 4).smoothstep(0.4, 0.61));
+  }
+}
+)JS";
+        MaterialRegistryResetDynamic();
+        WorldEvalResult rb = host.eval_world(kBoth, "{}");
+        CHECK(rb.ok, rb.message.c_str());
+        CHECK(!rb.surface_program.empty() && !rb.habitat_program.empty(),
+              "a world may declare both tapes");
+        terrain_field::SurfaceProgram sp, hp;
+        std::string e1, e2;
+        CHECK(terrain_field::SurfaceProgram::parse(rb.surface_program, sp, e1),
+              e1.c_str());
+        CHECK(terrain_field::SurfaceProgram::parse(
+                  rb.habitat_program, hp, e2,
+                  terrain_field::TapeMode::Habitat), e2.c_str());
+        CHECK(sp.materials.size() == 2 && hp.channel_count == 1,
+              "each tape kept its own outputs");
+        CHECK(rb.habitat_program.find("slope") == std::string::npos,
+              "the surfaces tape's ops did not leak into the habitat tape");
+        MaterialRegistryResetDynamic();
+    }
+
     return check_summary();
 }

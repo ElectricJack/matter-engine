@@ -1053,6 +1053,10 @@ struct WorldSession::Impl {
     // classifier) and — via the hash — VT page invalidation on tape edits.
     std::unique_ptr<terrain_field::SurfaceRuntime> world_surface;
     uint64_t world_surface_hash = 0;
+    // habitat() tape: the world's ecology as data, read per scatter candidate
+    // through the habitatAt verb. Null when the world declares none.
+    std::unique_ptr<terrain_field::SurfaceRuntime> world_habitat;
+    std::vector<std::string> world_habitat_channels;
 
     // Sea level from the most recent eval_world result (-inf = not a world).
     float world_sea_level = std::numeric_limits<float>::lowest();
@@ -3156,6 +3160,44 @@ bool WorldSession::Impl::install_world(
     if (world_surface_hash != previous_surface_hash)
         schedule_vt_surface_reclassify();
 
+    // 3b. habitat() tape (docs/habitat-tape-sketch-2026-08-08.md). Same op set
+    // and same register machine as surfaces() above; it differs in declaring
+    // CHANNELS instead of materials, and in being read on the CPU per scatter
+    // candidate at bake time rather than per texel on the GPU.
+    //
+    // No reclassify hook and no page invalidation: a habitat tape affects what
+    // a bake PLACES, so it is folded into the sector params (and therefore the
+    // part hash) rather than into VT page keys.
+    world_habitat.reset();
+    world_habitat_channels.clear();
+    if (!r.habitat_program.empty()) {
+        terrain_field::SurfaceProgram hprog;
+        if (!terrain_field::SurfaceProgram::parse(
+                r.habitat_program, hprog, perr,
+                terrain_field::TapeMode::Habitat)) {
+            err = "install_world: habitat tape parse failed: " + perr;
+            return false;
+        }
+        world_habitat =
+            std::make_unique<terrain_field::SurfaceRuntime>(std::move(hprog));
+        world_habitat_channels = r.habitat_channels;
+        fprintf(stderr,
+                "[habitat] tape compiled: %d channels (%s), %s inputs, "
+                "hash=%016llx\n",
+                world_habitat->channel_count(),
+                [&] {
+                    static std::string names;
+                    names.clear();
+                    for (size_t i = 0; i < world_habitat_channels.size(); ++i) {
+                        if (i) names += ", ";
+                        names += world_habitat_channels[i];
+                    }
+                    return names.c_str();
+                }(),
+                world_habitat->uses_world_inputs() ? "world" : "local",
+                (unsigned long long)world_habitat->hash());
+    }
+
     // 4. Store world constants.
     world_sea_level    = world_field->sea_level();
     world_biomes_json  = r.biomes_json;
@@ -4326,6 +4368,10 @@ void WorldSession::Impl::bake_and_stage_sector(
         script_host::BakeOptions opts;
         opts.parts_dir = provider_ref->transient_dir();
         opts.world.field       = world_field.get();
+        // The ecology tape rides the same binding as the field: one pointer,
+        // read per scatter candidate by habitatAt. Null when the world declares
+        // no habitat(), which the verb reports rather than silently zeroing.
+        opts.world.habitat     = world_habitat.get();
         world_profile.apply(opts.world);
         // The profile carries S_0; this request may be a coarser, larger tile.
         // Each streamed bake builds its own BakeOptions and its own ScriptHost,

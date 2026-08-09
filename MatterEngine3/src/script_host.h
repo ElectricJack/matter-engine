@@ -130,6 +130,12 @@ struct WorldEvalResult {
     // recorded by the world's optional surfaces(s) method. Empty when the
     // world defines no surfaces() (legacy path: TriEx materialId weights).
     std::string surface_program;
+    // habitat() tape: canonical program text plus the channel NAMES in
+    // declaration order (index i in the program is habitat_channels[i]). Empty
+    // when the world declares no habitat(). The names are the ecology's
+    // contract; the engine only evaluates registers.
+    std::string habitat_program;
+    std::vector<std::string> habitat_channels;
     std::string biomes_json;      // JSON.stringify of biomes() return value
     float sector_size = 16.0f;
     float y_min = -64.0f;

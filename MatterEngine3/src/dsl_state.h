@@ -22,6 +22,13 @@ namespace dsl {
 // the field's mesher. Null field pointer means "no world bound".
 struct WorldBinding {
     const terrain_field::FieldRuntime* field = nullptr;
+    // habitat() tape (docs/habitat-tape-sketch-2026-08-08.md): the world's
+    // compiled ecology, read per scatter candidate through the habitatAt verb.
+    // Null means the world declared no habitat(), and habitatAt then reports
+    // "no habitat tape bound" rather than silently returning zeros -- an
+    // ecology that quietly reads all-zero channels would place nothing and look
+    // like a scatter bug.
+    const terrain_field::SurfaceRuntime* habitat = nullptr;
     float sector_size = 16.0f;
     float y_min       = -64.0f;
     float y_max       = 192.0f;

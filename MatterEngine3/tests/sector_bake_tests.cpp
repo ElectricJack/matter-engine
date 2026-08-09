@@ -412,5 +412,110 @@ int main() {
               "-- they are large, visible and nearly free");
     }
 
+    // --- habitatAt: the verb agrees with the runtime it reads ---------------
+    // The last link in the habitat chain (docs/habitat-tape-sketch-2026-08-08).
+    // A Part reads channels through this.habitatAt(x, z, out) and THROWS on any
+    // disagreement with the values C++ computes from the same tape, so a bake
+    // that succeeds is the assertion. Cross-checking rather than asserting a
+    // constant means a change to the noise, the register machine or the verb's
+    // argument order all show up here.
+    {
+        const char* tape =
+            "noise2w 11 0.00333 3 0.5 2\n"        // r0
+            "const 0.62\n"                         // r1
+            "mul r0 r1\n"                          // r2
+            "input height\n"                       // r3
+            "const 0.01\n"                         // r4
+            "mul r3 r4\n"                          // r5
+            "input fslope\n"                       // r6
+            "channel 0 r2\nchannel 1 r5\nchannel 2 r6\n";
+        terrain_field::SurfaceProgram hp;
+        std::string herr;
+        CHECK(terrain_field::SurfaceProgram::parse(
+                  tape, hp, herr, terrain_field::TapeMode::Habitat),
+              herr.c_str());
+        terrain_field::SurfaceRuntime hrt(std::move(hp));
+
+        // What the runtime says, at the probe points the JS will use.
+        const float probes[4][2] = {
+            {0.0f, 0.0f}, {137.0f, -89.0f}, {-420.5f, 260.25f}, {910.0f, 910.0f},
+        };
+        std::string expect = "[";
+        for (int i = 0; i < 4; ++i) {
+            float ch[terrain_field::kMaxHabitatChannels] = {};
+            hrt.channels_at(probes[i][0], probes[i][1], &field, ch);
+            for (int c = 0; c < 3; ++c) {
+                if (i || c) expect += ",";
+                char buf[64];
+                std::snprintf(buf, sizeof(buf), "%.9g", (double)ch[c]);
+                expect += buf;
+            }
+        }
+        expect += "]";
+
+        const char* probe_src = R"JS(
+class HabProbe extends Part {
+  static params = { expect: '', tol: 0.0005 };
+  build(p) {
+    const want = JSON.parse(p.expect);
+    const probes = [[0,0],[137,-89],[-420.5,260.25],[910,910]];
+    const out = [];
+    let k = 0;
+    for (const [x, z] of probes) {
+      const n = this.habitatAt(x, z, out);
+      if (n !== 3) throw new Error('habitatAt returned ' + n + ' channels, want 3');
+      for (let c = 0; c < 3; ++c) {
+        const got = out[c], exp = want[k++];
+        if (!(Math.abs(got - exp) <= p.tol))
+          throw new Error('channel ' + c + ' at ' + x + ',' + z +
+                          ': verb ' + got + ' vs runtime ' + exp);
+      }
+    }
+    this.terrainVolume(0, 0, 0, 0, [16,16,16,16]);
+  }
+}
+)JS";
+        BakeOptions opts;
+        opts.parts_dir = parts_dir;
+        opts.world.field = &field;
+        opts.world.habitat = &hrt;
+        opts.world.sector_size = 16.0f;
+        std::string params = "{\"expect\":\"";
+        for (char c : expect) {           // escape for embedding in JSON
+            if (c == '"') params += "\\\"";
+            else params += c;
+        }
+        params += "\"}";
+        BakeResult hb = host.bake_source(probe_src, params.c_str(), opts);
+        CHECK(hb.error.ok, hb.error.message.c_str());
+        printf("  habitatAt: verb matches the runtime at 4 probes x 3 channels\n");
+
+        // And with no tape bound the verb REPORTS it rather than handing back
+        // zeros -- an ecology reading all-zero channels would place nothing and
+        // look like a scatter bug rather than a missing habitat().
+        //
+        // A bare probe, not the cross-check above: the verb follows the same
+        // convention heightAt/slopeAt do (set the DSL error, return undefined,
+        // harvest at the end) rather than throwing, so a script that keeps
+        // running after the failed call can raise its OWN error first and mask
+        // the host's. That is worth knowing about the convention, and it is why
+        // this case gets a probe that does nothing after the call.
+        static const char* bare_src = R"JS(
+class BareHab extends Part {
+  build(p) {
+    const out = [];
+    this.habitatAt(0, 0, out);
+    this.terrainVolume(0, 0, 0, 0, [16,16,16,16]);
+  }
+}
+)JS";
+        BakeOptions bare = opts;
+        bare.world.habitat = nullptr;
+        BakeResult nb = host.bake_source(bare_src, "{}", bare);
+        CHECK(!nb.error.ok, "habitatAt with no tape bound fails the bake");
+        CHECK(nb.error.message.find("no habitat tape") != std::string::npos,
+              nb.error.message.c_str());
+    }
+
     return check_summary();
 }

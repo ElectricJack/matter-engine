@@ -2803,6 +2803,86 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
         JS_FreeValue(ctx, surfFn);
     }
 
+    // 13. Call habitat(h) if present (docs/habitat-tape-sketch-2026-08-08.md):
+    //     the same shape as surfaces() above, recording into its own op array
+    //     so register numbers stay tape-local, and reading back the declared
+    //     channel NAMES as well as the program. The names are the ecology's
+    //     contract -- the engine only ever evaluates register N.
+    //
+    //     Unlike surfaces(), an absent habitat() is not an error and neither is
+    //     a world that has one: this is opt-in per world.
+    {
+        JSValue habFn = JS_GetPropertyStr(ctx, inst, "habitat");
+        if (JS_IsFunction(ctx, habFn)) {
+            JSValue g = JS_GetGlobalObject(ctx);
+            JSValue makeArg = JS_GetPropertyStr(ctx, g, "__habitatArg");
+            JSValue arg = JS_Call(ctx, makeArg, JS_UNDEFINED, 0, nullptr);
+            JS_FreeValue(ctx, makeArg);
+            if (JS_IsException(arg)) {
+                BakeError e = harvest_exception(ctx);
+                r.message = "habitat() argument setup failed: " + e.message;
+                JS_FreeValue(ctx, habFn);
+                JS_FreeValue(ctx, g);
+                JS_FreeValue(ctx, inst); JS_FreeValue(ctx, cls); done(); return r;
+            }
+            JSValue habResult = JS_Call(ctx, habFn, inst, 1, &arg);
+            JS_FreeValue(ctx, arg);
+            if (JS_IsException(habResult)) {
+                BakeError e = harvest_exception(ctx);
+                r.message = e.message;
+                JS_FreeValue(ctx, habResult);
+                JS_FreeValue(ctx, habFn);
+                JS_FreeValue(ctx, g);
+                JS_FreeValue(ctx, inst); JS_FreeValue(ctx, cls); done(); return r;
+            }
+            JS_FreeValue(ctx, habResult);
+
+            std::string prog;
+            uint32_t chans = 0;
+            auto append_lines = [&](const char* prop) {
+                JSValue arr = JS_GetPropertyStr(ctx, g, prop);
+                uint32_t len = 0;
+                JSValue lenV = JS_GetPropertyStr(ctx, arr, "length");
+                JS_ToUint32(ctx, &len, lenV);
+                JS_FreeValue(ctx, lenV);
+                uint32_t appended = 0;
+                for (uint32_t i = 0; i < len; ++i) {
+                    JSValue line = JS_GetPropertyUint32(ctx, arr, i);
+                    const char* s = JS_ToCString(ctx, line);
+                    if (s) { prog += s; prog += '\n'; ++appended; JS_FreeCString(ctx, s); }
+                    JS_FreeValue(ctx, line);
+                }
+                JS_FreeValue(ctx, arr);
+                return appended;
+            };
+            append_lines("__habitat_ops");
+            chans = append_lines("__habitat_chans");
+            {
+                JSValue arr = JS_GetPropertyStr(ctx, g, "__habitat_names");
+                uint32_t len = 0;
+                JSValue lenV = JS_GetPropertyStr(ctx, arr, "length");
+                JS_ToUint32(ctx, &len, lenV);
+                JS_FreeValue(ctx, lenV);
+                for (uint32_t i = 0; i < len; ++i) {
+                    JSValue name = JS_GetPropertyUint32(ctx, arr, i);
+                    const char* s = JS_ToCString(ctx, name);
+                    if (s) { r.habitat_channels.emplace_back(s); JS_FreeCString(ctx, s); }
+                    JS_FreeValue(ctx, name);
+                }
+                JS_FreeValue(ctx, arr);
+            }
+            JS_FreeValue(ctx, g);
+            if (chans == 0) {
+                r.message = "habitat() declared no channels — call "
+                            "h.channel(name, node) at least once";
+                JS_FreeValue(ctx, habFn);
+                JS_FreeValue(ctx, inst); JS_FreeValue(ctx, cls); done(); return r;
+            }
+            r.habitat_program = std::move(prog);
+        }
+        JS_FreeValue(ctx, habFn);
+    }
+
     JS_FreeValue(ctx, inst);
     JS_FreeValue(ctx, cls);
     done();

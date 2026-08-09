@@ -156,6 +156,10 @@ globalThis.Part = class Part {
   heightAt(x,z)   { return __heightAt(x,z); }
   slopeAt(x,z)    { return __slopeAt(x,z); }
   moistureAt(x,z) { return __moistureAt(x,z); }
+  // Habitat channels at a world (x, z), written into the caller-owned
+  // `out` array; returns the channel count. The array is reused across
+  // calls on purpose -- this runs once per scatter candidate.
+  habitatAt(x,z,out) { return __habitatAt(x,z,out); }
   biomeAt(x,z)    { return __biomeAt(x,z); }
 };
 )JS";
