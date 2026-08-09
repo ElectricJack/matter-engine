@@ -161,11 +161,26 @@ export function environmentalDryness({ moisture, exposure, altitude, slope }) {
 // ---------------------------------------------------------------------------
 // THE HABITAT TAPE (docs/habitat-tape-sketch-2026-08-08.md)
 //
-// sampleHabitat below is ~99% of a sector bake: 14 fbm at 3-4 octaves, roughly
-// 180 interpreted hash evaluations, ~105 us per scatter candidate, against
-// ~3,385 candidates per 64 m cell. Measured, a JS fbm costs 7,488 ns and a
-// native boundary crossing 567 ns -- so evaluating this as a native tape is a
-// ~50x win on the dominant cost of the whole streaming fill.
+// sampleHabitat below costs ~105 us per scatter candidate: 14 fbm at 3-4
+// octaves, roughly 180 interpreted hash evaluations. Measured, a JS fbm is
+// 7,488 ns and a native boundary crossing is 567 ns, so replacing the whole
+// sample with one crossing removes ~104 us per candidate that reaches it.
+//
+// MEASURED EFFECT: -35.6% / -35.4% / -35.8% on levels 0 / 1 / 2 of
+// StreamMountain. Not the ~50x an earlier note here claimed. That figure came
+// from assuming sampleHabitat was ~99% of the bake, which came from assuming
+// ~3,385 candidates per 64 m cell -- the naive grid count. candidatesInRect is
+// a Poisson-style sampler, and the real number reaching sampleHabitat is ~963
+// (derived from the measured before/after delta, so that one is solid). The
+// per-candidate prediction was right to within 4%; the population was 3.5x
+// out.
+//
+// What the remaining ~65% is has NOT been established. The obvious suspect --
+// planTrees' O(viable^2) exclusion loop -- was implemented as an exact spatial
+// grid and measured at +1.4% / -1.9% / -2.9%, i.e. nothing, so it is not that:
+// `viable` is the candidates that PASS this sample, a small fraction of the
+// 963 that reach it, and a few hundred squared is milliseconds. Do not guess a
+// third time; profile inside the bake.
 //
 // It stays ECOLOGY, not engine: the tape is data the world ships, the kernel
 // only evaluates registers, and the channel names below are this module's
