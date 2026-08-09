@@ -148,6 +148,88 @@ Both attack the miss RATE rather than the miss COST, and neither adds memory:
   is demanding more distinct parts than it needs to (see Attribution), fewer
   variants is strictly better than caching more of them.
 
+
+## ROOT CAUSE (measured 2026-08-09, later the same day)
+
+Everything above is real but was aimed at the wrong magnitude. The trace it is
+based on is a 512-frame window whose worst frame is 56 ms; the symptom actually
+reported is **sub-second freezes while flying**, which that window never caught.
+
+Two measurement errors on my side made this take three attempts:
+
+1. **I verified a revert with a STATIC camera** and reported "60 fps, healthy".
+   Spikes are a motion phenomenon.
+2. **The periodic profile reporter only printed an average.** Every 2-second
+   window containing an 881 ms freeze still reads ~16.9 ms / 59 fps. `max=` and
+   `over33=` are now printed alongside it (libs/ProfileLib/src/profile.cpp) so
+   this cannot hide again.
+
+### The flying baseline
+
+Same 30-waypoint route, shipping build:
+
+```
+frames=118 frame~16.96 ms (~59 fps) max= 42.68 ms over33=2
+frames=108 frame~18.52 ms (~54 fps) max=110.59 ms over33=6
+frames= 96 frame~20.85 ms (~48 fps) max=346.14 ms over33=5
+frames= 63 frame~31.92 ms (~31 fps) max=683.46 ms over33=4
+frames= 69 frame~29.18 ms (~34 fps) max=881.87 ms over33=1
+```
+
+### The heap
+
+`MATTER_VT_MEM_LOG=1` on this machine:
+
+```
+heap 0: 24142 MiB DEVICE_LOCAL          (VRAM)
+heap 1: 65496 MiB                       (system RAM)
+heap 2:   214 MiB DEVICE_LOCAL          <- BAR
+type 4 -> heap 2  DEVICE_LOCAL HOST_VISIBLE HOST_COHERENT
+```
+
+`create_raw_buffer` asks for `HOST_VISIBLE|HOST_COHERENT` with `DEVICE_LOCAL`
+**preferred**, so every mesh-entry buffer picks type 4 — a **214 MiB** heap. The
+mesh cache alone wants ~155 MiB of it (512 entries x ~310 KiB of triangles,
+1986 tris/entry at 160 B). That is ~72% of the whole heap before charts, ring
+buffers or the tape arena.
+
+### The chain
+
+```
+214 MiB BAR heap
+  -> mesh cache ~155 MiB of it
+  -> vkAllocateMemory fails routinely     #vt.mesh_cache_wipes 0.05/frame (~1 per 0.33 s)
+  -> shed path: destroy a batch, retry, rebuild   #vt.mesh_shed 0.36/frame
+  -> 299-881 ms whole-frame freeze
+```
+
+A wipe happens ONLY on allocation failure, so those counters are direct
+evidence. The source already recorded 348.9 / 352.9 / 364.5 ms single-call
+outliers from this same path; the measured frame maxima sit in the same band.
+
+### Ruled out by measurement
+
+- **`unpark_ready_sectors`** (the split-overlap fix from earlier the same day).
+  Suspected on complexity grounds -- it is O(parked x sectors) per pass and
+  re-runs after each batch. Instrumented: **0.008-0.34 ms/frame** at 60-73
+  parked. Not involved. Still worth making O(sectors x levels) eventually, but
+  it is not this bug.
+- **Steady-state mesh-entry construction.** While flying, `vt.mesh_entry`
+  averages 0.3-2.0 ms/frame. The per-build cost is real; it is not what makes a
+  frame take 881 ms.
+
+### The fix
+
+`create_raw_buffer` grows a `prefer_device_local` parameter (default true, so
+the per-frame ring buffers keep BAR). The per-mesh-entry chart/tri buffers pass
+false and land in heap 1 instead: 65 GiB of system RAM against 214 MiB of BAR.
+
+They are written once by the CPU and read by the GPU during the fill pass, so
+device-local buys little and costs the entire hitch. Removing the failures
+removes the shed path with them -- and only then does raising `kMaxMeshEntries`
+past the 656-762 working set become affordable, since the memory no longer
+comes out of a 214 MiB budget.
+
 ## Attribution
 
 The spike mechanism is structural and predates today. What is unclear is why it
@@ -157,3 +239,72 @@ and now runs SectorLod, whose inline-cutover expansion emits child instances
 near the camera — more distinct parts demanded, so a larger VT working set
 against the same 512 slots. That is a hypothesis, not a measurement; the
 variant count before the switch was never captured.
+
+## THE ACTUAL BUG IS NOT VT AT ALL — sector eviction (2026-08-09, evening)
+
+Everything above concerns `vt.fill`, whose worst frame in the capture is 56 ms.
+The reported symptom is sub-second freezes while FLYING, and those come from a
+different place entirely. The engine had been naming it in the log all along:
+
+```
+[gpu-job] stream.apply_evictions took 846.5 ms
+[gpu-job] stream.apply_evictions took 604.1 ms
+[gpu-job] stream.apply_evictions took 362.3 ms
+```
+
+A blocking GpuJob on the render thread. Bisected:
+
+```
+stream.evict_batch     11.4 ms/frame
+  evict.store_release    9.6   (84%)   PartStore::release
+    store.blas_release   7.0   (61%)
+    store.erase_part     2.7   (23%)
+  evict.transient        1.5
+  stream.unpark          0.3          (the parking sweep -- NOT the problem)
+  evict.vk_release       0.1
+```
+
+At ~5 evictions/frame arriving in bursts of hundreds, this is ~11 ms/frame of
+pure teardown on the render thread and several hundred ms when a burst lands.
+
+### What was fixed, and what it bought
+
+- `BLASManager::release_blas` rebuilt BOTH lookup tables from scratch on every
+  handle, under a comment promising "O(1) handle lookup". A part owns many
+  handles, so one eviction was O(handles x entries). Now swap-and-pop.
+  **846 -> 688 ms.** Real, but not the bulk.
+- `apply_sector_evictions` did a `state.apply`, a
+  `vk_instance_cache.invalidate_expansion` and a `tracer.reset` PER ENTRY, each
+  a whole-world pass. Now one of each per batch. Removed O(evictions x world).
+- Mesh-entry buffers moved off the 214 MiB BAR heap (see above): allocation
+  failures 0.05/frame -> 0, `vt.mesh_alloc` 1.31 -> 0.08 ms/frame.
+
+Together: worst frame 881 -> 727 ms. **The freezes remain.**
+
+### What is actually left, and the fix that is NOT yet done
+
+After the O(1) fix, `store.blas_release` is still ~6.0 ms/frame and
+`store.erase_part` ~5.0 ms/frame. Both are now dominated by MEMORY
+DESTRUCTION, not bookkeeping: freeing a sector's BLAS entries and its
+LoadedPart (thousands of triangles across LOD levels and clusters). ~5 sectors
+a frame is tens of MB of frees on the render thread.
+
+No amount of tidying the bookkeeping fixes that. The destruction has to leave
+the render thread:
+
+- Unlink from the maps on the render thread (now genuinely O(1)), MOVE the
+  owning objects onto a deleter queue, and free them on a worker.
+- Nothing references either object after `loaded_.erase` / `entries_.pop_back`,
+  so the handoff is safe -- but BLASEntry ownership needs checking for GPU-side
+  resources before it is freed off-thread.
+- A per-frame eviction budget would bound the burst as well, but deferring the
+  free is the direct fix; the budget only spreads it.
+
+### Method note
+
+Four fixes were attempted before the right area was even identified. The first
+three targeted `vt.fill` because that is what the trace contained -- a trace
+whose worst frame was 56 ms, against a reported symptom of ~900 ms. The trace
+did not cover the symptom, and that was not checked before optimising against
+it. The `[gpu-job]` line naming `stream.apply_evictions` was in the first log
+opened.

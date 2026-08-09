@@ -353,16 +353,47 @@ void BLASManager::release_blas(BLASHandle handle) {
     }
 
     // Last owner: drop the entry and reclaim its place in the combined arrays.
-    entries_.erase(entries_.begin() + static_cast<ptrdiff_t>(idx));
-    handle_to_index_.erase(idx_it);
+    //
+    // SWAP-AND-POP, not erase-from-middle-and-rebuild.
+    //
+    // This used to erase at `idx` (an O(N) vector shift) and then rebuild BOTH
+    // lookup tables from scratch, every single call -- which made a function
+    // whose own comment promises "O(1) handle lookup" cost O(N) to use. A part
+    // owns MANY handles, so releasing one part was O(handles x entries), and a
+    // streamed world evicting ~5 sectors a frame against thousands of live
+    // entries turned that into 7 ms/frame of pure map rebuilding and bursts of
+    // several hundred ms inside the blocking stream.apply_evictions job. It was
+    // the largest single cause of the sub-second render hitches while flying
+    // (docs/vt-mesh-entry-allocation-2026-08-09.md).
+    //
+    // Only the moved entry's indices change, so only its two map entries need
+    // fixing. Order within entries_ is not meaningful -- it was already being
+    // permuted by every erase above, and mark_dirty() rebuilds whatever the GPU
+    // side derives from it.
+    // hash_to_entry_ is a MULTIMAP -- several entries may share a hash -- so
+    // both sides here have to match on the VALUE (the index), not just the key.
+    // Order matters: remove the dead entry's records first, then move the
+    // survivor, so a shared hash can never leave the wrong record standing.
+    const size_t last = entries_.size() - 1;
+    const auto dead_hash = entries_[idx]->hash;
 
-    // entries_ indices shifted, so rebuild both lookup tables from scratch.
-    hash_to_entry_.clear();
-    handle_to_index_.clear();
-    for (size_t i = 0; i < entries_.size(); ++i) {
-        hash_to_entry_.emplace(entries_[i]->hash, i);
-        handle_to_index_.emplace(entries_[i]->handle, i);
+    handle_to_index_.erase(idx_it);
+    for (auto r = hash_to_entry_.equal_range(dead_hash);
+         r.first != r.second; ++r.first) {
+        if (r.first->second == idx) { hash_to_entry_.erase(r.first); break; }
     }
+
+    if (idx != last) {
+        std::swap(entries_[idx], entries_[last]);
+        // The survivor moved from `last` to `idx`; repoint exactly its two
+        // records and nothing else.
+        handle_to_index_[entries_[idx]->handle] = idx;
+        for (auto r = hash_to_entry_.equal_range(entries_[idx]->hash);
+             r.first != r.second; ++r.first) {
+            if (r.first->second == last) { r.first->second = idx; break; }
+        }
+    }
+    entries_.pop_back();
 
     mark_dirty();
 }

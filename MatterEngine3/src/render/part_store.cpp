@@ -1876,10 +1876,21 @@ void PartStore::release(uint64_t part_hash) {
 
     const LoadedPart& lp = it->second;
 
-    release_loaded_part_blas(blas_, lp);
+    // Split because PartStore::release measured 84% of a sector eviction's
+    // cost (9.6 of 11.4 ms), and the two halves want different fixes: BLAS
+    // release touches the GPU, while erasing the LoadedPart is pure CPU
+    // teardown of a sector's whole mesh (thousands of triangles across LOD
+    // levels and clusters) and could be handed to a worker.
+    {
+        PROFILE_SCOPE("store.blas_release");
+        release_loaded_part_blas(blas_, lp);
+    }
 
     // Now safe to erase the LoadedPart from memory.
-    loaded_.erase(it);
+    {
+        PROFILE_SCOPE("store.erase_part");
+        loaded_.erase(it);
+    }
 }
 
 } // namespace viewer

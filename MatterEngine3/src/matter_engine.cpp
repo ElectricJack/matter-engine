@@ -935,7 +935,11 @@ struct WorldSession::Impl {
     bool apply_sector_evictions(
         const std::vector<streaming::detail::TaggedEviction>& evictions,
         std::string& err);
-    bool release_sector_entry(SectorEntry& entry, std::string& err) noexcept;
+    // batch: when non-null the entry's world-state removal is APPENDED to it
+    // and the caller applies one delta for the whole eviction batch. See the
+    // definition -- per-entry was an 841 ms render-thread stall.
+    bool release_sector_entry(SectorEntry& entry, std::string& err,
+                              viewer::WorldDelta* batch = nullptr) noexcept;
     PublicationCompletion* reserve_publication_completion(
         const std::shared_ptr<viewer::LocalProvider>& provider_ref) noexcept;
     void release_reserved_publication_completion(
@@ -3977,9 +3981,15 @@ void WorldSession::Impl::service_vt_rung_requests() {
 // releases transient artifacts. Posts a blocking GL job to ensure all state
 // mutations happen on the GL thread. Called on the worker thread.
 // ---------------------------------------------------------------------------
+// batch != nullptr: append this entry's removal to the caller's delta rather
+// than applying one of its own, and leave the tracer reset and the instance-
+// cache invalidation to the caller. Both are whole-world operations, so doing
+// them once per evicted sector is O(evictions x world) -- measured at 841 ms
+// inside a single blocking stream.apply_evictions GpuJob.
 bool WorldSession::Impl::release_sector_entry(
     SectorEntry& entry,
-    std::string& err) noexcept {
+    std::string& err,
+    viewer::WorldDelta* batch) noexcept {
     bool ok = true;
     try {
         if (cfg.test_fault_hook) cfg.test_fault_hook(-2);
@@ -4008,6 +4018,13 @@ bool WorldSession::Impl::release_sector_entry(
     release_attempt(
         entry.resources.world_state_attempted,
         [&] {
+            if (batch) {
+                // Deferred to one apply for the whole batch: state.apply walks
+                // the world's instance set, so N applies of a single removal
+                // each is N passes over the world to accomplish one.
+                batch->removed.push_back(entry.instance_id);
+                return;
+            }
             viewer::WorldDelta delta;
             delta.removed.push_back(entry.instance_id);
             state.apply(delta);
@@ -4017,7 +4034,12 @@ bool WorldSession::Impl::release_sector_entry(
 
 #ifdef MATTER_VULKAN_VIEWER
     release_attempt(entry.resources.vulkan_attempted, [&] {
+        PROFILE_SCOPE("evict.vk_release");
         if (vk_scene) vk_scene->release_part(entry.part_hash);
+        // Batched callers invalidate ONCE after the loop. The rebuild walks the
+        // whole instance set, so per-entry here is the same waste as the
+        // world-state apply above.
+        if (batch) return;
         // Rebuild the flat instance set but KEEP the per-source memos: the
         // evicted source vanishes from the resolver output in this same
         // release (the world-state delta above), so the next rebuild skips it
@@ -4033,9 +4055,11 @@ bool WorldSession::Impl::release_sector_entry(
     });
 #endif
     release_attempt(entry.resources.store_attempted, [&] {
+        PROFILE_SCOPE("evict.store_release");
         if (store) store->release(entry.part_hash);
     });
     release_attempt(entry.resources.transient_artifact, [&] {
+        PROFILE_SCOPE("evict.transient");
         if (entry.provider_ref) {
             entry.provider_ref->release_transient(entry.part_hash);
         }
@@ -4070,6 +4094,12 @@ bool WorldSession::Impl::release_sector_entry(
 void WorldSession::Impl::unpark_ready_sectors() {
     matter_async::assert_gl_thread("stream.unpark_sectors");
     if (!world_nested_sectors || parked_sectors <= 0) return;
+    // Instrumented because this is a prime suspect for the sub-second render
+    // hitches a 2026-08-09 flying capture caught (683 ms and 881 ms): the
+    // sweep below is O(parked x sectors) per pass and re-runs after every
+    // batch it unparks.
+    PROFILE_SCOPE("stream.unpark");
+    PROFILE_COUNT("stream.parked", double(parked_sectors));
     for (;;) {
         viewer::WorldDelta delta;
         std::vector<SectorEntry*> shown;
@@ -4131,6 +4161,22 @@ bool WorldSession::Impl::apply_sector_evictions(
     PROFILE_COUNT("stream.evictions_requested", evictions.size());
     uint64_t evictions_applied = 0;
     bool ok = true;
+    // ONE world-state delta for the whole batch, not one per eviction.
+    //
+    // This job is BLOCKING on the render thread, and each entry used to run
+    // its own state.apply (a pass over the world's instance set), its own
+    // vk_instance_cache.invalidate_expansion (a rebuild of the flat instance
+    // set) and its own tracer.reset. At the ~12 evictions/frame a flying
+    // camera sustains -- arriving in bursts of hundreds -- that is
+    // O(evictions x world), and it measured 841.3 / 563.7 / 301.9 ms in single
+    // gpu-job calls, which is exactly where the 858 / 614 / 344 ms frames came
+    // from.
+    //
+    // Batching is safe because none of the three is order-dependent: removals
+    // commute (they are matched by instance id), the expansion rebuild is
+    // idempotent, and the tracer reset just marks it dirty.
+    viewer::WorldDelta batch_delta;
+    PROFILE_SCOPE("stream.evict_batch");
     for (const auto& eviction : evictions) {
         const SectorKey key{
             eviction.sector.tx,
@@ -4144,7 +4190,7 @@ bool WorldSession::Impl::apply_sector_evictions(
             continue;
         }
 
-        if (release_sector_entry(found->second, err)) {
+        if (release_sector_entry(found->second, err, &batch_delta)) {
             // A parked entry can be evicted before it is ever shown -- an
             // abandoned transition, or a group whose parent was reinstated.
             // Its slot in the count goes with it, or the counter leaks and the
@@ -4155,6 +4201,16 @@ bool WorldSession::Impl::apply_sector_evictions(
         } else {
             ok = false;
         }
+    }
+    // The batch's single world-state pass, plus the one invalidation and one
+    // tracer reset the per-entry path used to do `evictions_applied` times.
+    if (!batch_delta.removed.empty()) {
+        state.apply(batch_delta);
+        tracer_dirty = true;
+        tracer.reset();
+#ifdef MATTER_VULKAN_VIEWER
+        vk_instance_cache.invalidate_expansion();
+#endif
     }
     PROFILE_COUNT("stream.evictions_applied", evictions_applied);
     // Same frame as the removals above: the parent leaves and its children

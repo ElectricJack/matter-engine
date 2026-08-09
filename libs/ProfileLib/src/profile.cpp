@@ -84,6 +84,12 @@ struct Registry {
     uint64_t log_zone_ns[kMaxZones] = {};
     uint64_t log_counter[kMaxCounters] = {};
     uint64_t log_wall_ns = 0;
+    // Spikes, not just the mean. An average hides exactly the failure mode
+    // this reporter gets used for: a 3 ms median with a 56 ms hitch every
+    // second reads as "16 ms, 60 fps" and looks perfectly healthy. Max and an
+    // over-budget count are what make a hitch visible in a log.
+    uint64_t log_wall_max_ns = 0;
+    uint64_t log_frames_over_33ms = 0;
 };
 
 constexpr int64_t kLogIntervalNs = 2000000000;  // 2 s
@@ -97,6 +103,8 @@ void log_accumulate_and_maybe_print(Registry& r, const FrameRecord& record,
     if (!r.log_enabled) return;
     ++r.log_frames;
     r.log_wall_ns += record.wall_ns;
+    if (record.wall_ns > r.log_wall_max_ns) r.log_wall_max_ns = record.wall_ns;
+    if (record.wall_ns > 33000000ull) ++r.log_frames_over_33ms;
     const int zones = r.count.load(std::memory_order_acquire);
     for (int i = 0; i < zones && i < kMaxZones; ++i)
         r.log_zone_ns[i] += record.zone_ns[i];
@@ -114,9 +122,12 @@ void log_accumulate_and_maybe_print(Registry& r, const FrameRecord& record,
     const double frames = static_cast<double>(r.log_frames);
     const double avg_ms = r.log_wall_ns / 1.0e6 / frames;
     std::fprintf(stderr,
-                 "[profile] frames=%llu frame~%.2f ms (~%.0f fps)\n",
+                 "[profile] frames=%llu frame~%.2f ms (~%.0f fps) "
+                 "max=%.2f ms over33=%llu\n",
                  (unsigned long long)r.log_frames, avg_ms,
-                 avg_ms > 0.0 ? 1000.0 / avg_ms : 0.0);
+                 avg_ms > 0.0 ? 1000.0 / avg_ms : 0.0,
+                 r.log_wall_max_ns / 1.0e6,
+                 (unsigned long long)r.log_frames_over_33ms);
     // Zones, sorted by cost, skipping sub-5us/frame noise.
     int order[kMaxZones];
     for (int i = 0; i < zones; ++i) order[i] = i;
@@ -136,6 +147,8 @@ void log_accumulate_and_maybe_print(Registry& r, const FrameRecord& record,
     }
     r.log_frames = 0;
     r.log_wall_ns = 0;
+    r.log_wall_max_ns = 0;
+    r.log_frames_over_33ms = 0;
     for (int i = 0; i < kMaxZones; ++i) r.log_zone_ns[i] = 0;
     for (int i = 0; i < kMaxCounters; ++i) r.log_counter[i] = 0;
     r.log_last_ns = t_ns;

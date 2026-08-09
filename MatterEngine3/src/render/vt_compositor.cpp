@@ -103,11 +103,42 @@ struct RawImage {
     VkImageView view = VK_NULL_HANDLE;
 };
 
+// MATTER_VT_MEM_LOG=1: dump the device's memory heaps and types once.
+//
+// Diagnostic for the mesh-entry allocation problem
+// (docs/vt-mesh-entry-allocation-2026-08-09.md). Entry buffers ask for
+// HOST_VISIBLE|HOST_COHERENT with DEVICE_LOCAL *preferred*, which targets the
+// BAR heap -- commonly 256 MiB without resizable BAR. The cache is already
+// ~155 MiB of triangle buffers at 512 entries, so the suspicion is that the
+// "host-visible memory pressure" shed path is BAR exhaustion rather than a
+// general shortage. That is a suspicion; this prints the heap sizes and the
+// type actually chosen so it stops being one.
+void log_memory_heaps_once(const VkPhysicalDeviceMemoryProperties& props) {
+    static bool done = false;
+    if (done || !std::getenv("MATTER_VT_MEM_LOG")) return;
+    done = true;
+    for (uint32_t h = 0; h < props.memoryHeapCount; ++h) {
+        std::fprintf(stderr, "[vt.mem] heap %u: %.0f MiB%s\n", h,
+                     double(props.memoryHeaps[h].size) / (1024.0 * 1024.0),
+                     (props.memoryHeaps[h].flags &
+                      VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) ? " DEVICE_LOCAL" : "");
+    }
+    for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
+        const VkMemoryPropertyFlags f = props.memoryTypes[i].propertyFlags;
+        std::fprintf(stderr, "[vt.mem] type %2u -> heap %u %s%s%s\n", i,
+                     props.memoryTypes[i].heapIndex,
+                     (f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "DEVICE_LOCAL " : "",
+                     (f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ? "HOST_VISIBLE " : "",
+                     (f & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) ? "HOST_COHERENT" : "");
+    }
+}
+
 bool find_memory_type_raw(VkPhysicalDevice phys, uint32_t allowed_bits,
                           VkMemoryPropertyFlags required,
                           VkMemoryPropertyFlags preferred, uint32_t& out) {
     VkPhysicalDeviceMemoryProperties props{};
     vkGetPhysicalDeviceMemoryProperties(phys, &props);
+    log_memory_heaps_once(props);
     uint32_t fallback = UINT32_MAX;
     for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
         if (!(allowed_bits & (1u << i))) continue;
@@ -120,9 +151,27 @@ bool find_memory_type_raw(VkPhysicalDevice phys, uint32_t allowed_bits,
     return false;
 }
 
+// prefer_device_local: for a HOST_VISIBLE buffer, whether to prefer memory
+// that is ALSO device-local -- i.e. the BAR heap.
+//
+// Default true, which is right for the small per-frame ring buffers the GPU
+// reads every frame. It is WRONG for the big per-mesh-entry chart/tri buffers,
+// and that was the sub-second-hitch bug: measured on this machine the BAR heap
+// is 214 MiB total, while the mesh cache alone wants ~155 MiB of it (512
+// entries x ~310 KiB of triangles). Allocation therefore failed routinely,
+// and every failure ran the shed path -- destroy a batch of entries, retry,
+// rebuild them all a moment later. The source already recorded 348.9 / 352.9 /
+// 364.5 ms single-call outliers from that path; a flying capture measured
+// whole frames at 299-881 ms.
+//
+// These buffers are written once by the CPU and read by the GPU during the
+// fill pass, so they do not need to be device-local at all. Sending them to
+// plain host-visible system memory (65 GiB here, against 214 MiB of BAR)
+// removes the failures, and with them the shed path.
 bool create_raw_buffer(VkDevice device, VkPhysicalDevice phys,
                        VkDeviceSize size, VkBufferUsageFlags usage,
-                       bool host_visible, RawBuffer& out, std::string& err) {
+                       bool host_visible, RawBuffer& out, std::string& err,
+                       bool prefer_device_local = true) {
     VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     info.size = size;
     info.usage = usage;
@@ -138,7 +187,8 @@ bool create_raw_buffer(VkDevice device, VkPhysicalDevice phys,
                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
                      : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     const VkMemoryPropertyFlags preferred =
-        host_visible ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : 0;
+        (host_visible && prefer_device_local)
+            ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : 0;
     uint32_t type = 0;
     if (!find_memory_type_raw(phys, reqs.memoryTypeBits, required, preferred,
                               type)) {
@@ -960,13 +1010,18 @@ VtCompositor::Impl::MeshEntry* VtCompositor::Impl::get_or_build_mesh_entry(
     std::string err;
     const VkDeviceSize charts_bytes = sizeof(GpuChart) * gcharts.size();
     const VkDeviceSize tris_bytes = sizeof(GpuTri) * gtris.size();
+    // prefer_device_local = FALSE: keep the mesh cache out of the 214 MiB BAR
+    // heap. See create_raw_buffer. This is the difference between allocation
+    // failing every ~20 frames and never failing.
     auto try_create_buffers = [&]() {
         return create_raw_buffer(device, phys, charts_bytes,
                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
-                                 entry.charts, err) &&
+                                 entry.charts, err,
+                                 /*prefer_device_local=*/false) &&
                create_raw_buffer(device, phys, tris_bytes,
                                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
-                                 entry.tris, err);
+                                 entry.tris, err,
+                                 /*prefer_device_local=*/false);
     };
     PROFILE_SCOPE_NAMED(z_mesh_alloc, "vt.mesh_alloc");
     if (!try_create_buffers()) {
