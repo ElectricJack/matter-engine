@@ -116,6 +116,27 @@ class StreamMountain extends World {
   // going to 10095 on the heightfield rungs, which is where the sightlines
   // actually come from.
   static streaming = {
+    // NESTED SECTOR LOD (docs/terrain-nested-sector-lod-2026-08-08.md).
+    //
+    // Level L tiles are 64<<L metres across at a 2<<L voxel, so cells-per-tile
+    // is a constant 32x32 and each annulus below holds a near-constant tile
+    // count. On the uniform grid this world's authored reach resides 78,161
+    // sectors, 78% of them in the two coarsest bands drawing one to four quads
+    // apiece -- the whole per-part machine (a JS bake, a publish, a BLAS, a
+    // TLAS instance, chart registration, residency bookkeeping) run 32,000
+    // times to draw one quad. Nested it is 1,207 tiles for the same triangles
+    // and the same reach, and update() costs 0.367 ms instead of 5.67.
+    //
+    // THE BAND TABLE BELOW IS UNCHANGED. Nesting only reinterprets it: band
+    // LOD l is the annulus where level 5-l tiles live. It happens to already
+    // satisfy what a nested ladder wants -- every annulus wider than one tile
+    // of the next coarser level (318/868/1419/2097/3051/2342 against
+    // 128/256/512/1024/2048) -- so the restriction pass has nothing to fix.
+    // The narrowest margin is the outermost: 2342 m of annulus against a
+    // 2048 m tile. Pulling 7753 outward is what to do if that band ever starts
+    // forcing splits.
+    nestedSectors: true,
+
     // THE RINGS BOUND RESIDENCY, not just scatter density. A sector past the
     // OUTERMOST ring gets desired_rung -1 from desired_rung_for_dist, and
     // sector_streamer skips it entirely -- it is never requested, never baked,
@@ -128,6 +149,11 @@ class StreamMountain extends World {
     // 0 is the cheapest scatter tier (landmark boulders and trees only), so
     // extending it costs residency bookkeeping and terrain, not dense scatter
     // -- the dense tiers still stop at 150 m and 500 m exactly as before.
+    //
+    // UNDER NESTING that trap is gone: the outermost BAND bounds residency and
+    // these rings only grade scatter, so the 10095 below is now redundant
+    // rather than load-bearing. Kept at that value so the world reads the same
+    // with the flag off, which is the rollback position.
     rings: [
       { radius: 150.0, rung: 2 },
       { radius: 500.0, rung: 1 },

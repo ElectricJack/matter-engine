@@ -600,6 +600,55 @@ Two things the derivation understated:
 These are the numbers WP7 compares against. Harness: `wp0_baseline.cpp` in the
 session scratchpad (links `sector_streamer.cpp` directly; no engine, no GPU).
 
+## WP7 result, measured (2026-08-08)
+
+StreamMountain adopted nesting with its band table **unchanged** — the authored
+318/1,186/2,605/4,702/7,753/10,095 already satisfies what a nested ladder wants
+(every annulus wider than one tile of the next coarser level: 318/868/1,419/
+2,097/3,051/2,342 against tiles of 128/256/512/1,024/2,048), so the restriction
+pass has nothing to fix. Only `nestedSectors: true` was added.
+
+Measured by running the real `SectorStreamer` with StreamMountain's authored
+config to settle at the same anchor, both ways:
+
+| | uniform | nested | |
+|---|---|---|---|
+| resident parts | 78,161 | **1,207** | **64.8× fewer** |
+| `update()` tick | 5.67 ms | **0.367 ms** | **15.5× faster** |
+| by level | — | 124/313/346/244/152/28 (L0…L5) | |
+
+The design predicted ~1,160 by the coverage rule; 1,207 is that plus the
+hysteresis margin at the reach. Triangles and reach are unchanged by
+construction.
+
+Visual acceptance: StreamMountain nested renders correctly — an alpine ridge
+vista at (-1400, 620, -1400) shows continuous sunlit terrain, snow lines and
+scree with no holes and no visible seams at level boundaries; the authored
+camera renders the same silhouette nested as uniform. StreamMeadow nested fills
+to the horizon at 15.5 ms/frame.
+
+### What was NOT measured, and why
+
+**An engine-level fill-time comparison is not claimed.** Two attempts failed and
+both failure modes are worth recording:
+
+1. Reading `[bake-timing]` as a fill time gives `total=171,805 ms` uniform
+   against `19,813 ms` nested — an apparent 8.7×. It is **wrong**. That line
+   times the world-kind ROOTS bake, and the uniform run happened to be the first
+   of the session, so it paid for five cold `.gtex` detail-tileset bakes that
+   every later run got warm. Re-running uniform warm gives `21,688 ms`, i.e.
+   indistinguishable from nested. The comparison measured cache warmth.
+2. Instrumenting `Coordinator::worker_step` to log residency and a settle time
+   linked into the binary but never fired, so the branch it sits in is not
+   reached in a world-kind editor session. Reverted rather than shipped: a
+   diagnostic that silently prints nothing is worse than none.
+
+Nothing in the engine currently reports when a streamed world has finished
+filling. That is the gap to close before any fill-time claim can be made, and
+it is a prerequisite for the frame-ms / TLAS-instance / peak-memory numbers the
+plan also asks for. The part-count and tick-cost numbers above need none of it:
+they come from the real streamer with the real config.
+
 ## Rejected alternatives (summary)
 
 | alternative | rejected because |
