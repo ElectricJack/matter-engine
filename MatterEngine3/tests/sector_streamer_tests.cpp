@@ -606,6 +606,155 @@ int main() {
               "only alongside a COMPLETE set of four children");
     }
 
+    // --- transition groups: NO HOLE while a camera flies (WP4) --------------
+    // The gate that matters. A split replaces one tile with four independent
+    // bakes that finish at different times; evicting the parent when the
+    // descent changes its mind opens a hole over its whole footprint until the
+    // slowest child lands. Here the bakes are deliberately SLOW and staggered
+    // (a fixed number of publishes per tick, not instant), the camera flies,
+    // and after every single tick every world column near it must be covered by
+    // a RESIDENT tile -- not merely a desired one.
+    {
+        SectorStreamer s(nested_cfg());
+        const float S0 = 6.4f;
+        // Track residency ourselves: resident_count() is a number, and what
+        // this needs is the set.
+        std::map<std::tuple<int,long long,long long>, int> resident;
+        auto settle_at = [&](float x, float z, int budget) {
+            s.update(x, z);
+            SectorRequest q;
+            for (int i = 0; i < budget && s.next_request(q); ++i)
+                if (s.on_published(q.tx, q.tz, q.rung))
+                    resident[{variant_level(q.rung), (long long)q.tx,
+                              (long long)q.tz}] = q.rung;
+            for (const auto& e : s.take_evictions()) {
+                // Erase ONLY if the evicted variant is the one still recorded.
+                // A 1:1 swap (an edge-mask rebake) publishes the new variant of
+                // the SAME tile and then evicts the old one, so a blind erase
+                // here deletes the tile that is actually resident and invents a
+                // hole the streamer never produced.
+                const auto key = std::make_tuple(variant_level(e.rung),
+                                                 (long long)e.tx,
+                                                 (long long)e.tz);
+                auto it = resident.find(key);
+                if (it != resident.end() && it->second == e.rung)
+                    resident.erase(it);
+            }
+        };
+        // Fill completely at the start position.
+        for (int i = 0; i < 4000; ++i) settle_at(0.0f, 0.0f, 64);
+
+        auto covered = [&](float wx, float wz) {
+            for (int L = 0; L <= 5; ++L) {
+                const float S = S0 * float(1 << L);
+                if (resident.count({L, (long long)std::floor(wx / S),
+                                       (long long)std::floor(wz / S)}))
+                    return true;
+            }
+            return false;
+        };
+
+        int holes = 0, ticks = 0, worst_tick = -1;
+        for (int step = 0; step < 220; ++step) {
+            // 3 publishes per tick: slow enough that a split is in progress for
+            // many ticks at a time, which is the condition a hole needs.
+            settle_at(float(step) * 2.0f, 0.0f, 3);
+            ++ticks;
+            int tick_holes = 0;
+            for (float d = -60.0f; d <= 60.0f; d += 3.2f)
+                for (float e = -60.0f; e <= 60.0f; e += 3.2f)
+                    if (!covered(float(step) * 2.0f + d, e)) ++tick_holes;
+            if (tick_holes && worst_tick < 0) worst_tick = step;
+            holes += tick_holes;
+        }
+        printf("  nested groups: %d ticks flown, %d uncovered probes "
+               "(first at tick %d)\n", ticks, holes, worst_tick);
+        CHECK(holes == 0,
+              "transition groups: a superseded tile stays resident until every "
+              "tile replacing it is resident, so a flying camera never sees a "
+              "hole");
+    }
+
+    // --- transition groups: a failed child holds its parent -----------------
+    // Partial failure is the case the invariant exists for. One child of a
+    // split never bakes; the parent must stay resident and drawn rather than
+    // leaving a quarter-tile hole, and must release the moment the child lands.
+    {
+        SectorStreamer s(nested_cfg());
+        // Settle far out, so the tiles around the anchor are coarse and a move
+        // inward forces splits.
+        for (int i = 0; i < 4000; ++i) {
+            s.update(300.0f, 0.0f);
+            SectorRequest q;
+            while (s.next_request(q)) s.on_published(q.tx, q.tz, q.rung);
+            s.take_evictions();
+        }
+        // Move in and refuse exactly one request forever.
+        bool have_victim = false;
+        int64_t vtx = 0, vtz = 0; int vrung = 0;
+        int parent_evictions_while_failing = 0;
+        for (int i = 0; i < 400; ++i) {
+            s.update(120.0f, 0.0f);
+            SectorRequest q;
+            while (s.next_request(q)) {
+                if (!have_victim && variant_level(q.rung) <= 3) {
+                    have_victim = true;
+                    vtx = q.tx; vtz = q.tz; vrung = q.rung;
+                }
+                if (have_victim && q.tx == vtx && q.tz == vtz &&
+                    q.rung == vrung) {
+                    s.on_failed(q.tx, q.tz, q.rung);      // never succeeds
+                    continue;
+                }
+                s.on_published(q.tx, q.tz, q.rung);
+            }
+            // While the victim is missing, no tile whose footprint contains it
+            // may be evicted -- that is the hole this prevents.
+            for (const auto& e : s.take_evictions()) {
+                const int el = variant_level(e.rung);
+                const int vl = variant_level(vrung);
+                if (!have_victim || el <= vl) continue;
+                const int sh = el - vl;
+                if ((vtx >> sh) == e.tx && (vtz >> sh) == e.tz)
+                    ++parent_evictions_while_failing;
+            }
+        }
+        CHECK(have_victim, "the failure test actually found a victim request");
+        printf("  nested groups: %d ancestor evictions while a child was "
+               "failing\n", parent_evictions_while_failing);
+        CHECK(parent_evictions_while_failing == 0,
+              "transition groups: a child that never bakes holds its parent "
+              "resident instead of opening a hole");
+    }
+
+    // --- transition groups: abandonment releases with no bookkeeping --------
+    // A transition the camera walks away from must not strand its held tile.
+    {
+        SectorStreamer s(nested_cfg());
+        for (int i = 0; i < 4000; ++i) {
+            s.update(0.0f, 0.0f);
+            SectorRequest q;
+            while (s.next_request(q)) s.on_published(q.tx, q.tz, q.rung);
+            s.take_evictions();
+        }
+        const size_t settled = s.resident_count();
+        // Start a wave of splits by moving, then leave entirely without ever
+        // servicing them.
+        s.update(200.0f, 0.0f);
+        s.update(5000.0f, 5000.0f);
+        for (int i = 0; i < 4000; ++i) {
+            s.update(5000.0f, 5000.0f);
+            SectorRequest q;
+            while (s.next_request(q)) s.on_published(q.tx, q.tz, q.rung);
+            s.take_evictions();
+        }
+        printf("  nested groups: %zu resident at origin, %zu after leaving\n",
+               settled, s.resident_count());
+        CHECK(s.resident_count() < settled * 2,
+              "transition groups: abandoning a transition releases the held "
+              "tiles rather than stranding them");
+    }
+
     // --- legacy: the flag off is the old streamer, request for request ------
     // The rollback position. Two streamers over the same anchors, one built
     // before this change would have mattered (nested_sectors defaults false),

@@ -271,6 +271,24 @@ private:
     int min_edge_level(bool vary_z, float fixed, float t0, float t1,
                        int seg_level, int stop_below) const;
 
+    // TRANSITION GROUPS. A tile that stops being desired under nesting has
+    // usually been SUPERSEDED -- split into four children, or merged into a
+    // parent -- and evicting it the moment the descent changes its mind leaves
+    // a hole for as long as the replacements take to bake, which is seconds.
+    //
+    // So the rule is: the old residency is torn down only once the complete new
+    // residency exists. These two walk the superseded tile's footprint and
+    // report whether anything desired covers it (if not, it is genuinely out of
+    // range and goes now) and whether all of that is resident yet.
+    //
+    // Coverage makes this cheap and exact: at most one ANCESTOR can be desired
+    // (a merge), and otherwise the desired tiles under it tile its footprint
+    // exactly (a split, possibly of differing depths after a restriction pass).
+    void scan_footprint(int level, int64_t tx, int64_t tz,
+                        bool& any_desired, bool& all_resident) const;
+    void scan_subtree(int level, int64_t tx, int64_t tz,
+                      bool& any_desired, bool& all_resident) const;
+
     void update_nested(float anchor_x, float anchor_z);
     // Quadtree descent: mark (level, tx, tz) desired or recurse into its four
     // children. `finer_resident` holds the ancestors of every resident tile, so

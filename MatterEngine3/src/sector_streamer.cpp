@@ -383,6 +383,38 @@ void SectorStreamer::assign_nested_masks() {
     }
 }
 
+void SectorStreamer::scan_subtree(int level, int64_t tx, int64_t tz,
+                                  bool& any_desired, bool& all_resident) const {
+    auto it = sectors_.find(nested_key(level, tx, tz));
+    if (it != sectors_.end() && it->second.desired_level == level) {
+        any_desired = true;
+        if (it->second.resident_rung < 0) all_resident = false;
+        return;                       // this tile covers its own footprint
+    }
+    if (level == 0) return;           // nothing desired covers this column
+    for (int c = 0; c < 4; ++c)
+        scan_subtree(level - 1, 2 * tx + (c & 1), 2 * tz + (c >> 1),
+                     any_desired, all_resident);
+}
+
+void SectorStreamer::scan_footprint(int level, int64_t tx, int64_t tz,
+                                    bool& any_desired,
+                                    bool& all_resident) const {
+    // A merge: one coarser tile has taken over this footprint. At most one
+    // ancestor can be desired, because exactly one level covers any column.
+    for (int up = level + 1; up <= max_level(); ++up) {
+        const int sh = up - level;
+        auto it = sectors_.find(nested_key(up, tx >> sh, tz >> sh));
+        if (it != sectors_.end() && it->second.desired_level == up) {
+            any_desired = true;
+            if (it->second.resident_rung < 0) all_resident = false;
+            return;
+        }
+    }
+    // Otherwise a split (or nothing at all).
+    scan_subtree(level, tx, tz, any_desired, all_resident);
+}
+
 void SectorStreamer::update_nested(float anchor_x, float anchor_z) {
     last_anchor_x_ = anchor_x;
     last_anchor_z_ = anchor_z;
@@ -429,11 +461,22 @@ void SectorStreamer::update_nested(float anchor_x, float anchor_z) {
     restrict_levels();
     assign_nested_masks();
 
-    // Evict and prune. A resident tile that is no longer desired has been
-    // SUPERSEDED -- its replacement at another level is desired right now --
-    // rather than merely fallen out of range, so it goes immediately. The
-    // merge hysteresis in descend() already made that decision; deferring it
-    // again here would leave a parent and its children both drawn.
+    // Evict and prune -- with the transition-group rule.
+    //
+    // A resident tile that stopped being desired has usually been SUPERSEDED:
+    // split into four children, or merged into a parent. Evicting it now would
+    // open a hole over its whole footprint until the replacements finish
+    // baking, and four independent bakes finish seconds apart. So a superseded
+    // tile is HELD, drawn, until every desired tile covering its footprint is
+    // resident -- the group's invariant is that the old residency is torn down
+    // only once the complete new residency exists.
+    //
+    // Everything else falls out of the same test. A tile that is genuinely out
+    // of range has nothing desired over its footprint and goes immediately. A
+    // partially failed split holds the parent, which is exactly the desired
+    // fail-safe: a stale coarse tile beats a hole. An abandoned transition (the
+    // anchor moved on) stops having desired tiles over the footprint and
+    // releases on its own, with no group bookkeeping to unwind.
     std::vector<uint64_t> to_erase;
     for (auto& [k, st] : sectors_) {
         if (st.desired_rung >= 0) continue;
@@ -441,6 +484,9 @@ void SectorStreamer::update_nested(float anchor_x, float anchor_z) {
             if (stream_no_evict()) continue;
             int lvl; int64_t tx, tz;
             nested_unkey(k, lvl, tx, tz);
+            bool any_desired = false, all_resident = true;
+            scan_footprint(lvl, tx, tz, any_desired, all_resident);
+            if (any_desired && !all_resident) continue;   // hold: still baking
             evictions_.push_back({tx, tz, st.resident_rung});
             if (st.inflight_rung >= 0) --inflight_;
             to_erase.push_back(k);

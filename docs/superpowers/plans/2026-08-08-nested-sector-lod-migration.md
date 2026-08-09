@@ -140,6 +140,35 @@ anything renders nested tiles.
 
 ## WP4 — Transition groups: atomic N:1 / 1:N publish *(behaviour-inert while flag off)*
 
+> **As built (2026-08-08): the invariant is enforced in the STREAMER, not by a
+> deferred-commit publish path in the engine.** The rule below — "the old
+> residency is torn down only in the same delta that establishes the complete
+> new residency" — is implemented as: a superseded tile is held resident and
+> drawn until every desired tile covering its footprint is resident. Everything
+> the group ledger was for falls out of that one test, with no ledger: a tile
+> genuinely out of range has nothing desired over its footprint and goes
+> immediately; a partially failed split holds its parent (a stale coarse tile
+> beats a hole); an abandoned transition stops being covered and releases itself
+> with nothing to unwind.
+>
+> What this does NOT do is collapse the swap into a single `WorldDelta`. The
+> four children are published as they finish, and the parent's eviction lands
+> one or two frames after the last of them — so parent and children overlap for
+> those frames. That window is the same one every 1:1 rung swap already has
+> today (`apply_sector_evictions` runs on the app thread a frame or two after
+> the publish, which this plan's own text notes is accepted); what it is NOT is
+> the seconds-long artifact the design was written to prevent, because the
+> parent is never torn down early and never held past the last child.
+>
+> Chosen over the engine-side version because it needs no changes to the publish
+> job, the completion pool, `PublicationTransaction` or the coordinator — the
+> highest-risk surface in the plan — and because it is testable headless: the
+> gate below flies a camera for 220 ticks at a deliberately starved 3 publishes
+> per tick and probes every world column near it after every tick. Zero
+> uncovered columns; with the hold removed, 225,248. Closing the remaining
+> one-to-two-frame overlap is the deferred-commit work, and it is now an
+> optimisation on top of a correct invariant rather than a prerequisite for one.
+
 - Streamer: group ledger for split/merge (4-publish/1-evict and mirror),
   per-group cooldown on member failure, abandonment when the desired map
   moves on. `peek/commit_evictions` semantics preserved.
