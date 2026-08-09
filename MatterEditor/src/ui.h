@@ -120,6 +120,15 @@ struct ViewerStats {
     matter::AtmosphereSettings atmosphere{};
     matter::VulkanVolumetricsSettings volumetrics{};
     matter::CloudShadowSettings cloud_shadows{};
+    // Allocation/cost readouts for the Lighting panel. main.cpp updates the
+    // requested values from the live registered settings before submitting a
+    // frame; the renderer may later replace effective_froxel/error when an
+    // allocation fallback is needed.
+    matter::FroxelGridDimensions requested_froxel{};
+    matter::FroxelGridDimensions effective_froxel{};
+    uint64_t froxel_bytes = 0;
+    uint64_t cloud_shadow_bytes = 0;
+    std::string last_volumetric_allocation_error;
     // Live override of the world-authored fog (property group "render.fog",
     // Scope::World). Seeded from WorldSession::world_fog at every connect —
     // which is what makes the group's layer-2 baseline the authored values —

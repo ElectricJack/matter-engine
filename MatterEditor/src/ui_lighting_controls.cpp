@@ -4,6 +4,9 @@ namespace viewer {
 
 void reset_lighting_controls(ViewerStats& stats) {
     stats.lighting = matter::VulkanLightingOverrides{};
+    stats.atmosphere = matter::AtmosphereSettings{};
+    stats.volumetrics = matter::VulkanVolumetricsSettings{};
+    stats.cloud_shadows = matter::CloudShadowSettings{};
 }
 
 // The reload / world-switch seams drop every Scope::World group's backing
@@ -13,7 +16,9 @@ void reset_lighting_controls(ViewerStats& stats) {
 // and they would be indistinguishable from authored values from then on.
 void reset_world_scope_controls(ViewerStats& stats) {
     stats.lighting = matter::VulkanLightingOverrides{};
+    stats.atmosphere = matter::AtmosphereSettings{};
     stats.volumetrics = matter::VulkanVolumetricsSettings{};
+    stats.cloud_shadows = matter::CloudShadowSettings{};
     stats.tileset_pom = matter::TilesetPomSettings{};
     stats.vt_near_band = matter::VtNearBandSettings{};
     // render.fog. Reseeded from the INCOMING world's authored fog at the next

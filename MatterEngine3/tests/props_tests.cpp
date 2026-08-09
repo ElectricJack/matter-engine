@@ -7,6 +7,7 @@
 #include "matter/props.h"
 #include "matter/stream_settings.h"
 #include "matter/vt_budgets.h"
+#include "matter/world_definition.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -1184,6 +1185,38 @@ void test_engine_group_persistence_rules() {
               "stream.runtime: every field is process-lifetime, so ReadOnly");
 }
 
+void test_quality_enum_text_round_trip() {
+    static const char* const xy_labels[] = {"0.5x", "0.75x", "1x", "1.5x", "2x"};
+    static const auto quality = props::group<matter::VulkanVolumetricsSettings>(
+        "render.volumetrics", "Volumetrics",
+        props::prop(&matter::VulkanVolumetricsSettings::froxel_xy_scale,
+                    "froxel_xy_scale").enums(xy_labels, 5),
+        props::prop(&matter::VulkanVolumetricsSettings::multiple_scattering_orders,
+                    "multiple_scattering_orders").range(1.0f, 4.0f));
+    matter::VulkanVolumetricsSettings settings;
+    Registry reg;
+    Binding* binding = reg.get(reg.bind(quality, &settings, Scope::World));
+    CHECK(binding != nullptr, "quality parse: binds the live settings");
+    const Desc& xy = binding->schema().fields[0];
+    const Desc& orders = binding->schema().fields[1];
+    CHECK(props::parse_and_set(*binding, xy, "1.5X"),
+          "quality parse: enum labels ignore case");
+    CHECK(props::parse_and_set(*binding, orders, "3"),
+          "quality parse: integer quality setting parses");
+    binding->set_dirty(true);  // the FIFO/UI property path marks accepted live edits dirty
+    const matter::FroxelXyScale before_invalid = settings.froxel_xy_scale;
+    CHECK(!props::parse_and_set(*binding, xy, "bad-scale"),
+          "quality parse: invalid enum is rejected");
+    CHECK(settings.froxel_xy_scale == before_invalid,
+          "quality parse: invalid enum leaves the setting intact");
+    jsondoc::Value saved;
+    props::save_scope(reg, Scope::World, saved);
+    const std::string text = doc_to_string(saved);
+    CHECK(text.find("\"froxel_xy_scale\"") != std::string::npos &&
+              text.find("\"multiple_scattering_orders\"") != std::string::npos,
+          "quality parse: generic edits serialize as property values");
+}
+
 int main() {
     test_builder_layout();
     test_defaults_and_reset();
@@ -1208,5 +1241,6 @@ int main() {
     test_dynamic_group_teardown();
     test_env_at_first_use_latch();
     test_engine_group_persistence_rules();
+    test_quality_enum_text_round_trip();
     return check_summary();
 }

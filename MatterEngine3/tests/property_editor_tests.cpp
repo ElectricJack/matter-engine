@@ -11,7 +11,9 @@
 #include "matter/world_definition.h"   // FogSettings — the render.fog group
 
 #include <cstring>
+#include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -677,6 +679,181 @@ void test_draw_override_baseline_rule() {
           "draw.overrides: a grown module set is a different schema");
 }
 
+// The physical-atmosphere controls use ordinary property descriptors: this is
+// the contract the editor registry must bind verbatim.  Keeping the test in the
+// ImGui-free suite exercises parsing, sparse persistence and baseline rules
+// without requiring a window or a renderer.
+void test_physical_atmosphere_quality_property_contract() {
+    static const char* const xy_labels[] = {"0.5x", "0.75x", "1x", "1.5x", "2x"};
+    static const char* const depth_labels[] = {"64", "96", "128", "192", "256"};
+    static const char* const shadow_resolution_labels[] = {"128", "256", "512"};
+    static const auto atmosphere = props::group<AtmosphereSettings>(
+        "render.atmosphere", "Atmosphere",
+        props::prop(&AtmosphereSettings::sea_level_y, "sea_level_y").label("Sea level").range(-1000.0f, 10000.0f).units("m"),
+        props::prop(&AtmosphereSettings::rayleigh_scale, "rayleigh_scale").label("Rayleigh scale").range(0.0f, 4.0f),
+        props::prop(&AtmosphereSettings::mie_scale, "mie_scale").label("Mie scale").range(0.0f, 4.0f),
+        props::prop(&AtmosphereSettings::mie_anisotropy, "mie_anisotropy").label("Mie anisotropy").range(-0.2f, 0.99f),
+        props::prop(&AtmosphereSettings::ozone_scale, "ozone_scale").label("Ozone scale").range(0.0f, 4.0f),
+        props::prop(&AtmosphereSettings::ground_albedo, "ground_albedo").label("Ground albedo").range(0.0f, 1.0f));
+    static const auto volumetrics = props::group<VulkanVolumetricsSettings>(
+        "render.volumetrics", "Volumetrics",
+        props::prop(&VulkanVolumetricsSettings::froxel_xy_scale, "froxel_xy_scale").label("Froxel XY scale").enums(xy_labels, 5),
+        props::prop(&VulkanVolumetricsSettings::froxel_depth_slices, "froxel_depth_slices").label("Froxel depth slices").enums(depth_labels, 5),
+        props::prop(&VulkanVolumetricsSettings::local_sun_march_steps, "local_sun_march_steps").label("Local sun march steps").range(0.0f, 32.0f),
+        props::prop(&VulkanVolumetricsSettings::local_sun_march_distance_m, "local_sun_march_distance_m").label("Local sun march distance").range(0.0f, 1000.0f).units("m"),
+        props::prop(&VulkanVolumetricsSettings::multiple_scattering_orders, "multiple_scattering_orders").label("Multiple scattering orders").range(1.0f, 4.0f),
+        props::prop(&VulkanVolumetricsSettings::multiple_scattering_strength, "multiple_scattering_strength").label("Multiple scattering strength").range(0.0f, 1.0f),
+        props::prop(&VulkanVolumetricsSettings::powder_strength, "powder_strength").label("Powder strength").range(0.0f, 1.0f));
+    static const auto shadows = props::group<CloudShadowSettings>(
+        "render.cloud_shadows", "Cloud Shadows",
+        props::prop(&CloudShadowSettings::near_resolution, "near_resolution").label("Near resolution").enums(shadow_resolution_labels, 3),
+        props::prop(&CloudShadowSettings::near_coverage_m, "near_coverage_m").label("Near coverage").range(250.0f, 10000.0f).units("m"),
+        props::prop(&CloudShadowSettings::filter_scale, "filter_scale").label("Filter scale").range(0.0f, 4.0f),
+        props::prop(&CloudShadowSettings::update_fraction, "update_fraction").label("Update fraction").range(0.0625f, 1.0f));
+    static const auto clouds = props::group<FogSettings>(
+        "render.clouds", "Clouds",
+        props::PropBuilder("layer1_detail_erosion", Type::Float,
+            static_cast<uint32_t>(offsetof(FogSettings, clouds) + sizeof(CloudLayer) + offsetof(CloudLayer, detail_erosion)))
+            .label("Detail erosion").range(0.0f, 1.0f));
+
+    AtmosphereSettings live_atmosphere;
+    VulkanVolumetricsSettings live_volumetrics;
+    CloudShadowSettings live_shadows;
+    FogSettings live_fog;
+    props::Registry registry;
+    props::Binding* atmosphere_binding = registry.get(registry.bind(atmosphere, &live_atmosphere, props::Scope::World));
+    props::Binding* volumetrics_binding = registry.get(registry.bind(volumetrics, &live_volumetrics, props::Scope::World));
+    props::Binding* shadow_binding = registry.get(registry.bind(shadows, &live_shadows, props::Scope::World));
+    props::Binding* cloud_binding = registry.get(registry.bind(clouds, &live_fog, props::Scope::World));
+    CHECK(atmosphere_binding && volumetrics_binding && shadow_binding && cloud_binding,
+          "physical atmosphere: every group binds");
+
+    struct Edit { const char* path; const char* text; };
+    const Edit edits[] = {
+        {"render.atmosphere.mie_anisotropy", "0.72"},
+        {"render.volumetrics.froxel_xy_scale", "1.5x"},
+        {"render.volumetrics.froxel_depth_slices", "192"},
+        {"render.volumetrics.multiple_scattering_orders", "3"},
+        {"render.cloud_shadows.near_resolution", "512"},
+        {"render.cloud_shadows.update_fraction", "0.5"},
+        {"render.clouds.layer1_detail_erosion", "0.4"},
+    };
+    for (const Edit& edit : edits) {
+        props::Binding* binding = nullptr;
+        const Desc* desc = nullptr;
+        CHECK(props::resolve_field(registry, edit.path, binding, desc),
+              "physical atmosphere: generic path resolves");
+        CHECK(props::parse_and_set(*binding, *desc, edit.text),
+              "physical atmosphere: generic set accepts valid text");
+    }
+    CHECK(live_atmosphere.mie_anisotropy == 0.72f &&
+              live_volumetrics.froxel_xy_scale == FroxelXyScale::X1_5 &&
+              live_volumetrics.froxel_depth_slices == FroxelDepthSlices::D192 &&
+              live_volumetrics.multiple_scattering_orders == 3 &&
+              live_shadows.near_resolution == 2 && live_shadows.update_fraction == 0.5f &&
+              live_fog.clouds[1].detail_erosion == 0.4f,
+          "physical atmosphere: generic values reach the live structs");
+
+    props::Binding* binding = nullptr;
+    const Desc* desc = nullptr;
+    CHECK(props::resolve_field(registry, "render.volumetrics.froxel_xy_scale", binding, desc),
+          "physical atmosphere: enum resolves");
+    CHECK(props::parse_and_set(*binding, *desc, "2X"),
+          "physical atmosphere: enum labels are case-insensitive");
+    const FroxelXyScale before_invalid = live_volumetrics.froxel_xy_scale;
+    CHECK(!props::parse_and_set(*binding, *desc, "not-a-scale"),
+          "physical atmosphere: invalid enum text is refused");
+    CHECK(live_volumetrics.froxel_xy_scale == before_invalid,
+          "physical atmosphere: invalid enum text does not mutate storage");
+
+    for (props::Binding* candidate : {atmosphere_binding, volumetrics_binding, shadow_binding, cloud_binding}) {
+        CHECK(candidate->scope() == props::Scope::World,
+              "physical atmosphere: every binding is World scoped");
+        CHECK(!props::group_requires_reload(candidate->schema()),
+              "physical atmosphere: every field stays live");
+    }
+    props::Registry neutral_registry;
+    AtmosphereSettings neutral_atmosphere;
+    VulkanVolumetricsSettings neutral_volumetrics;
+    CloudShadowSettings neutral_shadows;
+    FogSettings neutral_fog;
+    neutral_registry.bind(atmosphere, &neutral_atmosphere, props::Scope::World);
+    neutral_registry.bind(volumetrics, &neutral_volumetrics, props::Scope::World);
+    neutral_registry.bind(shadows, &neutral_shadows, props::Scope::World);
+    neutral_registry.bind(clouds, &neutral_fog, props::Scope::World);
+    matter::jsondoc::Value neutral_doc;
+    props::save_scope(neutral_registry, props::Scope::World, neutral_doc);
+    CHECK(matter::jsondoc::write_json(neutral_doc).find("render.atmosphere") == std::string::npos &&
+              matter::jsondoc::write_json(neutral_doc).find("render.clouds") == std::string::npos,
+          "physical atmosphere: neutral defaults remain sparse");
+
+    apply_volumetric_quality_preset(VolumetricQualityPreset::Improved,
+                                    live_volumetrics, live_shadows);
+    CHECK(identify_volumetric_quality_preset(live_volumetrics, live_shadows) ==
+              VolumetricQualityPreset::Improved,
+          "physical atmosphere: Improved identifies after applying through values");
+    ++live_volumetrics.multiple_scattering_orders;
+    CHECK(identify_volumetric_quality_preset(live_volumetrics, live_shadows) ==
+              VolumetricQualityPreset::Custom,
+          "physical atmosphere: a one-field edit derives Custom");
+}
+
+// The test target deliberately does not link the editor's ImGui/Vulkan closure.
+// Pin the registry/UI seam at its source boundary instead, so a later refactor
+// cannot make the headless schema test green while dropping the live bindings.
+void test_physical_atmosphere_editor_source_contract() {
+    const auto read = [](const char* path) {
+        std::ifstream in(path);
+        std::ostringstream out;
+        out << in.rdbuf();
+        return out.str();
+    };
+    const std::string props_source = read("../../MatterEditor/src/editor_props.cpp");
+    const std::string editor_source = read("../../MatterEditor/src/property_editor.cpp");
+    const std::string reset_source = read("../../MatterEditor/src/ui_lighting_controls.cpp");
+    const std::string main_source = read("../../MatterEditor/src/main.cpp");
+    CHECK(!props_source.empty() && !editor_source.empty() && !reset_source.empty() &&
+              !main_source.empty(),
+          "physical atmosphere: editor sources are available from the test cwd");
+    for (const char* token : {"\"render.atmosphere\", \"Atmosphere\"",
+                              "\"render.volumetrics\", \"Volumetrics\"",
+                              "\"render.cloud_shadows\", \"Cloud Shadows\"",
+                              "\"render.clouds\", \"Clouds\"",
+                              "MATTER_ATMOSPHERE_MIE_ANISOTROPY",
+                              "MATTER_FROXEL_XY_SCALE", "MATTER_FROXEL_DEPTH_SLICES",
+                              "MATTER_CLOUD_SCATTER_ORDERS", "layer\" #i \"_detail_erosion"})
+        CHECK(props_source.find(token) != std::string::npos,
+              "physical atmosphere: production registry exposes required schema/env token");
+    for (const char* token : {"atmosphere_ = registry_.bind", "cloud_shadows_ = registry_.bind",
+                              "EditorProps::atmosphere", "EditorProps::cloud_shadows"})
+        CHECK(props_source.find(token) != std::string::npos,
+              "physical atmosphere: production registry binds/accesses World groups");
+    const size_t lighting_begin = editor_source.find("void draw_lighting_contents");
+    CHECK(lighting_begin != std::string::npos,
+          "physical atmosphere: Lighting draw function is present");
+    const std::string lighting_body = editor_source.substr(lighting_begin);
+    size_t previous = 0;
+    for (const char* token : {"props.lighting()", "props.atmosphere()", "props.volumetrics()",
+                              "props.fog()", "props.cloud_shadows()", "props.clouds()"}) {
+        const size_t found = lighting_body.find(token);
+        CHECK(found != std::string::npos && found > previous,
+              "physical atmosphere: Lighting draws all six groups in required order");
+        previous = found;
+    }
+    for (const char* token : {"apply_volumetric_quality_preset", "apply_registered_fields",
+                              "set_bool(binding", "set_enum(binding", "set_int(binding", "set_float(binding",
+                              "Froxels requested/effective", "Froxel memory", "Last allocation error"})
+        CHECK(editor_source.find(token) != std::string::npos,
+              "physical atmosphere: Lighting presets/readouts stay on the property path");
+    CHECK(reset_source.find("void reset_lighting_controls") != std::string::npos &&
+              reset_source.find("stats.atmosphere = matter::AtmosphereSettings{};") != std::string::npos &&
+              reset_source.find("stats.cloud_shadows = matter::CloudShadowSettings{};") != std::string::npos,
+          "physical atmosphere: all physical lighting controls reset to the compiled baseline");
+    CHECK(main_source.find("MATTER_CAPTURE_LIGHTING_UI") != std::string::npos &&
+              main_source.find("ImGui::SetWindowFocus(\"Lighting\")") != std::string::npos,
+          "physical atmosphere: screenshot automation can focus Lighting without a FIFO command");
+}
+
 }  // namespace
 
 int main() {
@@ -694,5 +871,7 @@ int main() {
     test_dynamic_group_renders_generically();
     test_draw_override_rows();
     test_draw_override_baseline_rule();
+    test_physical_atmosphere_quality_property_contract();
+    test_physical_atmosphere_editor_source_contract();
     return check_summary();
 }

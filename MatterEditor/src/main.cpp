@@ -1505,6 +1505,10 @@ int main() {
         screenshot_env  ? screenshot_env
         : replay.valid  ? (replay_out_env ? replay_out_env : "replay.png")
                         : "";
+    // Capture-only aid for automated Lighting-panel verification. This is not a
+    // command and cannot affect an ordinary editor session: the tab is focused
+    // only while the caller explicitly asks for a screenshot capture.
+    const bool capture_lighting_ui = std::getenv("MATTER_CAPTURE_LIGHTING_UI") != nullptr;
     int screenshot_settle = 0;
     int screenshot_failures = 0;
     bool bake_ready = false;
@@ -2450,6 +2454,8 @@ int main() {
                 ui.draw_debug_panel(stats, viewer_commands, editor_props);
                 ui.draw_tunables_panel(editor_props);
                 ui.draw_lighting_panel(editor_props);
+                if (capture_lighting_ui && !screenshot_path.empty())
+                    ImGui::SetWindowFocus("Lighting");
                 ui.draw_vt_warning_banner(stats);
                 ui.draw_bake_lab_panel(bake_lab, &app_hub, session.get(), worlds, stats);
                 ui.draw_asset_browser_panel(asset_browser, worlds, stats, shared_lib,
@@ -2964,6 +2970,17 @@ int main() {
         options.volumetrics.vol_debug_view =
             static_cast<float>(stats.vol_debug_view);
         options.cloud_shadows = stats.cloud_shadows;
+        stats.requested_froxel = matter::resolve_froxel_grid(options.volumetrics);
+        // The current allocator accepts this exact grid; retain a separate
+        // field so a future fallback can report its effective dimensions
+        // without changing the requested setting or the UI contract.
+        stats.effective_froxel = stats.requested_froxel;
+        stats.froxel_bytes = matter::estimate_froxel_bytes(
+            stats.effective_froxel,
+            matter::enhanced_cloud_lighting(options.volumetrics,
+                                            options.cloud_shadows));
+        stats.cloud_shadow_bytes =
+            matter::estimate_cloud_shadow_bytes(options.cloud_shadows);
         // render.fog. Only once stats.fog actually holds this world's authored
         // fog (see fog_override_ready); until then — and for the whole of a
         // replay — the session keeps consuming its own authored_fog_. Cleared

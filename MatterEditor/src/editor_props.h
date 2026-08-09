@@ -147,7 +147,10 @@ public:
 
     matter::props::Binding* budget();
     matter::props::Binding* lighting();
+    matter::props::Binding* atmosphere();
     matter::props::Binding* volumetrics();
+    matter::props::Binding* cloud_shadows();
+    const ViewerStats* viewer_stats() const { return stats_; }
     // World-authored fog, live (WS2). See the group definition in the .cpp for
     // why this is live and not RequiresReload.
     matter::props::Binding* fog();
@@ -258,9 +261,12 @@ private:
     void release_draw_overrides();
 
     matter::props::Registry registry_;
+    ViewerStats* stats_ = nullptr;
     matter::props::BindingId budget_ = matter::props::kInvalidBinding;
     matter::props::BindingId lighting_ = matter::props::kInvalidBinding;
+    matter::props::BindingId atmosphere_ = matter::props::kInvalidBinding;
     matter::props::BindingId volumetrics_ = matter::props::kInvalidBinding;
+    matter::props::BindingId cloud_shadows_ = matter::props::kInvalidBinding;
     matter::props::BindingId fog_ = matter::props::kInvalidBinding;
     matter::props::BindingId clouds_ = matter::props::kInvalidBinding;
     matter::props::BindingId pom_ = matter::props::kInvalidBinding;
