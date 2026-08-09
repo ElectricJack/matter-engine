@@ -33,7 +33,7 @@ float hg_phase(float cos_theta, float g) {
     return (1.0 - g2) / (4.0 * 3.14159265 * denom * sqrt(denom));
 }
 
-// Must match C++ GpuCloudLayer in matter/cloud_layers.h (64 bytes std430).
+// Must match C++ GpuCloudLayer in matter/cloud_layers.h (96 bytes std430).
 // All-float, like GpuVolumeEmitter below and for the same reason: the struct
 // alignment stays 4 and the std430 array stride is exactly sizeof, so the C++
 // array and this one agree without invoking any padding rule.
@@ -58,6 +58,11 @@ struct GpuCloudLayer {
 
     float wind[3];
     float pad1;
+
+    // weather_scale, weather_influence, detail_scale, detail_erosion.
+    vec4 weather_scale_influence_detail_scale_detail_erosion;
+    // shape_bias followed by three zero padding lanes.
+    vec4 shape_bias_padding;
 };
 
 // Half-width of the coverage threshold's soft shoulder, in units of the

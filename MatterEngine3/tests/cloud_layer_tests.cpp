@@ -23,6 +23,9 @@
 #include "matter/world_definition.h"
 
 #include <cstdio>
+#include <fstream>
+#include <iterator>
+#include <string>
 
 namespace {
 
@@ -446,6 +449,24 @@ void test_gpu_packing_round_trip() {
           "weather and detail controls pack without loss");
 }
 
+// This is the ABI boundary for the cloud SSBO. The density shader may not use
+// the new controls until Task 9, but changing C++ stride without extending its
+// GLSL mirror would make every following element read at the wrong offset.
+void test_gpu_cloud_layer_shader_layout_contract() {
+    std::ifstream input("../shaders_vk/vol_common.glsl", std::ios::binary);
+    CHECK(static_cast<bool>(input), "cloud GLSL source is available to pin the SSBO contract");
+    const std::string source((std::istreambuf_iterator<char>(input)),
+                             std::istreambuf_iterator<char>());
+    CHECK(source.find("GpuCloudLayer in matter/cloud_layers.h (96 bytes std430)") !=
+              std::string::npos,
+          "GLSL mirror declares the 96-byte cloud-layer stride");
+    CHECK(source.find("vec4 weather_scale_influence_detail_scale_detail_erosion;") !=
+              std::string::npos,
+          "GLSL appends weatherScale, weatherInfluence, detailScale, detailErosion as one vec4");
+    CHECK(source.find("vec4 shape_bias_padding;") != std::string::npos,
+          "GLSL appends shapeBias plus three zero padding lanes as one vec4");
+}
+
 // The octave ceiling is a frame-cost guard, not a preference: octaves
 // multiply the per-froxel work directly across 1.84M froxels.
 void test_sanitize_clamps_the_cost_dials() {
@@ -495,6 +516,7 @@ int main() {
     test_disabled_layer_survives_compaction_and_reenable();
     test_seed_default_cloud_layer_makes_a_degenerate_layer_live();
     test_gpu_packing_round_trip();
+    test_gpu_cloud_layer_shader_layout_contract();
     test_sanitize_clamps_the_cost_dials();
     return check_summary();
 }
