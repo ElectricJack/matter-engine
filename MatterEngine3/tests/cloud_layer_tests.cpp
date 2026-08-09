@@ -392,11 +392,11 @@ void test_seed_default_cloud_layer_makes_a_degenerate_layer_live() {
           "seeding a well-formed layer is a no-op");
 }
 
-// The GPU mirror must stay exactly 64 bytes and must carry every authored
+// The GPU mirror must stay exactly 96 bytes and must carry every authored
 // field. A silent layout drift here shows up as garbage clouds, not a crash.
 void test_gpu_packing_round_trip() {
-    CHECK(sizeof(matter::GpuCloudLayer) == 64,
-          "GpuCloudLayer is 64 bytes - vol_density.comp's SSBO stride");
+    CHECK(sizeof(matter::GpuCloudLayer) == 96,
+          "GpuCloudLayer is 96 bytes - vol_density.comp's SSBO stride");
 
     matter::CloudLayer in = make_layer(120.0f, 260.0f, 0.045f, 8.0f, 40.0f);
     in.noise_scale = 0.0016f;
@@ -407,6 +407,11 @@ void test_gpu_packing_round_trip() {
     in.wind[0] = 1.5f;
     in.wind[1] = 0.0f;
     in.wind[2] = -0.25f;
+    in.weather_scale = 0.00025f;
+    in.weather_influence = 0.6f;
+    in.detail_scale = 0.012f;
+    in.detail_erosion = 0.35f;
+    in.shape_bias = -0.1f;
 
     matter::GpuCloudLayer out{};
     matter::pack_cloud_layer(in, 2, out);
@@ -433,6 +438,12 @@ void test_gpu_packing_round_trip() {
     CHECK(!nearly_equal(static_cast<float>(matter::cloud_layer_seed(0)),
                         static_cast<float>(matter::cloud_layer_seed(1))),
           "identical layers at different indices get different noise");
+    CHECK(nearly_equal(out.weather_scale, 0.00025f) &&
+              nearly_equal(out.weather_influence, 0.6f) &&
+              nearly_equal(out.detail_scale, 0.012f) &&
+              nearly_equal(out.detail_erosion, 0.35f) &&
+              nearly_equal(out.shape_bias, -0.1f),
+          "weather and detail controls pack without loss");
 }
 
 // The octave ceiling is a frame-cost guard, not a preference: octaves
@@ -443,6 +454,11 @@ void test_sanitize_clamps_the_cost_dials() {
     layer.coverage = 3.0f;
     layer.gain = -1.0f;
     layer.noise_scale = 0.0f;
+    layer.weather_scale = 0.0f;
+    layer.weather_influence = -1.0f;
+    layer.detail_scale = -1.0f;
+    layer.detail_erosion = 2.0f;
+    layer.shape_bias = -2.0f;
     matter::sanitize_cloud_layer(layer);
 
     CHECK(layer.octaves == matter::kMaxCloudOctaves,
@@ -450,6 +466,12 @@ void test_sanitize_clamps_the_cost_dials() {
     CHECK(nearly_equal(layer.coverage, 1.0f), "coverage clamped to [0,1]");
     CHECK(nearly_equal(layer.gain, 0.0f), "gain clamped to [0,1]");
     CHECK(layer.noise_scale > 0.0f, "a zero noise scale is replaced");
+    CHECK(layer.weather_scale > 0.0f && layer.detail_scale > 0.0f,
+          "non-positive weather and detail scales use safe defaults");
+    CHECK(nearly_equal(layer.weather_influence, 0.0f) &&
+              nearly_equal(layer.detail_erosion, 1.0f) &&
+              nearly_equal(layer.shape_bias, -1.0f),
+          "weather influence, erosion and shape bias are bounded");
 
     matter::CloudLayer degenerate = make_layer(200.0f, 100.0f, 1.0f, 0.0f, 0.0f);
     matter::sanitize_cloud_layer(degenerate);

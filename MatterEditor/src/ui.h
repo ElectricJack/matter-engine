@@ -117,7 +117,9 @@ struct ViewerStats {
     // (index into the enumerated worlds list) instead.
     int      world_current = 0;
     matter::VulkanLightingOverrides lighting{};
+    matter::AtmosphereSettings atmosphere{};
     matter::VulkanVolumetricsSettings volumetrics{};
+    matter::CloudShadowSettings cloud_shadows{};
     // Live override of the world-authored fog (property group "render.fog",
     // Scope::World). Seeded from WorldSession::world_fog at every connect —
     // which is what makes the group's layer-2 baseline the authored values —

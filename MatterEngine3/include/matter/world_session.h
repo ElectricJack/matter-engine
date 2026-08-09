@@ -142,7 +142,9 @@ struct RenderOptions {
     VulkanRayTracingSettings vulkan_ray_tracing{};
     VulkanGiSettings vulkan_gi{};
     VulkanLightingOverrides vulkan_lighting{};
-    VulkanVolumetricsSettings vulkan_volumetrics{};
+    AtmosphereSettings atmosphere{};
+    VulkanVolumetricsSettings volumetrics{};
+    CloudShadowSettings cloud_shadows{};
     TilesetPomSettings vulkan_tileset_pom{};
     // Phase 0: the chart-VT near band, decoupled from the POM distances
     // beside it. Compiled defaults (50/10 m) are what a caller that never
@@ -153,7 +155,7 @@ struct RenderOptions {
     // FogSettings the connect captured is consumed PER FRAME — WorldSession::
     // render hands it to VkSceneRenderer::set_volumetrics_settings on every
     // call — so an editor copy of it can simply ride the per-frame options the
-    // way vulkan_lighting/vulkan_volumetrics already do.
+    // way vulkan_lighting/volumetrics already do.
     //
     // Opt-in rather than unconditional: every non-editor caller (headless
     // tests, the replay harness, the Part Workbench's isolation session) leaves
@@ -398,6 +400,10 @@ public:
     // available once a world-kind connect completes. The editor adopts these
     // into its live volumetrics controls on world load.
     bool world_volumetrics(VulkanVolumetricsSettings& out) const;
+    // World-authored physical atmosphere and cloud-shadow defaults, captured
+    // at the same world-install seams as volumetrics.
+    bool world_atmosphere(AtmosphereSettings& out) const;
+    bool world_cloud_shadows(CloudShadowSettings& out) const;
     // World-authored fog (World.fog static), captured at every install /
     // compose / cone-rebake. False until the first successful connect. The
     // editor seeds its live render.fog override from this so the group's

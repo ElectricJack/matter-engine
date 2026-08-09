@@ -1031,6 +1031,10 @@ struct WorldSession::Impl {
     // to adopt (guarded by streaming_lod_mutex alongside the LOD profile).
     VulkanVolumetricsSettings world_volumetrics_defaults{};
     bool has_world_volumetrics = false;
+    AtmosphereSettings world_atmosphere_defaults{};
+    bool has_world_atmosphere = false;
+    CloudShadowSettings world_cloud_shadows_defaults{};
+    bool has_world_cloud_shadows = false;
     // Same contract for the world-authored fog. Set through set_authored_fog
     // (declared above), which every authored_fog_ publication goes through.
     FogSettings world_fog_defaults{};
@@ -1423,6 +1427,12 @@ void WorldSession::Impl::set_authored_sun(const matter::WorldSettings& settings)
     std::lock_guard<std::mutex> lk(streaming_lod_mutex);
     world_sun_defaults = sun;
     has_world_sun = true;
+    world_atmosphere_defaults = settings.atmosphere;
+    has_world_atmosphere = true;
+    world_volumetrics_defaults = settings.volumetrics;
+    has_world_volumetrics = true;
+    world_cloud_shadows_defaults = settings.cloud_shadows;
+    has_world_cloud_shadows = true;
 }
 
 void WorldSession::Impl::ensure_worker_started() {
@@ -7010,7 +7020,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // here on each call. An editor override therefore lands on the next frame
     // with no reload, exactly like the volumetrics multipliers beside it.
     impl_->vk_scene->set_volumetrics_settings(
-        opts.vulkan_volumetrics,
+        opts.volumetrics,
         opts.use_fog_override ? opts.fog_override : impl_->authored_fog_);
     impl_->vk_scene->set_tileset_pom_settings(opts.vulkan_tileset_pom);
     impl_->vk_scene->set_vt_near_band_settings(opts.vulkan_vt_near_band);
@@ -7537,8 +7547,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->manifest.lights.sky_color[1] * controls.sky_multiplier * controls.sky_tint[1],
         impl_->manifest.lights.sky_color[2] * controls.sky_multiplier * controls.sky_tint[2]};
     lighting.emission_multiplier = controls.emission_multiplier;
-    lighting.vol_enabled = opts.vulkan_volumetrics.enabled ? 1.0f : 0.0f;
-    lighting.vol_debug_view = opts.vulkan_volumetrics.vol_debug_view;
+    lighting.vol_enabled = opts.volumetrics.enabled ? 1.0f : 0.0f;
+    lighting.vol_debug_view = opts.volumetrics.vol_debug_view;
     impl_->vk_scene->set_lighting(lighting);
     impl_->vk_scene->set_display_exposure(controls.exposure_ev);
     impl_->vk_scene->set_composite_debug_view(controls.composite_debug_view);
@@ -7965,6 +7975,20 @@ bool WorldSession::world_volumetrics(VulkanVolumetricsSettings& out) const {
     std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
     if (!impl_->has_world_volumetrics) return false;
     out = impl_->world_volumetrics_defaults;
+    return true;
+}
+
+bool WorldSession::world_atmosphere(AtmosphereSettings& out) const {
+    std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
+    if (!impl_->has_world_atmosphere) return false;
+    out = impl_->world_atmosphere_defaults;
+    return true;
+}
+
+bool WorldSession::world_cloud_shadows(CloudShadowSettings& out) const {
+    std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
+    if (!impl_->has_world_cloud_shadows) return false;
+    out = impl_->world_cloud_shadows_defaults;
     return true;
 }
 

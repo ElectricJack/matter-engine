@@ -1514,6 +1514,8 @@ int main() {
     // World-authored volumetrics defaults adopt on every world load (initial
     // and switches); replays keep their recorded settings.
     bool apply_world_volumetrics_after_bake = !replay.valid;
+    bool apply_world_atmosphere_after_bake = !replay.valid;
+    bool apply_world_cloud_shadows_after_bake = !replay.valid;
     // render.fog's own one-shot, deliberately NOT folded into the volumetrics
     // flag beside it: the two are published by different engine paths (a
     // closed-world connect publishes fog but never volumetrics, and a
@@ -2847,6 +2849,20 @@ int main() {
                         apply_world_volumetrics_after_bake = false;
                     }
                 }
+                if (bake_ready && apply_world_atmosphere_after_bake) {
+                    matter::AtmosphereSettings world_atmosphere;
+                    if (session->world_atmosphere(world_atmosphere)) {
+                        stats.atmosphere = world_atmosphere;
+                        apply_world_atmosphere_after_bake = false;
+                    }
+                }
+                if (bake_ready && apply_world_cloud_shadows_after_bake) {
+                    matter::CloudShadowSettings world_cloud_shadows;
+                    if (session->world_cloud_shadows(world_cloud_shadows)) {
+                        stats.cloud_shadows = world_cloud_shadows;
+                        apply_world_cloud_shadows_after_bake = false;
+                    }
+                }
                 // Layer 2 for the sun half of render.lighting. Same ordering
                 // rule as fog: strictly before on_world_connected below.
                 //
@@ -2943,9 +2959,11 @@ int main() {
             : stats.debug_view_mode == 3 ? 1.0f
             : stats.debug_view_mode == 4 ? 4.0f
                                          : 0.0f;
-        options.vulkan_volumetrics = stats.volumetrics;
-        options.vulkan_volumetrics.vol_debug_view =
+        options.atmosphere = stats.atmosphere;
+        options.volumetrics = stats.volumetrics;
+        options.volumetrics.vol_debug_view =
             static_cast<float>(stats.vol_debug_view);
+        options.cloud_shadows = stats.cloud_shadows;
         // render.fog. Only once stats.fog actually holds this world's authored
         // fog (see fog_override_ready); until then — and for the whole of a
         // replay — the session keeps consuming its own authored_fog_. Cleared
@@ -3625,6 +3643,8 @@ int main() {
             apply_world_camera_after_bake =
                 !replay.valid && initial_camera_env == nullptr;
             apply_world_volumetrics_after_bake = !replay.valid;
+            apply_world_atmosphere_after_bake = !replay.valid;
+            apply_world_cloud_shadows_after_bake = !replay.valid;
             // prepare_world_reload below drops stats.fog to the compiled
             // default; until the reconnect re-seeds it, the session's own
             // authored fog is the only truthful source.
@@ -3680,6 +3700,8 @@ int main() {
                 screenshot_settle = 0;
                 apply_world_camera_after_bake = true;
                 apply_world_volumetrics_after_bake = true;
+                apply_world_atmosphere_after_bake = true;
+                apply_world_cloud_shadows_after_bake = true;
                 // complete_world_switch reset stats.fog; same reasoning as the
                 // reload seam above.
                 apply_world_fog_after_bake = true;
