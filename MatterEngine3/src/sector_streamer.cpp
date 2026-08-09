@@ -49,7 +49,35 @@ void resolve_terrain_defaults(Config& cfg) {
 
 SectorStreamer::SectorStreamer(Config cfg)
     : cfg_(std::move(cfg)) {
+    // Nesting IS the terrain ladder expressed as tile size, so it implies the
+    // ladder rather than composing with it. Without this a world that set only
+    // `nestedSectors` would resolve no bands and fall straight back to uniform.
+    if (cfg_.nested_sectors) cfg_.terrain_lod_enabled = true;
     resolve_terrain_defaults(cfg_);
+    if (!cfg_.nested_sectors) return;
+
+    // Band LOD l is the annulus where level (5 - l) tiles live. Same authored
+    // table, same tuning UI, one reinterpretation.
+    std::vector<float> radius(kMaxLevel + 1, 0.0f);
+    std::vector<char>  seen(kMaxLevel + 1, 0);
+    for (const auto& band : cfg_.terrain_bands) {
+        const int lvl = kMaxLevel - band.rung;
+        if (lvl < 0 || lvl > kMaxLevel) continue;
+        radius[lvl] = band.radius;
+        seen[lvl] = 1;
+    }
+    // Only the contiguous run from level 0 is usable. A table missing a level
+    // cannot describe a nested ladder -- the descent would have no size to
+    // stop at -- and silently skipping the gap would leave a ring-shaped hole
+    // in the world, so the ladder ends at the gap instead.
+    for (int L = 0; L <= kMaxLevel && seen[L]; ++L)
+        level_radius_.push_back(radius[L]);
+    // Radii must increase with level. Clamping rather than rejecting keeps a
+    // mis-authored table renderable (as fewer effective levels) instead of
+    // turning one typo into an empty world.
+    for (size_t i = 1; i < level_radius_.size(); ++i)
+        level_radius_[i] = std::max(level_radius_[i], level_radius_[i - 1]);
+    if (level_radius_.empty()) cfg_.nested_sectors = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,10 +181,283 @@ void SectorStreamer::assign_terrain_lods() {
 }
 
 // ---------------------------------------------------------------------------
+// Nested mode: geometry helpers
+// ---------------------------------------------------------------------------
+
+float SectorStreamer::tile_centre_dist(int level, int64_t tx, int64_t tz) const {
+    const float S = level_size(level);
+    const float cx = (float(tx) + 0.5f) * S;
+    const float cz = (float(tz) + 0.5f) * S;
+    const float dx = cx - last_anchor_x_, dz = cz - last_anchor_z_;
+    return std::sqrt(dx * dx + dz * dz);
+}
+
+// Distance from the anchor to the CLOSEST point of the tile -- zero when the
+// anchor is inside it. The split test uses this rather than the centre so that
+// a tile splits when any part of it is close enough, which is what makes the
+// desired set cover every world column exactly once.
+float SectorStreamer::tile_near_dist(int level, int64_t tx, int64_t tz) const {
+    const float S = level_size(level);
+    const float x0 = float(tx) * S, x1 = x0 + S;
+    const float z0 = float(tz) * S, z1 = z0 + S;
+    const float dx = std::max(std::max(x0 - last_anchor_x_, 0.0f),
+                              last_anchor_x_ - x1);
+    const float dz = std::max(std::max(z0 - last_anchor_z_, 0.0f),
+                              last_anchor_z_ - z1);
+    return std::sqrt(dx * dx + dz * dz);
+}
+
+int SectorStreamer::nested_scatter_tier(float d) const {
+    for (const auto& ring : cfg_.rings)
+        if (d <= ring.radius) return ring.rung;
+    // Past the last ring: the coarsest tier, NOT "undesired". In nested mode
+    // the terrain bands bound residency and the rings only grade scatter.
+    return cfg_.rings.empty() ? 0 : cfg_.rings.back().rung;
+}
+
+int SectorStreamer::min_edge_level(bool vary_z, float fixed, float t0, float t1,
+                                   int seg_level, int stop_below) const {
+    // Probe the segment's own CENTRE -- an interior point of whichever tile
+    // covers it, never a tile boundary, so the answer is unambiguous.
+    const float mid = 0.5f * (t0 + t1);
+    const int m = vary_z ? desired_level_at(fixed, mid)
+                         : desired_level_at(mid, fixed);
+    // Nothing desired out there (past the reach): no adjacency constraint.
+    if (m < 0) return kMaxLevel + 1;
+    // A tile at or above this segment's level spans the whole segment, because
+    // the grids nest. That is the early exit that makes this cheap.
+    if (m >= seg_level || seg_level <= 0) return m;
+    const int a = min_edge_level(vary_z, fixed, t0, mid, seg_level - 1, stop_below);
+    if (a < stop_below) return a;                 // already a violation
+    const int b = min_edge_level(vary_z, fixed, mid, t1, seg_level - 1, stop_below);
+    return std::min(a, b);
+}
+
+int SectorStreamer::desired_level_at(float wx, float wz) const {
+    for (int L = 0; L <= max_level(); ++L) {
+        const float S = level_size(L);
+        const int64_t tx = int64_t(std::floor(wx / S));
+        const int64_t tz = int64_t(std::floor(wz / S));
+        auto it = sectors_.find(nested_key(L, tx, tz));
+        if (it != sectors_.end() && it->second.desired_level == L) return L;
+    }
+    return -1;
+}
+
+// ---------------------------------------------------------------------------
+// Nested mode: the desired set
+// ---------------------------------------------------------------------------
+
+void SectorStreamer::mark_desired(int level, int64_t tx, int64_t tz) {
+    auto& st = sectors_[nested_key(level, tx, tz)];
+    st.dist          = tile_centre_dist(level, tx, tz);
+    st.desired_level = level;
+    st.desired_lod   = kMaxLevel - level;
+
+    int tier = nested_scatter_tier(st.dist);
+    // Scatter-tier demotion gets the same hysteresis the uniform path gives it
+    // (sector_streamer.cpp, update()'s ring comparison). Without it a camera
+    // parked on a ring boundary rebakes the tiles under it forever: the tier is
+    // part of the variant, so a tier flip is a full rebake and republish.
+    if (st.resident_rung >= 0) {
+        const int res_tier = variant_scatter(st.resident_rung);
+        if (tier < res_tier) {
+            float ring_radius = 0.0f;
+            for (const auto& ring : cfg_.rings)
+                if (ring.rung == res_tier) { ring_radius = ring.radius; break; }
+            if (st.dist <= ring_radius + cfg_.hysteresis) tier = res_tier;
+        }
+    }
+    // Scatter bits only for now; assign_nested_masks() packs the variant once
+    // every level is final, because the edge mask depends on the neighbours.
+    st.desired_rung = tier;
+}
+
+void SectorStreamer::descend(
+    int level, int64_t tx, int64_t tz,
+    const std::unordered_map<uint64_t, char, KeyHash>& finer_resident) {
+    const float nd = tile_near_dist(level, tx, tz);
+
+    // A tile with anything of its own resident -- itself, or something finer
+    // under it -- is OCCUPIED, and every boundary it can cross gets hysteresis
+    // on the way out. Two boundaries matter and both churned without this: the
+    // split radius (below) and the reach (here). At the reach, a bare `nd >
+    // reach()` drops the outermost ring of tiles the instant the anchor drifts
+    // a metre outward and re-requests them when it drifts back -- the uniform
+    // path has always held that edge with `outer_r + hysteresis`.
+    const bool is_split =
+        finer_resident.find(nested_key(level, tx, tz)) != finer_resident.end();
+    bool self_resident = false;
+    {
+        auto it = sectors_.find(nested_key(level, tx, tz));
+        self_resident = it != sectors_.end() &&
+                        (it->second.resident_rung >= 0 ||
+                         it->second.inflight_rung >= 0);
+    }
+    const bool occupied = is_split || self_resident;
+    if (nd > reach() + (occupied ? cfg_.hysteresis : 0.0f)) return;
+    if (level == 0) { mark_desired(0, tx, tz); return; }
+
+    // Level-(L-1) tiles live inside this radius.
+    const float split_r = level_radius_[level - 1];
+    // Splitting is promotion and gets no hysteresis; merging back is demotion
+    // and does -- the same asymmetry the uniform path applies to rungs. A tile
+    // with finer residency under it is currently SPLIT, so the choice facing us
+    // is whether to merge; otherwise it is whether to split.
+    const float thresh = is_split ? split_r + cfg_.hysteresis : split_r;
+
+    if (nd <= thresh) {
+        // Hysteresis acts on the whole sibling quad, never on one child: a tile
+        // cannot be half-merged, so the four children are decided together.
+        for (int c = 0; c < 4; ++c)
+            descend(level - 1, 2 * tx + (c & 1), 2 * tz + (c >> 1),
+                    finer_resident);
+    } else {
+        mark_desired(level, tx, tz);
+    }
+}
+
+void SectorStreamer::restrict_levels() {
+    // Cardinal-adjacent desired tiles must differ by at most one level: that is
+    // the premise the edge-mask snap relies on, and the mesher has no wider
+    // stitch. Monotone (only splits, levels bounded), so the fixpoint is
+    // iteration-order independent, exactly like the uniform 2:1 balance pass.
+    //
+    // With the default band table this is a no-op by construction -- every
+    // annulus is wider than one tile of the coarser level -- but bands are
+    // authorable and hysteresis can locally hold a stale level, which is the
+    // same reason the uniform path keeps its balance pass.
+    for (int sweep = 0; sweep < 8; ++sweep) {
+        std::vector<std::pair<int, std::pair<int64_t, int64_t>>> to_split;
+        for (const auto& [k, st] : sectors_) {
+            if (st.desired_level < 1) continue;
+            int lvl; int64_t tx, tz;
+            nested_unkey(k, lvl, tx, tz);
+            const float S = level_size(lvl);
+            const float ox = float(tx) * S, oz = float(tz) * S;
+            const float out = 0.5f * cfg_.sector_size;   // just outside an edge
+            // The whole edge, not a midpoint sample: a lone over-fine
+            // neighbour against a long coarse edge is exactly the case that
+            // matters, and a midpoint probe would walk past it.
+            const int worst = std::min(
+                std::min(min_edge_level(true,  ox + S + out, oz, oz + S, lvl, lvl - 1),
+                         min_edge_level(true,  ox - out,     oz, oz + S, lvl, lvl - 1)),
+                std::min(min_edge_level(false, oz + S + out, ox, ox + S, lvl, lvl - 1),
+                         min_edge_level(false, oz - out,     ox, ox + S, lvl, lvl - 1)));
+            if (worst < lvl - 1) to_split.push_back({lvl, {tx, tz}});
+        }
+        if (to_split.empty()) return;
+        for (const auto& e : to_split) {
+            const int lvl = e.first;
+            const int64_t tx = e.second.first, tz = e.second.second;
+            auto it = sectors_.find(nested_key(lvl, tx, tz));
+            if (it != sectors_.end()) {
+                it->second.desired_level = -1;
+                it->second.desired_lod   = -1;
+                it->second.desired_rung  = -1;
+            }
+            for (int c = 0; c < 4; ++c)
+                mark_desired(lvl - 1, 2 * tx + (c & 1), 2 * tz + (c >> 1));
+        }
+    }
+}
+
+void SectorStreamer::assign_nested_masks() {
+    for (auto& [k, st] : sectors_) {
+        if (st.desired_level < 0) continue;
+        int lvl; int64_t tx, tz;
+        nested_unkey(k, lvl, tx, tz);
+        // A coarser neighbour spans this tile's WHOLE edge -- the tile's edge
+        // is half of the coarser tile's, because the grids nest -- so the
+        // question "is side n one level coarser" is a single lookup at the
+        // level-(L+1) tile that would contain that neighbour, and no half-edge
+        // mask bits are needed. Arithmetic shift, which is exact for negative
+        // tile indices (floor division, which is what nesting means here).
+        const int64_t ntx[4] = {(tx + 1) >> 1, (tx - 1) >> 1, tx >> 1, tx >> 1};
+        const int64_t ntz[4] = {tz >> 1, tz >> 1, (tz + 1) >> 1, (tz - 1) >> 1};
+        int mask = 0;
+        for (int n = 0; n < 4; ++n)
+            if (desired_at(lvl + 1, ntx[n], ntz[n])) mask |= 1 << n;
+        st.desired_rung = pack_variant(variant_scatter(st.desired_rung),
+                                       st.desired_lod, mask);
+    }
+}
+
+void SectorStreamer::update_nested(float anchor_x, float anchor_z) {
+    last_anchor_x_ = anchor_x;
+    last_anchor_z_ = anchor_z;
+
+    // "Is anything finer than level L resident under this tile?" -- answered by
+    // walking each resident tile's ancestors once (O(resident x levels)) rather
+    // than by a range query per descent node. Inflight counts as residency in
+    // the making: a tile whose children are being baked is already split.
+    std::unordered_map<uint64_t, char, KeyHash> finer_resident;
+    for (const auto& [k, st] : sectors_) {
+        if (st.resident_rung < 0 && st.inflight_rung < 0) continue;
+        int lvl; int64_t tx, tz;
+        nested_unkey(k, lvl, tx, tz);
+        for (int up = lvl + 1; up <= max_level(); ++up) {
+            const int sh = up - lvl;
+            finer_resident[nested_key(up, tx >> sh, tz >> sh)] = 1;
+        }
+    }
+
+    for (auto& [k, st] : sectors_) {
+        st.desired_rung  = -1;
+        st.desired_lod   = -1;
+        st.desired_level = -1;
+        if (st.cooldown > 0) --st.cooldown;
+        int lvl; int64_t tx, tz;
+        nested_unkey(k, lvl, tx, tz);
+        st.dist = tile_centre_dist(lvl, tx, tz);
+    }
+
+    // Descend the coarsest grid over the reach. This visits O(resident) nodes
+    // -- a few thousand -- where the uniform scan evaluates one distance per
+    // finest-grid cell over the whole disc (~100k at StreamMountain's reach).
+    const int   top    = max_level();
+    const float S      = level_size(top);
+    const float margin = reach() + cfg_.hysteresis;
+    const int64_t tx_min = int64_t(std::floor((anchor_x - margin) / S));
+    const int64_t tx_max = int64_t(std::floor((anchor_x + margin) / S));
+    const int64_t tz_min = int64_t(std::floor((anchor_z - margin) / S));
+    const int64_t tz_max = int64_t(std::floor((anchor_z + margin) / S));
+    for (int64_t tz = tz_min; tz <= tz_max; ++tz)
+        for (int64_t tx = tx_min; tx <= tx_max; ++tx)
+            descend(top, tx, tz, finer_resident);
+
+    restrict_levels();
+    assign_nested_masks();
+
+    // Evict and prune. A resident tile that is no longer desired has been
+    // SUPERSEDED -- its replacement at another level is desired right now --
+    // rather than merely fallen out of range, so it goes immediately. The
+    // merge hysteresis in descend() already made that decision; deferring it
+    // again here would leave a parent and its children both drawn.
+    std::vector<uint64_t> to_erase;
+    for (auto& [k, st] : sectors_) {
+        if (st.desired_rung >= 0) continue;
+        if (st.resident_rung >= 0) {
+            if (stream_no_evict()) continue;
+            int lvl; int64_t tx, tz;
+            nested_unkey(k, lvl, tx, tz);
+            evictions_.push_back({tx, tz, st.resident_rung});
+            if (st.inflight_rung >= 0) --inflight_;
+            to_erase.push_back(k);
+        } else if (st.inflight_rung < 0 && st.cooldown == 0) {
+            to_erase.push_back(k);
+        }
+    }
+    for (uint64_t k : to_erase) sectors_.erase(k);
+}
+
+// ---------------------------------------------------------------------------
 // update()
 // ---------------------------------------------------------------------------
 
 void SectorStreamer::update(float anchor_x, float anchor_z) {
+    if (cfg_.nested_sectors) { update_nested(anchor_x, anchor_z); return; }
+
     last_anchor_x_ = anchor_x;
     last_anchor_z_ = anchor_z;
 
@@ -291,7 +592,13 @@ bool SectorStreamer::next_request(SectorRequest& out) {
         if (st.desired_rung == st.resident_rung) continue; // satisfied
 
         const bool is_hole = (st.resident_rung < 0);
-        const float score = is_hole ? st.dist - cfg_.sector_size : st.dist;
+        // The hole bonus is one tile width, so in nested mode it is the tile's
+        // OWN width -- a 2 km level-5 hole should not outrank a 64 m one by the
+        // margin a level-0 width would give it.
+        const float width = cfg_.nested_sectors
+            ? level_size(st.desired_level < 0 ? 0 : st.desired_level)
+            : cfg_.sector_size;
+        const float score = is_hole ? st.dist - width : st.dist;
         if (score < best_score) {
             best_score = score;
             best_k = k;
@@ -302,8 +609,8 @@ bool SectorStreamer::next_request(SectorRequest& out) {
     if (!found) return false;
 
     auto& st = sectors_.at(best_k);
-    int64_t tx, tz;
-    unkey(best_k, tx, tz);
+    int level; int64_t tx, tz;
+    sunkey(best_k, level, tx, tz);
     out.tx   = tx;
     out.tz   = tz;
     out.rung = st.desired_rung;
@@ -317,7 +624,7 @@ bool SectorStreamer::next_request(SectorRequest& out) {
 // ---------------------------------------------------------------------------
 
 bool SectorStreamer::on_published(int64_t tx, int64_t tz, int rung) {
-    uint64_t k = key(tx, tz);
+    uint64_t k = key_for(tx, tz, rung);
     auto it = sectors_.find(k);
     if (it == sectors_.end()) {
         // Entry was erased (anchor moved on / clear()).
@@ -347,7 +654,7 @@ bool SectorStreamer::on_published(int64_t tx, int64_t tz, int rung) {
 // ---------------------------------------------------------------------------
 
 void SectorStreamer::on_failed(int64_t tx, int64_t tz, int rung) {
-    uint64_t k = key(tx, tz);
+    uint64_t k = key_for(tx, tz, rung);
     auto it = sectors_.find(k);
     if (it == sectors_.end()) return;
     auto& st = it->second;
@@ -362,7 +669,7 @@ bool SectorStreamer::cancel_request(
     int64_t tx,
     int64_t tz,
     int rung) noexcept {
-    const auto it = sectors_.find(key(tx, tz));
+    const auto it = sectors_.find(key_for(tx, tz, rung));
     if (it == sectors_.end() || it->second.inflight_rung != rung) {
         return false;
     }
@@ -400,8 +707,8 @@ bool SectorStreamer::commit_evictions(
 void SectorStreamer::clear() {
     for (auto& [k, st] : sectors_) {
         if (st.resident_rung >= 0) {
-            int64_t tx, tz;
-            unkey(k, tx, tz);
+            int level; int64_t tx, tz;
+            sunkey(k, level, tx, tz);
             evictions_.push_back({tx, tz, st.resident_rung});
         }
     }

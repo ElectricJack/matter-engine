@@ -32,6 +32,32 @@ constexpr int variant_scatter(int v)     { return variant_packed(v) ? (v & 0xF) 
 constexpr int variant_terrain_lod(int v) { return variant_packed(v) ? ((v >> 4) & 0x7) : 5; }
 constexpr int variant_edge_mask(int v)   { return variant_packed(v) ? ((v >> 7) & 0xF) : 0; }
 
+// ---------------------------------------------------------------------------
+// NESTED SECTOR LOD (docs/terrain-nested-sector-lod-2026-08-08.md)
+//
+// Level L has sector size S_0 << L and native voxel 2 << L (mesher rung -L), so
+// cells-per-tile is constant and each level's annulus holds a near-constant
+// tile count -- instead of the uniform grid's O(R^2), where the two coarsest
+// bands hold 78% of 78k sectors and draw one to four quads apiece.
+//
+// LEVEL NEEDS NO NEW VARIANT BITS. While cells-per-tile is constant, level is a
+// pure function of the terrain LOD the variant already carries:
+//
+//     level = 5 - terrain_lod        size = S_0 << level
+//
+// so SectorKey, sector_instance_id, same_publication_tag and the whole
+// coordinator keep treating the packed value as an opaque identity, and a
+// legacy bare rung still decodes to level 0 at S_0. Bits 12-14 are reserved
+// for the day level and voxel rung decouple; they do not in this design,
+// because constant cells-per-tile IS the design.
+//
+// Two tiles at different levels can share numeric (tx, tz) -- the level makes
+// them distinct, and it is inside the compared value.
+constexpr int kMaxLevel = 5;
+constexpr int variant_level(int v) {
+    return kMaxLevel - variant_terrain_lod(v);
+}
+
 struct Config {
     float sector_size = 16.0f;
     // Innermost first. A sector's desired rung = the rung of the first ring
@@ -51,6 +77,25 @@ struct Config {
     // the packed variant carries the four-bit coarser-neighbor edge mask.
     bool terrain_lod_enabled = false;
     std::vector<Ring> terrain_bands;   // radius -> terrain LOD when enabled
+
+    // Nested sector LOD. Off by default: the uniform-grid path below runs
+    // byte-for-byte as it always has, and that is the rollback position.
+    //
+    // On, `terrain_bands` is REINTERPRETED rather than replaced: the band with
+    // LOD l is the annulus where level (5 - l) tiles live, so the same authored
+    // table and the same tuning UI drive both modes. Two further rules follow
+    // from nesting and are documented here because they change what an existing
+    // world's numbers mean:
+    //
+    //   * the outermost terrain BAND bounds residency, not the outermost
+    //     scatter ring. Today a sector past the last ring is never requested no
+    //     matter what the bands say -- the trap StreamMountain's own comment
+    //     documents ("the world simply stopped about 1 km out"). Rings become
+    //     scatter-tier-only.
+    //   * a tile is desired if any part of it is within reach (the coverage
+    //     rule), not if its centre is. That is what makes the desired set a
+    //     hole-free quadtree.
+    bool nested_sectors = false;
 };
 
 // Fill Config::terrain_bands with the default radial profile (scaled by
@@ -115,6 +160,7 @@ private:
         int   inflight_rung = -1;   // -1 = no request outstanding
         int   desired_rung  = -1;   // recomputed each update(); -1 = not desired
         int   desired_lod   = -1;   // transient terrain LOD during update()
+        int   desired_level = -1;   // transient nesting level during update()
         float dist          = 0.0f; // anchor distance at last update
         int   cooldown      = 0;    // updates remaining before re-request allowed
     };
@@ -127,6 +173,41 @@ private:
     static void unkey(uint64_t k, int64_t& tx, int64_t& tz) {
         tx = int64_t(int32_t(uint32_t(k >> 32)));
         tz = int64_t(int32_t(uint32_t(k & 0xFFFFFFFFu)));
+    }
+
+    // Nested key: 4 bits level, then 30 bits each of tx/tz -- +-2^29 tiles per
+    // axis, which is +-34,000 km at a 64 m level 0. The two-axis pack above
+    // cannot carry a level, and the two modes never share a streamer instance,
+    // so the pair below dispatches on the flag rather than trying to unify.
+    static uint64_t nested_key(int level, int64_t tx, int64_t tz) {
+        return (uint64_t(uint32_t(level) & 0xFu) << 60) |
+               ((uint64_t(tx) & 0x3FFFFFFFull) << 30) |
+               (uint64_t(tz) & 0x3FFFFFFFull);
+    }
+    static void nested_unkey(uint64_t k, int& level, int64_t& tx, int64_t& tz) {
+        level = int((k >> 60) & 0xFu);
+        const auto sext30 = [](uint64_t v) -> int64_t {
+            int64_t s = int64_t(v & 0x3FFFFFFFull);
+            return (s & 0x20000000ll) ? s - 0x40000000ll : s;
+        };
+        tx = sext30(k >> 30);
+        tz = sext30(k);
+    }
+    uint64_t skey(int level, int64_t tx, int64_t tz) const {
+        return cfg_.nested_sectors ? nested_key(level, tx, tz) : key(tx, tz);
+    }
+    void sunkey(uint64_t k, int& level, int64_t& tx, int64_t& tz) const {
+        if (cfg_.nested_sectors) { nested_unkey(k, level, tx, tz); return; }
+        level = 0;
+        unkey(k, tx, tz);
+    }
+    // The key an EXTERNAL (tx, tz, rung) triple names. This is why level needs
+    // no place in SectorRequest/Eviction: it is already inside the packed
+    // variant, so a publish or a failure finds its own entry with no new field
+    // and no coordinator change.
+    uint64_t key_for(int64_t tx, int64_t tz, int rung) const {
+        return cfg_.nested_sectors ? nested_key(variant_level(rung), tx, tz)
+                                   : key(tx, tz);
     }
 
     struct KeyHash {
@@ -149,6 +230,65 @@ private:
     // lookup with demotion hysteresis, 2:1 balance relaxation, edge masks,
     // then repack every desired_rung as a variant.
     void assign_terrain_lods();
+
+    // ---- nested mode ------------------------------------------------------
+    // Outer radius per level, index = level, built from terrain_bands in the
+    // constructor (band LOD l -> level 5 - l). Empty when nesting is off.
+    std::vector<float> level_radius_;
+    int   max_level() const {
+        return level_radius_.empty() ? 0 : int(level_radius_.size()) - 1;
+    }
+    float reach() const {
+        return level_radius_.empty() ? 0.0f : level_radius_.back();
+    }
+    float level_size(int level) const {
+        return cfg_.sector_size * float(1 << level);
+    }
+    // Anchor to tile centre, and anchor to the tile's NEAREST point. The split
+    // test uses the nearest point (a tile splits if any of it is close enough),
+    // which is what makes the desired set a coverage-rule quadtree; everything
+    // that ranks or bands a tile as a whole uses the centre.
+    float tile_centre_dist(int level, int64_t tx, int64_t tz) const;
+    float tile_near_dist(int level, int64_t tx, int64_t tz) const;
+    // The scatter tier for a tile centre. In nested mode the rings no longer
+    // bound residency, so past the last ring this clamps to the coarsest tier
+    // instead of returning "not desired".
+    int nested_scatter_tier(float centre_dist) const;
+    // Which level is desired at a world point right now, or -1. Exactly one
+    // level covers any point (coverage rule), so this walks 0..max_level.
+    int desired_level_at(float wx, float wz) const;
+    bool desired_at(int level, int64_t tx, int64_t tz) const {
+        auto it = sectors_.find(nested_key(level, tx, tz));
+        return it != sectors_.end() && it->second.desired_level == level;
+    }
+    // The finest level found along one edge, by recursive halving. A neighbour
+    // at or above a segment's own level covers that whole segment (grids nest),
+    // so a well-formed ladder costs ONE probe per side; only where the far side
+    // is genuinely finer does this subdivide, and it stops as soon as it finds
+    // a level low enough to be a violation. Probing the edge at the finest tile
+    // pitch instead -- the obvious implementation -- costs 2^level probes per
+    // side and made update() the most expensive thing in the streamer.
+    int min_edge_level(bool vary_z, float fixed, float t0, float t1,
+                       int seg_level, int stop_below) const;
+
+    void update_nested(float anchor_x, float anchor_z);
+    // Quadtree descent: mark (level, tx, tz) desired or recurse into its four
+    // children. `finer_resident` holds the ancestors of every resident tile, so
+    // a tile that is currently SPLIT can be told apart from one that is not --
+    // which is the difference between promotion (no hysteresis) and a merge
+    // (hysteresis), exactly as the uniform path distinguishes them.
+    void descend(int level, int64_t tx, int64_t tz,
+                 const std::unordered_map<uint64_t, char, KeyHash>& finer_resident);
+    void mark_desired(int level, int64_t tx, int64_t tz);
+    // Cardinal-adjacent desired tiles must differ by at most one level. Splits
+    // the coarser side to a fixpoint; a no-op for band tables whose every
+    // annulus is wider than one tile of the coarser level, which the default
+    // profile satisfies by construction.
+    void restrict_levels();
+    // Bit n iff the cardinal neighbour on side n is exactly one level coarser.
+    // A tile's whole edge abuts exactly one coarser tile (grids nest), so four
+    // bits still suffice and no half-edge generalisation is needed.
+    void assign_nested_masks();
 };
 
 } // namespace matter_stream
