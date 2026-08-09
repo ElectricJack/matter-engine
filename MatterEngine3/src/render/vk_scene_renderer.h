@@ -1006,6 +1006,11 @@ public:
     uint32_t cloud_shadow_active_ping(uint32_t level) const;
     const std::string& cloud_shadow_allocation_error() const;
     void set_fail_next_cloud_shadow_bundle_creation_for_test(bool enabled);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    void set_fail_next_environment_flush_for_test(bool enabled) {
+        test_fail_next_environment_flush_ = enabled;
+    }
+#endif
     bool cloud_shadow_failed_candidate_destroyed_for_test() const;
     size_t cloud_shadow_retired_bundle_count_for_test() const;
     bool cloud_shadow_environment_bindings_match_for_test() const;
@@ -1781,7 +1786,8 @@ private:
     void probe_skin_raster_draws(
         const std::vector<VkSkinRasterDraw>& draws) const;
     void update_composite_descriptor(FrameResources& frame);
-    void update_environment_descriptor(FrameResources& frame);
+    bool update_environment_descriptor(FrameResources& frame,
+                                       std::string& error);
     void update_display_descriptor(VkDescriptorSet set, VkImageView view);
     bool upload_scene_buffers(FrameResources& frame,
                               VkCommandBuffer material_command_buffer,
@@ -2469,6 +2475,7 @@ private:
     uint32_t test_fail_after_skin_uploads_ =
         std::numeric_limits<uint32_t>::max();
     bool test_fail_animation_bounds_upload_once_ = false;
+    bool test_fail_next_environment_flush_ = false;
 #endif
 };
 

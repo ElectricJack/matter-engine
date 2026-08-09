@@ -3,7 +3,7 @@
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(r16f, set = 0, binding = 0) uniform readonly image3D cloud_density;
-layout(r16f, set = 0, binding = 2) uniform writeonly image3D cumulative_out;
+layout(r16f, set = 0, binding = 2) uniform image3D cumulative_out;
 layout(std140, set = 0, binding = 4) uniform GenerationConstants {
     mat4 current_uvw_to_world;
     mat4 previous_world_to_uvw;
@@ -44,6 +44,10 @@ bool previous_column_out_of_bounds(uvec2 column) {
 bool selected(uvec2 column) {
     if (pc.scheduling.w <= 0.5 || previous_column_out_of_bounds(column))
         return true;
+    for (uint z = 0u; z < pc.dimensions_level.z; ++z) {
+        float tau = imageLoad(cumulative_out, ivec3(column, z)).r;
+        if (tau < 0.0 || isnan(tau) || isinf(tau)) return true;
+    }
     float fraction = clamp(pc.scheduling.x, 0.0625, 1.0);
     uint phase_count = uint(round(1.0 / fraction));
     phase_count = clamp(phase_count, 1u, 16u);
@@ -56,12 +60,13 @@ void main() {
     if (any(greaterThanEqual(column, pc.dimensions_level.xy)) ||
         !selected(column)) return;
     float tau = 0.0;
-    for (uint z = 0u; z < pc.dimensions_level.z; ++z) {
-        float sigma = imageLoad(cloud_density, ivec3(column, z)).r;
+    for (int z = int(pc.dimensions_level.z) - 1; z >= 0; --z) {
+        float sigma = imageLoad(cloud_density,
+                                ivec3(ivec2(column), z)).r;
         if (isnan(sigma) || isinf(sigma)) sigma = 0.0;
         tau = clamp(tau + max(sigma, 0.0) * pc.scheduling.z, 0.0, 80.0);
         if (isnan(tau) || isinf(tau)) tau = 0.0;
-        imageStore(cumulative_out, ivec3(column, z),
+        imageStore(cumulative_out, ivec3(ivec2(column), z),
                    vec4(tau, 0.0, 0.0, 0.0));
     }
 }

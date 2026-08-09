@@ -7,6 +7,7 @@
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(r16f, set = 0, binding = 0) uniform writeonly image3D cloud_density;
+layout(r16f, set = 0, binding = 2) uniform readonly image3D cumulative_out;
 layout(std430, set = 0, binding = 3) readonly buffer CloudSSBO {
     GpuCloudLayer cloud_layers[];
 };
@@ -50,6 +51,10 @@ bool previous_column_out_of_bounds(uvec2 column) {
 bool selected(uvec2 column) {
     if (pc.scheduling.w <= 0.5 || previous_column_out_of_bounds(column))
         return true;
+    for (uint z = 0u; z < pc.dimensions_level.z; ++z) {
+        float tau = imageLoad(cumulative_out, ivec3(column, z)).r;
+        if (tau < 0.0 || isnan(tau) || isinf(tau)) return true;
+    }
     float fraction = clamp(pc.scheduling.x, 0.0625, 1.0);
     uint phase_count = uint(round(1.0 / fraction));
     phase_count = clamp(phase_count, 1u, 16u);
@@ -63,11 +68,16 @@ void main() {
         !selected(column)) return;
     for (uint z = 0u; z < pc.dimensions_level.z; ++z) {
         float sigma = 0.0;
-        if (pc.controls.y != 0u) {
+        if (pc.controls.y == 1u) {
             sigma = ((tile_hash(column) & 1u) == 0u)
                 ? pc.density_override.x : pc.density_override.y;
             if (int(z) == int(pc.controls.z))
                 sigma = uintBitsToFloat(0x7fc00000u);
+        } else if (pc.controls.y == 2u) {
+            if (z == uint(pc.density_override.z))
+                sigma += pc.density_override.x;
+            if (z == uint(pc.density_override.w))
+                sigma += pc.density_override.y;
         } else {
             vec3 uvw = (vec3(column, z) + vec3(0.5)) /
                        vec3(pc.dimensions_level.xyz);

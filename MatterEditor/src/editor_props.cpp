@@ -634,7 +634,7 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
              "\"LOD levels\" view. Forced off, and reported as such, on "
              "devices without VkPhysicalDeviceFeatures::fillModeNonSolid."),
     prop(&ViewerStats::vol_debug_view, "vol_debug_view")
-        .label("Volumetric view").enums(kVolDebugLabels, 5)
+        .label("Volumetric view").enums(kVolDebugLabels, 6)
         .doc("Only meaningful while volumetrics are enabled."));
 
 // ---- render.gpu ----------------------------------------------------------

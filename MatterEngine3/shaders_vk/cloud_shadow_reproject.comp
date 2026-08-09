@@ -28,8 +28,12 @@ void main() {
     bool inside = pc.scheduling.w > 0.5 && finite3(previous_uvw) &&
                   all(greaterThanEqual(previous_uvw, vec3(0.0))) &&
                   all(lessThan(previous_uvw, vec3(1.0)));
-    float tau = inside ? texture(previous_cumulative, previous_uvw).r : 0.0;
-    if (isnan(tau) || isinf(tau)) tau = 0.0;
+    float tau = inside ? texture(previous_cumulative, previous_uvw).r : -1.0;
+    // Negative is a transient invalid-history marker. Density/integration
+    // consume it in this command buffer and replace the entire affected XY
+    // column before cumulative_out is published as sampled history.
+    if (isnan(tau) || isinf(tau)) tau = -1.0;
     imageStore(cumulative_out, ivec3(voxel),
-               vec4(clamp(tau, 0.0, 80.0), 0.0, 0.0, 0.0));
+               vec4(tau < 0.0 ? -1.0 : clamp(tau, 0.0, 80.0),
+                    0.0, 0.0, 0.0));
 }

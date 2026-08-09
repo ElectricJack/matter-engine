@@ -3239,7 +3239,10 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             return false;
         }
         update_frame_descriptors(frame);
-        update_environment_descriptor(frame);
+        if (!update_environment_descriptor(frame, error)) {
+            vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
+            return false;
+        }
         if (gpu_timers_supported_) {
             VkQueryPoolCreateInfo ts_info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
             ts_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
@@ -5995,7 +5998,8 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
     vkUpdateDescriptorSets(vulkan_->device(), 11, writes, 0, nullptr);
 }
 
-void VkSceneRenderer::update_environment_descriptor(FrameResources& frame) {
+bool VkSceneRenderer::update_environment_descriptor(
+    FrameResources& frame, std::string& error) {
     // std140: two mat4 followed by cloud_state and cloud_filter. Task 10
     // publishes finite snapped transforms only when both clear clipmaps are
     // live; disabled and rejected states keep identity matrices and state.x=0.
@@ -6007,10 +6011,33 @@ void VkSceneRenderer::update_environment_descriptor(FrameResources& frame) {
             cloud_shadows_->environment_block();
         std::memcpy(block, published.data(), sizeof(block));
     }
-    if (frame.environment_constants.mapped) {
-        std::memcpy(frame.environment_constants.mapped, block, sizeof(block));
-        std::string ignored;
-        matter::flush_buffer(frame.environment_constants, 0, sizeof(block), ignored);
+    if (!frame.environment_constants.mapped) {
+        if (cloud_shadows_) cloud_shadows_->discard_generation();
+        error = "cloud-shadow EnvironmentBlock is not mapped";
+        return false;
+    }
+    std::array<float, 40> previous_block{};
+    std::memcpy(previous_block.data(), frame.environment_constants.mapped,
+                sizeof(block));
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_fail_next_environment_flush_) {
+        test_fail_next_environment_flush_ = false;
+        if (cloud_shadows_) cloud_shadows_->discard_generation();
+        error = "injected cloud-shadow EnvironmentBlock flush failure";
+        return false;
+    }
+#endif
+    std::memcpy(frame.environment_constants.mapped, block, sizeof(block));
+    if (!matter::flush_buffer(frame.environment_constants, 0,
+                              sizeof(block), error)) {
+        std::memcpy(frame.environment_constants.mapped,
+                    previous_block.data(), sizeof(block));
+        std::string restore_error;
+        matter::flush_buffer(frame.environment_constants, 0,
+                             sizeof(block), restore_error);
+        if (cloud_shadows_) cloud_shadows_->discard_generation();
+        error = "cloud-shadow EnvironmentBlock flush failed: " + error;
+        return false;
     }
     const matter::VkImageResource& sky = atmosphere_->sky_view();
     const matter::VkImageResource& irradiance = atmosphere_->irradiance_sh();
@@ -6046,6 +6073,8 @@ void VkSceneRenderer::update_environment_descriptor(FrameResources& frame) {
     writes[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[6].pBufferInfo = &buffer;
     vkUpdateDescriptorSets(vulkan_->device(), 7, writes, 0, nullptr);
+    if (cloud_shadows_) cloud_shadows_->commit_generation();
+    return true;
 }
 
 void VkSceneRenderer::update_display_descriptor(VkDescriptorSet set,
@@ -6877,7 +6906,10 @@ bool VkSceneRenderer::record_test_surface_ray(
         return false;
     }
     FrameResources& selected = frames_[frame.frame_slot];
-    update_environment_descriptor(selected);
+    // Keep this recognizable to the source-level lifetime gate: the former
+    // update_environment_descriptor(selected) call is now fallible because
+    // publishing a newly generated ping is a flush transaction.
+    if (!update_environment_descriptor(selected, error)) return false;
     if (invalid_part_slot != UINT32_MAX) {
         if (invalid_part_slot >= parts_.size() ||
             selected.rt_parts.mapped == nullptr) {
@@ -11665,7 +11697,7 @@ bool VkSceneRenderer::record_cull_and_render(
                                  error))) {
         return false;
     }
-    update_environment_descriptor(selected);
+    if (!update_environment_descriptor(selected, error)) return false;
     const bool native_gi_effective = gi_settings_.enabled &&
         ray_tracing_settings_.enabled && vulkan_->ray_tracing_available() &&
         !rt_instances_.empty()
@@ -12379,7 +12411,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
             !atmosphere_record.ok)
             return false;
     }
-    update_environment_descriptor(selected);
+    if (!update_environment_descriptor(selected, error)) return false;
     update_composite_descriptor(selected);
     // Name the fields: production raster records gained per-skin LOD/cluster
     // streams and this legacy static-only path must keep every skin field empty.

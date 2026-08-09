@@ -23,6 +23,12 @@ struct ReadTauRecord {
     uint32_t x = 0, y = 0, z = 0;
 };
 
+struct WriteTauRecord {
+    matter::VkImageResource* image = nullptr;
+    VkBuffer source = VK_NULL_HANDLE;
+    uint32_t x = 0, y = 0, z = 0;
+};
+
 struct GenerationRecord {
     VkCloudShadows* shadows = nullptr;
     float frame_time = 0.0f;
@@ -165,6 +171,31 @@ void record_read_tau(VkCommandBuffer command_buffer, void* user_data) {
     matter::record_image_transition(
         command_buffer, *record.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+}
+
+void record_write_tau(VkCommandBuffer command_buffer, void* user_data) {
+    const auto& record = *static_cast<WriteTauRecord*>(user_data);
+    matter::record_image_transition(
+        command_buffer, *record.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT);
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageOffset = {static_cast<int32_t>(record.x),
+                          static_cast<int32_t>(record.y),
+                          static_cast<int32_t>(record.z)};
+    region.imageExtent = {1, 1, 1};
+    vkCmdCopyBufferToImage(command_buffer, record.source, record.image->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    matter::record_image_transition(
+        command_buffer, *record.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
             VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
@@ -546,6 +577,7 @@ bool VkCloudShadows::prepare_frame(
         error = "cloud-shadow descriptor frame slot is out of range";
         return false;
     }
+    if (generation_pending_) discard_generation();
     collect_retired(frame_slot);
     prepared_frame_slot_ = frame_slot;
     last_generation_dispatch_count_ = 0;
@@ -646,6 +678,10 @@ bool VkCloudShadows::record(VkCommandBuffer command_buffer, float frame_time,
         constants.controls[3] = cloud_layer_count_;
         constants.density_override[0] = density_override_even_sigma_;
         constants.density_override[1] = density_override_odd_sigma_;
+        constants.density_override[2] =
+            static_cast<float>(density_override_sunward_slice_);
+        constants.density_override[3] =
+            static_cast<float>(density_override_receiverward_slice_);
         auto& constant_buffer =
             level.generation_constants[prepared_frame_slot_];
         std::memcpy(constant_buffer.mapped, &constants, sizeof(constants));
@@ -721,13 +757,26 @@ bool VkCloudShadows::record(VkCommandBuffer command_buffer, float frame_time,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
     }
+    generation_pending_ = true;
+    return true;
+}
+
+void VkCloudShadows::commit_generation() {
+    if (!generation_pending_) return;
     for (auto& level : active_levels_) {
         level.active_index ^= 1u;
         level.history_valid = true;
     }
     force_history_invalidation_ = false;
+    generation_pending_ = false;
     ++frame_index_;
-    return true;
+}
+
+void VkCloudShadows::discard_generation() {
+    if (!generation_pending_) return;
+    generation_pending_ = false;
+    for (auto& level : active_levels_) level.history_valid = false;
+    force_history_invalidation_ = true;
 }
 
 const CloudShadowLevelBundle& VkCloudShadows::level(uint32_t index) const {
@@ -770,8 +819,10 @@ std::array<float, 40> VkCloudShadows::environment_block() const {
                     source.m[row * 4 + column];
     }
     block[32] = 1.0f;
-    block[33] = static_cast<float>(active_levels_[0].active_index);
-    block[34] = static_cast<float>(active_levels_[1].active_index);
+    block[33] = static_cast<float>(active_levels_[0].active_index ^
+                                   (generation_pending_ ? 1u : 0u));
+    block[34] = static_cast<float>(active_levels_[1].active_index ^
+                                   (generation_pending_ ? 1u : 0u));
     block[36] = active_levels_[0].current_frame.voxel_xy_m;
     block[37] = active_levels_[1].current_frame.voxel_xy_m;
     block[38] = sun_angular_radius_;
@@ -825,6 +876,26 @@ void VkCloudShadows::set_density_override_for_test(
     if (invalidate_history) force_history_invalidation_ = true;
 }
 
+void VkCloudShadows::set_density_layers_for_test(
+    uint32_t sunward_slice, float sunward_sigma,
+    uint32_t receiverward_slice, float receiverward_sigma,
+    bool invalidate_history) {
+    density_override_mode_ = 2;
+    density_override_even_sigma_ = sunward_sigma;
+    density_override_odd_sigma_ = receiverward_sigma;
+    density_override_sunward_slice_ = sunward_slice;
+    density_override_receiverward_slice_ = receiverward_slice;
+    density_override_nan_slice_ = -1;
+    if (invalidate_history) force_history_invalidation_ = true;
+}
+
+void VkCloudShadows::clear_density_override_for_test(
+    bool invalidate_history) {
+    density_override_mode_ = 0;
+    density_override_nan_slice_ = -1;
+    if (invalidate_history) force_history_invalidation_ = true;
+}
+
 bool VkCloudShadows::generate_for_test(
     uint32_t frame_slot, const matter::Float3& camera,
     const matter::Float3& sun_direction, float frame_time,
@@ -854,11 +925,16 @@ bool VkCloudShadows::generate_for_test(
     if (!matter::submit_immediate(
             *vulkan_, callback, &request, error,
             matter::ImmediateSubmitPhase::staging_upload,
-            std::move(lifetimes))) return false;
+            std::move(lifetimes))) {
+        discard_generation();
+        return false;
+    }
     if (!request.ok) {
+        discard_generation();
         error = request.error;
         return false;
     }
+    commit_generation();
     return true;
 }
 
@@ -898,6 +974,35 @@ bool VkCloudShadows::readback_cumulative_voxel_for_test(
     }
     return readback_voxel(active_levels_[level_index].cumulative[ping],
                           x, y, z, value, raw, error);
+}
+
+bool VkCloudShadows::write_cumulative_raw_for_test(
+    uint32_t level_index, uint32_t ping, uint32_t x, uint32_t y, uint32_t z,
+    uint16_t raw, std::string& error) {
+    error.clear();
+    if (!active_ || level_index >= 2 || ping >= 2) {
+        error = "cloud-shadow cumulative write selection is invalid";
+        return false;
+    }
+    auto& image = active_levels_[level_index].cumulative[ping];
+    if (x >= image.extent.width || y >= image.extent.height ||
+        z >= image.extent.depth) {
+        error = "cloud-shadow cumulative write voxel is out of bounds";
+        return false;
+    }
+    matter::VkBufferResource upload;
+    if (!matter::create_buffer(
+            *vulkan_, sizeof(raw), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, upload, error) ||
+        !matter::map_buffer(upload, error)) return false;
+    std::memcpy(upload.mapped, &raw, sizeof(raw));
+    if (!matter::flush_buffer(upload, 0, sizeof(raw), error)) return false;
+    WriteTauRecord request{&image, upload.buffer, x, y, z};
+    return matter::submit_immediate(
+        *vulkan_, record_write_tau, &request, error,
+        matter::ImmediateSubmitPhase::staging_upload,
+        {image.lifetime, upload.lifetime});
 }
 
 void VkCloudShadows::append_frame_lifetimes(

@@ -40,6 +40,35 @@ capture() {
   echo "ERROR: screenshot timed out: $png" >&2
   exit 1
 }
+SETTLE_SEQUENCE=0
+wait_for_streaming_settle() {
+  local previous="" stable=0 probe label row count
+  SETTLE_SEQUENCE=$((SETTLE_SEQUENCE + 1))
+  for probe in $(seq 1 30); do
+    label="settle_${SETTLE_SEQUENCE}_${probe}"
+    send "stats $label"
+    for _ in $(seq 1 20); do
+      grep -q "^STATS,$label," "$LOG" 2>/dev/null && break
+      sleep 0.25
+    done
+    row="$(grep "^STATS,$label," "$LOG" 2>/dev/null | tail -n 1 || true)"
+    # Field 8 is the depth-producing streamed draw count (the first two CSV
+    # fields are the STATS tag and label). Field 7 includes VT
+    # refinement variants and may keep rising after the receiver geometry is
+    # complete, which is irrelevant to this grayscale depth/debug pass.
+    count="$(printf '%s\n' "$row" | cut -d, -f8)"
+    if [ -n "$count" ] && [ "$count" = "$previous" ]; then
+      stable=$((stable + 1))
+    else
+      stable=0
+    fi
+    previous="$count"
+    [ "$stable" -ge 3 ] && return 0
+    sleep 3
+  done
+  echo "ERROR: streaming did not settle for cloud-shadow capture" >&2
+  return 1
+}
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE/../../MatterEditor"
@@ -83,7 +112,7 @@ trap cleanup EXIT INT TERM
 
 WORLD="${MATTER_WORLD:-StreamMountain}"
 FROXEL_PERF_WARMUP_SECONDS=140
-CLOUD_SHADOW_PERF_WARMUP_SECONDS=90
+CLOUD_SHADOW_PERF_WARMUP_SECONDS=180
 PERF_WARMUP_SECONDS="${MATTER_PERF_WARMUP_SECONDS:-20}"
 # The one-process froxel lane spends 25 seconds on the matrix, then settles
 # and captures four representatives.  Do not let the editor's perf timer end
@@ -437,6 +466,14 @@ case "$SUITE" in
     send "set render.lighting.sun_elevation_deg 45"
     send "set render.lighting.exposure_ev 0"
     send "set viewer.debug.vol_debug_view 5"
+    # Pin a readable physical extinction range for the diagnostic itself.
+    # StreamMountain's authored 0.02 /m deck intentionally saturates long
+    # sunward paths; 0.004 /m keeps the same cloud field and exact exp(-tau)
+    # visualization while exposing temporal strips and near/far seams.
+    send "set render.clouds.layer0_enabled true"
+    send "set render.clouds.layer0_max_density 0.004"
+    send "get render.clouds.layer0_enabled"
+    send "get render.clouds.layer0_max_density"
     for layer in 0 1 2 3; do
       send "set render.clouds.layer${layer}_wind 0,0,0"
       send "get render.clouds.layer${layer}_wind"
@@ -456,7 +493,10 @@ case "$SUITE" in
       viewer.debug.vol_debug_view; do
       send "get $property"
     done
-    send "cam 20 760 350 0 420 0"
+    # Look through the deck at depth-covered valley receivers below its top;
+    # the former summit framing put nearly every receiver above the clouds and
+    # therefore (correctly but uselessly) displayed uniform clear white.
+    send "cam 20 450 350 0 150 0"
     for _ in $(seq 1 300); do
       grep -q 'bake-timing.*world-kind' "$LOG" 2>/dev/null && break
       sleep 1
@@ -465,15 +505,16 @@ case "$SUITE" in
       echo "ERROR: StreamMountain sectors did not publish" >&2
       exit 1
     }
-    sleep 5
+    wait_for_streaming_settle
     capture centered
-    send "cam 650 760 350 630 420 0"
-    sleep 4
+    send "cam 650 450 350 630 150 0"
+    wait_for_streaming_settle
     capture translated
-    send "cam 850 760 350 830 420 0"
-    sleep 4
+    send "cam 850 450 350 830 150 0"
+    wait_for_streaming_settle
     capture boundary
-    send "cam 20 760 350 0 420 0"
+    send "cam 20 450 350 0 150 0"
+    wait_for_streaming_settle
     send "set render.clouds.layer0_wind 25,0,0"
     send "get render.clouds.layer0_wind"
     for frame in 0 1 2 3; do
@@ -496,19 +537,31 @@ case "$SUITE" in
     }
     DIFF_LOG="$OUT/${LABEL}_diffs.log"
     : > "$DIFF_LOG"
-    for pair in "centered translated" "moving_0 moving_1" \
-                "moving_1 moving_2" "moving_2 moving_3"; do
+    for pair in "centered translated 85 15 64" \
+                "moving_0 moving_1 70 10 64" \
+                "moving_1 moving_2 70 10 64" \
+                "moving_2 moving_3 70 10 64"; do
       set -- $pair
       a="$OUT/${LABEL}_$1.png"; b="$OUT/${LABEL}_$2.png"
+      diff_limit="$3"; mean_limit="$4"; channel_limit="$5"
       "$IMAGE_PYTHON" "$HERE/img_diff.py" "$a" "$b" \
-        --max-diff-pct 100 | tee -a "$DIFF_LOG"
-      "$IMAGE_PYTHON" - "$a" "$b" <<'PY' | tee -a "$DIFF_LOG"
+        --max-diff-pct "$diff_limit" | tee -a "$DIFF_LOG"
+      "$IMAGE_PYTHON" - "$a" "$b" "$mean_limit" "$channel_limit" <<'PY' | tee -a "$DIFF_LOG"
 from PIL import Image
 import sys
 a = Image.open(sys.argv[1]).convert("RGB")
 b = Image.open(sys.argv[2]).convert("RGB")
 d = [abs(x-y) for x,y in zip(a.tobytes(), b.tobytes())]
-print(f"MEAN_MAX {sys.argv[1]} {sys.argv[2]} mean={sum(d)/len(d):.4f} max={max(d)}")
+mean = sum(d) / len(d)
+peak = max(d)
+mean_limit = float(sys.argv[3])
+peak_limit = int(sys.argv[4])
+print(f"MEAN_MAX {sys.argv[1]} {sys.argv[2]} mean={mean:.4f} max={peak} limits={mean_limit:.1f}/{peak_limit}")
+if mean < 0.01:
+    raise SystemExit("ERROR: adjacent cloud-shadow frames did not change")
+if mean > mean_limit or peak > peak_limit:
+    raise SystemExit("ERROR: cloud-shadow seam/flash metric exceeded")
+print("METRIC PASS")
 PY
     done
     for _ in $(seq 1 $((CLOUD_SHADOW_PERF_WARMUP_SECONDS + 30))); do

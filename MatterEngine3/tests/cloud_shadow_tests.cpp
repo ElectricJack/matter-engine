@@ -233,11 +233,12 @@ void test_task11_prefix_integrates_sunward_density_fail_closed() {
     const auto slab_tau = viewer::cloud_shadow_prefix_integrate(slab, 10.0f);
     bool slab_ok = true;
     for (size_t z = 0; z < slab_tau.size(); ++z) {
-        const float expected_tau = static_cast<float>(z + 1u) * 0.2f;
+        const float expected_tau =
+            static_cast<float>(slab_tau.size() - z) * 0.2f;
         const float transmittance = std::exp(-slab_tau[z]);
         slab_ok = slab_ok &&
             std::fabs(slab_tau[z] - expected_tau) < 1.0e-6f &&
-            (z == 0 || slab_tau[z] >= slab_tau[z - 1]) &&
+            (z == 0 || slab_tau[z] <= slab_tau[z - 1]) &&
             std::fabs(transmittance - std::exp(-expected_tau)) < 0.01f &&
             transmittance >= 0.0f && transmittance <= 1.0f;
     }
@@ -249,20 +250,32 @@ void test_task11_prefix_integrates_sunward_density_fail_closed() {
                                           0.02f, 0.02f, 0.02f}};
     const auto punctured_tau =
         viewer::cloud_shadow_prefix_integrate(punctured, 10.0f);
-    CHECK(std::fabs(punctured_tau[0] - 0.2f) < 1.0e-6f &&
-              std::fabs(punctured_tau[1] - 0.4f) < 1.0e-6f &&
-              std::fabs(punctured_tau[2] - 0.4f) < 1.0e-6f &&
-              std::fabs(punctured_tau[5] - 1.0f) < 1.0e-6f,
+    CHECK(std::fabs(punctured_tau[0] - 1.0f) < 1.0e-6f &&
+              std::fabs(punctured_tau[1] - 0.8f) < 1.0e-6f &&
+              std::fabs(punctured_tau[2] - 0.6f) < 1.0e-6f &&
+              std::fabs(punctured_tau[5] - 0.2f) < 1.0e-6f,
           "a non-finite density sample contributes zero without blacking later slices");
 
     const std::array<float, 5> separated{{0.03f, 0.0f, 0.0f, 0.02f, 0.0f}};
     const auto separated_tau =
         viewer::cloud_shadow_prefix_integrate(separated, 10.0f);
-    CHECK(std::fabs(separated_tau[0] - 0.3f) < 1.0e-6f &&
-              std::fabs(separated_tau[2] - 0.3f) < 1.0e-6f &&
-              std::fabs(separated_tau[3] - 0.5f) < 1.0e-6f &&
-              std::fabs(separated_tau[4] - 0.5f) < 1.0e-6f,
+    CHECK(std::fabs(separated_tau[0] - 0.5f) < 1.0e-6f &&
+              std::fabs(separated_tau[2] - 0.2f) < 1.0e-6f &&
+              std::fabs(separated_tau[3] - 0.2f) < 1.0e-6f &&
+              std::fabs(separated_tau[4] - 0.0f) < 1.0e-6f,
           "receivers above between and below separated layers see the sunward subset");
+
+    const matter::CloudShadowLevelDesc level{16, 16, 8, 160.0f};
+    const auto frame = matter::make_cloud_shadow_frame(
+        level, {0.0f, 0.0f, 0.0f}, {0.0f, -1.0f, 0.0f});
+    const matter::Float3 plus_z{
+        frame.uvw_to_world.m[2], frame.uvw_to_world.m[6],
+        frame.uvw_to_world.m[10]};
+    const float sunward_dot = plus_z.x * frame.incoming_light_axis.x +
+        plus_z.y * frame.incoming_light_axis.y +
+        plus_z.z * frame.incoming_light_axis.z;
+    CHECK(sunward_dot > 0.0f,
+          "increasing sun-space Z points toward the incoming light, so prefix integration starts at depth minus one");
 }
 
 void test_task11_reprojection_maps_world_overlap_and_exposed_border() {
@@ -300,13 +313,21 @@ void test_task11_rotating_tile_scheduler_and_horizon_contract() {
               viewer::cloud_shadow_phase_count(
                   std::numeric_limits<float>::quiet_NaN()) == 16u,
           "update fractions sanitize to a finite one-through-sixteen phase count");
-    uint32_t refreshes = 0;
-    for (uint32_t frame = 0; frame < 4; ++frame) {
-        refreshes += viewer::cloud_shadow_column_selected(
-            true, false, {24, 40}, 0, frame, 0.25f) ? 1u : 0u;
+    bool every_tile_once = true;
+    for (uint32_t level = 0; level < 2; ++level) {
+        for (uint32_t y = 0; y < 128; y += 8) {
+            for (uint32_t x = 0; x < 128; x += 8) {
+                uint32_t refreshes = 0;
+                for (uint32_t frame = 0; frame < 4; ++frame) {
+                    refreshes += viewer::cloud_shadow_column_selected(
+                        true, false, {x, y}, level, frame, 0.25f) ? 1u : 0u;
+                }
+                every_tile_once = every_tile_once && refreshes == 1u;
+            }
+        }
     }
-    CHECK(refreshes == 1u,
-          "an existing 8x8 tile refreshes exactly once over four quarter phases");
+    CHECK(every_tile_once,
+          "every 8x8 tile in both levels refreshes exactly once over four quarter phases");
     bool border_always = true;
     for (uint32_t frame = 0; frame < 4; ++frame) {
         border_always = border_always && viewer::cloud_shadow_column_selected(

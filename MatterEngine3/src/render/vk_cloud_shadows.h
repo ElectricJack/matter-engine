@@ -86,7 +86,7 @@ inline std::array<float, N> cloud_shadow_prefix_integrate(
     if (!std::isfinite(voxel_depth_m) || voxel_depth_m <= 0.0f)
         return cumulative;
     float tau = 0.0f;
-    for (size_t z = 0; z < N; ++z) {
+    for (size_t z = N; z-- > 0;) {
         float sigma = density[z];
         if (!std::isfinite(sigma) || sigma < 0.0f) sigma = 0.0f;
         tau = std::fmin(tau + sigma * voxel_depth_m, 80.0f);
@@ -181,6 +181,8 @@ public:
                        float sun_angular_diameter_deg, std::string& error);
     bool record(VkCommandBuffer command_buffer, float frame_time,
                 std::string& error);
+    void commit_generation();
+    void discard_generation();
     const CloudShadowLevelBundle& level(uint32_t index) const;
     uint64_t persistent_bytes() const;
     bool active() const { return active_; }
@@ -201,6 +203,12 @@ public:
     void set_density_override_for_test(float even_sigma, int32_t nan_slice,
                                        float odd_sigma,
                                        bool invalidate_history);
+    void set_density_layers_for_test(uint32_t sunward_slice,
+                                     float sunward_sigma,
+                                     uint32_t receiverward_slice,
+                                     float receiverward_sigma,
+                                     bool invalidate_history);
+    void clear_density_override_for_test(bool invalidate_history);
     bool generate_for_test(uint32_t frame_slot,
                            const matter::Float3& camera,
                            const matter::Float3& sun_direction,
@@ -208,9 +216,13 @@ public:
     bool readback_cumulative_voxel_for_test(
         uint32_t level, uint32_t ping, uint32_t x, uint32_t y, uint32_t z,
         float& value, uint16_t& raw, std::string& error);
+    bool write_cumulative_raw_for_test(
+        uint32_t level, uint32_t ping, uint32_t x, uint32_t y, uint32_t z,
+        uint16_t raw, std::string& error);
     uint32_t last_generation_dispatch_count_for_test() const {
         return last_generation_dispatch_count_;
     }
+    uint32_t frame_index_for_test() const { return frame_index_; }
     void append_frame_lifetimes(
         uint32_t frame_slot,
         std::vector<std::shared_ptr<void>>& lifetimes) const;
@@ -260,6 +272,7 @@ private:
     bool fail_next_bundle_creation_for_test_ = false;
     bool force_history_invalidation_ = true;
     bool direct_sun_visible_ = false;
+    bool generation_pending_ = false;
     uint32_t prepared_frame_slot_ = 0;
     uint32_t frame_index_ = 0;
     uint32_t last_generation_dispatch_count_ = 0;
@@ -270,6 +283,8 @@ private:
     int32_t density_override_nan_slice_ = -1;
     float density_override_even_sigma_ = 0.0f;
     float density_override_odd_sigma_ = 0.0f;
+    uint32_t density_override_sunward_slice_ = 0;
+    uint32_t density_override_receiverward_slice_ = 0;
     std::string allocation_error_;
     std::vector<std::weak_ptr<void>> failed_candidate_lifetimes_;
 };

@@ -4891,7 +4891,7 @@ static void rt_scenario_froxel_resize(
     const size_t composite_function = renderer_implementation.find(
         "void VkSceneRenderer::update_composite_descriptor");
     const size_t composite_end = renderer_implementation.find(
-        "void VkSceneRenderer::update_environment_descriptor", composite_function);
+        "bool VkSceneRenderer::update_environment_descriptor", composite_function);
     const std::string composite_selection = composite_function == std::string::npos ||
         composite_end == std::string::npos ? std::string{} :
         renderer_implementation.substr(composite_function,
@@ -4905,6 +4905,16 @@ static void rt_scenario_froxel_resize(
               composite_selection.find("rt_effective_observed()") ==
               std::string::npos,
           "composite selects live froxels from pre-record RT eligibility, not the reset per-frame observation");
+    std::ifstream editor_props_source("src/editor_props.cpp",
+                                      std::ios::binary);
+    const std::string editor_props_implementation(
+        (std::istreambuf_iterator<char>(editor_props_source)),
+        std::istreambuf_iterator<char>());
+    CHECK(editor_props_implementation.find(
+              "\"Cloud shadow transmittance\"") != std::string::npos &&
+              editor_props_implementation.find(
+                  ".enums(kVolDebugLabels, 6)") != std::string::npos,
+          "cloud-shadow debug label is reachable as the sixth session enum value");
     uint64_t previous_generation = renderer.volumetrics_resource_generation();
     VkImageView previous_view = renderer.volumetrics_integrated_view();
     bool seen_frame_slots[2] = {};
@@ -5306,15 +5316,15 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
                         : error.c_str());
     const uint32_t slab_ping = task11_clouds.level(0).active_index;
     bool slab_matches = task11_clouds.last_generation_dispatch_count_for_test() == 6u;
-    float previous_tau = -1.0f;
+    float previous_tau = std::numeric_limits<float>::infinity();
     for (uint32_t z = 0; z < 16; ++z) {
         float tau = 0.0f;
         uint16_t raw = 0;
         slab_matches = slab_matches &&
             task11_clouds.readback_cumulative_voxel_for_test(
                 0, slab_ping, 64, 64, z, tau, raw, error) &&
-            raw != 0u && std::isfinite(tau) && tau >= previous_tau &&
-            std::fabs(tau - static_cast<float>(z + 1u) * 0.2f) < 0.005f &&
+            raw != 0u && std::isfinite(tau) && tau <= previous_tau &&
+            std::fabs(tau - static_cast<float>(16u - z) * 0.2f) < 0.005f &&
             std::isfinite(std::exp(-tau)) && std::exp(-tau) >= 0.0f &&
             std::exp(-tau) <= 1.0f;
         previous_tau = tau;
@@ -5337,10 +5347,31 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
                   0, nan_ping, 64, 64, 2, tau_at_nan, raw_at_nan, error) &&
               task11_clouds.readback_cumulative_voxel_for_test(
                   0, nan_ping, 64, 64, 3, tau_after_nan, raw_after_nan, error) &&
-              std::fabs(tau_before_nan - 0.4f) < 0.005f &&
-              std::fabs(tau_at_nan - 0.4f) < 0.005f &&
-              std::fabs(tau_after_nan - 0.6f) < 0.005f,
+              std::fabs(tau_before_nan - 2.8f) < 0.005f &&
+              std::fabs(tau_at_nan - 2.6f) < 0.005f &&
+              std::fabs(tau_after_nan - 2.6f) < 0.005f,
           error.empty() ? "GPU prefix treats one NaN density sample as clear"
+                        : error.c_str());
+
+    task11_clouds.set_density_layers_for_test(12, 0.03f, 3, 0.02f,
+                                              true);
+    CHECK(task11_clouds.generate_for_test(
+              0, task11_camera, task11_daylight, 1.5f, error),
+          error.empty() ? "generate two analytically separated cloud layers"
+                        : error.c_str());
+    const uint32_t layers_ping = task11_clouds.level(0).active_index;
+    float above_tau = 0.0f, between_tau = 0.0f, below_tau = 0.0f;
+    uint16_t above_raw = 0, between_raw = 0, below_raw = 0;
+    CHECK(task11_clouds.readback_cumulative_voxel_for_test(
+              0, layers_ping, 64, 64, 15, above_tau, above_raw, error) &&
+              task11_clouds.readback_cumulative_voxel_for_test(
+                  0, layers_ping, 64, 64, 8, between_tau, between_raw, error) &&
+              task11_clouds.readback_cumulative_voxel_for_test(
+                  0, layers_ping, 64, 64, 0, below_tau, below_raw, error) &&
+              std::fabs(above_tau) < 0.005f &&
+              std::fabs(between_tau - 0.3f) < 0.005f &&
+              std::fabs(below_tau - 0.5f) < 0.005f,
+          error.empty() ? "GPU receivers above, between, and below separated layers see only sunward extinction"
                         : error.c_str());
 
     // Quarter scheduling changes a selected tile while a non-selected tile
@@ -5356,10 +5387,11 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
     std::array<uint32_t, 2> selected_column{0, 0};
     std::array<uint32_t, 2> retained_column{0, 0};
     bool found_selected = false, found_retained = false;
+    const uint32_t quarter_phase = task11_clouds.frame_index_for_test();
     for (uint32_t y = 0; y < 128 && (!found_selected || !found_retained); y += 8)
         for (uint32_t x = 0; x < 128 && (!found_selected || !found_retained); x += 8) {
             const bool selected = viewer::cloud_shadow_column_selected(
-                true, false, {x, y}, 0, 3, 0.25f);
+                true, false, {x, y}, 0, quarter_phase, 0.25f);
             if (selected && !found_selected) {
                 selected_column = {x, y}; found_selected = true;
             } else if (!selected && !found_retained) {
@@ -5381,12 +5413,22 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
               task11_clouds.readback_cumulative_voxel_for_test(
                   0, quarter_ping, retained_column[0], retained_column[1], 0,
                   retained_tau, retained_raw, error) &&
-              std::fabs(selected_tau - 0.2f) < 0.005f &&
-              std::fabs(retained_tau - 0.1f) < 0.005f,
+              std::fabs(selected_tau - 3.2f) < 0.005f &&
+              std::fabs(retained_tau - 1.6f) < 0.005f,
           error.empty() ? "GPU updates one deterministic quarter and retains reprojected tiles"
                         : error.c_str());
 
-    task11_clouds.set_density_override_for_test(0.02f, -1, 0.02f, false);
+    // Seed a tile-unique checker, then move exactly one snapped voxel. Pick a
+    // retained current tile whose previous-world source crosses an 8x8 tile
+    // boundary and has a different raw value than the wrong equal-index copy.
+    task11_settings.update_fraction = 1.0f;
+    task11_clouds.request_settings(task11_settings);
+    task11_clouds.set_density_override_for_test(0.01f, -1, 0.03f, true);
+    CHECK(task11_clouds.generate_for_test(
+              0, task11_camera, task11_daylight, 3.5f, error),
+          error.empty() ? "seed checker history for world-position reprojection"
+                        : error.c_str());
+    const uint32_t checker_ping = task11_clouds.level(0).active_index;
     const auto before_move = task11_clouds.level(0).current_frame;
     matter::Float3 task11_lateral{
         before_move.uvw_to_world.m[0] / task11_settings.near_coverage_m,
@@ -5396,6 +5438,43 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
         task11_lateral.x * before_move.voxel_xy_m,
         task11_lateral.y * before_move.voxel_xy_m,
         task11_lateral.z * before_move.voxel_xy_m};
+    task11_settings.update_fraction = 0.25f;
+    task11_clouds.request_settings(task11_settings);
+    const uint32_t move_phase = task11_clouds.frame_index_for_test();
+    std::array<uint32_t, 2> overlap_column{0, 0};
+    uint32_t source_x = 0;
+    uint16_t source_raw = 0, equal_index_raw = 0;
+    bool found_shifted_checker = false;
+    for (uint32_t y = 0; y < 128 && !found_shifted_checker; y += 8) {
+        for (uint32_t x = 7; x < 127 && !found_shifted_checker; x += 8) {
+            if (viewer::cloud_shadow_column_selected(
+                    true, false, {x, y}, 0, move_phase, 0.25f)) continue;
+            const auto moved_frame = matter::make_cloud_shadow_frame(
+                task11_clouds.level(0).desc, moved_camera, task11_daylight);
+            const auto source_uvw = viewer::cloud_shadow_previous_uvw_for_voxel(
+                moved_frame, before_move, task11_clouds.level(0).desc,
+                x, y, 0);
+            const uint32_t candidate_source_x = static_cast<uint32_t>(
+                source_uvw.x * task11_clouds.level(0).desc.width);
+            float ignored_tau = 0.0f;
+            uint16_t candidate_source_raw = 0, candidate_equal_raw = 0;
+            if (candidate_source_x < 128 && candidate_source_x != x &&
+                task11_clouds.readback_cumulative_voxel_for_test(
+                    0, checker_ping, candidate_source_x, y, 0,
+                    ignored_tau, candidate_source_raw, error) &&
+                task11_clouds.readback_cumulative_voxel_for_test(
+                    0, checker_ping, x, y, 0,
+                    ignored_tau, candidate_equal_raw, error) &&
+                candidate_source_raw != candidate_equal_raw) {
+                overlap_column = {x, y};
+                source_x = candidate_source_x;
+                source_raw = candidate_source_raw;
+                equal_index_raw = candidate_equal_raw;
+                found_shifted_checker = true;
+            }
+        }
+    }
+    task11_clouds.set_density_override_for_test(0.02f, -1, 0.04f, false);
     CHECK(task11_clouds.generate_for_test(
               0, moved_camera, task11_daylight, 4.0f, error),
           error.empty() ? "reproject one snapped voxel and refresh exposed border"
@@ -5403,13 +5482,154 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
     const uint32_t moved_ping = task11_clouds.level(0).active_index;
     float overlap_tau = 0.0f, border_tau = 0.0f;
     uint16_t overlap_raw = 0, border_raw = 0;
-    CHECK(task11_clouds.readback_cumulative_voxel_for_test(
-              0, moved_ping, 63, 64, 0, overlap_tau, overlap_raw, error) &&
+    const float border_sigma =
+        (viewer::cloud_shadow_tile_hash(127, 64, 0) & 1u) == 0u
+            ? 0.02f : 0.04f;
+    CHECK(found_shifted_checker && source_x != overlap_column[0] &&
+              source_raw != equal_index_raw &&
+              task11_clouds.readback_cumulative_voxel_for_test(
+                  0, moved_ping, overlap_column[0], overlap_column[1], 0,
+                  overlap_tau, overlap_raw, error) &&
               task11_clouds.readback_cumulative_voxel_for_test(
                   0, moved_ping, 127, 64, 0, border_tau, border_raw, error) &&
-              std::fabs(overlap_tau - 0.2f) < 0.005f &&
-              std::fabs(border_tau - 0.2f) < 0.005f,
-          error.empty() ? "world-overlap survives reprojection and new border refreshes immediately"
+              overlap_raw == source_raw &&
+              std::fabs(border_tau - 16.0f * border_sigma * 10.0f) < 0.01f,
+          error.empty() ? "shifted world-position checker history survives while only the exposed border refreshes"
+                        : error.c_str());
+
+    // A non-finite value in otherwise valid history must invalidate and
+    // refresh its entire column immediately, independent of rotating phase.
+    std::array<uint32_t, 2> nan_history_column{0, 0};
+    bool found_nan_history_column = false;
+    const uint32_t nan_phase = task11_clouds.frame_index_for_test();
+    for (uint32_t y = 0; y < 128 && !found_nan_history_column; y += 8)
+        for (uint32_t x = 0; x < 128 && !found_nan_history_column; x += 8)
+            if (!viewer::cloud_shadow_column_selected(
+                    true, false, {x, y}, 0, nan_phase, 0.25f)) {
+                nan_history_column = {x, y};
+                found_nan_history_column = true;
+            }
+    CHECK(found_nan_history_column &&
+              task11_clouds.write_cumulative_raw_for_test(
+                  0, moved_ping, nan_history_column[0],
+                  nan_history_column[1], 8, 0x7e00u, error),
+          error.empty() ? "inject non-finite cumulative history into a non-rotating column"
+                        : error.c_str());
+    task11_clouds.set_density_override_for_test(0.05f, -1, 0.05f, false);
+    CHECK(task11_clouds.generate_for_test(
+              1, moved_camera, task11_daylight, 4.5f, error),
+          error.empty() ? "refresh non-finite reprojected history"
+                        : error.c_str());
+    float repaired_tau = 0.0f;
+    uint16_t repaired_raw = 0;
+    CHECK(task11_clouds.readback_cumulative_voxel_for_test(
+              0, task11_clouds.level(0).active_index,
+              nan_history_column[0], nan_history_column[1], 0,
+              repaired_tau, repaired_raw, error) &&
+              std::isfinite(repaired_tau) &&
+              std::fabs(repaired_tau - 8.0f) < 0.01f,
+          error.empty() ? "non-finite history triggers immediate full-column regeneration instead of a clear hole"
+                        : error.c_str());
+
+    // Exercise production packed cloud density: fixed camera and frame phase,
+    // advancing cloud time may modify exactly the rotating quarter only.
+    matter::FogSettings animated_fog{};
+    animated_fog.cloud_count = 1;
+    animated_fog.clouds[0].enabled = true;
+    animated_fog.clouds[0].min_height = -10000.0f;
+    animated_fog.clouds[0].max_height = 10000.0f;
+    animated_fog.clouds[0].max_density = 0.02f;
+    animated_fog.clouds[0].coverage = 0.5f;
+    animated_fog.clouds[0].noise_scale = 0.01f;
+    animated_fog.clouds[0].wind[0] = 25.0f;
+    animated_fog.clouds[0].octaves = 2;
+    task11_clouds.request_cloud_layers(animated_fog);
+    task11_clouds.clear_density_override_for_test(true);
+    task11_settings.update_fraction = 1.0f;
+    task11_clouds.request_settings(task11_settings);
+    CHECK(task11_clouds.generate_for_test(
+              0, task11_camera, task11_daylight, 0.0f, error),
+          error.empty() ? "seed production packed-cloud history"
+                        : error.c_str());
+    const uint32_t production_seed_ping =
+        task11_clouds.level(0).active_index;
+    std::array<uint16_t, 256> production_before{};
+    uint32_t tile_sample = 0;
+    for (uint32_t y = 4; y < 128; y += 8)
+        for (uint32_t x = 4; x < 128; x += 8) {
+            float ignored_tau = 0.0f;
+            task11_clouds.readback_cumulative_voxel_for_test(
+                0, production_seed_ping, x, y, 0, ignored_tau,
+                production_before[tile_sample++], error);
+        }
+    task11_settings.update_fraction = 0.25f;
+    task11_clouds.request_settings(task11_settings);
+    const uint32_t production_phase = task11_clouds.frame_index_for_test();
+    CHECK(task11_clouds.generate_for_test(
+              1, task11_camera, task11_daylight, 10.0f, error),
+          error.empty() ? "advance cloud time for one production rotating quarter"
+                        : error.c_str());
+    bool nonselected_unchanged = true, selected_changed = false;
+    tile_sample = 0;
+    for (uint32_t y = 4; y < 128; y += 8)
+        for (uint32_t x = 4; x < 128; x += 8) {
+            float ignored_tau = 0.0f;
+            uint16_t after_raw = 0;
+            const bool read = task11_clouds.readback_cumulative_voxel_for_test(
+                0, task11_clouds.level(0).active_index, x, y, 0,
+                ignored_tau, after_raw, error);
+            const bool selected = viewer::cloud_shadow_column_selected(
+                true, false, {x, y}, 0, production_phase, 0.25f);
+            nonselected_unchanged = nonselected_unchanged && read &&
+                (selected || after_raw == production_before[tile_sample]);
+            selected_changed = selected_changed ||
+                (read && selected && after_raw != production_before[tile_sample]);
+            ++tile_sample;
+        }
+    CHECK(nonselected_unchanged && selected_changed,
+          error.empty() ? "cloud time advances production density only in the deterministic rotating quarter"
+                        : error.c_str());
+
+    animated_fog.clouds[0].max_density = 0.03f;
+    task11_clouds.request_cloud_layers(animated_fog);
+    CHECK(task11_clouds.prepare_frame(
+              0, task11_camera, task11_daylight, 0.53f, error) &&
+              !task11_clouds.level(0).history_valid &&
+              !task11_clouds.level(1).history_valid,
+          error.empty() ? "packed cloud authoring invalidates both generated levels"
+                        : error.c_str());
+    CHECK(task11_clouds.generate_for_test(
+              0, task11_camera, task11_daylight, 11.0f, error),
+          error.empty() ? "reseed after packed authoring invalidation"
+                        : error.c_str());
+    task11_settings.near_coverage_m = 180.0f;
+    task11_clouds.request_settings(task11_settings);
+    CHECK(task11_clouds.prepare_frame(
+              1, task11_camera, task11_daylight, 0.53f, error) &&
+              !task11_clouds.level(0).history_valid &&
+              !task11_clouds.level(1).history_valid,
+          error.empty() ? "dimension or coverage changes invalidate both generated levels"
+                        : error.c_str());
+    CHECK(task11_clouds.generate_for_test(
+              1, task11_camera, task11_daylight, 12.0f, error),
+          error.empty() ? "reseed resized cloud-shadow levels"
+                        : error.c_str());
+    const float deg = 3.14159265358979323846f / 180.0f;
+    const matter::Float3 within_two{
+        0.0f, -std::cos(1.9f * deg), std::sin(1.9f * deg)};
+    const matter::Float3 beyond_two{
+        0.0f, -std::cos(4.1f * deg), std::sin(4.1f * deg)};
+    CHECK(task11_clouds.prepare_frame(
+              0, task11_camera, within_two, 0.53f, error) &&
+              task11_clouds.level(0).history_valid &&
+              task11_clouds.level(1).history_valid,
+          error.empty() ? "a two-degree-or-smaller sun edit preserves both histories"
+                        : error.c_str());
+    CHECK(task11_clouds.prepare_frame(
+              0, task11_camera, beyond_two, 0.53f, error) &&
+              !task11_clouds.level(0).history_valid &&
+              !task11_clouds.level(1).history_valid,
+          error.empty() ? "a greater-than-two-degree sun edit invalidates both histories"
                         : error.c_str());
 
     CHECK(task11_clouds.generate_for_test(
@@ -5496,6 +5716,53 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
           error.empty()
               ? "authored cloud extinction generates nonzero sun-space optical depth"
               : error.c_str());
+
+    matter::VulkanFrame flush_failure_frame{};
+    CHECK(vulkan.begin_frame(flush_failure_frame, error) &&
+              renderer.prepare_frame(flush_failure_frame, matrices,
+                                     camera.position, 1.0f, error),
+          error.empty() ? "begin acquired slot for EnvironmentBlock flush failure"
+                        : error.c_str());
+    const uint32_t ping_before_flush_failure[2]{
+        renderer.cloud_shadow_active_ping(0),
+        renderer.cloud_shadow_active_ping(1)};
+    float state_before_flush_failure[4]{};
+    VkImageView view_before_flush_failure[4]{};
+    for (uint32_t i = 0; i < 4; ++i) {
+        state_before_flush_failure[i] =
+            renderer.cloud_shadow_environment_state_for_test(i);
+        view_before_flush_failure[i] =
+            renderer.cloud_shadow_environment_view_for_test(i);
+    }
+    renderer.set_fail_next_environment_flush_for_test(true);
+    const bool flush_failure_recorded = renderer.record_cull_and_render(
+        flush_failure_frame, matrices, camera.position, 1.0f, error);
+    const std::string flush_failure_error = error;
+    bool publication_unchanged = !flush_failure_recorded &&
+        renderer.cloud_shadow_active_ping(0) == ping_before_flush_failure[0] &&
+        renderer.cloud_shadow_active_ping(1) == ping_before_flush_failure[1];
+    for (uint32_t i = 0; i < 4; ++i) {
+        publication_unchanged = publication_unchanged &&
+            renderer.cloud_shadow_environment_state_for_test(i) ==
+                state_before_flush_failure[i] &&
+            renderer.cloud_shadow_environment_view_for_test(i) ==
+                view_before_flush_failure[i];
+    }
+    CHECK(publication_unchanged &&
+              flush_failure_error.find("EnvironmentBlock flush failure") !=
+                  std::string::npos,
+          "failed acquired-slot EnvironmentBlock flush keeps the previous published ping transactionally");
+    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "record");
+    std::string abort_error;
+    CHECK(!vulkan.end_frame(flush_failure_frame, abort_error),
+          "abort the intentionally incomplete flush-failure frame");
+    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "");
+    renderer.finish_ray_tracing_frame(flush_failure_frame.serial, false);
+    vulkan.wait_idle();
+    error.clear();
+    CHECK(warm_rt_tlas(),
+          error.empty() ? "regenerate and publish after transactional flush failure"
+                        : error.c_str());
     renderer.set_volumetrics_settings(current_clouds, cloud_fog,
                                       no_cloud_shadows);
     CHECK(warm_rt_tlas() &&
