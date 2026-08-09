@@ -7,10 +7,15 @@
 #include "part_graph.h"   // params_from_json, params_to_json — canonical JSON normalizer
 #include "terrain_mesher.h"
 #include "triangle_emit.hpp"
-#include <atomic>   // terrain_verb_census() backing counters
+#include <atomic>   // terrain_verb_census() + script_profile backing counters
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <string>
 #include <vector>
 #include <regex>
 extern "C" {
@@ -1211,6 +1216,35 @@ static JSValue j_habitatAt(JSContext* c, JSValueConst, int argc,
         JS_SetPropertyUint32(c, a[2], (uint32_t)i, JS_NewFloat64(c, ch[i]));
     return JS_NewInt32(c, count);
 }
+// __profSlot(name) -> int, __profBegin(slot), __profEnd(slot)
+//
+// The script side of ScriptProfile. Split into an intern call and two int
+// calls on purpose: the scatter loop opens a scope per candidate, and
+// interning a string there would cost more than the thing being measured.
+// Scripts hoist the slot into a module constant and pass the int.
+//
+// All three are no-ops (slot returns -1, which begin/end ignore) unless
+// MATTER_SCRIPT_PROFILE is set, so instrumentation can be left in the ecology
+// permanently instead of being added and removed around each investigation.
+static JSValue j_profSlot(JSContext* c, JSValueConst, int argc,
+                          JSValueConst* a) {
+    if (argc < 1) return JS_NewInt32(c, -1);
+    const char* s = JS_ToCString(c, a[0]);
+    if (!s) return JS_NewInt32(c, -1);
+    const int id = dsl::script_profile::slot(s);
+    JS_FreeCString(c, s);
+    return JS_NewInt32(c, id);
+}
+static JSValue j_profBegin(JSContext* c, JSValueConst, int argc,
+                           JSValueConst* a) {
+    if (argc >= 1) dsl::script_profile::begin((int)argd(c, a[0]));
+    return JS_UNDEFINED;
+}
+static JSValue j_profEnd(JSContext* c, JSValueConst, int argc,
+                         JSValueConst* a) {
+    if (argc >= 1) dsl::script_profile::end((int)argd(c, a[0]));
+    return JS_UNDEFINED;
+}
 static JSValue j_moistureAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
     VerbTimer _vt(g_biome_us, g_biome_calls);
     DslState* st = state_of(c);
@@ -1478,6 +1512,9 @@ void install_bindings(JSContext* ctx) {
     bind("__biomeAt",j_biomeAt,2);
     bind("__habitatAt",j_habitatAt,3);
     bind("__hasHabitat",j_hasHabitat,0);
+    bind("__profSlot", j_profSlot, 1);
+    bind("__profBegin",j_profBegin,1);
+    bind("__profEnd",  j_profEnd,  1);
     // Tileset verb bindings.
     bind("__dsl_ts_tile",j_ts_tile,5); bind("__dsl_ts_base",j_ts_base,2);
     bind("__dsl_ts_layer",j_ts_layer,2); bind("__dsl_ts_dropChild",j_ts_dropChild,2);
@@ -1508,4 +1545,167 @@ TerrainVerbCensus terrain_verb_census() {
     c.biome_us     = g_biome_us.load(std::memory_order_relaxed);
     return c;
 }
+}  // namespace dsl
+
+// ---------------------------------------------------------------------------
+// ScriptProfile implementation (see dsl_bindings.h for the contract).
+//
+// Two pieces of state, deliberately split:
+//
+//   - the label table and the counters are PROCESS-wide, because the answer
+//     wanted is the sum over every worker and every sector;
+//   - the open-scope stack is THREAD-local, because nesting is a property of
+//     one call chain and a dozen workers interleave freely.
+//
+// Self time is what makes the table readable: a scope charges its own elapsed
+// time to `total`, and its elapsed MINUS the time its children took to `self`,
+// so the self column sums to the profiled whole instead of counting nested
+// work once per enclosing label.
+// ---------------------------------------------------------------------------
+namespace dsl {
+namespace script_profile {
+namespace {
+
+struct Slot {
+    std::atomic<unsigned long long> calls{0};
+    std::atomic<unsigned long long> total_ns{0};
+    std::atomic<unsigned long long> self_ns{0};
+};
+
+// Fixed storage: begin/end index it without a lock. Only `slot()` takes the
+// mutex, and only to intern a name the caller then caches.
+Slot g_slots[kMaxLabels];
+std::mutex g_names_mutex;
+std::vector<std::string> g_names;          // index == slot id
+std::atomic<int> g_name_count{0};          // published count, read lock-free
+std::atomic<unsigned long long> g_mismatches{0};
+
+struct OpenScope {
+    int slot;
+    std::chrono::steady_clock::time_point t0;
+    unsigned long long child_ns;
+};
+// Thread-local because scopes nest within one call chain. Not a vector on the
+// hot path: a small fixed depth avoids allocating inside the scatter loop, and
+// a script nesting deeper than this is measuring the wrong thing.
+constexpr int kMaxDepth = 16;
+thread_local OpenScope t_stack[kMaxDepth];
+thread_local int t_depth = 0;
+
+}  // namespace
+
+// Read live rather than latched into a function-local static. A latch here
+// would be a pure liability: `enabled()` is reached only from `slot()`, which
+// a caller is expected to hoist out of its loops, so there is no hot path to
+// protect -- while the latch DOES make the off-state untestable, because the
+// first probe fixes the answer for the rest of the process. Same reasoning
+// bake_source applies to MATTER_BAKE_PROFILE, and for the same reason.
+bool enabled() { return std::getenv("MATTER_SCRIPT_PROFILE") != nullptr; }
+
+int slot(const char* name) {
+    if (!enabled() || name == nullptr) return -1;
+    std::lock_guard<std::mutex> lock(g_names_mutex);
+    for (size_t i = 0; i < g_names.size(); ++i)
+        if (g_names[i] == name) return (int)i;
+    if (g_names.size() >= (size_t)kMaxLabels) return -1;
+    g_names.emplace_back(name);
+    // Publish the count AFTER the name is in place so a concurrent report()
+    // never reads past the last fully-written entry.
+    g_name_count.store((int)g_names.size(), std::memory_order_release);
+    return (int)g_names.size() - 1;
+}
+
+void begin(int s) {
+    if (s < 0 || s >= kMaxLabels) return;
+    if (t_depth >= kMaxDepth) return;   // too deep: drop, do not corrupt
+    t_stack[t_depth].slot = s;
+    t_stack[t_depth].t0 = std::chrono::steady_clock::now();
+    t_stack[t_depth].child_ns = 0;
+    ++t_depth;
+}
+
+void end(int s) {
+    if (t_depth <= 0) return;
+    OpenScope& top = t_stack[t_depth - 1];
+    // A mismatch means the script's begin/end are unbalanced. Close the scope
+    // that is actually open (the alternative -- refusing to pop -- leaks the
+    // whole rest of the bake into this label) and count it so `report` can say
+    // the numbers are suspect rather than quietly presenting nonsense.
+    if (top.slot != s) g_mismatches.fetch_add(1, std::memory_order_relaxed);
+    const unsigned long long ns = (unsigned long long)
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - top.t0).count();
+    Slot& slot_ref = g_slots[top.slot];
+    slot_ref.calls.fetch_add(1, std::memory_order_relaxed);
+    slot_ref.total_ns.fetch_add(ns, std::memory_order_relaxed);
+    slot_ref.self_ns.fetch_add(ns - std::min(ns, top.child_ns),
+                               std::memory_order_relaxed);
+    --t_depth;
+    if (t_depth > 0) t_stack[t_depth - 1].child_ns += ns;
+}
+
+void clear_thread() { t_depth = 0; }
+
+void reset() {
+    for (int i = 0; i < kMaxLabels; ++i) {
+        g_slots[i].calls.store(0, std::memory_order_relaxed);
+        g_slots[i].total_ns.store(0, std::memory_order_relaxed);
+        g_slots[i].self_ns.store(0, std::memory_order_relaxed);
+    }
+    g_mismatches.store(0, std::memory_order_relaxed);
+}
+
+std::string report() {
+    const int n = g_name_count.load(std::memory_order_acquire);
+    struct Row { std::string name; unsigned long long calls, total_ns, self_ns; };
+    std::vector<Row> rows;
+    {
+        std::lock_guard<std::mutex> lock(g_names_mutex);
+        for (int i = 0; i < n && i < (int)g_names.size(); ++i) {
+            const unsigned long long calls =
+                g_slots[i].calls.load(std::memory_order_relaxed);
+            if (calls == 0) continue;
+            rows.push_back({g_names[i], calls,
+                            g_slots[i].total_ns.load(std::memory_order_relaxed),
+                            g_slots[i].self_ns.load(std::memory_order_relaxed)});
+        }
+    }
+    if (rows.empty()) return std::string();
+    std::sort(rows.begin(), rows.end(),
+              [](const Row& a, const Row& b) { return a.self_ns > b.self_ns; });
+
+    unsigned long long self_total = 0;
+    for (const Row& r : rows) self_total += r.self_ns;
+
+    char line[256];
+    std::string out =
+        "[script-profile] thread-ms summed across ALL bake workers "
+        "(not wall time)\n";
+    std::snprintf(line, sizeof line, "  %-28s %10s %12s %12s %7s %9s\n",
+                  "label", "calls", "self ms", "total ms", "self%", "us/call");
+    out += line;
+    for (const Row& r : rows) {
+        std::snprintf(line, sizeof line,
+                      "  %-28s %10llu %12.1f %12.1f %6.1f%% %9.2f\n",
+                      r.name.c_str(), r.calls, r.self_ns / 1e6, r.total_ns / 1e6,
+                      self_total ? 100.0 * (double)r.self_ns / (double)self_total
+                                 : 0.0,
+                      r.calls ? (double)r.total_ns / (double)r.calls / 1000.0
+                              : 0.0);
+        out += line;
+    }
+    std::snprintf(line, sizeof line, "  %-28s %10s %12.1f\n",
+                  "(sum of self)", "", self_total / 1e6);
+    out += line;
+    const unsigned long long mm = g_mismatches.load(std::memory_order_relaxed);
+    if (mm) {
+        std::snprintf(line, sizeof line,
+                      "  WARNING: %llu unbalanced prof() scopes — "
+                      "attribution above is unreliable\n", mm);
+        out += line;
+    }
+    return out;
+}
+
+}  // namespace script_profile
 }  // namespace dsl

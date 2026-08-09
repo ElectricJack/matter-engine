@@ -3,6 +3,7 @@
 #include "../src/script_host.h"
 #include "../src/terrain_field.h"
 #include "../src/part_graph.h"
+#include "../src/dsl_bindings.h"
 #include "../src/terrain_mesher.h"
 #include <chrono>
 #include <cstdio>
@@ -515,6 +516,108 @@ class BareHab extends Part {
         CHECK(!nb.error.ok, "habitatAt with no tape bound fails the bake");
         CHECK(nb.error.message.find("no habitat tape") != std::string::npos,
               nb.error.message.c_str());
+    }
+
+    // ---- ScriptProfile: prof() from inside a bake ---------------------------
+    //
+    // This exists because the thing it measures had NO instrumentation: the
+    // bake's `build` phase was one opaque block, and two successive theories
+    // about where its time went were both wrong -- each backed by arithmetic
+    // that matched a measured total to within a few percent, and each refuted
+    // only after being implemented. A profiler that is itself unverified would
+    // just be a third way to be confidently wrong, so its arithmetic is pinned
+    // here rather than trusted.
+    {
+        printf("== script profile ==\n");
+        // Off by default: a script can carry prof() calls permanently without
+        // paying for them. Slot allocation is the gate -- an unenabled slot()
+        // returns -1 and every begin/end after it is an early return.
+        _putenv_s("MATTER_SCRIPT_PROFILE", "");
+        CHECK(dsl::script_profile::slot("off") < 0,
+              "slot() is -1 when the profile is off");
+        CHECK(dsl::script_profile::report().empty(),
+              "report is empty when nothing was recorded");
+
+        _putenv_s("MATTER_SCRIPT_PROFILE", "1");
+        // Toggling mid-process has to work, which is exactly why `enabled()`
+        // reads the env var live instead of latching it: the first version
+        // latched, and this suite could then only ever observe whichever state
+        // it happened to probe first.
+        CHECK(dsl::script_profile::enabled(), "MATTER_SCRIPT_PROFILE arms it");
+        dsl::script_profile::reset();
+
+        // The same name interns to the same slot; distinct names do not. This
+        // is what lets a script hoist `profSlot` into a module constant.
+        const int a = dsl::script_profile::slot("t.alpha");
+        const int b = dsl::script_profile::slot("t.beta");
+        CHECK(a >= 0 && b >= 0 && a != b, "distinct labels get distinct slots");
+        CHECK(dsl::script_profile::slot("t.alpha") == a, "interning is stable");
+
+        // SELF vs TOTAL is the property the whole table hangs on: nesting
+        // alpha around beta must charge beta's time to beta once, and to
+        // alpha's total but NOT alpha's self. Get this wrong and every parent
+        // label reads as its own cost plus all its children's, which is
+        // exactly the "137% of frame" illusion the render profiler once had.
+        {
+            dsl::script_profile::begin(a);
+            dsl::script_profile::begin(b);
+            const auto spin_until = std::chrono::steady_clock::now() +
+                                    std::chrono::milliseconds(20);
+            while (std::chrono::steady_clock::now() < spin_until) { /* spin */ }
+            dsl::script_profile::end(b);
+            dsl::script_profile::end(a);
+        }
+        const std::string rep = dsl::script_profile::report();
+        CHECK(!rep.empty(), "report is non-empty after recording");
+        CHECK(rep.find("t.alpha") != std::string::npos, rep.c_str());
+        CHECK(rep.find("t.beta") != std::string::npos, rep.c_str());
+        CHECK(rep.find("WARNING") == std::string::npos,
+              "balanced scopes report no mismatch");
+        fputs(rep.c_str(), stdout);
+
+        // An unbalanced end() must not corrupt the stack or silently produce a
+        // plausible-looking table -- it says so. A script whose prof() calls
+        // are wrong should be caught by the output, not by the reader assuming
+        // the numbers are fine.
+        dsl::script_profile::reset();
+        dsl::script_profile::begin(a);
+        dsl::script_profile::end(b);            // wrong label closes `a`
+        CHECK(dsl::script_profile::report().find("WARNING") != std::string::npos,
+              "an unbalanced scope is announced, not hidden");
+
+        // End to end: prof() called from JS inside a real bake reaches the
+        // native counters. This is the only case that proves the binding, the
+        // part_base globals and the aggregation are wired to each other.
+        dsl::script_profile::reset();
+        static const char* prof_src = R"JS(
+class ProfProbe extends Part {
+  build(p) {
+    const S = profSlot('js.loop');
+    profBegin(S);
+    let acc = 0;
+    for (let i = 0; i < 200000; ++i) acc += Math.sqrt(i);
+    profEnd(S);
+    this.terrainVolume(0, 0, 0, 0, [16,16,16,16]);
+  }
+}
+)JS";
+        BakeOptions popts;
+        popts.parts_dir = parts_dir;
+        popts.world.field = &field;
+        popts.world.sector_size = 16.0f;
+        BakeResult pr = host.bake_source(prof_src, "{}", popts);
+        CHECK(pr.error.ok, pr.error.message.c_str());
+        const std::string js_rep = dsl::script_profile::report();
+        CHECK(js_rep.find("js.loop") != std::string::npos,
+              "prof() from JS reaches the native counters");
+        CHECK(js_rep.find("WARNING") == std::string::npos, js_rep.c_str());
+        fputs(js_rep.c_str(), stdout);
+
+        // Leave the process as we found it so no later suite inherits an armed
+        // profile (the latch means it could not be disarmed anyway, but the
+        // env var should not leak to a child process either).
+        _putenv_s("MATTER_SCRIPT_PROFILE", "");
+        dsl::script_profile::reset();
     }
 
     return check_summary();

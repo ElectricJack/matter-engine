@@ -1655,6 +1655,11 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     // old prof_lap boundaries. Declared before the first `goto done` so both
     // are in scope at the label and unwound on every exit path.
     ScopedCurrentCollector bt_guard;
+    // A bake that throws out of JS leaves ScriptProfile scopes open on this
+    // worker. Dropping the stack here bounds the damage to the bake that
+    // failed instead of charging its remainder to the next sector this thread
+    // picks up. No-op when the profile is off.
+    dsl::script_profile::clear_thread();
     bake_trace::Collector* const btc = bake_trace::current();
     PartBakePhases phases;
     phases.start(btc, bake_trace::kSpanFold);

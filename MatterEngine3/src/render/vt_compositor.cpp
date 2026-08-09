@@ -72,11 +72,16 @@ constexpr uint32_t kTilesetArraySize =
 constexpr uint32_t kMaxMeshEntries = 512;
 
 // P2: the shared tape-op arena. Fixed-size slots (one per mesh entry with a
-// packed tape) — a SurfaceProgram is capped at 64 dedup'd ops, so a slot is
-// 64 * 48 B = 3 KiB; sizing covers every cached entry plus the worst-case
-// one-shot burst (kMaxBatchesInFlight batches of kMaxRequestsPerFill distinct
-// variants), so a fill is never demoted to mode 2 for arena pressure alone.
-constexpr uint32_t kTapeSlotOps = 96;   // == kMaxSurfaceOps (arena slot size)
+// packed tape) — a SurfaceProgram is capped at kMaxSurfaceOps dedup'd ops, so
+// a slot is that many * 48 B; sizing covers every cached entry plus the
+// worst-case one-shot burst (kMaxBatchesInFlight batches of
+// kMaxRequestsPerFill distinct variants), so a fill is never demoted to mode 2
+// for arena pressure alone.
+//
+// Derived, not a copy: this was a literal 96 next to a comment still claiming
+// 64 from before the cap was raised, i.e. exactly the drift the alias removes.
+constexpr uint32_t kTapeSlotOps =
+    static_cast<uint32_t>(terrain_field::kMaxSurfaceOps);
 constexpr uint32_t kTapeArenaSlots =
     kMaxMeshEntries +
     VtCompositor::kMaxBatchesInFlight * kMaxRequestsPerFill;   // 1536

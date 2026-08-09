@@ -2135,7 +2135,15 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             clk_t::now() - t_publish_start).count();
         double total_ms = std::chrono::duration<double, std::milli>(
             clk_t::now() - t_bake_start).count();
-        fprintf(stderr, "[bake-timing] install=%.0fms world=%.0fms publish=%.0fms total=%.0fms (world-kind)\n",
+        // "(world-kind)" alone read as the cost of loading the world, and it
+        // is not: for a STREAMED world this returns as soon as the roots are
+        // published, with every sector still unbaked. Reading this total as a
+        // fill time produced a confidently-wrong 8.7x speedup claim once
+        // already. Say what it excludes, and name the line that answers the
+        // question it gets mistaken for.
+        fprintf(stderr, "[bake-timing] install=%.0fms world=%.0fms publish=%.0fms "
+                        "total=%.0fms (world-kind: ROOTS ONLY — the sector fill "
+                        "is NOT in this number, see [stream.fill])\n",
                 install_ms, world_ms, publish_ms, total_ms);
         return;  // world-kind path complete — SectorStreamer built in publish_pipeline tail
     }
@@ -5335,6 +5343,13 @@ void WorldSession::Impl::execute_sector_stream_step() {
                             (unsigned long long)(lc.tris_out[r] / (uint64_t)n));
                 }
             }
+            // Inside build(), one level below [stream.build]: the phases the
+            // world's OWN script named with prof(). The census above splits
+            // native mesher from native field queries; this splits the
+            // interpreted JS between them, which is the part that had no
+            // instrumentation at all. Empty unless MATTER_SCRIPT_PROFILE.
+            const std::string sp = dsl::script_profile::report();
+            if (!sp.empty()) fputs(sp.c_str(), stderr);
         }
     }
 
@@ -5372,10 +5387,22 @@ void WorldSession::Impl::execute_sector_stream_step() {
         bake_pool_outstanding() == 0 &&
         requests_exhausted) {
         world_initial_load_done = true;
+        const double fill_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - stream_fill_start).count();
+        // ALWAYS announce that the disc is full — one line, once per world
+        // load. This used to print only under MATTER_STREAM_FILL_PROFILE,
+        // which meant a streamed world had no completion signal at all unless
+        // you already knew the env var existed: "is it still filling, or is
+        // this all there is?" was unanswerable from the log, and the nearest
+        // line that looked like an answer ([bake-timing], below) is the roots
+        // bake and says nothing about the fill.
+        fprintf(stderr, "[stream.fill] COMPLETE: %u sectors resident in %.2f s "
+                        "(%.0f/s, %d workers)\n",
+                snapshot.status.resident_sectors, fill_ms / 1000.0,
+                fill_ms > 0 ? stream_fill_sectors * 1000.0 / fill_ms : 0.0,
+                stream_worker_count);
         if (stream_fill_timing) {
             stream_fill_timing = false;
-            const double fill_ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - stream_fill_start).count();
             fprintf(stderr,
                     "[stream.fill] %.2f s  resident=%u dispatched=%llu "
                     "steps=%llu step_avg=%.2f ms rate=%.0f/s workers=%d\n",
@@ -5385,6 +5412,14 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     stream_fill_steps ? stream_fill_step_ms / stream_fill_steps : 0.0,
                     fill_ms > 0 ? stream_fill_sectors * 1000.0 / fill_ms : 0.0,
                     stream_worker_count);
+        }
+        // The definitive script profile: the whole fill, not a 200-step
+        // sample. Printed on the same terms as the fill line above (i.e.
+        // whenever MATTER_SCRIPT_PROFILE armed the counters), because this is
+        // the number an investigation actually wants.
+        {
+            const std::string sp = dsl::script_profile::report();
+            if (!sp.empty()) fputs(sp.c_str(), stderr);
         }
         events::BakeFinished ev;
         ev.errors = 0;

@@ -12,6 +12,20 @@ globalThis.MAT = {
 };
 globalThis.SHAPE = { triangles: 0, strip: 1, fan: 2, polygon: 3 };
 globalThis.JOIN = { miter: 0, bevel: 1, round: 2 };
+// ScriptProfile (dsl_bindings.h): named timers a bake script opens around its
+// own phases, aggregated natively across every sector and every worker. Off
+// and nearly free unless MATTER_SCRIPT_PROFILE is set, so instrumentation
+// stays in the ecology rather than being added and removed per investigation.
+//
+//   const P = profSlot('scatter.trees');      // once, at module scope
+//   profBegin(P); ...work...; profEnd(P);
+//
+// Globals, not builder methods, because the code worth measuring lives in
+// shared-lib modules that never see the builder. Hoist profSlot out of loops:
+// it interns a string, while profBegin/profEnd take the int it returns.
+globalThis.profSlot  = (name) => __profSlot(String(name));
+globalThis.profBegin = (slot) => { __profBegin(slot|0); };
+globalThis.profEnd   = (slot) => { __profEnd(slot|0); };
 // M3 (docs/lod-vt-redesign-2026-08-04.md §3.1): NAMED generators for a
 // `static lods` entry. Each helper returns a plain DATA descriptor -- never a
 // closure -- so ScriptHost::eval_lods can read the whole ladder without

@@ -103,7 +103,10 @@ public:
 private:
     FieldProgram prog_;
 
-    static constexpr int kMaxOps = 96;
+    // (No private kMaxOps here. There was a third `= 96` at this spot that
+    // nothing referenced — the parser and evaluator both use the file-scope
+    // alias of kMaxSurfaceOps in terrain_field.cpp. An unused copy of a
+    // mirrored constant is worse than no copy: it reads like the authority.)
 
     // Evaluate register [0..target] into regs[], using (x, z) as world coords.
     void eval_regs(float regs[], int count, float x, float z) const;
@@ -154,8 +157,10 @@ constexpr int kSurfaceInputWorldFirst = kSurfInWorldX;
 // mesh vertex — keep the two in sync).
 constexpr int kMaxSurfaceMaterials = 8;
 
-// Hard cap on emitted (deduplicated) tape ops — mirrors FieldRuntime::kMaxOps
-// and the shader's VT_TAPE_MAX_OPS register file. Raised 64 -> 96 when the
+// Hard cap on emitted (deduplicated) tape ops. THE authority for the surfaces
+// tape: terrain_field.cpp's kMaxOps and vt_compositor.cpp's kTapeSlotOps are
+// both aliases of this, so the only uncheckable mirror left is the shader's
+// VT_TAPE_MAX_OPS register file. Raised 64 -> 96 when the
 // StreamMountain P4 pass proved 64 binding (strata + speckle + seep terms were
 // cut for budget); the GPU cost is the register file and the arena slot, both
 // measured harmless at 64 with headroom.

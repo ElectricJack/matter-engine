@@ -13,7 +13,11 @@
 // ---------------------------------------------------------------------------
 // File-scope constants shared between parse (static fn) and eval.
 // ---------------------------------------------------------------------------
-static constexpr int kMaxOps = 96;
+// The surfaces/field op cap. NOT a second 96: the number lives once, in
+// terrain_field.h, because the GPU mirrors it and a silent divergence between
+// the parser's bound and the shader's register file is the kind of bug that
+// shows up as garbage texels rather than a compile error.
+static constexpr int kMaxOps = terrain_field::kMaxSurfaceOps;
 // The register file every tape evaluator puts on the stack. Sized for the
 // LARGER of the two caps: a surfaces tape is bounded at kMaxOps because the
 // GPU mirrors it, a habitat tape at kMaxHabitatOps because nothing does.
@@ -606,9 +610,12 @@ FieldRuntime::Material FieldRuntime::material_at(float x, float z) const {
 // SurfaceProgram — surfaces() classifier tape (chart-VT Phase 4, contract C4).
 // ---------------------------------------------------------------------------
 
-static_assert(kMaxOps == kMaxSurfaceOps,
-              "the surface tape's public op cap must equal the field "
-              "interpreter's register file (shader VT_TAPE_MAX_OPS mirrors it)");
+// (kMaxOps IS kMaxSurfaceOps now — see the alias at the top of this file. The
+// assert that used to guard the two literals against drift is gone with the
+// second literal. The one mirror that still cannot be checked by the compiler
+// is VT_TAPE_MAX_OPS in shaders_vk/vt_surface_tape.glsl; raising the cap means
+// raising it there too, and rebuilding SPIR-V — `make -C MatterEngine3` alone
+// does not.)
 
 namespace {
 
