@@ -384,6 +384,7 @@ struct RasterRecord {
     VkPipeline composite_pipeline;
     VkPipelineLayout composite_layout;
     VkDescriptorSet composite_set;
+    VkDescriptorSet environment_set;
     VkBuffer vertex_buffer;
     VkBuffer index_buffer;
     VkBuffer indirect_buffer;
@@ -429,6 +430,48 @@ struct RasterRecord {
     VkSceneRenderer* vt_hooks = nullptr;
     uint32_t vt_zone = 0;
 };
+
+struct AtmosphereLutRecord {
+    VkAtmosphere* atmosphere = nullptr;
+    float camera_y = 0.0f;
+    matter::Float3 to_sun{};
+    std::string* error = nullptr;
+    bool ok = false;
+};
+
+void record_atmosphere_luts(VkCommandBuffer command_buffer, void* user_data) {
+    auto& record = *static_cast<AtmosphereLutRecord*>(user_data);
+    record.ok = record.atmosphere && record.error &&
+        record.atmosphere->record(command_buffer, record.camera_y,
+                                  record.to_sun, *record.error);
+}
+
+struct NeutralCloudClearRecord {
+    matter::VkImageResource* images = nullptr;
+};
+
+void record_neutral_cloud_clear(VkCommandBuffer command_buffer, void* user_data) {
+    auto& record = *static_cast<NeutralCloudClearRecord*>(user_data);
+    const VkClearColorValue clear{{1.0f, 0.0f, 0.0f, 0.0f}};
+    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    for (uint32_t i = 0; i < 4; ++i) {
+        auto& image = record.images[i];
+        matter::record_image_transition(command_buffer, image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+        vkCmdClearColorImage(command_buffer, image.image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
+        matter::record_image_transition(command_buffer, image,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+}
 
 void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     auto& record = *static_cast<RasterRecord*>(user_data);
@@ -816,9 +859,11 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     vkCmdSetScissor(command_buffer, 0, 1, &scissor);
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       record.composite_pipeline);
+    const VkDescriptorSet composite_sets[] = {record.composite_set,
+                                               record.environment_set};
     vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            record.composite_layout, 0, 1,
-                            &record.composite_set, 0, nullptr);
+                            record.composite_layout, 0, 2,
+                            composite_sets, 0, nullptr);
     vkCmdPushConstants(command_buffer, record.composite_layout,
                        VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(record.lighting), &record.lighting);
@@ -1672,6 +1717,9 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyPipelineLayout(device, composite_pipeline_layout_, nullptr);
     if (composite_set_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device, composite_set_layout_, nullptr);
+    if (environment_set_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device, environment_set_layout_, nullptr);
+    for (auto& image : environment_cloud_neutral_) image.reset();
     if (raster_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, raster_pipeline_, nullptr);
     if (skinned_raster_pipeline_ != VK_NULL_HANDLE)
@@ -1706,6 +1754,7 @@ void VkSceneRenderer::destroy_pipeline() {
     skin_pipeline_layout_ = VK_NULL_HANDLE;
     skin_set_layout_ = VK_NULL_HANDLE;
     composite_set_layout_ = VK_NULL_HANDLE;
+    environment_set_layout_ = VK_NULL_HANDLE;
     composite_pipeline_layout_ = VK_NULL_HANDLE;
     composite_pipeline_ = VK_NULL_HANDLE;
     composite_sampler_ = VK_NULL_HANDLE;
@@ -1745,6 +1794,47 @@ void VkSceneRenderer::destroy_pipeline() {
     active_frame_index_ = 0;
     frame_resource_slot_capacity_ = 0;
     initialized_ = false;
+}
+
+bool VkSceneRenderer::create_environment_layout(std::string& error) {
+    const VkShaderStageFlags stages = VK_SHADER_STAGE_FRAGMENT_BIT |
+        VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+    VkDescriptorSetLayoutBinding bindings[7]{};
+    for (uint32_t binding = 0; binding < 6; ++binding)
+        bindings[binding] = descriptor_binding(
+            binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stages);
+    bindings[6] = descriptor_binding(6, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                     stages);
+    VkDescriptorSetLayoutCreateInfo info{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    info.bindingCount = 7;
+    info.pBindings = bindings;
+    const VkResult result = vkCreateDescriptorSetLayout(vulkan_->device(),
+        &info, nullptr, &environment_set_layout_);
+    return result == VK_SUCCESS ||
+        fail_vk("vkCreateDescriptorSetLayout(environment)", result, error);
+}
+
+bool VkSceneRenderer::create_environment_resources(std::string& error) {
+    if (!atmosphere_) {
+        error = "physical environment requires atmosphere LUT resources";
+        return false;
+    }
+    for (auto& image : environment_cloud_neutral_) {
+        if (!matter::create_image(*vulkan_, VK_IMAGE_TYPE_3D,
+                VK_FORMAT_R16_SFLOAT, {1, 1, 1},
+                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                image, error))
+            return false;
+    }
+    NeutralCloudClearRecord clear{environment_cloud_neutral_};
+    std::vector<std::shared_ptr<void>> lifetimes;
+    for (const auto& image : environment_cloud_neutral_)
+        lifetimes.push_back(image.lifetime);
+    return matter::submit_immediate(*vulkan_, record_neutral_cloud_clear,
+        &clear, error, matter::ImmediateSubmitPhase::staging_upload,
+        std::move(lifetimes));
 }
 
 bool VkSceneRenderer::create_pipeline(std::string& error) {
@@ -2165,8 +2255,10 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     push.size = 144;
     VkPipelineLayoutCreateInfo layout_info{
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layout_info.setLayoutCount = 1;
-    layout_info.pSetLayouts = &rt_set_layout_;
+    const VkDescriptorSetLayout rt_sets[] = {rt_set_layout_,
+                                              environment_set_layout_};
+    layout_info.setLayoutCount = 2;
+    layout_info.pSetLayouts = rt_sets;
     layout_info.pushConstantRangeCount = 1;
     layout_info.pPushConstantRanges = &push;
     result = vkCreatePipelineLayout(device, &layout_info, nullptr,
@@ -2615,8 +2707,10 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
                        error);
     VkPipelineLayoutCreateInfo composite_layout{
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    composite_layout.setLayoutCount = 1;
-    composite_layout.pSetLayouts = &composite_set_layout_;
+    const VkDescriptorSetLayout composite_sets[] = {composite_set_layout_,
+                                                     environment_set_layout_};
+    composite_layout.setLayoutCount = 2;
+    composite_layout.pSetLayouts = composite_sets;
     VkPushConstantRange lighting_range{};
     lighting_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     lighting_range.size = sizeof(VkSceneLighting);
@@ -3001,19 +3095,19 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     // samplers, 1 storage image, 1 storage buffer each) for the transmission
     // signal chain -- the counts below already fold those in.
     const VkDescriptorPoolSize pool_sizes[] = {
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count * 2},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count * 3},
         // 27 for the scene/VT buffers above, +1 for the per-module
         // draw-override table at binding 14.
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 28},
         // +1 for the M2.5 impostor atlas at scene binding 15.
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count *
-             (114 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
+             (120 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
               vt::kVtChannelCount)},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 34}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = frame_slot_count * 17;
+    pool.maxSets = frame_slot_count * 18;
     pool.poolSizeCount = 4;
     pool.pPoolSizes = pool_sizes;
     VkDescriptorPool next_pool = VK_NULL_HANDLE;
@@ -3029,12 +3123,13 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         return fail_vk("vkCreateDescriptorPool(cull)", result, error);
     std::vector<FrameResources> next_frames(frame_slot_count);
     std::vector<VkDescriptorSetLayout> layouts;
-    layouts.reserve(frame_slot_count * 17);
+    layouts.reserve(frame_slot_count * 18);
     for (size_t index = 0; index < frame_slot_count; ++index) {
         layouts.push_back(set_layouts_[0]);
         layouts.push_back(set_layouts_[1]);
         layouts.push_back(skin_set_layout_);
         layouts.push_back(composite_set_layout_);
+        layouts.push_back(environment_set_layout_);
         layouts.push_back(display_set_layout_);
         for (uint32_t i = 0; i < 3; ++i)
             layouts.push_back(gi_temporal_set_layout_);
@@ -3068,17 +3163,21 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     };
     for (size_t index = 0; index < frame_slot_count; ++index) {
         FrameResources& frame = next_frames[index];
-        frame.descriptor_sets[0] = sets[index * 17];
-        frame.descriptor_sets[1] = sets[index * 17 + 1];
-        frame.skin_descriptor_set = sets[index * 17 + 2];
-        frame.composite_descriptor_set = sets[index * 17 + 3];
-        frame.display_descriptor_set = sets[index * 17 + 4];
+        frame.descriptor_sets[0] = sets[index * 18];
+        frame.descriptor_sets[1] = sets[index * 18 + 1];
+        frame.skin_descriptor_set = sets[index * 18 + 2];
+        frame.composite_descriptor_set = sets[index * 18 + 3];
+        frame.environment_descriptor_set = sets[index * 18 + 4];
+        frame.display_descriptor_set = sets[index * 18 + 5];
         for (uint32_t i = 0; i < 3; ++i)
-            frame.gi_temporal_descriptor_sets[i] = sets[index * 17 + 5 + i];
+            frame.gi_temporal_descriptor_sets[i] = sets[index * 18 + 6 + i];
         for (uint32_t i = 0; i < 9; ++i)
-            frame.gi_atrous_descriptor_sets[i] = sets[index * 17 + 8 + i];
+            frame.gi_atrous_descriptor_sets[i] = sets[index * 18 + 9 + i];
         if (!ensure_candidate_buffer(frame.frame_constants,
                                      sizeof(FrameConstants),
+                                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.environment_constants,
+                                     sizeof(float) * 40,
                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.instances, sizeof(GpuInstance),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
@@ -3151,6 +3250,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             return false;
         }
         update_frame_descriptors(frame);
+        update_environment_descriptor(frame);
         if (gpu_timers_supported_) {
             VkQueryPoolCreateInfo ts_info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
             ts_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
@@ -5884,6 +5984,48 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
     vkUpdateDescriptorSets(vulkan_->device(), 11, writes, 0, nullptr);
 }
 
+void VkSceneRenderer::update_environment_descriptor(FrameResources& frame) {
+    // std140: two mat4 followed by two vec4. Cloud production begins in a
+    // later task; until then the valid R16F resources are neutral and state.x
+    // is exactly zero, so shaders never dereference cloud transforms.
+    float block[40]{};
+    block[0] = block[5] = block[10] = block[15] = 1.0f;
+    block[16] = block[21] = block[26] = block[31] = 1.0f;
+    if (frame.environment_constants.mapped) {
+        std::memcpy(frame.environment_constants.mapped, block, sizeof(block));
+        std::string ignored;
+        matter::flush_buffer(frame.environment_constants, 0, sizeof(block), ignored);
+    }
+    const matter::VkImageResource& sky = atmosphere_->sky_view();
+    const matter::VkImageResource& irradiance = atmosphere_->irradiance_sh();
+    VkDescriptorImageInfo images[6]{};
+    images[0] = {composite_sampler_, sky.view,
+                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    images[1] = {composite_sampler_, irradiance.view,
+                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    for (uint32_t i = 0; i < 4; ++i)
+        images[i + 2] = {composite_sampler_, environment_cloud_neutral_[i].view,
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorBufferInfo buffer{frame.environment_constants.buffer, 0,
+                                  sizeof(block)};
+    VkWriteDescriptorSet writes[7]{};
+    for (uint32_t i = 0; i < 6; ++i) {
+        writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writes[i].dstSet = frame.environment_descriptor_set;
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].pImageInfo = &images[i];
+    }
+    writes[6] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    writes[6].dstSet = frame.environment_descriptor_set;
+    writes[6].dstBinding = 6;
+    writes[6].descriptorCount = 1;
+    writes[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[6].pBufferInfo = &buffer;
+    vkUpdateDescriptorSets(vulkan_->device(), 7, writes, 0, nullptr);
+}
+
 void VkSceneRenderer::update_display_descriptor(VkDescriptorSet set,
                                                 VkImageView view) {
     VkDescriptorImageInfo image_info{};
@@ -6087,6 +6229,10 @@ bool VkSceneRenderer::init(std::string& error) {
     // That is the exact failure this milestone exists to make impossible, and
     // it reappeared here because a lazy initialiser is easy to attach to.
     if (!create_impostor_atlas(error)) return false;
+    if (!create_environment_layout(error)) {
+        destroy_pipeline();
+        return false;
+    }
     if (!create_pipeline(error)) {
         destroy_pipeline();
         return false;
@@ -6117,7 +6263,7 @@ bool VkSceneRenderer::init(std::string& error) {
     if (initialize_volumetrics && !volumetrics_) {
         auto vol = std::make_unique<VkVolumetrics>();
         std::string vol_error;
-        if (vol->init(*vulkan_, vol_error)) {
+        if (vol->init(*vulkan_, environment_set_layout_, vol_error)) {
             volumetrics_ = std::move(vol);
         } else {
             // Volumetrics are optional, but a failed init must not be silent:
@@ -6139,6 +6285,10 @@ bool VkSceneRenderer::init(std::string& error) {
         }
         atmosphere->request_settings(atmosphere_settings_);
         atmosphere_ = std::move(atmosphere);
+    }
+    if (!create_environment_resources(error)) {
+        destroy_pipeline();
+        return false;
     }
     if (sizeof(FrameConstants) >
         std::min(limits_.max_uniform_buffer_range, limits_.max_buffer_size)) {
@@ -6693,6 +6843,7 @@ bool VkSceneRenderer::record_test_surface_ray(
         return false;
     }
     FrameResources& selected = frames_[frame.frame_slot];
+    update_environment_descriptor(selected);
     if (invalid_part_slot != UINT32_MAX) {
         if (invalid_part_slot >= parts_.size() ||
             selected.rt_parts.mapped == nullptr) {
@@ -8074,6 +8225,7 @@ void VkSceneRenderer::set_lighting(const VkSceneLighting& lighting) {
         lighting.sun_angular_diameter_deg != lighting_.sun_angular_diameter_deg;
     if (lighting_initialized_ && source_changed)
         gi_history_reset_pending_ = true;
+    if (source_changed && volumetrics_) volumetrics_->invalidate_history();
     lighting_ = lighting;
     // The two disc cosines are DERIVED, not passed in: computing them here is
     // what guarantees every consumer (composite sky, RT environment, RT
@@ -8095,8 +8247,20 @@ void VkSceneRenderer::set_lighting(const VkSceneLighting& lighting) {
 
 void VkSceneRenderer::set_atmosphere_settings(
     const matter::AtmosphereSettings& settings) {
-    atmosphere_settings_ = matter::sanitize_atmosphere(settings);
+    const matter::AtmosphereSettings clean = matter::sanitize_atmosphere(settings);
+    const bool changed = clean.sea_level_y != atmosphere_settings_.sea_level_y ||
+        clean.rayleigh_scale != atmosphere_settings_.rayleigh_scale ||
+        clean.mie_scale != atmosphere_settings_.mie_scale ||
+        clean.mie_anisotropy != atmosphere_settings_.mie_anisotropy ||
+        clean.ozone_scale != atmosphere_settings_.ozone_scale ||
+        clean.ground_albedo != atmosphere_settings_.ground_albedo;
+    atmosphere_settings_ = clean;
     if (atmosphere_) atmosphere_->request_settings(atmosphere_settings_);
+    // Coefficient changes alter every indirect lighting consumer. Keep the
+    // one-shot GI reset coherent with the atmosphere's own dirty generation;
+    // unchanged per-frame calls intentionally do nothing.
+    if (changed && lighting_initialized_) gi_history_reset_pending_ = true;
+    if (changed && volumetrics_) volumetrics_->invalidate_history();
 }
 
 void VkSceneRenderer::set_display_exposure(float exposure_ev) {
@@ -11020,9 +11184,11 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     vkCmdBindPipeline(frame.command_buffer,
                       VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline_);
     const VkDescriptorSet rt_set = rt_descriptor_sets_[frame.frame_slot];
+    const VkDescriptorSet rt_sets[] = {rt_set,
+                                        frames_[frame.frame_slot].environment_descriptor_set};
     vkCmdBindDescriptorSets(frame.command_buffer,
                             VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
-                            rt_pipeline_layout_, 0, 1, &rt_set, 0, nullptr);
+                            rt_pipeline_layout_, 0, 2, rt_sets, 0, nullptr);
     vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                        VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(constants),
                        &constants);
@@ -11259,6 +11425,7 @@ bool VkSceneRenderer::record_cull_and_render(
     }
 
     FrameResources& selected = frames_[frame.frame_slot];
+    update_environment_descriptor(selected);
     const bool native_gi_effective = gi_settings_.enabled &&
         ray_tracing_settings_.enabled && vulkan_->ray_tracing_available() &&
         !rt_instances_.empty()
@@ -11467,6 +11634,7 @@ bool VkSceneRenderer::record_cull_and_render(
                         composite_pipeline_,
                         composite_pipeline_layout_,
                         selected.composite_descriptor_set,
+                        selected.environment_descriptor_set,
                         vertices_.buffer,
                         indices_.buffer,
                         selected.commands.buffer,
@@ -11505,8 +11673,11 @@ bool VkSceneRenderer::record_cull_and_render(
                         &selected.rt_tlas,
                         this,              // WP-E: vt_hooks
                         kGpuZoneVt};       // WP-E: vt_zone
-    if (volumetrics_)
+    if (volumetrics_) {
         volumetrics_->set_lighting(frame_lighting);
+        volumetrics_->set_environment_descriptor(
+            selected.environment_descriptor_set);
+    }
     // (vt_begin_frame ran near the top of this function — see the note there:
     // it rewrites scene set 1, which the cull dispatch has already bound by
     // the time control reaches here.)
@@ -11949,6 +12120,21 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
         return false;
     }
     FrameResources& selected = frames_[active_frame_index_];
+    if (atmosphere_) {
+        const matter::Float3 to_sun{-lighting_.sun_direction.x,
+                                    -lighting_.sun_direction.y,
+                                    -lighting_.sun_direction.z};
+        AtmosphereLutRecord atmosphere_record{atmosphere_.get(),
+                                               0.0f, to_sun, &error, false};
+        if (!matter::submit_immediate(*vulkan_, record_atmosphere_luts,
+                &atmosphere_record, error,
+                matter::ImmediateSubmitPhase::compute_dispatch,
+                {atmosphere_->sky_view().lifetime,
+                 atmosphere_->irradiance_sh().lifetime}) ||
+            !atmosphere_record.ok)
+            return false;
+    }
+    update_environment_descriptor(selected);
     update_composite_descriptor(selected);
     // Name the fields: production raster records gained per-skin LOD/cluster
     // streams and this legacy static-only path must keep every skin field empty.
@@ -11988,6 +12174,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     record.composite_pipeline = composite_pipeline_;
     record.composite_layout = composite_pipeline_layout_;
     record.composite_set = selected.composite_descriptor_set;
+    record.environment_set = selected.environment_descriptor_set;
     record.vertex_buffer = vertices_.buffer;
     record.index_buffer = indices_.buffer;
     record.indirect_buffer = selected.commands.buffer;

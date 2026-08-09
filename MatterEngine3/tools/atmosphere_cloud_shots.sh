@@ -7,7 +7,7 @@ LABEL="${2:?usage: atmosphere_cloud_shots.sh <suite> <label> <out-dir>}"
 OUT="${3:?usage: atmosphere_cloud_shots.sh <suite> <label> <out-dir>}"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
-FIFO="/tmp/matter_atmosphere_clouds_$$.fifo"
+FIFO="${TMPDIR:-/tmp}/matter_atmosphere_clouds_$$.fifo"
 LOG="$OUT/${LABEL}_viewer.log"
 COMMANDS="$OUT/${LABEL}_commands.log"
 PERF_OUTPUT="$OUT/${LABEL}_telemetry.json"
@@ -26,7 +26,9 @@ send() {
   fi
 }
 capture() {
-  local name="$1" png="$OUT/${LABEL}_${1}.png" shot_path
+  local name="$1" file_stem png shot_path
+  file_stem="${2:-${LABEL}_${name}}"
+  png="$OUT/${file_stem}.png"
   shot_path="$png"
   if [ "$WINDOWS_COMMAND_FILE" = 1 ]; then
     shot_path="$(cygpath -w "$png")"
@@ -48,7 +50,8 @@ else
 fi
 rm -f "$LOG" "$COMMANDS" "$PERF_OUTPUT" \
   "$OUT/${LABEL}_stats.log" "$OUT/${LABEL}_metrics.log" \
-  "$OUT/${LABEL}_"*.png "$OUT/${LABEL}_"*.png.done
+  "$OUT/${LABEL}_"*.png "$OUT/${LABEL}_"*.png.done \
+  "$OUT/physical-sky_"*.png "$OUT/physical-sky_"*.png.done
 : > "$COMMANDS"
 PID=""
 cleanup() {
@@ -142,7 +145,79 @@ case "$SUITE" in
       exit 1
     }
     ;;
-  atmosphere|froxel|cloud-lighting|cloud-shadows|final)
+  atmosphere)
+    [ "$WORLD" = StreamMountain ] || {
+      echo "ERROR: atmosphere suite requires StreamMountain" >&2
+      exit 2
+    }
+    send "set render.volumetrics.enabled true"
+    send "get render.volumetrics.enabled"
+    # Force the registered Current cost preset fields so persisted/user env
+    # overrides cannot silently turn this baseline into an enhanced run.
+    send "set render.volumetrics.froxel_xy_scale 1x"
+    send "set render.volumetrics.froxel_depth_slices 128"
+    send "set render.volumetrics.local_sun_march_steps 0"
+    send "set render.volumetrics.local_sun_march_distance_m 250"
+    send "set render.volumetrics.multiple_scattering_orders 1"
+    send "set render.volumetrics.multiple_scattering_strength 0"
+    send "set render.volumetrics.powder_strength 0"
+    send "set render.cloud_shadows.enabled false"
+    for property in \
+      render.volumetrics.froxel_xy_scale \
+      render.volumetrics.froxel_depth_slices \
+      render.volumetrics.local_sun_march_steps \
+      render.volumetrics.local_sun_march_distance_m \
+      render.volumetrics.multiple_scattering_orders \
+      render.volumetrics.multiple_scattering_strength \
+      render.volumetrics.powder_strength \
+      render.cloud_shadows.enabled \
+      render.atmosphere.sea_level_y \
+      render.atmosphere.rayleigh_scale \
+      render.atmosphere.mie_scale \
+      render.atmosphere.mie_anisotropy \
+      render.atmosphere.ozone_scale \
+      render.atmosphere.ground_albedo \
+      render.lighting.exposure_ev \
+      render.lighting.sun_multiplier \
+      render.lighting.sky_multiplier \
+      render.lighting.sun_tint \
+      render.lighting.sky_tint \
+      render.lighting.sun_azimuth_deg; do
+      send "get $property"
+    done
+    send "cam 20 760 350 0 420 0"
+    for _ in $(seq 1 300); do
+      grep -q 'bake-timing.*world-kind' "$LOG" 2>/dev/null && break
+      sleep 1
+    done
+    grep -q 'bake-timing.*world-kind' "$LOG" 2>/dev/null || {
+      echo "ERROR: StreamMountain sectors did not publish" >&2
+      exit 1
+    }
+    for elevation in 90 45 5 0 -5; do
+      if [ "$elevation" = "-5" ]; then
+        # Dark adaptation only for the below-horizon diagnostic: daylight
+        # remains at the world baseline while nonzero twilight is legible.
+        send "set render.lighting.exposure_ev 5"
+      else
+        send "set render.lighting.exposure_ev 0"
+      fi
+      send "get render.lighting.exposure_ev"
+      send "set render.lighting.sun_elevation_deg $elevation"
+      send "get render.lighting.sun_elevation_deg"
+      sleep 3
+      case "$elevation" in
+        90) capture "sun_90" "physical-sky_current-cost" ;;
+        *) capture "sun_${elevation}" "physical-sky_${elevation}deg" ;;
+      esac
+    done
+    for _ in $(seq 1 30); do [ -s "$PERF_OUTPUT" ] && break; sleep 1; done
+    [ -s "$PERF_OUTPUT" ] || {
+      echo "ERROR: telemetry timed out: $PERF_OUTPUT" >&2
+      exit 1
+    }
+    ;;
+  froxel|cloud-lighting|cloud-shadows|final)
     echo "ERROR: suite '$SUITE' is reserved for a later milestone" >&2
     exit 2
     ;;

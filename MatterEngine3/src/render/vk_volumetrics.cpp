@@ -108,8 +108,11 @@ VkVolumetrics::~VkVolumetrics() { destroy(); }
 // init
 // ---------------------------------------------------------------------------
 
-bool VkVolumetrics::init(matter::VulkanDevice& vulkan, std::string& error) {
+bool VkVolumetrics::init(matter::VulkanDevice& vulkan,
+                         VkDescriptorSetLayout environment_layout,
+                         std::string& error) {
     device_ = vulkan.device();
+    environment_set_layout_ = environment_layout;
 
     // Ray query availability follows the same ray-tracing capability check
     // that the engine uses for RT shadows.  If the device does not support
@@ -610,8 +613,10 @@ bool VkVolumetrics::create_scatter_pipeline(matter::VulkanDevice& vulkan,
 
     VkPipelineLayoutCreateInfo layout_info{
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layout_info.setLayoutCount = 1;
-    layout_info.pSetLayouts = &scatter_set_layout_;
+    const VkDescriptorSetLayout scatter_sets[] = {scatter_set_layout_,
+                                                   environment_set_layout_};
+    layout_info.setLayoutCount = 2;
+    layout_info.pSetLayouts = scatter_sets;
     layout_info.pushConstantRangeCount = 1;
     layout_info.pPushConstantRanges = &push;
     result = vkCreatePipelineLayout(device_, &layout_info, nullptr,
@@ -1139,9 +1144,11 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     scatter_pc.pad2 = 0.0f;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, scatter_pipeline_);
+    const VkDescriptorSet scatter_sets[] = {scatter_sets_[current],
+                                             environment_descriptor_set_};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            scatter_pipeline_layout_, 0, 1,
-                            &scatter_sets_[current], 0, nullptr);
+                            scatter_pipeline_layout_, 0, 2,
+                            scatter_sets, 0, nullptr);
     vkCmdPushConstants(cmd, scatter_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(ScatterConstants), &scatter_pc);
 
@@ -1285,6 +1292,8 @@ void VkVolumetrics::destroy() {
     integrate_sets_[1] = VK_NULL_HANDLE;
     density_set_layout_ = VK_NULL_HANDLE;
     scatter_set_layout_ = VK_NULL_HANDLE;
+    environment_set_layout_ = VK_NULL_HANDLE;
+    environment_descriptor_set_ = VK_NULL_HANDLE;
     integrate_set_layout_ = VK_NULL_HANDLE;
     linear_clamp_sampler_ = VK_NULL_HANDLE;
     linear_border_sampler_ = VK_NULL_HANDLE;

@@ -10,6 +10,7 @@
 #include "matter/engine_context.h"
 #include "matter/world_session.h"
 #include "matter/world_props.h"
+#include "matter/atmosphere.h"
 #include "matter/draw_overrides.h"
 #include "matter/stream_settings.h"
 #include "matter/vt_budgets.h"
@@ -7538,10 +7539,17 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // constants, the volumetric scatter pass via frame_lighting) reads them
     // from here, so tinted direct light and tinted in-scattering cannot
     // disagree. A white tint is bit-exact (x * 1.0f == x).
-    lighting.sun_color = {
-        impl_->manifest.lights.sun_color[0] * controls.sun_multiplier * controls.sun_tint[0],
-        impl_->manifest.lights.sun_color[1] * controls.sun_multiplier * controls.sun_tint[1],
-        impl_->manifest.lights.sun_color[2] * controls.sun_multiplier * controls.sun_tint[2]};
+    // `sun_direction` is the engine's sun-to-scene convention. The physical
+    // helper deliberately consumes that convention and performs the one
+    // required negation internally; passing `to_sun` here would light the
+    // below-horizon sun as if it were overhead.
+    lighting.sun_color = atmosphere_direct_sun_rgb(
+        opts.atmosphere, cam.position.y, lighting.sun_direction,
+        {impl_->manifest.lights.sun_color[0],
+         impl_->manifest.lights.sun_color[1],
+         impl_->manifest.lights.sun_color[2]},
+        {controls.sun_tint[0], controls.sun_tint[1], controls.sun_tint[2]},
+        controls.sun_multiplier);
     lighting.sky_color = {
         impl_->manifest.lights.sky_color[0] * controls.sky_multiplier * controls.sky_tint[0],
         impl_->manifest.lights.sky_color[1] * controls.sky_multiplier * controls.sky_tint[1],
@@ -7549,6 +7557,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     lighting.emission_multiplier = controls.emission_multiplier;
     lighting.vol_enabled = opts.volumetrics.enabled ? 1.0f : 0.0f;
     lighting.vol_debug_view = opts.volumetrics.vol_debug_view;
+    // Request the live coefficients before the renderer records this frame's
+    // LUT work. Unchanged settings are a no-op inside VkAtmosphere.
+    impl_->vk_scene->set_atmosphere_settings(opts.atmosphere);
     impl_->vk_scene->set_lighting(lighting);
     impl_->vk_scene->set_display_exposure(controls.exposure_ev);
     impl_->vk_scene->set_composite_debug_view(controls.composite_debug_view);

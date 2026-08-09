@@ -598,7 +598,7 @@ build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
     $(ME3_DIR)/shaders_vk/tileset_common.glsl
 
 build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
-    $(ME3_DIR)/shaders_vk/sky_common.glsl
+    $(ME3_DIR)/shaders_vk/environment_common.glsl
 
 build/shaders_vk/gi_temporal.comp.spv build/shaders_vk/gi_atrous.comp.spv: \
     $(ME3_DIR)/shaders_vk/gi_common.glsl

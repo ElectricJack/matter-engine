@@ -32,8 +32,15 @@ void main() {
         float cosine = dot(view, sun);
         vec3 source = (ATM_RAYLEIGH * atmosphere.settings0.x * atmosphere_density_rayleigh(height_m) * rayleigh_phase(cosine) +
                        ATM_MIE_SCATTER * atmosphere.settings0.y * atmosphere_density_mie(height_m) * mie_phase(cosine));
-        vec3 multi = texture(multiscatter_tex, vec2((local_sun_mu+1.0)*0.5, height_m/100000.0)).rgb;
-        light += view_t * (ATM_EXTRATERRESTRIAL_SOLAR_RGB * sun_t * source + multi) *
+        // multiscatter LUT stores local radiance, not a radiance-per-metre
+        // source. Convert it with the local extinction/scattering density
+        // before this path integral applies its segment length.
+        vec3 multi_radiance = texture(multiscatter_tex,
+            vec2((local_sun_mu+1.0)*0.5, height_m/100000.0)).rgb;
+        vec3 multi_source = multi_radiance *
+            (ATM_RAYLEIGH * atmosphere.settings0.x * atmosphere_density_rayleigh(height_m) +
+             ATM_MIE_SCATTER * atmosphere.settings0.y * atmosphere_density_mie(height_m));
+        light += view_t * (ATM_EXTRATERRESTRIAL_SOLAR_RGB * sun_t * source + multi_source) *
                  (distance_t/32.0);
     }
     if (ground) {

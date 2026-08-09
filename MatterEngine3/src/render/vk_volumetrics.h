@@ -59,7 +59,8 @@ public:
 
     // Create all GPU resources (images, buffers, pipelines, descriptors).
     // Returns false and populates |error| on any Vulkan failure.
-    bool init(matter::VulkanDevice& vulkan, std::string& error);
+    bool init(matter::VulkanDevice& vulkan,
+              VkDescriptorSetLayout environment_layout, std::string& error);
 
     // Latch the per-frame settings from the UI / world definition.
     void update_settings(const matter::VulkanVolumetricsSettings& vol,
@@ -169,10 +170,12 @@ private:
 
     // Scatter pass resources (2 descriptor sets for ping-pong).
     VkDescriptorSetLayout scatter_set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout environment_set_layout_ = VK_NULL_HANDLE;  // borrowed
     VkPipelineLayout scatter_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline scatter_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorPool scatter_pool_ = VK_NULL_HANDLE;
     VkDescriptorSet scatter_sets_[2] = {};   // [ping_index] is write target
+    VkDescriptorSet environment_descriptor_set_ = VK_NULL_HANDLE;
 
     // Integrate pass resources.
     VkDescriptorSetLayout integrate_set_layout_ = VK_NULL_HANDLE;
@@ -217,6 +220,10 @@ private:
 public:
     // Set lighting state that the scatter pass needs.
     void set_lighting(const VkSceneLighting& lighting);
+    void set_environment_descriptor(VkDescriptorSet set) {
+        environment_descriptor_set_ = set;
+    }
+    void invalidate_history() { has_prev_matrices_ = false; }
 };
 
 }  // namespace viewer

@@ -1533,6 +1533,10 @@ private:
 
     struct FrameResources {
         matter::VkBufferResource frame_constants;
+        // Set-1 physical environment state is deliberately per frame slot so
+        // a new camera/sun cannot rewrite storage still referenced by a
+        // submitted composite, RT, or froxel dispatch.
+        matter::VkBufferResource environment_constants;
         matter::VkBufferResource instances;
         matter::VkBufferResource commands;
         matter::VkBufferResource draw_transforms;
@@ -1569,6 +1573,7 @@ private:
         VkDescriptorSet descriptor_sets[2]{};
         VkDescriptorSet skin_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;
+        VkDescriptorSet environment_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet display_descriptor_set = VK_NULL_HANDLE;
         // Three denoised signals (diffuse, specular, transmission), one
         // temporal set each and three a-trous ping-pong sets each.
@@ -1679,6 +1684,8 @@ private:
         std::string& error);
 
     bool create_pipeline(std::string& error);
+    bool create_environment_layout(std::string& error);
+    bool create_environment_resources(std::string& error);
     bool create_raster_pipelines(std::string& error);
     bool create_display_pipeline(std::string& error);
     bool create_ray_tracing_pipeline(std::string& error);
@@ -1723,6 +1730,7 @@ private:
     void probe_skin_raster_draws(
         const std::vector<VkSkinRasterDraw>& draws) const;
     void update_composite_descriptor(FrameResources& frame);
+    void update_environment_descriptor(FrameResources& frame);
     void update_display_descriptor(VkDescriptorSet set, VkImageView view);
     bool upload_scene_buffers(FrameResources& frame,
                               VkCommandBuffer material_command_buffer,
@@ -1924,9 +1932,11 @@ private:
     VkPipeline wireframe_raster_pipeline_ = VK_NULL_HANDLE;
     VkPipeline wireframe_skinned_raster_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout composite_set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout environment_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline composite_pipeline_ = VK_NULL_HANDLE;
     VkSampler composite_sampler_ = VK_NULL_HANDLE;
+    matter::VkImageResource environment_cloud_neutral_[4];
     VkSampler vol_linear_sampler_ = VK_NULL_HANDLE;  // trilinear for froxel volume
     VkDescriptorSetLayout display_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout display_pipeline_layout_ = VK_NULL_HANDLE;

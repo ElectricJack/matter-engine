@@ -1672,6 +1672,124 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
               bright_center.hdr.z > dark_center.hdr.z,
           "authored world sky lighting changes raster pixels");
 
+    // Task 7 must make this a real physical-atmosphere readback, rather than
+    // merely changing the final sun RGB on the CPU.  (4,4) is a reliable
+    // depth-miss, away from the analytic sun disc, while the center triangle
+    // is an upward-facing receiver.  Keep the sky modifier non-zero: in the
+    // physical ABI it is a componentwise LUT modifier, not an on/off switch.
+    const MaterialGpuRecord physical_receiver = materials[7];
+    materials[7].base_roughness[0] = 1.0f;
+    materials[7].base_roughness[1] = 1.0f;
+    materials[7].base_roughness[2] = 1.0f;
+    materials[7].emission_strength[0] = 0.0f;
+    materials[7].emission_strength[1] = 0.0f;
+    materials[7].emission_strength[2] = 0.0f;
+    materials[7].emission_strength[3] = 0.0f;
+    CHECK(renderer.update_materials(materials, 7, 2, error) &&
+              renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+          error.empty() ? "stage neutral physical-atmosphere receiver"
+                        : error.c_str());
+
+    struct AtmosphereRasterCase {
+        viewer::VkRasterPixel direct_on{};
+        viewer::VkRasterPixel direct_off{};
+        viewer::VkRasterPixel sky{};
+    };
+    const matter::AtmosphereSettings physical_atmosphere{};
+    const auto render_atmosphere_case = [&](float elevation_deg,
+                                            AtmosphereRasterCase& result) {
+        const matter::Float3 to_sun =
+            matter::atmosphere_to_sun_from_elevation_deg(elevation_deg);
+        viewer::VkSceneLighting lighting{};
+        // VkSceneLighting stores the engine convention (sun -> scene), while
+        // the physical helpers above first construct to_sun.
+        lighting.sun_direction = {-to_sun.x, -to_sun.y, -to_sun.z};
+        lighting.sun_color = matter::atmosphere_direct_sun_rgb(
+            physical_atmosphere, camera.position.y, lighting.sun_direction,
+            {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f}, 1.0f);
+        lighting.sun_intensity = 1.0f;
+        lighting.sky_color = {1.0f, 1.0f, 1.0f};
+        renderer.set_lighting(lighting);
+        CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+              error.empty() ? "render physical-atmosphere direct-on case"
+                            : error.c_str());
+        CHECK(renderer.readback_raster_pixel(width / 2, height / 2,
+                                             result.direct_on, error) &&
+                  renderer.readback_raster_pixel(4, 4, result.sky, error),
+              error.empty() ? "read physical-atmosphere direct-on pixels"
+                            : error.c_str());
+
+        lighting.sun_intensity = 0.0f;
+        renderer.set_lighting(lighting);
+        CHECK(renderer.render_gbuffer_and_composite(width, height, error) &&
+                  renderer.readback_raster_pixel(width / 2, height / 2,
+                                                 result.direct_off, error),
+              error.empty() ? "read physical-atmosphere direct-off receiver"
+                            : error.c_str());
+    };
+    AtmosphereRasterCase noon{};
+    AtmosphereRasterCase low_sun{};
+    AtmosphereRasterCase twilight{};
+    render_atmosphere_case(90.0f, noon);
+    render_atmosphere_case(5.0f, low_sun);
+    render_atmosphere_case(-5.0f, twilight);
+    const auto finite_hdr = [](const viewer::VkRasterPixel& pixel) {
+        return std::isfinite(pixel.hdr.x) && std::isfinite(pixel.hdr.y) &&
+               std::isfinite(pixel.hdr.z) && std::isfinite(pixel.hdr.w);
+    };
+    const auto rgb_luma = [](const viewer::VkRasterPixel& pixel) {
+        return 0.2126f * pixel.hdr.x + 0.7152f * pixel.hdr.y +
+               0.0722f * pixel.hdr.z;
+    };
+    const auto direct_luma = [&](const AtmosphereRasterCase& value) {
+        return std::max(0.0f, rgb_luma(value.direct_on) -
+                                  rgb_luma(value.direct_off));
+    };
+    CHECK(finite_hdr(noon.sky) && finite_hdr(low_sun.sky) &&
+              finite_hdr(twilight.sky) && noon.sky.hdr.x > 1e-4f &&
+              noon.sky.hdr.y > 1e-4f && noon.sky.hdr.z > 1e-4f &&
+              low_sun.sky.hdr.x > 1e-4f && low_sun.sky.hdr.y > 1e-4f &&
+              low_sun.sky.hdr.z > 1e-4f && twilight.sky.hdr.x > 1e-4f &&
+              twilight.sky.hdr.y > 1e-4f && twilight.sky.hdr.z > 1e-4f,
+          "physical sky is finite and nonblack at 90, 5, and -5 degrees");
+    CHECK(std::fabs(noon.sky.hdr.x - low_sun.sky.hdr.x) > 1e-2f ||
+              std::fabs(noon.sky.hdr.y - low_sun.sky.hdr.y) > 1e-2f ||
+              std::fabs(noon.sky.hdr.z - low_sun.sky.hdr.z) > 1e-2f ||
+              std::fabs(low_sun.sky.hdr.x - twilight.sky.hdr.x) > 1e-2f ||
+              std::fabs(low_sun.sky.hdr.y - twilight.sky.hdr.y) > 1e-2f ||
+              std::fabs(low_sun.sky.hdr.z - twilight.sky.hdr.z) > 1e-2f,
+          "physical sky readback changes with solar elevation");
+    const float noon_direct = direct_luma(noon);
+    const float low_sun_direct = direct_luma(low_sun);
+    const float twilight_direct = direct_luma(twilight);
+    CHECK(noon_direct > low_sun_direct && low_sun_direct > 1e-4f &&
+              twilight_direct < 1e-4f,
+          "GPU direct sun is positive/dimmer near the horizon and zero below it");
+    const float noon_blue = std::max(noon.direct_on.hdr.z -
+                                         noon.direct_off.hdr.z,
+                                     1e-5f);
+    const float low_blue = std::max(low_sun.direct_on.hdr.z -
+                                        low_sun.direct_off.hdr.z,
+                                    1e-5f);
+    const float noon_warmth = (noon.direct_on.hdr.x - noon.direct_off.hdr.x) /
+                              noon_blue;
+    const float low_warmth =
+        (low_sun.direct_on.hdr.x - low_sun.direct_off.hdr.x) / low_blue;
+    CHECK(low_warmth > noon_warmth,
+          "GPU direct sun becomes warmer near the horizon");
+    std::printf("physical atmosphere raster: noon=%.5f low=%.5f twilight=%.5f "
+                "sky90=%.5f %.5f %.5f sky5=%.5f %.5f %.5f sky-5=%.5f %.5f %.5f\n",
+                noon_direct, low_sun_direct, twilight_direct, noon.sky.hdr.x,
+                noon.sky.hdr.y, noon.sky.hdr.z, low_sun.sky.hdr.x,
+                low_sun.sky.hdr.y, low_sun.sky.hdr.z, twilight.sky.hdr.x,
+                twilight.sky.hdr.y, twilight.sky.hdr.z);
+
+    materials[7] = physical_receiver;
+    CHECK(renderer.update_materials(materials, 8, 2, error) &&
+              renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+          error.empty() ? "restore raster material after physical-atmosphere case"
+                        : error.c_str());
+
     const VkImage old_albedo = attachments.albedo.image;
     const VkDeviceSize initial_vertex_capacity =
         renderer.raster_vertex_buffer_size();

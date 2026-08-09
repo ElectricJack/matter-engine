@@ -71,7 +71,7 @@ layout(push_constant) uniform SceneLighting {
     float sun_disc_cos_core;
 } lighting;
 
-#include "sky_common.glsl"
+#include "environment_common.glsl"
 
 vec3 compute_view_ray(vec2 uv) {
     vec3 fwd = vec3(lighting.camera_fwd_x, lighting.camera_fwd_y,
@@ -143,13 +143,13 @@ float integrated_slice_at_depth(float depth) {
 void main() {
     // Ahead of the sky early-out below, so the depth view covers the whole
     // frame (sky reads hw depth 0 -> camera_far -> t = 1) rather than being
-    // punched through by sky_with_sun wherever the gbuffer normal is empty.
+    // punched through by the physical sky wherever the gbuffer normal is empty.
     // debug_view 4.0: the GBuffer albedo, untouched by lighting. It exists for
     // the shaders that write a diagnostic FIELD into albedo rather than a
     // colour -- today gbuffer.frag's render.pom.horizon_debug, which draws the
     // baked horizon term and the reference march as greyscale over the
     // parallaxed ground. Anything lit is unreadable as a field: ambient scales
-    // it by sky_irradiance(normal), which sweeps across a curved surface, so a
+    // it by physical irradiance, which sweeps across a curved surface, so a
     // field that varied and a surface that curved would look the same.
     //
     // Ahead of the depth view for the same reason that one is ahead of the sky
@@ -175,11 +175,11 @@ void main() {
     if (normal_length_squared <= 1e-20) {
         vec3 ray = compute_view_ray(in_uv);
         vec3 to_sun = normalize(-lighting.sun_direction);
-        vec3 sky = sky_with_sun(ray, lighting.sky_color,
-                                to_sun, lighting.sun_color,
-                                lighting.sun_intensity,
-                                lighting.sun_disc_cos_edge,
-                                lighting.sun_disc_cos_core);
+        vec3 sky = sample_physical_sky(ray, to_sun, lighting.sky_color);
+        float disc = smoothstep(lighting.sun_disc_cos_edge,
+                                lighting.sun_disc_cos_core,
+                                dot(normalize(ray), to_sun));
+        sky += lighting.sun_color * lighting.sun_intensity * disc;
         if (lighting.vol_enabled > 0.5) {
             vec3 far_uvw = vec3(in_uv, 1.0 - 0.5 / float(VOL_D));
             vec4 integrated = texture(vol_integrated_texture, far_uvw);
@@ -196,7 +196,7 @@ void main() {
     float metallic = orm.y;
     float ao = orm.z;
     vec3 diffuse = albedo.rgb * (1.0 - metallic);
-    vec3 ambient = diffuse * sky_irradiance(normal, lighting.sky_color) * ao;
+    vec3 ambient = diffuse * sample_sky_irradiance(normal, lighting.sky_color) * ao;
     vec3 visibility = texture(visibility_texture, in_uv).rgb;
     if (lighting.debug_view > 1.5) {
         out_hdr = vec4(normal * 0.5 + 0.5, 1.0);
@@ -356,18 +356,20 @@ void main() {
             vec3 fallback_absorption = mat.absorption_pad.rgb;
             if (dot(fallback_absorption, fallback_absorption) < 1e-8)
                 fallback_absorption = vec3(1.0);
-            transmission.rgb = sky_with_sun(through_dir, lighting.sky_color,
-                                            to_sun, lighting.sun_color,
-                                            lighting.sun_intensity * 0.5,
-                                            lighting.sun_disc_cos_edge,
-                                            lighting.sun_disc_cos_core)
-                             * fallback_absorption;
-            glass_reflection = sky_with_sun(reflect_dir, lighting.sky_color,
-                                            to_sun, lighting.sun_color,
-                                            lighting.sun_intensity,
-                                            lighting.sun_disc_cos_edge,
-                                            lighting.sun_disc_cos_core)
-                             * fresnel * mat_trans;
+            float through_disc = smoothstep(lighting.sun_disc_cos_edge,
+                                             lighting.sun_disc_cos_core,
+                                             dot(normalize(through_dir), to_sun));
+            transmission.rgb = (sample_physical_sky(through_dir, to_sun,
+                                                     lighting.sky_color) +
+                                lighting.sun_color * lighting.sun_intensity *
+                                    through_disc * 0.5) * fallback_absorption;
+            float reflection_disc = smoothstep(lighting.sun_disc_cos_edge,
+                                                lighting.sun_disc_cos_core,
+                                                dot(normalize(reflect_dir), to_sun));
+            glass_reflection = (sample_physical_sky(reflect_dir, to_sun,
+                                                     lighting.sky_color) +
+                               lighting.sun_color * lighting.sun_intensity *
+                                   reflection_disc) * fresnel * mat_trans;
         }
     }
     vec3 linear_hdr = (ambient + sun * mix(1.0, 0.65, roughness) +

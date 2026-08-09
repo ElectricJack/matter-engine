@@ -3,7 +3,7 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "rt_surface_common.glsl"
-#include "sky_common.glsl"
+#include "environment_common.glsl"
 // IMPOSTOR_IDENTITY_BIT + impostor_identity_material(). gbuffer.frag sets bit
 // 31 of the identity attachment's .x on billboard fragments, so every use of
 // it as a material index here has to mask first.
@@ -171,15 +171,17 @@ vec3 rough_refract(vec3 incident, vec3 view, vec3 normal, float eta,
 }
 
 vec3 sky_environment(vec3 direction) {
-    return procedural_sky(direction, constants.sky_color);
+    return sample_physical_sky(direction, normalize(constants.to_sun),
+                               constants.sky_color);
 }
 
-vec3 environment(vec3 direction) {
-    return sky_with_sun(direction, constants.sky_color,
-                        normalize(constants.to_sun), constants.sun_color,
-                        constants.sun_intensity,
-                        constants.sun_disc_cos_edge,
-                        constants.sun_disc_cos_core);
+vec3 environment_radiance(vec3 direction) {
+    vec3 to_sun = normalize(constants.to_sun);
+    float disc = smoothstep(constants.sun_disc_cos_edge,
+                            constants.sun_disc_cos_core,
+                            dot(normalize(direction), to_sun));
+    return sample_physical_sky(direction, to_sun, constants.sky_color) +
+           constants.sun_color * constants.sun_intensity * disc;
 }
 
 vec3 reflection_environment(vec3 direction, float roughness) {
@@ -194,15 +196,17 @@ vec3 reflection_environment(vec3 direction, float roughness) {
     float lobe_solid_angle = 3.14159265 * alpha * alpha;
     float prefilter =
         sun_solid_angle / max(lobe_solid_angle, sun_solid_angle);
-    float sun_disk = sun_disc(direction, constants.to_sun,
-                              constants.sun_disc_cos_edge,
-                              constants.sun_disc_cos_core);
-    return procedural_sky(direction, constants.sky_color) + constants.sun_color *
+    float sun_disk = smoothstep(constants.sun_disc_cos_edge,
+                                constants.sun_disc_cos_core,
+                                dot(normalize(direction),
+                                    normalize(constants.to_sun)));
+    return sample_physical_sky(direction, normalize(constants.to_sun),
+                               constants.sky_color) + constants.sun_color *
            constants.sun_intensity * sun_disk * prefilter;
 }
 
 vec3 rt_sky_irradiance(vec3 normal) {
-    return sky_irradiance(normal, constants.sky_color);
+    return sample_sky_irradiance(normal, constants.sky_color);
 }
 
 // --- WP-G ray cone model ----------------------------------------------------
@@ -530,7 +534,7 @@ void main() {
                     vertex_origin, constants.bias, direction,
                     constants.max_distance, 1);
         if ((hit.surface.flags & RT_SURFACE_VALID) == 0u) {
-            bounce += throughput * horizon_ray_scale * environment(direction);
+            bounce += throughput * horizon_ray_scale * environment_radiance(direction);
             break;
         }
         vec3 hit_base;
@@ -773,7 +777,7 @@ void main() {
                         // thickness stands in for the medium path length.
                         path_length = max(path_length,
                                           trans_material.transmission.z);
-                        exit_radiance = environment(walk_dir);
+                        exit_radiance = environment_radiance(walk_dir);
                         shaded = true;
                         break;
                     }
@@ -818,7 +822,7 @@ void main() {
                                                                 to_sun);
                             signal_t = path_length + hit.surface.hit_t;
                         } else {
-                            exit_radiance = environment(exit_dir);
+                            exit_radiance = environment_radiance(exit_dir);
                         }
                         shaded = true;
                         break;
@@ -836,7 +840,7 @@ void main() {
                     // the environment along the last internal direction.
                     path_length = max(path_length,
                                       trans_material.transmission.z);
-                    exit_radiance = environment(walk_dir);
+                    exit_radiance = environment_radiance(walk_dir);
                 }
                 vec3 absorption_color = trans_material.absorption_pad.rgb;
                 // Legacy glass packs black absorption; treat as clear.
