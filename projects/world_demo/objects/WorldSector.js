@@ -26,6 +26,25 @@ import {
 // computed per 64 m cell so a placement does not move when its carrier tile
 // changes size -- see the cell loop in build().
 const SECTOR = 64.0;
+
+// ---- ScriptProfile slots (MatterEngine3/src/dsl_bindings.h) ----------------
+//
+// The sector-level split, one level above alpine_ecology.js's. `sector.terrain`
+// is the native mesher call and is here as the SCALE: every other label is
+// only meaningful against something known to be real work. Inert unless
+// MATTER_SCRIPT_PROFILE is set.
+//
+// typeof-guarded for the same reason alpine_ecology.js guards: this file is
+// evaluated by more than one kind of JS context and their preludes differ.
+const pslot  = typeof profSlot  === 'function' ? profSlot  : () => -1;
+const pbegin = typeof profBegin === 'function' ? profBegin : () => {};
+const pend   = typeof profEnd   === 'function' ? profEnd   : () => {};
+
+const P_TERRAIN  = pslot('sector.terrain');
+const P_BOULDERS = pslot('sector.boulders');
+const P_PLAN     = pslot('sector.plan');
+const P_PLACE    = pslot('sector.place');
+const P_ROCKS    = pslot('sector.rocks');
 const ROCK_VARIANTS    = 8, PEBBLE_VARIANTS = 6, GRASS_VARIANTS = 5;
 const TREE_VARIANTS    = 3;
 // Reuse the modest cached rock meshes and scale their instances to colossal
@@ -175,7 +194,9 @@ class WorldSector extends Part {
     // everywhere, so no unequal pair existed to crack.
     const terrainLod = p.terrainLod === undefined ? 5 : (p.terrainLod | 0);
     const voxelRung = Math.max(-5, Math.min(0, terrainLod - 5));
+    pbegin(P_TERRAIN);
     this.terrainVolume(p.tx, p.tz, voxelRung, p.edgeMask | 0, terrainMaterials);
+    pend(P_TERRAIN);
     if (!table) return;   // no biome table -> terrain only
 
     // ---- SCATTER RUNS PER FIXED 64 m CELL, NOT PER TILE --------------------
@@ -254,6 +275,7 @@ class WorldSector extends Part {
     const inSector = () => [ox + r.range(0, SECTOR), oz + r.range(0, SECTOR)];
 
     // ---- every tier: landmark boulders --------------------------------------
+    pbegin(P_BOULDERS);
     for (const c of candidatesInRect(seed, 2, BOULDER_MIN_DIST, ox, oz, SECTOR, SECTOR)) {
       if (this.biomeAt(c.x, c.z) === 'ocean') continue;
       const sz = BOULDER_SIZES[(c.u * BOULDER_SIZES.length) | 0];
@@ -266,6 +288,7 @@ class WorldSector extends Part {
       this.placeChild('Rock', { seed: (c.u * 16 | 0) % BOULDER_SEEDS, size: sz });
       this.popMatrix();
     }
+    pend(P_BOULDERS);
 
     // ---- VEGETATION STOPS WHERE IT CANNOT BE RESOLVED ----------------------
     //
@@ -302,6 +325,7 @@ class WorldSector extends Part {
     const scatterRocks = () => {
       // ---- tier >= 1: rocks (scree fields) and pebbles ----------------------
       // Baseline sparse rocks everywhere; full density inside scree patches.
+      pbegin(P_ROCKS);
       for (let i = 0, n = (counts.rocks | 0) * 3; i < n; ++i) {
         const [wx, wz] = inSector();
         if (this.biomeAt(wx, wz) === 'ocean') continue;
@@ -310,16 +334,27 @@ class WorldSector extends Part {
         const s = r.range(0.6, 1.8);
         put('Rock', { seed: r.int(ROCK_VARIANTS) }, wx, wz, s, 0.15 * s);
       }
+      pend(P_ROCKS);
     };
 
     if (isAlpineProfile(table)) {
       if (p.rung >= 1) scatterRocks();
-      for (const placement of planAlpineSector({
+      // Split PLAN from PLACE. They look like one loop and are not: planning
+      // is field sampling and asset selection, while placing is matrix pushes
+      // and one placeChild per survivor -- and placeChild's cost is the
+      // engine's, not the ecology's. Reading them as a single number is how a
+      // scatter investigation ends up optimizing the wrong half.
+      pbegin(P_PLAN);
+      const planned = planAlpineSector({
         rung: p.rung, worldSeed: seed, ox, oz, sectorSize: SECTOR,
         heightAt: this.heightAt.bind(this), slopeAt: this.slopeAt.bind(this),
         candidatesInRect, biomeAt: this.biomeAt.bind(this),
         habitatAt: hasHabitat ? this.habitatAt.bind(this) : undefined,
-      })) putPlanned(placement);
+      });
+      pend(P_PLAN);
+      pbegin(P_PLACE);
+      for (const placement of planned) putPlanned(placement);
+      pend(P_PLACE);
       return;
     }
 

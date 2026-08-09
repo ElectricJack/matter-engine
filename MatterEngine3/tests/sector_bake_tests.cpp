@@ -518,6 +518,82 @@ class BareHab extends Part {
               nb.error.message.c_str());
     }
 
+    // ---- __candidatesInRect is BITWISE identical to the JS ------------------
+    //
+    // Every scatter placement in every world is derived from these hashes, so
+    // a native implementation that is merely close moves trees, rocks and
+    // grass everywhere -- silently, and only visible as "the world changed".
+    // The JS reference stays in scatter_grid.js as candidatesInRectJs
+    // precisely so this comparison can exist.
+    //
+    // Compared inside a real bake (rather than by reimplementing the hash in
+    // C++ here) because that is the only place both implementations are
+    // reachable at once, and because it also proves the binding is installed
+    // where the ecology actually calls it.
+    //
+    // The rects are the REAL ones: the tree grid over a 64 m cell padded by
+    // 16 m on every side at 1.65 m spacing, and the grass grid at 0.63 m --
+    // the densest in the world, and the one where an off-by-one in the cell
+    // loop would first show.
+    {
+        printf("== candidatesInRect: native vs JS ==\n");
+        static const char* cmp_src = R"JS(
+import { candidatesInRect, candidatesInRectJs } from 'shared-lib/scatter_grid';
+class GridCmp extends Part {
+  build(p) {
+    const cases = [
+      [31, 1.65, -16, -16, 96, 96],     // trees, padded cell
+      [47, 0.63, 0, 0, 64, 64],         // grass, densest grid
+      [2, 180.0, 0, 0, 64, 64],         // landmark boulders, sparsest
+      [37, 1.58, -640, 448, 64, 64],    // shrubs, away from the origin
+      [41, 1.26, 63.5, -0.5, 64, 64],   // non-integer rect origin
+    ];
+    let total = 0;
+    for (const [kind, minDist, x0, z0, w, h] of cases) {
+      const a = candidatesInRect(42, kind, minDist, x0, z0, w, h);
+      const b = candidatesInRectJs(42, kind, minDist, x0, z0, w, h);
+      if (a.length !== b.length)
+        throw new Error('count ' + kind + ': ' + a.length + ' vs ' + b.length);
+      for (let i = 0; i < a.length; ++i) {
+        // Strict equality on doubles, deliberately: the claim under test is
+        // bitwise identity, and a tolerance here would pass exactly the drift
+        // this exists to catch.
+        if (a[i].x !== b[i].x || a[i].z !== b[i].z || a[i].rot !== b[i].rot ||
+            a[i].u !== b[i].u || a[i].v !== b[i].v)
+          throw new Error('candidate ' + kind + '[' + i + '] differs');
+      }
+      total += a.length;
+    }
+    if (total < 100) throw new Error('suspiciously few candidates: ' + total);
+    this.terrainVolume(0, 0, 0, 0, [16,16,16,16]);
+  }
+}
+)JS";
+        BakeOptions gopts;
+        gopts.parts_dir = parts_dir;
+        gopts.world.field = &field;
+        gopts.world.sector_size = 16.0f;
+        BakeResult gr = host.bake_source(cmp_src, "{}", gopts);
+        CHECK(gr.error.ok, gr.error.message.c_str());
+        printf("  native == JS over 5 real rects (trees, grass, boulders, "
+               "shrubs, off-origin)\n");
+
+        // And the binding is actually REACHED -- a `typeof` guard that
+        // silently fell through to the JS would pass every check above while
+        // delivering none of the speedup. Ask the module which path it took.
+        static const char* path_src = R"JS(
+class GridPath extends Part {
+  build(p) {
+    if (typeof __candidatesInRect !== 'function')
+      throw new Error('__candidatesInRect is not installed in a part bake');
+    this.terrainVolume(0, 0, 0, 0, [16,16,16,16]);
+  }
+}
+)JS";
+        BakeResult pr2 = host.bake_source(path_src, "{}", gopts);
+        CHECK(pr2.error.ok, pr2.error.message.c_str());
+    }
+
     // ---- ScriptProfile: prof() from inside a bake ---------------------------
     //
     // This exists because the thing it measures had NO instrumentation: the

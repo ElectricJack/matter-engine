@@ -5396,10 +5396,14 @@ void WorldSession::Impl::execute_sector_stream_step() {
         // this all there is?" was unanswerable from the log, and the nearest
         // line that looked like an answer ([bake-timing], below) is the roots
         // bake and says nothing about the fill.
+        // No dispatch rate here: stream_fill_sectors only counts under
+        // MATTER_STREAM_FILL_PROFILE, so an unconditional rate reads "0/s" on
+        // a completed fill -- a made-up number in the one line everyone will
+        // look at. Resident count and wall time are both always true.
         fprintf(stderr, "[stream.fill] COMPLETE: %u sectors resident in %.2f s "
-                        "(%.0f/s, %d workers)\n",
+                        "(%d workers; MATTER_STREAM_FILL_PROFILE=1 for the "
+                        "rate breakdown)\n",
                 snapshot.status.resident_sectors, fill_ms / 1000.0,
-                fill_ms > 0 ? stream_fill_sectors * 1000.0 / fill_ms : 0.0,
                 stream_worker_count);
         if (stream_fill_timing) {
             stream_fill_timing = false;

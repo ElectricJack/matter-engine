@@ -44,7 +44,11 @@ export function survives(seed, kind, cellX, cellZ, minDist) {
   return true;
 }
 
-export function candidatesInRect(seed, kind, minDist, x0, z0, w, h) {
+// The reference implementation, kept and still exported as candidatesInRectJs
+// so the native binding can be proved against it rather than believed. Do not
+// delete it to "remove the duplicate": it is the specification, and the whole
+// safety argument for the native path is that the two agree bit for bit.
+export function candidatesInRectJs(seed, kind, minDist, x0, z0, w, h) {
   const out = [];
   const c0 = Math.floor(x0 / minDist), c1 = Math.floor((x0 + w) / minDist);
   const r0 = Math.floor(z0 / minDist), r1 = Math.floor((z0 + h) / minDist);
@@ -56,4 +60,31 @@ export function candidatesInRect(seed, kind, minDist, x0, z0, w, h) {
       out.push({ x: c.x, z: c.z, rot: c.rot, u: c.u, v: c.v });
     }
   return out;
+}
+
+// The one every caller uses. Native when the binding is installed (part bakes),
+// the JS above otherwise (contexts with no DSL bindings, and any host predating
+// the binding).
+//
+// WHY IT WENT NATIVE. Measured with ScriptProfile on StreamMountain, this was
+// the single largest cost inside a sector bake -- 46.6% of profiled self time
+// at the far vegetation band, ahead of habitat sampling, asset selection, the
+// exclusion pass, and the native terrain mesher. The reason is structural: the
+// loop above evaluates cellCandidate TEN times per grid cell (the cell, plus
+// eight neighbours inside survives, plus the cell again inside survives), each
+// allocating an object that is read once. A 96 m tree rect at 1.65 m spacing is
+// 59x59 cells -- ~35,000 allocations and ~244,000 hash rounds to return ~1,300
+// candidates. Grass, at 0.63 m spacing, is denser still.
+//
+// It is a pure function of (seed, kind, minDist, rect) with nothing
+// game-specific in it, which is why it belongs to the engine and not to an
+// ecology.
+//
+// The native path is bitwise identical, not merely equivalent -- every
+// placement in every world derives from these hashes, so "close enough" would
+// move trees. sector_bake_tests proves the two agree over the real rects.
+export function candidatesInRect(seed, kind, minDist, x0, z0, w, h) {
+  if (typeof __candidatesInRect === 'function')
+    return __candidatesInRect(seed, kind, minDist, x0, z0, w, h);
+  return candidatesInRectJs(seed, kind, minDist, x0, z0, w, h);
 }

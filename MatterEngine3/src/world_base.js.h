@@ -6,6 +6,14 @@
 // globalThis.__surface_ops / __surface_mats (the surfaces() classifier tape)
 // and globalThis.__world_class (the authored class) after eval.
 static const char* kWorldBaseJS = R"JS(
+// ScriptProfile no-ops. This context installs no __dsl_* bindings, so there is
+// nothing here to time -- but a shared-lib module that carries prof() calls for
+// its PART-bake path (alpine_ecology.js, imported here for its habitat tape)
+// must still evaluate. Defined rather than left missing so the module needs no
+// typeof guard of its own at every call site.
+globalThis.profSlot  = () => -1;
+globalThis.profBegin = () => {};
+globalThis.profEnd   = () => {};
 globalThis.__world_ops = [];
 function __emit(line) { globalThis.__world_ops.push(line); return globalThis.__world_ops.length - 1; }
 function __reg(v) {

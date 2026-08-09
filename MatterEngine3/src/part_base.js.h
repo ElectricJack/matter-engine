@@ -23,9 +23,28 @@ globalThis.JOIN = { miter: 0, bevel: 1, round: 2 };
 // Globals, not builder methods, because the code worth measuring lives in
 // shared-lib modules that never see the builder. Hoist profSlot out of loops:
 // it interns a string, while profBegin/profEnd take the int it returns.
-globalThis.profSlot  = (name) => __profSlot(String(name));
-globalThis.profBegin = (slot) => { __profBegin(slot|0); };
-globalThis.profEnd   = (slot) => { __profEnd(slot|0); };
+//
+// Guarded, because a shared-lib module gets imported into more than one kind
+// of context -- alpine_ecology.js is pulled in by a PART bake for its planner
+// and by the WORLD eval for its habitat tape -- and the world context installs
+// no __dsl_* bindings at all. An unguarded reference throws at module scope
+// there, taking down every world install with a ReferenceError nowhere near
+// the instrumentation that caused it.
+//
+// The guard is INSIDE the call, not around the definition. This file is
+// evaluated BEFORE install_bindings runs, so a `typeof __profSlot` test at
+// definition time picks the inert branch in the very context that has the
+// bindings -- which is exactly how the first version of this silently
+// measured nothing while every test but one still passed.
+//
+// profBegin/profEnd gate on the slot rather than re-testing typeof: a slot can
+// only be >= 0 if __profSlot resolved, so the missing-binding context never
+// reaches the native call, and the hot path pays an int compare instead of a
+// global lookup.
+globalThis.profSlot  = (name) =>
+  (typeof __profSlot === 'function') ? __profSlot(String(name)) : -1;
+globalThis.profBegin = (slot) => { if (slot >= 0) __profBegin(slot|0); };
+globalThis.profEnd   = (slot) => { if (slot >= 0) __profEnd(slot|0); };
 // M3 (docs/lod-vt-redesign-2026-08-04.md §3.1): NAMED generators for a
 // `static lods` entry. Each helper returns a plain DATA descriptor -- never a
 // closure -- so ScriptHost::eval_lods can read the whole ladder without

@@ -1216,6 +1216,142 @@ static JSValue j_habitatAt(JSContext* c, JSValueConst, int argc,
         JS_SetPropertyUint32(c, a[2], (uint32_t)i, JS_NewFloat64(c, ch[i]));
     return JS_NewInt32(c, count);
 }
+// ---------------------------------------------------------------------------
+// __candidatesInRect — the scatter candidate grid, natively.
+//
+// This is shared-lib/scatter_grid.js's candidatesInRect, op for op. It is here
+// because it MEASURED as the largest single cost inside a sector bake: 46.6%
+// of profiled self time at StreamMountain's far vegetation band, more than the
+// habitat sampling, the asset selection and the exclusion pass combined, and
+// more than the native terrain mesher.
+//
+// The shape of the cost is structural, not incidental. Per grid cell the JS
+// evaluates cellCandidate TEN times -- once for the cell and once for each of
+// its eight neighbours inside survives() -- and each of those allocates a
+// six-field object that is read once and thrown away. A 96 m tree rect at
+// 1.65 m spacing is 59x59 cells, so one call allocates ~35,000 objects and
+// runs ~244,000 hash rounds to return ~1,300 candidates. The grass families
+// are worse: 0.63 m spacing over a 64 m cell is 101x101.
+//
+// Nothing about it is game-specific -- it is (seed, kind, minDist, rect) in and
+// deterministic points out -- which is what makes it belong in the engine
+// rather than in an ecology.
+//
+// BITWISE IDENTITY IS THE CONTRACT. Every placement in every world is derived
+// from these hashes, so a result that differs in the last bit moves trees.
+// uint32_t arithmetic reproduces JS exactly here, and the equivalences are
+// worth stating because they are the whole reason this is safe:
+//   - Math.imul(a,b)  == (uint32)a * (uint32)b truncated to 32 bits
+//   - x >>> n         == (uint32)x >> n
+//   - a ^ b           == ToInt32(a) ^ ToInt32(b), same bits as uint32 XOR
+//   - h + Math.imul(...) is an exact integer sum of two int32 values, and the
+//     ToInt32 that the following ^= applies to it is the same bit pattern
+//     uint32 addition wraps to.
+// The float math is double throughout, as it is in JS.
+//
+// sector_bake_tests cross-checks this against the JS implementation over the
+// real rects rather than taking the argument above on trust.
+namespace {
+
+inline uint32_t sg_mix(uint32_t h, uint32_t c) {
+    h = (h ^ (h >> 15)) * (c | 1u);
+    h ^= h + (h ^ (h >> 7)) * (h | 61u);
+    return h ^ (h >> 14);
+}
+inline uint32_t sg_base_hash(uint32_t seed, uint32_t kind,
+                             int32_t cx, int32_t cz) {
+    uint32_t h = seed ^ (kind * 374761393u);
+    h = sg_mix(h ^ ((uint32_t)cx * 668265263u), 2246822519u);
+    h = sg_mix(h ^ ((uint32_t)cz * 1274126177u), 374761393u);
+    return h;
+}
+inline double sg_unit(uint32_t h) { return (double)h / 4294967296.0; }
+
+struct SgCandidate {
+    double x, z, rot, u, v;
+    uint32_t pri;
+};
+inline SgCandidate sg_cell_candidate(uint32_t seed, uint32_t kind,
+                                     int32_t cx, int32_t cz, double min_dist) {
+    const uint32_t h = sg_base_hash(seed, kind, cx, cz);
+    const double jx = sg_unit(sg_mix(h, 0x9E3779B1u));
+    const double jz = sg_unit(sg_mix(h, 0x85EBCA77u));
+    SgCandidate c;
+    c.x = ((double)cx + 0.25 + 0.5 * jx) * min_dist;
+    c.z = ((double)cz + 0.25 + 0.5 * jz) * min_dist;
+    c.rot = sg_unit(sg_mix(h, 0xC2B2AE3Du)) * 3.141592653589793 * 2.0;
+    c.u = sg_unit(sg_mix(h, 0x27D4EB2Fu));
+    c.v = sg_unit(sg_mix(h, 0x165667B1u));
+    c.pri = h;
+    return c;
+}
+// Neighbour-priority rejection: an exact min-distance guarantee that is
+// order-independent, so a candidate's fate is the same from any sector that
+// happens to look at it. Identical rule and identical tie-break to the JS.
+inline bool sg_survives(uint32_t seed, uint32_t kind, int32_t cx, int32_t cz,
+                        double min_dist, const SgCandidate& c) {
+    for (int dz = -1; dz <= 1; ++dz)
+        for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dz == 0) continue;
+            const int32_t nx = cx + dx, nz = cz + dz;
+            const SgCandidate o =
+                sg_cell_candidate(seed, kind, nx, nz, min_dist);
+            const double ddx = c.x - o.x, ddz = c.z - o.z;
+            if (ddx * ddx + ddz * ddz >= min_dist * min_dist) continue;
+            if (o.pri > c.pri) return false;
+            if (o.pri == c.pri && (nz < cz || (nz == cz && nx < cx)))
+                return false;
+        }
+    return true;
+}
+}  // namespace
+
+static JSValue j_candidatesInRect(JSContext* c, JSValueConst, int argc,
+                                  JSValueConst* a) {
+    DslState* st = state_of(c);
+    if (argc < 7) {
+        st->set_error("candidatesInRect: expected "
+                      "(seed, kind, minDist, x0, z0, w, h)");
+        return JS_UNDEFINED;
+    }
+    const uint32_t seed = (uint32_t)(int64_t)argd(c, a[0]);
+    const uint32_t kind = (uint32_t)(int64_t)argd(c, a[1]);
+    const double min_dist = argd(c, a[2]);
+    const double x0 = argd(c, a[3]), z0 = argd(c, a[4]);
+    const double w = argd(c, a[5]), h = argd(c, a[6]);
+    // A non-positive spacing would make the cell loop unbounded. The JS has
+    // the same hole; failing loudly beats hanging a bake worker.
+    if (!(min_dist > 0.0)) {
+        st->set_error("candidatesInRect: minDist must be > 0");
+        return JS_UNDEFINED;
+    }
+
+    const double c0 = std::floor(x0 / min_dist), c1 = std::floor((x0 + w) / min_dist);
+    const double r0 = std::floor(z0 / min_dist), r1 = std::floor((z0 + h) / min_dist);
+
+    JSValue out = JS_NewArray(c);
+    uint32_t n = 0;
+    for (double dcz = r0; dcz <= r1; dcz += 1.0)
+        for (double dcx = c0; dcx <= c1; dcx += 1.0) {
+            const int32_t cx = (int32_t)dcx, cz = (int32_t)dcz;
+            const SgCandidate cand =
+                sg_cell_candidate(seed, kind, cx, cz, min_dist);
+            // Rect test BEFORE the survives() scan, as in the JS: nine hash
+            // evaluations are the expensive part and most cells fail here.
+            if (cand.x < x0 || cand.x >= x0 + w ||
+                cand.z < z0 || cand.z >= z0 + h) continue;
+            if (!sg_survives(seed, kind, cx, cz, min_dist, cand)) continue;
+            JSValue o = JS_NewObject(c);
+            JS_SetPropertyStr(c, o, "x",   JS_NewFloat64(c, cand.x));
+            JS_SetPropertyStr(c, o, "z",   JS_NewFloat64(c, cand.z));
+            JS_SetPropertyStr(c, o, "rot", JS_NewFloat64(c, cand.rot));
+            JS_SetPropertyStr(c, o, "u",   JS_NewFloat64(c, cand.u));
+            JS_SetPropertyStr(c, o, "v",   JS_NewFloat64(c, cand.v));
+            JS_SetPropertyUint32(c, out, n++, o);
+        }
+    return out;
+}
+
 // __profSlot(name) -> int, __profBegin(slot), __profEnd(slot)
 //
 // The script side of ScriptProfile. Split into an intern call and two int
@@ -1512,6 +1648,7 @@ void install_bindings(JSContext* ctx) {
     bind("__biomeAt",j_biomeAt,2);
     bind("__habitatAt",j_habitatAt,3);
     bind("__hasHabitat",j_hasHabitat,0);
+    bind("__candidatesInRect", j_candidatesInRect, 7);
     bind("__profSlot", j_profSlot, 1);
     bind("__profBegin",j_profBegin,1);
     bind("__profEnd",  j_profEnd,  1);

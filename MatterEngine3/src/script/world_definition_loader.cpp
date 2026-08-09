@@ -1873,7 +1873,20 @@ bool load_world_definition(const WorldLoadDesc& desc,
         JS_FreeRuntime(runtime);
     };
 
+    // ScriptProfile no-ops (dsl_bindings.h). Nothing here to time -- this
+    // context has no DSL bindings at all -- but a world definition imports
+    // shared-lib modules that carry prof() calls for their PART-bake path, and
+    // those calls run at MODULE SCOPE. Without these, importing such a module
+    // throws ReferenceError during world load, which surfaces as "the world
+    // failed to load" with no hint that instrumentation caused it.
+    //
+    // This is the THIRD prelude that needs them: part_base.js.h and
+    // world_base.js.h have their own. Anything a shared-lib module may
+    // reference at module scope has to exist in all three.
     static constexpr const char* base_source = R"JS(
+globalThis.profSlot  = () => -1;
+globalThis.profBegin = () => {};
+globalThis.profEnd   = () => {};
 globalThis.__matter_entities = [];
 Math.random = undefined;
 class World {}

@@ -525,6 +525,37 @@ function withinTerrainGates(family, altitude, slope) {
 // and allocating a channel array and a habitat object per call would hand back
 // a good part of what evaluating the tape natively buys. Nothing downstream
 // retains either: selectAlpineAsset SPREADS the habitat into a fresh object.
+// ---- ScriptProfile slots (MatterEngine3/src/dsl_bindings.h) ----------------
+//
+// Interned once per bake context, not per call. Inert (-1, and every
+// begin/end an early return) unless MATTER_SCRIPT_PROFILE is set, so these
+// stay in the file permanently. They exist because two successive theories
+// about where a sector bake's time goes were both wrong, and both were
+// arithmetic over things measured OUTSIDE this loop -- see the note above
+// plannedCandidate.
+//
+// The split is chosen so the answer is unambiguous whichever way it comes out:
+// candidate GENERATION vs per-candidate EVALUATION vs the exclusion pass, and
+// inside evaluation, the tape read vs the asset selection that follows it.
+//
+// Resolved through typeof rather than called directly. A shared-lib module is
+// imported into SEVERAL kinds of JS context -- the part bake, the world eval
+// (for the habitat tape), and the world-definition load -- and each has its
+// own separate prelude. All three define these now, but the first attempt
+// covered two of the three and the miss surfaced as a bare ReferenceError
+// during world load, pointing nowhere near the instrumentation that caused it.
+// A module that can be imported anywhere should not assume a global exists.
+const pslot  = typeof profSlot  === 'function' ? profSlot  : () => -1;
+const pbegin = typeof profBegin === 'function' ? profBegin : () => {};
+const pend   = typeof profEnd   === 'function' ? profEnd   : () => {};
+
+const P_CANDIDATES = pslot('plan.candidates');
+const P_EVAL       = pslot('plan.evaluate');
+const P_HABITAT    = pslot('plan.habitat');
+const P_SELECT     = pslot('plan.select');
+const P_EXCLUDE    = pslot('plan.exclude');
+const P_OTHER      = pslot('plan.otherFamilies');
+
 const HABITAT_OUT = [];
 const HABITAT_SCRATCH = {
   valid: true, moisture: 0, exposure: 0, dryness: 0, forest: 0, forestEdge: 0,
@@ -565,7 +596,9 @@ function plannedCandidate({
     // ONE crossing for what used to be heightAt + slopeAt + 14 interpreted
     // fbm: altitude and slope are channels of the same tape, so the terrain
     // gates below cost nothing extra to evaluate.
+    pbegin(P_HABITAT);
     habitatAt(candidate.x, candidate.z, HABITAT_OUT);
+    pend(P_HABITAT);
     altitude = HABITAT_OUT[HABITAT.altitude];
     slope = HABITAT_OUT[HABITAT.slope];
     if (!withinTerrainGates(family, altitude, slope)) return null;
@@ -588,12 +621,16 @@ function plannedCandidate({
         (family === 'tree' && altitude > 455)) return null;
     slope = slopeAt(candidate.x, candidate.z);
     if (!withinTerrainGates(family, altitude, slope)) return null;
+    pbegin(P_HABITAT);
     habitat = sampleHabitat({
       x: candidate.x, z: candidate.z, altitude, slope, worldSeed,
     });
+    pend(P_HABITAT);
   }
+  pbegin(P_SELECT);
   const asset = selectAlpineAsset(family, { ...habitat, altitude, slope },
     placementIdentity(worldSeed, kind, candidate.x, candidate.z, 1));
+  pend(P_SELECT);
   if (!asset) return null;
   return {
     family,
@@ -623,13 +660,16 @@ function planTrees({
   habitatAt,
 }) {
   const { kind, minDistance } = FAMILY_SCATTER.tree;
+  pbegin(P_CANDIDATES);
   const candidates = candidatesInRect(
     worldSeed, kind, minDistance,
     ox - TREE_NEIGHBOR_PADDING, oz - TREE_NEIGHBOR_PADDING,
     sectorSize + TREE_NEIGHBOR_PADDING * 2,
     sectorSize + TREE_NEIGHBOR_PADDING * 2,
   );
+  pend(P_CANDIDATES);
   const viable = [];
+  pbegin(P_EVAL);
   for (const candidate of candidates) {
     const placement = plannedCandidate({
       family: 'tree', candidate, worldSeed, kind, heightAt, slopeAt, biomeAt,
@@ -643,8 +683,17 @@ function planTrees({
         worldSeed, kind, candidate.x, candidate.z, 7),
     });
   }
+  pend(P_EVAL);
 
+  // The O(viable^2) pass. Instrumented because it was ONCE ASSERTED to be the
+  // bake's dominant cost, on arithmetic that matched the measured total to
+  // within 3% -- and an exact spatial-grid replacement, verified to produce a
+  // bitwise-identical placement list, then measured +1.4%/-1.9%/-2.9%. The
+  // error was reading `viable` as the ~963 candidates that REACH the habitat
+  // sample rather than the far smaller subset that passes it. Now it reports
+  // its own share instead of being reasoned about.
   const accepted = [];
+  pbegin(P_EXCLUDE);
   for (const tree of viable) {
     if (tree.x < ox || tree.x >= ox + sectorSize ||
       tree.z < oz || tree.z >= oz + sectorSize) continue;
@@ -665,6 +714,7 @@ function planTrees({
     accepted.push(placement);
     if (accepted.length >= FAMILY_CAPS.tree) break;
   }
+  pend(P_EXCLUDE);
   return accepted;
 }
 
@@ -685,11 +735,25 @@ export function planAlpineSector({
       }));
       continue;
     }
+    // shrub / groundCover / flower / grass. These already route through
+    // plannedCandidate, so they already read the habitat tape -- they are
+    // grouped under one label because they are the same loop four times, and
+    // what matters is their total against the tree planner's.
     const { kind, minDistance } = FAMILY_SCATTER[family];
     let placed = 0;
-    for (const candidate of candidatesInRect(
-      worldSeed, kind, minDistance, ox, oz, sectorSize, sectorSize,
-    )) {
+    // Generation is timed SEPARATELY from evaluation here, as it is for trees.
+    // Folding them together is what hid the answer the first time: measured as
+    // one number, `plan.otherFamilies` looked like per-candidate evaluation
+    // cost, when most of it is candidatesInRect -- and these families use
+    // minDistance down to 0.63 m, so their candidate grids are the densest in
+    // the world (a 64 m cell is 101x101 cells for grass against 59x59 for
+    // trees, and every cell costs ten cellCandidate evaluations).
+    pbegin(P_CANDIDATES);
+    const family_candidates = candidatesInRect(
+      worldSeed, kind, minDistance, ox, oz, sectorSize, sectorSize);
+    pend(P_CANDIDATES);
+    pbegin(P_OTHER);
+    for (const candidate of family_candidates) {
       if (placed >= FAMILY_CAPS[family]) break;
       const placement = plannedCandidate({
         family, candidate, worldSeed, kind, heightAt, slopeAt, biomeAt,
@@ -699,6 +763,7 @@ export function planAlpineSector({
       placements.push(placement);
       ++placed;
     }
+    pend(P_OTHER);
   }
   return placements;
 }

@@ -282,6 +282,53 @@ bool nearly_equal(float a, float b) {
     return std::fabs(a - b) < 1e-5f;
 }
 
+// EVERY shipped world must load, not just the six in the table below.
+//
+// The table is a hand-maintained list of worlds whose manifest authoring is
+// pinned, and StreamMountain/StreamMeadow were never in it -- so when the
+// world-definition loader's prelude went missing a global that a shared-lib
+// module referenced at MODULE SCOPE, importing that module threw
+// ReferenceError during world load and every suite here stayed green. The
+// failure surfaced only as "the world failed to load" in a run log.
+//
+// This walks the directory instead of a list, so a world added tomorrow is
+// covered without anyone remembering to add it, and asserts only the thing
+// that has to be true of all of them: they load. Anything world-specific
+// belongs in the pinned table.
+//
+// The loader gets its OWN JS context with its OWN prelude -- separate from
+// part_base.js.h and world_base.js.h -- and this is the only gate on it.
+void test_every_shipped_world_loads() {
+    const fs::path project = fs::path("../../projects/world_demo");
+    const fs::path worlds_dir = project / "worlds";
+    CHECK(fs::is_directory(worlds_dir), "world_demo exposes worlds/");
+
+    std::vector<fs::path> world_files;
+    for (const auto& entry : fs::directory_iterator(worlds_dir))
+        if (entry.is_regular_file() && entry.path().extension() == ".js")
+            world_files.push_back(entry.path());
+    std::sort(world_files.begin(), world_files.end());
+    CHECK(world_files.size() >= 6, "found the shipped worlds");
+
+    size_t loaded = 0;
+    for (const fs::path& world : world_files) {
+        matter::WorldLoadDesc desc;
+        desc.world_path = world.string();
+        desc.objects_dir = (project / "objects").string();
+        desc.project_shared_lib_dir = (project / "shared-lib").string();
+        desc.engine_shared_lib_dir = "../shared-lib";
+
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        const bool ok = matter::load_world_definition(desc, definition, error);
+        CHECK(ok, (world.filename().string() + " fails to load: " +
+                   error.message).c_str());
+        if (ok) ++loaded;
+    }
+    std::printf("  every shipped world loads: %zu/%zu\n",
+                loaded, world_files.size());
+}
+
 void test_example_worlds_preserve_manifest_authoring() {
     const fs::path project = fs::path("../../projects/world_demo");
     const ExpectedExampleWorld worlds[] = {
@@ -1567,6 +1614,7 @@ void test_slot_binder_reports_displaced_materials() {
 int main() {
     test_project_layout_derives_runtime_paths();
     test_relative_project_dir_yields_absolute_cache_root();
+    test_every_shipped_world_loads();
     test_example_worlds_preserve_manifest_authoring();
     test_rejects_non_world_base_with_location_and_property();
     test_extracts_statics_without_calling_field_and_uses_project_override();
