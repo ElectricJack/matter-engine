@@ -83,10 +83,54 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     const double ox   = double(tx) * double(sector_size);
     const double oz   = double(tz) * double(sector_size);
 
+    // ---- Reach-back on a coarser -x / -z neighbour --------------------------
+    //
+    // Face ownership below is `i in [1..n]`, and a +y quad at sample i uses
+    // cells ci in {i-1, i}. So a tile's surface reaches ONE OF ITS OWN VOXELS
+    // back past its -x border and stops half a voxel short of its +x border:
+    // every shared plane is bridged by the tile on its EAST/NORTH side, using
+    // THAT tile's voxel size.
+    //
+    // At equal size the bridge lands exactly on the neighbour's last vertex
+    // (same world samples, bitwise-identical) and the pair is watertight -- the
+    // property that let the border skirts go. Across a 2:1 size step it is
+    // asymmetric:
+    //
+    //   fine west / coarse east -- the COARSE tile bridges, with a 2v-wide ring
+    //     cell reaching back to ~X0-v, past the fine mesh's last vertex at
+    //     ~X0-v/2. Overlaps. Closed, which is why this was never noticed.
+    //   coarse west / fine east -- the FINE tile bridges, reaching back only
+    //     ~v/2, while the coarse mesh's last vertex is at ~X0-v. The strip
+    //     between them is emitted by NEITHER tile: a one-voxel gap running the
+    //     length of the seam. Measured at 0.88-1.12 fine voxels, every level.
+    //
+    // Fix: on a masked -x / -z face, extend this tile's lattice ONE COARSE
+    // VOXEL (two fine samples) outward on that side and let ownership reach
+    // into it. The fine bridge then starts at ~X0-2.5v, comfortably west of the
+    // coarse tile's last vertex, and the two meshes overlap instead of parting
+    // -- the mirror of what already closes the +x/+z direction.
+    //
+    // The extension carries raw fine samples, so within the overlap strip the
+    // fine surface deviates from the coarse one by the field's curvature over a
+    // coarse voxel. That is exactly the behaviour the +x/+z direction has
+    // always had (see terrain_mesher_tests: "an overlap is all the seam
+    // needs"). Making the two COINCIDE needs a real 2:1 stitch that
+    // reconstructs the coarse border cell's vertices; this closes the hole
+    // without that machinery.
+    //
+    // Nothing changes for an unmasked face: px == pz == 0 makes every
+    // expression below identical to what it was.
+    //
+    // This is NOT nested-specific. The uniform ladder has the same hole
+    // wherever a coarse tile sits west or south of a fine one; nesting only
+    // made those borders common and put them near the camera.
+    const int reach_x = (edge_mask & kEdgeNegX) ? 2 : 0;
+    const int reach_z = (edge_mask & kEdgeNegZ) ? 2 : 0;
+
     // Evaluate height once per X/Z lattice point, then mesh only a narrow Y
     // slab snapped to the authored global lattice. Neighboring sectors can use
     // different depths without shifting their shared sample coordinates.
-    const int sx = n + 3, szn = n + 3;
+    const int sx = n + 3 + reach_x, szn = n + 3 + reach_z;
     std::vector<float> heights(size_t(sx) * size_t(szn));
     auto hat = [&](int i, int k) -> float& {
         return heights[size_t(k) * size_t(sx) + size_t(i)];
@@ -96,8 +140,8 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     for (int k = 0; k < szn; ++k) {
         for (int i = 0; i < sx; ++i) {
             const float h = field.height_at(
-                float(ox + (i - 1) * double(voxel)),
-                float(oz + (k - 1) * double(voxel)));
+                float(ox + (i - 1 - reach_x) * double(voxel)),
+                float(oz + (k - 1 - reach_z) * double(voxel)));
             if (!std::isfinite(h)) {
                 err = "terrain_mesher: non-finite height";
                 return false;
@@ -127,23 +171,28 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     // edge_mask bits match mesh_sector_heightfield exactly (0 = +x, 1 = -x,
     // 2 = +z, 3 = -z) so the streamer's existing masks carry over unchanged.
     //
-    // Boundary sample indices: hat(i,k) is sampled at ox + (i-1)*voxel, so the
-    // sector's own edges are i == 1 (x = ox) and i == n+1 (x = ox + S), and
-    // likewise for k. Interior samples are untouched -- this only moves the one
-    // row or column that has to agree with someone else.
+    // Boundary sample indices: hat(i,k) is sampled at ox + (i-1-reach_x)*voxel, so
+    // the sector's own edges are i == 1+reach_x (x = ox) and i == n+1+reach_x
+    // (x = ox + S), and likewise for k. Interior samples are untouched -- this
+    // only moves the one row or column that has to agree with someone else.
+    //
+    // The reach offsets matter here twice over: they move which index IS the
+    // boundary, and they move the PARITY the snap walks. "Odd offsets" means
+    // odd relative to the tile's own edge, not to the array -- the reach-back
+    // extension is not part of the boundary polyline being matched.
     {
         const auto snap_column = [&](int i) {          // vary k, fixed i
-            for (int k = 2; k <= n; k += 2)            // odd offsets: (k-1) odd
+            for (int k = 2 + reach_z; k <= n + reach_z; k += 2)  // odd from edge
                 hat(i, k) = 0.5f * (hat(i, k - 1) + hat(i, k + 1));
         };
         const auto snap_row = [&](int k) {             // vary i, fixed k
-            for (int i = 2; i <= n; i += 2)
+            for (int i = 2 + reach_x; i <= n + reach_x; i += 2)
                 hat(i, k) = 0.5f * (hat(i - 1, k) + hat(i + 1, k));
         };
-        if (edge_mask & kEdgeNegX) snap_column(1);
-        if (edge_mask & kEdgePosX) snap_column(n + 1);
-        if (edge_mask & kEdgeNegZ) snap_row(1);
-        if (edge_mask & kEdgePosZ) snap_row(n + 1);
+        if (edge_mask & kEdgeNegX) snap_column(1 + reach_x);
+        if (edge_mask & kEdgePosX) snap_column(n + 1 + reach_x);
+        if (edge_mask & kEdgeNegZ) snap_row(1 + reach_z);
+        if (edge_mask & kEdgePosZ) snap_row(n + 1 + reach_z);
     }
 
     if (h_min < y_min || h_max > y_max) {
@@ -196,12 +245,14 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
         }
         if (!cnt) return nullptr;
         CellVert cv;
-        // Local x/z: (lattice_index - 1) * voxel (undoes the ring offset)
+        // Local x/z: (lattice_index - 1 - reach) * voxel — undoes the ring
+        // offset AND the -x/-z reach-back extension, so local (0,0) is still
+        // the tile's own corner and a reach-back vertex is simply negative.
         // World y: y0 + lattice_j * voxel
         cv.p = {
-            (px / cnt - 1.0f) * voxel,
+            (px / cnt - 1.0f - float(reach_x)) * voxel,
             y0 + (py / cnt) * voxel,
-            (pz / cnt - 1.0f) * voxel
+            (pz / cnt - 1.0f - float(reach_z)) * voxel
         };
         // Gradient normal from the WORLD position.
         const float e2 = voxel;
@@ -229,15 +280,23 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
         push_tri(b, *v00, *v10, *v11);
         push_tri(b, *v00, *v11, *v01);
     };
-    // Ownership predicate: lattice indices [1..n] map to sector-local [0, S).
-    // Integer comparison avoids float precision gaps at sector boundaries.
-    // Each sector's mesh ends EXACTLY at the border: the border cell rows are
-    // shared with the neighbor (same world samples -> bitwise-identical verts)
-    // and sit on the mesh's open boundary, so the LOD ladder's topological
-    // boundary lock freezes them at every level. Watertight at any LOD pair
-    // without skirts or overlap geometry — do not extend ownership past [1..n].
+    // Ownership predicate. Without reach-back this is exactly [1..n], the
+    // lattice indices mapping to sector-local [0, S): integer comparison, no
+    // float precision gaps at sector boundaries. Each sector's mesh then ends
+    // EXACTLY at its +x/+z border, and its -x/-z bridge lands on the
+    // neighbour's last vertex because the border cell rows are shared (same
+    // world samples -> bitwise-identical verts).
+    //
+    // The UPPER bound is still the tile's own last sample in world terms
+    // (n + reach): the reach-back only moves indices, it does not extend the
+    // tile eastward. The LOWER bound stays at 1 so ownership reaches into the
+    // reach-back columns and the bridge is emitted over them -- that is the
+    // whole mechanism (see the reach_x/reach_z note at the top).
+    //
+    // Do not widen this any further. Ownership past the tile's own +x/+z border
+    // would double-emit the border quads that the neighbour already owns.
     auto owned = [&](int i, int k) -> bool {
-        return i >= 1 && i <= n && k >= 1 && k <= n;
+        return i >= 1 && i <= n + reach_x && k >= 1 && k <= n + reach_z;
     };
 
     for (int k = 0; k < szn; ++k)
@@ -245,8 +304,8 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
             for (int i = 0; i < sx; ++i) {
                 float a = at(i, j, k);
                 // World coords of this sample (for material query midpoint).
-                float wxs = float(ox) + float(i - 1) * voxel;
-                float wzs = float(oz) + float(k - 1) * voxel;
+                float wxs = float(ox) + float(i - 1 - reach_x) * voxel;
+                float wzs = float(oz) + float(k - 1 - reach_z) * voxel;
 
                 // +y edge — the typical terrain surface case (horizontal face).
                 if (j + 1 < sy && owned(i, k)) {

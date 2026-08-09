@@ -293,6 +293,123 @@ int main() {
               "at the same voxels -- sector size drops out");
     }
 
+    // --- NO GAP when the coarse neighbour is on the fine tile's -x / -z ------
+    //
+    // The seam tests above all put the fine tile WEST of the coarse one
+    // (kEdgePosX) and probe INWARD from the border on the fine side. That is
+    // the orientation the ownership rule happens to close, and the probe walks
+    // away from where the other orientation leaks -- so between them they could
+    // not see this.
+    //
+    // Reported from a real session: adjacent tiles of DIFFERENT SIZE show a
+    // one-triangle-strip gap along the shared edge.
+    //
+    // Why it is direction-asymmetric. Face ownership is `i in [1..n]`, and a
+    // +y quad at i uses cells ci in {i-1, i} -- so a tile's surface reaches one
+    // of ITS OWN voxels back past its -x border and stops one half voxel short
+    // of its +x border. Every shared plane is therefore bridged by the tile on
+    // its EAST side, using that tile's own voxel size:
+    //
+    //   fine west / coarse east: the coarse tile bridges with a 2v-wide ring
+    //     cell, reaching back to ~X0-v, well past the fine mesh's last vertex
+    //     at ~X0-v/2. Overlaps. Closed.
+    //   coarse west / fine east: the FINE tile bridges, reaching back only
+    //     ~v/2, while the coarse mesh's last vertex sits at ~X0-v (its own
+    //     ring cell is 2v wide). The strip between them belongs to neither.
+    //     THE GAP.
+    //
+    // So this is not a nested-sectors bug at all -- the same hole exists on the
+    // uniform grid whenever a coarse tile sits west or south of a fine one.
+    // Nesting made those borders common and put them near the camera.
+    //
+    // Measured as UNION coverage per row, absolutely: for each z row, scan x
+    // across the border and fail on any run covered by NEITHER mesh. It cannot
+    // be measured against the uniform grid as a control the way the tests above
+    // do, because the uniform grid has the identical hole.
+    {
+        FieldRuntime f = make(kNoise);
+        int worst_level = -1;
+        float worst_gap_v = 0.0f;
+        for (int L = 0; L <= 3; ++L) {
+            const float SL = 64.0f * float(1 << L);
+            const float v  = SL / 32.0f;        // the FINE voxel
+            const float X0 = 2.0f * SL;         // shared plane
+            SectorMesh coarse_m, fine;
+            std::string err;
+            // coarse tile 0 at 2*SL: x,z in [0, 2 SL), rung -(L+1)
+            // fine   tile 2 at SL:   x in [2 SL, 3 SL), z in [0, SL), rung -L
+            // The coarse tile is on the fine tile's -x side, so the FINE tile
+            // carries kEdgeNegX. The coarse tile carries nothing: the mask
+            // marks neighbours one rung COARSER, and its +x neighbour is finer.
+            CHECK(mesh_sector(f, 0, 0, -(L + 1), 0, 2.0f * SL, -300, 300,
+                              coarse_m, err), err.c_str());
+            CHECK(mesh_sector(f, 2, 0, -L, kEdgeNegX, SL, -300, 300, fine, err),
+                  err.c_str());
+
+            const float step = v / 8.0f;
+            int rows = 0, gapped = 0;
+            float worst_run = 0.0f;
+            for (float wz = v; wz <= SL - v; wz += v) {
+                ++rows;
+                float run = 0.0f, run_max = 0.0f;
+                for (float wx = X0 - 2.5f * v; wx <= X0 + 2.0f * v; wx += step) {
+                    const float yc = surface_y_at(coarse_m, wx, wz);
+                    const float yf = surface_y_at(fine, wx - X0, wz);
+                    if (yc > -1e29f || yf > -1e29f) run = 0.0f;
+                    else { run += step; run_max = std::max(run_max, run); }
+                }
+                if (run_max > 0.25f * v) ++gapped;
+                worst_run = std::max(worst_run, run_max);
+            }
+            printf("  seam -x L%d/%d (voxel %.0f/%.0f m): %d/%d rows gapped, "
+                   "worst run %.3f m (%.2f fine voxels)\n",
+                   L, L + 1, v, 2 * v, gapped, rows, worst_run, worst_run / v);
+            CHECK(gapped == 0,
+                  "coarse neighbour on the fine tile's -x side: every row of "
+                  "the shared border is covered by one mesh or the other");
+            if (worst_run / v > worst_gap_v) {
+                worst_gap_v = worst_run / v; worst_level = L;
+            }
+        }
+        printf("  seam -x: worst uncovered run %.2f fine voxels (level %d)\n",
+               worst_gap_v, worst_level);
+
+        // The -z mirror. Same rule, other axis: a coarse neighbour to the
+        // south is bridged by the fine tile with a fine-sized reach.
+        for (int L = 0; L <= 2; ++L) {
+            const float SL = 64.0f * float(1 << L);
+            const float v  = SL / 32.0f;
+            const float Z0 = 2.0f * SL;
+            SectorMesh coarse_m, fine;
+            std::string err;
+            CHECK(mesh_sector(f, 0, 0, -(L + 1), 0, 2.0f * SL, -300, 300,
+                              coarse_m, err), err.c_str());
+            CHECK(mesh_sector(f, 0, 2, -L, kEdgeNegZ, SL, -300, 300, fine, err),
+                  err.c_str());
+            const float step = v / 8.0f;
+            int rows = 0, gapped = 0;
+            float worst_run = 0.0f;
+            for (float wx = v; wx <= SL - v; wx += v) {
+                ++rows;
+                float run = 0.0f, run_max = 0.0f;
+                for (float wz = Z0 - 2.5f * v; wz <= Z0 + 2.0f * v; wz += step) {
+                    const float yc = surface_y_at(coarse_m, wx, wz);
+                    const float yf = surface_y_at(fine, wx, wz - Z0);
+                    if (yc > -1e29f || yf > -1e29f) run = 0.0f;
+                    else { run += step; run_max = std::max(run_max, run); }
+                }
+                if (run_max > 0.25f * v) ++gapped;
+                worst_run = std::max(worst_run, run_max);
+            }
+            printf("  seam -z L%d/%d: %d/%d rows gapped, worst run %.3f m "
+                   "(%.2f fine voxels)\n",
+                   L, L + 1, gapped, rows, worst_run, worst_run / v);
+            CHECK(gapped == 0,
+                  "coarse neighbour on the fine tile's -z side: every row of "
+                  "the shared border is covered by one mesh or the other");
+        }
+    }
+
     // --- the edge mask still does its job across sizes -----------------------
     // The snap replaces each odd boundary sample with the average of its even
     // neighbours, so the fine boundary LATTICE becomes the coarse side's linear
