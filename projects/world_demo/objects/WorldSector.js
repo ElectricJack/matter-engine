@@ -292,19 +292,23 @@ class WorldSector extends Part {
 
     // ---- VEGETATION STOPS WHERE IT CANNOT BE RESOLVED ----------------------
     //
-    // Everything below this line is planted vegetation, and it is ~99% of a
-    // sector bake. Measured on StreamMountain: 334 ms per 64 m cell at the FAR
-    // scatter tier, which the ring table extends to 10,095 m -- about 90,000
-    // cells, so roughly 8 CPU-hours of planting per world fill.
+    // Everything below this line is planted vegetation, and it dominates a
+    // sector bake: at the far band it is ~96% of profiled self time against
+    // the native terrain mesher's ~4%, and the ring table extends that band to
+    // 10,095 m -- tens of thousands of cells per world fill.
+    //
+    // (An earlier note here said "~99%" and "334 ms per 64 m cell". Both were
+    // pre-tape, pre-native-grid figures, and the 99% was itself an estimate
+    // rather than a measurement. The current split comes from ScriptProfile:
+    // MATTER_SCRIPT_PROFILE=1, or `make -C MatterEngine3/tests run-scatterprof`.)
     //
     // The far tier is not the cheap one, which is the assumption that let this
     // happen. `familiesForRung(rung <= 0)` is ['tree'], and the tree planner is
     // the expensive family: a candidate grid over the cell plus 16 m of padding,
-    // three field queries (heightAt / slopeAt / biomeAt) per candidate, then an
-    // O(viable^2) exclusion pass, capped at 1080 trees per cell. Grass -- the
-    // family everyone thinks of as the expensive one -- is a flat loop with no
-    // exclusion pass, and is already gated to the nearest tier. The gating was
-    // backwards with respect to cost.
+    // a habitat sample per candidate, then an O(viable^2) exclusion pass, capped
+    // at 1080 trees per cell. Grass -- the family everyone thinks of as the
+    // expensive one -- is a flat loop with no exclusion pass, and is already
+    // gated to the nearest tier. The gating was backwards with respect to cost.
     //
     // p.terrainLod is the DISTANCE BAND and is the right handle in both tiling
     // modes: under nested sectors it is 5 - level, and on the uniform grid it

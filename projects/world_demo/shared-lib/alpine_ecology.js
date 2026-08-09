@@ -175,12 +175,22 @@ export function environmentalDryness({ moisture, exposure, altitude, slope }) {
 // per-candidate prediction was right to within 4%; the population was 3.5x
 // out.
 //
-// What the remaining ~65% is has NOT been established. The obvious suspect --
-// planTrees' O(viable^2) exclusion loop -- was implemented as an exact spatial
-// grid and measured at +1.4% / -1.9% / -2.9%, i.e. nothing, so it is not that:
-// `viable` is the candidates that PASS this sample, a small fraction of the
-// 963 that reach it, and a few hundred squared is milliseconds. Do not guess a
-// third time; profile inside the bake.
+// The remaining ~65% was ANSWERED, by profiling instead of guessing: most of
+// it was candidatesInRect -- the candidate GRID, not anything per-candidate --
+// at 46.6% of a far-band bake's profiled self time. It is native now
+// (shared-lib/scatter_grid.js), and the whole bake dropped a further
+// -35.6% / -44.3% / -49.2% at bands 3 / 4 / 5.
+//
+// Two guesses preceded that measurement and both were wrong with arithmetic
+// that fit: the ~50x above, and then the O(viable^2) exclusion loop, which was
+// implemented as an exact spatial grid and measured +1.4% / -1.9% / -2.9%.
+// (`viable` is the candidates that PASS this sample, a small fraction of the
+// 963 that reach it.) The profiler that settled it is ScriptProfile --
+// prof() from JS, MATTER_SCRIPT_PROFILE=1, and `make -C MatterEngine3/tests
+// run-scatterprof`. Use it before believing any estimate about this loop.
+//
+// What is left is roughly even four ways -- asset selection, per-candidate
+// evaluation, the exclusion pass, and this tape -- with no dominant term.
 //
 // It stays ECOLOGY, not engine: the tape is data the world ships, the kernel
 // only evaluates registers, and the channel names below are this module's
