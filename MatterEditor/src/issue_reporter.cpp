@@ -190,7 +190,6 @@ void write_shot_json(std::ostream& out, const IssueShot& shot) {
         << "\", \"time_scale\": " << shot.time_scale << "},\n";
     out << "      \"render\": {\"dlss\": \"" << json_escape(shot.dlss_mode)
         << "\", \"pixel_budget\": " << shot.pixel_budget
-        << ", \"resolver\": " << shot.resolver_choice
         << ", \"debug_view\": " << shot.debug_view_mode
         << ", \"ui_visible\": " << (shot.ui_visible ? "true" : "false")
         << "},\n";
@@ -330,7 +329,6 @@ bool write_state_json(const std::filesystem::path& path,
         << ", \"reason\": \"" << json_escape(frame_stats.dlss_reason)
         << "\"},\n";
     out << "    \"view\": {\"pixel_budget\": " << stats.pixel_budget
-        << ", \"resolver_choice\": " << stats.resolver_choice
         << ", \"debug_view_mode\": " << stats.debug_view_mode
         << ", \"vol_debug_view\": " << stats.vol_debug_view
         << ", \"hiz_enabled\": " << (stats.hiz_enabled ? "true" : "false")

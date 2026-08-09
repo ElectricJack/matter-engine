@@ -79,8 +79,6 @@ struct ViewerStats {
     int      parts_baked = 0;       // last connect: cache misses
     int      cache_hits = 0;        // last connect: cache hits
     int      last_want_count = 0;   // last reconcile want-list size
-    // Writable: 0 = PassThrough, 1 = SectorLod. Panel sets this; main swaps resolver.
-    int      resolver_choice = 0;
     // GPU-path counters. The Vulkan GPU-driven path reports raster_batches (live
     // indirect draw buckets) and raster_tris from the cull shader stats SSBO.
     // batch_cache_hit remains legacy/always-false (no per-frame batch cache).
@@ -162,12 +160,10 @@ struct ViewerStats {
     // StreamMountain default; Meadow ships 0.0015. Seeded per world by
     // apply_world_resolver_defaults, then live-overridable here.
     float min_projected_size    = 0.0f;
-    // SectorLod activation radius, metres. Sectors whose centre is beyond this
-    // emit nothing. The resolver's own default is 64 m against a 16 m sector
-    // pitch -- about four sectors -- which is why SectorLod looks broken on a
-    // world whose fog wall is 2.5 km. Seeded per world, live-overridable.
-    // Inert while resolver_choice is 0 (PassThrough).
-    float active_radius         = 64.0f;
+    // (No active_radius and no resolver_choice. The engine has one resolver,
+    // and its activation radius is derived from the world's outermost terrain
+    // LOD band -- see RenderOptions in matter/world_session.h. Edit the band
+    // table to move it.)
     bool  wireframe_available   = false;
     std::string wireframe_unavailable_reason;
     // Viewer-local diagnostic toggles.  These are deliberately not part of

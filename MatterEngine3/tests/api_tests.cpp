@@ -106,7 +106,6 @@ int main() {
                            60.0f * 3.14159265358979323846f / 180.0f,
                            1.0f, 5000.0f};
     matter::RenderOptions opts;   // defaults: GpuDriven + SectorLod
-    opts.resolver = matter::ResolverKind::PassThrough;
     for (int i = 0; i < 3; ++i) {
         BeginDrawing();
         session->render(cam, GetScreenWidth(), GetScreenHeight(), opts);

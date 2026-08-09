@@ -387,24 +387,19 @@ void init_camera(matter::CameraDesc& camera) {
     camera.far_plane = 10241.0f;
 }
 
+// Per-world sub-pixel floor. This used to also pick a RESOLVER per world by
+// name (Meadow got SectorLod, everything else PassThrough) and seed an
+// activation radius. Both are gone: there is one resolver, and its radius is
+// derived from the world's outermost terrain LOD band rather than guessed from
+// the world's name.
 void apply_world_resolver_defaults(const std::string& world_name,
-                                   float& active_radius,
                                    float& min_projected_size,
                                    viewer::ViewerStats& stats) {
-    if (world_name == "Meadow") {
-        active_radius = 400.0f;
-        min_projected_size = 0.0015f;
-        stats.resolver_choice = 1;
-    } else {
-        active_radius = 64.0f;
-        min_projected_size = 0.0f;
-        stats.resolver_choice = 0;
-    }
+    min_projected_size = world_name == "Meadow" ? 0.0015f : 0.0f;
     // Seed the live slider from the world's default. From here the Debug View
     // control owns the value, so a world switch re-seeds it rather than
     // fighting it -- and RenderOptions reads the slider, not this local.
     stats.min_projected_size = min_projected_size;
-    stats.active_radius = active_radius;
 }
 
 // The windowed placement saved on the way into presentation mode, so leaving
@@ -1041,10 +1036,9 @@ int main() {
     stats.connected = true;
     if (std::getenv("MATTER_HIZ"))
         std::printf("MATTER_HIZ: not available in Vulkan milestone; ignored\n");
-    float active_radius = 64.0f;
     float min_projected_size = 0.0f;
     apply_world_resolver_defaults(worlds[initial_world].world_name,
-                                  active_radius, min_projected_size, stats);
+                                  min_projected_size, stats);
 
     // Property registry (property-system design S3/S4). Bound BEFORE anything
     // writes the tunable structs, so bind() captures the compiled defaults;
@@ -1448,7 +1442,6 @@ int main() {
         shot.frame_height = fb_h;
         shot.dlss_mode = matter::dlss_mode_name(selected_dlss_mode());
         shot.pixel_budget = stats.pixel_budget;
-        shot.resolver_choice = stats.resolver_choice;
         shot.debug_view_mode = stats.debug_view_mode;
         shot.ui_visible = !hide_ui;
         // The layout IS the viewport geometry; without it a replay reproduces
@@ -1568,7 +1561,6 @@ int main() {
         // the comparison honest and repeatable. Ask for the recorded mode with
         // MATTER_DLSS_MODE if you want it back.
         stats.pixel_budget = replay.pixel_budget;
-        stats.resolver_choice = replay.resolver_choice;
         stats.debug_view_mode = replay.debug_view_mode;
         ui.set_sim_time_scale(replay.time_scale);
         if (replay.dlss_mode != "native")
@@ -2913,9 +2905,6 @@ int main() {
         }
         matter::RenderOptions options;
         options.path = matter::RenderPath::GpuDriven;
-        options.resolver = stats.resolver_choice == 1
-                               ? matter::ResolverKind::SectorLod
-                               : matter::ResolverKind::PassThrough;
         // Geometry-stage views. Unlike 1-4 these are not composite modes, so
         // the remap below leaves composite_debug_view at 0 for them.
         //
@@ -2935,7 +2924,6 @@ int main() {
                 : matter::GeometryDebugView::None;
         options.hiz_occlusion = false;
         options.pixel_budget = stats.pixel_budget;
-        options.active_radius = stats.active_radius;
         options.min_projected_size = stats.min_projected_size;
         options.dlss_mode = selected_dlss_mode();
         options.vulkan_lighting = stats.lighting;
@@ -3698,7 +3686,7 @@ int main() {
                 fog_override_ready = false;
                 apply_world_sun_after_bake = true;
                 sun_override_ready = false;
-                apply_world_resolver_defaults(worlds[selected].world_name, active_radius,
+                apply_world_resolver_defaults(worlds[selected].world_name,
                                               min_projected_size, stats);
             }
         }

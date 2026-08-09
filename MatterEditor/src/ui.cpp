@@ -1446,38 +1446,20 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
     // here — that mapping had already drifted once, which is why it is a
     // fact panels declare now instead of a list maintained by hand.
     //
-    // resolver_choice / debug_view_mode / vol_debug_view / wireframe below are
-    // the FOUR fields viewer.debug describes, edited here as raw widgets (not
-    // through
+    // debug_view_mode / vol_debug_view / wireframe below are the fields
+    // viewer.debug describes, edited here as raw widgets (not through
     // draw_group — main.cpp copies debug_view_mode/vol_debug_view onward into
     // the render structs every frame, so the registered struct member IS the
     // widget's backing value, just not through the generic renderer).
+    //
+    // There is no Resolver combo any more, and no Activation radius slider.
+    // The engine has ONE resolver (SectorLod), so there was nothing to choose
+    // between; and its radius is derived from the world's outermost terrain
+    // LOD band -- the distance past which the streamer keeps nothing resident
+    // anyway -- so a slider could only ever set it to disagree with the
+    // streamer. Edit the band table (LOD Settings) to move it.
     if (matter::props::Binding* b = props.viewer_debug())
         props.note_panel_home(b->schema().path, "Viewer Debug");
-    const char* resolvers[] = { "PassThrough", "SectorLod" };
-    ImGui::Combo("Resolver", &s.resolver_choice, resolvers, 2);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip(
-            "PassThrough: every world entry becomes an instance; all LOD and "
-            "culling are left to the GPU cull.\n"
-            "SectorLod: bins into sectors, picks one rung per (sector, part) "
-            "from that sector's CLOSEST instance, and emits nothing for "
-            "sectors outside the activation radius below.");
-    if (s.resolver_choice == 1) {
-        // SectorLod's activation radius. Its built-in default is 64 m against
-        // a 16 m sector pitch -- roughly four sectors -- which is why the
-        // resolver looks empty on a world whose fog wall is 2.5 km. It was
-        // previously fixed per world by name with no way to adjust it, so the
-        // resolver could not be evaluated at all on StreamMountain.
-        ImGui::SetNextItemWidth(160.0f);
-        ImGui::SliderFloat("Activation radius", &s.active_radius, 16.0f,
-                           4096.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(
-                "Sectors whose centre is beyond this emit no instances.\n"
-                "Raise it until the horizon fills in, then compare "
-                "cull.instances and frame_ms against PassThrough.");
-    }
     if (ImGui::Button("Reload world") && commands.reload) commands.reload();
 
     ImGui::SeparatorText("Debug View");

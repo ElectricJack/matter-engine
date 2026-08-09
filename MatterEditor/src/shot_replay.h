@@ -121,7 +121,6 @@ struct ShotReplay {
 
     std::string dlss_mode = "native";
     float pixel_budget = 1.0f;
-    int resolver_choice = 0;
     int debug_view_mode = 0;
     bool ui_visible = true;
 };

@@ -539,11 +539,11 @@ static void test_resolvers() {
     lod_select::PartLodTable lods;
     lods[kPart] = lod_select::PartLod{ 1.0f, { 0.50f, 0.20f, 0.05f } };
 
-    // PassThrough: everything active at LOD 0, ignores camera.
-    viewer::PassThroughResolver pass;
-    auto a = pass.resolve(state, lods, make_float3(0,0,0));
-    CHECK(a.size() == 2, "passthrough activates all instances");
-    CHECK(a[0].lod_level == 0 && a[1].lod_level == 0, "passthrough uses LOD 0");
+    // (The PassThroughResolver cases that stood here are gone with the
+    // resolver. They asserted "everything active at LOD 0, ignores camera" --
+    // a baseline that only meant something while there were two resolvers to
+    // compare. SectorLod with an unbounded radius is the same claim, and it is
+    // covered by the activation-radius case further down.)
 
     // SectorLod with a large activation radius so BOTH instances stay active and
     // the test exercises LOD selection (not culling): near camera keeps the near

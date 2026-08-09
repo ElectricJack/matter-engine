@@ -30,58 +30,6 @@ static ResolvedInstance to_resolved(const WorldManifestEntry& e, int lod) {
 }
 
 std::vector<ResolvedInstance>
-PassThroughResolver::resolve(const WorldState& state,
-                             const lod_select::PartLodTable& lods,
-                             const float3& cam_pos) {
-    std::vector<ResolvedInstance> out;
-    out.reserve(state.entries().size());
-    // Sub-pixel floor. Without it this resolver emits every entry in the world
-    // state unconditionally, which is exactly what it did before -- and why the
-    // editor's sub-pixel slider did nothing on StreamMountain, whose
-    // resolver_choice of 0 selects THIS resolver while the knob was only ever
-    // routed to SectorLodResolver.
-    //
-    // Same rule as everywhere else: a projected size is radius * scale /
-    // distance, compared against the floor. Expressed through
-    // lod::normalized_switch_distance so the floor keeps meaning the same thing
-    // it means to lod_select and to cull.comp, rather than becoming a second
-    // definition of "too small".
-    const bool floor_on = min_projected_size_ > 0.0f;
-    const float floor_distance =
-        floor_on ? lod::normalized_switch_distance(min_projected_size_) : 0.0f;
-    for (const auto& e : state.entries()) {
-        if (floor_on) {
-            const auto found = lods.find(e.part_hash);
-            // A part with no LOD metadata is never culled: unknown size is not
-            // evidence of smallness, and silently dropping it would make a
-            // missing table entry look like a rendering bug.
-            if (found != lods.end() && found->second.bound_radius > 0.0f) {
-                // Average basis length, the same uniform-scale estimate every
-                // other lane uses (see select_cluster_lod_view).
-                const float* m = e.transform;   // column-major, 16 floats
-                const auto col = [&](int a, int b, int c) {
-                    return std::sqrt(m[a] * m[a] + m[b] * m[b] + m[c] * m[c]);
-                };
-                const float scale =
-                    (col(0, 1, 2) + col(4, 5, 6) + col(8, 9, 10)) / 3.0f;
-                const float dx = m[12] - cam_pos.x;
-                const float dy = m[13] - cam_pos.y;
-                const float dz = m[14] - cam_pos.z;
-                const float distance = std::max(
-                    std::sqrt(dx * dx + dy * dy + dz * dz), 0.01f);
-                if (distance >
-                    floor_distance *
-                        lod::reach(found->second.bound_radius, scale,
-                                   pixel_budget_))
-                    continue;   // below the floor: emit nothing for it
-            }
-        }
-        out.push_back(to_resolved(e, 0));
-    }
-    return out;
-}
-
-std::vector<ResolvedInstance>
 SectorLodResolver::resolve(const WorldState& state,
                            const lod_select::PartLodTable& lods,
                            const float3& cam_pos) {

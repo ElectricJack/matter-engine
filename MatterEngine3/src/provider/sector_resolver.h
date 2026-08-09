@@ -19,46 +19,29 @@ struct ResolvedInstance {
     float    transform[16] = {0};     // row-major world placement
 };
 
-// Strategy: "given the camera, which instances render and at what LOD?"
-class SectorResolver {
-public:
-    virtual ~SectorResolver() = default;
-    virtual std::vector<ResolvedInstance>
-        resolve(const WorldState& state,
-                const lod_select::PartLodTable& lods,
-                const float3& cam_pos) = 0;
-    virtual const char* name() const = 0;
-};
-
-// Baseline: all instances active at LOD 0, no culling. Correctness reference.
-class PassThroughResolver : public SectorResolver {
-public:
-    std::vector<ResolvedInstance>
-        resolve(const WorldState&, const lod_select::PartLodTable&, const float3&) override;
-    const char* name() const override { return "PassThrough"; }
-    // Sub-pixel floor, same meaning and same units as SectorLodResolver's.
-    //
-    // This resolver used to emit EVERY world entry unconditionally, which is
-    // why the editor's sub-pixel slider appeared to do nothing on
-    // StreamMountain: the knob was only ever applied to SectorLodResolver, and
-    // StreamMountain runs PassThrough (resolver_choice 0). 0 = off.
-    void set_min_projected_size(float v) { min_projected_size_ = v; }
-    void set_pixel_budget(float b) { pixel_budget_ = b; }
-
-private:
-    float min_projected_size_ = 0.0f;
-    float pixel_budget_ = 1.0f;
-};
-
+// THE resolver: "given the camera, which instances render and at what LOD?"
+//
+// There is one. A PassThroughResolver used to sit beside this -- every world
+// entry emitted at LOD 0, no binning, no culling -- as a correctness reference,
+// and it was the default for every world but Meadow. Two resolve paths meant
+// two places every knob had to be remembered, and the sub-pixel floor was
+// wired to only one of them for long enough that the editor's slider was
+// silently inert on the world being tuned with it. SectorLod is a strict
+// superset: the same instances, plus per-sector rung selection and
+// inline-cutover child expansion.
+//
 // Bins instances into sectors, picks per-sector LOD via lod_select, and
 // activates sectors within `active_radius_` of the camera.
-class SectorLodResolver : public SectorResolver {
+class SectorLodResolver {
 public:
     SectorLodResolver(float pitch, float active_radius)
         : pitch_(pitch), active_radius_(active_radius) {}
     std::vector<ResolvedInstance>
-        resolve(const WorldState&, const lod_select::PartLodTable&, const float3&) override;
-    const char* name() const override { return "SectorLod"; }
+        resolve(const WorldState&, const lod_select::PartLodTable&, const float3&);
+    const char* name() const { return "SectorLod"; }
+    // The world's outermost terrain LOD band -- see RenderOptions in
+    // matter/world_session.h for why this is derived rather than dialled.
+    // Infinity for a world with no bands, which emits every sector.
     void set_active_radius(float r) { active_radius_ = r; }
     void set_min_projected_size(float v) { min_projected_size_ = v; }
     void set_pixel_budget(float b) { pixel_budget_ = b; }

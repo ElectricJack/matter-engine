@@ -497,18 +497,19 @@ const auto s_overlay = matter::props::group<AnimationDebugOverlayOptions>(
 
 // viewer.debug — Scope::Session.
 //
-// These four ARE user-owned, which is exactly what the excluded debug-view
+// These ARE user-owned, which is exactly what the excluded debug-view
 // fields at the top of this file are not: main.cpp reads
 // ViewerStats::debug_view_mode / vol_debug_view / wireframe and WRITES them into
 // VulkanLightingOverrides::composite_debug_view /
 // VulkanVolumetricsSettings::vol_debug_view every frame. The struct members are
 // the overwritten copies; these ints are the source the combos edit, so binding
-// them is honest where binding the copies would not be. resolver_choice is the
-// same shape — written only by the combo, read by main.cpp to pick the resolver.
+// them is honest where binding the copies would not be.
+//
+// resolver_choice used to be listed here too. It is gone with the second
+// resolver: there is one, so there is nothing to select.
 //
 // Session: a debug visualization that survived a relaunch would be a bug report
 // waiting to happen, and the combos are right there in Viewer Debug.
-const char* const kResolverLabels[] = {"PassThrough", "SectorLod"};
 // NOT composite.frag's mode numbering -- main.cpp remaps these indices onto
 // VulkanLightingOverrides::composite_debug_view (1 -> 2.0 normals, 2 -> 3.0
 // linear depth), so the shader's mode 1.0 (the RT sun-visibility image) had no
@@ -536,8 +537,6 @@ const char* const kVolDebugLabels[] = {"Off", "Density", "Scatter",
 
 const auto s_viewer_debug = matter::props::group<ViewerStats>(
     "viewer.debug", "Viewer Debug Views",
-    prop(&ViewerStats::resolver_choice, "resolver_choice")
-        .label("Resolver").enums(kResolverLabels, 2),
     prop(&ViewerStats::debug_view_mode, "debug_view_mode")
         .label("Debug view").enums(kDebugViewLabels, 7)
         .doc("0-4 select composite views; \"LOD levels\" tints each surface by "

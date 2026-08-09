@@ -50,7 +50,15 @@ struct WorldDesc {
 };
 
 enum class RenderPath { GpuDriven, Raytrace };
-enum class ResolverKind { SectorLod, PassThrough };
+// (ResolverKind is gone. There was a PassThrough resolver -- every world entry
+// emitted at LOD 0, no binning, no culling -- kept as a correctness reference
+// and selected by default for every world except Meadow. It meant the engine
+// had two resolve paths that had to agree, and every knob added to one had to
+// be remembered for the other; the sub-pixel floor was routed only to SectorLod
+// for a while, which made the editor's slider silently inert on the one world
+// anyone was tuning. SectorLod is a superset -- it emits the same instances,
+// then adds per-sector rung selection and inline-cutover child expansion -- so
+// there is nothing PassThrough could express that survives its removal.)
 enum class DlssMode : uint8_t { Native, Quality, Balanced, Performance };
 
 const char* dlss_mode_name(DlssMode mode) noexcept;
@@ -118,7 +126,6 @@ struct VulkanLightingOverrides {
 
 struct RenderOptions {
     RenderPath   path     = RenderPath::GpuDriven;
-    ResolverKind resolver = ResolverKind::SectorLod;
     // Geometry-stage diagnostic. Applied while the G-buffer is written, unlike
     // VulkanLightingOverrides::composite_debug_view; None is inert.
     GeometryDebugView geometry_debug_view = GeometryDebugView::None;
@@ -133,8 +140,15 @@ struct RenderOptions {
     bool  impostor_parallax = true;
     bool  hiz_occlusion   = false;    // default OFF (known false-positive issue)
     float pixel_budget    = 0.0f;     // 0 = default (1.0); clamped to [0.05, 4.0]
-    float active_radius   = 0.0f;     // SectorLod knob; 0 = default (64.0)
-    float min_projected_size = 0.0f;  // SectorLod sub-pixel cull; 0 = off
+    // (No active_radius. It is DERIVED from the world's outermost terrain LOD
+    // band -- the distance past which the streamer keeps nothing resident
+    // anyway -- so the two can no longer disagree. It used to be a caller knob
+    // defaulting to 64 m against a 16 m sector pitch, which is about four
+    // sectors: on a world whose fog wall is 2.5 km that empties the view, and
+    // it was the reason SectorLod could not be evaluated on StreamMountain at
+    // all until a slider was added for it. A world with no bands is unbounded,
+    // which is what a closed (non-streamed) world needs.)
+    float min_projected_size = 0.0f;  // sub-pixel cull; 0 = off
     bool  cull_backfaces  = false;    // GpuDriven path: skip backface triangles
                                       // (off by default: mesh-session winding
                                       // is not guaranteed for all part kinds)

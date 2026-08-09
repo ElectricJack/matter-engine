@@ -100,10 +100,18 @@ inline const matter::props::Group& streaming_lod_group() {
     using matter::props::prop;
     static const auto def = matter::props::group<StreamingLodPrefs>(
         "stream.lod", "Streaming LOD",
+        // NOT "Heightfield terrain LOD" any more. The name dated from when
+        // LODs 0-4 meshed as a heightfield grid and only LOD 5 was voxels --
+        // two different surfaces, which is exactly what made the near/far
+        // transition visible as a seam no band tuning could hide. The ladder
+        // is one voxel representation at every rung now, so the checkbox turns
+        // COARSENING on and off, not a change of representation.
         prop(&StreamingLodPrefs::terrain_lod_enabled, "terrain_lod_enabled")
-            .label("Heightfield terrain LOD")
-            .doc("Off: every sector bakes the full-detail voxel mesh (the "
-                 "pre-ladder behavior; far more memory and bake time).")
+            .label("Terrain LOD ladder")
+            .doc("Coarsen distant terrain by meshing it at a bigger voxel. "
+                 "Off: every sector bakes at full detail regardless of "
+                 "distance (far more memory and bake time). Every rung is the "
+                 "same voxel mesher -- only the voxel size changes.")
             .requires_reload(),
         prop(&StreamingLodPrefs::scatter_rings, "scatter_rings")
             .label("Scatter rings")

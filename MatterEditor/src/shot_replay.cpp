@@ -219,8 +219,10 @@ ShotReplay load_shot_replay(const std::string& path, int shot_index) {
             get_string(ctx, render, "dlss", replay.dlss_mode);
             if (get_number(ctx, render, "pixel_budget", n))
                 replay.pixel_budget = static_cast<float>(n);
-            if (get_number(ctx, render, "resolver", n))
-                replay.resolver_choice = static_cast<int>(n);
+            // "resolver" is READ AND DISCARDED for old descriptors: every
+            // shot on disk records one, and there is only one resolver now,
+            // so the recorded choice can neither be honoured nor is it needed.
+            // Parsing past it silently is what keeps those shots replayable.
             if (get_number(ctx, render, "debug_view", n))
                 replay.debug_view_mode = static_cast<int>(n);
             get_bool(ctx, render, "ui_visible", replay.ui_visible);

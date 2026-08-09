@@ -604,11 +604,18 @@ struct WorldSession::Impl {
     // GPU culler (per-session; initialized once per session after first bake).
     bool              culler_ready = false;
 
-    // Resolvers — mirrors main.cpp's pass/sec locals.
-    viewer::PassThroughResolver pass;
-    // Constructor radius overwritten immediately by opts.active_radius in render();
-    // 64.0f keeps it valid before first render call.
-    viewer::SectorLodResolver sec{16.0f, 64.0f};
+    // THE resolver. Radius is overwritten every render() from the world's
+    // outermost terrain band; the constructor value only has to be valid
+    // before the first call, and infinity is the honest "nothing is excluded
+    // yet" rather than a 64 m default that would blank a streamed world for
+    // one frame.
+    viewer::SectorLodResolver sec{16.0f,
+                                  std::numeric_limits<float>::infinity()};
+    // The derived activation radius, published as a plain float so render()
+    // does not take streaming_lod_mutex every frame to read one number.
+    // Infinity until a streamed world resolves its bands.
+    std::atomic<float> stream_activation_radius{
+        std::numeric_limits<float>::infinity()};
 
     std::atomic<bool> connected{false};
 
@@ -1907,6 +1914,15 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     struct TraceCurrentGuard {
         ~TraceCurrentGuard() { bake_trace::set_current(nullptr); }
     } trace_current_guard;
+
+    // Unbound the resolver for the world about to load. install_world resets
+    // it from the resolved band table for a STREAMED world; a closed world
+    // never gets there, and without this reset it would inherit the previous
+    // world's radius and quietly lose everything outside it. Reset per bake,
+    // above the branch, because that is the only place both kinds pass
+    // through.
+    stream_activation_radius.store(std::numeric_limits<float>::infinity(),
+                                   std::memory_order_relaxed);
 
     // 1) BakeStarted -----------------------------------------------------------
     ecs_runtime.enqueue_world_state(
@@ -3537,15 +3553,19 @@ bool WorldSession::Impl::install_world(
     // and a run that silently fell back to the uniform grid -- a band table
     // with a gap in it, MATTER_NESTED_SECTORS=0 -- would otherwise be
     // indistinguishable from one that nested.
+    // The REACH is not printed here any more, only below with the resolver's
+    // activation radius. It used to be, reading the band table as the world
+    // authored it -- before the editor's LOD Settings overrides are folded in
+    // a few lines down -- so on any world carrying an override it announced a
+    // reach the streamer would never use. StreamMountain logged 10095 m
+    // against an actual 2619 m: two adjacent lines disagreeing about one
+    // number, with the wrong one first.
     if (profile.nested_sectors) {
-        const float nested_reach = profile.terrain_bands.empty()
-            ? 0.0f : profile.terrain_bands.back().radius;
         fprintf(stderr,
                 "[stream] NESTED sector LOD: level 0 = %.0f m tiles, %zu "
-                "levels, reach %.0f m (the outermost BAND bounds residency; "
-                "rings grade scatter only)\n",
-                profile.sector_size, profile.terrain_bands.size(),
-                nested_reach);
+                "levels (the outermost BAND bounds residency; rings grade "
+                "scatter only)\n",
+                profile.sector_size, profile.terrain_bands.size());
     }
     {
         // Editor LOD Settings overrides (set on the app thread; this connect
@@ -3579,6 +3599,36 @@ bool WorldSession::Impl::install_world(
         matter_stream::resolve_terrain_defaults(profile);
         active_streaming_lod = profile;
         has_active_streaming_lod = true;
+        // Publish the resolver's activation radius from the SAME resolved
+        // profile the streamer is built from, at the one point where world
+        // JS, env vars and the editor's overrides have all been folded in.
+        // Deriving it anywhere earlier would read a band table that a later
+        // override could still replace.
+        //
+        // The outermost band is where residency stops, so a sector beyond it
+        // is one the streamer has already evicted or never requested; the
+        // resolver excluding it costs nothing and keeps the two from
+        // disagreeing. Bandless worlds (every closed, non-streamed one) are
+        // unbounded -- their content sits wherever it was authored and there
+        // is no distance at which dropping it would be correct.
+        const float activation_radius =
+            profile.terrain_bands.empty()
+                ? std::numeric_limits<float>::infinity()
+                : profile.terrain_bands.back().radius;
+        stream_activation_radius.store(activation_radius,
+                                       std::memory_order_relaxed);
+        // Logged because it used to be a slider. With the control gone there
+        // is otherwise no way to see what the resolver is using, and "the
+        // horizon is empty" would be indistinguishable from "the bands are
+        // wrong". This is also THE reach for a nested world -- same table,
+        // read after every override, which is why the line above no longer
+        // prints one of its own.
+        if (std::isinf(activation_radius))
+            fprintf(stderr, "[stream] resolver activation radius: unbounded "
+                            "(no terrain bands)\n");
+        else
+            fprintf(stderr, "[stream] resolver activation radius: %.0f m "
+                            "(outermost terrain band)\n", activation_radius);
         world_volumetrics_defaults = provider->world_settings().volumetrics;
         has_world_volumetrics = true;
         // Not a bake input and not hashed anywhere: this is the schema half of
@@ -7469,20 +7519,16 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
 
     float budget = opts.pixel_budget == 0.0f ? 1.0f : opts.pixel_budget;
     budget = std::max(0.05f, std::min(4.0f, budget));
-    float active_radius = opts.active_radius == 0.0f ? 64.0f
-                                                     : opts.active_radius;
-    impl_->sec.set_active_radius(active_radius);
+    // Activation radius is DERIVED, not dialled: it is the world's outermost
+    // terrain LOD band, the distance past which the streamer keeps nothing
+    // resident anyway. A caller-supplied radius could only ever disagree with
+    // that -- too small and the resolver blanks terrain the streamer is still
+    // paying to keep, too large and it does nothing.
+    impl_->sec.set_active_radius(
+        impl_->stream_activation_radius.load(std::memory_order_relaxed));
     impl_->sec.set_min_projected_size(opts.min_projected_size);
     impl_->sec.set_pixel_budget(budget);
-    // BOTH resolvers, not just SectorLod. Routing the floor only to `sec` is
-    // what made the editor's sub-pixel slider a no-op on StreamMountain, which
-    // runs PassThrough -- the knob moved, nothing downstream ever saw it.
-    impl_->pass.set_min_projected_size(opts.min_projected_size);
-    impl_->pass.set_pixel_budget(budget);
-    viewer::SectorResolver& resolver =
-        opts.resolver == ResolverKind::SectorLod
-            ? static_cast<viewer::SectorResolver&>(impl_->sec)
-            : static_cast<viewer::SectorResolver&>(impl_->pass);
+    viewer::SectorLodResolver& resolver = impl_->sec;
     const float3 camera_pos =
         make_float3(cam.position.x, cam.position.y, cam.position.z);
     const auto resolve_start = std::chrono::steady_clock::now();
