@@ -5149,6 +5149,137 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
           error.empty() ? "commit isolated traceable TLAS before froxel resize"
                         : error.c_str());
 
+    // Task 10: allocate the clear-only sun-space clipmaps through the real
+    // renderer frame lifecycle before any Task 11 density generation exists.
+    // The observable contract is resource ownership, descriptor publication,
+    // fallback, failure cleanup, and retirement -- every sample remains clear.
+    matter::FogSettings clear_fog{};
+    matter::VulkanVolumetricsSettings clear_volumetrics{};
+    clear_volumetrics.enabled = true;
+    matter::CloudShadowSettings improved_shadows{};
+    matter::apply_volumetric_quality_preset(
+        matter::VolumetricQualityPreset::Improved, clear_volumetrics,
+        improved_shadows);
+    renderer.set_volumetrics_settings(clear_volumetrics, clear_fog,
+                                      improved_shadows);
+    CHECK(warm_rt_tlas(),
+          error.empty() ? "allocate clear Task 10 cloud-shadow clipmaps"
+                        : error.c_str());
+    const auto improved_levels =
+        matter::resolve_cloud_shadow_levels(improved_shadows);
+    bool all_task10_images_match = renderer.cloud_shadows_active() &&
+        renderer.cloud_shadow_persistent_bytes() ==
+            matter::estimate_cloud_shadow_bytes(improved_shadows);
+    for (uint32_t level = 0; level < 2; ++level) {
+        const auto active_desc = renderer.cloud_shadow_level_desc(level);
+        all_task10_images_match = all_task10_images_match &&
+            active_desc.width == improved_levels[level].width &&
+            active_desc.height == improved_levels[level].height &&
+            active_desc.depth == improved_levels[level].depth &&
+            renderer.cloud_shadow_density_format(level) ==
+                VK_FORMAT_R16_SFLOAT &&
+            renderer.cloud_shadow_density_extent(level).width ==
+                improved_levels[level].width &&
+            renderer.cloud_shadow_density_extent(level).height ==
+                improved_levels[level].height &&
+            renderer.cloud_shadow_density_extent(level).depth ==
+                improved_levels[level].depth &&
+            renderer.cloud_shadow_density_view(level) != VK_NULL_HANDLE;
+        for (uint32_t ping = 0; ping < 2; ++ping) {
+            const auto extent =
+                renderer.cloud_shadow_cumulative_extent(level, ping);
+            all_task10_images_match = all_task10_images_match &&
+                renderer.cloud_shadow_cumulative_format(level, ping) ==
+                    VK_FORMAT_R16_SFLOAT &&
+                extent.width == improved_levels[level].width &&
+                extent.height == improved_levels[level].height &&
+                extent.depth == improved_levels[level].depth &&
+                renderer.cloud_shadow_cumulative_view(level, ping) !=
+                    VK_NULL_HANDLE &&
+                renderer.cloud_shadow_environment_image_is_clear_for_test(
+                    level * 2u + ping, error);
+        }
+    }
+    CHECK(all_task10_images_match,
+          "Improved owns exactly one density and two R16F cumulative images per resolved level");
+    CHECK(renderer.cloud_shadow_active_ping(0) < 2u &&
+              renderer.cloud_shadow_active_ping(1) < 2u &&
+              renderer.cloud_shadow_environment_bindings_match_for_test() &&
+              renderer.cloud_shadow_environment_state_for_test(0) == 1.0f,
+          "both ping indices and the current set-1 cloud-shadow views are valid");
+
+    matter::CloudShadowSettings disabled_shadows = improved_shadows;
+    disabled_shadows.enabled = false;
+    renderer.set_volumetrics_settings(clear_volumetrics, clear_fog,
+                                      disabled_shadows);
+    CHECK(warm_rt_tlas(),
+          error.empty() ? "bind Task 10 emergency cloud-shadow images"
+                        : error.c_str());
+    bool disabled_is_clear = !renderer.cloud_shadows_active() &&
+        renderer.cloud_shadow_persistent_bytes() == 0u &&
+        renderer.cloud_shadow_environment_state_for_test(0) == 0.0f;
+    for (uint32_t binding = 0; binding < 4; ++binding) {
+        const auto extent =
+            renderer.cloud_shadow_environment_extent_for_test(binding);
+        disabled_is_clear = disabled_is_clear &&
+            renderer.cloud_shadow_environment_view_for_test(binding) !=
+                VK_NULL_HANDLE &&
+            renderer.cloud_shadow_environment_image_is_clear_for_test(
+                binding, error) &&
+            extent.width == 1u && extent.height == 1u && extent.depth == 1u;
+    }
+    CHECK(disabled_is_clear,
+          "disabled mode publishes cloud_state.x zero and initialized 1x1x1 clear bindings");
+
+    // Re-establish a live pair, then fail High after partial candidate image
+    // allocation. The current safe slot must switch to emergency descriptors;
+    // no failed-candidate lifetime may escape into a live set.
+    renderer.set_volumetrics_settings(clear_volumetrics, clear_fog,
+                                      improved_shadows);
+    CHECK(warm_rt_tlas(),
+          error.empty() ? "restore Improved clipmaps before failure injection"
+                        : error.c_str());
+    matter::CloudShadowSettings high_shadows{};
+    matter::VulkanVolumetricsSettings high_volumetrics{};
+    matter::apply_volumetric_quality_preset(
+        matter::VolumetricQualityPreset::High, high_volumetrics,
+        high_shadows);
+    renderer.set_fail_next_cloud_shadow_bundle_creation_for_test(true);
+    renderer.set_volumetrics_settings(high_volumetrics, clear_fog,
+                                      high_shadows);
+    CHECK(warm_rt_tlas(),
+          error.empty() ? "renderer survives partial High cloud-shadow allocation failure"
+                        : error.c_str());
+    const std::string cloud_failure = renderer.cloud_shadow_allocation_error();
+    bool failure_uses_clear = !renderer.cloud_shadows_active() &&
+        renderer.cloud_shadow_environment_state_for_test(0) == 0.0f &&
+        renderer.cloud_shadow_failed_candidate_destroyed_for_test();
+    for (uint32_t binding = 0; binding < 4; ++binding) {
+        const auto extent =
+            renderer.cloud_shadow_environment_extent_for_test(binding);
+        failure_uses_clear = failure_uses_clear &&
+            renderer.cloud_shadow_environment_image_is_clear_for_test(
+                binding, error) &&
+            extent.width == 1u && extent.height == 1u && extent.depth == 1u;
+    }
+    CHECK(failure_uses_clear &&
+              cloud_failure.find("512x512x32") != std::string::npos &&
+              cloud_failure.find("256x256x24") != std::string::npos &&
+              cloud_failure.find("MiB") != std::string::npos,
+          "partial High failure destroys candidates, binds emergency clear, and names both levels plus MiB");
+
+    renderer.set_volumetrics_settings(clear_volumetrics, clear_fog,
+                                      improved_shadows);
+    CHECK(warm_rt_tlas(),
+          error.empty() ? "recreate Improved clipmaps after rejected High request"
+                        : error.c_str());
+    renderer.set_volumetrics_settings(clear_volumetrics, clear_fog,
+                                      disabled_shadows);
+    CHECK(warm_rt_tlas() && warm_rt_tlas() &&
+              renderer.cloud_shadow_retired_bundle_count_for_test() == 0u,
+          error.empty() ? "retire cloud-shadow bundle after both frame slots complete"
+                        : error.c_str());
+
     // Task 9: exercise the production bundle swap, density dispatch, and
     // readback path with a cloud deck that is constant over every froxel this
     // fixture can see.  Ground fog and emitters stay clear, so enhanced

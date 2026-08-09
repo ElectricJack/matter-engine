@@ -19,6 +19,7 @@
 #include "chart_atlas.h"   // WP-E: per-rung chart tables travel with a part
 #include "frame_matrices.h"
 #include "matter/draw_overrides.h"  // per-module draw overrides (GPU lane)
+#include "matter/cloud_shadow_settings.h"
 #include "matter/render_debug.h"
 #include "gpu_matrix_pack.h"
 #include "matter/lod_contract.h"
@@ -57,6 +58,7 @@ namespace viewer {
 class VkVolumetrics;
 struct FroxelDispatchGrid;
 class VkAtmosphere;
+class VkCloudShadows;
 
 constexpr uint32_t kVkMaxLod =
     static_cast<uint32_t>(matter::kMaxSerializedLodLevels);
@@ -989,6 +991,29 @@ public:
     bool readback_volumetrics_density_voxel_for_test(
         uint32_t x, uint32_t y, uint32_t z, matter::Float4& media,
         float& cloud_density, std::string& error);
+    bool cloud_shadows_active() const;
+    uint64_t cloud_shadow_persistent_bytes() const;
+    matter::CloudShadowLevelDesc cloud_shadow_level_desc(uint32_t level) const;
+    VkFormat cloud_shadow_density_format(uint32_t level) const;
+    VkExtent3D cloud_shadow_density_extent(uint32_t level) const;
+    VkImageView cloud_shadow_density_view(uint32_t level) const;
+    VkFormat cloud_shadow_cumulative_format(uint32_t level,
+                                            uint32_t ping) const;
+    VkExtent3D cloud_shadow_cumulative_extent(uint32_t level,
+                                              uint32_t ping) const;
+    VkImageView cloud_shadow_cumulative_view(uint32_t level,
+                                             uint32_t ping) const;
+    uint32_t cloud_shadow_active_ping(uint32_t level) const;
+    const std::string& cloud_shadow_allocation_error() const;
+    void set_fail_next_cloud_shadow_bundle_creation_for_test(bool enabled);
+    bool cloud_shadow_failed_candidate_destroyed_for_test() const;
+    size_t cloud_shadow_retired_bundle_count_for_test() const;
+    bool cloud_shadow_environment_bindings_match_for_test() const;
+    float cloud_shadow_environment_state_for_test(uint32_t index) const;
+    VkImageView cloud_shadow_environment_view_for_test(uint32_t index) const;
+    VkExtent3D cloud_shadow_environment_extent_for_test(uint32_t index) const;
+    bool cloud_shadow_environment_image_is_clear_for_test(
+        uint32_t index, std::string& error);
     // Ground POM live-tunables (viewer "Ground POM" UI). Stores the settings
     // and immediately re-writes the tileset params UBO (cheap -- see
     // write_tileset_params_buffer) so the next frame's gbuffer/RT tileset
@@ -1597,6 +1622,9 @@ private:
         VkDescriptorSet skin_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet environment_descriptor_set = VK_NULL_HANDLE;
+        VkImageView environment_cloud_views[4]{};
+        VkExtent3D environment_cloud_extents[4]{};
+        float environment_cloud_state[4]{};
         VkDescriptorSet display_descriptor_set = VK_NULL_HANDLE;
         // Three denoised signals (diffuse, specular, transmission), one
         // temporal set each and three a-trous ping-pong sets each.
@@ -1959,7 +1987,6 @@ private:
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline composite_pipeline_ = VK_NULL_HANDLE;
     VkSampler composite_sampler_ = VK_NULL_HANDLE;
-    matter::VkImageResource environment_cloud_neutral_[4];
     VkSampler vol_linear_sampler_ = VK_NULL_HANDLE;  // trilinear for froxel volume
     VkDescriptorSetLayout display_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout display_pipeline_layout_ = VK_NULL_HANDLE;
@@ -2287,7 +2314,9 @@ private:
     matter::VulkanGiSettings gi_settings_{};
     std::unique_ptr<VkVolumetrics> volumetrics_;
     std::unique_ptr<VkAtmosphere> atmosphere_;
+    std::unique_ptr<VkCloudShadows> cloud_shadows_;
     matter::AtmosphereSettings atmosphere_settings_{};
+    matter::CloudShadowSettings cloud_shadow_settings_{};
     bool volumetrics_enabled_ = false;
     float volumetrics_debug_view_ = 0.0f;
     bool volumetrics_height_layer_ = false;

@@ -16,6 +16,17 @@ layout(set = 1, binding = 6, std140) uniform EnvironmentBlock {
     vec4 cloud_filter;
 } environment;
 
+#include "cloud_shadow_common.glsl"
+
+float sample_cloud_transmittance(vec3 world_pos, float receiver_distance_m) {
+    // The disabled/failure path is independent of transforms and image
+    // contents. Active sampling remains binding-free in cloud_shadow_common.
+    if (environment.cloud_state.x == 0.0 ||
+        isnan(environment.cloud_state.x) ||
+        isinf(environment.cloud_state.x)) return 1.0;
+    return cloud_shadow_sample_active(world_pos, receiver_distance_m);
+}
+
 const float ENV_PI = 3.14159265359;
 
 vec2 atmosphere_sky_uv(vec3 world_dir, vec3 to_sun) {
@@ -64,13 +75,6 @@ vec3 sample_sky_irradiance(vec3 normal, vec3 sky_modifier) {
                       environment_sh_basis(coefficient, n) * band;
     }
     return max(irradiance, vec3(0.0)) * sky_modifier;
-}
-
-float sample_cloud_transmittance(vec3 world_pos, float receiver_distance_m) {
-    // Task 7 binds valid neutral 1x1x1 resources, but intentionally has no
-    // cloud field yet. Keep the disabled path independent of transforms.
-    if (environment.cloud_state.x == 0.0) return 1.0;
-    return 1.0;
 }
 
 #endif

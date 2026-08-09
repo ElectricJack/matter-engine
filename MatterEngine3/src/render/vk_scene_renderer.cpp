@@ -36,6 +36,7 @@
 #include "tileset_slicer.h"
 #include "vk_volumetrics.h"
 #include "vk_atmosphere.h"
+#include "vk_cloud_shadows.h"
 #include "tileset_bake_vk.h"
 
 namespace viewer {
@@ -444,33 +445,6 @@ void record_atmosphere_luts(VkCommandBuffer command_buffer, void* user_data) {
     record.ok = record.atmosphere && record.error &&
         record.atmosphere->record(command_buffer, record.camera_y,
                                   record.to_sun, *record.error);
-}
-
-struct NeutralCloudClearRecord {
-    matter::VkImageResource* images = nullptr;
-};
-
-void record_neutral_cloud_clear(VkCommandBuffer command_buffer, void* user_data) {
-    auto& record = *static_cast<NeutralCloudClearRecord*>(user_data);
-    const VkClearColorValue clear{{1.0f, 0.0f, 0.0f, 0.0f}};
-    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    for (uint32_t i = 0; i < 4; ++i) {
-        auto& image = record.images[i];
-        matter::record_image_transition(command_buffer, image,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_ACCESS_2_NONE,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_IMAGE_ASPECT_COLOR_BIT);
-        vkCmdClearColorImage(command_buffer, image.image,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
-        matter::record_image_transition(command_buffer, image,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-    }
 }
 
 struct NeutralVolumeClearRecord {
@@ -1226,7 +1200,12 @@ bool checked_size_to_int(size_t count, int& result, const char* label,
 }  // namespace vk_scene_detail
 
 VkSceneRenderer::VkSceneRenderer(matter::VulkanDevice& vulkan)
-    : vulkan_(&vulkan), dlss_bridge_(&vulkan.streamline_bridge()) {}
+    : vulkan_(&vulkan), dlss_bridge_(&vulkan.streamline_bridge()) {
+    // A renderer that has not yet received RenderOptions remains neutral.
+    // Production supplies the authored setting before its first recorded
+    // frame; legacy test/tool seams opt in explicitly.
+    cloud_shadow_settings_.enabled = false;
+}
 
 bool VkSceneRenderer::register_animation_skin_asset(
     uint64_t asset_key, const std::vector<VkSkinInfluence>& influences) {
@@ -1627,6 +1606,10 @@ void VkSceneRenderer::destroy_pipeline() {
         atmosphere_->destroy();
         atmosphere_.reset();
     }
+    if (cloud_shadows_) {
+        cloud_shadows_->destroy();
+        cloud_shadows_.reset();
+    }
     const VkDevice device = vulkan_->device();
     rt_sbt_.reset();
     visibility_.reset();
@@ -1732,7 +1715,6 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyDescriptorSetLayout(device, composite_set_layout_, nullptr);
     if (environment_set_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device, environment_set_layout_, nullptr);
-    for (auto& image : environment_cloud_neutral_) image.reset();
     if (raster_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, raster_pipeline_, nullptr);
     if (skinned_raster_pipeline_ != VK_NULL_HANDLE)
@@ -1829,25 +1811,14 @@ bool VkSceneRenderer::create_environment_layout(std::string& error) {
 }
 
 bool VkSceneRenderer::create_environment_resources(std::string& error) {
-    if (!atmosphere_) {
-        error = "physical environment requires atmosphere LUT resources";
+    if (!atmosphere_ || !cloud_shadows_) {
+        error = "physical environment requires atmosphere and cloud-shadow resources";
         return false;
     }
-    for (auto& image : environment_cloud_neutral_) {
-        if (!matter::create_image(*vulkan_, VK_IMAGE_TYPE_3D,
-                VK_FORMAT_R16_SFLOAT, {1, 1, 1},
-                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                image, error))
-            return false;
-    }
-    NeutralCloudClearRecord clear{environment_cloud_neutral_};
-    std::vector<std::shared_ptr<void>> lifetimes;
-    for (const auto& image : environment_cloud_neutral_)
-        lifetimes.push_back(image.lifetime);
-    return matter::submit_immediate(*vulkan_, record_neutral_cloud_clear,
-        &clear, error, matter::ImmediateSubmitPhase::staging_upload,
-        std::move(lifetimes));
+    // VkCloudShadows replaces Task 7's renderer-local
+    // record_neutral_cloud_clear VK_FORMAT_R16_SFLOAT resources with
+    // persistent tau=0 emergency images owned by the module itself.
+    return true;
 }
 
 bool VkSceneRenderer::create_pipeline(std::string& error) {
@@ -6025,12 +5996,17 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
 }
 
 void VkSceneRenderer::update_environment_descriptor(FrameResources& frame) {
-    // std140: two mat4 followed by two vec4. Cloud production begins in a
-    // later task; until then the valid R16F resources are neutral and state.x
-    // is exactly zero, so shaders never dereference cloud transforms.
+    // std140: two mat4 followed by cloud_state and cloud_filter. Task 10
+    // publishes finite snapped transforms only when both clear clipmaps are
+    // live; disabled and rejected states keep identity matrices and state.x=0.
     float block[40]{};
     block[0] = block[5] = block[10] = block[15] = 1.0f;
     block[16] = block[21] = block[26] = block[31] = 1.0f;
+    if (cloud_shadows_) {
+        const std::array<float, 40> published =
+            cloud_shadows_->environment_block();
+        std::memcpy(block, published.data(), sizeof(block));
+    }
     if (frame.environment_constants.mapped) {
         std::memcpy(frame.environment_constants.mapped, block, sizeof(block));
         std::string ignored;
@@ -6043,9 +6019,15 @@ void VkSceneRenderer::update_environment_descriptor(FrameResources& frame) {
                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     images[1] = {composite_sampler_, irradiance.view,
                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    for (uint32_t i = 0; i < 4; ++i)
-        images[i + 2] = {composite_sampler_, environment_cloud_neutral_[i].view,
+    for (uint32_t i = 0; i < 4; ++i) {
+        const matter::VkImageResource& cloud =
+            cloud_shadows_->environment_image(i);
+        images[i + 2] = {composite_sampler_, cloud.view,
                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        frame.environment_cloud_views[i] = cloud.view;
+        frame.environment_cloud_extents[i] = cloud.extent;
+        frame.environment_cloud_state[i] = block[32 + i];
+    }
     VkDescriptorBufferInfo buffer{frame.environment_constants.buffer, 0,
                                   sizeof(block)};
     VkWriteDescriptorSet writes[7]{};
@@ -6325,6 +6307,18 @@ bool VkSceneRenderer::init(std::string& error) {
         }
         atmosphere->request_settings(atmosphere_settings_);
         atmosphere_ = std::move(atmosphere);
+    }
+    if (!cloud_shadows_) {
+        auto cloud_shadows = std::make_unique<VkCloudShadows>();
+        std::string cloud_shadow_error;
+        if (!cloud_shadows->init(*vulkan_, cloud_shadow_error)) {
+            error = "cloud-shadow emergency resource init failed: " +
+                    cloud_shadow_error;
+            destroy_pipeline();
+            return false;
+        }
+        cloud_shadows->request_settings(cloud_shadow_settings_);
+        cloud_shadows_ = std::move(cloud_shadows);
     }
     if (!create_environment_resources(error)) {
         destroy_pipeline();
@@ -8319,6 +8313,8 @@ void VkSceneRenderer::set_volumetrics_settings(
     const matter::VulkanVolumetricsSettings& s,
     const matter::FogSettings& fog,
     const matter::CloudShadowSettings& shadows) {
+    cloud_shadow_settings_ = shadows;
+    if (cloud_shadows_) cloud_shadows_->request_settings(cloud_shadow_settings_);
     volumetrics_enabled_ = s.enabled;
     volumetrics_debug_view_ = s.vol_debug_view;
     // The composite pass skips froxel integration entirely for a ray whose
@@ -8408,6 +8404,119 @@ bool VkSceneRenderer::readback_volumetrics_density_voxel_for_test(
     }
     return volumetrics_->readback_density_voxel_for_test(
         x, y, z, media, cloud_density, error);
+}
+
+bool VkSceneRenderer::cloud_shadows_active() const {
+    return cloud_shadows_ && cloud_shadows_->active();
+}
+
+uint64_t VkSceneRenderer::cloud_shadow_persistent_bytes() const {
+    return cloud_shadows_ ? cloud_shadows_->persistent_bytes() : 0u;
+}
+
+matter::CloudShadowLevelDesc VkSceneRenderer::cloud_shadow_level_desc(
+    uint32_t level) const {
+    return cloud_shadows_ ? cloud_shadows_->level(level).desc
+                          : matter::CloudShadowLevelDesc{};
+}
+
+VkFormat VkSceneRenderer::cloud_shadow_density_format(uint32_t level) const {
+    return cloud_shadows_ ? cloud_shadows_->level(level).density.format
+                          : VK_FORMAT_UNDEFINED;
+}
+
+VkExtent3D VkSceneRenderer::cloud_shadow_density_extent(uint32_t level) const {
+    return cloud_shadows_ ? cloud_shadows_->level(level).density.extent
+                          : VkExtent3D{};
+}
+
+VkImageView VkSceneRenderer::cloud_shadow_density_view(uint32_t level) const {
+    return cloud_shadows_ ? cloud_shadows_->level(level).density.view
+                          : VK_NULL_HANDLE;
+}
+
+VkFormat VkSceneRenderer::cloud_shadow_cumulative_format(
+    uint32_t level, uint32_t ping) const {
+    return cloud_shadows_ && ping < 2
+        ? cloud_shadows_->level(level).cumulative[ping].format
+        : VK_FORMAT_UNDEFINED;
+}
+
+VkExtent3D VkSceneRenderer::cloud_shadow_cumulative_extent(
+    uint32_t level, uint32_t ping) const {
+    return cloud_shadows_ && ping < 2
+        ? cloud_shadows_->level(level).cumulative[ping].extent
+        : VkExtent3D{};
+}
+
+VkImageView VkSceneRenderer::cloud_shadow_cumulative_view(
+    uint32_t level, uint32_t ping) const {
+    return cloud_shadows_ && ping < 2
+        ? cloud_shadows_->level(level).cumulative[ping].view
+        : VK_NULL_HANDLE;
+}
+
+uint32_t VkSceneRenderer::cloud_shadow_active_ping(uint32_t level) const {
+    return cloud_shadows_ ? cloud_shadows_->level(level).active_index : 0u;
+}
+
+const std::string& VkSceneRenderer::cloud_shadow_allocation_error() const {
+    static const std::string empty;
+    return cloud_shadows_ ? cloud_shadows_->allocation_error() : empty;
+}
+
+void VkSceneRenderer::set_fail_next_cloud_shadow_bundle_creation_for_test(
+    bool enabled) {
+    if (cloud_shadows_)
+        cloud_shadows_->set_fail_next_bundle_creation_for_test(enabled);
+}
+
+bool VkSceneRenderer::cloud_shadow_failed_candidate_destroyed_for_test() const {
+    return cloud_shadows_ &&
+           cloud_shadows_->failed_candidate_destroyed_for_test();
+}
+
+size_t VkSceneRenderer::cloud_shadow_retired_bundle_count_for_test() const {
+    return cloud_shadows_ ? cloud_shadows_->retired_bundle_count_for_test() : 0u;
+}
+
+bool VkSceneRenderer::cloud_shadow_environment_bindings_match_for_test() const {
+    if (!cloud_shadows_ || frames_.empty()) return false;
+    const FrameResources& frame = frames_[active_frame_index_];
+    for (uint32_t index = 0; index < 4; ++index) {
+        if (frame.environment_cloud_views[index] !=
+            cloud_shadows_->environment_image(index).view) return false;
+    }
+    return true;
+}
+
+float VkSceneRenderer::cloud_shadow_environment_state_for_test(
+    uint32_t index) const {
+    return !frames_.empty() && index < 4
+        ? frames_[active_frame_index_].environment_cloud_state[index] : 0.0f;
+}
+
+VkImageView VkSceneRenderer::cloud_shadow_environment_view_for_test(
+    uint32_t index) const {
+    return !frames_.empty() && index < 4
+        ? frames_[active_frame_index_].environment_cloud_views[index]
+        : VK_NULL_HANDLE;
+}
+
+VkExtent3D VkSceneRenderer::cloud_shadow_environment_extent_for_test(
+    uint32_t index) const {
+    return !frames_.empty() && index < 4
+        ? frames_[active_frame_index_].environment_cloud_extents[index]
+        : VkExtent3D{};
+}
+
+bool VkSceneRenderer::cloud_shadow_environment_image_is_clear_for_test(
+    uint32_t index, std::string& error) {
+    if (!cloud_shadows_) {
+        error = "cloud-shadow resources are unavailable for clear readback";
+        return false;
+    }
+    return cloud_shadows_->environment_image_is_clear_for_test(index, error);
 }
 
 void VkSceneRenderer::set_tileset_pom_settings(
@@ -11543,6 +11652,16 @@ bool VkSceneRenderer::record_cull_and_render(
     if (volumetrics_ &&
         !volumetrics_->prepare_froxel_bundle(frame.frame_slot, error))
         return false;
+    if (cloud_shadows_ &&
+        (!cloud_shadows_->prepare_frame(
+             frame.frame_slot, camera_eye, lighting_.sun_direction,
+             lighting_.sun_angular_diameter_deg, error) ||
+         !cloud_shadows_->record(frame.command_buffer,
+                                 static_cast<float>(frame.serial) *
+                                     (1.0f / 60.0f),
+                                 error))) {
+        return false;
+    }
     update_environment_descriptor(selected);
     const bool native_gi_effective = gi_settings_.enabled &&
         ray_tracing_settings_.enabled && vulkan_->ray_tracing_available() &&

@@ -162,7 +162,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/tileset_gtex.cpp src/tileset_torus_bvh.cpp \
           src/shader_source.cpp \
           src/render/raster_mesh.cpp src/render/indexed_part_geometry.cpp \
-          src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp src/render/vk_atmosphere.cpp \
+          src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp src/render/vk_atmosphere.cpp src/render/vk_cloud_shadows.cpp \
           src/render/part_store.cpp src/render/world_state.cpp \
           src/render/lod_trace.cpp \
           src/render/tileset_slicer.cpp src/render/bc_encode.cpp \
@@ -397,7 +397,7 @@ build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
 build/shaders_vk/rt_shadow.rgen.spv: shaders_vk/tileset_common.glsl
 
 build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
-    shaders_vk/environment_common.glsl
+    shaders_vk/environment_common.glsl shaders_vk/cloud_shadow_common.glsl
 
 build/shaders_vk/gi_temporal.comp.spv build/shaders_vk/gi_atrous.comp.spv: \
     shaders_vk/gi_common.glsl
@@ -409,7 +409,7 @@ build/shaders_vk/vol_density.comp.spv build/shaders_vk/vol_scatter.comp.spv \
 
 build/shaders_vk/vol_density.comp.spv: shaders_vk/cloud_density.glsl shaders_vk/vt_noise.glsl
 
-build/shaders_vk/vol_scatter.comp.spv: shaders_vk/environment_common.glsl
+build/shaders_vk/vol_scatter.comp.spv: shaders_vk/environment_common.glsl shaders_vk/cloud_shadow_common.glsl
 
 # WP-D (chart VT): the Wang cell machinery moved into wang_common.glsl, which
 # tileset_common.glsl now includes; every tileset_common consumer therefore
