@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <map>
 #include <tuple>
 #include <vector>
@@ -673,6 +674,157 @@ int main() {
               "transition groups: a superseded tile stays resident until every "
               "tile replacing it is resident, so a flying camera never sees a "
               "hole");
+    }
+
+    // --- transition groups: the hold RELEASES the tick the group completes ---
+    //
+    // Reported from a real session: "a 2x or greater sized cell often gets
+    // replaced with smaller cells but the smaller cells overlap the larger
+    // cell." That is a real bug, but measurement puts it in the ENGINE, not
+    // here -- and this test is what establishes that, so it is worth keeping
+    // even though it does not fail.
+    //
+    // The streamer's contract has two halves and only the first was ever
+    // asserted (the no-hole test above returns on the FIRST level covering a
+    // column, so a column covered by a parent AND its children passes it). The
+    // second half is that the hold must RELEASE immediately: a superseded tile
+    // must stop being resident on the very next update after the last tile
+    // replacing it becomes resident, not linger.
+    //
+    // Measured below: worst dwell is 1 tick. One is inherent and irreducible at
+    // this API -- `on_published` means "accepted", the streamer cannot evict a
+    // parent before the last child's acceptance, and acceptance necessarily
+    // happens after the update() that would have evicted it. So the streamer is
+    // doing everything it can.
+    //
+    // Which is why the residency overlap this also reports is NOT failed here.
+    // Residency is not visibility. The engine draws a child the moment its own
+    // bake lands and removes the parent only after the last sibling's -- and
+    // sector bakes finish SECONDS apart, so what the eye sees is not this
+    // one-tick window at all. Zero-overlap and zero-hole are jointly impossible
+    // for any layer whose "published" means "drawn"; some layer has to hold
+    // completed bakes invisible until the whole group is ready. That layer is
+    // the engine (matter_engine.cpp parks a publication whose footprint a
+    // visible different-level entry still covers, and unparks the group inside
+    // the same WorldDelta that removes the parent).
+    {
+        SectorStreamer s(nested_cfg());
+        const float S0 = 6.4f;
+        std::map<std::tuple<int,long long,long long>, int> resident;
+        int ev_mismatched = 0, ev_unknown = 0;
+        auto settle_at = [&](float x, float z, int budget) {
+            s.update(x, z);
+            SectorRequest q;
+            for (int i = 0; i < budget && s.next_request(q); ++i)
+                if (s.on_published(q.tx, q.tz, q.rung))
+                    resident[{variant_level(q.rung), (long long)q.tx,
+                              (long long)q.tz}] = q.rung;
+            for (const auto& e : s.take_evictions()) {
+                const auto key = std::make_tuple(variant_level(e.rung),
+                                                 (long long)e.tx,
+                                                 (long long)e.tz);
+                auto it = resident.find(key);
+                if (it == resident.end())      ++ev_unknown;
+                else if (it->second != e.rung) ++ev_mismatched;
+                else                           resident.erase(it);
+            }
+        };
+        for (int i = 0; i < 4000; ++i) settle_at(0.0f, 0.0f, 64);
+
+        // How MANY resident tiles cover this column, across every level.
+        auto coverage = [&](float wx, float wz) {
+            int n = 0;
+            for (int L = 0; L <= 5; ++L) {
+                const float S = S0 * float(1 << L);
+                if (resident.count({L, (long long)std::floor(wx / S),
+                                       (long long)std::floor(wz / S)})) ++n;
+            }
+            return n;
+        };
+
+        // How LONG each superseded tile stays resident alongside its
+        // replacements is the question that decides which layer owns this bug.
+        // One tick is inherent: the streamer cannot evict a parent before the
+        // last child's publish is accepted, and acceptance happens after
+        // update(). Many ticks would mean the hold rule itself is wrong.
+        std::map<std::tuple<int,long long,long long>, int> overlap_since;
+        int overlaps = 0, worst = 0, worst_tick = -1, worst_dwell = 0;
+        for (int step = 0; step < 220; ++step) {
+            settle_at(float(step) * 2.0f, 0.0f, 3);
+            for (float d = -60.0f; d <= 60.0f; d += 3.2f)
+                for (float e = -60.0f; e <= 60.0f; e += 3.2f) {
+                    const int n = coverage(float(step) * 2.0f + d, e);
+                    if (n > 1) {
+                        ++overlaps;
+                        if (n > worst) worst = n;
+                        if (worst_tick < 0) worst_tick = step;
+                    }
+                }
+            // Dwell: for every resident tile that is covered by a resident tile
+            // at a FINER level (i.e. it has been superseded and its
+            // replacements are up), count consecutive ticks it survives.
+            // "Superseded AND its replacement is complete" is the condition the
+            // hold rule releases on, so it is the only one whose dwell means
+            // anything. A parent with one child up and three still baking is
+            // being held CORRECTLY -- counting that as dwell measures the
+            // feature, not the bug. The footprint may be covered at any depth
+            // (a child can itself have split), so this recurses exactly the way
+            // scan_footprint does.
+            std::function<bool(int,long long,long long)> covered_by_finer =
+                [&](int L, long long tx, long long tz) -> bool {
+                    if (L == 0) return false;
+                    for (int c = 0; c < 4; ++c) {
+                        const long long cx = 2 * tx + (c & 1);
+                        const long long cz = 2 * tz + (c >> 1);
+                        if (resident.count({L - 1, cx, cz})) continue;
+                        if (!covered_by_finer(L - 1, cx, cz)) return false;
+                    }
+                    return true;
+                };
+            std::map<std::tuple<int,long long,long long>, int> next_since;
+            for (const auto& [k, rung] : resident) {
+                const int L = std::get<0>(k);
+                if (L == 0) continue;
+                if (!covered_by_finer(L, std::get<1>(k), std::get<2>(k)))
+                    continue;
+                const int since = overlap_since.count(k)
+                    ? overlap_since[k] + 1 : 1;
+                next_since[k] = since;
+                if (since > worst_dwell) worst_dwell = since;
+            }
+            overlap_since.swap(next_since);
+        }
+        printf("  nested groups: worst superseded-tile dwell %d ticks "
+               "(1 is inherent to publish-then-evict)\n", worst_dwell);
+        // Bookkeeping soundness, reported because this test's whole claim
+        // rests on it.
+        //
+        // `mismatched` is EXPECTED and benign: a 1:1 edge-mask rebake
+        // publishes the new variant of a tile and only then evicts the old
+        // one, so the eviction names a variant that is no longer the recorded
+        // residency -- and the tile really is still resident, as the newer
+        // variant. Erasing on that would invent a hole.
+        //
+        // `unknown` is the one that would matter: an eviction for a key this
+        // model never recorded means the two residencies have diverged, and
+        // then the overlap count below is measuring this test rather than the
+        // engine.
+        printf("  nested groups: eviction bookkeeping: %d superseded-variant "
+               "(expected), %d unknown-key\n", ev_mismatched, ev_unknown);
+        CHECK(ev_unknown == 0,
+              "every eviction names a tile this model knows about, so the "
+              "overlap count below is the engine's and not this test's");
+        // Context, not a verdict: this is the one-tick residency window the
+        // dwell gate above bounds, not the seconds-long VISIBILITY overlap the
+        // engine is responsible for. Printed so a future reader can see the
+        // two are different quantities.
+        printf("  nested groups: %d probe-ticks of residency overlap "
+               "(worst depth %d, first at tick %d) -- the 1-tick window, not "
+               "the visibility bug\n", overlaps, worst, worst_tick);
+        CHECK(worst_dwell <= 1,
+              "transition groups: a superseded tile stops being resident on "
+              "the very next update after the last tile replacing it becomes "
+              "resident -- the hold releases immediately, it does not linger");
     }
 
     // --- transition groups: a failed child holds its parent -----------------
