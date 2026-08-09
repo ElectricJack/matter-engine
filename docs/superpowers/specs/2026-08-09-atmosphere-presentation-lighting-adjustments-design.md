@@ -17,17 +17,17 @@ The current lighting assembly emits one `sky_color` that feeds surface ambient, 
 ```text
 Atmosphere settings + sun direction
   -> VkAtmosphere sky-view LUT and irradiance coefficients
-  -> resolved lighting snapshot
-       visible_sky_rgb       -> composite background only
-       direct_world_sun_rgb  -> raster/RT/fog/cloud direct light
-       sky_irradiance_rgb    -> raster/RT/GI/fog/cloud ambient
-       sun_disc_rgb          -> analytic disc presentation only
+  -> atomic resolved atmosphere-and-lighting snapshot
+       sky_display_modifier_rgb    -> background, RT misses, reflections
+       sky_irradiance_modifier_rgb -> 9-SH diffuse/GI/fog/cloud ambient
+       direct_world_sun_rgb        -> raster/RT/fog/cloud direct light
+       sun_disc_rgb                -> analytic disc presentation only
   -> HDR composite
   -> display transform: tone map, gamma, deterministic dither
   -> 8-bit output
 ```
 
-The renderer owns all policy-derived values. Raster push constants, RT/GI constants, environment helpers, and `VkVolumetrics::set_lighting` consume the same resolved snapshot; no shader reconstructs its own elevation or ambient curve.
+The renderer owns all policy-derived values. Raster push constants, RT/GI constants, environment helpers, and `VkVolumetrics::set_lighting` consume the same resolved snapshot; no shader reconstructs its own elevation or ambient curve. The 3x3 atmosphere irradiance texture remains nine directional SH coefficients, not a flat RGB replacement.
 
 ## Sky-View Filtering and Seam
 
@@ -42,46 +42,68 @@ addressModeV/W       = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
 
 Bind it only to the sky-view environment descriptor. Keep the current nearest sampler for G-buffer, material, depth, and ID attachments. Do not make `composite_sampler_` linear globally. Irradiance-coefficient and cloud-shadow images retain their existing, purpose-specific sampling contracts rather than inheriting sky U-repeat.
 
-The common sky-view helper wraps azimuth with `fract` and samples texel centres:
+The sky-view LUT is a periodic set of 192 centred azimuth bins. The common helper samples U exactly as follows:
 
 ```text
-u = 0.5 / 192 + fract(azimuth_u) * (191 / 192)
+u = fract(azimuth_u)
 v = clamp(v, 0.5 / 108, 107.5 / 108)
 ```
 
-The sky-view compute pass writes periodic first/last azimuth columns. Thus repeat filtering crosses a continuous circular signal; it does not blend arbitrary left/right edges or duplicate a texel. `192x108` is retained. A later resolution increase is allowed only if the vertical/edge/seam gates below fail after this binding and mapping are present.
+The compute pass evaluates each U column at its centred periodic bin, `(column + 0.5) / 192`; it does not write a duplicate endpoint column. Repeat-U filtering then blends the last and first real bins across the seam. V is independently centre-clamped as above. `192x108` is retained. A later resolution increase is allowed only if the vertical/edge/seam gates below fail after this binding and mapping are present.
 
 ## Stable Output Dither
 
-Implement dither in `display_transform.frag`, after tone mapping and gamma and immediately before writing the normalized 8-bit target. It never changes the HDR composite, G-buffer, LUTs, irradiance, RT/GI, denoiser, or volumetric inputs.
+Implement dither in `display_transform.frag`, after tone mapping and conversion to encoded display code, immediately before that pass stores its scene result. It never changes the HDR composite, G-buffer, LUTs, irradiance, RT/GI, denoiser, or volumetric inputs. This is deliberately viewport/scene-only: the display pass runs before ImGui, so ImGui is composited afterward and receives no dither.
 
-Use one achromatic scalar per final physical output pixel. Use `ivec2(floor(gl_FragCoord.xy))`, a fixed 8x8 blue-noise-style rank permutation, and a deterministic integer hash of the 8x8 tile coordinate to cyclically rotate the 64 ranks. Every complete 8x8 tile therefore contains ranks 0 through 63 exactly once. Do not use frame index, jitter, time, camera position, DLSS phase, or random state.
-
-For rank `r` in `[0,63]`:
+Use one achromatic scalar per display-pass pixel, `ivec2(floor(gl_FragCoord.xy))`. There is no temporal hash: use this exact, row-major 8x8 rank table indexed by `(pixel.y & 7) * 8 + (pixel.x & 7)`:
 
 ```text
-d = ((r - 31.5) / 63.0) * (0.5 / 255.0)
-rgb_output = clamp(rgb_after_gamma + d, 0, 1)
+37 12 54  1 46 27 61  8
+18 43  5 58 31 50 14 40
+63 22 35 10 48  3 56 29
+16 45  7 60 25 52 11 38
+33  0 47 20 57 15 42 30
+ 9 53 24 62  4 36 19 51
+41 13 55 28 59  6 44 21
+26 49  2 39 17 34 23 32
 ```
 
-The offset is bounded by ±0.5 LSB, has exact zero mean per complete 8x8 tile, and is the same in RGB so neutrals stay neutral. It applies across the whole final frame, including UI, and remains byte-stable for unchanged output size/content. Raw HDR and intermediate validation readbacks remain before this pass.
+The table is a permutation of 0 through 63. Its required byte-table oracle is FNV-1a-32 `0xdc0d948b` (offset basis `2166136261`, byte-wise XOR/multiply by `16777619`, unsigned wrap). This prevents a reordered or substituted pattern from becoming an unreviewed visual change. Do not use frame index, jitter, time, camera position, DLSS phase, or random state.
+
+For rank `r` in `[0,63]`, in encoded/code space before quantization:
+
+```text
+d = ((r - 31.5) / 31.5) * (0.5 / 255.0)
+code_dithered = clamp(code + vec3(d), 0, 1)
+```
+
+This has exact extrema `-0.5/255` and `+0.5/255`, exact zero mean per complete tile, and one equal RGB offset. `code` is the explicit sRGB OETF result of the tone-mapped scene RGB. For a UNORM swapchain, write `code_dithered` directly. For an sRGB swapchain, write `srgb_eotf(code_dithered)` from the shader so the attachment's fixed-function sRGB OETF stores exactly `code_dithered`; do not add noise to linear values before fixed-function encoding. The existing `srgb_output` display setting selects these two branches. Raw HDR/intermediate readbacks remain before this pass.
 
 ## Lighting Split
 
-The resolved frame ABI explicitly carries four values:
+The resolved frame ABI explicitly carries the following independent values:
 
-| Value | Consumers | Must not affect |
+| Value | Exact consumers | Must not affect |
 |---|---|---|
-| `visible_sky_rgb` | Composite background | irradiance, direct light, RT/GI, fog, clouds |
-| `direct_world_sun_rgb` | Raster direct BRDF, RT direct/secondary direct, fog/cloud direct scatter | analytic disc brightness |
-| `sky_irradiance_rgb` | Raster ambient, RT/GI environment/secondary hits, fog/cloud ambient scatter | visible background |
+| `sky_display_modifier_rgb` | Composite sky background, RT miss radiance, reflection environment | 9-SH diffuse/GI/fog/cloud ambient |
+| `sky_irradiance_modifier_rgb` | Multiplies the evaluated directional 9-SH result for raster diffuse, diffuse GI, fog ambient scatter, cloud ambient scatter | background, RT miss/reflection display radiance |
+| `direct_world_sun_rgb` | Raster direct BRDF, RT primary/secondary direct, fog/cloud direct scatter | analytic disc brightness |
 | `sun_disc_rgb` | Existing analytic disc path | direct-world elevation ratio |
 
-`visible_sky_rgb` uses the existing physical-sky presentation controls and mapping at defaults, preserving the present background appearance. `sun_disc_rgb` uses the existing atmospheric solar radiance and existing disc-size thresholds. If the disc currently inherits the shared direct-light field, split it before multiplying the direct-world curve; otherwise leave it unchanged.
+The atmosphere irradiance image remains nine directional coefficients. Every diffuse consumer first evaluates `sky_irradiance_sh(normal_or_direction)` and only then multiplies RGB by `sky_irradiance_modifier_rgb`; it must not collapse SH to a flat colour. `sky_display_modifier_rgb` is the existing visible-sky modifier path (authored display sky chroma times live sky tint and sky multiplier) and preserves its default appearance in composite, misses, and reflections. `sky_irradiance_modifier_rgb` is the independent authored irradiance chroma times the day/twilight ambient ratio below; it does not read the display modifier.
 
-The direct base RGB remains extraterrestrial solar RGB × atmospheric transmittance × authored sun modifier × live sun tint × sun multiplier. Apply the direct ratio last and as one scalar, preserving atmospheric chroma. The base ambient is physical irradiance coefficients × authored sky chroma; apply only the ambient ratio. Never derive ambient from post-tone-mapped background pixels.
+Use these exact direct equations, with component-wise multiplication written as `*`:
 
-Visible-sky controls are presentation-only. They update only composite/background constants and must not change irradiance, GI/volumetric history, or exposure. The physical LUT remains the environmental source for lighting paths, controlled by the separate ambient properties below.
+```text
+direct_base_rgb = extraterrestrial_solar_rgb * atmospheric_transmittance_rgb
+                * authored_sun_rgb * live_sun_tint_rgb * sun_multiplier
+sun_disc_rgb = direct_base_rgb
+direct_world_sun_rgb = direct_base_rgb * direct_world_ratio(e)
+```
+
+`sun_disc_rgb` deliberately does not inherit `direct_world_ratio`. Existing disc size/edge/core presentation remains unchanged. `direct_world_sun_rgb` receives the scalar last, preserving atmosphere chroma. Never derive any of these values from post-tone-mapped pixels.
+
+Display-modifier edits must leave resolved SH irradiance, diffuse GI, fog/cloud ambient, direct-world RGB, and exposure unchanged. They do change background/miss/reflection radiance, so they invalidate only reflection/miss temporal history where that history exists; they do not reset diffuse-GI or volumetric history. Irradiance-modifier edits do not change background/miss/reflection display radiance and do reset diffuse-GI and volumetric ambient history.
 
 ## Direct World-Light Curve
 
@@ -130,12 +152,15 @@ Older worlds/property state omit the new fields and receive these defaults. Exis
 
 ## History, Resource, and Path Consistency
 
-- Atmosphere coefficient and sun-direction edits retain existing LUT dirty behavior. A successful changed LUT invalidates GI and volumetric lighting history once.
-- Day ambient, twilight ambient, and Sunset direct are lighting-source edits: update constants without LUT regeneration, request one GI reset, and invalidate volumetric temporal scatter history. They do not invalidate cloud density/optical-depth history.
-- Visible-sky-only edits and output dither alter neither irradiance nor direct light; they invalidate no GI, volumetric, or cloud history and never change exposure.
+Atmosphere coefficient and sun-direction changes use an explicit candidate transaction. A candidate contains the complete LUT image set, its settings and normalized sun direction, its 9 SH coefficients, `direct_base_rgb`, both sky modifiers, resolved ambient ratio, and direct ratio. Generate/validate all of it off the currently committed descriptor set. Only after successful generation and descriptor publication may the renderer atomically replace the committed transaction and its direction. Every consumer then sees the new direction and all new light values together. If an ambient/direct/display control changes while an atmosphere candidate is pending, fold its current sanitized value into that candidate before publication; until then, retain the complete committed transaction rather than mixing old LUTs with new controls.
+
+On candidate generation, validation, allocation, or descriptor-publication failure, retain the entire last-valid transaction: old atmosphere LUTs, old direction, old direct RGB/ratio, old ambient ratio/modifier, and old environment descriptors. Do not advance one light direction while retaining LUTs from another direction, and do not partially dim direct light. Report the failure; do not reset any history. On successful atomic commit only, increment atmosphere generation serial and request exactly one diffuse-GI and volumetric-history reset. This replaces any partial dirty/reset behavior for atmosphere-linked updates.
+
+- Day ambient, twilight ambient, and Sunset direct edits update resolved constants without regenerating the LUT, request one diffuse-GI reset, and invalidate volumetric temporal scatter history. They do not invalidate cloud density/optical-depth history.
+- Display-modifier edits follow the narrow reflection/miss history rule in **Lighting Split**; output dither changes no lighting history. Neither changes exposure.
 - Create/bind the dedicated sampler transactionally with environment descriptors and retain it through the normal frame-resource fence. Failure reports an error and retains the previous valid descriptor/sampler; it is not silently accepted as nearest filtering.
-- Raster, RT, and volumetrics receive a single resolved `VkSceneLighting` snapshot per frame. In particular, the RT secondary direct term and fog/cloud direct scatter must use `direct_world_sun_rgb`, and RT/GI/environment plus fog/cloud ambient must use `sky_irradiance_rgb`.
-- Dither has no history and no presented-frame dependency. A resize changes the pixel lattice normally; same-size static output is deterministic.
+- Raster, RT, and volumetrics receive one committed snapshot per frame. RT secondary direct and fog/cloud direct use `direct_world_sun_rgb`; raster diffuse/diffuse GI/fog/cloud ambient evaluate 9 SH then apply `sky_irradiance_modifier_rgb`; background, RT misses, and reflections apply `sky_display_modifier_rgb`.
+- Dither has no history and no presented-frame dependency. A resize changes the viewport pixel lattice normally; same-size static scene output is deterministic.
 
 ## Validation
 
@@ -144,19 +169,21 @@ Older worlds/property state omit the new fields and receive these defaults. Exis
 - Test default direct ratios at `90`, `45`, `5`, `0`, `-5`, and `-12`: `1`, `1`, `0.25`, `0`, `0`, `0`; dense `[-90,90]` samples are monotonic and continuous at `0`, `5`, and `45`.
 - Verify noon ambient is 0.25 of the former effective lighting input, not 25% of tone-mapped screen colour. Verify the `+5..-6°` blend is finite/continuous and its endpoint values are exact.
 - At `-5°`, verify resolved direct is zero and physical ambient is positive for an upward receiver and fog. At `-12°`, verify no artificial floor has been added.
-- Verify sanitization/fallbacks, older settings defaults, and that presentation edits leave irradiance/direct RGB unchanged while ambient edits leave visible sky RGB unchanged.
+- Verify sanitization/fallbacks and older-settings defaults. Changing `sky_display_modifier_rgb` must leave all nine SH coefficients, `sky_irradiance_modifier_rgb`, direct ratio, and `direct_world_sun_rgb` byte-identical; changing `sky_irradiance_modifier_rgb` must leave background/miss/reflection display RGB byte-identical.
+- Candidate failure test injects LUT-generation and descriptor-publication failure. It proves the committed direction, all LUT handles, direct/ambient ratios, direct RGB, and modifiers are the exact previous transaction, and proves no history-reset counter advances. A successful candidate proves one atomic serial advance and one reset.
 
 ### GPU/image gates
 
 - Descriptor test proves sky-view uses dedicated linear/repeat-U sampling while a representative G-buffer binding remains nearest.
 - For 432 fixed vertical samples away from disc/horizon, GPU sampling differs from a CPU bilinear 192x108 LUT oracle by at most `1e-3` per linear channel. Where reference luminance slope exceeds `1e-4`, no identical-output plateau spans more than two adjacent samples.
 - V=0/V=1 samples are finite and within the min/max of their clamped edge texel pairs. For 256 direction pairs immediately across the U wrap, relative RGB difference is at most `0.5%` (absolute `1e-3` near black), and seam finite difference is no more than twice the median adjacent-U finite difference.
-- For a uniform post-gamma image on a multiple-of-8 viewport, dither is byte-identical over two static frames, lies in ±`0.5/255` before clamp, has absolute 8x8 mean at most `1e-8`, uses equal RGB offset, and has frame mean within `1e-6` of undithered output. Shader/ABI inspection rejects a temporal input.
-- Raster/RT/volumetric captures at `90/5/0/-5°` prove equal direct ratios. At `-5°`, fog and upward receiver are readable but direct/shadow contribution is zero. At noon, lit-versus-occluded receiver comparison proves restored shadow contrast after ambient reduction.
+- Dither oracle test checks the exact table and FNV checksum above. On uniform interior encoded values `code=(0.5,0.5,0.5)` in a multiple-of-8 viewport, measure `code_dithered-code` before quantization: every value is within `[-0.5/255,+0.5/255]`, extrema occur, RGB offsets are equal, each 8x8 mean has absolute value at most `1e-8`, and two static frames match exactly. Rail cases `code=0` and `code=1` are separate: after clamp they may have non-zero mean, but every code stays in `[0,1]` and the un-clamped offset still meets the same bound. The test also proves the sRGB and UNORM branches yield the same pre-quantization encoded code values. Shader/ABI inspection rejects temporal inputs.
+- Use the deterministic `AtmospherePresentationFixture`: white Lambert up-facing 8 m x 8 m ground receiver centred at origin; 2 m vertical occluder centred at `(0,1,0)`; camera exactly `cam 0 2 12 0 1 0`; clouds disabled; fog enabled with `density=0.002`, `floor=0`, `falloff=30`, `color=(0.9,0.92,0.95)`, `wind=(0,0,0)`. The lit ROI is pixels `[420,300]..[460,340]`, shadow ROI `[500,300]..[540,340]`, upward/fog ROI `[430,260]..[470,290]` at 1280x720.
+- Run both raster and native RT fixture paths at `90`, `5`, `0`, `-5`, and `-12` degrees after three warm-up frames plus a forced history reset. Emit and assert the resolved elevation, `direct_world_ratio`, `direct_base_rgb`, `direct_world_sun_rgb`, `sky_ambient_ratio`, `sky_display_modifier_rgb`, and `sky_irradiance_modifier_rgb`. Ratios must match CPU within `1e-6`; raster/RT direct RGB channels within `2e-3`; and fog/upward ROI mean at `-5` must exceed `1e-4` linear while direct contribution is exactly zero. Noon lit ROI must exceed shadow ROI by at least 10% after the day-ambient reduction. Native RT unavailable is an explicit acceptance-fixture failure, not a skipped RT comparison.
 
 ### CLI/FIFO captures
 
-Extend the existing one-process atmosphere shot harness; do not add a protocol. Wait for `viewer: bake ready` and `MATTER_CMD_FIFO: listening`, hold one camera and exposure fixed, and issue for each `90`, `5`, `0`, `-5`, and `-12` degree capture:
+Extend the existing one-process atmosphere shot harness; do not add a protocol. It loads `AtmospherePresentationFixture`, selects 1280x720, waits for `viewer: bake ready` and `MATTER_CMD_FIFO: listening`, uses `cam 0 2 12 0 1 0`, runs three warm-up frames and one forced history reset for each path/elevation, and holds exposure fixed. Run the complete matrix once with raster and once with native RT; unavailable RT is a failed acceptance fixture. For each `90`, `5`, `0`, `-5`, and `-12` degree capture issue:
 
 ```text
 set render.lighting.exposure_ev -2
@@ -167,17 +194,24 @@ set render.lighting.sun_elevation_deg <elevation>
 get render.lighting.day_ambient_multiplier
 get render.lighting.twilight_ambient_multiplier
 get render.lighting.sunset_direct_ratio
+get resolved.sun_elevation_deg
+get resolved.direct_world_ratio
+get resolved.direct_base_rgb
+get resolved.direct_world_sun_rgb
+get resolved.sky_ambient_ratio
+get resolved.sky_display_modifier_rgb
+get resolved.sky_irradiance_modifier_rgb
 stats atmosphere-presentation-<elevation>
 shot <absolute-png-path>
 ```
 
-Wait for `<png>.done` before compare/inspection, capture raster and RT where available plus a fog-enabled `-5°` scene, send `quit`, and retain a kill trap only as cleanup. Store transient output in `MatterEditor/build/validation/atmosphere-presentation/`; commit test assertions/metadata rather than captures.
+Wait for `<png>.done` before compare/inspection, measure the named ROIs/tolerances above, send `quit`, and retain a kill trap only as cleanup. Store transient output in `MatterEditor/build/validation/atmosphere-presentation/`; commit test assertions/metadata rather than captures.
 
 ## Acceptance Criteria
 
 - The `192x108` LUT is linear with a correct periodic U seam; G-buffer sampling stays nearest; resolution changes only after a metric failure.
-- Dither is final-display-only, deterministic, bounded, whole-frame, neutral, and zero-mean without shimmer.
-- Visible sky and irradiance are independent. Noon ambient defaults to 25% of today's effective value.
+- Dither is deterministic, scene-viewport-only, code-space correct for UNORM and sRGB presentation, bounded at exact plus/minus 0.5 LSB before quantization, and zero-mean on interior values without shimmer. ImGui is unaffected because it is composited after the display pass.
+- `sky_display_modifier_rgb` and post-SH `sky_irradiance_modifier_rgb` are independent. Noon ambient defaults to 25% of today's effective value while the physical 9 SH remain directional.
 - Direct world lighting preserves atmospheric chroma and defaults to `90=100%`, `5=25%`, `0=0`, `<0=0`; analytic-disc presentation remains separate.
 - At `-5°`, direct is zero while upward receivers/fog remain positive/readable; deep night has no permanent ambient floor.
-- New controls are manual existing-Lighting properties, sanitize predictably, preserve old content, work through FIFO, and are consistent in raster, RT, and volumetrics.
+- Atmosphere direction/LUT/direct/ambient changes commit atomically or retain a complete last-valid transaction. New controls are manual existing-Lighting properties, sanitize predictably, preserve old content, work through FIFO, and are consistent in raster, RT, and volumetrics.
