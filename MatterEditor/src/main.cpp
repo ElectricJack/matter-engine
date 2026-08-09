@@ -1518,6 +1518,7 @@ int main() {
     // World-authored volumetrics defaults adopt on every world load (initial
     // and switches); replays keep their recorded settings.
     bool apply_world_volumetrics_after_bake = !replay.valid;
+    uint64_t last_rejected_froxel_generation = UINT64_MAX;
     bool apply_world_atmosphere_after_bake = !replay.valid;
     bool apply_world_cloud_shadows_after_bake = !replay.valid;
     // render.fog's own one-shot, deliberately NOT folded into the volumetrics
@@ -3175,8 +3176,35 @@ int main() {
                                   frame_stats.vol_grid_d};
         stats.froxel_bytes = frame_stats.vol_memory_bytes;
         stats.last_volumetric_allocation_error = frame_stats.vol_allocation_error;
-        if (frame_stats.vol_allocation_rejected) {
-            std::fprintf(stderr, "volumetric froxel allocation rejected: %s\n",
+        if (frame_stats.vol_allocation_rejected &&
+            frame_stats.vol_resource_generation !=
+                last_rejected_froxel_generation) {
+            last_rejected_froxel_generation = frame_stats.vol_resource_generation;
+            if (matter::props::Binding* b = editor_props.volumetrics()) {
+                const matter::props::Desc* xy = nullptr;
+                const matter::props::Desc* depth = nullptr;
+                for (uint32_t i = 0; i < b->schema().field_count; ++i) {
+                    const matter::props::Desc& field = b->schema().fields[i];
+                    if (std::strcmp(field.name, "froxel_xy_scale") == 0) xy = &field;
+                    if (std::strcmp(field.name, "froxel_depth_slices") == 0) depth = &field;
+                }
+                if (xy && depth) {
+                    matter::props::set_enum(b->instance(), *xy,
+                        static_cast<int32_t>(frame_stats.vol_effective_xy_scale));
+                    matter::props::set_enum(b->instance(), *depth,
+                        static_cast<int32_t>(frame_stats.vol_effective_depth_slices));
+                    b->set_dirty(false);
+                }
+            }
+            std::fprintf(stderr,
+                         "volumetric froxel allocation rejected: requested %ux%ux%u "
+                         "%.2f MiB; effective %ux%ux%u; %s\n",
+                         stats.requested_froxel.width, stats.requested_froxel.height,
+                         stats.requested_froxel.depth,
+                         static_cast<double>(matter::estimate_froxel_bytes(
+                             stats.requested_froxel, false)) / (1024.0 * 1024.0),
+                         stats.effective_froxel.width, stats.effective_froxel.height,
+                         stats.effective_froxel.depth,
                          frame_stats.vol_allocation_error.c_str());
         }
         stats.vt_active              = frame_stats.vt_active;

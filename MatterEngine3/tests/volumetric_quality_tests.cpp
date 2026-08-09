@@ -242,6 +242,55 @@ void test_froxel_capture_uses_the_reproducible_current_cost_baseline() {
           "froxel capture pins Task 7's Current-cost and daylight baseline");
 }
 
+void test_effective_froxel_state_and_rejection_recovery_are_wired() {
+    const std::string engine = read_file("../src/matter_engine.cpp");
+    const std::string editor = read_file("../../MatterEditor/src/main.cpp");
+    CHECK(engine.find("vol_effective_xy_scale") != std::string::npos &&
+              engine.find("vol_effective_depth_slices") != std::string::npos,
+          "frame stats receive active effective froxel enums from the renderer");
+    CHECK(editor.find("last_rejected_froxel_generation") != std::string::npos &&
+              editor.find("frame_stats.vol_resource_generation !=\n                last_rejected_froxel_generation") != std::string::npos &&
+              editor.find("set_enum(b->instance(), *xy") != std::string::npos &&
+              editor.find("set_enum(b->instance(), *depth") != std::string::npos &&
+              editor.find("b->set_dirty(false)") != std::string::npos &&
+              editor.find("volumetric froxel allocation rejected:") != std::string::npos,
+          "a new rejected froxel generation restores both live fields, clears the binding, and logs once");
+}
+
+void test_froxel_candidate_descriptor_failure_is_transactionally_destroyed() {
+    const std::string implementation = read_file("../src/render/vk_volumetrics.cpp");
+    CHECK(implementation.find("fail_next_bundle_descriptor_allocation_for_test_") !=
+              std::string::npos &&
+              implementation.find("destroy_froxel_bundle(bundle)") !=
+              std::string::npos,
+          "a descriptor-allocation failure has a test seam and destroys its partial froxel bundle");
+}
+
+void test_neutral_volume_fallback_is_explicitly_cleared() {
+    const std::string renderer = read_file("../src/render/vk_scene_renderer.cpp");
+    CHECK(renderer.find("VkClearColorValue neutral_volume") != std::string::npos &&
+              renderer.find("vol_dummy_3d_") != std::string::npos &&
+              renderer.find("submit_immediate") != std::string::npos,
+          "the no-RT volumetric fallback is cleared to a defined neutral value");
+}
+
+void test_resize_smoke_observes_bundle_view_and_ceil_dispatch_coverage() {
+    const std::string smoke = read_file("vulkan_smoke_tests.cpp");
+    CHECK(smoke.find("volumetrics_integrated_view()") != std::string::npos &&
+              smoke.find("(active.width + 7) / 8") != std::string::npos &&
+              smoke.find("seen_frame_slots") != std::string::npos,
+          "the resize smoke pins bundle-view replacement, ceil dispatch coverage, and both frame slots");
+}
+
+void test_froxel_harness_reserves_time_for_the_entire_one_process_sweep() {
+    const std::string harness = read_file("../tools/atmosphere_cloud_shots.sh");
+    CHECK(harness.find("FROXEL_PERF_WARMUP_SECONDS=140") != std::string::npos &&
+              harness.find("MATTER_PERF_WARMUP_SECONDS=\"$PERF_WARMUP_SECONDS\"") !=
+                  std::string::npos &&
+              harness.find("TELEMETRY_WAIT_SECONDS") != std::string::npos,
+          "the froxel harness reserves enough process lifetime for all 25 pairs and four captures");
+}
+
 } // namespace
 
 int main() {
@@ -253,5 +302,10 @@ int main() {
     test_presets_apply_and_identify_exact_fixed_table_values();
     test_enhanced_lighting_derives_from_any_enhanced_feature();
     test_froxel_capture_uses_the_reproducible_current_cost_baseline();
+    test_effective_froxel_state_and_rejection_recovery_are_wired();
+    test_froxel_candidate_descriptor_failure_is_transactionally_destroyed();
+    test_neutral_volume_fallback_is_explicitly_cleared();
+    test_resize_smoke_observes_bundle_view_and_ceil_dispatch_coverage();
+    test_froxel_harness_reserves_time_for_the_entire_one_process_sweep();
     return check_summary();
 }

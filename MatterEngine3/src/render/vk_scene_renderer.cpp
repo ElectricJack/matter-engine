@@ -473,6 +473,19 @@ void record_neutral_cloud_clear(VkCommandBuffer command_buffer, void* user_data)
     }
 }
 
+struct NeutralVolumeClearRecord {
+    matter::VkImageResource* image = nullptr;
+};
+
+void record_neutral_volume_clear(VkCommandBuffer command_buffer, void* user_data) {
+    auto& record = *static_cast<NeutralVolumeClearRecord*>(user_data);
+    const VkClearColorValue neutral_volume{{0.0f, 0.0f, 0.0f, 1.0f}};
+    clear_color_image_for_use(command_buffer, *record.image, neutral_volume,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                              VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+}
+
 void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     auto& record = *static_cast<RasterRecord*>(user_data);
     const auto valid_skin_draw = [&record](const VkSkinRasterDraw& draw) {
@@ -2821,13 +2834,10 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
             vol_dummy_3d_, error)) {
         return false;
     }
-    if (!matter::transition_image(
-            *vulkan_, vol_dummy_3d_,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_ACCESS_2_NONE,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            VK_IMAGE_ASPECT_COLOR_BIT, error)) {
+    NeutralVolumeClearRecord neutral_volume_clear{&vol_dummy_3d_};
+    if (!matter::submit_immediate(*vulkan_, record_neutral_volume_clear,
+                                  &neutral_volume_clear, error,
+                                  matter::ImmediateSubmitPhase::image_transition)) {
         return false;
     }
     return true;
@@ -8321,6 +8331,22 @@ void VkSceneRenderer::set_volumetrics_settings(
 matter::FroxelGridDimensions VkSceneRenderer::volumetrics_dimensions() const {
     return volumetrics_ ? volumetrics_->dimensions() : matter::FroxelGridDimensions{160, 90, 128};
 }
+matter::FroxelXyScale VkSceneRenderer::volumetrics_effective_xy_scale() const {
+    return volumetrics_ ? volumetrics_->effective_xy_scale() : matter::FroxelXyScale::X1_0;
+}
+matter::FroxelDepthSlices VkSceneRenderer::volumetrics_effective_depth_slices() const {
+    return volumetrics_ ? volumetrics_->effective_depth_slices() : matter::FroxelDepthSlices::D128;
+}
+VkImageView VkSceneRenderer::volumetrics_integrated_view() const {
+    return volumetrics_ ? volumetrics_->vol_integrated().view : VK_NULL_HANDLE;
+}
+FroxelDispatchGrid VkSceneRenderer::volumetrics_last_dispatch_grid() const {
+    return volumetrics_ ? volumetrics_->last_dispatch_grid()
+                        : FroxelDispatchGrid{};
+}
+bool VkSceneRenderer::volumetrics_last_scatter_history_was_valid_for_test() const {
+    return volumetrics_ && volumetrics_->last_scatter_history_was_valid_for_test();
+}
 uint64_t VkSceneRenderer::volumetrics_resource_generation() const {
     return volumetrics_ ? volumetrics_->resource_generation() : 0;
 }
@@ -8333,6 +8359,12 @@ const std::string& VkSceneRenderer::volumetrics_allocation_error() const {
 }
 void VkSceneRenderer::set_fail_next_froxel_bundle_creation_for_test(bool enabled) {
     if (volumetrics_) volumetrics_->set_fail_next_bundle_creation_for_test(enabled);
+}
+
+void VkSceneRenderer::set_fail_next_froxel_bundle_descriptor_allocation_for_test(
+        bool enabled) {
+    if (volumetrics_)
+        volumetrics_->set_fail_next_bundle_descriptor_allocation_for_test(enabled);
 }
 
 void VkSceneRenderer::set_tileset_pom_settings(

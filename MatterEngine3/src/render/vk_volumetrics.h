@@ -46,6 +46,13 @@ static constexpr float    kVolFroxelFarRange = 3000.0f;
 static constexpr float    kVolShadowFarRange = 300.0f;
 static constexpr uint32_t kVolNoiseSize = 32;
 
+struct FroxelDispatchGrid {
+    uint32_t density_x = 0;
+    uint32_t density_y = 0;
+    uint32_t integrate_x = 0;
+    uint32_t integrate_y = 0;
+};
+
 class VkVolumetrics {
 public:
     VkVolumetrics();
@@ -87,11 +94,20 @@ public:
     matter::VkImageResource& vol_integrated() { return active_bundle_.integrated; }
     const matter::VkImageResource& vol_integrated() const { return active_bundle_.integrated; }
     matter::FroxelGridDimensions dimensions() const { return active_bundle_.dimensions; }
+    matter::FroxelXyScale effective_xy_scale() const;
+    matter::FroxelDepthSlices effective_depth_slices() const;
+    FroxelDispatchGrid last_dispatch_grid() const { return last_dispatch_grid_; }
+    bool last_scatter_history_was_valid_for_test() const {
+        return last_scatter_history_was_valid_;
+    }
     uint64_t resource_generation() const { return resource_generation_; }
     bool allocation_rejected() const { return allocation_rejected_; }
     const std::string& allocation_error() const { return allocation_error_; }
     void set_fail_next_bundle_creation_for_test(bool enabled) {
         fail_next_bundle_creation_for_test_ = enabled;
+    }
+    void set_fail_next_bundle_descriptor_allocation_for_test(bool enabled) {
+        fail_next_bundle_descriptor_allocation_for_test_ = enabled;
     }
 
     // Whether volumetrics is currently active (enabled + ray query available).
@@ -175,6 +191,9 @@ private:
     bool allocation_rejected_ = false;
     std::string allocation_error_;
     bool fail_next_bundle_creation_for_test_ = false;
+    bool fail_next_bundle_descriptor_allocation_for_test_ = false;
+    FroxelDispatchGrid last_dispatch_grid_{};
+    bool last_scatter_history_was_valid_ = false;
     matter::VulkanDevice* vulkan_ = nullptr;
     matter::VkImageResource noise_texture_;
 

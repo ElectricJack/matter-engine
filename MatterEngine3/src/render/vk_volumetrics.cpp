@@ -257,6 +257,10 @@ bool VkVolumetrics::create_froxel_bundle(matter::VulkanDevice& vulkan,
         return false;
     }
     bundle.dimensions = dimensions;
+    const auto fail = [&]() {
+        destroy_froxel_bundle(bundle);
+        return false;
+    };
     const VkExtent3D vol_extent{dimensions.width, dimensions.height, dimensions.depth};
     const VkImageUsageFlags sampled_storage =
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
@@ -267,7 +271,7 @@ bool VkVolumetrics::create_froxel_bundle(matter::VulkanDevice& vulkan,
                               VK_IMAGE_ASPECT_COLOR_BIT,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                               bundle.media, error)) {
-        return false;
+        return fail();
     }
 
     // vol_scatter_[0..1] (ping-pong temporal).
@@ -277,7 +281,7 @@ bool VkVolumetrics::create_froxel_bundle(matter::VulkanDevice& vulkan,
                                   sampled_storage, VK_IMAGE_ASPECT_COLOR_BIT,
                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                   bundle.scatter[i], error)) {
-            return false;
+            return fail();
         }
     }
 
@@ -287,9 +291,10 @@ bool VkVolumetrics::create_froxel_bundle(matter::VulkanDevice& vulkan,
                               VK_IMAGE_ASPECT_COLOR_BIT,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                               bundle.integrated, error)) {
-        return false;
+        return fail();
     }
-    return create_bundle_descriptors(bundle, error);
+    if (!create_bundle_descriptors(bundle, error)) return fail();
+    return true;
 }
 
 void VkVolumetrics::destroy_froxel_bundle(FroxelBundle& bundle) {
@@ -319,6 +324,11 @@ bool VkVolumetrics::create_bundle_descriptors(FroxelBundle& bundle,
                                              &bundle.descriptor_pool);
     if (result != VK_SUCCESS)
         return vk_fail("vkCreateDescriptorPool(froxel bundle)", result, error);
+    if (fail_next_bundle_descriptor_allocation_for_test_) {
+        fail_next_bundle_descriptor_allocation_for_test_ = false;
+        error = "injected froxel descriptor allocation failure";
+        return false;
+    }
 
     const VkDescriptorSetLayout layouts[] = {
         density_set_layout_, scatter_set_layout_, scatter_set_layout_,
@@ -462,6 +472,26 @@ bool VkVolumetrics::prepare_froxel_bundle(uint32_t frame_slot,
         return true;
     }
     return false;
+}
+
+matter::FroxelXyScale VkVolumetrics::effective_xy_scale() const {
+    switch (active_bundle_.dimensions.width) {
+        case 80: return matter::FroxelXyScale::X0_5;
+        case 120: return matter::FroxelXyScale::X0_75;
+        case 240: return matter::FroxelXyScale::X1_5;
+        case 320: return matter::FroxelXyScale::X2_0;
+        default: return matter::FroxelXyScale::X1_0;
+    }
+}
+
+matter::FroxelDepthSlices VkVolumetrics::effective_depth_slices() const {
+    switch (active_bundle_.dimensions.depth) {
+        case 64: return matter::FroxelDepthSlices::D64;
+        case 96: return matter::FroxelDepthSlices::D96;
+        case 192: return matter::FroxelDepthSlices::D192;
+        case 256: return matter::FroxelDepthSlices::D256;
+        default: return matter::FroxelDepthSlices::D128;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1110,6 +1140,7 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     scatter_pc.sky_color[2] = sky_color_[2];
     scatter_pc.temporal_blend = temporal_blend_;
     scatter_pc.history_valid = has_prev_matrices_ ? 1u : 0u;
+    last_scatter_history_was_valid_ = scatter_pc.history_valid != 0;
     // Reversed-ZO recovery identities — see the density_pc note above.
     scatter_pc.camera_near = matrices.view_to_clip.m[11] /
                              (matrices.view_to_clip.m[10] + 1.0f);
@@ -1168,6 +1199,7 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     // Dispatch: ceil(160/8) x ceil(90/8) x 1 = 20 x 12 x 1.
     const uint32_t integrate_gx = (active_bundle_.dimensions.width + 7) / 8;
     const uint32_t integrate_gy = (active_bundle_.dimensions.height + 7) / 8;
+    last_dispatch_grid_ = {density_gx, density_gy, integrate_gx, integrate_gy};
     vkCmdDispatch(cmd, integrate_gx, integrate_gy, 1);
 
     // ---------------------------------------------------------------

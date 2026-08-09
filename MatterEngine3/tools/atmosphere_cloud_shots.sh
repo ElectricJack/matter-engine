@@ -81,13 +81,21 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 WORLD="${MATTER_WORLD:-StreamMountain}"
+FROXEL_PERF_WARMUP_SECONDS=140
+PERF_WARMUP_SECONDS="${MATTER_PERF_WARMUP_SECONDS:-20}"
+# The one-process froxel lane spends 25 seconds on the matrix, then settles
+# and captures four representatives.  Do not let the editor's perf timer end
+# the process halfway through that required proof.
+if [ "$SUITE" = "froxel" ] && [ "$PERF_WARMUP_SECONDS" -lt "$FROXEL_PERF_WARMUP_SECONDS" ]; then
+  PERF_WARMUP_SECONDS="$FROXEL_PERF_WARMUP_SECONDS"
+fi
 MATTER_WORLD="$WORLD" \
 MATTER_CMD_FIFO="$FIFO" \
 TMP="${TMP:?TMP must be set for the Windows editor}" \
 TEMP="${TEMP:?TEMP must be set for the Windows editor}" \
 MATTER_HIDE_UI="${MATTER_HIDE_UI:-1}" \
 MATTER_PERF_OUTPUT="$PERF_OUTPUT_ENV" \
-MATTER_PERF_WARMUP_SECONDS="${MATTER_PERF_WARMUP_SECONDS:-20}" \
+MATTER_PERF_WARMUP_SECONDS="$PERF_WARMUP_SECONDS" \
 MATTER_PERF_SAMPLE_SECONDS="${MATTER_PERF_SAMPLE_SECONDS:-1}" \
 stdbuf -oL ./build/windows/editor.exe > "$LOG" 2>&1 &
 PID=$!
@@ -228,18 +236,24 @@ case "$SUITE" in
     # Otherwise any inherited enhanced-cloud setting changes both the workload
     # and the image while the grid is being measured.
     send "set render.volumetrics.local_sun_march_steps 0"
+    send "set render.volumetrics.local_sun_march_distance_m 250"
     send "set render.volumetrics.multiple_scattering_orders 1"
     send "set render.volumetrics.multiple_scattering_strength 0"
     send "set render.volumetrics.powder_strength 0"
     send "set render.cloud_shadows.enabled false"
     send "set render.lighting.exposure_ev 0"
+    send "set render.lighting.sun_azimuth_deg -14"
+    send "set render.lighting.sun_elevation_deg 90"
     for property in \
       render.volumetrics.local_sun_march_steps \
+      render.volumetrics.local_sun_march_distance_m \
       render.volumetrics.multiple_scattering_orders \
       render.volumetrics.multiple_scattering_strength \
       render.volumetrics.powder_strength \
       render.cloud_shadows.enabled \
-      render.lighting.exposure_ev; do
+      render.lighting.exposure_ev \
+      render.lighting.sun_azimuth_deg \
+      render.lighting.sun_elevation_deg; do
       send "get $property"
     done
     send "cam 20 760 350 0 420 0"
@@ -271,7 +285,14 @@ case "$SUITE" in
       sleep 4
       capture "froxel_$3" "${LABEL}_$3"
     done
-    for _ in $(seq 1 30); do [ -s "$PERF_OUTPUT" ] && break; sleep 1; done
+    # The forced 140-second lifetime is intentionally longer than the sweep;
+    # wait through that timer rather than rejecting four valid captures before
+    # the editor has emitted its telemetry.
+    TELEMETRY_WAIT_SECONDS=$((FROXEL_PERF_WARMUP_SECONDS + 30))
+    for _ in $(seq 1 "$TELEMETRY_WAIT_SECONDS"); do
+      [ -s "$PERF_OUTPUT" ] && break
+      sleep 1
+    done
     [ -s "$PERF_OUTPUT" ] || {
       echo "ERROR: telemetry timed out: $PERF_OUTPUT" >&2
       exit 1

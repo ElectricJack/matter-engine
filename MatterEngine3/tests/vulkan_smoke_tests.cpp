@@ -29,6 +29,7 @@
 #include "render/vk_pipeline.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
+#include "render/vk_volumetrics.h"
 #include "render/vk_atmosphere.h"
 #include "provider/sector_resolver.h"
 #include "tileset_gtex.h"
@@ -2108,6 +2109,27 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
               error.empty() ? "submit RT-disabled production frame"
                             : error.c_str());
         vulkan.wait_idle();
+        viewer::VkRasterPixel enabled_fallback{};
+        CHECK(renderer.readback_raster_pixel(4, 4, enabled_fallback, error),
+              error.empty() ? "read enabled no-RT fallback" : error.c_str());
+        no_rt_volumetrics.enabled = false;
+        renderer.set_volumetrics_settings(no_rt_volumetrics, no_rt_fog);
+        matter::VulkanFrame neutral{};
+        CHECK(vulkan.begin_frame(neutral, error) &&
+                  renderer.prepare_frame(neutral, frame, camera.position, 1.0f,
+                                         error) &&
+                  renderer.record_cull_and_render(
+                      neutral, frame, camera.position, 1.0f, error) &&
+                  renderer.record_composite_to_swapchain(neutral, error) &&
+                  vulkan.end_frame(neutral, error),
+              error.empty() ? "submit disabled volumetric neutral frame"
+                            : error.c_str());
+        vulkan.wait_idle();
+        viewer::VkRasterPixel disabled_neutral{};
+        CHECK(renderer.readback_raster_pixel(4, 4, disabled_neutral, error) &&
+                  close4(enabled_fallback.hdr, disabled_neutral.hdr, 2e-3f),
+              error.empty() ? "enabled no-RT fallback matches disabled neutral composite"
+                            : error.c_str());
         CHECK(vulkan.validation_error_count() == 0,
               "enabled no-RT volume composites through initialized neutral resources");
     }
@@ -4883,6 +4905,8 @@ static void rt_scenario_froxel_resize(
               std::string::npos,
           "composite selects live froxels from pre-record RT eligibility, not the reset per-frame observation");
     uint64_t previous_generation = renderer.volumetrics_resource_generation();
+    VkImageView previous_view = renderer.volumetrics_integrated_view();
+    bool seen_frame_slots[2] = {};
     for (size_t index = 0; index < std::size(expected); ++index) {
         settings.froxel_xy_scale = xy[index];
         settings.froxel_depth_slices = depth[index];
@@ -4891,6 +4915,7 @@ static void rt_scenario_froxel_resize(
         const bool prepared = vulkan.begin_frame(frame, error) &&
             renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
                                    error);
+        if (prepared && frame.frame_slot < 2) seen_frame_slots[frame.frame_slot] = true;
         const bool rendered = prepared &&
             renderer.record_cull_and_render(frame, matrices, camera.position,
                                             1.0f, error) &&
@@ -4899,8 +4924,11 @@ static void rt_scenario_froxel_resize(
         renderer.finish_ray_tracing_frame(frame.serial, rendered);
         CHECK(rendered, error.empty() ? "record RT froxel resize frame"
                                       : error.c_str());
-        vulkan.wait_idle();
+        CHECK(index == 0 || !renderer.volumetrics_last_scatter_history_was_valid_for_test(),
+              "froxel replacement invalidates temporal history before scatter");
         const auto active = renderer.volumetrics_dimensions();
+        const auto dispatch = renderer.volumetrics_last_dispatch_grid();
+        const VkImageView active_view = renderer.volumetrics_integrated_view();
         std::printf("froxel RT trace: step=%zu requested=%ux%ux%u active=%ux%ux%u gen=%llu validation=%u\n",
                     index, expected[index].width, expected[index].height,
                     expected[index].depth, active.width, active.height,
@@ -4911,22 +4939,35 @@ static void rt_scenario_froxel_resize(
         CHECK(active.width == expected[index].width &&
                   active.height == expected[index].height &&
                   active.depth == expected[index].depth &&
+                  renderer.volumetrics_effective_xy_scale() == xy[index] &&
+                  renderer.volumetrics_effective_depth_slices() == depth[index] &&
+                  dispatch.density_x == (active.width + 3) / 4 &&
+                  dispatch.density_y == (active.height + 3) / 4 &&
+                  dispatch.integrate_x == (active.width + 7) / 8 &&
+                  dispatch.integrate_y == (active.height + 7) / 8 &&
+                  active_view != VK_NULL_HANDLE &&
+                  (index == 0 || active_view != previous_view) &&
                   renderer.volumetrics_resource_generation() >=
                       previous_generation + (index == 0 ? 0u : 1u),
-              "RT froxel resize swaps the exact active grid before composite sampling");
+              "RT froxel resize swaps descriptor view, effective enums, and ceil-covered dispatch grid");
         previous_generation = renderer.volumetrics_resource_generation();
-        viewer::VkRasterPixel pixel{};
-        CHECK(renderer.readback_raster_pixel(4, 4, pixel, error) &&
-                  std::isfinite(pixel.hdr.x) && std::isfinite(pixel.hdr.y) &&
-                  std::isfinite(pixel.hdr.z),
-              error.empty() ? "RT resized froxel composite remains finite"
-                            : error.c_str());
+        previous_view = active_view;
     }
+    CHECK(seen_frame_slots[0] && seen_frame_slots[1],
+          "froxel resize recycles both in-flight frame slots without per-resize idle waits");
+    vulkan.wait_idle();
+    viewer::VkRasterPixel pixel{};
+    CHECK(renderer.readback_raster_pixel(4, 4, pixel, error) &&
+              std::isfinite(pixel.hdr.x) && std::isfinite(pixel.hdr.y) &&
+              std::isfinite(pixel.hdr.z),
+          error.empty() ? "RT resized froxel composite remains finite"
+                        : error.c_str());
 
     const auto before_failure = renderer.volumetrics_dimensions();
     const uint64_t generation_before_failure =
         renderer.volumetrics_resource_generation();
-    renderer.set_fail_next_froxel_bundle_creation_for_test(true);
+    const VkImageView view_before_failure = renderer.volumetrics_integrated_view();
+    renderer.set_fail_next_froxel_bundle_descriptor_allocation_for_test(true);
     settings.froxel_xy_scale = matter::FroxelXyScale::X2_0;
     settings.froxel_depth_slices = matter::FroxelDepthSlices::D256;
     renderer.set_volumetrics_settings(settings, fog);
@@ -4939,7 +4980,7 @@ static void rt_scenario_froxel_resize(
         renderer.record_composite_to_swapchain(failed, error) &&
         vulkan.end_frame(failed, error);
     renderer.finish_ray_tracing_frame(failed.serial, rendered);
-    CHECK(rendered, error.empty() ? "record RT injected froxel allocation failure"
+    CHECK(rendered, error.empty() ? "record RT injected froxel descriptor allocation failure"
                                   : error.c_str());
     vulkan.wait_idle();
     const auto after_failure = renderer.volumetrics_dimensions();
@@ -4947,9 +4988,10 @@ static void rt_scenario_froxel_resize(
               after_failure.width == before_failure.width &&
               after_failure.height == before_failure.height &&
               after_failure.depth == before_failure.depth &&
+              renderer.volumetrics_integrated_view() == view_before_failure &&
               renderer.volumetrics_resource_generation() ==
                   generation_before_failure,
-          "RT injected froxel allocation failure retains the live bundle");
+          "RT injected descriptor allocation failure retains live view, dimensions, and generation");
 }
 
 // Isolated real-device lane for Task 8. It deliberately creates a new

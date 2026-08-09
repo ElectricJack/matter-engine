@@ -7734,6 +7734,10 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.vol_grid_w = vol_dimensions.width;
     impl_->stats.vol_grid_h = vol_dimensions.height;
     impl_->stats.vol_grid_d = vol_dimensions.depth;
+    impl_->stats.vol_effective_xy_scale =
+        impl_->vk_scene->volumetrics_effective_xy_scale();
+    impl_->stats.vol_effective_depth_slices =
+        impl_->vk_scene->volumetrics_effective_depth_slices();
     impl_->stats.vol_memory_bytes = matter::estimate_froxel_bytes(vol_dimensions, false);
     impl_->stats.vol_resource_generation = impl_->vk_scene->volumetrics_resource_generation();
     impl_->stats.vol_allocation_rejected = impl_->vk_scene->volumetrics_allocation_rejected();

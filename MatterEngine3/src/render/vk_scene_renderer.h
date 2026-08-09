@@ -55,6 +55,7 @@ struct BakeInputs;
 namespace viewer {
 
 class VkVolumetrics;
+struct FroxelDispatchGrid;
 class VkAtmosphere;
 
 constexpr uint32_t kVkMaxLod =
@@ -967,10 +968,16 @@ public:
     void set_volumetrics_settings(const matter::VulkanVolumetricsSettings& s,
                                   const matter::FogSettings& fog);
     matter::FroxelGridDimensions volumetrics_dimensions() const;
+    matter::FroxelXyScale volumetrics_effective_xy_scale() const;
+    matter::FroxelDepthSlices volumetrics_effective_depth_slices() const;
+    VkImageView volumetrics_integrated_view() const;
+    FroxelDispatchGrid volumetrics_last_dispatch_grid() const;
+    bool volumetrics_last_scatter_history_was_valid_for_test() const;
     uint64_t volumetrics_resource_generation() const;
     bool volumetrics_allocation_rejected() const;
     const std::string& volumetrics_allocation_error() const;
     void set_fail_next_froxel_bundle_creation_for_test(bool enabled);
+    void set_fail_next_froxel_bundle_descriptor_allocation_for_test(bool enabled);
     // Ground POM live-tunables (viewer "Ground POM" UI). Stores the settings
     // and immediately re-writes the tileset params UBO (cheap -- see
     // write_tileset_params_buffer) so the next frame's gbuffer/RT tileset
