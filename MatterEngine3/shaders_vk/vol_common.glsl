@@ -1,9 +1,6 @@
 // vol_common.glsl -- shared constants and utilities for volumetric shaders.
 // No layout/binding declarations; include after #version and #extension lines.
 
-const uint VOL_W = 160;
-const uint VOL_H = 90;
-const uint VOL_D = 128;
 // View-space froxel coverage must be large enough for streamed landscapes.
 // Keep shadow rays separate: tracing every froxel several kilometres through
 // a dense terrain TLAS is unnecessary and can trigger severe GPU stalls.
@@ -12,14 +9,14 @@ const float VOL_SHADOW_FAR = 300.0;
 const float VOL_NEAR = 0.1;
 
 // Exponential slice-to-depth mapping: concentrates precision near the camera.
-// slice in [0, VOL_D], depth in [VOL_NEAR, VOL_FROXEL_FAR].
-float slice_to_depth(float slice) {
-    float t = slice / float(VOL_D);
+// slice in [0, depth_slices], depth in [VOL_NEAR, VOL_FROXEL_FAR].
+float slice_to_depth(float slice_index, float depth_slices) {
+    float t = slice_index / max(depth_slices, 1.0);
     return VOL_NEAR * pow(VOL_FROXEL_FAR / VOL_NEAR, t);
 }
 
 // Inverse: depth to normalized slice [0, 1].
-float depth_to_slice_n(float depth) {
+float depth_to_slice_n(float depth, float depth_slices) {
     float clamped = clamp(depth, VOL_NEAR, VOL_FROXEL_FAR);
     return log(clamped / VOL_NEAR) /
            log(VOL_FROXEL_FAR / VOL_NEAR);

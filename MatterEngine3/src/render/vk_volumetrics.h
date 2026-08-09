@@ -18,6 +18,7 @@
 
 #include "matter/cloud_layers.h"
 #include "matter/math_types.h"
+#include "matter/volumetric_quality.h"
 #include "vk_resources.h"
 
 namespace matter {
@@ -40,10 +41,6 @@ struct VulkanVolumetricsSettings;
 
 namespace viewer {
 
-// Froxel grid dimensions.
-static constexpr uint32_t kVolGridW = 160;
-static constexpr uint32_t kVolGridH = 90;
-static constexpr uint32_t kVolGridD = 128;
 static constexpr uint32_t kVolMaxEmitters = 256;
 static constexpr float    kVolFroxelFarRange = 3000.0f;
 static constexpr float    kVolShadowFarRange = 300.0f;
@@ -70,6 +67,11 @@ public:
     void update_emitters(matter::VulkanDevice& vulkan,
                          const std::vector<GpuVolumeEmitter>& emitters);
 
+    // Called while the renderer has acquired this frame slot but before any
+    // scene descriptor is bound. A successful swap is therefore visible to
+    // this frame's composite descriptor as well as the compute passes.
+    bool prepare_froxel_bundle(uint32_t frame_slot, std::string& error);
+
     // Record the three compute dispatches into |cmd|.  No-ops when volumetrics
     // is disabled or ray query is unavailable.  Previous-frame matrices for
     // temporal reprojection are stored internally from the prior call.
@@ -82,8 +84,15 @@ public:
                 std::string& error);
 
     // The integration output -- sampled by the composite fragment shader.
-    matter::VkImageResource& vol_integrated() { return vol_integrated_; }
-    const matter::VkImageResource& vol_integrated() const { return vol_integrated_; }
+    matter::VkImageResource& vol_integrated() { return active_bundle_.integrated; }
+    const matter::VkImageResource& vol_integrated() const { return active_bundle_.integrated; }
+    matter::FroxelGridDimensions dimensions() const { return active_bundle_.dimensions; }
+    uint64_t resource_generation() const { return resource_generation_; }
+    bool allocation_rejected() const { return allocation_rejected_; }
+    const std::string& allocation_error() const { return allocation_error_; }
+    void set_fail_next_bundle_creation_for_test(bool enabled) {
+        fail_next_bundle_creation_for_test_ = enabled;
+    }
 
     // Whether volumetrics is currently active (enabled + ray query available).
     bool active() const { return enabled_ && ray_query_available_; }
@@ -127,7 +136,28 @@ private:
     static_assert(sizeof(ScatterConstants) == 208);
 
     bool create_noise_texture(matter::VulkanDevice& vulkan, std::string& error);
-    bool create_volume_images(matter::VulkanDevice& vulkan, std::string& error);
+    struct FroxelBundle {
+        matter::FroxelGridDimensions dimensions{};
+        bool enhanced_clouds = false;  // reserved for Task 9; false in Task 8.
+        matter::VkImageResource media;
+        matter::VkImageResource scatter[2];
+        matter::VkImageResource integrated;
+        matter::VkImageResource cloud_density;
+        VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+        VkDescriptorSet density_set = VK_NULL_HANDLE;
+        // The TLAS/depth bindings change for each recycled renderer frame
+        // slot. Keep them separate from temporal ping-pong so record() never
+        // updates a descriptor already bound by the other slot.
+        VkDescriptorSet scatter_sets[2][2] = {};  // [frame_slot][ping]
+        VkDescriptorSet integrate_sets[2] = {};
+        uint32_t ping_index = 0;
+    };
+    bool create_froxel_bundle(matter::VulkanDevice& vulkan,
+                              matter::FroxelGridDimensions dimensions,
+                              FroxelBundle& bundle, std::string& error);
+    void destroy_froxel_bundle(FroxelBundle& bundle);
+    bool replace_froxel_bundle(uint32_t completed_frame_slot, std::string& error);
+    bool create_bundle_descriptors(FroxelBundle& bundle, std::string& error);
     bool create_emitter_buffer(matter::VulkanDevice& vulkan, std::string& error);
     bool create_cloud_buffer(matter::VulkanDevice& vulkan, std::string& error);
     bool create_samplers(matter::VulkanDevice& vulkan, std::string& error);
@@ -135,10 +165,17 @@ private:
     bool create_scatter_pipeline(matter::VulkanDevice& vulkan, std::string& error);
     bool create_integrate_pipeline(matter::VulkanDevice& vulkan, std::string& error);
 
-    // Persistent volume images.
-    matter::VkImageResource vol_media_;
-    matter::VkImageResource vol_scatter_[2];    // ping-pong for temporal
-    matter::VkImageResource vol_integrated_;
+    // Runtime-sized resources are replaced only at a completed frame slot.
+    FroxelBundle active_bundle_{};
+    struct RetiredBundle { FroxelBundle bundle; uint32_t protected_slot = 0; };
+    std::vector<RetiredBundle> retired_bundles_;
+    matter::FroxelGridDimensions requested_dimensions_{160, 90, 128};
+    uint64_t resource_generation_ = 0;
+    uint32_t prepared_frame_slot_ = UINT32_MAX;
+    bool allocation_rejected_ = false;
+    std::string allocation_error_;
+    bool fail_next_bundle_creation_for_test_ = false;
+    matter::VulkanDevice* vulkan_ = nullptr;
     matter::VkImageResource noise_texture_;
 
     // Emitter SSBO: uint32 count at offset 0, then GpuVolumeEmitter[256]
@@ -165,24 +202,18 @@ private:
     // compiles at startup beats a driver compile in the frame a layer is
     // switched on, and it means every permutation is validated on every run.
     VkPipeline density_pipelines_[matter::kMaxCloudLayers + 1] = {};
-    VkDescriptorPool density_pool_ = VK_NULL_HANDLE;
-    VkDescriptorSet density_set_ = VK_NULL_HANDLE;
 
     // Scatter pass resources (2 descriptor sets for ping-pong).
     VkDescriptorSetLayout scatter_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout environment_set_layout_ = VK_NULL_HANDLE;  // borrowed
     VkPipelineLayout scatter_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline scatter_pipeline_ = VK_NULL_HANDLE;
-    VkDescriptorPool scatter_pool_ = VK_NULL_HANDLE;
-    VkDescriptorSet scatter_sets_[2] = {};   // [ping_index] is write target
     VkDescriptorSet environment_descriptor_set_ = VK_NULL_HANDLE;
 
     // Integrate pass resources.
     VkDescriptorSetLayout integrate_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout integrate_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline integrate_pipeline_ = VK_NULL_HANDLE;
-    VkDescriptorPool integrate_pool_ = VK_NULL_HANDLE;
-    VkDescriptorSet integrate_sets_[2] = {};  // one per scatter output
 
     // State.
     VkDevice device_ = VK_NULL_HANDLE;

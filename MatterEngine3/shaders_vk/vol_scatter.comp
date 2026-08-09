@@ -37,14 +37,15 @@ int bayer2x2(ivec2 pixel) {
 
 void main() {
     ivec3 voxel = ivec3(gl_GlobalInvocationID.xyz);
-    if (voxel.x >= int(VOL_W) || voxel.y >= int(VOL_H)) return;
+    ivec3 grid = imageSize(vol_scatter_out);
+    if (any(greaterThanEqual(voxel, grid))) return;
 
     // 2x2 Bayer subsampling: each frame traces 1 of 4 froxel columns.
     int bayer = bayer2x2(voxel.xy);
     bool is_active = (bayer == int(pc.frame_index & 3u));
 
-    for (int z = 0; z < int(VOL_D); ++z) {
-        vec3 uvw = (vec3(voxel.xy, z) + 0.5) / vec3(VOL_W, VOL_H, VOL_D);
+    for (int z = 0; z < grid.z; ++z) {
+        vec3 uvw = (vec3(voxel.xy, z) + 0.5) / vec3(grid);
         vec4 media = texture(vol_media_tex, uvw);
         vec3 scattering = media.rgb;  // albedo * extinction
         float extinction = media.a;
@@ -52,8 +53,8 @@ void main() {
         vec4 scatter_result = vec4(0.0);
 
         if (is_active && extinction > 1e-6) {
-            float depth = slice_to_depth(float(z) + 0.5);
-            vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(VOL_W, VOL_H);
+            float depth = slice_to_depth(float(z) + 0.5, float(grid.z));
+            vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(grid.xy);
             // Reversed-ZO: hw=1 at z=near, hw=0 at z=far (see vol_density.comp
             // for the plug-in verification).
             float ndc_z = pc.camera_near * (pc.camera_far - depth) /
@@ -100,8 +101,8 @@ void main() {
         // Temporal reprojection — always sample history (clamp-to-edge
         // provides smooth fill-in for newly exposed screen regions).
         if (pc.history_valid != 0u) {
-            float depth = slice_to_depth(float(z) + 0.5);
-            vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(VOL_W, VOL_H);
+            float depth = slice_to_depth(float(z) + 0.5, float(grid.z));
+            vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(grid.xy);
             // Reversed-ZO: hw=1 at z=near, hw=0 at z=far (see vol_density.comp
             // for the plug-in verification).
             float ndc_z = pc.camera_near * (pc.camera_far - depth) /
@@ -121,7 +122,7 @@ void main() {
             float prev_depth = pc.camera_near * pc.camera_far /
                 max(prev_ndc.z * (pc.camera_far - pc.camera_near) +
                     pc.camera_near, 1e-6);
-            float prev_slice_n = depth_to_slice_n(prev_depth);
+            float prev_slice_n = depth_to_slice_n(prev_depth, float(grid.z));
             vec4 history = texture(vol_scatter_history,
                                    vec3(prev_uv, prev_slice_n));
 

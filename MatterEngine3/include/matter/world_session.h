@@ -315,6 +315,13 @@ struct FrameStats {
     float gpu_dlss_ms           = 0;
     float gpu_composite_ms      = 0;
     float gpu_vol_ms            = 0;
+    uint32_t vol_grid_w = 0, vol_grid_h = 0, vol_grid_d = 0;
+    uint64_t vol_memory_bytes = 0;
+    FroxelXyScale vol_effective_xy_scale = FroxelXyScale::X1_0;
+    FroxelDepthSlices vol_effective_depth_slices = FroxelDepthSlices::D128;
+    uint64_t vol_resource_generation = 0;
+    bool vol_allocation_rejected = false;
+    std::string vol_allocation_error;
     // WP-E: the chart-VT page-fill pass (residency uploads + tier-1
     // compositor dispatches + pool copies). 0 when VT is not active.
     float gpu_vt_ms             = 0;

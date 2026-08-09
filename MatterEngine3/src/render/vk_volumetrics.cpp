@@ -112,6 +112,7 @@ bool VkVolumetrics::init(matter::VulkanDevice& vulkan,
                          VkDescriptorSetLayout environment_layout,
                          std::string& error) {
     device_ = vulkan.device();
+    vulkan_ = &vulkan;
     environment_set_layout_ = environment_layout;
 
     // Ray query availability follows the same ray-tracing capability check
@@ -127,14 +128,18 @@ bool VkVolumetrics::init(matter::VulkanDevice& vulkan,
     }
 
     if (!create_noise_texture(vulkan, error)) return false;
-    if (!create_volume_images(vulkan, error)) return false;
     if (!create_emitter_buffer(vulkan, error)) return false;
     if (!create_cloud_buffer(vulkan, error)) return false;
     if (!create_samplers(vulkan, error)) return false;
     if (!create_density_pipeline(vulkan, error)) return false;
     if (!create_scatter_pipeline(vulkan, error)) return false;
     if (!create_integrate_pipeline(vulkan, error)) return false;
+    // A bundle owns every descriptor set that references its images. Pipelines
+    // and layouts must therefore exist before the initial bundle is allocated.
+    if (!create_froxel_bundle(vulkan, requested_dimensions_, active_bundle_, error))
+        return false;
 
+    resource_generation_ = 1;
     initialized_ = true;
     return true;
 }
@@ -243,9 +248,16 @@ bool VkVolumetrics::create_noise_texture(matter::VulkanDevice& vulkan,
 // Volume images
 // ---------------------------------------------------------------------------
 
-bool VkVolumetrics::create_volume_images(matter::VulkanDevice& vulkan,
-                                          std::string& error) {
-    const VkExtent3D vol_extent{kVolGridW, kVolGridH, kVolGridD};
+bool VkVolumetrics::create_froxel_bundle(matter::VulkanDevice& vulkan,
+                                         matter::FroxelGridDimensions dimensions,
+                                         FroxelBundle& bundle, std::string& error) {
+    if (fail_next_bundle_creation_for_test_) {
+        fail_next_bundle_creation_for_test_ = false;
+        error = "injected froxel bundle allocation failure";
+        return false;
+    }
+    bundle.dimensions = dimensions;
+    const VkExtent3D vol_extent{dimensions.width, dimensions.height, dimensions.depth};
     const VkImageUsageFlags sampled_storage =
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
 
@@ -254,7 +266,7 @@ bool VkVolumetrics::create_volume_images(matter::VulkanDevice& vulkan,
                               vol_extent, sampled_storage,
                               VK_IMAGE_ASPECT_COLOR_BIT,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                              vol_media_, error)) {
+                              bundle.media, error)) {
         return false;
     }
 
@@ -264,7 +276,7 @@ bool VkVolumetrics::create_volume_images(matter::VulkanDevice& vulkan,
                                   VK_FORMAT_R16G16B16A16_SFLOAT, vol_extent,
                                   sampled_storage, VK_IMAGE_ASPECT_COLOR_BIT,
                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                  vol_scatter_[i], error)) {
+                                  bundle.scatter[i], error)) {
             return false;
         }
     }
@@ -274,10 +286,182 @@ bool VkVolumetrics::create_volume_images(matter::VulkanDevice& vulkan,
                               vol_extent, sampled_storage,
                               VK_IMAGE_ASPECT_COLOR_BIT,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                              vol_integrated_, error)) {
+                              bundle.integrated, error)) {
         return false;
     }
+    return create_bundle_descriptors(bundle, error);
+}
+
+void VkVolumetrics::destroy_froxel_bundle(FroxelBundle& bundle) {
+    if (bundle.descriptor_pool != VK_NULL_HANDLE)
+        vkDestroyDescriptorPool(device_, bundle.descriptor_pool, nullptr);
+    bundle.media.reset();
+    bundle.scatter[0].reset();
+    bundle.scatter[1].reset();
+    bundle.integrated.reset();
+    bundle.cloud_density.reset();
+    bundle = {};
+}
+
+bool VkVolumetrics::create_bundle_descriptors(FroxelBundle& bundle,
+                                              std::string& error) {
+    const VkDescriptorPoolSize sizes[] = {
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 7},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 15},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
+        {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 4},
+    };
+    VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool_info.maxSets = 7;
+    pool_info.poolSizeCount = static_cast<uint32_t>(std::size(sizes));
+    pool_info.pPoolSizes = sizes;
+    VkResult result = vkCreateDescriptorPool(device_, &pool_info, nullptr,
+                                             &bundle.descriptor_pool);
+    if (result != VK_SUCCESS)
+        return vk_fail("vkCreateDescriptorPool(froxel bundle)", result, error);
+
+    const VkDescriptorSetLayout layouts[] = {
+        density_set_layout_, scatter_set_layout_, scatter_set_layout_,
+        scatter_set_layout_, scatter_set_layout_,
+        integrate_set_layout_, integrate_set_layout_};
+    VkDescriptorSet sets[7]{};
+    VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    alloc.descriptorPool = bundle.descriptor_pool;
+    alloc.descriptorSetCount = static_cast<uint32_t>(std::size(layouts));
+    alloc.pSetLayouts = layouts;
+    result = vkAllocateDescriptorSets(device_, &alloc, sets);
+    if (result != VK_SUCCESS)
+        return vk_fail("vkAllocateDescriptorSets(froxel bundle)", result, error);
+    bundle.density_set = sets[0];
+    bundle.scatter_sets[0][0] = sets[1];
+    bundle.scatter_sets[0][1] = sets[2];
+    bundle.scatter_sets[1][0] = sets[3];
+    bundle.scatter_sets[1][1] = sets[4];
+    bundle.integrate_sets[0] = sets[5];
+    bundle.integrate_sets[1] = sets[6];
+
+    VkDescriptorImageInfo media{};
+    media.sampler = linear_clamp_sampler_;
+    media.imageView = bundle.media.view;
+    media.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorImageInfo density{};
+    density.imageView = bundle.media.view;
+    density.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkDescriptorImageInfo noise{};
+    noise.sampler = linear_repeat_sampler_;
+    noise.imageView = noise_texture_.view;
+    noise.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorBufferInfo emitters{emitter_ssbo_.buffer, 0, emitter_ssbo_.size};
+    VkDescriptorBufferInfo clouds{cloud_ssbo_.buffer, 0, cloud_ssbo_.size};
+    VkWriteDescriptorSet density_writes[4]{};
+    density_writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    density_writes[0].dstSet = bundle.density_set;
+    density_writes[0].dstBinding = 0; density_writes[0].descriptorCount = 1;
+    density_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    density_writes[0].pImageInfo = &density;
+    density_writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    density_writes[1].dstSet = bundle.density_set;
+    density_writes[1].dstBinding = 1; density_writes[1].descriptorCount = 1;
+    density_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    density_writes[1].pImageInfo = &noise;
+    density_writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    density_writes[2].dstSet = bundle.density_set;
+    density_writes[2].dstBinding = 2; density_writes[2].descriptorCount = 1;
+    density_writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    density_writes[2].pBufferInfo = &emitters;
+    density_writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    density_writes[3].dstSet = bundle.density_set;
+    density_writes[3].dstBinding = 3; density_writes[3].descriptorCount = 1;
+    density_writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    density_writes[3].pBufferInfo = &clouds;
+    vkUpdateDescriptorSets(device_, static_cast<uint32_t>(std::size(density_writes)),
+                           density_writes, 0, nullptr);
+    for (int slot = 0; slot < 2; ++slot) for (int i = 0; i < 2; ++i) {
+        VkDescriptorImageInfo write{};
+        write.imageView = bundle.scatter[i].view;
+        write.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        VkDescriptorImageInfo history{};
+        history.sampler = linear_clamp_sampler_;
+        history.imageView = bundle.scatter[1 - i].view;
+        history.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet writes[3]{};
+        writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[0].dstSet = bundle.scatter_sets[slot][i];
+        writes[0].dstBinding = 0; writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[0].pImageInfo = &media;
+        writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[1].dstSet = bundle.scatter_sets[slot][i];
+        writes[1].dstBinding = 1; writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; writes[1].pImageInfo = &write;
+        writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[2].dstSet = bundle.scatter_sets[slot][i];
+        writes[2].dstBinding = 2; writes[2].descriptorCount = 1;
+        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[2].pImageInfo = &history;
+        vkUpdateDescriptorSets(device_, 3, writes, 0, nullptr);
+    }
+    for (int i = 0; i < 2; ++i) {
+        VkDescriptorImageInfo scatter{};
+        scatter.sampler = linear_clamp_sampler_;
+        scatter.imageView = bundle.scatter[i].view;
+        scatter.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkDescriptorImageInfo integrated{};
+        integrated.imageView = bundle.integrated.view;
+        integrated.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        VkWriteDescriptorSet writes[2]{};
+        writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[0].dstSet = bundle.integrate_sets[i];
+        writes[0].dstBinding = 0; writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[0].pImageInfo = &scatter;
+        writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[1].dstSet = bundle.integrate_sets[i];
+        writes[1].dstBinding = 1; writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; writes[1].pImageInfo = &integrated;
+        vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
+    }
     return true;
+}
+
+bool VkVolumetrics::replace_froxel_bundle(uint32_t completed_frame_slot, std::string& error) {
+    for (auto it = retired_bundles_.begin(); it != retired_bundles_.end();) {
+        if (it->protected_slot == completed_frame_slot) {
+            destroy_froxel_bundle(it->bundle);
+            it = retired_bundles_.erase(it);
+        } else ++it;
+    }
+    if (requested_dimensions_.width == active_bundle_.dimensions.width &&
+        requested_dimensions_.height == active_bundle_.dimensions.height &&
+        requested_dimensions_.depth == active_bundle_.dimensions.depth) return true;
+    FroxelBundle candidate{};
+    if (!create_froxel_bundle(*vulkan_, requested_dimensions_, candidate, error)) {
+        allocation_rejected_ = true;
+        allocation_error_ = error;
+        return false;
+    }
+    retired_bundles_.push_back({std::move(active_bundle_), completed_frame_slot ^ 1u});
+    active_bundle_ = std::move(candidate);
+    active_bundle_.ping_index = 0;
+    has_prev_matrices_ = false;
+    allocation_rejected_ = false;
+    allocation_error_.clear();
+    ++resource_generation_;
+    return true;
+}
+
+bool VkVolumetrics::prepare_froxel_bundle(uint32_t frame_slot,
+                                          std::string& error) {
+    if (!initialized_ || !enabled_ || !ray_query_available_) return true;
+    if (frame_slot >= 2) {
+        error = "froxel descriptor frame slot is out of range";
+        return false;
+    }
+    if (replace_froxel_bundle(frame_slot, error)) {
+        prepared_frame_slot_ = frame_slot;
+        return true;
+    }
+    // Allocation rejection is transactional: the old active bundle remains
+    // valid for this frame. Preserve its diagnostic for UI/stats but do not
+    // abandon an already-acquired renderer frame.
+    if (active_bundle_.integrated.view != VK_NULL_HANDLE) {
+        error.clear();
+        prepared_frame_slot_ = frame_slot;
+        return true;
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -486,87 +670,6 @@ bool VkVolumetrics::create_density_pipeline(matter::VulkanDevice& vulkan,
         if (!ok) return false;
     }
 
-    // Descriptor pool + set.
-    const VkDescriptorPoolSize pool_sizes[] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
-    };
-    VkDescriptorPoolCreateInfo pool_info{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool_info.maxSets = 1;
-    pool_info.poolSizeCount = 3;
-    pool_info.pPoolSizes = pool_sizes;
-    result = vkCreateDescriptorPool(device_, &pool_info, nullptr, &density_pool_);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkCreateDescriptorPool(density)", result, error);
-
-    VkDescriptorSetAllocateInfo alloc{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    alloc.descriptorPool = density_pool_;
-    alloc.descriptorSetCount = 1;
-    alloc.pSetLayouts = &density_set_layout_;
-    result = vkAllocateDescriptorSets(device_, &alloc, &density_set_);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkAllocateDescriptorSets(density)", result, error);
-
-    // Write descriptors for noise texture (binding 1) and emitter SSBO (binding 2).
-    // vol_media (binding 0) is written each frame in record() since its image
-    // view is stable but its layout transitions.
-    //
-    // Actually, all bindings are stable -- write them all now.  The storage image
-    // descriptor works with any layout at update time; the layout in the descriptor
-    // is what we promise to use at dispatch time (GENERAL for storage images).
-
-    VkDescriptorImageInfo media_info{};
-    media_info.imageView = vol_media_.view;
-    media_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-    VkDescriptorImageInfo noise_info{};
-    noise_info.sampler = linear_repeat_sampler_;
-    noise_info.imageView = noise_texture_.view;
-    noise_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkDescriptorBufferInfo emitter_info{};
-    emitter_info.buffer = emitter_ssbo_.buffer;
-    emitter_info.offset = 0;
-    emitter_info.range = emitter_ssbo_.size;
-
-    VkDescriptorBufferInfo cloud_info{};
-    cloud_info.buffer = cloud_ssbo_.buffer;
-    cloud_info.offset = 0;
-    cloud_info.range = cloud_ssbo_.size;
-
-    VkWriteDescriptorSet writes[4]{};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = density_set_;
-    writes[0].dstBinding = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[0].pImageInfo = &media_info;
-
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = density_set_;
-    writes[1].dstBinding = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].pImageInfo = &noise_info;
-
-    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet = density_set_;
-    writes[2].dstBinding = 2;
-    writes[2].descriptorCount = 1;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[2].pBufferInfo = &emitter_info;
-
-    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[3].dstSet = density_set_;
-    writes[3].dstBinding = 3;
-    writes[3].descriptorCount = 1;
-    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[3].pBufferInfo = &cloud_info;
-
-    vkUpdateDescriptorSets(device_, 4, writes, 0, nullptr);
     return true;
 }
 
@@ -645,82 +748,6 @@ bool VkVolumetrics::create_scatter_pipeline(matter::VulkanDevice& vulkan,
     if (result != VK_SUCCESS)
         return vk_fail("vkCreateComputePipelines(scatter)", result, error);
 
-    // Descriptor pool: 2 sets (one per ping-pong state).
-    // Each set has: 3 combined image samplers + 1 storage image + 1 AS.
-    const VkDescriptorPoolSize pool_sizes[] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6},   // 3 per set x 2
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},             // 1 per set x 2
-        {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 2},// 1 per set x 2
-    };
-    VkDescriptorPoolCreateInfo pool_info{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool_info.maxSets = 2;
-    pool_info.poolSizeCount = 3;
-    pool_info.pPoolSizes = pool_sizes;
-    result = vkCreateDescriptorPool(device_, &pool_info, nullptr, &scatter_pool_);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkCreateDescriptorPool(scatter)", result, error);
-
-    // Allocate 2 descriptor sets.
-    VkDescriptorSetLayout layouts[2] = {scatter_set_layout_, scatter_set_layout_};
-    VkDescriptorSetAllocateInfo alloc{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    alloc.descriptorPool = scatter_pool_;
-    alloc.descriptorSetCount = 2;
-    alloc.pSetLayouts = layouts;
-    result = vkAllocateDescriptorSets(device_, &alloc, scatter_sets_);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkAllocateDescriptorSets(scatter)", result, error);
-
-    // Write the static portions of both scatter descriptor sets.
-    // For set i:
-    //   binding 0 = vol_media (combined image sampler, always the same)
-    //   binding 1 = vol_scatter[i] as storage image (write target)
-    //   binding 2 = vol_scatter[1-i] as combined image sampler (history)
-    //   binding 3 = depth texture -- written per-frame in record()
-    //   binding 4 = TLAS -- written per-frame in record()
-    for (int i = 0; i < 2; ++i) {
-        VkDescriptorImageInfo media_info{};
-        media_info.sampler = linear_clamp_sampler_;
-        media_info.imageView = vol_media_.view;
-        media_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        VkDescriptorImageInfo write_info{};
-        write_info.imageView = vol_scatter_[i].view;
-        write_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-        VkDescriptorImageInfo history_info{};
-        history_info.sampler = linear_clamp_sampler_;
-        history_info.imageView = vol_scatter_[1 - i].view;
-        history_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        VkWriteDescriptorSet writes[3]{};
-        // Binding 0: vol_media as sampled.
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = scatter_sets_[i];
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].pImageInfo = &media_info;
-
-        // Binding 1: vol_scatter[i] as storage image (write).
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = scatter_sets_[i];
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        writes[1].pImageInfo = &write_info;
-
-        // Binding 2: vol_scatter[1-i] as sampled (history).
-        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[2].dstSet = scatter_sets_[i];
-        writes[2].dstBinding = 2;
-        writes[2].descriptorCount = 1;
-        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[2].pImageInfo = &history_info;
-
-        vkUpdateDescriptorSets(device_, 3, writes, 0, nullptr);
-    }
     return true;
 }
 
@@ -781,61 +808,6 @@ bool VkVolumetrics::create_integrate_pipeline(matter::VulkanDevice& vulkan,
     if (result != VK_SUCCESS)
         return vk_fail("vkCreateComputePipelines(integrate)", result, error);
 
-    // Descriptor pool: 2 sets (one per ping-pong input).
-    const VkDescriptorPoolSize pool_sizes[] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
-    };
-    VkDescriptorPoolCreateInfo pool_info{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool_info.maxSets = 2;
-    pool_info.poolSizeCount = 2;
-    pool_info.pPoolSizes = pool_sizes;
-    result = vkCreateDescriptorPool(device_, &pool_info, nullptr,
-                                    &integrate_pool_);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkCreateDescriptorPool(integrate)", result, error);
-
-    VkDescriptorSetLayout int_layouts[2] = {integrate_set_layout_,
-                                             integrate_set_layout_};
-    VkDescriptorSetAllocateInfo alloc{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    alloc.descriptorPool = integrate_pool_;
-    alloc.descriptorSetCount = 2;
-    alloc.pSetLayouts = int_layouts;
-    result = vkAllocateDescriptorSets(device_, &alloc, integrate_sets_);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkAllocateDescriptorSets(integrate)", result, error);
-
-    // Write descriptors for both integrate sets.
-    // Set i: binding 0 = vol_scatter[i] as sampled, binding 1 = vol_integrated.
-    for (int i = 0; i < 2; ++i) {
-        VkDescriptorImageInfo scatter_info{};
-        scatter_info.sampler = linear_clamp_sampler_;
-        scatter_info.imageView = vol_scatter_[i].view;
-        scatter_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        VkDescriptorImageInfo integrated_info{};
-        integrated_info.imageView = vol_integrated_.view;
-        integrated_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-        VkWriteDescriptorSet writes[2]{};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = integrate_sets_[i];
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].pImageInfo = &scatter_info;
-
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = integrate_sets_[i];
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        writes[1].pImageInfo = &integrated_info;
-
-        vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
-    }
     return true;
 }
 
@@ -849,6 +821,7 @@ void VkVolumetrics::update_settings(
     enabled_ = vol.enabled;
     temporal_blend_ = vol.temporal_blend;
     phase_g_ = vol.phase_g;
+    requested_dimensions_ = matter::resolve_froxel_grid(vol);
 
     fog_density_ = fog.density;
     fog_floor_ = fog.floor;
@@ -937,13 +910,13 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
                            const FrameMatrices& matrices,
                            float frame_time,
                            std::string& error) {
-    (void)frame_slot;
-    (void)error;  // recording currently cannot fail after init succeeds
     if (!initialized_) return true;
     if (!enabled_ || !ray_query_available_) return true;
+    if (prepared_frame_slot_ != frame_slot &&
+        !prepare_froxel_bundle(frame_slot, error)) return false;
 
-    const uint32_t current = ping_index_;
-    const uint32_t history = 1 - ping_index_;
+    const uint32_t current = active_bundle_.ping_index;
+    const uint32_t history = 1 - active_bundle_.ping_index;
 
     // --- Update per-frame scatter descriptors (depth + TLAS) ---
     {
@@ -961,7 +934,7 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
 
         VkWriteDescriptorSet writes[2]{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = scatter_sets_[current];
+        writes[0].dstSet = active_bundle_.scatter_sets[frame_slot][current];
         writes[0].dstBinding = 3;
         writes[0].descriptorCount = 1;
         writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -969,7 +942,7 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
 
         writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[1].pNext = &as_write;
-        writes[1].dstSet = scatter_sets_[current];
+        writes[1].dstSet = active_bundle_.scatter_sets[frame_slot][current];
         writes[1].dstBinding = 4;
         writes[1].descriptorCount = 1;
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
@@ -983,11 +956,11 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
 
     // Transition vol_media_ to GENERAL for storage write.
     matter::record_image_transition(
-        cmd, vol_media_, VK_IMAGE_LAYOUT_GENERAL,
-        vol_media_.layout == VK_IMAGE_LAYOUT_UNDEFINED
+        cmd, active_bundle_.media, VK_IMAGE_LAYOUT_GENERAL,
+        active_bundle_.media.layout == VK_IMAGE_LAYOUT_UNDEFINED
             ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
             : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        vol_media_.layout == VK_IMAGE_LAYOUT_UNDEFINED
+        active_bundle_.media.layout == VK_IMAGE_LAYOUT_UNDEFINED
             ? VkAccessFlags2(0)
             : VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1054,21 +1027,22 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                       density_pipelines_[pipeline_index]);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            density_pipeline_layout_, 0, 1, &density_set_,
+                            density_pipeline_layout_, 0, 1,
+                            &active_bundle_.density_set,
                             0, nullptr);
     vkCmdPushConstants(cmd, density_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(DensityConstants), &density_pc);
 
     // Dispatch: ceil(160/4) x ceil(90/4) x 1 = 40 x 23 x 1.
-    const uint32_t density_gx = (kVolGridW + 3) / 4;
-    const uint32_t density_gy = (kVolGridH + 3) / 4;
+    const uint32_t density_gx = (active_bundle_.dimensions.width + 3) / 4;
+    const uint32_t density_gy = (active_bundle_.dimensions.height + 3) / 4;
     vkCmdDispatch(cmd, density_gx, density_gy, 1);
 
     // ---------------------------------------------------------------
     // Barrier: vol_media_ GENERAL -> SHADER_READ_ONLY
     // ---------------------------------------------------------------
     matter::record_image_transition(
-        cmd, vol_media_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        cmd, active_bundle_.media, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1081,11 +1055,11 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
 
     // Transition vol_scatter_[current] to GENERAL for storage write.
     matter::record_image_transition(
-        cmd, vol_scatter_[current], VK_IMAGE_LAYOUT_GENERAL,
-        vol_scatter_[current].layout == VK_IMAGE_LAYOUT_UNDEFINED
+        cmd, active_bundle_.scatter[current], VK_IMAGE_LAYOUT_GENERAL,
+        active_bundle_.scatter[current].layout == VK_IMAGE_LAYOUT_UNDEFINED
             ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
             : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        vol_scatter_[current].layout == VK_IMAGE_LAYOUT_UNDEFINED
+        active_bundle_.scatter[current].layout == VK_IMAGE_LAYOUT_UNDEFINED
             ? VkAccessFlags2(0)
             : VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1093,14 +1067,14 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
         VK_IMAGE_ASPECT_COLOR_BIT);
 
     // Ensure history is readable (may still be UNDEFINED on first frame).
-    if (vol_scatter_[history].layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+    if (active_bundle_.scatter[history].layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
         matter::record_image_transition(
-            cmd, vol_scatter_[history],
+            cmd, active_bundle_.scatter[history],
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            vol_scatter_[history].layout == VK_IMAGE_LAYOUT_UNDEFINED
+            active_bundle_.scatter[history].layout == VK_IMAGE_LAYOUT_UNDEFINED
                 ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
                 : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            vol_scatter_[history].layout == VK_IMAGE_LAYOUT_UNDEFINED
+            active_bundle_.scatter[history].layout == VK_IMAGE_LAYOUT_UNDEFINED
                 ? VkAccessFlags2(0)
                 : VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1144,7 +1118,8 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     scatter_pc.pad2 = 0.0f;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, scatter_pipeline_);
-    const VkDescriptorSet scatter_sets[] = {scatter_sets_[current],
+    const VkDescriptorSet scatter_sets[] = {
+                                             active_bundle_.scatter_sets[frame_slot][current],
                                              environment_descriptor_set_};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                             scatter_pipeline_layout_, 0, 2,
@@ -1160,7 +1135,7 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     // Barrier: vol_scatter_[current] GENERAL -> SHADER_READ_ONLY
     // ---------------------------------------------------------------
     matter::record_image_transition(
-        cmd, vol_scatter_[current],
+        cmd, active_bundle_.scatter[current],
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -1174,11 +1149,11 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
 
     // Transition vol_integrated_ to GENERAL for storage write.
     matter::record_image_transition(
-        cmd, vol_integrated_, VK_IMAGE_LAYOUT_GENERAL,
-        vol_integrated_.layout == VK_IMAGE_LAYOUT_UNDEFINED
+        cmd, active_bundle_.integrated, VK_IMAGE_LAYOUT_GENERAL,
+        active_bundle_.integrated.layout == VK_IMAGE_LAYOUT_UNDEFINED
             ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
             : VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-        vol_integrated_.layout == VK_IMAGE_LAYOUT_UNDEFINED
+        active_bundle_.integrated.layout == VK_IMAGE_LAYOUT_UNDEFINED
             ? VkAccessFlags2(0)
             : VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1188,11 +1163,11 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, integrate_pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                             integrate_pipeline_layout_, 0, 1,
-                            &integrate_sets_[current], 0, nullptr);
+                            &active_bundle_.integrate_sets[current], 0, nullptr);
 
     // Dispatch: ceil(160/8) x ceil(90/8) x 1 = 20 x 12 x 1.
-    const uint32_t integrate_gx = (kVolGridW + 7) / 8;
-    const uint32_t integrate_gy = (kVolGridH + 7) / 8;
+    const uint32_t integrate_gx = (active_bundle_.dimensions.width + 7) / 8;
+    const uint32_t integrate_gy = (active_bundle_.dimensions.height + 7) / 8;
     vkCmdDispatch(cmd, integrate_gx, integrate_gy, 1);
 
     // ---------------------------------------------------------------
@@ -1200,7 +1175,7 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     // (ready for composite fragment shader sampling)
     // ---------------------------------------------------------------
     matter::record_image_transition(
-        cmd, vol_integrated_,
+        cmd, active_bundle_.integrated,
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -1209,10 +1184,11 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
         VK_IMAGE_ASPECT_COLOR_BIT);
 
     // Flip ping-pong, advance frame counter, store matrices for next frame.
-    ping_index_ ^= 1;
+    active_bundle_.ping_index ^= 1;
     ++frame_index_;
     prev_world_to_clip_ = matrices.world_to_clip;
     has_prev_matrices_ = true;
+    prepared_frame_slot_ = UINT32_MAX;
 
     return true;
 }
@@ -1243,12 +1219,6 @@ void VkVolumetrics::destroy() {
         vkDestroyPipelineLayout(device_, integrate_pipeline_layout_, nullptr);
 
     // Descriptor pools (implicitly free sets).
-    if (density_pool_ != VK_NULL_HANDLE)
-        vkDestroyDescriptorPool(device_, density_pool_, nullptr);
-    if (scatter_pool_ != VK_NULL_HANDLE)
-        vkDestroyDescriptorPool(device_, scatter_pool_, nullptr);
-    if (integrate_pool_ != VK_NULL_HANDLE)
-        vkDestroyDescriptorPool(device_, integrate_pool_, nullptr);
 
     // Descriptor set layouts.
     if (density_set_layout_ != VK_NULL_HANDLE)
@@ -1268,10 +1238,9 @@ void VkVolumetrics::destroy() {
 
     // Resources (VkImageResource/VkBufferResource destructors handle cleanup
     // via their shared_ptr lifetime, but we reset them here for clarity).
-    vol_media_.reset();
-    vol_scatter_[0].reset();
-    vol_scatter_[1].reset();
-    vol_integrated_.reset();
+    destroy_froxel_bundle(active_bundle_);
+    for (RetiredBundle& retired : retired_bundles_) destroy_froxel_bundle(retired.bundle);
+    retired_bundles_.clear();
     noise_texture_.reset();
     emitter_ssbo_.reset();
     cloud_ssbo_.reset();
@@ -1282,14 +1251,6 @@ void VkVolumetrics::destroy() {
     density_pipeline_layout_ = VK_NULL_HANDLE;
     scatter_pipeline_layout_ = VK_NULL_HANDLE;
     integrate_pipeline_layout_ = VK_NULL_HANDLE;
-    density_pool_ = VK_NULL_HANDLE;
-    scatter_pool_ = VK_NULL_HANDLE;
-    integrate_pool_ = VK_NULL_HANDLE;
-    density_set_ = VK_NULL_HANDLE;
-    scatter_sets_[0] = VK_NULL_HANDLE;
-    scatter_sets_[1] = VK_NULL_HANDLE;
-    integrate_sets_[0] = VK_NULL_HANDLE;
-    integrate_sets_[1] = VK_NULL_HANDLE;
     density_set_layout_ = VK_NULL_HANDLE;
     scatter_set_layout_ = VK_NULL_HANDLE;
     environment_set_layout_ = VK_NULL_HANDLE;
@@ -1300,6 +1261,7 @@ void VkVolumetrics::destroy() {
     linear_repeat_sampler_ = VK_NULL_HANDLE;
 
     device_ = VK_NULL_HANDLE;
+    vulkan_ = nullptr;
     initialized_ = false;
     ping_index_ = 0;
     frame_index_ = 0;

@@ -87,8 +87,8 @@ TMP="${TMP:?TMP must be set for the Windows editor}" \
 TEMP="${TEMP:?TEMP must be set for the Windows editor}" \
 MATTER_HIDE_UI="${MATTER_HIDE_UI:-1}" \
 MATTER_PERF_OUTPUT="$PERF_OUTPUT_ENV" \
-MATTER_PERF_WARMUP_SECONDS=20 \
-MATTER_PERF_SAMPLE_SECONDS=1 \
+MATTER_PERF_WARMUP_SECONDS="${MATTER_PERF_WARMUP_SECONDS:-20}" \
+MATTER_PERF_SAMPLE_SECONDS="${MATTER_PERF_SAMPLE_SECONDS:-1}" \
 stdbuf -oL ./build/windows/editor.exe > "$LOG" 2>&1 &
 PID=$!
 
@@ -217,7 +217,67 @@ case "$SUITE" in
       exit 1
     }
     ;;
-  froxel|cloud-lighting|cloud-shadows|final)
+  froxel)
+    [ "$WORLD" = StreamMountain ] || {
+      echo "ERROR: froxel suite requires StreamMountain" >&2
+      exit 2
+    }
+    send "set render.volumetrics.enabled true"
+    send "get render.volumetrics.enabled"
+    # Keep this resize comparison at Task 7's Current-cost lighting baseline.
+    # Otherwise any inherited enhanced-cloud setting changes both the workload
+    # and the image while the grid is being measured.
+    send "set render.volumetrics.local_sun_march_steps 0"
+    send "set render.volumetrics.multiple_scattering_orders 1"
+    send "set render.volumetrics.multiple_scattering_strength 0"
+    send "set render.volumetrics.powder_strength 0"
+    send "set render.cloud_shadows.enabled false"
+    send "set render.lighting.exposure_ev 0"
+    for property in \
+      render.volumetrics.local_sun_march_steps \
+      render.volumetrics.multiple_scattering_orders \
+      render.volumetrics.multiple_scattering_strength \
+      render.volumetrics.powder_strength \
+      render.cloud_shadows.enabled \
+      render.lighting.exposure_ev; do
+      send "get $property"
+    done
+    send "cam 20 760 350 0 420 0"
+    for _ in $(seq 1 300); do
+      grep -q 'bake-timing.*world-kind' "$LOG" 2>/dev/null && break
+      sleep 1
+    done
+    grep -q 'bake-timing.*world-kind' "$LOG" 2>/dev/null || {
+      echo "ERROR: StreamMountain sectors did not publish" >&2
+      exit 1
+    }
+    # Exercise every discrete pair in one process. The representative pairs
+    # below are deliberately revisited and captured after their own settle.
+    for xy in 0.5x 0.75x 1x 1.5x 2x; do
+      for depth in 64 96 128 192 256; do
+        send "set render.volumetrics.froxel_xy_scale $xy"
+        send "set render.volumetrics.froxel_depth_slices $depth"
+        send "get render.volumetrics.froxel_xy_scale"
+        send "get render.volumetrics.froxel_depth_slices"
+        sleep 1
+        done
+    done
+    for pair in "0.5x 64 low" "1x 128 current" "1.5x 192 high" "2x 256 ultra"; do
+      set -- $pair
+      send "set render.volumetrics.froxel_xy_scale $1"
+      send "set render.volumetrics.froxel_depth_slices $2"
+      send "get render.volumetrics.froxel_xy_scale"
+      send "get render.volumetrics.froxel_depth_slices"
+      sleep 4
+      capture "froxel_$3" "${LABEL}_$3"
+    done
+    for _ in $(seq 1 30); do [ -s "$PERF_OUTPUT" ] && break; sleep 1; done
+    [ -s "$PERF_OUTPUT" ] || {
+      echo "ERROR: telemetry timed out: $PERF_OUTPUT" >&2
+      exit 1
+    }
+    ;;
+  cloud-lighting|cloud-shadows|final)
     echo "ERROR: suite '$SUITE' is reserved for a later milestone" >&2
     exit 2
     ;;

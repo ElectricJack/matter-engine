@@ -5957,7 +5957,19 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
             ? (gi_filtered_valid_ ? &gi_trans_atrous_[gi_filtered_index_]
                                   : &gi_trans_history_[gi_composite_history_index_].radiance)
             : &raw_transmission_;
-    const bool vol_active = volumetrics_ && volumetrics_->active();
+    // This executes before this frame's trace records, so last_rt_effective_
+    // has just been reset by record_cull_and_render(). Select the real bundle
+    // from the stable pre-record RT eligibility instead; otherwise every
+    // normal RT frame binds vol_dummy_3d_ and the active composite multiplies
+    // the physical sky by the dummy's zero transmittance.
+    const bool vol_active = volumetrics_ && volumetrics_->active() &&
+                            ray_tracing_settings_.enabled &&
+                            vulkan_->ray_tracing_available() &&
+                            !rt_instances_.empty()
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+                            && !test_force_rt_unavailable_
+#endif
+                            ;
     matter::VkImageResource* sampled[] = {&albedo_, &normal_, &orm_,
                                           &visibility_, diffuse, specular,
                                           &material_instance_,
@@ -8304,6 +8316,23 @@ void VkSceneRenderer::set_volumetrics_settings(
     volumetrics_cloud_top_ = ceiling;
     if (volumetrics_)
         volumetrics_->update_settings(s, fog);
+}
+
+matter::FroxelGridDimensions VkSceneRenderer::volumetrics_dimensions() const {
+    return volumetrics_ ? volumetrics_->dimensions() : matter::FroxelGridDimensions{160, 90, 128};
+}
+uint64_t VkSceneRenderer::volumetrics_resource_generation() const {
+    return volumetrics_ ? volumetrics_->resource_generation() : 0;
+}
+bool VkSceneRenderer::volumetrics_allocation_rejected() const {
+    return volumetrics_ && volumetrics_->allocation_rejected();
+}
+const std::string& VkSceneRenderer::volumetrics_allocation_error() const {
+    static const std::string empty;
+    return volumetrics_ ? volumetrics_->allocation_error() : empty;
+}
+void VkSceneRenderer::set_fail_next_froxel_bundle_creation_for_test(bool enabled) {
+    if (volumetrics_) volumetrics_->set_fail_next_bundle_creation_for_test(enabled);
 }
 
 void VkSceneRenderer::set_tileset_pom_settings(
@@ -11433,6 +11462,12 @@ bool VkSceneRenderer::record_cull_and_render(
     }
 
     FrameResources& selected = frames_[frame.frame_slot];
+    // Resize froxels while this frame slot is known complete and before the
+    // composite descriptor below is written. The same frame then binds the
+    // candidate integrated view rather than one frame of the retired bundle.
+    if (volumetrics_ &&
+        !volumetrics_->prepare_froxel_bundle(frame.frame_slot, error))
+        return false;
     update_environment_descriptor(selected);
     const bool native_gi_effective = gi_settings_.enabled &&
         ray_tracing_settings_.enabled && vulkan_->ray_tracing_available() &&

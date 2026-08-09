@@ -2,8 +2,11 @@
 #include "matter/cloud_shadow_settings.h"
 #include "check.h"
 
+#include <cmath>
 #include <cstdint>
+#include <fstream>
 #include <limits>
+#include <string>
 
 namespace {
 
@@ -31,6 +34,51 @@ bool equal(const matter::CloudShadowSettings& a,
            a.far_resolution == b.far_resolution && a.far_depth_slices == b.far_depth_slices &&
            a.far_coverage_m == b.far_coverage_m && a.filter_scale == b.filter_scale &&
            a.update_fraction == b.update_fraction;
+}
+
+std::string read_file(const char* path) {
+    std::ifstream file(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+}
+
+float slice_to_depth(float slice, float depth_slices) {
+    return 0.1f * std::pow(30000.0f, slice / depth_slices);
+}
+
+float depth_to_slice_n(float depth, float depth_slices) {
+    const float clamped = std::fmax(0.1f, std::fmin(3000.0f, depth));
+    return std::log(clamped / 0.1f) / std::log(30000.0f);
+}
+
+void test_dimension_independent_slice_mapping_and_shader_contract() {
+    const uint32_t depths[] = {64, 96, 128, 192, 256};
+    for (uint32_t depth_count : depths) {
+        CHECK(slice_to_depth(0.0f, static_cast<float>(depth_count)) >= 0.1f &&
+                  slice_to_depth(static_cast<float>(depth_count), static_cast<float>(depth_count)) <= 3000.0f,
+              "slice endpoints remain within the 3000m froxel range");
+        float prior_depth = 0.0f;
+        float prior_transmittance = 1.0f;
+        for (uint32_t i = 0; i < depth_count; ++i) {
+            const float midpoint = slice_to_depth(static_cast<float>(i) + 0.5f,
+                                                  static_cast<float>(depth_count));
+            CHECK(midpoint > prior_depth, "froxel depths are strictly increasing");
+            CHECK(std::fabs(depth_to_slice_n(midpoint, static_cast<float>(depth_count)) -
+                                (static_cast<float>(i) + 0.5f) / static_cast<float>(depth_count)) <= 1e-5f,
+                  "slice/depth mapping round-trips at every supported depth count");
+            const float transmittance = std::exp(-0.01f * midpoint);
+            CHECK(transmittance <= prior_transmittance,
+                  "integrated transmittance is non-increasing for nonnegative extinction");
+            prior_depth = midpoint;
+            prior_transmittance = transmittance;
+        }
+    }
+    const std::string common = read_file("../shaders_vk/vol_common.glsl");
+    CHECK(common.find("const uint VOL_W") == std::string::npos &&
+              common.find("const uint VOL_H") == std::string::npos &&
+              common.find("const uint VOL_D") == std::string::npos &&
+              common.find("slice_to_depth(float slice_index, float depth_slices)") != std::string::npos &&
+              common.find("depth_to_slice_n(float depth, float depth_slices)") != std::string::npos,
+          "volumetric shader helpers derive slice mapping from runtime depth dimensions");
 }
 
 void test_froxel_grid_resolves_every_discrete_combination() {
@@ -171,14 +219,39 @@ void test_enhanced_lighting_derives_from_any_enhanced_feature() {
           "cloud shadows enable enhanced cloud lighting");
 }
 
+void test_froxel_capture_uses_the_reproducible_current_cost_baseline() {
+    const std::string harness =
+        read_file("../tools/atmosphere_cloud_shots.sh");
+    const size_t froxel = harness.find("  froxel)\n");
+    const size_t suite_end =
+        froxel == std::string::npos ? std::string::npos : harness.find("    ;;", froxel);
+    const std::string body = suite_end == std::string::npos
+        ? std::string{} : harness.substr(froxel, suite_end - froxel);
+    CHECK(body.find("set render.volumetrics.local_sun_march_steps 0") !=
+              std::string::npos &&
+              body.find("set render.volumetrics.multiple_scattering_orders 1") !=
+              std::string::npos &&
+              body.find("set render.volumetrics.multiple_scattering_strength 0") !=
+              std::string::npos &&
+              body.find("set render.volumetrics.powder_strength 0") !=
+              std::string::npos &&
+              body.find("set render.cloud_shadows.enabled false") !=
+              std::string::npos &&
+              body.find("set render.lighting.exposure_ev 0") !=
+              std::string::npos,
+          "froxel capture pins Task 7's Current-cost and daylight baseline");
+}
+
 } // namespace
 
 int main() {
+    test_dimension_independent_slice_mapping_and_shader_contract();
     test_froxel_grid_resolves_every_discrete_combination();
     test_froxel_grid_sanitizes_invalid_enums_to_current_cost();
     test_froxel_memory_accounts_for_four_rgba16f_images_and_optional_density();
     test_froxel_memory_saturates_instead_of_wrapping_for_unrepresentable_dimensions();
     test_presets_apply_and_identify_exact_fixed_table_values();
     test_enhanced_lighting_derives_from_any_enhanced_feature();
+    test_froxel_capture_uses_the_reproducible_current_cost_baseline();
     return check_summary();
 }

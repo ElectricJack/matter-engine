@@ -966,6 +966,11 @@ public:
     }
     void set_volumetrics_settings(const matter::VulkanVolumetricsSettings& s,
                                   const matter::FogSettings& fog);
+    matter::FroxelGridDimensions volumetrics_dimensions() const;
+    uint64_t volumetrics_resource_generation() const;
+    bool volumetrics_allocation_rejected() const;
+    const std::string& volumetrics_allocation_error() const;
+    void set_fail_next_froxel_bundle_creation_for_test(bool enabled);
     // Ground POM live-tunables (viewer "Ground POM" UI). Stores the settings
     // and immediately re-writes the tileset params UBO (cheap -- see
     // write_tileset_params_buffer) so the next frame's gbuffer/RT tileset

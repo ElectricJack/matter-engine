@@ -10,22 +10,23 @@ layout(rgba16f, set = 0, binding = 1) uniform writeonly image3D vol_integrated;
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    if (pixel.x >= int(VOL_W) || pixel.y >= int(VOL_H)) return;
+    ivec3 grid = imageSize(vol_integrated);
+    if (any(greaterThanEqual(pixel, grid.xy))) return;
 
     // Front-to-back integration along the depth axis.
     vec3 inscatter = vec3(0.0);
     float transmittance = 1.0;
 
-    for (int z = 0; z < int(VOL_D); ++z) {
-        vec3 uvw = (vec3(pixel, z) + 0.5) / vec3(VOL_W, VOL_H, VOL_D);
+    for (int z = 0; z < grid.z; ++z) {
+        vec3 uvw = (vec3(pixel, z) + 0.5) / vec3(grid);
         vec4 scatter = texture(vol_scatter_tex, uvw);
 
         vec3 slice_scatter = scatter.rgb;
         float extinction = scatter.a;
 
         // Step size: distance between adjacent slice depths.
-        float depth_near = slice_to_depth(float(z));
-        float depth_far = slice_to_depth(float(z) + 1.0);
+        float depth_near = slice_to_depth(float(z), float(grid.z));
+        float depth_far = slice_to_depth(float(z) + 1.0, float(grid.z));
         float step = depth_far - depth_near;
 
         // Accumulate in-scattering weighted by current transmittance.

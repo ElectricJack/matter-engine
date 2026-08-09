@@ -136,8 +136,9 @@ float integrated_slice_at_depth(float depth) {
     // the integral ending at the hit instead of blending in the next froxel
     // behind it. At kilometre scale that leaked froxel can be tens of metres
     // deep, enough to put valley fog over an otherwise clear summit.
-    return clamp(depth_to_slice_n(depth) - 0.5 / float(VOL_D),
-                 0.0, 1.0 - 0.5 / float(VOL_D));
+    int depth_slices = textureSize(vol_integrated_texture, 0).z;
+    return clamp(depth_to_slice_n(depth, float(depth_slices)) - 0.5 / float(depth_slices),
+                 0.0, 1.0 - 0.5 / float(depth_slices));
 }
 
 void main() {
@@ -181,7 +182,8 @@ void main() {
                                 dot(normalize(ray), to_sun));
         sky += lighting.sun_color * lighting.sun_intensity * disc;
         if (lighting.vol_enabled > 0.5) {
-            vec3 far_uvw = vec3(in_uv, 1.0 - 0.5 / float(VOL_D));
+            int depth_slices = textureSize(vol_integrated_texture, 0).z;
+            vec3 far_uvw = vec3(in_uv, 1.0 - 0.5 / float(depth_slices));
             vec4 integrated = texture(vol_integrated_texture, far_uvw);
             sky = sky * integrated.a + integrated.rgb;
         }

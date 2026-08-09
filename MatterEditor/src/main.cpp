@@ -3171,6 +3171,14 @@ int main() {
         stats.gpu_denoise_ms         = frame_stats.gpu_denoise_ms;
         stats.gpu_dlss_ms            = frame_stats.gpu_dlss_ms;
         stats.gpu_composite_ms       = frame_stats.gpu_composite_ms;
+        stats.effective_froxel = {frame_stats.vol_grid_w, frame_stats.vol_grid_h,
+                                  frame_stats.vol_grid_d};
+        stats.froxel_bytes = frame_stats.vol_memory_bytes;
+        stats.last_volumetric_allocation_error = frame_stats.vol_allocation_error;
+        if (frame_stats.vol_allocation_rejected) {
+            std::fprintf(stderr, "volumetric froxel allocation rejected: %s\n",
+                         frame_stats.vol_allocation_error.c_str());
+        }
         stats.vt_active              = frame_stats.vt_active;
         stats.vt_variants            = frame_stats.vt_variants;
         stats.vt_max_variants        = frame_stats.vt_max_variants;
@@ -3593,7 +3601,7 @@ int main() {
             // vt_rejected != 0 means part of the world silently fell back to
             // the legacy path and is ignoring its surfaces() classification.
             std::printf("STATS,%s,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%d"
-                        ",%u,%u,%u,%.1f,%.1f\n",
+                        ",%u,%u,%u,%.1f,%.1f,%u,%u,%u,%.2f,%llu\n",
                         stats_label.c_str(), stats.frame_ms, stats.resolve_ms,
                         stats.build_ms, stats.draw_ms, stats.instances_active,
                         stats.raster_batches, stats.raster_tris,
@@ -3605,7 +3613,13 @@ int main() {
                             (1024.0 * 1024.0),
                         static_cast<double>(
                             frame_stats.vt_mesh_budget_bytes) /
-                            (1024.0 * 1024.0));
+                            (1024.0 * 1024.0),
+                        frame_stats.vol_grid_w, frame_stats.vol_grid_h,
+                        frame_stats.vol_grid_d,
+                        static_cast<double>(frame_stats.vol_memory_bytes) /
+                            (1024.0 * 1024.0),
+                        static_cast<unsigned long long>(
+                            frame_stats.vol_resource_generation));
             std::fflush(stdout);
             // The VT census goes to STDERR, next to the rest of the [vk]/[vt]
             // diagnostics, and unbuffered: a streamed-world capture that dies
