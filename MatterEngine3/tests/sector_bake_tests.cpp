@@ -649,6 +649,126 @@ class GridPath extends Part {
         CHECK(pr2.error.ok, pr2.error.message.c_str());
     }
 
+    // ---- __planCandidates agrees with __candidatesInRect + __habitatAt ------
+    //
+    // __planCandidates is the fused, one-crossing form of the two verbs proven
+    // above: same cell loop, same survival test, same order, plus the bound
+    // habitat tape's channels evaluated per survivor before the result crosses
+    // into JS. This test proves the fusion changed NOTHING observable: same
+    // candidates in the same order as __candidatesInRect, and for each
+    // candidate the same channel doubles __habitatAt would report at that
+    // point. Bitwise equality throughout -- the candidatesInRect precedent
+    // above proved that is achievable for exactly this shape.
+    {
+        printf("== planCandidates: native fused vs native two-step ==\n");
+        const char* tape =
+            "noise2w 11 0.00333 3 0.5 2\n"        // r0
+            "const 0.62\n"                         // r1
+            "mul r0 r1\n"                          // r2
+            "input height\n"                       // r3
+            "const 0.01\n"                         // r4
+            "mul r3 r4\n"                          // r5
+            "input fslope\n"                       // r6
+            "channel 0 r2\nchannel 1 r5\nchannel 2 r6\n";
+        terrain_field::SurfaceProgram pp;
+        std::string perr;
+        CHECK(terrain_field::SurfaceProgram::parse(
+                  tape, pp, perr, terrain_field::TapeMode::Habitat),
+              perr.c_str());
+        terrain_field::SurfaceRuntime prt(std::move(pp));
+
+        BakeOptions popts;
+        popts.parts_dir = parts_dir;
+        popts.world.field = &field;
+        popts.world.habitat = &prt;
+        popts.world.sector_size = 16.0f;
+
+        static const char* plan_src = R"JS(
+class PlanCmp extends Part {
+  build(p) {
+    const cases = [
+      [31, 1.65, -16, -16, 96, 96],     // trees, padded cell
+      [47, 0.63, 0, 0, 64, 64],         // grass, densest grid
+      [2, 180.0, 0, 0, 64, 64],         // landmark boulders, sparsest
+      [37, 1.58, -640, 448, 64, 64],    // shrubs, away from the origin
+      [41, 1.26, 63.5, -0.5, 64, 64],   // non-integer rect origin
+    ];
+    let total = 0;
+    for (const [kind, minDist, x0, z0, w, h] of cases) {
+      const flat = __planCandidates(42, kind, minDist, x0, z0, w, h);
+      const channelCount = flat[0];
+      const count = flat[1];
+      const stride = 5 + channelCount;
+      const ref = __candidatesInRect(42, kind, minDist, x0, z0, w, h);
+      if (count !== ref.length)
+        throw new Error('count ' + kind + ': ' + count + ' vs ' + ref.length);
+      if (channelCount !== 3)
+        throw new Error('channelCount ' + kind + ': ' + channelCount + ' want 3');
+      const out = [];
+      for (let i = 0; i < count; ++i) {
+        const base = 2 + i * stride;
+        const x = flat[base], z = flat[base+1], rot = flat[base+2],
+              u = flat[base+3], v = flat[base+4];
+        if (x !== ref[i].x || z !== ref[i].z || rot !== ref[i].rot ||
+            u !== ref[i].u || v !== ref[i].v)
+          throw new Error('candidate ' + kind + '[' + i + '] position differs');
+        const n = this.habitatAt(x, z, out);
+        if (n !== 3) throw new Error('habitatAt returned ' + n);
+        for (let c = 0; c < 3; ++c) {
+          if (flat[base + 5 + c] !== out[c])
+            throw new Error('candidate ' + kind + '[' + i + '] channel ' + c +
+                            ' differs: ' + flat[base + 5 + c] + ' vs ' + out[c]);
+        }
+      }
+      total += count;
+    }
+    if (total < 100) throw new Error('suspiciously few candidates: ' + total);
+    this.terrainVolume(0, 0, 0, 0, [16,16,16,16]);
+  }
+}
+)JS";
+        BakeResult plr = host.bake_source(plan_src, "{}", popts);
+        CHECK(plr.error.ok, plr.error.message.c_str());
+        printf("  planCandidates == candidatesInRect positions + habitatAt "
+               "channels over 5 real rects\n");
+
+        // No habitat tape bound: channelCount must be 0 and the bake must
+        // NOT fail (unlike habitatAt, which fails loudly with no tape).
+        static const char* no_tape_src = R"JS(
+class PlanNoTape extends Part {
+  build(p) {
+    const flat = __planCandidates(42, 31, 1.65, -16, -16, 96, 96);
+    const channelCount = flat[0], count = flat[1];
+    if (channelCount !== 0)
+      throw new Error('channelCount with no tape: ' + channelCount);
+    if (count < 1) throw new Error('no candidates at all: ' + count);
+    if (flat.length !== 2 + count * 5)
+      throw new Error('unexpected flat length ' + flat.length +
+                      ' for count ' + count);
+    this.terrainVolume(0, 0, 0, 0, [16,16,16,16]);
+  }
+}
+)JS";
+        BakeOptions ntopts = popts;
+        ntopts.world.habitat = nullptr;
+        BakeResult ntr = host.bake_source(no_tape_src, "{}", ntopts);
+        CHECK(ntr.error.ok, ntr.error.message.c_str());
+        printf("  planCandidates with no habitat tape: channelCount=0, "
+               "does not fail\n");
+
+        static const char* plan_path_src = R"JS(
+class PlanPath extends Part {
+  build(p) {
+    if (typeof __planCandidates !== 'function')
+      throw new Error('__planCandidates is not installed in a part bake');
+    this.terrainVolume(0, 0, 0, 0, [16,16,16,16]);
+  }
+}
+)JS";
+        BakeResult ppr = host.bake_source(plan_path_src, "{}", popts);
+        CHECK(ppr.error.ok, ppr.error.message.c_str());
+    }
+
     // ---- ScriptProfile: prof() from inside a bake ---------------------------
     //
     // This exists because the thing it measures had NO instrumentation: the
