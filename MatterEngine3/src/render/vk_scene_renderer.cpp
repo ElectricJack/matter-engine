@@ -8786,6 +8786,33 @@ bool VkSceneRenderer::readback_volumetrics_integrated_voxel_for_test(
         x, y, z, integrated, error);
 }
 
+bool VkSceneRenderer::readback_volumetrics_scatter_voxel_for_test(
+    uint32_t x, uint32_t y, uint32_t z, matter::Float4& scatter,
+    std::string& error) {
+    if (!volumetrics_) {
+        error = "volumetrics are unavailable for scatter readback";
+        return false;
+    }
+    return volumetrics_->readback_scatter_voxel_for_test(
+        x, y, z, scatter, error);
+}
+
+void VkSceneRenderer::set_cloud_shadow_density_layers_for_test(
+    uint32_t sunward_slice, float sunward_sigma,
+    uint32_t receiverward_slice, float receiverward_sigma,
+    bool invalidate_history) {
+    if (cloud_shadows_)
+        cloud_shadows_->set_density_layers_for_test(
+            sunward_slice, sunward_sigma, receiverward_slice,
+            receiverward_sigma, invalidate_history);
+}
+
+void VkSceneRenderer::clear_cloud_shadow_density_override_for_test(
+    bool invalidate_history) {
+    if (cloud_shadows_)
+        cloud_shadows_->clear_density_override_for_test(invalidate_history);
+}
+
 bool VkSceneRenderer::cloud_shadows_active() const {
     return cloud_shadows_ && cloud_shadows_->active();
 }

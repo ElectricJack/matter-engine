@@ -103,3 +103,52 @@ Only Task 12 implementation, tests, generated SPIR-V, harness, and this report
 are intended for the commit. Protected pre-existing deletions
 `MatterEditor/shaders`, `MatterEngine3/shaders` and untracked `.tmp-task8/`,
 `.tmp-task9-base/` were neither edited nor staged. No Task 13 work was started.
+
+## Review fix round 1: froxel eye and seeded overlap proof
+
+Both Important review findings were reproduced. The host populated
+`camera_pos` by unprojecting NDC near-center while `world_to_froxel_uvw`, the
+frustum-exit slab equations, and the phase direction all subtracted it as the
+eye. The earlier real-GPU Task 12 check also passed `cloud_shadows.enabled =
+false`, so its analytical endpoint assertion was not production evidence.
+
+Exact RED evidence, captured before the fix:
+
+- `make -C MatterEngine3/tests run-cloud-shadows` failed to compile the new
+  center/near/edge assertions because `FroxelCameraReference`,
+  `volumetric_camera_eye`, `world_to_froxel_reference`, and
+  `froxel_to_world_reference` did not exist.
+- `make -C MatterEditor build/windows/vulkan_smoke_tests.exe` failed under
+  `-Werror` because the new production fixture could not find
+  `froxel_ray_exit_distance_reference`,
+  `set_cloud_shadow_density_layers_for_test`,
+  `readback_volumetrics_scatter_voxel_for_test`, or
+  `clear_cloud_shadow_density_override_for_test`.
+
+The fix now reconstructs the rigid-transform eye as `-R^T t` once on the host
+and passes that value through the unchanged density/scatter push-constant ABI.
+The shader accepts exact near/lateral boundaries within `1e-5` and clamps them
+to the sampled domain. CPU tests pin translated-eye recovery plus center,
+exact-near, and lateral-edge mappings and inverse round trips; the source gate
+pins the production helper call and boundary tolerance. No production
+descriptor, resource, or push-constant layout changed, so no full rebuild was
+required for this review round.
+
+The real RTX fixture uses the existing Task 11 density-layer override to seed
+nonuniform cumulative tau, enables cloud shadows, and reads the production
+scatter volume. Its GREEN diagnostics are `center local=2.4999 total=4.5000`
+(endpoint remainder 2, more than 1 away from the incorrect 6.5),
+`near local=0.0874 total=2.0881 alpha=0.6250`, and
+`edge local=0.0213 total=4.0212`. Both boundary cases retain more than 1.5
+coarse tau; the lateral endpoint is outside the froxel frustum.
+
+Final GREEN evidence:
+
+- PASS: `make -C MatterEngine3/tests run-cloud-shadows` (`ALL PASS`).
+- PASS: `make -C MatterEngine3/tests run-shader-source`
+  (`shader_source_tests: all passed`).
+- PASS: `make -C MatterEngine3 vulkan-spirv`.
+- PASS: `make -C MatterEditor build/windows/vulkan_smoke_tests.exe`
+  (`-Wall -Wextra -Werror`).
+- PASS: RTX `MATTER_VK_SMOKE_MODE=froxel-resize` (`ALL PASS`, validation
+  errors 0, seeded diagnostics above).

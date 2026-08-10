@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -56,6 +57,107 @@ struct FroxelDispatchGrid {
     uint32_t integrate_x = 0;
     uint32_t integrate_y = 0;
 };
+
+struct FroxelCameraReference {
+    matter::Float3 eye{};
+    matter::Float3 forward{0.0f, 0.0f, -1.0f};
+    matter::Float3 right{1.0f, 0.0f, 0.0f};
+    matter::Float3 up{0.0f, 1.0f, 0.0f};
+    float tan_half_fov = 1.0f;
+    float aspect_ratio = 1.0f;
+    float near_plane = 0.1f;
+};
+
+inline matter::Float3 volumetric_camera_eye(
+    const matter::Mat4f& world_to_view) {
+    const auto& m = world_to_view.m;
+    return {
+        -(m[0] * m[3] + m[4] * m[7] + m[8] * m[11]),
+        -(m[1] * m[3] + m[5] * m[7] + m[9] * m[11]),
+        -(m[2] * m[3] + m[6] * m[7] + m[10] * m[11])};
+}
+
+inline bool world_to_froxel_reference(
+    const FroxelCameraReference& camera, const matter::Float3& world,
+    matter::Float3& uvw) {
+    constexpr float froxel_near = 0.1f;
+    constexpr float froxel_far = 3000.0f;
+    const matter::Float3 relative{world.x - camera.eye.x,
+                                  world.y - camera.eye.y,
+                                  world.z - camera.eye.z};
+    const auto dot = [](const matter::Float3& a, const matter::Float3& b) {
+        return a.x * b.x + a.y * b.y + a.z * b.z;
+    };
+    const float depth = dot(relative, camera.forward);
+    const float tan_y = camera.tan_half_fov;
+    const float tan_x = tan_y * camera.aspect_ratio;
+    if (!std::isfinite(depth) || depth + 1.0e-5f < camera.near_plane ||
+        depth > froxel_far || !(tan_x > 0.0f) || !(tan_y > 0.0f))
+        return false;
+    const float ndc_x = dot(relative, camera.right) / (depth * tan_x);
+    const float ndc_y = dot(relative, camera.up) / (depth * tan_y);
+    const float u = ndc_x * 0.5f + 0.5f;
+    const float v = 0.5f - ndc_y * 0.5f;
+    if (!std::isfinite(u) || !std::isfinite(v) || u < -1.0e-5f ||
+        u > 1.0f + 1.0e-5f || v < -1.0e-5f || v > 1.0f + 1.0e-5f)
+        return false;
+    const float clamped_depth = std::clamp(depth, froxel_near, froxel_far);
+    uvw = {std::clamp(u, 0.0f, 1.0f), std::clamp(v, 0.0f, 1.0f),
+           std::log(clamped_depth / froxel_near) /
+               std::log(froxel_far / froxel_near)};
+    return true;
+}
+
+inline matter::Float3 froxel_to_world_reference(
+    const FroxelCameraReference& camera, const matter::Float3& uvw) {
+    constexpr float froxel_near = 0.1f;
+    constexpr float froxel_far = 3000.0f;
+    const float depth = froxel_near *
+        std::pow(froxel_far / froxel_near, std::clamp(uvw.z, 0.0f, 1.0f));
+    const float view_x = (uvw.x * 2.0f - 1.0f) * depth *
+                         camera.tan_half_fov * camera.aspect_ratio;
+    const float view_y = (1.0f - uvw.y * 2.0f) * depth *
+                         camera.tan_half_fov;
+    return {camera.eye.x + camera.forward.x * depth +
+                camera.right.x * view_x + camera.up.x * view_y,
+            camera.eye.y + camera.forward.y * depth +
+                camera.right.y * view_x + camera.up.y * view_y,
+            camera.eye.z + camera.forward.z * depth +
+                camera.right.z * view_x + camera.up.z * view_y};
+}
+
+inline float froxel_ray_exit_distance_reference(
+    const FroxelCameraReference& camera, const matter::Float3& world,
+    const matter::Float3& direction) {
+    constexpr float froxel_far = 3000.0f;
+    const matter::Float3 relative{world.x - camera.eye.x,
+                                  world.y - camera.eye.y,
+                                  world.z - camera.eye.z};
+    const auto dot = [](const matter::Float3& a, const matter::Float3& b) {
+        return a.x * b.x + a.y * b.y + a.z * b.z;
+    };
+    const float px = dot(relative, camera.right);
+    const float py = dot(relative, camera.up);
+    const float pz = dot(relative, camera.forward);
+    const float dx = dot(direction, camera.right);
+    const float dy = dot(direction, camera.up);
+    const float dz = dot(direction, camera.forward);
+    const float tan_y = std::max(camera.tan_half_fov, 1.0e-6f);
+    const float tan_x = std::max(tan_y * camera.aspect_ratio, 1.0e-6f);
+    const float a[6]{pz - camera.near_plane, froxel_far - pz,
+                     pz * tan_x - px, pz * tan_x + px,
+                     pz * tan_y - py, pz * tan_y + py};
+    const float b[6]{dz, -dz, dz * tan_x - dx, dz * tan_x + dx,
+                     dz * tan_y - dy, dz * tan_y + dy};
+    float exit_distance = std::numeric_limits<float>::max();
+    for (size_t plane = 0; plane < 6; ++plane) {
+        if (a[plane] < -1.0e-4f) return 0.0f;
+        if (b[plane] < -1.0e-7f)
+            exit_distance = std::min(exit_distance,
+                                     std::max(a[plane], 0.0f) / -b[plane]);
+    }
+    return std::isfinite(exit_distance) ? std::max(exit_distance, 0.0f) : 0.0f;
+}
 
 // Independent CPU references for the numerical Task 12 gates. They use
 // literal coefficients from the approved shader contract and deliberately
@@ -247,6 +349,9 @@ public:
                                             uint32_t z,
                                             matter::Float4& integrated,
                                             std::string& error);
+    bool readback_scatter_voxel_for_test(uint32_t x, uint32_t y, uint32_t z,
+                                         matter::Float4& scatter,
+                                         std::string& error);
     // Whether volumetrics is currently active (enabled + ray query available).
     bool active() const { return enabled_ && ray_query_available_; }
 

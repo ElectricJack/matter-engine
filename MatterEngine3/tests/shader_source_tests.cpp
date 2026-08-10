@@ -144,6 +144,13 @@ int main() {
                                "offsetof(ScatterConstants, local_march_distance_m) == 236"})
         assert(volumetrics_header.find(offset) != std::string::npos);
     assert(volumetrics_header.find("sun_intensity") == std::string::npos);
+    const std::string volumetrics_host =
+        read_shader("../src/render/vk_volumetrics.cpp");
+    assert(volumetrics_host.find(
+               "volumetric_camera_eye(matrices.world_to_view)") !=
+           std::string::npos);
+    assert(volume.find("view_depth + 1.0e-5 < pc.camera_near") !=
+           std::string::npos);
     const std::string sky_view =
         read_shader("../shaders_vk/atmosphere_sky_view.comp");
     assert(sky_view.find("(float(pixel.x) + 0.5) / 192.0") !=

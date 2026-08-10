@@ -1066,6 +1066,14 @@ public:
     bool readback_volumetrics_integrated_voxel_for_test(
         uint32_t x, uint32_t y, uint32_t z, matter::Float4& integrated,
         std::string& error);
+    bool readback_volumetrics_scatter_voxel_for_test(
+        uint32_t x, uint32_t y, uint32_t z, matter::Float4& scatter,
+        std::string& error);
+    void set_cloud_shadow_density_layers_for_test(
+        uint32_t sunward_slice, float sunward_sigma,
+        uint32_t receiverward_slice, float receiverward_sigma,
+        bool invalidate_history);
+    void clear_cloud_shadow_density_override_for_test(bool invalidate_history);
     bool cloud_shadows_active() const;
     uint64_t cloud_shadow_persistent_bytes() const;
     matter::CloudShadowLevelDesc cloud_shadow_level_desc(uint32_t level) const;

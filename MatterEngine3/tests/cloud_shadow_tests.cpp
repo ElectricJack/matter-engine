@@ -433,6 +433,53 @@ void test_task12_bounded_cloud_orders_and_ground_fog_separation() {
           "FogLab without cloud layers has a zero cloud-only channel and nonzero low haze");
 }
 
+void test_task12_froxel_camera_eye_mapping_and_round_trip() {
+    matter::Mat4f world_to_view{{
+        1.0f, 0.0f, 0.0f, -3.0f,
+        0.0f, 1.0f, 0.0f, -4.0f,
+        0.0f, 0.0f, 1.0f, -5.0f,
+        0.0f, 0.0f, 0.0f, 1.0f}};
+    viewer::FroxelCameraReference camera{};
+    camera.eye = viewer::volumetric_camera_eye(world_to_view);
+    camera.forward = {0.0f, 0.0f, -1.0f};
+    camera.right = {1.0f, 0.0f, 0.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.tan_half_fov = 0.5f;
+    camera.aspect_ratio = 1.6f;
+    camera.near_plane = 0.1f;
+
+    CHECK(length({camera.eye.x - 3.0f, camera.eye.y - 4.0f,
+                  camera.eye.z - 5.0f}) < 1.0e-6f,
+          "volumetric camera origin recovers the eye rather than near-plane center");
+    const matter::Float3 points[]{
+        {3.0f, 4.0f, -5.0f},
+        {3.0f, 4.0f, 4.9f},
+        {11.0f, 4.0f, -5.0f},
+    };
+    const matter::Float3 expected_uvw[]{
+        {0.5f, 0.5f, std::log(10.0f / 0.1f) / std::log(3000.0f / 0.1f)},
+        {0.5f, 0.5f, 0.0f},
+        {1.0f, 0.5f, std::log(10.0f / 0.1f) / std::log(3000.0f / 0.1f)},
+    };
+    bool mappings_match = true;
+    for (size_t index = 0; index < std::size(points); ++index) {
+        matter::Float3 uvw{};
+        const bool mapped = viewer::world_to_froxel_reference(
+            camera, points[index], uvw);
+        const matter::Float3 round_trip =
+            viewer::froxel_to_world_reference(camera, uvw);
+        mappings_match = mappings_match && mapped &&
+            length({uvw.x - expected_uvw[index].x,
+                    uvw.y - expected_uvw[index].y,
+                    uvw.z - expected_uvw[index].z}) < 2.0e-5f &&
+            length({round_trip.x - points[index].x,
+                    round_trip.y - points[index].y,
+                    round_trip.z - points[index].z}) < 2.0e-4f;
+    }
+    CHECK(mappings_match,
+          "center, exact near boundary, and lateral edge map and round-trip from the true eye");
+}
+
 } // namespace
 
 int main() {
@@ -447,5 +494,6 @@ int main() {
     test_task11_rotating_tile_scheduler_and_horizon_contract();
     test_task12_constant_slab_local_march_and_remaining_coarse_tau();
     test_task12_bounded_cloud_orders_and_ground_fog_separation();
+    test_task12_froxel_camera_eye_mapping_and_round_trip();
     return check_summary();
 }

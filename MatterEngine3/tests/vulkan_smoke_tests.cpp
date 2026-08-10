@@ -6822,6 +6822,166 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
               ? "real FogLab-style no-cloud fixture retains haze with a zero cloud channel independent of cloud orders"
               : error.c_str());
 
+    // Review fix: run the production enhanced scatter against a seeded,
+    // nonuniform cumulative-tau texture. The near clipmap has 2 m slices;
+    // one sunward and one receiverward slab each contribute tau=2. The center
+    // local march contributes 0.625/m * 4 m = 2.5, so endpoint composition
+    // must expose 4.5. Sampling the coarse field at the start would expose
+    // 6.5 and fail independently of phase, sun RGB, or half precision.
+    // Mostly camera-ward: the near sample exits through the real near plane
+    // before reaching the existing smoke-scene triangle, while the center
+    // sample still has enough depth for the complete four-metre march.
+    const matter::Float3 task12_to_sun{0.1f, 0.25f, 0.9630680142f};
+    task12_lighting.sun_direction = {-task12_to_sun.x, -task12_to_sun.y,
+                                     -task12_to_sun.z};
+    renderer.set_lighting(task12_lighting);
+    matter::FogSettings task12_seeded_cloud = cloud_fog;
+    task12_seeded_cloud.clouds[0].max_density = 0.625f;
+    matter::VulkanVolumetricsSettings task12_tau_settings = improved_clouds;
+    task12_tau_settings.temporal_blend = 0.0f;
+    task12_tau_settings.local_sun_march_distance_m = 4.0f;
+    task12_tau_settings.multiple_scattering_orders = 2;
+    task12_tau_settings.multiple_scattering_strength = 0.0f;
+    task12_tau_settings.powder_strength = 0.0f;
+    matter::CloudShadowSettings task12_seeded_shadows{};
+    task12_seeded_shadows.enabled = true;
+    task12_seeded_shadows.near_resolution = 0;
+    task12_seeded_shadows.near_depth_slices = 0;
+    task12_seeded_shadows.near_coverage_m = 32.0f;
+    task12_seeded_shadows.far_resolution = 0;
+    task12_seeded_shadows.far_depth_slices = 0;
+    task12_seeded_shadows.far_coverage_m = 64.0f;
+    task12_seeded_shadows.filter_scale = 0.0f;
+    task12_seeded_shadows.update_fraction = 1.0f;
+    struct Task12TauPoint { uint32_t x, y, z; };
+    const Task12TauPoint task12_tau_points[]{
+        {80u, 45u, 50u},   // center, full four-metre local march
+        {80u, 45u, 30u},   // just beyond the 1 m camera near boundary
+        {159u, 45u, 50u},  // lateral edge, endpoint leaves the froxel grid
+    };
+    viewer::FroxelCameraReference task12_camera{};
+    task12_camera.eye = viewer::volumetric_camera_eye(matrices.world_to_view);
+    task12_camera.forward = {-matrices.world_to_view.m[8],
+                             -matrices.world_to_view.m[9],
+                             -matrices.world_to_view.m[10]};
+    task12_camera.right = {matrices.world_to_view.m[0],
+                           matrices.world_to_view.m[1],
+                           matrices.world_to_view.m[2]};
+    task12_camera.up = {matrices.world_to_view.m[4],
+                        matrices.world_to_view.m[5],
+                        matrices.world_to_view.m[6]};
+    task12_camera.tan_half_fov = 1.0f / matrices.view_to_clip.m[5];
+    task12_camera.aspect_ratio = matrices.view_to_clip.m[5] /
+                                 matrices.view_to_clip.m[0];
+    task12_camera.near_plane = matrices.view_to_clip.m[11] /
+        (matrices.view_to_clip.m[10] + 1.0f);
+    Task9CloudPoint task12_tau_world[3]{};
+    float task12_expected_local[3]{};
+    for (size_t index = 0; index < std::size(task12_tau_points); ++index) {
+        const auto& point = task12_tau_points[index];
+        task12_tau_world[index] = task9_froxel_world_position(
+            matrices, point.x, point.y, point.z);
+        const matter::Float3 world{task12_tau_world[index].x,
+                                   task12_tau_world[index].y,
+                                   task12_tau_world[index].z};
+        const float exit_m = viewer::froxel_ray_exit_distance_reference(
+            task12_camera, world, task12_to_sun);
+        task12_expected_local[index] = 0.625f * std::min(4.0f, exit_m);
+    }
+    CHECK(task12_expected_local[0] > 2.49f &&
+              task12_expected_local[1] < 1.0f &&
+              task12_expected_local[2] < 0.1f,
+          "center marches fully while near and lateral-edge endpoints leave the camera froxel grid");
+
+    const auto task12_shadow_frame = matter::make_cloud_shadow_frame(
+        matter::resolve_cloud_shadow_levels(task12_seeded_shadows)[0],
+        camera.position, task12_lighting.sun_direction);
+    const auto& center_world = task12_tau_world[0];
+    const auto& shadow_matrix = task12_shadow_frame.world_to_uvw.m;
+    const matter::Float3 center_uvw{
+        shadow_matrix[0] * center_world.x +
+            shadow_matrix[1] * center_world.y +
+            shadow_matrix[2] * center_world.z + shadow_matrix[3],
+        shadow_matrix[4] * center_world.x +
+            shadow_matrix[5] * center_world.y +
+            shadow_matrix[6] * center_world.z + shadow_matrix[7],
+        shadow_matrix[8] * center_world.x +
+            shadow_matrix[9] * center_world.y +
+            shadow_matrix[10] * center_world.z + shadow_matrix[11]};
+    const uint32_t receiver_slice = static_cast<uint32_t>(std::clamp(
+        static_cast<int>(std::floor(center_uvw.z * 16.0f - 0.5f)) + 1,
+        1, 14));
+    renderer.set_cloud_shadow_density_layers_for_test(
+        15u, 1.0f, receiver_slice, 1.0f, true);
+
+    const auto capture_task12_scatter = [&](int local_steps,
+                                             const matter::CloudShadowSettings& shadows,
+                                             matter::Float4 samples[3]) {
+        task12_tau_settings.local_sun_march_steps = local_steps;
+        renderer.set_volumetrics_settings(task12_tau_settings,
+                                          task12_seeded_cloud, shadows);
+        bool rendered = true;
+        for (int frame = 0; frame < 4; ++frame)
+            rendered = rendered && warm_rt_tlas();
+        for (size_t index = 0; index < std::size(task12_tau_points); ++index) {
+            const auto& point = task12_tau_points[index];
+            rendered = rendered &&
+                renderer.readback_volumetrics_scatter_voxel_for_test(
+                    point.x, point.y, point.z, samples[index], error);
+        }
+        return rendered;
+    };
+    matter::Float4 task12_tau_clear[3]{}, task12_tau_local[3]{},
+                   task12_tau_shadowed[3]{};
+    const bool task12_tau_read =
+        capture_task12_scatter(0, task12_no_shadows, task12_tau_clear) &&
+        capture_task12_scatter(8, task12_no_shadows, task12_tau_local) &&
+        capture_task12_scatter(8, task12_seeded_shadows,
+                               task12_tau_shadowed);
+    float task12_inferred_local[3]{}, task12_inferred_total[3]{};
+    bool task12_tau_finite[3]{task12_tau_read, task12_tau_read,
+                              task12_tau_read};
+    for (size_t index = 0; index < std::size(task12_tau_points); ++index) {
+        const float clear = luminance(task12_tau_clear[index]);
+        const float local = luminance(task12_tau_local[index]);
+        const float shadowed = luminance(task12_tau_shadowed[index]);
+        task12_tau_finite[index] = task12_tau_finite[index] && clear > 0.0f &&
+            local > 0.0f && shadowed > 0.0f;
+        task12_inferred_local[index] = -std::log(local / clear);
+        task12_inferred_total[index] = -std::log(shadowed / clear);
+    }
+    std::fprintf(stderr,
+                 "task12 seeded tau: center local=%.4f total=%.4f near=%.4f/%.4f alpha=%.4f edge=%.4f/%.4f receiver=%u\n",
+                 task12_inferred_local[0], task12_inferred_total[0],
+                 task12_inferred_local[1], task12_inferred_total[1],
+                 task12_tau_shadowed[1].w,
+                 task12_inferred_local[2], task12_inferred_total[2],
+                 receiver_slice);
+    CHECK(task12_tau_finite[0] &&
+              std::fabs(task12_inferred_local[0] - 2.5f) < 0.15f &&
+              std::fabs(task12_inferred_total[0] - 4.5f) < 0.2f &&
+              std::fabs(task12_inferred_total[0] - 6.5f) > 1.0f,
+          error.empty()
+              ? "real seeded cumulative tau composes local 2.5 with endpoint 2 as 4.5 not start-overlapped 6.5"
+              : error.c_str());
+    CHECK(task12_tau_finite[1] &&
+              task12_inferred_total[1] - task12_inferred_local[1] > 1.5f &&
+              std::isfinite(task12_tau_clear[1].w) &&
+              std::isfinite(task12_tau_local[1].w) &&
+              std::isfinite(task12_tau_shadowed[1].w) &&
+              task12_tau_clear[1].w > 0.6f &&
+              std::fabs(task12_tau_local[1].w - task12_tau_clear[1].w) < 1e-3f &&
+              std::fabs(task12_tau_shadowed[1].w - task12_tau_clear[1].w) < 1e-3f,
+          error.empty()
+              ? "near-camera production froxel remains populated across seeded shadow captures"
+              : error.c_str());
+    CHECK(task12_tau_finite[2] &&
+              task12_inferred_total[2] - task12_inferred_local[2] > 1.5f,
+          error.empty()
+              ? "out-of-frustum lateral endpoint retains seeded coarse remainder"
+              : error.c_str());
+    renderer.clear_cloud_shadow_density_override_for_test(true);
+
     // Restore the Task 9 constant fog+cloud fixture expected by the following
     // stale-low-slice regression; Task 12's no-cloud isolation must not leak
     // into an older fixture.

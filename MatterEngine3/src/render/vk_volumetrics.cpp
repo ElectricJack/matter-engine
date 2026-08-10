@@ -1148,22 +1148,22 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
             VK_IMAGE_ASPECT_COLOR_BIT);
     }
 
+    // Recover the true view origin from the rigid world-to-view transform.
+    // Unprojecting NDC z=1 yields the near-plane center, not the eye; Task 12
+    // subtracts this value in its world-space froxel and ray-exit equations.
+    const matter::Float3 camera_eye =
+        volumetric_camera_eye(matrices.world_to_view);
+
     // Fill push constants.
     DensityConstants density_pc{};
     pack_mat4_column_major(density_pc.clip_to_world, matrices.clip_to_world);
-    // Extract camera position by unprojecting the near-plane center.
-    // Reversed-Z: near is NDC z = 1, so this is clip_to_world * (0,0,1,1).
+    // The density prefix shares the same actual-eye meaning as scatter.
+    // Do not substitute a clip-space point here:
     // (NDC (0,0,0) is now the FAR-plane center — using it put the "camera"
     // a kilometer out and flipped every view-dependent term.)
-    {
-        const float* m = matrices.clip_to_world.m;
-        float w = m[14] + m[15];
-        if (std::abs(w) > 1e-9f) {
-            density_pc.camera_pos[0] = (m[2]  + m[3])  / w;
-            density_pc.camera_pos[1] = (m[6]  + m[7])  / w;
-            density_pc.camera_pos[2] = (m[10] + m[11]) / w;
-        }
-    }
+    density_pc.camera_pos[0] = camera_eye.x;
+    density_pc.camera_pos[1] = camera_eye.y;
+    density_pc.camera_pos[2] = camera_eye.z;
     density_pc.frame_time = frame_time;
     density_pc.fog_density = fog_density_;
     // Always the ground-fog meaning now. The bounded-cloud mode that used to
@@ -1278,17 +1278,10 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     ScatterConstants scatter_pc{};
     pack_mat4_column_major(scatter_pc.clip_to_world, matrices.clip_to_world);
     pack_mat4_column_major(scatter_pc.prev_world_to_clip, prev_world_to_clip_);
-    // Camera position = unprojected near-plane center (reversed-Z: NDC z = 1;
-    // see the density_pc note above).
-    {
-        const float* m = matrices.clip_to_world.m;
-        float w = m[14] + m[15];
-        if (std::abs(w) > 1e-9f) {
-            scatter_pc.camera_pos[0] = (m[2]  + m[3])  / w;
-            scatter_pc.camera_pos[1] = (m[6]  + m[7])  / w;
-            scatter_pc.camera_pos[2] = (m[10] + m[11]) / w;
-        }
-    }
+    // Task 12 world-space mapping and phase both consume the actual eye.
+    scatter_pc.camera_pos[0] = camera_eye.x;
+    scatter_pc.camera_pos[1] = camera_eye.y;
+    scatter_pc.camera_pos[2] = camera_eye.z;
     scatter_pc.frame_index = frame_index_;
     scatter_pc.sun_dir[0] = sun_direction_[0];
     scatter_pc.sun_dir[1] = sun_direction_[1];
@@ -1569,6 +1562,68 @@ bool VkVolumetrics::readback_integrated_voxel_for_test(
     const auto* values = static_cast<const uint16_t*>(readback.mapped);
     integrated = {half_to_float(values[0]), half_to_float(values[1]),
                   half_to_float(values[2]), half_to_float(values[3])};
+    return true;
+}
+
+bool VkVolumetrics::readback_scatter_voxel_for_test(
+    uint32_t x, uint32_t y, uint32_t z, matter::Float4& scatter,
+    std::string& error) {
+    if (!vulkan_ || !active()) {
+        error = "volumetric scatter image is unavailable";
+        return false;
+    }
+    const auto& dimensions = active_bundle_.dimensions;
+    if (x >= dimensions.width || y >= dimensions.height ||
+        z >= dimensions.depth) {
+        error = "scatter readback coordinate is outside the froxel grid";
+        return false;
+    }
+    matter::VkBufferResource readback;
+    if (!matter::create_buffer(*vulkan_, 8, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                               readback, error) ||
+        !matter::map_buffer(readback, error)) return false;
+    // record() flips ping_index after integration. The just-produced scatter
+    // is therefore the image opposite the next frame's write destination.
+    matter::VkImageResource& produced =
+        active_bundle_.scatter[active_bundle_.ping_index ^ 1u];
+    struct ReadbackRequest {
+        matter::VkImageResource* image;
+        VkBuffer destination;
+        uint32_t x, y, z;
+    } request{&produced, readback.buffer, x, y, z};
+    const auto copy = [](VkCommandBuffer cmd, void* data) {
+        const auto& request = *static_cast<ReadbackRequest*>(data);
+        matter::record_image_transition(
+            cmd, *request.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageOffset = {static_cast<int32_t>(request.x),
+                              static_cast<int32_t>(request.y),
+                              static_cast<int32_t>(request.z)};
+        region.imageExtent = {1, 1, 1};
+        vkCmdCopyImageToBuffer(cmd, request.image->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               request.destination, 1, &region);
+        matter::record_image_transition(
+            cmd, *request.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    };
+    if (!matter::submit_immediate(
+            *vulkan_, copy, &request, error,
+            matter::ImmediateSubmitPhase::staging_readback,
+            {produced.lifetime, readback.lifetime}) ||
+        !matter::invalidate_buffer(readback, 0, 8, error)) return false;
+    const auto* values = static_cast<const uint16_t*>(readback.mapped);
+    scatter = {half_to_float(values[0]), half_to_float(values[1]),
+               half_to_float(values[2]), half_to_float(values[3])};
     return true;
 }
 

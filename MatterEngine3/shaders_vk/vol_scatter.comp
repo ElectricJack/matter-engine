@@ -59,15 +59,16 @@ bool world_to_froxel_uvw(vec3 world_pos, ivec3 grid, out vec3 uvw) {
     float view_depth = dot(relative, pc.camera_fwd);
     float tan_y = pc.tan_half_fov;
     float tan_x = tan_y * pc.aspect_ratio;
-    if (isnan(view_depth) || isinf(view_depth) || view_depth < pc.camera_near ||
+    if (isnan(view_depth) || isinf(view_depth) ||
+        view_depth + 1.0e-5 < pc.camera_near ||
         view_depth > VOL_FROXEL_FAR || tan_x <= 0.0 || tan_y <= 0.0) return false;
     vec2 ndc = vec2(dot(relative, pc.camera_right) / (view_depth * tan_x),
                     dot(relative, pc.camera_up) / (view_depth * tan_y));
     vec2 candidate_uv = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
     if (any(isnan(candidate_uv)) || any(isinf(candidate_uv)) ||
-        any(lessThan(candidate_uv, vec2(0.0))) ||
-        any(greaterThan(candidate_uv, vec2(1.0)))) return false;
-    uvw = vec3(candidate_uv,
+        any(lessThan(candidate_uv, vec2(-1.0e-5))) ||
+        any(greaterThan(candidate_uv, vec2(1.0 + 1.0e-5)))) return false;
+    uvw = vec3(clamp(candidate_uv, vec2(0.0), vec2(1.0)),
                depth_to_slice_n(view_depth, float(grid.z)));
     return uvw.z >= 0.0 && uvw.z <= 1.0;
 }
