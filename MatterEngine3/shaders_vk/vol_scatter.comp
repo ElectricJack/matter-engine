@@ -187,6 +187,20 @@ void main() {
             vec3 view_dir = normalize(world_pos - pc.camera_pos);
             vec3 to_sun = normalize(-pc.sun_dir);
 
+            // Empty/fog-only froxels keep the short terrain traversal. Only
+            // enhanced froxels containing real cloud extinction pay for the
+            // full represented-volume reach, without launching another ray.
+            float cloud_extinction = 0.0;
+            if (ENHANCED_CLOUD_LIGHTING) {
+                cloud_extinction = texture(vol_cloud_density, uvw).r;
+                if (isnan(cloud_extinction) || isinf(cloud_extinction))
+                    cloud_extinction = 0.0;
+                cloud_extinction = clamp(cloud_extinction, 0.0, extinction);
+            }
+            float shadow_far = cloud_extinction > 1e-6
+                ? VOL_CLOUD_TERRAIN_SHADOW_FAR
+                : VOL_SHADOW_FAR;
+
             // Shadow ray via rayQueryEXT.
             float shadow = 1.0;
             rayQueryEXT rq;
@@ -195,7 +209,7 @@ void main() {
                 gl_RayFlagsOpaqueEXT,
                 0xFF,
                 world_pos, 0.1,
-                to_sun, VOL_SHADOW_FAR);
+                to_sun, shadow_far);
             rayQueryProceedEXT(rq);
             if (rayQueryGetIntersectionTypeEXT(rq, true) !=
                 gl_RayQueryCommittedIntersectionNoneEXT) {
@@ -214,10 +228,6 @@ void main() {
                     vec3(0.0, 1.0, 0.0));
                 scatter_result = vec4(sun_contrib + sky_contrib, extinction);
             } else {
-                float cloud_extinction = texture(vol_cloud_density, uvw).r;
-                if (isnan(cloud_extinction) || isinf(cloud_extinction))
-                    cloud_extinction = 0.0;
-                cloud_extinction = clamp(cloud_extinction, 0.0, extinction);
                 vec3 cloud_scattering = vec3(0.99) * cloud_extinction;
                 vec3 fog_emitter_scattering =
                     max(scattering - cloud_scattering, vec3(0.0));

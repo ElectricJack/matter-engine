@@ -6,6 +6,7 @@
 // a dense terrain TLAS is unnecessary and can trigger severe GPU stalls.
 const float VOL_FROXEL_FAR = 3000.0;
 const float VOL_SHADOW_FAR = 300.0;
+const float VOL_CLOUD_TERRAIN_SHADOW_FAR = VOL_FROXEL_FAR;
 const float VOL_NEAR = 0.1;
 
 // Exponential slice-to-depth mapping: concentrates precision near the camera.

@@ -12,6 +12,16 @@ static std::string read_shader(const char* path) {
                        std::istreambuf_iterator<char>());
 }
 
+static size_t count_occurrences(const std::string& text,
+                                const std::string& needle) {
+    size_t count = 0;
+    for (size_t offset = 0;
+         (offset = text.find(needle, offset)) != std::string::npos;
+         offset += needle.size())
+        ++count;
+    return count;
+}
+
 int main() {
     std::string text, err;
     // 1. embedded lookup works and matches the on-disk source.
@@ -130,6 +140,24 @@ int main() {
            volume_common.find(
                "0.2 * hg_phase(mu, -0.30 * anisotropy_scale)") !=
                std::string::npos);
+    // Terrain occlusion for cloud-bearing froxels extends the existing ray;
+    // it must not silently add a second per-froxel query or lengthen the
+    // fog-only/Current path.  Ordering pins the density decision before the
+    // one real ray and its sanitized value before cloud scattering consumes it.
+    const size_t cloud_sample = volume.find(
+        "cloud_extinction = texture(vol_cloud_density, uvw).r");
+    const size_t ray_query = volume.find("rayQueryInitializeEXT");
+    const size_t cloud_scattering = volume.find(
+        "vec3 cloud_scattering = vec3(0.99) * cloud_extinction");
+    assert(volume_common.find(
+               "const float VOL_CLOUD_TERRAIN_SHADOW_FAR = VOL_FROXEL_FAR") !=
+               std::string::npos);
+    assert(volume.find("cloud_extinction > 1e-6") != std::string::npos);
+    assert(volume.find("VOL_CLOUD_TERRAIN_SHADOW_FAR") != std::string::npos);
+    assert(count_occurrences(volume, "rayQueryInitializeEXT") == 1);
+    assert(cloud_sample != std::string::npos && ray_query != std::string::npos &&
+           cloud_scattering != std::string::npos && cloud_sample < ray_query &&
+           ray_query < cloud_scattering);
     assert(volume.find("pc.sun_color") == std::string::npos &&
            volume.find("pc.sky_color") == std::string::npos &&
            volume.find("sun_intensity") == std::string::npos);

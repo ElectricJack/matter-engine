@@ -7089,6 +7089,144 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
     const auto luminance = [](const matter::Float4& value) {
         return value.x * 0.2126f + value.y * 0.7152f + value.z * 0.0722f;
     };
+
+    // Terrain-to-cloud occlusion must extend the existing shadow ray rather
+    // than adding a test-only visibility path.  This real opaque quad sits
+    // 600 m sunward of a cloud-bearing froxel: outside the legacy 300 m cap,
+    // but well inside the represented 3 km volume.
+    constexpr uint32_t terrain_cloud_x = 80u;
+    constexpr uint32_t terrain_cloud_y = 45u;
+    constexpr uint32_t terrain_cloud_z = 92u;
+    const Task9CloudPoint terrain_cloud_point = task9_froxel_world_position(
+        matrices, terrain_cloud_x, terrain_cloud_y, terrain_cloud_z);
+    const float terrain_half_extent = 100.0f;
+    const float terrain_occluder_y = terrain_cloud_point.y + 600.0f;
+    viewer::VkScenePart terrain_occluder = fixed_part(
+        999u,
+        {terrain_cloud_point.x - terrain_half_extent,
+         terrain_occluder_y - 0.01f,
+         terrain_cloud_point.z - terrain_half_extent},
+        {terrain_cloud_point.x + terrain_half_extent,
+         terrain_occluder_y + 0.01f,
+         terrain_cloud_point.z + terrain_half_extent},
+        0u);
+    const matter::Float3 terrain_normal{0.0f, -1.0f, 0.0f};
+    const matter::Float4 terrain_tint{0.5f, 0.5f, 0.5f, 0.0f};
+    const auto terrain_vertex = [&](float x, float z) {
+        return viewer::VkRasterVertex{
+            {x, terrain_occluder_y, z}, terrain_normal, terrain_tint,
+            {0.0f, 0.0f, 0.0f, 1.0f}, 7u, {}};
+    };
+    terrain_occluder.vertices = {
+        terrain_vertex(terrain_cloud_point.x - terrain_half_extent,
+                       terrain_cloud_point.z - terrain_half_extent),
+        terrain_vertex(terrain_cloud_point.x + terrain_half_extent,
+                       terrain_cloud_point.z - terrain_half_extent),
+        terrain_vertex(terrain_cloud_point.x + terrain_half_extent,
+                       terrain_cloud_point.z + terrain_half_extent),
+        terrain_vertex(terrain_cloud_point.x - terrain_half_extent,
+                       terrain_cloud_point.z + terrain_half_extent)};
+    terrain_occluder.indices = {0u, 1u, 2u, 0u, 2u, 3u};
+    terrain_occluder.clusters[0].lods[0].index_count = 6u;
+    CHECK(renderer.ensure_part(terrain_occluder, error) >= 0,
+          error.empty() ? "upload distant terrain-to-cloud occluder"
+                        : error.c_str());
+
+    matter::VulkanVolumetricsSettings terrain_cloud_settings = task12_settings;
+    terrain_cloud_settings.temporal_blend = 0.0f;
+    terrain_cloud_settings.local_sun_march_steps = 1;
+    terrain_cloud_settings.local_sun_march_distance_m = 0.0f;
+    terrain_cloud_settings.multiple_scattering_orders = 1;
+    terrain_cloud_settings.multiple_scattering_strength = 0.0f;
+    terrain_cloud_settings.powder_strength = 0.0f;
+    matter::FogSettings terrain_cloud_fog = cloud_fog;
+    terrain_cloud_fog.clouds[0].max_density = 0.004f;
+    matter::FogSettings terrain_capture_fog = terrain_cloud_fog;
+    const auto capture_terrain_cloud = [&](bool include_occluder,
+                                           matter::Float4& sample) {
+        const std::vector<viewer::VkSceneInstance> instances =
+            include_occluder
+                ? std::vector<viewer::VkSceneInstance>{
+                      {998u, identity_matrix()}, {999u, identity_matrix()}}
+                : std::vector<viewer::VkSceneInstance>{
+                      {998u, identity_matrix()}};
+        bool rendered = renderer.update_instances(instances, error);
+        renderer.set_volumetrics_settings(terrain_cloud_settings,
+                                          terrain_capture_fog,
+                                          task12_no_shadows);
+        for (int frame = 0; frame < 4; ++frame)
+            rendered = rendered && warm_rt_tlas();
+        return rendered &&
+            renderer.readback_volumetrics_scatter_voxel_for_test(
+                terrain_cloud_x, terrain_cloud_y, terrain_cloud_z,
+                sample, error);
+    };
+    matter::Float4 terrain_cloud_clear{}, terrain_cloud_occluded{};
+    const bool terrain_cloud_read =
+        capture_terrain_cloud(false, terrain_cloud_clear) &&
+        capture_terrain_cloud(true, terrain_cloud_occluded);
+    const float terrain_cloud_clear_luma = luminance(terrain_cloud_clear);
+    const float terrain_cloud_occluded_luma = luminance(terrain_cloud_occluded);
+    std::fprintf(stderr,
+                 "terrain cloud shadow: clear=%.7f occluded=%.7f alpha=%.7f/%.7f\n",
+                 terrain_cloud_clear_luma, terrain_cloud_occluded_luma,
+                 terrain_cloud_clear.w, terrain_cloud_occluded.w);
+    CHECK(terrain_cloud_read && std::isfinite(terrain_cloud_clear_luma) &&
+              std::isfinite(terrain_cloud_occluded_luma) &&
+              terrain_cloud_clear_luma > 1.0e-6f &&
+              terrain_cloud_occluded_luma < terrain_cloud_clear_luma * 0.25f &&
+              std::fabs(terrain_cloud_occluded.w - terrain_cloud_clear.w) <
+                  2.0e-3f,
+          error.empty()
+              ? "opaque terrain beyond 300 m attenuates enhanced cloud direct sunlight without changing extinction"
+              : error.c_str());
+
+    // A fog-only enhanced froxel has a live detail grid whose cloud channel is
+    // zero, so the same distant quad must remain outside its 300 m ray policy.
+    matter::FogSettings terrain_fog_only{};
+    terrain_fog_only.density = 0.004f;
+    terrain_fog_only.floor = -10000.0f;
+    terrain_fog_only.falloff = 100000.0f;
+    terrain_fog_only.color[0] = 0.8f;
+    terrain_fog_only.color[1] = 0.8f;
+    terrain_fog_only.color[2] = 0.8f;
+    terrain_capture_fog = terrain_fog_only;
+    matter::Float4 terrain_fog_clear{}, terrain_fog_occluded{};
+    const bool terrain_fog_read =
+        capture_terrain_cloud(false, terrain_fog_clear) &&
+        capture_terrain_cloud(true, terrain_fog_occluded);
+    const float terrain_fog_clear_luma = luminance(terrain_fog_clear);
+    const float terrain_fog_occluded_luma = luminance(terrain_fog_occluded);
+    std::fprintf(stderr,
+                 "terrain fog-only shadow: clear=%.7f occluded=%.7f alpha=%.7f/%.7f\n",
+                 terrain_fog_clear_luma, terrain_fog_occluded_luma,
+                 terrain_fog_clear.w, terrain_fog_occluded.w);
+    CHECK(terrain_fog_read && terrain_fog_clear_luma > 1.0e-6f &&
+              std::fabs(terrain_fog_occluded_luma - terrain_fog_clear_luma) <
+                  terrain_fog_clear_luma * 0.05f,
+          "fog-only enhanced media retains the short terrain-shadow reach");
+    terrain_capture_fog = terrain_cloud_fog;
+
+    // Geometry visibility is a direct-sun term. With the sun disabled, the
+    // quad must not modulate the evaluated sky-irradiance ambient lane.
+    viewer::VkSceneLighting terrain_ambient_lighting = task12_lighting;
+    terrain_ambient_lighting.sun_intensity = 0.0f;
+    terrain_ambient_lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+        {0.45f, 0.45f, 0.45f};
+    renderer.set_lighting(terrain_ambient_lighting);
+    matter::Float4 terrain_ambient_clear{}, terrain_ambient_occluded{};
+    const bool terrain_ambient_read =
+        capture_terrain_cloud(false, terrain_ambient_clear) &&
+        capture_terrain_cloud(true, terrain_ambient_occluded);
+    CHECK(terrain_ambient_read && luminance(terrain_ambient_clear) > 0.0f &&
+              close4(terrain_ambient_clear, terrain_ambient_occluded, 2.0e-4f),
+          "distant terrain visibility leaves enhanced cloud sky ambient unchanged");
+    renderer.set_lighting(task12_lighting);
+
+    CHECK(renderer.update_instances({{998u, identity_matrix()}}, error),
+          error.empty() ? "restore isolated froxel fixture instances"
+                        : error.c_str());
+
     matter::Float4 task12_orders[4]{};
     const uint64_t task12_enhanced_generation =
         renderer.volumetrics_resource_generation();
