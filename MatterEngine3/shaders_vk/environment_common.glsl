@@ -17,6 +17,10 @@ layout(set = 1, binding = 6, std140) uniform EnvironmentBlock {
     mat4 cloud_world_to_uvw[2];
     vec4 cloud_state;
     vec4 cloud_filter;
+    vec4 direct_world_sun_ratio;
+    vec4 sun_disc_reserved;
+    vec4 sky_display_reserved;
+    vec4 sky_irradiance_ambient_ratio;
 } environment;
 
 #include "cloud_shadow_common.glsl"
@@ -51,9 +55,10 @@ vec2 atmosphere_sky_uv(vec3 world_dir, vec3 to_sun) {
 }
 
 #ifndef MATTER_ENVIRONMENT_SAMPLING_TEST
-vec3 sample_physical_sky(vec3 world_dir, vec3 to_sun, vec3 sky_modifier) {
+vec3 sample_physical_sky(vec3 world_dir, vec3 to_sun) {
     return texture(atmosphere_sky_view,
-                   atmosphere_sky_uv(world_dir, to_sun)).rgb * sky_modifier;
+                   atmosphere_sky_uv(world_dir, to_sun)).rgb *
+           environment.sky_display_reserved.rgb;
 }
 
 float environment_sh_basis(int index, vec3 d) {
@@ -68,7 +73,7 @@ float environment_sh_basis(int index, vec3 d) {
     return 0.546274 * (d.x * d.x - d.y * d.y);
 }
 
-vec3 sample_sky_irradiance(vec3 normal, vec3 sky_modifier) {
+vec3 sample_sky_irradiance(vec3 normal) {
     vec3 n = normalize(normal);
     vec3 irradiance = vec3(0.0);
     for (int coefficient = 0; coefficient < 9; ++coefficient) {
@@ -81,7 +86,8 @@ vec3 sample_sky_irradiance(vec3 normal, vec3 sky_modifier) {
                                  ivec2(coefficient % 3, coefficient / 3), 0).rgb *
                       environment_sh_basis(coefficient, n) * band;
     }
-    return max(irradiance, vec3(0.0)) * sky_modifier;
+    return max(irradiance, vec3(0.0)) *
+           environment.sky_irradiance_ambient_ratio.rgb;
 }
 #endif
 

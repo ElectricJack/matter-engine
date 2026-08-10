@@ -20,13 +20,13 @@ layout(push_constant) uniform ScatterConstants {
     uint frame_index;
     vec3 sun_dir;
     float sun_intensity;
-    vec3 sun_color;
     float phase_g;
-    vec3 sky_color;
     float temporal_blend;
     uint history_valid;
     float camera_near;
     float camera_far;
+    float pad0;
+    float pad1;
     float pad2;
 } pc;
 
@@ -89,11 +89,11 @@ void main() {
 
             // Sun in-scattering.
             vec3 sun_contrib = scattering * shadow * phase *
-                               pc.sun_color * pc.sun_intensity;
+                               environment.direct_world_sun_ratio.rgb;
 
             // Sky ambient (isotropic approximation using upward hemisphere).
             vec3 sky_contrib = scattering * sample_sky_irradiance(
-                vec3(0.0, 1.0, 0.0), pc.sky_color);
+                vec3(0.0, 1.0, 0.0));
 
             scatter_result = vec4(sun_contrib + sky_contrib, extinction);
         }

@@ -1,8 +1,11 @@
 #include "matter/atmosphere.h"
+#include "matter/atmosphere_lighting.h"
 #include "matter/display_dither.h"
 #include "check.h"
 
+#include <array>
 #include <cmath>
+#include <cstring>
 #include <limits>
 
 namespace {
@@ -171,6 +174,214 @@ void test_direct_sun_rgb_applies_all_authored_modifiers_once() {
           "direct sun RGB applies extraterrestrial spectrum, atmosphere, modifier, tint, and multiplier per component");
 }
 
+void test_atmosphere_lighting_curves_are_exact_continuous_and_bounded() {
+    struct Anchor { float elevation; float ratio; };
+    constexpr Anchor anchors[] = {{90.0f, 1.0f}, {45.0f, 1.0f},
+                                  {5.0f, 0.25f}, {0.0f, 0.0f},
+                                  {-5.0f, 0.0f}, {-12.0f, 0.0f}};
+    for (const Anchor anchor : anchors) {
+        CHECK(matter::direct_world_ratio(anchor.elevation, 0.25f) ==
+                  anchor.ratio,
+              "direct-world curve matches its approved elevation anchor");
+    }
+
+    float previous = matter::direct_world_ratio(-90.0f, 0.25f);
+    for (int step = -9000; step <= 9000; ++step) {
+        const float elevation = static_cast<float>(step) * 0.01f;
+        const float direct = matter::direct_world_ratio(elevation, 0.25f);
+        const float ambient = matter::sky_ambient_ratio(elevation, 0.25f, 1.0f);
+        CHECK(std::isfinite(direct) && direct >= 0.0f && direct <= 1.0f,
+              "dense direct-world curve stays finite and bounded");
+        CHECK(direct + 1.0e-7f >= previous,
+              "dense direct-world curve is monotonic");
+        CHECK(std::isfinite(ambient) && ambient >= 0.0f && ambient <= 1.0f,
+              "dense ambient curve stays finite and bounded");
+        previous = direct;
+    }
+    for (float seam : {0.0f, 5.0f, 45.0f}) {
+        const float at = matter::direct_world_ratio(seam, 0.25f);
+        const float left = matter::direct_world_ratio(seam - 0.0001f, 0.25f);
+        const float right = matter::direct_world_ratio(seam + 0.0001f, 0.25f);
+        CHECK(std::fabs(at - left) <= 1.0e-5f &&
+                  std::fabs(right - at) <= 1.0e-5f,
+              "direct-world curve has matching one-sided seam limits");
+    }
+    CHECK(matter::sky_ambient_ratio(5.0f, 0.25f, 1.0f) == 0.25f,
+          "day ambient reaches its exact +5 degree endpoint");
+    CHECK(matter::sky_ambient_ratio(-6.0f, 0.25f, 1.0f) == 1.0f,
+          "twilight ambient reaches its exact -6 degree endpoint");
+}
+
+void test_atmosphere_lighting_resolution_is_componentwise_and_independent() {
+    matter::AtmosphereLightingSources sources{};
+    sources.atmospheric_direct_base_rgb = {0.31f, 0.47f, 0.83f};
+    sources.atmospheric_noon_direct_base_rgb = {0.62f, 0.94f, 1.66f};
+    sources.authored_display_sky_chroma_rgb = {0.23f, 0.41f, 0.79f};
+    sources.authored_irradiance_chroma_rgb = {0.91f, 0.53f, 0.37f};
+    sources.live_sun_tint_rgb = {1.2f, 0.6f, 1.7f};
+    sources.live_sky_tint_rgb = {0.4f, 1.5f, 0.8f};
+    sources.sun_multiplier = 1.3f;
+    sources.sky_multiplier = 0.7f;
+    sources.sky_irradiance_multiplier = 1.6f;
+    sources.day_ambient_multiplier = 0.25f;
+    sources.twilight_ambient_multiplier = 1.0f;
+    sources.sunset_direct_ratio = 0.25f;
+    sources.elevation_deg = 5.0f;
+
+    const matter::ResolvedAtmosphereLighting resolved =
+        matter::resolve_atmosphere_lighting(sources);
+    CHECK(resolved.atmospheric_direct_base_rgb.x == 0.31f &&
+              resolved.atmospheric_direct_base_rgb.y == 0.47f &&
+              resolved.atmospheric_direct_base_rgb.z == 0.83f,
+          "resolver preserves the committed atmospheric direct base");
+    CHECK(resolved.direct_base_rgb.x == 0.31f * 1.2f * 1.3f &&
+              resolved.direct_base_rgb.y == 0.47f * 0.6f * 1.3f &&
+              resolved.direct_base_rgb.z == 0.83f * 1.7f * 1.3f,
+          "direct base applies the live sun tint and multiplier component-wise");
+    CHECK(resolved.sun_disc_rgb.x == resolved.direct_base_rgb.x &&
+              resolved.sun_disc_rgb.y == resolved.direct_base_rgb.y &&
+              resolved.sun_disc_rgb.z == resolved.direct_base_rgb.z,
+          "analytic disc presentation uses the untapered direct base");
+    CHECK(resolved.direct_world_ratio == 0.25f &&
+              resolved.direct_world_sun_rgb.x == resolved.direct_base_rgb.x * 0.5f &&
+              resolved.direct_world_sun_rgb.y == resolved.direct_base_rgb.y * 0.5f &&
+              resolved.direct_world_sun_rgb.z == resolved.direct_base_rgb.z * 0.5f,
+          "direct-world RGB normalizes atmospheric attenuation to noon luminance");
+    CHECK(resolved.direct_world_sun_rgb.x / resolved.direct_base_rgb.x ==
+                  resolved.direct_world_sun_rgb.y / resolved.direct_base_rgb.y &&
+              resolved.direct_world_sun_rgb.y / resolved.direct_base_rgb.y ==
+                  resolved.direct_world_sun_rgb.z / resolved.direct_base_rgb.z,
+          "noon normalization preserves the current atmospheric sunset chroma");
+    CHECK(resolved.sky_display_modifier_rgb.x == 0.23f * 0.7f * 0.4f &&
+              resolved.sky_display_modifier_rgb.y == 0.41f * 0.7f * 1.5f &&
+              resolved.sky_display_modifier_rgb.z == 0.79f * 0.7f * 0.8f,
+          "visible-sky modifier uses only display chroma, multiplier, and tint");
+    CHECK(resolved.sky_irradiance_modifier_rgb.x == 0.91f * 1.6f * 0.25f &&
+              resolved.sky_irradiance_modifier_rgb.y == 0.53f * 1.6f * 0.25f &&
+              resolved.sky_irradiance_modifier_rgb.z == 0.37f * 1.6f * 0.25f,
+          "post-9SH modifier uses only irradiance chroma, multiplier, and ambient ratio");
+
+    struct IndependenceFixture {
+        std::array<matter::Float3, 9> irradiance_sh{};
+        matter::ResolvedAtmosphereLighting lighting{};
+        float exposure_ev = -1.25f;
+    } baseline{};
+    for (size_t i = 0; i < baseline.irradiance_sh.size(); ++i)
+        baseline.irradiance_sh[i] = {0.01f * static_cast<float>(i + 1),
+                                     0.02f * static_cast<float>(i + 1),
+                                     0.03f * static_cast<float>(i + 1)};
+    baseline.lighting = resolved;
+
+    IndependenceFixture display_changed = baseline;
+    matter::AtmosphereLightingSources display_sources = sources;
+    display_sources.authored_display_sky_chroma_rgb = {1.7f, 0.2f, 0.6f};
+    display_sources.sky_multiplier = 3.0f;
+    display_sources.live_sky_tint_rgb = {0.5f, 1.25f, 2.0f};
+    display_changed.lighting = matter::resolve_atmosphere_lighting(display_sources);
+    CHECK(std::memcmp(display_changed.irradiance_sh.data(),
+                      baseline.irradiance_sh.data(),
+                      sizeof(baseline.irradiance_sh)) == 0 &&
+              std::memcmp(&display_changed.lighting.sky_irradiance_modifier_rgb,
+                          &baseline.lighting.sky_irradiance_modifier_rgb,
+                          sizeof(matter::Float3)) == 0 &&
+              std::memcmp(&display_changed.lighting.direct_world_ratio,
+                          &baseline.lighting.direct_world_ratio,
+                          sizeof(float)) == 0 &&
+              std::memcmp(&display_changed.lighting.direct_world_sun_rgb,
+                          &baseline.lighting.direct_world_sun_rgb,
+                          sizeof(matter::Float3)) == 0 &&
+              std::memcmp(&display_changed.exposure_ev, &baseline.exposure_ev,
+                          sizeof(float)) == 0,
+          "display-only edits leave SH, irradiance, direct world, and exposure bytes unchanged");
+
+    matter::AtmosphereLightingSources irradiance_sources = sources;
+    irradiance_sources.authored_irradiance_chroma_rgb = {0.2f, 1.4f, 0.9f};
+    irradiance_sources.sky_irradiance_multiplier = 3.1f;
+    irradiance_sources.day_ambient_multiplier = 0.8f;
+    irradiance_sources.twilight_ambient_multiplier = 2.2f;
+    const auto irradiance_changed =
+        matter::resolve_atmosphere_lighting(irradiance_sources);
+    CHECK(std::memcmp(&irradiance_changed.sky_display_modifier_rgb,
+                      &baseline.lighting.sky_display_modifier_rgb,
+                      sizeof(matter::Float3)) == 0,
+          "irradiance-only edits leave visible background, miss, and reflection RGB unchanged");
+}
+
+void test_direct_world_noon_normalization_rejects_invalid_luminance() {
+    matter::AtmosphereLightingSources sources{};
+    sources.atmospheric_direct_base_rgb = {0.3f, 0.2f, 0.1f};
+    sources.atmospheric_noon_direct_base_rgb = {0.9f, 0.8f, 0.7f};
+    sources.elevation_deg = 5.0f;
+    CHECK(matter::resolve_atmosphere_lighting(sources).direct_world_sun_rgb.x >
+              0.0f,
+          "finite positive current and noon luminance publishes world sun");
+    sources.atmospheric_noon_direct_base_rgb = {};
+    const auto zero_noon = matter::resolve_atmosphere_lighting(sources);
+    CHECK(zero_noon.direct_world_sun_rgb.x == 0.0f &&
+              zero_noon.direct_world_sun_rgb.y == 0.0f &&
+              zero_noon.direct_world_sun_rgb.z == 0.0f,
+          "nonpositive noon luminance zeros world sun");
+    sources.atmospheric_noon_direct_base_rgb = {0.9f, 0.8f, 0.7f};
+    sources.atmospheric_direct_base_rgb = {};
+    const auto zero_current = matter::resolve_atmosphere_lighting(sources);
+    CHECK(zero_current.direct_world_sun_rgb.x == 0.0f &&
+              zero_current.direct_world_sun_rgb.y == 0.0f &&
+              zero_current.direct_world_sun_rgb.z == 0.0f,
+          "nonpositive current luminance zeros world sun");
+}
+
+void test_twilight_uses_evaluated_sh_without_a_constant_floor() {
+    matter::AtmosphereLightingSources sources{};
+    sources.authored_irradiance_chroma_rgb = {0.8f, 0.6f, 0.4f};
+    sources.elevation_deg = -5.0f;
+    const auto twilight = matter::resolve_atmosphere_lighting(sources);
+    const matter::Float3 upward_sh{0.16f, 0.11f, 0.07f};
+    const matter::Float3 receiver{
+        upward_sh.x * twilight.sky_irradiance_modifier_rgb.x,
+        upward_sh.y * twilight.sky_irradiance_modifier_rgb.y,
+        upward_sh.z * twilight.sky_irradiance_modifier_rgb.z};
+    CHECK(twilight.direct_world_ratio == 0.0f && receiver.x > 0.0f &&
+              receiver.y > 0.0f && receiver.z > 0.0f,
+          "-5 degree twilight has zero direct light but positive SH receiver and fog input");
+
+    sources.elevation_deg = -12.0f;
+    sources.authored_irradiance_chroma_rgb = {};
+    const auto dark = matter::resolve_atmosphere_lighting(sources);
+    CHECK(dark.sky_irradiance_modifier_rgb.x == 0.0f &&
+              dark.sky_irradiance_modifier_rgb.y == 0.0f &&
+              dark.sky_irradiance_modifier_rgb.z == 0.0f,
+          "-12 degree ambient path injects no constant floor when evaluated SH input is black");
+}
+
+void test_atmosphere_history_decisions_are_narrow() {
+    const auto full = matter::atmosphere_history_decision(
+        matter::kAtmosphereChangeNone, true);
+    CHECK(full.reset_diffuse_gi && !full.reset_reflection_miss &&
+              full.reset_volumetric,
+          "a successful atmosphere commit resets diffuse GI and volumetrics only");
+    const auto display = matter::atmosphere_history_decision(
+        matter::kAtmosphereChangeDisplay, false);
+    CHECK(!display.reset_diffuse_gi && display.reset_reflection_miss &&
+              !display.reset_volumetric,
+          "visible-sky edits reset reflection/miss history only");
+    const auto direct = matter::atmosphere_history_decision(
+        matter::kAtmosphereChangeDirect, false);
+    CHECK(direct.reset_diffuse_gi && !direct.reset_reflection_miss &&
+              direct.reset_volumetric,
+          "direct-world edits reset diffuse GI and volumetrics only");
+    const auto irradiance = matter::atmosphere_history_decision(
+        matter::kAtmosphereChangeIrradiance, false);
+    CHECK(irradiance.reset_diffuse_gi && !irradiance.reset_reflection_miss &&
+              irradiance.reset_volumetric,
+          "irradiance edits reset diffuse GI and volumetrics only");
+    const auto inert = matter::atmosphere_history_decision(
+        matter::kAtmosphereChangeExposure | matter::kAtmosphereChangeShadow,
+        false);
+    CHECK(!inert.reset_diffuse_gi && !inert.reset_reflection_miss &&
+              !inert.reset_volumetric,
+          "exposure and shadow-sample edits reset no lighting histories");
+}
+
 } // namespace
 
 int main() {
@@ -182,5 +393,10 @@ int main() {
     test_direct_sun_vector_uses_engine_sun_direction_convention();
     test_elevated_observer_extends_the_direct_sun_horizon();
     test_direct_sun_rgb_applies_all_authored_modifiers_once();
+    test_atmosphere_lighting_curves_are_exact_continuous_and_bounded();
+    test_atmosphere_lighting_resolution_is_componentwise_and_independent();
+    test_direct_world_noon_normalization_rejects_invalid_luminance();
+    test_twilight_uses_evaluated_sh_without_a_constant_floor();
+    test_atmosphere_history_decisions_are_narrow();
     return check_summary();
 }

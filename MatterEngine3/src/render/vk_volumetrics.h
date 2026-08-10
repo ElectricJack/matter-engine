@@ -128,6 +128,10 @@ public:
                                          matter::Float4& media,
                                          float& cloud_density,
                                          std::string& error);
+    bool readback_integrated_voxel_for_test(uint32_t x, uint32_t y,
+                                            uint32_t z,
+                                            matter::Float4& integrated,
+                                            std::string& error);
     // Whether volumetrics is currently active (enabled + ray query available).
     bool active() const { return enabled_ && ray_query_available_; }
 
@@ -158,16 +162,14 @@ private:
         uint32_t frame_index;
         float sun_dir[3];
         float sun_intensity;
-        float sun_color[3];
         float phase_g;
-        float sky_color[3];
         float temporal_blend;
         uint32_t history_valid;
         float camera_near;
         float camera_far;
-        float pad2;
+        float pad[3];
     };
-    static_assert(sizeof(ScatterConstants) == 208);
+    static_assert(sizeof(ScatterConstants) == 192);
 
     bool create_noise_texture(matter::VulkanDevice& vulkan, std::string& error);
     struct FroxelBundle {
@@ -285,8 +287,6 @@ private:
     // Lighting state (set externally before record).
     float sun_direction_[3] = {-0.45f, -0.80f, -0.35f};
     float sun_intensity_ = 1.0f;
-    float sun_color_[3] = {2.2f, 2.05f, 1.8f};
-    float sky_color_[3] = {0.38f, 0.43f, 0.52f};
 
 public:
     // Set lighting state that the scatter pass needs.

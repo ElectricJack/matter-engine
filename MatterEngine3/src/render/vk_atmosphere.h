@@ -3,7 +3,9 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <array>
 #include <string>
+#include <vector>
 
 #include "matter/atmosphere.h"
 #include "matter/math_types.h"
@@ -15,17 +17,52 @@ class VulkanDevice;
 
 namespace viewer {
 
+struct AtmosphereRequest {
+    matter::AtmosphereSettings settings{};
+    float camera_world_y = 0.0f;
+    matter::Float3 normalized_to_sun{0.0f, 1.0f, 0.0f};
+    matter::Float3 authored_sun_rgb{1.0f, 1.0f, 1.0f};
+};
+
+struct AtmosphereCommittedState {
+    matter::AtmosphereSettings settings{};
+    matter::Float3 normalized_to_sun{0.0f, 1.0f, 0.0f};
+    float camera_world_y = 0.0f;
+    std::array<matter::Float3, 9> irradiance_sh{};
+    matter::Float3 atmospheric_direct_base_rgb{};
+    matter::Float3 atmospheric_noon_direct_base_rgb{};
+    uint64_t generation_serial = 0;
+};
+
 // Owns the physical atmosphere lookup textures.  Task 6 deliberately stops at
 // producing these immutable resources; production lighting consumers bind them
 // in Task 7.
 class VkAtmosphere {
 public:
+    struct Candidate {
+        matter::VkImageResource transmittance;
+        matter::VkImageResource multiscatter;
+        matter::VkImageResource sky_view;
+        matter::VkImageResource irradiance_sh;
+        AtmosphereCommittedState state{};
+        bool valid = false;
+    };
     bool init(matter::VulkanDevice&, std::string& error);
     void request_settings(const matter::AtmosphereSettings&);
     bool record(VkCommandBuffer, float camera_world_y,
                 const matter::Float3& to_sun, std::string& error);
     const matter::VkImageResource& sky_view() const;
     const matter::VkImageResource& irradiance_sh() const;
+    const matter::VkImageResource& transmittance() const;
+    const matter::VkImageResource& multiscatter() const;
+    void force_regeneration() noexcept { has_committed_settings_ = false; }
+    bool build_candidate(const AtmosphereRequest&, Candidate&,
+                         std::string& error);
+    void commit_candidate(Candidate&&, uint32_t protected_frame_slot);
+    void discard_candidate(Candidate&) noexcept;
+    const AtmosphereCommittedState& committed_state() const noexcept {
+        return committed_state_snapshot_;
+    }
     matter::Float3 direct_sun_transmittance(float camera_world_y,
                                              const matter::Float3& to_sun) const;
     bool readback_transmittance_for_test(matter::VulkanDevice&,
@@ -45,6 +82,14 @@ private:
     static constexpr uint32_t kIrradianceSize = 3;
 
     bool create_images(matter::VulkanDevice&, std::string& error);
+    bool create_candidate_images(Candidate&, std::string& error);
+    void update_compute_descriptors(matter::VkImageResource& transmittance,
+                                    matter::VkImageResource& multiscatter,
+                                    matter::VkImageResource& sky_view,
+                                    matter::VkImageResource& irradiance);
+    bool readback_irradiance(matter::VkImageResource&,
+                             std::array<matter::Float3, 9>&,
+                             std::string& error);
     bool create_pipelines(matter::VulkanDevice&, std::string& error);
     bool initialize_emergency(matter::VulkanDevice&, std::string& error);
     bool coefficient_change_pending() const;
@@ -83,6 +128,15 @@ private:
     bool has_committed_settings_ = false;
     bool physical_selected_ = false;
     bool generated_this_frame_ = false;
+    AtmosphereCommittedState committed_state_snapshot_{};
+    struct RetiredLuts {
+        matter::VkImageResource transmittance;
+        matter::VkImageResource multiscatter;
+        matter::VkImageResource sky_view;
+        matter::VkImageResource irradiance;
+        uint32_t protected_frame_slot = 0;
+    };
+    std::vector<RetiredLuts> retired_luts_;
 };
 
 }  // namespace viewer

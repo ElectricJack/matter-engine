@@ -961,12 +961,6 @@ void VkVolumetrics::set_lighting(const VkSceneLighting& lighting) {
     sun_direction_[1] = lighting.sun_direction.y;
     sun_direction_[2] = lighting.sun_direction.z;
     sun_intensity_ = lighting.sun_intensity;
-    sun_color_[0] = lighting.sun_color.x;
-    sun_color_[1] = lighting.sun_color.y;
-    sun_color_[2] = lighting.sun_color.z;
-    sky_color_[0] = lighting.sky_color.x;
-    sky_color_[1] = lighting.sky_color.y;
-    sky_color_[2] = lighting.sky_color.z;
 }
 
 // ---------------------------------------------------------------------------
@@ -1226,13 +1220,7 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     scatter_pc.sun_dir[1] = sun_direction_[1];
     scatter_pc.sun_dir[2] = sun_direction_[2];
     scatter_pc.sun_intensity = sun_intensity_;
-    scatter_pc.sun_color[0] = sun_color_[0];
-    scatter_pc.sun_color[1] = sun_color_[1];
-    scatter_pc.sun_color[2] = sun_color_[2];
     scatter_pc.phase_g = phase_g_;
-    scatter_pc.sky_color[0] = sky_color_[0];
-    scatter_pc.sky_color[1] = sky_color_[1];
-    scatter_pc.sky_color[2] = sky_color_[2];
     scatter_pc.temporal_blend = temporal_blend_;
     scatter_pc.history_valid = has_prev_matrices_ ? 1u : 0u;
     last_scatter_history_was_valid_ = scatter_pc.history_valid != 0;
@@ -1241,7 +1229,6 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
                              (matrices.view_to_clip.m[10] + 1.0f);
     scatter_pc.camera_far = matrices.view_to_clip.m[11] /
                             matrices.view_to_clip.m[10];
-    scatter_pc.pad2 = 0.0f;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, scatter_pipeline_);
     const VkDescriptorSet scatter_sets[] = {
@@ -1426,6 +1413,69 @@ bool VkVolumetrics::readback_density_voxel_for_test(
     media = {half_to_float(values[0]), half_to_float(values[1]),
              half_to_float(values[2]), half_to_float(values[3])};
     cloud_density = half_to_float(values[4]);
+    return true;
+}
+
+bool VkVolumetrics::readback_integrated_voxel_for_test(
+    uint32_t x, uint32_t y, uint32_t z, matter::Float4& integrated,
+    std::string& error) {
+    if (!vulkan_ || !active()) {
+        error = "volumetric integrated image is unavailable";
+        return false;
+    }
+    const auto& dimensions = active_bundle_.dimensions;
+    if (x >= dimensions.width || y >= dimensions.height ||
+        z >= dimensions.depth) {
+        error = "integrated readback coordinate is outside the froxel grid";
+        return false;
+    }
+    matter::VkBufferResource readback;
+    if (!matter::create_buffer(*vulkan_, 8, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                               readback, error) ||
+        !matter::map_buffer(readback, error)) {
+        return false;
+    }
+    struct ReadbackRequest {
+        matter::VkImageResource* image;
+        VkBuffer destination;
+        uint32_t x, y, z;
+    } request{&active_bundle_.integrated, readback.buffer, x, y, z};
+    const auto copy = [](VkCommandBuffer cmd, void* data) {
+        const auto& request = *static_cast<ReadbackRequest*>(data);
+        matter::record_image_transition(
+            cmd, *request.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageOffset = {static_cast<int32_t>(request.x),
+                              static_cast<int32_t>(request.y),
+                              static_cast<int32_t>(request.z)};
+        region.imageExtent = {1, 1, 1};
+        vkCmdCopyImageToBuffer(cmd, request.image->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               request.destination, 1, &region);
+        matter::record_image_transition(
+            cmd, *request.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    };
+    if (!matter::submit_immediate(
+            *vulkan_, copy, &request, error,
+            matter::ImmediateSubmitPhase::staging_readback,
+            {active_bundle_.integrated.lifetime, readback.lifetime}) ||
+        !matter::invalidate_buffer(readback, 0, 8, error)) {
+        return false;
+    }
+    const auto* values = static_cast<const uint16_t*>(readback.mapped);
+    integrated = {half_to_float(values[0]), half_to_float(values[1]),
+                  half_to_float(values[2]), half_to_float(values[3])};
     return true;
 }
 

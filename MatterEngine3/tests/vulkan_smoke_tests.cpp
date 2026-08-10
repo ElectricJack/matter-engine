@@ -4,6 +4,7 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -33,6 +34,7 @@
 #include "render/vk_volumetrics.h"
 #include "render/vk_atmosphere.h"
 #include "render/vk_cloud_shadows.h"
+#include "matter/atmosphere_lighting.h"
 #include "provider/sector_resolver.h"
 #include "tileset_gtex.h"
 #include "../../MatterEditor/src/ui.h"
@@ -43,6 +45,13 @@
 namespace {
 
 bool close4(matter::Float4 actual, matter::Float4 expected, float epsilon);
+
+constexpr std::array<float, 6> kAtmosphereGpuElevations{
+    90.0f, 45.0f, 5.0f, 0.0f, -5.0f, -12.0f};
+constexpr std::array<float, 6> kAtmosphereGpuRatios{
+    1.0f, 1.0f, 0.25f, 0.0f, 0.0f, 0.0f};
+std::array<matter::Float3, 6> g_atmosphere_raster_direct_rgb{};
+bool g_atmosphere_raster_direct_valid = false;
 
 static matter::Float3 aces_reference(matter::Float3 hdr, float exposure_ev) {
     const float scale = std::exp2(exposure_ev);
@@ -976,6 +985,271 @@ void run_atmosphere_lut_smoke(matter::VulkanDevice& vulkan) {
     atmosphere.destroy();
 }
 
+void test_atmosphere_lighting_control_sanitization() {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    matter::VulkanLightingOverrides invalid{};
+    invalid.day_ambient_multiplier = nan;
+    invalid.twilight_ambient_multiplier = inf;
+    invalid.sky_irradiance_multiplier = -inf;
+    invalid.sunset_direct_ratio = nan;
+    invalid.sun_elevation_deg = inf;
+    const auto fallback = viewer::sanitize_vulkan_lighting_overrides(invalid);
+    CHECK(fallback.day_ambient_multiplier == 0.25f &&
+              fallback.twilight_ambient_multiplier == 1.0f &&
+              fallback.sky_irradiance_multiplier == 1.0f &&
+              fallback.sunset_direct_ratio == 0.25f,
+          "atmosphere lighting controls use their exact non-finite fallbacks");
+    const matter::VulkanLightingOverrides defaults{};
+    CHECK(fallback.sun_elevation_deg == defaults.sun_elevation_deg,
+          "sun elevation keeps its established non-finite fallback");
+
+    matter::VulkanLightingOverrides outside{};
+    outside.day_ambient_multiplier = -1.0f;
+    outside.twilight_ambient_multiplier = 9.0f;
+    outside.sky_irradiance_multiplier = 8.0f;
+    outside.sunset_direct_ratio = 2.0f;
+    outside.sun_elevation_deg = -120.0f;
+    const auto clamped = viewer::sanitize_vulkan_lighting_overrides(outside);
+    CHECK(clamped.day_ambient_multiplier == 0.0f &&
+              clamped.twilight_ambient_multiplier == 4.0f &&
+              clamped.sky_irradiance_multiplier == 4.0f &&
+              clamped.sunset_direct_ratio == 1.0f &&
+              clamped.sun_elevation_deg == -90.0f,
+          "atmosphere lighting and elevation controls clamp to exact ranges");
+}
+
+bool same_atmosphere_handles(const viewer::AtmosphereLutHandles& a,
+                             const viewer::AtmosphereLutHandles& b) {
+    return std::memcmp(a.images.data(), b.images.data(), sizeof(a.images)) == 0 &&
+           std::memcmp(a.views.data(), b.views.data(), sizeof(a.views)) == 0;
+}
+
+bool same_committed_atmosphere(const viewer::ResolvedAtmosphereStatus& a,
+                               const viewer::ResolvedAtmosphereStatus& b) {
+    return a.generation_serial == b.generation_serial &&
+           std::memcmp(&a.normalized_to_sun, &b.normalized_to_sun,
+                       sizeof(matter::Float3)) == 0 &&
+           std::memcmp(a.irradiance_sh.data(), b.irradiance_sh.data(),
+                       sizeof(a.irradiance_sh)) == 0 &&
+           std::memcmp(&a.atmospheric_direct_base_rgb,
+                       &b.atmospheric_direct_base_rgb,
+                       sizeof(matter::Float3)) == 0 &&
+           std::memcmp(&a.atmospheric_noon_direct_base_rgb,
+                       &b.atmospheric_noon_direct_base_rgb,
+                       sizeof(matter::Float3)) == 0;
+}
+
+void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
+    std::string error;
+    viewer::AtmosphereCommittedState committed_abi{};
+    CHECK(committed_abi.atmospheric_noon_direct_base_rgb.x == 0.0f,
+          "committed atmosphere state exposes the noon direct reference ABI");
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "initialize atmosphere transaction renderer"
+                        : error.c_str());
+    if (!error.empty()) return;
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.0f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, 16, 16, matrices, error),
+          error.empty() ? "build atmosphere transaction matrices"
+                        : error.c_str());
+
+    const auto prepare_once = [&](std::string& observed_error) {
+        observed_error.clear();
+        matter::VulkanFrame frame{};
+        if (!vulkan.begin_frame(frame, observed_error)) return false;
+        const bool prepared = renderer.prepare_frame(
+            frame, matrices, camera.position, 1.0f, observed_error);
+        const std::string prepare_error = observed_error;
+        std::string end_error;
+        const bool ended = vulkan.end_frame(frame, end_error);
+        renderer.finish_ray_tracing_frame(frame.serial, prepared && ended);
+        vulkan.wait_idle();
+        if (!prepared) observed_error = prepare_error;
+        else if (!ended) observed_error = end_error;
+        return prepared && ended;
+    };
+
+    viewer::VkSceneLighting baseline_lighting{};
+    baseline_lighting.sun_direction = {0.0f, -1.0f, 0.0f};
+    baseline_lighting.authored_sun_rgb = {0.9f, 0.7f, 0.5f};
+    baseline_lighting.atmosphere_sources.authored_display_sky_chroma_rgb =
+        {0.7f, 0.8f, 0.9f};
+    baseline_lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+        {0.7f, 0.8f, 0.9f};
+    renderer.set_atmosphere_settings({});
+    renderer.set_lighting(baseline_lighting);
+    CHECK(prepare_once(error),
+          error.empty() ? "commit baseline atmosphere transaction"
+                        : error.c_str());
+    const auto baseline_status = renderer.test_resolved_atmosphere_status();
+    const auto baseline_handles = renderer.test_atmosphere_lut_handles();
+    const auto baseline_histories = renderer.test_atmosphere_history_counters();
+    CHECK(baseline_status.generation_serial == 1 &&
+              baseline_histories.diffuse_gi == 1 &&
+              baseline_histories.reflection_miss == 0 &&
+              baseline_histories.volumetric == 1,
+          "baseline atmosphere commit advances serial and narrow histories once");
+
+    matter::AtmosphereSettings pending{};
+    pending.mie_scale = 1.25f;
+    renderer.set_atmosphere_settings(pending);
+    renderer.test_fail_next_atmosphere_generation();
+    CHECK(!prepare_once(error) &&
+              error.find("injected atmosphere generation failure") !=
+                  std::string::npos,
+          "candidate generation failure is reported precisely");
+    const auto generation_no_edit_handles = renderer.test_atmosphere_lut_handles();
+    const auto generation_no_edit_status = renderer.test_resolved_atmosphere_status();
+    const auto generation_no_edit_histories = renderer.test_atmosphere_history_counters();
+    CHECK(same_atmosphere_handles(baseline_handles, generation_no_edit_handles) &&
+              std::memcmp(&baseline_status, &generation_no_edit_status,
+                          sizeof(baseline_status)) == 0 &&
+              std::memcmp(&baseline_histories, &generation_no_edit_histories,
+                          sizeof(baseline_histories)) == 0,
+          "generation failure without a live edit preserves the complete transaction");
+
+    renderer.test_fail_next_atmosphere_descriptor_publication();
+    CHECK(!prepare_once(error) &&
+              error.find("injected atmosphere descriptor publication failure") !=
+                  std::string::npos,
+          "candidate descriptor publication failure is reported precisely");
+    const auto publication_no_edit_status =
+        renderer.test_resolved_atmosphere_status();
+    const auto publication_no_edit_histories =
+        renderer.test_atmosphere_history_counters();
+    const auto publication_no_edit_handles = renderer.test_atmosphere_lut_handles();
+    CHECK(same_atmosphere_handles(baseline_handles,
+                                  publication_no_edit_handles) &&
+              std::memcmp(&baseline_status, &publication_no_edit_status,
+                          sizeof(baseline_status)) == 0 &&
+              std::memcmp(&baseline_histories, &publication_no_edit_histories,
+                          sizeof(baseline_histories)) == 0,
+          "publication failure without a live edit preserves the complete transaction");
+
+    const auto make_replay = [&](float scale) {
+        viewer::VkSceneLighting value = baseline_lighting;
+        value.atmosphere_sources.live_sun_tint_rgb =
+            {0.4f * scale, 0.7f, 1.3f};
+        value.atmosphere_sources.sun_multiplier = 1.2f * scale;
+        value.atmosphere_sources.authored_display_sky_chroma_rgb =
+            {0.2f, 1.1f * scale, 0.6f};
+        value.atmosphere_sources.sky_multiplier = 1.4f * scale;
+        value.atmosphere_sources.live_sky_tint_rgb = {1.5f, 0.3f, 0.8f};
+        value.atmosphere_sources.authored_irradiance_chroma_rgb =
+            {1.2f, 0.5f * scale, 0.9f};
+        value.atmosphere_sources.sky_irradiance_multiplier = 1.8f * scale;
+        value.atmosphere_sources.day_ambient_multiplier = 0.4f * scale;
+        value.atmosphere_sources.twilight_ambient_multiplier = 1.3f * scale;
+        value.atmosphere_sources.sunset_direct_ratio = 0.35f * scale;
+        value.emission_multiplier = 0.6f * scale;
+        value.sun_angular_diameter_deg = 0.8f * scale;
+        value.sun_shadow_samples = scale < 1.1f ? 5 : 7;
+        return value;
+    };
+    const auto assert_failure_replay = [&](
+        const viewer::ResolvedAtmosphereStatus& value,
+        const viewer::VkSceneLighting& live, const char* message) {
+        matter::AtmosphereLightingSources expected_sources =
+            live.atmosphere_sources;
+        expected_sources.atmospheric_direct_base_rgb =
+            baseline_status.atmospheric_direct_base_rgb;
+        expected_sources.atmospheric_noon_direct_base_rgb =
+            baseline_status.atmospheric_noon_direct_base_rgb;
+        expected_sources.elevation_deg = baseline_status.resolved_elevation_deg;
+        const auto expected = matter::resolve_atmosphere_lighting(expected_sources);
+        CHECK(same_committed_atmosphere(baseline_status, value) &&
+                  std::memcmp(&value.direct_base_rgb, &expected.direct_base_rgb,
+                              sizeof(matter::Float3)) == 0 &&
+                  value.direct_world_ratio == expected.direct_world_ratio &&
+                  std::memcmp(&value.direct_world_sun_rgb,
+                              &expected.direct_world_sun_rgb,
+                              sizeof(matter::Float3)) == 0 &&
+                  std::memcmp(&value.sun_disc_rgb, &expected.sun_disc_rgb,
+                              sizeof(matter::Float3)) == 0 &&
+                  value.sky_ambient_ratio == expected.sky_ambient_ratio &&
+                  std::memcmp(&value.sky_display_modifier_rgb,
+                              &expected.sky_display_modifier_rgb,
+                              sizeof(matter::Float3)) == 0 &&
+                  std::memcmp(&value.sky_irradiance_modifier_rgb,
+                              &expected.sky_irradiance_modifier_rgb,
+                              sizeof(matter::Float3)) == 0,
+              message);
+    };
+
+    const viewer::VkSceneLighting generation_replay = make_replay(1.0f);
+    renderer.set_lighting(generation_replay);
+    renderer.set_display_exposure(1.25f);
+    renderer.test_fail_next_atmosphere_generation();
+    const auto before_generation_replay =
+        renderer.test_atmosphere_history_counters();
+    CHECK(!prepare_once(error),
+          "generation replay fixture observes the injected failure");
+    assert_failure_replay(renderer.test_resolved_atmosphere_status(),
+                          generation_replay,
+                          "generation failure replays every current live constant over the old physical state");
+    const auto after_generation_replay =
+        renderer.test_atmosphere_history_counters();
+    CHECK(after_generation_replay.diffuse_gi ==
+                  before_generation_replay.diffuse_gi + 1 &&
+              after_generation_replay.reflection_miss ==
+                  before_generation_replay.reflection_miss + 1 &&
+              after_generation_replay.volumetric ==
+                  before_generation_replay.volumetric + 1,
+          "combined generation-failure replay applies the union of narrow resets once");
+
+    renderer.set_atmosphere_settings({});
+    renderer.set_lighting(baseline_lighting);
+    renderer.set_display_exposure(-2.0f);
+    CHECK(prepare_once(error),
+          error.empty() ? "restore constants without regenerating atmosphere"
+                        : error.c_str());
+    renderer.set_atmosphere_settings(pending);
+    const viewer::VkSceneLighting publication_replay = make_replay(1.2f);
+    renderer.set_lighting(publication_replay);
+    renderer.set_display_exposure(2.0f);
+    renderer.test_fail_next_atmosphere_descriptor_publication();
+    const auto before_publication_replay =
+        renderer.test_atmosphere_history_counters();
+    CHECK(!prepare_once(error),
+          "publication replay fixture observes the injected failure");
+    assert_failure_replay(renderer.test_resolved_atmosphere_status(),
+                          publication_replay,
+                          "publication failure replays every current live constant over the old physical state");
+    const auto after_publication_replay =
+        renderer.test_atmosphere_history_counters();
+    CHECK(after_publication_replay.diffuse_gi ==
+                  before_publication_replay.diffuse_gi + 1 &&
+              after_publication_replay.reflection_miss ==
+                  before_publication_replay.reflection_miss + 1 &&
+              after_publication_replay.volumetric ==
+                  before_publication_replay.volumetric + 1,
+          "combined publication-failure replay applies the union of narrow resets once");
+
+    const auto before_success = renderer.test_atmosphere_history_counters();
+    const uint64_t serial_before_success =
+        renderer.test_resolved_atmosphere_status().generation_serial;
+    CHECK(prepare_once(error),
+          error.empty() ? "commit successful candidate after failure replay"
+                        : error.c_str());
+    const auto after_success = renderer.test_atmosphere_history_counters();
+    CHECK(renderer.test_resolved_atmosphere_status().generation_serial ==
+                  serial_before_success + 1 &&
+              after_success.diffuse_gi == before_success.diffuse_gi + 1 &&
+              after_success.reflection_miss == before_success.reflection_miss &&
+              after_success.volumetric == before_success.volumetric + 1,
+          "successful candidate advances serial, diffuse GI, and volumetrics exactly once");
+}
+
 void test_atmosphere_irradiance_dispatch_contract() {
     std::ifstream shader("MatterEngine3/shaders_vk/atmosphere_irradiance.comp",
                          std::ios::binary);
@@ -1793,7 +2067,8 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
 
     viewer::VkSceneLighting dark{};
     dark.sun_intensity = 0.0f;
-    dark.sky_color = {0.0f, 0.0f, 0.0f};
+    dark.atmosphere_sources.authored_display_sky_chroma_rgb = {};
+    dark.atmosphere_sources.authored_irradiance_chroma_rgb = {};
     renderer.set_lighting(dark);
     CHECK(renderer.render_gbuffer_and_composite(width, height, error),
           error.empty() ? "render authored dark lighting" : error.c_str());
@@ -1845,7 +2120,10 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           error.empty() ? "restore emission 5 before authored bright sky"
                         : error.c_str());
     viewer::VkSceneLighting bright = dark;
-    bright.sky_color = {2.0f, 2.0f, 2.0f};
+    bright.atmosphere_sources.authored_display_sky_chroma_rgb =
+        {2.0f, 2.0f, 2.0f};
+    bright.atmosphere_sources.authored_irradiance_chroma_rgb =
+        {2.0f, 2.0f, 2.0f};
     renderer.set_lighting(bright);
     CHECK(renderer.render_gbuffer_and_composite(width, height, error),
           error.empty() ? "render authored bright sky" : error.c_str());
@@ -1885,8 +2163,8 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
         viewer::VkRasterPixel direct_on{};
         viewer::VkRasterPixel direct_off{};
         viewer::VkRasterPixel sky{};
+        viewer::ResolvedAtmosphereStatus status{};
     };
-    const matter::AtmosphereSettings physical_atmosphere{};
     const auto render_atmosphere_case = [&](float elevation_deg,
                                             AtmosphereRasterCase& result) {
         const matter::Float3 to_sun =
@@ -1895,11 +2173,14 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
         // VkSceneLighting stores the engine convention (sun -> scene), while
         // the physical helpers above first construct to_sun.
         lighting.sun_direction = {-to_sun.x, -to_sun.y, -to_sun.z};
-        lighting.sun_color = matter::atmosphere_direct_sun_rgb(
-            physical_atmosphere, camera.position.y, lighting.sun_direction,
-            {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f}, 1.0f);
+        lighting.authored_sun_rgb = {1.0f, 1.0f, 1.0f};
         lighting.sun_intensity = 1.0f;
-        lighting.sky_color = {1.0f, 1.0f, 1.0f};
+        lighting.atmosphere_sources.authored_display_sky_chroma_rgb =
+            {1.0f, 1.0f, 1.0f};
+        lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+            {1.0f, 1.0f, 1.0f};
+        lighting.atmosphere_sources.sun_multiplier = 1.0f;
+        lighting.atmosphere_sources.sky_multiplier = 1.0f;
         renderer.set_lighting(lighting);
         CHECK(renderer.render_gbuffer_and_composite(width, height, error),
               error.empty() ? "render physical-atmosphere direct-on case"
@@ -1909,6 +2190,7 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
                   renderer.readback_raster_pixel(4, 4, result.sky, error),
               error.empty() ? "read physical-atmosphere direct-on pixels"
                             : error.c_str());
+        result.status = renderer.test_resolved_atmosphere_status();
 
         lighting.sun_intensity = 0.0f;
         renderer.set_lighting(lighting);
@@ -1918,12 +2200,20 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
               error.empty() ? "read physical-atmosphere direct-off receiver"
                             : error.c_str());
     };
-    AtmosphereRasterCase noon{};
-    AtmosphereRasterCase low_sun{};
-    AtmosphereRasterCase twilight{};
-    render_atmosphere_case(90.0f, noon);
-    render_atmosphere_case(5.0f, low_sun);
-    render_atmosphere_case(-5.0f, twilight);
+    AtmosphereRasterCase atmosphere_cases[6]{};
+    for (size_t index = 0; index < 6; ++index) {
+        render_atmosphere_case(kAtmosphereGpuElevations[index],
+                               atmosphere_cases[index]);
+        CHECK(std::fabs(atmosphere_cases[index].status.direct_world_ratio -
+                        kAtmosphereGpuRatios[index]) <= 1.0e-6f,
+              "GPU-published direct-world ratio matches its exact elevation anchor");
+        g_atmosphere_raster_direct_rgb[index] =
+            atmosphere_cases[index].status.direct_world_sun_rgb;
+    }
+    g_atmosphere_raster_direct_valid = true;
+    const AtmosphereRasterCase& noon = atmosphere_cases[0];
+    const AtmosphereRasterCase& low_sun = atmosphere_cases[2];
+    const AtmosphereRasterCase& twilight = atmosphere_cases[4];
     const auto finite_hdr = [](const viewer::VkRasterPixel& pixel) {
         return std::isfinite(pixel.hdr.x) && std::isfinite(pixel.hdr.y) &&
                std::isfinite(pixel.hdr.z) && std::isfinite(pixel.hdr.w);
@@ -1956,6 +2246,17 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     CHECK(noon_direct > low_sun_direct && low_sun_direct > 1e-4f &&
               twilight_direct < 1e-4f,
           "GPU direct sun is positive/dimmer near the horizon and zero below it");
+    for (size_t index = 3; index < 6; ++index) {
+        CHECK(atmosphere_cases[index].direct_on.hdr.x ==
+                  atmosphere_cases[index].direct_off.hdr.x &&
+                  atmosphere_cases[index].direct_on.hdr.y ==
+                  atmosphere_cases[index].direct_off.hdr.y &&
+                  atmosphere_cases[index].direct_on.hdr.z ==
+                  atmosphere_cases[index].direct_off.hdr.z,
+              "raster direct contribution is exactly zero at and below the horizon");
+    }
+    CHECK(rgb_luma(twilight.direct_off) > 1.0e-4f,
+          "-5 degree upward receiver remains positively lit by evaluated SH");
     const float noon_blue = std::max(noon.direct_on.hdr.z -
                                          noon.direct_off.hdr.z,
                                      1e-5f);
@@ -6382,7 +6683,8 @@ static void rt_scenario_gi_history_resets(RtPathContext& ctx) {
         const uint64_t lighting_reset_baseline =
             renderer.test_gi_history_reset_count();
         viewer::VkSceneLighting changed_source = lighting;
-        changed_source.sky_color.x *= 0.5f;
+        changed_source.atmosphere_sources.authored_irradiance_chroma_rgb.x *=
+            0.5f;
         renderer.set_lighting(changed_source);
         CHECK(render_temporal_control(247, false, false) &&
                   renderer.test_gi_history_reset_count() ==
@@ -6447,32 +6749,62 @@ static void rt_scenario_gi_history_resets(RtPathContext& ctx) {
         const float emission_strength =
             std::exp2(std::min(composite_pixel.normal.w,
                                viewer::kVkMaxEncodedEmission)) - 1.0f;
-        // Mirror sky_common.glsl's sky_irradiance(): the ambient term is not
-        // the flat sky color, it is scaled by a hemispherical factor keyed on
-        // the shading normal, mix(0.2, 1.0, normal.y * 0.5 + 0.5). This model
-        // used the flat color, which only agreed while the sky was uniform.
-        const float sky_irradiance_scale =
-            0.2f + 0.8f * std::clamp(composite_pixel.normal.y * 0.5f + 0.5f,
-                                     0.0f, 1.0f);
+        const auto atmosphere_status =
+            renderer.test_resolved_atmosphere_status();
+        const matter::Float3 normal{composite_pixel.normal.x,
+                                    composite_pixel.normal.y,
+                                    composite_pixel.normal.z};
+        const auto sh_basis = [&](size_t index) {
+            if (index == 0) return 0.282095f;
+            if (index == 1) return 0.488603f * normal.y;
+            if (index == 2) return 0.488603f * normal.z;
+            if (index == 3) return 0.488603f * normal.x;
+            if (index == 4) return 1.092548f * normal.x * normal.y;
+            if (index == 5) return 1.092548f * normal.y * normal.z;
+            if (index == 6)
+                return 0.315392f * (3.0f * normal.z * normal.z - 1.0f);
+            if (index == 7) return 1.092548f * normal.x * normal.z;
+            return 0.546274f *
+                   (normal.x * normal.x - normal.y * normal.y);
+        };
+        matter::Float3 sky_irradiance{};
+        for (size_t index = 0; index < 9; ++index) {
+            const float band = index == 0 ? 3.14159265359f
+                               : index < 4 ? 2.0f * 3.14159265359f / 3.0f
+                                           : 3.14159265359f / 4.0f;
+            const float scale = sh_basis(index) * band;
+            sky_irradiance.x += atmosphere_status.irradiance_sh[index].x * scale;
+            sky_irradiance.y += atmosphere_status.irradiance_sh[index].y * scale;
+            sky_irradiance.z += atmosphere_status.irradiance_sh[index].z * scale;
+        }
+        sky_irradiance.x = std::max(0.0f, sky_irradiance.x) *
+                           atmosphere_status.sky_irradiance_modifier_rgb.x;
+        sky_irradiance.y = std::max(0.0f, sky_irradiance.y) *
+                           atmosphere_status.sky_irradiance_modifier_rgb.y;
+        sky_irradiance.z = std::max(0.0f, sky_irradiance.z) *
+                           atmosphere_status.sky_irradiance_modifier_rgb.z;
         const matter::Float3 expected_composite{
-            composite_pixel.albedo.x * diffuse_scale * lighting.sky_color.x *
-                    sky_irradiance_scale * composite_pixel.orm.z +
-                composite_pixel.albedo.x * diffuse_scale * lighting.sun_color.x *
-                    sun_base * composite_pixel.visibility.x +
+            composite_pixel.albedo.x * diffuse_scale * sky_irradiance.x *
+                    composite_pixel.orm.z +
+                composite_pixel.albedo.x * diffuse_scale * sun_base *
+                    atmosphere_status.direct_world_sun_rgb.x *
+                    composite_pixel.visibility.x +
                 composite_pixel.albedo.x * emission_strength +
                 composite_pixel.accumulated_diffuse.x +
                 composite_pixel.accumulated_specular.x,
-            composite_pixel.albedo.y * diffuse_scale * lighting.sky_color.y *
-                    sky_irradiance_scale * composite_pixel.orm.z +
-                composite_pixel.albedo.y * diffuse_scale * lighting.sun_color.y *
-                    sun_base * composite_pixel.visibility.y +
+            composite_pixel.albedo.y * diffuse_scale * sky_irradiance.y *
+                    composite_pixel.orm.z +
+                composite_pixel.albedo.y * diffuse_scale * sun_base *
+                    atmosphere_status.direct_world_sun_rgb.y *
+                    composite_pixel.visibility.y +
                 composite_pixel.albedo.y * emission_strength +
                 composite_pixel.accumulated_diffuse.y +
                 composite_pixel.accumulated_specular.y,
-            composite_pixel.albedo.z * diffuse_scale * lighting.sky_color.z *
-                    sky_irradiance_scale * composite_pixel.orm.z +
-                composite_pixel.albedo.z * diffuse_scale * lighting.sun_color.z *
-                    sun_base * composite_pixel.visibility.z +
+            composite_pixel.albedo.z * diffuse_scale * sky_irradiance.z *
+                    composite_pixel.orm.z +
+                composite_pixel.albedo.z * diffuse_scale * sun_base *
+                    atmosphere_status.direct_world_sun_rgb.z *
+                    composite_pixel.visibility.z +
                 composite_pixel.albedo.z * emission_strength +
                 composite_pixel.accumulated_diffuse.z +
                 composite_pixel.accumulated_specular.z};
@@ -6515,8 +6847,9 @@ static void rt_scenario_gi_history_resets(RtPathContext& ctx) {
                                                viewer::VkRasterPixel& emitter,
                                                viewer::VkRasterPixel& receiver) {
             viewer::VkSceneLighting isolated = lighting;
-            isolated.sun_color = {};
-            isolated.sky_color = {};
+            isolated.authored_sun_rgb = {};
+            isolated.atmosphere_sources.authored_display_sky_chroma_rgb = {};
+            isolated.atmosphere_sources.authored_irradiance_chroma_rgb = {};
             isolated.emission_multiplier = multiplier;
             renderer.set_lighting(isolated);
             const bool rendered = render_temporal_control(attempt_token);
@@ -7735,6 +8068,294 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         rt_scenario_secondary_sun_visibility(ctx);
         rt_scenario_mirror_specular(ctx);
         rt_scenario_baked_ao_and_gi_disable(ctx);
+    }
+
+}
+
+void run_atmosphere_real_gpu_gate(matter::VulkanDevice& vulkan) {
+    constexpr uint32_t width = 160;
+    constexpr uint32_t height = 160;
+    std::string error;
+
+    viewer::VkSceneRenderer raster(vulkan);
+    std::vector<MaterialGpuRecord> materials(8);
+    materials[7].base_roughness[0] = 0.7f;
+    materials[7].base_roughness[1] = 0.7f;
+    materials[7].base_roughness[2] = 0.7f;
+    materials[7].base_roughness[3] = 0.6f;
+    materials[7].metal_opacity_spec_coat[1] = 1.0f;
+    materials[7].scattering_shape[3] = 1.0f;
+    const viewer::VkScenePart triangle = known_raster_triangle(990);
+    CHECK(raster.update_materials(materials, 1, 1, error) &&
+              raster.ensure_part(triangle, error) >= 0 &&
+              raster.update_instances({{990, identity_matrix()}}, error),
+          error.empty() ? "prepare atmosphere raster GPU gate"
+                        : error.c_str());
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, width, height, matrices,
+                                       error) &&
+              raster.dispatch_culling(matrices, camera.position, 1.0f,
+                                      error),
+          error.empty() ? "build atmosphere raster GPU gate matrices"
+                        : error.c_str());
+    for (size_t index = 0; index < kAtmosphereGpuElevations.size(); ++index) {
+        const matter::Float3 to_sun =
+            matter::atmosphere_to_sun_from_elevation_deg(
+                kAtmosphereGpuElevations[index]);
+        viewer::VkSceneLighting lighting{};
+        lighting.sun_direction = {-to_sun.x, -to_sun.y, -to_sun.z};
+        lighting.authored_sun_rgb = {1.0f, 1.0f, 1.0f};
+        lighting.atmosphere_sources.authored_display_sky_chroma_rgb =
+            {1.0f, 1.0f, 1.0f};
+        lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+            {1.0f, 1.0f, 1.0f};
+        lighting.atmosphere_sources.sun_multiplier = 1.0f;
+        lighting.atmosphere_sources.sky_multiplier = 1.0f;
+        raster.set_lighting(lighting);
+        viewer::VkRasterPixel direct_on{};
+        viewer::VkRasterPixel direct_off{};
+        CHECK(raster.render_gbuffer_and_composite(width, height, error) &&
+                  raster.readback_raster_pixel(width / 2, height / 2,
+                                               direct_on, error),
+              error.empty() ? "render atmosphere raster direct-on frame"
+                            : error.c_str());
+        const auto status = raster.test_resolved_atmosphere_status();
+        g_atmosphere_raster_direct_rgb[index] =
+            status.direct_world_sun_rgb;
+        const float published_luma =
+            0.2126f * status.direct_world_sun_rgb.x +
+            0.7152f * status.direct_world_sun_rgb.y +
+            0.0722f * status.direct_world_sun_rgb.z;
+        const float noon_luma = index == 0
+                                    ? published_luma
+                                    : 0.2126f * g_atmosphere_raster_direct_rgb[0].x +
+                                          0.7152f * g_atmosphere_raster_direct_rgb[0].y +
+                                          0.0722f * g_atmosphere_raster_direct_rgb[0].z;
+        const float expected_published_ratio = kAtmosphereGpuRatios[index];
+        CHECK(noon_luma > 0.0f &&
+                  std::fabs(published_luma / noon_luma -
+                            expected_published_ratio) <= 2.0e-3f,
+              "raster published world-sun luminance ratio matches its exact elevation anchor");
+        if (index == 0 || index == 2)
+            std::printf("atmosphere published direct e=%.0f luma=%.9f rgb=%.9f %.9f %.9f\n",
+                        kAtmosphereGpuElevations[index], published_luma,
+                        status.direct_world_sun_rgb.x,
+                        status.direct_world_sun_rgb.y,
+                        status.direct_world_sun_rgb.z);
+        CHECK(std::fabs(status.direct_world_ratio -
+                        kAtmosphereGpuRatios[index]) <= 1.0e-6f,
+              "raster publishes the exact direct-world elevation ratio");
+        lighting.sun_intensity = 0.0f;
+        raster.set_lighting(lighting);
+        CHECK(raster.render_gbuffer_and_composite(width, height, error) &&
+                  raster.readback_raster_pixel(width / 2, height / 2,
+                                               direct_off, error),
+              error.empty() ? "render atmosphere raster direct-off frame"
+                            : error.c_str());
+        if (index == 0 || index == 2) {
+            const matter::Float3 receiver_direct{
+                direct_on.hdr.x - direct_off.hdr.x,
+                direct_on.hdr.y - direct_off.hdr.y,
+                direct_on.hdr.z - direct_off.hdr.z};
+            const float receiver_luma = 0.2126f * receiver_direct.x +
+                                        0.7152f * receiver_direct.y +
+                                        0.0722f * receiver_direct.z;
+            std::printf("atmosphere receiver direct e=%.0f luma=%.9f rgb=%.9f %.9f %.9f\n",
+                        kAtmosphereGpuElevations[index], receiver_luma,
+                        receiver_direct.x, receiver_direct.y,
+                        receiver_direct.z);
+        }
+        if (index >= 3) {
+            CHECK(direct_on.hdr.x == direct_off.hdr.x &&
+                      direct_on.hdr.y == direct_off.hdr.y &&
+                      direct_on.hdr.z == direct_off.hdr.z,
+                  "raster direct contribution is exactly zero at and below the horizon");
+        }
+        if (index == 4) {
+            CHECK(direct_off.hdr.x > 1.0e-4f ||
+                      direct_off.hdr.y > 1.0e-4f ||
+                      direct_off.hdr.z > 1.0e-4f,
+                  "-5 degree raster receiver remains positive from evaluated SH");
+        }
+    }
+    g_atmosphere_raster_direct_valid = true;
+
+    CHECK(vulkan.ray_tracing_available(),
+          vulkan.ray_tracing_available()
+              ? "native ray tracing available for atmosphere ratio gate"
+              : vulkan.ray_tracing_unavailable_reason().c_str());
+    if (!vulkan.ray_tracing_available()) return;
+    viewer::VkSceneRenderer native(vulkan);
+    CHECK(native.init(error),
+          error.empty() ? "initialize atmosphere native-RT GPU gate"
+                        : error.c_str());
+    viewer::VkSceneLighting native_lighting{};
+    matter::VulkanRayTracingSettings enabled{};
+    matter::VulkanGiSettings gi{};
+    viewer::FrameMatrices native_matrices{};
+    matter::CameraDesc native_camera{};
+    viewer::TemporalFrame temporal{};
+    std::vector<MaterialGpuRecord> native_materials;
+    uint32_t retry_x = 0, retry_y = 0;
+    bool receiver_seen = false;
+    float minimum_visibility = 1.0f, maximum_visibility = 0.0f;
+    float receiver_min_visibility = 1.0f, receiver_max_visibility = 0.0f;
+    const auto& properties = vulkan.ray_tracing_properties();
+    RtPathContext ctx{vulkan, properties, error, native, native_lighting,
+                      enabled, gi, native_matrices, native_camera, temporal,
+                      native_materials, retry_x, retry_y, receiver_seen,
+                      minimum_visibility, maximum_visibility,
+                      receiver_min_visibility, receiver_max_visibility};
+    rt_scenario_shadow_contract(ctx);
+    for (size_t index = 0; index < kAtmosphereGpuElevations.size(); ++index) {
+        const matter::Float3 to_sun =
+            matter::atmosphere_to_sun_from_elevation_deg(
+                kAtmosphereGpuElevations[index]);
+        native_lighting.sun_direction = {-to_sun.x, -to_sun.y, -to_sun.z};
+        native_lighting.sun_intensity = 1.0f;
+        native_lighting.authored_sun_rgb = {1.0f, 1.0f, 1.0f};
+        native_lighting.atmosphere_sources.authored_display_sky_chroma_rgb =
+            {1.0f, 1.0f, 1.0f};
+        native_lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+            {1.0f, 1.0f, 1.0f};
+        native_lighting.atmosphere_sources.sun_multiplier = 1.0f;
+        native_lighting.atmosphere_sources.sky_multiplier = 1.0f;
+        native.set_lighting(native_lighting);
+        temporal.reset = true;
+        temporal.attempt_token = 1000 + index;
+        native.set_temporal_frame(temporal);
+        matter::VulkanFrame frame{};
+        const bool rendered =
+            vulkan.begin_frame(frame, error) &&
+            native.prepare_frame(frame, native_matrices,
+                                 native_camera.position, 1.0f, error) &&
+            native.record_cull_and_render(frame, native_matrices,
+                                          native_camera.position, 1.0f,
+                                          error) &&
+            native.record_composite_to_swapchain(frame, error) &&
+            vulkan.end_frame(frame, error);
+        CHECK(rendered,
+              error.empty() ? "render atmosphere native-RT ratio frame"
+                            : error.c_str());
+        if (!rendered) break;
+        native.finish_ray_tracing_frame(frame.serial, true);
+        vulkan.wait_idle();
+        const auto status = native.test_resolved_atmosphere_status();
+        const matter::Float3 raster_rgb =
+            g_atmosphere_raster_direct_rgb[index];
+        const float native_luma =
+            0.2126f * status.direct_world_sun_rgb.x +
+            0.7152f * status.direct_world_sun_rgb.y +
+            0.0722f * status.direct_world_sun_rgb.z;
+        const float noon_luma =
+            0.2126f * g_atmosphere_raster_direct_rgb[0].x +
+            0.7152f * g_atmosphere_raster_direct_rgb[0].y +
+            0.0722f * g_atmosphere_raster_direct_rgb[0].z;
+        CHECK(native.rt_effective_observed() &&
+                  native.rt_trace_dispatches_observed() > 0 &&
+                  std::fabs(status.direct_world_ratio -
+                            kAtmosphereGpuRatios[index]) <= 1.0e-6f,
+              "native RT dispatch consumes the exact direct-world ratio");
+        CHECK(noon_luma > 0.0f &&
+                  std::fabs(native_luma / noon_luma -
+                            kAtmosphereGpuRatios[index]) <= 2.0e-3f,
+              "native RT published world-sun luminance ratio matches its exact elevation anchor");
+        CHECK(std::fabs(status.direct_world_sun_rgb.x - raster_rgb.x) <=
+                      2.0e-3f &&
+                  std::fabs(status.direct_world_sun_rgb.y - raster_rgb.y) <=
+                      2.0e-3f &&
+                  std::fabs(status.direct_world_sun_rgb.z - raster_rgb.z) <=
+                      2.0e-3f,
+              "raster and native RT resolved direct RGB agree channel-wise");
+        if (index >= 3) {
+            CHECK(status.direct_world_sun_rgb.x == 0.0f &&
+                      status.direct_world_sun_rgb.y == 0.0f &&
+                      status.direct_world_sun_rgb.z == 0.0f,
+                  "native RT direct RGB is exactly zero at and below the horizon");
+        }
+        if (index == 4) {
+            bool positive_receiver = false;
+            for (uint32_t y = 20; y < 200 && !positive_receiver; y += 20) {
+                for (uint32_t x = 20; x < 320; x += 20) {
+                    viewer::VkRasterPixel pixel{};
+                    if (native.readback_raster_pixel(x, y, pixel, error) &&
+                        pixel.material_index < 2u &&
+                        (pixel.hdr.x > 1.0e-4f || pixel.hdr.y > 1.0e-4f ||
+                         pixel.hdr.z > 1.0e-4f)) {
+                        positive_receiver = true;
+                        break;
+                    }
+                }
+            }
+            CHECK(positive_receiver,
+                  "-5 degree native RT receiver/fog remains positive from evaluated SH");
+        }
+    }
+
+    matter::VulkanVolumetricsSettings twilight_volume{};
+    twilight_volume.enabled = true;
+    twilight_volume.froxel_xy_scale = matter::FroxelXyScale::X0_5;
+    twilight_volume.froxel_depth_slices = matter::FroxelDepthSlices::D64;
+    matter::FogSettings twilight_fog{};
+    twilight_fog.density = 0.01f;
+    twilight_fog.floor = -10000.0f;
+    twilight_fog.falloff = 100000.0f;
+    twilight_fog.color[0] = 1.0f;
+    twilight_fog.color[1] = 1.0f;
+    twilight_fog.color[2] = 1.0f;
+    native.set_volumetrics_settings(twilight_volume, twilight_fog);
+    const matter::Float3 twilight_to_sun =
+        matter::atmosphere_to_sun_from_elevation_deg(-5.0f);
+    native_lighting.sun_direction = {-twilight_to_sun.x,
+                                     -twilight_to_sun.y,
+                                     -twilight_to_sun.z};
+    native_lighting.sun_intensity = 1.0f;
+    native.set_lighting(native_lighting);
+    temporal.reset = true;
+    temporal.attempt_token = 2000;
+    native.set_temporal_frame(temporal);
+    matter::VulkanFrame fog_frame{};
+    const bool fog_rendered =
+        vulkan.begin_frame(fog_frame, error) &&
+        native.prepare_frame(fog_frame, native_matrices,
+                             native_camera.position, 1.0f, error) &&
+        native.record_cull_and_render(fog_frame, native_matrices,
+                                      native_camera.position, 1.0f, error) &&
+        native.record_composite_to_swapchain(fog_frame, error) &&
+        vulkan.end_frame(fog_frame, error);
+    CHECK(fog_rendered,
+          error.empty() ? "render -5 degree native-RT twilight fog frame"
+                        : error.c_str());
+    if (fog_rendered) {
+        native.finish_ray_tracing_frame(fog_frame.serial, true);
+        vulkan.wait_idle();
+        const auto dimensions = native.volumetrics_dimensions();
+        bool positive_fog = false;
+        for (uint32_t y = dimensions.height / 2; y < dimensions.height / 2 + 2;
+             ++y) {
+            for (uint32_t x = dimensions.width / 2;
+                 x < dimensions.width / 2 + 2; ++x) {
+                matter::Float4 integrated{};
+                if (native.readback_volumetrics_integrated_voxel_for_test(
+                        x, y, dimensions.depth - 1, integrated, error) &&
+                    std::isfinite(integrated.x) &&
+                    std::isfinite(integrated.y) &&
+                    std::isfinite(integrated.z) &&
+                    (integrated.x > 1.0e-4f || integrated.y > 1.0e-4f ||
+                     integrated.z > 1.0e-4f)) {
+                    positive_fog = true;
+                }
+            }
+        }
+        CHECK(positive_fog,
+              "-5 degree volumetric fog remains positive from evaluated SH");
     }
 }
 
@@ -10084,9 +10705,12 @@ int main() {
             return check_summary();
         }
         if (smoke_mode && std::string(smoke_mode) == "atmosphere") {
+            test_atmosphere_lighting_control_sanitization();
             test_atmosphere_irradiance_dispatch_contract();
             run_atmosphere_lut_smoke(*vulkan);
             run_atmosphere_presentation_sampling_tests(*vulkan);
+            run_atmosphere_transaction_failure_tests(*vulkan);
+            run_atmosphere_real_gpu_gate(*vulkan);
             std::printf("validation errors: %u\n", vulkan->validation_error_count());
             finish_vulkan_test(vulkan);
             if (window) glfwDestroyWindow(window);

@@ -7482,16 +7482,6 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             animation_skin_queue_pending_seal = true;
         }
     }
-    {
-        // Parent of the pf.* zones; the gap between this and their sum is
-        // prepare_frame's own unscoped work.
-        PROFILE_SCOPE("build.prepare_frame");
-        if (!impl_->vk_scene->prepare_frame(frame, matrices, cam.position,
-                                            budget, err)) {
-            impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
-            return false;
-        }
-    }
     viewer::VkSceneLighting lighting{};
     const auto controls =
         viewer::sanitize_vulkan_lighting_overrides(opts.vulkan_lighting);
@@ -7544,17 +7534,33 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // helper deliberately consumes that convention and performs the one
     // required negation internally; passing `to_sun` here would light the
     // below-horizon sun as if it were overhead.
-    lighting.sun_color = atmosphere_direct_sun_rgb(
-        opts.atmosphere, cam.position.y, lighting.sun_direction,
-        {impl_->manifest.lights.sun_color[0],
-         impl_->manifest.lights.sun_color[1],
-         impl_->manifest.lights.sun_color[2]},
-        {controls.sun_tint[0], controls.sun_tint[1], controls.sun_tint[2]},
-        controls.sun_multiplier);
-    lighting.sky_color = {
-        impl_->manifest.lights.sky_color[0] * controls.sky_multiplier * controls.sky_tint[0],
-        impl_->manifest.lights.sky_color[1] * controls.sky_multiplier * controls.sky_tint[1],
-        impl_->manifest.lights.sky_color[2] * controls.sky_multiplier * controls.sky_tint[2]};
+    lighting.authored_sun_rgb = {impl_->manifest.lights.sun_color[0],
+                                 impl_->manifest.lights.sun_color[1],
+                                 impl_->manifest.lights.sun_color[2]};
+    const matter::Float3 authored_sky{
+        impl_->manifest.lights.sky_color[0],
+        impl_->manifest.lights.sky_color[1],
+        impl_->manifest.lights.sky_color[2]};
+    lighting.atmosphere_sources.authored_display_sky_chroma_rgb = authored_sky;
+    lighting.atmosphere_sources.authored_irradiance_chroma_rgb = authored_sky;
+    lighting.atmosphere_sources.live_sun_tint_rgb =
+        {controls.sun_tint[0], controls.sun_tint[1], controls.sun_tint[2]};
+    lighting.atmosphere_sources.live_sky_tint_rgb =
+        {controls.sky_tint[0], controls.sky_tint[1], controls.sky_tint[2]};
+    lighting.atmosphere_sources.sun_multiplier = controls.sun_multiplier;
+    lighting.atmosphere_sources.sky_multiplier = controls.sky_multiplier;
+    lighting.atmosphere_sources.sky_irradiance_multiplier =
+        controls.sky_irradiance_multiplier;
+    lighting.atmosphere_sources.day_ambient_multiplier =
+        controls.day_ambient_multiplier;
+    lighting.atmosphere_sources.twilight_ambient_multiplier =
+        controls.twilight_ambient_multiplier;
+    lighting.atmosphere_sources.sunset_direct_ratio =
+        controls.sunset_direct_ratio;
+    float resolved_azimuth = 0.0f;
+    sun_angles_from_direction(lighting.sun_direction, resolved_azimuth,
+                              lighting.atmosphere_sources.elevation_deg);
+    lighting.sun_shadow_samples = controls.sun_shadow_samples;
     lighting.emission_multiplier = controls.emission_multiplier;
     lighting.vol_enabled = opts.volumetrics.enabled ? 1.0f : 0.0f;
     lighting.vol_debug_view = opts.volumetrics.vol_debug_view;
@@ -7564,6 +7570,16 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->vk_scene->set_lighting(lighting);
     impl_->vk_scene->set_display_exposure(controls.exposure_ev);
     impl_->vk_scene->set_composite_debug_view(controls.composite_debug_view);
+    {
+        // The atmosphere transaction consumes the current live lighting, so
+        // publish those inputs before selecting this completed frame slot.
+        PROFILE_SCOPE("build.prepare_frame");
+        if (!impl_->vk_scene->prepare_frame(frame, matrices, cam.position,
+                                            budget, err)) {
+            impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
+            return false;
+        }
+    }
     z_build.stop();
     const auto build_end = std::chrono::steady_clock::now();
     const auto draw_start = std::chrono::steady_clock::now();

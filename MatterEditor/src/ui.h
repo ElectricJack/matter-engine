@@ -116,6 +116,8 @@ struct ViewerStats {
     // longer writes a switch-request flag — it issues ViewerCommands::switch_world
     // (index into the enumerated worlds list) instead.
     int      world_current = 0;
+    // Includes independent visible-sky, post-9SH ambient, world-sun and disc
+    // presentation controls; reset/reload always replaces the whole snapshot.
     matter::VulkanLightingOverrides lighting{};
     matter::AtmosphereSettings atmosphere{};
     matter::VulkanVolumetricsSettings volumetrics{};

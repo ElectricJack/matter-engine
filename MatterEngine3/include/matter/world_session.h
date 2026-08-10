@@ -12,6 +12,7 @@
 #include "matter/world_definition.h"
 #include "matter/streaming.h"
 #include "matter/sun_angles.h"  // kSunAngularDiameterDefaultDeg + the convention
+#include "matter/atmosphere_lighting.h"
 #include "matter/vulkan_device.h"
 #include "render/vk_gi_contract.h"
 #include "part_graph_snapshot.h"
@@ -54,67 +55,6 @@ enum class ResolverKind { SectorLod, PassThrough };
 enum class DlssMode : uint8_t { Native, Quality, Balanced, Performance };
 
 const char* dlss_mode_name(DlssMode mode) noexcept;
-
-struct VulkanLightingOverrides {
-    // sun/sky are the 2026-07-30 tuning pass (both were 1.0): a hotter key
-    // against a dimmer sky is what separates lit slope from shadowed slope
-    // once the terrain is mostly one gray rock material. These are the values
-    // the viewer's "Reset to World" button restores.
-    float sun_multiplier = 1.67f;
-    float sky_multiplier = 0.77f;
-    float emission_multiplier = 1.0f;
-    float exposure_ev = -2.0f;
-    float composite_debug_view = 0.0f;
-    // Per-channel tint on the AUTHORED sun/sky colour, applied component-wise
-    // at exactly the same point as the scalar multiplier above (see
-    // matter_engine.cpp, where VkSceneLighting::sun_color / sky_color are
-    // assembled from the manifest). Everything downstream — the composite
-    // push constant, the RT/GI constants and the volumetric scatter pass —
-    // reads those two colours, so a tint reaches direct light, GI and
-    // in-scattering together and cannot desync them.
-    //
-    // White is a BIT-EXACT no-op (x * 1.0f == x), which is what lets these
-    // exist without perturbing any golden/reference rendering.
-    //
-    // Appended after composite_debug_view on purpose: several call sites
-    // aggregate-initialize the first four members positionally
-    // ({sun, sky, emission, exposure}); the NSDMIs below keep those valid.
-    float sun_tint[3] = {1.0f, 1.0f, 1.0f};
-    float sky_tint[3] = {1.0f, 1.0f, 1.0f};
-
-    // --- Sun orientation and size ------------------------------------------
-    // WHERE the sun is, as the two angles a person actually thinks in, rather
-    // than as the Float3 that is duplicated down five layers. matter/sun_angles
-    // .h owns the conversion AND the convention (light vector points FROM the
-    // sun TOWARD the scene, so elevation +90 is (0,-1,0)) — read it before
-    // touching either number.
-    //
-    // These are only consulted when RenderOptions::use_sun_override is set,
-    // which the editor turns on once it has SEEDED them from what the world
-    // authored. Every other caller (headless tests, the replay harness, the
-    // Part Workbench's isolation session) leaves the flag false and keeps
-    // getting the world's authored sun_direction byte-for-byte, which is what
-    // keeps a default render pixel-identical to a pre-override build.
-    //
-    // The defaults below are the angles of the engine-default light vector
-    // {-0.45,-0.80,-0.35}; sun_angles_tests.cpp pins them against the
-    // conversion so the two cannot drift apart.
-    float sun_azimuth_deg = 127.874985f;
-    float sun_elevation_deg = 54.525963f;
-    // Angular DIAMETER of the sun, degrees. Drives the sky disc, the RT
-    // reflection prefilter and the shadow-ray cone together (sun_angles.h
-    // explains the calibration that makes 0.53 reproduce the three magic
-    // constants those three used to carry). Also world-authorable —
-    // WorldSettings::sun_angular_diameter_deg.
-    float sun_angular_diameter_deg = kSunAngularDiameterDefaultDeg;
-    // Shadow rays per pixel. Lives here rather than in VulkanRayTracingSettings
-    // because it is inseparable from the field above: rt_shadow.rgen collapses
-    // the cone to a single hard ray when this is 1 (the shipped default and the
-    // reason today's shadows are crisp), so enlarging the sun does nothing
-    // visible to shadows until this is raised. One knob would have been nicer;
-    // one knob that silently multiplies GPU cost would have been worse.
-    int32_t sun_shadow_samples = 1;
-};
 
 struct RenderOptions {
     RenderPath   path     = RenderPath::GpuDriven;

@@ -1,5 +1,5 @@
 #pragma once
-#include "matter/world_session.h"
+#include "matter/atmosphere_lighting.h"
 
 namespace viewer {
 matter::VulkanLightingOverrides sanitize_vulkan_lighting_overrides(

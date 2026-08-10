@@ -58,6 +58,26 @@ const auto s_lighting = matter::props::group<matter::VulkanLightingOverrides>(
     prop(&matter::VulkanLightingOverrides::sky_tint, "sky_tint")
         .label("Sky tint").color()
         .doc("Per-channel tint on the authored sky colour. White = unchanged."),
+    prop(&matter::VulkanLightingOverrides::day_ambient_multiplier,
+         "day_ambient_multiplier")
+        .label("Day ambient").range(0.0f, 4.0f)
+        .env("MATTER_DAY_AMBIENT_MULTIPLIER")
+        .doc("Physical irradiance at e >= +5 deg. Visible sky does not change ambient."),
+    prop(&matter::VulkanLightingOverrides::twilight_ambient_multiplier,
+         "twilight_ambient_multiplier")
+        .label("Twilight ambient").range(0.0f, 4.0f)
+        .env("MATTER_TWILIGHT_AMBIENT_MULTIPLIER")
+        .doc("Physical irradiance at e <= -6 deg. Ambient does not recolour the visible sky."),
+    prop(&matter::VulkanLightingOverrides::sky_irradiance_multiplier,
+         "sky_irradiance_multiplier")
+        .label("Sky irradiance").range(0.0f, 4.0f)
+        .env("MATTER_SKY_IRRADIANCE_MULTIPLIER")
+        .doc("Post-9SH physical ambient multiplier; independent of visible sky."),
+    prop(&matter::VulkanLightingOverrides::sunset_direct_ratio,
+         "sunset_direct_ratio")
+        .label("Sunset direct").range(0.0f, 1.0f)
+        .env("MATTER_SUNSET_DIRECT_RATIO")
+        .doc("Direct-world ratio at +5 deg. Sunset direct does not affect disc presentation."),
     // The four below carry MATTER_SUN_* env names (layer 5) for a reason
     // beyond convenience: the editor has no scriptable input on Windows (the
     // FIFO command path is POSIX-only), so an env override is the ONLY way to

@@ -8,6 +8,7 @@
 #include "../../MatterEditor/src/property_editor.h"
 #include "../../MatterEditor/src/streaming_lod_prefs.h"
 #include "matter/json_doc.h"
+#include "matter/atmosphere_lighting.h"
 #include "matter/world_definition.h"   // FogSettings — the render.fog group
 
 #include <cstring>
@@ -854,6 +855,131 @@ void test_physical_atmosphere_editor_source_contract() {
           "physical atmosphere: screenshot automation can focus Lighting without a FIFO command");
 }
 
+const auto& atmosphere_lighting_controls_schema() {
+    using V = matter::VulkanLightingOverrides;
+    static const auto group = props::group<V>(
+        "render.lighting", "Lighting",
+        props::prop(&V::sky_multiplier, "sky_multiplier")
+            .label("Sky").range(0.0f, 4.0f),
+        props::prop(&V::sky_tint, "sky_tint")
+            .label("Sky tint").color(),
+        props::prop(&V::day_ambient_multiplier, "day_ambient_multiplier")
+            .label("Day ambient").range(0.0f, 4.0f)
+            .env("MATTER_DAY_AMBIENT_MULTIPLIER")
+            .doc("Physical irradiance at e >= +5 deg. Visible sky does not change ambient."),
+        props::prop(&V::twilight_ambient_multiplier, "twilight_ambient_multiplier")
+            .label("Twilight ambient").range(0.0f, 4.0f)
+            .env("MATTER_TWILIGHT_AMBIENT_MULTIPLIER")
+            .doc("Physical irradiance at e <= -6 deg. Ambient does not recolour the visible sky."),
+        props::prop(&V::sky_irradiance_multiplier, "sky_irradiance_multiplier")
+            .label("Sky irradiance").range(0.0f, 4.0f)
+            .env("MATTER_SKY_IRRADIANCE_MULTIPLIER")
+            .doc("Post-9SH physical ambient multiplier; independent of visible sky."),
+        props::prop(&V::sunset_direct_ratio, "sunset_direct_ratio")
+            .label("Sunset direct").range(0.0f, 1.0f)
+            .env("MATTER_SUNSET_DIRECT_RATIO")
+            .doc("Direct-world ratio at +5 deg. Sunset direct does not affect disc presentation."));
+    return group;
+}
+
+const Desc& atmosphere_lighting_field(const char* name) {
+    const props::Group& group = atmosphere_lighting_controls_schema();
+    for (uint32_t i = 0; i < group.field_count; ++i)
+        if (std::strcmp(group.fields[i].name, name) == 0) return group.fields[i];
+    static Desc missing;
+    return missing;
+}
+
+void test_atmosphere_lighting_property_defaults_metadata_and_round_trip() {
+    VulkanLightingOverrides values{};
+    props::Registry registry;
+    props::Binding* binding = registry.get(registry.bind(
+        atmosphere_lighting_controls_schema(), &values, props::Scope::World));
+    CHECK(binding != nullptr, "new atmosphere lighting properties bind generically");
+
+    jsondoc::Value old_document;
+    CHECK(jsondoc::parse_json(
+              "{\"version\":1,\"groups\":{\"render.lighting\":{\"sky_multiplier\":1.25}}}",
+              old_document),
+          "old lighting JSON parses without any new keys");
+    props::load_scope(registry, props::Scope::World, old_document);
+    CHECK(values.day_ambient_multiplier == 0.25f &&
+              values.twilight_ambient_multiplier == 1.0f &&
+              values.sky_irradiance_multiplier == 1.0f &&
+              values.sunset_direct_ratio == 0.25f,
+          "old lighting JSON preserves all four backwards defaults");
+
+    struct Expected {
+        const char* name;
+        const char* label;
+        float minimum;
+        float maximum;
+        const char* environment;
+    };
+    constexpr Expected expected[] = {
+        {"day_ambient_multiplier", "Day ambient", 0.0f, 4.0f,
+         "MATTER_DAY_AMBIENT_MULTIPLIER"},
+        {"twilight_ambient_multiplier", "Twilight ambient", 0.0f, 4.0f,
+         "MATTER_TWILIGHT_AMBIENT_MULTIPLIER"},
+        {"sky_irradiance_multiplier", "Sky irradiance", 0.0f, 4.0f,
+         "MATTER_SKY_IRRADIANCE_MULTIPLIER"},
+        {"sunset_direct_ratio", "Sunset direct", 0.0f, 1.0f,
+         "MATTER_SUNSET_DIRECT_RATIO"},
+    };
+    for (const Expected& item : expected) {
+        const Desc& desc = atmosphere_lighting_field(item.name);
+        CHECK(viewer::prop_field_path(atmosphere_lighting_controls_schema(), desc) ==
+                  std::string("render.lighting.") + item.name,
+              "new atmosphere lighting property has its exact generic path");
+        CHECK(desc.label && std::strcmp(desc.label, item.label) == 0 &&
+                  desc.has_range && desc.min == item.minimum &&
+                  desc.max == item.maximum && desc.env &&
+                  std::strcmp(desc.env, item.environment) == 0,
+              "new atmosphere lighting property has exact label, range, and environment name");
+        CHECK((desc.flags & props::ReadOnly) == 0,
+              "new atmosphere lighting property remains live and editable");
+    }
+
+    CHECK(props::set_float(*binding,
+                           atmosphere_lighting_field("day_ambient_multiplier"),
+                           0.6f) &&
+              props::set_float(*binding,
+                               atmosphere_lighting_field("twilight_ambient_multiplier"),
+                               1.7f) &&
+              props::set_float(*binding,
+                               atmosphere_lighting_field("sky_irradiance_multiplier"),
+                               2.3f) &&
+              props::set_float(*binding,
+                               atmosphere_lighting_field("sunset_direct_ratio"),
+                               0.4f),
+          "all four atmosphere lighting properties edit through generic setters");
+    jsondoc::Value saved;
+    props::save_scope(registry, props::Scope::World, saved);
+    VulkanLightingOverrides restored{};
+    props::Registry restored_registry;
+    restored_registry.bind(atmosphere_lighting_controls_schema(), &restored,
+                           props::Scope::World);
+    props::load_scope(restored_registry, props::Scope::World, saved);
+    CHECK(restored.day_ambient_multiplier == 0.6f &&
+              restored.twilight_ambient_multiplier == 1.7f &&
+              restored.sky_irradiance_multiplier == 2.3f &&
+              restored.sunset_direct_ratio == 0.4f,
+          "all four atmosphere lighting properties round-trip generically");
+
+    const std::string props_source = [] {
+        std::ifstream in("../../MatterEditor/src/editor_props.cpp");
+        std::ostringstream out;
+        out << in.rdbuf();
+        return out.str();
+    }();
+    for (const char* statement : {
+             "Visible sky does not change ambient.",
+             "Ambient does not recolour the visible sky.",
+             "Sunset direct does not affect disc presentation."})
+        CHECK(props_source.find(statement) != std::string::npos,
+              "production lighting documentation states control independence explicitly");
+}
+
 }  // namespace
 
 int main() {
@@ -873,5 +999,6 @@ int main() {
     test_draw_override_baseline_rule();
     test_physical_atmosphere_quality_property_contract();
     test_physical_atmosphere_editor_source_contract();
+    test_atmosphere_lighting_property_defaults_metadata_and_round_trip();
     return check_summary();
 }

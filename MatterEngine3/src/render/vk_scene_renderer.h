@@ -20,6 +20,7 @@
 #include "frame_matrices.h"
 #include "matter/draw_overrides.h"  // per-module draw overrides (GPU lane)
 #include "matter/cloud_shadow_settings.h"
+#include "matter/atmosphere_lighting.h"
 #include "matter/render_debug.h"
 #include "gpu_matrix_pack.h"
 #include "matter/lod_contract.h"
@@ -58,6 +59,41 @@ namespace viewer {
 class VkVolumetrics;
 struct FroxelDispatchGrid;
 class VkAtmosphere;
+
+struct alignas(16) EnvironmentLightingGpu {
+    float direct_world_sun_ratio[4]{};
+    float sun_disc_reserved[4]{};
+    float sky_display_reserved[4]{};
+    float sky_irradiance_ambient_ratio[4]{};
+};
+static_assert(sizeof(EnvironmentLightingGpu) == 64);
+
+struct ResolvedAtmosphereStatus {
+    uint64_t generation_serial = 0;
+    float resolved_elevation_deg = 0.0f;
+    matter::Float3 normalized_to_sun{0.0f, 1.0f, 0.0f};
+    std::array<matter::Float3, 9> irradiance_sh{};
+    matter::Float3 atmospheric_direct_base_rgb{};
+    matter::Float3 atmospheric_noon_direct_base_rgb{};
+    float direct_world_ratio = 0.0f;
+    matter::Float3 direct_base_rgb{};
+    matter::Float3 direct_world_sun_rgb{};
+    matter::Float3 sun_disc_rgb{};
+    float sky_ambient_ratio = 0.0f;
+    matter::Float3 sky_display_modifier_rgb{};
+    matter::Float3 sky_irradiance_modifier_rgb{};
+};
+
+struct AtmosphereLutHandles {
+    std::array<VkImage, 4> images{};
+    std::array<VkImageView, 4> views{};
+};
+
+struct AtmosphereHistoryCounters {
+    uint64_t diffuse_gi = 0;
+    uint64_t reflection_miss = 0;
+    uint64_t volumetric = 0;
+};
 class VkCloudShadows;
 
 constexpr uint32_t kVkMaxLod =
@@ -640,9 +676,7 @@ struct VkSceneLighting {
     // Direction from the sun toward the scene, matching WorldLights.
     matter::Float3 sun_direction{-0.45f, -0.80f, -0.35f};
     float sun_intensity = 1.0f;
-    matter::Float3 sun_color{2.2f, 2.05f, 1.8f};
     float diffuse_rt_multiplier = 0.0f;
-    matter::Float3 sky_color{0.38f, 0.43f, 0.52f};
     float emission_multiplier = 1.0f;
     float debug_view = 0.0f;
     float camera_fwd_x = 0.0f;
@@ -671,11 +705,18 @@ struct VkSceneLighting {
     // few ULP at 0.9997 moves the visible edge of the disc.
     float sun_disc_cos_edge = 0.99975f;
     float sun_disc_cos_core = 0.99995f;
+    // CPU-only atmosphere transaction inputs; not part of the composite push
+    // prefix above.
+    matter::Float3 authored_sun_rgb{2.2f, 2.05f, 1.8f};
+    matter::AtmosphereLightingSources atmosphere_sources{
+        {}, {}, {0.38f, 0.43f, 0.52f}, {0.38f, 0.43f, 0.52f},
+        {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f},
+        1.67f, 0.77f, 1.0f, 0.25f, 1.0f, 0.25f, 54.525963f};
+    int sun_shadow_samples = 1;
 };
-// Two floats longer than the 112 this was (vol_pad became a real field and two
-// more followed): the composite push constant grew with the sun-size fields
-// above. composite.frag's SceneLighting block must match member for member.
-static_assert(sizeof(VkSceneLighting) == 120);
+inline constexpr uint32_t kVkSceneLightingPushBytes =
+    static_cast<uint32_t>(offsetof(VkSceneLighting, authored_sun_rgb));
+static_assert(kVkSceneLightingPushBytes == 96);
 
 struct VkSceneUploadCounters {
     uint64_t vertex_uploads = 0;
@@ -946,6 +987,9 @@ public:
         const std::vector<matter::PartDrawOverrideEntry>& entries);
     void set_lighting(const VkSceneLighting& lighting);
     void set_atmosphere_settings(const matter::AtmosphereSettings& settings);
+    const ResolvedAtmosphereStatus& resolved_atmosphere_status() const noexcept {
+        return resolved_atmosphere_status_;
+    }
     void set_display_exposure(float exposure_ev);
     void set_composite_debug_view(float mode) { composite_debug_override_ = mode; }
     void set_geometry_debug_view(matter::GeometryDebugView view);
@@ -991,6 +1035,9 @@ public:
     bool readback_volumetrics_density_voxel_for_test(
         uint32_t x, uint32_t y, uint32_t z, matter::Float4& media,
         float& cloud_density, std::string& error);
+    bool readback_volumetrics_integrated_voxel_for_test(
+        uint32_t x, uint32_t y, uint32_t z, matter::Float4& integrated,
+        std::string& error);
     bool cloud_shadows_active() const;
     uint64_t cloud_shadow_persistent_bytes() const;
     matter::CloudShadowLevelDesc cloud_shadow_level_desc(uint32_t level) const;
@@ -1007,6 +1054,19 @@ public:
     const std::string& cloud_shadow_allocation_error() const;
     void set_fail_next_cloud_shadow_bundle_creation_for_test(bool enabled);
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    void test_fail_next_atmosphere_generation() noexcept {
+        test_fail_next_atmosphere_generation_ = true;
+    }
+    void test_fail_next_atmosphere_descriptor_publication() noexcept {
+        test_fail_next_atmosphere_descriptor_publication_ = true;
+    }
+    AtmosphereLutHandles test_atmosphere_lut_handles() const noexcept;
+    AtmosphereHistoryCounters test_atmosphere_history_counters() const noexcept {
+        return atmosphere_history_counters_;
+    }
+    ResolvedAtmosphereStatus test_resolved_atmosphere_status() const noexcept {
+        return resolved_atmosphere_status_;
+    }
     void set_fail_next_environment_flush_for_test(bool enabled) {
         test_fail_next_environment_flush_ = enabled;
     }
@@ -1805,7 +1865,14 @@ private:
         const std::vector<VkSkinRasterDraw>& draws) const;
     void update_composite_descriptor(FrameResources& frame);
     bool update_environment_descriptor(FrameResources& frame,
-                                       std::string& error);
+                                       std::string& error,
+                                       const matter::VkImageResource* sky = nullptr,
+                                       const matter::VkImageResource* irradiance = nullptr,
+                                       const ResolvedAtmosphereStatus* status = nullptr);
+    bool resolve_atmosphere_transaction(FrameResources& frame,
+                                        float camera_world_y,
+                                        std::string& error);
+    void resolve_live_atmosphere(uint32_t change_mask, bool full_commit);
     void update_display_descriptor(VkDescriptorSet set, VkImageView view);
     bool upload_scene_buffers(FrameResources& frame,
                               VkCommandBuffer material_command_buffer,
@@ -2199,6 +2266,8 @@ private:
     uint64_t gi_presented_attempt_token_ = 0;
     uint64_t gi_history_reset_count_ = 0;
     bool gi_candidate_was_reset_ = false;
+    bool gi_candidate_used_diffuse_reset_ = false;
+    bool gi_candidate_used_reflection_reset_ = false;
     bool last_composite_used_gi_temporal_ = false;
     VkImageUsageFlags visibility_usage_ = 0;
     matter::VkBufferResource rt_sbt_;
@@ -2289,6 +2358,8 @@ private:
     uint64_t material_geometry_revision_ = 0;
     uint64_t material_generation_ = 1;
     bool gi_history_reset_pending_ = false;
+    bool gi_diffuse_history_reset_pending_ = false;
+    bool gi_reflection_history_reset_pending_ = false;
     // MATTER_VT_CHART_LOG route census: which of vt_slot_for_lod's seven
     // early-outs sent a draw to the legacy flat-tint path. Mutable + atomic
     // because vt_slot_for_lod is const and reached from the record path.
@@ -2341,6 +2412,13 @@ private:
     std::unique_ptr<VkAtmosphere> atmosphere_;
     std::unique_ptr<VkCloudShadows> cloud_shadows_;
     matter::AtmosphereSettings atmosphere_settings_{};
+    matter::AtmosphereSettings committed_atmosphere_settings_{};
+    ResolvedAtmosphereStatus resolved_atmosphere_status_{};
+    AtmosphereHistoryCounters atmosphere_history_counters_{};
+    uint32_t pending_atmosphere_change_mask_ = matter::kAtmosphereChangeNone;
+    matter::Float3 requested_atmosphere_to_sun_{0.0f, 1.0f, 0.0f};
+    matter::Float3 requested_atmosphere_authored_sun_{2.2f, 2.05f, 1.8f};
+    float requested_atmosphere_camera_y_ = 0.0f;
     matter::CloudShadowSettings cloud_shadow_settings_{};
     bool volumetrics_enabled_ = false;
     float volumetrics_debug_view_ = 0.0f;
@@ -2495,6 +2573,8 @@ private:
         std::numeric_limits<uint32_t>::max();
     bool test_fail_animation_bounds_upload_once_ = false;
     bool test_fail_next_environment_flush_ = false;
+    bool test_fail_next_atmosphere_generation_ = false;
+    bool test_fail_next_atmosphere_descriptor_publication_ = false;
 #endif
 };
 

@@ -43,9 +43,7 @@ layout(set = 0, binding = 10) uniform sampler2D depth_texture;
 layout(push_constant) uniform SceneLighting {
     vec3 sun_direction;
     float sun_intensity;
-    vec3 sun_color;
     float diffuse_rt_multiplier;
-    vec3 sky_color;
     float emission_multiplier;
     float debug_view;
     float camera_fwd_x;
@@ -218,11 +216,11 @@ void main() {
     if (normal_length_squared <= 1e-20) {
         vec3 ray = compute_view_ray(in_uv);
         vec3 to_sun = normalize(-lighting.sun_direction);
-        vec3 sky = sample_physical_sky(ray, to_sun, lighting.sky_color);
+        vec3 sky = sample_physical_sky(ray, to_sun);
         float disc = smoothstep(lighting.sun_disc_cos_edge,
                                 lighting.sun_disc_cos_core,
                                 dot(normalize(ray), to_sun));
-        sky += lighting.sun_color * lighting.sun_intensity * disc;
+        sky += environment.sun_disc_reserved.rgb * disc;
         if (lighting.vol_enabled > 0.5) {
             int depth_slices = textureSize(vol_integrated_texture, 0).z;
             vec3 far_uvw = vec3(in_uv, 1.0 - 0.5 / float(depth_slices));
@@ -240,7 +238,7 @@ void main() {
     float metallic = orm.y;
     float ao = orm.z;
     vec3 diffuse = albedo.rgb * (1.0 - metallic);
-    vec3 ambient = diffuse * sample_sky_irradiance(normal, lighting.sky_color) * ao;
+    vec3 ambient = diffuse * sample_sky_irradiance(normal) * ao;
     vec3 visibility = texture(visibility_texture, in_uv).rgb;
     if (lighting.debug_view > 1.5) {
         out_hdr = vec4(normal * 0.5 + 0.5, 1.0);
@@ -324,7 +322,7 @@ void main() {
             }
         }
     }
-    vec3 sun = sun_response * lighting.sun_color * lighting.sun_intensity *
+    vec3 sun = sun_response * environment.direct_world_sun_ratio.rgb *
                visibility;
     // Per-texel metalness (G-buffer ORM.y, the VT surfaces() tape 'metallic'
     // lane): metals have no diffuse, so `sun_response` above is zero for
@@ -358,7 +356,7 @@ void main() {
             (vec3(1.0) - albedo.rgb) * pow(1.0 - v_dot_h, 5.0);
         sun += metallic * metal_f * ggx_d * g1v * g1l /
                max(4.0 * n_dot_v * direct, 1e-6) * direct *
-               lighting.sun_color * lighting.sun_intensity * visibility;
+               environment.direct_world_sun_ratio.rgb * visibility;
     }
     float encoded_emission = normal_payload.w;
     float emission_strength =
@@ -403,16 +401,14 @@ void main() {
             float through_disc = smoothstep(lighting.sun_disc_cos_edge,
                                              lighting.sun_disc_cos_core,
                                              dot(normalize(through_dir), to_sun));
-            transmission.rgb = (sample_physical_sky(through_dir, to_sun,
-                                                     lighting.sky_color) +
-                                lighting.sun_color * lighting.sun_intensity *
+            transmission.rgb = (sample_physical_sky(through_dir, to_sun) +
+                                environment.sun_disc_reserved.rgb *
                                     through_disc * 0.5) * fallback_absorption;
             float reflection_disc = smoothstep(lighting.sun_disc_cos_edge,
                                                 lighting.sun_disc_cos_core,
                                                 dot(normalize(reflect_dir), to_sun));
-            glass_reflection = (sample_physical_sky(reflect_dir, to_sun,
-                                                     lighting.sky_color) +
-                               lighting.sun_color * lighting.sun_intensity *
+            glass_reflection = (sample_physical_sky(reflect_dir, to_sun) +
+                               environment.sun_disc_reserved.rgb *
                                    reflection_disc) * fresnel * mat_trans;
         }
     }

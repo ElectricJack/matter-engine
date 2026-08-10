@@ -3,6 +3,8 @@
 namespace viewer {
 
 void reset_lighting_controls(ViewerStats& stats) {
+    // Whole-struct reset is intentional: it restores all four atmosphere
+    // presentation lanes atomically with their backwards-compatible defaults.
     stats.lighting = matter::VulkanLightingOverrides{};
     stats.atmosphere = matter::AtmosphereSettings{};
     stats.volumetrics = matter::VulkanVolumetricsSettings{};

@@ -44,6 +44,34 @@ static int g_tests    = 0;
     }                                                  \
 } while (0)
 
+static void test_atmosphere_transaction_public_abi() {
+    printf("\n[test_atmosphere_transaction_public_abi]\n");
+    static_assert(sizeof(viewer::EnvironmentLightingGpu) == 64,
+                  "environment lighting UBO tail is exactly four vec4 lanes");
+    viewer::ResolvedAtmosphereStatus status{};
+    viewer::AtmosphereLutHandles handles{};
+    viewer::AtmosphereHistoryCounters counters{};
+    CHECK(status.normalized_to_sun.y == 1.0f &&
+              status.atmospheric_noon_direct_base_rgb.x == 0.0f &&
+              handles.images.size() == 4 &&
+              handles.views.size() == 4 && counters.diffuse_gi == 0 &&
+              counters.reflection_miss == 0 && counters.volumetric == 0,
+          "atmosphere transaction status, handle, and history ABI constructs");
+    const viewer::ResolvedAtmosphereStatus&
+        (viewer::VkSceneRenderer::*status_accessor)() const noexcept =
+            &viewer::VkSceneRenderer::resolved_atmosphere_status;
+    CHECK(status_accessor != nullptr,
+          "renderer exposes the production committed/resolved atmosphere status");
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    void (viewer::VkSceneRenderer::*fail_generation)() noexcept =
+        &viewer::VkSceneRenderer::test_fail_next_atmosphere_generation;
+    void (viewer::VkSceneRenderer::*fail_publication)() noexcept =
+        &viewer::VkSceneRenderer::test_fail_next_atmosphere_descriptor_publication;
+    CHECK(fail_generation != nullptr && fail_publication != nullptr,
+          "renderer exposes one-shot atmosphere failure injection controls");
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // test_vk_scene_lod_fields
 //
@@ -984,6 +1012,7 @@ int main() {
     printf("Validates Task 3+5 struct layout: first_index/index_count, part.indices,\n");
     printf("GpuRtPartRecord 48-byte layout with index_address.\n");
 
+    test_atmosphere_transaction_public_abi();
     test_vk_scene_lod_fields();
     test_rt_geometry_selection_fields();
     test_two_lod_rt_payload_indexed();

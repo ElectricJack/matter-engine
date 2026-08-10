@@ -126,6 +126,27 @@ bool VkAtmosphere::create_images(matter::VulkanDevice& vulkan, std::string& erro
            create(sky_view_, sky) && create(irradiance_sh_, irradiance);
 }
 
+bool VkAtmosphere::create_candidate_images(Candidate& candidate,
+                                           std::string& error) {
+    const auto create = [&](matter::VkImageResource& image,
+                            VkExtent3D extent) {
+        return matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R16G16B16A16_SFLOAT,
+            extent, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, error);
+    };
+    return create(candidate.transmittance,
+                  {kTransmittanceWidth, kTransmittanceHeight, 1}) &&
+           create(candidate.multiscatter,
+                  {kMultiscatterSize, kMultiscatterSize, 1}) &&
+           create(candidate.sky_view, {kSkyViewWidth, kSkyViewHeight, 1}) &&
+           create(candidate.irradiance_sh,
+                  {kIrradianceSize, kIrradianceSize, 1});
+}
+
 bool VkAtmosphere::initialize_emergency(matter::VulkanDevice& vulkan,
                                         std::string& error) {
     struct ClearRequest { std::array<matter::VkImageResource*, 4> images; };
@@ -266,6 +287,57 @@ bool VkAtmosphere::create_pipelines(matter::VulkanDevice& vulkan, std::string& e
     return true;
 }
 
+void VkAtmosphere::update_compute_descriptors(
+    matter::VkImageResource& transmittance,
+    matter::VkImageResource& multiscatter,
+    matter::VkImageResource& sky_view,
+    matter::VkImageResource& irradiance) {
+    const auto sampled = [&](matter::VkImageResource& image) {
+        return VkDescriptorImageInfo{linear_sampler_, image.view,
+                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    };
+    const auto storage = [](matter::VkImageResource& image) {
+        return VkDescriptorImageInfo{VK_NULL_HANDLE, image.view,
+                                     VK_IMAGE_LAYOUT_GENERAL};
+    };
+    const VkDescriptorImageInfo trans_store = storage(transmittance);
+    const VkDescriptorImageInfo trans_sample = sampled(transmittance);
+    const VkDescriptorImageInfo multi_store = storage(multiscatter);
+    const VkDescriptorImageInfo multi_sample = sampled(multiscatter);
+    const VkDescriptorImageInfo sky_store = storage(sky_view);
+    const VkDescriptorImageInfo sky_sample = sampled(sky_view);
+    const VkDescriptorImageInfo irradiance_store = storage(irradiance);
+    std::array<VkWriteDescriptorSet, 8> writes{};
+    const auto write = [&](uint32_t index, ComputePass& pass, uint32_t slot,
+                           VkDescriptorType type,
+                           const VkDescriptorImageInfo* info) {
+        writes[index] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writes[index].dstSet = pass.descriptor_set;
+        writes[index].dstBinding = slot;
+        writes[index].descriptorCount = 1;
+        writes[index].descriptorType = type;
+        writes[index].pImageInfo = info;
+    };
+    write(0, transmittance_pass_, 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+          &trans_store);
+    write(1, multiscatter_pass_, 0,
+          VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &trans_sample);
+    write(2, multiscatter_pass_, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+          &multi_store);
+    write(3, sky_view_pass_, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+          &trans_sample);
+    write(4, sky_view_pass_, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+          &multi_sample);
+    write(5, sky_view_pass_, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &sky_store);
+    write(6, irradiance_pass_, 0,
+          VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &sky_sample);
+    write(7, irradiance_pass_, 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+          &irradiance_store);
+    vkUpdateDescriptorSets(vulkan_->device(),
+                           static_cast<uint32_t>(writes.size()),
+                           writes.data(), 0, nullptr);
+}
+
 bool VkAtmosphere::coefficient_change_pending() const {
     return !has_committed_settings_ || !same_settings(requested_settings_, committed_settings_);
 }
@@ -371,8 +443,218 @@ bool VkAtmosphere::record(VkCommandBuffer command_buffer, float camera_world_y,
     return true;
 }
 
+bool VkAtmosphere::readback_irradiance(
+    matter::VkImageResource& image,
+    std::array<matter::Float3, 9>& output, std::string& error) {
+    matter::VkBufferResource readback;
+    constexpr VkDeviceSize kBytes = 9 * 8;
+    if (!matter::create_buffer(*vulkan_, kBytes,
+                               VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                               readback, error) ||
+        !matter::map_buffer(readback, error))
+        return false;
+    struct Request {
+        matter::VkImageResource* image;
+        VkBuffer buffer;
+    } request{&image, readback.buffer};
+    const auto copy = [](VkCommandBuffer command_buffer, void* opaque) {
+        auto& value = *static_cast<Request*>(opaque);
+        matter::record_image_transition(
+            command_buffer, *value.image,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = {3, 3, 1};
+        vkCmdCopyImageToBuffer(command_buffer, value.image->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               value.buffer, 1, &region);
+        matter::record_image_transition(
+            command_buffer, *value.image,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+    };
+    if (!matter::submit_immediate(
+            *vulkan_, copy, &request, error,
+            matter::ImmediateSubmitPhase::staging_readback,
+            {image.lifetime, readback.lifetime}) ||
+        !matter::invalidate_buffer(readback, 0, kBytes, error))
+        return false;
+    const auto* values = static_cast<const uint16_t*>(readback.mapped);
+    for (size_t index = 0; index < output.size(); ++index) {
+        output[index] = {half_to_float(values[index * 4 + 0]),
+                         half_to_float(values[index * 4 + 1]),
+                         half_to_float(values[index * 4 + 2])};
+        if (!std::isfinite(output[index].x) ||
+            !std::isfinite(output[index].y) ||
+            !std::isfinite(output[index].z)) {
+            error = "atmosphere candidate irradiance contains non-finite texels";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool VkAtmosphere::build_candidate(const AtmosphereRequest& input,
+                                   Candidate& candidate,
+                                   std::string& error) {
+    discard_candidate(candidate);
+    if (!initialized_ || !vulkan_) {
+        error = "VkAtmosphere is not initialized";
+        return false;
+    }
+    AtmosphereRequest request = input;
+    request.settings = matter::sanitize_atmosphere(request.settings);
+    if (!std::isfinite(request.camera_world_y) ||
+        !normalize(request.normalized_to_sun)) {
+        error = "atmosphere candidate request is invalid";
+        return false;
+    }
+    if (!create_candidate_images(candidate, error)) {
+        discard_candidate(candidate);
+        return false;
+    }
+
+    RetiredLuts saved{std::move(transmittance_), std::move(multiscatter_),
+                      std::move(sky_view_), std::move(irradiance_sh_)};
+    transmittance_ = std::move(candidate.transmittance);
+    multiscatter_ = std::move(candidate.multiscatter);
+    sky_view_ = std::move(candidate.sky_view);
+    irradiance_sh_ = std::move(candidate.irradiance_sh);
+    update_compute_descriptors(transmittance_, multiscatter_, sky_view_,
+                               irradiance_sh_);
+    const matter::AtmosphereSettings saved_requested = requested_settings_;
+    requested_settings_ = request.settings;
+
+    struct Dispatch {
+        VkAtmosphere* self;
+        float camera_world_y;
+        matter::Float3 to_sun;
+        std::string* error;
+        bool ok = false;
+    } dispatch{this, request.camera_world_y, request.normalized_to_sun,
+               &error};
+    const auto record_candidate = [](VkCommandBuffer command_buffer,
+                                     void* opaque) {
+        auto& value = *static_cast<Dispatch*>(opaque);
+        value.ok = value.self->record_dispatches(
+            command_buffer, true, value.camera_world_y, value.to_sun,
+            *value.error);
+    };
+    const bool dispatched = matter::submit_immediate(
+        *vulkan_, record_candidate, &dispatch, error,
+        matter::ImmediateSubmitPhase::compute_dispatch,
+        {transmittance_.lifetime, multiscatter_.lifetime,
+         sky_view_.lifetime, irradiance_sh_.lifetime});
+    bool valid = dispatched && dispatch.ok;
+    if (valid)
+        valid = readback_irradiance(irradiance_sh_,
+                                    candidate.state.irradiance_sh, error);
+    candidate.state.settings = request.settings;
+    candidate.state.normalized_to_sun = request.normalized_to_sun;
+    candidate.state.camera_world_y = request.camera_world_y;
+    candidate.state.atmospheric_direct_base_rgb =
+        matter::atmosphere_direct_sun_rgb(
+            request.settings, request.camera_world_y,
+            {-request.normalized_to_sun.x,
+             -request.normalized_to_sun.y,
+             -request.normalized_to_sun.z},
+            request.authored_sun_rgb, {1.0f, 1.0f, 1.0f}, 1.0f);
+    candidate.state.atmospheric_noon_direct_base_rgb =
+        matter::atmosphere_direct_sun_rgb(
+            request.settings, request.camera_world_y, {0.0f, -1.0f, 0.0f},
+            request.authored_sun_rgb, {1.0f, 1.0f, 1.0f}, 1.0f);
+    const auto valid_direct_base = [](matter::Float3 value) {
+        return std::isfinite(value.x) && value.x >= 0.0f &&
+               std::isfinite(value.y) && value.y >= 0.0f &&
+               std::isfinite(value.z) && value.z >= 0.0f;
+    };
+    if (valid &&
+        (!valid_direct_base(candidate.state.atmospheric_direct_base_rgb) ||
+         !valid_direct_base(
+             candidate.state.atmospheric_noon_direct_base_rgb))) {
+        valid = false;
+        error = "atmosphere candidate direct bases are invalid";
+    }
+    candidate.state.generation_serial = generation_serial_ + 1;
+
+    candidate.transmittance = std::move(transmittance_);
+    candidate.multiscatter = std::move(multiscatter_);
+    candidate.sky_view = std::move(sky_view_);
+    candidate.irradiance_sh = std::move(irradiance_sh_);
+    transmittance_ = std::move(saved.transmittance);
+    multiscatter_ = std::move(saved.multiscatter);
+    sky_view_ = std::move(saved.sky_view);
+    irradiance_sh_ = std::move(saved.irradiance);
+    requested_settings_ = saved_requested;
+    update_compute_descriptors(transmittance_, multiscatter_, sky_view_,
+                               irradiance_sh_);
+    candidate.valid = valid;
+    if (!valid && error.empty()) error = "atmosphere candidate dispatch failed";
+    return valid;
+}
+
+void VkAtmosphere::commit_candidate(Candidate&& candidate,
+                                    uint32_t protected_frame_slot) {
+    if (!candidate.valid) return;
+    retired_luts_.erase(
+        std::remove_if(retired_luts_.begin(), retired_luts_.end(),
+                       [protected_frame_slot](const RetiredLuts& retired) {
+                           return retired.protected_frame_slot ==
+                                  protected_frame_slot;
+                       }),
+        retired_luts_.end());
+    retired_luts_.push_back(
+        {std::move(transmittance_), std::move(multiscatter_),
+         std::move(sky_view_), std::move(irradiance_sh_),
+         protected_frame_slot});
+    transmittance_ = std::move(candidate.transmittance);
+    multiscatter_ = std::move(candidate.multiscatter);
+    sky_view_ = std::move(candidate.sky_view);
+    irradiance_sh_ = std::move(candidate.irradiance_sh);
+    committed_state_snapshot_ = candidate.state;
+    committed_settings_ = candidate.state.settings;
+    committed_to_sun_ = candidate.state.normalized_to_sun;
+    committed_camera_world_y_ = candidate.state.camera_world_y;
+    generation_serial_ = candidate.state.generation_serial;
+    has_committed_settings_ = true;
+    physical_selected_ = true;
+    generated_this_frame_ = true;
+    candidate.valid = false;
+    update_compute_descriptors(transmittance_, multiscatter_, sky_view_,
+                               irradiance_sh_);
+}
+
+void VkAtmosphere::discard_candidate(Candidate& candidate) noexcept {
+    candidate.transmittance.reset();
+    candidate.multiscatter.reset();
+    candidate.sky_view.reset();
+    candidate.irradiance_sh.reset();
+    candidate.state = {};
+    candidate.valid = false;
+}
+
 const matter::VkImageResource& VkAtmosphere::sky_view() const {
     return physical_selected_ ? sky_view_ : emergency_sky_view_;
+}
+
+const matter::VkImageResource& VkAtmosphere::transmittance() const {
+    return physical_selected_ ? transmittance_ : emergency_transmittance_;
+}
+
+const matter::VkImageResource& VkAtmosphere::multiscatter() const {
+    return physical_selected_ ? multiscatter_ : emergency_multiscatter_;
 }
 
 const matter::VkImageResource& VkAtmosphere::irradiance_sh() const {
@@ -455,12 +737,14 @@ void VkAtmosphere::destroy() {
     linear_sampler_ = VK_NULL_HANDLE;
     emergency_irradiance_sh_.reset(); emergency_sky_view_.reset(); emergency_multiscatter_.reset(); emergency_transmittance_.reset();
     irradiance_sh_.reset(); sky_view_.reset(); multiscatter_.reset(); transmittance_.reset();
+    retired_luts_.clear();
     vulkan_ = nullptr;
     initialized_ = false;
     has_committed_settings_ = false;
     physical_selected_ = false;
     generated_this_frame_ = false;
     generation_serial_ = 0;
+    committed_state_snapshot_ = {};
 }
 
 }  // namespace viewer

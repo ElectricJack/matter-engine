@@ -71,6 +71,48 @@ int main() {
     assert(environment.find("fract(azimuth_u)") != std::string::npos);
     assert(environment.find("clamp(v, 0.5 / 108.0, 107.5 / 108.0)") !=
            std::string::npos);
+    // Task 2: visible sky, post-9SH irradiance, direct-world sunlight and the
+    // analytic disc are four independent CPU-resolved lanes in one UBO.  None
+    // of the three consumers may retain its former private sun/sky colours or
+    // reconstruct an elevation curve in GLSL.
+    for (const char* name : {"vec4 direct_world_sun_ratio;",
+                             "vec4 sun_disc_reserved;",
+                             "vec4 sky_display_reserved;",
+                             "vec4 sky_irradiance_ambient_ratio;"})
+        assert(environment.find(name) != std::string::npos);
+    const size_t sh_loop = environment.find(
+        "for (int coefficient = 0; coefficient < 9; ++coefficient)");
+    const size_t irradiance_modifier = environment.find(
+        "environment.sky_irradiance_ambient_ratio.rgb", sh_loop);
+    assert(sh_loop != std::string::npos && irradiance_modifier != std::string::npos &&
+           irradiance_modifier > sh_loop);
+    assert(environment.find("environment.sky_display_reserved.rgb") !=
+           std::string::npos);
+    for (const char* entry : entries) {
+        const std::string production = read_shader(entry);
+        for (const char* forbidden : {"lighting.sky_color", "lighting.sun_color",
+                                      "constants.sky_color", "constants.sun_color",
+                                      "pc.sky_color", "pc.sun_color",
+                                      "smoothstep(-6", "smoothstep(0,5",
+                                      "elevation_deg"})
+            assert(production.find(forbidden) == std::string::npos);
+    }
+    const std::string composite = read_shader("../shaders_vk/composite.frag");
+    const std::string rt = read_shader("../shaders_vk/rt_lighting.rgen");
+    const std::string volume = read_shader("../shaders_vk/vol_scatter.comp");
+    assert(composite.find("environment.direct_world_sun_ratio.rgb") !=
+               std::string::npos &&
+           composite.find("environment.sun_disc_reserved.rgb") !=
+               std::string::npos);
+    assert(rt.find("environment.direct_world_sun_ratio.rgb") !=
+               std::string::npos &&
+           rt.find("environment.sun_disc_reserved.rgb") !=
+               std::string::npos &&
+           rt.find("environment.sky_display_reserved.rgb") !=
+               std::string::npos);
+    assert(volume.find("environment.direct_world_sun_ratio.rgb") !=
+               std::string::npos &&
+           volume.find("sample_sky_irradiance") != std::string::npos);
     const std::string sky_view =
         read_shader("../shaders_vk/atmosphere_sky_view.comp");
     assert(sky_view.find("(float(pixel.x) + 0.5) / 192.0") !=
@@ -116,10 +158,10 @@ int main() {
            std::string::npos &&
            renderer.find("environment_constants.mapped == nullptr") ==
                std::string::npos);
-    const size_t neutral_environment_block = renderer.find("float block[40]{};");
+    const size_t neutral_environment_block = renderer.find("float block[56]{};");
     assert(neutral_environment_block != std::string::npos);
     const std::string neutral_environment_tail =
-        renderer.substr(neutral_environment_block, 1200);
+        renderer.substr(neutral_environment_block, 3200);
     assert(neutral_environment_tail.find("block[0] = block[5] = block[10] = block[15] = 1.0f;") !=
                std::string::npos &&
            neutral_environment_tail.find("block[16] = block[21] = block[26] = block[31] = 1.0f;") !=
