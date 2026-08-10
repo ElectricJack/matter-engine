@@ -1073,6 +1073,7 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
                            VkAccelerationStructureKHR tlas,
                            const FrameMatrices& matrices,
                            float frame_time,
+                           const VolumetricPassBoundary& boundary,
                            std::string& error) {
     if (!initialized_) return true;
     if (!enabled_ || !ray_query_available_) return true;
@@ -1117,6 +1118,8 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     // ---------------------------------------------------------------
     // Pass 1: Density
     // ---------------------------------------------------------------
+
+    if (boundary) boundary(VolumetricPass::Density, false);
 
     // Transition vol_media_ to GENERAL for storage write.
     matter::record_image_transition(
@@ -1242,9 +1245,13 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
     }
 
+    if (boundary) boundary(VolumetricPass::Density, true);
+
     // ---------------------------------------------------------------
     // Pass 2: Scatter
     // ---------------------------------------------------------------
+
+    if (boundary) boundary(VolumetricPass::Scatter, false);
 
     // Transition vol_scatter_[current] to GENERAL for storage write.
     matter::record_image_transition(
@@ -1342,9 +1349,13 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
 
+    if (boundary) boundary(VolumetricPass::Scatter, true);
+
     // ---------------------------------------------------------------
     // Pass 3: Integrate
     // ---------------------------------------------------------------
+
+    if (boundary) boundary(VolumetricPass::Integrate, false);
 
     // Transition vol_integrated_ to GENERAL for storage write.
     matter::record_image_transition(
@@ -1382,6 +1393,8 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
+
+    if (boundary) boundary(VolumetricPass::Integrate, true);
 
     // Flip ping-pong, advance frame counter, store matrices for next frame.
     active_bundle_.ping_index ^= 1;

@@ -819,8 +819,15 @@ void test_physical_atmosphere_editor_source_contract() {
     const std::string editor_source = read("../../MatterEditor/src/property_editor.cpp");
     const std::string reset_source = read("../../MatterEditor/src/ui_lighting_controls.cpp");
     const std::string main_source = read("../../MatterEditor/src/main.cpp");
+    const std::string ui_source = read("../../MatterEditor/src/ui.cpp");
+    const std::string issue_source = read("../../MatterEditor/src/issue_reporter.cpp");
+    const std::string session_source = read("../include/matter/world_session.h");
+    const std::string renderer_source = read("../src/render/vk_scene_renderer.h");
+    const std::string volumetrics_source = read("../src/render/vk_volumetrics.h");
     CHECK(!props_source.empty() && !editor_source.empty() && !reset_source.empty() &&
-              !main_source.empty(),
+              !main_source.empty() && !ui_source.empty() && !issue_source.empty() &&
+              !session_source.empty() && !renderer_source.empty() &&
+              !volumetrics_source.empty(),
           "physical atmosphere: editor sources are available from the test cwd");
     for (const char* token : {"\"render.atmosphere\", \"Atmosphere\"",
                               "\"render.volumetrics\", \"Volumetrics\"",
@@ -857,8 +864,42 @@ void test_physical_atmosphere_editor_source_contract() {
               reset_source.find("stats.cloud_shadows = matter::CloudShadowSettings{};") != std::string::npos,
           "physical atmosphere: all physical lighting controls reset to the compiled baseline");
     CHECK(main_source.find("MATTER_CAPTURE_LIGHTING_UI") != std::string::npos &&
-              main_source.find("ImGui::SetWindowFocus(\"Lighting\")") != std::string::npos,
+               main_source.find("ImGui::SetWindowFocus(\"Lighting\")") != std::string::npos,
           "physical atmosphere: screenshot automation can focus Lighting without a FIFO command");
+
+    // Task 14 is intentionally append-only: existing STATS parsers consume the
+    // legacy prefix by position, while the new lanes are available to newer
+    // captures after the froxel generation field.
+    for (const char* token : {"gpu_atmosphere_ms", "gpu_cloud_shadows_ms",
+                              "gpu_vol_density_ms", "gpu_vol_scatter_ms",
+                              "gpu_vol_integrate_ms", "cloud_shadow_memory_bytes"}) {
+        CHECK(session_source.find(token) != std::string::npos,
+              "physical atmosphere: FrameStats exposes timing and memory lanes");
+        CHECK(main_source.find(token) != std::string::npos,
+              "physical atmosphere: STATS propagates timing and memory lanes");
+    }
+    const size_t stats_begin = main_source.find("std::printf(\"STATS,");
+    const std::string stats_body = main_source.substr(stats_begin);
+    CHECK(stats_begin != std::string::npos &&
+              stats_body.find("frame_stats.vol_resource_generation") <
+                  stats_body.find("frame_stats.gpu_atmosphere_ms"),
+          "physical atmosphere: STATS retains its legacy froxel suffix before new lanes");
+    for (const char* token : {"kGpuZoneAtmosphere", "kGpuZoneCloudShadows",
+                              "kGpuZoneVolDensity", "kGpuZoneVolScatter",
+                              "kGpuZoneVolIntegrate", "kGpuZoneCount"})
+        CHECK(renderer_source.find(token) != std::string::npos,
+              "physical atmosphere: GPU timer zones append without renumbering legacy lanes");
+    CHECK(volumetrics_source.find("VolumetricPassBoundary") != std::string::npos &&
+              volumetrics_source.find("VolumetricPass") != std::string::npos,
+          "physical atmosphere: volumetrics owns typed pass boundaries");
+    for (const char* token : {"GPU atmosphere", "Cloud shadows", "Vol density",
+                              "gpu_atmosphere_ms", "gpu_cloud_shadows_ms"})
+        CHECK(editor_source.find(token) != std::string::npos ||
+                  ui_source.find(token) != std::string::npos ||
+                  issue_source.find(token) != std::string::npos,
+              "physical atmosphere: Lighting, Performance, and issue reports retain timing lanes");
+    CHECK(issue_source.find("cloud_shadow_memory_bytes") != std::string::npos,
+          "physical atmosphere: issue reports retain actual cloud-shadow memory");
 }
 
 const auto& atmosphere_lighting_controls_schema() {

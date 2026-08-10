@@ -181,6 +181,7 @@ FROXEL_PERF_WARMUP_SECONDS=140
 CLOUD_LIGHTING_PERF_WARMUP_SECONDS=180
 CLOUD_SHADOW_PERF_WARMUP_SECONDS=180
 ATMOSPHERE_PRESENTATION_PERF_WARMUP_SECONDS=600
+FINAL_PERF_WARMUP_SECONDS=120
 PERF_WARMUP_SECONDS="${MATTER_PERF_WARMUP_SECONDS:-20}"
 # The one-process froxel lane spends 25 seconds on the matrix, then settles
 # and captures four representatives.  Do not let the editor's perf timer end
@@ -198,6 +199,9 @@ fi
 if [ "$SUITE" = "atmosphere-presentation" ] && \
    [ "$PERF_WARMUP_SECONDS" -lt "$ATMOSPHERE_PRESENTATION_PERF_WARMUP_SECONDS" ]; then
   PERF_WARMUP_SECONDS="$ATMOSPHERE_PRESENTATION_PERF_WARMUP_SECONDS"
+fi
+if [ "$SUITE" = "final" ] && [ "$PERF_WARMUP_SECONDS" -lt "$FINAL_PERF_WARMUP_SECONDS" ]; then
+  PERF_WARMUP_SECONDS="$FINAL_PERF_WARMUP_SECONDS"
 fi
 MATTER_WORLD="$WORLD" \
 MATTER_CMD_FIFO="$FIFO" \
@@ -1012,8 +1016,227 @@ PY
     }
     ;;
   final)
-    echo "ERROR: suite '$SUITE' is reserved for a later milestone" >&2
-    exit 2
+    [ "$WORLD" = StreamMountain ] || {
+      echo "ERROR: final suite requires StreamMountain" >&2
+      exit 2
+    }
+    # This is the final one-process acceptance lane. It intentionally revisits
+    # all 25 froxel pairs as get/restore stability cases, but only captures the
+    # representative preset frames below; the exhaustive visual grid is already
+    # proven by the froxel suite and would dominate an overnight final run.
+    final_get_properties() {
+      for property in \
+        render.volumetrics.enabled \
+        render.volumetrics.froxel_xy_scale \
+        render.volumetrics.froxel_depth_slices \
+        render.volumetrics.local_sun_march_steps \
+        render.volumetrics.local_sun_march_distance_m \
+        render.volumetrics.multiple_scattering_orders \
+        render.volumetrics.multiple_scattering_strength \
+        render.volumetrics.powder_strength \
+        render.cloud_shadows.enabled \
+        render.cloud_shadows.near_resolution \
+        render.cloud_shadows.near_depth_slices \
+        render.cloud_shadows.near_coverage_m \
+        render.cloud_shadows.far_resolution \
+        render.cloud_shadows.far_depth_slices \
+        render.cloud_shadows.far_coverage_m \
+        render.cloud_shadows.filter_scale \
+        render.cloud_shadows.update_fraction \
+        render.lighting.exposure_ev \
+        render.lighting.sun_elevation_deg \
+        render.fog.density \
+        render.fog.floor \
+        render.fog.falloff \
+        render.clouds.layer0_enabled \
+        render.clouds.layer0_min_height \
+        render.clouds.layer0_max_height \
+        render.clouds.layer0_max_density \
+        render.clouds.layer0_coverage \
+        render.clouds.layer0_wind; do
+        request_property "$property" >/dev/null
+      done
+    }
+    final_preset() {
+      local preset="$1"
+      send "set render.volumetrics.enabled true"
+      case "$preset" in
+        current)
+          send "set render.volumetrics.froxel_xy_scale 1x"
+          send "set render.volumetrics.froxel_depth_slices 128"
+          send "set render.volumetrics.local_sun_march_steps 0"
+          send "set render.volumetrics.local_sun_march_distance_m 250"
+          send "set render.volumetrics.multiple_scattering_orders 1"
+          send "set render.volumetrics.multiple_scattering_strength 0"
+          send "set render.volumetrics.powder_strength 0"
+          send "set render.cloud_shadows.enabled false"
+          ;;
+        improved)
+          send "set render.volumetrics.froxel_xy_scale 1x"
+          send "set render.volumetrics.froxel_depth_slices 128"
+          send "set render.volumetrics.local_sun_march_steps 8"
+          send "set render.volumetrics.local_sun_march_distance_m 250"
+          send "set render.volumetrics.multiple_scattering_orders 2"
+          send "set render.volumetrics.multiple_scattering_strength 0.55"
+          send "set render.volumetrics.powder_strength 0.25"
+          send "set render.cloud_shadows.enabled true"
+          send "set render.cloud_shadows.near_resolution 256"
+          send "set render.cloud_shadows.near_depth_slices 24"
+          send "set render.cloud_shadows.far_resolution 128"
+          send "set render.cloud_shadows.far_depth_slices 16"
+          ;;
+        high)
+          send "set render.volumetrics.froxel_xy_scale 1.5x"
+          send "set render.volumetrics.froxel_depth_slices 192"
+          send "set render.volumetrics.local_sun_march_steps 12"
+          send "set render.volumetrics.local_sun_march_distance_m 350"
+          send "set render.volumetrics.multiple_scattering_orders 3"
+          send "set render.volumetrics.multiple_scattering_strength 0.70"
+          send "set render.volumetrics.powder_strength 0.35"
+          send "set render.cloud_shadows.enabled true"
+          send "set render.cloud_shadows.near_resolution 512"
+          send "set render.cloud_shadows.near_depth_slices 24"
+          send "set render.cloud_shadows.far_resolution 256"
+          send "set render.cloud_shadows.far_depth_slices 24"
+          ;;
+        ultra)
+          send "set render.volumetrics.froxel_xy_scale 2x"
+          send "set render.volumetrics.froxel_depth_slices 256"
+          send "set render.volumetrics.local_sun_march_steps 24"
+          send "set render.volumetrics.local_sun_march_distance_m 500"
+          send "set render.volumetrics.multiple_scattering_orders 4"
+          send "set render.volumetrics.multiple_scattering_strength 0.85"
+          send "set render.volumetrics.powder_strength 0.50"
+          send "set render.cloud_shadows.enabled true"
+          send "set render.cloud_shadows.near_resolution 512"
+          send "set render.cloud_shadows.near_depth_slices 32"
+          send "set render.cloud_shadows.far_resolution 256"
+          send "set render.cloud_shadows.far_depth_slices 32"
+          ;;
+      esac
+      send "set render.cloud_shadows.near_coverage_m 2200"
+      send "set render.cloud_shadows.far_coverage_m 4500"
+      send "set render.cloud_shadows.filter_scale 1"
+      send "set render.cloud_shadows.update_fraction 1"
+    }
+    send "cam 20 760 350 0 420 0"
+    send "set render.lighting.exposure_ev 0"
+    for _ in $(seq 1 300); do
+      grep -q 'bake-timing.*world-kind' "$LOG" 2>/dev/null && break
+      sleep 1
+    done
+    grep -q 'bake-timing.*world-kind' "$LOG" 2>/dev/null || {
+      echo "ERROR: StreamMountain sectors did not publish" >&2
+      exit 1
+    }
+    # Every pair round-trips through the live property transport. No screenshot
+    # is taken here: each pair's allocation/recovery is the stability gate.
+    for xy in 0.5x 0.75x 1x 1.5x 2x; do
+      for depth in 64 96 128 192 256; do
+        send "set render.volumetrics.froxel_xy_scale $xy"
+        send "set render.volumetrics.froxel_depth_slices $depth"
+        request_property render.volumetrics.froxel_xy_scale >/dev/null
+        request_property render.volumetrics.froxel_depth_slices >/dev/null
+      done
+    done
+    send "set render.clouds.layer0_enabled true"
+    send "set render.clouds.layer0_min_height 140"
+    send "set render.clouds.layer0_max_height 226"
+    send "set render.clouds.layer0_max_density 0.008"
+    send "set render.clouds.layer0_coverage 0.55"
+    send "set render.clouds.layer0_wind 0,0,0"
+    send "set render.fog.density 0.02"
+    send "set render.fog.floor 0"
+    send "set render.fog.falloff 18"
+    for elevation in 90 45 5 0 -5; do
+      send "set render.lighting.sun_elevation_deg $elevation"
+      request_property render.lighting.sun_elevation_deg >/dev/null
+      settle_volumetrics 4
+      case "$elevation" in
+        90) capture "sun_90" "${LABEL}_noon" ;;
+        5) capture "sun_5" "${LABEL}_sunset" ;;
+        -5) capture "sun_-5" "${LABEL}_twilight" ;;
+      esac
+    done
+    send "set render.lighting.sun_elevation_deg 45"
+    for preset in current improved high ultra; do
+      final_preset "$preset"
+      final_get_properties
+      settle_volumetrics 4
+      capture "preset_${preset}" "${LABEL}_${preset}"
+    done
+    # A non-preset combination proves the property path does not merely select
+    # canned quality tuples.
+    send "set render.volumetrics.froxel_xy_scale 0.75x"
+    send "set render.volumetrics.froxel_depth_slices 96"
+    send "set render.volumetrics.local_sun_march_steps 6"
+    send "set render.volumetrics.multiple_scattering_orders 2"
+    send "set render.volumetrics.multiple_scattering_strength 0.4"
+    send "set render.volumetrics.powder_strength 0.2"
+    final_get_properties
+    settle_volumetrics 4
+    capture custom "${LABEL}_custom"
+    for order in 1 2 4; do
+      send "set render.volumetrics.multiple_scattering_orders $order"
+      request_property render.volumetrics.multiple_scattering_orders >/dev/null
+      settle_volumetrics 4
+      capture "order_${order}" "${LABEL}_order-${order}"
+    done
+    # One deck is the self-shadow receiver; the contiguous second deck makes a
+    # cross-layer receiver under identical sun/camera conditions.
+    send "set render.clouds.layer1_enabled false"
+    settle_volumetrics 4
+    capture cloud_self "${LABEL}_self-shadow"
+    send "set render.clouds.layer1_enabled true"
+    send "set render.clouds.layer1_min_height 255"
+    send "set render.clouds.layer1_max_height 345"
+    send "set render.clouds.layer1_max_density 0.005"
+    send "set render.clouds.layer1_coverage 0.68"
+    send "set render.clouds.layer1_wind 0,0,0"
+    for property in render.clouds.layer1_enabled render.clouds.layer1_min_height \
+                    render.clouds.layer1_max_height render.clouds.layer1_max_density \
+                    render.clouds.layer1_coverage; do request_property "$property" >/dev/null; done
+    settle_volumetrics 4
+    capture cloud_cross "${LABEL}_cross-shadow"
+    send "cam 20 450 350 0 150 0"
+    wait_for_streaming_settle
+    send "set render.cloud_shadows.enabled false"
+    request_property render.cloud_shadows.enabled >/dev/null
+    settle_volumetrics 4
+    capture shadow_ground_disabled "${LABEL}_ground-object-shadow-disabled"
+    send "set render.cloud_shadows.enabled true"
+    request_property render.cloud_shadows.enabled >/dev/null
+    settle_volumetrics 4
+    capture shadow_ground "${LABEL}_ground-object-shadow"
+    send "set render.fog.density 0.035"
+    request_property render.fog.density >/dev/null
+    settle_volumetrics 4
+    capture shadow_fog "${LABEL}_fog-shadow"
+    send "cam 650 450 350 630 150 0"
+    wait_for_streaming_settle
+    capture translated "${LABEL}_near-far-translated"
+    send "cam 850 450 350 830 150 0"
+    wait_for_streaming_settle
+    capture boundary "${LABEL}_near-far-boundary"
+    send "cam 20 450 350 0 150 0"
+    send "set render.clouds.layer0_wind 25,0,0"
+    request_property render.clouds.layer0_wind >/dev/null
+    for frame in 0 1 2 3; do sleep 2; capture "moving_${frame}" "${LABEL}_moving-${frame}"; done
+    IMAGE_PYTHON="${MATTER_IMAGE_PYTHON:-python3}"
+    "$IMAGE_PYTHON" "$HERE/img_diff.py" "$OUT/${LABEL}_order-1.png" \
+      "$OUT/${LABEL}_order-4.png" --max-diff-pct 95
+    "$IMAGE_PYTHON" "$HERE/img_diff.py" "$OUT/${LABEL}_near-far-translated.png" \
+      "$OUT/${LABEL}_near-far-boundary.png" --max-diff-pct 95
+    "$IMAGE_PYTHON" "$HERE/img_diff.py" "$OUT/${LABEL}_ground-object-shadow-disabled.png" \
+      "$OUT/${LABEL}_ground-object-shadow.png" --max-diff-pct 95
+    for _ in $(seq 1 $((FINAL_PERF_WARMUP_SECONDS + 30))); do
+      [ -s "$PERF_OUTPUT" ] && break
+      sleep 1
+    done
+    [ -s "$PERF_OUTPUT" ] || {
+      echo "ERROR: telemetry timed out: $PERF_OUTPUT" >&2
+      exit 1
+    }
     ;;
   *)
     echo "ERROR: unknown suite '$SUITE' (baseline, atmosphere, atmosphere-presentation, froxel, cloud-lighting, cloud-shadows, final)" >&2

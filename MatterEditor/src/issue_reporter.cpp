@@ -297,7 +297,19 @@ bool write_state_json(const std::filesystem::path& path,
         << ", \"denoise\": " << frame_stats.gpu_denoise_ms
         << ", \"dlss\": " << frame_stats.gpu_dlss_ms
         << ", \"composite\": " << frame_stats.gpu_composite_ms
-        << ", \"volumetrics\": " << frame_stats.gpu_vol_ms << "},\n";
+        << ", \"volumetrics\": " << frame_stats.gpu_vol_ms
+        << ", \"atmosphere\": " << frame_stats.gpu_atmosphere_ms
+        << ", \"cloud_shadows\": " << frame_stats.gpu_cloud_shadows_ms
+        << ", \"vol_density\": " << frame_stats.gpu_vol_density_ms
+        << ", \"vol_scatter\": " << frame_stats.gpu_vol_scatter_ms
+        << ", \"vol_integrate\": " << frame_stats.gpu_vol_integrate_ms
+        << "},\n";
+    out << "    \"volumetric_resources\": {\"grid\": ["
+        << frame_stats.vol_grid_w << ", " << frame_stats.vol_grid_h << ", "
+        << frame_stats.vol_grid_d << "], \"froxel_memory_bytes\": "
+        << frame_stats.vol_memory_bytes
+        << ", \"cloud_shadow_memory_bytes\": "
+        << frame_stats.cloud_shadow_memory_bytes << "},\n";
     out << "    \"counts\": {\"instances_resolved\": "
         << frame_stats.instances_resolved
         << ", \"instances_drawn\": " << frame_stats.instances_drawn

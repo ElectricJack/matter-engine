@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <string>
 #include <vector>
@@ -50,6 +51,13 @@ static constexpr uint32_t kVolMaxEmitters = 256;
 static constexpr float    kVolFroxelFarRange = 3000.0f;
 static constexpr float    kVolShadowFarRange = 300.0f;
 static constexpr uint32_t kVolNoiseSize = 32;
+
+// The renderer owns timestamp-query zone ids, while this module owns the
+// density/scatter/integrate work boundaries. Keeping that direction prevents a
+// reusable compute module from depending on one renderer's profiler layout.
+enum class VolumetricPass : uint8_t { Density, Scatter, Integrate };
+using VolumetricPassBoundary =
+    std::function<void(VolumetricPass pass, bool is_end)>;
 
 struct FroxelDispatchGrid {
     uint32_t density_x = 0;
@@ -307,6 +315,7 @@ public:
                 VkAccelerationStructureKHR tlas,
                 const FrameMatrices& matrices,
                 float frame_time,
+                const VolumetricPassBoundary& boundary,
                 std::string& error);
 
     // The integration output -- sampled by the composite fragment shader.

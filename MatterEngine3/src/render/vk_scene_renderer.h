@@ -1065,6 +1065,7 @@ public:
     matter::FroxelGridDimensions
     volumetrics_cloud_density_dimensions_for_test() const;
     uint64_t volumetrics_grid_bytes_for_test() const;
+    uint64_t volumetrics_persistent_bytes() const;
     bool readback_volumetrics_density_voxel_for_test(
         uint32_t x, uint32_t y, uint32_t z, matter::Float4& media,
         float& cloud_density, std::string& error);
@@ -1314,7 +1315,13 @@ public:
     // runs when GI is enabled. Splitting them tells primary-ray BLAS traversal
     // cost (dense foliage) apart from the GI bounce cost.
     static constexpr uint32_t kGpuZoneRtGi         = 11;
-    static constexpr uint32_t kGpuZoneCount        = 12;
+    // Append-only: external captures consume the established zones by index.
+    static constexpr uint32_t kGpuZoneAtmosphere    = 12;
+    static constexpr uint32_t kGpuZoneCloudShadows  = 13;
+    static constexpr uint32_t kGpuZoneVolDensity    = 14;
+    static constexpr uint32_t kGpuZoneVolScatter    = 15;
+    static constexpr uint32_t kGpuZoneVolIntegrate  = 16;
+    static constexpr uint32_t kGpuZoneCount         = 17;
     bool gpu_timers_supported() const { return gpu_timers_supported_; }
     float gpu_zone_ms(uint32_t zone) const {
         return zone < kGpuZoneCount ? gpu_smoothed_ms_[zone] : 0.0f;
@@ -1818,7 +1825,7 @@ private:
         uint64_t rt_tlas_pending_serial = 0;
         uint64_t rt_tlas_pending_epoch = 0;
         bool rt_tlas_valid = false;
-        // GPU timestamp query pool: 18 slots (9 zones × begin/end).
+        // GPU timestamp query pool: one begin/end pair per kGpuZone* lane.
         VkQueryPool ts_pool = VK_NULL_HANDLE;
         // Per zone: bit 0 set when begin was written, bit 1 when end was.
         uint8_t ts_written[kGpuZoneCount]{};

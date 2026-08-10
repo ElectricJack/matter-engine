@@ -45,6 +45,31 @@
 
 namespace {
 
+void test_atmosphere_timing_contract() {
+    using Renderer = viewer::VkSceneRenderer;
+    CHECK(Renderer::kGpuZoneTotal == 0 && Renderer::kGpuZoneVolumetrics == 9 &&
+              Renderer::kGpuZoneVt == 10 && Renderer::kGpuZoneRtGi == 11,
+          "atmosphere timings retain every existing GPU-zone index");
+    CHECK(Renderer::kGpuZoneAtmosphere == 12 &&
+              Renderer::kGpuZoneCloudShadows == 13 &&
+              Renderer::kGpuZoneVolDensity == 14 &&
+              Renderer::kGpuZoneVolScatter == 15 &&
+              Renderer::kGpuZoneVolIntegrate == 16 &&
+              Renderer::kGpuZoneCount == 17,
+          "atmosphere timings append five exact GPU zones");
+
+    std::array<uint32_t, 3> boundaries{};
+    viewer::VolumetricPassBoundary boundary =
+        [&](viewer::VolumetricPass pass, bool is_end) {
+            if (is_end) ++boundaries[static_cast<uint32_t>(pass)];
+        };
+    boundary(viewer::VolumetricPass::Density, true);
+    boundary(viewer::VolumetricPass::Scatter, true);
+    boundary(viewer::VolumetricPass::Integrate, true);
+    CHECK((boundaries == std::array<uint32_t, 3>{1, 1, 1}),
+          "atmosphere timings retain one typed boundary for each froxel pass");
+}
+
 void test_atmosphere_acceptance_fifo_parser_and_present_sequencer() {
     {
         const auto parsed = viewer::parse_fifo_line("render_path raster");
@@ -11514,6 +11539,7 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 }  // namespace
 
 int main() {
+    test_atmosphere_timing_contract();
     test_atmosphere_acceptance_fifo_parser_and_present_sequencer();
     const char* startup_smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
     const bool animation_skin_only = startup_smoke_mode &&

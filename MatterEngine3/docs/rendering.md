@@ -280,7 +280,9 @@ echo "shot /tmp/out.png"   > /tmp/viewer.fifo
 echo "quit"                > /tmp/viewer.fifo
 ```
 
-Commands (one per line) include `cam <px> <py> <pz> <tx> <ty> <tz>`,
+Commands (one per line) include `set <group.path.field> <value>`,
+`get <group.path.field>`, `cam <px> <py> <pz> <tx> <ty> <tz>`,
+`stats <label>`, `shot <absolute-png-path>`,
 `shot <path>`, `render_path raster|native_rt`, `history_reset`,
 `wait_frames <positive-uint32>`, `shot_now <absolute-png-path>`, `reload`, and
 `quit`. `wait_frames` reports only successful presents. `shot_now` captures the
@@ -288,6 +290,27 @@ next successful present without the legacy `shot` command's three-frame settle;
 both screenshot commands touch `<path>.done` only after the PNG is complete.
 Native RT is never silently substituted: an unsupported request reports
 `render_path: native_rt unavailable` and fails.
+
+For example, a complete FIFO exchange is:
+
+```
+set render.volumetrics.froxel_xy_scale 1x
+get render.volumetrics.froxel_xy_scale
+cam 20 760 350 0 420 0
+stats current-cost
+shot C:\\captures\\current-cost.png
+quit
+```
+
+`STATS` is positional and append-only. Its stable order is
+`STATS,label,frame_ms,resolve_ms,build_ms,draw_ms,instances_active,raster_batches,`
+`raster_tris,culled_clusters,gpu_culled_hiz,vt_variants,vt_rejected_variants,`
+`vt_max_variants,vt_mesh_MiB,vt_mesh_budget_MiB,vol_grid_w,vol_grid_h,vol_grid_d,`
+`vol_memory_MiB,vol_resource_generation,gpu_atmosphere_ms,`
+`gpu_cloud_shadows_ms,gpu_vol_density_ms,gpu_vol_scatter_ms,`
+`gpu_vol_integrate_ms,cloud_shadow_memory_MiB`. The five timing lanes are
+milliseconds; both memory lanes are MiB; `gpu_volumetrics_ms` remains the
+combined froxel span in telemetry.
 
 The generic `get` command exposes read-only committed presentation evidence at
 `viewer.session.*` and `viewer.atmosphere_status.*`. The latter is copied from
@@ -302,8 +325,10 @@ report `set: <path> is read-only`.
 `tools/atmosphere_cloud_shots.sh <suite> <label> <out-dir>` drives all captures
 for one suite through a single editor process. The current executable suite is
 `baseline`, `atmosphere`, `atmosphere-presentation`, `froxel`,
-`cloud-lighting`, and `cloud-shadows`; `final` is reserved for its later
-milestone.
+`cloud-lighting`, `cloud-shadows`, and `final`. The final suite is deliberately
+scoped: it revisits every preset and discrete froxel setting for property
+round-trip/stability, but captures representative frames rather than repeating
+the already-proven full 25-combination visual matrix.
 The baseline defaults to `MATTER_WORLD=StreamMountain`, the shipped world with
 working volumetrics; callers can explicitly override `MATTER_WORLD`.
 

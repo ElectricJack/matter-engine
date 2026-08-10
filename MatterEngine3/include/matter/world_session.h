@@ -272,8 +272,15 @@ struct FrameStats {
     float gpu_dlss_ms           = 0;
     float gpu_composite_ms      = 0;
     float gpu_vol_ms            = 0;
+    // Append-only detail lanes. gpu_vol_ms remains the combined froxel span.
+    float gpu_atmosphere_ms     = 0;
+    float gpu_cloud_shadows_ms  = 0;
+    float gpu_vol_density_ms    = 0;
+    float gpu_vol_scatter_ms    = 0;
+    float gpu_vol_integrate_ms  = 0;
     uint32_t vol_grid_w = 0, vol_grid_h = 0, vol_grid_d = 0;
     uint64_t vol_memory_bytes = 0;
+    uint64_t cloud_shadow_memory_bytes = 0;
     FroxelXyScale vol_effective_xy_scale = FroxelXyScale::X1_0;
     FroxelDepthSlices vol_effective_depth_slices = FroxelDepthSlices::D128;
     uint64_t vol_resource_generation = 0;

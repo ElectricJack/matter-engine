@@ -424,6 +424,9 @@ struct RasterRecord {
     uint32_t frame_slot = 0;
     float frame_time = 0.0f;
     uint32_t volumetrics_zone = 0;
+    uint32_t volumetric_density_zone = 0;
+    uint32_t volumetric_scatter_zone = 0;
+    uint32_t volumetric_integrate_zone = 0;
     matter::VkAccelerationStructureResource* tlas = nullptr;
     // WP-E: owner for the VT frame hooks only. Deliberately NOT `renderer`:
     // that field also gates the ray-traced-shadow branch, which dereferences
@@ -796,10 +799,21 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
             record.ts_written[record.volumetrics_zone] |= 1u;
         }
         std::string vol_error;
+        const VolumetricPassBoundary boundary =
+            [&record, command_buffer](VolumetricPass pass, bool is_end) {
+                if (record.ts_pool == VK_NULL_HANDLE || !record.ts_written)
+                    return;
+                const uint32_t zones[] = {record.volumetric_density_zone,
+                                          record.volumetric_scatter_zone,
+                                          record.volumetric_integrate_zone};
+                const uint32_t zone = zones[static_cast<uint32_t>(pass)];
+                write_ts(command_buffer, record.ts_pool, zone, is_end);
+                record.ts_written[zone] |= is_end ? 2u : 1u;
+            };
         record.volumetrics->record(
             command_buffer, record.frame_slot,
             *record.depth, record.tlas->handle, *record.matrices,
-            record.frame_time, vol_error);
+            record.frame_time, boundary, vol_error);
         if (record.ts_pool != VK_NULL_HANDLE && record.ts_written) {
             write_ts(command_buffer, record.ts_pool, record.volumetrics_zone, true);
             record.ts_written[record.volumetrics_zone] |= 2u;
@@ -8764,6 +8778,9 @@ VkSceneRenderer::volumetrics_cloud_density_dimensions_for_test() const {
 uint64_t VkSceneRenderer::volumetrics_grid_bytes_for_test() const {
     return volumetrics_ ? volumetrics_->grid_bytes_for_test() : 0u;
 }
+uint64_t VkSceneRenderer::volumetrics_persistent_bytes() const {
+    return volumetrics_ ? volumetrics_->grid_bytes_for_test() : 0u;
+}
 bool VkSceneRenderer::readback_volumetrics_density_voxel_for_test(
     uint32_t x, uint32_t y, uint32_t z, matter::Float4& media,
     float& cloud_density, std::string& error) {
@@ -12043,10 +12060,19 @@ bool VkSceneRenderer::record_cull_and_render(
         const matter::Float3 to_sun{-lighting_.sun_direction.x,
                                     -lighting_.sun_direction.y,
                                     -lighting_.sun_direction.z};
+        FrameResources& atmosphere_frame = frames_[frame.frame_slot];
+        const bool atmosphere_work =
+            atmosphere_->generation_pending(camera_eye.y, to_sun);
+        if (atmosphere_work)
+            write_gpu_timestamp(frame.command_buffer, kGpuZoneAtmosphere,
+                                false, atmosphere_frame);
         if (!atmosphere_->record(frame.command_buffer, camera_eye.y, to_sun, error)) {
             error = "atmosphere LUT generation failed: " + error;
             return false;
         }
+        if (atmosphere_work)
+            write_gpu_timestamp(frame.command_buffer, kGpuZoneAtmosphere,
+                                true, atmosphere_frame);
     }
     if (limits_.max_draw_indirect_count < 1) {
         error = "Vulkan maxDrawIndirectCount cannot support grouped indirect draws";
@@ -12083,15 +12109,25 @@ bool VkSceneRenderer::record_cull_and_render(
     if (volumetrics_ &&
         !volumetrics_->prepare_froxel_bundle(frame.frame_slot, error))
         return false;
-    if (cloud_shadows_ &&
-        (!cloud_shadows_->prepare_frame(
-             frame.frame_slot, camera_eye, lighting_.sun_direction,
-             lighting_.sun_angular_diameter_deg, error) ||
-         !cloud_shadows_->record(frame.command_buffer,
-                                 static_cast<float>(frame.serial) *
-                                     (1.0f / 60.0f),
-                                 error))) {
-        return false;
+    if (cloud_shadows_) {
+        if (!cloud_shadows_->prepare_frame(
+                frame.frame_slot, camera_eye, lighting_.sun_direction,
+                lighting_.sun_angular_diameter_deg, error)) {
+            return false;
+        }
+        const bool cloud_shadow_work = cloud_shadows_->record_work_pending();
+        if (cloud_shadow_work)
+            write_gpu_timestamp(frame.command_buffer, kGpuZoneCloudShadows,
+                                false, selected);
+        if (!cloud_shadows_->record(frame.command_buffer,
+                                    static_cast<float>(frame.serial) *
+                                        (1.0f / 60.0f),
+                                    error)) {
+            return false;
+        }
+        if (cloud_shadow_work)
+            write_gpu_timestamp(frame.command_buffer, kGpuZoneCloudShadows,
+                                true, selected);
     }
     if (!update_environment_descriptor(selected, error)) return false;
     const bool native_gi_effective = gi_settings_.enabled &&
@@ -12355,6 +12391,9 @@ bool VkSceneRenderer::record_cull_and_render(
                         frame.frame_slot,
                         static_cast<float>(frame.serial) * (1.0f / 60.0f),
                         kGpuZoneVolumetrics,
+                        kGpuZoneVolDensity,
+                        kGpuZoneVolScatter,
+                        kGpuZoneVolIntegrate,
                         &selected.rt_tlas,
                         this,              // WP-E: vt_hooks
                         kGpuZoneVt};       // WP-E: vt_zone

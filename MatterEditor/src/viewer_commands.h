@@ -200,6 +200,13 @@ struct FifoBudget {
 // paths, unparsable values and env-forced fields all report to the console
 // instead of failing silently. The older bespoke `budget <f>` command stays as
 // a shorthand for `set viewer.budget.pixel_budget <f>`.
+// Capture examples (one line per FIFO write):
+//   set render.volumetrics.froxel_xy_scale 1x
+//   get render.volumetrics.froxel_xy_scale
+//   cam 20 760 350 0 420 0
+//   stats current-cost
+//   shot C:\\captures\\current-cost.png
+//   quit
 struct FifoSetProp {
     MT_COMMAND_NAME("fifo.set_prop");
     using Result = matter::evt::CommandResult<bool>;

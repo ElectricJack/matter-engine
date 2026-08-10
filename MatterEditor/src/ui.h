@@ -237,6 +237,11 @@ struct ViewerStats {
     float gpu_dlss_ms           = 0.0f;
     float gpu_composite_ms      = 0.0f;
     float gpu_vol_ms            = 0.0f;
+    float gpu_atmosphere_ms     = 0.0f;
+    float gpu_cloud_shadows_ms  = 0.0f;
+    float gpu_vol_density_ms    = 0.0f;
+    float gpu_vol_scatter_ms    = 0.0f;
+    float gpu_vol_integrate_ms  = 0.0f;
     bool  gpu_timers_supported  = false;
     int   debug_view_mode       = 0;
     // Wireframe debug view. `wireframe` is the session-owned request (the

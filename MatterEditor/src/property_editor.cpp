@@ -85,6 +85,15 @@ void draw_volumetric_readouts(const ViewerStats& stats) {
     ImGui::TextDisabled("Froxel memory: %.2f MiB   Cloud shadows: %.2f MiB",
                         static_cast<double>(stats.froxel_bytes) / (1024.0 * 1024.0),
                         static_cast<double>(stats.cloud_shadow_bytes) / (1024.0 * 1024.0));
+    const float physical_gpu_ms = stats.gpu_atmosphere_ms +
+        stats.gpu_cloud_shadows_ms + stats.gpu_vol_ms;
+    ImGui::TextDisabled("GPU atmosphere %.3f ms  Cloud shadows %.3f ms",
+                        stats.gpu_atmosphere_ms, stats.gpu_cloud_shadows_ms);
+    ImGui::TextDisabled("Froxel GPU: density %.3f  scatter %.3f  integrate %.3f "
+                        "(combined %.3f, physical %.3f ms)",
+                        stats.gpu_vol_density_ms, stats.gpu_vol_scatter_ms,
+                        stats.gpu_vol_integrate_ms, stats.gpu_vol_ms,
+                        physical_gpu_ms);
     ImGui::TextDisabled("Last allocation error: %s",
                         stats.last_volumetric_allocation_error.empty() ? "none" :
                         stats.last_volumetric_allocation_error.c_str());

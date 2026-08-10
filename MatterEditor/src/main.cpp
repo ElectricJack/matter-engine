@@ -745,6 +745,14 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            // exactly that problem.
            << ",\"gpu_total_ms\":" << frame_stats.gpu_total_ms
            << ",\"gpu_volumetrics_ms\":" << frame_stats.gpu_vol_ms
+           << ",\"gpu_atmosphere_ms\":" << frame_stats.gpu_atmosphere_ms
+           << ",\"gpu_cloud_shadows_ms\":" << frame_stats.gpu_cloud_shadows_ms
+           << ",\"gpu_vol_density_ms\":" << frame_stats.gpu_vol_density_ms
+           << ",\"gpu_vol_scatter_ms\":" << frame_stats.gpu_vol_scatter_ms
+           << ",\"gpu_vol_integrate_ms\":" << frame_stats.gpu_vol_integrate_ms
+           << ",\"vol_memory_bytes\":" << frame_stats.vol_memory_bytes
+           << ",\"cloud_shadow_memory_bytes\":"
+           << frame_stats.cloud_shadow_memory_bytes
            // Full per-pass GPU zone breakdown (last sampled frame). rt is the
            // primary/shadow trace; rt_gi is the separate GI/reflection trace.
            // Added so a fly-through capture can attribute a heavy RT frame to
@@ -3250,9 +3258,16 @@ int main() {
         stats.gpu_denoise_ms         = frame_stats.gpu_denoise_ms;
         stats.gpu_dlss_ms            = frame_stats.gpu_dlss_ms;
         stats.gpu_composite_ms       = frame_stats.gpu_composite_ms;
+        stats.gpu_vol_ms             = frame_stats.gpu_vol_ms;
+        stats.gpu_atmosphere_ms      = frame_stats.gpu_atmosphere_ms;
+        stats.gpu_cloud_shadows_ms   = frame_stats.gpu_cloud_shadows_ms;
+        stats.gpu_vol_density_ms     = frame_stats.gpu_vol_density_ms;
+        stats.gpu_vol_scatter_ms     = frame_stats.gpu_vol_scatter_ms;
+        stats.gpu_vol_integrate_ms   = frame_stats.gpu_vol_integrate_ms;
         stats.effective_froxel = {frame_stats.vol_grid_w, frame_stats.vol_grid_h,
                                   frame_stats.vol_grid_d};
         stats.froxel_bytes = frame_stats.vol_memory_bytes;
+        stats.cloud_shadow_bytes = frame_stats.cloud_shadow_memory_bytes;
         stats.last_volumetric_allocation_error = frame_stats.vol_allocation_error;
         if (frame_stats.vol_allocation_rejected &&
             frame_stats.vol_resource_generation !=
@@ -3722,12 +3737,12 @@ int main() {
         }
 
         if (!stats_label.empty()) {
-            // APPEND-ONLY format (scripts parse by position). The five trailing
-            // VT fields are the chart-space virtual-texturing census: a
-            // vt_rejected != 0 means part of the world silently fell back to
-            // the legacy path and is ignoring its surfaces() classification.
+            // APPEND-ONLY format (scripts parse by position). The established
+            // row ends at vol_resource_generation. Task 14 appends five timing
+            // lanes (ms) and cloud_shadow_memory_MiB after that stable prefix.
             std::printf("STATS,%s,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%d"
-                        ",%u,%u,%u,%.1f,%.1f,%u,%u,%u,%.2f,%llu\n",
+                        ",%u,%u,%u,%.1f,%.1f,%u,%u,%u,%.2f,%llu"
+                        ",%.3f,%.3f,%.3f,%.3f,%.3f,%.2f\n",
                         stats_label.c_str(), stats.frame_ms, stats.resolve_ms,
                         stats.build_ms, stats.draw_ms, stats.instances_active,
                         stats.raster_batches, stats.raster_tris,
@@ -3745,7 +3760,14 @@ int main() {
                         static_cast<double>(frame_stats.vol_memory_bytes) /
                             (1024.0 * 1024.0),
                         static_cast<unsigned long long>(
-                            frame_stats.vol_resource_generation));
+                            frame_stats.vol_resource_generation),
+                        frame_stats.gpu_atmosphere_ms,
+                        frame_stats.gpu_cloud_shadows_ms,
+                        frame_stats.gpu_vol_density_ms,
+                        frame_stats.gpu_vol_scatter_ms,
+                        frame_stats.gpu_vol_integrate_ms,
+                        static_cast<double>(frame_stats.cloud_shadow_memory_bytes) /
+                            (1024.0 * 1024.0));
             std::fflush(stdout);
             // The VT census goes to STDERR, next to the rest of the [vk]/[vt]
             // diagnostics, and unbuffered: a streamed-world capture that dies

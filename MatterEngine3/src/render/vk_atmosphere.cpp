@@ -449,6 +449,14 @@ bool VkAtmosphere::record(VkCommandBuffer command_buffer, float camera_world_y,
     return true;
 }
 
+bool VkAtmosphere::generation_pending(
+    float camera_world_y, const matter::Float3& to_sun_input) const {
+    if (!initialized_ || !std::isfinite(camera_world_y)) return false;
+    matter::Float3 to_sun = to_sun_input;
+    if (!normalize(to_sun)) return false;
+    return coefficient_change_pending() || view_change_pending(camera_world_y, to_sun);
+}
+
 bool VkAtmosphere::readback_irradiance(
     matter::VkImageResource& image,
     std::array<matter::Float3, 9>& output, std::string& error) {

@@ -186,6 +186,9 @@ public:
     const CloudShadowLevelBundle& level(uint32_t index) const;
     uint64_t persistent_bytes() const;
     bool active() const { return active_; }
+    bool record_work_pending() const {
+        return initialized_ && active_ && direct_sun_visible_;
+    }
     void destroy();
 
     const matter::VkImageResource& environment_image(uint32_t index) const;

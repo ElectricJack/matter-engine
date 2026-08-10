@@ -7761,6 +7761,11 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.gpu_dlss_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneDlss);
     impl_->stats.gpu_composite_ms        = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneComposite);
     impl_->stats.gpu_vol_ms              = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolumetrics);
+    impl_->stats.gpu_atmosphere_ms       = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneAtmosphere);
+    impl_->stats.gpu_cloud_shadows_ms    = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneCloudShadows);
+    impl_->stats.gpu_vol_density_ms      = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolDensity);
+    impl_->stats.gpu_vol_scatter_ms      = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolScatter);
+    impl_->stats.gpu_vol_integrate_ms    = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolIntegrate);
     const matter::FroxelGridDimensions vol_dimensions = impl_->vk_scene->volumetrics_dimensions();
     impl_->stats.vol_grid_w = vol_dimensions.width;
     impl_->stats.vol_grid_h = vol_dimensions.height;
@@ -7769,7 +7774,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->vk_scene->volumetrics_effective_xy_scale();
     impl_->stats.vol_effective_depth_slices =
         impl_->vk_scene->volumetrics_effective_depth_slices();
-    impl_->stats.vol_memory_bytes = matter::estimate_froxel_bytes(vol_dimensions, false);
+    impl_->stats.vol_memory_bytes = impl_->vk_scene->volumetrics_persistent_bytes();
+    impl_->stats.cloud_shadow_memory_bytes =
+        impl_->vk_scene->cloud_shadow_persistent_bytes();
     impl_->stats.vol_resource_generation = impl_->vk_scene->volumetrics_resource_generation();
     impl_->stats.vol_allocation_rejected = impl_->vk_scene->volumetrics_allocation_rejected();
     impl_->stats.vol_allocation_error = impl_->vk_scene->volumetrics_allocation_error();

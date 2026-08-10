@@ -54,6 +54,10 @@ public:
     void request_settings(const matter::AtmosphereSettings&);
     bool record(VkCommandBuffer, float camera_world_y,
                 const matter::Float3& to_sun, std::string& error);
+    // record() successfully early-outs on steady LUTs; renderer timing must
+    // therefore consult this predicate before writing a query pair.
+    bool generation_pending(float camera_world_y,
+                            const matter::Float3& to_sun) const;
     const matter::VkImageResource& sky_view() const;
     const matter::VkImageResource& irradiance_sh() const;
     const matter::VkImageResource& transmittance() const;
