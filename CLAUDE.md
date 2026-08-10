@@ -153,6 +153,22 @@ The build system ensures that:
 - Dependencies are correctly handled
 - Each project can use different compiler flags if needed
 
+### JS world-script tests (node)
+
+The world scripts under `projects/*/shared-lib/` and `MatterEngine3/shared-lib/`
+have Node test files (`projects/world_demo/tests/*.mjs`). There is no Makefile
+target and no `package.json` anywhere in the repo, so the `.js` modules those
+tests import default to CommonJS and a plain `node file.mjs` dies with
+"is a CommonJS module". Run them from the repo root with:
+
+```bash
+node --experimental-default-type=module projects/world_demo/tests/alpine_ecology_tests.mjs
+```
+
+(`--experimental-detect-module` works too on Node >= 20.10.) Do not "fix" this
+by adding a `package.json` — the same `.js` files are loaded by the engine's
+QuickJS host, which has its own module resolution and would not see it.
+
 ## Project Relationships
 
 Current projects and their relationships. Dependencies run one way only:
