@@ -2,6 +2,8 @@
 // Pure CPU module: no JS, no GL, no engine subsystem dependencies.
 
 #include <cassert>
+#include <atomic>
+#include <chrono>
 #include "terrain_field.h"
 
 #include <cmath>
@@ -574,8 +576,28 @@ float FieldRuntime::eval_reg(int target, float x, float z) const {
     return regs[target];
 }
 
+// Diagnostic counters for height_at, the field-program evaluation that the
+// habitat tape triggers FIVE times per scatter candidate (once for `height`,
+// four more inside slope_at's finite differences). Measured at ~93% of the
+// scatter cost, so this is the term any fieldSlope change has to beat.
+// Always-on counting is a single relaxed increment; the timer is the caller's
+// business (field_probe_ns is only accumulated when the caller opts in).
+std::atomic<unsigned long long> g_field_height_calls{0};
+std::atomic<unsigned long long> g_field_height_ns{0};
+bool g_field_probe_timing = false;
+
 float FieldRuntime::height_at(float x, float z) const {
-    return eval_reg(prog_.height_reg, x, z);
+    if (!g_field_probe_timing) {
+        g_field_height_calls.fetch_add(1, std::memory_order_relaxed);
+        return eval_reg(prog_.height_reg, x, z);
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    const float v = eval_reg(prog_.height_reg, x, z);
+    g_field_height_calls.fetch_add(1, std::memory_order_relaxed);
+    g_field_height_ns.fetch_add((unsigned long long)std::chrono::duration_cast<
+        std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count(),
+        std::memory_order_relaxed);
+    return v;
 }
 
 float FieldRuntime::density_at(float x, float y, float z) const {

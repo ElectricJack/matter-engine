@@ -46,6 +46,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -59,6 +60,14 @@
 
 using namespace script_host;
 
+// The field-probe counters (terrain_field.cpp). The habitat tape triggers
+// height_at FIVE times per candidate -- once for `height`, four more inside
+// slope_at's finite differences -- and that is ~93% of scatter cost.
+namespace terrain_field {
+extern std::atomic<unsigned long long> g_field_height_calls;
+extern std::atomic<unsigned long long> g_field_height_ns;
+extern bool g_field_probe_timing;
+}
 namespace {
 
 std::string slurp(const std::string& path) {
@@ -192,6 +201,7 @@ int main(int argc, char** argv) {
         }
         habitat = std::make_unique<terrain_field::SurfaceRuntime>(
             std::move(hprog));
+        terrain_field::g_field_probe_timing = true;   // opt in to probe timing
         std::printf("habitat tape: %d channels, %zu ops\n",
                     habitat->channel_count(), (size_t)habitat->op_count());
     } else {
@@ -339,6 +349,19 @@ int main(int argc, char** argv) {
         }
         const double wall_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t0).count();
+        {
+            // Field probes are the dominant scatter term: 1 for `height` plus 4
+            // inside slope_at per candidate. Printed per band so any fieldSlope
+            // change can be judged against the calls it actually removes.
+            const unsigned long long hc =
+                terrain_field::g_field_height_calls.exchange(0);
+            const unsigned long long hn =
+                terrain_field::g_field_height_ns.exchange(0);
+            if (hc)
+                std::printf("  [field probes] height_at calls=%llu  %.1f ms"
+                            "  (%.2f us/call)\n",
+                            hc, hn / 1e6, hn / 1000.0 / (double)hc);
+        }
         std::printf("\n=== %s (%d bakes, %.1f ms/bake wall) ===\n",
                     label, ok, ok ? wall_ms / ok : 0.0);
         const std::string rep = dsl::script_profile::report();

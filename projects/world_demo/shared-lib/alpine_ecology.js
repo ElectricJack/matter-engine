@@ -139,10 +139,17 @@ function identityChannel(identity, channel) {
 // ---------------------------------------------------------------------------
 // THE HABITAT TAPE (docs/habitat-tape-sketch-2026-08-08.md)
 //
-// sampleHabitat below costs ~105 us per scatter candidate: 14 fbm at 3-4
-// octaves, roughly 180 interpreted hash evaluations. Measured, a JS fbm is
-// 7,488 ns and a native boundary crossing is 567 ns, so replacing the whole
-// sample with one crossing removes ~104 us per candidate that reaches it.
+// HISTORICAL — sampleHabitat itself is gone; this records why the tape exists.
+// The interpreted sampler cost ~105 us per scatter candidate: 14 fbm at 3-4
+// octaves, roughly 180 interpreted hash evaluations. Measured, a JS fbm was
+// 7,488 ns and a native boundary crossing 567 ns, so replacing the whole
+// sample with one crossing removed ~104 us per candidate that reached it.
+//
+// WHAT THE TAPE COSTS NOW (measured 2026-08-10, band 5): ~24 us per candidate,
+// of which ~15.4 us is FIVE terrain-field evaluations -- one for `height` and
+// four inside slope_at's finite differences, at ~3.07 us each -- and ~9 us is
+// the tape's own 276 ops. So the interpreted sampler is not what to compare
+// against any more; fieldSlope's four probes are half the remaining cost.
 //
 // MEASURED EFFECT: -35.6% / -35.4% / -35.8% on levels 0 / 1 / 2 of
 // StreamMountain. Not the ~50x an earlier note here claimed. That figure came
