@@ -37,6 +37,7 @@
 #include "vk_volumetrics.h"
 #include "vk_atmosphere.h"
 #include "vk_cloud_shadows.h"
+#include "vk_pipeline.h"
 #include "tileset_bake_vk.h"
 
 namespace viewer {
@@ -1657,6 +1658,8 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyDescriptorSetLayout(device, rt_set_layout_, nullptr);
     if (composite_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device, composite_sampler_, nullptr);
+    if (sky_view_linear_sampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device, sky_view_linear_sampler_, nullptr);
     if (vol_linear_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device, vol_linear_sampler_, nullptr);
     // Phase 1 tileset Vulkan port (Task 6): tear down slot images, dummies,
@@ -1753,6 +1756,7 @@ void VkSceneRenderer::destroy_pipeline() {
     composite_pipeline_layout_ = VK_NULL_HANDLE;
     composite_pipeline_ = VK_NULL_HANDLE;
     composite_sampler_ = VK_NULL_HANDLE;
+    sky_view_linear_sampler_ = VK_NULL_HANDLE;
     vol_linear_sampler_ = VK_NULL_HANDLE;
     display_set_layout_ = VK_NULL_HANDLE;
     display_pipeline_layout_ = VK_NULL_HANDLE;
@@ -2788,6 +2792,15 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     sampler.magFilter = VK_FILTER_LINEAR;
     sampler.minFilter = VK_FILTER_LINEAR;
     sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    result = vkCreateSampler(device, &sampler, nullptr,
+                             &sky_view_linear_sampler_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateSampler(sky_view_linear)", result, error);
+
+    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     result = vkCreateSampler(device, &sampler, nullptr, &vol_linear_sampler_);
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateSampler(vol_linear)", result, error);
@@ -6042,7 +6055,7 @@ bool VkSceneRenderer::update_environment_descriptor(
     const matter::VkImageResource& sky = atmosphere_->sky_view();
     const matter::VkImageResource& irradiance = atmosphere_->irradiance_sh();
     VkDescriptorImageInfo images[6]{};
-    images[0] = {composite_sampler_, sky.view,
+    images[0] = {sky_view_linear_sampler_, sky.view,
                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     images[1] = {composite_sampler_, irradiance.view,
                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -12496,6 +12509,392 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
 #endif
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+VkSampler VkSceneRenderer::test_sky_view_sampler() const {
+    return sky_view_linear_sampler_;
+}
+
+VkSampler VkSceneRenderer::test_composite_sampler() const {
+    return composite_sampler_;
+}
+
+bool VkSceneRenderer::test_dispatch_environment_sampling_fixture(
+    const EnvironmentSamplingGpuFixture& fixture,
+    std::vector<matter::Float3>& output, std::string& error) {
+    output.clear();
+    error.clear();
+    if (!initialized_ || sky_view_linear_sampler_ == VK_NULL_HANDLE ||
+        fixture.uv.empty()) {
+        error = "environment sampling fixture requires an initialized renderer and UVs";
+        return false;
+    }
+    const VkDeviceSize lut_bytes = fixture.lut.size() * sizeof(matter::Float4);
+    const VkDeviceSize uv_bytes = fixture.uv.size() * sizeof(matter::Float2);
+    const VkDeviceSize output_bytes = fixture.uv.size() * sizeof(matter::Float4);
+    matter::VkBufferResource lut_upload;
+    matter::VkBufferResource uv_buffer;
+    matter::VkBufferResource output_buffer;
+    matter::VkImageResource lut_image;
+    if (!matter::create_buffer(
+            *vulkan_, lut_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, lut_upload, error) ||
+        !matter::create_buffer(
+            *vulkan_, uv_bytes,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uv_buffer, error) ||
+        !matter::create_buffer(
+            *vulkan_, output_bytes,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+            output_buffer, error) ||
+        !matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R32G32B32A32_SFLOAT,
+            {192, 108, 1},
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            lut_image, error) ||
+        !matter::map_buffer(lut_upload, error) ||
+        !matter::map_buffer(uv_buffer, error))
+        return false;
+    auto* packed_lut = static_cast<matter::Float4*>(lut_upload.mapped);
+    for (size_t i = 0; i < fixture.lut.size(); ++i)
+        packed_lut[i] = {fixture.lut[i].x, fixture.lut[i].y,
+                         fixture.lut[i].z, 1.0f};
+    std::memcpy(uv_buffer.mapped, fixture.uv.data(), uv_bytes);
+    if (!matter::flush_buffer(lut_upload, 0, lut_bytes, error) ||
+        !matter::flush_buffer(uv_buffer, 0, uv_bytes, error))
+        return false;
+    struct UploadRecord {
+        matter::VkImageResource* image;
+        VkBuffer source;
+    } upload{&lut_image, lut_upload.buffer};
+    const auto upload_callback = [](VkCommandBuffer command_buffer,
+                                    void* opaque) {
+        auto& item = *static_cast<UploadRecord*>(opaque);
+        transition_for_use(command_buffer, *item.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageExtent = {192, 108, 1};
+        vkCmdCopyBufferToImage(command_buffer, item.source, item.image->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        matter::record_image_transition(
+            command_buffer, *item.image,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    };
+    if (!matter::submit_immediate(
+            *vulkan_, upload_callback, &upload, error,
+            matter::ImmediateSubmitPhase::staging_upload,
+            {lut_upload.lifetime, lut_image.lifetime}))
+        return false;
+    std::vector<VkDescriptorSetLayoutBinding> bindings(3);
+    bindings[0] = descriptor_binding(
+        0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings[1] = descriptor_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                     VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings[2] = descriptor_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                     VK_SHADER_STAGE_COMPUTE_BIT);
+    matter::VkComputePipelineResource pipeline;
+    if (!matter::create_compute_pipeline(
+            *vulkan_, "environment_sampling_test.comp.spv", bindings,
+            pipeline, error))
+        return false;
+    VkDescriptorImageInfo image_info{sky_view_linear_sampler_, lut_image.view,
+                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet image_write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    image_write.dstSet = pipeline.descriptor_set;
+    image_write.dstBinding = 0;
+    image_write.descriptorCount = 1;
+    image_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    image_write.pImageInfo = &image_info;
+    vkUpdateDescriptorSets(vulkan_->device(), 1, &image_write, 0, nullptr);
+    matter::write_storage_buffer_descriptor(pipeline, 1, uv_buffer, 0,
+                                            uv_bytes);
+    matter::write_storage_buffer_descriptor(pipeline, 2, output_buffer, 0,
+                                            output_bytes);
+    if (!matter::dispatch_compute(
+            *vulkan_, pipeline,
+            static_cast<uint32_t>((fixture.uv.size() + 63u) / 64u), 1, 1,
+            error))
+        return false;
+    std::vector<matter::Float4> packed_output(fixture.uv.size());
+    if (!matter::readback_buffer(*vulkan_, output_buffer, packed_output.data(),
+                                 output_bytes, 0, error))
+        return false;
+    output.reserve(packed_output.size());
+    for (const matter::Float4& value : packed_output)
+        output.push_back({value.x, value.y, value.z});
+    return true;
+}
+
+bool VkSceneRenderer::test_dispatch_display_transform_fixture(
+    const DisplayTransformGpuFixture& fixture,
+    std::vector<matter::Float3>& output, std::string& error) {
+    output.clear();
+    error.clear();
+    if (!initialized_ || fixture.width == 0 || fixture.height == 0 ||
+        display_set_layout_ == VK_NULL_HANDLE ||
+        display_pipeline_layout_ == VK_NULL_HANDLE) {
+        error = "display transform fixture requires an initialized renderer and extent";
+        return false;
+    }
+    const size_t pixel_count =
+        static_cast<size_t>(fixture.width) * fixture.height;
+    const VkDeviceSize output_bytes = pixel_count * sizeof(matter::Float4);
+    matter::VkImageResource input;
+    matter::VkImageResource target;
+    matter::VkBufferResource readback;
+    if (!matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R32G32B32A32_SFLOAT,
+            {1, 1, 1},
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            input, error) ||
+        !matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R32G32B32A32_SFLOAT,
+            {fixture.width, fixture.height, 1},
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            target, error) ||
+        !matter::create_buffer(
+            *vulkan_, output_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+            readback, error))
+        return false;
+
+    struct FixtureGraphics {
+        VkDevice device = VK_NULL_HANDLE;
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        VkDescriptorPool pool = VK_NULL_HANDLE;
+        ~FixtureGraphics() {
+            if (pipeline != VK_NULL_HANDLE)
+                vkDestroyPipeline(device, pipeline, nullptr);
+            if (pool != VK_NULL_HANDLE)
+                vkDestroyDescriptorPool(device, pool, nullptr);
+        }
+    } graphics;
+    graphics.device = vulkan_->device();
+    const VkDescriptorPoolSize pool_size{
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+    VkDescriptorPoolCreateInfo pool_create{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool_create.maxSets = 1;
+    pool_create.poolSizeCount = 1;
+    pool_create.pPoolSizes = &pool_size;
+    VkResult result = vkCreateDescriptorPool(
+        graphics.device, &pool_create, nullptr, &graphics.pool);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateDescriptorPool(display fixture)", result,
+                       error);
+    VkDescriptorSet descriptor = VK_NULL_HANDLE;
+    VkDescriptorSetAllocateInfo allocate{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocate.descriptorPool = graphics.pool;
+    allocate.descriptorSetCount = 1;
+    allocate.pSetLayouts = &display_set_layout_;
+    result = vkAllocateDescriptorSets(graphics.device, &allocate, &descriptor);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkAllocateDescriptorSets(display fixture)", result,
+                       error);
+    VkDescriptorImageInfo input_info{composite_sampler_, input.view,
+                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet input_write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    input_write.dstSet = descriptor;
+    input_write.dstBinding = 0;
+    input_write.descriptorCount = 1;
+    input_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    input_write.pImageInfo = &input_info;
+    vkUpdateDescriptorSets(graphics.device, 1, &input_write, 0, nullptr);
+
+    VkShaderModule vertex = VK_NULL_HANDLE;
+    VkShaderModule fragment = VK_NULL_HANDLE;
+    if (!create_shader_module(graphics.device, "composite.vert.spv", vertex,
+                              error) ||
+        !create_shader_module(graphics.device, "display_transform.frag.spv",
+                              fragment, error)) {
+        if (vertex != VK_NULL_HANDLE)
+            vkDestroyShaderModule(graphics.device, vertex, nullptr);
+        return false;
+    }
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vertex;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragment;
+    stages[1].pName = "main";
+    VkPipelineVertexInputStateCreateInfo vertex_input{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo input_assembly{
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport_state{
+        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewport_state.viewportCount = 1;
+    viewport_state.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rasterization{
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterization.cullMode = VK_CULL_MODE_NONE;
+    rasterization.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterization.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo multisample{
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineColorBlendAttachmentState blend{};
+    blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+                           VK_COLOR_COMPONENT_G_BIT |
+                           VK_COLOR_COMPONENT_B_BIT |
+                           VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo color_blend{
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    color_blend.attachmentCount = 1;
+    color_blend.pAttachments = &blend;
+    const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
+                                             VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{
+        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_states;
+    const VkFormat target_format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    VkPipelineRenderingCreateInfo rendering_create{
+        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    rendering_create.colorAttachmentCount = 1;
+    rendering_create.pColorAttachmentFormats = &target_format;
+    VkGraphicsPipelineCreateInfo pipeline_create{
+        VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    pipeline_create.pNext = &rendering_create;
+    pipeline_create.stageCount = 2;
+    pipeline_create.pStages = stages;
+    pipeline_create.pVertexInputState = &vertex_input;
+    pipeline_create.pInputAssemblyState = &input_assembly;
+    pipeline_create.pViewportState = &viewport_state;
+    pipeline_create.pRasterizationState = &rasterization;
+    pipeline_create.pMultisampleState = &multisample;
+    pipeline_create.pColorBlendState = &color_blend;
+    pipeline_create.pDynamicState = &dynamic;
+    pipeline_create.layout = display_pipeline_layout_;
+    result = vkCreateGraphicsPipelines(
+        graphics.device, VK_NULL_HANDLE, 1, &pipeline_create, nullptr,
+        &graphics.pipeline);
+    vkDestroyShaderModule(graphics.device, fragment, nullptr);
+    vkDestroyShaderModule(graphics.device, vertex, nullptr);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateGraphicsPipelines(display fixture)", result,
+                       error);
+
+    struct DisplayRecord {
+        matter::VkImageResource* input;
+        matter::VkImageResource* target;
+        VkBuffer readback;
+        VkPipeline pipeline;
+        VkPipelineLayout layout;
+        VkDescriptorSet descriptor;
+        uint32_t width;
+        uint32_t height;
+        matter::Float3 hdr;
+        float push[3];
+    } record{&input, &target, readback.buffer, graphics.pipeline,
+             display_pipeline_layout_, descriptor, fixture.width,
+             fixture.height, fixture.hdr,
+             {fixture.exposure_ev, 0.0f, fixture.srgb_output ? 1.0f : 0.0f}};
+    const auto record_callback = [](VkCommandBuffer command_buffer,
+                                    void* opaque) {
+        auto& item = *static_cast<DisplayRecord*>(opaque);
+        const VkClearColorValue hdr_clear{{item.hdr.x, item.hdr.y,
+                                           item.hdr.z, 1.0f}};
+        clear_color_image_for_use(
+            command_buffer, *item.input, hdr_clear,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        transition_for_use(command_buffer, *item.target,
+                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
+        VkRenderingAttachmentInfo attachment{
+            VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        attachment.imageView = item.target->view;
+        attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+        rendering.renderArea.extent = {item.width, item.height};
+        rendering.layerCount = 1;
+        rendering.colorAttachmentCount = 1;
+        rendering.pColorAttachments = &attachment;
+        vkCmdBeginRendering(command_buffer, &rendering);
+        VkViewport viewport{0.0f, 0.0f, static_cast<float>(item.width),
+                            static_cast<float>(item.height), 0.0f, 1.0f};
+        const VkRect2D scissor{{0, 0}, {item.width, item.height}};
+        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          item.pipeline);
+        vkCmdBindDescriptorSets(command_buffer,
+                                VK_PIPELINE_BIND_POINT_GRAPHICS, item.layout,
+                                0, 1, &item.descriptor, 0, nullptr);
+        vkCmdPushConstants(command_buffer, item.layout,
+                           VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(item.push), item.push);
+        vkCmdDraw(command_buffer, 3, 1, 0, 0);
+        vkCmdEndRendering(command_buffer);
+        matter::record_image_transition(
+            command_buffer, *item.target,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageExtent = {item.width, item.height, 1};
+        vkCmdCopyImageToBuffer(command_buffer, item.target->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               item.readback, 1, &copy);
+        VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+        VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependency.memoryBarrierCount = 1;
+        dependency.pMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
+    };
+    if (!matter::submit_immediate(
+            *vulkan_, record_callback, &record, error,
+            matter::ImmediateSubmitPhase::raster_submission,
+            {input.lifetime, target.lifetime, readback.lifetime}))
+        return false;
+    std::vector<matter::Float4> packed(pixel_count);
+    if (!matter::readback_buffer(*vulkan_, readback, packed.data(),
+                                 output_bytes, 0, error))
+        return false;
+    output.reserve(pixel_count);
+    for (const matter::Float4& value : packed)
+        output.push_back({value.x, value.y, value.z});
+    return true;
+}
+
 bool VkSceneRenderer::test_record_hdr_constant(
     const matter::VulkanFrame& frame, matter::Float3 color,
     std::string& error) {

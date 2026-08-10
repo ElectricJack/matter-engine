@@ -1045,6 +1045,24 @@ public:
     uint32_t rt_invalid_part_records_last_ = 0;
     uint64_t rt_invalid_part_records_total_ = 0;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    struct EnvironmentSamplingGpuFixture {
+        std::array<matter::Float3, 192 * 108> lut{};
+        std::vector<matter::Float2> uv;
+    };
+    struct DisplayTransformGpuFixture {
+        uint32_t width = 8, height = 8;
+        matter::Float3 hdr{0.21404114f, 0.21404114f, 0.21404114f};
+        float exposure_ev = 0.0f;
+        bool srgb_output = false;
+    };
+    bool test_dispatch_environment_sampling_fixture(
+        const EnvironmentSamplingGpuFixture&, std::vector<matter::Float3>&,
+        std::string&);
+    bool test_dispatch_display_transform_fixture(
+        const DisplayTransformGpuFixture&, std::vector<matter::Float3>&,
+        std::string&);
+    VkSampler test_sky_view_sampler() const;
+    VkSampler test_composite_sampler() const;
     void test_force_rt_unavailable(bool unavailable) {
         test_force_rt_unavailable_ = unavailable;
     }
@@ -1993,6 +2011,7 @@ private:
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline composite_pipeline_ = VK_NULL_HANDLE;
     VkSampler composite_sampler_ = VK_NULL_HANDLE;
+    VkSampler sky_view_linear_sampler_ = VK_NULL_HANDLE;
     VkSampler vol_linear_sampler_ = VK_NULL_HANDLE;  // trilinear for froxel volume
     VkDescriptorSetLayout display_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout display_pipeline_layout_ = VK_NULL_HANDLE;

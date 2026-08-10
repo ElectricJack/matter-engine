@@ -4,6 +4,9 @@
 // Stable physical-environment ABI.  All raster, RT, and froxel consumers bind
 // this identical set at set 1; the neutral cloud fields make the declaration
 // valid before cloud-shadow production exists.
+#ifdef MATTER_ENVIRONMENT_SAMPLING_TEST
+layout(set = 0, binding = 0) uniform sampler2D atmosphere_sky_view;
+#else
 layout(set = 1, binding = 0) uniform sampler2D atmosphere_sky_view;
 layout(set = 1, binding = 1) uniform sampler2D atmosphere_irradiance_sh;
 layout(set = 1, binding = 2) uniform sampler3D cloud_shadow_near_0;
@@ -26,6 +29,7 @@ float sample_cloud_transmittance(vec3 world_pos, float receiver_distance_m) {
         isinf(environment.cloud_state.x)) return 1.0;
     return cloud_shadow_sample_active(world_pos, receiver_distance_m);
 }
+#endif
 
 const float ENV_PI = 3.14159265359;
 
@@ -41,9 +45,12 @@ vec2 atmosphere_sky_uv(vec3 world_dir, vec3 to_sun) {
         ? atan(dot(normalize(horizontal), right),
                dot(normalize(horizontal), forward)) : 0.0;
     float zenith = acos(clamp(direction.y, -1.0, 1.0));
-    return vec2((azimuth + ENV_PI) / (2.0 * ENV_PI), zenith / ENV_PI);
+    float azimuth_u = (azimuth + ENV_PI) / (2.0 * ENV_PI);
+    float v = zenith / ENV_PI;
+    return vec2(fract(azimuth_u), clamp(v, 0.5 / 108.0, 107.5 / 108.0));
 }
 
+#ifndef MATTER_ENVIRONMENT_SAMPLING_TEST
 vec3 sample_physical_sky(vec3 world_dir, vec3 to_sun, vec3 sky_modifier) {
     return texture(atmosphere_sky_view,
                    atmosphere_sky_uv(world_dir, to_sun)).rgb * sky_modifier;
@@ -76,5 +83,6 @@ vec3 sample_sky_irradiance(vec3 normal, vec3 sky_modifier) {
     }
     return max(irradiance, vec3(0.0)) * sky_modifier;
 }
+#endif
 
 #endif

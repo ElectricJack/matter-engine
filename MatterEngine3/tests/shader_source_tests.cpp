@@ -68,6 +68,28 @@ int main() {
     assert(environment.find("sample_sky_irradiance") != std::string::npos &&
            environment.find("environment.cloud_state.x == 0.0") !=
                std::string::npos);
+    assert(environment.find("fract(azimuth_u)") != std::string::npos);
+    assert(environment.find("clamp(v, 0.5 / 108.0, 107.5 / 108.0)") !=
+           std::string::npos);
+    const std::string sky_view =
+        read_shader("../shaders_vk/atmosphere_sky_view.comp");
+    assert(sky_view.find("(float(pixel.x) + 0.5) / 192.0") !=
+           std::string::npos);
+    assert(sky_view.find("float(pixel.x) / 191.0") == std::string::npos);
+    const std::string display =
+        read_shader("../shaders_vk/display_transform.frag");
+    const std::string ranks =
+        "37,12,54,1,46,27,61,8,18,43,5,58,31,50,14,40,"
+        "63,22,35,10,48,3,56,29,16,45,7,60,25,52,11,38,"
+        "33,0,47,20,57,15,42,30,9,53,24,62,4,36,19,51,"
+        "41,13,55,28,59,6,44,21,26,49,2,39,17,34,23,32";
+    assert(display.find(ranks) != std::string::npos);
+    for (const char* required : {"gl_FragCoord", "linear_to_srgb",
+                                 "srgb_to_linear", "code_dithered"})
+        assert(display.find(required) != std::string::npos);
+    for (const char* forbidden : {"frame_index", "jitter", "time",
+                                  "random", "pcg"})
+        assert(display.find(forbidden) == std::string::npos);
     const std::string renderer = read_shader("../src/render/vk_scene_renderer.cpp");
     assert(renderer.find("VK_FORMAT_R16_SFLOAT") != std::string::npos &&
            renderer.find("record_neutral_cloud_clear") != std::string::npos &&

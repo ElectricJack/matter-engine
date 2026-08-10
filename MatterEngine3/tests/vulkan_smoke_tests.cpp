@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "matter/vulkan_device.h"
+#include "matter/display_dither.h"
 #include "render/gpu_matrix_pack.h"
 #include "render/lod_distance.h"
 #include "render/matrix_math.h"
@@ -52,6 +53,194 @@ static matter::Float3 aces_reference(matter::Float3 hdr, float exposure_ev) {
                           0.0f, 1.0f);
     };
     return {map(hdr.x), map(hdr.y), map(hdr.z)};
+}
+
+static float srgb_encode(float linear) {
+    return linear <= 0.0031308f ? linear * 12.92f
+        : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
+}
+
+static float srgb_decode(float encoded) {
+    return encoded <= 0.04045f ? encoded / 12.92f
+        : std::pow((encoded + 0.055f) / 1.055f, 2.4f);
+}
+
+static float inverse_aces(float mapped) {
+    if (mapped <= 0.0f) return 0.0f;
+    if (mapped >= 1.0f) return 8.0f;
+    const float a = 2.43f * mapped - 2.51f;
+    const float b = 0.59f * mapped - 0.03f;
+    const float c = 0.14f * mapped;
+    const float discriminant = std::max(0.0f, b * b - 4.0f * a * c);
+    return (-b - std::sqrt(discriminant)) / (2.0f * a);
+}
+
+static matter::Float3 sample_periodic_sky_cpu(
+    const viewer::VkSceneRenderer::EnvironmentSamplingGpuFixture& fixture,
+    matter::Float2 uv) {
+    const float u = uv.x - std::floor(uv.x);
+    const float v = std::clamp(uv.y, 0.5f / 108.0f, 107.5f / 108.0f);
+    const float px = u * 192.0f - 0.5f;
+    const float py = v * 108.0f - 0.5f;
+    const int x0_raw = static_cast<int>(std::floor(px));
+    const int y0 = std::clamp(static_cast<int>(std::floor(py)), 0, 107);
+    const int y1 = std::min(y0 + 1, 107);
+    const int x0 = (x0_raw % 192 + 192) % 192;
+    const int x1 = (x0 + 1) % 192;
+    const float tx = px - std::floor(px);
+    const float ty = py - std::floor(py);
+    const auto lerp = [](float a, float b, float t) { return a + (b - a) * t; };
+    const matter::Float3& a = fixture.lut[static_cast<size_t>(y0) * 192 + x0];
+    const matter::Float3& b = fixture.lut[static_cast<size_t>(y0) * 192 + x1];
+    const matter::Float3& c = fixture.lut[static_cast<size_t>(y1) * 192 + x0];
+    const matter::Float3& d = fixture.lut[static_cast<size_t>(y1) * 192 + x1];
+    return {lerp(lerp(a.x, b.x, tx), lerp(c.x, d.x, tx), ty),
+            lerp(lerp(a.y, b.y, tx), lerp(c.y, d.y, tx), ty),
+            lerp(lerp(a.z, b.z, tx), lerp(c.z, d.z, tx), ty)};
+}
+
+void run_atmosphere_presentation_sampling_tests(matter::VulkanDevice& vulkan) {
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error), error.empty() ? "initialize atmosphere presentation fixture" : error.c_str());
+    if (!error.empty()) return;
+    CHECK(renderer.test_sky_view_sampler() != VK_NULL_HANDLE &&
+              renderer.test_sky_view_sampler() != renderer.test_composite_sampler(),
+          "physical sky uses a dedicated sampler rather than the nearest G-buffer sampler");
+
+    viewer::VkSceneRenderer::EnvironmentSamplingGpuFixture fixture;
+    for (uint32_t y = 0; y < 108; ++y) for (uint32_t x = 0; x < 192; ++x) {
+        const float u = (static_cast<float>(x) + 0.5f) / 192.0f;
+        const float v = (static_cast<float>(y) + 0.5f) / 108.0f;
+        fixture.lut[static_cast<size_t>(y) * 192 + x] =
+            {u, v, 0.25f * u + 0.75f * v};
+    }
+    for (uint32_t i = 0; i < 432; ++i)
+        fixture.uv.push_back({0.37f, (static_cast<float>(i) + 0.5f) / 432.0f});
+    fixture.uv.push_back({0.37f, 0.0f});
+    fixture.uv.push_back({0.37f, 1.0f});
+    constexpr float epsilon = 1.0e-5f;
+    for (uint32_t i = 0; i < 256; ++i) {
+        const float v = (static_cast<float>(i) + 0.5f) / 256.0f;
+        fixture.uv.push_back({epsilon, v});
+        fixture.uv.push_back({1.0f - epsilon, v});
+    }
+    std::vector<matter::Float3> sampled;
+    CHECK(renderer.test_dispatch_environment_sampling_fixture(fixture, sampled, error),
+          error.empty() ? "dispatch periodic linear sky sampling fixture" : error.c_str());
+    if (sampled.size() != fixture.uv.size()) {
+        CHECK(false, "sky sampling fixture returns every requested UV");
+        return;
+    }
+    size_t plateau = 1, max_plateau = 1, mismatch_count = 0;
+    for (size_t i = 0; i < 432; ++i) {
+        const matter::Float3 expected = sample_periodic_sky_cpu(fixture, fixture.uv[i]);
+        const bool matches = std::fabs(sampled[i].x - expected.x) <= 1.0e-3f &&
+                             std::fabs(sampled[i].y - expected.y) <= 1.0e-3f &&
+                             std::fabs(sampled[i].z - expected.z) <= 1.0e-3f;
+        if (!matches && mismatch_count++ < 8)
+            std::printf("sky sample mismatch[%zu] uv=(%.8f,%.8f) actual=(%.6f,%.6f,%.6f) expected=(%.6f,%.6f,%.6f)\n",
+                        i, fixture.uv[i].x, fixture.uv[i].y,
+                        sampled[i].x, sampled[i].y, sampled[i].z,
+                        expected.x, expected.y, expected.z);
+        CHECK(matches,
+              "GPU sky sample matches periodic-U clamped-V bilinear oracle");
+        if (i > 0) {
+            const float reference_slope = std::fabs(
+                sample_periodic_sky_cpu(fixture, fixture.uv[i]).y -
+                sample_periodic_sky_cpu(fixture, fixture.uv[i - 1]).y);
+            if (reference_slope > 1.0e-4f && sampled[i].y == sampled[i - 1].y)
+                ++plateau;
+            else
+                plateau = 1;
+            max_plateau = std::max(max_plateau, plateau);
+        }
+    }
+    CHECK(max_plateau <= 2, "linear sky sampling avoids visible vertical plateaus");
+    CHECK(std::fabs(sampled[432].y - fixture.lut[0].y) <= 1.0e-3f &&
+              std::fabs(sampled[433].y - fixture.lut[107 * 192].y) <= 1.0e-3f,
+          "sky V edge probes clamp to edge texel centres");
+    std::vector<float> adjacent;
+    for (uint32_t i = 1; i < 191; ++i) {
+        const matter::Float2 left{(static_cast<float>(i) - epsilon) / 192.0f, 0.5f};
+        const matter::Float2 right{(static_cast<float>(i) + epsilon) / 192.0f, 0.5f};
+        const auto a = sample_periodic_sky_cpu(fixture, left);
+        const auto b = sample_periodic_sky_cpu(fixture, right);
+        adjacent.push_back(std::fabs(a.x - b.x));
+    }
+    std::sort(adjacent.begin(), adjacent.end());
+    const float median_adjacent = adjacent[adjacent.size() / 2];
+    for (uint32_t i = 0; i < 256; ++i) {
+        const auto& a = sampled[434 + i * 2];
+        const auto& b = sampled[435 + i * 2];
+        const float absolute = std::max({std::fabs(a.x - b.x), std::fabs(a.y - b.y),
+                                         std::fabs(a.z - b.z)});
+        const float scale = std::max({std::fabs(a.x), std::fabs(a.y), std::fabs(a.z),
+                                      std::fabs(b.x), std::fabs(b.y), std::fabs(b.z)});
+        CHECK(std::isfinite(absolute) && (scale <= 1.0e-3f ? absolute <= 1.0e-3f
+                                                               : absolute / scale <= 0.005f),
+              "periodic sky seam pair is finite and bounded");
+        CHECK(std::fabs(a.x - b.x) <= 2.0f * median_adjacent + 1.0e-6f,
+              "sky seam finite difference is no larger than local sampling variation");
+    }
+
+    const float target_codes[] = {0.5f, 0.0f, 1.0f};
+    for (float target_code : target_codes) {
+        const float target_linear = srgb_decode(target_code);
+        const float hdr = inverse_aces(target_linear);
+        viewer::VkSceneRenderer::DisplayTransformGpuFixture display;
+        display.width = 16;
+        display.height = 16;
+        display.hdr = {hdr, hdr, hdr};
+        std::vector<matter::Float3> unorm_a, unorm_b, srgb;
+        CHECK(renderer.test_dispatch_display_transform_fixture(display, unorm_a, error),
+              error.empty() ? "dispatch UNORM display dither fixture" : error.c_str());
+        CHECK(renderer.test_dispatch_display_transform_fixture(display, unorm_b, error),
+              error.empty() ? "repeat static display dither fixture" : error.c_str());
+        display.srgb_output = true;
+        CHECK(renderer.test_dispatch_display_transform_fixture(display, srgb, error),
+              error.empty() ? "dispatch sRGB display dither fixture" : error.c_str());
+        CHECK(unorm_a.size() == 256 && unorm_b.size() == 256 && srgb.size() == 256,
+              "display fixture returns the complete 16x16 interior");
+        if (unorm_a.size() != 256 || unorm_b.size() != 256 || srgb.size() != 256) continue;
+        float tile_sums[4]{};
+        float minimum_offset = 1.0f, maximum_offset = -1.0f;
+        bool identical = true;
+        for (uint32_t y = 0; y < 16; ++y) for (uint32_t x = 0; x < 16; ++x) {
+            const size_t index = static_cast<size_t>(y) * 16 + x;
+            const matter::Float3 expected = matter::apply_display_dither_code(
+                {target_code, target_code, target_code}, x, y);
+            const matter::Float3 actual = unorm_a[index];
+            const float offset = actual.x - target_code;
+            minimum_offset = std::min(minimum_offset, offset);
+            maximum_offset = std::max(maximum_offset, offset);
+            tile_sums[(y / 8) * 2 + x / 8] += offset;
+            identical = identical && std::memcmp(&actual, &unorm_b[index], sizeof(actual)) == 0;
+            CHECK(std::fabs(actual.x - expected.x) <= 1.0e-6f &&
+                      std::fabs(actual.y - expected.y) <= 1.0e-6f &&
+                      std::fabs(actual.z - expected.z) <= 1.0e-6f &&
+                      std::fabs((actual.x - target_code) - (actual.y - target_code)) <= 1.0e-7f &&
+                      std::fabs((actual.x - target_code) - (actual.z - target_code)) <= 1.0e-7f,
+                  "display shader applies the exact achromatic CPU dither oracle");
+            CHECK(actual.x >= 0.0f && actual.x <= 1.0f &&
+                      expected.x >= 0.0f && expected.x <= 1.0f &&
+                      std::fabs(matter::display_dither_code_offset(x, y)) <= 0.5f / 255.0f,
+                  "display dither clamps rails while its oracle remains half-LSB bounded");
+            CHECK(std::fabs(srgb_encode(srgb[index].x) - actual.x) <= 1.0e-6f &&
+                      std::fabs(srgb_encode(srgb[index].y) - actual.y) <= 1.0e-6f &&
+                      std::fabs(srgb_encode(srgb[index].z) - actual.z) <= 1.0e-6f,
+                  "UNORM and sRGB branches agree in encoded display code space");
+        }
+        CHECK(identical, "two static display submissions are byte-identical");
+        if (target_code == 0.5f) {
+            CHECK(std::fabs(minimum_offset + 0.5f / 255.0f) <= 1.0e-6f &&
+                      std::fabs(maximum_offset - 0.5f / 255.0f) <= 1.0e-6f,
+                  "display dither reaches both exact half-LSB extrema");
+            for (float sum : tile_sums)
+                CHECK(std::fabs(sum / 64.0f) <= 1.0e-8f,
+                      "each complete 8x8 display dither tile has zero mean");
+        }
+    }
 }
 
 static int display_unorm_code(float linear, VkFormat swapchain_format) {
@@ -9897,6 +10086,7 @@ int main() {
         if (smoke_mode && std::string(smoke_mode) == "atmosphere") {
             test_atmosphere_irradiance_dispatch_contract();
             run_atmosphere_lut_smoke(*vulkan);
+            run_atmosphere_presentation_sampling_tests(*vulkan);
             std::printf("validation errors: %u\n", vulkan->validation_error_count());
             finish_vulkan_test(vulkan);
             if (window) glfwDestroyWindow(window);

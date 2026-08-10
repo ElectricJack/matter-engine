@@ -535,6 +535,7 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/atmosphere_multiscatter.comp.spv \
          build/shaders_vk/atmosphere_sky_view.comp.spv \
          build/shaders_vk/atmosphere_irradiance.comp.spv \
+         build/shaders_vk/environment_sampling_test.comp.spv \
          build/shaders_vk/animation_skin.comp.spv \
          build/shaders_vk/cull.comp.spv \
          build/shaders_vk/raster.vert.spv \
@@ -581,6 +582,10 @@ build/shaders_vk/atmosphere_transmittance.comp.spv \
     build/shaders_vk/atmosphere_sky_view.comp.spv \
     build/shaders_vk/atmosphere_irradiance.comp.spv: \
     $(ME3_DIR)/shaders_vk/atmosphere_common.glsl
+
+build/shaders_vk/environment_sampling_test.comp.spv: \
+    $(ME3_DIR)/shaders_vk/environment_common.glsl \
+    $(ME3_DIR)/shaders_vk/cloud_shadow_common.glsl
 
 # C2 uses the same source and descriptor ABI as raster.vert; a compile-time
 # specialization adds location 5 for the previous skinned position.

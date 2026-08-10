@@ -1,4 +1,5 @@
 #include "matter/atmosphere.h"
+#include "matter/display_dither.h"
 #include "check.h"
 
 #include <cmath>
@@ -18,6 +19,38 @@ bool in_unit_interval(const matter::Float3& value) {
 
 bool nearly_equal(float a, float b) {
     return std::fabs(a - b) <= 1.0e-6f;
+}
+
+matter::Float2 sky_uv(float azimuth_u, float v) {
+    return {azimuth_u - std::floor(azimuth_u),
+            std::clamp(v, 0.5f / 108.0f, 107.5f / 108.0f)};
+}
+
+void test_periodic_sky_uv_and_display_dither_oracles() {
+    CHECK(matter::display_dither_fnv1a32() == 0xdc0d948bu,
+          "display dither rank bytes match the approved FNV oracle");
+    bool seen[64]{};
+    double sum = 0.0;
+    for (uint32_t y = 0; y < 8; ++y) for (uint32_t x = 0; x < 8; ++x) {
+        const uint8_t rank = matter::display_dither_rank(x, y);
+        CHECK(rank < 64 && !seen[rank], "display dither is a 0..63 permutation");
+        seen[rank] = true;
+        sum += matter::display_dither_code_offset(x, y);
+    }
+    CHECK(matter::display_dither_rank(0, 0) == 37 &&
+              matter::display_dither_rank(7, 7) == 32,
+          "display dither uses exact row-major pixel indexing");
+    CHECK(std::fabs(sum) <= 1.0e-12,
+          "one complete dither tile has zero mean");
+    CHECK(matter::display_dither_code_offset(1, 4) == -0.5f / 255.0f &&
+              matter::display_dither_code_offset(0, 2) == 0.5f / 255.0f,
+          "dither extrema are exact half-LSB offsets");
+    CHECK(sky_uv(-0.25f, 0.0f).x == 0.75f &&
+              sky_uv(1.25f, 1.0f).x == 0.25f,
+          "sky U wraps periodically");
+    CHECK(sky_uv(0.0f, 0.0f).y == 0.5f / 108.0f &&
+              sky_uv(0.0f, 1.0f).y == 107.5f / 108.0f,
+          "sky V clamps to edge-texel centres");
 }
 
 void test_sanitize_atmosphere_is_finite_and_bounded() {
@@ -141,6 +174,7 @@ void test_direct_sun_rgb_applies_all_authored_modifiers_once() {
 } // namespace
 
 int main() {
+    test_periodic_sky_uv_and_display_dither_oracles();
     test_sanitize_atmosphere_is_finite_and_bounded();
     test_reference_transmittance_is_finite_bounded_and_monotonic_with_path_length();
     test_invalid_reference_inputs_return_clear_invalid_transmittance();

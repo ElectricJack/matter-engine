@@ -247,8 +247,8 @@ static void test_raster_debug_push_constants_contract() {
     const viewer::RasterDebugPushConstants indirect =
         viewer::make_raster_debug_push_constants(
             99u, false, matter::GeometryDebugView::LodTint, false);
-    CHECK(sizeof(viewer::RasterDebugPushConstants) == 16,
-          "raster debug push constants stay four 32-bit words");
+    CHECK(sizeof(viewer::RasterDebugPushConstants) == 20,
+          "raster debug push constants stay five 32-bit words");
     CHECK(indirect.direct_lod == 99u && indirect.direct_lod_valid == 0u,
           "indirect mesh draws do not override the cull-selected transform LOD");
     CHECK(indirect.lod_tint_enabled == 1u && indirect.wireframe_enabled == 0u,

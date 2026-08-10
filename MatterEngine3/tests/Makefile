@@ -2807,7 +2807,7 @@ clean-surfacefield:
 ATMOSPHERE_TARGET = build/atmosphere_tests
 ATMOSPHERE_CPP = atmosphere_tests.cpp
 
-$(ATMOSPHERE_TARGET): $(ATMOSPHERE_CPP) ../include/matter/atmosphere.h ../include/matter/math_types.h check.h | build
+$(ATMOSPHERE_TARGET): $(ATMOSPHERE_CPP) ../include/matter/atmosphere.h ../include/matter/display_dither.h ../include/matter/math_types.h check.h | build
 	$(CC) -std=c++17 -Wall -Wextra -Wno-missing-braces -O2 -I../include -o $@ $(ATMOSPHERE_CPP)
 
 run-atmosphere: $(ATMOSPHERE_TARGET)
