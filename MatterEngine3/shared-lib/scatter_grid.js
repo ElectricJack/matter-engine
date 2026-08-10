@@ -88,3 +88,42 @@ export function candidatesInRect(seed, kind, minDist, x0, z0, w, h) {
     return __candidatesInRect(seed, kind, minDist, x0, z0, w, h);
   return candidatesInRectJs(seed, kind, minDist, x0, z0, w, h);
 }
+
+// The JS twin of dsl_bindings.cpp's j_planCandidates (__planCandidates) --
+// the same delegation shape as candidatesInRect above, one level up: a caller
+// with no native fused binding (the alpine_ecology_tests.mjs Node harness,
+// which has no QuickJS bindings at all) still gets ONE producer to consume,
+// not a second hand-rolled candidates-then-habitat loop next to the fused one.
+//
+// Layout matches the native binding exactly: a flat Float64Array where
+// data[0]=channelCount, data[1]=candidateCount, and record i sits at
+// 2 + i*(5+channelCount) as [x, z, rot, u, v, ...channels]. `candidatesInRect`
+// is the candidate-grid function to fuse -- ordinarily candidatesInRectJs
+// itself, but callers may pass any function with the same signature (a test
+// stub, say) and this still fuses against it, exactly as the engine binding
+// fuses __candidatesInRect's C++ loop against __habitatAt's. `habitatAt(x, z,
+// out)` fills `out` with `channelCount` channel values, the same shape as the
+// engine's __habitatAt. Pass channelCount = 0 (habitatAt then unused) for the
+// "no habitat tape bound" case -- the same contract __planCandidates uses.
+export function planCandidatesJs(
+  candidatesInRect, seed, kind, minDist, x0, z0, w, h, habitatAt, channelCount,
+) {
+  const candidates = candidatesInRect(seed, kind, minDist, x0, z0, w, h);
+  const count = candidates.length;
+  const stride = 5 + channelCount;
+  const flat = new Float64Array(2 + count * stride);
+  flat[0] = channelCount;
+  flat[1] = count;
+  const scratch = channelCount > 0 ? new Array(channelCount) : null;
+  for (let i = 0; i < count; ++i) {
+    const c = candidates[i];
+    const base = 2 + i * stride;
+    flat[base] = c.x; flat[base + 1] = c.z; flat[base + 2] = c.rot;
+    flat[base + 3] = c.u; flat[base + 4] = c.v;
+    if (channelCount > 0) {
+      habitatAt(c.x, c.z, scratch);
+      for (let ch = 0; ch < channelCount; ++ch) flat[base + 5 + ch] = scratch[ch];
+    }
+  }
+  return flat;
+}
