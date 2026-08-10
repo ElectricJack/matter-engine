@@ -138,13 +138,18 @@ bool VkAtmosphere::create_candidate_images(Candidate& candidate,
             VK_IMAGE_ASPECT_COLOR_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, error);
     };
-    return create(candidate.transmittance,
-                  {kTransmittanceWidth, kTransmittanceHeight, 1}) &&
-           create(candidate.multiscatter,
-                  {kMultiscatterSize, kMultiscatterSize, 1}) &&
-           create(candidate.sky_view, {kSkyViewWidth, kSkyViewHeight, 1}) &&
-           create(candidate.irradiance_sh,
-                  {kIrradianceSize, kIrradianceSize, 1});
+    const bool created =
+        create(candidate.transmittance,
+               {kTransmittanceWidth, kTransmittanceHeight, 1}) &&
+        create(candidate.multiscatter,
+               {kMultiscatterSize, kMultiscatterSize, 1}) &&
+        create(candidate.sky_view, {kSkyViewWidth, kSkyViewHeight, 1}) &&
+        create(candidate.irradiance_sh,
+               {kIrradianceSize, kIrradianceSize, 1});
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (created) ++test_candidate_image_sets_allocated_;
+#endif
+    return created;
 }
 
 bool VkAtmosphere::initialize_emergency(matter::VulkanDevice& vulkan,
@@ -600,6 +605,17 @@ bool VkAtmosphere::build_candidate(const AtmosphereRequest& input,
     requested_settings_ = saved_requested;
     update_compute_descriptors(transmittance_, multiscatter_, sky_view_,
                                irradiance_sh_);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (valid) {
+        ++test_candidate_generation_stages_completed_;
+        if (test_fail_next_generation_) {
+            test_fail_next_generation_ = false;
+            error = "injected atmosphere generation failure";
+            discard_candidate(candidate);
+            return false;
+        }
+    }
+#endif
     candidate.valid = valid;
     if (!valid && error.empty()) error = "atmosphere candidate dispatch failed";
     return valid;
@@ -637,6 +653,13 @@ void VkAtmosphere::commit_candidate(Candidate&& candidate,
 }
 
 void VkAtmosphere::discard_candidate(Candidate& candidate) noexcept {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (candidate.transmittance.image != VK_NULL_HANDLE ||
+        candidate.multiscatter.image != VK_NULL_HANDLE ||
+        candidate.sky_view.image != VK_NULL_HANDLE ||
+        candidate.irradiance_sh.image != VK_NULL_HANDLE)
+        ++test_candidate_image_sets_discarded_;
+#endif
     candidate.transmittance.reset();
     candidate.multiscatter.reset();
     candidate.sky_view.reset();

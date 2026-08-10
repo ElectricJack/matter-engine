@@ -13,6 +13,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -67,6 +68,12 @@ struct alignas(16) EnvironmentLightingGpu {
     float sky_irradiance_ambient_ratio[4]{};
 };
 static_assert(sizeof(EnvironmentLightingGpu) == 64);
+static_assert(std::is_standard_layout_v<EnvironmentLightingGpu>);
+static_assert(offsetof(EnvironmentLightingGpu, direct_world_sun_ratio) == 0);
+static_assert(offsetof(EnvironmentLightingGpu, sun_disc_reserved) == 16);
+static_assert(offsetof(EnvironmentLightingGpu, sky_display_reserved) == 32);
+static_assert(offsetof(EnvironmentLightingGpu,
+                       sky_irradiance_ambient_ratio) == 48);
 
 struct ResolvedAtmosphereStatus {
     uint64_t generation_serial = 0;
@@ -93,6 +100,27 @@ struct AtmosphereHistoryCounters {
     uint64_t diffuse_gi = 0;
     uint64_t reflection_miss = 0;
     uint64_t volumetric = 0;
+};
+
+struct AtmosphereCandidateCounters {
+    uint64_t image_sets_allocated = 0;
+    uint64_t generation_stages_completed = 0;
+    uint64_t image_sets_discarded = 0;
+};
+
+struct AtmosphereReplayConstants {
+    matter::Float3 composite_sun_direction{};
+    float composite_emission_multiplier = 0.0f;
+    float display_exposure_ev = 0.0f;
+    float composite_sun_disc_cos_edge = 0.0f;
+    float composite_sun_disc_cos_core = 0.0f;
+    matter::Float3 rt_to_sun{};
+    uint32_t rt_shadow_samples = 0;
+    float rt_shadow_sun_cone_scale = 0.0f;
+    float rt_gi_emission_multiplier = 0.0f;
+    float rt_gi_sun_disc_cos_edge = 0.0f;
+    float rt_gi_sun_disc_cos_core = 0.0f;
+    float rt_gi_sun_size_scale = 0.0f;
 };
 class VkCloudShadows;
 
@@ -1054,9 +1082,7 @@ public:
     const std::string& cloud_shadow_allocation_error() const;
     void set_fail_next_cloud_shadow_bundle_creation_for_test(bool enabled);
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
-    void test_fail_next_atmosphere_generation() noexcept {
-        test_fail_next_atmosphere_generation_ = true;
-    }
+    void test_fail_next_atmosphere_generation() noexcept;
     void test_fail_next_atmosphere_descriptor_publication() noexcept {
         test_fail_next_atmosphere_descriptor_publication_ = true;
     }
@@ -1064,6 +1090,12 @@ public:
     AtmosphereHistoryCounters test_atmosphere_history_counters() const noexcept {
         return atmosphere_history_counters_;
     }
+    AtmosphereCandidateCounters
+    test_atmosphere_candidate_counters() const noexcept;
+    AtmosphereReplayConstants
+    test_atmosphere_replay_constants() const noexcept;
+    bool test_read_environment_lighting_gpu(
+        uint32_t frame_slot, EnvironmentLightingGpu& output) const noexcept;
     ResolvedAtmosphereStatus test_resolved_atmosphere_status() const noexcept {
         return resolved_atmosphere_status_;
     }
@@ -1872,6 +1904,7 @@ private:
     bool resolve_atmosphere_transaction(FrameResources& frame,
                                         float camera_world_y,
                                         std::string& error);
+    void update_atmosphere_replay_constants() noexcept;
     void resolve_live_atmosphere(uint32_t change_mask, bool full_commit);
     void update_display_descriptor(VkDescriptorSet set, VkImageView view);
     bool upload_scene_buffers(FrameResources& frame,
@@ -2414,6 +2447,8 @@ private:
     matter::AtmosphereSettings atmosphere_settings_{};
     matter::AtmosphereSettings committed_atmosphere_settings_{};
     ResolvedAtmosphereStatus resolved_atmosphere_status_{};
+    bool has_valid_sky_irradiance_modifier_ = false;
+    AtmosphereReplayConstants atmosphere_replay_constants_{};
     AtmosphereHistoryCounters atmosphere_history_counters_{};
     uint32_t pending_atmosphere_change_mask_ = matter::kAtmosphereChangeNone;
     matter::Float3 requested_atmosphere_to_sun_{0.0f, 1.0f, 0.0f};

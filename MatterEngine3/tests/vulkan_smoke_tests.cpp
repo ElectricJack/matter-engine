@@ -1019,6 +1019,85 @@ void test_atmosphere_lighting_control_sanitization() {
           "atmosphere lighting and elevation controls clamp to exact ranges");
 }
 
+void run_atmosphere_irradiance_last_valid_test(
+    matter::VulkanDevice& vulkan) {
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "initialize irradiance last-valid fixture"
+                        : error.c_str());
+    if (!error.empty()) return;
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.0f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, 16, 16, matrices, error),
+          error.empty() ? "build irradiance last-valid matrices"
+                        : error.c_str());
+    const auto prepare_once = [&]() {
+        error.clear();
+        matter::VulkanFrame frame{};
+        if (!vulkan.begin_frame(frame, error)) return false;
+        const bool prepared = renderer.prepare_frame(
+            frame, matrices, camera.position, 1.0f, error);
+        const bool ended = vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, prepared && ended);
+        vulkan.wait_idle();
+        return prepared && ended;
+    };
+
+    viewer::VkSceneLighting lighting{};
+    lighting.sun_direction = {0.0f, -1.0f, 0.0f};
+    const float largest = std::numeric_limits<float>::max();
+    lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+        {largest, largest, largest};
+    lighting.atmosphere_sources.sky_irradiance_multiplier = 4.0f;
+    lighting.atmosphere_sources.day_ambient_multiplier = 4.0f;
+    renderer.set_lighting(lighting);
+    CHECK(prepare_once(),
+          error.empty() ? "publish initial overflow-safe irradiance"
+                        : error.c_str());
+    const auto initial = renderer.test_resolved_atmosphere_status();
+    CHECK(initial.sky_irradiance_modifier_rgb.x == 0.0f &&
+              initial.sky_irradiance_modifier_rgb.y == 0.0f &&
+              initial.sky_irradiance_modifier_rgb.z == 0.0f,
+          "invalid derived irradiance is zero when no last-valid value exists");
+
+    lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+        {0.5f, 0.6f, 0.7f};
+    lighting.atmosphere_sources.sky_irradiance_multiplier = 1.0f;
+    lighting.atmosphere_sources.day_ambient_multiplier = 1.0f;
+    renderer.set_lighting(lighting);
+    CHECK(prepare_once(),
+          error.empty() ? "publish finite irradiance modifier"
+                        : error.c_str());
+    const matter::Float3 last_valid =
+        renderer.test_resolved_atmosphere_status()
+            .sky_irradiance_modifier_rgb;
+    CHECK(last_valid.x == 0.5f && last_valid.y == 0.6f &&
+              last_valid.z == 0.7f,
+          "finite derived irradiance becomes the last-valid modifier");
+
+    lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+        {largest, largest, largest};
+    lighting.atmosphere_sources.sky_irradiance_multiplier = 4.0f;
+    lighting.atmosphere_sources.day_ambient_multiplier = 4.0f;
+    renderer.set_lighting(lighting);
+    CHECK(prepare_once(),
+          error.empty() ? "replay overflow after a finite irradiance value"
+                        : error.c_str());
+    const matter::Float3 retained =
+        renderer.test_resolved_atmosphere_status()
+            .sky_irradiance_modifier_rgb;
+    CHECK(std::memcmp(&retained, &last_valid, sizeof(retained)) == 0,
+          "overflowed derived irradiance retains the prior finite modifier");
+}
+
 bool same_atmosphere_handles(const viewer::AtmosphereLutHandles& a,
                              const viewer::AtmosphereLutHandles& b) {
     return std::memcmp(a.images.data(), b.images.data(), sizeof(a.images)) == 0 &&
@@ -1103,6 +1182,10 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
     matter::AtmosphereSettings pending{};
     pending.mie_scale = 1.25f;
     renderer.set_atmosphere_settings(pending);
+    const auto generation_attempts_before =
+        renderer.test_atmosphere_candidate_counters();
+    const uint64_t generation_submits_before =
+        matter::immediate_submit_count();
     renderer.test_fail_next_atmosphere_generation();
     CHECK(!prepare_once(error) &&
               error.find("injected atmosphere generation failure") !=
@@ -1111,12 +1194,23 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
     const auto generation_no_edit_handles = renderer.test_atmosphere_lut_handles();
     const auto generation_no_edit_status = renderer.test_resolved_atmosphere_status();
     const auto generation_no_edit_histories = renderer.test_atmosphere_history_counters();
+    const auto generation_attempts_after =
+        renderer.test_atmosphere_candidate_counters();
     CHECK(same_atmosphere_handles(baseline_handles, generation_no_edit_handles) &&
               std::memcmp(&baseline_status, &generation_no_edit_status,
                           sizeof(baseline_status)) == 0 &&
               std::memcmp(&baseline_histories, &generation_no_edit_histories,
                           sizeof(baseline_histories)) == 0,
           "generation failure without a live edit preserves the complete transaction");
+    CHECK(generation_attempts_after.image_sets_allocated ==
+                  generation_attempts_before.image_sets_allocated + 1 &&
+              generation_attempts_after.generation_stages_completed ==
+                  generation_attempts_before.generation_stages_completed + 1 &&
+              generation_attempts_after.image_sets_discarded ==
+                  generation_attempts_before.image_sets_discarded + 1 &&
+              matter::immediate_submit_count() >=
+                  generation_submits_before + 2,
+          "injected generation failure allocates, dispatches, reads back, restores, and discards one candidate set");
 
     renderer.test_fail_next_atmosphere_descriptor_publication();
     CHECK(!prepare_once(error) &&
@@ -1138,6 +1232,10 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
 
     const auto make_replay = [&](float scale) {
         viewer::VkSceneLighting value = baseline_lighting;
+        const matter::Float3 replay_to_sun =
+            matter::atmosphere_to_sun_from_elevation_deg(5.0f * scale);
+        value.sun_direction = {-replay_to_sun.x, -replay_to_sun.y,
+                               -replay_to_sun.z};
         value.atmosphere_sources.live_sun_tint_rgb =
             {0.4f * scale, 0.7f, 1.3f};
         value.atmosphere_sources.sun_multiplier = 1.2f * scale;
@@ -1158,7 +1256,8 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
     };
     const auto assert_failure_replay = [&](
         const viewer::ResolvedAtmosphereStatus& value,
-        const viewer::VkSceneLighting& live, const char* message) {
+        const viewer::VkSceneLighting& live, float expected_exposure,
+        const char* message) {
         matter::AtmosphereLightingSources expected_sources =
             live.atmosphere_sources;
         expected_sources.atmospheric_direct_base_rgb =
@@ -1167,7 +1266,21 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
             baseline_status.atmospheric_noon_direct_base_rgb;
         expected_sources.elevation_deg = baseline_status.resolved_elevation_deg;
         const auto expected = matter::resolve_atmosphere_lighting(expected_sources);
-        CHECK(same_committed_atmosphere(baseline_status, value) &&
+        const auto push = renderer.test_atmosphere_replay_constants();
+        const float direction_length = std::sqrt(
+            live.sun_direction.x * live.sun_direction.x +
+            live.sun_direction.y * live.sun_direction.y +
+            live.sun_direction.z * live.sun_direction.z);
+        const matter::Float3 expected_to_sun{
+            -live.sun_direction.x / direction_length,
+            -live.sun_direction.y / direction_length,
+            -live.sun_direction.z / direction_length};
+        CHECK(same_atmosphere_handles(
+                  baseline_handles,
+                  renderer.test_atmosphere_lut_handles()) &&
+                  same_committed_atmosphere(baseline_status, value) &&
+                  value.resolved_elevation_deg ==
+                      baseline_status.resolved_elevation_deg &&
                   std::memcmp(&value.direct_base_rgb, &expected.direct_base_rgb,
                               sizeof(matter::Float3)) == 0 &&
                   value.direct_world_ratio == expected.direct_world_ratio &&
@@ -1184,10 +1297,45 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
                               &expected.sky_irradiance_modifier_rgb,
                               sizeof(matter::Float3)) == 0,
               message);
+        CHECK(std::memcmp(&push.composite_sun_direction,
+                          &live.sun_direction,
+                          sizeof(matter::Float3)) == 0 &&
+                  push.composite_emission_multiplier ==
+                      live.emission_multiplier &&
+                  push.display_exposure_ev == expected_exposure &&
+                  push.composite_sun_disc_cos_edge ==
+                      matter::sun_disc_cos_edge(
+                          live.sun_angular_diameter_deg) &&
+                  push.composite_sun_disc_cos_core ==
+                      matter::sun_disc_cos_core(
+                          live.sun_angular_diameter_deg) &&
+                  std::memcmp(&push.rt_to_sun, &expected_to_sun,
+                              sizeof(matter::Float3)) == 0 &&
+                  push.rt_shadow_samples ==
+                      static_cast<uint32_t>(live.sun_shadow_samples) &&
+                  push.rt_shadow_sun_cone_scale ==
+                      matter::sun_size_scale(
+                          live.sun_angular_diameter_deg) &&
+                  push.rt_gi_emission_multiplier ==
+                      live.emission_multiplier &&
+                  push.rt_gi_sun_disc_cos_edge ==
+                      matter::sun_disc_cos_edge(
+                          live.sun_angular_diameter_deg) &&
+                  push.rt_gi_sun_disc_cos_core ==
+                      matter::sun_disc_cos_core(
+                          live.sun_angular_diameter_deg) &&
+                  push.rt_gi_sun_size_scale ==
+                      matter::sun_size_scale(
+                          live.sun_angular_diameter_deg),
+              "failure replay exposes every current composite/display/RT push input while physical direction stays committed");
     };
 
     const viewer::VkSceneLighting generation_replay = make_replay(1.0f);
     renderer.set_lighting(generation_replay);
+    matter::VulkanRayTracingSettings replay_rt{};
+    replay_rt.samples = static_cast<uint32_t>(
+        generation_replay.sun_shadow_samples);
+    renderer.set_ray_tracing_settings(replay_rt);
     renderer.set_display_exposure(1.25f);
     renderer.test_fail_next_atmosphere_generation();
     const auto before_generation_replay =
@@ -1195,7 +1343,7 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
     CHECK(!prepare_once(error),
           "generation replay fixture observes the injected failure");
     assert_failure_replay(renderer.test_resolved_atmosphere_status(),
-                          generation_replay,
+                          generation_replay, 1.25f,
                           "generation failure replays every current live constant over the old physical state");
     const auto after_generation_replay =
         renderer.test_atmosphere_history_counters();
@@ -1216,6 +1364,9 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
     renderer.set_atmosphere_settings(pending);
     const viewer::VkSceneLighting publication_replay = make_replay(1.2f);
     renderer.set_lighting(publication_replay);
+    replay_rt.samples = static_cast<uint32_t>(
+        publication_replay.sun_shadow_samples);
+    renderer.set_ray_tracing_settings(replay_rt);
     renderer.set_display_exposure(2.0f);
     renderer.test_fail_next_atmosphere_descriptor_publication();
     const auto before_publication_replay =
@@ -1223,7 +1374,7 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
     CHECK(!prepare_once(error),
           "publication replay fixture observes the injected failure");
     assert_failure_replay(renderer.test_resolved_atmosphere_status(),
-                          publication_replay,
+                          publication_replay, 2.0f,
                           "publication failure replays every current live constant over the old physical state");
     const auto after_publication_replay =
         renderer.test_atmosphere_history_counters();
@@ -8214,12 +8365,14 @@ void run_atmosphere_real_gpu_gate(matter::VulkanDevice& vulkan) {
                       minimum_visibility, maximum_visibility,
                       receiver_min_visibility, receiver_max_visibility};
     rt_scenario_shadow_contract(ctx);
+    constexpr float kNativeProbeSunIntensity = 100.0f;
+    float native_noon_luma = 0.0f;
     for (size_t index = 0; index < kAtmosphereGpuElevations.size(); ++index) {
         const matter::Float3 to_sun =
             matter::atmosphere_to_sun_from_elevation_deg(
                 kAtmosphereGpuElevations[index]);
         native_lighting.sun_direction = {-to_sun.x, -to_sun.y, -to_sun.z};
-        native_lighting.sun_intensity = 1.0f;
+        native_lighting.sun_intensity = kNativeProbeSunIntensity;
         native_lighting.authored_sun_rgb = {1.0f, 1.0f, 1.0f};
         native_lighting.atmosphere_sources.authored_display_sky_chroma_rgb =
             {1.0f, 1.0f, 1.0f};
@@ -8248,37 +8401,126 @@ void run_atmosphere_real_gpu_gate(matter::VulkanDevice& vulkan) {
         native.finish_ray_tracing_frame(frame.serial, true);
         vulkan.wait_idle();
         const auto status = native.test_resolved_atmosphere_status();
+        viewer::EnvironmentLightingGpu environment_gpu{};
+        CHECK(native.test_read_environment_lighting_gpu(
+                  frame.frame_slot, environment_gpu) &&
+                  environment_gpu.direct_world_sun_ratio[0] ==
+                      status.direct_world_sun_rgb.x &&
+                  environment_gpu.direct_world_sun_ratio[1] ==
+                      status.direct_world_sun_rgb.y &&
+                  environment_gpu.direct_world_sun_ratio[2] ==
+                      status.direct_world_sun_rgb.z &&
+                  environment_gpu.direct_world_sun_ratio[3] ==
+                      kAtmosphereGpuRatios[index],
+              "native RT frame uploads the exact RGB/ratio Environment UBO lane");
+        viewer::VkRasterPixel native_direct_on{};
+        uint32_t native_receiver_x = 0;
+        uint32_t native_receiver_y = 0;
+        bool native_receiver_found = false;
+        for (uint32_t y = 20; y < 200 && !native_receiver_found; y += 20) {
+            for (uint32_t x = 20; x < 320; x += 20) {
+                viewer::VkRasterPixel pixel{};
+                if (native.readback_raster_pixel(x, y, pixel, error) &&
+                    pixel.material_index == 1u &&
+                    std::isfinite(pixel.raw_diffuse.x) &&
+                    std::isfinite(pixel.raw_diffuse.y) &&
+                    std::isfinite(pixel.raw_diffuse.z)) {
+                    native_direct_on = pixel;
+                    native_receiver_x = x;
+                    native_receiver_y = y;
+                    native_receiver_found = true;
+                    break;
+                }
+            }
+        }
+        CHECK(native_receiver_found,
+              "native RT direct-on frame exposes a finite material receiver");
         const matter::Float3 raster_rgb =
             g_atmosphere_raster_direct_rgb[index];
         const float native_luma =
             0.2126f * status.direct_world_sun_rgb.x +
             0.7152f * status.direct_world_sun_rgb.y +
             0.0722f * status.direct_world_sun_rgb.z;
-        const float noon_luma =
-            0.2126f * g_atmosphere_raster_direct_rgb[0].x +
-            0.7152f * g_atmosphere_raster_direct_rgb[0].y +
-            0.0722f * g_atmosphere_raster_direct_rgb[0].z;
+        if (index == 0) native_noon_luma = native_luma;
         CHECK(native.rt_effective_observed() &&
                   native.rt_trace_dispatches_observed() > 0 &&
                   std::fabs(status.direct_world_ratio -
                             kAtmosphereGpuRatios[index]) <= 1.0e-6f,
               "native RT dispatch consumes the exact direct-world ratio");
-        CHECK(noon_luma > 0.0f &&
-                  std::fabs(native_luma / noon_luma -
+        CHECK(native_noon_luma > 0.0f &&
+                  std::fabs(native_luma / native_noon_luma -
                             kAtmosphereGpuRatios[index]) <= 2.0e-3f,
               "native RT published world-sun luminance ratio matches its exact elevation anchor");
-        CHECK(std::fabs(status.direct_world_sun_rgb.x - raster_rgb.x) <=
+        CHECK(std::fabs(status.direct_world_sun_rgb.x /
+                            kNativeProbeSunIntensity - raster_rgb.x) <=
                       2.0e-3f &&
-                  std::fabs(status.direct_world_sun_rgb.y - raster_rgb.y) <=
+                  std::fabs(status.direct_world_sun_rgb.y /
+                                kNativeProbeSunIntensity - raster_rgb.y) <=
                       2.0e-3f &&
-                  std::fabs(status.direct_world_sun_rgb.z - raster_rgb.z) <=
+                  std::fabs(status.direct_world_sun_rgb.z /
+                                kNativeProbeSunIntensity - raster_rgb.z) <=
                       2.0e-3f,
-              "raster and native RT resolved direct RGB agree channel-wise");
+              "raster and normalized native RT direct RGB agree channel-wise");
         if (index >= 3) {
             CHECK(status.direct_world_sun_rgb.x == 0.0f &&
                       status.direct_world_sun_rgb.y == 0.0f &&
                       status.direct_world_sun_rgb.z == 0.0f,
                   "native RT direct RGB is exactly zero at and below the horizon");
+        }
+        native_lighting.sun_intensity = 0.0f;
+        native.set_lighting(native_lighting);
+        temporal.reset = true;
+        temporal.attempt_token = 3000 + index;
+        native.set_temporal_frame(temporal);
+        matter::VulkanFrame direct_off_frame{};
+        const bool direct_off_rendered =
+            vulkan.begin_frame(direct_off_frame, error) &&
+            native.prepare_frame(direct_off_frame, native_matrices,
+                                 native_camera.position, 1.0f, error) &&
+            native.record_cull_and_render(direct_off_frame, native_matrices,
+                                          native_camera.position, 1.0f,
+                                          error) &&
+            native.record_composite_to_swapchain(direct_off_frame, error) &&
+            vulkan.end_frame(direct_off_frame, error);
+        CHECK(direct_off_rendered,
+              error.empty() ? "render atmosphere native-RT direct-off frame"
+                            : error.c_str());
+        viewer::VkRasterPixel native_direct_off{};
+        if (direct_off_rendered) {
+            native.finish_ray_tracing_frame(direct_off_frame.serial, true);
+            vulkan.wait_idle();
+            CHECK(native_receiver_found &&
+                      native.readback_raster_pixel(
+                          native_receiver_x, native_receiver_y,
+                          native_direct_off, error) &&
+                      native_direct_off.material_index == 1u,
+                  "native RT direct-off frame reads the identical material receiver");
+            const auto raw_luma = [](matter::Float4 value) {
+                return 0.2126f * value.x + 0.7152f * value.y +
+                       0.0722f * value.z;
+            };
+            const float direct_delta =
+                raw_luma(native_direct_on.raw_diffuse) -
+                raw_luma(native_direct_off.raw_diffuse);
+            if (index < 3) {
+                CHECK(direct_delta > 1.0e-5f,
+                      "native RT raw-diffuse direct-on exceeds direct-off above the horizon");
+            } else {
+                CHECK(std::memcmp(&native_direct_on.raw_diffuse,
+                                  &native_direct_off.raw_diffuse,
+                                  sizeof(matter::Float4)) == 0,
+                      "native RT raw-diffuse direct-on/off are identical at and below the horizon");
+            }
+            std::printf(
+                "atmosphere native raw direct e=%.0f delta=%.9f "
+                "on=%.6f/%.6f/%.6f off=%.6f/%.6f/%.6f\n",
+                kAtmosphereGpuElevations[index], direct_delta,
+                native_direct_on.raw_diffuse.x,
+                native_direct_on.raw_diffuse.y,
+                native_direct_on.raw_diffuse.z,
+                native_direct_off.raw_diffuse.x,
+                native_direct_off.raw_diffuse.y,
+                native_direct_off.raw_diffuse.z);
         }
         if (index == 4) {
             bool positive_receiver = false;
@@ -10709,6 +10951,7 @@ int main() {
             test_atmosphere_irradiance_dispatch_contract();
             run_atmosphere_lut_smoke(*vulkan);
             run_atmosphere_presentation_sampling_tests(*vulkan);
+            run_atmosphere_irradiance_last_valid_test(*vulkan);
             run_atmosphere_transaction_failure_tests(*vulkan);
             run_atmosphere_real_gpu_gate(*vulkan);
             std::printf("validation errors: %u\n", vulkan->validation_error_count());

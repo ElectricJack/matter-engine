@@ -5997,6 +5997,35 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
     vkUpdateDescriptorSets(vulkan_->device(), 11, writes, 0, nullptr);
 }
 
+void VkSceneRenderer::update_atmosphere_replay_constants() noexcept {
+    AtmosphereReplayConstants result{};
+    result.composite_sun_direction = lighting_.sun_direction;
+    result.composite_emission_multiplier = lighting_.emission_multiplier;
+    result.display_exposure_ev = display_exposure_ev_;
+    result.composite_sun_disc_cos_edge = lighting_.sun_disc_cos_edge;
+    result.composite_sun_disc_cos_core = lighting_.sun_disc_cos_core;
+    const float length = std::sqrt(
+        lighting_.sun_direction.x * lighting_.sun_direction.x +
+        lighting_.sun_direction.y * lighting_.sun_direction.y +
+        lighting_.sun_direction.z * lighting_.sun_direction.z);
+    if (length > 0.0f && std::isfinite(length)) {
+        result.rt_to_sun = {-lighting_.sun_direction.x / length,
+                            -lighting_.sun_direction.y / length,
+                            -lighting_.sun_direction.z / length};
+    } else {
+        result.rt_to_sun = {0.0f, 1.0f, 0.0f};
+    }
+    result.rt_shadow_samples =
+        std::max(1u, ray_tracing_settings_.samples);
+    result.rt_shadow_sun_cone_scale =
+        matter::sun_size_scale(lighting_.sun_angular_diameter_deg);
+    result.rt_gi_emission_multiplier = lighting_.emission_multiplier;
+    result.rt_gi_sun_disc_cos_edge = lighting_.sun_disc_cos_edge;
+    result.rt_gi_sun_disc_cos_core = lighting_.sun_disc_cos_core;
+    result.rt_gi_sun_size_scale = result.rt_shadow_sun_cone_scale;
+    atmosphere_replay_constants_ = result;
+}
+
 void VkSceneRenderer::resolve_live_atmosphere(uint32_t change_mask,
                                               bool full_commit) {
     matter::AtmosphereLightingSources sources = lighting_.atmosphere_sources;
@@ -6009,6 +6038,13 @@ void VkSceneRenderer::resolve_live_atmosphere(uint32_t change_mask,
     sources.sun_multiplier *= lighting_.sun_intensity;
     const matter::ResolvedAtmosphereLighting resolved =
         matter::resolve_atmosphere_lighting(sources);
+    const matter::Float3 derived_irradiance{
+        sources.authored_irradiance_chroma_rgb.x *
+            sources.sky_irradiance_multiplier * resolved.sky_ambient_ratio,
+        sources.authored_irradiance_chroma_rgb.y *
+            sources.sky_irradiance_multiplier * resolved.sky_ambient_ratio,
+        sources.authored_irradiance_chroma_rgb.z *
+            sources.sky_irradiance_multiplier * resolved.sky_ambient_ratio};
     const bool irradiance_sources_valid =
         std::isfinite(sources.authored_irradiance_chroma_rgb.x) &&
         std::isfinite(sources.authored_irradiance_chroma_rgb.y) &&
@@ -6016,7 +6052,10 @@ void VkSceneRenderer::resolve_live_atmosphere(uint32_t change_mask,
         std::isfinite(sources.sky_irradiance_multiplier) &&
         std::isfinite(sources.day_ambient_multiplier) &&
         std::isfinite(sources.twilight_ambient_multiplier) &&
-        std::isfinite(sources.elevation_deg);
+        std::isfinite(sources.elevation_deg) &&
+        std::isfinite(derived_irradiance.x) &&
+        std::isfinite(derived_irradiance.y) &&
+        std::isfinite(derived_irradiance.z);
     resolved_atmosphere_status_.resolved_elevation_deg =
         resolved.resolved_elevation_deg;
     resolved_atmosphere_status_.direct_world_ratio =
@@ -6031,8 +6070,12 @@ void VkSceneRenderer::resolve_live_atmosphere(uint32_t change_mask,
         resolved.sky_display_modifier_rgb;
     if (irradiance_sources_valid) {
         resolved_atmosphere_status_.sky_irradiance_modifier_rgb =
-            resolved.sky_irradiance_modifier_rgb;
+            derived_irradiance;
+        has_valid_sky_irradiance_modifier_ = true;
+    } else if (!has_valid_sky_irradiance_modifier_) {
+        resolved_atmosphere_status_.sky_irradiance_modifier_rgb = {};
     }
+    update_atmosphere_replay_constants();
 
     const matter::AtmosphereHistoryDecision decision =
         matter::atmosphere_history_decision(change_mask, full_commit);
@@ -6088,21 +6131,18 @@ bool VkSceneRenderer::resolve_atmosphere_transaction(
         return update_environment_descriptor(frame, error);
     }
 
-#ifdef MATTER_VK_TEST_FAULT_INJECTION
-    if (test_fail_next_atmosphere_generation_) {
-        test_fail_next_atmosphere_generation_ = false;
-        resolve_live_atmosphere(pending_atmosphere_change_mask_, false);
-        error = "injected atmosphere generation failure";
-        return false;
-    }
-#endif
-
     AtmosphereRequest request{};
     request.settings = atmosphere_settings_;
     request.camera_world_y = camera_world_y;
     request.normalized_to_sun = to_sun;
     request.authored_sun_rgb = authored;
     VkAtmosphere::Candidate candidate{};
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_fail_next_atmosphere_generation_) {
+        atmosphere_->test_fail_next_generation();
+        test_fail_next_atmosphere_generation_ = false;
+    }
+#endif
     if (!atmosphere_->build_candidate(request, candidate, error)) {
         resolve_live_atmosphere(pending_atmosphere_change_mask_, false);
         if (error.empty()) error = "atmosphere candidate generation failed";
@@ -6128,6 +6168,13 @@ bool VkSceneRenderer::resolve_atmosphere_transaction(
     sources.elevation_deg = committed.resolved_elevation_deg;
     sources.sun_multiplier *= lighting_.sun_intensity;
     const auto resolved = matter::resolve_atmosphere_lighting(sources);
+    const matter::Float3 derived_irradiance{
+        sources.authored_irradiance_chroma_rgb.x *
+            sources.sky_irradiance_multiplier * resolved.sky_ambient_ratio,
+        sources.authored_irradiance_chroma_rgb.y *
+            sources.sky_irradiance_multiplier * resolved.sky_ambient_ratio,
+        sources.authored_irradiance_chroma_rgb.z *
+            sources.sky_irradiance_multiplier * resolved.sky_ambient_ratio};
     const bool irradiance_sources_valid =
         std::isfinite(sources.authored_irradiance_chroma_rgb.x) &&
         std::isfinite(sources.authored_irradiance_chroma_rgb.y) &&
@@ -6135,7 +6182,10 @@ bool VkSceneRenderer::resolve_atmosphere_transaction(
         std::isfinite(sources.sky_irradiance_multiplier) &&
         std::isfinite(sources.day_ambient_multiplier) &&
         std::isfinite(sources.twilight_ambient_multiplier) &&
-        std::isfinite(sources.elevation_deg);
+        std::isfinite(sources.elevation_deg) &&
+        std::isfinite(derived_irradiance.x) &&
+        std::isfinite(derived_irradiance.y) &&
+        std::isfinite(derived_irradiance.z);
     committed.direct_world_ratio = resolved.direct_world_ratio;
     committed.direct_base_rgb = resolved.direct_base_rgb;
     committed.direct_world_sun_rgb = resolved.direct_world_sun_rgb;
@@ -6144,8 +6194,10 @@ bool VkSceneRenderer::resolve_atmosphere_transaction(
     committed.sky_display_modifier_rgb = resolved.sky_display_modifier_rgb;
     committed.sky_irradiance_modifier_rgb =
         irradiance_sources_valid
-            ? resolved.sky_irradiance_modifier_rgb
-            : resolved_atmosphere_status_.sky_irradiance_modifier_rgb;
+            ? derived_irradiance
+            : has_valid_sky_irradiance_modifier_
+                  ? resolved_atmosphere_status_.sky_irradiance_modifier_rgb
+                  : matter::Float3{};
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     if (test_fail_next_atmosphere_descriptor_publication_) {
         test_fail_next_atmosphere_descriptor_publication_ = false;
@@ -6165,6 +6217,8 @@ bool VkSceneRenderer::resolve_atmosphere_transaction(
     atmosphere_->commit_candidate(std::move(candidate),
                                   static_cast<uint32_t>(&frame - frames_.data()));
     resolved_atmosphere_status_ = committed;
+    if (irradiance_sources_valid)
+        has_valid_sky_irradiance_modifier_ = true;
     requested_atmosphere_camera_y_ = camera_world_y;
     requested_atmosphere_to_sun_ = to_sun;
     requested_atmosphere_authored_sun_ = authored;
@@ -6174,6 +6228,43 @@ bool VkSceneRenderer::resolve_atmosphere_transaction(
 }
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+void VkSceneRenderer::test_fail_next_atmosphere_generation() noexcept {
+    if (atmosphere_)
+        atmosphere_->test_fail_next_generation();
+    else
+        test_fail_next_atmosphere_generation_ = true;
+}
+
+AtmosphereCandidateCounters
+VkSceneRenderer::test_atmosphere_candidate_counters() const noexcept {
+    AtmosphereCandidateCounters result{};
+    if (!atmosphere_) return result;
+    result.image_sets_allocated =
+        atmosphere_->test_candidate_image_sets_allocated();
+    result.generation_stages_completed =
+        atmosphere_->test_candidate_generation_stages_completed();
+    result.image_sets_discarded =
+        atmosphere_->test_candidate_image_sets_discarded();
+    return result;
+}
+
+AtmosphereReplayConstants
+VkSceneRenderer::test_atmosphere_replay_constants() const noexcept {
+    return atmosphere_replay_constants_;
+}
+
+bool VkSceneRenderer::test_read_environment_lighting_gpu(
+    uint32_t frame_slot, EnvironmentLightingGpu& output) const noexcept {
+    output = {};
+    if (frame_slot >= frames_.size() ||
+        !frames_[frame_slot].environment_constants.mapped)
+        return false;
+    const auto* block = static_cast<const uint8_t*>(
+        frames_[frame_slot].environment_constants.mapped);
+    std::memcpy(&output, block + sizeof(float) * 40, sizeof(output));
+    return true;
+}
+
 AtmosphereLutHandles VkSceneRenderer::test_atmosphere_lut_handles() const noexcept {
     AtmosphereLutHandles result{};
     if (!atmosphere_) return result;
@@ -11677,16 +11768,15 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         float sun_cone_scale;
     } constants{};
     constants.clip_to_world = pack_glsl_mat4(matrices.clip_to_world);
-    const float x = -lighting_.sun_direction.x;
-    const float y = -lighting_.sun_direction.y;
-    const float z = -lighting_.sun_direction.z;
-    const float length = std::sqrt(x*x + y*y + z*z);
-    constants.to_sun_max_distance[0] = length > 0 ? x / length : 0;
-    constants.to_sun_max_distance[1] = length > 0 ? y / length : 1;
-    constants.to_sun_max_distance[2] = length > 0 ? z / length : 0;
+    constants.to_sun_max_distance[0] =
+        atmosphere_replay_constants_.rt_to_sun.x;
+    constants.to_sun_max_distance[1] =
+        atmosphere_replay_constants_.rt_to_sun.y;
+    constants.to_sun_max_distance[2] =
+        atmosphere_replay_constants_.rt_to_sun.z;
     constants.to_sun_max_distance[3] = ray_tracing_settings_.max_distance;
     constants.bias = ray_tracing_settings_.bias;
-    constants.samples = std::max(1u, ray_tracing_settings_.samples);
+    constants.samples = atmosphere_replay_constants_.rt_shadow_samples;
     constants.debug_view = ray_tracing_settings_.debug_view ? 1u : 0u;
     // With POM disabled the ground stays flat at the datum, so there is no
     // displaced roof to escape -- lifting by the relief cap would then push
@@ -11695,7 +11785,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                              ? tileset_pom_settings_.relief_cap_m + 0.02f
                              : 0.02f;
     constants.sun_cone_scale =
-        matter::sun_size_scale(lighting_.sun_angular_diameter_deg);
+        atmosphere_replay_constants_.rt_shadow_sun_cone_scale;
     last_rt_samples_ = constants.samples;
     last_rt_debug_view_ = constants.debug_view != 0;
     vkCmdBindPipeline(frame.command_buffer,
@@ -11771,11 +11861,14 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
             std::clamp(gi_settings_.max_reflection_roughness, 0.02f, 1.0f);
         gi.diffuse_multiplier = gi_settings_.diffuse_multiplier;
         gi.reflection_multiplier = gi_settings_.reflection_multiplier;
-        gi.emission_multiplier = lighting_.emission_multiplier;
-        gi.sun_disc_cos_edge = lighting_.sun_disc_cos_edge;
-        gi.sun_disc_cos_core = lighting_.sun_disc_cos_core;
+        gi.emission_multiplier =
+            atmosphere_replay_constants_.rt_gi_emission_multiplier;
+        gi.sun_disc_cos_edge =
+            atmosphere_replay_constants_.rt_gi_sun_disc_cos_edge;
+        gi.sun_disc_cos_core =
+            atmosphere_replay_constants_.rt_gi_sun_disc_cos_core;
         gi.sun_size_scale =
-            matter::sun_size_scale(lighting_.sun_angular_diameter_deg);
+            atmosphere_replay_constants_.rt_gi_sun_size_scale;
         vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi), &gi);
         const VkStridedDeviceAddressRegionKHR gi_raygen{
@@ -12075,6 +12168,14 @@ bool VkSceneRenderer::record_cull_and_render(
     PROFILE_SCOPE_NAMED(z_setup, "cull.setup");
     bool ray_trace_ok = true;
     VkSceneLighting frame_lighting = lighting_;
+    frame_lighting.sun_direction =
+        atmosphere_replay_constants_.composite_sun_direction;
+    frame_lighting.emission_multiplier =
+        atmosphere_replay_constants_.composite_emission_multiplier;
+    frame_lighting.sun_disc_cos_edge =
+        atmosphere_replay_constants_.composite_sun_disc_cos_edge;
+    frame_lighting.sun_disc_cos_core =
+        atmosphere_replay_constants_.composite_sun_disc_cos_core;
     frame_lighting.diffuse_rt_multiplier = gi_settings_.enabled &&
                                   ray_tracing_settings_.enabled &&
                                   vulkan_->ray_tracing_available()
@@ -12709,6 +12810,14 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     record.max_draw_indirect_count = limits_.max_draw_indirect_count;
     record.lighting = [&] {
         auto lighting = lighting_;
+        lighting.sun_direction =
+            atmosphere_replay_constants_.composite_sun_direction;
+        lighting.emission_multiplier =
+            atmosphere_replay_constants_.composite_emission_multiplier;
+        lighting.sun_disc_cos_edge =
+            atmosphere_replay_constants_.composite_sun_disc_cos_edge;
+        lighting.sun_disc_cos_core =
+            atmosphere_replay_constants_.composite_sun_disc_cos_core;
         lighting.debug_view = composite_debug_override_;
         return lighting;
     }();
@@ -13389,7 +13498,7 @@ bool VkSceneRenderer::record_composite_to_swapchain(
     // choose_surface_format prefers B8G8R8A8_SRGB, and the readback hands the
     // raw swapchain bytes back with only a BGR swap.
     const float display_push[3] = {
-        display_exposure_ev_,
+        atmosphere_replay_constants_.display_exposure_ev,
         composite_debug_override_ > 2.5f ? 1.0f : 0.0f,
         (display_pipeline_format_ == VK_FORMAT_B8G8R8A8_SRGB ||
          display_pipeline_format_ == VK_FORMAT_R8G8B8A8_SRGB)

@@ -60,6 +60,20 @@ public:
                          std::string& error);
     void commit_candidate(Candidate&&, uint32_t protected_frame_slot);
     void discard_candidate(Candidate&) noexcept;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    void test_fail_next_generation() noexcept {
+        test_fail_next_generation_ = true;
+    }
+    uint64_t test_candidate_image_sets_allocated() const noexcept {
+        return test_candidate_image_sets_allocated_;
+    }
+    uint64_t test_candidate_generation_stages_completed() const noexcept {
+        return test_candidate_generation_stages_completed_;
+    }
+    uint64_t test_candidate_image_sets_discarded() const noexcept {
+        return test_candidate_image_sets_discarded_;
+    }
+#endif
     const AtmosphereCommittedState& committed_state() const noexcept {
         return committed_state_snapshot_;
     }
@@ -137,6 +151,12 @@ private:
         uint32_t protected_frame_slot = 0;
     };
     std::vector<RetiredLuts> retired_luts_;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    bool test_fail_next_generation_ = false;
+    uint64_t test_candidate_image_sets_allocated_ = 0;
+    uint64_t test_candidate_generation_stages_completed_ = 0;
+    uint64_t test_candidate_image_sets_discarded_ = 0;
+#endif
 };
 
 }  // namespace viewer
