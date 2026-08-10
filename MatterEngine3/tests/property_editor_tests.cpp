@@ -15,6 +15,7 @@
 #undef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
 #include "matter/json_doc.h"
 #include "matter/atmosphere_lighting.h"
+#include "matter/cloud_shadow_settings.h"
 #include "matter/world_definition.h"   // FogSettings — the render.fog group
 
 #include <cstring>
@@ -805,6 +806,24 @@ void test_physical_atmosphere_quality_property_contract() {
           "physical atmosphere: a one-field edit derives Custom");
 }
 
+// The final harness derives its expected bytes from the same canonical feature
+// predicate that controls the optional cloud-density image at runtime.
+void test_froxel_expected_bytes_follow_canonical_enhancement_predicate() {
+    const matter::FroxelGridDimensions grid{120, 68, 96};
+    constexpr uint64_t kVoxelCount = 120ull * 68ull * 96ull;
+    matter::VulkanVolumetricsSettings volumetrics{};
+    matter::CloudShadowSettings shadows{};
+    matter::apply_volumetric_quality_preset(
+        matter::VolumetricQualityPreset::CurrentCost, volumetrics, shadows);
+    CHECK(!matter::enhanced_cloud_lighting(volumetrics, shadows) &&
+              matter::estimate_froxel_bytes(grid, false) == kVoxelCount * 32ull,
+          "Current froxels use the canonical 32 bytes per voxel");
+    volumetrics.local_sun_march_steps = 1;
+    CHECK(matter::enhanced_cloud_lighting(volumetrics, shadows) &&
+              matter::estimate_froxel_bytes(grid, true) == kVoxelCount * 34ull,
+          "enhanced froxels use the canonical 34 bytes per voxel");
+}
+
 // The test target deliberately does not link the editor's ImGui/Vulkan closure.
 // Pin the registry/UI seam at its source boundary instead, so a later refactor
 // cannot make the headless schema test green while dropping the live bindings.
@@ -826,12 +845,14 @@ void test_physical_atmosphere_editor_source_contract() {
     const std::string renderer_impl_source = read("../src/render/vk_scene_renderer.cpp");
     const std::string atmosphere_source = read("../src/render/vk_atmosphere.cpp");
     const std::string volumetrics_source = read("../src/render/vk_volumetrics.h");
+    const std::string volumetrics_impl_source = read("../src/render/vk_volumetrics.cpp");
     const std::string shots_source = read("../tools/atmosphere_cloud_shots.sh");
     CHECK(!props_source.empty() && !editor_source.empty() && !reset_source.empty() &&
               !main_source.empty() && !ui_source.empty() && !issue_source.empty() &&
               !session_source.empty() && !renderer_source.empty() &&
               !renderer_impl_source.empty() &&
               !atmosphere_source.empty() && !volumetrics_source.empty() &&
+              !volumetrics_impl_source.empty() &&
               !shots_source.empty(),
           "physical atmosphere: editor sources are available from the test cwd");
     for (const char* token : {"\"render.atmosphere\", \"Atmosphere\"",
@@ -897,6 +918,9 @@ void test_physical_atmosphere_editor_source_contract() {
     CHECK(volumetrics_source.find("VolumetricPassBoundary") != std::string::npos &&
               volumetrics_source.find("VolumetricPass") != std::string::npos,
           "physical atmosphere: volumetrics owns typed pass boundaries");
+    CHECK(volumetrics_impl_source.find(
+              "matter::enhanced_cloud_lighting(vol, shadows)") != std::string::npos,
+          "physical atmosphere: persistent froxel allocation uses the canonical enhancement predicate");
     for (const char* token : {"GPU atmosphere", "Cloud shadows", "Vol density",
                               "gpu_atmosphere_ms", "gpu_cloud_shadows_ms"})
         CHECK(editor_source.find(token) != std::string::npos ||
@@ -909,8 +933,15 @@ void test_physical_atmosphere_editor_source_contract() {
               atmosphere_source.find("vkGetQueryPoolResults") != std::string::npos &&
               renderer_impl_source.find("last_generation_gpu_ms") != std::string::npos,
           "physical atmosphere: the immediate LUT candidate publishes a GPU query result");
+    CHECK(renderer_impl_source.find("z == kGpuZoneAtmosphere") != std::string::npos,
+          "physical atmosphere: frame timestamp readback cannot overwrite the module atmosphere lane");
     for (const char* token : {"FINAL_STAGE_DIR", "expect_property", "ffmpeg",
-                              "verify_final_capture", "promote_final_evidence"})
+                              "verify_final_capture", "promote_final_evidence",
+                              "FINAL_EXPECT_BYTES_PER_VOXEL",
+                              "final_canonical_enhanced_cloud_lighting",
+                              "final_verify_froxel_pair",
+                              "FINAL_PREVIOUS_PAIR_GENERATION",
+                              "scan_final_log"})
         CHECK(shots_source.find(token) != std::string::npos,
               "physical atmosphere: final acceptance validates and promotes staged evidence");
 }
@@ -1153,6 +1184,7 @@ int main() {
     test_draw_override_rows();
     test_draw_override_baseline_rule();
     test_physical_atmosphere_quality_property_contract();
+    test_froxel_expected_bytes_follow_canonical_enhancement_predicate();
     test_physical_atmosphere_editor_source_contract();
     test_atmosphere_lighting_property_defaults_metadata_and_round_trip();
     test_viewer_status_groups_are_exact_read_only_session_state();

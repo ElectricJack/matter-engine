@@ -28,6 +28,7 @@
 
 #include "gpu_matrix_pack.h"
 #include "frame_matrices.h"
+#include "matter/cloud_shadow_settings.h"
 #include "matter/vulkan_device.h"
 #include "matter/world_definition.h"
 #include "matter/world_session.h"
@@ -990,8 +991,8 @@ void VkVolumetrics::update_settings(
     multiple_scattering_strength_ = next_strength;
     powder_strength_ = next_powder;
     requested_dimensions_ = matter::resolve_froxel_grid(vol);
-    enhanced_clouds_requested_ = next_steps > 0 || next_orders > 1 ||
-        next_powder > 0.0f || shadows.enabled;
+    enhanced_clouds_requested_ =
+        matter::enhanced_cloud_lighting(vol, shadows);
 
     fog_density_ = fog.density;
     fog_floor_ = fog.floor;

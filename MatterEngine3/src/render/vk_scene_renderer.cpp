@@ -10537,6 +10537,11 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
             // the per-query availability bits below gate each sample individually.
             if (rb == VK_SUCCESS || rb == VK_NOT_READY) {
                 for (uint32_t z = 0; z < kGpuZoneCount; ++z) {
+                    // Atmosphere LUT candidates submit and resolve their own
+                    // query pool before this frame begins. Frame query slot
+                    // 12 is intentionally unwritten, so treating it as an
+                    // absent frame pass would erase a newer module sample.
+                    if (z == kGpuZoneAtmosphere) continue;
                     const uint8_t written = selected.ts_written[z];
                     if ((written & 3u) != 3u) {
                         // Zone did not execute this frame — report 0 immediately.

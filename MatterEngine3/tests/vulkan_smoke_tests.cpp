@@ -9024,6 +9024,19 @@ void run_atmosphere_real_gpu_gate(matter::VulkanDevice& vulkan) {
                                       error),
           error.empty() ? "build atmosphere raster GPU gate matrices"
                         : error.c_str());
+    const auto submit_timestamped_frame = [&]() {
+        matter::VulkanFrame frame{};
+        const bool recorded = vulkan.begin_frame(frame, error) &&
+            raster.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                 error) &&
+            raster.record_cull_and_render(frame, matrices, camera.position,
+                                          1.0f, error) &&
+            raster.record_composite_to_swapchain(frame, error);
+        const bool submitted = recorded && vulkan.end_frame(frame, error);
+        raster.finish_ray_tracing_frame(frame.serial, submitted);
+        vulkan.wait_idle();
+        return submitted;
+    };
     for (size_t index = 0; index < kAtmosphereGpuElevations.size(); ++index) {
         const matter::Float3 to_sun =
             matter::atmosphere_to_sun_from_elevation_deg(
@@ -9038,6 +9051,38 @@ void run_atmosphere_real_gpu_gate(matter::VulkanDevice& vulkan) {
         lighting.atmosphere_sources.sun_multiplier = 1.0f;
         lighting.atmosphere_sources.sky_multiplier = 1.0f;
         raster.set_lighting(lighting);
+        if (index == 0 && raster.gpu_timers_supported()) {
+            CHECK(submit_timestamped_frame(),
+                  error.empty() ? "submit first dirty atmosphere timing frame"
+                                : error.c_str());
+            CHECK(raster.gpu_zone_ms(
+                      viewer::VkSceneRenderer::kGpuZoneAtmosphere) > 0.0f,
+                  "dirty atmosphere candidate publishes a positive GPU timestamp");
+            for (int warm_frame = 0; warm_frame < 3; ++warm_frame) {
+                CHECK(submit_timestamped_frame(),
+                      error.empty()
+                          ? "warm a valid frame timestamp before the next dirty atmosphere"
+                          : error.c_str());
+            }
+            CHECK(raster.gpu_zone_ms(
+                      viewer::VkSceneRenderer::kGpuZoneAtmosphere) == 0.0f,
+                  "steady atmosphere frame resets its GPU timing lane to zero");
+        }
+        if (index == 1 && raster.gpu_timers_supported()) {
+            CHECK(submit_timestamped_frame(),
+                  error.empty() ? "submit warmed dirty atmosphere timing frame"
+                                : error.c_str());
+            CHECK(raster.gpu_zone_ms(
+                      viewer::VkSceneRenderer::kGpuZoneAtmosphere) > 0.0f,
+                  "warmed frame timestamp readback preserves the next dirty atmosphere measurement");
+            CHECK(submit_timestamped_frame(),
+                  error.empty()
+                      ? "submit steady frame after warmed dirty atmosphere"
+                      : error.c_str());
+            CHECK(raster.gpu_zone_ms(
+                      viewer::VkSceneRenderer::kGpuZoneAtmosphere) == 0.0f,
+                  "warmed dirty atmosphere returns to an exact zero on steady work");
+        }
         viewer::VkRasterPixel direct_on{};
         viewer::VkRasterPixel direct_off{};
         CHECK(raster.render_gbuffer_and_composite(width, height, error) &&
@@ -9045,18 +9090,6 @@ void run_atmosphere_real_gpu_gate(matter::VulkanDevice& vulkan) {
                                                direct_on, error),
               error.empty() ? "render atmosphere raster direct-on frame"
                             : error.c_str());
-        if (index == 0 && raster.gpu_timers_supported()) {
-            const float dirty_atmosphere_ms = raster.gpu_zone_ms(
-                viewer::VkSceneRenderer::kGpuZoneAtmosphere);
-            CHECK(dirty_atmosphere_ms > 0.0f,
-                  "dirty atmosphere candidate publishes a positive GPU timestamp");
-            CHECK(raster.render_gbuffer_and_composite(width, height, error),
-                  error.empty() ? "render steady atmosphere timing frame"
-                                : error.c_str());
-            CHECK(raster.gpu_zone_ms(
-                      viewer::VkSceneRenderer::kGpuZoneAtmosphere) == 0.0f,
-                  "steady atmosphere frame resets its GPU timing lane to zero");
-        }
         const auto status = raster.test_resolved_atmosphere_status();
         g_atmosphere_raster_direct_rgb[index] =
             status.direct_world_sun_rgb;

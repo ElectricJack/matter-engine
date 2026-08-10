@@ -175,12 +175,27 @@ final_expected_value() {
   esac
 }
 
+final_canonical_enhanced_cloud_lighting() {
+  awk -v steps="$FINAL_EXPECT_LOCAL_SUN_MARCH_STEPS" \
+      -v orders="$FINAL_EXPECT_MULTIPLE_SCATTERING_ORDERS" \
+      -v powder="$FINAL_EXPECT_POWDER_STRENGTH" \
+      -v shadows="$FINAL_EXPECT_CLOUD_SHADOWS_ENABLED" \
+      'BEGIN { exit !((steps + 0) > 0 || (orders + 0) > 1 ||
+                       (powder + 0) > 0 || shadows == "true") }'
+}
+
 final_update_expected_grid() {
   local scale="${FINAL_EXPECT_XY%x}"
+  if final_canonical_enhanced_cloud_lighting; then
+    FINAL_EXPECT_BYTES_PER_VOXEL=34
+  else
+    FINAL_EXPECT_BYTES_PER_VOXEL=32
+  fi
   FINAL_EXPECT_GRID_W="$(awk -v s="$scale" 'BEGIN { print int((1280*s + 7) / 8) }')"
   FINAL_EXPECT_GRID_H="$(awk -v s="$scale" 'BEGIN { print int((720*s + 7) / 8) }')"
   FINAL_EXPECT_MEMORY_MIB="$(awk -v w="$FINAL_EXPECT_GRID_W" -v h="$FINAL_EXPECT_GRID_H" \
-    -v d="$FINAL_EXPECT_DEPTH" 'BEGIN { printf "%.2f", w*h*d*34/1048576.0 }')"
+    -v d="$FINAL_EXPECT_DEPTH" -v b="$FINAL_EXPECT_BYTES_PER_VOXEL" \
+    'BEGIN { printf "%.2f", w*h*d*b/1048576.0 }')"
 }
 
 final_set_round_trip() {
@@ -193,13 +208,24 @@ final_set_round_trip() {
   case "$path" in
     render.volumetrics.froxel_xy_scale)
       FINAL_EXPECT_XY="$value"
-      final_update_expected_grid
       ;;
     render.volumetrics.froxel_depth_slices)
       FINAL_EXPECT_DEPTH="$value"
-      final_update_expected_grid
+      ;;
+    render.volumetrics.local_sun_march_steps)
+      FINAL_EXPECT_LOCAL_SUN_MARCH_STEPS="$value"
+      ;;
+    render.volumetrics.multiple_scattering_orders)
+      FINAL_EXPECT_MULTIPLE_SCATTERING_ORDERS="$value"
+      ;;
+    render.volumetrics.powder_strength)
+      FINAL_EXPECT_POWDER_STRENGTH="$value"
+      ;;
+    render.cloud_shadows.enabled)
+      FINAL_EXPECT_CLOUD_SHADOWS_ENABLED="$value"
       ;;
   esac
+  final_update_expected_grid
 }
 
 wait_for_shot_done() {
@@ -256,6 +282,14 @@ cleanup() {
   fi
   PID=""
   rm -f "$FIFO"
+}
+
+scan_final_log() {
+  if grep -Eqi 'FATAL:|Validation Error|VUID-|renderer[^:]*:.*(error|failed)|^ERROR:' "$LOG" || \
+     grep -Eq 'validation errors: [1-9][0-9]*' "$LOG"; then
+    echo "ERROR: renderer or Vulkan validation failure found in $LOG" >&2
+    return 1
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -1117,10 +1151,18 @@ PY
     FINAL_VERIFY_SETS=1
     FINAL_EXPECT_XY=1x
     FINAL_EXPECT_DEPTH=128
+    FINAL_EXPECT_LOCAL_SUN_MARCH_STEPS=0
+    FINAL_EXPECT_MULTIPLE_SCATTERING_ORDERS=1
+    FINAL_EXPECT_POWDER_STRENGTH=0
+    FINAL_EXPECT_CLOUD_SHADOWS_ENABLED=false
+    FINAL_EXPECT_BYTES_PER_VOXEL=32
+    FINAL_PAIR_INDEX=0
+    FINAL_PREVIOUS_PAIR_GENERATION=""
+    FINAL_LAST_STATS_GENERATION=""
     final_update_expected_grid
 
     verify_final_stats() {
-      local label="$1" row="" index field actual_memory
+      local label="$1" row="" index field actual_memory generation
       for _ in $(seq 1 240); do
         row="$(grep "^STATS,$label," "$LOG" 2>/dev/null | tail -n 1 || true)"
         [ -n "$row" ] && break
@@ -1150,6 +1192,33 @@ PY
           return 1
         }
       done
+      generation="${field[20]:-}"
+      case "$generation" in
+        ''|*[!0-9]*)
+          echo "ERROR: STATS '$label' has malformed froxel resource generation '$generation'" >&2
+          return 1
+          ;;
+      esac
+      [ "$generation" -gt 0 ] || {
+        echo "ERROR: STATS '$label' did not publish an effective froxel resource generation" >&2
+        return 1
+      }
+      FINAL_LAST_STATS_GENERATION="$generation"
+    }
+
+    final_verify_froxel_pair() {
+      local label
+      FINAL_PAIR_INDEX=$((FINAL_PAIR_INDEX + 1))
+      label="froxel_pair_${FINAL_PAIR_INDEX}"
+      settle_volumetrics 4
+      send "stats $label"
+      verify_final_stats "$label"
+      if [ -n "$FINAL_PREVIOUS_PAIR_GENERATION" ] &&
+         [ "$FINAL_LAST_STATS_GENERATION" -le "$FINAL_PREVIOUS_PAIR_GENERATION" ]; then
+        echo "ERROR: froxel pair $FINAL_PAIR_INDEX coalesced resource generation $FINAL_LAST_STATS_GENERATION" >&2
+        return 1
+      fi
+      FINAL_PREVIOUS_PAIR_GENERATION="$FINAL_LAST_STATS_GENERATION"
     }
 
     verify_final_capture() {
@@ -1292,12 +1361,19 @@ PY
       echo "ERROR: StreamMountain sectors did not publish" >&2
       exit 1
     }
-    # Every pair round-trips through the live property transport. No screenshot
-    # is taken here: each pair's allocation/recovery is the stability gate.
+    # Exercise the complete 25-pair grid from the canonical Current predicate.
+    # Each unique allocation must present before the next pair can replace it;
+    # a unique, strictly increasing resource generation makes coalescing fail.
+    send "set render.volumetrics.enabled true"
+    send "set render.volumetrics.local_sun_march_steps 0"
+    send "set render.volumetrics.multiple_scattering_orders 1"
+    send "set render.volumetrics.powder_strength 0"
+    send "set render.cloud_shadows.enabled false"
     for xy in 0.5x 0.75x 1x 1.5x 2x; do
       for depth in 64 96 128 192 256; do
         send "set render.volumetrics.froxel_xy_scale $xy"
         send "set render.volumetrics.froxel_depth_slices $depth"
+        final_verify_froxel_pair
       done
     done
     send "set render.clouds.layer0_enabled true"
@@ -1381,11 +1457,7 @@ PY
     verify_moving_pair "$OUT/${LABEL}_moving-0.png" "$OUT/${LABEL}_moving-1.png"
     verify_moving_pair "$OUT/${LABEL}_moving-1.png" "$OUT/${LABEL}_moving-2.png"
     verify_moving_pair "$OUT/${LABEL}_moving-2.png" "$OUT/${LABEL}_moving-3.png"
-    if grep -Eqi 'FATAL:|Validation Error|VUID-|renderer[^:]*:.*(error|failed)|^ERROR:' "$LOG" || \
-       grep -Eq 'validation errors: [1-9][0-9]*' "$LOG"; then
-      echo "ERROR: renderer or Vulkan validation failure found in $LOG" >&2
-      exit 1
-    fi
+    scan_final_log
     FINAL_VERIFY_SETS=0
     ;;
   *)
@@ -1400,6 +1472,11 @@ trap - EXIT INT TERM
 if [ "$SUITE" = final ] && [ "$EDITOR_EXIT_STATUS" -ne 0 ]; then
   echo "ERROR: final editor child exited with status $EDITOR_EXIT_STATUS" >&2
   exit 1
+fi
+if [ "$SUITE" = final ]; then
+  # This second pass is deliberately after FIFO quit and child wait, so Vulkan
+  # lifetime/validation errors emitted during teardown cannot promote evidence.
+  scan_final_log
 fi
 
 grep '^STATS,' "$LOG" > "$OUT/${LABEL}_stats.log" || true

@@ -138,3 +138,44 @@ as `DONE_WITH_CONCERNS`: the hardened script and focused GPU timing gate are
 green, but the single permitted final visual run was blocked by readiness
 before the new image/STATS assertions could execute.  Task 13 receiver PNGs
 remain the retained inspected visual evidence.
+
+## Review-gap closure -- timestamp ownership and final pair gates
+
+### RED to GREEN
+
+- New property/source contracts first failed six checks against `cf0385ae`:
+  the warmed frame-query ownership guard and the canonical memory, pair
+  generation, and teardown-scan acceptance gates were absent.
+- The real RTX 4090 gate was extended to submit actual production frames
+  (`prepare_frame`, `record_cull_and_render`, composite, and `end_frame`),
+  rather than the immediate raster helper which has no frame-query readback.
+  After three valid steady frames, the next dirty sun change failed exactly
+  `warmed frame timestamp readback preserves the next dirty atmosphere
+  measurement`, with `validation errors: 0`.
+- Root cause: `prepare_frame` resolves the synchronous, module-owned
+  atmosphere query first, then reads a warmed renderer query slot.  Since that
+  frame never writes zone 12, the generic unwritten-zone path overwrote the
+  new module timing with zero.  Renderer readback now skips zone 12; only the
+  atmosphere transaction publishes or clears that lane.
+- `VkVolumetrics` now uses `matter::enhanced_cloud_lighting(vol, shadows)`,
+  the canonical allocation predicate.  The harness mirrors that predicate for
+  its independent expected STATS calculation: Current is exactly 32 bytes per
+  voxel (four RGBA16F images), and enhanced is 34 (plus R16F cloud density).
+- Every one of the 25 final XY/depth pairs now resets history, waits four
+  successful presents, requests a unique STATS label, checks effective grid
+  dimensions/memory, and requires a strictly increasing resource generation.
+  The log error/validation scan runs again after explicit FIFO quit and child
+  wait, before staged evidence may be promoted.
+
+### Focused verification
+
+- `make -C MatterEngine3/tests run-property-editor WIN_CXX=/ucrt64/bin/g++.exe`
+  -- `ALL PASS`; `bash -n MatterEngine3/tools/atmosphere_cloud_shots.sh` --
+  pass.
+- The UCRT64 Vulkan smoke target rebuilt with `-Werror`.  The atmosphere-only
+  real-GPU gate then reported `ALL PASS` on NVIDIA GeForce RTX 4090 (driver
+  610.74, Vulkan 1.4.341), including dirty-positive, steady-zero, and warmed
+  dirty-after-valid-frame assertions; `validation errors: 0`.
+- No StreamMountain/final visual run was launched for this review closure.
+  The earlier bounded-run concern and preserved Task 13 visual evidence remain
+  unchanged.  Generated shader cache was removed before staging.
