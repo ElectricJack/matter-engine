@@ -42,6 +42,7 @@
 #include "../src/part_graph.h"
 #include "../src/dsl_bindings.h"
 #include "../src/script/world_definition_loader.h"
+#include "../src/part_asset_v2.h"
 
 #include <algorithm>
 #include <chrono>
@@ -53,6 +54,7 @@
 #include <sstream>
 #include <system_error>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using namespace script_host;
@@ -64,6 +66,49 @@ std::string slurp(const std::string& path) {
     std::stringstream ss;
     ss << f.rdbuf();
     return ss.str();
+}
+
+// ---- placement-hash gate (docs/streammountain-refactor-implementation-2026-08-09.md, Step 1) --
+//
+// FNV-1a64 fold, byte-exact -- never over formatted text. A placement's
+// identity is: which module, with which canonical params, at which transform.
+// The transform is folded as RAW BITS (each of the 16 row-major floats widened
+// to double -- an exact, lossless widening -- then memcpy'd to a uint64_t and
+// folded byte-by-byte) specifically so that a drift too small to show up under
+// "%g" formatting still flips the hash. That is the entire point of this gate:
+// later steps claim "bitwise identical" placement lists, and a hash built from
+// rounded text could not actually prove that claim.
+constexpr uint64_t kFnvOffsetBasis = 0xcbf29ce484222325ULL;
+constexpr uint64_t kFnvPrime       = 0x100000001b3ULL;
+
+uint64_t fnv1a64_bytes(uint64_t h, const void* data, size_t len) {
+    const unsigned char* p = static_cast<const unsigned char*>(data);
+    for (size_t i = 0; i < len; ++i) {
+        h ^= p[i];
+        h *= kFnvPrime;
+    }
+    return h;
+}
+
+uint64_t fnv1a64_string(uint64_t h, const std::string& s) {
+    // Length-prefix so ("AB","") and ("A","B") can never fold to the same
+    // byte stream.
+    uint64_t len = (uint64_t)s.size();
+    h = fnv1a64_bytes(h, &len, sizeof(len));
+    return fnv1a64_bytes(h, s.data(), s.size());
+}
+
+uint64_t fnv1a64_transform(uint64_t h, const float transform[16]) {
+    for (int i = 0; i < 16; ++i) {
+        // Widen float -> double: exact (every float is exactly representable
+        // as a double), so this is not a "%g"-style lossy formatting step --
+        // it only gives the raw bits a wider, uniform lane to fold through.
+        double d = (double)transform[i];
+        uint64_t bits;
+        std::memcpy(&bits, &d, sizeof(bits));
+        h = fnv1a64_bytes(h, &bits, sizeof(bits));
+    }
+    return h;
 }
 
 }  // namespace
@@ -206,11 +251,24 @@ int main(int argc, char** argv) {
         std::filesystem::create_directories("build/scatterprof/parts", ec);
     }
 
-    auto run = [&](const char* label, int terrain_lod, int rung,
+    // hash -> (module, canonical params) for every declared child variant.
+    // bake_source resolves each placeChild() call to exactly one of `hashes`
+    // (the composite module+params key, looked up via child_hashes_), so this
+    // is the inverse: given a written ChildInstance's child_resolved_hash,
+    // recover the module name and canonical params JSON the placement-hash
+    // gate needs to fold. Built once; every band bakes against the same
+    // variant table.
+    std::unordered_map<uint64_t, size_t> hash_to_variant;
+    hash_to_variant.reserve(hashes.size());
+    for (size_t i = 0; i < hashes.size(); ++i) hash_to_variant[hashes[i]] = i;
+
+    auto run = [&](const char* label, int band, int terrain_lod, int rung,
                    double sector_size) {
         dsl::script_profile::reset();
         const auto t0 = std::chrono::steady_clock::now();
         int ok = 0;
+        uint64_t placement_hash = kFnvOffsetBasis;
+        uint64_t placement_count = 0;
         for (int i = 0; i < iters; ++i) {
             char params[8192];
             std::snprintf(params, sizeof(params),
@@ -239,6 +297,45 @@ int main(int argc, char** argv) {
                 return;
             }
             ++ok;
+
+            // Read back the child-instance table this exact bake just wrote,
+            // in state.children() order (script_host.cpp builds
+            // child_modules_placed and the on-disk ChildInstance table in the
+            // SAME loop, so index k here is the same placement as
+            // r.child_modules_placed[k] would have named). This is the only
+            // way to reach hash+transform per placement from the test tier --
+            // BakeResult exposes module names but not the resolved child hash
+            // or the transform, and load_v2 is the engine's own public
+            // reader for exactly this table.
+            BLASManager blas;
+            TLASManager tlas(256);
+            std::vector<part_asset::ChildInstance> children;
+            part_asset::LodLevels lods_unused;
+            if (!part_asset::load_v2(r.written_path, r.resolved_hash, blas,
+                                     tlas, children, lods_unused)) {
+                std::fprintf(stderr,
+                             "[%s] load_v2(%s) failed -- cannot fold "
+                             "placements\n",
+                             label, r.written_path.c_str());
+                return;
+            }
+            for (const auto& c : children) {
+                const auto it = hash_to_variant.find(c.child_resolved_hash);
+                if (it == hash_to_variant.end()) {
+                    std::fprintf(stderr,
+                                 "[%s] placement hash %016llx matches no "
+                                 "declared variant -- refusing a partial "
+                                 "placement-hash gate\n",
+                                 label,
+                                 (unsigned long long)c.child_resolved_hash);
+                    return;
+                }
+                const size_t vi = it->second;
+                placement_hash = fnv1a64_string(placement_hash, mods[vi]);
+                placement_hash = fnv1a64_string(placement_hash, cparams[vi]);
+                placement_hash = fnv1a64_transform(placement_hash, c.transform);
+                ++placement_count;
+            }
         }
         const double wall_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t0).count();
@@ -246,6 +343,9 @@ int main(int argc, char** argv) {
                     label, ok, ok ? wall_ms / ok : 0.0);
         const std::string rep = dsl::script_profile::report();
         std::fputs(rep.empty() ? "  (no profile data)\n" : rep.c_str(), stdout);
+        std::printf("placement-hash band=%d %016llx count=%llu\n", band,
+                    (unsigned long long)placement_hash,
+                    (unsigned long long)placement_count);
     };
 
     std::printf("\nStreamMountain sector scatter profile — %d bakes per row\n",
@@ -257,10 +357,10 @@ int main(int argc, char** argv) {
     // terrainLod is the distance band; VEGETATION_MIN_LOD gates planting at 3.
     // Band 3 is the far edge of where vegetation is planted at all -- the bulk
     // of the disc -- and band 5 is underfoot.
-    run("band 5 (nearest, rung 2)", 5, 2, 64.0);
-    run("band 4 (rung 1)",          4, 1, 64.0);
-    run("band 3 (far edge, rung 0)", 3, 0, 64.0);
-    run("band 2 (gated: no vegetation)", 2, 0, 128.0);
+    run("band 5 (nearest, rung 2)", 5, 5, 2, 64.0);
+    run("band 4 (rung 1)",          4, 4, 1, 64.0);
+    run("band 3 (far edge, rung 0)", 3, 3, 0, 64.0);
+    run("band 2 (gated: no vegetation)", 2, 2, 0, 128.0);
     std::printf("\n");
     return 0;
 }

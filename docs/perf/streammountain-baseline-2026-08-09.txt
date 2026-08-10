@@ -1,0 +1,65 @@
+habitat tape: 12 channels, 12 ops
+child variants: 92
+
+StreamMountain sector scatter profile — 8 bakes per row
+Single-threaded and single-bake: this is the COMPOSITION of a bake,
+not the throughput of a fill. Cross-check against the engine's own
+[script-profile] block before acting on it.
+
+=== band 5 (nearest, rung 2) (8 bakes, 520.6 ms/bake wall) ===
+[script-profile] thread-ms summed across ALL bake workers (not wall time)
+  label                             calls      self ms     total ms   self%   us/call
+  plan.habitat                      63189       1224.9       1224.9   34.4%     19.39
+  plan.otherFamilies                   32        760.2       2190.0   21.4%  68437.47
+  plan.select                       55543        551.1        551.1   15.5%      9.92
+  sector.terrain                        8        504.2        504.2   14.2%  63027.97
+  plan.evaluate                         8        172.6        518.9    4.9%  64859.22
+  plan.exclude                          8        153.4        153.4    4.3%  19180.67
+  plan.candidates                      40         99.8         99.8    2.8%   2495.01
+  sector.place                          8         71.1         71.1    2.0%   8889.29
+  sector.plan                           8          9.3       2971.4    0.3% 371422.62
+  sector.rocks                          8          9.1          9.1    0.3%   1141.42
+  sector.boulders                       8          0.1          0.1    0.0%     16.61
+  (sum of self)                                 3556.0
+placement-hash band=5 e0fdb2725e48788b count=4708
+
+=== band 4 (rung 1) (8 bakes, 179.1 ms/bake wall) ===
+[script-profile] thread-ms summed across ALL bake workers (not wall time)
+  label                             calls      self ms     total ms   self%   us/call
+  plan.habitat                      15483        307.4        307.4   27.5%     19.86
+  plan.select                       13600        195.6        195.6   17.5%     14.38
+  plan.evaluate                         8        176.5        532.1   15.8%  66513.52
+  plan.exclude                          8        158.0        158.0   14.1%  19753.95
+  sector.terrain                        8        130.5        130.5   11.7%  16314.85
+  plan.otherFamilies                    8         77.8        225.2    7.0%  28151.59
+  sector.place                          8         35.0         35.0    3.1%   4380.18
+  plan.candidates                      16         24.7         24.7    2.2%   1545.34
+  sector.rocks                          8          9.1          9.1    0.8%   1132.71
+  sector.plan                           8          2.8        942.8    0.2% 117856.04
+  sector.boulders                       8          0.1          0.1    0.0%     14.06
+  (sum of self)                                 1117.6
+placement-hash band=4 2d2c2e5a829123d0 count=2369
+
+=== band 3 (far edge, rung 0) (8 bakes, 128.6 ms/bake wall) ===
+[script-profile] thread-ms summed across ALL bake workers (not wall time)
+  label                             calls      self ms     total ms   self%   us/call
+  plan.habitat                      10424        209.4        209.4   27.9%     20.09
+  plan.evaluate                         8        178.8        535.5   23.8%  66934.55
+  plan.exclude                          8        159.6        159.6   21.2%  19950.58
+  plan.select                        9171        147.3        147.3   19.6%     16.06
+  sector.terrain                        8         33.9         33.9    4.5%   4236.52
+  plan.candidates                       8         17.3         17.3    2.3%   2164.81
+  sector.place                          8          2.6          2.6    0.4%    330.35
+  sector.plan                           8          2.2        714.6    0.3%  89328.60
+  sector.boulders                       8          0.1          0.1    0.0%     10.53
+  (sum of self)                                  751.2
+placement-hash band=3 6b9ab4550106073e count=116
+
+=== band 2 (gated: no vegetation) (8 bakes, 57.7 ms/bake wall) ===
+[script-profile] thread-ms summed across ALL bake workers (not wall time)
+  label                             calls      self ms     total ms   self%   us/call
+  sector.terrain                        8         39.9         39.9   99.7%   4988.82
+  sector.boulders                      32          0.1          0.1    0.3%      3.52
+  (sum of self)                                   40.0
+placement-hash band=2 048c45218c6016da count=1
+
