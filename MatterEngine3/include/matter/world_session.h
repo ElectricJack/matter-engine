@@ -12,6 +12,7 @@
 #include "matter/world_definition.h"
 #include "matter/streaming.h"
 #include "matter/sun_angles.h"  // kSunAngularDiameterDefaultDeg + the convention
+#include "matter/atmosphere_lighting.h"
 #include "matter/vulkan_device.h"
 #include "render/vk_gi_contract.h"
 #include "part_graph_snapshot.h"
@@ -61,68 +62,24 @@ enum class RenderPath { GpuDriven, Raytrace };
 // there is nothing PassThrough could express that survives its removal.)
 enum class DlssMode : uint8_t { Native, Quality, Balanced, Performance };
 
-const char* dlss_mode_name(DlssMode mode) noexcept;
-
-struct VulkanLightingOverrides {
-    // sun/sky are the 2026-07-30 tuning pass (both were 1.0): a hotter key
-    // against a dimmer sky is what separates lit slope from shadowed slope
-    // once the terrain is mostly one gray rock material. These are the values
-    // the viewer's "Reset to World" button restores.
-    float sun_multiplier = 1.67f;
-    float sky_multiplier = 0.77f;
-    float emission_multiplier = 1.0f;
-    float exposure_ev = -2.0f;
-    float composite_debug_view = 0.0f;
-    // Per-channel tint on the AUTHORED sun/sky colour, applied component-wise
-    // at exactly the same point as the scalar multiplier above (see
-    // matter_engine.cpp, where VkSceneLighting::sun_color / sky_color are
-    // assembled from the manifest). Everything downstream — the composite
-    // push constant, the RT/GI constants and the volumetric scatter pass —
-    // reads those two colours, so a tint reaches direct light, GI and
-    // in-scattering together and cannot desync them.
-    //
-    // White is a BIT-EXACT no-op (x * 1.0f == x), which is what lets these
-    // exist without perturbing any golden/reference rendering.
-    //
-    // Appended after composite_debug_view on purpose: several call sites
-    // aggregate-initialize the first four members positionally
-    // ({sun, sky, emission, exposure}); the NSDMIs below keep those valid.
-    float sun_tint[3] = {1.0f, 1.0f, 1.0f};
-    float sky_tint[3] = {1.0f, 1.0f, 1.0f};
-
-    // --- Sun orientation and size ------------------------------------------
-    // WHERE the sun is, as the two angles a person actually thinks in, rather
-    // than as the Float3 that is duplicated down five layers. matter/sun_angles
-    // .h owns the conversion AND the convention (light vector points FROM the
-    // sun TOWARD the scene, so elevation +90 is (0,-1,0)) — read it before
-    // touching either number.
-    //
-    // These are only consulted when RenderOptions::use_sun_override is set,
-    // which the editor turns on once it has SEEDED them from what the world
-    // authored. Every other caller (headless tests, the replay harness, the
-    // Part Workbench's isolation session) leaves the flag false and keeps
-    // getting the world's authored sun_direction byte-for-byte, which is what
-    // keeps a default render pixel-identical to a pre-override build.
-    //
-    // The defaults below are the angles of the engine-default light vector
-    // {-0.45,-0.80,-0.35}; sun_angles_tests.cpp pins them against the
-    // conversion so the two cannot drift apart.
-    float sun_azimuth_deg = 127.874985f;
-    float sun_elevation_deg = 54.525963f;
-    // Angular DIAMETER of the sun, degrees. Drives the sky disc, the RT
-    // reflection prefilter and the shadow-ray cone together (sun_angles.h
-    // explains the calibration that makes 0.53 reproduce the three magic
-    // constants those three used to carry). Also world-authorable —
-    // WorldSettings::sun_angular_diameter_deg.
-    float sun_angular_diameter_deg = kSunAngularDiameterDefaultDeg;
-    // Shadow rays per pixel. Lives here rather than in VulkanRayTracingSettings
-    // because it is inseparable from the field above: rt_shadow.rgen collapses
-    // the cone to a single hard ray when this is 1 (the shipped default and the
-    // reason today's shadows are crisp), so enlarging the sun does nothing
-    // visible to shadows until this is raised. One knob would have been nicer;
-    // one knob that silently multiplies GPU cost would have been worse.
-    int32_t sun_shadow_samples = 1;
+// Public, renderer-type-free copy-out of the atmosphere snapshot that actually
+// committed. The Vulkan renderer's richer viewer::ResolvedAtmosphereStatus
+// remains private to the render implementation; editor automation must read
+// this copy instead of reconstructing status from requested controls.
+struct ResolvedAtmospherePresentationStatus {
+    uint64_t generation_serial = 0;
+    float resolved_elevation_deg = 0.0f;
+    Float3 atmospheric_direct_base_rgb{};
+    Float3 atmospheric_noon_direct_base_rgb{};
+    float direct_world_ratio = 0.0f;
+    Float3 direct_base_rgb{};
+    Float3 direct_world_sun_rgb{};
+    float sky_ambient_ratio = 0.0f;
+    Float3 sky_display_modifier_rgb{};
+    Float3 sky_irradiance_modifier_rgb{};
 };
+
+const char* dlss_mode_name(DlssMode mode) noexcept;
 
 struct RenderOptions {
     RenderPath   path     = RenderPath::GpuDriven;
@@ -156,7 +113,9 @@ struct RenderOptions {
     VulkanRayTracingSettings vulkan_ray_tracing{};
     VulkanGiSettings vulkan_gi{};
     VulkanLightingOverrides vulkan_lighting{};
-    VulkanVolumetricsSettings vulkan_volumetrics{};
+    AtmosphereSettings atmosphere{};
+    VulkanVolumetricsSettings volumetrics{};
+    CloudShadowSettings cloud_shadows{};
     TilesetPomSettings vulkan_tileset_pom{};
     // Phase 0: the chart-VT near band, decoupled from the POM distances
     // beside it. Compiled defaults (50/10 m) are what a caller that never
@@ -167,7 +126,7 @@ struct RenderOptions {
     // FogSettings the connect captured is consumed PER FRAME — WorldSession::
     // render hands it to VkSceneRenderer::set_volumetrics_settings on every
     // call — so an editor copy of it can simply ride the per-frame options the
-    // way vulkan_lighting/vulkan_volumetrics already do.
+    // way vulkan_lighting/volumetrics already do.
     //
     // Opt-in rather than unconditional: every non-editor caller (headless
     // tests, the replay harness, the Part Workbench's isolation session) leaves
@@ -327,6 +286,20 @@ struct FrameStats {
     float gpu_dlss_ms           = 0;
     float gpu_composite_ms      = 0;
     float gpu_vol_ms            = 0;
+    // Append-only detail lanes. gpu_vol_ms remains the combined froxel span.
+    float gpu_atmosphere_ms     = 0;
+    float gpu_cloud_shadows_ms  = 0;
+    float gpu_vol_density_ms    = 0;
+    float gpu_vol_scatter_ms    = 0;
+    float gpu_vol_integrate_ms  = 0;
+    uint32_t vol_grid_w = 0, vol_grid_h = 0, vol_grid_d = 0;
+    uint64_t vol_memory_bytes = 0;
+    uint64_t cloud_shadow_memory_bytes = 0;
+    FroxelXyScale vol_effective_xy_scale = FroxelXyScale::X1_0;
+    FroxelDepthSlices vol_effective_depth_slices = FroxelDepthSlices::D128;
+    uint64_t vol_resource_generation = 0;
+    bool vol_allocation_rejected = false;
+    std::string vol_allocation_error;
     // WP-E: the chart-VT page-fill pass (residency uploads + tier-1
     // compositor dispatches + pool copies). 0 when VT is not active.
     float gpu_vt_ms             = 0;
@@ -368,6 +341,12 @@ public:
     // Resolve the temporal candidate recorded by render(). Call exactly once
     // with the result returned by VulkanDevice::end_frame.
     void finish_vulkan_frame(uint64_t frame_serial, bool presented);
+
+    bool resolved_atmosphere_status(
+        ResolvedAtmospherePresentationStatus& out) const;
+    // Queues one one-shot reset of diffuse-GI, reflection/miss and volumetric
+    // histories without changing the committed atmosphere generation.
+    void request_atmosphere_history_reset();
 
     bool readback_swapchain_rgba8(const VulkanFrame& frame,
                                   std::vector<uint8_t>& rgba,
@@ -420,6 +399,10 @@ public:
     // available once a world-kind connect completes. The editor adopts these
     // into its live volumetrics controls on world load.
     bool world_volumetrics(VulkanVolumetricsSettings& out) const;
+    // World-authored physical atmosphere and cloud-shadow defaults, captured
+    // at the same world-install seams as volumetrics.
+    bool world_atmosphere(AtmosphereSettings& out) const;
+    bool world_cloud_shadows(CloudShadowSettings& out) const;
     // World-authored fog (World.fog static), captured at every install /
     // compose / cone-rebake. False until the first successful connect. The
     // editor seeds its live render.fog override from this so the group's

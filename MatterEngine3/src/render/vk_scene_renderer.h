@@ -13,12 +13,15 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "chart_atlas.h"   // WP-E: per-rung chart tables travel with a part
 #include "frame_matrices.h"
 #include "matter/draw_overrides.h"  // per-module draw overrides (GPU lane)
+#include "matter/cloud_shadow_settings.h"
+#include "matter/atmosphere_lighting.h"
 #include "matter/render_debug.h"
 #include "gpu_matrix_pack.h"
 #include "matter/lod_contract.h"
@@ -55,6 +58,71 @@ struct BakeInputs;
 namespace viewer {
 
 class VkVolumetrics;
+struct FroxelDispatchGrid;
+class VkAtmosphere;
+
+struct alignas(16) EnvironmentLightingGpu {
+    float direct_world_sun_ratio[4]{};
+    float sun_disc_reserved[4]{};
+    float sky_display_reserved[4]{};
+    float sky_irradiance_ambient_ratio[4]{};
+};
+static_assert(sizeof(EnvironmentLightingGpu) == 64);
+static_assert(std::is_standard_layout_v<EnvironmentLightingGpu>);
+static_assert(offsetof(EnvironmentLightingGpu, direct_world_sun_ratio) == 0);
+static_assert(offsetof(EnvironmentLightingGpu, sun_disc_reserved) == 16);
+static_assert(offsetof(EnvironmentLightingGpu, sky_display_reserved) == 32);
+static_assert(offsetof(EnvironmentLightingGpu,
+                       sky_irradiance_ambient_ratio) == 48);
+
+struct ResolvedAtmosphereStatus {
+    uint64_t generation_serial = 0;
+    float resolved_elevation_deg = 0.0f;
+    matter::Float3 normalized_to_sun{0.0f, 1.0f, 0.0f};
+    std::array<matter::Float3, 9> irradiance_sh{};
+    matter::Float3 atmospheric_direct_base_rgb{};
+    matter::Float3 atmospheric_noon_direct_base_rgb{};
+    float direct_world_ratio = 0.0f;
+    matter::Float3 direct_base_rgb{};
+    matter::Float3 direct_world_sun_rgb{};
+    matter::Float3 sun_disc_rgb{};
+    float sky_ambient_ratio = 0.0f;
+    matter::Float3 sky_display_modifier_rgb{};
+    matter::Float3 sky_irradiance_modifier_rgb{};
+};
+
+struct AtmosphereLutHandles {
+    std::array<VkImage, 4> images{};
+    std::array<VkImageView, 4> views{};
+};
+
+struct AtmosphereHistoryCounters {
+    uint64_t diffuse_gi = 0;
+    uint64_t reflection_miss = 0;
+    uint64_t volumetric = 0;
+};
+
+struct AtmosphereCandidateCounters {
+    uint64_t image_sets_allocated = 0;
+    uint64_t generation_stages_completed = 0;
+    uint64_t image_sets_discarded = 0;
+};
+
+struct AtmosphereReplayConstants {
+    matter::Float3 composite_sun_direction{};
+    float composite_emission_multiplier = 0.0f;
+    float display_exposure_ev = 0.0f;
+    float composite_sun_disc_cos_edge = 0.0f;
+    float composite_sun_disc_cos_core = 0.0f;
+    matter::Float3 rt_to_sun{};
+    uint32_t rt_shadow_samples = 0;
+    float rt_shadow_sun_cone_scale = 0.0f;
+    float rt_gi_emission_multiplier = 0.0f;
+    float rt_gi_sun_disc_cos_edge = 0.0f;
+    float rt_gi_sun_disc_cos_core = 0.0f;
+    float rt_gi_sun_size_scale = 0.0f;
+};
+class VkCloudShadows;
 
 constexpr uint32_t kVkMaxLod =
     static_cast<uint32_t>(matter::kMaxSerializedLodLevels);
@@ -636,9 +704,7 @@ struct VkSceneLighting {
     // Direction from the sun toward the scene, matching WorldLights.
     matter::Float3 sun_direction{-0.45f, -0.80f, -0.35f};
     float sun_intensity = 1.0f;
-    matter::Float3 sun_color{2.2f, 2.05f, 1.8f};
     float diffuse_rt_multiplier = 0.0f;
-    matter::Float3 sky_color{0.38f, 0.43f, 0.52f};
     float emission_multiplier = 1.0f;
     float debug_view = 0.0f;
     float camera_fwd_x = 0.0f;
@@ -667,11 +733,23 @@ struct VkSceneLighting {
     // few ULP at 0.9997 moves the visible edge of the disc.
     float sun_disc_cos_edge = 0.99975f;
     float sun_disc_cos_core = 0.99995f;
+    // Appended push-constant lanes. Preserve every legacy offset above.
+    float camera_pos_x = 0.0f;
+    float camera_pos_z = 0.0f;
+    // CPU-only atmosphere transaction inputs; not part of the composite push
+    // prefix above.
+    matter::Float3 authored_sun_rgb{2.2f, 2.05f, 1.8f};
+    matter::AtmosphereLightingSources atmosphere_sources{
+        {}, {}, {0.38f, 0.43f, 0.52f}, {0.38f, 0.43f, 0.52f},
+        {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f},
+        1.67f, 0.77f, 1.0f, 0.25f, 1.0f, 0.25f, 54.525963f};
+    int sun_shadow_samples = 1;
 };
-// Two floats longer than the 112 this was (vol_pad became a real field and two
-// more followed): the composite push constant grew with the sun-size fields
-// above. composite.frag's SceneLighting block must match member for member.
-static_assert(sizeof(VkSceneLighting) == 120);
+inline constexpr uint32_t kVkSceneLightingPushBytes =
+    static_cast<uint32_t>(offsetof(VkSceneLighting, authored_sun_rgb));
+static_assert(offsetof(VkSceneLighting, camera_pos_x) == 96);
+static_assert(offsetof(VkSceneLighting, camera_pos_z) == 100);
+static_assert(kVkSceneLightingPushBytes == 104);
 
 struct VkSceneUploadCounters {
     uint64_t vertex_uploads = 0;
@@ -941,6 +1019,10 @@ public:
     void set_part_draw_overrides(
         const std::vector<matter::PartDrawOverrideEntry>& entries);
     void set_lighting(const VkSceneLighting& lighting);
+    void set_atmosphere_settings(const matter::AtmosphereSettings& settings);
+    const ResolvedAtmosphereStatus& resolved_atmosphere_status() const noexcept {
+        return resolved_atmosphere_status_;
+    }
     void set_display_exposure(float exposure_ev);
     void set_composite_debug_view(float mode) { composite_debug_override_ = mode; }
     void set_geometry_debug_view(matter::GeometryDebugView view);
@@ -964,6 +1046,91 @@ public:
     }
     void set_volumetrics_settings(const matter::VulkanVolumetricsSettings& s,
                                   const matter::FogSettings& fog);
+    void set_volumetrics_settings(const matter::VulkanVolumetricsSettings& s,
+                                  const matter::FogSettings& fog,
+                                  const matter::CloudShadowSettings& shadows);
+    matter::FroxelGridDimensions volumetrics_dimensions() const;
+    matter::FroxelXyScale volumetrics_effective_xy_scale() const;
+    matter::FroxelDepthSlices volumetrics_effective_depth_slices() const;
+    VkImageView volumetrics_integrated_view() const;
+    FroxelDispatchGrid volumetrics_last_dispatch_grid() const;
+    bool volumetrics_last_scatter_history_was_valid_for_test() const;
+    uint64_t volumetrics_resource_generation() const;
+    bool volumetrics_allocation_rejected() const;
+    const std::string& volumetrics_allocation_error() const;
+    void set_fail_next_froxel_bundle_creation_for_test(bool enabled);
+    void set_fail_next_froxel_bundle_descriptor_allocation_for_test(bool enabled);
+    uint32_t volumetrics_grid_rgba16f_volume_count_for_test() const;
+    bool volumetrics_cloud_density_allocated_for_test() const;
+    matter::FroxelGridDimensions
+    volumetrics_cloud_density_dimensions_for_test() const;
+    uint64_t volumetrics_grid_bytes_for_test() const;
+    uint64_t volumetrics_persistent_bytes() const;
+    bool readback_volumetrics_density_voxel_for_test(
+        uint32_t x, uint32_t y, uint32_t z, matter::Float4& media,
+        float& cloud_density, std::string& error);
+    bool readback_volumetrics_integrated_voxel_for_test(
+        uint32_t x, uint32_t y, uint32_t z, matter::Float4& integrated,
+        std::string& error);
+    bool readback_volumetrics_scatter_voxel_for_test(
+        uint32_t x, uint32_t y, uint32_t z, matter::Float4& scatter,
+        std::string& error);
+    void set_cloud_shadow_density_layers_for_test(
+        uint32_t sunward_slice, float sunward_sigma,
+        uint32_t receiverward_slice, float receiverward_sigma,
+        bool invalidate_history);
+    void set_cloud_shadow_density_checker_for_test(
+        float even_sigma, float odd_sigma, bool invalidate_history);
+    bool generate_cloud_shadows_for_test(
+        uint32_t frame_slot, const matter::Float3& camera,
+        const matter::Float3& sun_direction, float frame_time,
+        std::string& error);
+    void clear_cloud_shadow_density_override_for_test(bool invalidate_history);
+    bool cloud_shadows_active() const;
+    uint64_t cloud_shadow_persistent_bytes() const;
+    matter::CloudShadowLevelDesc cloud_shadow_level_desc(uint32_t level) const;
+    VkFormat cloud_shadow_density_format(uint32_t level) const;
+    VkExtent3D cloud_shadow_density_extent(uint32_t level) const;
+    VkImageView cloud_shadow_density_view(uint32_t level) const;
+    VkFormat cloud_shadow_cumulative_format(uint32_t level,
+                                            uint32_t ping) const;
+    VkExtent3D cloud_shadow_cumulative_extent(uint32_t level,
+                                              uint32_t ping) const;
+    VkImageView cloud_shadow_cumulative_view(uint32_t level,
+                                             uint32_t ping) const;
+    uint32_t cloud_shadow_active_ping(uint32_t level) const;
+    const std::string& cloud_shadow_allocation_error() const;
+    void set_fail_next_cloud_shadow_bundle_creation_for_test(bool enabled);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    void test_fail_next_atmosphere_generation() noexcept;
+    void test_fail_next_atmosphere_descriptor_publication() noexcept {
+        test_fail_next_atmosphere_descriptor_publication_ = true;
+    }
+    AtmosphereLutHandles test_atmosphere_lut_handles() const noexcept;
+    AtmosphereHistoryCounters test_atmosphere_history_counters() const noexcept {
+        return atmosphere_history_counters_;
+    }
+    AtmosphereCandidateCounters
+    test_atmosphere_candidate_counters() const noexcept;
+    AtmosphereReplayConstants
+    test_atmosphere_replay_constants() const noexcept;
+    bool test_read_environment_lighting_gpu(
+        uint32_t frame_slot, EnvironmentLightingGpu& output) const noexcept;
+    ResolvedAtmosphereStatus test_resolved_atmosphere_status() const noexcept {
+        return resolved_atmosphere_status_;
+    }
+    void set_fail_next_environment_flush_for_test(bool enabled) {
+        test_fail_next_environment_flush_ = enabled;
+    }
+#endif
+    bool cloud_shadow_failed_candidate_destroyed_for_test() const;
+    size_t cloud_shadow_retired_bundle_count_for_test() const;
+    bool cloud_shadow_environment_bindings_match_for_test() const;
+    float cloud_shadow_environment_state_for_test(uint32_t index) const;
+    VkImageView cloud_shadow_environment_view_for_test(uint32_t index) const;
+    VkExtent3D cloud_shadow_environment_extent_for_test(uint32_t index) const;
+    bool cloud_shadow_environment_image_is_clear_for_test(
+        uint32_t index, std::string& error);
     // Ground POM live-tunables (viewer "Ground POM" UI). Stores the settings
     // and immediately re-writes the tileset params UBO (cheap -- see
     // write_tileset_params_buffer) so the next frame's gbuffer/RT tileset
@@ -990,6 +1157,24 @@ public:
     uint32_t rt_invalid_part_records_last_ = 0;
     uint64_t rt_invalid_part_records_total_ = 0;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    struct EnvironmentSamplingGpuFixture {
+        std::array<matter::Float3, 192 * 108> lut{};
+        std::vector<matter::Float2> uv;
+    };
+    struct DisplayTransformGpuFixture {
+        uint32_t width = 8, height = 8;
+        matter::Float3 hdr{0.21404114f, 0.21404114f, 0.21404114f};
+        float exposure_ev = 0.0f;
+        bool srgb_output = false;
+    };
+    bool test_dispatch_environment_sampling_fixture(
+        const EnvironmentSamplingGpuFixture&, std::vector<matter::Float3>&,
+        std::string&);
+    bool test_dispatch_display_transform_fixture(
+        const DisplayTransformGpuFixture&, std::vector<matter::Float3>&,
+        std::string&);
+    VkSampler test_sky_view_sampler() const;
+    VkSampler test_composite_sampler() const;
     void test_force_rt_unavailable(bool unavailable) {
         test_force_rt_unavailable_ = unavailable;
     }
@@ -1130,7 +1315,13 @@ public:
     // runs when GI is enabled. Splitting them tells primary-ray BLAS traversal
     // cost (dense foliage) apart from the GI bounce cost.
     static constexpr uint32_t kGpuZoneRtGi         = 11;
-    static constexpr uint32_t kGpuZoneCount        = 12;
+    // Append-only: external captures consume the established zones by index.
+    static constexpr uint32_t kGpuZoneAtmosphere    = 12;
+    static constexpr uint32_t kGpuZoneCloudShadows  = 13;
+    static constexpr uint32_t kGpuZoneVolDensity    = 14;
+    static constexpr uint32_t kGpuZoneVolScatter    = 15;
+    static constexpr uint32_t kGpuZoneVolIntegrate  = 16;
+    static constexpr uint32_t kGpuZoneCount         = 17;
     bool gpu_timers_supported() const { return gpu_timers_supported_; }
     float gpu_zone_ms(uint32_t zone) const {
         return zone < kGpuZoneCount ? gpu_smoothed_ms_[zone] : 0.0f;
@@ -1531,6 +1722,10 @@ private:
 
     struct FrameResources {
         matter::VkBufferResource frame_constants;
+        // Set-1 physical environment state is deliberately per frame slot so
+        // a new camera/sun cannot rewrite storage still referenced by a
+        // submitted composite, RT, or froxel dispatch.
+        matter::VkBufferResource environment_constants;
         matter::VkBufferResource instances;
         matter::VkBufferResource commands;
         matter::VkBufferResource draw_transforms;
@@ -1567,6 +1762,10 @@ private:
         VkDescriptorSet descriptor_sets[2]{};
         VkDescriptorSet skin_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;
+        VkDescriptorSet environment_descriptor_set = VK_NULL_HANDLE;
+        VkImageView environment_cloud_views[4]{};
+        VkExtent3D environment_cloud_extents[4]{};
+        float environment_cloud_state[4]{};
         VkDescriptorSet display_descriptor_set = VK_NULL_HANDLE;
         // Three denoised signals (diffuse, specular, transmission), one
         // temporal set each and three a-trous ping-pong sets each.
@@ -1626,7 +1825,7 @@ private:
         uint64_t rt_tlas_pending_serial = 0;
         uint64_t rt_tlas_pending_epoch = 0;
         bool rt_tlas_valid = false;
-        // GPU timestamp query pool: 18 slots (9 zones × begin/end).
+        // GPU timestamp query pool: one begin/end pair per kGpuZone* lane.
         VkQueryPool ts_pool = VK_NULL_HANDLE;
         // Per zone: bit 0 set when begin was written, bit 1 when end was.
         uint8_t ts_written[kGpuZoneCount]{};
@@ -1677,6 +1876,8 @@ private:
         std::string& error);
 
     bool create_pipeline(std::string& error);
+    bool create_environment_layout(std::string& error);
+    bool create_environment_resources(std::string& error);
     bool create_raster_pipelines(std::string& error);
     bool create_display_pipeline(std::string& error);
     bool create_ray_tracing_pipeline(std::string& error);
@@ -1721,6 +1922,16 @@ private:
     void probe_skin_raster_draws(
         const std::vector<VkSkinRasterDraw>& draws) const;
     void update_composite_descriptor(FrameResources& frame);
+    bool update_environment_descriptor(FrameResources& frame,
+                                       std::string& error,
+                                       const matter::VkImageResource* sky = nullptr,
+                                       const matter::VkImageResource* irradiance = nullptr,
+                                       const ResolvedAtmosphereStatus* status = nullptr);
+    bool resolve_atmosphere_transaction(FrameResources& frame,
+                                        float camera_world_y,
+                                        std::string& error);
+    void update_atmosphere_replay_constants() noexcept;
+    void resolve_live_atmosphere(uint32_t change_mask, bool full_commit);
     void update_display_descriptor(VkDescriptorSet set, VkImageView view);
     bool upload_scene_buffers(FrameResources& frame,
                               VkCommandBuffer material_command_buffer,
@@ -1922,9 +2133,11 @@ private:
     VkPipeline wireframe_raster_pipeline_ = VK_NULL_HANDLE;
     VkPipeline wireframe_skinned_raster_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout composite_set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout environment_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline composite_pipeline_ = VK_NULL_HANDLE;
     VkSampler composite_sampler_ = VK_NULL_HANDLE;
+    VkSampler sky_view_linear_sampler_ = VK_NULL_HANDLE;
     VkSampler vol_linear_sampler_ = VK_NULL_HANDLE;  // trilinear for froxel volume
     VkDescriptorSetLayout display_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout display_pipeline_layout_ = VK_NULL_HANDLE;
@@ -2112,6 +2325,8 @@ private:
     uint64_t gi_presented_attempt_token_ = 0;
     uint64_t gi_history_reset_count_ = 0;
     bool gi_candidate_was_reset_ = false;
+    bool gi_candidate_used_diffuse_reset_ = false;
+    bool gi_candidate_used_reflection_reset_ = false;
     bool last_composite_used_gi_temporal_ = false;
     VkImageUsageFlags visibility_usage_ = 0;
     matter::VkBufferResource rt_sbt_;
@@ -2202,6 +2417,8 @@ private:
     uint64_t material_geometry_revision_ = 0;
     uint64_t material_generation_ = 1;
     bool gi_history_reset_pending_ = false;
+    bool gi_diffuse_history_reset_pending_ = false;
+    bool gi_reflection_history_reset_pending_ = false;
     // MATTER_VT_CHART_LOG route census: which of vt_slot_for_lod's seven
     // early-outs sent a draw to the legacy flat-tint path. Mutable + atomic
     // because vt_slot_for_lod is const and reached from the record path.
@@ -2251,6 +2468,19 @@ private:
     matter::VulkanRayTracingSettings ray_tracing_settings_{};
     matter::VulkanGiSettings gi_settings_{};
     std::unique_ptr<VkVolumetrics> volumetrics_;
+    std::unique_ptr<VkAtmosphere> atmosphere_;
+    std::unique_ptr<VkCloudShadows> cloud_shadows_;
+    matter::AtmosphereSettings atmosphere_settings_{};
+    matter::AtmosphereSettings committed_atmosphere_settings_{};
+    ResolvedAtmosphereStatus resolved_atmosphere_status_{};
+    bool has_valid_sky_irradiance_modifier_ = false;
+    AtmosphereReplayConstants atmosphere_replay_constants_{};
+    AtmosphereHistoryCounters atmosphere_history_counters_{};
+    uint32_t pending_atmosphere_change_mask_ = matter::kAtmosphereChangeNone;
+    matter::Float3 requested_atmosphere_to_sun_{0.0f, 1.0f, 0.0f};
+    matter::Float3 requested_atmosphere_authored_sun_{2.2f, 2.05f, 1.8f};
+    float requested_atmosphere_camera_y_ = 0.0f;
+    matter::CloudShadowSettings cloud_shadow_settings_{};
     bool volumetrics_enabled_ = false;
     float volumetrics_debug_view_ = 0.0f;
     bool volumetrics_height_layer_ = false;
@@ -2403,6 +2633,9 @@ private:
     uint32_t test_fail_after_skin_uploads_ =
         std::numeric_limits<uint32_t>::max();
     bool test_fail_animation_bounds_upload_once_ = false;
+    bool test_fail_next_environment_flush_ = false;
+    bool test_fail_next_atmosphere_generation_ = false;
+    bool test_fail_next_atmosphere_descriptor_publication_ = false;
 #endif
 };
 

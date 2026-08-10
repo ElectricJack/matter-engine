@@ -78,6 +78,26 @@ const auto s_lighting = matter::props::group<matter::VulkanLightingOverrides>(
     prop(&matter::VulkanLightingOverrides::sky_tint, "sky_tint")
         .label("Sky tint").color()
         .doc("Per-channel tint on the authored sky colour. White = unchanged."),
+    prop(&matter::VulkanLightingOverrides::day_ambient_multiplier,
+         "day_ambient_multiplier")
+        .label("Day ambient").range(0.0f, 4.0f)
+        .env("MATTER_DAY_AMBIENT_MULTIPLIER")
+        .doc("Physical irradiance at e >= +5 deg. Visible sky does not change ambient."),
+    prop(&matter::VulkanLightingOverrides::twilight_ambient_multiplier,
+         "twilight_ambient_multiplier")
+        .label("Twilight ambient").range(0.0f, 4.0f)
+        .env("MATTER_TWILIGHT_AMBIENT_MULTIPLIER")
+        .doc("Physical irradiance at e <= -6 deg. Ambient does not recolour the visible sky."),
+    prop(&matter::VulkanLightingOverrides::sky_irradiance_multiplier,
+         "sky_irradiance_multiplier")
+        .label("Sky irradiance").range(0.0f, 4.0f)
+        .env("MATTER_SKY_IRRADIANCE_MULTIPLIER")
+        .doc("Post-9SH physical ambient multiplier; independent of visible sky."),
+    prop(&matter::VulkanLightingOverrides::sunset_direct_ratio,
+         "sunset_direct_ratio")
+        .label("Sunset direct").range(0.0f, 1.0f)
+        .env("MATTER_SUNSET_DIRECT_RATIO")
+        .doc("Direct-world ratio at +5 deg. Sunset direct does not affect disc presentation."),
     // The four below carry MATTER_SUN_* env names (layer 5) for a reason
     // beyond convenience: the editor has no scriptable input on Windows (the
     // FIFO command path is POSIX-only), so an env override is the ONLY way to
@@ -121,8 +141,32 @@ const auto s_lighting = matter::props::group<matter::VulkanLightingOverrides>(
         .env("MATTER_SUN_SHADOW_SAMPLES")
         .doc("Sun shadow rays per pixel. At 1 (the default) the ray is hard "
              "and Sun size has no effect on shadows at all; the cone only "
-             "resolves into a penumbra with several rays. Costs GPU time "
-             "linearly."));
+              "resolves into a penumbra with several rays. Costs GPU time "
+              "linearly."));
+
+const auto s_atmosphere = matter::props::group<matter::AtmosphereSettings>(
+    "render.atmosphere", "Atmosphere",
+    prop(&matter::AtmosphereSettings::sea_level_y, "sea_level_y")
+        .label("Sea level").range(-1000.0f, 10000.0f).units("m")
+        .env("MATTER_ATMOSPHERE_SEA_LEVEL_Y"),
+    prop(&matter::AtmosphereSettings::rayleigh_scale, "rayleigh_scale")
+        .label("Rayleigh scale").range(0.0f, 4.0f)
+        .env("MATTER_ATMOSPHERE_RAYLEIGH_SCALE"),
+    prop(&matter::AtmosphereSettings::mie_scale, "mie_scale")
+        .label("Mie scale").range(0.0f, 4.0f)
+        .env("MATTER_ATMOSPHERE_MIE_SCALE"),
+    prop(&matter::AtmosphereSettings::mie_anisotropy, "mie_anisotropy")
+        .label("Mie anisotropy").range(-0.2f, 0.99f)
+        .env("MATTER_ATMOSPHERE_MIE_ANISOTROPY"),
+    prop(&matter::AtmosphereSettings::ozone_scale, "ozone_scale")
+        .label("Ozone scale").range(0.0f, 4.0f)
+        .env("MATTER_ATMOSPHERE_OZONE_SCALE"),
+    prop(&matter::AtmosphereSettings::ground_albedo, "ground_albedo")
+        .label("Ground albedo").range(0.0f, 1.0f)
+        .env("MATTER_ATMOSPHERE_GROUND_ALBEDO"));
+
+const char* const kFroxelXyLabels[] = {"0.5x", "0.75x", "1x", "1.5x", "2x"};
+const char* const kFroxelDepthLabels[] = {"64", "96", "128", "192", "256"};
 
 // render.volumetrics — how the froxel volume is MARCHED. What is IN it is
 // render.fog's business and nothing here duplicates it.
@@ -154,9 +198,54 @@ const auto s_volumetrics = matter::props::group<matter::VulkanVolumetricsSetting
              "volumetrics on for a headless capture."),
     prop(&matter::VulkanVolumetricsSettings::phase_g, "phase_g")
         .label("Phase g").range(0.0f, 0.99f)
-        .doc("Henyey-Greenstein anisotropy."),
+        .doc("Ground fog/haze Henyey-Greenstein anisotropy."),
     prop(&matter::VulkanVolumetricsSettings::temporal_blend, "temporal_blend")
-        .label("Temporal blend").range(0.0f, 0.99f));
+        .label("Temporal blend").range(0.0f, 0.99f),
+    prop(&matter::VulkanVolumetricsSettings::froxel_xy_scale, "froxel_xy_scale")
+        .label("Froxel XY scale").enums(kFroxelXyLabels, 5)
+        .env("MATTER_FROXEL_XY_SCALE"),
+    prop(&matter::VulkanVolumetricsSettings::froxel_depth_slices, "froxel_depth_slices")
+        .label("Froxel depth slices").enums(kFroxelDepthLabels, 5)
+        .env("MATTER_FROXEL_DEPTH_SLICES"),
+    prop(&matter::VulkanVolumetricsSettings::local_sun_march_steps, "local_sun_march_steps")
+        .label("Local sun march steps").range(0.0f, 32.0f),
+    prop(&matter::VulkanVolumetricsSettings::local_sun_march_distance_m,
+         "local_sun_march_distance_m")
+        .label("Local sun march distance").range(0.0f, 1000.0f).units("m"),
+    prop(&matter::VulkanVolumetricsSettings::multiple_scattering_orders,
+         "multiple_scattering_orders")
+        .label("Multiple scattering orders").range(1.0f, 4.0f)
+        .env("MATTER_CLOUD_SCATTER_ORDERS"),
+    prop(&matter::VulkanVolumetricsSettings::multiple_scattering_strength,
+         "multiple_scattering_strength")
+        .label("Multiple scattering strength").range(0.0f, 1.0f),
+    prop(&matter::VulkanVolumetricsSettings::powder_strength, "powder_strength")
+        .label("Powder strength").range(0.0f, 1.0f));
+
+const char* const kNearResolutionLabels[] = {"128", "256", "512"};
+const char* const kNearDepthLabels[] = {"16", "32", "48"};
+const char* const kFarResolutionLabels[] = {"64", "128", "256"};
+const char* const kFarDepthLabels[] = {"16", "24", "32"};
+
+const auto s_cloud_shadows = matter::props::group<matter::CloudShadowSettings>(
+    "render.cloud_shadows", "Cloud Shadows",
+    prop(&matter::CloudShadowSettings::enabled, "enabled").label("Enable"),
+    prop(&matter::CloudShadowSettings::near_resolution, "near_resolution")
+        .label("Near resolution").enums(kNearResolutionLabels, 3),
+    prop(&matter::CloudShadowSettings::near_depth_slices, "near_depth_slices")
+        .label("Near depth slices").enums(kNearDepthLabels, 3),
+    prop(&matter::CloudShadowSettings::near_coverage_m, "near_coverage_m")
+        .label("Near coverage").range(250.0f, 10000.0f).units("m"),
+    prop(&matter::CloudShadowSettings::far_resolution, "far_resolution")
+        .label("Far resolution").enums(kFarResolutionLabels, 3),
+    prop(&matter::CloudShadowSettings::far_depth_slices, "far_depth_slices")
+        .label("Far depth slices").enums(kFarDepthLabels, 3),
+    prop(&matter::CloudShadowSettings::far_coverage_m, "far_coverage_m")
+        .label("Far coverage").range(250.0f, 10000.0f).units("m"),
+    prop(&matter::CloudShadowSettings::filter_scale, "filter_scale")
+        .label("Filter scale").range(0.0f, 4.0f),
+    prop(&matter::CloudShadowSettings::update_fraction, "update_fraction")
+        .label("Update fraction").range(0.0625f, 1.0f));
 
 // Ground-POM horizon diagnostic (TilesetPomSettings::horizon_debug). Order
 // matters: the shader switches on the index, and 2 is the REFERENCE the other
@@ -378,6 +467,21 @@ const auto s_fog = matter::props::group<matter::FogSettings>(
     CLOUD_PROP(i, coverage, "layer" #i "_coverage", matter::props::Type::Float) \
         .label("Coverage").range(0.0f, 1.0f)                                   \
         .doc("How much sky the deck fills. 1 is solid overcast, 0 is clear."), \
+    CLOUD_PROP(i, weather_scale, "layer" #i "_weather_scale",                 \
+               matter::props::Type::Float)                                     \
+        .label("Weather scale").range(1e-6f, 0.1f).log(),                      \
+    CLOUD_PROP(i, weather_influence, "layer" #i "_weather_influence",         \
+               matter::props::Type::Float)                                     \
+        .label("Weather influence").range(0.0f, 1.0f),                         \
+    CLOUD_PROP(i, detail_scale, "layer" #i "_detail_scale",                   \
+               matter::props::Type::Float)                                     \
+        .label("Detail scale").range(1e-5f, 0.2f).log(),                       \
+    CLOUD_PROP(i, detail_erosion, "layer" #i "_detail_erosion",               \
+               matter::props::Type::Float)                                     \
+        .label("Detail erosion").range(0.0f, 1.0f),                            \
+    CLOUD_PROP(i, shape_bias, "layer" #i "_shape_bias",                       \
+               matter::props::Type::Float)                                     \
+        .label("Shape bias").range(-1.0f, 1.0f),                               \
     CLOUD_PROP(i, wind, "layer" #i "_wind", matter::props::Type::Float3)        \
         .label("Wind").units("m/s")                                            \
         .doc("Per-layer advection. Decks at different altitudes moving at "    \
@@ -553,7 +657,8 @@ const char* const kDebugViewLabels[] = {"None", "Normals", "Depth",
                                         "Sun visibility", "Raw albedo",
                                         "LOD levels", "Wireframe"};
 const char* const kVolDebugLabels[] = {"Off", "Density", "Scatter",
-                                       "Integrated"};
+                                       "Integrated", "Cloud density",
+                                       "Cloud shadow transmittance"};
 
 const auto s_viewer_debug = matter::props::group<ViewerStats>(
     "viewer.debug", "Viewer Debug Views",
@@ -568,7 +673,7 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
              "\"LOD levels\" view. Forced off, and reported as such, on "
              "devices without VkPhysicalDeviceFeatures::fillModeNonSolid."),
     prop(&ViewerStats::vol_debug_view, "vol_debug_view")
-        .label("Volumetric view").enums(kVolDebugLabels, 4)
+        .label("Volumetric view").enums(kVolDebugLabels, 6)
         .doc("Only meaningful while volumetrics are enabled."));
 
 // ---- render.gpu ----------------------------------------------------------
@@ -837,6 +942,7 @@ const char* const kDlssModeLabels[4] = {
 void EditorProps::init(ViewerStats& stats, CameraPrefs& camera,
                        ToolbarState& toolbar, ConsolePanelState& console,
                        bool persist) {
+    stats_ = &stats;
     persist_ = persist;
     // Same convention as imgui.ini: relative to the cwd, and the editor is
     // always launched from MatterEditor/.
@@ -868,7 +974,10 @@ void EditorProps::init(ViewerStats& stats, CameraPrefs& camera,
                                      &matter::stream_runtime_settings(),
                                      Scope::User);
     lighting_ = registry_.bind(s_lighting, &stats.lighting, Scope::World);
+    atmosphere_ = registry_.bind(s_atmosphere, &stats.atmosphere, Scope::World);
     volumetrics_ = registry_.bind(s_volumetrics, &stats.volumetrics, Scope::World);
+    cloud_shadows_ = registry_.bind(s_cloud_shadows, &stats.cloud_shadows,
+                                    Scope::World);
     fog_ = registry_.bind(s_fog, &stats.fog, Scope::World);
     // Same instance as render.fog above, disjoint fields — see the comment on
     // s_clouds for why this is a second group rather than more rows in that
@@ -885,6 +994,11 @@ void EditorProps::init(ViewerStats& stats, CameraPrefs& camera,
     overlay_ = registry_.bind(s_overlay, &stats.animation_overlay,
                               Scope::Session);
     viewer_debug_ = registry_.bind(s_viewer_debug, &stats, Scope::Session);
+    viewer_session_status_ = registry_.bind(
+        viewer_session_status_group(), &stats.session_status, Scope::Session);
+    viewer_atmosphere_status_ = registry_.bind(
+        viewer_atmosphere_status_group(), &stats.atmosphere_status,
+        Scope::Session);
 
     // User groups have no world-JS layer (S4): their baseline IS the compiled
     // default, which is what bind() already captured.
@@ -905,7 +1019,13 @@ void EditorProps::shutdown() {
 
 matter::props::Binding* EditorProps::budget() { return registry_.get(budget_); }
 matter::props::Binding* EditorProps::lighting() { return registry_.get(lighting_); }
+matter::props::Binding* EditorProps::atmosphere() {
+    return registry_.get(atmosphere_);
+}
 matter::props::Binding* EditorProps::volumetrics() { return registry_.get(volumetrics_); }
+matter::props::Binding* EditorProps::cloud_shadows() {
+    return registry_.get(cloud_shadows_);
+}
 matter::props::Binding* EditorProps::fog() { return registry_.get(fog_); }
 matter::props::Binding* EditorProps::clouds() { return registry_.get(clouds_); }
 matter::props::Binding* EditorProps::pom() { return registry_.get(pom_); }
@@ -976,6 +1096,12 @@ matter::props::Binding* EditorProps::animation_overlay() {
 }
 matter::props::Binding* EditorProps::viewer_debug() {
     return registry_.get(viewer_debug_);
+}
+matter::props::Binding* EditorProps::viewer_session_status() {
+    return registry_.get(viewer_session_status_);
+}
+matter::props::Binding* EditorProps::viewer_atmosphere_status() {
+    return registry_.get(viewer_atmosphere_status_);
 }
 
 matter::props::Binding* EditorProps::world_props() {

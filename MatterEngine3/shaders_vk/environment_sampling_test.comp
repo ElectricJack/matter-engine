@@ -1,0 +1,24 @@
+#version 460
+
+#define MATTER_ENVIRONMENT_SAMPLING_TEST
+#include "environment_common.glsl"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(set = 0, binding = 1, std430) readonly buffer SampleUv {
+    vec2 values[];
+} sample_uv;
+layout(set = 0, binding = 2, std430) writeonly buffer SampleRgb {
+    vec4 values[];
+} sample_rgb;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= sample_uv.values.length()) return;
+    float azimuth = sample_uv.values[index].x * (2.0 * ENV_PI) - ENV_PI;
+    float zenith = sample_uv.values[index].y * ENV_PI;
+    vec3 direction = vec3(cos(azimuth) * sin(zenith),
+                          cos(zenith),
+                          -sin(azimuth) * sin(zenith));
+    vec2 uv = atmosphere_sky_uv(direction, vec3(1.0, 0.0, 0.0));
+    sample_rgb.values[index] = vec4(texture(atmosphere_sky_view, uv).rgb, 1.0);
+}

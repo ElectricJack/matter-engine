@@ -1,10 +1,15 @@
 #pragma once
 
+#include "atmosphere.h"
 #include "cloud_layers.h"
+#include "cloud_shadow_settings.h"
 #include "math_types.h"
 #include "sun_angles.h"
+#include "volumetric_quality.h"
 
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -109,6 +114,17 @@ inline int32_t active_cloud_count(const FogSettings& fog) {
     return n;
 }
 
+inline float active_cloud_top(const FogSettings& fog) {
+    const int32_t count = active_cloud_count(fog);
+    if (count == 0) return 0.0f;
+    float top = -std::numeric_limits<float>::infinity();
+    for (int32_t i = 0; i < count; ++i) {
+        if (std::isfinite(fog.clouds[i].max_height))
+            top = std::fmax(top, fog.clouds[i].max_height);
+    }
+    return std::isfinite(top) ? top : 0.0f;
+}
+
 // Slides every enabled layer down to the front, so `clouds[0 .. count)` is
 // exactly the live set. Call after any edit that can disable a middle layer —
 // the editor toggling `clouds[0].enabled` off with `clouds[1]` still on is
@@ -156,26 +172,6 @@ struct WorldCameraSettings {
     bool authored = false;
     Float3 position{};
     Float3 target{};
-};
-
-// How the froxel volume is MARCHED. Everything about what is IN the volume
-// lives in FogSettings above.
-//
-// This struct used to also carry fog_density_mul / fog_floor_offset /
-// fog_falloff_mul / fog_color_mul / fog_wind_mul — five pure multipliers on
-// five FogSettings fields of the same name. They predate render.fog being
-// directly editable, and once it was, the Lighting panel showed every fog
-// concept twice (issue 80c66789). They are gone: a multiplier can only SCALE
-// what the world authored, while the direct field can SET it, so the authored
-// field is strictly more expressive and the multiplier is redundant. Worlds
-// and property files that still carry the old keys are folded into the
-// authored values once, loudly — see fold_legacy_fog_multipliers() in
-// world_definition_loader.cpp and migrate_legacy_fog_keys() in props.cpp.
-struct VulkanVolumetricsSettings {
-    bool  enabled        = false;
-    float temporal_blend = 0.85f;
-    float phase_g        = 0.3f;
-    float vol_debug_view   = 0.0f;
 };
 
 // Ground POM live-tunables (viewer "Ground POM" UI). Mirrors the
@@ -344,7 +340,9 @@ struct WorldSettings {
     // World-authored volumetrics defaults (World.volumetrics static). The
     // editor adopts these into its live volumetrics controls when the world
     // loads; enabled defaults to false so worlds opt in.
+    AtmosphereSettings atmosphere{};
     VulkanVolumetricsSettings volumetrics{};
+    CloudShadowSettings cloud_shadows{};
 };
 
 // Typed component validation deliberately occurs later at the SceneRegistry

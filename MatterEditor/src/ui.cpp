@@ -1040,6 +1040,11 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
             ImGui::Text("  DLSS %.1f  Comp %.1f  Vol %.1f  (other %.1f)",
                         s.gpu_dlss_ms, s.gpu_composite_ms,
                         s.gpu_vol_ms, s.gpu_total_ms - gpu_sum);
+            ImGui::Text("  Atmos %.1f  Cloud shadows %.1f", s.gpu_atmosphere_ms,
+                        s.gpu_cloud_shadows_ms);
+            ImGui::Text("  Vol density %.1f  scatter %.1f  integrate %.1f",
+                        s.gpu_vol_density_ms, s.gpu_vol_scatter_ms,
+                        s.gpu_vol_integrate_ms);
         } else {
             ImGui::TextDisabled("GPU timers unavailable");
         }

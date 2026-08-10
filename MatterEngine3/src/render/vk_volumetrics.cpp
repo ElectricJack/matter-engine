@@ -28,6 +28,7 @@
 
 #include "gpu_matrix_pack.h"
 #include "frame_matrices.h"
+#include "matter/cloud_shadow_settings.h"
 #include "matter/vulkan_device.h"
 #include "matter/world_definition.h"
 #include "matter/world_session.h"
@@ -86,6 +87,28 @@ void pack_mat4_column_major(float out[16], const matter::Mat4f& m) {
             out[col * 4 + row] = m.m[row * 4 + col];
 }
 
+float half_to_float(uint16_t value) {
+    const uint32_t sign = static_cast<uint32_t>(value & 0x8000u) << 16;
+    uint32_t exponent = (value >> 10) & 0x1fu;
+    uint32_t mantissa = value & 0x3ffu;
+    uint32_t bits = sign;
+    if (exponent == 0) {
+        if (mantissa != 0) {
+            exponent = 127 - 14;
+            while ((mantissa & 0x400u) == 0) { mantissa <<= 1; --exponent; }
+            bits |= exponent << 23;
+            bits |= (mantissa & 0x3ffu) << 13;
+        }
+    } else if (exponent == 31) {
+        bits |= 0x7f800000u | (mantissa << 13);
+    } else {
+        bits |= (exponent + 127 - 15) << 23;
+        bits |= mantissa << 13;
+    }
+    union { uint32_t bits; float value; } result{bits};
+    return result.value;
+}
+
 // Simple 3D hash for procedural noise generation.
 uint32_t hash3d(uint32_t x, uint32_t y, uint32_t z, uint32_t seed) {
     uint32_t h = x * 374761393u + y * 668265263u + z * 1274126177u + seed;
@@ -108,8 +131,12 @@ VkVolumetrics::~VkVolumetrics() { destroy(); }
 // init
 // ---------------------------------------------------------------------------
 
-bool VkVolumetrics::init(matter::VulkanDevice& vulkan, std::string& error) {
+bool VkVolumetrics::init(matter::VulkanDevice& vulkan,
+                         VkDescriptorSetLayout environment_layout,
+                         std::string& error) {
     device_ = vulkan.device();
+    vulkan_ = &vulkan;
+    environment_set_layout_ = environment_layout;
 
     // Ray query availability follows the same ray-tracing capability check
     // that the engine uses for RT shadows.  If the device does not support
@@ -124,14 +151,44 @@ bool VkVolumetrics::init(matter::VulkanDevice& vulkan, std::string& error) {
     }
 
     if (!create_noise_texture(vulkan, error)) return false;
-    if (!create_volume_images(vulkan, error)) return false;
+    if (!matter::create_image(vulkan, VK_IMAGE_TYPE_3D, VK_FORMAT_R16_SFLOAT,
+                              {1, 1, 1}, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                              VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                              cloud_density_dummy_, error)) return false;
+    struct ClearDummy { matter::VkImageResource* image; } clear_dummy{&cloud_density_dummy_};
+    const auto clear = [](VkCommandBuffer cmd, void* data) {
+        auto& image = *static_cast<ClearDummy*>(data)->image;
+        matter::record_image_transition(
+            cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+        const VkClearColorValue zero{{0.0f, 0.0f, 0.0f, 0.0f}};
+        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cmd, image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             &zero, 1, &range);
+        matter::record_image_transition(
+            cmd, image, VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    };
+    if (!matter::submit_immediate(vulkan, clear, &clear_dummy, error,
+                                  matter::ImmediateSubmitPhase::staging_upload,
+                                  {cloud_density_dummy_.lifetime})) return false;
     if (!create_emitter_buffer(vulkan, error)) return false;
     if (!create_cloud_buffer(vulkan, error)) return false;
     if (!create_samplers(vulkan, error)) return false;
     if (!create_density_pipeline(vulkan, error)) return false;
     if (!create_scatter_pipeline(vulkan, error)) return false;
     if (!create_integrate_pipeline(vulkan, error)) return false;
+    // A bundle owns every descriptor set that references its images. Pipelines
+    // and layouts must therefore exist before the initial bundle is allocated.
+    if (!create_froxel_bundle(vulkan, requested_dimensions_, active_bundle_, error))
+        return false;
 
+    resource_generation_ = 1;
     initialized_ = true;
     return true;
 }
@@ -240,20 +297,37 @@ bool VkVolumetrics::create_noise_texture(matter::VulkanDevice& vulkan,
 // Volume images
 // ---------------------------------------------------------------------------
 
-bool VkVolumetrics::create_volume_images(matter::VulkanDevice& vulkan,
-                                          std::string& error) {
-    const VkExtent3D vol_extent{kVolGridW, kVolGridH, kVolGridD};
+bool VkVolumetrics::create_froxel_bundle(matter::VulkanDevice& vulkan,
+                                         matter::FroxelGridDimensions dimensions,
+                                         FroxelBundle& bundle, std::string& error) {
+    if (fail_next_bundle_creation_for_test_) {
+        fail_next_bundle_creation_for_test_ = false;
+        error = "injected froxel bundle allocation failure";
+        return false;
+    }
+    bundle.dimensions = dimensions;
+    const auto fail = [&]() {
+        destroy_froxel_bundle(bundle);
+        return false;
+    };
+    const VkExtent3D vol_extent{dimensions.width, dimensions.height, dimensions.depth};
     const VkImageUsageFlags sampled_storage =
-        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    bundle.enhanced_clouds = enhanced_clouds_requested_;
 
     // vol_media_ (density pass output, scatter pass input).
     if (!matter::create_image(vulkan, VK_IMAGE_TYPE_3D, VK_FORMAT_R16G16B16A16_SFLOAT,
                               vol_extent, sampled_storage,
                               VK_IMAGE_ASPECT_COLOR_BIT,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                              vol_media_, error)) {
-        return false;
+                              bundle.media, error)) {
+        return fail();
     }
+    if (bundle.enhanced_clouds && !matter::create_image(
+            vulkan, VK_IMAGE_TYPE_3D, VK_FORMAT_R16_SFLOAT, vol_extent,
+            sampled_storage, VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, bundle.cloud_density, error)) return fail();
 
     // vol_scatter_[0..1] (ping-pong temporal).
     for (int i = 0; i < 2; ++i) {
@@ -261,8 +335,8 @@ bool VkVolumetrics::create_volume_images(matter::VulkanDevice& vulkan,
                                   VK_FORMAT_R16G16B16A16_SFLOAT, vol_extent,
                                   sampled_storage, VK_IMAGE_ASPECT_COLOR_BIT,
                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                  vol_scatter_[i], error)) {
-            return false;
+                                  bundle.scatter[i], error)) {
+            return fail();
         }
     }
 
@@ -271,10 +345,227 @@ bool VkVolumetrics::create_volume_images(matter::VulkanDevice& vulkan,
                               vol_extent, sampled_storage,
                               VK_IMAGE_ASPECT_COLOR_BIT,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                              vol_integrated_, error)) {
+                              bundle.integrated, error)) {
+        return fail();
+    }
+    if (!create_bundle_descriptors(bundle, error)) return fail();
+    return true;
+}
+
+void VkVolumetrics::destroy_froxel_bundle(FroxelBundle& bundle) {
+    if (bundle.descriptor_pool != VK_NULL_HANDLE)
+        vkDestroyDescriptorPool(device_, bundle.descriptor_pool, nullptr);
+    bundle.media.reset();
+    bundle.scatter[0].reset();
+    bundle.scatter[1].reset();
+    bundle.integrated.reset();
+    bundle.cloud_density.reset();
+    bundle = {};
+}
+
+bool VkVolumetrics::create_bundle_descriptors(FroxelBundle& bundle,
+                                              std::string& error) {
+    const VkDescriptorPoolSize sizes[] = {
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 8},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 19},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
+        {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 4},
+    };
+    VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool_info.maxSets = 7;
+    pool_info.poolSizeCount = static_cast<uint32_t>(std::size(sizes));
+    pool_info.pPoolSizes = sizes;
+    VkResult result = vkCreateDescriptorPool(device_, &pool_info, nullptr,
+                                             &bundle.descriptor_pool);
+    if (result != VK_SUCCESS)
+        return vk_fail("vkCreateDescriptorPool(froxel bundle)", result, error);
+    if (fail_next_bundle_descriptor_allocation_for_test_) {
+        fail_next_bundle_descriptor_allocation_for_test_ = false;
+        error = "injected froxel descriptor allocation failure";
         return false;
     }
+
+    const VkDescriptorSetLayout layouts[] = {
+        density_set_layout_, scatter_set_layout_, scatter_set_layout_,
+        scatter_set_layout_, scatter_set_layout_,
+        integrate_set_layout_, integrate_set_layout_};
+    VkDescriptorSet sets[7]{};
+    VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    alloc.descriptorPool = bundle.descriptor_pool;
+    alloc.descriptorSetCount = static_cast<uint32_t>(std::size(layouts));
+    alloc.pSetLayouts = layouts;
+    result = vkAllocateDescriptorSets(device_, &alloc, sets);
+    if (result != VK_SUCCESS)
+        return vk_fail("vkAllocateDescriptorSets(froxel bundle)", result, error);
+    bundle.density_set = sets[0];
+    bundle.scatter_sets[0][0] = sets[1];
+    bundle.scatter_sets[0][1] = sets[2];
+    bundle.scatter_sets[1][0] = sets[3];
+    bundle.scatter_sets[1][1] = sets[4];
+    bundle.integrate_sets[0] = sets[5];
+    bundle.integrate_sets[1] = sets[6];
+
+    VkDescriptorImageInfo media{};
+    media.sampler = linear_clamp_sampler_;
+    media.imageView = bundle.media.view;
+    media.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorImageInfo density{};
+    density.imageView = bundle.media.view;
+    density.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkDescriptorImageInfo noise{};
+    noise.sampler = linear_repeat_sampler_;
+    noise.imageView = noise_texture_.view;
+    noise.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorBufferInfo emitters{emitter_ssbo_.buffer, 0, emitter_ssbo_.size};
+    VkDescriptorBufferInfo clouds{cloud_ssbo_.buffer, 0, cloud_ssbo_.size};
+    VkDescriptorImageInfo cloud_density{};
+    cloud_density.imageView = (bundle.enhanced_clouds ? bundle.cloud_density : cloud_density_dummy_).view;
+    cloud_density.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkWriteDescriptorSet density_writes[5]{};
+    density_writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    density_writes[0].dstSet = bundle.density_set;
+    density_writes[0].dstBinding = 0; density_writes[0].descriptorCount = 1;
+    density_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    density_writes[0].pImageInfo = &density;
+    density_writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    density_writes[1].dstSet = bundle.density_set;
+    density_writes[1].dstBinding = 1; density_writes[1].descriptorCount = 1;
+    density_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    density_writes[1].pImageInfo = &noise;
+    density_writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    density_writes[2].dstSet = bundle.density_set;
+    density_writes[2].dstBinding = 2; density_writes[2].descriptorCount = 1;
+    density_writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    density_writes[2].pBufferInfo = &emitters;
+    density_writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    density_writes[3].dstSet = bundle.density_set;
+    density_writes[3].dstBinding = 3; density_writes[3].descriptorCount = 1;
+    density_writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    density_writes[3].pBufferInfo = &clouds;
+    density_writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    density_writes[4].dstSet = bundle.density_set;
+    density_writes[4].dstBinding = 4; density_writes[4].descriptorCount = 1;
+    density_writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    density_writes[4].pImageInfo = &cloud_density;
+    vkUpdateDescriptorSets(device_, static_cast<uint32_t>(std::size(density_writes)),
+                           density_writes, 0, nullptr);
+    for (int slot = 0; slot < 2; ++slot) for (int i = 0; i < 2; ++i) {
+        VkDescriptorImageInfo write{};
+        write.imageView = bundle.scatter[i].view;
+        write.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        VkDescriptorImageInfo history{};
+        history.sampler = linear_clamp_sampler_;
+        history.imageView = bundle.scatter[1 - i].view;
+        history.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkDescriptorImageInfo cloud{};
+        cloud.sampler = linear_clamp_sampler_;
+        cloud.imageView = (bundle.enhanced_clouds ? bundle.cloud_density
+                                                  : cloud_density_dummy_).view;
+        cloud.imageLayout = bundle.enhanced_clouds
+            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            : VK_IMAGE_LAYOUT_GENERAL;
+        VkWriteDescriptorSet writes[4]{};
+        writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[0].dstSet = bundle.scatter_sets[slot][i];
+        writes[0].dstBinding = 0; writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[0].pImageInfo = &media;
+        writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[1].dstSet = bundle.scatter_sets[slot][i];
+        writes[1].dstBinding = 1; writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; writes[1].pImageInfo = &write;
+        writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[2].dstSet = bundle.scatter_sets[slot][i];
+        writes[2].dstBinding = 2; writes[2].descriptorCount = 1;
+        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[2].pImageInfo = &history;
+        writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[3].dstSet = bundle.scatter_sets[slot][i];
+        writes[3].dstBinding = 5; writes[3].descriptorCount = 1;
+        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[3].pImageInfo = &cloud;
+        vkUpdateDescriptorSets(device_, 4, writes, 0, nullptr);
+    }
+    for (int i = 0; i < 2; ++i) {
+        VkDescriptorImageInfo scatter{};
+        scatter.sampler = linear_clamp_sampler_;
+        scatter.imageView = bundle.scatter[i].view;
+        scatter.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkDescriptorImageInfo integrated{};
+        integrated.imageView = bundle.integrated.view;
+        integrated.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        VkWriteDescriptorSet writes[2]{};
+        writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[0].dstSet = bundle.integrate_sets[i];
+        writes[0].dstBinding = 0; writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[0].pImageInfo = &scatter;
+        writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[1].dstSet = bundle.integrate_sets[i];
+        writes[1].dstBinding = 1; writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; writes[1].pImageInfo = &integrated;
+        vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
+    }
     return true;
+}
+
+bool VkVolumetrics::replace_froxel_bundle(uint32_t completed_frame_slot, std::string& error) {
+    for (auto it = retired_bundles_.begin(); it != retired_bundles_.end();) {
+        if (it->protected_slot == completed_frame_slot) {
+            destroy_froxel_bundle(it->bundle);
+            it = retired_bundles_.erase(it);
+        } else ++it;
+    }
+    if (requested_dimensions_.width == active_bundle_.dimensions.width &&
+        requested_dimensions_.height == active_bundle_.dimensions.height &&
+        requested_dimensions_.depth == active_bundle_.dimensions.depth &&
+        enhanced_clouds_requested_ == active_bundle_.enhanced_clouds) return true;
+    FroxelBundle candidate{};
+    if (!create_froxel_bundle(*vulkan_, requested_dimensions_, candidate, error)) {
+        allocation_rejected_ = true;
+        allocation_error_ = error;
+        return false;
+    }
+    retired_bundles_.push_back({std::move(active_bundle_), completed_frame_slot ^ 1u});
+    active_bundle_ = std::move(candidate);
+    active_bundle_.ping_index = 0;
+    has_prev_matrices_ = false;
+    allocation_rejected_ = false;
+    allocation_error_.clear();
+    ++resource_generation_;
+    return true;
+}
+
+bool VkVolumetrics::prepare_froxel_bundle(uint32_t frame_slot,
+                                          std::string& error) {
+    if (!initialized_ || !enabled_ || !ray_query_available_) return true;
+    if (frame_slot >= 2) {
+        error = "froxel descriptor frame slot is out of range";
+        return false;
+    }
+    if (replace_froxel_bundle(frame_slot, error)) {
+        prepared_frame_slot_ = frame_slot;
+        return true;
+    }
+    // Allocation rejection is transactional: the old active bundle remains
+    // valid for this frame. Preserve its diagnostic for UI/stats but do not
+    // abandon an already-acquired renderer frame.
+    if (active_bundle_.integrated.view != VK_NULL_HANDLE) {
+        error.clear();
+        prepared_frame_slot_ = frame_slot;
+        return true;
+    }
+    return false;
+}
+
+matter::FroxelXyScale VkVolumetrics::effective_xy_scale() const {
+    switch (active_bundle_.dimensions.width) {
+        case 80: return matter::FroxelXyScale::X0_5;
+        case 120: return matter::FroxelXyScale::X0_75;
+        case 240: return matter::FroxelXyScale::X1_5;
+        case 320: return matter::FroxelXyScale::X2_0;
+        default: return matter::FroxelXyScale::X1_0;
+    }
+}
+
+matter::FroxelDepthSlices VkVolumetrics::effective_depth_slices() const {
+    switch (active_bundle_.dimensions.depth) {
+        case 64: return matter::FroxelDepthSlices::D64;
+        case 96: return matter::FroxelDepthSlices::D96;
+        case 192: return matter::FroxelDepthSlices::D192;
+        case 256: return matter::FroxelDepthSlices::D256;
+        default: return matter::FroxelDepthSlices::D128;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -393,11 +684,13 @@ bool VkVolumetrics::create_density_pipeline(matter::VulkanDevice& vulkan,
                      VK_SHADER_STAGE_COMPUTE_BIT),
         make_binding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                      VK_SHADER_STAGE_COMPUTE_BIT),
+        make_binding(4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                     VK_SHADER_STAGE_COMPUTE_BIT),
     };
 
     VkDescriptorSetLayoutCreateInfo set_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    set_info.bindingCount = 4;
+    set_info.bindingCount = 5;
     set_info.pBindings = bindings;
     VkResult result = vkCreateDescriptorSetLayout(device_, &set_info, nullptr,
                                                   &density_set_layout_);
@@ -442,19 +735,18 @@ bool VkVolumetrics::create_density_pipeline(matter::VulkanDevice& vulkan,
         return false;
     }
     {
-        VkSpecializationMapEntry entry{};
-        entry.constantID = 0;
-        entry.offset = 0;
-        entry.size = sizeof(int32_t);
+        VkSpecializationMapEntry entries[2]{};
+        entries[0] = {0, 0, sizeof(int32_t)};
+        entries[1] = {1, sizeof(int32_t), sizeof(int32_t)};
 
         bool ok = true;
-        for (int count = 0; count <= matter::kMaxCloudLayers; ++count) {
-            const int32_t value = count;
+        for (int count = 0; count <= matter::kMaxCloudLayers; ++count) for (int enhanced = 0; enhanced < 2; ++enhanced) {
+            const int32_t values[2] = {count, enhanced};
             VkSpecializationInfo spec{};
-            spec.mapEntryCount = 1;
-            spec.pMapEntries = &entry;
-            spec.dataSize = sizeof(int32_t);
-            spec.pData = &value;
+            spec.mapEntryCount = 2;
+            spec.pMapEntries = entries;
+            spec.dataSize = sizeof(values);
+            spec.pData = values;
 
             VkPipelineShaderStageCreateInfo stage{
                 VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
@@ -469,7 +761,7 @@ bool VkVolumetrics::create_density_pipeline(matter::VulkanDevice& vulkan,
             create.layout = density_pipeline_layout_;
             result = vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1,
                                               &create, nullptr,
-                                              &density_pipelines_[count]);
+                                              &density_pipelines_[count][enhanced]);
             if (result != VK_SUCCESS) {
                 const std::string op =
                     "vkCreateComputePipelines(density, CLOUD_LAYERS=" +
@@ -483,87 +775,6 @@ bool VkVolumetrics::create_density_pipeline(matter::VulkanDevice& vulkan,
         if (!ok) return false;
     }
 
-    // Descriptor pool + set.
-    const VkDescriptorPoolSize pool_sizes[] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
-    };
-    VkDescriptorPoolCreateInfo pool_info{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool_info.maxSets = 1;
-    pool_info.poolSizeCount = 3;
-    pool_info.pPoolSizes = pool_sizes;
-    result = vkCreateDescriptorPool(device_, &pool_info, nullptr, &density_pool_);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkCreateDescriptorPool(density)", result, error);
-
-    VkDescriptorSetAllocateInfo alloc{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    alloc.descriptorPool = density_pool_;
-    alloc.descriptorSetCount = 1;
-    alloc.pSetLayouts = &density_set_layout_;
-    result = vkAllocateDescriptorSets(device_, &alloc, &density_set_);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkAllocateDescriptorSets(density)", result, error);
-
-    // Write descriptors for noise texture (binding 1) and emitter SSBO (binding 2).
-    // vol_media (binding 0) is written each frame in record() since its image
-    // view is stable but its layout transitions.
-    //
-    // Actually, all bindings are stable -- write them all now.  The storage image
-    // descriptor works with any layout at update time; the layout in the descriptor
-    // is what we promise to use at dispatch time (GENERAL for storage images).
-
-    VkDescriptorImageInfo media_info{};
-    media_info.imageView = vol_media_.view;
-    media_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-    VkDescriptorImageInfo noise_info{};
-    noise_info.sampler = linear_repeat_sampler_;
-    noise_info.imageView = noise_texture_.view;
-    noise_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkDescriptorBufferInfo emitter_info{};
-    emitter_info.buffer = emitter_ssbo_.buffer;
-    emitter_info.offset = 0;
-    emitter_info.range = emitter_ssbo_.size;
-
-    VkDescriptorBufferInfo cloud_info{};
-    cloud_info.buffer = cloud_ssbo_.buffer;
-    cloud_info.offset = 0;
-    cloud_info.range = cloud_ssbo_.size;
-
-    VkWriteDescriptorSet writes[4]{};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = density_set_;
-    writes[0].dstBinding = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[0].pImageInfo = &media_info;
-
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = density_set_;
-    writes[1].dstBinding = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].pImageInfo = &noise_info;
-
-    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet = density_set_;
-    writes[2].dstBinding = 2;
-    writes[2].descriptorCount = 1;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[2].pBufferInfo = &emitter_info;
-
-    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[3].dstSet = density_set_;
-    writes[3].dstBinding = 3;
-    writes[3].descriptorCount = 1;
-    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[3].pBufferInfo = &cloud_info;
-
-    vkUpdateDescriptorSets(device_, 4, writes, 0, nullptr);
     return true;
 }
 
@@ -580,6 +791,7 @@ bool VkVolumetrics::create_scatter_pipeline(matter::VulkanDevice& vulkan,
     //   2 = combined image sampler (vol_scatter[history], read)
     //   3 = combined image sampler (depth texture)
     //   4 = acceleration structure (TLAS)
+    //   5 = combined image sampler (full-resolution cloud extinction)
     const VkDescriptorSetLayoutBinding bindings[] = {
         make_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                      VK_SHADER_STAGE_COMPUTE_BIT),
@@ -591,18 +803,21 @@ bool VkVolumetrics::create_scatter_pipeline(matter::VulkanDevice& vulkan,
                      VK_SHADER_STAGE_COMPUTE_BIT),
         make_binding(4, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
                      VK_SHADER_STAGE_COMPUTE_BIT),
+        make_binding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                     VK_SHADER_STAGE_COMPUTE_BIT),
     };
 
     VkDescriptorSetLayoutCreateInfo set_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    set_info.bindingCount = 5;
+    set_info.bindingCount = 6;
     set_info.pBindings = bindings;
     VkResult result = vkCreateDescriptorSetLayout(device_, &set_info, nullptr,
                                                   &scatter_set_layout_);
     if (result != VK_SUCCESS)
         return vk_fail("vkCreateDescriptorSetLayout(scatter)", result, error);
 
-    // Push constants: ScatterConstants (208 bytes).
+    // Push constants: the post-lighting-adjustment 192-byte prefix plus the
+    // exact Task 12 48-byte camera-basis tail (240 bytes total).
     VkPushConstantRange push{};
     push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     push.offset = 0;
@@ -610,8 +825,10 @@ bool VkVolumetrics::create_scatter_pipeline(matter::VulkanDevice& vulkan,
 
     VkPipelineLayoutCreateInfo layout_info{
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layout_info.setLayoutCount = 1;
-    layout_info.pSetLayouts = &scatter_set_layout_;
+    const VkDescriptorSetLayout scatter_sets[] = {scatter_set_layout_,
+                                                   environment_set_layout_};
+    layout_info.setLayoutCount = 2;
+    layout_info.pSetLayouts = scatter_sets;
     layout_info.pushConstantRangeCount = 1;
     layout_info.pPushConstantRanges = &push;
     result = vkCreatePipelineLayout(device_, &layout_info, nullptr,
@@ -625,98 +842,42 @@ bool VkVolumetrics::create_scatter_pipeline(matter::VulkanDevice& vulkan,
                                          shader, error)) {
         return false;
     }
-    VkPipelineShaderStageCreateInfo stage{
-        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = shader;
-    stage.pName = "main";
-    VkComputePipelineCreateInfo create{
-        VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    create.stage = stage;
-    create.layout = scatter_pipeline_layout_;
-    result = vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &create,
-                                      nullptr, &scatter_pipeline_);
-    vkDestroyShaderModule(device_, shader, nullptr);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkCreateComputePipelines(scatter)", result, error);
-
-    // Descriptor pool: 2 sets (one per ping-pong state).
-    // Each set has: 3 combined image samplers + 1 storage image + 1 AS.
-    const VkDescriptorPoolSize pool_sizes[] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6},   // 3 per set x 2
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},             // 1 per set x 2
-        {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 2},// 1 per set x 2
-    };
-    VkDescriptorPoolCreateInfo pool_info{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool_info.maxSets = 2;
-    pool_info.poolSizeCount = 3;
-    pool_info.pPoolSizes = pool_sizes;
-    result = vkCreateDescriptorPool(device_, &pool_info, nullptr, &scatter_pool_);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkCreateDescriptorPool(scatter)", result, error);
-
-    // Allocate 2 descriptor sets.
-    VkDescriptorSetLayout layouts[2] = {scatter_set_layout_, scatter_set_layout_};
-    VkDescriptorSetAllocateInfo alloc{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    alloc.descriptorPool = scatter_pool_;
-    alloc.descriptorSetCount = 2;
-    alloc.pSetLayouts = layouts;
-    result = vkAllocateDescriptorSets(device_, &alloc, scatter_sets_);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkAllocateDescriptorSets(scatter)", result, error);
-
-    // Write the static portions of both scatter descriptor sets.
-    // For set i:
-    //   binding 0 = vol_media (combined image sampler, always the same)
-    //   binding 1 = vol_scatter[i] as storage image (write target)
-    //   binding 2 = vol_scatter[1-i] as combined image sampler (history)
-    //   binding 3 = depth texture -- written per-frame in record()
-    //   binding 4 = TLAS -- written per-frame in record()
-    for (int i = 0; i < 2; ++i) {
-        VkDescriptorImageInfo media_info{};
-        media_info.sampler = linear_clamp_sampler_;
-        media_info.imageView = vol_media_.view;
-        media_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        VkDescriptorImageInfo write_info{};
-        write_info.imageView = vol_scatter_[i].view;
-        write_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-        VkDescriptorImageInfo history_info{};
-        history_info.sampler = linear_clamp_sampler_;
-        history_info.imageView = vol_scatter_[1 - i].view;
-        history_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        VkWriteDescriptorSet writes[3]{};
-        // Binding 0: vol_media as sampled.
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = scatter_sets_[i];
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].pImageInfo = &media_info;
-
-        // Binding 1: vol_scatter[i] as storage image (write).
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = scatter_sets_[i];
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        writes[1].pImageInfo = &write_info;
-
-        // Binding 2: vol_scatter[1-i] as sampled (history).
-        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[2].dstSet = scatter_sets_[i];
-        writes[2].dstBinding = 2;
-        writes[2].descriptorCount = 1;
-        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[2].pImageInfo = &history_info;
-
-        vkUpdateDescriptorSets(device_, 3, writes, 0, nullptr);
+    bool created = true;
+    for (uint32_t enhanced = 0; enhanced < 2; ++enhanced) {
+        const VkSpecializationMapEntry entry{0, 0, sizeof(uint32_t)};
+        const VkSpecializationInfo specialization{
+            1, &entry, sizeof(enhanced), &enhanced};
+        VkPipelineShaderStageCreateInfo stage{
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage.module = shader;
+        stage.pName = "main";
+        stage.pSpecializationInfo = &specialization;
+        VkComputePipelineCreateInfo create{
+            VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        create.stage = stage;
+        create.layout = scatter_pipeline_layout_;
+        result = vkCreateComputePipelines(
+            device_, VK_NULL_HANDLE, 1, &create, nullptr,
+            &scatter_pipelines_[enhanced]);
+        if (result != VK_SUCCESS) {
+            vk_fail(enhanced == 0
+                        ? "vkCreateComputePipelines(scatter Current)"
+                        : "vkCreateComputePipelines(scatter enhanced)",
+                    result, error);
+            created = false;
+            break;
+        }
     }
-    return true;
+    vkDestroyShaderModule(device_, shader, nullptr);
+    if (!created) {
+        for (VkPipeline& pipeline : scatter_pipelines_) {
+            if (pipeline != VK_NULL_HANDLE)
+                vkDestroyPipeline(device_, pipeline, nullptr);
+            pipeline = VK_NULL_HANDLE;
+        }
+    }
+    return created;
 }
 
 // ---------------------------------------------------------------------------
@@ -776,61 +937,6 @@ bool VkVolumetrics::create_integrate_pipeline(matter::VulkanDevice& vulkan,
     if (result != VK_SUCCESS)
         return vk_fail("vkCreateComputePipelines(integrate)", result, error);
 
-    // Descriptor pool: 2 sets (one per ping-pong input).
-    const VkDescriptorPoolSize pool_sizes[] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
-    };
-    VkDescriptorPoolCreateInfo pool_info{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool_info.maxSets = 2;
-    pool_info.poolSizeCount = 2;
-    pool_info.pPoolSizes = pool_sizes;
-    result = vkCreateDescriptorPool(device_, &pool_info, nullptr,
-                                    &integrate_pool_);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkCreateDescriptorPool(integrate)", result, error);
-
-    VkDescriptorSetLayout int_layouts[2] = {integrate_set_layout_,
-                                             integrate_set_layout_};
-    VkDescriptorSetAllocateInfo alloc{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    alloc.descriptorPool = integrate_pool_;
-    alloc.descriptorSetCount = 2;
-    alloc.pSetLayouts = int_layouts;
-    result = vkAllocateDescriptorSets(device_, &alloc, integrate_sets_);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkAllocateDescriptorSets(integrate)", result, error);
-
-    // Write descriptors for both integrate sets.
-    // Set i: binding 0 = vol_scatter[i] as sampled, binding 1 = vol_integrated.
-    for (int i = 0; i < 2; ++i) {
-        VkDescriptorImageInfo scatter_info{};
-        scatter_info.sampler = linear_clamp_sampler_;
-        scatter_info.imageView = vol_scatter_[i].view;
-        scatter_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        VkDescriptorImageInfo integrated_info{};
-        integrated_info.imageView = vol_integrated_.view;
-        integrated_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-        VkWriteDescriptorSet writes[2]{};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = integrate_sets_[i];
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].pImageInfo = &scatter_info;
-
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = integrate_sets_[i];
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-        writes[1].pImageInfo = &integrated_info;
-
-        vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
-    }
     return true;
 }
 
@@ -840,10 +946,53 @@ bool VkVolumetrics::create_integrate_pipeline(matter::VulkanDevice& vulkan,
 
 void VkVolumetrics::update_settings(
     const matter::VulkanVolumetricsSettings& vol,
-    const matter::FogSettings& fog) {
+    const matter::FogSettings& fog,
+    const matter::CloudShadowSettings& shadows) {
+    const uint32_t next_steps = static_cast<uint32_t>(
+        std::clamp(vol.local_sun_march_steps, 0, 32));
+    const float next_distance = std::isfinite(vol.local_sun_march_distance_m)
+        ? std::clamp(vol.local_sun_march_distance_m, 0.0f, 1000.0f)
+        : 0.0f;
+    const uint32_t next_orders = static_cast<uint32_t>(
+        std::clamp(vol.multiple_scattering_orders, 1, 4));
+    const float next_strength = std::isfinite(vol.multiple_scattering_strength)
+        ? std::clamp(vol.multiple_scattering_strength, 0.0f, 1.0f)
+        : 0.0f;
+    const float next_powder = std::isfinite(vol.powder_strength)
+        ? std::clamp(vol.powder_strength, 0.0f, 1.0f)
+        : 0.0f;
+    const int next_cloud_count = matter::active_cloud_count(fog);
+    bool cloud_shape_changed = next_cloud_count != cloud_count_;
+    if (settings_initialized_ && !cloud_shape_changed) {
+        matter::GpuCloudLayer previous[matter::kMaxCloudLayers]{};
+        matter::GpuCloudLayer incoming[matter::kMaxCloudLayers]{};
+        for (int i = 0; i < next_cloud_count; ++i) {
+            matter::pack_cloud_layer(cloud_layers_[i], i, previous[i]);
+            matter::pack_cloud_layer(fog.clouds[i], i, incoming[i]);
+        }
+        cloud_shape_changed =
+            std::memcmp(previous, incoming, sizeof(previous)) != 0;
+    }
+    const bool scatter_lighting_changed = settings_initialized_ &&
+        (next_steps != local_sun_march_steps_ ||
+         next_distance != local_march_distance_m_ ||
+         next_orders != multiple_scattering_orders_ ||
+         next_strength != multiple_scattering_strength_ ||
+         next_powder != powder_strength_ || vol.phase_g != phase_g_);
+    if (cloud_shape_changed || scatter_lighting_changed)
+        has_prev_matrices_ = false;
+
     enabled_ = vol.enabled;
     temporal_blend_ = vol.temporal_blend;
     phase_g_ = vol.phase_g;
+    local_sun_march_steps_ = next_steps;
+    local_march_distance_m_ = next_distance;
+    multiple_scattering_orders_ = next_orders;
+    multiple_scattering_strength_ = next_strength;
+    powder_strength_ = next_powder;
+    requested_dimensions_ = matter::resolve_froxel_grid(vol);
+    enhanced_clouds_requested_ =
+        matter::enhanced_cloud_lighting(vol, shadows);
 
     fog_density_ = fog.density;
     fog_floor_ = fog.floor;
@@ -873,8 +1022,9 @@ void VkVolumetrics::update_settings(
                      static_cast<int>(fog.cloud_count), matter::kMaxCloudLayers);
     }
     (void)requested;
-    cloud_count_ = matter::active_cloud_count(fog);
+    cloud_count_ = next_cloud_count;
     for (int i = 0; i < matter::kMaxCloudLayers; ++i) cloud_layers_[i] = fog.clouds[i];
+    settings_initialized_ = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -885,13 +1035,6 @@ void VkVolumetrics::set_lighting(const VkSceneLighting& lighting) {
     sun_direction_[0] = lighting.sun_direction.x;
     sun_direction_[1] = lighting.sun_direction.y;
     sun_direction_[2] = lighting.sun_direction.z;
-    sun_intensity_ = lighting.sun_intensity;
-    sun_color_[0] = lighting.sun_color.x;
-    sun_color_[1] = lighting.sun_color.y;
-    sun_color_[2] = lighting.sun_color.z;
-    sky_color_[0] = lighting.sky_color.x;
-    sky_color_[1] = lighting.sky_color.y;
-    sky_color_[2] = lighting.sky_color.z;
 }
 
 // ---------------------------------------------------------------------------
@@ -931,14 +1074,15 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
                            VkAccelerationStructureKHR tlas,
                            const FrameMatrices& matrices,
                            float frame_time,
+                           const VolumetricPassBoundary& boundary,
                            std::string& error) {
-    (void)frame_slot;
-    (void)error;  // recording currently cannot fail after init succeeds
     if (!initialized_) return true;
     if (!enabled_ || !ray_query_available_) return true;
+    if (prepared_frame_slot_ != frame_slot &&
+        !prepare_froxel_bundle(frame_slot, error)) return false;
 
-    const uint32_t current = ping_index_;
-    const uint32_t history = 1 - ping_index_;
+    const uint32_t current = active_bundle_.ping_index;
+    const uint32_t history = 1 - active_bundle_.ping_index;
 
     // --- Update per-frame scatter descriptors (depth + TLAS) ---
     {
@@ -956,7 +1100,7 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
 
         VkWriteDescriptorSet writes[2]{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = scatter_sets_[current];
+        writes[0].dstSet = active_bundle_.scatter_sets[frame_slot][current];
         writes[0].dstBinding = 3;
         writes[0].descriptorCount = 1;
         writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -964,7 +1108,7 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
 
         writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[1].pNext = &as_write;
-        writes[1].dstSet = scatter_sets_[current];
+        writes[1].dstSet = active_bundle_.scatter_sets[frame_slot][current];
         writes[1].dstBinding = 4;
         writes[1].descriptorCount = 1;
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
@@ -976,35 +1120,54 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     // Pass 1: Density
     // ---------------------------------------------------------------
 
+    if (boundary) boundary(VolumetricPass::Density, false);
+
     // Transition vol_media_ to GENERAL for storage write.
     matter::record_image_transition(
-        cmd, vol_media_, VK_IMAGE_LAYOUT_GENERAL,
-        vol_media_.layout == VK_IMAGE_LAYOUT_UNDEFINED
+        cmd, active_bundle_.media, VK_IMAGE_LAYOUT_GENERAL,
+        active_bundle_.media.layout == VK_IMAGE_LAYOUT_UNDEFINED
             ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
             : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        vol_media_.layout == VK_IMAGE_LAYOUT_UNDEFINED
+        active_bundle_.media.layout == VK_IMAGE_LAYOUT_UNDEFINED
             ? VkAccessFlags2(0)
             : VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
+    if (active_bundle_.enhanced_clouds) {
+        matter::record_image_transition(
+            cmd, active_bundle_.cloud_density, VK_IMAGE_LAYOUT_GENERAL,
+            active_bundle_.cloud_density.layout == VK_IMAGE_LAYOUT_UNDEFINED
+                ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
+                : (active_bundle_.cloud_density.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                       ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+                       : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT),
+            active_bundle_.cloud_density.layout == VK_IMAGE_LAYOUT_UNDEFINED
+                ? VkAccessFlags2(0)
+                : (active_bundle_.cloud_density.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                       ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
+                       : VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT),
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+
+    // Recover the true view origin from the rigid world-to-view transform.
+    // Unprojecting NDC z=1 yields the near-plane center, not the eye; Task 12
+    // subtracts this value in its world-space froxel and ray-exit equations.
+    const matter::Float3 camera_eye =
+        volumetric_camera_eye(matrices.world_to_view);
 
     // Fill push constants.
     DensityConstants density_pc{};
     pack_mat4_column_major(density_pc.clip_to_world, matrices.clip_to_world);
-    // Extract camera position by unprojecting the near-plane center.
-    // Reversed-Z: near is NDC z = 1, so this is clip_to_world * (0,0,1,1).
+    // The density prefix shares the same actual-eye meaning as scatter.
+    // Do not substitute a clip-space point here:
     // (NDC (0,0,0) is now the FAR-plane center — using it put the "camera"
     // a kilometer out and flipped every view-dependent term.)
-    {
-        const float* m = matrices.clip_to_world.m;
-        float w = m[14] + m[15];
-        if (std::abs(w) > 1e-9f) {
-            density_pc.camera_pos[0] = (m[2]  + m[3])  / w;
-            density_pc.camera_pos[1] = (m[6]  + m[7])  / w;
-            density_pc.camera_pos[2] = (m[10] + m[11]) / w;
-        }
-    }
+    density_pc.camera_pos[0] = camera_eye.x;
+    density_pc.camera_pos[1] = camera_eye.y;
+    density_pc.camera_pos[2] = camera_eye.z;
     density_pc.frame_time = frame_time;
     density_pc.fog_density = fog_density_;
     // Always the ground-fog meaning now. The bounded-cloud mode that used to
@@ -1047,40 +1210,57 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
                                 : cloud_count_);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                      density_pipelines_[pipeline_index]);
+                      density_pipelines_[pipeline_index][active_bundle_.enhanced_clouds ? 1 : 0]);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            density_pipeline_layout_, 0, 1, &density_set_,
+                            density_pipeline_layout_, 0, 1,
+                            &active_bundle_.density_set,
                             0, nullptr);
     vkCmdPushConstants(cmd, density_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(DensityConstants), &density_pc);
 
     // Dispatch: ceil(160/4) x ceil(90/4) x 1 = 40 x 23 x 1.
-    const uint32_t density_gx = (kVolGridW + 3) / 4;
-    const uint32_t density_gy = (kVolGridH + 3) / 4;
+    const uint32_t density_gx = (active_bundle_.dimensions.width + 3) / 4;
+    const uint32_t density_gy = (active_bundle_.dimensions.height + 3) / 4;
     vkCmdDispatch(cmd, density_gx, density_gy, 1);
 
     // ---------------------------------------------------------------
     // Barrier: vol_media_ GENERAL -> SHADER_READ_ONLY
     // ---------------------------------------------------------------
     matter::record_image_transition(
-        cmd, vol_media_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        cmd, active_bundle_.media, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
+    // The enhanced density image is sampled by Task 12 scatter and by the
+    // composite debug view. Publish the density write to both consumers.
+    if (active_bundle_.enhanced_clouds) {
+        matter::record_image_transition(
+            cmd, active_bundle_.cloud_density,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+
+    if (boundary) boundary(VolumetricPass::Density, true);
 
     // ---------------------------------------------------------------
     // Pass 2: Scatter
     // ---------------------------------------------------------------
 
+    if (boundary) boundary(VolumetricPass::Scatter, false);
+
     // Transition vol_scatter_[current] to GENERAL for storage write.
     matter::record_image_transition(
-        cmd, vol_scatter_[current], VK_IMAGE_LAYOUT_GENERAL,
-        vol_scatter_[current].layout == VK_IMAGE_LAYOUT_UNDEFINED
+        cmd, active_bundle_.scatter[current], VK_IMAGE_LAYOUT_GENERAL,
+        active_bundle_.scatter[current].layout == VK_IMAGE_LAYOUT_UNDEFINED
             ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
             : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        vol_scatter_[current].layout == VK_IMAGE_LAYOUT_UNDEFINED
+        active_bundle_.scatter[current].layout == VK_IMAGE_LAYOUT_UNDEFINED
             ? VkAccessFlags2(0)
             : VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1088,14 +1268,14 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
         VK_IMAGE_ASPECT_COLOR_BIT);
 
     // Ensure history is readable (may still be UNDEFINED on first frame).
-    if (vol_scatter_[history].layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+    if (active_bundle_.scatter[history].layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
         matter::record_image_transition(
-            cmd, vol_scatter_[history],
+            cmd, active_bundle_.scatter[history],
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            vol_scatter_[history].layout == VK_IMAGE_LAYOUT_UNDEFINED
+            active_bundle_.scatter[history].layout == VK_IMAGE_LAYOUT_UNDEFINED
                 ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
                 : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            vol_scatter_[history].layout == VK_IMAGE_LAYOUT_UNDEFINED
+            active_bundle_.scatter[history].layout == VK_IMAGE_LAYOUT_UNDEFINED
                 ? VkAccessFlags2(0)
                 : VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1106,42 +1286,51 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     ScatterConstants scatter_pc{};
     pack_mat4_column_major(scatter_pc.clip_to_world, matrices.clip_to_world);
     pack_mat4_column_major(scatter_pc.prev_world_to_clip, prev_world_to_clip_);
-    // Camera position = unprojected near-plane center (reversed-Z: NDC z = 1;
-    // see the density_pc note above).
-    {
-        const float* m = matrices.clip_to_world.m;
-        float w = m[14] + m[15];
-        if (std::abs(w) > 1e-9f) {
-            scatter_pc.camera_pos[0] = (m[2]  + m[3])  / w;
-            scatter_pc.camera_pos[1] = (m[6]  + m[7])  / w;
-            scatter_pc.camera_pos[2] = (m[10] + m[11]) / w;
-        }
-    }
+    // Task 12 world-space mapping and phase both consume the actual eye.
+    scatter_pc.camera_pos[0] = camera_eye.x;
+    scatter_pc.camera_pos[1] = camera_eye.y;
+    scatter_pc.camera_pos[2] = camera_eye.z;
     scatter_pc.frame_index = frame_index_;
     scatter_pc.sun_dir[0] = sun_direction_[0];
     scatter_pc.sun_dir[1] = sun_direction_[1];
     scatter_pc.sun_dir[2] = sun_direction_[2];
-    scatter_pc.sun_intensity = sun_intensity_;
-    scatter_pc.sun_color[0] = sun_color_[0];
-    scatter_pc.sun_color[1] = sun_color_[1];
-    scatter_pc.sun_color[2] = sun_color_[2];
+    scatter_pc.local_sun_march_steps = local_sun_march_steps_;
     scatter_pc.phase_g = phase_g_;
-    scatter_pc.sky_color[0] = sky_color_[0];
-    scatter_pc.sky_color[1] = sky_color_[1];
-    scatter_pc.sky_color[2] = sky_color_[2];
     scatter_pc.temporal_blend = temporal_blend_;
     scatter_pc.history_valid = has_prev_matrices_ ? 1u : 0u;
+    last_scatter_history_was_valid_ = scatter_pc.history_valid != 0;
     // Reversed-ZO recovery identities — see the density_pc note above.
     scatter_pc.camera_near = matrices.view_to_clip.m[11] /
                              (matrices.view_to_clip.m[10] + 1.0f);
     scatter_pc.camera_far = matrices.view_to_clip.m[11] /
                             matrices.view_to_clip.m[10];
-    scatter_pc.pad2 = 0.0f;
+    scatter_pc.multiple_scattering_orders = multiple_scattering_orders_;
+    scatter_pc.multiple_scattering_strength = multiple_scattering_strength_;
+    scatter_pc.powder_strength = powder_strength_;
+    scatter_pc.camera_fwd[0] = -matrices.world_to_view.m[8];
+    scatter_pc.camera_fwd[1] = -matrices.world_to_view.m[9];
+    scatter_pc.camera_fwd[2] = -matrices.world_to_view.m[10];
+    scatter_pc.tan_half_fov = matrices.view_to_clip.m[5] != 0.0f
+        ? 1.0f / matrices.view_to_clip.m[5] : 1.0f;
+    scatter_pc.camera_right[0] = matrices.world_to_view.m[0];
+    scatter_pc.camera_right[1] = matrices.world_to_view.m[1];
+    scatter_pc.camera_right[2] = matrices.world_to_view.m[2];
+    scatter_pc.aspect_ratio = matrices.view_to_clip.m[0] != 0.0f
+        ? matrices.view_to_clip.m[5] / matrices.view_to_clip.m[0] : 1.0f;
+    scatter_pc.camera_up[0] = matrices.world_to_view.m[4];
+    scatter_pc.camera_up[1] = matrices.world_to_view.m[5];
+    scatter_pc.camera_up[2] = matrices.world_to_view.m[6];
+    scatter_pc.local_march_distance_m = local_march_distance_m_;
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, scatter_pipeline_);
+    vkCmdBindPipeline(
+        cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+        scatter_pipelines_[active_bundle_.enhanced_clouds ? 1 : 0]);
+    const VkDescriptorSet scatter_sets[] = {
+                                             active_bundle_.scatter_sets[frame_slot][current],
+                                             environment_descriptor_set_};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            scatter_pipeline_layout_, 0, 1,
-                            &scatter_sets_[current], 0, nullptr);
+                            scatter_pipeline_layout_, 0, 2,
+                            scatter_sets, 0, nullptr);
     vkCmdPushConstants(cmd, scatter_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(ScatterConstants), &scatter_pc);
 
@@ -1153,7 +1342,7 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     // Barrier: vol_scatter_[current] GENERAL -> SHADER_READ_ONLY
     // ---------------------------------------------------------------
     matter::record_image_transition(
-        cmd, vol_scatter_[current],
+        cmd, active_bundle_.scatter[current],
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -1161,17 +1350,21 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
 
+    if (boundary) boundary(VolumetricPass::Scatter, true);
+
     // ---------------------------------------------------------------
     // Pass 3: Integrate
     // ---------------------------------------------------------------
 
+    if (boundary) boundary(VolumetricPass::Integrate, false);
+
     // Transition vol_integrated_ to GENERAL for storage write.
     matter::record_image_transition(
-        cmd, vol_integrated_, VK_IMAGE_LAYOUT_GENERAL,
-        vol_integrated_.layout == VK_IMAGE_LAYOUT_UNDEFINED
+        cmd, active_bundle_.integrated, VK_IMAGE_LAYOUT_GENERAL,
+        active_bundle_.integrated.layout == VK_IMAGE_LAYOUT_UNDEFINED
             ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
             : VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-        vol_integrated_.layout == VK_IMAGE_LAYOUT_UNDEFINED
+        active_bundle_.integrated.layout == VK_IMAGE_LAYOUT_UNDEFINED
             ? VkAccessFlags2(0)
             : VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1181,11 +1374,12 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, integrate_pipeline_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                             integrate_pipeline_layout_, 0, 1,
-                            &integrate_sets_[current], 0, nullptr);
+                            &active_bundle_.integrate_sets[current], 0, nullptr);
 
     // Dispatch: ceil(160/8) x ceil(90/8) x 1 = 20 x 12 x 1.
-    const uint32_t integrate_gx = (kVolGridW + 7) / 8;
-    const uint32_t integrate_gy = (kVolGridH + 7) / 8;
+    const uint32_t integrate_gx = (active_bundle_.dimensions.width + 7) / 8;
+    const uint32_t integrate_gy = (active_bundle_.dimensions.height + 7) / 8;
+    last_dispatch_grid_ = {density_gx, density_gy, integrate_gx, integrate_gy};
     vkCmdDispatch(cmd, integrate_gx, integrate_gy, 1);
 
     // ---------------------------------------------------------------
@@ -1193,7 +1387,7 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     // (ready for composite fragment shader sampling)
     // ---------------------------------------------------------------
     matter::record_image_transition(
-        cmd, vol_integrated_,
+        cmd, active_bundle_.integrated,
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -1201,12 +1395,249 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
 
+    if (boundary) boundary(VolumetricPass::Integrate, true);
+
     // Flip ping-pong, advance frame counter, store matrices for next frame.
-    ping_index_ ^= 1;
+    active_bundle_.ping_index ^= 1;
     ++frame_index_;
     prev_world_to_clip_ = matrices.world_to_clip;
     has_prev_matrices_ = true;
+    prepared_frame_slot_ = UINT32_MAX;
 
+    return true;
+}
+
+uint32_t VkVolumetrics::grid_rgba16f_volume_count_for_test() const {
+    const auto is_grid_rgba16f = [&](const matter::VkImageResource& image) {
+        const auto& d = active_bundle_.dimensions;
+        return image.image != VK_NULL_HANDLE &&
+               image.format == VK_FORMAT_R16G16B16A16_SFLOAT &&
+               image.extent.width == d.width && image.extent.height == d.height &&
+               image.extent.depth == d.depth;
+    };
+    return static_cast<uint32_t>(is_grid_rgba16f(active_bundle_.media)) +
+           static_cast<uint32_t>(is_grid_rgba16f(active_bundle_.scatter[0])) +
+           static_cast<uint32_t>(is_grid_rgba16f(active_bundle_.scatter[1])) +
+           static_cast<uint32_t>(is_grid_rgba16f(active_bundle_.integrated));
+}
+
+bool VkVolumetrics::cloud_density_allocated_for_test() const {
+    return active_bundle_.enhanced_clouds &&
+           active_bundle_.cloud_density.image != VK_NULL_HANDLE &&
+           active_bundle_.cloud_density.format == VK_FORMAT_R16_SFLOAT;
+}
+
+matter::FroxelGridDimensions
+VkVolumetrics::cloud_density_dimensions_for_test() const {
+    const matter::VkImageResource& image = active_bundle_.enhanced_clouds
+        ? active_bundle_.cloud_density : cloud_density_dummy_;
+    return {image.extent.width, image.extent.height, image.extent.depth};
+}
+
+uint64_t VkVolumetrics::grid_bytes_for_test() const {
+    return matter::estimate_froxel_bytes(active_bundle_.dimensions,
+                                         active_bundle_.enhanced_clouds);
+}
+
+bool VkVolumetrics::readback_density_voxel_for_test(
+    uint32_t x, uint32_t y, uint32_t z, matter::Float4& media,
+    float& cloud_density, std::string& error) {
+    if (!vulkan_ || !cloud_density_allocated_for_test()) {
+        error = "enhanced cloud-density image is unavailable";
+        return false;
+    }
+    const auto& d = active_bundle_.dimensions;
+    if (x >= d.width || y >= d.height || z >= d.depth) {
+        error = "cloud-density readback coordinate is outside the froxel grid";
+        return false;
+    }
+    matter::VkBufferResource readback;
+    if (!matter::create_buffer(*vulkan_, 16, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                               readback, error) || !matter::map_buffer(readback, error)) {
+        return false;
+    }
+    struct ReadbackRequest {
+        matter::VkImageResource* media;
+        matter::VkImageResource* cloud_density;
+        VkBuffer destination;
+        uint32_t x, y, z;
+    } request{&active_bundle_.media, &active_bundle_.cloud_density,
+              readback.buffer, x, y, z};
+    const auto copy = [](VkCommandBuffer cmd, void* data) {
+        const auto& request = *static_cast<ReadbackRequest*>(data);
+        const auto transition_to_copy = [&](matter::VkImageResource& image) {
+            matter::record_image_transition(
+                cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT);
+        };
+        transition_to_copy(*request.media);
+        transition_to_copy(*request.cloud_density);
+        VkBufferImageCopy media_region{};
+        media_region.bufferOffset = 0;
+        media_region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        media_region.imageOffset = {static_cast<int32_t>(request.x),
+                                    static_cast<int32_t>(request.y),
+                                    static_cast<int32_t>(request.z)};
+        media_region.imageExtent = {1, 1, 1};
+        VkBufferImageCopy cloud_region = media_region;
+        cloud_region.bufferOffset = 8;
+        vkCmdCopyImageToBuffer(cmd, request.media->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               request.destination, 1, &media_region);
+        vkCmdCopyImageToBuffer(cmd, request.cloud_density->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               request.destination, 1, &cloud_region);
+        const auto restore_sampled = [&](matter::VkImageResource& image) {
+            matter::record_image_transition(
+                cmd, image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        };
+        restore_sampled(*request.media);
+        restore_sampled(*request.cloud_density);
+    };
+    if (!matter::submit_immediate(*vulkan_, copy, &request, error,
+                                  matter::ImmediateSubmitPhase::staging_readback,
+                                  {active_bundle_.media.lifetime,
+                                   active_bundle_.cloud_density.lifetime,
+                                   readback.lifetime}) ||
+        !matter::invalidate_buffer(readback, 0, 16, error)) return false;
+    const auto* values = static_cast<const uint16_t*>(readback.mapped);
+    media = {half_to_float(values[0]), half_to_float(values[1]),
+             half_to_float(values[2]), half_to_float(values[3])};
+    cloud_density = half_to_float(values[4]);
+    return true;
+}
+
+bool VkVolumetrics::readback_integrated_voxel_for_test(
+    uint32_t x, uint32_t y, uint32_t z, matter::Float4& integrated,
+    std::string& error) {
+    if (!vulkan_ || !active()) {
+        error = "volumetric integrated image is unavailable";
+        return false;
+    }
+    const auto& dimensions = active_bundle_.dimensions;
+    if (x >= dimensions.width || y >= dimensions.height ||
+        z >= dimensions.depth) {
+        error = "integrated readback coordinate is outside the froxel grid";
+        return false;
+    }
+    matter::VkBufferResource readback;
+    if (!matter::create_buffer(*vulkan_, 8, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                               readback, error) ||
+        !matter::map_buffer(readback, error)) {
+        return false;
+    }
+    struct ReadbackRequest {
+        matter::VkImageResource* image;
+        VkBuffer destination;
+        uint32_t x, y, z;
+    } request{&active_bundle_.integrated, readback.buffer, x, y, z};
+    const auto copy = [](VkCommandBuffer cmd, void* data) {
+        const auto& request = *static_cast<ReadbackRequest*>(data);
+        matter::record_image_transition(
+            cmd, *request.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageOffset = {static_cast<int32_t>(request.x),
+                              static_cast<int32_t>(request.y),
+                              static_cast<int32_t>(request.z)};
+        region.imageExtent = {1, 1, 1};
+        vkCmdCopyImageToBuffer(cmd, request.image->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               request.destination, 1, &region);
+        matter::record_image_transition(
+            cmd, *request.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    };
+    if (!matter::submit_immediate(
+            *vulkan_, copy, &request, error,
+            matter::ImmediateSubmitPhase::staging_readback,
+            {active_bundle_.integrated.lifetime, readback.lifetime}) ||
+        !matter::invalidate_buffer(readback, 0, 8, error)) {
+        return false;
+    }
+    const auto* values = static_cast<const uint16_t*>(readback.mapped);
+    integrated = {half_to_float(values[0]), half_to_float(values[1]),
+                  half_to_float(values[2]), half_to_float(values[3])};
+    return true;
+}
+
+bool VkVolumetrics::readback_scatter_voxel_for_test(
+    uint32_t x, uint32_t y, uint32_t z, matter::Float4& scatter,
+    std::string& error) {
+    if (!vulkan_ || !active()) {
+        error = "volumetric scatter image is unavailable";
+        return false;
+    }
+    const auto& dimensions = active_bundle_.dimensions;
+    if (x >= dimensions.width || y >= dimensions.height ||
+        z >= dimensions.depth) {
+        error = "scatter readback coordinate is outside the froxel grid";
+        return false;
+    }
+    matter::VkBufferResource readback;
+    if (!matter::create_buffer(*vulkan_, 8, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                               readback, error) ||
+        !matter::map_buffer(readback, error)) return false;
+    // record() flips ping_index after integration. The just-produced scatter
+    // is therefore the image opposite the next frame's write destination.
+    matter::VkImageResource& produced =
+        active_bundle_.scatter[active_bundle_.ping_index ^ 1u];
+    struct ReadbackRequest {
+        matter::VkImageResource* image;
+        VkBuffer destination;
+        uint32_t x, y, z;
+    } request{&produced, readback.buffer, x, y, z};
+    const auto copy = [](VkCommandBuffer cmd, void* data) {
+        const auto& request = *static_cast<ReadbackRequest*>(data);
+        matter::record_image_transition(
+            cmd, *request.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageOffset = {static_cast<int32_t>(request.x),
+                              static_cast<int32_t>(request.y),
+                              static_cast<int32_t>(request.z)};
+        region.imageExtent = {1, 1, 1};
+        vkCmdCopyImageToBuffer(cmd, request.image->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               request.destination, 1, &region);
+        matter::record_image_transition(
+            cmd, *request.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    };
+    if (!matter::submit_immediate(
+            *vulkan_, copy, &request, error,
+            matter::ImmediateSubmitPhase::staging_readback,
+            {produced.lifetime, readback.lifetime}) ||
+        !matter::invalidate_buffer(readback, 0, 8, error)) return false;
+    const auto* values = static_cast<const uint16_t*>(readback.mapped);
+    scatter = {half_to_float(values[0]), half_to_float(values[1]),
+               half_to_float(values[2]), half_to_float(values[3])};
     return true;
 }
 
@@ -1218,12 +1649,14 @@ void VkVolumetrics::destroy() {
     if (device_ == VK_NULL_HANDLE) return;
 
     // Pipelines. One density pipeline per cloud-layer specialization.
-    for (VkPipeline& p : density_pipelines_) {
+    for (auto& family : density_pipelines_) for (VkPipeline& p : family) {
         if (p != VK_NULL_HANDLE) vkDestroyPipeline(device_, p, nullptr);
         p = VK_NULL_HANDLE;
     }
-    if (scatter_pipeline_ != VK_NULL_HANDLE)
-        vkDestroyPipeline(device_, scatter_pipeline_, nullptr);
+    cloud_density_dummy_.reset();
+    for (VkPipeline& pipeline : scatter_pipelines_)
+        if (pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device_, pipeline, nullptr);
     if (integrate_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, integrate_pipeline_, nullptr);
 
@@ -1236,12 +1669,6 @@ void VkVolumetrics::destroy() {
         vkDestroyPipelineLayout(device_, integrate_pipeline_layout_, nullptr);
 
     // Descriptor pools (implicitly free sets).
-    if (density_pool_ != VK_NULL_HANDLE)
-        vkDestroyDescriptorPool(device_, density_pool_, nullptr);
-    if (scatter_pool_ != VK_NULL_HANDLE)
-        vkDestroyDescriptorPool(device_, scatter_pool_, nullptr);
-    if (integrate_pool_ != VK_NULL_HANDLE)
-        vkDestroyDescriptorPool(device_, integrate_pool_, nullptr);
 
     // Descriptor set layouts.
     if (density_set_layout_ != VK_NULL_HANDLE)
@@ -1261,36 +1688,30 @@ void VkVolumetrics::destroy() {
 
     // Resources (VkImageResource/VkBufferResource destructors handle cleanup
     // via their shared_ptr lifetime, but we reset them here for clarity).
-    vol_media_.reset();
-    vol_scatter_[0].reset();
-    vol_scatter_[1].reset();
-    vol_integrated_.reset();
+    destroy_froxel_bundle(active_bundle_);
+    for (RetiredBundle& retired : retired_bundles_) destroy_froxel_bundle(retired.bundle);
+    retired_bundles_.clear();
     noise_texture_.reset();
     emitter_ssbo_.reset();
     cloud_ssbo_.reset();
 
     // Zero out all handles.
-    scatter_pipeline_ = VK_NULL_HANDLE;
+    scatter_pipelines_[0] = scatter_pipelines_[1] = VK_NULL_HANDLE;
     integrate_pipeline_ = VK_NULL_HANDLE;
     density_pipeline_layout_ = VK_NULL_HANDLE;
     scatter_pipeline_layout_ = VK_NULL_HANDLE;
     integrate_pipeline_layout_ = VK_NULL_HANDLE;
-    density_pool_ = VK_NULL_HANDLE;
-    scatter_pool_ = VK_NULL_HANDLE;
-    integrate_pool_ = VK_NULL_HANDLE;
-    density_set_ = VK_NULL_HANDLE;
-    scatter_sets_[0] = VK_NULL_HANDLE;
-    scatter_sets_[1] = VK_NULL_HANDLE;
-    integrate_sets_[0] = VK_NULL_HANDLE;
-    integrate_sets_[1] = VK_NULL_HANDLE;
     density_set_layout_ = VK_NULL_HANDLE;
     scatter_set_layout_ = VK_NULL_HANDLE;
+    environment_set_layout_ = VK_NULL_HANDLE;
+    environment_descriptor_set_ = VK_NULL_HANDLE;
     integrate_set_layout_ = VK_NULL_HANDLE;
     linear_clamp_sampler_ = VK_NULL_HANDLE;
     linear_border_sampler_ = VK_NULL_HANDLE;
     linear_repeat_sampler_ = VK_NULL_HANDLE;
 
     device_ = VK_NULL_HANDLE;
+    vulkan_ = nullptr;
     initialized_ = false;
     ping_index_ = 0;
     frame_index_ = 0;

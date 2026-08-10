@@ -15,6 +15,7 @@
 // That one stays independent: the part content address depends on its exact
 // bytes.
 
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,9 +24,10 @@ namespace matter {
 namespace jsondoc {
 
 struct Value {
-    enum class Kind { Null, Bool, Number, String, Array, Object } kind = Kind::Null;
+    enum class Kind { Null, Bool, Number, UInt64, String, Array, Object } kind = Kind::Null;
     bool b = false;
     double num = 0.0;
+    std::uint64_t uint64_value = 0;
     std::string str;
     std::vector<Value> arr;
     std::vector<std::pair<std::string, Value>> obj;

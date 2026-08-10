@@ -1,12 +1,14 @@
 #include "matter/props.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <limits>
 
 namespace matter {
 namespace props {
@@ -42,6 +44,7 @@ const char* type_name(Type t) {
         case Type::Float:  return "float";
         case Type::Int:    return "int";
         case Type::UInt:   return "uint";
+        case Type::UInt64: return "uint64";
         case Type::Bool:   return "bool";
         case Type::Enum:   return "enum";
         case Type::Float3: return "float3";
@@ -56,6 +59,7 @@ const char* kind_name(Value::Kind k) {
         case Value::Kind::Null:   return "null";
         case Value::Kind::Bool:   return "bool";
         case Value::Kind::Number: return "number";
+        case Value::Kind::UInt64: return "number";
         case Value::Kind::String: return "string";
         case Value::Kind::Array:  return "array";
         case Value::Kind::Object: return "object";
@@ -73,6 +77,13 @@ Value number(double n) {
     Value v;
     v.kind = Value::Kind::Number;
     v.num = n;
+    return v;
+}
+
+Value uint64_number(uint64_t n) {
+    Value v;
+    v.kind = Value::Kind::UInt64;
+    v.uint64_value = n;
     return v;
 }
 
@@ -102,6 +113,7 @@ Value encode_field(const void* instance, const Desc& d) {
         case Type::Float:  return number(get_float(instance, d));
         case Type::Int:    return number(get_int(instance, d));
         case Type::UInt:   return number(get_uint(instance, d));
+        case Type::UInt64: return uint64_number(get_uint64(instance, d));
         case Type::Enum:   return number(get_enum(instance, d));
         case Type::Bool:
             v.kind = Value::Kind::Bool;
@@ -140,6 +152,17 @@ bool decode_field(void* instance, const Desc& d, const Value& v) {
         case Type::UInt:
             if (v.kind != Value::Kind::Number) return false;
             set_uint(instance, d, v.num < 0.0 ? 0u : static_cast<uint32_t>(v.num));
+            return true;
+        case Type::UInt64:
+            if (v.kind == Value::Kind::UInt64) {
+                set_uint64(instance, d, v.uint64_value);
+                return true;
+            }
+            if (v.kind != Value::Kind::Number || !std::isfinite(v.num) ||
+                v.num < 0.0 || v.num > 9007199254740992.0 ||
+                std::trunc(v.num) != v.num)
+                return false;
+            set_uint64(instance, d, static_cast<uint64_t>(v.num));
             return true;
         case Type::Enum:
             if (v.kind != Value::Kind::Number) return false;
@@ -185,6 +208,16 @@ bool parse_env_number(const char* s, double& out) {
     const double v = strtod(s, &end);
     if (end == s) return false;
     out = v;
+    return true;
+}
+
+bool parse_env_uint64(const char* s, uint64_t& out) {
+    if (!s || !*s || *s == '-') return false;
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long value = strtoull(s, &end, 10);
+    if (end == s || *end != '\0' || errno == ERANGE) return false;
+    out = static_cast<uint64_t>(value);
     return true;
 }
 
@@ -236,6 +269,12 @@ bool parse_and_set(void* instance, const Desc& d, const char* raw) {
             double n;
             if (!parse_env_number(raw, n)) return false;
             set_uint(instance, d, n < 0.0 ? 0u : static_cast<uint32_t>(n));
+            return true;
+        }
+        case Type::UInt64: {
+            uint64_t n = 0;
+            if (!parse_env_uint64(raw, n)) return false;
+            set_uint64(instance, d, n);
             return true;
         }
         case Type::Enum: {
@@ -297,6 +336,10 @@ std::string format_value(const void* instance, const Desc& d) {
             return buf;
         case Type::UInt:
             snprintf(buf, sizeof(buf), "%u", get_uint(instance, d));
+            return buf;
+        case Type::UInt64:
+            snprintf(buf, sizeof(buf), "%llu",
+                     static_cast<unsigned long long>(get_uint64(instance, d)));
             return buf;
         case Type::Bool:
             return get_bool(instance, d) ? "true" : "false";
@@ -472,6 +515,7 @@ const Binding* Registry::find(const char* group_path) const {
 float get_float(const void* instance, const Desc& d) { return as<float>(instance, d); }
 int32_t get_int(const void* instance, const Desc& d) { return as<int32_t>(instance, d); }
 uint32_t get_uint(const void* instance, const Desc& d) { return as<uint32_t>(instance, d); }
+uint64_t get_uint64(const void* instance, const Desc& d) { return as<uint64_t>(instance, d); }
 bool get_bool(const void* instance, const Desc& d) { return as<bool>(instance, d); }
 int32_t get_enum(const void* instance, const Desc& d) { return as<int32_t>(instance, d); }
 
@@ -523,6 +567,19 @@ bool set_uint(void* instance, const Desc& d, uint32_t v) {
     return true;
 }
 
+bool set_uint64(void* instance, const Desc& d, uint64_t v) {
+    uint64_t& dst = as<uint64_t>(instance, d);
+    uint64_t nv = v;
+    if (d.has_range) {
+        const uint64_t lo = d.min <= 0.0f ? 0ull : static_cast<uint64_t>(d.min);
+        const uint64_t hi = d.max <= 0.0f ? 0ull : static_cast<uint64_t>(d.max);
+        nv = nv < lo ? lo : (nv > hi ? hi : nv);
+    }
+    if (dst == nv) return false;
+    dst = nv;
+    return true;
+}
+
 bool set_bool(void* instance, const Desc& d, bool v) {
     bool& dst = as<bool>(instance, d);
     if (dst == v) return false;
@@ -565,6 +622,7 @@ bool set_string(void* instance, const Desc& d, const std::string& v) {
 float get_float(const Binding& b, const Desc& d) { return get_float(b.instance(), d); }
 int32_t get_int(const Binding& b, const Desc& d) { return get_int(b.instance(), d); }
 uint32_t get_uint(const Binding& b, const Desc& d) { return get_uint(b.instance(), d); }
+uint64_t get_uint64(const Binding& b, const Desc& d) { return get_uint64(b.instance(), d); }
 bool get_bool(const Binding& b, const Desc& d) { return get_bool(b.instance(), d); }
 int32_t get_enum(const Binding& b, const Desc& d) { return get_enum(b.instance(), d); }
 void get_float3(const Binding& b, const Desc& d, float out[3]) { get_float3(b.instance(), d, out); }
@@ -580,6 +638,7 @@ std::string get_string(const Binding& b, const Desc& d) { return get_string(b.in
 MATTER_PROPS_BINDING_SET(set_float, float)
 MATTER_PROPS_BINDING_SET(set_int, int32_t)
 MATTER_PROPS_BINDING_SET(set_uint, uint32_t)
+MATTER_PROPS_BINDING_SET(set_uint64, uint64_t)
 MATTER_PROPS_BINDING_SET(set_bool, bool)
 MATTER_PROPS_BINDING_SET(set_enum, int32_t)
 MATTER_PROPS_BINDING_SET(set_float3, const float*)
@@ -597,6 +656,7 @@ void copy_field(void* dst, const void* src, const Desc& d) {
         case Type::Int:
         case Type::Enum:   as<int32_t>(dst, d) = as<int32_t>(src, d); break;
         case Type::UInt:   as<uint32_t>(dst, d) = as<uint32_t>(src, d); break;
+        case Type::UInt64: as<uint64_t>(dst, d) = as<uint64_t>(src, d); break;
         case Type::Bool:   as<bool>(dst, d) = as<bool>(src, d); break;
         case Type::Float3:
         case Type::Color3: {
@@ -615,6 +675,7 @@ bool fields_equal(const void* a, const void* b, const Desc& d) {
         case Type::Int:
         case Type::Enum:   return as<int32_t>(a, d) == as<int32_t>(b, d);
         case Type::UInt:   return as<uint32_t>(a, d) == as<uint32_t>(b, d);
+        case Type::UInt64: return as<uint64_t>(a, d) == as<uint64_t>(b, d);
         case Type::Bool:   return as<bool>(a, d) == as<bool>(b, d);
         case Type::Float3:
         case Type::Color3: {
@@ -903,6 +964,9 @@ void DynamicGroup::construct_values(void* p) const {
                     f.number_default < 0.0 ? 0u
                                            : static_cast<uint32_t>(f.number_default);
                 break;
+            case Type::UInt64:
+                *static_cast<uint64_t*>(lane) = f.uint64_default;
+                break;
             case Type::Bool:
                 *static_cast<bool*>(lane) = f.bool_default;
                 break;
@@ -974,6 +1038,7 @@ int32_t DynamicGroup::index_of(const char* name) const {
 MATTER_PROPS_DYN_GET(get_float, float, 0.0f)
 MATTER_PROPS_DYN_GET(get_int, int32_t, 0)
 MATTER_PROPS_DYN_GET(get_uint, uint32_t, 0u)
+MATTER_PROPS_DYN_GET(get_uint64, uint64_t, 0ull)
 MATTER_PROPS_DYN_GET(get_bool, bool, false)
 MATTER_PROPS_DYN_GET(get_enum, int32_t, 0)
 MATTER_PROPS_DYN_GET(get_string, std::string, std::string())
@@ -997,6 +1062,7 @@ void DynamicGroup::get_float3(uint32_t index, float out[3]) const {
 MATTER_PROPS_DYN_SET(set_float, float)
 MATTER_PROPS_DYN_SET(set_int, int32_t)
 MATTER_PROPS_DYN_SET(set_uint, uint32_t)
+MATTER_PROPS_DYN_SET(set_uint64, uint64_t)
 MATTER_PROPS_DYN_SET(set_bool, bool)
 MATTER_PROPS_DYN_SET(set_enum, int32_t)
 MATTER_PROPS_DYN_SET(set_float3, const float*)

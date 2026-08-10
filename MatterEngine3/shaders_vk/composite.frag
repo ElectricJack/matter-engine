@@ -43,9 +43,7 @@ layout(set = 0, binding = 10) uniform sampler2D depth_texture;
 layout(push_constant) uniform SceneLighting {
     vec3 sun_direction;
     float sun_intensity;
-    vec3 sun_color;
     float diffuse_rt_multiplier;
-    vec3 sky_color;
     float emission_multiplier;
     float debug_view;
     float camera_fwd_x;
@@ -69,9 +67,11 @@ layout(push_constant) uniform SceneLighting {
     float sun_angular_diameter_deg;
     float sun_disc_cos_edge;
     float sun_disc_cos_core;
+    float camera_pos_x;
+    float camera_pos_z;
 } lighting;
 
-#include "sky_common.glsl"
+#include "environment_common.glsl"
 
 vec3 compute_view_ray(vec2 uv) {
     vec3 fwd = vec3(lighting.camera_fwd_x, lighting.camera_fwd_y,
@@ -136,20 +136,63 @@ float integrated_slice_at_depth(float depth) {
     // the integral ending at the hit instead of blending in the next froxel
     // behind it. At kilometre scale that leaked froxel can be tens of metres
     // deep, enough to put valley fog over an otherwise clear summit.
-    return clamp(depth_to_slice_n(depth) - 0.5 / float(VOL_D),
-                 0.0, 1.0 - 0.5 / float(VOL_D));
+    int depth_slices = textureSize(vol_integrated_texture, 0).z;
+    return clamp(depth_to_slice_n(depth, float(depth_slices)) - 0.5 / float(depth_slices),
+                 0.0, 1.0 - 0.5 / float(depth_slices));
 }
 
 void main() {
+    // Session-only Task 11 diagnostic. Sky is unambiguously clear (white);
+    // depth-covered receivers reconstruct a world position from the snapped
+    // near-clipmap center and display filtered near/far transmittance only.
+    // This never multiplies production direct lighting (Task 13 owns that).
+    if (lighting.vol_debug_view > 4.5) {
+        float hw_depth = texture(depth_texture, in_uv).r;
+        if (hw_depth <= 0.0 || environment.cloud_state.x <= 0.0) {
+            out_hdr = vec4(1.0);
+            return;
+        }
+        float linear_depth = composite_linear_depth(hw_depth);
+        vec3 view_ray = compute_view_ray(in_uv);
+        vec3 camera_forward = normalize(vec3(
+            lighting.camera_fwd_x, lighting.camera_fwd_y,
+            lighting.camera_fwd_z));
+        float ray_distance = linear_depth /
+            max(dot(view_ray, camera_forward), 1e-4);
+        mat4 near_uvw_to_world = inverse(environment.cloud_world_to_uvw[0]);
+        vec3 camera = (near_uvw_to_world * vec4(0.5, 0.5, 0.5, 1.0)).xyz;
+        camera.y = lighting.camera_y;
+        vec3 world_pos = camera + view_ray * ray_distance;
+        vec3 to_sun = normalize(-lighting.sun_direction);
+        float receiver_distance = max(lighting.vol_cloud_top - world_pos.y, 0.0) /
+            max(to_sun.y, 1e-3);
+        float transmittance = sample_cloud_transmittance(
+            world_pos, receiver_distance);
+        out_hdr = vec4(vec3(transmittance), 1.0);
+        return;
+    }
+    // Cloud density must precede every GBuffer/sky early-out.  Binding 9 is
+    // the initialized 1x1x1 Current dummy or the Improved R16F extinction
+    // grid, so this full-ray maximum is black for Current and independent of
+    // terrain silhouettes for Improved.
+    if (lighting.vol_debug_view > 3.5) {
+        int depth_slices = textureSize(vol_integrated_texture, 0).z;
+        float cloud_density = 0.0;
+        for (int z = 0; z < depth_slices; ++z)
+            cloud_density = max(cloud_density, texture(vol_integrated_texture,
+                vec3(in_uv, (float(z) + 0.5) / float(depth_slices))).r);
+        out_hdr = vec4(vec3(cloud_density), 1.0);
+        return;
+    }
     // Ahead of the sky early-out below, so the depth view covers the whole
     // frame (sky reads hw depth 0 -> camera_far -> t = 1) rather than being
-    // punched through by sky_with_sun wherever the gbuffer normal is empty.
+    // punched through by the physical sky wherever the gbuffer normal is empty.
     // debug_view 4.0: the GBuffer albedo, untouched by lighting. It exists for
     // the shaders that write a diagnostic FIELD into albedo rather than a
     // colour -- today gbuffer.frag's render.pom.horizon_debug, which draws the
     // baked horizon term and the reference march as greyscale over the
     // parallaxed ground. Anything lit is unreadable as a field: ambient scales
-    // it by sky_irradiance(normal), which sweeps across a curved surface, so a
+    // it by physical irradiance, which sweeps across a curved surface, so a
     // field that varied and a surface that curved would look the same.
     //
     // Ahead of the depth view for the same reason that one is ahead of the sky
@@ -175,13 +218,14 @@ void main() {
     if (normal_length_squared <= 1e-20) {
         vec3 ray = compute_view_ray(in_uv);
         vec3 to_sun = normalize(-lighting.sun_direction);
-        vec3 sky = sky_with_sun(ray, lighting.sky_color,
-                                to_sun, lighting.sun_color,
-                                lighting.sun_intensity,
-                                lighting.sun_disc_cos_edge,
-                                lighting.sun_disc_cos_core);
+        vec3 sky = sample_physical_sky(ray, to_sun);
+        float disc = smoothstep(lighting.sun_disc_cos_edge,
+                                lighting.sun_disc_cos_core,
+                                dot(normalize(ray), to_sun));
+        sky += environment.sun_disc_reserved.rgb * disc;
         if (lighting.vol_enabled > 0.5) {
-            vec3 far_uvw = vec3(in_uv, 1.0 - 0.5 / float(VOL_D));
+            int depth_slices = textureSize(vol_integrated_texture, 0).z;
+            vec3 far_uvw = vec3(in_uv, 1.0 - 0.5 / float(depth_slices));
             vec4 integrated = texture(vol_integrated_texture, far_uvw);
             sky = sky * integrated.a + integrated.rgb;
         }
@@ -196,7 +240,7 @@ void main() {
     float metallic = orm.y;
     float ao = orm.z;
     vec3 diffuse = albedo.rgb * (1.0 - metallic);
-    vec3 ambient = diffuse * sky_irradiance(normal, lighting.sky_color) * ao;
+    vec3 ambient = diffuse * sample_sky_irradiance(normal) * ao;
     vec3 visibility = texture(visibility_texture, in_uv).rgb;
     if (lighting.debug_view > 1.5) {
         out_hdr = vec4(normal * 0.5 + 0.5, 1.0);
@@ -228,6 +272,21 @@ void main() {
         }
         return;
     }
+    float receiver_hw_depth = texture(depth_texture, in_uv).r;
+    float receiver_linear_depth = composite_linear_depth(receiver_hw_depth);
+    vec3 receiver_view_ray = compute_view_ray(in_uv);
+    vec3 camera_forward = normalize(vec3(
+        lighting.camera_fwd_x, lighting.camera_fwd_y, lighting.camera_fwd_z));
+    float receiver_ray_t = receiver_linear_depth /
+        max(dot(receiver_view_ray, camera_forward), 1e-4);
+    vec3 receiver_world_pos =
+        vec3(lighting.camera_pos_x, lighting.camera_y, lighting.camera_pos_z) +
+        receiver_view_ray * receiver_ray_t;
+    float cloud_visibility = sample_cloud_transmittance(
+        receiver_world_pos,
+        cloud_receiver_distance_to_top(receiver_world_pos, to_sun));
+    vec3 visible_direct_sun = environment.direct_world_sun_ratio.rgb *
+                              visibility * cloud_visibility;
     // Mask gbuffer.frag's impostor bit out of .x before using it as an index.
     // Without the mask an impostor pixel fails the bounds test below and
     // silently loses its subsurface term -- a wrong-but-plausible result, not
@@ -280,8 +339,7 @@ void main() {
             }
         }
     }
-    vec3 sun = sun_response * lighting.sun_color * lighting.sun_intensity *
-               visibility;
+    vec3 sun = sun_response * visible_direct_sun;
     // Per-texel metalness (G-buffer ORM.y, the VT surfaces() tape 'metallic'
     // lane): metals have no diffuse, so `sun_response` above is zero for
     // them, and the traced reflection lane only sees the sun through its
@@ -314,7 +372,7 @@ void main() {
             (vec3(1.0) - albedo.rgb) * pow(1.0 - v_dot_h, 5.0);
         sun += metallic * metal_f * ggx_d * g1v * g1l /
                max(4.0 * n_dot_v * direct, 1e-6) * direct *
-               lighting.sun_color * lighting.sun_intensity * visibility;
+               visible_direct_sun;
     }
     float encoded_emission = normal_payload.w;
     float emission_strength =
@@ -356,18 +414,18 @@ void main() {
             vec3 fallback_absorption = mat.absorption_pad.rgb;
             if (dot(fallback_absorption, fallback_absorption) < 1e-8)
                 fallback_absorption = vec3(1.0);
-            transmission.rgb = sky_with_sun(through_dir, lighting.sky_color,
-                                            to_sun, lighting.sun_color,
-                                            lighting.sun_intensity * 0.5,
-                                            lighting.sun_disc_cos_edge,
-                                            lighting.sun_disc_cos_core)
-                             * fallback_absorption;
-            glass_reflection = sky_with_sun(reflect_dir, lighting.sky_color,
-                                            to_sun, lighting.sun_color,
-                                            lighting.sun_intensity,
-                                            lighting.sun_disc_cos_edge,
-                                            lighting.sun_disc_cos_core)
-                             * fresnel * mat_trans;
+            float through_disc = smoothstep(lighting.sun_disc_cos_edge,
+                                             lighting.sun_disc_cos_core,
+                                             dot(normalize(through_dir), to_sun));
+            transmission.rgb = (sample_physical_sky(through_dir, to_sun) +
+                                environment.sun_disc_reserved.rgb *
+                                    through_disc * 0.5) * fallback_absorption;
+            float reflection_disc = smoothstep(lighting.sun_disc_cos_edge,
+                                                lighting.sun_disc_cos_core,
+                                                dot(normalize(reflect_dir), to_sun));
+            glass_reflection = (sample_physical_sky(reflect_dir, to_sun) +
+                               environment.sun_disc_reserved.rgb *
+                                   reflection_disc) * fresnel * mat_trans;
         }
     }
     vec3 linear_hdr = (ambient + sun * mix(1.0, 0.65, roughness) +

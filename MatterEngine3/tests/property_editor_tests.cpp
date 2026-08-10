@@ -7,11 +7,21 @@
 
 #include "../../MatterEditor/src/property_editor.h"
 #include "../../MatterEditor/src/streaming_lod_prefs.h"
+#define VIEWER_UI_STATUS_ONLY
+#include "../../MatterEditor/src/ui.h"
+#undef VIEWER_UI_STATUS_ONLY
+#define VIEWER_FIFO_PROPERTY_HELPERS_ONLY
+#include "../../MatterEditor/src/viewer_commands.h"
+#undef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
 #include "matter/json_doc.h"
+#include "matter/atmosphere_lighting.h"
+#include "matter/cloud_shadow_settings.h"
 #include "matter/world_definition.h"   // FogSettings — the render.fog group
 
 #include <cstring>
+#include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -677,6 +687,485 @@ void test_draw_override_baseline_rule() {
           "draw.overrides: a grown module set is a different schema");
 }
 
+// The physical-atmosphere controls use ordinary property descriptors: this is
+// the contract the editor registry must bind verbatim.  Keeping the test in the
+// ImGui-free suite exercises parsing, sparse persistence and baseline rules
+// without requiring a window or a renderer.
+void test_physical_atmosphere_quality_property_contract() {
+    static const char* const xy_labels[] = {"0.5x", "0.75x", "1x", "1.5x", "2x"};
+    static const char* const depth_labels[] = {"64", "96", "128", "192", "256"};
+    static const char* const shadow_resolution_labels[] = {"128", "256", "512"};
+    static const auto atmosphere = props::group<AtmosphereSettings>(
+        "render.atmosphere", "Atmosphere",
+        props::prop(&AtmosphereSettings::sea_level_y, "sea_level_y").label("Sea level").range(-1000.0f, 10000.0f).units("m"),
+        props::prop(&AtmosphereSettings::rayleigh_scale, "rayleigh_scale").label("Rayleigh scale").range(0.0f, 4.0f),
+        props::prop(&AtmosphereSettings::mie_scale, "mie_scale").label("Mie scale").range(0.0f, 4.0f),
+        props::prop(&AtmosphereSettings::mie_anisotropy, "mie_anisotropy").label("Mie anisotropy").range(-0.2f, 0.99f),
+        props::prop(&AtmosphereSettings::ozone_scale, "ozone_scale").label("Ozone scale").range(0.0f, 4.0f),
+        props::prop(&AtmosphereSettings::ground_albedo, "ground_albedo").label("Ground albedo").range(0.0f, 1.0f));
+    static const auto volumetrics = props::group<VulkanVolumetricsSettings>(
+        "render.volumetrics", "Volumetrics",
+        props::prop(&VulkanVolumetricsSettings::froxel_xy_scale, "froxel_xy_scale").label("Froxel XY scale").enums(xy_labels, 5),
+        props::prop(&VulkanVolumetricsSettings::froxel_depth_slices, "froxel_depth_slices").label("Froxel depth slices").enums(depth_labels, 5),
+        props::prop(&VulkanVolumetricsSettings::local_sun_march_steps, "local_sun_march_steps").label("Local sun march steps").range(0.0f, 32.0f),
+        props::prop(&VulkanVolumetricsSettings::local_sun_march_distance_m, "local_sun_march_distance_m").label("Local sun march distance").range(0.0f, 1000.0f).units("m"),
+        props::prop(&VulkanVolumetricsSettings::multiple_scattering_orders, "multiple_scattering_orders").label("Multiple scattering orders").range(1.0f, 4.0f),
+        props::prop(&VulkanVolumetricsSettings::multiple_scattering_strength, "multiple_scattering_strength").label("Multiple scattering strength").range(0.0f, 1.0f),
+        props::prop(&VulkanVolumetricsSettings::powder_strength, "powder_strength").label("Powder strength").range(0.0f, 1.0f));
+    static const auto shadows = props::group<CloudShadowSettings>(
+        "render.cloud_shadows", "Cloud Shadows",
+        props::prop(&CloudShadowSettings::near_resolution, "near_resolution").label("Near resolution").enums(shadow_resolution_labels, 3),
+        props::prop(&CloudShadowSettings::near_coverage_m, "near_coverage_m").label("Near coverage").range(250.0f, 10000.0f).units("m"),
+        props::prop(&CloudShadowSettings::filter_scale, "filter_scale").label("Filter scale").range(0.0f, 4.0f),
+        props::prop(&CloudShadowSettings::update_fraction, "update_fraction").label("Update fraction").range(0.0625f, 1.0f));
+    static const auto clouds = props::group<FogSettings>(
+        "render.clouds", "Clouds",
+        props::PropBuilder("layer1_detail_erosion", Type::Float,
+            static_cast<uint32_t>(offsetof(FogSettings, clouds) + sizeof(CloudLayer) + offsetof(CloudLayer, detail_erosion)))
+            .label("Detail erosion").range(0.0f, 1.0f));
+
+    AtmosphereSettings live_atmosphere;
+    VulkanVolumetricsSettings live_volumetrics;
+    CloudShadowSettings live_shadows;
+    FogSettings live_fog;
+    props::Registry registry;
+    props::Binding* atmosphere_binding = registry.get(registry.bind(atmosphere, &live_atmosphere, props::Scope::World));
+    props::Binding* volumetrics_binding = registry.get(registry.bind(volumetrics, &live_volumetrics, props::Scope::World));
+    props::Binding* shadow_binding = registry.get(registry.bind(shadows, &live_shadows, props::Scope::World));
+    props::Binding* cloud_binding = registry.get(registry.bind(clouds, &live_fog, props::Scope::World));
+    CHECK(atmosphere_binding && volumetrics_binding && shadow_binding && cloud_binding,
+          "physical atmosphere: every group binds");
+
+    struct Edit { const char* path; const char* text; };
+    const Edit edits[] = {
+        {"render.atmosphere.mie_anisotropy", "0.72"},
+        {"render.volumetrics.froxel_xy_scale", "1.5x"},
+        {"render.volumetrics.froxel_depth_slices", "192"},
+        {"render.volumetrics.multiple_scattering_orders", "3"},
+        {"render.cloud_shadows.near_resolution", "512"},
+        {"render.cloud_shadows.update_fraction", "0.5"},
+        {"render.clouds.layer1_detail_erosion", "0.4"},
+    };
+    for (const Edit& edit : edits) {
+        props::Binding* binding = nullptr;
+        const Desc* desc = nullptr;
+        CHECK(props::resolve_field(registry, edit.path, binding, desc),
+              "physical atmosphere: generic path resolves");
+        CHECK(props::parse_and_set(*binding, *desc, edit.text),
+              "physical atmosphere: generic set accepts valid text");
+    }
+    CHECK(live_atmosphere.mie_anisotropy == 0.72f &&
+              live_volumetrics.froxel_xy_scale == FroxelXyScale::X1_5 &&
+              live_volumetrics.froxel_depth_slices == FroxelDepthSlices::D192 &&
+              live_volumetrics.multiple_scattering_orders == 3 &&
+              live_shadows.near_resolution == 2 && live_shadows.update_fraction == 0.5f &&
+              live_fog.clouds[1].detail_erosion == 0.4f,
+          "physical atmosphere: generic values reach the live structs");
+
+    props::Binding* binding = nullptr;
+    const Desc* desc = nullptr;
+    CHECK(props::resolve_field(registry, "render.volumetrics.froxel_xy_scale", binding, desc),
+          "physical atmosphere: enum resolves");
+    CHECK(props::parse_and_set(*binding, *desc, "2X"),
+          "physical atmosphere: enum labels are case-insensitive");
+    const FroxelXyScale before_invalid = live_volumetrics.froxel_xy_scale;
+    CHECK(!props::parse_and_set(*binding, *desc, "not-a-scale"),
+          "physical atmosphere: invalid enum text is refused");
+    CHECK(live_volumetrics.froxel_xy_scale == before_invalid,
+          "physical atmosphere: invalid enum text does not mutate storage");
+
+    for (props::Binding* candidate : {atmosphere_binding, volumetrics_binding, shadow_binding, cloud_binding}) {
+        CHECK(candidate->scope() == props::Scope::World,
+              "physical atmosphere: every binding is World scoped");
+        CHECK(!props::group_requires_reload(candidate->schema()),
+              "physical atmosphere: every field stays live");
+    }
+    props::Registry neutral_registry;
+    AtmosphereSettings neutral_atmosphere;
+    VulkanVolumetricsSettings neutral_volumetrics;
+    CloudShadowSettings neutral_shadows;
+    FogSettings neutral_fog;
+    neutral_registry.bind(atmosphere, &neutral_atmosphere, props::Scope::World);
+    neutral_registry.bind(volumetrics, &neutral_volumetrics, props::Scope::World);
+    neutral_registry.bind(shadows, &neutral_shadows, props::Scope::World);
+    neutral_registry.bind(clouds, &neutral_fog, props::Scope::World);
+    matter::jsondoc::Value neutral_doc;
+    props::save_scope(neutral_registry, props::Scope::World, neutral_doc);
+    CHECK(matter::jsondoc::write_json(neutral_doc).find("render.atmosphere") == std::string::npos &&
+              matter::jsondoc::write_json(neutral_doc).find("render.clouds") == std::string::npos,
+          "physical atmosphere: neutral defaults remain sparse");
+
+    apply_volumetric_quality_preset(VolumetricQualityPreset::Improved,
+                                    live_volumetrics, live_shadows);
+    CHECK(identify_volumetric_quality_preset(live_volumetrics, live_shadows) ==
+              VolumetricQualityPreset::Improved,
+          "physical atmosphere: Improved identifies after applying through values");
+    ++live_volumetrics.multiple_scattering_orders;
+    CHECK(identify_volumetric_quality_preset(live_volumetrics, live_shadows) ==
+              VolumetricQualityPreset::Custom,
+          "physical atmosphere: a one-field edit derives Custom");
+}
+
+// The final harness derives its expected bytes from the same canonical feature
+// predicate that controls the optional cloud-density image at runtime.
+void test_froxel_expected_bytes_follow_canonical_enhancement_predicate() {
+    const matter::FroxelGridDimensions grid{120, 68, 96};
+    constexpr uint64_t kVoxelCount = 120ull * 68ull * 96ull;
+    matter::VulkanVolumetricsSettings volumetrics{};
+    matter::CloudShadowSettings shadows{};
+    matter::apply_volumetric_quality_preset(
+        matter::VolumetricQualityPreset::CurrentCost, volumetrics, shadows);
+    CHECK(!matter::enhanced_cloud_lighting(volumetrics, shadows) &&
+              matter::estimate_froxel_bytes(grid, false) == kVoxelCount * 32ull,
+          "Current froxels use the canonical 32 bytes per voxel");
+    volumetrics.local_sun_march_steps = 1;
+    CHECK(matter::enhanced_cloud_lighting(volumetrics, shadows) &&
+              matter::estimate_froxel_bytes(grid, true) == kVoxelCount * 34ull,
+          "enhanced froxels use the canonical 34 bytes per voxel");
+}
+
+// The test target deliberately does not link the editor's ImGui/Vulkan closure.
+// Pin the registry/UI seam at its source boundary instead, so a later refactor
+// cannot make the headless schema test green while dropping the live bindings.
+void test_physical_atmosphere_editor_source_contract() {
+    const auto read = [](const char* path) {
+        std::ifstream in(path);
+        std::ostringstream out;
+        out << in.rdbuf();
+        return out.str();
+    };
+    const std::string props_source = read("../../MatterEditor/src/editor_props.cpp");
+    const std::string editor_source = read("../../MatterEditor/src/property_editor.cpp");
+    const std::string reset_source = read("../../MatterEditor/src/ui_lighting_controls.cpp");
+    const std::string main_source = read("../../MatterEditor/src/main.cpp");
+    const std::string ui_source = read("../../MatterEditor/src/ui.cpp");
+    const std::string issue_source = read("../../MatterEditor/src/issue_reporter.cpp");
+    const std::string session_source = read("../include/matter/world_session.h");
+    const std::string renderer_source = read("../src/render/vk_scene_renderer.h");
+    const std::string renderer_impl_source = read("../src/render/vk_scene_renderer.cpp");
+    const std::string atmosphere_source = read("../src/render/vk_atmosphere.cpp");
+    const std::string volumetrics_source = read("../src/render/vk_volumetrics.h");
+    const std::string volumetrics_impl_source = read("../src/render/vk_volumetrics.cpp");
+    const std::string shots_source = read("../tools/atmosphere_cloud_shots.sh");
+    CHECK(!props_source.empty() && !editor_source.empty() && !reset_source.empty() &&
+              !main_source.empty() && !ui_source.empty() && !issue_source.empty() &&
+              !session_source.empty() && !renderer_source.empty() &&
+              !renderer_impl_source.empty() &&
+              !atmosphere_source.empty() && !volumetrics_source.empty() &&
+              !volumetrics_impl_source.empty() &&
+              !shots_source.empty(),
+          "physical atmosphere: editor sources are available from the test cwd");
+    for (const char* token : {"\"render.atmosphere\", \"Atmosphere\"",
+                              "\"render.volumetrics\", \"Volumetrics\"",
+                              "\"render.cloud_shadows\", \"Cloud Shadows\"",
+                              "\"render.clouds\", \"Clouds\"",
+                              "MATTER_ATMOSPHERE_MIE_ANISOTROPY",
+                              "MATTER_FROXEL_XY_SCALE", "MATTER_FROXEL_DEPTH_SLICES",
+                              "MATTER_CLOUD_SCATTER_ORDERS", "layer\" #i \"_detail_erosion"})
+        CHECK(props_source.find(token) != std::string::npos,
+              "physical atmosphere: production registry exposes required schema/env token");
+    for (const char* token : {"atmosphere_ = registry_.bind", "cloud_shadows_ = registry_.bind",
+                              "EditorProps::atmosphere", "EditorProps::cloud_shadows"})
+        CHECK(props_source.find(token) != std::string::npos,
+              "physical atmosphere: production registry binds/accesses World groups");
+    const size_t lighting_begin = editor_source.find("void draw_lighting_contents");
+    CHECK(lighting_begin != std::string::npos,
+          "physical atmosphere: Lighting draw function is present");
+    const std::string lighting_body = editor_source.substr(lighting_begin);
+    size_t previous = 0;
+    for (const char* token : {"props.lighting()", "props.atmosphere()", "props.volumetrics()",
+                              "props.fog()", "props.cloud_shadows()", "props.clouds()"}) {
+        const size_t found = lighting_body.find(token);
+        CHECK(found != std::string::npos && found > previous,
+              "physical atmosphere: Lighting draws all six groups in required order");
+        previous = found;
+    }
+    for (const char* token : {"apply_volumetric_quality_preset", "apply_registered_fields",
+                              "set_bool(binding", "set_enum(binding", "set_int(binding", "set_float(binding",
+                              "Froxels requested/effective", "Froxel memory", "Last allocation error"})
+        CHECK(editor_source.find(token) != std::string::npos,
+              "physical atmosphere: Lighting presets/readouts stay on the property path");
+    CHECK(reset_source.find("void reset_lighting_controls") != std::string::npos &&
+              reset_source.find("stats.atmosphere = matter::AtmosphereSettings{};") != std::string::npos &&
+              reset_source.find("stats.cloud_shadows = matter::CloudShadowSettings{};") != std::string::npos,
+          "physical atmosphere: all physical lighting controls reset to the compiled baseline");
+    CHECK(main_source.find("MATTER_CAPTURE_LIGHTING_UI") != std::string::npos &&
+               main_source.find("ImGui::SetWindowFocus(\"Lighting\")") != std::string::npos,
+          "physical atmosphere: screenshot automation can focus Lighting without a FIFO command");
+
+    // Task 14 is intentionally append-only: existing STATS parsers consume the
+    // legacy prefix by position, while the new lanes are available to newer
+    // captures after the froxel generation field.
+    for (const char* token : {"gpu_atmosphere_ms", "gpu_cloud_shadows_ms",
+                              "gpu_vol_density_ms", "gpu_vol_scatter_ms",
+                              "gpu_vol_integrate_ms", "cloud_shadow_memory_bytes"}) {
+        CHECK(session_source.find(token) != std::string::npos,
+              "physical atmosphere: FrameStats exposes timing and memory lanes");
+        CHECK(main_source.find(token) != std::string::npos,
+              "physical atmosphere: STATS propagates timing and memory lanes");
+    }
+    const size_t stats_begin = main_source.find("std::printf(\"STATS,");
+    const std::string stats_body = main_source.substr(stats_begin);
+    CHECK(stats_begin != std::string::npos &&
+              stats_body.find("frame_stats.vol_resource_generation") <
+                  stats_body.find("frame_stats.gpu_atmosphere_ms"),
+          "physical atmosphere: STATS retains its legacy froxel suffix before new lanes");
+    for (const char* token : {"kGpuZoneAtmosphere", "kGpuZoneCloudShadows",
+                              "kGpuZoneVolDensity", "kGpuZoneVolScatter",
+                              "kGpuZoneVolIntegrate", "kGpuZoneCount"})
+        CHECK(renderer_source.find(token) != std::string::npos,
+              "physical atmosphere: GPU timer zones append without renumbering legacy lanes");
+    CHECK(volumetrics_source.find("VolumetricPassBoundary") != std::string::npos &&
+              volumetrics_source.find("VolumetricPass") != std::string::npos,
+          "physical atmosphere: volumetrics owns typed pass boundaries");
+    CHECK(volumetrics_impl_source.find(
+              "matter::enhanced_cloud_lighting(vol, shadows)") != std::string::npos,
+          "physical atmosphere: persistent froxel allocation uses the canonical enhancement predicate");
+    for (const char* token : {"GPU atmosphere", "Cloud shadows", "Vol density",
+                              "gpu_atmosphere_ms", "gpu_cloud_shadows_ms"})
+        CHECK(editor_source.find(token) != std::string::npos ||
+                  ui_source.find(token) != std::string::npos ||
+                  issue_source.find(token) != std::string::npos,
+              "physical atmosphere: Lighting, Performance, and issue reports retain timing lanes");
+    CHECK(issue_source.find("cloud_shadow_memory_bytes") != std::string::npos,
+          "physical atmosphere: issue reports retain actual cloud-shadow memory");
+    CHECK(atmosphere_source.find("candidate_timestamp_pool_") != std::string::npos &&
+              atmosphere_source.find("vkGetQueryPoolResults") != std::string::npos &&
+              renderer_impl_source.find("last_generation_gpu_ms") != std::string::npos,
+          "physical atmosphere: the immediate LUT candidate publishes a GPU query result");
+    CHECK(renderer_impl_source.find("z == kGpuZoneAtmosphere") != std::string::npos,
+          "physical atmosphere: frame timestamp readback cannot overwrite the module atmosphere lane");
+    for (const char* token : {"FINAL_STAGE_DIR", "expect_property", "ffmpeg",
+                              "verify_final_capture", "promote_final_evidence",
+                              "FINAL_EXPECT_BYTES_PER_VOXEL",
+                              "final_canonical_enhanced_cloud_lighting",
+                              "final_verify_froxel_pair",
+                              "FINAL_PREVIOUS_PAIR_GENERATION",
+                              "scan_final_log"})
+        CHECK(shots_source.find(token) != std::string::npos,
+              "physical atmosphere: final acceptance validates and promotes staged evidence");
+}
+
+const auto& atmosphere_lighting_controls_schema() {
+    using V = matter::VulkanLightingOverrides;
+    static const auto group = props::group<V>(
+        "render.lighting", "Lighting",
+        props::prop(&V::sky_multiplier, "sky_multiplier")
+            .label("Sky").range(0.0f, 4.0f),
+        props::prop(&V::sky_tint, "sky_tint")
+            .label("Sky tint").color(),
+        props::prop(&V::day_ambient_multiplier, "day_ambient_multiplier")
+            .label("Day ambient").range(0.0f, 4.0f)
+            .env("MATTER_DAY_AMBIENT_MULTIPLIER")
+            .doc("Physical irradiance at e >= +5 deg. Visible sky does not change ambient."),
+        props::prop(&V::twilight_ambient_multiplier, "twilight_ambient_multiplier")
+            .label("Twilight ambient").range(0.0f, 4.0f)
+            .env("MATTER_TWILIGHT_AMBIENT_MULTIPLIER")
+            .doc("Physical irradiance at e <= -6 deg. Ambient does not recolour the visible sky."),
+        props::prop(&V::sky_irradiance_multiplier, "sky_irradiance_multiplier")
+            .label("Sky irradiance").range(0.0f, 4.0f)
+            .env("MATTER_SKY_IRRADIANCE_MULTIPLIER")
+            .doc("Post-9SH physical ambient multiplier; independent of visible sky."),
+        props::prop(&V::sunset_direct_ratio, "sunset_direct_ratio")
+            .label("Sunset direct").range(0.0f, 1.0f)
+            .env("MATTER_SUNSET_DIRECT_RATIO")
+            .doc("Direct-world ratio at +5 deg. Sunset direct does not affect disc presentation."));
+    return group;
+}
+
+const Desc& atmosphere_lighting_field(const char* name) {
+    const props::Group& group = atmosphere_lighting_controls_schema();
+    for (uint32_t i = 0; i < group.field_count; ++i)
+        if (std::strcmp(group.fields[i].name, name) == 0) return group.fields[i];
+    static Desc missing;
+    return missing;
+}
+
+void test_atmosphere_lighting_property_defaults_metadata_and_round_trip() {
+    VulkanLightingOverrides values{};
+    props::Registry registry;
+    props::Binding* binding = registry.get(registry.bind(
+        atmosphere_lighting_controls_schema(), &values, props::Scope::World));
+    CHECK(binding != nullptr, "new atmosphere lighting properties bind generically");
+
+    jsondoc::Value old_document;
+    CHECK(jsondoc::parse_json(
+              "{\"version\":1,\"groups\":{\"render.lighting\":{\"sky_multiplier\":1.25}}}",
+              old_document),
+          "old lighting JSON parses without any new keys");
+    props::load_scope(registry, props::Scope::World, old_document);
+    CHECK(values.day_ambient_multiplier == 0.25f &&
+              values.twilight_ambient_multiplier == 1.0f &&
+              values.sky_irradiance_multiplier == 1.0f &&
+              values.sunset_direct_ratio == 0.25f,
+          "old lighting JSON preserves all four backwards defaults");
+
+    struct Expected {
+        const char* name;
+        const char* label;
+        float minimum;
+        float maximum;
+        const char* environment;
+    };
+    constexpr Expected expected[] = {
+        {"day_ambient_multiplier", "Day ambient", 0.0f, 4.0f,
+         "MATTER_DAY_AMBIENT_MULTIPLIER"},
+        {"twilight_ambient_multiplier", "Twilight ambient", 0.0f, 4.0f,
+         "MATTER_TWILIGHT_AMBIENT_MULTIPLIER"},
+        {"sky_irradiance_multiplier", "Sky irradiance", 0.0f, 4.0f,
+         "MATTER_SKY_IRRADIANCE_MULTIPLIER"},
+        {"sunset_direct_ratio", "Sunset direct", 0.0f, 1.0f,
+         "MATTER_SUNSET_DIRECT_RATIO"},
+    };
+    for (const Expected& item : expected) {
+        const Desc& desc = atmosphere_lighting_field(item.name);
+        CHECK(viewer::prop_field_path(atmosphere_lighting_controls_schema(), desc) ==
+                  std::string("render.lighting.") + item.name,
+              "new atmosphere lighting property has its exact generic path");
+        CHECK(desc.label && std::strcmp(desc.label, item.label) == 0 &&
+                  desc.has_range && desc.min == item.minimum &&
+                  desc.max == item.maximum && desc.env &&
+                  std::strcmp(desc.env, item.environment) == 0,
+              "new atmosphere lighting property has exact label, range, and environment name");
+        CHECK((desc.flags & props::ReadOnly) == 0,
+              "new atmosphere lighting property remains live and editable");
+    }
+
+    CHECK(props::set_float(*binding,
+                           atmosphere_lighting_field("day_ambient_multiplier"),
+                           0.6f) &&
+              props::set_float(*binding,
+                               atmosphere_lighting_field("twilight_ambient_multiplier"),
+                               1.7f) &&
+              props::set_float(*binding,
+                               atmosphere_lighting_field("sky_irradiance_multiplier"),
+                               2.3f) &&
+              props::set_float(*binding,
+                               atmosphere_lighting_field("sunset_direct_ratio"),
+                               0.4f),
+          "all four atmosphere lighting properties edit through generic setters");
+    jsondoc::Value saved;
+    props::save_scope(registry, props::Scope::World, saved);
+    VulkanLightingOverrides restored{};
+    props::Registry restored_registry;
+    restored_registry.bind(atmosphere_lighting_controls_schema(), &restored,
+                           props::Scope::World);
+    props::load_scope(restored_registry, props::Scope::World, saved);
+    CHECK(restored.day_ambient_multiplier == 0.6f &&
+              restored.twilight_ambient_multiplier == 1.7f &&
+              restored.sky_irradiance_multiplier == 2.3f &&
+              restored.sunset_direct_ratio == 0.4f,
+          "all four atmosphere lighting properties round-trip generically");
+
+    const std::string props_source = [] {
+        std::ifstream in("../../MatterEditor/src/editor_props.cpp");
+        std::ostringstream out;
+        out << in.rdbuf();
+        return out.str();
+    }();
+    for (const char* statement : {
+             "Visible sky does not change ambient.",
+             "Ambient does not recolour the visible sky.",
+             "Sunset direct does not affect disc presentation."})
+        CHECK(props_source.find(statement) != std::string::npos,
+              "production lighting documentation states control independence explicitly");
+}
+
+void test_viewer_status_groups_are_exact_read_only_session_state() {
+    viewer::ViewerSessionStatus session{};
+    viewer::ViewerAtmosphereStatus atmosphere{};
+    session.render_path = viewer::ViewerRenderPathStatus::NativeRt;
+    session.presented_frame_serial = 4294967297ull;
+    session.native_rt_available = true;
+    atmosphere.generation_serial = 8589934593ull;
+    atmosphere.resolved_elevation_deg = 5.0f;
+    atmosphere.atmospheric_direct_base_rgb = {1.0f, 2.0f, 3.0f};
+
+    props::Registry registry;
+    props::Binding* session_binding = registry.get(registry.bind(
+        viewer::viewer_session_status_group(), &session,
+        props::Scope::Session));
+    props::Binding* atmosphere_binding = registry.get(registry.bind(
+        viewer::viewer_atmosphere_status_group(), &atmosphere,
+        props::Scope::Session));
+    CHECK(session_binding && atmosphere_binding,
+          "viewer status groups bind at Session scope");
+
+    struct Expected {
+        const char* path;
+        props::Type type;
+    };
+    const Expected expected[] = {
+        {"viewer.session.render_path", Type::Enum},
+        {"viewer.session.presented_frame_serial", Type::UInt64},
+        {"viewer.session.native_rt_available", Type::Bool},
+        {"viewer.atmosphere_status.generation_serial", Type::UInt64},
+        {"viewer.atmosphere_status.resolved_elevation_deg", Type::Float},
+        {"viewer.atmosphere_status.atmospheric_direct_base_rgb", Type::Float3},
+        {"viewer.atmosphere_status.atmospheric_noon_direct_base_rgb", Type::Float3},
+        {"viewer.atmosphere_status.direct_world_ratio", Type::Float},
+        {"viewer.atmosphere_status.direct_base_rgb", Type::Float3},
+        {"viewer.atmosphere_status.direct_world_sun_rgb", Type::Float3},
+        {"viewer.atmosphere_status.sky_ambient_ratio", Type::Float},
+        {"viewer.atmosphere_status.sky_display_modifier_rgb", Type::Float3},
+        {"viewer.atmosphere_status.sky_irradiance_modifier_rgb", Type::Float3},
+    };
+    for (const Expected& item : expected) {
+        props::Binding* binding = nullptr;
+        const props::Desc* desc = nullptr;
+        CHECK(props::resolve_field(registry, item.path, binding, desc) &&
+                  binding && desc && desc->type == item.type,
+              "viewer status field has exact path and type");
+        CHECK(desc && (desc->flags & props::ReadOnly) != 0 &&
+                  (desc->flags & props::NoSerialize) != 0,
+              "every viewer status field is read-only and non-serializing");
+    }
+
+    const props::Desc& render_path = session_binding->schema().fields[0];
+    CHECK(render_path.enum_count == 3 && render_path.enum_labels &&
+              std::strcmp(render_path.enum_labels[0], "raster") == 0 &&
+              std::strcmp(render_path.enum_labels[1], "native_rt") == 0 &&
+              std::strcmp(render_path.enum_labels[2],
+                          "native_rt_unavailable") == 0,
+          "viewer render-path status labels are exact");
+
+    const auto path_get = viewer::fifo_get_property(
+        registry, "viewer.session.render_path");
+    const auto serial_get = viewer::fifo_get_property(
+        registry, "viewer.session.presented_frame_serial");
+    const auto triple_get = viewer::fifo_get_property(
+        registry,
+        "viewer.atmosphere_status.atmospheric_direct_base_rgb");
+    CHECK(path_get.success &&
+              path_get.line == "get: viewer.session.render_path = native_rt",
+          "FIFO get formats the render-path enum label exactly");
+    CHECK(serial_get.success && serial_get.line ==
+              "get: viewer.session.presented_frame_serial = 4294967297",
+          "FIFO get formats UInt64 without truncation");
+    CHECK(triple_get.success && triple_get.line ==
+              "get: viewer.atmosphere_status.atmospheric_direct_base_rgb = (1, 2, 3)",
+          "FIFO get formats status triples in the strict metrics grammar");
+
+    const auto rejected = viewer::fifo_set_property(
+        registry, "viewer.session.presented_frame_serial", "7");
+    CHECK(!rejected.success && rejected.line ==
+              "set: viewer.session.presented_frame_serial is read-only" &&
+              session.presented_frame_serial == 4294967297ull,
+          "FIFO setter rejects ReadOnly before parsing and leaves status intact");
+
+    jsondoc::Value session_doc;
+    props::save_scope(registry, props::Scope::Session, session_doc);
+    jsondoc::Value world_doc;
+    props::save_scope(registry, props::Scope::World, world_doc);
+    const std::string session_json = jsondoc::write_json(session_doc);
+    const std::string world_json = jsondoc::write_json(world_doc);
+    CHECK(session_json.find("viewer.session") == std::string::npos &&
+              session_json.find("viewer.atmosphere_status") == std::string::npos &&
+              world_json.find("viewer.session") == std::string::npos &&
+              world_json.find("viewer.atmosphere_status") == std::string::npos,
+          "viewer status groups are absent from saved Session and World JSON");
+}
+
 }  // namespace
 
 int main() {
@@ -694,5 +1183,10 @@ int main() {
     test_dynamic_group_renders_generically();
     test_draw_override_rows();
     test_draw_override_baseline_rule();
+    test_physical_atmosphere_quality_property_contract();
+    test_froxel_expected_bytes_follow_canonical_enhancement_predicate();
+    test_physical_atmosphere_editor_source_contract();
+    test_atmosphere_lighting_property_defaults_metadata_and_round_trip();
+    test_viewer_status_groups_are_exact_read_only_session_state();
     return check_summary();
 }

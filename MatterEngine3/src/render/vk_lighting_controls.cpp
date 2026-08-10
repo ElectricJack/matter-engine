@@ -25,6 +25,14 @@ matter::VulkanLightingOverrides sanitize_vulkan_lighting_overrides(
         out.sun_tint[i] = std::clamp(finite_or(value.sun_tint[i], 1.0f), 0.0f, 4.0f);
         out.sky_tint[i] = std::clamp(finite_or(value.sky_tint[i], 1.0f), 0.0f, 4.0f);
     }
+    out.day_ambient_multiplier = std::clamp(
+        finite_or(value.day_ambient_multiplier, 0.25f), 0.0f, 4.0f);
+    out.twilight_ambient_multiplier = std::clamp(
+        finite_or(value.twilight_ambient_multiplier, 1.0f), 0.0f, 4.0f);
+    out.sky_irradiance_multiplier = std::clamp(
+        finite_or(value.sky_irradiance_multiplier, 1.0f), 0.0f, 4.0f);
+    out.sunset_direct_ratio = std::clamp(
+        finite_or(value.sunset_direct_ratio, 0.25f), 0.0f, 1.0f);
     // Sun orientation. Azimuth WRAPS rather than clamps -- it is a bearing, and
     // a slider that sticks at 180 while the sun is one degree past the seam is
     // the wrong behaviour. Elevation clamps, because the poles are real ends.
@@ -79,6 +87,11 @@ bool vulkan_source_lighting_changed(
     return x.sun_multiplier != y.sun_multiplier ||
            x.sky_multiplier != y.sky_multiplier ||
            x.emission_multiplier != y.emission_multiplier ||
+           x.day_ambient_multiplier != y.day_ambient_multiplier ||
+           x.twilight_ambient_multiplier !=
+               y.twilight_ambient_multiplier ||
+           x.sky_irradiance_multiplier != y.sky_irradiance_multiplier ||
+           x.sunset_direct_ratio != y.sunset_direct_ratio ||
            // Aiming or resizing the sun moves every shadow, every bounce and
            // the disc itself: as SOURCE a change as a colour change, and the
            // one that would look worst if stale GI history survived it.

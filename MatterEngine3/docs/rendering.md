@@ -280,6 +280,91 @@ echo "shot /tmp/out.png"   > /tmp/viewer.fifo
 echo "quit"                > /tmp/viewer.fifo
 ```
 
-Commands (one per line): `cam <px> <py> <pz> <tx> <ty> <tz>`, `shot <path>`,
-`reload`, `quit`. After `shot`, the viewer touches `<path>.done` so a driver can
-poll for a fully-written file.
+Commands (one per line) include `set <group.path.field> <value>`,
+`get <group.path.field>`, `cam <px> <py> <pz> <tx> <ty> <tz>`,
+`stats <label>`, `shot <absolute-png-path>`,
+`shot <path>`, `render_path raster|native_rt`, `history_reset`,
+`wait_frames <positive-uint32>`, `shot_now <absolute-png-path>`, `reload`, and
+`quit`. `wait_frames` reports only successful presents. `shot_now` captures the
+next successful present without the legacy `shot` command's three-frame settle;
+both screenshot commands touch `<path>.done` only after the PNG is complete.
+Native RT is never silently substituted: an unsupported request reports
+`render_path: native_rt unavailable` and fails.
+
+For example, a complete FIFO exchange is:
+
+```
+set render.volumetrics.froxel_xy_scale 1x
+get render.volumetrics.froxel_xy_scale
+cam 20 760 350 0 420 0
+stats current-cost
+shot C:\\captures\\current-cost.png
+quit
+```
+
+`STATS` is positional and append-only. Its stable order is
+`STATS,label,frame_ms,resolve_ms,build_ms,draw_ms,instances_active,raster_batches,`
+`raster_tris,culled_clusters,gpu_culled_hiz,vt_variants,vt_rejected_variants,`
+`vt_max_variants,vt_mesh_MiB,vt_mesh_budget_MiB,vol_grid_w,vol_grid_h,vol_grid_d,`
+`vol_memory_MiB,vol_resource_generation,gpu_atmosphere_ms,`
+`gpu_cloud_shadows_ms,gpu_vol_density_ms,gpu_vol_scatter_ms,`
+`gpu_vol_integrate_ms,cloud_shadow_memory_MiB`. The five timing lanes are
+milliseconds; both memory lanes are MiB; `gpu_volumetrics_ms` remains the
+combined froxel span in telemetry.
+
+The generic `get` command exposes read-only committed presentation evidence at
+`viewer.session.*` and `viewer.atmosphere_status.*`. The latter is copied from
+the renderer's committed atmosphere transaction, so
+`viewer.atmosphere_status.resolved_elevation_deg` can intentionally differ from
+the requested `render.lighting.sun_elevation_deg` after a failed request.
+Status groups are session-only and are not serialized. Attempts to change one
+report `set: <path> is read-only`.
+
+### Atmosphere and cloud capture baseline
+
+`tools/atmosphere_cloud_shots.sh <suite> <label> <out-dir>` drives all captures
+for one suite through a single editor process. The current executable suite is
+`baseline`, `atmosphere`, `atmosphere-presentation`, `froxel`,
+`cloud-lighting`, `cloud-shadows`, and `final`. The final suite is deliberately
+scoped: it revisits every preset and discrete froxel setting for property
+round-trip/stability, but captures representative frames rather than repeating
+the already-proven full 25-combination visual matrix.
+The baseline defaults to `MATTER_WORLD=StreamMountain`, the shipped world with
+working volumetrics; callers can explicitly override `MATTER_WORLD`.
+
+The driver waits for both `viewer: bake ready` and command transport readiness
+(`MATTER_CMD_FIFO: listening` on POSIX, or `MATTER_CMD_FIFO: polling command
+file` on Windows) before sending any command, records every command in
+`<label>_commands.log`, and waits for each `<png>.done` marker before proceeding.
+Before launch it removes prior label-matched PNG/`.done`, viewer/command,
+STATS, metrics, and telemetry outputs; it then fails if the new STATS or
+`gpu_volumetrics_ms` metrics file is empty. It writes `<label>_viewer.log`,
+positional `STATS,` rows to `<label>_stats.log`, a one-second telemetry sample
+to `<label>_telemetry.json`, and its `gpu_volumetrics_ms` row to
+`<label>_metrics.log`. For StreamMountain, the driver applies the
+volumetrics/camera batch immediately after readiness, before waiting for sector
+publish, then settles and captures. The existing performance lifecycle cannot
+leave `WaitingForBake` until a drawable instance exists, so its 20-second
+warm-up and sample structurally follow that configuration; the resulting
+telemetry therefore follows the settled configuration and shot.
+UI is hidden for unobscured captures. It always sends `quit`, bounds the POSIX
+FIFO writer/child wait, and removes its FIFO/command file, including on an
+error path.
+
+The deterministic presentation gate is:
+
+```powershell
+$env:MATTER_WORLD='AtmospherePresentationFixture'
+C:\msys64\usr\bin\bash.exe MatterEngine3/tools/atmosphere_cloud_shots.sh atmosphere-presentation acceptance MatterEditor/build/validation/atmosphere-presentation
+C:\msys64\usr\bin\python3.exe MatterEngine3/tools/atmosphere_presentation_metrics.py --log MatterEditor/build/validation/atmosphere-presentation/acceptance_viewer.log --capture-dir MatterEditor/build/validation/atmosphere-presentation --width 1280 --height 720
+```
+
+It keeps one editor process alive for the fixed-exposure raster/native-RT
+`90, 5, 0, -5, -12` matrix, waits for committed generation/elevation status,
+resets all atmosphere-dependent temporal histories, and guards every immediate
+capture with `.done`. Native RT unavailability, malformed or missing status,
+timeouts, renderer errors, and a process that survives `quit` are hard failures.
+The metrics tool checks the CPU lighting curves, noon-relative pre-BRDF status,
+raster/native-RT RGB agreement, and the lit, shadow, and fog ROIs after inverting
+the display sRGB and ACES transforms. It writes
+`atmosphere_presentation_metrics.json` beside the captures.

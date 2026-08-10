@@ -740,6 +740,14 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            // exactly that problem.
            << ",\"gpu_total_ms\":" << frame_stats.gpu_total_ms
            << ",\"gpu_volumetrics_ms\":" << frame_stats.gpu_vol_ms
+           << ",\"gpu_atmosphere_ms\":" << frame_stats.gpu_atmosphere_ms
+           << ",\"gpu_cloud_shadows_ms\":" << frame_stats.gpu_cloud_shadows_ms
+           << ",\"gpu_vol_density_ms\":" << frame_stats.gpu_vol_density_ms
+           << ",\"gpu_vol_scatter_ms\":" << frame_stats.gpu_vol_scatter_ms
+           << ",\"gpu_vol_integrate_ms\":" << frame_stats.gpu_vol_integrate_ms
+           << ",\"vol_memory_bytes\":" << frame_stats.vol_memory_bytes
+           << ",\"cloud_shadow_memory_bytes\":"
+           << frame_stats.cloud_shadow_memory_bytes
            // Full per-pass GPU zone breakdown (last sampled frame). rt is the
            // primary/shadow trace; rt_gi is the separate GI/reflection trace.
            // Added so a fly-through capture can attribute a heavy RT frame to
@@ -773,6 +781,11 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
 } // namespace
 
 int main() {
+    // Native Windows stdout is fully buffered when the harness redirects it;
+    // MSYS `stdbuf` cannot alter the MSVCRT stream. FIFO automation consumes
+    // exact acknowledgements as synchronization, so publish them immediately.
+    if (std::getenv("MATTER_CMD_FIFO"))
+        std::setvbuf(stdout, nullptr, _IONBF, 0);
     PerfRunConfig perf;
     std::string perf_error;
     if (!read_perf_run_config(perf, perf_error)) {
@@ -1508,6 +1521,10 @@ int main() {
         screenshot_env  ? screenshot_env
         : replay.valid  ? (replay_out_env ? replay_out_env : "replay.png")
                         : "";
+    // Capture-only aid for automated Lighting-panel verification. This is not a
+    // command and cannot affect an ordinary editor session: the tab is focused
+    // only while the caller explicitly asks for a screenshot capture.
+    const bool capture_lighting_ui = std::getenv("MATTER_CAPTURE_LIGHTING_UI") != nullptr;
     int screenshot_settle = 0;
     int screenshot_failures = 0;
     bool bake_ready = false;
@@ -1517,6 +1534,9 @@ int main() {
     // World-authored volumetrics defaults adopt on every world load (initial
     // and switches); replays keep their recorded settings.
     bool apply_world_volumetrics_after_bake = !replay.valid;
+    uint64_t last_rejected_froxel_generation = UINT64_MAX;
+    bool apply_world_atmosphere_after_bake = !replay.valid;
+    bool apply_world_cloud_shadows_after_bake = !replay.valid;
     // render.fog's own one-shot, deliberately NOT folded into the volumetrics
     // flag beside it: the two are published by different engine paths (a
     // closed-world connect publishes fog but never volumetrics, and a
@@ -1620,9 +1640,15 @@ int main() {
                         fifo_path);
     }
 #endif
+    if (fifo_path) std::fflush(stdout);
     std::string shot_path;
     std::string stats_label;
     int shot_settle = 0;
+    viewer::FifoPresentSequencer fifo_present;
+    matter::RenderPath fifo_render_path = matter::RenderPath::GpuDriven;
+    bool fifo_render_path_override = false;
+    stats.session_status.native_rt_available =
+        vulkan->ray_tracing_available();
     bool quit_requested = false;
     bool fatal_error = false;
     enum class PerfPhase { WaitingForBake, Warming, Sampling, Complete };
@@ -1766,6 +1792,53 @@ int main() {
             shot_settle = 3;
             return viewer::FifoScreenshot::Result::succeeded(true);
         });
+    auto reg_fifo_render_path =
+        registry.must_register_handler<viewer::FifoRenderPath>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::FifoRenderPath& cmd) {
+                if (cmd.requested == matter::RenderPath::Raytrace &&
+                    !vulkan->ray_tracing_available()) {
+                    stats.session_status.render_path =
+                        viewer::ViewerRenderPathStatus::NativeRtUnavailable;
+                    std::printf("render_path: native_rt unavailable\n");
+                    return viewer::FifoRenderPath::Result::failed(
+                        "native RT unavailable");
+                }
+                fifo_render_path = cmd.requested;
+                fifo_render_path_override = true;
+                stats.session_status.render_path =
+                    cmd.requested == matter::RenderPath::Raytrace
+                        ? viewer::ViewerRenderPathStatus::NativeRt
+                        : viewer::ViewerRenderPathStatus::Raster;
+                std::printf("render_path: %s\n",
+                            cmd.requested == matter::RenderPath::Raytrace
+                                ? "native_rt"
+                                : "raster");
+                return viewer::FifoRenderPath::Result::succeeded(true);
+            });
+    auto reg_fifo_history_reset =
+        registry.must_register_handler<viewer::FifoHistoryReset>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::FifoHistoryReset&) {
+                session->request_atmosphere_history_reset();
+                std::printf("history_reset: requested\n");
+                return viewer::FifoHistoryReset::Result::succeeded(true);
+            });
+    auto reg_fifo_wait_frames =
+        registry.must_register_handler<viewer::FifoWaitFrames>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::FifoWaitFrames& cmd) {
+                fifo_present.queue_wait(cmd.count);
+                return viewer::FifoWaitFrames::Result::succeeded(true);
+            });
+    auto reg_fifo_shot_now =
+        registry.must_register_handler<viewer::FifoScreenshotNow>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::FifoScreenshotNow& cmd) {
+                fifo_present.queue_screenshot(cmd.path);
+                std::printf("shot_now: queued %s\n", cmd.path.c_str());
+                return viewer::FifoScreenshotNow::Result::succeeded(true);
+            });
     auto reg_fifo_stats = registry.must_register_handler<viewer::FifoStatsLabel>(
         matter::evt::CommandScope::App, app_lane, [&](const viewer::FifoStatsLabel& cmd) {
             stats_label = cmd.label;
@@ -1810,65 +1883,26 @@ int main() {
     // EditorProps::on_world_connected, and resolve_field splits on the LAST '.'
     // precisely so "Rock/lod_bias" survives as the field half). Name the
     // near-miss instead of reporting the group as absent.
-    auto explain_unresolved = [&](const char* verb, bool takes_value,
-                                  const std::string& path) {
-        if (editor_props.registry().find(path.c_str()))
-            std::printf("%s: '%s' is a group, not a field - use `%s %s.<field>%s`\n",
-                        verb, path.c_str(), verb, path.c_str(),
-                        takes_value ? " <value>" : "");
-        else
-            std::printf("%s: unknown property '%s'\n", verb, path.c_str());
-    };
     auto reg_fifo_set_prop = registry.must_register_handler<viewer::FifoSetProp>(
         matter::evt::CommandScope::App, app_lane,
         [&](const viewer::FifoSetProp& cmd) {
-            matter::props::Binding* binding = nullptr;
-            const matter::props::Desc* desc = nullptr;
-            if (!matter::props::resolve_field(editor_props.registry(),
-                                              cmd.path.c_str(), binding, desc)) {
-                explain_unresolved("set", true, cmd.path);
-                return viewer::FifoSetProp::Result::failed("unknown property");
-            }
-            const uint32_t index = static_cast<uint32_t>(
-                desc - binding->schema().fields);
-            if (binding->env_forced(index)) {
-                std::printf("set: %s is forced by %s; ignored\n",
-                            cmd.path.c_str(), desc->env ? desc->env : "env");
-                return viewer::FifoSetProp::Result::failed("env-forced");
-            }
-            // A RequiresReload field is written into the DRAFT for the same
-            // reason the UI does: nothing would consume a live write. The FIFO
-            // then needs an explicit `reload` to commit it, which is the same
-            // two-step the Apply button performs.
-            void* target = matter::props::group_requires_reload(binding->schema())
-                               ? matter::props::ensure_draft(*binding)
-                               : binding->instance();
-            if (!target ||
-                !matter::props::parse_and_set(target, *desc, cmd.value.c_str())) {
-                std::printf("set: cannot parse '%s' for %s\n", cmd.value.c_str(),
-                            cmd.path.c_str());
-                return viewer::FifoSetProp::Result::failed("unparsable value");
-            }
-            if (target == binding->instance()) binding->set_dirty(true);
-            std::printf("set: %s = %s%s\n", cmd.path.c_str(),
-                        matter::props::format_value(target, *desc).c_str(),
-                        target == binding->instance() ? "" : "  (draft; `reload` to apply)");
-            return viewer::FifoSetProp::Result::succeeded(true);
+            const viewer::FifoPropertyResult result =
+                viewer::fifo_set_property(editor_props.registry(), cmd.path,
+                                          cmd.value);
+            std::printf("%s\n", result.line.c_str());
+            return result.success
+                       ? viewer::FifoSetProp::Result::succeeded(true)
+                       : viewer::FifoSetProp::Result::failed(result.line);
         });
     auto reg_fifo_get_prop = registry.must_register_handler<viewer::FifoGetProp>(
         matter::evt::CommandScope::App, app_lane,
         [&](const viewer::FifoGetProp& cmd) {
-            matter::props::Binding* binding = nullptr;
-            const matter::props::Desc* desc = nullptr;
-            if (!matter::props::resolve_field(editor_props.registry(),
-                                              cmd.path.c_str(), binding, desc)) {
-                explain_unresolved("get", false, cmd.path);
-                return viewer::FifoGetProp::Result::failed("unknown property");
-            }
-            std::printf("get: %s = %s\n", cmd.path.c_str(),
-                        matter::props::format_value(binding->instance(), *desc)
-                            .c_str());
-            return viewer::FifoGetProp::Result::succeeded(true);
+            const viewer::FifoPropertyResult result =
+                viewer::fifo_get_property(editor_props.registry(), cmd.path);
+            std::printf("%s\n", result.line.c_str());
+            return result.success
+                       ? viewer::FifoGetProp::Result::succeeded(true)
+                       : viewer::FifoGetProp::Result::failed(result.line);
         });
     auto reg_fifo_quit = registry.must_register_handler<viewer::FifoQuit>(
         matter::evt::CommandScope::App, app_lane, [&](const viewer::FifoQuit&) {
@@ -2065,6 +2099,8 @@ int main() {
             vulkan->dlss_available() && dlss_modes_supported,
             vulkan->dlss_available() ? last_dlss_reason
                                      : vulkan->dlss_unavailable_reason());
+        stats.session_status.native_rt_available =
+            vulkan->ray_tracing_available();
         // camera.prefs -> the live camera. One-way and every frame, the same
         // shape as the RenderOptions copy block below: the property group is
         // the edit site, CameraDesc stays the thing everything else reads.
@@ -2164,7 +2200,30 @@ int main() {
                 // an explicit ticket completion. The queued jobs run at the
                 // registry pump right below (still this frame, before render).
                 float c[6]; char word[256];
-                if (std::sscanf(line.c_str(), "cam %f %f %f %f %f %f",
+                const viewer::FifoParseResult presentation_command =
+                    viewer::parse_fifo_line(line);
+                if (presentation_command.recognized) {
+                    if (!presentation_command.success) {
+                        std::printf("%s\n",
+                                    presentation_command.error.c_str());
+                    } else if (const auto* command =
+                                   std::get_if<viewer::FifoRenderPath>(
+                                       &presentation_command.command)) {
+                        registry.dispatch(*command);
+                    } else if (const auto* command =
+                                   std::get_if<viewer::FifoHistoryReset>(
+                                       &presentation_command.command)) {
+                        registry.dispatch(*command);
+                    } else if (const auto* command =
+                                   std::get_if<viewer::FifoWaitFrames>(
+                                       &presentation_command.command)) {
+                        registry.dispatch(*command);
+                    } else if (const auto* command =
+                                   std::get_if<viewer::FifoScreenshotNow>(
+                                       &presentation_command.command)) {
+                        registry.dispatch(*command);
+                    }
+                } else if (std::sscanf(line.c_str(), "cam %f %f %f %f %f %f",
                                 &c[0], &c[1], &c[2], &c[3], &c[4], &c[5]) == 6) {
                     viewer::FifoSetCamera cmd;
                     cmd.eye[0] = c[0]; cmd.eye[1] = c[1]; cmd.eye[2] = c[2];
@@ -2450,6 +2509,8 @@ int main() {
                 ui.draw_debug_panel(stats, viewer_commands, editor_props);
                 ui.draw_tunables_panel(editor_props);
                 ui.draw_lighting_panel(editor_props);
+                if (capture_lighting_ui && !screenshot_path.empty())
+                    ImGui::SetWindowFocus("Lighting");
                 ui.draw_vt_warning_banner(stats);
                 ui.draw_bake_lab_panel(bake_lab, &app_hub, session.get(), worlds, stats);
                 ui.draw_asset_browser_panel(asset_browser, worlds, stats, shared_lib,
@@ -2849,6 +2910,20 @@ int main() {
                         apply_world_volumetrics_after_bake = false;
                     }
                 }
+                if (bake_ready && apply_world_atmosphere_after_bake) {
+                    matter::AtmosphereSettings world_atmosphere;
+                    if (session->world_atmosphere(world_atmosphere)) {
+                        stats.atmosphere = world_atmosphere;
+                        apply_world_atmosphere_after_bake = false;
+                    }
+                }
+                if (bake_ready && apply_world_cloud_shadows_after_bake) {
+                    matter::CloudShadowSettings world_cloud_shadows;
+                    if (session->world_cloud_shadows(world_cloud_shadows)) {
+                        stats.cloud_shadows = world_cloud_shadows;
+                        apply_world_cloud_shadows_after_bake = false;
+                    }
+                }
                 // Layer 2 for the sun half of render.lighting. Same ordering
                 // rule as fog: strictly before on_world_connected below.
                 //
@@ -2895,7 +2970,10 @@ int main() {
                                 static_cast<unsigned long long>(selected.part_hash));
                     selected_world_reported = true;
                 }
-                if (fifo_path) std::printf("viewer: bake ready\n");
+                if (fifo_path) {
+                    std::printf("viewer: bake ready\n");
+                    std::fflush(stdout);
+                }
             } else if (event.type == matter::EventType::BakeError) {
                 std::printf("bake error [%s]: %s\n", event.module.c_str(),
                             event.message.c_str());
@@ -2904,7 +2982,17 @@ int main() {
             }
         }
         matter::RenderOptions options;
-        options.path = matter::RenderPath::GpuDriven;
+        const bool native_rt_requested =
+            fifo_render_path_override
+                ? fifo_render_path == matter::RenderPath::Raytrace
+                : editor_props.gpu_prefs().ray_tracing;
+        const bool native_rt_enabled =
+            vulkan->ray_tracing_available() && native_rt_requested;
+        options.path = native_rt_enabled ? matter::RenderPath::Raytrace
+                                         : matter::RenderPath::GpuDriven;
+        stats.session_status.render_path =
+            native_rt_enabled ? viewer::ViewerRenderPathStatus::NativeRt
+                              : viewer::ViewerRenderPathStatus::Raster;
         // Geometry-stage views. Unlike 1-4 these are not composite modes, so
         // the remap below leaves composite_debug_view at 0 for them.
         //
@@ -2941,9 +3029,22 @@ int main() {
             : stats.debug_view_mode == 3 ? 1.0f
             : stats.debug_view_mode == 4 ? 4.0f
                                          : 0.0f;
-        options.vulkan_volumetrics = stats.volumetrics;
-        options.vulkan_volumetrics.vol_debug_view =
+        options.atmosphere = stats.atmosphere;
+        options.volumetrics = stats.volumetrics;
+        options.volumetrics.vol_debug_view =
             static_cast<float>(stats.vol_debug_view);
+        options.cloud_shadows = stats.cloud_shadows;
+        stats.requested_froxel = matter::resolve_froxel_grid(options.volumetrics);
+        // The current allocator accepts this exact grid; retain a separate
+        // field so a future fallback can report its effective dimensions
+        // without changing the requested setting or the UI contract.
+        stats.effective_froxel = stats.requested_froxel;
+        stats.froxel_bytes = matter::estimate_froxel_bytes(
+            stats.effective_froxel,
+            matter::enhanced_cloud_lighting(options.volumetrics,
+                                            options.cloud_shadows));
+        stats.cloud_shadow_bytes =
+            matter::estimate_cloud_shadow_bytes(options.cloud_shadows);
         // render.fog. Only once stats.fog actually holds this world's authored
         // fog (see fog_override_ready); until then — and for the whole of a
         // replay — the session keeps consuming its own authored_fog_. Cleared
@@ -2966,9 +3067,7 @@ int main() {
         // cannot ask for something impossible. Per-frame, which is what makes
         // the checkbox live — see the group definition in editor_props.cpp for
         // the trace proving the renderer tolerates the flip.
-        options.vulkan_ray_tracing.enabled =
-            vulkan->ray_tracing_available() &&
-            editor_props.gpu_prefs().ray_tracing;
+        options.vulkan_ray_tracing.enabled = native_rt_enabled;
         // Part Workbench (W2, "modal isolation" — see part_workbench.h):
         // VulkanFrame/render() always draws the whole frame extent and
         // begin_frame() yields exactly one frame per call, so only ONE
@@ -3007,6 +3106,29 @@ int main() {
             fatal_error = true;
         } else if (!show_isolation) {
             camera_input_order.render_scene();
+            matter::ResolvedAtmospherePresentationStatus committed{};
+            if (session->resolved_atmosphere_status(committed)) {
+                stats.atmosphere_status.generation_serial =
+                    committed.generation_serial;
+                stats.atmosphere_status.resolved_elevation_deg =
+                    committed.resolved_elevation_deg;
+                stats.atmosphere_status.atmospheric_direct_base_rgb =
+                    committed.atmospheric_direct_base_rgb;
+                stats.atmosphere_status.atmospheric_noon_direct_base_rgb =
+                    committed.atmospheric_noon_direct_base_rgb;
+                stats.atmosphere_status.direct_world_ratio =
+                    committed.direct_world_ratio;
+                stats.atmosphere_status.direct_base_rgb =
+                    committed.direct_base_rgb;
+                stats.atmosphere_status.direct_world_sun_rgb =
+                    committed.direct_world_sun_rgb;
+                stats.atmosphere_status.sky_ambient_ratio =
+                    committed.sky_ambient_ratio;
+                stats.atmosphere_status.sky_display_modifier_rgb =
+                    committed.sky_display_modifier_rgb;
+                stats.atmosphere_status.sky_irradiance_modifier_rgb =
+                    committed.sky_irradiance_modifier_rgb;
+            }
         }
         // Contains the engine's own resolve/build/draw spans — the line above
         // it in the panel breaks this down further; don't double-count.
@@ -3134,6 +3256,48 @@ int main() {
         stats.gpu_denoise_ms         = frame_stats.gpu_denoise_ms;
         stats.gpu_dlss_ms            = frame_stats.gpu_dlss_ms;
         stats.gpu_composite_ms       = frame_stats.gpu_composite_ms;
+        stats.gpu_vol_ms             = frame_stats.gpu_vol_ms;
+        stats.gpu_atmosphere_ms      = frame_stats.gpu_atmosphere_ms;
+        stats.gpu_cloud_shadows_ms   = frame_stats.gpu_cloud_shadows_ms;
+        stats.gpu_vol_density_ms     = frame_stats.gpu_vol_density_ms;
+        stats.gpu_vol_scatter_ms     = frame_stats.gpu_vol_scatter_ms;
+        stats.gpu_vol_integrate_ms   = frame_stats.gpu_vol_integrate_ms;
+        stats.effective_froxel = {frame_stats.vol_grid_w, frame_stats.vol_grid_h,
+                                  frame_stats.vol_grid_d};
+        stats.froxel_bytes = frame_stats.vol_memory_bytes;
+        stats.cloud_shadow_bytes = frame_stats.cloud_shadow_memory_bytes;
+        stats.last_volumetric_allocation_error = frame_stats.vol_allocation_error;
+        if (frame_stats.vol_allocation_rejected &&
+            frame_stats.vol_resource_generation !=
+                last_rejected_froxel_generation) {
+            last_rejected_froxel_generation = frame_stats.vol_resource_generation;
+            if (matter::props::Binding* b = editor_props.volumetrics()) {
+                const matter::props::Desc* xy = nullptr;
+                const matter::props::Desc* depth = nullptr;
+                for (uint32_t i = 0; i < b->schema().field_count; ++i) {
+                    const matter::props::Desc& field = b->schema().fields[i];
+                    if (std::strcmp(field.name, "froxel_xy_scale") == 0) xy = &field;
+                    if (std::strcmp(field.name, "froxel_depth_slices") == 0) depth = &field;
+                }
+                if (xy && depth) {
+                    matter::props::set_enum(b->instance(), *xy,
+                        static_cast<int32_t>(frame_stats.vol_effective_xy_scale));
+                    matter::props::set_enum(b->instance(), *depth,
+                        static_cast<int32_t>(frame_stats.vol_effective_depth_slices));
+                    b->set_dirty(false);
+                }
+            }
+            std::fprintf(stderr,
+                         "volumetric froxel allocation rejected: requested %ux%ux%u "
+                         "%.2f MiB; effective %ux%ux%u; %s\n",
+                         stats.requested_froxel.width, stats.requested_froxel.height,
+                         stats.requested_froxel.depth,
+                         static_cast<double>(matter::estimate_froxel_bytes(
+                             stats.requested_froxel, false)) / (1024.0 * 1024.0),
+                         stats.effective_froxel.width, stats.effective_froxel.height,
+                         stats.effective_froxel.depth,
+                         frame_stats.vol_allocation_error.c_str());
+        }
         stats.vt_active              = frame_stats.vt_active;
         stats.vt_variants            = frame_stats.vt_variants;
         stats.vt_max_variants        = frame_stats.vt_max_variants;
@@ -3158,6 +3322,7 @@ int main() {
 
         bool capture = false;
         bool issue_capture = false;
+        bool fifo_immediate_capture = false;
         std::string capture_path;
         if (!screenshot_path.empty() && bake_ready && frame_stats.instances_drawn > 0 &&
             ++screenshot_settle >= settle_frames) {
@@ -3165,6 +3330,10 @@ int main() {
         } else if (shot_settle > 0 && frame_stats.instances_drawn > 0 &&
                    --shot_settle == 0) {
             capture = true; capture_path = shot_path;
+        } else if (!fifo_present.pending_screenshot_path().empty()) {
+            capture = true;
+            fifo_immediate_capture = true;
+            capture_path = fifo_present.pending_screenshot_path();
         } else if (issue_state.phase == viewer::ReporterPhase::AwaitingCapture &&
                    --issue_state.capture_settle <= 0) {
             // Deliberately NOT gated on instances_drawn: "the world renders
@@ -3180,7 +3349,7 @@ int main() {
             capture = false;
             if (issue_capture) { issue_capture = false; issue_state.capture_settle = 2; }
             else if (capture_path == screenshot_path) screenshot_settle = 1;
-            else shot_settle = 2;
+            else if (!fifo_immediate_capture) shot_settle = 2;
             if (screenshot_failures >= 5) {
                 std::fprintf(stderr, "FATAL: screenshot readback exhausted retries\n");
                 fatal_error = true;
@@ -3191,6 +3360,19 @@ int main() {
             vulkan->end_frame(frame, frame_presented, error);
         session->finish_vulkan_frame(
             frame.serial, frame_presented && !fatal_error);
+        const viewer::FifoPresentUpdate fifo_present_update =
+            fifo_present.advance(frame_completed && frame_presented &&
+                                     !fatal_error,
+                                 !fifo_immediate_capture || capture);
+        stats.session_status.presented_frame_serial =
+            fifo_present.presented_frame_serial();
+        for (const viewer::FifoCompletedWait& completed :
+             fifo_present_update.completed_waits) {
+            std::printf("wait_frames: complete %u frame_serial=%llu\n",
+                        completed.count,
+                        static_cast<unsigned long long>(
+                            completed.frame_serial));
+        }
         // end_frame() records the queue submit and present boundary. The
         // smoothed cadence below also feeds the HUD frame time on the next frame.
         phase.present = phase_split();
@@ -3366,7 +3548,9 @@ int main() {
                     issue_state.phase = viewer::ReporterPhase::Editing;
                     issue_state.window_open = true;
                 }
-            } else if (capture) {
+            } else if (capture &&
+                       (!fifo_immediate_capture ||
+                        !fifo_present_update.screenshot_path.empty())) {
                 // A replay crops to the recorded rect so its PNG is directly
                 // diffable against the shot it came from (img_diff.py rejects a
                 // size mismatch outright).
@@ -3488,13 +3672,11 @@ int main() {
                     screenshot_failures = 0;
                     std::printf("screenshot written to %s\n",
                                 capture_path.c_str());
-#ifndef _WIN32
-                    if (capture_path == shot_path) {
-                        const std::string done = shot_path + ".done";
+                    if (capture_path == shot_path || fifo_immediate_capture) {
+                        const std::string done = capture_path + ".done";
                         if (FILE* file = std::fopen(done.c_str(), "w"))
                             std::fclose(file);
                     }
-#endif
                     if (capture_path == screenshot_path) quit_requested = true;
                 }
             }
@@ -3553,12 +3735,12 @@ int main() {
         }
 
         if (!stats_label.empty()) {
-            // APPEND-ONLY format (scripts parse by position). The five trailing
-            // VT fields are the chart-space virtual-texturing census: a
-            // vt_rejected != 0 means part of the world silently fell back to
-            // the legacy path and is ignoring its surfaces() classification.
+            // APPEND-ONLY format (scripts parse by position). The established
+            // row ends at vol_resource_generation. Task 14 appends five timing
+            // lanes (ms) and cloud_shadow_memory_MiB after that stable prefix.
             std::printf("STATS,%s,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%d"
-                        ",%u,%u,%u,%.1f,%.1f\n",
+                        ",%u,%u,%u,%.1f,%.1f,%u,%u,%u,%.2f,%llu"
+                        ",%.3f,%.3f,%.3f,%.3f,%.3f,%.2f\n",
                         stats_label.c_str(), stats.frame_ms, stats.resolve_ms,
                         stats.build_ms, stats.draw_ms, stats.instances_active,
                         stats.raster_batches, stats.raster_tris,
@@ -3570,6 +3752,19 @@ int main() {
                             (1024.0 * 1024.0),
                         static_cast<double>(
                             frame_stats.vt_mesh_budget_bytes) /
+                            (1024.0 * 1024.0),
+                        frame_stats.vol_grid_w, frame_stats.vol_grid_h,
+                        frame_stats.vol_grid_d,
+                        static_cast<double>(frame_stats.vol_memory_bytes) /
+                            (1024.0 * 1024.0),
+                        static_cast<unsigned long long>(
+                            frame_stats.vol_resource_generation),
+                        frame_stats.gpu_atmosphere_ms,
+                        frame_stats.gpu_cloud_shadows_ms,
+                        frame_stats.gpu_vol_density_ms,
+                        frame_stats.gpu_vol_scatter_ms,
+                        frame_stats.gpu_vol_integrate_ms,
+                        static_cast<double>(frame_stats.cloud_shadow_memory_bytes) /
                             (1024.0 * 1024.0));
             std::fflush(stdout);
             // The VT census goes to STDERR, next to the rest of the [vk]/[vt]
@@ -3625,6 +3820,8 @@ int main() {
             apply_world_camera_after_bake =
                 !replay.valid && initial_camera_env == nullptr;
             apply_world_volumetrics_after_bake = !replay.valid;
+            apply_world_atmosphere_after_bake = !replay.valid;
+            apply_world_cloud_shadows_after_bake = !replay.valid;
             // prepare_world_reload below drops stats.fog to the compiled
             // default; until the reconnect re-seeds it, the session's own
             // authored fog is the only truthful source.
@@ -3680,6 +3877,8 @@ int main() {
                 screenshot_settle = 0;
                 apply_world_camera_after_bake = true;
                 apply_world_volumetrics_after_bake = true;
+                apply_world_atmosphere_after_bake = true;
+                apply_world_cloud_shadows_after_bake = true;
                 // complete_world_switch reset stats.fog; same reasoning as the
                 // reload seam above.
                 apply_world_fog_after_bake = true;

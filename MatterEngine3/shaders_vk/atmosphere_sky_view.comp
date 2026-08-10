@@ -1,0 +1,58 @@
+#version 460
+#include "atmosphere_common.glsl"
+layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
+layout(set=0,binding=0) uniform sampler2D transmittance_tex;
+layout(set=0,binding=1) uniform sampler2D multiscatter_tex;
+layout(set=0,binding=2,rgba16f) uniform writeonly image2D sky_view_out;
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, ivec2(192,108)))) return;
+    float azimuth = -ATM_PI + 2.0 * ATM_PI * (float(pixel.x) + 0.5) / 192.0;
+    float zenith = ATM_PI * (float(pixel.y)+0.5) / 108.0;
+    vec3 sun = normalize(atmosphere.to_sun.xyz);
+    vec3 sun_horizontal = sun - vec3(0.0, sun.y, 0.0);
+    vec3 forward = length(sun_horizontal) > 1e-4 ? normalize(sun_horizontal) : vec3(1.0,0.0,0.0);
+    vec3 right = normalize(cross(vec3(0.0,1.0,0.0), forward));
+    vec3 horizontal = forward*cos(azimuth)+right*sin(azimuth);
+    vec3 view = horizontal*sin(zenith)+vec3(0.0,1.0,0.0)*cos(zenith);
+    float altitude = clamp(atmosphere.settings1.z - atmosphere.settings1.x, 0.0, 100000.0);
+    vec3 origin = vec3(0.0, ATM_PLANET_RADIUS + altitude, 0.0);
+    float top_t = atmosphere_exit(origin, view, ATM_TOP_RADIUS);
+    float ground_t = atmosphere_exit(origin, view, ATM_PLANET_RADIUS);
+    bool ground = ground_t > 0.0 && ground_t < top_t;
+    float distance_t = ground ? ground_t : top_t;
+    vec3 light = vec3(0.0);
+    if (distance_t > 0.0) for (int i=0; i<32; ++i) {
+        vec3 point = origin + view * ((float(i)+0.5) * distance_t / 32.0);
+        float height_m = max(0.0, length(point)-ATM_PLANET_RADIUS);
+        vec3 view_t = atmosphere_segment_transmittance(origin, view,
+                                                        (float(i)+0.5)*distance_t/32.0, 32);
+        float local_sun_mu = dot(normalize(point), sun);
+        vec3 sun_t = texture(transmittance_tex, vec2((local_sun_mu+1.0)*0.5, height_m/100000.0)).rgb;
+        float cosine = dot(view, sun);
+        vec3 source = (ATM_RAYLEIGH * atmosphere.settings0.x * atmosphere_density_rayleigh(height_m) * rayleigh_phase(cosine) +
+                       ATM_MIE_SCATTER * atmosphere.settings0.y * atmosphere_density_mie(height_m) * mie_phase(cosine));
+        // multiscatter LUT stores local radiance, not a radiance-per-metre
+        // source. Convert it with the local extinction/scattering density
+        // before this path integral applies its segment length.
+        vec3 multi_radiance = texture(multiscatter_tex,
+            vec2((local_sun_mu+1.0)*0.5, height_m/100000.0)).rgb;
+        vec3 multi_source = multi_radiance *
+            (ATM_RAYLEIGH * atmosphere.settings0.x * atmosphere_density_rayleigh(height_m) +
+             ATM_MIE_SCATTER * atmosphere.settings0.y * atmosphere_density_mie(height_m));
+        light += view_t * (ATM_EXTRATERRESTRIAL_SOLAR_RGB * sun_t * source + multi_source) *
+                 (distance_t/32.0);
+    }
+    if (ground) {
+        vec3 ground_point = origin + view * ground_t;
+        vec3 ground_normal = normalize(ground_point);
+        float ground_sun_mu = dot(ground_normal, sun);
+        float ground_height = max(0.0,length(ground_point)-ATM_PLANET_RADIUS);
+        vec3 ground_sun = ground_sun_mu > 0.0 ? ATM_EXTRATERRESTRIAL_SOLAR_RGB *
+            texture(transmittance_tex, vec2((ground_sun_mu+1.0)*0.5, ground_height/100000.0)).rgb * ground_sun_mu : vec3(0.0);
+        vec3 ground_sky = texture(multiscatter_tex, vec2((ground_sun_mu+1.0)*0.5, ground_height/100000.0)).rgb;
+        vec3 return_t = atmosphere_segment_transmittance(ground_point, -view, ground_t, 32);
+        light += return_t * vec3(atmosphere.settings0.w) * (ground_sun + ground_sky) / ATM_PI;
+    }
+    imageStore(sky_view_out, pixel, vec4(max(light, vec3(0.0)), 1.0));
+}

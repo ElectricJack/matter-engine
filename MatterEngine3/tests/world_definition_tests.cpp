@@ -1174,6 +1174,150 @@ void test_vulkan_volumetrics_settings_defaults() {
     CHECK(nearly_equal(vol.vol_debug_view, 0.0f), "vol_debug_view defaults to 0.0");
 }
 
+// World quality statics are optional, but when present they must preserve the
+// script's camelCase contract exactly. Removing any one of these extraction
+// paths would make this test fail at the authored value it owns.
+void test_atmosphere_and_cloud_quality_extraction() {
+    Fixture fixture;
+    const fs::path path = fixture.write("AtmosphereCloudQuality.js", R"JS(
+class AtmosphereCloudQuality extends World {
+  static roots = [{ module: 'Root' }];
+  static atmosphere = {
+    seaLevelY: 12, rayleighScale: 1.1, mieScale: 0.8,
+    mieAnisotropy: 0.76, ozoneScale: 1.2, groundAlbedo: 0.18
+  };
+  static volumetrics = {
+    enabled: true, temporalBlend: 0.7, phaseG: 0.2,
+    froxelXyScale: "1.5x", froxelDepthSlices: 192,
+    localSunMarchSteps: 12, localSunMarchDistanceM: 350,
+    multipleScatteringOrders: 3, multipleScatteringStrength: 0.7,
+    powderStrength: 0.35
+  };
+  static cloudShadows = {
+    enabled: true, nearResolution: 512, nearDepthSlices: 32,
+    nearCoverageM: 2200, farResolution: 256, farDepthSlices: 24,
+    farCoverageM: 4500, filterScale: 1.25, updateFraction: 0.5
+  };
+  static fog = { clouds: [{
+    minHeight: 300, maxHeight: 650, maxDensity: 0.02,
+    weatherScale: 0.00025, weatherInfluence: 0.6,
+    detailScale: 0.012, detailErosion: 0.35, shapeBias: -0.1
+  }] };
+}
+)JS");
+
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+
+    const matter::AtmosphereSettings& atmosphere = definition.settings.atmosphere;
+    CHECK(nearly_equal(atmosphere.sea_level_y, 12.0f) &&
+              nearly_equal(atmosphere.rayleigh_scale, 1.1f) &&
+              nearly_equal(atmosphere.mie_scale, 0.8f) &&
+              nearly_equal(atmosphere.mie_anisotropy, 0.76f) &&
+              nearly_equal(atmosphere.ozone_scale, 1.2f) &&
+              nearly_equal(atmosphere.ground_albedo, 0.18f),
+          "atmosphere static extracts every authored value");
+
+    const matter::VulkanVolumetricsSettings& volumetrics = definition.settings.volumetrics;
+    CHECK(volumetrics.enabled && nearly_equal(volumetrics.temporal_blend, 0.7f) &&
+              nearly_equal(volumetrics.phase_g, 0.2f) &&
+              static_cast<int>(volumetrics.froxel_xy_scale) == 3 &&
+              static_cast<int>(volumetrics.froxel_depth_slices) == 3 &&
+              volumetrics.local_sun_march_steps == 12 &&
+              nearly_equal(volumetrics.local_sun_march_distance_m, 350.0f) &&
+              volumetrics.multiple_scattering_orders == 3 &&
+              nearly_equal(volumetrics.multiple_scattering_strength, 0.7f) &&
+              nearly_equal(volumetrics.powder_strength, 0.35f),
+          "volumetrics static extracts every quality dial");
+
+    const matter::CloudShadowSettings& shadows = definition.settings.cloud_shadows;
+    CHECK(shadows.enabled && shadows.near_resolution == 2 &&
+              shadows.near_depth_slices == 1 &&
+              nearly_equal(shadows.near_coverage_m, 2200.0f) &&
+              shadows.far_resolution == 2 && shadows.far_depth_slices == 1 &&
+              nearly_equal(shadows.far_coverage_m, 4500.0f) &&
+              nearly_equal(shadows.filter_scale, 1.25f) &&
+              nearly_equal(shadows.update_fraction, 0.5f),
+          "cloudShadows static extracts and maps discrete resolutions");
+
+    const matter::CloudLayer& cloud = definition.settings.fog.clouds[0];
+    CHECK(nearly_equal(cloud.weather_scale, 0.00025f) &&
+              nearly_equal(cloud.weather_influence, 0.6f) &&
+              nearly_equal(cloud.detail_scale, 0.012f) &&
+              nearly_equal(cloud.detail_erosion, 0.35f) &&
+              nearly_equal(cloud.shape_bias, -0.1f),
+          "cloud layer extracts weather and detail fields");
+}
+
+void test_atmosphere_and_cloud_quality_validation_paths() {
+    const auto rejects = [](const char* name, const char* body,
+                            const char* property) {
+        Fixture fixture;
+        const fs::path path = fixture.write(name, std::string("class Bad extends World { static roots = [{ module: 'Root' }]; ") + body + " }");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "invalid quality setting is rejected");
+        CHECK(error.property_path.find(property) != std::string::npos,
+              "quality validation reports the full property path");
+    };
+    rejects("BadAtmosphere.js", "static atmosphere = { mieScale: Infinity };", "atmosphere.mieScale");
+    rejects("BadFroxelLabel.js", "static volumetrics = { froxelXyScale: '3x' };", "volumetrics.froxelXyScale");
+    rejects("BadFroxelSlices.js", "static volumetrics = { froxelDepthSlices: 42 };", "volumetrics.froxelDepthSlices");
+    rejects("BadLowOrder.js", "static volumetrics = { multipleScatteringOrders: 0 };", "volumetrics.multipleScatteringOrders");
+    rejects("BadOrder.js", "static volumetrics = { multipleScatteringOrders: 5 };", "volumetrics.multipleScatteringOrders");
+    rejects("BadLowShadowFraction.js", "static cloudShadows = { updateFraction: -0.1 };", "cloudShadows.updateFraction");
+    rejects("BadShadowFraction.js", "static cloudShadows = { updateFraction: 1.1 };", "cloudShadows.updateFraction");
+}
+
+void test_quality_settings_default_to_compiled_defaults() {
+    Fixture fixture;
+    const fs::path path = fixture.write("NoQualityStatics.js", R"JS(
+class NoQualityStatics extends World { static roots = [{ module: 'Root' }]; }
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+
+    const matter::AtmosphereSettings atmosphere_defaults{};
+    const matter::VulkanVolumetricsSettings volumetric_defaults{};
+    const matter::CloudShadowSettings shadow_defaults{};
+    CHECK(nearly_equal(definition.settings.atmosphere.sea_level_y, atmosphere_defaults.sea_level_y) &&
+              nearly_equal(definition.settings.atmosphere.rayleigh_scale, atmosphere_defaults.rayleigh_scale) &&
+              nearly_equal(definition.settings.atmosphere.mie_scale, atmosphere_defaults.mie_scale) &&
+              nearly_equal(definition.settings.atmosphere.mie_anisotropy, atmosphere_defaults.mie_anisotropy) &&
+              nearly_equal(definition.settings.atmosphere.ozone_scale, atmosphere_defaults.ozone_scale) &&
+              nearly_equal(definition.settings.atmosphere.ground_albedo, atmosphere_defaults.ground_albedo),
+          "missing atmosphere static keeps compiled defaults");
+    CHECK(definition.settings.volumetrics.enabled == volumetric_defaults.enabled &&
+              nearly_equal(definition.settings.volumetrics.temporal_blend, volumetric_defaults.temporal_blend) &&
+              nearly_equal(definition.settings.volumetrics.phase_g, volumetric_defaults.phase_g) &&
+              nearly_equal(definition.settings.volumetrics.vol_debug_view, volumetric_defaults.vol_debug_view) &&
+              static_cast<int>(definition.settings.volumetrics.froxel_xy_scale) ==
+                  static_cast<int>(volumetric_defaults.froxel_xy_scale) &&
+              static_cast<int>(definition.settings.volumetrics.froxel_depth_slices) ==
+                  static_cast<int>(volumetric_defaults.froxel_depth_slices) &&
+              definition.settings.volumetrics.local_sun_march_steps == volumetric_defaults.local_sun_march_steps &&
+              nearly_equal(definition.settings.volumetrics.local_sun_march_distance_m, volumetric_defaults.local_sun_march_distance_m) &&
+              definition.settings.volumetrics.multiple_scattering_orders == volumetric_defaults.multiple_scattering_orders &&
+              nearly_equal(definition.settings.volumetrics.multiple_scattering_strength, volumetric_defaults.multiple_scattering_strength) &&
+              nearly_equal(definition.settings.volumetrics.powder_strength, volumetric_defaults.powder_strength),
+          "missing volumetrics static keeps compiled defaults");
+    CHECK(definition.settings.cloud_shadows.enabled == shadow_defaults.enabled &&
+              definition.settings.cloud_shadows.near_resolution == shadow_defaults.near_resolution &&
+              definition.settings.cloud_shadows.near_depth_slices == shadow_defaults.near_depth_slices &&
+              nearly_equal(definition.settings.cloud_shadows.near_coverage_m, shadow_defaults.near_coverage_m) &&
+              definition.settings.cloud_shadows.far_resolution == shadow_defaults.far_resolution &&
+              definition.settings.cloud_shadows.far_depth_slices == shadow_defaults.far_depth_slices &&
+              nearly_equal(definition.settings.cloud_shadows.far_coverage_m, shadow_defaults.far_coverage_m) &&
+              nearly_equal(definition.settings.cloud_shadows.filter_scale, shadow_defaults.filter_scale) &&
+              nearly_equal(definition.settings.cloud_shadows.update_fraction, shadow_defaults.update_fraction),
+          "missing cloudShadows static keeps compiled defaults");
+}
+
 // issue 80c66789: the five fog multipliers were deleted from
 // VulkanVolumetricsSettings. A world that still authors the three JS-facing
 // ones must keep the picture it had, by folding them into the FogSettings
@@ -1802,6 +1946,9 @@ int main() {
     test_streaming_ring_extraction();
     test_nested_sectors_flag();
     test_vulkan_volumetrics_settings_defaults();
+    test_atmosphere_and_cloud_quality_extraction();
+    test_atmosphere_and_cloud_quality_validation_paths();
+    test_quality_settings_default_to_compiled_defaults();
     test_legacy_fog_multipliers_fold_into_authored_fog();
     test_legacy_fog_multipliers_fold_into_height_layer();
     test_cloud_layer_extraction();

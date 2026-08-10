@@ -35,6 +35,9 @@
 #include "tileset_gtex.h"
 #include "tileset_slicer.h"
 #include "vk_volumetrics.h"
+#include "vk_atmosphere.h"
+#include "vk_cloud_shadows.h"
+#include "vk_pipeline.h"
 #include "tileset_bake_vk.h"
 
 namespace viewer {
@@ -383,6 +386,7 @@ struct RasterRecord {
     VkPipeline composite_pipeline;
     VkPipelineLayout composite_layout;
     VkDescriptorSet composite_set;
+    VkDescriptorSet environment_set;
     VkBuffer vertex_buffer;
     VkBuffer index_buffer;
     VkBuffer indirect_buffer;
@@ -420,6 +424,9 @@ struct RasterRecord {
     uint32_t frame_slot = 0;
     float frame_time = 0.0f;
     uint32_t volumetrics_zone = 0;
+    uint32_t volumetric_density_zone = 0;
+    uint32_t volumetric_scatter_zone = 0;
+    uint32_t volumetric_integrate_zone = 0;
     matter::VkAccelerationStructureResource* tlas = nullptr;
     // WP-E: owner for the VT frame hooks only. Deliberately NOT `renderer`:
     // that field also gates the ray-traced-shadow branch, which dereferences
@@ -428,6 +435,19 @@ struct RasterRecord {
     VkSceneRenderer* vt_hooks = nullptr;
     uint32_t vt_zone = 0;
 };
+
+struct NeutralVolumeClearRecord {
+    matter::VkImageResource* image = nullptr;
+};
+
+void record_neutral_volume_clear(VkCommandBuffer command_buffer, void* user_data) {
+    auto& record = *static_cast<NeutralVolumeClearRecord*>(user_data);
+    const VkClearColorValue neutral_volume{{0.0f, 0.0f, 0.0f, 1.0f}};
+    clear_color_image_for_use(command_buffer, *record.image, neutral_volume,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                              VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                              VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+}
 
 void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     auto& record = *static_cast<RasterRecord*>(user_data);
@@ -779,10 +799,21 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
             record.ts_written[record.volumetrics_zone] |= 1u;
         }
         std::string vol_error;
+        const VolumetricPassBoundary boundary =
+            [&record, command_buffer](VolumetricPass pass, bool is_end) {
+                if (record.ts_pool == VK_NULL_HANDLE || !record.ts_written)
+                    return;
+                const uint32_t zones[] = {record.volumetric_density_zone,
+                                          record.volumetric_scatter_zone,
+                                          record.volumetric_integrate_zone};
+                const uint32_t zone = zones[static_cast<uint32_t>(pass)];
+                write_ts(command_buffer, record.ts_pool, zone, is_end);
+                record.ts_written[zone] |= is_end ? 2u : 1u;
+            };
         record.volumetrics->record(
             command_buffer, record.frame_slot,
             *record.depth, record.tlas->handle, *record.matrices,
-            record.frame_time, vol_error);
+            record.frame_time, boundary, vol_error);
         if (record.ts_pool != VK_NULL_HANDLE && record.ts_written) {
             write_ts(command_buffer, record.ts_pool, record.volumetrics_zone, true);
             record.ts_written[record.volumetrics_zone] |= 2u;
@@ -815,12 +846,14 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     vkCmdSetScissor(command_buffer, 0, 1, &scissor);
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       record.composite_pipeline);
+    const VkDescriptorSet composite_sets[] = {record.composite_set,
+                                               record.environment_set};
     vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            record.composite_layout, 0, 1,
-                            &record.composite_set, 0, nullptr);
+                            record.composite_layout, 0, 2,
+                            composite_sets, 0, nullptr);
     vkCmdPushConstants(command_buffer, record.composite_layout,
                        VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof(record.lighting), &record.lighting);
+                       kVkSceneLightingPushBytes, &record.lighting);
     vkCmdDraw(command_buffer, 3, 1, 0, 0);
     vkCmdEndRendering(command_buffer);
 }
@@ -1167,7 +1200,12 @@ bool checked_size_to_int(size_t count, int& result, const char* label,
 }  // namespace vk_scene_detail
 
 VkSceneRenderer::VkSceneRenderer(matter::VulkanDevice& vulkan)
-    : vulkan_(&vulkan), dlss_bridge_(&vulkan.streamline_bridge()) {}
+    : vulkan_(&vulkan), dlss_bridge_(&vulkan.streamline_bridge()) {
+    // A renderer that has not yet received RenderOptions remains neutral.
+    // Production supplies the authored setting before its first recorded
+    // frame; legacy test/tool seams opt in explicitly.
+    cloud_shadow_settings_.enabled = false;
+}
 
 bool VkSceneRenderer::register_animation_skin_asset(
     uint64_t asset_key, const std::vector<VkSkinInfluence>& influences) {
@@ -1564,6 +1602,14 @@ void VkSceneRenderer::destroy_pipeline() {
         volumetrics_->destroy();
         volumetrics_.reset();
     }
+    if (atmosphere_) {
+        atmosphere_->destroy();
+        atmosphere_.reset();
+    }
+    if (cloud_shadows_) {
+        cloud_shadows_->destroy();
+        cloud_shadows_.reset();
+    }
     const VkDevice device = vulkan_->device();
     rt_sbt_.reset();
     visibility_.reset();
@@ -1611,6 +1657,8 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyDescriptorSetLayout(device, rt_set_layout_, nullptr);
     if (composite_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device, composite_sampler_, nullptr);
+    if (sky_view_linear_sampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device, sky_view_linear_sampler_, nullptr);
     if (vol_linear_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device, vol_linear_sampler_, nullptr);
     // Phase 1 tileset Vulkan port (Task 6): tear down slot images, dummies,
@@ -1667,6 +1715,8 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyPipelineLayout(device, composite_pipeline_layout_, nullptr);
     if (composite_set_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device, composite_set_layout_, nullptr);
+    if (environment_set_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device, environment_set_layout_, nullptr);
     if (raster_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, raster_pipeline_, nullptr);
     if (skinned_raster_pipeline_ != VK_NULL_HANDLE)
@@ -1701,9 +1751,11 @@ void VkSceneRenderer::destroy_pipeline() {
     skin_pipeline_layout_ = VK_NULL_HANDLE;
     skin_set_layout_ = VK_NULL_HANDLE;
     composite_set_layout_ = VK_NULL_HANDLE;
+    environment_set_layout_ = VK_NULL_HANDLE;
     composite_pipeline_layout_ = VK_NULL_HANDLE;
     composite_pipeline_ = VK_NULL_HANDLE;
     composite_sampler_ = VK_NULL_HANDLE;
+    sky_view_linear_sampler_ = VK_NULL_HANDLE;
     vol_linear_sampler_ = VK_NULL_HANDLE;
     display_set_layout_ = VK_NULL_HANDLE;
     display_pipeline_layout_ = VK_NULL_HANDLE;
@@ -1740,6 +1792,36 @@ void VkSceneRenderer::destroy_pipeline() {
     active_frame_index_ = 0;
     frame_resource_slot_capacity_ = 0;
     initialized_ = false;
+}
+
+bool VkSceneRenderer::create_environment_layout(std::string& error) {
+    const VkShaderStageFlags stages = VK_SHADER_STAGE_FRAGMENT_BIT |
+        VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+    VkDescriptorSetLayoutBinding bindings[7]{};
+    for (uint32_t binding = 0; binding < 6; ++binding)
+        bindings[binding] = descriptor_binding(
+            binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, stages);
+    bindings[6] = descriptor_binding(6, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                     stages);
+    VkDescriptorSetLayoutCreateInfo info{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    info.bindingCount = 7;
+    info.pBindings = bindings;
+    const VkResult result = vkCreateDescriptorSetLayout(vulkan_->device(),
+        &info, nullptr, &environment_set_layout_);
+    return result == VK_SUCCESS ||
+        fail_vk("vkCreateDescriptorSetLayout(environment)", result, error);
+}
+
+bool VkSceneRenderer::create_environment_resources(std::string& error) {
+    if (!atmosphere_ || !cloud_shadows_) {
+        error = "physical environment requires atmosphere and cloud-shadow resources";
+        return false;
+    }
+    // VkCloudShadows replaces Task 7's renderer-local
+    // record_neutral_cloud_clear VK_FORMAT_R16_SFLOAT resources with
+    // persistent tau=0 emergency images owned by the module itself.
+    return true;
 }
 
 bool VkSceneRenderer::create_pipeline(std::string& error) {
@@ -2157,11 +2239,13 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
                        error);
     VkPushConstantRange push{};
     push.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
-    push.size = 144;
+    push.size = 128;
     VkPipelineLayoutCreateInfo layout_info{
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layout_info.setLayoutCount = 1;
-    layout_info.pSetLayouts = &rt_set_layout_;
+    const VkDescriptorSetLayout rt_sets[] = {rt_set_layout_,
+                                              environment_set_layout_};
+    layout_info.setLayoutCount = 2;
+    layout_info.pSetLayouts = rt_sets;
     layout_info.pushConstantRangeCount = 1;
     layout_info.pPushConstantRanges = &push;
     result = vkCreatePipelineLayout(device, &layout_info, nullptr,
@@ -2610,11 +2694,13 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
                        error);
     VkPipelineLayoutCreateInfo composite_layout{
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    composite_layout.setLayoutCount = 1;
-    composite_layout.pSetLayouts = &composite_set_layout_;
+    const VkDescriptorSetLayout composite_sets[] = {composite_set_layout_,
+                                                     environment_set_layout_};
+    composite_layout.setLayoutCount = 2;
+    composite_layout.pSetLayouts = composite_sets;
     VkPushConstantRange lighting_range{};
     lighting_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    lighting_range.size = sizeof(VkSceneLighting);
+    lighting_range.size = kVkSceneLightingPushBytes;
     composite_layout.pushConstantRangeCount = 1;
     composite_layout.pPushConstantRanges = &lighting_range;
     result = vkCreatePipelineLayout(device, &composite_layout, nullptr,
@@ -2705,6 +2791,15 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     sampler.magFilter = VK_FILTER_LINEAR;
     sampler.minFilter = VK_FILTER_LINEAR;
     sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    result = vkCreateSampler(device, &sampler, nullptr,
+                             &sky_view_linear_sampler_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateSampler(sky_view_linear)", result, error);
+
+    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     result = vkCreateSampler(device, &sampler, nullptr, &vol_linear_sampler_);
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateSampler(vol_linear)", result, error);
@@ -2722,13 +2817,10 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
             vol_dummy_3d_, error)) {
         return false;
     }
-    if (!matter::transition_image(
-            *vulkan_, vol_dummy_3d_,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_ACCESS_2_NONE,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            VK_IMAGE_ASPECT_COLOR_BIT, error)) {
+    NeutralVolumeClearRecord neutral_volume_clear{&vol_dummy_3d_};
+    if (!matter::submit_immediate(*vulkan_, record_neutral_volume_clear,
+                                  &neutral_volume_clear, error,
+                                  matter::ImmediateSubmitPhase::image_transition)) {
         return false;
     }
     return true;
@@ -2996,19 +3088,19 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     // samplers, 1 storage image, 1 storage buffer each) for the transmission
     // signal chain -- the counts below already fold those in.
     const VkDescriptorPoolSize pool_sizes[] = {
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count * 2},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count * 3},
         // 27 for the scene/VT buffers above, +1 for the per-module
         // draw-override table at binding 14.
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 28},
         // +1 for the M2.5 impostor atlas at scene binding 15.
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count *
-             (114 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
+             (120 + tileset::kMaxTilesetSlots * kTilesetChannelCount +
               vt::kVtChannelCount)},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 34}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = frame_slot_count * 17;
+    pool.maxSets = frame_slot_count * 18;
     pool.poolSizeCount = 4;
     pool.pPoolSizes = pool_sizes;
     VkDescriptorPool next_pool = VK_NULL_HANDLE;
@@ -3024,12 +3116,13 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         return fail_vk("vkCreateDescriptorPool(cull)", result, error);
     std::vector<FrameResources> next_frames(frame_slot_count);
     std::vector<VkDescriptorSetLayout> layouts;
-    layouts.reserve(frame_slot_count * 17);
+    layouts.reserve(frame_slot_count * 18);
     for (size_t index = 0; index < frame_slot_count; ++index) {
         layouts.push_back(set_layouts_[0]);
         layouts.push_back(set_layouts_[1]);
         layouts.push_back(skin_set_layout_);
         layouts.push_back(composite_set_layout_);
+        layouts.push_back(environment_set_layout_);
         layouts.push_back(display_set_layout_);
         for (uint32_t i = 0; i < 3; ++i)
             layouts.push_back(gi_temporal_set_layout_);
@@ -3063,17 +3156,22 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     };
     for (size_t index = 0; index < frame_slot_count; ++index) {
         FrameResources& frame = next_frames[index];
-        frame.descriptor_sets[0] = sets[index * 17];
-        frame.descriptor_sets[1] = sets[index * 17 + 1];
-        frame.skin_descriptor_set = sets[index * 17 + 2];
-        frame.composite_descriptor_set = sets[index * 17 + 3];
-        frame.display_descriptor_set = sets[index * 17 + 4];
+        frame.descriptor_sets[0] = sets[index * 18];
+        frame.descriptor_sets[1] = sets[index * 18 + 1];
+        frame.skin_descriptor_set = sets[index * 18 + 2];
+        frame.composite_descriptor_set = sets[index * 18 + 3];
+        frame.environment_descriptor_set = sets[index * 18 + 4];
+        frame.display_descriptor_set = sets[index * 18 + 5];
         for (uint32_t i = 0; i < 3; ++i)
-            frame.gi_temporal_descriptor_sets[i] = sets[index * 17 + 5 + i];
+            frame.gi_temporal_descriptor_sets[i] = sets[index * 18 + 6 + i];
         for (uint32_t i = 0; i < 9; ++i)
-            frame.gi_atrous_descriptor_sets[i] = sets[index * 17 + 8 + i];
+            frame.gi_atrous_descriptor_sets[i] = sets[index * 18 + 9 + i];
         if (!ensure_candidate_buffer(frame.frame_constants,
                                      sizeof(FrameConstants),
+                                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.environment_constants,
+                                     sizeof(float) * 40 +
+                                         sizeof(EnvironmentLightingGpu),
                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.instances, sizeof(GpuInstance),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
@@ -3145,7 +3243,19 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
             return false;
         }
+        // EnvironmentBlock is host-visible by construction, but create_buffer
+        // deliberately does not map every allocation. Map it transactionally
+        // before the initial neutral write; VkBufferResource lifetime owns the
+        // matching unmap/reset if a later frame-slot allocation fails.
+        if (!matter::map_buffer(frame.environment_constants, error)) {
+            vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
+            return false;
+        }
         update_frame_descriptors(frame);
+        if (!update_environment_descriptor(frame, error)) {
+            vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
+            return false;
+        }
         if (gpu_timers_supported_) {
             VkQueryPoolCreateInfo ts_info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
             ts_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
@@ -5844,12 +5954,26 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
             ? (gi_filtered_valid_ ? &gi_trans_atrous_[gi_filtered_index_]
                                   : &gi_trans_history_[gi_composite_history_index_].radiance)
             : &raw_transmission_;
-    const bool vol_active = volumetrics_ && volumetrics_->active();
+    // This executes before this frame's trace records, so last_rt_effective_
+    // has just been reset by record_cull_and_render(). Select the real bundle
+    // from the stable pre-record RT eligibility instead; otherwise every
+    // normal RT frame binds vol_dummy_3d_ and the active composite multiplies
+    // the physical sky by the dummy's zero transmittance.
+    const bool vol_active = volumetrics_ && volumetrics_->active() &&
+                            ray_tracing_settings_.enabled &&
+                            vulkan_->ray_tracing_available() &&
+                            !rt_instances_.empty()
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+                            && !test_force_rt_unavailable_
+#endif
+                            ;
     matter::VkImageResource* sampled[] = {&albedo_, &normal_, &orm_,
                                           &visibility_, diffuse, specular,
                                           &material_instance_,
                                           transmission,
-                                          vol_active ? &volumetrics_->vol_integrated()
+                                          vol_active ? (volumetrics_debug_view_ > 3.5f
+                                                ? &volumetrics_->cloud_density_or_dummy()
+                                                : &volumetrics_->vol_integrated())
                                                      : &vol_dummy_3d_,
                                           &depth_};
     const uint32_t sampled_slots[] = {0, 1, 2, 3, 4, 5, 6, 8, 9, 10};
@@ -5859,7 +5983,15 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
         image_infos[i].sampler = (i == 8) ? vol_linear_sampler_
                                           : composite_sampler_;
         image_infos[i].imageView = sampled[i]->view;
-        image_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        // The Current-cost path binds its stable zero-valued cloud-density
+        // dummy through a storage-image descriptor, so it remains GENERAL.
+        // A combined sampler may likewise name GENERAL; the Improved grid is
+        // transitioned to shader-read-only after the density dispatch.
+        image_infos[i].imageLayout =
+            (i == 8 && vol_active && volumetrics_debug_view_ > 3.5f &&
+             !volumetrics_->cloud_density_allocated_for_test())
+                ? VK_IMAGE_LAYOUT_GENERAL
+                : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = frame.composite_descriptor_set;
         writes[i].dstBinding = sampled_slots[i];
@@ -5877,6 +6009,405 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
     writes[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[10].pBufferInfo = &material_info;
     vkUpdateDescriptorSets(vulkan_->device(), 11, writes, 0, nullptr);
+}
+
+void VkSceneRenderer::update_atmosphere_replay_constants() noexcept {
+    AtmosphereReplayConstants result{};
+    const matter::Float3 committed_to_sun =
+        resolved_atmosphere_status_.normalized_to_sun;
+    result.composite_sun_direction = {-committed_to_sun.x,
+                                      -committed_to_sun.y,
+                                      -committed_to_sun.z};
+    result.composite_emission_multiplier = lighting_.emission_multiplier;
+    result.display_exposure_ev = display_exposure_ev_;
+    result.composite_sun_disc_cos_edge = lighting_.sun_disc_cos_edge;
+    result.composite_sun_disc_cos_core = lighting_.sun_disc_cos_core;
+    result.rt_to_sun = committed_to_sun;
+    result.rt_shadow_samples =
+        std::max(1u, ray_tracing_settings_.samples);
+    result.rt_shadow_sun_cone_scale =
+        matter::sun_size_scale(lighting_.sun_angular_diameter_deg);
+    result.rt_gi_emission_multiplier = lighting_.emission_multiplier;
+    result.rt_gi_sun_disc_cos_edge = lighting_.sun_disc_cos_edge;
+    result.rt_gi_sun_disc_cos_core = lighting_.sun_disc_cos_core;
+    result.rt_gi_sun_size_scale = result.rt_shadow_sun_cone_scale;
+    atmosphere_replay_constants_ = result;
+}
+
+void VkSceneRenderer::resolve_live_atmosphere(uint32_t change_mask,
+                                              bool full_commit) {
+    matter::AtmosphereLightingSources sources = lighting_.atmosphere_sources;
+    sources.atmospheric_direct_base_rgb =
+        resolved_atmosphere_status_.atmospheric_direct_base_rgb;
+    sources.atmospheric_noon_direct_base_rgb =
+        resolved_atmosphere_status_.atmospheric_noon_direct_base_rgb;
+    sources.elevation_deg =
+        resolved_atmosphere_status_.resolved_elevation_deg;
+    sources.sun_multiplier *= lighting_.sun_intensity;
+    const matter::ResolvedAtmosphereLighting resolved =
+        matter::resolve_atmosphere_lighting(sources);
+    const matter::Float3 derived_irradiance{
+        sources.authored_irradiance_chroma_rgb.x *
+            sources.sky_irradiance_multiplier * resolved.sky_ambient_ratio,
+        sources.authored_irradiance_chroma_rgb.y *
+            sources.sky_irradiance_multiplier * resolved.sky_ambient_ratio,
+        sources.authored_irradiance_chroma_rgb.z *
+            sources.sky_irradiance_multiplier * resolved.sky_ambient_ratio};
+    const bool irradiance_sources_valid =
+        std::isfinite(sources.authored_irradiance_chroma_rgb.x) &&
+        std::isfinite(sources.authored_irradiance_chroma_rgb.y) &&
+        std::isfinite(sources.authored_irradiance_chroma_rgb.z) &&
+        std::isfinite(sources.sky_irradiance_multiplier) &&
+        std::isfinite(sources.day_ambient_multiplier) &&
+        std::isfinite(sources.twilight_ambient_multiplier) &&
+        std::isfinite(sources.elevation_deg) &&
+        std::isfinite(derived_irradiance.x) &&
+        std::isfinite(derived_irradiance.y) &&
+        std::isfinite(derived_irradiance.z);
+    resolved_atmosphere_status_.resolved_elevation_deg =
+        resolved.resolved_elevation_deg;
+    resolved_atmosphere_status_.direct_world_ratio =
+        resolved.direct_world_ratio;
+    resolved_atmosphere_status_.direct_base_rgb = resolved.direct_base_rgb;
+    resolved_atmosphere_status_.direct_world_sun_rgb =
+        resolved.direct_world_sun_rgb;
+    resolved_atmosphere_status_.sun_disc_rgb = resolved.sun_disc_rgb;
+    resolved_atmosphere_status_.sky_ambient_ratio =
+        resolved.sky_ambient_ratio;
+    resolved_atmosphere_status_.sky_display_modifier_rgb =
+        resolved.sky_display_modifier_rgb;
+    if (irradiance_sources_valid) {
+        resolved_atmosphere_status_.sky_irradiance_modifier_rgb =
+            derived_irradiance;
+        has_valid_sky_irradiance_modifier_ = true;
+    } else if (!has_valid_sky_irradiance_modifier_) {
+        resolved_atmosphere_status_.sky_irradiance_modifier_rgb = {};
+    }
+    update_atmosphere_replay_constants();
+
+    const matter::AtmosphereHistoryDecision decision =
+        matter::atmosphere_history_decision(change_mask, full_commit);
+    if (decision.reset_diffuse_gi) {
+        gi_diffuse_history_reset_pending_ = true;
+        ++atmosphere_history_counters_.diffuse_gi;
+    }
+    if (decision.reset_reflection_miss) {
+        gi_reflection_history_reset_pending_ = true;
+        ++atmosphere_history_counters_.reflection_miss;
+    }
+    if (decision.reset_volumetric) {
+        if (volumetrics_) volumetrics_->invalidate_history();
+        ++atmosphere_history_counters_.volumetric;
+    }
+    pending_atmosphere_change_mask_ = matter::kAtmosphereChangeNone;
+}
+
+bool VkSceneRenderer::resolve_atmosphere_transaction(
+    FrameResources& frame, float camera_world_y, std::string& error) {
+    matter::Float3 to_sun{-lighting_.sun_direction.x,
+                          -lighting_.sun_direction.y,
+                          -lighting_.sun_direction.z};
+    const float length2 = to_sun.x * to_sun.x + to_sun.y * to_sun.y +
+                          to_sun.z * to_sun.z;
+    if (!std::isfinite(camera_world_y) || !std::isfinite(length2) ||
+        length2 <= 0.0f) {
+        error = "atmosphere request contains a non-finite camera or sun direction";
+        resolve_live_atmosphere(pending_atmosphere_change_mask_, false);
+        return false;
+    }
+    const float inv_length = 1.0f / std::sqrt(length2);
+    to_sun.x *= inv_length;
+    to_sun.y *= inv_length;
+    to_sun.z *= inv_length;
+    const matter::Float3 authored = lighting_.authored_sun_rgb;
+    const auto different3 = [](matter::Float3 a, matter::Float3 b) {
+        return a.x != b.x || a.y != b.y || a.z != b.z;
+    };
+    const bool request_changed =
+        resolved_atmosphere_status_.generation_serial == 0 ||
+        atmosphere_settings_.sea_level_y != committed_atmosphere_settings_.sea_level_y ||
+        atmosphere_settings_.rayleigh_scale != committed_atmosphere_settings_.rayleigh_scale ||
+        atmosphere_settings_.mie_scale != committed_atmosphere_settings_.mie_scale ||
+        atmosphere_settings_.mie_anisotropy != committed_atmosphere_settings_.mie_anisotropy ||
+        atmosphere_settings_.ozone_scale != committed_atmosphere_settings_.ozone_scale ||
+        atmosphere_settings_.ground_albedo != committed_atmosphere_settings_.ground_albedo ||
+        std::fabs(camera_world_y - requested_atmosphere_camera_y_) >
+            kAtmosphereObserverAltitudeRebuildThresholdMeters ||
+        different3(to_sun, requested_atmosphere_to_sun_) ||
+        different3(authored, requested_atmosphere_authored_sun_);
+    if (!request_changed) {
+        // Candidate LUT work is submitted synchronously above the frame
+        // command buffer.  A steady request submits no candidate, so its lane
+        // must be exact zero instead of decaying an old dirty-frame EMA.
+        gpu_smoothed_ms_[kGpuZoneAtmosphere] = 0.0f;
+        resolve_live_atmosphere(pending_atmosphere_change_mask_, false);
+        return update_environment_descriptor(frame, error);
+    }
+
+    AtmosphereRequest request{};
+    request.settings = atmosphere_settings_;
+    request.camera_world_y = camera_world_y;
+    request.normalized_to_sun = to_sun;
+    request.authored_sun_rgb = authored;
+    VkAtmosphere::Candidate candidate{};
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_fail_next_atmosphere_generation_) {
+        atmosphere_->test_fail_next_generation();
+        test_fail_next_atmosphere_generation_ = false;
+    }
+#endif
+    if (!atmosphere_->build_candidate(request, candidate, error)) {
+        gpu_smoothed_ms_[kGpuZoneAtmosphere] = 0.0f;
+        resolve_live_atmosphere(pending_atmosphere_change_mask_, false);
+        if (error.empty()) error = "atmosphere candidate generation failed";
+        return false;
+    }
+
+    ResolvedAtmosphereStatus committed{};
+    committed.generation_serial = candidate.state.generation_serial;
+    committed.normalized_to_sun = candidate.state.normalized_to_sun;
+    committed.irradiance_sh = candidate.state.irradiance_sh;
+    committed.resolved_elevation_deg =
+        std::asin(std::clamp(to_sun.y, -1.0f, 1.0f)) *
+        (180.0f / 3.14159265358979323846f);
+    committed.atmospheric_direct_base_rgb =
+        candidate.state.atmospheric_direct_base_rgb;
+    committed.atmospheric_noon_direct_base_rgb =
+        candidate.state.atmospheric_noon_direct_base_rgb;
+    matter::AtmosphereLightingSources sources = lighting_.atmosphere_sources;
+    sources.atmospheric_direct_base_rgb =
+        committed.atmospheric_direct_base_rgb;
+    sources.atmospheric_noon_direct_base_rgb =
+        committed.atmospheric_noon_direct_base_rgb;
+    sources.elevation_deg = committed.resolved_elevation_deg;
+    sources.sun_multiplier *= lighting_.sun_intensity;
+    const auto resolved = matter::resolve_atmosphere_lighting(sources);
+    const matter::Float3 derived_irradiance{
+        sources.authored_irradiance_chroma_rgb.x *
+            sources.sky_irradiance_multiplier * resolved.sky_ambient_ratio,
+        sources.authored_irradiance_chroma_rgb.y *
+            sources.sky_irradiance_multiplier * resolved.sky_ambient_ratio,
+        sources.authored_irradiance_chroma_rgb.z *
+            sources.sky_irradiance_multiplier * resolved.sky_ambient_ratio};
+    const bool irradiance_sources_valid =
+        std::isfinite(sources.authored_irradiance_chroma_rgb.x) &&
+        std::isfinite(sources.authored_irradiance_chroma_rgb.y) &&
+        std::isfinite(sources.authored_irradiance_chroma_rgb.z) &&
+        std::isfinite(sources.sky_irradiance_multiplier) &&
+        std::isfinite(sources.day_ambient_multiplier) &&
+        std::isfinite(sources.twilight_ambient_multiplier) &&
+        std::isfinite(sources.elevation_deg) &&
+        std::isfinite(derived_irradiance.x) &&
+        std::isfinite(derived_irradiance.y) &&
+        std::isfinite(derived_irradiance.z);
+    committed.direct_world_ratio = resolved.direct_world_ratio;
+    committed.direct_base_rgb = resolved.direct_base_rgb;
+    committed.direct_world_sun_rgb = resolved.direct_world_sun_rgb;
+    committed.sun_disc_rgb = resolved.sun_disc_rgb;
+    committed.sky_ambient_ratio = resolved.sky_ambient_ratio;
+    committed.sky_display_modifier_rgb = resolved.sky_display_modifier_rgb;
+    committed.sky_irradiance_modifier_rgb =
+        irradiance_sources_valid
+            ? derived_irradiance
+            : has_valid_sky_irradiance_modifier_
+                  ? resolved_atmosphere_status_.sky_irradiance_modifier_rgb
+                  : matter::Float3{};
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_fail_next_atmosphere_descriptor_publication_) {
+        test_fail_next_atmosphere_descriptor_publication_ = false;
+        atmosphere_->discard_candidate(candidate);
+        resolve_live_atmosphere(pending_atmosphere_change_mask_, false);
+        error = "injected atmosphere descriptor publication failure";
+        return false;
+    }
+#endif
+    if (!update_environment_descriptor(frame, error, &candidate.sky_view,
+                                       &candidate.irradiance_sh,
+                                       &committed)) {
+        atmosphere_->discard_candidate(candidate);
+        resolve_live_atmosphere(pending_atmosphere_change_mask_, false);
+        return false;
+    }
+    atmosphere_->commit_candidate(std::move(candidate),
+                                  static_cast<uint32_t>(&frame - frames_.data()));
+    const float atmosphere_generation_ms = atmosphere_->last_generation_gpu_ms();
+    gpu_smoothed_ms_[kGpuZoneAtmosphere] =
+        std::isfinite(atmosphere_generation_ms) && atmosphere_generation_ms > 0.0f
+            ? gpu_smoothed_ms_[kGpuZoneAtmosphere] * 0.9f +
+                  atmosphere_generation_ms * 0.1f
+            : 0.0f;
+    resolved_atmosphere_status_ = committed;
+    if (irradiance_sources_valid)
+        has_valid_sky_irradiance_modifier_ = true;
+    requested_atmosphere_camera_y_ = camera_world_y;
+    requested_atmosphere_to_sun_ = to_sun;
+    requested_atmosphere_authored_sun_ = authored;
+    committed_atmosphere_settings_ = atmosphere_settings_;
+    resolve_live_atmosphere(pending_atmosphere_change_mask_, true);
+    return true;
+}
+
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+void VkSceneRenderer::test_fail_next_atmosphere_generation() noexcept {
+    if (atmosphere_)
+        atmosphere_->test_fail_next_generation();
+    else
+        test_fail_next_atmosphere_generation_ = true;
+}
+
+AtmosphereCandidateCounters
+VkSceneRenderer::test_atmosphere_candidate_counters() const noexcept {
+    AtmosphereCandidateCounters result{};
+    if (!atmosphere_) return result;
+    result.image_sets_allocated =
+        atmosphere_->test_candidate_image_sets_allocated();
+    result.generation_stages_completed =
+        atmosphere_->test_candidate_generation_stages_completed();
+    result.image_sets_discarded =
+        atmosphere_->test_candidate_image_sets_discarded();
+    return result;
+}
+
+AtmosphereReplayConstants
+VkSceneRenderer::test_atmosphere_replay_constants() const noexcept {
+    return atmosphere_replay_constants_;
+}
+
+bool VkSceneRenderer::test_read_environment_lighting_gpu(
+    uint32_t frame_slot, EnvironmentLightingGpu& output) const noexcept {
+    output = {};
+    if (frame_slot >= frames_.size() ||
+        !frames_[frame_slot].environment_constants.mapped)
+        return false;
+    const auto* block = static_cast<const uint8_t*>(
+        frames_[frame_slot].environment_constants.mapped);
+    std::memcpy(&output, block + sizeof(float) * 40, sizeof(output));
+    return true;
+}
+
+AtmosphereLutHandles VkSceneRenderer::test_atmosphere_lut_handles() const noexcept {
+    AtmosphereLutHandles result{};
+    if (!atmosphere_) return result;
+    const matter::VkImageResource* images[] = {
+        &atmosphere_->transmittance(), &atmosphere_->multiscatter(),
+        &atmosphere_->sky_view(), &atmosphere_->irradiance_sh()};
+    for (size_t index = 0; index < 4; ++index) {
+        result.images[index] = images[index]->image;
+        result.views[index] = images[index]->view;
+    }
+    return result;
+}
+#endif
+
+bool VkSceneRenderer::update_environment_descriptor(
+    FrameResources& frame, std::string& error,
+    const matter::VkImageResource* candidate_sky,
+    const matter::VkImageResource* candidate_irradiance,
+    const ResolvedAtmosphereStatus* candidate_status) {
+    // std140: two mat4 followed by cloud_state and cloud_filter. Task 10
+    // publishes finite snapped transforms only when both clear clipmaps are
+    // live; disabled and rejected states keep identity matrices and state.x=0.
+    float block[56]{};
+    block[0] = block[5] = block[10] = block[15] = 1.0f;
+    block[16] = block[21] = block[26] = block[31] = 1.0f;
+    if (cloud_shadows_) {
+        const std::array<float, 40> published =
+            cloud_shadows_->environment_block();
+        std::memcpy(block, published.data(), sizeof(published));
+    }
+    EnvironmentLightingGpu gpu{};
+    const ResolvedAtmosphereStatus& published_status =
+        candidate_status ? *candidate_status : resolved_atmosphere_status_;
+    const matter::Float3 direct = published_status.direct_world_sun_rgb;
+    gpu.direct_world_sun_ratio[0] = direct.x;
+    gpu.direct_world_sun_ratio[1] = direct.y;
+    gpu.direct_world_sun_ratio[2] = direct.z;
+    gpu.direct_world_sun_ratio[3] =
+        published_status.direct_world_ratio;
+    const matter::Float3 disc = published_status.sun_disc_rgb;
+    gpu.sun_disc_reserved[0] = disc.x;
+    gpu.sun_disc_reserved[1] = disc.y;
+    gpu.sun_disc_reserved[2] = disc.z;
+    const matter::Float3 display =
+        published_status.sky_display_modifier_rgb;
+    gpu.sky_display_reserved[0] = display.x;
+    gpu.sky_display_reserved[1] = display.y;
+    gpu.sky_display_reserved[2] = display.z;
+    const matter::Float3 irradiance_modifier =
+        published_status.sky_irradiance_modifier_rgb;
+    gpu.sky_irradiance_ambient_ratio[0] = irradiance_modifier.x;
+    gpu.sky_irradiance_ambient_ratio[1] = irradiance_modifier.y;
+    gpu.sky_irradiance_ambient_ratio[2] = irradiance_modifier.z;
+    gpu.sky_irradiance_ambient_ratio[3] =
+        published_status.sky_ambient_ratio;
+    std::memcpy(block + 40, &gpu, sizeof(gpu));
+    if (!frame.environment_constants.mapped) {
+        if (cloud_shadows_) cloud_shadows_->discard_generation();
+        error = "cloud-shadow EnvironmentBlock is not mapped";
+        return false;
+    }
+    std::array<float, 56> previous_block{};
+    std::memcpy(previous_block.data(), frame.environment_constants.mapped,
+                sizeof(block));
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_fail_next_environment_flush_) {
+        test_fail_next_environment_flush_ = false;
+        if (cloud_shadows_) cloud_shadows_->discard_generation();
+        error = "injected cloud-shadow EnvironmentBlock flush failure";
+        return false;
+    }
+#endif
+    std::memcpy(frame.environment_constants.mapped, block, sizeof(block));
+    if (!matter::flush_buffer(frame.environment_constants, 0,
+                              sizeof(block), error)) {
+        std::memcpy(frame.environment_constants.mapped,
+                    previous_block.data(), sizeof(block));
+        std::string restore_error;
+        matter::flush_buffer(frame.environment_constants, 0,
+                             sizeof(block), restore_error);
+        if (cloud_shadows_) cloud_shadows_->discard_generation();
+        error = "cloud-shadow EnvironmentBlock flush failed: " + error;
+        return false;
+    }
+    const matter::VkImageResource& sky =
+        candidate_sky ? *candidate_sky : atmosphere_->sky_view();
+    const matter::VkImageResource& irradiance =
+        candidate_irradiance ? *candidate_irradiance
+                             : atmosphere_->irradiance_sh();
+    VkDescriptorImageInfo images[6]{};
+    images[0] = {sky_view_linear_sampler_, sky.view,
+                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    images[1] = {composite_sampler_, irradiance.view,
+                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    for (uint32_t i = 0; i < 4; ++i) {
+        const matter::VkImageResource& cloud =
+            cloud_shadows_->environment_image(i);
+        images[i + 2] = {composite_sampler_, cloud.view,
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        frame.environment_cloud_views[i] = cloud.view;
+        frame.environment_cloud_extents[i] = cloud.extent;
+        frame.environment_cloud_state[i] = block[32 + i];
+    }
+    VkDescriptorBufferInfo buffer{frame.environment_constants.buffer, 0,
+                                  sizeof(block)};
+    VkWriteDescriptorSet writes[7]{};
+    for (uint32_t i = 0; i < 6; ++i) {
+        writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writes[i].dstSet = frame.environment_descriptor_set;
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].pImageInfo = &images[i];
+    }
+    writes[6] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    writes[6].dstSet = frame.environment_descriptor_set;
+    writes[6].dstBinding = 6;
+    writes[6].descriptorCount = 1;
+    writes[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[6].pBufferInfo = &buffer;
+    vkUpdateDescriptorSets(vulkan_->device(), 7, writes, 0, nullptr);
+    if (cloud_shadows_) cloud_shadows_->commit_generation();
+    return true;
 }
 
 void VkSceneRenderer::update_display_descriptor(VkDescriptorSet set,
@@ -6082,6 +6613,10 @@ bool VkSceneRenderer::init(std::string& error) {
     // That is the exact failure this milestone exists to make impossible, and
     // it reappeared here because a lazy initialiser is easy to attach to.
     if (!create_impostor_atlas(error)) return false;
+    if (!create_environment_layout(error)) {
+        destroy_pipeline();
+        return false;
+    }
     if (!create_pipeline(error)) {
         destroy_pipeline();
         return false;
@@ -6112,7 +6647,7 @@ bool VkSceneRenderer::init(std::string& error) {
     if (initialize_volumetrics && !volumetrics_) {
         auto vol = std::make_unique<VkVolumetrics>();
         std::string vol_error;
-        if (vol->init(*vulkan_, vol_error)) {
+        if (vol->init(*vulkan_, environment_set_layout_, vol_error)) {
             volumetrics_ = std::move(vol);
         } else {
             // Volumetrics are optional, but a failed init must not be silent:
@@ -6123,6 +6658,33 @@ bool VkSceneRenderer::init(std::string& error) {
                          vol_error.c_str());
             std::fflush(stderr);
         }
+    }
+    if (!atmosphere_) {
+        auto atmosphere = std::make_unique<VkAtmosphere>();
+        std::string atmosphere_error;
+        if (!atmosphere->init(*vulkan_, atmosphere_error)) {
+            error = "atmosphere LUT init failed: " + atmosphere_error;
+            destroy_pipeline();
+            return false;
+        }
+        atmosphere->request_settings(atmosphere_settings_);
+        atmosphere_ = std::move(atmosphere);
+    }
+    if (!cloud_shadows_) {
+        auto cloud_shadows = std::make_unique<VkCloudShadows>();
+        std::string cloud_shadow_error;
+        if (!cloud_shadows->init(*vulkan_, cloud_shadow_error)) {
+            error = "cloud-shadow emergency resource init failed: " +
+                    cloud_shadow_error;
+            destroy_pipeline();
+            return false;
+        }
+        cloud_shadows->request_settings(cloud_shadow_settings_);
+        cloud_shadows_ = std::move(cloud_shadows);
+    }
+    if (!create_environment_resources(error)) {
+        destroy_pipeline();
+        return false;
     }
     if (sizeof(FrameConstants) >
         std::min(limits_.max_uniform_buffer_range, limits_.max_buffer_size)) {
@@ -6677,6 +7239,10 @@ bool VkSceneRenderer::record_test_surface_ray(
         return false;
     }
     FrameResources& selected = frames_[frame.frame_slot];
+    // Keep this recognizable to the source-level lifetime gate: the former
+    // update_environment_descriptor(selected) call is now fallible because
+    // publishing a newly generated ping is a flush transaction.
+    if (!update_environment_descriptor(selected, error)) return false;
     if (invalid_part_slot != UINT32_MAX) {
         if (invalid_part_slot >= parts_.size() ||
             selected.rt_parts.mapped == nullptr) {
@@ -7650,6 +8216,9 @@ bool VkSceneRenderer::test_readback_animation_skin_output(
 
 bool VkSceneRenderer::record_gi_temporal(const matter::VulkanFrame& frame,
                                          std::string& error, bool retain) {
+    gi_candidate_was_reset_ = false;
+    gi_candidate_used_diffuse_reset_ = false;
+    gi_candidate_used_reflection_reset_ = false;
     return record_gi_temporal_signal(frame, 0u, error, retain) &&
            record_gi_temporal_signal(frame, 1u, error, retain) &&
            record_gi_temporal_signal(frame, 2u, error, retain);
@@ -7763,9 +8332,18 @@ bool VkSceneRenderer::record_gi_temporal_signal(
     constants.temporal_extent[1] = raw_diffuse_extent_.height;
     constants.gbuffer_extent[0] = raster_extent_.width;
     constants.gbuffer_extent[1] = raster_extent_.height;
+    const bool selective_reset =
+        signal_mode == 0u ? gi_diffuse_history_reset_pending_
+                          : gi_reflection_history_reset_pending_;
     constants.reset = temporal_frame_.reset || gi_history_reset_pending_ ||
-                      gi_presented_attempt_token_ == 0;
-    gi_candidate_was_reset_ = constants.reset != 0;
+                      selective_reset || gi_presented_attempt_token_ == 0;
+    gi_candidate_was_reset_ = gi_candidate_was_reset_ || constants.reset != 0;
+    gi_candidate_used_diffuse_reset_ =
+        gi_candidate_used_diffuse_reset_ ||
+        (signal_mode == 0u && selective_reset);
+    gi_candidate_used_reflection_reset_ =
+        gi_candidate_used_reflection_reset_ ||
+        (signal_mode != 0u && selective_reset);
     constants.attempt_token_lo =
         static_cast<uint32_t>(temporal_frame_.attempt_token);
     constants.presented_attempt_token_lo =
@@ -7984,6 +8562,10 @@ void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
             gi_presented_attempt_token_ = gi_candidate_attempt_token_;
             if (gi_candidate_was_reset_)
                 gi_history_reset_pending_ = false;
+            if (gi_candidate_used_diffuse_reset_)
+                gi_diffuse_history_reset_pending_ = false;
+            if (gi_candidate_used_reflection_reset_)
+                gi_reflection_history_reset_pending_ = false;
             if (gi_candidate_was_reset_) ++gi_history_reset_count_;
         }
         gi_candidate_frame_serial_ = 0;
@@ -8040,24 +8622,43 @@ void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
 }
 
 void VkSceneRenderer::set_lighting(const VkSceneLighting& lighting) {
-    const bool source_changed =
-        lighting.sun_direction.x != lighting_.sun_direction.x ||
-        lighting.sun_direction.y != lighting_.sun_direction.y ||
-        lighting.sun_direction.z != lighting_.sun_direction.z ||
-        lighting.sun_intensity != lighting_.sun_intensity ||
-        lighting.sun_color.x != lighting_.sun_color.x ||
-        lighting.sun_color.y != lighting_.sun_color.y ||
-        lighting.sun_color.z != lighting_.sun_color.z ||
-        lighting.sky_color.x != lighting_.sky_color.x ||
-        lighting.sky_color.y != lighting_.sky_color.y ||
-        lighting.sky_color.z != lighting_.sky_color.z ||
-        lighting.emission_multiplier != lighting_.emission_multiplier ||
-        // A wider sun redistributes both direct light (softer shadow cone) and
-        // the reflection prefilter, so it invalidates GI history exactly like a
-        // sun move does.
-        lighting.sun_angular_diameter_deg != lighting_.sun_angular_diameter_deg;
-    if (lighting_initialized_ && source_changed)
-        gi_history_reset_pending_ = true;
+    const auto different3 = [](matter::Float3 a, matter::Float3 b) {
+        return a.x != b.x || a.y != b.y || a.z != b.z;
+    };
+    const bool physical_source_changed =
+        lighting_initialized_ &&
+        (different3(lighting.sun_direction, lighting_.sun_direction) ||
+         different3(lighting.authored_sun_rgb,
+                    lighting_.authored_sun_rgb));
+    uint32_t changes = matter::kAtmosphereChangeNone;
+    if (lighting_initialized_) {
+        const auto& a = lighting_.atmosphere_sources;
+        const auto& b = lighting.atmosphere_sources;
+        if (different3(a.live_sun_tint_rgb, b.live_sun_tint_rgb) ||
+            a.sun_multiplier != b.sun_multiplier ||
+            a.sunset_direct_ratio != b.sunset_direct_ratio ||
+            lighting.sun_intensity != lighting_.sun_intensity)
+            changes |= matter::kAtmosphereChangeDirect;
+        if (different3(a.authored_display_sky_chroma_rgb,
+                       b.authored_display_sky_chroma_rgb) ||
+            different3(a.live_sky_tint_rgb, b.live_sky_tint_rgb) ||
+            a.sky_multiplier != b.sky_multiplier)
+            changes |= matter::kAtmosphereChangeDisplay;
+        if (different3(a.authored_irradiance_chroma_rgb,
+                       b.authored_irradiance_chroma_rgb) ||
+            a.sky_irradiance_multiplier != b.sky_irradiance_multiplier ||
+            a.day_ambient_multiplier != b.day_ambient_multiplier ||
+            a.twilight_ambient_multiplier != b.twilight_ambient_multiplier)
+            changes |= matter::kAtmosphereChangeIrradiance;
+        if (lighting.emission_multiplier != lighting_.emission_multiplier)
+            changes |= matter::kAtmosphereChangeEmission;
+        if (lighting.sun_angular_diameter_deg !=
+            lighting_.sun_angular_diameter_deg)
+            changes |= matter::kAtmosphereChangeDisc;
+        if (lighting.sun_shadow_samples != lighting_.sun_shadow_samples)
+            changes |= matter::kAtmosphereChangeShadow;
+    }
+    pending_atmosphere_change_mask_ |= changes;
     lighting_ = lighting;
     // The two disc cosines are DERIVED, not passed in: computing them here is
     // what guarantees every consumer (composite sky, RT environment, RT
@@ -8074,16 +8675,40 @@ void VkSceneRenderer::set_lighting(const VkSceneLighting& lighting) {
     // every frame -- write_tileset_params_buffer() no-ops until
     // ensure_tileset_infra() has run, and re-derives the (cheap) slot table
     // from tileset_slots_ each call, so this stays a plain memcpy+flush.
-    if (source_changed) write_tileset_params_buffer();
+    if (changes != matter::kAtmosphereChangeNone || physical_source_changed)
+        write_tileset_params_buffer();
+}
+
+void VkSceneRenderer::set_atmosphere_settings(
+    const matter::AtmosphereSettings& settings) {
+    const matter::AtmosphereSettings clean = matter::sanitize_atmosphere(settings);
+    atmosphere_settings_ = clean;
+    if (atmosphere_) atmosphere_->request_settings(atmosphere_settings_);
 }
 
 void VkSceneRenderer::set_display_exposure(float exposure_ev) {
+    if (exposure_ev != display_exposure_ev_)
+        pending_atmosphere_change_mask_ |= matter::kAtmosphereChangeExposure;
     display_exposure_ev_ = exposure_ev;
 }
 
 void VkSceneRenderer::set_volumetrics_settings(
     const matter::VulkanVolumetricsSettings& s,
     const matter::FogSettings& fog) {
+    matter::CloudShadowSettings shadows{};
+    shadows.enabled = false;
+    set_volumetrics_settings(s, fog, shadows);
+}
+
+void VkSceneRenderer::set_volumetrics_settings(
+    const matter::VulkanVolumetricsSettings& s,
+    const matter::FogSettings& fog,
+    const matter::CloudShadowSettings& shadows) {
+    cloud_shadow_settings_ = shadows;
+    if (cloud_shadows_) {
+        cloud_shadows_->request_settings(cloud_shadow_settings_);
+        cloud_shadows_->request_cloud_layers(fog);
+    }
     volumetrics_enabled_ = s.enabled;
     volumetrics_debug_view_ = s.vol_debug_view;
     // The composite pass skips froxel integration entirely for a ray whose
@@ -8109,7 +8734,247 @@ void VkSceneRenderer::set_volumetrics_settings(
     volumetrics_height_layer_ = enabled > 0 && fog.density <= 0.0f;
     volumetrics_cloud_top_ = ceiling;
     if (volumetrics_)
-        volumetrics_->update_settings(s, fog);
+        volumetrics_->update_settings(s, fog, shadows);
+}
+
+matter::FroxelGridDimensions VkSceneRenderer::volumetrics_dimensions() const {
+    return volumetrics_ ? volumetrics_->dimensions() : matter::FroxelGridDimensions{160, 90, 128};
+}
+matter::FroxelXyScale VkSceneRenderer::volumetrics_effective_xy_scale() const {
+    return volumetrics_ ? volumetrics_->effective_xy_scale() : matter::FroxelXyScale::X1_0;
+}
+matter::FroxelDepthSlices VkSceneRenderer::volumetrics_effective_depth_slices() const {
+    return volumetrics_ ? volumetrics_->effective_depth_slices() : matter::FroxelDepthSlices::D128;
+}
+VkImageView VkSceneRenderer::volumetrics_integrated_view() const {
+    return volumetrics_ ? volumetrics_->vol_integrated().view : VK_NULL_HANDLE;
+}
+FroxelDispatchGrid VkSceneRenderer::volumetrics_last_dispatch_grid() const {
+    return volumetrics_ ? volumetrics_->last_dispatch_grid()
+                        : FroxelDispatchGrid{};
+}
+bool VkSceneRenderer::volumetrics_last_scatter_history_was_valid_for_test() const {
+    return volumetrics_ && volumetrics_->last_scatter_history_was_valid_for_test();
+}
+uint64_t VkSceneRenderer::volumetrics_resource_generation() const {
+    return volumetrics_ ? volumetrics_->resource_generation() : 0;
+}
+bool VkSceneRenderer::volumetrics_allocation_rejected() const {
+    return volumetrics_ && volumetrics_->allocation_rejected();
+}
+const std::string& VkSceneRenderer::volumetrics_allocation_error() const {
+    static const std::string empty;
+    return volumetrics_ ? volumetrics_->allocation_error() : empty;
+}
+void VkSceneRenderer::set_fail_next_froxel_bundle_creation_for_test(bool enabled) {
+    if (volumetrics_) volumetrics_->set_fail_next_bundle_creation_for_test(enabled);
+}
+
+void VkSceneRenderer::set_fail_next_froxel_bundle_descriptor_allocation_for_test(
+        bool enabled) {
+    if (volumetrics_)
+        volumetrics_->set_fail_next_bundle_descriptor_allocation_for_test(enabled);
+}
+uint32_t VkSceneRenderer::volumetrics_grid_rgba16f_volume_count_for_test() const {
+    return volumetrics_ ? volumetrics_->grid_rgba16f_volume_count_for_test() : 0u;
+}
+bool VkSceneRenderer::volumetrics_cloud_density_allocated_for_test() const {
+    return volumetrics_ && volumetrics_->cloud_density_allocated_for_test();
+}
+matter::FroxelGridDimensions
+VkSceneRenderer::volumetrics_cloud_density_dimensions_for_test() const {
+    return volumetrics_ ? volumetrics_->cloud_density_dimensions_for_test()
+                        : matter::FroxelGridDimensions{};
+}
+uint64_t VkSceneRenderer::volumetrics_grid_bytes_for_test() const {
+    return volumetrics_ ? volumetrics_->grid_bytes_for_test() : 0u;
+}
+uint64_t VkSceneRenderer::volumetrics_persistent_bytes() const {
+    return volumetrics_ ? volumetrics_->grid_bytes_for_test() : 0u;
+}
+bool VkSceneRenderer::readback_volumetrics_density_voxel_for_test(
+    uint32_t x, uint32_t y, uint32_t z, matter::Float4& media,
+    float& cloud_density, std::string& error) {
+    if (!volumetrics_) {
+        error = "volumetrics are unavailable for density readback";
+        return false;
+    }
+    return volumetrics_->readback_density_voxel_for_test(
+        x, y, z, media, cloud_density, error);
+}
+
+bool VkSceneRenderer::readback_volumetrics_integrated_voxel_for_test(
+    uint32_t x, uint32_t y, uint32_t z, matter::Float4& integrated,
+    std::string& error) {
+    if (!volumetrics_) {
+        error = "volumetrics are unavailable for integrated readback";
+        return false;
+    }
+    return volumetrics_->readback_integrated_voxel_for_test(
+        x, y, z, integrated, error);
+}
+
+bool VkSceneRenderer::readback_volumetrics_scatter_voxel_for_test(
+    uint32_t x, uint32_t y, uint32_t z, matter::Float4& scatter,
+    std::string& error) {
+    if (!volumetrics_) {
+        error = "volumetrics are unavailable for scatter readback";
+        return false;
+    }
+    return volumetrics_->readback_scatter_voxel_for_test(
+        x, y, z, scatter, error);
+}
+
+void VkSceneRenderer::set_cloud_shadow_density_layers_for_test(
+    uint32_t sunward_slice, float sunward_sigma,
+    uint32_t receiverward_slice, float receiverward_sigma,
+    bool invalidate_history) {
+    if (cloud_shadows_)
+        cloud_shadows_->set_density_layers_for_test(
+            sunward_slice, sunward_sigma, receiverward_slice,
+            receiverward_sigma, invalidate_history);
+}
+
+void VkSceneRenderer::set_cloud_shadow_density_checker_for_test(
+    float even_sigma, float odd_sigma, bool invalidate_history) {
+    if (cloud_shadows_)
+        cloud_shadows_->set_density_override_for_test(
+            even_sigma, -1, odd_sigma, invalidate_history);
+}
+
+bool VkSceneRenderer::generate_cloud_shadows_for_test(
+    uint32_t frame_slot, const matter::Float3& camera,
+    const matter::Float3& sun_direction, float frame_time,
+    std::string& error) {
+    if (!cloud_shadows_) {
+        error = "cloud shadows are unavailable for test generation";
+        return false;
+    }
+    if (!cloud_shadows_->generate_for_test(
+            frame_slot, camera, sun_direction, frame_time, error))
+        return false;
+    for (auto& frame : frames_)
+        if (!update_environment_descriptor(frame, error)) return false;
+    return true;
+}
+
+void VkSceneRenderer::clear_cloud_shadow_density_override_for_test(
+    bool invalidate_history) {
+    if (cloud_shadows_)
+        cloud_shadows_->clear_density_override_for_test(invalidate_history);
+}
+
+bool VkSceneRenderer::cloud_shadows_active() const {
+    return cloud_shadows_ && cloud_shadows_->active();
+}
+
+uint64_t VkSceneRenderer::cloud_shadow_persistent_bytes() const {
+    return cloud_shadows_ ? cloud_shadows_->persistent_bytes() : 0u;
+}
+
+matter::CloudShadowLevelDesc VkSceneRenderer::cloud_shadow_level_desc(
+    uint32_t level) const {
+    return cloud_shadows_ ? cloud_shadows_->level(level).desc
+                          : matter::CloudShadowLevelDesc{};
+}
+
+VkFormat VkSceneRenderer::cloud_shadow_density_format(uint32_t level) const {
+    return cloud_shadows_ ? cloud_shadows_->level(level).density.format
+                          : VK_FORMAT_UNDEFINED;
+}
+
+VkExtent3D VkSceneRenderer::cloud_shadow_density_extent(uint32_t level) const {
+    return cloud_shadows_ ? cloud_shadows_->level(level).density.extent
+                          : VkExtent3D{};
+}
+
+VkImageView VkSceneRenderer::cloud_shadow_density_view(uint32_t level) const {
+    return cloud_shadows_ ? cloud_shadows_->level(level).density.view
+                          : VK_NULL_HANDLE;
+}
+
+VkFormat VkSceneRenderer::cloud_shadow_cumulative_format(
+    uint32_t level, uint32_t ping) const {
+    return cloud_shadows_ && ping < 2
+        ? cloud_shadows_->level(level).cumulative[ping].format
+        : VK_FORMAT_UNDEFINED;
+}
+
+VkExtent3D VkSceneRenderer::cloud_shadow_cumulative_extent(
+    uint32_t level, uint32_t ping) const {
+    return cloud_shadows_ && ping < 2
+        ? cloud_shadows_->level(level).cumulative[ping].extent
+        : VkExtent3D{};
+}
+
+VkImageView VkSceneRenderer::cloud_shadow_cumulative_view(
+    uint32_t level, uint32_t ping) const {
+    return cloud_shadows_ && ping < 2
+        ? cloud_shadows_->level(level).cumulative[ping].view
+        : VK_NULL_HANDLE;
+}
+
+uint32_t VkSceneRenderer::cloud_shadow_active_ping(uint32_t level) const {
+    return cloud_shadows_ ? cloud_shadows_->level(level).active_index : 0u;
+}
+
+const std::string& VkSceneRenderer::cloud_shadow_allocation_error() const {
+    static const std::string empty;
+    return cloud_shadows_ ? cloud_shadows_->allocation_error() : empty;
+}
+
+void VkSceneRenderer::set_fail_next_cloud_shadow_bundle_creation_for_test(
+    bool enabled) {
+    if (cloud_shadows_)
+        cloud_shadows_->set_fail_next_bundle_creation_for_test(enabled);
+}
+
+bool VkSceneRenderer::cloud_shadow_failed_candidate_destroyed_for_test() const {
+    return cloud_shadows_ &&
+           cloud_shadows_->failed_candidate_destroyed_for_test();
+}
+
+size_t VkSceneRenderer::cloud_shadow_retired_bundle_count_for_test() const {
+    return cloud_shadows_ ? cloud_shadows_->retired_bundle_count_for_test() : 0u;
+}
+
+bool VkSceneRenderer::cloud_shadow_environment_bindings_match_for_test() const {
+    if (!cloud_shadows_ || frames_.empty()) return false;
+    const FrameResources& frame = frames_[active_frame_index_];
+    for (uint32_t index = 0; index < 4; ++index) {
+        if (frame.environment_cloud_views[index] !=
+            cloud_shadows_->environment_image(index).view) return false;
+    }
+    return true;
+}
+
+float VkSceneRenderer::cloud_shadow_environment_state_for_test(
+    uint32_t index) const {
+    return !frames_.empty() && index < 4
+        ? frames_[active_frame_index_].environment_cloud_state[index] : 0.0f;
+}
+
+VkImageView VkSceneRenderer::cloud_shadow_environment_view_for_test(
+    uint32_t index) const {
+    return !frames_.empty() && index < 4
+        ? frames_[active_frame_index_].environment_cloud_views[index]
+        : VK_NULL_HANDLE;
+}
+
+VkExtent3D VkSceneRenderer::cloud_shadow_environment_extent_for_test(
+    uint32_t index) const {
+    return !frames_.empty() && index < 4
+        ? frames_[active_frame_index_].environment_cloud_extents[index]
+        : VkExtent3D{};
+}
+
+bool VkSceneRenderer::cloud_shadow_environment_image_is_clear_for_test(
+    uint32_t index, std::string& error) {
+    if (!cloud_shadows_) {
+        error = "cloud-shadow resources are unavailable for clear readback";
+        return false;
+    }
+    return cloud_shadows_->environment_image_is_clear_for_test(index, error);
 }
 
 void VkSceneRenderer::set_tileset_pom_settings(
@@ -9632,6 +10497,8 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     }
     if (!ensure_frame_resources(frame.frame_slot_count, error)) return false;
     FrameResources& selected = frames_[frame.frame_slot];
+    if (!resolve_atmosphere_transaction(selected, camera_eye.y, error))
+        return false;
     // M1d: this slot's previous submission has retired (begin_frame waited its
     // fence) and nothing has written its buffers yet, so `commands` still holds
     // that frame's GPU-written instance counts and `draw_transforms` its tokens.
@@ -9670,6 +10537,11 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
             // the per-query availability bits below gate each sample individually.
             if (rb == VK_SUCCESS || rb == VK_NOT_READY) {
                 for (uint32_t z = 0; z < kGpuZoneCount; ++z) {
+                    // Atmosphere LUT candidates submit and resolve their own
+                    // query pool before this frame begins. Frame query slot
+                    // 12 is intentionally unwritten, so treating it as an
+                    // absent frame pass would erase a newer module sample.
+                    if (z == kGpuZoneAtmosphere) continue;
                     const uint8_t written = selected.ts_written[z];
                     if ((written & 3u) != 3u) {
                         // Zone did not execute this frame — report 0 immediately.
@@ -10974,16 +11846,15 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         float sun_cone_scale;
     } constants{};
     constants.clip_to_world = pack_glsl_mat4(matrices.clip_to_world);
-    const float x = -lighting_.sun_direction.x;
-    const float y = -lighting_.sun_direction.y;
-    const float z = -lighting_.sun_direction.z;
-    const float length = std::sqrt(x*x + y*y + z*z);
-    constants.to_sun_max_distance[0] = length > 0 ? x / length : 0;
-    constants.to_sun_max_distance[1] = length > 0 ? y / length : 1;
-    constants.to_sun_max_distance[2] = length > 0 ? z / length : 0;
+    constants.to_sun_max_distance[0] =
+        atmosphere_replay_constants_.rt_to_sun.x;
+    constants.to_sun_max_distance[1] =
+        atmosphere_replay_constants_.rt_to_sun.y;
+    constants.to_sun_max_distance[2] =
+        atmosphere_replay_constants_.rt_to_sun.z;
     constants.to_sun_max_distance[3] = ray_tracing_settings_.max_distance;
     constants.bias = ray_tracing_settings_.bias;
-    constants.samples = std::max(1u, ray_tracing_settings_.samples);
+    constants.samples = atmosphere_replay_constants_.rt_shadow_samples;
     constants.debug_view = ray_tracing_settings_.debug_view ? 1u : 0u;
     // With POM disabled the ground stays flat at the datum, so there is no
     // displaced roof to escape -- lifting by the relief cap would then push
@@ -10992,15 +11863,17 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                              ? tileset_pom_settings_.relief_cap_m + 0.02f
                              : 0.02f;
     constants.sun_cone_scale =
-        matter::sun_size_scale(lighting_.sun_angular_diameter_deg);
+        atmosphere_replay_constants_.rt_shadow_sun_cone_scale;
     last_rt_samples_ = constants.samples;
     last_rt_debug_view_ = constants.debug_view != 0;
     vkCmdBindPipeline(frame.command_buffer,
                       VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline_);
     const VkDescriptorSet rt_set = rt_descriptor_sets_[frame.frame_slot];
+    const VkDescriptorSet rt_sets[] = {rt_set,
+                                        frames_[frame.frame_slot].environment_descriptor_set};
     vkCmdBindDescriptorSets(frame.command_buffer,
                             VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
-                            rt_pipeline_layout_, 0, 1, &rt_set, 0, nullptr);
+                            rt_pipeline_layout_, 0, 2, rt_sets, 0, nullptr);
     vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                        VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(constants),
                        &constants);
@@ -11034,8 +11907,8 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         struct alignas(16) GiConstants {
             GpuMat4 clip_to_world;
             float to_sun_intensity[4];
-            float sun_color_bias[4];
-            float sky_color_distance[4];
+            float bias;
+            float max_distance;
             uint32_t presented_frame_index;
             float max_reflection_roughness;
             float diffuse_multiplier;
@@ -11049,31 +11922,31 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
             float sun_disc_cos_edge;
             float sun_disc_cos_core;
             float sun_size_scale;
+            float pad0;
+            float pad1;
         } gi{};
+        static_assert(sizeof(GiConstants) == 128);
         gi.clip_to_world = pack_glsl_mat4(matrices.clip_to_world);
         gi.to_sun_intensity[0] = constants.to_sun_max_distance[0];
         gi.to_sun_intensity[1] = constants.to_sun_max_distance[1];
         gi.to_sun_intensity[2] = constants.to_sun_max_distance[2];
         gi.to_sun_intensity[3] = lighting_.sun_intensity;
-        gi.sun_color_bias[0] = lighting_.sun_color.x;
-        gi.sun_color_bias[1] = lighting_.sun_color.y;
-        gi.sun_color_bias[2] = lighting_.sun_color.z;
-        gi.sun_color_bias[3] = ray_tracing_settings_.bias;
-        gi.sky_color_distance[0] = lighting_.sky_color.x;
-        gi.sky_color_distance[1] = lighting_.sky_color.y;
-        gi.sky_color_distance[2] = lighting_.sky_color.z;
-        gi.sky_color_distance[3] = ray_tracing_settings_.max_distance;
+        gi.bias = ray_tracing_settings_.bias;
+        gi.max_distance = ray_tracing_settings_.max_distance;
         gi.presented_frame_index =
             static_cast<uint32_t>(temporal_frame_.presented_frame_index);
         gi.max_reflection_roughness =
             std::clamp(gi_settings_.max_reflection_roughness, 0.02f, 1.0f);
         gi.diffuse_multiplier = gi_settings_.diffuse_multiplier;
         gi.reflection_multiplier = gi_settings_.reflection_multiplier;
-        gi.emission_multiplier = lighting_.emission_multiplier;
-        gi.sun_disc_cos_edge = lighting_.sun_disc_cos_edge;
-        gi.sun_disc_cos_core = lighting_.sun_disc_cos_core;
+        gi.emission_multiplier =
+            atmosphere_replay_constants_.rt_gi_emission_multiplier;
+        gi.sun_disc_cos_edge =
+            atmosphere_replay_constants_.rt_gi_sun_disc_cos_edge;
+        gi.sun_disc_cos_core =
+            atmosphere_replay_constants_.rt_gi_sun_disc_cos_core;
         gi.sun_size_scale =
-            matter::sun_size_scale(lighting_.sun_angular_diameter_deg);
+            atmosphere_replay_constants_.rt_gi_sun_size_scale;
         vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi), &gi);
         const VkStridedDeviceAddressRegionKHR gi_raygen{
@@ -11199,6 +12072,19 @@ bool VkSceneRenderer::record_cull_and_render(
         error = "record_cull_and_render requires prepared acquired frame resources";
         return false;
     }
+    if (atmosphere_) {
+        const matter::Float3 to_sun{-lighting_.sun_direction.x,
+                                    -lighting_.sun_direction.y,
+                                    -lighting_.sun_direction.z};
+        // Dirty LUT dispatches are synchronously submitted and timestamped by
+        // VkAtmosphere::build_candidate during prepare_frame(). This record is
+        // intentionally a no-op on committed/steady candidates, so bracketing
+        // it with the frame query pool would manufacture a zero-duration lane.
+        if (!atmosphere_->record(frame.command_buffer, camera_eye.y, to_sun, error)) {
+            error = "atmosphere LUT generation failed: " + error;
+            return false;
+        }
+    }
     if (limits_.max_draw_indirect_count < 1) {
         error = "Vulkan maxDrawIndirectCount cannot support grouped indirect draws";
         return false;
@@ -11228,6 +12114,33 @@ bool VkSceneRenderer::record_cull_and_render(
     }
 
     FrameResources& selected = frames_[frame.frame_slot];
+    // Resize froxels while this frame slot is known complete and before the
+    // composite descriptor below is written. The same frame then binds the
+    // candidate integrated view rather than one frame of the retired bundle.
+    if (volumetrics_ &&
+        !volumetrics_->prepare_froxel_bundle(frame.frame_slot, error))
+        return false;
+    if (cloud_shadows_) {
+        if (!cloud_shadows_->prepare_frame(
+                frame.frame_slot, camera_eye, lighting_.sun_direction,
+                lighting_.sun_angular_diameter_deg, error)) {
+            return false;
+        }
+        const bool cloud_shadow_work = cloud_shadows_->record_work_pending();
+        if (cloud_shadow_work)
+            write_gpu_timestamp(frame.command_buffer, kGpuZoneCloudShadows,
+                                false, selected);
+        if (!cloud_shadows_->record(frame.command_buffer,
+                                    static_cast<float>(frame.serial) *
+                                        (1.0f / 60.0f),
+                                    error)) {
+            return false;
+        }
+        if (cloud_shadow_work)
+            write_gpu_timestamp(frame.command_buffer, kGpuZoneCloudShadows,
+                                true, selected);
+    }
+    if (!update_environment_descriptor(selected, error)) return false;
     const bool native_gi_effective = gi_settings_.enabled &&
         ray_tracing_settings_.enabled && vulkan_->ray_tracing_available() &&
         !rt_instances_.empty()
@@ -11276,8 +12189,15 @@ bool VkSceneRenderer::record_cull_and_render(
         gi_atrous_[0].lifetime, gi_atrous_[1].lifetime,
         gi_spec_atrous_[0].lifetime, gi_spec_atrous_[1].lifetime,
         gi_trans_atrous_[0].lifetime, gi_trans_atrous_[1].lifetime};
-    if (volumetrics_ && volumetrics_->active())
+    if (volumetrics_ && volumetrics_->active()) {
         attachments.push_back(volumetrics_->vol_integrated().lifetime);
+        // Task 12 scatter samples this image in enhanced mode. Current cost
+        // retains only the stable 1^3 dummy, so keeping the descriptor backing
+        // alive changes no grid-sized footprint.
+        attachments.push_back(volumetrics_->cloud_density_or_dummy().lifetime);
+    }
+    if (cloud_shadows_)
+        cloud_shadows_->append_frame_lifetimes(frame.frame_slot, attachments);
     for (auto* histories : {&gi_history_, &gi_spec_history_,
                             &gi_trans_history_}) {
         for (auto& history : *histories) {
@@ -11342,6 +12262,14 @@ bool VkSceneRenderer::record_cull_and_render(
     PROFILE_SCOPE_NAMED(z_setup, "cull.setup");
     bool ray_trace_ok = true;
     VkSceneLighting frame_lighting = lighting_;
+    frame_lighting.sun_direction =
+        atmosphere_replay_constants_.composite_sun_direction;
+    frame_lighting.emission_multiplier =
+        atmosphere_replay_constants_.composite_emission_multiplier;
+    frame_lighting.sun_disc_cos_edge =
+        atmosphere_replay_constants_.composite_sun_disc_cos_edge;
+    frame_lighting.sun_disc_cos_core =
+        atmosphere_replay_constants_.composite_sun_disc_cos_core;
     frame_lighting.diffuse_rt_multiplier = gi_settings_.enabled &&
                                   ray_tracing_settings_.enabled &&
                                   vulkan_->ray_tracing_available()
@@ -11386,6 +12314,8 @@ bool VkSceneRenderer::record_cull_and_render(
     frame_lighting.camera_near = matrices.view_to_clip.m[11] /
                                  (matrices.view_to_clip.m[10] + 1.0f);
     frame_lighting.camera_y = camera_eye.y;
+    frame_lighting.camera_pos_x = camera_eye.x;
+    frame_lighting.camera_pos_z = camera_eye.z;
     frame_lighting.vol_cloud_top = volumetrics_cloud_top_;
     frame_lighting.vol_height_layer =
         volumetrics_height_layer_ ? 1.0f : 0.0f;
@@ -11436,6 +12366,7 @@ bool VkSceneRenderer::record_cull_and_render(
                         composite_pipeline_,
                         composite_pipeline_layout_,
                         selected.composite_descriptor_set,
+                        selected.environment_descriptor_set,
                         vertices_.buffer,
                         indices_.buffer,
                         selected.commands.buffer,
@@ -11471,11 +12402,17 @@ bool VkSceneRenderer::record_cull_and_render(
                         frame.frame_slot,
                         static_cast<float>(frame.serial) * (1.0f / 60.0f),
                         kGpuZoneVolumetrics,
+                        kGpuZoneVolDensity,
+                        kGpuZoneVolScatter,
+                        kGpuZoneVolIntegrate,
                         &selected.rt_tlas,
                         this,              // WP-E: vt_hooks
                         kGpuZoneVt};       // WP-E: vt_zone
-    if (volumetrics_)
+    if (volumetrics_) {
         volumetrics_->set_lighting(frame_lighting);
+        volumetrics_->set_environment_descriptor(
+            selected.environment_descriptor_set);
+    }
     // (vt_begin_frame ran near the top of this function — see the note there:
     // it rewrites scene set 1, which the cull dispatch has already bound by
     // the time control reaches here.)
@@ -11918,6 +12855,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
         return false;
     }
     FrameResources& selected = frames_[active_frame_index_];
+    if (!resolve_atmosphere_transaction(selected, 0.0f, error)) return false;
     update_composite_descriptor(selected);
     // Name the fields: production raster records gained per-skin LOD/cluster
     // streams and this legacy static-only path must keep every skin field empty.
@@ -11957,6 +12895,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     record.composite_pipeline = composite_pipeline_;
     record.composite_layout = composite_pipeline_layout_;
     record.composite_set = selected.composite_descriptor_set;
+    record.environment_set = selected.environment_descriptor_set;
     record.vertex_buffer = vertices_.buffer;
     record.index_buffer = indices_.buffer;
     record.indirect_buffer = selected.commands.buffer;
@@ -11970,6 +12909,14 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     record.max_draw_indirect_count = limits_.max_draw_indirect_count;
     record.lighting = [&] {
         auto lighting = lighting_;
+        lighting.sun_direction =
+            atmosphere_replay_constants_.composite_sun_direction;
+        lighting.emission_multiplier =
+            atmosphere_replay_constants_.composite_emission_multiplier;
+        lighting.sun_disc_cos_edge =
+            atmosphere_replay_constants_.composite_sun_disc_cos_edge;
+        lighting.sun_disc_cos_core =
+            atmosphere_replay_constants_.composite_sun_disc_cos_core;
         lighting.debug_view = composite_debug_override_;
         return lighting;
     }();
@@ -12001,6 +12948,392 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
 #endif
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+VkSampler VkSceneRenderer::test_sky_view_sampler() const {
+    return sky_view_linear_sampler_;
+}
+
+VkSampler VkSceneRenderer::test_composite_sampler() const {
+    return composite_sampler_;
+}
+
+bool VkSceneRenderer::test_dispatch_environment_sampling_fixture(
+    const EnvironmentSamplingGpuFixture& fixture,
+    std::vector<matter::Float3>& output, std::string& error) {
+    output.clear();
+    error.clear();
+    if (!initialized_ || sky_view_linear_sampler_ == VK_NULL_HANDLE ||
+        fixture.uv.empty()) {
+        error = "environment sampling fixture requires an initialized renderer and UVs";
+        return false;
+    }
+    const VkDeviceSize lut_bytes = fixture.lut.size() * sizeof(matter::Float4);
+    const VkDeviceSize uv_bytes = fixture.uv.size() * sizeof(matter::Float2);
+    const VkDeviceSize output_bytes = fixture.uv.size() * sizeof(matter::Float4);
+    matter::VkBufferResource lut_upload;
+    matter::VkBufferResource uv_buffer;
+    matter::VkBufferResource output_buffer;
+    matter::VkImageResource lut_image;
+    if (!matter::create_buffer(
+            *vulkan_, lut_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, lut_upload, error) ||
+        !matter::create_buffer(
+            *vulkan_, uv_bytes,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uv_buffer, error) ||
+        !matter::create_buffer(
+            *vulkan_, output_bytes,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+            output_buffer, error) ||
+        !matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R32G32B32A32_SFLOAT,
+            {192, 108, 1},
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            lut_image, error) ||
+        !matter::map_buffer(lut_upload, error) ||
+        !matter::map_buffer(uv_buffer, error))
+        return false;
+    auto* packed_lut = static_cast<matter::Float4*>(lut_upload.mapped);
+    for (size_t i = 0; i < fixture.lut.size(); ++i)
+        packed_lut[i] = {fixture.lut[i].x, fixture.lut[i].y,
+                         fixture.lut[i].z, 1.0f};
+    std::memcpy(uv_buffer.mapped, fixture.uv.data(), uv_bytes);
+    if (!matter::flush_buffer(lut_upload, 0, lut_bytes, error) ||
+        !matter::flush_buffer(uv_buffer, 0, uv_bytes, error))
+        return false;
+    struct UploadRecord {
+        matter::VkImageResource* image;
+        VkBuffer source;
+    } upload{&lut_image, lut_upload.buffer};
+    const auto upload_callback = [](VkCommandBuffer command_buffer,
+                                    void* opaque) {
+        auto& item = *static_cast<UploadRecord*>(opaque);
+        transition_for_use(command_buffer, *item.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageExtent = {192, 108, 1};
+        vkCmdCopyBufferToImage(command_buffer, item.source, item.image->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        matter::record_image_transition(
+            command_buffer, *item.image,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    };
+    if (!matter::submit_immediate(
+            *vulkan_, upload_callback, &upload, error,
+            matter::ImmediateSubmitPhase::staging_upload,
+            {lut_upload.lifetime, lut_image.lifetime}))
+        return false;
+    std::vector<VkDescriptorSetLayoutBinding> bindings(3);
+    bindings[0] = descriptor_binding(
+        0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings[1] = descriptor_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                     VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings[2] = descriptor_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                     VK_SHADER_STAGE_COMPUTE_BIT);
+    matter::VkComputePipelineResource pipeline;
+    if (!matter::create_compute_pipeline(
+            *vulkan_, "environment_sampling_test.comp.spv", bindings,
+            pipeline, error))
+        return false;
+    VkDescriptorImageInfo image_info{sky_view_linear_sampler_, lut_image.view,
+                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet image_write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    image_write.dstSet = pipeline.descriptor_set;
+    image_write.dstBinding = 0;
+    image_write.descriptorCount = 1;
+    image_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    image_write.pImageInfo = &image_info;
+    vkUpdateDescriptorSets(vulkan_->device(), 1, &image_write, 0, nullptr);
+    matter::write_storage_buffer_descriptor(pipeline, 1, uv_buffer, 0,
+                                            uv_bytes);
+    matter::write_storage_buffer_descriptor(pipeline, 2, output_buffer, 0,
+                                            output_bytes);
+    if (!matter::dispatch_compute(
+            *vulkan_, pipeline,
+            static_cast<uint32_t>((fixture.uv.size() + 63u) / 64u), 1, 1,
+            error))
+        return false;
+    std::vector<matter::Float4> packed_output(fixture.uv.size());
+    if (!matter::readback_buffer(*vulkan_, output_buffer, packed_output.data(),
+                                 output_bytes, 0, error))
+        return false;
+    output.reserve(packed_output.size());
+    for (const matter::Float4& value : packed_output)
+        output.push_back({value.x, value.y, value.z});
+    return true;
+}
+
+bool VkSceneRenderer::test_dispatch_display_transform_fixture(
+    const DisplayTransformGpuFixture& fixture,
+    std::vector<matter::Float3>& output, std::string& error) {
+    output.clear();
+    error.clear();
+    if (!initialized_ || fixture.width == 0 || fixture.height == 0 ||
+        display_set_layout_ == VK_NULL_HANDLE ||
+        display_pipeline_layout_ == VK_NULL_HANDLE) {
+        error = "display transform fixture requires an initialized renderer and extent";
+        return false;
+    }
+    const size_t pixel_count =
+        static_cast<size_t>(fixture.width) * fixture.height;
+    const VkDeviceSize output_bytes = pixel_count * sizeof(matter::Float4);
+    matter::VkImageResource input;
+    matter::VkImageResource target;
+    matter::VkBufferResource readback;
+    if (!matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R32G32B32A32_SFLOAT,
+            {1, 1, 1},
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            input, error) ||
+        !matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R32G32B32A32_SFLOAT,
+            {fixture.width, fixture.height, 1},
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            target, error) ||
+        !matter::create_buffer(
+            *vulkan_, output_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+            readback, error))
+        return false;
+
+    struct FixtureGraphics {
+        VkDevice device = VK_NULL_HANDLE;
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        VkDescriptorPool pool = VK_NULL_HANDLE;
+        ~FixtureGraphics() {
+            if (pipeline != VK_NULL_HANDLE)
+                vkDestroyPipeline(device, pipeline, nullptr);
+            if (pool != VK_NULL_HANDLE)
+                vkDestroyDescriptorPool(device, pool, nullptr);
+        }
+    } graphics;
+    graphics.device = vulkan_->device();
+    const VkDescriptorPoolSize pool_size{
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+    VkDescriptorPoolCreateInfo pool_create{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool_create.maxSets = 1;
+    pool_create.poolSizeCount = 1;
+    pool_create.pPoolSizes = &pool_size;
+    VkResult result = vkCreateDescriptorPool(
+        graphics.device, &pool_create, nullptr, &graphics.pool);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateDescriptorPool(display fixture)", result,
+                       error);
+    VkDescriptorSet descriptor = VK_NULL_HANDLE;
+    VkDescriptorSetAllocateInfo allocate{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocate.descriptorPool = graphics.pool;
+    allocate.descriptorSetCount = 1;
+    allocate.pSetLayouts = &display_set_layout_;
+    result = vkAllocateDescriptorSets(graphics.device, &allocate, &descriptor);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkAllocateDescriptorSets(display fixture)", result,
+                       error);
+    VkDescriptorImageInfo input_info{composite_sampler_, input.view,
+                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet input_write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    input_write.dstSet = descriptor;
+    input_write.dstBinding = 0;
+    input_write.descriptorCount = 1;
+    input_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    input_write.pImageInfo = &input_info;
+    vkUpdateDescriptorSets(graphics.device, 1, &input_write, 0, nullptr);
+
+    VkShaderModule vertex = VK_NULL_HANDLE;
+    VkShaderModule fragment = VK_NULL_HANDLE;
+    if (!create_shader_module(graphics.device, "composite.vert.spv", vertex,
+                              error) ||
+        !create_shader_module(graphics.device, "display_transform.frag.spv",
+                              fragment, error)) {
+        if (vertex != VK_NULL_HANDLE)
+            vkDestroyShaderModule(graphics.device, vertex, nullptr);
+        return false;
+    }
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vertex;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragment;
+    stages[1].pName = "main";
+    VkPipelineVertexInputStateCreateInfo vertex_input{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo input_assembly{
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport_state{
+        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewport_state.viewportCount = 1;
+    viewport_state.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rasterization{
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterization.cullMode = VK_CULL_MODE_NONE;
+    rasterization.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterization.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo multisample{
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineColorBlendAttachmentState blend{};
+    blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+                           VK_COLOR_COMPONENT_G_BIT |
+                           VK_COLOR_COMPONENT_B_BIT |
+                           VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo color_blend{
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    color_blend.attachmentCount = 1;
+    color_blend.pAttachments = &blend;
+    const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
+                                             VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{
+        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_states;
+    const VkFormat target_format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    VkPipelineRenderingCreateInfo rendering_create{
+        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    rendering_create.colorAttachmentCount = 1;
+    rendering_create.pColorAttachmentFormats = &target_format;
+    VkGraphicsPipelineCreateInfo pipeline_create{
+        VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    pipeline_create.pNext = &rendering_create;
+    pipeline_create.stageCount = 2;
+    pipeline_create.pStages = stages;
+    pipeline_create.pVertexInputState = &vertex_input;
+    pipeline_create.pInputAssemblyState = &input_assembly;
+    pipeline_create.pViewportState = &viewport_state;
+    pipeline_create.pRasterizationState = &rasterization;
+    pipeline_create.pMultisampleState = &multisample;
+    pipeline_create.pColorBlendState = &color_blend;
+    pipeline_create.pDynamicState = &dynamic;
+    pipeline_create.layout = display_pipeline_layout_;
+    result = vkCreateGraphicsPipelines(
+        graphics.device, VK_NULL_HANDLE, 1, &pipeline_create, nullptr,
+        &graphics.pipeline);
+    vkDestroyShaderModule(graphics.device, fragment, nullptr);
+    vkDestroyShaderModule(graphics.device, vertex, nullptr);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateGraphicsPipelines(display fixture)", result,
+                       error);
+
+    struct DisplayRecord {
+        matter::VkImageResource* input;
+        matter::VkImageResource* target;
+        VkBuffer readback;
+        VkPipeline pipeline;
+        VkPipelineLayout layout;
+        VkDescriptorSet descriptor;
+        uint32_t width;
+        uint32_t height;
+        matter::Float3 hdr;
+        float push[3];
+    } record{&input, &target, readback.buffer, graphics.pipeline,
+             display_pipeline_layout_, descriptor, fixture.width,
+             fixture.height, fixture.hdr,
+             {fixture.exposure_ev, 0.0f, fixture.srgb_output ? 1.0f : 0.0f}};
+    const auto record_callback = [](VkCommandBuffer command_buffer,
+                                    void* opaque) {
+        auto& item = *static_cast<DisplayRecord*>(opaque);
+        const VkClearColorValue hdr_clear{{item.hdr.x, item.hdr.y,
+                                           item.hdr.z, 1.0f}};
+        clear_color_image_for_use(
+            command_buffer, *item.input, hdr_clear,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        transition_for_use(command_buffer, *item.target,
+                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
+        VkRenderingAttachmentInfo attachment{
+            VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        attachment.imageView = item.target->view;
+        attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+        rendering.renderArea.extent = {item.width, item.height};
+        rendering.layerCount = 1;
+        rendering.colorAttachmentCount = 1;
+        rendering.pColorAttachments = &attachment;
+        vkCmdBeginRendering(command_buffer, &rendering);
+        VkViewport viewport{0.0f, 0.0f, static_cast<float>(item.width),
+                            static_cast<float>(item.height), 0.0f, 1.0f};
+        const VkRect2D scissor{{0, 0}, {item.width, item.height}};
+        vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+        vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          item.pipeline);
+        vkCmdBindDescriptorSets(command_buffer,
+                                VK_PIPELINE_BIND_POINT_GRAPHICS, item.layout,
+                                0, 1, &item.descriptor, 0, nullptr);
+        vkCmdPushConstants(command_buffer, item.layout,
+                           VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(item.push), item.push);
+        vkCmdDraw(command_buffer, 3, 1, 0, 0);
+        vkCmdEndRendering(command_buffer);
+        matter::record_image_transition(
+            command_buffer, *item.target,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageExtent = {item.width, item.height, 1};
+        vkCmdCopyImageToBuffer(command_buffer, item.target->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               item.readback, 1, &copy);
+        VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+        VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependency.memoryBarrierCount = 1;
+        dependency.pMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
+    };
+    if (!matter::submit_immediate(
+            *vulkan_, record_callback, &record, error,
+            matter::ImmediateSubmitPhase::raster_submission,
+            {input.lifetime, target.lifetime, readback.lifetime}))
+        return false;
+    std::vector<matter::Float4> packed(pixel_count);
+    if (!matter::readback_buffer(*vulkan_, readback, packed.data(),
+                                 output_bytes, 0, error))
+        return false;
+    output.reserve(pixel_count);
+    for (const matter::Float4& value : packed)
+        output.push_back({value.x, value.y, value.z});
+    return true;
+}
+
 bool VkSceneRenderer::test_record_hdr_constant(
     const matter::VulkanFrame& frame, matter::Float3 color,
     std::string& error) {
@@ -12264,7 +13597,7 @@ bool VkSceneRenderer::record_composite_to_swapchain(
     // choose_surface_format prefers B8G8R8A8_SRGB, and the readback hands the
     // raw swapchain bytes back with only a BGR swap.
     const float display_push[3] = {
-        display_exposure_ev_,
+        atmosphere_replay_constants_.display_exposure_ev,
         composite_debug_override_ > 2.5f ? 1.0f : 0.0f,
         (display_pipeline_format_ == VK_FORMAT_B8G8R8A8_SRGB ||
          display_pipeline_format_ == VK_FORMAT_R8G8B8A8_SRGB)

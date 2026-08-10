@@ -1,6 +1,7 @@
 #include "matter/json_doc.h"
 
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -132,8 +133,23 @@ private:
                           peek() == 'e' || peek() == 'E' || peek() == '+' || peek() == '-'))
             ++i_;
         if (i_ == start) return false;
+        const std::string token = s_.substr(start, i_ - start);
+        const bool unsigned_integer = !token.empty() &&
+            token.find_first_not_of("0123456789") == std::string::npos;
+        if (unsigned_integer) {
+            errno = 0;
+            char* end = nullptr;
+            const unsigned long long exact = std::strtoull(token.c_str(), &end, 10);
+            constexpr std::uint64_t kMaxExactDoubleInteger = 9007199254740992ull;
+            if (errno != ERANGE && end && *end == '\0' &&
+                exact > kMaxExactDoubleInteger) {
+                out.kind = Value::Kind::UInt64;
+                out.uint64_value = static_cast<std::uint64_t>(exact);
+                return true;
+            }
+        }
         out.kind = Value::Kind::Number;
-        out.num = std::atof(s_.substr(start, i_ - start).c_str());
+        out.num = std::atof(token.c_str());
         return true;
     }
 };
@@ -213,6 +229,9 @@ void write_json(const Value& v, std::string& out) {
             }
             break;
         }
+        case Value::Kind::UInt64:
+            out += std::to_string(v.uint64_value);
+            break;
         case Value::Kind::String: write_json_escaped(v.str, out); break;
         case Value::Kind::Array: {
             out += '[';

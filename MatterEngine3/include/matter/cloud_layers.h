@@ -41,6 +41,7 @@
 // floor with no upper bound, worlds depend on it, and forcing it into this
 // shape would change every one of them.
 
+#include <cmath>
 #include <cstdint>
 
 namespace matter {
@@ -99,6 +100,12 @@ struct CloudLayer {
     // is per-layer rather than shared with FogSettings::wind (which advects
     // the ground-fog noise and nothing else).
     float wind[3] = {0.0f, 0.0f, 0.0f};
+
+    float weather_scale = 0.00025f;
+    float weather_influence = 0.0f;
+    float detail_scale = 0.012f;
+    float detail_erosion = 0.0f;
+    float shape_bias = 0.0f;
 };
 
 // Octave ceiling. Four is where the fbm stops adding shape a froxel grid can
@@ -204,6 +211,15 @@ inline void sanitize_cloud_layer(CloudLayer& layer) {
     if (layer.gain > 1.0f) layer.gain = 1.0f;
     if (layer.coverage < 0.0f) layer.coverage = 0.0f;
     if (layer.coverage > 1.0f) layer.coverage = 1.0f;
+    if (!(layer.weather_scale > 0.0f)) layer.weather_scale = 0.00025f;
+    if (!std::isfinite(layer.weather_influence) || layer.weather_influence < 0.0f) layer.weather_influence = 0.0f;
+    if (layer.weather_influence > 1.0f) layer.weather_influence = 1.0f;
+    if (!(layer.detail_scale > 0.0f)) layer.detail_scale = 0.012f;
+    if (!std::isfinite(layer.detail_erosion) || layer.detail_erosion < 0.0f) layer.detail_erosion = 0.0f;
+    if (layer.detail_erosion > 1.0f) layer.detail_erosion = 1.0f;
+    if (!std::isfinite(layer.shape_bias)) layer.shape_bias = 0.0f;
+    if (layer.shape_bias < -1.0f) layer.shape_bias = -1.0f;
+    if (layer.shape_bias > 1.0f) layer.shape_bias = 1.0f;
 }
 
 // ---------------------------------------------------------------------------
@@ -238,9 +254,19 @@ struct GpuCloudLayer {
 
     float wind[3];
     float pad1;
+
+    float weather_scale;
+    float weather_influence;
+    float detail_scale;
+    float detail_erosion;
+
+    float shape_bias;
+    float pad2;
+    float pad3;
+    float pad4;
 };
-static_assert(sizeof(GpuCloudLayer) == 64,
-              "GpuCloudLayer must stay 64 bytes — vol_density.comp's SSBO "
+static_assert(sizeof(GpuCloudLayer) == 96,
+              "GpuCloudLayer must stay 96 bytes — vol_density.comp's SSBO "
               "stride depends on it");
 
 // Two layers with identical parameters at different altitudes would otherwise
@@ -267,6 +293,14 @@ inline void pack_cloud_layer(const CloudLayer& in, int index,
     out.pad0 = 0.0f;
     for (int i = 0; i < 3; ++i) out.wind[i] = in.wind[i];
     out.pad1 = 0.0f;
+    out.weather_scale = in.weather_scale;
+    out.weather_influence = in.weather_influence;
+    out.detail_scale = in.detail_scale;
+    out.detail_erosion = in.detail_erosion;
+    out.shape_bias = in.shape_bias;
+    out.pad2 = 0.0f;
+    out.pad3 = 0.0f;
+    out.pad4 = 0.0f;
 }
 
 }  // namespace matter

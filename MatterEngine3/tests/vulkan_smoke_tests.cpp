@@ -4,10 +4,12 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <string>
@@ -15,6 +17,7 @@
 #include <vector>
 
 #include "matter/vulkan_device.h"
+#include "matter/display_dither.h"
 #include "render/gpu_matrix_pack.h"
 #include "render/lod_distance.h"
 #include "render/matrix_math.h"
@@ -28,16 +31,156 @@
 #include "render/vk_pipeline.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
+#include "render/vk_volumetrics.h"
+#include "render/vk_atmosphere.h"
+#include "render/vk_cloud_shadows.h"
+#include "matter/atmosphere_lighting.h"
 #include "provider/sector_resolver.h"
 #include "tileset_gtex.h"
 #include "../../MatterEditor/src/ui.h"
+#include "../../MatterEditor/src/viewer_commands.h"
 // LAST on purpose: impostor_bake.h reaches precomp.h, whose `using namespace
 // std;` makes `byte` ambiguous inside any <windows.h> pulled in after it.
 #include "impostor_bake.h"   // M2.5 kQuadMarker, the billboard sentinel
 
 namespace {
 
+void test_atmosphere_timing_contract() {
+    using Renderer = viewer::VkSceneRenderer;
+    CHECK(Renderer::kGpuZoneTotal == 0 && Renderer::kGpuZoneVolumetrics == 9 &&
+              Renderer::kGpuZoneVt == 10 && Renderer::kGpuZoneRtGi == 11,
+          "atmosphere timings retain every existing GPU-zone index");
+    CHECK(Renderer::kGpuZoneAtmosphere == 12 &&
+              Renderer::kGpuZoneCloudShadows == 13 &&
+              Renderer::kGpuZoneVolDensity == 14 &&
+              Renderer::kGpuZoneVolScatter == 15 &&
+              Renderer::kGpuZoneVolIntegrate == 16 &&
+              Renderer::kGpuZoneCount == 17,
+          "atmosphere timings append five exact GPU zones");
+
+    std::array<uint32_t, 3> boundaries{};
+    viewer::VolumetricPassBoundary boundary =
+        [&](viewer::VolumetricPass pass, bool is_end) {
+            if (is_end) ++boundaries[static_cast<uint32_t>(pass)];
+        };
+    boundary(viewer::VolumetricPass::Density, true);
+    boundary(viewer::VolumetricPass::Scatter, true);
+    boundary(viewer::VolumetricPass::Integrate, true);
+    CHECK((boundaries == std::array<uint32_t, 3>{1, 1, 1}),
+          "atmosphere timings retain one typed boundary for each froxel pass");
+}
+
+void test_atmosphere_acceptance_fifo_parser_and_present_sequencer() {
+    {
+        const auto parsed = viewer::parse_fifo_line("render_path raster");
+        const auto* command =
+            std::get_if<viewer::FifoRenderPath>(&parsed.command);
+        CHECK(parsed.recognized && parsed.success && command &&
+                  command->requested == matter::RenderPath::GpuDriven,
+              "FIFO parser types render_path raster");
+    }
+    {
+        const auto parsed = viewer::parse_fifo_line("render_path native_rt");
+        const auto* command =
+            std::get_if<viewer::FifoRenderPath>(&parsed.command);
+        CHECK(parsed.recognized && parsed.success && command &&
+                  command->requested == matter::RenderPath::Raytrace,
+              "FIFO parser types render_path native_rt");
+    }
+    {
+        const auto parsed = viewer::parse_fifo_line("history_reset");
+        CHECK(parsed.recognized && parsed.success &&
+                  std::holds_alternative<viewer::FifoHistoryReset>(
+                      parsed.command),
+              "FIFO parser types history_reset");
+    }
+    {
+        const auto parsed = viewer::parse_fifo_line("wait_frames 3");
+        const auto* command =
+            std::get_if<viewer::FifoWaitFrames>(&parsed.command);
+        CHECK(parsed.recognized && parsed.success && command &&
+                  command->count == 3u,
+              "FIFO parser types a positive wait_frames count");
+    }
+    {
+        const auto parsed =
+            viewer::parse_fifo_line("shot_now C:\\absolute\\frame.png");
+        const auto* command =
+            std::get_if<viewer::FifoScreenshotNow>(&parsed.command);
+        CHECK(parsed.recognized && parsed.success && command &&
+                  command->path == "C:\\absolute\\frame.png",
+              "FIFO parser types an absolute shot_now path");
+    }
+
+    for (const char* line : {"wait_frames 0", "wait_frames -1",
+                             "wait_frames 1.5", "wait_frames 4294967296",
+                             "shot_now relative.png",
+                             "render_path pathtrace"}) {
+        const auto parsed = viewer::parse_fifo_line(line);
+        CHECK(parsed.recognized && !parsed.success,
+              "FIFO parser rejects malformed presentation commands");
+    }
+
+    for (const char* line : {"render_pathology native_rt",
+                             "history_reset_extra",
+                             "wait_frames_extra 3",
+                             "shot_now_extra C:\\absolute\\frame.png"}) {
+        const auto parsed = viewer::parse_fifo_line(line);
+        CHECK(!parsed.recognized,
+              "FIFO parser requires an exact presentation command token");
+    }
+
+    for (const char* line : {"shot_now \\frame.png",
+                             "shot_now /frame.png",
+                             "shot_now C:\\absolute\\frame.jpg",
+                             "shot_now C:\\absolute\\..\\frame.png",
+                             "shot_now \\\\server\\..\\frame.png"}) {
+        const auto parsed = viewer::parse_fifo_line(line);
+        CHECK(parsed.recognized && !parsed.success,
+              "FIFO parser rejects drive-relative, non-PNG, and traversal shots");
+    }
+
+    viewer::FifoPresentSequencer sequencing;
+    sequencing.queue_wait(3u);
+    sequencing.queue_screenshot("C:\\absolute\\next.png");
+    CHECK(sequencing.presented_frame_serial() == 0u &&
+              sequencing.pending_screenshot_path() ==
+                  "C:\\absolute\\next.png",
+          "present sequencer queues wait and zero-settle screenshot");
+    const auto failed = sequencing.advance(false);
+    CHECK(sequencing.presented_frame_serial() == 0u &&
+              failed.completed_waits.empty() &&
+              failed.screenshot_path.empty() &&
+              sequencing.pending_screenshot_path() ==
+                  "C:\\absolute\\next.png",
+          "failed/acquire-only frame neither advances nor consumes queued work");
+    const auto first = sequencing.advance(true);
+    CHECK(sequencing.presented_frame_serial() == 1u &&
+              first.completed_waits.empty() &&
+              first.screenshot_path == "C:\\absolute\\next.png",
+          "shot_now captures the next successful present with zero settle");
+    const auto intervening_failure = sequencing.advance(false);
+    CHECK(sequencing.presented_frame_serial() == 1u &&
+              intervening_failure.completed_waits.empty(),
+          "intervening failed present cannot complete a queued wait");
+    const auto second = sequencing.advance(true);
+    CHECK(second.completed_waits.empty(),
+          "wait_frames does not print success before its target serial");
+    const auto third = sequencing.advance(true);
+    CHECK(third.completed_waits.size() == 1u &&
+              third.completed_waits[0].count == 3u &&
+              third.completed_waits[0].frame_serial == 3u,
+          "wait_frames completes on the third successful present only");
+}
+
 bool close4(matter::Float4 actual, matter::Float4 expected, float epsilon);
+
+constexpr std::array<float, 6> kAtmosphereGpuElevations{
+    90.0f, 45.0f, 5.0f, 0.0f, -5.0f, -12.0f};
+constexpr std::array<float, 6> kAtmosphereGpuRatios{
+    1.0f, 1.0f, 0.25f, 0.0f, 0.0f, 0.0f};
+std::array<matter::Float3, 6> g_atmosphere_raster_direct_rgb{};
+bool g_atmosphere_raster_direct_valid = false;
 
 static matter::Float3 aces_reference(matter::Float3 hdr, float exposure_ev) {
     const float scale = std::exp2(exposure_ev);
@@ -48,6 +191,194 @@ static matter::Float3 aces_reference(matter::Float3 hdr, float exposure_ev) {
                           0.0f, 1.0f);
     };
     return {map(hdr.x), map(hdr.y), map(hdr.z)};
+}
+
+static float srgb_encode(float linear) {
+    return linear <= 0.0031308f ? linear * 12.92f
+        : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
+}
+
+static float srgb_decode(float encoded) {
+    return encoded <= 0.04045f ? encoded / 12.92f
+        : std::pow((encoded + 0.055f) / 1.055f, 2.4f);
+}
+
+static float inverse_aces(float mapped) {
+    if (mapped <= 0.0f) return 0.0f;
+    if (mapped >= 1.0f) return 8.0f;
+    const float a = 2.43f * mapped - 2.51f;
+    const float b = 0.59f * mapped - 0.03f;
+    const float c = 0.14f * mapped;
+    const float discriminant = std::max(0.0f, b * b - 4.0f * a * c);
+    return (-b - std::sqrt(discriminant)) / (2.0f * a);
+}
+
+static matter::Float3 sample_periodic_sky_cpu(
+    const viewer::VkSceneRenderer::EnvironmentSamplingGpuFixture& fixture,
+    matter::Float2 uv) {
+    const float u = uv.x - std::floor(uv.x);
+    const float v = std::clamp(uv.y, 0.5f / 108.0f, 107.5f / 108.0f);
+    const float px = u * 192.0f - 0.5f;
+    const float py = v * 108.0f - 0.5f;
+    const int x0_raw = static_cast<int>(std::floor(px));
+    const int y0 = std::clamp(static_cast<int>(std::floor(py)), 0, 107);
+    const int y1 = std::min(y0 + 1, 107);
+    const int x0 = (x0_raw % 192 + 192) % 192;
+    const int x1 = (x0 + 1) % 192;
+    const float tx = px - std::floor(px);
+    const float ty = py - std::floor(py);
+    const auto lerp = [](float a, float b, float t) { return a + (b - a) * t; };
+    const matter::Float3& a = fixture.lut[static_cast<size_t>(y0) * 192 + x0];
+    const matter::Float3& b = fixture.lut[static_cast<size_t>(y0) * 192 + x1];
+    const matter::Float3& c = fixture.lut[static_cast<size_t>(y1) * 192 + x0];
+    const matter::Float3& d = fixture.lut[static_cast<size_t>(y1) * 192 + x1];
+    return {lerp(lerp(a.x, b.x, tx), lerp(c.x, d.x, tx), ty),
+            lerp(lerp(a.y, b.y, tx), lerp(c.y, d.y, tx), ty),
+            lerp(lerp(a.z, b.z, tx), lerp(c.z, d.z, tx), ty)};
+}
+
+void run_atmosphere_presentation_sampling_tests(matter::VulkanDevice& vulkan) {
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error), error.empty() ? "initialize atmosphere presentation fixture" : error.c_str());
+    if (!error.empty()) return;
+    CHECK(renderer.test_sky_view_sampler() != VK_NULL_HANDLE &&
+              renderer.test_sky_view_sampler() != renderer.test_composite_sampler(),
+          "physical sky uses a dedicated sampler rather than the nearest G-buffer sampler");
+
+    viewer::VkSceneRenderer::EnvironmentSamplingGpuFixture fixture;
+    for (uint32_t y = 0; y < 108; ++y) for (uint32_t x = 0; x < 192; ++x) {
+        const float u = (static_cast<float>(x) + 0.5f) / 192.0f;
+        const float v = (static_cast<float>(y) + 0.5f) / 108.0f;
+        fixture.lut[static_cast<size_t>(y) * 192 + x] =
+            {u, v, 0.25f * u + 0.75f * v};
+    }
+    for (uint32_t i = 0; i < 432; ++i)
+        fixture.uv.push_back({0.37f, (static_cast<float>(i) + 0.5f) / 432.0f});
+    fixture.uv.push_back({0.37f, 0.0f});
+    fixture.uv.push_back({0.37f, 1.0f});
+    constexpr float epsilon = 1.0e-5f;
+    for (uint32_t i = 0; i < 256; ++i) {
+        const float v = (static_cast<float>(i) + 0.5f) / 256.0f;
+        fixture.uv.push_back({epsilon, v});
+        fixture.uv.push_back({1.0f - epsilon, v});
+    }
+    std::vector<matter::Float3> sampled;
+    CHECK(renderer.test_dispatch_environment_sampling_fixture(fixture, sampled, error),
+          error.empty() ? "dispatch periodic linear sky sampling fixture" : error.c_str());
+    if (sampled.size() != fixture.uv.size()) {
+        CHECK(false, "sky sampling fixture returns every requested UV");
+        return;
+    }
+    size_t plateau = 1, max_plateau = 1, mismatch_count = 0;
+    for (size_t i = 0; i < 432; ++i) {
+        const matter::Float3 expected = sample_periodic_sky_cpu(fixture, fixture.uv[i]);
+        const bool matches = std::fabs(sampled[i].x - expected.x) <= 1.0e-3f &&
+                             std::fabs(sampled[i].y - expected.y) <= 1.0e-3f &&
+                             std::fabs(sampled[i].z - expected.z) <= 1.0e-3f;
+        if (!matches && mismatch_count++ < 8)
+            std::printf("sky sample mismatch[%zu] uv=(%.8f,%.8f) actual=(%.6f,%.6f,%.6f) expected=(%.6f,%.6f,%.6f)\n",
+                        i, fixture.uv[i].x, fixture.uv[i].y,
+                        sampled[i].x, sampled[i].y, sampled[i].z,
+                        expected.x, expected.y, expected.z);
+        CHECK(matches,
+              "GPU sky sample matches periodic-U clamped-V bilinear oracle");
+        if (i > 0) {
+            const float reference_slope = std::fabs(
+                sample_periodic_sky_cpu(fixture, fixture.uv[i]).y -
+                sample_periodic_sky_cpu(fixture, fixture.uv[i - 1]).y);
+            if (reference_slope > 1.0e-4f && sampled[i].y == sampled[i - 1].y)
+                ++plateau;
+            else
+                plateau = 1;
+            max_plateau = std::max(max_plateau, plateau);
+        }
+    }
+    CHECK(max_plateau <= 2, "linear sky sampling avoids visible vertical plateaus");
+    CHECK(std::fabs(sampled[432].y - fixture.lut[0].y) <= 1.0e-3f &&
+              std::fabs(sampled[433].y - fixture.lut[107 * 192].y) <= 1.0e-3f,
+          "sky V edge probes clamp to edge texel centres");
+    std::vector<float> adjacent;
+    for (uint32_t i = 1; i < 191; ++i) {
+        const matter::Float2 left{(static_cast<float>(i) - epsilon) / 192.0f, 0.5f};
+        const matter::Float2 right{(static_cast<float>(i) + epsilon) / 192.0f, 0.5f};
+        const auto a = sample_periodic_sky_cpu(fixture, left);
+        const auto b = sample_periodic_sky_cpu(fixture, right);
+        adjacent.push_back(std::fabs(a.x - b.x));
+    }
+    std::sort(adjacent.begin(), adjacent.end());
+    const float median_adjacent = adjacent[adjacent.size() / 2];
+    for (uint32_t i = 0; i < 256; ++i) {
+        const auto& a = sampled[434 + i * 2];
+        const auto& b = sampled[435 + i * 2];
+        const float absolute = std::max({std::fabs(a.x - b.x), std::fabs(a.y - b.y),
+                                         std::fabs(a.z - b.z)});
+        const float scale = std::max({std::fabs(a.x), std::fabs(a.y), std::fabs(a.z),
+                                      std::fabs(b.x), std::fabs(b.y), std::fabs(b.z)});
+        CHECK(std::isfinite(absolute) && (scale <= 1.0e-3f ? absolute <= 1.0e-3f
+                                                               : absolute / scale <= 0.005f),
+              "periodic sky seam pair is finite and bounded");
+        CHECK(std::fabs(a.x - b.x) <= 2.0f * median_adjacent + 1.0e-6f,
+              "sky seam finite difference is no larger than local sampling variation");
+    }
+
+    const float target_codes[] = {0.5f, 0.0f, 1.0f};
+    for (float target_code : target_codes) {
+        const float target_linear = srgb_decode(target_code);
+        const float hdr = inverse_aces(target_linear);
+        viewer::VkSceneRenderer::DisplayTransformGpuFixture display;
+        display.width = 16;
+        display.height = 16;
+        display.hdr = {hdr, hdr, hdr};
+        std::vector<matter::Float3> unorm_a, unorm_b, srgb;
+        CHECK(renderer.test_dispatch_display_transform_fixture(display, unorm_a, error),
+              error.empty() ? "dispatch UNORM display dither fixture" : error.c_str());
+        CHECK(renderer.test_dispatch_display_transform_fixture(display, unorm_b, error),
+              error.empty() ? "repeat static display dither fixture" : error.c_str());
+        display.srgb_output = true;
+        CHECK(renderer.test_dispatch_display_transform_fixture(display, srgb, error),
+              error.empty() ? "dispatch sRGB display dither fixture" : error.c_str());
+        CHECK(unorm_a.size() == 256 && unorm_b.size() == 256 && srgb.size() == 256,
+              "display fixture returns the complete 16x16 interior");
+        if (unorm_a.size() != 256 || unorm_b.size() != 256 || srgb.size() != 256) continue;
+        float tile_sums[4]{};
+        float minimum_offset = 1.0f, maximum_offset = -1.0f;
+        bool identical = true;
+        for (uint32_t y = 0; y < 16; ++y) for (uint32_t x = 0; x < 16; ++x) {
+            const size_t index = static_cast<size_t>(y) * 16 + x;
+            const matter::Float3 expected = matter::apply_display_dither_code(
+                {target_code, target_code, target_code}, x, y);
+            const matter::Float3 actual = unorm_a[index];
+            const float offset = actual.x - target_code;
+            minimum_offset = std::min(minimum_offset, offset);
+            maximum_offset = std::max(maximum_offset, offset);
+            tile_sums[(y / 8) * 2 + x / 8] += offset;
+            identical = identical && std::memcmp(&actual, &unorm_b[index], sizeof(actual)) == 0;
+            CHECK(std::fabs(actual.x - expected.x) <= 1.0e-6f &&
+                      std::fabs(actual.y - expected.y) <= 1.0e-6f &&
+                      std::fabs(actual.z - expected.z) <= 1.0e-6f &&
+                      std::fabs((actual.x - target_code) - (actual.y - target_code)) <= 1.0e-7f &&
+                      std::fabs((actual.x - target_code) - (actual.z - target_code)) <= 1.0e-7f,
+                  "display shader applies the exact achromatic CPU dither oracle");
+            CHECK(actual.x >= 0.0f && actual.x <= 1.0f &&
+                      expected.x >= 0.0f && expected.x <= 1.0f &&
+                      std::fabs(matter::display_dither_code_offset(x, y)) <= 0.5f / 255.0f,
+                  "display dither clamps rails while its oracle remains half-LSB bounded");
+            CHECK(std::fabs(srgb_encode(srgb[index].x) - actual.x) <= 1.0e-6f &&
+                      std::fabs(srgb_encode(srgb[index].y) - actual.y) <= 1.0e-6f &&
+                      std::fabs(srgb_encode(srgb[index].z) - actual.z) <= 1.0e-6f,
+                  "UNORM and sRGB branches agree in encoded display code space");
+        }
+        CHECK(identical, "two static display submissions are byte-identical");
+        if (target_code == 0.5f) {
+            CHECK(std::fabs(minimum_offset + 0.5f / 255.0f) <= 1.0e-6f &&
+                      std::fabs(maximum_offset - 0.5f / 255.0f) <= 1.0e-6f,
+                  "display dither reaches both exact half-LSB extrema");
+            for (float sum : tile_sums)
+                CHECK(std::fabs(sum / 64.0f) <= 1.0e-8f,
+                      "each complete 8x8 display dither tile has zero mean");
+        }
+    }
 }
 
 static int display_unorm_code(float linear, VkFormat swapchain_format) {
@@ -706,6 +1037,568 @@ void run_vulkan_only_handle_diagnostic(matter::VulkanDevice& vulkan) {
     trace("Vulkan-only submit+fence wait");
     image.reset();
     trace("Vulkan-only image destroy");
+}
+
+struct AtmosphereRecordRequest {
+    viewer::VkAtmosphere* atmosphere = nullptr;
+    float camera_world_y = 0.0f;
+    matter::Float3 to_sun{};
+    bool recorded = false;
+    std::string error;
+};
+
+void record_atmosphere_luts(VkCommandBuffer command_buffer, void* user_data) {
+    auto& request = *static_cast<AtmosphereRecordRequest*>(user_data);
+    request.recorded = request.atmosphere->record(
+        command_buffer, request.camera_world_y, request.to_sun, request.error);
+}
+
+void run_atmosphere_lut_smoke(matter::VulkanDevice& vulkan) {
+    viewer::VkAtmosphere atmosphere;
+    std::string error;
+    CHECK(atmosphere.init(vulkan, error),
+          error.empty() ? "atmosphere LUT init" : error.c_str());
+    if (!error.empty()) return;
+
+    const matter::AtmosphereSettings settings{};
+    atmosphere.request_settings(settings);
+    const matter::Float3 to_sun{0.0f, 1.0f, 0.0f};
+    auto record = [&](float altitude) {
+        AtmosphereRecordRequest request{&atmosphere, altitude, to_sun};
+        std::string submit_error;
+        const bool submitted = matter::submit_immediate(
+            vulkan, record_atmosphere_luts, &request, submit_error,
+            matter::ImmediateSubmitPhase::compute_dispatch);
+        CHECK(submitted && request.recorded,
+              !submit_error.empty() ? submit_error.c_str() : request.error.c_str());
+    };
+    record(0.0f);
+
+    const auto check_sample = [&](uint32_t x, uint32_t y, const char* label) {
+        matter::Float3 actual{};
+        std::string read_error;
+        CHECK(atmosphere.readback_transmittance_for_test(
+                  vulkan, x, y, actual, read_error),
+              read_error.empty() ? label : read_error.c_str());
+        const float mu = -1.0f + 2.0f * static_cast<float>(x) / 255.0f;
+        const float altitude = 100000.0f * static_cast<float>(y) / 63.0f;
+        const float horizontal = std::sqrt(std::max(0.0f, 1.0f - mu * mu));
+        const matter::Float3 expected = matter::atmosphere_transmittance_reference(
+            settings, altitude, {horizontal, mu, 0.0f}, 256).transmittance;
+        const bool finite = std::isfinite(actual.x) && std::isfinite(actual.y) &&
+                            std::isfinite(actual.z);
+        const bool bounded = actual.x >= 0.0f && actual.x <= 1.0f &&
+                             actual.y >= 0.0f && actual.y <= 1.0f &&
+                             actual.z >= 0.0f && actual.z <= 1.0f;
+        const bool close = std::fabs(actual.x - expected.x) <= 0.025f &&
+                           std::fabs(actual.y - expected.y) <= 0.025f &&
+                           std::fabs(actual.z - expected.z) <= 0.025f;
+        CHECK(finite && bounded && close, label);
+    };
+    check_sample(255, 0, "atmosphere sea-level zenith transmittance matches CPU");
+    check_sample(128, 0, "atmosphere sea-level near-horizon transmittance matches CPU");
+    check_sample(255, 16, "atmosphere 25 km zenith transmittance matches CPU");
+
+    const uint64_t first_generation = atmosphere.generation_serial();
+    record(0.0f);
+    CHECK(atmosphere.generation_serial() == first_generation &&
+              !atmosphere.generated_this_frame(),
+          "unchanged atmosphere frame does not regenerate LUTs");
+    matter::AtmosphereSettings changed = settings;
+    changed.mie_scale = 1.25f;
+    atmosphere.request_settings(changed);
+    record(0.0f);
+    CHECK(atmosphere.generation_serial() == first_generation + 1 &&
+              atmosphere.generated_this_frame(),
+          "atmosphere coefficient change advances generation serial once");
+    atmosphere.destroy();
+}
+
+void test_atmosphere_lighting_control_sanitization() {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    matter::VulkanLightingOverrides invalid{};
+    invalid.day_ambient_multiplier = nan;
+    invalid.twilight_ambient_multiplier = inf;
+    invalid.sky_irradiance_multiplier = -inf;
+    invalid.sunset_direct_ratio = nan;
+    invalid.sun_elevation_deg = inf;
+    const auto fallback = viewer::sanitize_vulkan_lighting_overrides(invalid);
+    CHECK(fallback.day_ambient_multiplier == 0.25f &&
+              fallback.twilight_ambient_multiplier == 1.0f &&
+              fallback.sky_irradiance_multiplier == 1.0f &&
+              fallback.sunset_direct_ratio == 0.25f,
+          "atmosphere lighting controls use their exact non-finite fallbacks");
+    const matter::VulkanLightingOverrides defaults{};
+    CHECK(fallback.sun_elevation_deg == defaults.sun_elevation_deg,
+          "sun elevation keeps its established non-finite fallback");
+
+    matter::VulkanLightingOverrides outside{};
+    outside.day_ambient_multiplier = -1.0f;
+    outside.twilight_ambient_multiplier = 9.0f;
+    outside.sky_irradiance_multiplier = 8.0f;
+    outside.sunset_direct_ratio = 2.0f;
+    outside.sun_elevation_deg = -120.0f;
+    const auto clamped = viewer::sanitize_vulkan_lighting_overrides(outside);
+    CHECK(clamped.day_ambient_multiplier == 0.0f &&
+              clamped.twilight_ambient_multiplier == 4.0f &&
+              clamped.sky_irradiance_multiplier == 4.0f &&
+              clamped.sunset_direct_ratio == 1.0f &&
+              clamped.sun_elevation_deg == -90.0f,
+          "atmosphere lighting and elevation controls clamp to exact ranges");
+}
+
+void run_atmosphere_irradiance_last_valid_test(
+    matter::VulkanDevice& vulkan) {
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "initialize irradiance last-valid fixture"
+                        : error.c_str());
+    if (!error.empty()) return;
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.0f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, 16, 16, matrices, error),
+          error.empty() ? "build irradiance last-valid matrices"
+                        : error.c_str());
+    const auto prepare_once = [&]() {
+        error.clear();
+        matter::VulkanFrame frame{};
+        if (!vulkan.begin_frame(frame, error)) return false;
+        const bool prepared = renderer.prepare_frame(
+            frame, matrices, camera.position, 1.0f, error);
+        const bool ended = vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, prepared && ended);
+        vulkan.wait_idle();
+        return prepared && ended;
+    };
+
+    viewer::VkSceneLighting lighting{};
+    lighting.sun_direction = {0.0f, -1.0f, 0.0f};
+    const float largest = std::numeric_limits<float>::max();
+    lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+        {largest, largest, largest};
+    lighting.atmosphere_sources.sky_irradiance_multiplier = 4.0f;
+    lighting.atmosphere_sources.day_ambient_multiplier = 4.0f;
+    renderer.set_lighting(lighting);
+    CHECK(prepare_once(),
+          error.empty() ? "publish initial overflow-safe irradiance"
+                        : error.c_str());
+    const auto initial = renderer.test_resolved_atmosphere_status();
+    CHECK(initial.sky_irradiance_modifier_rgb.x == 0.0f &&
+              initial.sky_irradiance_modifier_rgb.y == 0.0f &&
+              initial.sky_irradiance_modifier_rgb.z == 0.0f,
+          "invalid derived irradiance is zero when no last-valid value exists");
+
+    lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+        {0.5f, 0.6f, 0.7f};
+    lighting.atmosphere_sources.sky_irradiance_multiplier = 1.0f;
+    lighting.atmosphere_sources.day_ambient_multiplier = 1.0f;
+    renderer.set_lighting(lighting);
+    CHECK(prepare_once(),
+          error.empty() ? "publish finite irradiance modifier"
+                        : error.c_str());
+    const matter::Float3 last_valid =
+        renderer.test_resolved_atmosphere_status()
+            .sky_irradiance_modifier_rgb;
+    CHECK(last_valid.x == 0.5f && last_valid.y == 0.6f &&
+              last_valid.z == 0.7f,
+          "finite derived irradiance becomes the last-valid modifier");
+
+    lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+        {largest, largest, largest};
+    lighting.atmosphere_sources.sky_irradiance_multiplier = 4.0f;
+    lighting.atmosphere_sources.day_ambient_multiplier = 4.0f;
+    renderer.set_lighting(lighting);
+    CHECK(prepare_once(),
+          error.empty() ? "replay overflow after a finite irradiance value"
+                        : error.c_str());
+    const matter::Float3 retained =
+        renderer.test_resolved_atmosphere_status()
+            .sky_irradiance_modifier_rgb;
+    CHECK(std::memcmp(&retained, &last_valid, sizeof(retained)) == 0,
+          "overflowed derived irradiance retains the prior finite modifier");
+}
+
+bool same_atmosphere_handles(const viewer::AtmosphereLutHandles& a,
+                             const viewer::AtmosphereLutHandles& b) {
+    return std::memcmp(a.images.data(), b.images.data(), sizeof(a.images)) == 0 &&
+           std::memcmp(a.views.data(), b.views.data(), sizeof(a.views)) == 0;
+}
+
+bool same_committed_atmosphere(const viewer::ResolvedAtmosphereStatus& a,
+                               const viewer::ResolvedAtmosphereStatus& b) {
+    return a.generation_serial == b.generation_serial &&
+           std::memcmp(&a.normalized_to_sun, &b.normalized_to_sun,
+                       sizeof(matter::Float3)) == 0 &&
+           std::memcmp(a.irradiance_sh.data(), b.irradiance_sh.data(),
+                       sizeof(a.irradiance_sh)) == 0 &&
+           std::memcmp(&a.atmospheric_direct_base_rgb,
+                       &b.atmospheric_direct_base_rgb,
+                       sizeof(matter::Float3)) == 0 &&
+           std::memcmp(&a.atmospheric_noon_direct_base_rgb,
+                       &b.atmospheric_noon_direct_base_rgb,
+                       sizeof(matter::Float3)) == 0;
+}
+
+void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
+    std::string error;
+    viewer::AtmosphereCommittedState committed_abi{};
+    CHECK(committed_abi.atmospheric_noon_direct_base_rgb.x == 0.0f,
+          "committed atmosphere state exposes the noon direct reference ABI");
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "initialize atmosphere transaction renderer"
+                        : error.c_str());
+    if (!error.empty()) return;
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.0f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, 16, 16, matrices, error),
+          error.empty() ? "build atmosphere transaction matrices"
+                        : error.c_str());
+
+    const auto prepare_once = [&](std::string& observed_error) {
+        observed_error.clear();
+        matter::VulkanFrame frame{};
+        if (!vulkan.begin_frame(frame, observed_error)) return false;
+        const bool prepared = renderer.prepare_frame(
+            frame, matrices, camera.position, 1.0f, observed_error);
+        const std::string prepare_error = observed_error;
+        std::string end_error;
+        const bool ended = vulkan.end_frame(frame, end_error);
+        renderer.finish_ray_tracing_frame(frame.serial, prepared && ended);
+        vulkan.wait_idle();
+        if (!prepared) observed_error = prepare_error;
+        else if (!ended) observed_error = end_error;
+        return prepared && ended;
+    };
+
+    viewer::VkSceneLighting baseline_lighting{};
+    baseline_lighting.sun_direction = {0.0f, -1.0f, 0.0f};
+    baseline_lighting.authored_sun_rgb = {0.9f, 0.7f, 0.5f};
+    baseline_lighting.atmosphere_sources.authored_display_sky_chroma_rgb =
+        {0.7f, 0.8f, 0.9f};
+    baseline_lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+        {0.7f, 0.8f, 0.9f};
+    renderer.set_atmosphere_settings({});
+    renderer.set_lighting(baseline_lighting);
+    CHECK(prepare_once(error),
+          error.empty() ? "commit baseline atmosphere transaction"
+                        : error.c_str());
+    const auto baseline_status = renderer.test_resolved_atmosphere_status();
+    const auto baseline_handles = renderer.test_atmosphere_lut_handles();
+    const auto baseline_histories = renderer.test_atmosphere_history_counters();
+    CHECK(baseline_status.generation_serial == 1 &&
+              baseline_histories.diffuse_gi == 1 &&
+              baseline_histories.reflection_miss == 0 &&
+              baseline_histories.volumetric == 1,
+          "baseline atmosphere commit advances serial and narrow histories once");
+
+    matter::AtmosphereSettings pending{};
+    pending.mie_scale = 1.25f;
+    renderer.set_atmosphere_settings(pending);
+    const auto generation_attempts_before =
+        renderer.test_atmosphere_candidate_counters();
+    const uint64_t generation_submits_before =
+        matter::immediate_submit_count();
+    renderer.test_fail_next_atmosphere_generation();
+    CHECK(!prepare_once(error) &&
+              error.find("injected atmosphere generation failure") !=
+                  std::string::npos,
+          "candidate generation failure is reported precisely");
+    const auto generation_no_edit_handles = renderer.test_atmosphere_lut_handles();
+    const auto generation_no_edit_status = renderer.test_resolved_atmosphere_status();
+    const auto generation_no_edit_histories = renderer.test_atmosphere_history_counters();
+    const auto generation_attempts_after =
+        renderer.test_atmosphere_candidate_counters();
+    CHECK(same_atmosphere_handles(baseline_handles, generation_no_edit_handles) &&
+              std::memcmp(&baseline_status, &generation_no_edit_status,
+                          sizeof(baseline_status)) == 0 &&
+              std::memcmp(&baseline_histories, &generation_no_edit_histories,
+                          sizeof(baseline_histories)) == 0,
+          "generation failure without a live edit preserves the complete transaction");
+    CHECK(generation_attempts_after.image_sets_allocated ==
+                  generation_attempts_before.image_sets_allocated + 1 &&
+              generation_attempts_after.generation_stages_completed ==
+                  generation_attempts_before.generation_stages_completed + 1 &&
+              generation_attempts_after.image_sets_discarded ==
+                  generation_attempts_before.image_sets_discarded + 1 &&
+              matter::immediate_submit_count() >=
+                  generation_submits_before + 2,
+          "injected generation failure allocates, dispatches, reads back, restores, and discards one candidate set");
+
+    renderer.test_fail_next_atmosphere_descriptor_publication();
+    CHECK(!prepare_once(error) &&
+              error.find("injected atmosphere descriptor publication failure") !=
+                  std::string::npos,
+          "candidate descriptor publication failure is reported precisely");
+    const auto publication_no_edit_status =
+        renderer.test_resolved_atmosphere_status();
+    const auto publication_no_edit_histories =
+        renderer.test_atmosphere_history_counters();
+    const auto publication_no_edit_handles = renderer.test_atmosphere_lut_handles();
+    CHECK(same_atmosphere_handles(baseline_handles,
+                                  publication_no_edit_handles) &&
+              std::memcmp(&baseline_status, &publication_no_edit_status,
+                          sizeof(baseline_status)) == 0 &&
+              std::memcmp(&baseline_histories, &publication_no_edit_histories,
+                          sizeof(baseline_histories)) == 0,
+          "publication failure without a live edit preserves the complete transaction");
+
+    const auto make_replay = [&](float scale) {
+        viewer::VkSceneLighting value = baseline_lighting;
+        const matter::Float3 replay_to_sun =
+            matter::atmosphere_to_sun_from_elevation_deg(5.0f * scale);
+        value.sun_direction = {-replay_to_sun.x, -replay_to_sun.y,
+                               -replay_to_sun.z};
+        value.atmosphere_sources.live_sun_tint_rgb =
+            {0.4f * scale, 0.7f, 1.3f};
+        value.atmosphere_sources.sun_multiplier = 1.2f * scale;
+        value.atmosphere_sources.authored_display_sky_chroma_rgb =
+            {0.2f, 1.1f * scale, 0.6f};
+        value.atmosphere_sources.sky_multiplier = 1.4f * scale;
+        value.atmosphere_sources.live_sky_tint_rgb = {1.5f, 0.3f, 0.8f};
+        value.atmosphere_sources.authored_irradiance_chroma_rgb =
+            {1.2f, 0.5f * scale, 0.9f};
+        value.atmosphere_sources.sky_irradiance_multiplier = 1.8f * scale;
+        value.atmosphere_sources.day_ambient_multiplier = 0.4f * scale;
+        value.atmosphere_sources.twilight_ambient_multiplier = 1.3f * scale;
+        value.atmosphere_sources.sunset_direct_ratio = 0.35f * scale;
+        value.emission_multiplier = 0.6f * scale;
+        value.sun_angular_diameter_deg = 0.8f * scale;
+        value.sun_shadow_samples = scale < 1.1f ? 5 : 7;
+        return value;
+    };
+    const auto assert_failure_replay = [&](
+        const viewer::ResolvedAtmosphereStatus& value,
+        const viewer::VkSceneLighting& live, float expected_exposure,
+        const char* message) {
+        matter::AtmosphereLightingSources expected_sources =
+            live.atmosphere_sources;
+        expected_sources.atmospheric_direct_base_rgb =
+            baseline_status.atmospheric_direct_base_rgb;
+        expected_sources.atmospheric_noon_direct_base_rgb =
+            baseline_status.atmospheric_noon_direct_base_rgb;
+        expected_sources.elevation_deg = baseline_status.resolved_elevation_deg;
+        const auto expected = matter::resolve_atmosphere_lighting(expected_sources);
+        const auto push = renderer.test_atmosphere_replay_constants();
+        const matter::Float3 expected_composite_direction{
+            -baseline_status.normalized_to_sun.x,
+            -baseline_status.normalized_to_sun.y,
+            -baseline_status.normalized_to_sun.z};
+        const matter::Float3 expected_to_sun =
+            baseline_status.normalized_to_sun;
+        CHECK(same_atmosphere_handles(
+                  baseline_handles,
+                  renderer.test_atmosphere_lut_handles()) &&
+                  same_committed_atmosphere(baseline_status, value) &&
+                  value.resolved_elevation_deg ==
+                      baseline_status.resolved_elevation_deg &&
+                  std::memcmp(&value.direct_base_rgb, &expected.direct_base_rgb,
+                              sizeof(matter::Float3)) == 0 &&
+                  value.direct_world_ratio == expected.direct_world_ratio &&
+                  std::memcmp(&value.direct_world_sun_rgb,
+                              &expected.direct_world_sun_rgb,
+                              sizeof(matter::Float3)) == 0 &&
+                  std::memcmp(&value.sun_disc_rgb, &expected.sun_disc_rgb,
+                              sizeof(matter::Float3)) == 0 &&
+                  value.sky_ambient_ratio == expected.sky_ambient_ratio &&
+                  std::memcmp(&value.sky_display_modifier_rgb,
+                              &expected.sky_display_modifier_rgb,
+                              sizeof(matter::Float3)) == 0 &&
+                  std::memcmp(&value.sky_irradiance_modifier_rgb,
+                              &expected.sky_irradiance_modifier_rgb,
+                              sizeof(matter::Float3)) == 0,
+              message);
+        CHECK(std::memcmp(&push.composite_sun_direction,
+                          &expected_composite_direction,
+                          sizeof(matter::Float3)) == 0 &&
+                  std::memcmp(&live.sun_direction,
+                              &expected_composite_direction,
+                              sizeof(matter::Float3)) != 0 &&
+                  push.composite_emission_multiplier ==
+                      live.emission_multiplier &&
+                  push.display_exposure_ev == expected_exposure &&
+                  push.composite_sun_disc_cos_edge ==
+                      matter::sun_disc_cos_edge(
+                          live.sun_angular_diameter_deg) &&
+                  push.composite_sun_disc_cos_core ==
+                      matter::sun_disc_cos_core(
+                          live.sun_angular_diameter_deg) &&
+                  std::memcmp(&push.rt_to_sun, &expected_to_sun,
+                              sizeof(matter::Float3)) == 0 &&
+                  push.rt_shadow_samples ==
+                      static_cast<uint32_t>(live.sun_shadow_samples) &&
+                  push.rt_shadow_sun_cone_scale ==
+                      matter::sun_size_scale(
+                          live.sun_angular_diameter_deg) &&
+                  push.rt_gi_emission_multiplier ==
+                      live.emission_multiplier &&
+                  push.rt_gi_sun_disc_cos_edge ==
+                      matter::sun_disc_cos_edge(
+                          live.sun_angular_diameter_deg) &&
+                  push.rt_gi_sun_disc_cos_core ==
+                      matter::sun_disc_cos_core(
+                          live.sun_angular_diameter_deg) &&
+                  push.rt_gi_sun_size_scale ==
+                      matter::sun_size_scale(
+                          live.sun_angular_diameter_deg),
+              "failure replay keeps composite/RT direction committed while exposing every permitted live push input");
+    };
+
+    const viewer::VkSceneLighting generation_replay = make_replay(1.0f);
+    renderer.set_lighting(generation_replay);
+    matter::VulkanRayTracingSettings replay_rt{};
+    replay_rt.samples = static_cast<uint32_t>(
+        generation_replay.sun_shadow_samples);
+    renderer.set_ray_tracing_settings(replay_rt);
+    renderer.set_display_exposure(1.25f);
+    renderer.test_fail_next_atmosphere_generation();
+    const auto before_generation_replay =
+        renderer.test_atmosphere_history_counters();
+    CHECK(!prepare_once(error),
+          "generation replay fixture observes the injected failure");
+    assert_failure_replay(renderer.test_resolved_atmosphere_status(),
+                          generation_replay, 1.25f,
+                          "generation failure replays every current live constant over the old physical state");
+    const auto after_generation_replay =
+        renderer.test_atmosphere_history_counters();
+    CHECK(after_generation_replay.diffuse_gi ==
+                  before_generation_replay.diffuse_gi + 1 &&
+              after_generation_replay.reflection_miss ==
+                  before_generation_replay.reflection_miss + 1 &&
+              after_generation_replay.volumetric ==
+                  before_generation_replay.volumetric + 1,
+          "combined generation-failure replay applies the union of narrow resets once");
+
+    renderer.set_atmosphere_settings({});
+    renderer.set_lighting(baseline_lighting);
+    renderer.set_display_exposure(-2.0f);
+    CHECK(prepare_once(error),
+          error.empty() ? "restore constants without regenerating atmosphere"
+                        : error.c_str());
+    renderer.set_atmosphere_settings(pending);
+    const viewer::VkSceneLighting publication_replay = make_replay(1.2f);
+    renderer.set_lighting(publication_replay);
+    replay_rt.samples = static_cast<uint32_t>(
+        publication_replay.sun_shadow_samples);
+    renderer.set_ray_tracing_settings(replay_rt);
+    renderer.set_display_exposure(2.0f);
+    renderer.test_fail_next_atmosphere_descriptor_publication();
+    const auto before_publication_replay =
+        renderer.test_atmosphere_history_counters();
+    CHECK(!prepare_once(error),
+          "publication replay fixture observes the injected failure");
+    assert_failure_replay(renderer.test_resolved_atmosphere_status(),
+                          publication_replay, 2.0f,
+                          "publication failure replays every current live constant over the old physical state");
+    const auto after_publication_replay =
+        renderer.test_atmosphere_history_counters();
+    CHECK(after_publication_replay.diffuse_gi ==
+                  before_publication_replay.diffuse_gi + 1 &&
+              after_publication_replay.reflection_miss ==
+                  before_publication_replay.reflection_miss + 1 &&
+              after_publication_replay.volumetric ==
+                  before_publication_replay.volumetric + 1,
+          "combined publication-failure replay applies the union of narrow resets once");
+
+    const auto before_success = renderer.test_atmosphere_history_counters();
+    const uint64_t serial_before_success =
+        renderer.test_resolved_atmosphere_status().generation_serial;
+    CHECK(prepare_once(error),
+          error.empty() ? "commit successful candidate after failure replay"
+                        : error.c_str());
+    const auto after_success = renderer.test_atmosphere_history_counters();
+    CHECK(renderer.test_resolved_atmosphere_status().generation_serial ==
+                  serial_before_success + 1 &&
+              after_success.diffuse_gi == before_success.diffuse_gi + 1 &&
+              after_success.reflection_miss == before_success.reflection_miss &&
+              after_success.volumetric == before_success.volumetric + 1,
+          "successful candidate advances serial, diffuse GI, and volumetrics exactly once");
+
+    const auto altitude_counters_before =
+        renderer.test_atmosphere_candidate_counters();
+    const auto altitude_histories_before =
+        renderer.test_atmosphere_history_counters();
+    const uint64_t altitude_serial_before =
+        renderer.test_resolved_atmosphere_status().generation_serial;
+    for (float camera_y : {2.0f, 7.5f, 10.0f}) {
+        camera.position.y = camera_y;
+        CHECK(prepare_once(error),
+              error.empty() ? "prepare sub-threshold atmosphere altitude motion"
+                            : error.c_str());
+    }
+    const auto altitude_counters_subthreshold =
+        renderer.test_atmosphere_candidate_counters();
+    const auto altitude_histories_subthreshold =
+        renderer.test_atmosphere_history_counters();
+    CHECK(std::memcmp(&altitude_counters_before,
+                      &altitude_counters_subthreshold,
+                      sizeof(altitude_counters_before)) == 0 &&
+              std::memcmp(&altitude_histories_before,
+                          &altitude_histories_subthreshold,
+                          sizeof(altitude_histories_before)) == 0 &&
+              renderer.test_resolved_atmosphere_status().generation_serial ==
+                  altitude_serial_before,
+          "cumulative camera altitude motion through 10 m does not rebuild atmosphere resources");
+
+    camera.position.y = 10.25f;
+    CHECK(prepare_once(error),
+          error.empty() ? "prepare meaningful atmosphere altitude motion"
+                        : error.c_str());
+    const auto altitude_counters_after =
+        renderer.test_atmosphere_candidate_counters();
+    const auto altitude_histories_after =
+        renderer.test_atmosphere_history_counters();
+    CHECK(altitude_counters_after.image_sets_allocated ==
+                  altitude_counters_before.image_sets_allocated + 1 &&
+              altitude_counters_after.generation_stages_completed ==
+                  altitude_counters_before.generation_stages_completed + 1 &&
+              altitude_counters_after.image_sets_discarded ==
+                  altitude_counters_before.image_sets_discarded &&
+              renderer.test_resolved_atmosphere_status().generation_serial ==
+                  altitude_serial_before + 1 &&
+              altitude_histories_after.diffuse_gi ==
+                  altitude_histories_before.diffuse_gi + 1 &&
+              altitude_histories_after.reflection_miss ==
+                  altitude_histories_before.reflection_miss &&
+              altitude_histories_after.volumetric ==
+                  altitude_histories_before.volumetric + 1,
+          "camera altitude motion above 10 m rebuilds and commits one atmosphere transaction");
+}
+
+void test_atmosphere_irradiance_dispatch_contract() {
+    std::ifstream shader("MatterEngine3/shaders_vk/atmosphere_irradiance.comp",
+                         std::ios::binary);
+    const std::string source((std::istreambuf_iterator<char>(shader)),
+                             std::istreambuf_iterator<char>());
+    CHECK(shader.good() || !source.empty(),
+          "atmosphere irradiance shader source is readable from smoke cwd");
+    CHECK(source.find("gl_GlobalInvocationID.y * 3u + gl_GlobalInvocationID.x") !=
+              std::string::npos &&
+              source.find("if (coefficient >= 9u) return;") != std::string::npos,
+          "irradiance shader assigns exactly one row-major SH coefficient per invocation");
+    std::ifstream implementation("MatterEngine3/src/render/vk_atmosphere.cpp",
+                                std::ios::binary);
+    const std::string implementation_source(
+        (std::istreambuf_iterator<char>(implementation)), std::istreambuf_iterator<char>());
+    CHECK(implementation_source.find("bind_dispatch(irradiance_pass_, 3, 3)") !=
+              std::string::npos,
+          "atmosphere records one irradiance dispatch group for each SH coefficient");
 }
 
 struct FixedCullScene {
@@ -1505,7 +2398,8 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
 
     viewer::VkSceneLighting dark{};
     dark.sun_intensity = 0.0f;
-    dark.sky_color = {0.0f, 0.0f, 0.0f};
+    dark.atmosphere_sources.authored_display_sky_chroma_rgb = {};
+    dark.atmosphere_sources.authored_irradiance_chroma_rgb = {};
     renderer.set_lighting(dark);
     CHECK(renderer.render_gbuffer_and_composite(width, height, error),
           error.empty() ? "render authored dark lighting" : error.c_str());
@@ -1557,7 +2451,10 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           error.empty() ? "restore emission 5 before authored bright sky"
                         : error.c_str());
     viewer::VkSceneLighting bright = dark;
-    bright.sky_color = {2.0f, 2.0f, 2.0f};
+    bright.atmosphere_sources.authored_display_sky_chroma_rgb =
+        {2.0f, 2.0f, 2.0f};
+    bright.atmosphere_sources.authored_irradiance_chroma_rgb =
+        {2.0f, 2.0f, 2.0f};
     renderer.set_lighting(bright);
     CHECK(renderer.render_gbuffer_and_composite(width, height, error),
           error.empty() ? "render authored bright sky" : error.c_str());
@@ -1574,6 +2471,395 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
               bright_center.hdr.y > dark_center.hdr.y &&
               bright_center.hdr.z > dark_center.hdr.z,
           "authored world sky lighting changes raster pixels");
+
+    // Task 7 must make this a real physical-atmosphere readback, rather than
+    // merely changing the final sun RGB on the CPU.  (4,4) is a reliable
+    // depth-miss, away from the analytic sun disc, while the center triangle
+    // is an upward-facing receiver.  Keep the sky modifier non-zero: in the
+    // physical ABI it is a componentwise LUT modifier, not an on/off switch.
+    const MaterialGpuRecord physical_receiver = materials[7];
+    materials[7].base_roughness[0] = 1.0f;
+    materials[7].base_roughness[1] = 1.0f;
+    materials[7].base_roughness[2] = 1.0f;
+    materials[7].emission_strength[0] = 0.0f;
+    materials[7].emission_strength[1] = 0.0f;
+    materials[7].emission_strength[2] = 0.0f;
+    materials[7].emission_strength[3] = 0.0f;
+    CHECK(renderer.update_materials(materials, 7, 2, error) &&
+              renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+          error.empty() ? "stage neutral physical-atmosphere receiver"
+                        : error.c_str());
+
+    struct AtmosphereRasterCase {
+        viewer::VkRasterPixel direct_on{};
+        viewer::VkRasterPixel direct_off{};
+        viewer::VkRasterPixel sky{};
+        viewer::ResolvedAtmosphereStatus status{};
+    };
+    const auto render_atmosphere_case = [&](float elevation_deg,
+                                            AtmosphereRasterCase& result) {
+        const matter::Float3 to_sun =
+            matter::atmosphere_to_sun_from_elevation_deg(elevation_deg);
+        viewer::VkSceneLighting lighting{};
+        // VkSceneLighting stores the engine convention (sun -> scene), while
+        // the physical helpers above first construct to_sun.
+        lighting.sun_direction = {-to_sun.x, -to_sun.y, -to_sun.z};
+        lighting.authored_sun_rgb = {1.0f, 1.0f, 1.0f};
+        lighting.sun_intensity = 1.0f;
+        lighting.atmosphere_sources.authored_display_sky_chroma_rgb =
+            {1.0f, 1.0f, 1.0f};
+        lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+            {1.0f, 1.0f, 1.0f};
+        lighting.atmosphere_sources.sun_multiplier = 1.0f;
+        lighting.atmosphere_sources.sky_multiplier = 1.0f;
+        renderer.set_lighting(lighting);
+        CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+              error.empty() ? "render physical-atmosphere direct-on case"
+                            : error.c_str());
+        CHECK(renderer.readback_raster_pixel(width / 2, height / 2,
+                                             result.direct_on, error) &&
+                  renderer.readback_raster_pixel(4, 4, result.sky, error),
+              error.empty() ? "read physical-atmosphere direct-on pixels"
+                            : error.c_str());
+        result.status = renderer.test_resolved_atmosphere_status();
+
+        lighting.sun_intensity = 0.0f;
+        renderer.set_lighting(lighting);
+        CHECK(renderer.render_gbuffer_and_composite(width, height, error) &&
+                  renderer.readback_raster_pixel(width / 2, height / 2,
+                                                 result.direct_off, error),
+              error.empty() ? "read physical-atmosphere direct-off receiver"
+                            : error.c_str());
+    };
+    AtmosphereRasterCase atmosphere_cases[6]{};
+    for (size_t index = 0; index < 6; ++index) {
+        render_atmosphere_case(kAtmosphereGpuElevations[index],
+                               atmosphere_cases[index]);
+        CHECK(std::fabs(atmosphere_cases[index].status.direct_world_ratio -
+                        kAtmosphereGpuRatios[index]) <= 1.0e-6f,
+              "GPU-published direct-world ratio matches its exact elevation anchor");
+        g_atmosphere_raster_direct_rgb[index] =
+            atmosphere_cases[index].status.direct_world_sun_rgb;
+    }
+
+    // Task 13 RED/GREEN: production composite lighting must consume the same
+    // cumulative cloud field as the diagnostic, without touching evaluated SH
+    // ambient. The fixed triangle is a depth-covered object receiver at y=0;
+    // slice 12 is an overhead slab while slice 2 is wholly below it.
+    const auto raster_receiver_capture = [&](float sun_intensity,
+                                             viewer::VkRasterPixel& pixel,
+                                             float cloud_debug = 0.0f,
+                                             float cloud_top = 5.0f) {
+        viewer::VkSceneLighting receiver_lighting{};
+        receiver_lighting.sun_direction = {0.0f, -1.0f, 0.0f};
+        receiver_lighting.sun_intensity = sun_intensity;
+        receiver_lighting.authored_sun_rgb = {1.0f, 1.0f, 1.0f};
+        receiver_lighting.atmosphere_sources.authored_display_sky_chroma_rgb =
+            {1.0f, 1.0f, 1.0f};
+        receiver_lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+            {0.35f, 0.35f, 0.35f};
+        receiver_lighting.atmosphere_sources.sun_multiplier = 1.0f;
+        receiver_lighting.atmosphere_sources.sky_multiplier = 1.0f;
+        receiver_lighting.camera_near = camera.near_plane;
+        receiver_lighting.camera_far = camera.far_plane;
+        receiver_lighting.vol_cloud_top = cloud_top;
+        receiver_lighting.vol_debug_view = cloud_debug;
+        renderer.set_lighting(receiver_lighting);
+        return renderer.render_gbuffer_and_composite(width, height, error) &&
+               renderer.readback_raster_pixel(width / 2, height / 2, pixel,
+                                              error);
+    };
+    const auto receiver_luma = [](const matter::Float4& value) {
+        return value.x * 0.2126f + value.y * 0.7152f + value.z * 0.0722f;
+    };
+    matter::VulkanVolumetricsSettings receiver_volumetrics{};
+    receiver_volumetrics.enabled = false;
+    matter::FogSettings receiver_deck{};
+    receiver_deck.cloud_count = 1;
+    receiver_deck.clouds[0].enabled = true;
+    receiver_deck.clouds[0].min_height = 4.0f;
+    receiver_deck.clouds[0].max_height = 5.0f;
+    receiver_deck.clouds[0].coverage = 1.0f;
+    receiver_deck.clouds[0].max_density = 0.0f;
+    matter::CloudShadowSettings receiver_shadows{};
+    receiver_shadows.enabled = true;
+    receiver_shadows.near_resolution = 0;
+    receiver_shadows.near_depth_slices = 0;
+    receiver_shadows.near_coverage_m = 16.0f;
+    receiver_shadows.far_resolution = 0;
+    receiver_shadows.far_depth_slices = 0;
+    receiver_shadows.far_coverage_m = 16.0f;
+    receiver_shadows.filter_scale = 0.0f;
+    receiver_shadows.update_fraction = 1.0f;
+    matter::CloudShadowSettings receiver_shadows_disabled = receiver_shadows;
+    receiver_shadows_disabled.enabled = false;
+
+    renderer.set_volumetrics_settings(receiver_volumetrics, receiver_deck,
+                                      receiver_shadows_disabled);
+    CHECK(renderer.generate_cloud_shadows_for_test(
+              0u, camera.position, {0.0f, -1.0f, 0.0f}, 0.0f, error),
+          error.empty() ? "generate disabled raster cloud receiver control"
+                        : error.c_str());
+    viewer::VkRasterPixel raster_clear_sun{}, raster_clear_ambient{};
+    const bool raster_clear_read =
+        raster_receiver_capture(1.0f, raster_clear_sun) &&
+        raster_receiver_capture(0.0f, raster_clear_ambient);
+
+    renderer.set_volumetrics_settings(receiver_volumetrics, receiver_deck,
+                                      receiver_shadows);
+    renderer.set_cloud_shadow_density_layers_for_test(
+        12u, 2.0f, 2u, 0.0f, true);
+    CHECK(renderer.generate_cloud_shadows_for_test(
+              0u, camera.position, {0.0f, -1.0f, 0.0f}, 1.0f, error),
+          error.empty() ? "generate overhead raster cloud slab"
+                        : error.c_str());
+    viewer::VkRasterPixel raster_shadow_sun{}, raster_shadow_ambient{};
+    const bool raster_shadow_read =
+        raster_receiver_capture(1.0f, raster_shadow_sun) &&
+        raster_receiver_capture(0.0f, raster_shadow_ambient);
+    viewer::VkRasterPixel raster_shadow_debug{};
+    const bool raster_shadow_debug_read =
+        raster_receiver_capture(1.0f, raster_shadow_debug, 5.0f);
+    const float raster_clear_direct = receiver_luma({
+        raster_clear_sun.hdr.x - raster_clear_ambient.hdr.x,
+        raster_clear_sun.hdr.y - raster_clear_ambient.hdr.y,
+        raster_clear_sun.hdr.z - raster_clear_ambient.hdr.z, 0.0f});
+    const float raster_shadow_direct = receiver_luma({
+        raster_shadow_sun.hdr.x - raster_shadow_ambient.hdr.x,
+        raster_shadow_sun.hdr.y - raster_shadow_ambient.hdr.y,
+        raster_shadow_sun.hdr.z - raster_shadow_ambient.hdr.z, 0.0f});
+    std::fprintf(stderr,
+                 "task13 raster direct clear=%.7f shadow=%.7f debug=%d/%.5f cloud_state=%.1f/%.1f/%.1f/%.1f\n",
+                 raster_clear_direct, raster_shadow_direct,
+                 raster_shadow_debug_read ? 1 : 0, raster_shadow_debug.hdr.x,
+                 renderer.cloud_shadow_environment_state_for_test(0),
+                 renderer.cloud_shadow_environment_state_for_test(1),
+                 renderer.cloud_shadow_environment_state_for_test(2),
+                 renderer.cloud_shadow_environment_state_for_test(3));
+    CHECK(raster_clear_read && raster_shadow_read &&
+              raster_clear_direct > 1.0e-4f &&
+              raster_shadow_direct < raster_clear_direct * 0.35f,
+          error.empty()
+              ? "overhead cloud slab attenuates raster object direct lighting"
+              : error.c_str());
+    CHECK((materials[7].flags_misc[0] & MATERIAL_ALPHA_TESTED) != 0u &&
+              raster_shadow_read &&
+              raster_shadow_direct < raster_clear_direct * 0.35f,
+          "overhead cloud slab attenuates alpha-tested vegetation-style geometry");
+    CHECK(raster_clear_read && raster_shadow_read &&
+              close4(raster_clear_ambient.hdr, raster_shadow_ambient.hdr,
+                     2.0e-4f),
+          "raster cloud attenuation leaves evaluated SH ambient unchanged");
+
+    renderer.set_cloud_shadow_density_layers_for_test(
+        2u, 2.0f, 1u, 0.0f, true);
+    CHECK(renderer.generate_cloud_shadows_for_test(
+              0u, camera.position, {0.0f, -1.0f, 0.0f}, 2.0f, error),
+          error.empty() ? "generate below-receiver raster cloud slab"
+                        : error.c_str());
+    viewer::VkRasterPixel raster_above_sun{}, raster_above_ambient{};
+    const bool raster_above_read =
+        raster_receiver_capture(1.0f, raster_above_sun) &&
+        raster_receiver_capture(0.0f, raster_above_ambient);
+    const float raster_above_direct = receiver_luma({
+        raster_above_sun.hdr.x - raster_above_ambient.hdr.x,
+        raster_above_sun.hdr.y - raster_above_ambient.hdr.y,
+        raster_above_sun.hdr.z - raster_above_ambient.hdr.z, 0.0f});
+    CHECK(raster_above_read &&
+              std::fabs(raster_above_direct - raster_clear_direct) <
+                  raster_clear_direct * 0.05f,
+          "raster receiver above the authored slab remains clear");
+
+    renderer.set_volumetrics_settings(receiver_volumetrics, receiver_deck,
+                                      receiver_shadows_disabled);
+    CHECK(renderer.generate_cloud_shadows_for_test(
+              0u, camera.position, {0.0f, -1.0f, 0.0f}, 3.0f, error),
+          error.empty() ? "disable raster receiver cloud shadows"
+                        : error.c_str());
+    viewer::VkRasterPixel raster_disabled_sun{}, raster_disabled_ambient{};
+    const bool raster_disabled_read =
+        raster_receiver_capture(1.0f, raster_disabled_sun) &&
+        raster_receiver_capture(0.0f, raster_disabled_ambient);
+    const float raster_disabled_direct = receiver_luma({
+        raster_disabled_sun.hdr.x - raster_disabled_ambient.hdr.x,
+        raster_disabled_sun.hdr.y - raster_disabled_ambient.hdr.y,
+        raster_disabled_sun.hdr.z - raster_disabled_ambient.hdr.z, 0.0f});
+    CHECK(raster_disabled_read &&
+              std::fabs(raster_disabled_direct - raster_clear_direct) <
+                  raster_clear_direct * 0.05f,
+          "disabled raster cloud shadows return the receiver to clear control");
+
+    matter::FogSettings receiver_prefix_hole = receiver_deck;
+    receiver_prefix_hole.clouds[1].enabled = false;
+    receiver_prefix_hole.clouds[2].enabled = true;
+    receiver_prefix_hole.clouds[2].min_height = 900.0f;
+    receiver_prefix_hole.clouds[2].max_height = 1000.0f;
+    renderer.set_volumetrics_settings(receiver_volumetrics,
+                                      receiver_prefix_hole,
+                                      receiver_shadows);
+    CHECK(renderer.generate_cloud_shadows_for_test(
+              0u, camera.position, {0.0f, -1.0f, 0.0f}, 3.5f, error) &&
+              renderer.cloud_shadow_environment_state_for_test(3) == 5.0f,
+          error.empty()
+              ? "receiver cloud top ignores enabled layers parked after a prefix hole"
+              : error.c_str());
+
+    // A high cloud top and nonzero filter scale must widen the transition
+    // across the deterministic checker deck while conserving mean optical
+    // depth. This reads the production fragment receiver sampler, not a CPU
+    // approximation, and therefore exercises receiver-distance filtering.
+    matter::FogSettings receiver_high_deck = receiver_deck;
+    receiver_high_deck.clouds[0].min_height = 999.0f;
+    receiver_high_deck.clouds[0].max_height = 1000.0f;
+    const auto read_filter_profile = [&](std::vector<float>& tau) {
+        viewer::VkRasterPixel rendered{};
+        if (!raster_receiver_capture(1.0f, rendered, 5.0f, 1000.0f))
+            return false;
+        for (uint32_t x = width / 2 - 24; x <= width / 2 + 24; ++x) {
+            viewer::VkRasterPixel sample{};
+            if (!renderer.readback_raster_pixel(x, height / 2, sample, error))
+                return false;
+            if (sample.depth <= 0.0f) continue;
+            tau.push_back(-std::log(std::max(sample.hdr.x, 1.0e-6f)));
+        }
+        return !tau.empty();
+    };
+    matter::CloudShadowSettings receiver_sharp_filter = receiver_shadows;
+    receiver_sharp_filter.filter_scale = 0.0f;
+    renderer.set_volumetrics_settings(receiver_volumetrics,
+                                      receiver_high_deck,
+                                      receiver_sharp_filter);
+    renderer.set_cloud_shadow_density_checker_for_test(0.0f, 0.25f, true);
+    CHECK(renderer.generate_cloud_shadows_for_test(
+              0u, camera.position, {0.0f, -1.0f, 0.0f}, 4.0f, error),
+          error.empty() ? "generate sharp high-cloud receiver checker"
+                        : error.c_str());
+    std::vector<float> sharp_tau;
+    const bool sharp_profile_read = read_filter_profile(sharp_tau);
+
+    matter::CloudShadowSettings receiver_wide_filter = receiver_shadows;
+    receiver_wide_filter.filter_scale = 4.0f;
+    renderer.set_volumetrics_settings(receiver_volumetrics,
+                                      receiver_high_deck,
+                                      receiver_wide_filter);
+    CHECK(renderer.generate_cloud_shadows_for_test(
+              0u, camera.position, {0.0f, -1.0f, 0.0f}, 5.0f, error),
+          error.empty() ? "generate filtered high-cloud receiver checker"
+                        : error.c_str());
+    std::vector<float> wide_tau;
+    const bool wide_profile_read = read_filter_profile(wide_tau);
+    const auto profile_stats = [](const std::vector<float>& values) {
+        std::array<float, 4> result{
+            std::numeric_limits<float>::max(),
+            std::numeric_limits<float>::lowest(), 0.0f, 0.0f};
+        for (float value : values) {
+            result[0] = std::min(result[0], value);
+            result[1] = std::max(result[1], value);
+            result[2] += value;
+        }
+        if (!values.empty()) result[2] /= static_cast<float>(values.size());
+        return result;
+    };
+    const auto sharp_stats = profile_stats(sharp_tau);
+    const auto wide_stats = profile_stats(wide_tau);
+    const float sharp_range = sharp_stats[1] - sharp_stats[0];
+    const float penumbra_low = sharp_stats[0] + sharp_range * 0.15f;
+    const float penumbra_high = sharp_stats[1] - sharp_range * 0.15f;
+    uint32_t sharp_penumbra = 0u;
+    uint32_t wide_penumbra = 0u;
+    for (float value : sharp_tau)
+        if (value > penumbra_low && value < penumbra_high)
+            ++sharp_penumbra;
+    for (float value : wide_tau)
+        if (value > penumbra_low && value < penumbra_high)
+            ++wide_penumbra;
+    std::fprintf(stderr,
+                 "task13 filter sharp=%.4f..%.4f mean=%.4f penumbra=%.0f "
+                 "wide=%.4f..%.4f mean=%.4f penumbra=%.0f samples=%zu/%zu\n",
+                 sharp_stats[0], sharp_stats[1], sharp_stats[2],
+                 static_cast<double>(sharp_penumbra), wide_stats[0],
+                 wide_stats[1], wide_stats[2],
+                 static_cast<double>(wide_penumbra),
+                 sharp_tau.size(), wide_tau.size());
+    CHECK(sharp_profile_read && wide_profile_read &&
+              sharp_tau.size() == wide_tau.size() && sharp_tau.size() >= 16u &&
+              sharp_range > 0.5f &&
+              wide_stats[1] - wide_stats[0] < sharp_range * 0.6f &&
+              wide_penumbra > sharp_penumbra &&
+              std::fabs(wide_stats[2] - sharp_stats[2]) < sharp_range * 0.12f,
+          "high-cloud receiver filtering widens penumbra while conserving mean optical depth");
+    renderer.clear_cloud_shadow_density_override_for_test(true);
+    g_atmosphere_raster_direct_valid = true;
+    const AtmosphereRasterCase& noon = atmosphere_cases[0];
+    const AtmosphereRasterCase& low_sun = atmosphere_cases[2];
+    const AtmosphereRasterCase& twilight = atmosphere_cases[4];
+    const auto finite_hdr = [](const viewer::VkRasterPixel& pixel) {
+        return std::isfinite(pixel.hdr.x) && std::isfinite(pixel.hdr.y) &&
+               std::isfinite(pixel.hdr.z) && std::isfinite(pixel.hdr.w);
+    };
+    const auto rgb_luma = [](const viewer::VkRasterPixel& pixel) {
+        return 0.2126f * pixel.hdr.x + 0.7152f * pixel.hdr.y +
+               0.0722f * pixel.hdr.z;
+    };
+    const auto direct_luma = [&](const AtmosphereRasterCase& value) {
+        return std::max(0.0f, rgb_luma(value.direct_on) -
+                                  rgb_luma(value.direct_off));
+    };
+    CHECK(finite_hdr(noon.sky) && finite_hdr(low_sun.sky) &&
+              finite_hdr(twilight.sky) && noon.sky.hdr.x > 1e-4f &&
+              noon.sky.hdr.y > 1e-4f && noon.sky.hdr.z > 1e-4f &&
+              low_sun.sky.hdr.x > 1e-4f && low_sun.sky.hdr.y > 1e-4f &&
+              low_sun.sky.hdr.z > 1e-4f && twilight.sky.hdr.x > 1e-4f &&
+              twilight.sky.hdr.y > 1e-4f && twilight.sky.hdr.z > 1e-4f,
+          "physical sky is finite and nonblack at 90, 5, and -5 degrees");
+    CHECK(std::fabs(noon.sky.hdr.x - low_sun.sky.hdr.x) > 1e-2f ||
+              std::fabs(noon.sky.hdr.y - low_sun.sky.hdr.y) > 1e-2f ||
+              std::fabs(noon.sky.hdr.z - low_sun.sky.hdr.z) > 1e-2f ||
+              std::fabs(low_sun.sky.hdr.x - twilight.sky.hdr.x) > 1e-2f ||
+              std::fabs(low_sun.sky.hdr.y - twilight.sky.hdr.y) > 1e-2f ||
+              std::fabs(low_sun.sky.hdr.z - twilight.sky.hdr.z) > 1e-2f,
+          "physical sky readback changes with solar elevation");
+    const float noon_direct = direct_luma(noon);
+    const float low_sun_direct = direct_luma(low_sun);
+    const float twilight_direct = direct_luma(twilight);
+    CHECK(noon_direct > low_sun_direct && low_sun_direct > 1e-4f &&
+              twilight_direct < 1e-4f,
+          "GPU direct sun is positive/dimmer near the horizon and zero below it");
+    for (size_t index = 3; index < 6; ++index) {
+        CHECK(atmosphere_cases[index].direct_on.hdr.x ==
+                  atmosphere_cases[index].direct_off.hdr.x &&
+                  atmosphere_cases[index].direct_on.hdr.y ==
+                  atmosphere_cases[index].direct_off.hdr.y &&
+                  atmosphere_cases[index].direct_on.hdr.z ==
+                  atmosphere_cases[index].direct_off.hdr.z,
+              "raster direct contribution is exactly zero at and below the horizon");
+    }
+    CHECK(rgb_luma(twilight.direct_off) > 1.0e-4f,
+          "-5 degree upward receiver remains positively lit by evaluated SH");
+    const float noon_blue = std::max(noon.direct_on.hdr.z -
+                                         noon.direct_off.hdr.z,
+                                     1e-5f);
+    const float low_blue = std::max(low_sun.direct_on.hdr.z -
+                                        low_sun.direct_off.hdr.z,
+                                    1e-5f);
+    const float noon_warmth = (noon.direct_on.hdr.x - noon.direct_off.hdr.x) /
+                              noon_blue;
+    const float low_warmth =
+        (low_sun.direct_on.hdr.x - low_sun.direct_off.hdr.x) / low_blue;
+    CHECK(low_warmth > noon_warmth,
+          "GPU direct sun becomes warmer near the horizon");
+    std::printf("physical atmosphere raster: noon=%.5f low=%.5f twilight=%.5f "
+                "sky90=%.5f %.5f %.5f sky5=%.5f %.5f %.5f sky-5=%.5f %.5f %.5f\n",
+                noon_direct, low_sun_direct, twilight_direct, noon.sky.hdr.x,
+                noon.sky.hdr.y, noon.sky.hdr.z, low_sun.sky.hdr.x,
+                low_sun.sky.hdr.y, low_sun.sky.hdr.z, twilight.sky.hdr.x,
+                twilight.sky.hdr.y, twilight.sky.hdr.z);
+
+    materials[7] = physical_receiver;
+    CHECK(renderer.update_materials(materials, 8, 2, error) &&
+              renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+          error.empty() ? "restore raster material after physical-atmosphere case"
+                        : error.c_str());
 
     const VkImage old_albedo = attachments.albedo.image;
     const VkDeviceSize initial_vertex_capacity =
@@ -1862,6 +3148,14 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
         renderer.consume_gi_history_reset();
     }
 
+    // Task 8 regression A: an enabled volume on a renderer that cannot record
+    // RT/ray-query scatter must bind the initialized neutral volume, never an
+    // undefined active bundle. This is intentionally separate from the
+    // resize sequence below, which needs a traceable TLAS.
+    matter::FogSettings no_rt_fog{};
+    matter::VulkanVolumetricsSettings no_rt_volumetrics{};
+    no_rt_volumetrics.enabled = true;
+    renderer.set_volumetrics_settings(no_rt_volumetrics, no_rt_fog);
     matter::VulkanRayTracingSettings disabled_rt{};
     disabled_rt.enabled = false;
     renderer.set_ray_tracing_settings(disabled_rt);
@@ -1884,6 +3178,30 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
         CHECK(vulkan.end_frame(acquired, error),
               error.empty() ? "submit RT-disabled production frame"
                             : error.c_str());
+        vulkan.wait_idle();
+        viewer::VkRasterPixel enabled_fallback{};
+        CHECK(renderer.readback_raster_pixel(4, 4, enabled_fallback, error),
+              error.empty() ? "read enabled no-RT fallback" : error.c_str());
+        no_rt_volumetrics.enabled = false;
+        renderer.set_volumetrics_settings(no_rt_volumetrics, no_rt_fog);
+        matter::VulkanFrame neutral{};
+        CHECK(vulkan.begin_frame(neutral, error) &&
+                  renderer.prepare_frame(neutral, frame, camera.position, 1.0f,
+                                         error) &&
+                  renderer.record_cull_and_render(
+                      neutral, frame, camera.position, 1.0f, error) &&
+                  renderer.record_composite_to_swapchain(neutral, error) &&
+                  vulkan.end_frame(neutral, error),
+              error.empty() ? "submit disabled volumetric neutral frame"
+                            : error.c_str());
+        vulkan.wait_idle();
+        viewer::VkRasterPixel disabled_neutral{};
+        CHECK(renderer.readback_raster_pixel(4, 4, disabled_neutral, error) &&
+                  close4(enabled_fallback.hdr, disabled_neutral.hdr, 2e-3f),
+              error.empty() ? "enabled no-RT fallback matches disabled neutral composite"
+                            : error.c_str());
+        CHECK(vulkan.validation_error_count() == 0,
+              "enabled no-RT volume composites through initialized neutral resources");
     }
 }
 
@@ -4603,6 +5921,1514 @@ static void rt_scenario_first_frame_and_blas_lifecycle(
 }
 
 // ---------------------------------------------------------------------------
+// Scenario: real RT/TLAS froxel bundle replacement and failed allocation
+// ---------------------------------------------------------------------------
+static void rt_scenario_froxel_resize(
+        matter::VulkanDevice& vulkan, viewer::VkSceneRenderer& renderer,
+        viewer::FrameMatrices& matrices, matter::CameraDesc& camera,
+        std::string& error) {
+
+    // This must run after the native first-frame scenario has committed a
+    // traceable TLAS. The production record path then executes density,
+    // scatter, integration, swap, descriptor rewrite, and composite sample.
+    const matter::FroxelGridDimensions expected[] = {
+        {160, 90, 128}, {80, 45, 64}, {320, 180, 256},
+        {240, 135, 192}, {160, 90, 128}};
+    const matter::FroxelXyScale xy[] = {
+        matter::FroxelXyScale::X1_0, matter::FroxelXyScale::X0_5,
+        matter::FroxelXyScale::X2_0, matter::FroxelXyScale::X1_5,
+        matter::FroxelXyScale::X1_0};
+    const matter::FroxelDepthSlices depth[] = {
+        matter::FroxelDepthSlices::D128, matter::FroxelDepthSlices::D64,
+        matter::FroxelDepthSlices::D256, matter::FroxelDepthSlices::D192,
+        matter::FroxelDepthSlices::D128};
+    matter::FogSettings fog{};
+    matter::VulkanVolumetricsSettings settings{};
+    settings.enabled = true;
+    std::ifstream renderer_source("../MatterEngine3/src/render/vk_scene_renderer.cpp",
+                                  std::ios::binary);
+    const std::string renderer_implementation(
+        (std::istreambuf_iterator<char>(renderer_source)),
+        std::istreambuf_iterator<char>());
+    const size_t froxel_prepare = renderer_implementation.find(
+        "volumetrics_->prepare_froxel_bundle(frame.frame_slot, error)");
+    const size_t composite_update = renderer_implementation.find(
+        "update_composite_descriptor(selected)", froxel_prepare);
+    CHECK(froxel_prepare != std::string::npos && composite_update != std::string::npos &&
+              froxel_prepare < composite_update,
+          "froxel swap precedes same-frame composite descriptor selection");
+    const size_t composite_function = renderer_implementation.find(
+        "void VkSceneRenderer::update_composite_descriptor");
+    const size_t composite_end = renderer_implementation.find(
+        "bool VkSceneRenderer::update_environment_descriptor", composite_function);
+    const std::string composite_selection = composite_function == std::string::npos ||
+        composite_end == std::string::npos ? std::string{} :
+        renderer_implementation.substr(composite_function,
+                                       composite_end - composite_function);
+    CHECK(composite_selection.find("ray_tracing_settings_.enabled") !=
+              std::string::npos &&
+              composite_selection.find("vulkan_->ray_tracing_available()") !=
+              std::string::npos &&
+              composite_selection.find("!rt_instances_.empty()") !=
+              std::string::npos &&
+              composite_selection.find("rt_effective_observed()") ==
+              std::string::npos,
+          "composite selects live froxels from pre-record RT eligibility, not the reset per-frame observation");
+    std::ifstream editor_props_source("src/editor_props.cpp",
+                                      std::ios::binary);
+    const std::string editor_props_implementation(
+        (std::istreambuf_iterator<char>(editor_props_source)),
+        std::istreambuf_iterator<char>());
+    CHECK(editor_props_implementation.find(
+              "\"Cloud shadow transmittance\"") != std::string::npos &&
+              editor_props_implementation.find(
+                  ".enums(kVolDebugLabels, 6)") != std::string::npos,
+          "cloud-shadow debug label is reachable as the sixth session enum value");
+    uint64_t previous_generation = renderer.volumetrics_resource_generation();
+    VkImageView previous_view = renderer.volumetrics_integrated_view();
+    bool seen_frame_slots[2] = {};
+    for (size_t index = 0; index < std::size(expected); ++index) {
+        settings.froxel_xy_scale = xy[index];
+        settings.froxel_depth_slices = depth[index];
+        renderer.set_volumetrics_settings(settings, fog);
+        matter::VulkanFrame frame{};
+        const bool prepared = vulkan.begin_frame(frame, error) &&
+            renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                   error);
+        if (prepared && frame.frame_slot < 2) seen_frame_slots[frame.frame_slot] = true;
+        const bool rendered = prepared &&
+            renderer.record_cull_and_render(frame, matrices, camera.position,
+                                            1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error) &&
+            vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, rendered);
+        CHECK(rendered, error.empty() ? "record RT froxel resize frame"
+                                      : error.c_str());
+        CHECK(index == 0 || !renderer.volumetrics_last_scatter_history_was_valid_for_test(),
+              "froxel replacement invalidates temporal history before scatter");
+        const auto active = renderer.volumetrics_dimensions();
+        const auto dispatch = renderer.volumetrics_last_dispatch_grid();
+        const VkImageView active_view = renderer.volumetrics_integrated_view();
+        std::printf("froxel RT trace: step=%zu requested=%ux%ux%u active=%ux%ux%u gen=%llu validation=%u\n",
+                    index, expected[index].width, expected[index].height,
+                    expected[index].depth, active.width, active.height,
+                    active.depth,
+                    static_cast<unsigned long long>(
+                        renderer.volumetrics_resource_generation()),
+                    vulkan.validation_error_count());
+        CHECK(active.width == expected[index].width &&
+                  active.height == expected[index].height &&
+                  active.depth == expected[index].depth &&
+                  renderer.volumetrics_effective_xy_scale() == xy[index] &&
+                  renderer.volumetrics_effective_depth_slices() == depth[index] &&
+                  dispatch.density_x == (active.width + 3) / 4 &&
+                  dispatch.density_y == (active.height + 3) / 4 &&
+                  dispatch.integrate_x == (active.width + 7) / 8 &&
+                  dispatch.integrate_y == (active.height + 7) / 8 &&
+                  active_view != VK_NULL_HANDLE &&
+                  (index == 0 || active_view != previous_view) &&
+                  renderer.volumetrics_resource_generation() >=
+                      previous_generation + (index == 0 ? 0u : 1u),
+              "RT froxel resize swaps descriptor view, effective enums, and ceil-covered dispatch grid");
+        previous_generation = renderer.volumetrics_resource_generation();
+        previous_view = active_view;
+    }
+    CHECK(seen_frame_slots[0] && seen_frame_slots[1],
+          "froxel resize recycles both in-flight frame slots without per-resize idle waits");
+    vulkan.wait_idle();
+    viewer::VkRasterPixel pixel{};
+    CHECK(renderer.readback_raster_pixel(4, 4, pixel, error) &&
+              std::isfinite(pixel.hdr.x) && std::isfinite(pixel.hdr.y) &&
+              std::isfinite(pixel.hdr.z),
+          error.empty() ? "RT resized froxel composite remains finite"
+                        : error.c_str());
+
+    // Timestamp queries are asynchronous, so recycle both frame slots before
+    // reading the EMA lanes.  The combined Volumetrics bracket deliberately
+    // encloses the three actual pass brackets and must track their sum.  This
+    // catches a missing child boundary even when a dispatch still looks valid.
+    const auto render_timing_frame = [&]() {
+        error.clear();
+        matter::VulkanFrame timing{};
+        const bool rendered = vulkan.begin_frame(timing, error) &&
+            renderer.prepare_frame(timing, matrices, camera.position, 1.0f,
+                                   error) &&
+            renderer.record_cull_and_render(timing, matrices, camera.position,
+                                            1.0f, error) &&
+            renderer.record_composite_to_swapchain(timing, error) &&
+            vulkan.end_frame(timing, error);
+        renderer.finish_ray_tracing_frame(timing.serial, rendered);
+        vulkan.wait_idle();
+        return rendered;
+    };
+    if (renderer.gpu_timers_supported()) {
+        for (int frame = 0; frame < 4; ++frame)
+            CHECK(render_timing_frame(),
+                  error.empty() ? "record enabled RT timing frame" : error.c_str());
+        const float combined_ms = renderer.gpu_zone_ms(
+            viewer::VkSceneRenderer::kGpuZoneVolumetrics);
+        const float density_ms = renderer.gpu_zone_ms(
+            viewer::VkSceneRenderer::kGpuZoneVolDensity);
+        const float scatter_ms = renderer.gpu_zone_ms(
+            viewer::VkSceneRenderer::kGpuZoneVolScatter);
+        const float integrate_ms = renderer.gpu_zone_ms(
+            viewer::VkSceneRenderer::kGpuZoneVolIntegrate);
+        const float children_ms = density_ms + scatter_ms + integrate_ms;
+        // Every lane has the same EMA cadence, but timestamps can land in a
+        // neighboring recycled slot.  A quarter of the child total leaves
+        // that jitter headroom without accepting a missing pass boundary.
+        const float combined_tolerance = std::max(0.10f, children_ms * 0.25f);
+        std::printf("froxel GPU timing: combined=%.4f density=%.4f scatter=%.4f "
+                    "integrate=%.4f tolerance=%.4f\n",
+                    combined_ms, density_ms, scatter_ms, integrate_ms,
+                    combined_tolerance);
+        CHECK(combined_ms > 0.0f && density_ms > 0.0f && scatter_ms > 0.0f &&
+                  integrate_ms > 0.0f &&
+                  std::fabs(combined_ms - children_ms) <= combined_tolerance,
+              "RT froxel combined timestamp approximately covers density, scatter, and integrate");
+
+        settings.enabled = false;
+        renderer.set_volumetrics_settings(settings, fog);
+        for (int frame = 0; frame < 4; ++frame)
+            CHECK(render_timing_frame(),
+                  error.empty() ? "record disabled RT timing frame" : error.c_str());
+        CHECK(renderer.gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolumetrics) ==
+                      0.0f &&
+                  renderer.gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolDensity) ==
+                      0.0f &&
+                  renderer.gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolScatter) ==
+                      0.0f &&
+                  renderer.gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolIntegrate) ==
+                      0.0f,
+              "disabled RT froxel frame resets combined and child timestamp lanes to zero");
+        settings.enabled = true;
+        renderer.set_volumetrics_settings(settings, fog);
+    }
+
+    const auto before_failure = renderer.volumetrics_dimensions();
+    const uint64_t generation_before_failure =
+        renderer.volumetrics_resource_generation();
+    const VkImageView view_before_failure = renderer.volumetrics_integrated_view();
+    renderer.set_fail_next_froxel_bundle_descriptor_allocation_for_test(true);
+    settings.froxel_xy_scale = matter::FroxelXyScale::X2_0;
+    settings.froxel_depth_slices = matter::FroxelDepthSlices::D256;
+    renderer.set_volumetrics_settings(settings, fog);
+    matter::VulkanFrame failed{};
+    const bool rendered = vulkan.begin_frame(failed, error) &&
+        renderer.prepare_frame(failed, matrices, camera.position, 1.0f,
+                               error) &&
+        renderer.record_cull_and_render(failed, matrices, camera.position,
+                                        1.0f, error) &&
+        renderer.record_composite_to_swapchain(failed, error) &&
+        vulkan.end_frame(failed, error);
+    renderer.finish_ray_tracing_frame(failed.serial, rendered);
+    CHECK(rendered, error.empty() ? "record RT injected froxel descriptor allocation failure"
+                                  : error.c_str());
+    vulkan.wait_idle();
+    const auto after_failure = renderer.volumetrics_dimensions();
+    CHECK(renderer.volumetrics_allocation_rejected() &&
+              after_failure.width == before_failure.width &&
+              after_failure.height == before_failure.height &&
+              after_failure.depth == before_failure.depth &&
+              renderer.volumetrics_integrated_view() == view_before_failure &&
+              renderer.volumetrics_resource_generation() ==
+                  generation_before_failure,
+          "RT injected descriptor allocation failure retains live view, dimensions, and generation");
+}
+
+struct Task9CloudPoint { float x, y, z; };
+
+static uint32_t task9_cloud_hash3i(int32_t ix, int32_t iy, int32_t iz,
+                                   uint32_t seed) {
+    uint32_t h = static_cast<uint32_t>(ix) * 374761393u +
+                 static_cast<uint32_t>(iy) * 3266489917u +
+                 static_cast<uint32_t>(iz) * 668265263u + seed * 2246822519u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return h ^ (h >> 16);
+}
+
+static float task9_cloud_rand01(int32_t ix, int32_t iy, int32_t iz,
+                                uint32_t seed) {
+    return static_cast<float>(task9_cloud_hash3i(ix, iy, iz, seed) & 0xffffffu) /
+           16777216.0f;
+}
+
+static float task9_cloud_smooth5(float t) {
+    return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
+static float task9_cloud_value_noise3(float x, float y, float z,
+                                      uint32_t seed) {
+    const float fx0 = std::floor(x), fy0 = std::floor(y), fz0 = std::floor(z);
+    const int32_t ix = static_cast<int32_t>(fx0);
+    const int32_t iy = static_cast<int32_t>(fy0);
+    const int32_t iz = static_cast<int32_t>(fz0);
+    const float fx = x - fx0, fy = y - fy0, fz = z - fz0;
+    const float c000 = task9_cloud_rand01(ix,     iy,     iz,     seed);
+    const float c100 = task9_cloud_rand01(ix + 1, iy,     iz,     seed);
+    const float c010 = task9_cloud_rand01(ix,     iy + 1, iz,     seed);
+    const float c110 = task9_cloud_rand01(ix + 1, iy + 1, iz,     seed);
+    const float c001 = task9_cloud_rand01(ix,     iy,     iz + 1, seed);
+    const float c101 = task9_cloud_rand01(ix + 1, iy,     iz + 1, seed);
+    const float c011 = task9_cloud_rand01(ix,     iy + 1, iz + 1, seed);
+    const float c111 = task9_cloud_rand01(ix + 1, iy + 1, iz + 1, seed);
+    const float u = task9_cloud_smooth5(fx), v = task9_cloud_smooth5(fy);
+    const float w = task9_cloud_smooth5(fz);
+    const float x00 = c000 + (c100 - c000) * u;
+    const float x10 = c010 + (c110 - c010) * u;
+    const float x01 = c001 + (c101 - c001) * u;
+    const float x11 = c011 + (c111 - c011) * u;
+    const float y0 = x00 + (x10 - x00) * v;
+    const float y1 = x01 + (x11 - x01) * v;
+    return y0 + (y1 - y0) * w;
+}
+
+static float task9_cloud_fbm3(Task9CloudPoint p, uint32_t seed, int octaves,
+                              float gain, float lacunarity) {
+    float amplitude = 1.0f, sum = 0.0f, normalization = 0.0f, frequency = 1.0f;
+    for (int octave = 0; octave < octaves; ++octave) {
+        float noise = task9_cloud_value_noise3(
+            p.x * frequency, p.y * frequency, p.z * frequency,
+            seed + static_cast<uint32_t>(octave) * 131u);
+        noise = noise * 2.0f - 1.0f;
+        sum += noise * amplitude;
+        normalization += amplitude;
+        amplitude *= gain;
+        frequency *= lacunarity;
+    }
+    return sum / normalization;
+}
+
+static float task9_cloud_smoothstep(float edge0, float edge1, float value) {
+    const float t = std::clamp((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+static float task9_cloud_density_cpu(const matter::GpuCloudLayer& layer,
+                                     Task9CloudPoint world_pos,
+                                     float time_seconds) {
+    const float lo = layer.min_height, hi = layer.max_height;
+    if (!(hi > lo) || world_pos.y <= lo || world_pos.y >= hi) return 0.0f;
+    const float thickness = hi - lo;
+    const float f_lo = std::clamp(layer.falloff_min, 0.0f, thickness);
+    const float f_hi = std::clamp(layer.falloff_max, 0.0f, thickness);
+    const float rise = f_lo > 0.0f
+        ? task9_cloud_smoothstep(lo, lo + f_lo, world_pos.y) : 1.0f;
+    const float fall = f_hi > 0.0f
+        ? 1.0f - task9_cloud_smoothstep(hi - f_hi, hi, world_pos.y) : 1.0f;
+    const float profile = std::min(rise, fall);
+    if (profile <= 0.0f || layer.coverage <= 0.0f) return 0.0f;
+    const Task9CloudPoint p{
+        (world_pos.x + layer.wind[0] * time_seconds) * layer.noise_scale,
+        (world_pos.y + layer.wind[1] * time_seconds) * layer.noise_scale,
+        (world_pos.z + layer.wind[2] * time_seconds) * layer.noise_scale};
+    const float normalized = task9_cloud_fbm3(
+        p, static_cast<uint32_t>(layer.seed), static_cast<int>(layer.octaves),
+        layer.gain, layer.lacunarity) * 0.5f + 0.5f;
+    const float threshold = 1.0f - layer.coverage;
+    const float shape = task9_cloud_smoothstep(
+        threshold - matter::kCloudCoverageEdge,
+        threshold + matter::kCloudCoverageEdge, normalized);
+    return profile * layer.max_density * shape;
+}
+
+static Task9CloudPoint task9_froxel_world_position(
+    const viewer::FrameMatrices& matrices, uint32_t x, uint32_t y, uint32_t z) {
+    constexpr float froxel_near = 0.1f;
+    constexpr float froxel_far = 3000.0f;
+    constexpr float width = 160.0f, height = 90.0f, slices = 128.0f;
+    const float depth = froxel_near * std::pow(
+        froxel_far / froxel_near, (static_cast<float>(z) + 0.5f) / slices);
+    const float camera_near = matrices.view_to_clip.m[11] /
+                              (matrices.view_to_clip.m[10] + 1.0f);
+    const float camera_far = matrices.view_to_clip.m[11] / matrices.view_to_clip.m[10];
+    const float ndc_z = camera_near * (camera_far - depth) /
+                        ((camera_far - camera_near) * depth);
+    const matter::Float3 world = viewer::unproject_ndc(
+        matrices.clip_to_world,
+        {(static_cast<float>(x) + 0.5f) / width * 2.0f - 1.0f,
+         1.0f - (static_cast<float>(y) + 0.5f) / height * 2.0f,
+         ndc_z});
+    return {world.x, world.y, world.z};
+}
+
+// Isolated real-device lane for Task 8. It deliberately creates a new
+// renderer before the broad legacy RT scenarios: their intentional descriptor
+// stress must not obscure a resize validation failure.
+static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error), error.empty() ? "initialize isolated froxel RT renderer"
+                                              : error.c_str());
+    CHECK(renderer.ensure_part(known_raster_triangle(998), error) >= 0 &&
+              renderer.update_instances({{998, identity_matrix()}}, error),
+          error.empty() ? "prepare isolated froxel RT geometry" : error.c_str());
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.5f, 2.0f};
+    camera.target = {0.0f, 0.5f, 0.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, 160, 100, matrices, error),
+          error.empty() ? "build isolated froxel RT matrices" : error.c_str());
+    matter::VulkanRayTracingSettings rt{};
+    rt.enabled = true;
+    renderer.set_ray_tracing_settings(rt);
+    const auto warm_rt_tlas = [&]() {
+        matter::VulkanFrame frame{};
+        const bool recorded = vulkan.begin_frame(frame, error) &&
+            renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                   error) &&
+            renderer.record_cull_and_render(frame, matrices, camera.position,
+                                            1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error) &&
+            vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, recorded);
+        vulkan.wait_idle();
+        return recorded;
+    };
+    CHECK(warm_rt_tlas() && warm_rt_tlas() && renderer.rt_effective_observed(),
+          error.empty() ? "commit isolated traceable TLAS before froxel resize"
+                        : error.c_str());
+
+    // Task 10: allocate the clear-only sun-space clipmaps through the real
+    // renderer frame lifecycle before any Task 11 density generation exists.
+    // The observable contract is resource ownership, descriptor publication,
+    // fallback, failure cleanup, and retirement -- every sample remains clear.
+    matter::FogSettings clear_fog{};
+    matter::VulkanVolumetricsSettings clear_volumetrics{};
+    clear_volumetrics.enabled = true;
+    matter::CloudShadowSettings improved_shadows{};
+    matter::apply_volumetric_quality_preset(
+        matter::VolumetricQualityPreset::Improved, clear_volumetrics,
+        improved_shadows);
+    renderer.set_volumetrics_settings(clear_volumetrics, clear_fog,
+                                      improved_shadows);
+    CHECK(warm_rt_tlas(),
+          error.empty() ? "allocate clear Task 10 cloud-shadow clipmaps"
+                        : error.c_str());
+    const auto improved_levels =
+        matter::resolve_cloud_shadow_levels(improved_shadows);
+    bool all_task10_images_match = renderer.cloud_shadows_active() &&
+        renderer.cloud_shadow_persistent_bytes() ==
+            matter::estimate_cloud_shadow_bytes(improved_shadows);
+    for (uint32_t level = 0; level < 2; ++level) {
+        const auto active_desc = renderer.cloud_shadow_level_desc(level);
+        all_task10_images_match = all_task10_images_match &&
+            active_desc.width == improved_levels[level].width &&
+            active_desc.height == improved_levels[level].height &&
+            active_desc.depth == improved_levels[level].depth &&
+            renderer.cloud_shadow_density_format(level) ==
+                VK_FORMAT_R16_SFLOAT &&
+            renderer.cloud_shadow_density_extent(level).width ==
+                improved_levels[level].width &&
+            renderer.cloud_shadow_density_extent(level).height ==
+                improved_levels[level].height &&
+            renderer.cloud_shadow_density_extent(level).depth ==
+                improved_levels[level].depth &&
+            renderer.cloud_shadow_density_view(level) != VK_NULL_HANDLE;
+        for (uint32_t ping = 0; ping < 2; ++ping) {
+            const auto extent =
+                renderer.cloud_shadow_cumulative_extent(level, ping);
+            all_task10_images_match = all_task10_images_match &&
+                renderer.cloud_shadow_cumulative_format(level, ping) ==
+                    VK_FORMAT_R16_SFLOAT &&
+                extent.width == improved_levels[level].width &&
+                extent.height == improved_levels[level].height &&
+                extent.depth == improved_levels[level].depth &&
+                renderer.cloud_shadow_cumulative_view(level, ping) !=
+                    VK_NULL_HANDLE &&
+                renderer.cloud_shadow_environment_image_is_clear_for_test(
+                    level * 2u + ping, error);
+        }
+    }
+    CHECK(all_task10_images_match,
+          "Improved owns exactly one density and two R16F cumulative images per resolved level");
+    CHECK(renderer.cloud_shadow_active_ping(0) < 2u &&
+              renderer.cloud_shadow_active_ping(1) < 2u &&
+              renderer.cloud_shadow_environment_bindings_match_for_test() &&
+              renderer.cloud_shadow_environment_state_for_test(0) == 1.0f,
+          "both ping indices and the current set-1 cloud-shadow views are valid");
+
+    matter::CloudShadowSettings disabled_shadows = improved_shadows;
+    disabled_shadows.enabled = false;
+    renderer.set_volumetrics_settings(clear_volumetrics, clear_fog,
+                                      disabled_shadows);
+    CHECK(warm_rt_tlas(),
+          error.empty() ? "bind Task 10 emergency cloud-shadow images"
+                        : error.c_str());
+    bool disabled_is_clear = !renderer.cloud_shadows_active() &&
+        renderer.cloud_shadow_persistent_bytes() == 0u &&
+        renderer.cloud_shadow_environment_state_for_test(0) == 0.0f;
+    for (uint32_t binding = 0; binding < 4; ++binding) {
+        const auto extent =
+            renderer.cloud_shadow_environment_extent_for_test(binding);
+        disabled_is_clear = disabled_is_clear &&
+            renderer.cloud_shadow_environment_view_for_test(binding) !=
+                VK_NULL_HANDLE &&
+            renderer.cloud_shadow_environment_image_is_clear_for_test(
+                binding, error) &&
+            extent.width == 1u && extent.height == 1u && extent.depth == 1u;
+    }
+    CHECK(disabled_is_clear,
+          "disabled mode publishes cloud_state.x zero and initialized 1x1x1 clear bindings");
+
+    // Re-establish a live pair, then fail High after partial candidate image
+    // allocation. The current safe slot must switch to emergency descriptors;
+    // no failed-candidate lifetime may escape into a live set.
+    renderer.set_volumetrics_settings(clear_volumetrics, clear_fog,
+                                      improved_shadows);
+    CHECK(warm_rt_tlas(),
+          error.empty() ? "restore Improved clipmaps before failure injection"
+                        : error.c_str());
+    matter::CloudShadowSettings high_shadows{};
+    matter::VulkanVolumetricsSettings high_volumetrics{};
+    matter::apply_volumetric_quality_preset(
+        matter::VolumetricQualityPreset::High, high_volumetrics,
+        high_shadows);
+    renderer.set_fail_next_cloud_shadow_bundle_creation_for_test(true);
+    renderer.set_volumetrics_settings(high_volumetrics, clear_fog,
+                                      high_shadows);
+    CHECK(warm_rt_tlas(),
+          error.empty() ? "renderer survives partial High cloud-shadow allocation failure"
+                        : error.c_str());
+    const std::string cloud_failure = renderer.cloud_shadow_allocation_error();
+    bool failure_uses_clear = !renderer.cloud_shadows_active() &&
+        renderer.cloud_shadow_environment_state_for_test(0) == 0.0f &&
+        renderer.cloud_shadow_failed_candidate_destroyed_for_test();
+    for (uint32_t binding = 0; binding < 4; ++binding) {
+        const auto extent =
+            renderer.cloud_shadow_environment_extent_for_test(binding);
+        failure_uses_clear = failure_uses_clear &&
+            renderer.cloud_shadow_environment_image_is_clear_for_test(
+                binding, error) &&
+            extent.width == 1u && extent.height == 1u && extent.depth == 1u;
+    }
+    CHECK(failure_uses_clear &&
+              cloud_failure.find("512x512x32") != std::string::npos &&
+              cloud_failure.find("256x256x24") != std::string::npos &&
+              cloud_failure.find("MiB") != std::string::npos,
+          "partial High failure destroys candidates, binds emergency clear, and names both levels plus MiB");
+
+    renderer.set_volumetrics_settings(clear_volumetrics, clear_fog,
+                                      improved_shadows);
+    CHECK(warm_rt_tlas(),
+          error.empty() ? "recreate Improved clipmaps after rejected High request"
+                        : error.c_str());
+    renderer.set_volumetrics_settings(clear_volumetrics, clear_fog,
+                                      disabled_shadows);
+    CHECK(warm_rt_tlas() && warm_rt_tlas() &&
+              renderer.cloud_shadow_retired_bundle_count_for_test() == 0u,
+          error.empty() ? "retire cloud-shadow bundle after both frame slots complete"
+                        : error.c_str());
+
+    // Task 11 numerical path: use a separate small real module so the test
+    // can inject an analytical density without weakening authored cloud math.
+    viewer::VkCloudShadows task11_clouds;
+    CHECK(task11_clouds.init(vulkan, error),
+          error.empty() ? "initialize analytical Task 11 cloud-shadow module"
+                        : error.c_str());
+    matter::CloudShadowSettings task11_settings{};
+    task11_settings.enabled = true;
+    task11_settings.near_resolution = 0;
+    task11_settings.near_depth_slices = 0;
+    task11_settings.near_coverage_m = 160.0f;
+    task11_settings.far_resolution = 0;
+    task11_settings.far_depth_slices = 0;
+    task11_settings.far_coverage_m = 160.0f;
+    task11_settings.update_fraction = 1.0f;
+    task11_clouds.request_settings(task11_settings);
+    task11_clouds.set_density_override_for_test(0.02f, -1, 0.02f, true);
+    const matter::Float3 task11_camera{0.0f, 0.0f, 0.0f};
+    const matter::Float3 task11_daylight{0.0f, -1.0f, 0.0f};
+    CHECK(task11_clouds.generate_for_test(
+              0, task11_camera, task11_daylight, 0.0f, error),
+          error.empty() ? "generate analytical constant cloud-shadow slab"
+                        : error.c_str());
+    const uint32_t slab_ping = task11_clouds.level(0).active_index;
+    bool slab_matches = task11_clouds.last_generation_dispatch_count_for_test() == 6u;
+    float previous_tau = std::numeric_limits<float>::infinity();
+    for (uint32_t z = 0; z < 16; ++z) {
+        float tau = 0.0f;
+        uint16_t raw = 0;
+        slab_matches = slab_matches &&
+            task11_clouds.readback_cumulative_voxel_for_test(
+                0, slab_ping, 64, 64, z, tau, raw, error) &&
+            raw != 0u && std::isfinite(tau) && tau <= previous_tau &&
+            std::fabs(tau - static_cast<float>(16u - z) * 0.2f) < 0.005f &&
+            std::isfinite(std::exp(-tau)) && std::exp(-tau) >= 0.0f &&
+            std::exp(-tau) <= 1.0f;
+        previous_tau = tau;
+    }
+    CHECK(slab_matches,
+          error.empty() ? "R16F GPU prefix matches the constant analytical slab"
+                        : error.c_str());
+
+    task11_clouds.set_density_override_for_test(0.02f, 2, 0.02f, true);
+    CHECK(task11_clouds.generate_for_test(
+              1, task11_camera, task11_daylight, 1.0f, error),
+          error.empty() ? "generate slab with one non-finite density slice"
+                        : error.c_str());
+    const uint32_t nan_ping = task11_clouds.level(0).active_index;
+    float tau_before_nan = 0.0f, tau_at_nan = 0.0f, tau_after_nan = 0.0f;
+    uint16_t raw_before_nan = 0, raw_at_nan = 0, raw_after_nan = 0;
+    CHECK(task11_clouds.readback_cumulative_voxel_for_test(
+              0, nan_ping, 64, 64, 1, tau_before_nan, raw_before_nan, error) &&
+              task11_clouds.readback_cumulative_voxel_for_test(
+                  0, nan_ping, 64, 64, 2, tau_at_nan, raw_at_nan, error) &&
+              task11_clouds.readback_cumulative_voxel_for_test(
+                  0, nan_ping, 64, 64, 3, tau_after_nan, raw_after_nan, error) &&
+              std::fabs(tau_before_nan - 2.8f) < 0.005f &&
+              std::fabs(tau_at_nan - 2.6f) < 0.005f &&
+              std::fabs(tau_after_nan - 2.6f) < 0.005f,
+          error.empty() ? "GPU prefix treats one NaN density sample as clear"
+                        : error.c_str());
+
+    task11_clouds.set_density_layers_for_test(12, 0.03f, 3, 0.02f,
+                                              true);
+    CHECK(task11_clouds.generate_for_test(
+              0, task11_camera, task11_daylight, 1.5f, error),
+          error.empty() ? "generate two analytically separated cloud layers"
+                        : error.c_str());
+    const uint32_t layers_ping = task11_clouds.level(0).active_index;
+    float above_tau = 0.0f, between_tau = 0.0f, below_tau = 0.0f;
+    uint16_t above_raw = 0, between_raw = 0, below_raw = 0;
+    CHECK(task11_clouds.readback_cumulative_voxel_for_test(
+              0, layers_ping, 64, 64, 15, above_tau, above_raw, error) &&
+              task11_clouds.readback_cumulative_voxel_for_test(
+                  0, layers_ping, 64, 64, 8, between_tau, between_raw, error) &&
+              task11_clouds.readback_cumulative_voxel_for_test(
+                  0, layers_ping, 64, 64, 0, below_tau, below_raw, error) &&
+              std::fabs(above_tau) < 0.005f &&
+              std::fabs(between_tau - 0.3f) < 0.005f &&
+              std::fabs(below_tau - 0.5f) < 0.005f,
+          error.empty() ? "GPU receivers above, between, and below separated layers see only sunward extinction"
+                        : error.c_str());
+
+    // Quarter scheduling changes a selected tile while a non-selected tile
+    // retains the reprojected value. The phase helper independently locates
+    // representative columns for frame phase 1.
+    task11_settings.update_fraction = 0.25f;
+    task11_clouds.request_settings(task11_settings);
+    task11_clouds.set_density_override_for_test(0.01f, -1, 0.01f, true);
+    CHECK(task11_clouds.generate_for_test(
+              0, task11_camera, task11_daylight, 2.0f, error),
+          error.empty() ? "seed Task 11 quarter-scheduler history"
+                        : error.c_str());
+    std::array<uint32_t, 2> selected_column{0, 0};
+    std::array<uint32_t, 2> retained_column{0, 0};
+    bool found_selected = false, found_retained = false;
+    const uint32_t quarter_phase = task11_clouds.frame_index_for_test();
+    for (uint32_t y = 0; y < 128 && (!found_selected || !found_retained); y += 8)
+        for (uint32_t x = 0; x < 128 && (!found_selected || !found_retained); x += 8) {
+            const bool selected = viewer::cloud_shadow_column_selected(
+                true, false, {x, y}, 0, quarter_phase, 0.25f);
+            if (selected && !found_selected) {
+                selected_column = {x, y}; found_selected = true;
+            } else if (!selected && !found_retained) {
+                retained_column = {x, y}; found_retained = true;
+            }
+        }
+    task11_clouds.set_density_override_for_test(0.02f, -1, 0.02f, false);
+    CHECK(task11_clouds.generate_for_test(
+              1, task11_camera, task11_daylight, 3.0f, error),
+          error.empty() ? "advance one rotating Task 11 quarter"
+                        : error.c_str());
+    const uint32_t quarter_ping = task11_clouds.level(0).active_index;
+    float selected_tau = 0.0f, retained_tau = 0.0f;
+    uint16_t selected_raw = 0, retained_raw = 0;
+    CHECK(found_selected && found_retained &&
+              task11_clouds.readback_cumulative_voxel_for_test(
+                  0, quarter_ping, selected_column[0], selected_column[1], 0,
+                  selected_tau, selected_raw, error) &&
+              task11_clouds.readback_cumulative_voxel_for_test(
+                  0, quarter_ping, retained_column[0], retained_column[1], 0,
+                  retained_tau, retained_raw, error) &&
+              std::fabs(selected_tau - 3.2f) < 0.005f &&
+              std::fabs(retained_tau - 1.6f) < 0.005f,
+          error.empty() ? "GPU updates one deterministic quarter and retains reprojected tiles"
+                        : error.c_str());
+
+    // Seed a tile-unique checker, then move exactly one snapped voxel. Pick a
+    // retained current tile whose previous-world source crosses an 8x8 tile
+    // boundary and has a different raw value than the wrong equal-index copy.
+    task11_settings.update_fraction = 1.0f;
+    task11_clouds.request_settings(task11_settings);
+    task11_clouds.set_density_override_for_test(0.01f, -1, 0.03f, true);
+    CHECK(task11_clouds.generate_for_test(
+              0, task11_camera, task11_daylight, 3.5f, error),
+          error.empty() ? "seed checker history for world-position reprojection"
+                        : error.c_str());
+    const uint32_t checker_ping = task11_clouds.level(0).active_index;
+    const auto before_move = task11_clouds.level(0).current_frame;
+    matter::Float3 task11_lateral{
+        before_move.uvw_to_world.m[0] / task11_settings.near_coverage_m,
+        before_move.uvw_to_world.m[4] / task11_settings.near_coverage_m,
+        before_move.uvw_to_world.m[8] / task11_settings.near_coverage_m};
+    const matter::Float3 moved_camera{
+        task11_lateral.x * before_move.voxel_xy_m,
+        task11_lateral.y * before_move.voxel_xy_m,
+        task11_lateral.z * before_move.voxel_xy_m};
+    task11_settings.update_fraction = 0.25f;
+    task11_clouds.request_settings(task11_settings);
+    const uint32_t move_phase = task11_clouds.frame_index_for_test();
+    std::array<uint32_t, 2> overlap_column{0, 0};
+    uint32_t source_x = 0;
+    uint16_t source_raw = 0, equal_index_raw = 0;
+    bool found_shifted_checker = false;
+    for (uint32_t y = 0; y < 128 && !found_shifted_checker; y += 8) {
+        for (uint32_t x = 7; x < 127 && !found_shifted_checker; x += 8) {
+            if (viewer::cloud_shadow_column_selected(
+                    true, false, {x, y}, 0, move_phase, 0.25f)) continue;
+            const auto moved_frame = matter::make_cloud_shadow_frame(
+                task11_clouds.level(0).desc, moved_camera, task11_daylight);
+            const auto source_uvw = viewer::cloud_shadow_previous_uvw_for_voxel(
+                moved_frame, before_move, task11_clouds.level(0).desc,
+                x, y, 0);
+            const uint32_t candidate_source_x = static_cast<uint32_t>(
+                source_uvw.x * task11_clouds.level(0).desc.width);
+            float ignored_tau = 0.0f;
+            uint16_t candidate_source_raw = 0, candidate_equal_raw = 0;
+            if (candidate_source_x < 128 && candidate_source_x != x &&
+                task11_clouds.readback_cumulative_voxel_for_test(
+                    0, checker_ping, candidate_source_x, y, 0,
+                    ignored_tau, candidate_source_raw, error) &&
+                task11_clouds.readback_cumulative_voxel_for_test(
+                    0, checker_ping, x, y, 0,
+                    ignored_tau, candidate_equal_raw, error) &&
+                candidate_source_raw != candidate_equal_raw) {
+                overlap_column = {x, y};
+                source_x = candidate_source_x;
+                source_raw = candidate_source_raw;
+                equal_index_raw = candidate_equal_raw;
+                found_shifted_checker = true;
+            }
+        }
+    }
+    task11_clouds.set_density_override_for_test(0.02f, -1, 0.04f, false);
+    CHECK(task11_clouds.generate_for_test(
+              0, moved_camera, task11_daylight, 4.0f, error),
+          error.empty() ? "reproject one snapped voxel and refresh exposed border"
+                        : error.c_str());
+    const uint32_t moved_ping = task11_clouds.level(0).active_index;
+    float overlap_tau = 0.0f, border_tau = 0.0f;
+    uint16_t overlap_raw = 0, border_raw = 0;
+    const float border_sigma =
+        (viewer::cloud_shadow_tile_hash(127, 64, 0) & 1u) == 0u
+            ? 0.02f : 0.04f;
+    CHECK(found_shifted_checker && source_x != overlap_column[0] &&
+              source_raw != equal_index_raw &&
+              task11_clouds.readback_cumulative_voxel_for_test(
+                  0, moved_ping, overlap_column[0], overlap_column[1], 0,
+                  overlap_tau, overlap_raw, error) &&
+              task11_clouds.readback_cumulative_voxel_for_test(
+                  0, moved_ping, 127, 64, 0, border_tau, border_raw, error) &&
+              overlap_raw == source_raw &&
+              std::fabs(border_tau - 16.0f * border_sigma * 10.0f) < 0.01f,
+          error.empty() ? "shifted world-position checker history survives while only the exposed border refreshes"
+                        : error.c_str());
+
+    // A non-finite value in otherwise valid history must invalidate and
+    // refresh its entire column immediately, independent of rotating phase.
+    std::array<uint32_t, 2> nan_history_column{0, 0};
+    bool found_nan_history_column = false;
+    const uint32_t nan_phase = task11_clouds.frame_index_for_test();
+    for (uint32_t y = 0; y < 128 && !found_nan_history_column; y += 8)
+        for (uint32_t x = 0; x < 128 && !found_nan_history_column; x += 8)
+            if (!viewer::cloud_shadow_column_selected(
+                    true, false, {x, y}, 0, nan_phase, 0.25f)) {
+                nan_history_column = {x, y};
+                found_nan_history_column = true;
+            }
+    CHECK(found_nan_history_column &&
+              task11_clouds.write_cumulative_raw_for_test(
+                  0, moved_ping, nan_history_column[0],
+                  nan_history_column[1], 8, 0x7e00u, error),
+          error.empty() ? "inject non-finite cumulative history into a non-rotating column"
+                        : error.c_str());
+    task11_clouds.set_density_override_for_test(0.05f, -1, 0.05f, false);
+    CHECK(task11_clouds.generate_for_test(
+              1, moved_camera, task11_daylight, 4.5f, error),
+          error.empty() ? "refresh non-finite reprojected history"
+                        : error.c_str());
+    float repaired_tau = 0.0f;
+    uint16_t repaired_raw = 0;
+    CHECK(task11_clouds.readback_cumulative_voxel_for_test(
+              0, task11_clouds.level(0).active_index,
+              nan_history_column[0], nan_history_column[1], 0,
+              repaired_tau, repaired_raw, error) &&
+              std::isfinite(repaired_tau) &&
+              std::fabs(repaired_tau - 8.0f) < 0.01f,
+          error.empty() ? "non-finite history triggers immediate full-column regeneration instead of a clear hole"
+                        : error.c_str());
+
+    // Exercise production packed cloud density: fixed camera and frame phase,
+    // advancing cloud time may modify exactly the rotating quarter only.
+    matter::FogSettings animated_fog{};
+    animated_fog.cloud_count = 1;
+    animated_fog.clouds[0].enabled = true;
+    animated_fog.clouds[0].min_height = -10000.0f;
+    animated_fog.clouds[0].max_height = 10000.0f;
+    animated_fog.clouds[0].max_density = 0.02f;
+    animated_fog.clouds[0].coverage = 0.5f;
+    animated_fog.clouds[0].noise_scale = 0.01f;
+    animated_fog.clouds[0].wind[0] = 25.0f;
+    animated_fog.clouds[0].octaves = 2;
+    task11_clouds.request_cloud_layers(animated_fog);
+    task11_clouds.clear_density_override_for_test(true);
+    task11_settings.update_fraction = 1.0f;
+    task11_clouds.request_settings(task11_settings);
+    CHECK(task11_clouds.generate_for_test(
+              0, task11_camera, task11_daylight, 0.0f, error),
+          error.empty() ? "seed production packed-cloud history"
+                        : error.c_str());
+    const uint32_t production_seed_ping =
+        task11_clouds.level(0).active_index;
+    std::array<uint16_t, 256> production_before{};
+    uint32_t tile_sample = 0;
+    for (uint32_t y = 4; y < 128; y += 8)
+        for (uint32_t x = 4; x < 128; x += 8) {
+            float ignored_tau = 0.0f;
+            task11_clouds.readback_cumulative_voxel_for_test(
+                0, production_seed_ping, x, y, 0, ignored_tau,
+                production_before[tile_sample++], error);
+        }
+    task11_settings.update_fraction = 0.25f;
+    task11_clouds.request_settings(task11_settings);
+    const uint32_t production_phase = task11_clouds.frame_index_for_test();
+    CHECK(task11_clouds.generate_for_test(
+              1, task11_camera, task11_daylight, 10.0f, error),
+          error.empty() ? "advance cloud time for one production rotating quarter"
+                        : error.c_str());
+    bool nonselected_unchanged = true, selected_changed = false;
+    tile_sample = 0;
+    for (uint32_t y = 4; y < 128; y += 8)
+        for (uint32_t x = 4; x < 128; x += 8) {
+            float ignored_tau = 0.0f;
+            uint16_t after_raw = 0;
+            const bool read = task11_clouds.readback_cumulative_voxel_for_test(
+                0, task11_clouds.level(0).active_index, x, y, 0,
+                ignored_tau, after_raw, error);
+            const bool selected = viewer::cloud_shadow_column_selected(
+                true, false, {x, y}, 0, production_phase, 0.25f);
+            nonselected_unchanged = nonselected_unchanged && read &&
+                (selected || after_raw == production_before[tile_sample]);
+            selected_changed = selected_changed ||
+                (read && selected && after_raw != production_before[tile_sample]);
+            ++tile_sample;
+        }
+    CHECK(nonselected_unchanged && selected_changed,
+          error.empty() ? "cloud time advances production density only in the deterministic rotating quarter"
+                        : error.c_str());
+
+    animated_fog.clouds[0].max_density = 0.03f;
+    task11_clouds.request_cloud_layers(animated_fog);
+    CHECK(task11_clouds.prepare_frame(
+              0, task11_camera, task11_daylight, 0.53f, error) &&
+              !task11_clouds.level(0).history_valid &&
+              !task11_clouds.level(1).history_valid,
+          error.empty() ? "packed cloud authoring invalidates both generated levels"
+                        : error.c_str());
+    CHECK(task11_clouds.generate_for_test(
+              0, task11_camera, task11_daylight, 11.0f, error),
+          error.empty() ? "reseed after packed authoring invalidation"
+                        : error.c_str());
+    task11_settings.near_coverage_m = 180.0f;
+    task11_clouds.request_settings(task11_settings);
+    CHECK(task11_clouds.prepare_frame(
+              1, task11_camera, task11_daylight, 0.53f, error) &&
+              !task11_clouds.level(0).history_valid &&
+              !task11_clouds.level(1).history_valid,
+          error.empty() ? "dimension or coverage changes invalidate both generated levels"
+                        : error.c_str());
+    CHECK(task11_clouds.generate_for_test(
+              1, task11_camera, task11_daylight, 12.0f, error),
+          error.empty() ? "reseed resized cloud-shadow levels"
+                        : error.c_str());
+    const float deg = 3.14159265358979323846f / 180.0f;
+    const matter::Float3 within_two{
+        0.0f, -std::cos(1.9f * deg), std::sin(1.9f * deg)};
+    const matter::Float3 beyond_two{
+        0.0f, -std::cos(4.1f * deg), std::sin(4.1f * deg)};
+    CHECK(task11_clouds.prepare_frame(
+              0, task11_camera, within_two, 0.53f, error) &&
+              task11_clouds.level(0).history_valid &&
+              task11_clouds.level(1).history_valid,
+          error.empty() ? "a two-degree-or-smaller sun edit preserves both histories"
+                        : error.c_str());
+    CHECK(task11_clouds.prepare_frame(
+              0, task11_camera, beyond_two, 0.53f, error) &&
+              !task11_clouds.level(0).history_valid &&
+              !task11_clouds.level(1).history_valid,
+          error.empty() ? "a greater-than-two-degree sun edit invalidates both histories"
+                        : error.c_str());
+
+    CHECK(task11_clouds.generate_for_test(
+              1, task11_camera, {0.0f, 0.1f, 1.0f}, 5.0f, error) &&
+              task11_clouds.last_generation_dispatch_count_for_test() == 0u &&
+              task11_clouds.environment_block()[32] == 0.0f &&
+              task11_clouds.environment_image_is_clear_for_test(0, error),
+          error.empty() ? "below-horizon sun publishes clear without generation dispatches"
+                        : error.c_str());
+    task11_clouds.destroy();
+
+    // Task 9: exercise the production bundle swap, density dispatch, and
+    // readback path with a cloud deck that is constant over every froxel this
+    // fixture can see.  Ground fog and emitters stay clear, so enhanced
+    // media.rgb has only the cloud's documented 0.99 scattering term.
+    matter::FogSettings cloud_fog{};
+    cloud_fog.cloud_count = 1;
+    cloud_fog.clouds[0].enabled = true;
+    cloud_fog.clouds[0].min_height = -10000.0f;
+    cloud_fog.clouds[0].max_height = 10000.0f;
+    cloud_fog.clouds[0].max_density = 0.02f;
+    cloud_fog.clouds[0].coverage = 1.0f;
+    cloud_fog.clouds[0].falloff_min = 0.0f;
+    cloud_fog.clouds[0].falloff_max = 0.0f;
+    cloud_fog.clouds[0].octaves = 1;
+    cloud_fog.color[0] = 0.0f;
+    cloud_fog.color[1] = 0.0f;
+    cloud_fog.color[2] = 0.0f;
+    matter::VulkanVolumetricsSettings current_clouds{};
+    current_clouds.enabled = true;
+    current_clouds.local_sun_march_steps = 0;
+    current_clouds.multiple_scattering_orders = 1;
+    current_clouds.multiple_scattering_strength = 0.0f;
+    current_clouds.powder_strength = 0.0f;
+    renderer.set_volumetrics_settings(current_clouds, cloud_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "render Current-cost cloud density"
+                                        : error.c_str());
+    CHECK(renderer.volumetrics_grid_rgba16f_volume_count_for_test() == 4u &&
+              !renderer.volumetrics_cloud_density_allocated_for_test() &&
+              renderer.volumetrics_cloud_density_dimensions_for_test().width == 1u &&
+              renderer.volumetrics_cloud_density_dimensions_for_test().height == 1u &&
+              renderer.volumetrics_cloud_density_dimensions_for_test().depth == 1u &&
+              renderer.volumetrics_grid_bytes_for_test() == 58982400u,
+          "Current cost owns four RGBA16F grids and only a non-accounted R16F dummy");
+
+    // Exercise the composite cloud-density debug view on the Current path as
+    // well: its stable dummy stays GENERAL because it is also the unused
+    // storage-image binding of the Current specialization.
+    current_clouds.vol_debug_view = 4.0f;
+    renderer.set_volumetrics_settings(current_clouds, cloud_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "render Current cloud-density debug"
+                                        : error.c_str());
+    CHECK(vulkan.validation_error_count() == 0,
+          "Current cloud-density debug samples the stable GENERAL dummy without validation errors");
+    current_clouds.vol_debug_view = 0.0f;
+
+    // Custom-state predicate coverage: strength is a weighting control, not
+    // an enhanced feature by itself, while cloud shadows consume the shared
+    // density even when every volumetric enhanced dial remains neutral.
+    matter::CloudShadowSettings no_cloud_shadows{};
+    no_cloud_shadows.enabled = false;
+    matter::VulkanVolumetricsSettings strength_only = current_clouds;
+    strength_only.multiple_scattering_strength = 0.85f;
+    renderer.set_volumetrics_settings(strength_only, cloud_fog,
+                                      no_cloud_shadows);
+    CHECK(warm_rt_tlas(), error.empty() ? "render strength-only custom cloud state"
+                                        : error.c_str());
+    CHECK(!renderer.volumetrics_cloud_density_allocated_for_test() &&
+              renderer.volumetrics_grid_bytes_for_test() == 58982400u,
+          "multiple-scattering strength alone keeps the Current R16F dummy");
+
+    matter::CloudShadowSettings shadows_only{};
+    shadows_only.enabled = true;
+    renderer.set_volumetrics_settings(current_clouds, cloud_fog, shadows_only);
+    CHECK(warm_rt_tlas(), error.empty() ? "render shadows-only custom cloud state"
+                                        : error.c_str());
+    CHECK(renderer.volumetrics_cloud_density_allocated_for_test() &&
+              renderer.volumetrics_grid_bytes_for_test() == 62668800u,
+          "cloud shadows alone allocate the enhanced R16F density grid");
+    const uint32_t task11_initial_ping =
+        renderer.cloud_shadow_active_ping(0);
+    CHECK(!renderer.cloud_shadow_environment_image_is_clear_for_test(
+              task11_initial_ping, error),
+          error.empty()
+              ? "authored cloud extinction generates nonzero sun-space optical depth"
+              : error.c_str());
+
+    matter::VulkanFrame flush_failure_frame{};
+    CHECK(vulkan.begin_frame(flush_failure_frame, error) &&
+              renderer.prepare_frame(flush_failure_frame, matrices,
+                                     camera.position, 1.0f, error),
+          error.empty() ? "begin acquired slot for EnvironmentBlock flush failure"
+                        : error.c_str());
+    const uint32_t ping_before_flush_failure[2]{
+        renderer.cloud_shadow_active_ping(0),
+        renderer.cloud_shadow_active_ping(1)};
+    float state_before_flush_failure[4]{};
+    VkImageView view_before_flush_failure[4]{};
+    for (uint32_t i = 0; i < 4; ++i) {
+        state_before_flush_failure[i] =
+            renderer.cloud_shadow_environment_state_for_test(i);
+        view_before_flush_failure[i] =
+            renderer.cloud_shadow_environment_view_for_test(i);
+    }
+    renderer.set_fail_next_environment_flush_for_test(true);
+    const bool flush_failure_recorded = renderer.record_cull_and_render(
+        flush_failure_frame, matrices, camera.position, 1.0f, error);
+    const std::string flush_failure_error = error;
+    bool publication_unchanged = !flush_failure_recorded &&
+        renderer.cloud_shadow_active_ping(0) == ping_before_flush_failure[0] &&
+        renderer.cloud_shadow_active_ping(1) == ping_before_flush_failure[1];
+    for (uint32_t i = 0; i < 4; ++i) {
+        publication_unchanged = publication_unchanged &&
+            renderer.cloud_shadow_environment_state_for_test(i) ==
+                state_before_flush_failure[i] &&
+            renderer.cloud_shadow_environment_view_for_test(i) ==
+                view_before_flush_failure[i];
+    }
+    CHECK(publication_unchanged &&
+              flush_failure_error.find("EnvironmentBlock flush failure") !=
+                  std::string::npos,
+          "failed acquired-slot EnvironmentBlock flush keeps the previous published ping transactionally");
+    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "record");
+    std::string abort_error;
+    CHECK(!vulkan.end_frame(flush_failure_frame, abort_error),
+          "abort the intentionally incomplete flush-failure frame");
+    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "");
+    renderer.finish_ray_tracing_frame(flush_failure_frame.serial, false);
+    vulkan.wait_idle();
+    error.clear();
+    CHECK(warm_rt_tlas(),
+          error.empty() ? "regenerate and publish after transactional flush failure"
+                        : error.c_str());
+    renderer.set_volumetrics_settings(current_clouds, cloud_fog,
+                                      no_cloud_shadows);
+    CHECK(warm_rt_tlas() &&
+              !renderer.volumetrics_cloud_density_allocated_for_test(),
+          error.empty() ? "shadows-only density retires safely when disabled"
+                        : error.c_str());
+
+    matter::VulkanVolumetricsSettings improved_clouds = current_clouds;
+    improved_clouds.local_sun_march_steps = 1;
+    renderer.set_volumetrics_settings(improved_clouds, cloud_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "render Improved cloud density"
+                                        : error.c_str());
+    matter::Float4 cloud_media{};
+    float cloud_density = 0.0f;
+    constexpr uint32_t task9_x = 80u, task9_y = 45u, task9_z = 64u;
+    const Task9CloudPoint task9_world =
+        task9_froxel_world_position(matrices, task9_x, task9_y, task9_z);
+    matter::GpuCloudLayer task9_packed{};
+    matter::pack_cloud_layer(cloud_fog.clouds[0], 0, task9_packed);
+    const float task9_cpu_density =
+        task9_cloud_density_cpu(task9_packed, task9_world, 1.0f);
+    CHECK(renderer.volumetrics_cloud_density_allocated_for_test() &&
+              renderer.volumetrics_cloud_density_dimensions_for_test().width == 160u &&
+              renderer.volumetrics_cloud_density_dimensions_for_test().height == 90u &&
+              renderer.volumetrics_cloud_density_dimensions_for_test().depth == 128u &&
+              renderer.volumetrics_grid_rgba16f_volume_count_for_test() == 4u &&
+              renderer.volumetrics_grid_bytes_for_test() == 62668800u &&
+              renderer.readback_volumetrics_density_voxel_for_test(
+                  task9_x, task9_y, task9_z, cloud_media, cloud_density, error) &&
+              std::isfinite(cloud_density) && cloud_density > 0.0f &&
+              std::fabs(cloud_density - task9_cpu_density) < 2e-4f &&
+              std::fabs(cloud_media.w - cloud_density) < 2e-4f &&
+              std::fabs(cloud_media.x - 0.99f * cloud_density) < 2e-4f &&
+              std::fabs(cloud_media.y - 0.99f * cloud_density) < 2e-4f &&
+              std::fabs(cloud_media.z - 0.99f * cloud_density) < 2e-4f,
+          error.empty() ? "Improved cloud grid records extinction and near-white scattering"
+                        : error.c_str());
+
+    // Fixed-voxel semantic coverage uses the same binary32 hash/value-noise/
+    // FBM order as the shader oracle above.  These cases catch a missing
+    // coverage/height branch and a seed/index packing regression, rather than
+    // merely proving that some cloud voxel is nonzero.
+    matter::FogSettings semantic_fog = cloud_fog;
+    semantic_fog.clouds[0].coverage = 0.0f;
+    renderer.set_volumetrics_settings(improved_clouds, semantic_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "render coverage-zero cloud fixture"
+                                        : error.c_str());
+    matter::Float4 semantic_media{};
+    float semantic_density = -1.0f;
+    CHECK(renderer.readback_volumetrics_density_voxel_for_test(
+              task9_x, task9_y, task9_z, semantic_media, semantic_density, error) &&
+              semantic_density == 0.0f && semantic_media.w == 0.0f,
+          error.empty() ? "coverage zero clears the fixed GPU cloud voxel"
+                        : error.c_str());
+
+    semantic_fog.clouds[0].coverage = 1.0f;
+    semantic_fog.clouds[0].min_height = 100.0f;
+    semantic_fog.clouds[0].max_height = 300.0f;
+    renderer.set_volumetrics_settings(improved_clouds, semantic_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "render outside-height cloud fixture"
+                                        : error.c_str());
+    CHECK(renderer.readback_volumetrics_density_voxel_for_test(
+              task9_x, task9_y, task9_z, semantic_media, semantic_density, error) &&
+              semantic_density == 0.0f && semantic_media.w == 0.0f,
+          error.empty() ? "outside-height fixed GPU cloud voxel is clear"
+                        : error.c_str());
+
+    matter::CloudLayer shaped = cloud_fog.clouds[0];
+    shaped.min_height = -100.0f;
+    shaped.max_height = 100.0f;
+    shaped.coverage = 0.58f;
+    shaped.noise_scale = 0.017f;
+    shaped.octaves = 4;
+    shaped.lacunarity = 2.03f;
+    shaped.gain = 0.5f;
+    semantic_fog.cloud_count = 1;
+    semantic_fog.clouds[0] = shaped;
+    renderer.set_volumetrics_settings(improved_clouds, semantic_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "render seed-zero shaped cloud fixture"
+                                        : error.c_str());
+    float seed_zero_density = 0.0f;
+    matter::GpuCloudLayer seed_zero_layer{};
+    matter::pack_cloud_layer(shaped, 0, seed_zero_layer);
+    const float seed_zero_cpu = task9_cloud_density_cpu(
+        seed_zero_layer, task9_world, 1.0f);
+    CHECK(renderer.readback_volumetrics_density_voxel_for_test(
+              task9_x, task9_y, task9_z, semantic_media, seed_zero_density, error) &&
+              std::isfinite(seed_zero_density) && seed_zero_density >= 0.0f &&
+              std::fabs(seed_zero_density - seed_zero_cpu) < 2e-4f,
+          error.empty() ? "seed-zero fixed R16 voxel matches the CPU cloud evaluator"
+                        : error.c_str());
+
+    semantic_fog.cloud_count = 2;
+    semantic_fog.clouds[0] = shaped;
+    semantic_fog.clouds[0].max_density = 0.0f;
+    semantic_fog.clouds[1] = shaped;
+    renderer.set_volumetrics_settings(improved_clouds, semantic_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "render seed-one shaped cloud fixture"
+                                        : error.c_str());
+    float seed_one_density = 0.0f;
+    matter::GpuCloudLayer seed_one_layer{};
+    matter::pack_cloud_layer(shaped, 1, seed_one_layer);
+    const float seed_one_cpu = task9_cloud_density_cpu(
+        seed_one_layer, task9_world, 1.0f);
+    CHECK(renderer.readback_volumetrics_density_voxel_for_test(
+              task9_x, task9_y, task9_z, semantic_media, seed_one_density, error) &&
+              std::isfinite(seed_one_density) && seed_one_density >= 0.0f &&
+              std::fabs(seed_one_density - seed_one_cpu) < 2e-4f &&
+              std::fabs(seed_one_density - seed_zero_density) > 2e-4f,
+          error.empty() ? "derived seeds decorrelate fixed GPU cloud samples"
+                        : error.c_str());
+
+    renderer.set_volumetrics_settings(improved_clouds, cloud_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "restore constant cloud fixture"
+                                        : error.c_str());
+
+    // RED/GREEN guard for the enhanced composition: establish a nonzero fog
+    // baseline, then add the same constant cloud.  Only the cloud delta may
+    // contribute near-white scattering; multiplying fog_albedo by total
+    // extinction would double-count it here.
+    matter::FogSettings fog_plus_cloud = cloud_fog;
+    fog_plus_cloud.density = 0.004f;
+    fog_plus_cloud.floor = -10000.0f;
+    fog_plus_cloud.falloff = 100000.0f;
+    fog_plus_cloud.color[0] = 0.21f;
+    fog_plus_cloud.color[1] = 0.37f;
+    fog_plus_cloud.color[2] = 0.58f;
+    // Keep the one-layer specialization stable; zero density makes the
+    // baseline cloud-free without relying on a pipeline-count swap.
+    fog_plus_cloud.clouds[0].max_density = 0.0f;
+    renderer.set_volumetrics_settings(improved_clouds, fog_plus_cloud);
+    CHECK(warm_rt_tlas() && warm_rt_tlas(), error.empty() ? "render nonzero fog baseline" : error.c_str());
+    matter::Float4 fog_media{};
+    float no_cloud_density = 0.0f;
+    CHECK(renderer.readback_volumetrics_density_voxel_for_test(
+              80u, 45u, 64u, fog_media, no_cloud_density, error),
+          error.empty() ? "read nonzero fog baseline" : error.c_str());
+    fog_plus_cloud.clouds[0].max_density = cloud_fog.clouds[0].max_density;
+    renderer.set_volumetrics_settings(improved_clouds, fog_plus_cloud);
+    CHECK(warm_rt_tlas() && warm_rt_tlas(), error.empty() ? "render nonzero fog plus cloud" : error.c_str());
+    matter::Float4 combined_media{};
+    float combined_cloud_density = 0.0f;
+    const bool combined_read = renderer.readback_volumetrics_density_voxel_for_test(
+              80u, 45u, 64u, combined_media, combined_cloud_density, error);
+    if (combined_read) std::fprintf(stderr,
+        "task9 fog/cloud: base=(%.6f,%.6f,%.6f,%.6f) combined=(%.6f,%.6f,%.6f,%.6f) cloud=%.6f\n",
+        fog_media.x, fog_media.y, fog_media.z, fog_media.w, combined_media.x,
+        combined_media.y, combined_media.z, combined_media.w, combined_cloud_density);
+    CHECK(combined_read &&
+              std::fabs((combined_media.w - fog_media.w) - combined_cloud_density) < 2e-4f &&
+              std::fabs((combined_media.x - fog_media.x) - 0.99f * combined_cloud_density) < 2e-4f &&
+              std::fabs((combined_media.y - fog_media.y) - 0.99f * combined_cloud_density) < 2e-4f &&
+              std::fabs((combined_media.z - fog_media.z) - 0.99f * combined_cloud_density) < 2e-4f,
+          error.empty() ? "enhanced cloud delta preserves nonzero fog and adds only 0.99 cloud scattering"
+                        : error.c_str());
+
+    // Task 12 RED/GREEN: exercise the production scatter and integration
+    // pipelines with fixed physical direct/ambient inputs. Four frames cover
+    // the complete 2x2 Bayer schedule after every lighting-history reset.
+    viewer::VkSceneLighting task12_lighting{};
+    task12_lighting.sun_direction = {0.0f, -1.0f, 0.0f};
+    task12_lighting.sun_intensity = 1.0f;
+    task12_lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+        {0.0f, 0.0f, 0.0f};
+    task12_lighting.atmosphere_sources.live_sun_tint_rgb =
+        {1.0f, 1.0f, 1.0f};
+    task12_lighting.atmosphere_sources.sun_multiplier = 1.0f;
+    renderer.set_lighting(task12_lighting);
+    matter::CloudShadowSettings task12_no_shadows{};
+    task12_no_shadows.enabled = false;
+    matter::VulkanVolumetricsSettings task12_settings = improved_clouds;
+    task12_settings.temporal_blend = 0.0f;
+    task12_settings.local_sun_march_steps = 8;
+    task12_settings.local_sun_march_distance_m = 250.0f;
+    task12_settings.multiple_scattering_strength = 0.55f;
+    task12_settings.powder_strength = 0.0f;
+    matter::FogSettings task12_cloud = cloud_fog;
+    task12_cloud.clouds[0].max_density = 0.004f;
+    const auto task12_capture = [&](int orders, float strength,
+                                    const matter::FogSettings& fixture,
+                                    matter::Float4& sample) {
+        task12_settings.multiple_scattering_orders = orders;
+        task12_settings.multiple_scattering_strength = strength;
+        renderer.set_volumetrics_settings(task12_settings, fixture,
+                                          task12_no_shadows);
+        bool rendered = true;
+        for (int frame = 0; frame < 4; ++frame)
+            rendered = rendered && warm_rt_tlas();
+        return rendered &&
+            renderer.readback_volumetrics_integrated_voxel_for_test(
+                80u, 45u, 100u, sample, error);
+    };
+    const auto luminance = [](const matter::Float4& value) {
+        return value.x * 0.2126f + value.y * 0.7152f + value.z * 0.0722f;
+    };
+    matter::Float4 task12_orders[4]{};
+    const uint64_t task12_enhanced_generation =
+        renderer.volumetrics_resource_generation();
+    bool task12_orders_read = true;
+    for (int order = 1; order <= 4; ++order)
+        task12_orders_read = task12_orders_read &&
+            task12_capture(order, 0.55f, task12_cloud,
+                           task12_orders[order - 1]);
+    const float task12_luma[4]{luminance(task12_orders[0]),
+                               luminance(task12_orders[1]),
+                               luminance(task12_orders[2]),
+                               luminance(task12_orders[3])};
+    std::fprintf(stderr,
+                 "task12 orders: %.7f %.7f %.7f %.7f generation=%llu\n",
+                 task12_luma[0], task12_luma[1], task12_luma[2],
+                 task12_luma[3],
+                 static_cast<unsigned long long>(
+                     renderer.volumetrics_resource_generation()));
+    CHECK(task12_orders_read && std::isfinite(task12_luma[0]) &&
+              task12_luma[0] > 0.0f &&
+              task12_luma[1] > task12_luma[0] &&
+              task12_luma[2] > task12_luma[1] &&
+              task12_luma[3] > task12_luma[2] &&
+              renderer.volumetrics_resource_generation() ==
+                  task12_enhanced_generation,
+          error.empty()
+              ? "real enhanced scatter monotonically brightens bounded orders one through four without resource recreation"
+              : error.c_str());
+
+    matter::Float4 task12_order1_zero{}, task12_order1_full{};
+    const bool task12_strength_read =
+        task12_capture(1, 0.0f, task12_cloud, task12_order1_zero) &&
+        task12_capture(1, 1.0f, task12_cloud, task12_order1_full);
+    CHECK(task12_strength_read &&
+              std::fabs(luminance(task12_order1_zero) -
+                        luminance(task12_order1_full)) < 2.0e-4f,
+          error.empty()
+              ? "real order-one cloud lighting is independent of multiple-scattering strength"
+              : error.c_str());
+
+    matter::FogSettings task12_fog_only{};
+    task12_fog_only.density = 0.004f;
+    task12_fog_only.floor = -10000.0f;
+    task12_fog_only.falloff = 100000.0f;
+    task12_fog_only.color[0] = 0.21f;
+    task12_fog_only.color[1] = 0.37f;
+    task12_fog_only.color[2] = 0.58f;
+    matter::Float4 task12_fog_order1{}, task12_fog_order4{};
+    const bool task12_fog_read =
+        task12_capture(1, 0.55f, task12_fog_only, task12_fog_order1) &&
+        task12_capture(4, 0.55f, task12_fog_only, task12_fog_order4);
+    matter::Float4 task12_fog_media{};
+    float task12_fog_cloud_density = -1.0f;
+    const bool task12_fog_density_read =
+        renderer.readback_volumetrics_density_voxel_for_test(
+            80u, 45u, 64u, task12_fog_media,
+            task12_fog_cloud_density, error);
+    CHECK(task12_fog_read && task12_fog_density_read &&
+              task12_fog_cloud_density == 0.0f &&
+              task12_fog_media.w > 0.0f &&
+              luminance(task12_fog_order1) > 0.0f &&
+              std::fabs(task12_fog_order1.x - task12_fog_order4.x) < 2.0e-4f &&
+              std::fabs(task12_fog_order1.y - task12_fog_order4.y) < 2.0e-4f &&
+              std::fabs(task12_fog_order1.z - task12_fog_order4.z) < 2.0e-4f,
+          error.empty()
+              ? "real FogLab-style no-cloud fixture retains haze with a zero cloud channel independent of cloud orders"
+              : error.c_str());
+
+    // Review fix: run the production enhanced scatter against a seeded,
+    // nonuniform cumulative-tau texture. The near clipmap has 2 m slices;
+    // one sunward and one receiverward slab each contribute tau=2. The center
+    // local march contributes 0.625/m * 4 m = 2.5, so endpoint composition
+    // must expose 4.5. Sampling the coarse field at the start would expose
+    // 6.5 and fail independently of phase, sun RGB, or half precision.
+    // Mostly camera-ward: the near sample exits through the real near plane
+    // before reaching the existing smoke-scene triangle, while the center
+    // sample still has enough depth for the complete four-metre march.
+    const matter::Float3 task12_to_sun{0.1f, 0.25f, 0.9630680142f};
+    task12_lighting.sun_direction = {-task12_to_sun.x, -task12_to_sun.y,
+                                     -task12_to_sun.z};
+    renderer.set_lighting(task12_lighting);
+    matter::FogSettings task12_seeded_cloud = cloud_fog;
+    task12_seeded_cloud.clouds[0].max_density = 0.625f;
+    matter::VulkanVolumetricsSettings task12_tau_settings = improved_clouds;
+    task12_tau_settings.temporal_blend = 0.0f;
+    task12_tau_settings.local_sun_march_distance_m = 4.0f;
+    task12_tau_settings.multiple_scattering_orders = 2;
+    task12_tau_settings.multiple_scattering_strength = 0.0f;
+    task12_tau_settings.powder_strength = 0.0f;
+    matter::CloudShadowSettings task12_seeded_shadows{};
+    task12_seeded_shadows.enabled = true;
+    task12_seeded_shadows.near_resolution = 0;
+    task12_seeded_shadows.near_depth_slices = 0;
+    task12_seeded_shadows.near_coverage_m = 32.0f;
+    task12_seeded_shadows.far_resolution = 0;
+    task12_seeded_shadows.far_depth_slices = 0;
+    task12_seeded_shadows.far_coverage_m = 64.0f;
+    task12_seeded_shadows.filter_scale = 0.0f;
+    task12_seeded_shadows.update_fraction = 1.0f;
+    struct Task12TauPoint { uint32_t x, y, z; };
+    const Task12TauPoint task12_tau_points[]{
+        {80u, 45u, 50u},   // center, full four-metre local march
+        {80u, 45u, 30u},   // just beyond the 1 m camera near boundary
+        {159u, 45u, 50u},  // lateral edge, endpoint leaves the froxel grid
+    };
+    viewer::FroxelCameraReference task12_camera{};
+    task12_camera.eye = viewer::volumetric_camera_eye(matrices.world_to_view);
+    task12_camera.forward = {-matrices.world_to_view.m[8],
+                             -matrices.world_to_view.m[9],
+                             -matrices.world_to_view.m[10]};
+    task12_camera.right = {matrices.world_to_view.m[0],
+                           matrices.world_to_view.m[1],
+                           matrices.world_to_view.m[2]};
+    task12_camera.up = {matrices.world_to_view.m[4],
+                        matrices.world_to_view.m[5],
+                        matrices.world_to_view.m[6]};
+    task12_camera.tan_half_fov = 1.0f / matrices.view_to_clip.m[5];
+    task12_camera.aspect_ratio = matrices.view_to_clip.m[5] /
+                                 matrices.view_to_clip.m[0];
+    task12_camera.near_plane = matrices.view_to_clip.m[11] /
+        (matrices.view_to_clip.m[10] + 1.0f);
+    Task9CloudPoint task12_tau_world[3]{};
+    float task12_expected_local[3]{};
+    for (size_t index = 0; index < std::size(task12_tau_points); ++index) {
+        const auto& point = task12_tau_points[index];
+        task12_tau_world[index] = task9_froxel_world_position(
+            matrices, point.x, point.y, point.z);
+        const matter::Float3 world{task12_tau_world[index].x,
+                                   task12_tau_world[index].y,
+                                   task12_tau_world[index].z};
+        const float exit_m = viewer::froxel_ray_exit_distance_reference(
+            task12_camera, world, task12_to_sun);
+        task12_expected_local[index] = 0.625f * std::min(4.0f, exit_m);
+    }
+    CHECK(task12_expected_local[0] > 2.49f &&
+              task12_expected_local[1] < 1.0f &&
+              task12_expected_local[2] < 0.1f,
+          "center marches fully while near and lateral-edge endpoints leave the camera froxel grid");
+
+    const auto task12_shadow_frame = matter::make_cloud_shadow_frame(
+        matter::resolve_cloud_shadow_levels(task12_seeded_shadows)[0],
+        camera.position, task12_lighting.sun_direction);
+    const auto& center_world = task12_tau_world[0];
+    const auto& shadow_matrix = task12_shadow_frame.world_to_uvw.m;
+    const matter::Float3 center_uvw{
+        shadow_matrix[0] * center_world.x +
+            shadow_matrix[1] * center_world.y +
+            shadow_matrix[2] * center_world.z + shadow_matrix[3],
+        shadow_matrix[4] * center_world.x +
+            shadow_matrix[5] * center_world.y +
+            shadow_matrix[6] * center_world.z + shadow_matrix[7],
+        shadow_matrix[8] * center_world.x +
+            shadow_matrix[9] * center_world.y +
+            shadow_matrix[10] * center_world.z + shadow_matrix[11]};
+    const uint32_t receiver_slice = static_cast<uint32_t>(std::clamp(
+        static_cast<int>(std::floor(center_uvw.z * 16.0f - 0.5f)) + 1,
+        1, 14));
+    renderer.set_cloud_shadow_density_layers_for_test(
+        15u, 1.0f, receiver_slice, 1.0f, true);
+
+    const auto capture_task12_scatter = [&](int local_steps,
+                                             const matter::CloudShadowSettings& shadows,
+                                             matter::Float4 samples[3]) {
+        task12_tau_settings.local_sun_march_steps = local_steps;
+        renderer.set_volumetrics_settings(task12_tau_settings,
+                                          task12_seeded_cloud, shadows);
+        bool rendered = true;
+        for (int frame = 0; frame < 4; ++frame)
+            rendered = rendered && warm_rt_tlas();
+        for (size_t index = 0; index < std::size(task12_tau_points); ++index) {
+            const auto& point = task12_tau_points[index];
+            rendered = rendered &&
+                renderer.readback_volumetrics_scatter_voxel_for_test(
+                    point.x, point.y, point.z, samples[index], error);
+        }
+        return rendered;
+    };
+    matter::Float4 task12_tau_clear[3]{}, task12_tau_local[3]{},
+                   task12_tau_shadowed[3]{};
+    const bool task12_tau_read =
+        capture_task12_scatter(0, task12_no_shadows, task12_tau_clear) &&
+        capture_task12_scatter(8, task12_no_shadows, task12_tau_local) &&
+        capture_task12_scatter(8, task12_seeded_shadows,
+                               task12_tau_shadowed);
+    float task12_inferred_local[3]{}, task12_inferred_total[3]{};
+    bool task12_tau_finite[3]{task12_tau_read, task12_tau_read,
+                              task12_tau_read};
+    for (size_t index = 0; index < std::size(task12_tau_points); ++index) {
+        const float clear = luminance(task12_tau_clear[index]);
+        const float local = luminance(task12_tau_local[index]);
+        const float shadowed = luminance(task12_tau_shadowed[index]);
+        task12_tau_finite[index] = task12_tau_finite[index] && clear > 0.0f &&
+            local > 0.0f && shadowed > 0.0f;
+        task12_inferred_local[index] = -std::log(local / clear);
+        task12_inferred_total[index] = -std::log(shadowed / clear);
+    }
+    std::fprintf(stderr,
+                 "task12 seeded tau: center local=%.4f total=%.4f near=%.4f/%.4f alpha=%.4f edge=%.4f/%.4f receiver=%u\n",
+                 task12_inferred_local[0], task12_inferred_total[0],
+                 task12_inferred_local[1], task12_inferred_total[1],
+                 task12_tau_shadowed[1].w,
+                 task12_inferred_local[2], task12_inferred_total[2],
+                 receiver_slice);
+    CHECK(task12_tau_finite[0] &&
+              std::fabs(task12_inferred_local[0] - 2.5f) < 0.15f &&
+              std::fabs(task12_inferred_total[0] - 4.5f) < 0.2f &&
+              std::fabs(task12_inferred_total[0] - 6.5f) > 1.0f,
+          error.empty()
+              ? "real seeded cumulative tau composes local 2.5 with endpoint 2 as 4.5 not start-overlapped 6.5"
+              : error.c_str());
+    CHECK(task12_tau_finite[1] &&
+              task12_inferred_total[1] - task12_inferred_local[1] > 1.5f &&
+              std::isfinite(task12_tau_clear[1].w) &&
+              std::isfinite(task12_tau_local[1].w) &&
+              std::isfinite(task12_tau_shadowed[1].w) &&
+              task12_tau_clear[1].w > 0.6f &&
+              std::fabs(task12_tau_local[1].w - task12_tau_clear[1].w) < 1e-3f &&
+              std::fabs(task12_tau_shadowed[1].w - task12_tau_clear[1].w) < 1e-3f,
+          error.empty()
+              ? "near-camera production froxel remains populated across seeded shadow captures"
+              : error.c_str());
+    CHECK(task12_tau_finite[2] &&
+              task12_inferred_total[2] - task12_inferred_local[2] > 1.5f,
+          error.empty()
+              ? "out-of-frustum lateral endpoint retains seeded coarse remainder"
+              : error.c_str());
+
+    // Task 13 RED/GREEN: the same seeded cumulative field must attenuate only
+    // enhanced low-fog direct sun. Fog has no cloud-density channel here, so
+    // this cannot pass by changing Task 12's cloud self-lighting term.
+    const auto capture_task13_fog = [&] (
+        const viewer::VkSceneLighting& fixture_lighting,
+        const matter::CloudShadowSettings& shadows,
+        matter::Float4& sample) {
+        renderer.set_lighting(fixture_lighting);
+        renderer.set_volumetrics_settings(task12_tau_settings,
+                                          task12_fog_only, shadows);
+        bool rendered = true;
+        for (int frame = 0; frame < 4; ++frame)
+            rendered = rendered && warm_rt_tlas();
+        const auto& point = task12_tau_points[0];
+        return rendered &&
+            renderer.readback_volumetrics_scatter_voxel_for_test(
+                point.x, point.y, point.z, sample, error);
+    };
+    matter::Float4 task13_fog_clear{}, task13_fog_shadowed{};
+    const bool task13_fog_direct_read =
+        capture_task13_fog(task12_lighting, task12_no_shadows,
+                           task13_fog_clear) &&
+        capture_task13_fog(task12_lighting, task12_seeded_shadows,
+                           task13_fog_shadowed);
+    const float task13_fog_clear_luma = luminance(task13_fog_clear);
+    const float task13_fog_shadowed_luma = luminance(task13_fog_shadowed);
+    CHECK(task13_fog_direct_read && task13_fog_clear_luma > 1.0e-5f &&
+              task13_fog_shadowed_luma < task13_fog_clear_luma * 0.35f,
+          error.empty()
+              ? "overhead cumulative cloud slab attenuates enhanced low-fog direct sun"
+              : error.c_str());
+
+    viewer::VkSceneLighting task13_ambient_lighting = task12_lighting;
+    task13_ambient_lighting.sun_intensity = 0.0f;
+    task13_ambient_lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+        {0.45f, 0.45f, 0.45f};
+    matter::Float4 task13_fog_ambient_clear{}, task13_fog_ambient_shadowed{};
+    const bool task13_fog_ambient_read =
+        capture_task13_fog(task13_ambient_lighting, task12_no_shadows,
+                           task13_fog_ambient_clear) &&
+        capture_task13_fog(task13_ambient_lighting, task12_seeded_shadows,
+                           task13_fog_ambient_shadowed);
+    CHECK(task13_fog_ambient_read && luminance(task13_fog_ambient_clear) > 0.0f &&
+              close4(task13_fog_ambient_clear, task13_fog_ambient_shadowed,
+                     2.0e-4f),
+          "enhanced fog cloud attenuation leaves evaluated SH ambient unchanged");
+
+    renderer.set_cloud_shadow_density_layers_for_test(
+        2u, 1.0f, 1u, 0.0f, true);
+    matter::Float4 task13_fog_above{};
+    const bool task13_fog_above_read = capture_task13_fog(
+        task12_lighting, task12_seeded_shadows, task13_fog_above);
+    CHECK(task13_fog_above_read &&
+              std::fabs(luminance(task13_fog_above) -
+                        task13_fog_clear_luma) <
+                  task13_fog_clear_luma * 0.05f,
+          "enhanced fog receiver above the cloud slab remains clear");
+    matter::Float4 task13_fog_disabled{};
+    const bool task13_fog_disabled_read = capture_task13_fog(
+        task12_lighting, task12_no_shadows, task13_fog_disabled);
+    CHECK(task13_fog_disabled_read &&
+              std::fabs(luminance(task13_fog_disabled) -
+                        task13_fog_clear_luma) <
+                  task13_fog_clear_luma * 0.05f,
+          "disabled cloud shadows restore enhanced low-fog direct sun");
+    renderer.set_lighting(task12_lighting);
+    renderer.clear_cloud_shadow_density_override_for_test(true);
+
+    // Restore the Task 9 constant fog+cloud fixture expected by the following
+    // stale-low-slice regression; Task 12's no-cloud isolation must not leak
+    // into an older fixture.
+    renderer.set_volumetrics_settings(improved_clouds, fog_plus_cloud);
+
+    // Regression: the same enhanced bundle first writes a positive low-z
+    // voxel with a permissive camera near, then must clear it when that slice
+    // becomes invalid under a higher near plane.  Reallocation would hide the
+    // stale-write bug, so only matrices change between the two dispatches.
+    const viewer::FrameMatrices base_matrices = matrices;
+    camera.near_plane = 0.01f;
+    CHECK(viewer::build_frame_matrices(camera, 160, 100, matrices, error) &&
+              warm_rt_tlas(),
+          error.empty() ? "write permissive-near enhanced cloud voxel"
+                        : error.c_str());
+    matter::Float4 near_media{};
+    float near_density = 0.0f;
+    CHECK(renderer.readback_volumetrics_density_voxel_for_test(
+              task9_x, task9_y, 0u, near_media, near_density, error) &&
+              near_density > 0.0f,
+          error.empty() ? "permissive near writes positive low-z enhanced density"
+                        : error.c_str());
+    camera.near_plane = 1.0f;
+    matrices = base_matrices;
+    CHECK(warm_rt_tlas(), error.empty() ? "clear high-near enhanced cloud voxel"
+                                        : error.c_str());
+    CHECK(renderer.readback_volumetrics_density_voxel_for_test(
+              task9_x, task9_y, 0u, near_media, near_density, error) &&
+              near_density == 0.0f && near_media.w == 0.0f,
+          error.empty() ? "high near clears stale enhanced cloud density in-place"
+                        : error.c_str());
+
+    renderer.set_volumetrics_settings(current_clouds, cloud_fog);
+    CHECK(warm_rt_tlas(), error.empty() ? "retire Improved cloud density"
+                                        : error.c_str());
+    CHECK(!renderer.volumetrics_cloud_density_allocated_for_test() &&
+              renderer.volumetrics_grid_bytes_for_test() == 58982400u &&
+              vulkan.validation_error_count() == 0,
+          "Current-cost toggle retires cloud density without validation errors");
+    rt_scenario_froxel_resize(vulkan, renderer, matrices, camera, error);
+    CHECK(vulkan.validation_error_count() == 0,
+          "isolated RT froxel resize has no Vulkan validation errors");
+}
+
+// ---------------------------------------------------------------------------
 // Scenario: GPU A-trous denoising fixture (variance reduction, boundary, constant)
 // ---------------------------------------------------------------------------
 static void rt_scenario_atrous_denoising(RtPathContext& ctx) {
@@ -4837,7 +7663,8 @@ static void rt_scenario_gi_history_resets(RtPathContext& ctx) {
         const uint64_t lighting_reset_baseline =
             renderer.test_gi_history_reset_count();
         viewer::VkSceneLighting changed_source = lighting;
-        changed_source.sky_color.x *= 0.5f;
+        changed_source.atmosphere_sources.authored_irradiance_chroma_rgb.x *=
+            0.5f;
         renderer.set_lighting(changed_source);
         CHECK(render_temporal_control(247, false, false) &&
                   renderer.test_gi_history_reset_count() ==
@@ -4902,32 +7729,62 @@ static void rt_scenario_gi_history_resets(RtPathContext& ctx) {
         const float emission_strength =
             std::exp2(std::min(composite_pixel.normal.w,
                                viewer::kVkMaxEncodedEmission)) - 1.0f;
-        // Mirror sky_common.glsl's sky_irradiance(): the ambient term is not
-        // the flat sky color, it is scaled by a hemispherical factor keyed on
-        // the shading normal, mix(0.2, 1.0, normal.y * 0.5 + 0.5). This model
-        // used the flat color, which only agreed while the sky was uniform.
-        const float sky_irradiance_scale =
-            0.2f + 0.8f * std::clamp(composite_pixel.normal.y * 0.5f + 0.5f,
-                                     0.0f, 1.0f);
+        const auto atmosphere_status =
+            renderer.test_resolved_atmosphere_status();
+        const matter::Float3 normal{composite_pixel.normal.x,
+                                    composite_pixel.normal.y,
+                                    composite_pixel.normal.z};
+        const auto sh_basis = [&](size_t index) {
+            if (index == 0) return 0.282095f;
+            if (index == 1) return 0.488603f * normal.y;
+            if (index == 2) return 0.488603f * normal.z;
+            if (index == 3) return 0.488603f * normal.x;
+            if (index == 4) return 1.092548f * normal.x * normal.y;
+            if (index == 5) return 1.092548f * normal.y * normal.z;
+            if (index == 6)
+                return 0.315392f * (3.0f * normal.z * normal.z - 1.0f);
+            if (index == 7) return 1.092548f * normal.x * normal.z;
+            return 0.546274f *
+                   (normal.x * normal.x - normal.y * normal.y);
+        };
+        matter::Float3 sky_irradiance{};
+        for (size_t index = 0; index < 9; ++index) {
+            const float band = index == 0 ? 3.14159265359f
+                               : index < 4 ? 2.0f * 3.14159265359f / 3.0f
+                                           : 3.14159265359f / 4.0f;
+            const float scale = sh_basis(index) * band;
+            sky_irradiance.x += atmosphere_status.irradiance_sh[index].x * scale;
+            sky_irradiance.y += atmosphere_status.irradiance_sh[index].y * scale;
+            sky_irradiance.z += atmosphere_status.irradiance_sh[index].z * scale;
+        }
+        sky_irradiance.x = std::max(0.0f, sky_irradiance.x) *
+                           atmosphere_status.sky_irradiance_modifier_rgb.x;
+        sky_irradiance.y = std::max(0.0f, sky_irradiance.y) *
+                           atmosphere_status.sky_irradiance_modifier_rgb.y;
+        sky_irradiance.z = std::max(0.0f, sky_irradiance.z) *
+                           atmosphere_status.sky_irradiance_modifier_rgb.z;
         const matter::Float3 expected_composite{
-            composite_pixel.albedo.x * diffuse_scale * lighting.sky_color.x *
-                    sky_irradiance_scale * composite_pixel.orm.z +
-                composite_pixel.albedo.x * diffuse_scale * lighting.sun_color.x *
-                    sun_base * composite_pixel.visibility.x +
+            composite_pixel.albedo.x * diffuse_scale * sky_irradiance.x *
+                    composite_pixel.orm.z +
+                composite_pixel.albedo.x * diffuse_scale * sun_base *
+                    atmosphere_status.direct_world_sun_rgb.x *
+                    composite_pixel.visibility.x +
                 composite_pixel.albedo.x * emission_strength +
                 composite_pixel.accumulated_diffuse.x +
                 composite_pixel.accumulated_specular.x,
-            composite_pixel.albedo.y * diffuse_scale * lighting.sky_color.y *
-                    sky_irradiance_scale * composite_pixel.orm.z +
-                composite_pixel.albedo.y * diffuse_scale * lighting.sun_color.y *
-                    sun_base * composite_pixel.visibility.y +
+            composite_pixel.albedo.y * diffuse_scale * sky_irradiance.y *
+                    composite_pixel.orm.z +
+                composite_pixel.albedo.y * diffuse_scale * sun_base *
+                    atmosphere_status.direct_world_sun_rgb.y *
+                    composite_pixel.visibility.y +
                 composite_pixel.albedo.y * emission_strength +
                 composite_pixel.accumulated_diffuse.y +
                 composite_pixel.accumulated_specular.y,
-            composite_pixel.albedo.z * diffuse_scale * lighting.sky_color.z *
-                    sky_irradiance_scale * composite_pixel.orm.z +
-                composite_pixel.albedo.z * diffuse_scale * lighting.sun_color.z *
-                    sun_base * composite_pixel.visibility.z +
+            composite_pixel.albedo.z * diffuse_scale * sky_irradiance.z *
+                    composite_pixel.orm.z +
+                composite_pixel.albedo.z * diffuse_scale * sun_base *
+                    atmosphere_status.direct_world_sun_rgb.z *
+                    composite_pixel.visibility.z +
                 composite_pixel.albedo.z * emission_strength +
                 composite_pixel.accumulated_diffuse.z +
                 composite_pixel.accumulated_specular.z};
@@ -4970,8 +7827,9 @@ static void rt_scenario_gi_history_resets(RtPathContext& ctx) {
                                                viewer::VkRasterPixel& emitter,
                                                viewer::VkRasterPixel& receiver) {
             viewer::VkSceneLighting isolated = lighting;
-            isolated.sun_color = {};
-            isolated.sky_color = {};
+            isolated.authored_sun_rgb = {};
+            isolated.atmosphere_sources.authored_display_sky_chroma_rgb = {};
+            isolated.atmosphere_sources.authored_irradiance_chroma_rgb = {};
             isolated.emission_multiplier = multiplier;
             renderer.set_lighting(isolated);
             const bool rendered = render_temporal_control(attempt_token);
@@ -5109,6 +7967,7 @@ static void rt_scenario_secondary_sun_visibility(RtPathContext& ctx) {
         CHECK(render_sun_probe(lighting.sun_intensity, 303,
                                restored_unblocked_raw),
               "rerender unblocked receiver before visibility comparison");
+
         CHECK(renderer.test_rt_blas_built(920) &&
                   renderer.test_rt_blas_candidate_serial(920) == 0,
               "successful retry publishes candidate BLAS state");
@@ -6131,6 +8990,7 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
               ? "native ray tracing available"
               : vulkan.ray_tracing_unavailable_reason().c_str());
     if (!vulkan.ray_tracing_available()) return;
+    run_rt_froxel_resize_smoke(vulkan);
     const auto& properties = vulkan.ray_tracing_properties();
     CHECK(properties.shader_group_handle_alignment != 0 &&
               properties.shader_group_base_alignment != 0 &&
@@ -6189,6 +9049,554 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         rt_scenario_secondary_sun_visibility(ctx);
         rt_scenario_mirror_specular(ctx);
         rt_scenario_baked_ao_and_gi_disable(ctx);
+    }
+
+}
+
+void run_atmosphere_real_gpu_gate(matter::VulkanDevice& vulkan) {
+    constexpr uint32_t width = 160;
+    constexpr uint32_t height = 160;
+    std::string error;
+
+    viewer::VkSceneRenderer raster(vulkan);
+    std::vector<MaterialGpuRecord> materials(8);
+    materials[7].base_roughness[0] = 0.7f;
+    materials[7].base_roughness[1] = 0.7f;
+    materials[7].base_roughness[2] = 0.7f;
+    materials[7].base_roughness[3] = 0.6f;
+    materials[7].metal_opacity_spec_coat[1] = 1.0f;
+    materials[7].scattering_shape[3] = 1.0f;
+    const viewer::VkScenePart triangle = known_raster_triangle(990);
+    CHECK(raster.update_materials(materials, 1, 1, error) &&
+              raster.ensure_part(triangle, error) >= 0 &&
+              raster.update_instances({{990, identity_matrix()}}, error),
+          error.empty() ? "prepare atmosphere raster GPU gate"
+                        : error.c_str());
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, width, height, matrices,
+                                       error) &&
+              raster.dispatch_culling(matrices, camera.position, 1.0f,
+                                      error),
+          error.empty() ? "build atmosphere raster GPU gate matrices"
+                        : error.c_str());
+    const auto submit_timestamped_frame = [&]() {
+        matter::VulkanFrame frame{};
+        const bool recorded = vulkan.begin_frame(frame, error) &&
+            raster.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                 error) &&
+            raster.record_cull_and_render(frame, matrices, camera.position,
+                                          1.0f, error) &&
+            raster.record_composite_to_swapchain(frame, error);
+        const bool submitted = recorded && vulkan.end_frame(frame, error);
+        raster.finish_ray_tracing_frame(frame.serial, submitted);
+        vulkan.wait_idle();
+        return submitted;
+    };
+    for (size_t index = 0; index < kAtmosphereGpuElevations.size(); ++index) {
+        const matter::Float3 to_sun =
+            matter::atmosphere_to_sun_from_elevation_deg(
+                kAtmosphereGpuElevations[index]);
+        viewer::VkSceneLighting lighting{};
+        lighting.sun_direction = {-to_sun.x, -to_sun.y, -to_sun.z};
+        lighting.authored_sun_rgb = {1.0f, 1.0f, 1.0f};
+        lighting.atmosphere_sources.authored_display_sky_chroma_rgb =
+            {1.0f, 1.0f, 1.0f};
+        lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+            {1.0f, 1.0f, 1.0f};
+        lighting.atmosphere_sources.sun_multiplier = 1.0f;
+        lighting.atmosphere_sources.sky_multiplier = 1.0f;
+        raster.set_lighting(lighting);
+        if (index == 0 && raster.gpu_timers_supported()) {
+            CHECK(submit_timestamped_frame(),
+                  error.empty() ? "submit first dirty atmosphere timing frame"
+                                : error.c_str());
+            CHECK(raster.gpu_zone_ms(
+                      viewer::VkSceneRenderer::kGpuZoneAtmosphere) > 0.0f,
+                  "dirty atmosphere candidate publishes a positive GPU timestamp");
+            for (int warm_frame = 0; warm_frame < 3; ++warm_frame) {
+                CHECK(submit_timestamped_frame(),
+                      error.empty()
+                          ? "warm a valid frame timestamp before the next dirty atmosphere"
+                          : error.c_str());
+            }
+            CHECK(raster.gpu_zone_ms(
+                      viewer::VkSceneRenderer::kGpuZoneAtmosphere) == 0.0f,
+                  "steady atmosphere frame resets its GPU timing lane to zero");
+        }
+        if (index == 1 && raster.gpu_timers_supported()) {
+            CHECK(submit_timestamped_frame(),
+                  error.empty() ? "submit warmed dirty atmosphere timing frame"
+                                : error.c_str());
+            CHECK(raster.gpu_zone_ms(
+                      viewer::VkSceneRenderer::kGpuZoneAtmosphere) > 0.0f,
+                  "warmed frame timestamp readback preserves the next dirty atmosphere measurement");
+            CHECK(submit_timestamped_frame(),
+                  error.empty()
+                      ? "submit steady frame after warmed dirty atmosphere"
+                      : error.c_str());
+            CHECK(raster.gpu_zone_ms(
+                      viewer::VkSceneRenderer::kGpuZoneAtmosphere) == 0.0f,
+                  "warmed dirty atmosphere returns to an exact zero on steady work");
+        }
+        viewer::VkRasterPixel direct_on{};
+        viewer::VkRasterPixel direct_off{};
+        CHECK(raster.render_gbuffer_and_composite(width, height, error) &&
+                  raster.readback_raster_pixel(width / 2, height / 2,
+                                               direct_on, error),
+              error.empty() ? "render atmosphere raster direct-on frame"
+                            : error.c_str());
+        const auto status = raster.test_resolved_atmosphere_status();
+        g_atmosphere_raster_direct_rgb[index] =
+            status.direct_world_sun_rgb;
+        const float published_luma =
+            0.2126f * status.direct_world_sun_rgb.x +
+            0.7152f * status.direct_world_sun_rgb.y +
+            0.0722f * status.direct_world_sun_rgb.z;
+        const float noon_luma = index == 0
+                                    ? published_luma
+                                    : 0.2126f * g_atmosphere_raster_direct_rgb[0].x +
+                                          0.7152f * g_atmosphere_raster_direct_rgb[0].y +
+                                          0.0722f * g_atmosphere_raster_direct_rgb[0].z;
+        const float expected_published_ratio = kAtmosphereGpuRatios[index];
+        CHECK(noon_luma > 0.0f &&
+                  std::fabs(published_luma / noon_luma -
+                            expected_published_ratio) <= 2.0e-3f,
+              "raster published world-sun luminance ratio matches its exact elevation anchor");
+        if (index == 0 || index == 2)
+            std::printf("atmosphere published direct e=%.0f luma=%.9f rgb=%.9f %.9f %.9f\n",
+                        kAtmosphereGpuElevations[index], published_luma,
+                        status.direct_world_sun_rgb.x,
+                        status.direct_world_sun_rgb.y,
+                        status.direct_world_sun_rgb.z);
+        CHECK(std::fabs(status.direct_world_ratio -
+                        kAtmosphereGpuRatios[index]) <= 1.0e-6f,
+              "raster publishes the exact direct-world elevation ratio");
+        lighting.sun_intensity = 0.0f;
+        raster.set_lighting(lighting);
+        CHECK(raster.render_gbuffer_and_composite(width, height, error) &&
+                  raster.readback_raster_pixel(width / 2, height / 2,
+                                               direct_off, error),
+              error.empty() ? "render atmosphere raster direct-off frame"
+                            : error.c_str());
+        if (index == 0 || index == 2) {
+            const matter::Float3 receiver_direct{
+                direct_on.hdr.x - direct_off.hdr.x,
+                direct_on.hdr.y - direct_off.hdr.y,
+                direct_on.hdr.z - direct_off.hdr.z};
+            const float receiver_luma = 0.2126f * receiver_direct.x +
+                                        0.7152f * receiver_direct.y +
+                                        0.0722f * receiver_direct.z;
+            std::printf("atmosphere receiver direct e=%.0f luma=%.9f rgb=%.9f %.9f %.9f\n",
+                        kAtmosphereGpuElevations[index], receiver_luma,
+                        receiver_direct.x, receiver_direct.y,
+                        receiver_direct.z);
+        }
+        if (index >= 3) {
+            CHECK(direct_on.hdr.x == direct_off.hdr.x &&
+                      direct_on.hdr.y == direct_off.hdr.y &&
+                      direct_on.hdr.z == direct_off.hdr.z,
+                  "raster direct contribution is exactly zero at and below the horizon");
+        }
+        if (index == 4) {
+            CHECK(direct_off.hdr.x > 1.0e-4f ||
+                      direct_off.hdr.y > 1.0e-4f ||
+                      direct_off.hdr.z > 1.0e-4f,
+                  "-5 degree raster receiver remains positive from evaluated SH");
+        }
+    }
+    g_atmosphere_raster_direct_valid = true;
+
+    CHECK(vulkan.ray_tracing_available(),
+          vulkan.ray_tracing_available()
+              ? "native ray tracing available for atmosphere ratio gate"
+              : vulkan.ray_tracing_unavailable_reason().c_str());
+    if (!vulkan.ray_tracing_available()) return;
+    viewer::VkSceneRenderer native(vulkan);
+    CHECK(native.init(error),
+          error.empty() ? "initialize atmosphere native-RT GPU gate"
+                        : error.c_str());
+    viewer::VkSceneLighting native_lighting{};
+    matter::VulkanRayTracingSettings enabled{};
+    matter::VulkanGiSettings gi{};
+    viewer::FrameMatrices native_matrices{};
+    matter::CameraDesc native_camera{};
+    viewer::TemporalFrame temporal{};
+    std::vector<MaterialGpuRecord> native_materials;
+    uint32_t retry_x = 0, retry_y = 0;
+    bool receiver_seen = false;
+    float minimum_visibility = 1.0f, maximum_visibility = 0.0f;
+    float receiver_min_visibility = 1.0f, receiver_max_visibility = 0.0f;
+    const auto& properties = vulkan.ray_tracing_properties();
+    RtPathContext ctx{vulkan, properties, error, native, native_lighting,
+                      enabled, gi, native_matrices, native_camera, temporal,
+                      native_materials, retry_x, retry_y, receiver_seen,
+                      minimum_visibility, maximum_visibility,
+                      receiver_min_visibility, receiver_max_visibility};
+    rt_scenario_shadow_contract(ctx);
+    constexpr float kNativeProbeSunIntensity = 100.0f;
+    float native_noon_luma = 0.0f;
+    for (size_t index = 0; index < kAtmosphereGpuElevations.size(); ++index) {
+        const matter::Float3 to_sun =
+            matter::atmosphere_to_sun_from_elevation_deg(
+                kAtmosphereGpuElevations[index]);
+        native_lighting.sun_direction = {-to_sun.x, -to_sun.y, -to_sun.z};
+        native_lighting.sun_intensity = kNativeProbeSunIntensity;
+        native_lighting.authored_sun_rgb = {1.0f, 1.0f, 1.0f};
+        native_lighting.atmosphere_sources.authored_display_sky_chroma_rgb =
+            {1.0f, 1.0f, 1.0f};
+        native_lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+            {1.0f, 1.0f, 1.0f};
+        native_lighting.atmosphere_sources.sun_multiplier = 1.0f;
+        native_lighting.atmosphere_sources.sky_multiplier = 1.0f;
+        native.set_lighting(native_lighting);
+        temporal.reset = true;
+        temporal.attempt_token = 1000 + index;
+        native.set_temporal_frame(temporal);
+        matter::VulkanFrame frame{};
+        const bool rendered =
+            vulkan.begin_frame(frame, error) &&
+            native.prepare_frame(frame, native_matrices,
+                                 native_camera.position, 1.0f, error) &&
+            native.record_cull_and_render(frame, native_matrices,
+                                          native_camera.position, 1.0f,
+                                          error) &&
+            native.record_composite_to_swapchain(frame, error) &&
+            vulkan.end_frame(frame, error);
+        CHECK(rendered,
+              error.empty() ? "render atmosphere native-RT ratio frame"
+                            : error.c_str());
+        if (!rendered) break;
+        native.finish_ray_tracing_frame(frame.serial, true);
+        vulkan.wait_idle();
+        const auto status = native.test_resolved_atmosphere_status();
+        viewer::EnvironmentLightingGpu environment_gpu{};
+        CHECK(native.test_read_environment_lighting_gpu(
+                  frame.frame_slot, environment_gpu) &&
+                  environment_gpu.direct_world_sun_ratio[0] ==
+                      status.direct_world_sun_rgb.x &&
+                  environment_gpu.direct_world_sun_ratio[1] ==
+                      status.direct_world_sun_rgb.y &&
+                  environment_gpu.direct_world_sun_ratio[2] ==
+                      status.direct_world_sun_rgb.z &&
+                  environment_gpu.direct_world_sun_ratio[3] ==
+                      kAtmosphereGpuRatios[index],
+              "native RT frame uploads the exact RGB/ratio Environment UBO lane");
+        viewer::VkRasterPixel native_direct_on{};
+        uint32_t native_receiver_x = 0;
+        uint32_t native_receiver_y = 0;
+        bool native_receiver_found = false;
+        for (uint32_t y = 20; y < 200 && !native_receiver_found; y += 20) {
+            for (uint32_t x = 20; x < 320; x += 20) {
+                viewer::VkRasterPixel pixel{};
+                if (native.readback_raster_pixel(x, y, pixel, error) &&
+                    pixel.material_index == 1u &&
+                    std::isfinite(pixel.raw_diffuse.x) &&
+                    std::isfinite(pixel.raw_diffuse.y) &&
+                    std::isfinite(pixel.raw_diffuse.z)) {
+                    native_direct_on = pixel;
+                    native_receiver_x = x;
+                    native_receiver_y = y;
+                    if (index == 0) {
+                        retry_x = x;
+                        retry_y = y;
+                    }
+                    native_receiver_found = true;
+                    break;
+                }
+            }
+        }
+        CHECK(native_receiver_found,
+              "native RT direct-on frame exposes a finite material receiver");
+        const matter::Float3 raster_rgb =
+            g_atmosphere_raster_direct_rgb[index];
+        const float native_luma =
+            0.2126f * status.direct_world_sun_rgb.x +
+            0.7152f * status.direct_world_sun_rgb.y +
+            0.0722f * status.direct_world_sun_rgb.z;
+        if (index == 0) native_noon_luma = native_luma;
+        CHECK(native.rt_effective_observed() &&
+                  native.rt_trace_dispatches_observed() > 0 &&
+                  std::fabs(status.direct_world_ratio -
+                            kAtmosphereGpuRatios[index]) <= 1.0e-6f,
+              "native RT dispatch consumes the exact direct-world ratio");
+        CHECK(native_noon_luma > 0.0f &&
+                  std::fabs(native_luma / native_noon_luma -
+                            kAtmosphereGpuRatios[index]) <= 2.0e-3f,
+              "native RT published world-sun luminance ratio matches its exact elevation anchor");
+        CHECK(std::fabs(status.direct_world_sun_rgb.x /
+                            kNativeProbeSunIntensity - raster_rgb.x) <=
+                      2.0e-3f &&
+                  std::fabs(status.direct_world_sun_rgb.y /
+                                kNativeProbeSunIntensity - raster_rgb.y) <=
+                      2.0e-3f &&
+                  std::fabs(status.direct_world_sun_rgb.z /
+                                kNativeProbeSunIntensity - raster_rgb.z) <=
+                      2.0e-3f,
+              "raster and normalized native RT direct RGB agree channel-wise");
+        if (index >= 3) {
+            CHECK(status.direct_world_sun_rgb.x == 0.0f &&
+                      status.direct_world_sun_rgb.y == 0.0f &&
+                      status.direct_world_sun_rgb.z == 0.0f,
+                  "native RT direct RGB is exactly zero at and below the horizon");
+        }
+        native_lighting.sun_intensity = 0.0f;
+        native.set_lighting(native_lighting);
+        temporal.reset = true;
+        temporal.attempt_token = 3000 + index;
+        native.set_temporal_frame(temporal);
+        matter::VulkanFrame direct_off_frame{};
+        const bool direct_off_rendered =
+            vulkan.begin_frame(direct_off_frame, error) &&
+            native.prepare_frame(direct_off_frame, native_matrices,
+                                 native_camera.position, 1.0f, error) &&
+            native.record_cull_and_render(direct_off_frame, native_matrices,
+                                          native_camera.position, 1.0f,
+                                          error) &&
+            native.record_composite_to_swapchain(direct_off_frame, error) &&
+            vulkan.end_frame(direct_off_frame, error);
+        CHECK(direct_off_rendered,
+              error.empty() ? "render atmosphere native-RT direct-off frame"
+                            : error.c_str());
+        viewer::VkRasterPixel native_direct_off{};
+        if (direct_off_rendered) {
+            native.finish_ray_tracing_frame(direct_off_frame.serial, true);
+            vulkan.wait_idle();
+            CHECK(native_receiver_found &&
+                      native.readback_raster_pixel(
+                          native_receiver_x, native_receiver_y,
+                          native_direct_off, error) &&
+                      native_direct_off.material_index == 1u,
+                  "native RT direct-off frame reads the identical material receiver");
+            const auto raw_luma = [](matter::Float4 value) {
+                return 0.2126f * value.x + 0.7152f * value.y +
+                       0.0722f * value.z;
+            };
+            const float direct_delta =
+                raw_luma(native_direct_on.raw_diffuse) -
+                raw_luma(native_direct_off.raw_diffuse);
+            if (index < 3) {
+                CHECK(direct_delta > 1.0e-5f,
+                      "native RT raw-diffuse direct-on exceeds direct-off above the horizon");
+            } else {
+                CHECK(std::memcmp(&native_direct_on.raw_diffuse,
+                                  &native_direct_off.raw_diffuse,
+                                  sizeof(matter::Float4)) == 0,
+                      "native RT raw-diffuse direct-on/off are identical at and below the horizon");
+            }
+            std::printf(
+                "atmosphere native raw direct e=%.0f delta=%.9f "
+                "on=%.6f/%.6f/%.6f off=%.6f/%.6f/%.6f\n",
+                kAtmosphereGpuElevations[index], direct_delta,
+                native_direct_on.raw_diffuse.x,
+                native_direct_on.raw_diffuse.y,
+                native_direct_on.raw_diffuse.z,
+                native_direct_off.raw_diffuse.x,
+                native_direct_off.raw_diffuse.y,
+                native_direct_off.raw_diffuse.z);
+        }
+        if (index == 4) {
+            bool positive_receiver = false;
+            for (uint32_t y = 20; y < 200 && !positive_receiver; y += 20) {
+                for (uint32_t x = 20; x < 320; x += 20) {
+                    viewer::VkRasterPixel pixel{};
+                    if (native.readback_raster_pixel(x, y, pixel, error) &&
+                        pixel.material_index < 2u &&
+                        (pixel.hdr.x > 1.0e-4f || pixel.hdr.y > 1.0e-4f ||
+                         pixel.hdr.z > 1.0e-4f)) {
+                        positive_receiver = true;
+                        break;
+                    }
+                }
+            }
+            CHECK(positive_receiver,
+                  "-5 degree native RT receiver/fog remains positive from evaluated SH");
+        }
+    }
+
+    // Task 13 native-RT receiver gate runs after the atmosphere ratio loop so
+    // no command buffer is open while cloud resources/descriptors transition.
+    // The retained material-1 pixel is the same secondary-hit receiver used by
+    // the established native fixture; raw_diffuse excludes raster direct sun.
+    const auto task13_native_capture = [&](float sun_intensity,
+                                           uint64_t attempt_token,
+                                           matter::Float4& raw) {
+        viewer::VkSceneLighting probe = native_lighting;
+        probe.sun_direction = {0.0f, -1.0f, 0.0f};
+        probe.sun_intensity = sun_intensity;
+        probe.authored_sun_rgb = {1.0f, 1.0f, 1.0f};
+        probe.atmosphere_sources.authored_display_sky_chroma_rgb =
+            {1.0f, 1.0f, 1.0f};
+        probe.atmosphere_sources.authored_irradiance_chroma_rgb =
+            {0.35f, 0.35f, 0.35f};
+        probe.atmosphere_sources.sun_multiplier = 1.0f;
+        probe.atmosphere_sources.sky_multiplier = 1.0f;
+        native.set_lighting(probe);
+        temporal.reset = true;
+        temporal.attempt_token = attempt_token;
+        native.set_temporal_frame(temporal);
+        matter::VulkanFrame frame{};
+        const bool rendered = vulkan.begin_frame(frame, error) &&
+            native.prepare_frame(frame, native_matrices,
+                                 native_camera.position, 1.0f, error) &&
+            native.record_cull_and_render(frame, native_matrices,
+                                          native_camera.position, 1.0f,
+                                          error) &&
+            native.record_composite_to_swapchain(frame, error) &&
+            vulkan.end_frame(frame, error);
+        native.finish_ray_tracing_frame(frame.serial, rendered);
+        if (!rendered) return false;
+        vulkan.wait_idle();
+        viewer::VkRasterPixel pixel{};
+        const bool read = native.readback_raster_pixel(
+            retry_x, retry_y, pixel, error);
+        raw = pixel.raw_diffuse;
+        return read && pixel.material_index == 1u;
+    };
+    const auto task13_raw_luma = [](matter::Float4 value) {
+        return value.x * 0.2126f + value.y * 0.7152f + value.z * 0.0722f;
+    };
+    matter::VulkanVolumetricsSettings task13_rt_volumetrics{};
+    task13_rt_volumetrics.enabled = false;
+    matter::FogSettings task13_rt_deck{};
+    task13_rt_deck.cloud_count = 1;
+    task13_rt_deck.clouds[0].enabled = true;
+    task13_rt_deck.clouds[0].min_height = 4.0f;
+    task13_rt_deck.clouds[0].max_height = 5.0f;
+    task13_rt_deck.clouds[0].coverage = 1.0f;
+    task13_rt_deck.clouds[0].max_density = 0.0f;
+    matter::CloudShadowSettings task13_rt_shadows{};
+    task13_rt_shadows.enabled = true;
+    task13_rt_shadows.near_resolution = 0;
+    task13_rt_shadows.near_depth_slices = 0;
+    task13_rt_shadows.near_coverage_m = 16.0f;
+    task13_rt_shadows.far_resolution = 0;
+    task13_rt_shadows.far_depth_slices = 0;
+    task13_rt_shadows.far_coverage_m = 16.0f;
+    task13_rt_shadows.filter_scale = 0.0f;
+    task13_rt_shadows.update_fraction = 1.0f;
+    matter::CloudShadowSettings task13_rt_disabled = task13_rt_shadows;
+    task13_rt_disabled.enabled = false;
+    native.set_volumetrics_settings(task13_rt_volumetrics, task13_rt_deck,
+                                    task13_rt_disabled);
+    matter::Float4 task13_rt_clear_zero{}, task13_rt_clear_high{};
+    const bool task13_rt_clear_read =
+        task13_native_capture(0.0f, 4000, task13_rt_clear_zero) &&
+        task13_native_capture(100.0f, 4001, task13_rt_clear_high);
+    const float task13_rt_clear_delta =
+        task13_raw_luma(task13_rt_clear_high) -
+        task13_raw_luma(task13_rt_clear_zero);
+
+    native.set_volumetrics_settings(task13_rt_volumetrics, task13_rt_deck,
+                                    task13_rt_shadows);
+    native.set_cloud_shadow_density_layers_for_test(
+        12u, 2.0f, 2u, 0.0f, true);
+    matter::Float4 task13_rt_shadow_zero{}, task13_rt_shadow_high{};
+    const bool task13_rt_shadow_read =
+        task13_native_capture(0.0f, 4002, task13_rt_shadow_zero) &&
+        task13_native_capture(100.0f, 4003, task13_rt_shadow_high);
+    const float task13_rt_shadow_delta =
+        task13_raw_luma(task13_rt_shadow_high) -
+        task13_raw_luma(task13_rt_shadow_zero);
+    CHECK(task13_rt_clear_read && task13_rt_shadow_read &&
+              task13_rt_clear_delta > 0.05f &&
+              task13_rt_shadow_delta < task13_rt_clear_delta * 0.35f,
+          "overhead cloud slab attenuates native RT secondary-hit direct sun");
+    CHECK(task13_rt_clear_read && task13_rt_shadow_read &&
+              close4(task13_rt_clear_zero, task13_rt_shadow_zero, 2.0e-4f),
+          "native RT cloud attenuation leaves secondary-hit SH ambient unchanged");
+
+    native.set_cloud_shadow_density_layers_for_test(
+        2u, 2.0f, 1u, 0.0f, true);
+    matter::Float4 task13_rt_above_zero{}, task13_rt_above_high{};
+    const bool task13_rt_above_read =
+        task13_native_capture(0.0f, 4004, task13_rt_above_zero) &&
+        task13_native_capture(100.0f, 4005, task13_rt_above_high);
+    const float task13_rt_above_delta =
+        task13_raw_luma(task13_rt_above_high) -
+        task13_raw_luma(task13_rt_above_zero);
+    CHECK(task13_rt_above_read &&
+              std::fabs(task13_rt_above_delta - task13_rt_clear_delta) <
+                  task13_rt_clear_delta * 0.05f,
+          "native RT secondary receiver above the slab remains clear");
+    native.set_volumetrics_settings(task13_rt_volumetrics, task13_rt_deck,
+                                    task13_rt_disabled);
+    matter::Float4 task13_rt_disabled_zero{}, task13_rt_disabled_high{};
+    const bool task13_rt_disabled_read =
+        task13_native_capture(0.0f, 4006, task13_rt_disabled_zero) &&
+        task13_native_capture(100.0f, 4007, task13_rt_disabled_high);
+    const float task13_rt_disabled_delta =
+        task13_raw_luma(task13_rt_disabled_high) -
+        task13_raw_luma(task13_rt_disabled_zero);
+    CHECK(task13_rt_disabled_read &&
+              std::fabs(task13_rt_disabled_delta - task13_rt_clear_delta) <
+                  task13_rt_clear_delta * 0.05f,
+          "disabled cloud shadows restore native RT secondary direct sun");
+    native.clear_cloud_shadow_density_override_for_test(true);
+
+    matter::VulkanVolumetricsSettings twilight_volume{};
+    twilight_volume.enabled = true;
+    twilight_volume.froxel_xy_scale = matter::FroxelXyScale::X0_5;
+    twilight_volume.froxel_depth_slices = matter::FroxelDepthSlices::D64;
+    matter::FogSettings twilight_fog{};
+    twilight_fog.density = 0.01f;
+    twilight_fog.floor = -10000.0f;
+    twilight_fog.falloff = 100000.0f;
+    twilight_fog.color[0] = 1.0f;
+    twilight_fog.color[1] = 1.0f;
+    twilight_fog.color[2] = 1.0f;
+    native.set_volumetrics_settings(twilight_volume, twilight_fog);
+    const matter::Float3 twilight_to_sun =
+        matter::atmosphere_to_sun_from_elevation_deg(-5.0f);
+    native_lighting.sun_direction = {-twilight_to_sun.x,
+                                     -twilight_to_sun.y,
+                                     -twilight_to_sun.z};
+    native_lighting.sun_intensity = 1.0f;
+    native.set_lighting(native_lighting);
+    temporal.reset = true;
+    temporal.attempt_token = 2000;
+    native.set_temporal_frame(temporal);
+    matter::VulkanFrame fog_frame{};
+    const bool fog_rendered =
+        vulkan.begin_frame(fog_frame, error) &&
+        native.prepare_frame(fog_frame, native_matrices,
+                             native_camera.position, 1.0f, error) &&
+        native.record_cull_and_render(fog_frame, native_matrices,
+                                      native_camera.position, 1.0f, error) &&
+        native.record_composite_to_swapchain(fog_frame, error) &&
+        vulkan.end_frame(fog_frame, error);
+    CHECK(fog_rendered,
+          error.empty() ? "render -5 degree native-RT twilight fog frame"
+                        : error.c_str());
+    if (fog_rendered) {
+        native.finish_ray_tracing_frame(fog_frame.serial, true);
+        vulkan.wait_idle();
+        const auto dimensions = native.volumetrics_dimensions();
+        bool positive_fog = false;
+        for (uint32_t y = dimensions.height / 2; y < dimensions.height / 2 + 2;
+             ++y) {
+            for (uint32_t x = dimensions.width / 2;
+                 x < dimensions.width / 2 + 2; ++x) {
+                matter::Float4 integrated{};
+                if (native.readback_volumetrics_integrated_voxel_for_test(
+                        x, y, dimensions.depth - 1, integrated, error) &&
+                    std::isfinite(integrated.x) &&
+                    std::isfinite(integrated.y) &&
+                    std::isfinite(integrated.z) &&
+                    (integrated.x > 1.0e-4f || integrated.y > 1.0e-4f ||
+                     integrated.z > 1.0e-4f)) {
+                    positive_fog = true;
+                }
+            }
+        }
+        CHECK(positive_fog,
+              "-5 degree volumetric fog remains positive from evaluated SH");
     }
 }
 
@@ -6508,6 +9916,23 @@ void run_frame_upload_tests(matter::VulkanDevice& vulkan) {
           error.empty() ? "initialize renderer before immediate-submit baseline"
                         : error.c_str());
     const matter::Mat4f identity = identity_matrix();
+    const FixedCullScene scene = make_fixed_cull_scene();
+    const auto prepare = [&](const viewer::FrameMatrices& matrices,
+                             uint32_t* frame_slot = nullptr) {
+        matter::VulkanFrame frame{};
+        if (!vulkan.begin_frame(frame, error)) return false;
+        if (frame_slot) *frame_slot = frame.frame_slot;
+        const bool prepared = renderer.prepare_frame(frame, matrices, scene.eye,
+                                                     1.0f, error);
+        const bool ended = vulkan.end_frame(frame, error);
+        return prepared && ended;
+    };
+    // Atmosphere LUT initialization legitimately uses immediate submissions
+    // on the first prepared frame. Warm that independent one-shot before this
+    // test establishes the steady-state frame-upload baseline.
+    CHECK(prepare(scene.frame),
+          error.empty() ? "warm atmosphere before frame-upload baseline"
+                        : error.c_str());
     const viewer::VkScenePart first = known_raster_triangle(970);
     const viewer::VkScenePart second = known_raster_triangle(971);
     std::vector<MaterialGpuRecord> materials(8);
@@ -6521,18 +9946,6 @@ void run_frame_upload_tests(matter::VulkanDevice& vulkan) {
                                                     {970, identity}};
     CHECK(renderer.update_instances(instances, error),
           error.empty() ? "upload persistent Vulkan instances" : error.c_str());
-
-    const FixedCullScene scene = make_fixed_cull_scene();
-    const auto prepare = [&](const viewer::FrameMatrices& matrices,
-                             uint32_t* frame_slot = nullptr) {
-        matter::VulkanFrame frame{};
-        if (!vulkan.begin_frame(frame, error)) return false;
-        if (frame_slot) *frame_slot = frame.frame_slot;
-        const bool prepared = renderer.prepare_frame(frame, matrices, scene.eye,
-                                                     1.0f, error);
-        const bool ended = vulkan.end_frame(frame, error);
-        return prepared && ended;
-    };
 
     const uint64_t immediate_before_material = matter::immediate_submit_count();
     uint32_t first_material_slot = UINT32_MAX;
@@ -8233,6 +11646,8 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 }  // namespace
 
 int main() {
+    test_atmosphere_timing_contract();
+    test_atmosphere_acceptance_fifo_parser_and_present_sequencer();
     const char* startup_smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
     const bool animation_skin_only = startup_smoke_mode &&
         (std::string(startup_smoke_mode) == "animation-skin" ||
@@ -8500,6 +11915,16 @@ int main() {
             glfwTerminate();
             return check_summary();
         }
+        if (smoke_mode && std::string(smoke_mode) == "froxel-resize") {
+            run_rt_froxel_resize_smoke(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
         if (smoke_mode && std::string(smoke_mode) == "rt-transmission") {
             run_rt_transmission_path(*vulkan);
             std::printf("validation errors: %u\n",
@@ -8522,6 +11947,20 @@ int main() {
         }
         if (smoke_mode && std::string(smoke_mode) == "handle-diag-vulkan") {
             run_vulkan_only_handle_diagnostic(*vulkan);
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "atmosphere") {
+            test_atmosphere_lighting_control_sanitization();
+            test_atmosphere_irradiance_dispatch_contract();
+            run_atmosphere_lut_smoke(*vulkan);
+            run_atmosphere_presentation_sampling_tests(*vulkan);
+            run_atmosphere_irradiance_last_valid_test(*vulkan);
+            run_atmosphere_transaction_failure_tests(*vulkan);
+            run_atmosphere_real_gpu_gate(*vulkan);
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
             finish_vulkan_test(vulkan);
             if (window) glfwDestroyWindow(window);
             glfwTerminate();

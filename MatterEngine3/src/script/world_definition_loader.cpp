@@ -914,6 +914,11 @@ bool extract_cloud_layers(JSContext* context, JSValueConst fog_val,
             {"lacunarity", &layer.lacunarity},
             {"gain", &layer.gain},
             {"coverage", &layer.coverage},
+            {"weatherScale", &layer.weather_scale},
+            {"weatherInfluence", &layer.weather_influence},
+            {"detailScale", &layer.detail_scale},
+            {"detailErosion", &layer.detail_erosion},
+            {"shapeBias", &layer.shape_bias},
         };
         bool ok = true;
         std::string bad_key;
@@ -1367,6 +1372,122 @@ void apply_legacy_height_layer(FogSettings& fog) {
     fog.density = 0.0f;
 }
 
+bool extract_atmosphere(JSContext* context,
+                        JSValueConst world_class,
+                        const WorldLoadDesc& desc,
+                        WorldDefinition& definition,
+                        WorldLoadError& error) {
+    JSValue atmosphere = JS_GetPropertyStr(context, world_class, "atmosphere");
+    if (JS_IsUndefined(atmosphere)) {
+        JS_FreeValue(context, atmosphere);
+        return true;
+    }
+    if (!JS_IsObject(atmosphere)) {
+        JS_FreeValue(context, atmosphere);
+        return fail(desc, error, "atmosphere", "World.atmosphere must be an object");
+    }
+    AtmosphereSettings& out = definition.settings.atmosphere;
+    const struct { const char* name; float* target; } fields[] = {
+        {"seaLevelY", &out.sea_level_y}, {"rayleighScale", &out.rayleigh_scale},
+        {"mieScale", &out.mie_scale}, {"mieAnisotropy", &out.mie_anisotropy},
+        {"ozoneScale", &out.ozone_scale}, {"groundAlbedo", &out.ground_albedo},
+    };
+    for (const auto& field : fields) {
+        JSValue value = JS_GetPropertyStr(context, atmosphere, field.name);
+        if (!JS_IsUndefined(value) &&
+            (!number_value(context, value, *field.target) || !std::isfinite(*field.target))) {
+            JS_FreeValue(context, value);
+            JS_FreeValue(context, atmosphere);
+            return fail(desc, error, std::string("atmosphere.") + field.name,
+                        "must be a finite number");
+        }
+        JS_FreeValue(context, value);
+    }
+    JS_FreeValue(context, atmosphere);
+    return true;
+}
+
+bool extract_cloud_shadows(JSContext* context,
+                           JSValueConst world_class,
+                           const WorldLoadDesc& desc,
+                           WorldDefinition& definition,
+                           WorldLoadError& error) {
+    JSValue shadows = JS_GetPropertyStr(context, world_class, "cloudShadows");
+    if (JS_IsUndefined(shadows)) {
+        JS_FreeValue(context, shadows);
+        return true;
+    }
+    if (!JS_IsObject(shadows)) {
+        JS_FreeValue(context, shadows);
+        return fail(desc, error, "cloudShadows", "World.cloudShadows must be an object");
+    }
+    CloudShadowSettings& out = definition.settings.cloud_shadows;
+    JSValue enabled = JS_GetPropertyStr(context, shadows, "enabled");
+    if (!JS_IsUndefined(enabled)) out.enabled = JS_ToBool(context, enabled);
+    JS_FreeValue(context, enabled);
+
+    const struct { const char* name; float* target; } numbers[] = {
+        {"nearCoverageM", &out.near_coverage_m}, {"farCoverageM", &out.far_coverage_m},
+        {"filterScale", &out.filter_scale}, {"updateFraction", &out.update_fraction},
+    };
+    for (const auto& number : numbers) {
+        JSValue value = JS_GetPropertyStr(context, shadows, number.name);
+        if (!JS_IsUndefined(value) &&
+            (!number_value(context, value, *number.target) || !std::isfinite(*number.target))) {
+            JS_FreeValue(context, value);
+            JS_FreeValue(context, shadows);
+            return fail(desc, error, std::string("cloudShadows.") + number.name,
+                        "must be a finite number");
+        }
+        JS_FreeValue(context, value);
+    }
+    if (!(out.near_coverage_m > 0.0f)) {
+        JS_FreeValue(context, shadows);
+        return fail(desc, error, "cloudShadows.nearCoverageM", "must be positive");
+    }
+    if (!(out.far_coverage_m > 0.0f)) {
+        JS_FreeValue(context, shadows);
+        return fail(desc, error, "cloudShadows.farCoverageM", "must be positive");
+    }
+    if (!(out.filter_scale > 0.0f)) {
+        JS_FreeValue(context, shadows);
+        return fail(desc, error, "cloudShadows.filterScale", "must be positive");
+    }
+    if (out.update_fraction < 0.0f || out.update_fraction > 1.0f) {
+        JS_FreeValue(context, shadows);
+        return fail(desc, error, "cloudShadows.updateFraction", "must be in [0,1]");
+    }
+
+    const struct { const char* name; int32_t* target; int values[3]; } discrete[] = {
+        {"nearResolution", &out.near_resolution, {128, 256, 512}},
+        {"nearDepthSlices", &out.near_depth_slices, {16, 32, 48}},
+        {"farResolution", &out.far_resolution, {64, 128, 256}},
+        {"farDepthSlices", &out.far_depth_slices, {16, 24, 32}},
+    };
+    for (const auto& field : discrete) {
+        JSValue value = JS_GetPropertyStr(context, shadows, field.name);
+        if (!JS_IsUndefined(value)) {
+            float parsed = 0.0f;
+            int32_t index = -1;
+            if (number_value(context, value, parsed) && std::isfinite(parsed)) {
+                for (int32_t i = 0; i < 3; ++i)
+                    if (parsed == static_cast<float>(field.values[i])) index = i;
+            }
+            JS_FreeValue(context, value);
+            if (index < 0) {
+                JS_FreeValue(context, shadows);
+                return fail(desc, error, std::string("cloudShadows.") + field.name,
+                            "has an unrecognized discrete value");
+            }
+            *field.target = index;
+            continue;
+        }
+        JS_FreeValue(context, value);
+    }
+    JS_FreeValue(context, shadows);
+    return true;
+}
+
 // World.volumetrics static: editor volumetrics defaults for this world.
 // Optional; every field optional with the struct default.
 bool extract_volumetrics(JSContext* context,
@@ -1405,6 +1526,9 @@ bool extract_volumetrics(JSContext* context,
         {"fogDensityMul", &legacy_density_mul},
         {"fogFalloffMul", &legacy_falloff_mul},
         {"fogFloorOffset", &legacy_floor_offset},
+        {"localSunMarchDistanceM", &out.local_sun_march_distance_m},
+        {"multipleScatteringStrength", &out.multiple_scattering_strength},
+        {"powderStrength", &out.powder_strength},
     };
     for (const auto& field : fields) {
         JSValue value = JS_GetPropertyStr(context, vol, field.name);
@@ -1422,6 +1546,56 @@ bool extract_volumetrics(JSContext* context,
         }
         JS_FreeValue(context, value);
     }
+    const struct { const char* name; int32_t* target; int32_t minimum; int32_t maximum; } integers[] = {
+        {"localSunMarchSteps", &out.local_sun_march_steps, 0, 24},
+        {"multipleScatteringOrders", &out.multiple_scattering_orders, 1, 4},
+    };
+    for (const auto& field : integers) {
+        JSValue value = JS_GetPropertyStr(context, vol, field.name);
+        if (!JS_IsUndefined(value)) {
+            float parsed = 0.0f;
+            if (!number_value(context, value, parsed) || !std::isfinite(parsed) ||
+                std::floor(parsed) != parsed || parsed < field.minimum || parsed > field.maximum) {
+                JS_FreeValue(context, value);
+                JS_FreeValue(context, vol);
+                return fail(desc, error, std::string("volumetrics.") + field.name,
+                            "must be a supported integer");
+            }
+            *field.target = static_cast<int32_t>(parsed);
+        }
+        JS_FreeValue(context, value);
+    }
+    JSValue froxel_xy = JS_GetPropertyStr(context, vol, "froxelXyScale");
+    if (!JS_IsUndefined(froxel_xy)) {
+        std::string label;
+        if (!string_value(context, froxel_xy, label)) {
+            JS_FreeValue(context, froxel_xy); JS_FreeValue(context, vol);
+            return fail(desc, error, "volumetrics.froxelXyScale", "must be a recognized scale label");
+        }
+        const struct { const char* label; FroxelXyScale value; } labels[] = {
+            {"0.5x", FroxelXyScale::X0_5}, {"0.75x", FroxelXyScale::X0_75},
+            {"1x", FroxelXyScale::X1_0}, {"1.5x", FroxelXyScale::X1_5},
+            {"2x", FroxelXyScale::X2_0},
+        };
+        bool found = false;
+        for (const auto& entry : labels) if (label == entry.label) {
+            out.froxel_xy_scale = entry.value; found = true; break;
+        }
+        JS_FreeValue(context, froxel_xy);
+        if (!found) { JS_FreeValue(context, vol); return fail(desc, error, "volumetrics.froxelXyScale", "must be a recognized scale label"); }
+    } else JS_FreeValue(context, froxel_xy);
+    JSValue froxel_depth = JS_GetPropertyStr(context, vol, "froxelDepthSlices");
+    if (!JS_IsUndefined(froxel_depth)) {
+        float parsed = 0.0f;
+        int index = -1;
+        if (number_value(context, froxel_depth, parsed) && std::isfinite(parsed)) {
+            const int values[] = {64, 96, 128, 192, 256};
+            for (int i = 0; i < 5; ++i) if (parsed == static_cast<float>(values[i])) index = i;
+        }
+        JS_FreeValue(context, froxel_depth);
+        if (index < 0) { JS_FreeValue(context, vol); return fail(desc, error, "volumetrics.froxelDepthSlices", "must be a supported slice count"); }
+        out.froxel_depth_slices = static_cast<FroxelDepthSlices>(index);
+    } else JS_FreeValue(context, froxel_depth);
     JS_FreeValue(context, vol);
 
     fold_legacy_fog_multipliers(desc, definition.settings.fog,
@@ -1990,11 +2164,14 @@ class World {}
                             definition, error) &&
               extract_settings(context, world_class, desc, definition, error) &&
               extract_lights(context, world_class, desc, definition, error) &&
+              extract_atmosphere(context, world_class, desc, definition, error) &&
               extract_fog(context, world_class, desc, definition, error) &&
               extract_camera(context, world_class, desc, definition, error) &&
               extract_streaming(context, world_class, desc, definition, error) &&
               extract_volumetrics(context, world_class, desc, definition,
                                   error) &&
+              extract_cloud_shadows(context, world_class, desc, definition,
+                                    error) &&
               extract_props(context, world_class, desc, definition, error) &&
               append_static_entities(context, world_class, desc, error);
     // The legacy bounded layer becomes clouds[0] here, not inside
@@ -2003,7 +2180,11 @@ class World {}
     // runs before that. Unconditional rather than folded into the chain above
     // because a world can author `fog.minHeight` with no `volumetrics` block
     // at all, and that world still needs its deck.
-    if (ok) apply_legacy_height_layer(definition.settings.fog);
+    if (ok) {
+        definition.settings.atmosphere =
+            sanitize_atmosphere(definition.settings.atmosphere);
+        apply_legacy_height_layer(definition.settings.fog);
+    }
     if (!ok) {
         definition = WorldDefinition{};
         JS_FreeValue(context, canonicalizer);

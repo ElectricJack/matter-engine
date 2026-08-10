@@ -162,7 +162,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/tileset_gtex.cpp src/tileset_torus_bvh.cpp \
           src/shader_source.cpp \
           src/render/raster_mesh.cpp src/render/indexed_part_geometry.cpp \
-          src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp \
+          src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp src/render/vk_atmosphere.cpp src/render/vk_cloud_shadows.cpp \
           src/render/part_store.cpp src/render/world_state.cpp \
           src/render/lod_trace.cpp \
           src/render/tileset_slicer.cpp src/render/bc_encode.cpp \
@@ -329,6 +329,11 @@ shaders_gen/embedded_shaders.h: tools/embed_shaders.py $(SHADER_FILES)
 
 GLSLC ?= glslc
 VK_SPV = build/shaders_vk/transform_probe.comp.spv \
+         build/shaders_vk/atmosphere_transmittance.comp.spv \
+         build/shaders_vk/atmosphere_multiscatter.comp.spv \
+         build/shaders_vk/atmosphere_sky_view.comp.spv \
+         build/shaders_vk/atmosphere_irradiance.comp.spv \
+         build/shaders_vk/environment_sampling_test.comp.spv \
          build/shaders_vk/animation_skin.comp.spv \
          build/shaders_vk/cull.comp.spv \
          build/shaders_vk/raster.vert.spv \
@@ -353,6 +358,9 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/vol_density.comp.spv \
          build/shaders_vk/vol_scatter.comp.spv \
          build/shaders_vk/vol_integrate.comp.spv \
+         build/shaders_vk/cloud_shadow_reproject.comp.spv \
+         build/shaders_vk/cloud_shadow_density.comp.spv \
+         build/shaders_vk/cloud_shadow_integrate.comp.spv \
          build/shaders_vk/tileset_bake_primary.comp.spv \
          build/shaders_vk/tileset_bake_ao.comp.spv \
          build/shaders_vk/vt_composite.comp.spv \
@@ -365,6 +373,15 @@ build/shaders_vk/%.spv: shaders_vk/%
 
 build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
     shaders_vk/material_common.glsl
+
+build/shaders_vk/atmosphere_transmittance.comp.spv \
+    build/shaders_vk/atmosphere_multiscatter.comp.spv \
+    build/shaders_vk/atmosphere_sky_view.comp.spv \
+    build/shaders_vk/atmosphere_irradiance.comp.spv: \
+    shaders_vk/atmosphere_common.glsl
+
+build/shaders_vk/environment_sampling_test.comp.spv: \
+    shaders_vk/environment_common.glsl shaders_vk/cloud_shadow_common.glsl
 
 # C2 uses the same source and descriptor ABI as raster.vert, but a compile
 # time specialization adds location 5 for the previous skinned position.
@@ -387,7 +404,7 @@ build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
 build/shaders_vk/rt_shadow.rgen.spv: shaders_vk/tileset_common.glsl
 
 build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
-    shaders_vk/sky_common.glsl
+    shaders_vk/environment_common.glsl shaders_vk/cloud_shadow_common.glsl
 
 build/shaders_vk/gi_temporal.comp.spv build/shaders_vk/gi_atrous.comp.spv: \
     shaders_vk/gi_common.glsl
@@ -396,6 +413,13 @@ build/shaders_vk/vol_density.comp.spv build/shaders_vk/vol_scatter.comp.spv \
     build/shaders_vk/vol_integrate.comp.spv \
     build/shaders_vk/composite.frag.spv: \
     shaders_vk/vol_common.glsl
+
+build/shaders_vk/vol_density.comp.spv: shaders_vk/cloud_density.glsl shaders_vk/vt_noise.glsl
+
+build/shaders_vk/cloud_shadow_density.comp.spv: shaders_vk/cloud_density.glsl \
+    shaders_vk/vol_common.glsl shaders_vk/vt_noise.glsl
+
+build/shaders_vk/vol_scatter.comp.spv: shaders_vk/environment_common.glsl shaders_vk/cloud_shadow_common.glsl
 
 # WP-D (chart VT): the Wang cell machinery moved into wang_common.glsl, which
 # tileset_common.glsl now includes; every tileset_common consumer therefore

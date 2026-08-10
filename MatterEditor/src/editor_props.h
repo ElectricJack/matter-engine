@@ -147,7 +147,10 @@ public:
 
     matter::props::Binding* budget();
     matter::props::Binding* lighting();
+    matter::props::Binding* atmosphere();
     matter::props::Binding* volumetrics();
+    matter::props::Binding* cloud_shadows();
+    const ViewerStats* viewer_stats() const { return stats_; }
     // World-authored fog, live (WS2). See the group definition in the .cpp for
     // why this is live and not RequiresReload.
     matter::props::Binding* fog();
@@ -186,6 +189,8 @@ public:
     // vol_debug_view, edited by the raw Combo widgets in Viewer Debug. Same
     // reason as console().
     matter::props::Binding* viewer_debug();
+    matter::props::Binding* viewer_session_status();
+    matter::props::Binding* viewer_atmosphere_status();
 
     // ---- Tunables de-duplication (issue dd98763c) --------------------------
     //
@@ -258,9 +263,12 @@ private:
     void release_draw_overrides();
 
     matter::props::Registry registry_;
+    ViewerStats* stats_ = nullptr;
     matter::props::BindingId budget_ = matter::props::kInvalidBinding;
     matter::props::BindingId lighting_ = matter::props::kInvalidBinding;
+    matter::props::BindingId atmosphere_ = matter::props::kInvalidBinding;
     matter::props::BindingId volumetrics_ = matter::props::kInvalidBinding;
+    matter::props::BindingId cloud_shadows_ = matter::props::kInvalidBinding;
     matter::props::BindingId fog_ = matter::props::kInvalidBinding;
     matter::props::BindingId clouds_ = matter::props::kInvalidBinding;
     matter::props::BindingId pom_ = matter::props::kInvalidBinding;
@@ -274,6 +282,10 @@ private:
     matter::props::BindingId console_ = matter::props::kInvalidBinding;
     matter::props::BindingId overlay_ = matter::props::kInvalidBinding;
     matter::props::BindingId viewer_debug_ = matter::props::kInvalidBinding;
+    matter::props::BindingId viewer_session_status_ =
+        matter::props::kInvalidBinding;
+    matter::props::BindingId viewer_atmosphere_status_ =
+        matter::props::kInvalidBinding;
     matter::props::BindingId gpu_ = matter::props::kInvalidBinding;
     StreamingLodPrefs streaming_prefs_{};
     GpuPrefs gpu_prefs_{};

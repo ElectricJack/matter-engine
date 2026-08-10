@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "vol_common.glsl"
+#include "cloud_density.glsl"
 #include "vt_noise.glsl"   // vt_fbm3 — the engine's one value-noise core
 
 layout(local_size_x = 4, local_size_y = 4, local_size_z = 1) in;
@@ -24,6 +25,7 @@ layout(local_size_x = 4, local_size_y = 4, local_size_z = 1) in;
 // the compiler can already hoist per layer, and pipelines are the thing worth
 // being frugal with here.
 layout(constant_id = 0) const int CLOUD_LAYERS = 0;
+layout(constant_id = 1) const bool ENHANCED_CLOUDS = false;
 
 layout(rgba16f, set = 0, binding = 0) uniform writeonly image3D vol_media;
 layout(set = 0, binding = 1) uniform sampler3D noise_tex;
@@ -39,6 +41,7 @@ layout(std430, set = 0, binding = 2) readonly buffer EmitterSSBO {
 layout(std430, set = 0, binding = 3) readonly buffer CloudSSBO {
     GpuCloudLayer cloud_layers[];
 };
+layout(r16f, set = 0, binding = 4) uniform writeonly image3D vol_cloud_density;
 
 layout(push_constant) uniform DensityConstants {
     mat4 clip_to_world;
@@ -63,7 +66,7 @@ layout(push_constant) uniform DensityConstants {
 // of falloff_min metres up from the bottom, a soft shoulder of falloff_max
 // metres down from the top, and a true plateau at 1.0 between them.
 // ---------------------------------------------------------------------------
-float cloud_height_profile(GpuCloudLayer L, float y) {
+float legacy_cloud_height_profile(GpuCloudLayer L, float y) {
     float lo = L.min_height;
     float hi = L.max_height;
     if (!(hi > lo)) return 0.0;
@@ -106,19 +109,22 @@ float cloud_shape(GpuCloudLayer L, vec3 world_pos, float time) {
 
 void main() {
     ivec3 voxel = ivec3(gl_GlobalInvocationID.xyz);
-    if (voxel.x >= int(VOL_W) || voxel.y >= int(VOL_H)) return;
+    ivec3 grid = imageSize(vol_media);
+    if (any(greaterThanEqual(voxel, grid))) return;
 
     // Iterate over all depth slices for this XY thread.
-    for (int z = 0; z < int(VOL_D); ++z) {
-        float depth = slice_to_depth(float(z) + 0.5);
+    for (int z = 0; z < grid.z; ++z) {
+        float depth = slice_to_depth(float(z) + 0.5, float(grid.z));
 
         // Slices closer than the camera near plane have no valid NDC mapping.
         if (depth < pc.camera_near) {
             imageStore(vol_media, ivec3(voxel.xy, z), vec4(0.0));
+            if (ENHANCED_CLOUDS)
+                imageStore(vol_cloud_density, ivec3(voxel.xy, z), vec4(0.0));
             continue;
         }
 
-        vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(VOL_W, VOL_H);
+        vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(grid.xy);
         // Reversed-ZO: hw=1 at z=near, hw=0 at z=far.
         // Verify: z=near -> near*(far-near)/(near*(far-near)) = 1;
         //         z=far  -> near*(far-far)/(far*(far-near))   = 0.
@@ -148,6 +154,7 @@ void main() {
 
         vec3 fog_albedo = pc.fog_color;
         float extinction = height_fog;
+        float non_cloud_extinction = height_fog;
 
         // --- Cloud decks ---
         //
@@ -162,13 +169,12 @@ void main() {
         // every froxel and paying for it only in the froxels a deck actually
         // occupies, which for a deck a hundred metres thick in a three-
         // kilometre frustum is a small minority of the 1.84M.
+        float cloud_extinction = 0.0;
         for (int li = 0; li < CLOUD_LAYERS; ++li) {
             GpuCloudLayer L = cloud_layers[li];
-            float profile = cloud_height_profile(L, y);
-            if (profile <= 0.0) continue;
-            float shape = cloud_shape(L, world_pos, pc.frame_time);
-            extinction += L.max_density * profile * shape;
+            cloud_extinction += evaluate_cloud_density(L, world_pos, pc.frame_time).full;
         }
+        extinction += cloud_extinction;
 
         // --- Emitter contributions ---
         for (uint i = 0; i < emitter_count; ++i) {
@@ -223,12 +229,23 @@ void main() {
 
             float emitter_contrib = e_density * radial_falloff * axial_fade;
             extinction += emitter_contrib;
-            fog_albedo = mix(fog_albedo, emitter_color,
-                             clamp(emitter_contrib / max(extinction, 1e-6), 0.0, 1.0));
+            non_cloud_extinction += emitter_contrib;
+            if (ENHANCED_CLOUDS) {
+                fog_albedo = mix(fog_albedo, emitter_color,
+                                 clamp(emitter_contrib / max(non_cloud_extinction, 1e-6), 0.0, 1.0));
+            } else {
+                // Current specialization retains the existing arithmetic.
+                fog_albedo = mix(fog_albedo, emitter_color,
+                                 clamp(emitter_contrib / max(extinction, 1e-6), 0.0, 1.0));
+            }
         }
 
         // Store rgb = albedo * density (scattering coefficient), a = extinction.
-        imageStore(vol_media, ivec3(voxel.xy, z),
-                   vec4(fog_albedo * extinction, extinction));
+        vec3 scattering = ENHANCED_CLOUDS
+            ? fog_albedo * non_cloud_extinction + vec3(0.99) * cloud_extinction
+            : fog_albedo * extinction;
+        imageStore(vol_media, ivec3(voxel.xy, z), vec4(scattering, extinction));
+        if (ENHANCED_CLOUDS)
+            imageStore(vol_cloud_density, ivec3(voxel.xy, z), vec4(cloud_extinction));
     }
 }

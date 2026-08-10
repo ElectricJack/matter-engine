@@ -10,6 +10,7 @@
 #include "matter/engine_context.h"
 #include "matter/world_session.h"
 #include "matter/world_props.h"
+#include "matter/atmosphere.h"
 #include "matter/draw_overrides.h"
 #include "matter/stream_settings.h"
 #include "matter/vt_budgets.h"
@@ -565,6 +566,7 @@ struct WorldSession::Impl {
     viewer::TemporalState vk_temporal;
     uint64_t vk_temporal_serial = 0;
     uint64_t vk_temporal_token = 0;
+    bool vk_atmosphere_history_reset_pending = false;
     // C2 skin arena reuse follows actual frame completion, not submission.
     uint64_t vk_skin_completed_serial = 0;
     // Renderer-side bounds copies are immutable. Track the active ECS asset
@@ -1075,6 +1077,10 @@ struct WorldSession::Impl {
     // to adopt (guarded by streaming_lod_mutex alongside the LOD profile).
     VulkanVolumetricsSettings world_volumetrics_defaults{};
     bool has_world_volumetrics = false;
+    AtmosphereSettings world_atmosphere_defaults{};
+    bool has_world_atmosphere = false;
+    CloudShadowSettings world_cloud_shadows_defaults{};
+    bool has_world_cloud_shadows = false;
     // Same contract for the world-authored fog. Set through set_authored_fog
     // (declared above), which every authored_fog_ publication goes through.
     FogSettings world_fog_defaults{};
@@ -1564,6 +1570,12 @@ void WorldSession::Impl::set_authored_sun(const matter::WorldSettings& settings)
     std::lock_guard<std::mutex> lk(streaming_lod_mutex);
     world_sun_defaults = sun;
     has_world_sun = true;
+    world_atmosphere_defaults = settings.atmosphere;
+    has_world_atmosphere = true;
+    world_volumetrics_defaults = settings.volumetrics;
+    has_world_volumetrics = true;
+    world_cloud_shadows_defaults = settings.cloud_shadows;
+    has_world_cloud_shadows = true;
 }
 
 void WorldSession::Impl::ensure_worker_started() {
@@ -7521,8 +7533,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // here on each call. An editor override therefore lands on the next frame
     // with no reload, exactly like the volumetrics multipliers beside it.
     impl_->vk_scene->set_volumetrics_settings(
-        opts.vulkan_volumetrics,
-        opts.use_fog_override ? opts.fog_override : impl_->authored_fog_);
+        opts.volumetrics,
+        opts.use_fog_override ? opts.fog_override : impl_->authored_fog_,
+        opts.cloud_shadows);
     impl_->vk_scene->set_tileset_pom_settings(opts.vulkan_tileset_pom);
     impl_->vk_scene->set_vt_near_band_settings(opts.vulkan_vt_near_band);
     const int material_count = MaterialRegistryCount();
@@ -7977,16 +7990,6 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             animation_skin_queue_pending_seal = true;
         }
     }
-    {
-        // Parent of the pf.* zones; the gap between this and their sum is
-        // prepare_frame's own unscoped work.
-        PROFILE_SCOPE("build.prepare_frame");
-        if (!impl_->vk_scene->prepare_frame(frame, matrices, cam.position,
-                                            budget, err)) {
-            impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
-            return false;
-        }
-    }
     viewer::VkSceneLighting lighting{};
     const auto controls =
         viewer::sanitize_vulkan_lighting_overrides(opts.vulkan_lighting);
@@ -8035,20 +8038,69 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // constants, the volumetric scatter pass via frame_lighting) reads them
     // from here, so tinted direct light and tinted in-scattering cannot
     // disagree. A white tint is bit-exact (x * 1.0f == x).
-    lighting.sun_color = {
-        impl_->manifest.lights.sun_color[0] * controls.sun_multiplier * controls.sun_tint[0],
-        impl_->manifest.lights.sun_color[1] * controls.sun_multiplier * controls.sun_tint[1],
-        impl_->manifest.lights.sun_color[2] * controls.sun_multiplier * controls.sun_tint[2]};
-    lighting.sky_color = {
-        impl_->manifest.lights.sky_color[0] * controls.sky_multiplier * controls.sky_tint[0],
-        impl_->manifest.lights.sky_color[1] * controls.sky_multiplier * controls.sky_tint[1],
-        impl_->manifest.lights.sky_color[2] * controls.sky_multiplier * controls.sky_tint[2]};
+    // `sun_direction` is the engine's sun-to-scene convention. The physical
+    // helper deliberately consumes that convention and performs the one
+    // required negation internally; passing `to_sun` here would light the
+    // below-horizon sun as if it were overhead.
+    lighting.authored_sun_rgb = {impl_->manifest.lights.sun_color[0],
+                                 impl_->manifest.lights.sun_color[1],
+                                 impl_->manifest.lights.sun_color[2]};
+    const matter::Float3 authored_sky{
+        impl_->manifest.lights.sky_color[0],
+        impl_->manifest.lights.sky_color[1],
+        impl_->manifest.lights.sky_color[2]};
+    lighting.atmosphere_sources.authored_display_sky_chroma_rgb = authored_sky;
+    lighting.atmosphere_sources.authored_irradiance_chroma_rgb = authored_sky;
+    lighting.atmosphere_sources.live_sun_tint_rgb =
+        {controls.sun_tint[0], controls.sun_tint[1], controls.sun_tint[2]};
+    lighting.atmosphere_sources.live_sky_tint_rgb =
+        {controls.sky_tint[0], controls.sky_tint[1], controls.sky_tint[2]};
+    lighting.atmosphere_sources.sun_multiplier = controls.sun_multiplier;
+    lighting.atmosphere_sources.sky_multiplier = controls.sky_multiplier;
+    lighting.atmosphere_sources.sky_irradiance_multiplier =
+        controls.sky_irradiance_multiplier;
+    lighting.atmosphere_sources.day_ambient_multiplier =
+        controls.day_ambient_multiplier;
+    lighting.atmosphere_sources.twilight_ambient_multiplier =
+        controls.twilight_ambient_multiplier;
+    lighting.atmosphere_sources.sunset_direct_ratio =
+        controls.sunset_direct_ratio;
+    float resolved_azimuth = 0.0f;
+    sun_angles_from_direction(lighting.sun_direction, resolved_azimuth,
+                              lighting.atmosphere_sources.elevation_deg);
+    lighting.sun_shadow_samples = controls.sun_shadow_samples;
     lighting.emission_multiplier = controls.emission_multiplier;
-    lighting.vol_enabled = opts.vulkan_volumetrics.enabled ? 1.0f : 0.0f;
-    lighting.vol_debug_view = opts.vulkan_volumetrics.vol_debug_view;
+    lighting.vol_enabled = opts.volumetrics.enabled ? 1.0f : 0.0f;
+    lighting.vol_debug_view = opts.volumetrics.vol_debug_view;
+    // Request the live coefficients before the renderer records this frame's
+    // LUT work. Unchanged settings are a no-op inside VkAtmosphere.
+    impl_->vk_scene->set_atmosphere_settings(opts.atmosphere);
     impl_->vk_scene->set_lighting(lighting);
+    if (impl_->vk_atmosphere_history_reset_pending) {
+        // kAtmosphereChangeEmission is the one existing renderer signal that
+        // invalidates all three presentation histories. Stage an unrecorded
+        // temporary value and immediately restore the real one: prepare_frame
+        // observes the accumulated change mask, while every shader sees only
+        // the restored lighting and the atmosphere generation is untouched.
+        viewer::VkSceneLighting reset_signal = lighting;
+        reset_signal.emission_multiplier =
+            lighting.emission_multiplier == 0.0f ? 1.0f : 0.0f;
+        impl_->vk_scene->set_lighting(reset_signal);
+        impl_->vk_scene->set_lighting(lighting);
+        impl_->vk_atmosphere_history_reset_pending = false;
+    }
     impl_->vk_scene->set_display_exposure(controls.exposure_ev);
     impl_->vk_scene->set_composite_debug_view(controls.composite_debug_view);
+    {
+        // The atmosphere transaction consumes the current live lighting, so
+        // publish those inputs before selecting this completed frame slot.
+        PROFILE_SCOPE("build.prepare_frame");
+        if (!impl_->vk_scene->prepare_frame(frame, matrices, cam.position,
+                                            budget, err)) {
+            impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
+            return false;
+        }
+    }
     z_build.stop();
     const auto build_end = std::chrono::steady_clock::now();
     const auto draw_start = std::chrono::steady_clock::now();
@@ -8216,6 +8268,25 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.gpu_dlss_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneDlss);
     impl_->stats.gpu_composite_ms        = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneComposite);
     impl_->stats.gpu_vol_ms              = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolumetrics);
+    impl_->stats.gpu_atmosphere_ms       = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneAtmosphere);
+    impl_->stats.gpu_cloud_shadows_ms    = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneCloudShadows);
+    impl_->stats.gpu_vol_density_ms      = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolDensity);
+    impl_->stats.gpu_vol_scatter_ms      = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolScatter);
+    impl_->stats.gpu_vol_integrate_ms    = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolIntegrate);
+    const matter::FroxelGridDimensions vol_dimensions = impl_->vk_scene->volumetrics_dimensions();
+    impl_->stats.vol_grid_w = vol_dimensions.width;
+    impl_->stats.vol_grid_h = vol_dimensions.height;
+    impl_->stats.vol_grid_d = vol_dimensions.depth;
+    impl_->stats.vol_effective_xy_scale =
+        impl_->vk_scene->volumetrics_effective_xy_scale();
+    impl_->stats.vol_effective_depth_slices =
+        impl_->vk_scene->volumetrics_effective_depth_slices();
+    impl_->stats.vol_memory_bytes = impl_->vk_scene->volumetrics_persistent_bytes();
+    impl_->stats.cloud_shadow_memory_bytes =
+        impl_->vk_scene->cloud_shadow_persistent_bytes();
+    impl_->stats.vol_resource_generation = impl_->vk_scene->volumetrics_resource_generation();
+    impl_->stats.vol_allocation_rejected = impl_->vk_scene->volumetrics_allocation_rejected();
+    impl_->stats.vol_allocation_error = impl_->vk_scene->volumetrics_allocation_error();
     impl_->stats.gpu_vt_ms               = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVt);
     return true;
 }
@@ -8246,6 +8317,31 @@ void WorldSession::finish_vulkan_frame(uint64_t frame_serial, bool presented) {
     impl_->vk_temporal_token = 0;
 }
 
+bool WorldSession::resolved_atmosphere_status(
+    ResolvedAtmospherePresentationStatus& out) const {
+    if (!impl_ || !impl_->vk_scene) return false;
+    const viewer::ResolvedAtmosphereStatus& committed =
+        impl_->vk_scene->resolved_atmosphere_status();
+    out.generation_serial = committed.generation_serial;
+    out.resolved_elevation_deg = committed.resolved_elevation_deg;
+    out.atmospheric_direct_base_rgb =
+        committed.atmospheric_direct_base_rgb;
+    out.atmospheric_noon_direct_base_rgb =
+        committed.atmospheric_noon_direct_base_rgb;
+    out.direct_world_ratio = committed.direct_world_ratio;
+    out.direct_base_rgb = committed.direct_base_rgb;
+    out.direct_world_sun_rgb = committed.direct_world_sun_rgb;
+    out.sky_ambient_ratio = committed.sky_ambient_ratio;
+    out.sky_display_modifier_rgb = committed.sky_display_modifier_rgb;
+    out.sky_irradiance_modifier_rgb =
+        committed.sky_irradiance_modifier_rgb;
+    return true;
+}
+
+void WorldSession::request_atmosphere_history_reset() {
+    if (impl_) impl_->vk_atmosphere_history_reset_pending = true;
+}
+
 bool WorldSession::readback_swapchain_rgba8(
     const VulkanFrame& frame, std::vector<uint8_t>& rgba, std::string& err) {
     if (!impl_->engine->render_device) {
@@ -8259,6 +8355,13 @@ bool WorldSession::readback_swapchain_rgba8(
 
 #ifndef MATTER_VULKAN_VIEWER
 void WorldSession::finish_vulkan_frame(uint64_t, bool) {}
+
+bool WorldSession::resolved_atmosphere_status(
+    ResolvedAtmospherePresentationStatus&) const {
+    return false;
+}
+
+void WorldSession::request_atmosphere_history_reset() {}
 
 bool WorldSession::render(const CameraDesc&, const VulkanFrame&,
                           const RenderOptions&, std::string& err) {
@@ -8473,6 +8576,20 @@ bool WorldSession::world_volumetrics(VulkanVolumetricsSettings& out) const {
     std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
     if (!impl_->has_world_volumetrics) return false;
     out = impl_->world_volumetrics_defaults;
+    return true;
+}
+
+bool WorldSession::world_atmosphere(AtmosphereSettings& out) const {
+    std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
+    if (!impl_->has_world_atmosphere) return false;
+    out = impl_->world_atmosphere_defaults;
+    return true;
+}
+
+bool WorldSession::world_cloud_shadows(CloudShadowSettings& out) const {
+    std::lock_guard<std::mutex> lk(impl_->streaming_lod_mutex);
+    if (!impl_->has_world_cloud_shadows) return false;
+    out = impl_->world_cloud_shadows_defaults;
     return true;
 }
 

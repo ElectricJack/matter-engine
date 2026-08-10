@@ -2,9 +2,11 @@
 
 #include "editor_props.h"
 #include "matter/world_definition.h"  // FogSettings, compact_clouds
+#include "ui.h"  // ViewerStats readouts in the Lighting panel
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -22,6 +24,81 @@ constexpr float kNameColumn = 178.0f;
 // (part_workbench.cpp draw_params_panel) — same visual language.
 const ImVec4 kModifiedColor(1.0f, 0.85f, 0.35f, 1.0f);
 
+template <class T>
+void apply_registered_fields(Binding& binding, const T& target) {
+    for (uint32_t i = 0; i < binding.schema().field_count; ++i) {
+        if (binding.env_forced(i)) continue;  // layer 5 remains above a preset click
+        const Desc& d = binding.schema().fields[i];
+        const void* source = &target;
+        switch (d.type) {
+        case Type::Bool: set_bool(binding, d, get_bool(source, d)); break;
+        case Type::Enum: set_enum(binding, d, get_enum(source, d)); break;
+        case Type::Int: set_int(binding, d, get_int(source, d)); break;
+        case Type::UInt: set_uint(binding, d, get_uint(source, d)); break;
+        case Type::UInt64: set_uint64(binding, d, get_uint64(source, d)); break;
+        case Type::Float: set_float(binding, d, get_float(source, d)); break;
+        default: break;
+        }
+    }
+}
+
+void draw_volumetric_quality_presets(EditorProps& props) {
+    Binding* vol_binding = props.volumetrics();
+    Binding* shadow_binding = props.cloud_shadows();
+    if (!vol_binding || !shadow_binding) return;
+
+    const matter::VolumetricQualityPreset selected =
+        matter::identify_volumetric_quality_preset(
+            *static_cast<const matter::VulkanVolumetricsSettings*>(vol_binding->instance()),
+            *static_cast<const matter::CloudShadowSettings*>(shadow_binding->instance()));
+    struct Button { matter::VolumetricQualityPreset preset; const char* label; };
+    const Button buttons[] = {
+        {matter::VolumetricQualityPreset::CurrentCost, "Current cost"},
+        {matter::VolumetricQualityPreset::Improved, "Improved"},
+        {matter::VolumetricQualityPreset::High, "High"},
+        {matter::VolumetricQualityPreset::Ultra, "Ultra"},
+    };
+    for (const Button& button : buttons) {
+        if (&button != buttons) ImGui::SameLine();
+        if (ImGui::Button(button.label)) {
+            matter::VulkanVolumetricsSettings target_vol =
+                *static_cast<const matter::VulkanVolumetricsSettings*>(vol_binding->instance());
+            matter::CloudShadowSettings target_shadows =
+                *static_cast<const matter::CloudShadowSettings*>(shadow_binding->instance());
+            matter::apply_volumetric_quality_preset(button.preset, target_vol, target_shadows);
+            apply_registered_fields(*vol_binding, target_vol);
+            apply_registered_fields(*shadow_binding, target_shadows);
+        }
+    }
+    const char* selected_name = selected == matter::VolumetricQualityPreset::CurrentCost ? "Current cost" :
+                                selected == matter::VolumetricQualityPreset::Improved ? "Improved" :
+                                selected == matter::VolumetricQualityPreset::High ? "High" :
+                                selected == matter::VolumetricQualityPreset::Ultra ? "Ultra" : "Custom";
+    ImGui::TextDisabled("Preset: %s", selected_name);
+}
+
+void draw_volumetric_readouts(const ViewerStats& stats) {
+    ImGui::TextDisabled("Froxels requested/effective: %u x %u x %u / %u x %u x %u",
+                        stats.requested_froxel.width, stats.requested_froxel.height,
+                        stats.requested_froxel.depth, stats.effective_froxel.width,
+                        stats.effective_froxel.height, stats.effective_froxel.depth);
+    ImGui::TextDisabled("Froxel memory: %.2f MiB   Cloud shadows: %.2f MiB",
+                        static_cast<double>(stats.froxel_bytes) / (1024.0 * 1024.0),
+                        static_cast<double>(stats.cloud_shadow_bytes) / (1024.0 * 1024.0));
+    const float physical_gpu_ms = stats.gpu_atmosphere_ms +
+        stats.gpu_cloud_shadows_ms + stats.gpu_vol_ms;
+    ImGui::TextDisabled("GPU atmosphere %.3f ms  Cloud shadows %.3f ms",
+                        stats.gpu_atmosphere_ms, stats.gpu_cloud_shadows_ms);
+    ImGui::TextDisabled("Froxel GPU: density %.3f  scatter %.3f  integrate %.3f "
+                        "(combined %.3f, physical %.3f ms)",
+                        stats.gpu_vol_density_ms, stats.gpu_vol_scatter_ms,
+                        stats.gpu_vol_integrate_ms, stats.gpu_vol_ms,
+                        physical_gpu_ms);
+    ImGui::TextDisabled("Last allocation error: %s",
+                        stats.last_volumetric_allocation_error.empty() ? "none" :
+                        stats.last_volumetric_allocation_error.c_str());
+}
+
 std::string value_text(const void* inst, const Desc& d) {
     char buf[128];
     const std::string fmt = prop_format_for(d);
@@ -34,6 +111,10 @@ std::string value_text(const void* inst, const Desc& d) {
             break;
         case Type::UInt:
             std::snprintf(buf, sizeof(buf), fmt.c_str(), get_uint(inst, d));
+            break;
+        case Type::UInt64:
+            std::snprintf(buf, sizeof(buf), "%llu",
+                          static_cast<unsigned long long>(get_uint64(inst, d)));
             break;
         case Type::Enum: {
             const int32_t v = get_enum(inst, d);
@@ -554,6 +635,10 @@ void draw_lighting_contents(EditorProps& props) {
     // Neither group is RequiresReload, so the closure is inert today; passing
     // it anyway means a future reload-gated lighting field just works.
     const std::function<void()>& on_apply = props.reload_request();
+    // Keep screenshot evidence legible at a 720 px desktop height: the preset
+    // strip is drawn outside its group, while the long unrelated sections stay
+    // collapsed. Interactive layouts are untouched.
+    const bool compact_capture = std::getenv("MATTER_CAPTURE_LIGHTING_UI") != nullptr;
 
     // One reset for the whole panel rather than the old per-group button under
     // the lighting sliders: every group here is Scope::World, and their
@@ -561,13 +646,16 @@ void draw_lighting_contents(EditorProps& props) {
     // "back to what the world authored" is one concept, not three.
     if (ImGui::Button("Reset to World")) {
         if (Binding* b = props.lighting()) reset_group(*b);
+        if (Binding* b = props.atmosphere()) reset_group(*b);
         if (Binding* b = props.volumetrics()) reset_group(*b);
         if (Binding* b = props.fog()) reset_group(*b);
+        if (Binding* b = props.cloud_shadows()) reset_group(*b);
         if (Binding* b = props.clouds()) reset_group(*b);
     }
     ImGui::SetItemTooltip(
-        "Restores render.lighting, render.volumetrics, render.fog and "
-        "render.clouds to the values the world script authored at connect.");
+        "Restores render.lighting, render.atmosphere, render.volumetrics, "
+        "render.fog, render.cloud_shadows and render.clouds to the values "
+        "the world script authored at connect.");
     ImGui::Separator();
 
     // note_panel_home: declared right at the draw call for each group, per
@@ -575,11 +663,18 @@ void draw_lighting_contents(EditorProps& props) {
     // updates what Tunables hides — see EditorProps::panel_home.
     if (Binding* b = props.lighting()) {
         props.note_panel_home(b->schema().path, "Lighting");
+        draw_group(*b, nullptr, !compact_capture, &on_apply);
+    }
+    if (Binding* b = props.atmosphere()) {
+        props.note_panel_home(b->schema().path, "Lighting");
         draw_group(*b, nullptr, true, &on_apply);
     }
     if (Binding* b = props.volumetrics()) {
         props.note_panel_home(b->schema().path, "Lighting");
-        draw_group(*b, nullptr, true, &on_apply);
+        draw_volumetric_quality_presets(props);
+        if (const ViewerStats* stats = props.viewer_stats())
+            draw_volumetric_readouts(*stats);
+        draw_group(*b, nullptr, !compact_capture, &on_apply);
     }
     // render.fog sits directly after render.volumetrics because the two are
     // read together: volumetrics says whether the froxel volume is marched at
@@ -587,6 +682,10 @@ void draw_lighting_contents(EditorProps& props) {
     // the five multipliers that used to shadow five fog fields are gone
     // (issue 80c66789), so each row below appears exactly once in this panel.
     if (Binding* b = props.fog()) {
+        props.note_panel_home(b->schema().path, "Lighting");
+        draw_group(*b, nullptr, !compact_capture, &on_apply);
+    }
+    if (Binding* b = props.cloud_shadows()) {
         props.note_panel_home(b->schema().path, "Lighting");
         draw_group(*b, nullptr, true, &on_apply);
     }
