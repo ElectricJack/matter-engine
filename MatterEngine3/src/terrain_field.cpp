@@ -207,6 +207,18 @@ bool FieldProgram::parse(const std::string& text, FieldProgram& out, std::string
             have_height = true;
             continue;
         }
+        if (op == "density") {
+            // OPTIONAL. Absent means the density is `height - y` and the
+            // program is a heightfield; see the is_heightfield block after the
+            // parse loop for why the absence, rather than an explicit
+            // `sub(height, wy)`, is what every 2D world emits.
+            if (toks.size() < 2) { err = "density: missing register"; return false; }
+            int r = parse_reg(toks[1]);
+            if (r < 0) { err = "density: expected register ref"; return false; }
+            if (r >= (int)out.ops.size()) { err = "density: forward register ref"; return false; }
+            out.density_reg = r;
+            continue;
+        }
         if (op == "moisture") {
             if (toks.size() < 2) { err = "moisture: missing register"; return false; }
             int r = parse_reg(toks[1]);
@@ -312,12 +324,13 @@ bool FieldProgram::parse(const std::string& text, FieldProgram& out, std::string
         };
 
         if (op == "input") {
-            // World-coordinate access. The field is a pure function of (x, z),
-            // so those are the only two inputs that exist here — `input wx` and
-            // `input wz` and nothing else. The surfaces() tape's other input
-            // names (ly/ny/slope/height/...) are either undefined in this
-            // context or would make the field self-referential, so they are
-            // rejected by name rather than silently reading 0.
+            // World-coordinate access. The field is a pure function of
+            // (x, y, z), so those are the only three inputs that exist here.
+            // The surfaces() tape's other input names (ly/ny/slope/height/...)
+            // are either undefined in this context or would make the field
+            // self-referential, so they are rejected by name rather than
+            // silently reading 0. In particular `height` would be circular: the
+            // height register is a projection OF this program.
             //
             // Why the field needs coordinates at all: every other op is
             // translation-covariant noise, which can only ever produce
@@ -328,10 +341,11 @@ bool FieldProgram::parse(const std::string& text, FieldProgram& out, std::string
             // already has x and z in hand.
             if (toks.size() < 2) { err = "input: missing name"; return false; }
             if      (toks[1] == "wx") o.oct = kSurfInWorldX;
+            else if (toks[1] == "wy") o.oct = kSurfInAltitude;
             else if (toks[1] == "wz") o.oct = kSurfInWorldZ;
             else {
-                err = "input: the field program accepts only 'wx' and 'wz', got '"
-                    + toks[1] + "'";
+                err = "input: the field program accepts only 'wx', 'wy' and 'wz'"
+                      ", got '" + toks[1] + "'";
                 return false;
             }
             o.kind = Op::Input;
@@ -352,6 +366,19 @@ bool FieldProgram::parse(const std::string& text, FieldProgram& out, std::string
         else if (op == "ridge2") {
             // ridge2 seed freq oct gain lac
             o.kind = Op::Ridge2;
+            if (!require_uint(1, o.seed))   return false;
+            if (!require_float(2, o.f0))    return false; // freq
+            if (!require_int(3, o.oct))     return false;
+            if (!require_float(4, o.f1))    return false; // gain
+            if (!require_float(5, o.f2))    return false; // lac
+        }
+        else if (op == "noise3" || op == "ridge3") {
+            // noise3/ridge3 seed freq oct gain lac — the same five literals the
+            // 2D pair takes, evaluated over world (x, y, z) by the shared
+            // surface_op_fbm3. No domain-warp tail: the tape's 3D ops carry an
+            // optional one, and admitting it here would put a second spelling of
+            // the same op into the canonical text for no authored need.
+            o.kind = (op == "noise3") ? Op::Noise3 : Op::Ridge3;
             if (!require_uint(1, o.seed))   return false;
             if (!require_float(2, o.f0))    return false; // freq
             if (!require_int(3, o.oct))     return false;
@@ -452,12 +479,77 @@ bool FieldProgram::parse(const std::string& text, FieldProgram& out, std::string
         out.ops.push_back(o);
     }
 
-    // Validate that all required directives are present.
+    // Validate that all required directives are present. `density` is not in
+    // this list on purpose — it is optional, and its absence IS the heightfield.
     if (!have_height)   { err = "missing 'height' directive";   return false; }
     if (!have_moisture) { err = "missing 'moisture' directive"; return false; }
     if (!have_relief)   { err = "missing 'relief' directive";   return false; }
     if (!have_seaLevel) { err = "missing 'seaLevel' directive"; return false; }
     if (!have_biome)    { err = "missing 'biome' directive";    return false; }
+
+    // ---- y-dependence -------------------------------------------------------
+    //
+    // One pass, forward, because parse admits only backward register refs: an
+    // op depends on y iff it reads y directly (`input wy`, or a 3D noise op) or
+    // any of its operands does. a/b/c are -1 on the ops that take no registers,
+    // so the propagation below needs no per-kind switch.
+    out.y_dependent.assign(out.ops.size(), 0);
+    for (size_t i = 0; i < out.ops.size(); ++i) {
+        const Op& o = out.ops[i];
+        bool dep = (o.kind == Op::Input && o.oct == kSurfInAltitude) ||
+                   o.kind == Op::Noise3 || o.kind == Op::Ridge3;
+        if (o.a >= 0 && out.y_dependent[o.a]) dep = true;
+        if (o.b >= 0 && out.y_dependent[o.b]) dep = true;
+        if (o.c >= 0 && out.y_dependent[o.c]) dep = true;
+        out.y_dependent[i] = dep ? 1 : 0;
+    }
+
+    // ---- the 2D-projection contract -----------------------------------------
+    //
+    // height_at / moisture_at / relief_at take no y, and everything that
+    // consumes a heightfield goes through them: scatter placement, biome_at,
+    // material_at, slope_at, curvature_at, the VT tape's `s.height`, the
+    // mesher's slab bounds. A y-dependent register behind any of those would
+    // make every one of them silently read a slice at whatever y the evaluator
+    // happened to pass. Reject it here rather than pick a y.
+    //
+    // `height` carries the extra meaning: it is the SURFACE of the density, not
+    // a slice of it, and the mesher relies on that to bound its Y slab.
+    if (out.y_dependent[out.height_reg]) {
+        err = "height: the height register must not depend on world y "
+              "(it is the SURFACE of the density, not a slice of it)";
+        return false;
+    }
+    if (out.y_dependent[out.moisture_reg]) {
+        err = "moisture: the moisture register must not depend on world y";
+        return false;
+    }
+    if (out.y_dependent[out.relief_reg]) {
+        err = "relief: the relief register must not depend on world y";
+        return false;
+    }
+
+    // ---- heightfield recognition -------------------------------------------
+    //
+    // No `density` directive is the common case and the one every 2D world
+    // emits: heightToDensity() leaves its node unmaterialised, script_host sees
+    // density_reg == height_reg and omits the directive, and the canonical text
+    // is byte-identical to what that world produced before the field program
+    // became 3D. That is what keeps a world from re-baking every sector to say
+    // something the recogniser can derive.
+    //
+    // A program that spells the subtraction out is recognised too — it is the
+    // same field, and a hand-written or round-tripped program should not lose
+    // the mesher's specialisations over a notation difference.
+    if (out.density_reg < 0) {
+        out.is_heightfield = true;
+    } else {
+        const Op& d = out.ops[out.density_reg];
+        out.is_heightfield =
+            d.kind == Op::Sub && d.a == out.height_reg && d.b >= 0 &&
+            out.ops[d.b].kind == Op::Input &&
+            out.ops[d.b].oct == kSurfInAltitude;
+    }
 
     return true;
 }
@@ -483,8 +575,8 @@ FieldRuntime::FieldRuntime(FieldProgram p)
     : prog_(std::move(p))
 {}
 
-// Evaluate all registers 0..(count-1) into regs[] for world position (x, z).
-void FieldRuntime::eval_regs(float regs[], int count, float x, float z) const {
+// Evaluate all registers 0..(count-1) into regs[] for world position (x, y, z).
+void FieldRuntime::eval_regs(float regs[], int count, float x, float y, float z) const {
     const auto& ops = prog_.ops;
     for (int i = 0; i < count && i < (int)ops.size(); ++i) {
         const Op& o = ops[i];
@@ -513,8 +605,11 @@ void FieldRuntime::eval_regs(float regs[], int count, float x, float z) const {
             // here ran once per warp2 op per field evaluation (StreamMountain
             // has two warp2 ops, and the habitat tape triggers five field
             // evaluations per scatter candidate).
+            // y passes through undisplaced: warp2 is a 2D domain warp and
+            // always has been, so a 3D subexpression under one is warped in
+            // x/z at its own altitude.
             float scratch[kMaxOps];
-            eval_regs(scratch, o.a + 1, x + dx, z + dz);
+            eval_regs(scratch, o.a + 1, x + dx, y, z + dz);
             regs[i] = scratch[o.a];
             break;
         }
@@ -558,28 +653,38 @@ void FieldRuntime::eval_regs(float regs[], int count, float x, float z) const {
             regs[i] = std::pow(std::max(regs[o.a], 0.0f), o.f0);
             break;
         case Op::Input:
-            // FieldProgram::parse admits only wx and wz here, so the else IS
-            // wz and there is no unreachable third case to guard.
-            regs[i] = (o.oct == kSurfInWorldX) ? x : z;
+            // FieldProgram::parse admits only wx, wy and wz here, so the else
+            // IS wz and there is no unreachable fourth case to guard.
+            regs[i] = (o.oct == kSurfInWorldX)   ? x
+                    : (o.oct == kSurfInAltitude) ? y
+                                                 : z;
+            break;
+        case Op::Noise3:
+            regs[i] = surface_op_fbm3(o, x, y, z, false);
+            break;
+        case Op::Ridge3:
+            regs[i] = surface_op_fbm3(o, x, y, z, true);
             break;
         case Op::Noise2World:
         case Op::Ridge2World:
         case Op::FieldCurv:
-        case Op::Noise3:
-        case Op::Ridge3:
         case Op::Noise3World:
         case Op::Ridge3World:
         case Op::Fract:
             // surfaces()-tape-only ops; FieldProgram::parse never emits them.
+            // (The *World 3D pair stays here even though plain Noise3/Ridge3
+            // moved out: the field program has no part-local frame to
+            // distinguish them from, so admitting both spellings would put two
+            // names for one op into the canonical text.)
             regs[i] = 0.0f;
             break;
         }
     }
 }
 
-float FieldRuntime::eval_reg(int target, float x, float z) const {
+float FieldRuntime::eval_reg(int target, float x, float y, float z) const {
     float regs[kMaxTapeRegs];   // uninitialised on purpose -- see kMaxTapeRegs
-    eval_regs(regs, target + 1, x, z);
+    eval_regs(regs, target + 1, x, y, z);
     return regs[target];
 }
 
@@ -594,12 +699,15 @@ std::atomic<unsigned long long> g_field_height_ns{0};
 bool g_field_probe_timing = false;
 
 float FieldRuntime::height_at(float x, float z) const {
+    // y = 0: the height register is y-independent by parse-time contract (see
+    // the height-contract block in FieldProgram::parse), so the value passed
+    // here cannot reach the result.
     if (!g_field_probe_timing) {
         g_field_height_calls.fetch_add(1, std::memory_order_relaxed);
-        return eval_reg(prog_.height_reg, x, z);
+        return eval_reg(prog_.height_reg, x, 0.0f, z);
     }
     const auto t0 = std::chrono::steady_clock::now();
-    const float v = eval_reg(prog_.height_reg, x, z);
+    const float v = eval_reg(prog_.height_reg, x, 0.0f, z);
     g_field_height_calls.fetch_add(1, std::memory_order_relaxed);
     g_field_height_ns.fetch_add((unsigned long long)std::chrono::duration_cast<
         std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count(),
@@ -608,7 +716,102 @@ float FieldRuntime::height_at(float x, float z) const {
 }
 
 float FieldRuntime::density_at(float x, float y, float z) const {
-    return height_at(x, z) - y;
+    // The heightfield short-circuit is not just an optimisation: it also keeps
+    // the height-probe counters above counting the same thing they always did.
+    if (prog_.is_heightfield) return height_at(x, z) - y;
+    return eval_reg(prog_.density_reg, x, y, z);
+}
+
+// ---- Column cache ----------------------------------------------------------
+//
+// Split the program at the y-dependence boundary parse computed. eval_column
+// runs the y-INDEPENDENT ops once for a column; density_at(cache, y) runs only
+// the y-dependent tail against those cached values.
+//
+// The split is sound because parse admits only backward register refs, so a
+// y-dependent op's y-independent operands are always already resident in
+// cache.regs -- and a y-independent op can never read a y-dependent one, or it
+// would be y-dependent itself.
+void FieldRuntime::eval_column(ColumnCache& cache, float x, float z) const {
+    cache.x = x;
+    cache.z = z;
+    const int count = prog_.is_heightfield
+        ? prog_.height_reg + 1
+        : prog_.density_reg + 1;
+    // Run the whole prefix through the ordinary evaluator at y = 0 rather than
+    // stepping only the y-independent ops. Threading a skip predicate through
+    // eval_regs would put a branch in the hot loop of every heightfield
+    // evaluation in the engine to save recomputing a handful of slots here --
+    // and the y-dependent slots it does compute are garbage that density_at
+    // overwrites before anything reads them. What matters is that no
+    // y-INDEPENDENT slot can be wrong, which holds because a y-independent op
+    // cannot read a y-dependent one without becoming y-dependent itself.
+    eval_regs(cache.regs, count, x, 0.0f, z);
+}
+
+float FieldRuntime::density_at(ColumnCache& cache, float y) const {
+    if (prog_.is_heightfield) return cache.regs[prog_.height_reg] - y;
+
+    const auto& ops = prog_.ops;
+    const int count = prog_.density_reg + 1;
+    const float x = cache.x, z = cache.z;
+    for (int i = 0; i < count && i < (int)ops.size(); ++i) {
+        if (!prog_.y_dependent[i]) continue;
+        const Op& o = ops[i];
+        switch (o.kind) {
+        case Op::Input:
+            // Only `input wy` can be y-dependent.
+            cache.regs[i] = y;
+            break;
+        case Op::Noise3:
+            cache.regs[i] = surface_op_fbm3(o, x, y, z, false);
+            break;
+        case Op::Ridge3:
+            cache.regs[i] = surface_op_fbm3(o, x, y, z, true);
+            break;
+        case Op::Warp2: {
+            // A 2D domain warp over a y-dependent source. Rare, and it costs a
+            // full sub-evaluation at the displaced (x, z) because the cached
+            // prefix was computed at THIS column's coordinates -- so it falls
+            // back to the general evaluator rather than pretending otherwise.
+            float freq = o.f0, strength = o.f1;
+            float dx = (value_noise(x * freq, z * freq, o.seed)            * 2.0f - 1.0f) * strength;
+            float dz = (value_noise(x * freq, z * freq, o.seed ^ 0x9e37u)  * 2.0f - 1.0f) * strength;
+            float scratch[kMaxOps];
+            eval_regs(scratch, o.a + 1, x + dx, y, z + dz);
+            cache.regs[i] = scratch[o.a];
+            break;
+        }
+        case Op::Add:   cache.regs[i] = cache.regs[o.a] + cache.regs[o.b]; break;
+        case Op::Sub:   cache.regs[i] = cache.regs[o.a] - cache.regs[o.b]; break;
+        case Op::Mul:   cache.regs[i] = cache.regs[o.a] * cache.regs[o.b]; break;
+        case Op::Min:   cache.regs[i] = std::min(cache.regs[o.a], cache.regs[o.b]); break;
+        case Op::Max:   cache.regs[i] = std::max(cache.regs[o.a], cache.regs[o.b]); break;
+        case Op::Abs:   cache.regs[i] = std::fabs(cache.regs[o.a]); break;
+        case Op::OneMinus: cache.regs[i] = 1.0f - cache.regs[o.a]; break;
+        case Op::Pow:   cache.regs[i] = std::pow(std::max(cache.regs[o.a], 0.0f), o.f0); break;
+        case Op::Clamp: cache.regs[i] = std::max(o.f0, std::min(o.f1, cache.regs[o.a])); break;
+        case Op::Blend: {
+            const float t = cache.regs[o.c];
+            cache.regs[i] = cache.regs[o.a] * (1.0f - t) + cache.regs[o.b] * t;
+            break;
+        }
+        case Op::Smoothstep: {
+            const float t = std::max(0.0f, std::min(1.0f,
+                (cache.regs[o.a] - o.f0) / (o.f1 - o.f0)));
+            cache.regs[i] = t * t * (3.0f - 2.0f * t);
+            break;
+        }
+        default:
+            // Const/Noise2/Ridge2 are y-independent by construction and were
+            // handled by the prefix; the tape-only kinds never reach a field
+            // program. Anything here is a parse bug, and 0 is what the general
+            // evaluator produces for those kinds too.
+            cache.regs[i] = 0.0f;
+            break;
+        }
+    }
+    return cache.regs[prog_.density_reg];
 }
 
 float FieldRuntime::slope_at(float x, float z) const {
@@ -695,12 +898,14 @@ float FieldRuntime::curvature_at(float x, float z, float radius) const {
     return ring - height_at(x, z);   // + concave (below ring), - convex
 }
 
+// y = 0 for the same reason height_at passes it: both registers are
+// y-independent by parse-time contract, so the value cannot reach the result.
 float FieldRuntime::moisture_at(float x, float z) const {
-    return eval_reg(prog_.moisture_reg, x, z);
+    return eval_reg(prog_.moisture_reg, x, 0.0f, z);
 }
 
 float FieldRuntime::relief_at(float x, float z) const {
-    return eval_reg(prog_.relief_reg, x, z);
+    return eval_reg(prog_.relief_reg, x, 0.0f, z);
 }
 
 FieldRuntime::Biome FieldRuntime::biome_at(float x, float z) const {

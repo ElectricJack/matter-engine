@@ -207,7 +207,166 @@ int main() {
                   p, err),
               "field program rejects surfaces()-only input names");
         CHECK(err.find("wx") != std::string::npos,
-              "the rejection names the two inputs that ARE allowed");
+              "the rejection names the inputs that ARE allowed");
+    }
+
+    // =======================================================================
+    // 3D DENSITY. The field program is a function of (x, y, z); a heightfield
+    // is the density `h(x, z) - y` and is RECOGNISED, not a separate mode.
+    // =======================================================================
+
+    // --- the heightfield is the default, and it is recognised ---------------
+    {
+        FieldRuntime f = make(
+            "const 5\nconst 0.5\nconst 0.5\n"
+            "height r0\nmoisture r1\nrelief r2\nseaLevel 0\nbiome 0.65 0.35\n");
+        CHECK(f.is_heightfield(), "no density directive = heightfield");
+        CHECK(std::fabs(f.density_at(3, -2, 7) - 7.0f) < 1e-5f,
+              "heightfield density reconstructs as height - y");
+    }
+    // Spelled out longhand, the same field must still be recognised: a
+    // round-tripped or hand-written program should not lose the mesher's
+    // specialisations over a notation difference.
+    {
+        FieldRuntime f = make(
+            "const 5\nconst 0.5\nconst 0.5\ninput wy\nsub r0 r3\n"
+            "height r0\ndensity r4\nmoisture r1\nrelief r2\n"
+            "seaLevel 0\nbiome 0.65 0.35\n");
+        CHECK(f.is_heightfield(), "explicit sub(height, wy) is recognised too");
+        CHECK(std::fabs(f.density_at(3, -2, 7) - 7.0f) < 1e-5f,
+              "and evaluates identically");
+    }
+
+    // --- input wy reads world altitude --------------------------------------
+    // A density that is y and nothing else: solid below 0, air above, surface
+    // exactly at 0 -- and a height register that stays independent of it.
+    {
+        FieldRuntime f = make(
+            "const 0\nconst 0.5\ninput wy\nconst -1\nmul r2 r3\n"
+            "height r0\ndensity r4\nmoisture r1\nrelief r1\n"
+            "seaLevel -100\nbiome 0.65 0.35\n");
+        CHECK(!f.is_heightfield(), "a density that is not height - y is volumetric");
+        CHECK(f.density_at(1, -10, 2) > 0 && f.density_at(1, 10, 2) < 0,
+              "input wy reads world altitude");
+        CHECK(f.height_at(1, 2) == 0.0f, "height register unaffected by y");
+    }
+
+    // --- noise3 is deterministic, seed-sensitive, and varies in y -----------
+    {
+        const char* prog =
+            "noise3 1234 0.02 3 0.5 2\nconst 0.5\n"
+            "height r1\ndensity r0\nmoisture r1\nrelief r1\n"
+            "seaLevel -100\nbiome 0.65 0.35\n";
+        FieldRuntime a = make(prog), b = make(prog);
+        CHECK(a.density_at(10, 20, 30) == b.density_at(10, 20, 30),
+              "noise3 deterministic");
+        CHECK(a.density_at(10, 20, 30) != a.density_at(10, 24, 30),
+              "noise3 varies along y -- the whole point");
+        FieldRuntime c = make(
+            "noise3 999 0.02 3 0.5 2\nconst 0.5\n"
+            "height r1\ndensity r0\nmoisture r1\nrelief r1\n"
+            "seaLevel -100\nbiome 0.65 0.35\n");
+        CHECK(a.density_at(10, 20, 30) != c.density_at(10, 20, 30),
+              "seed changes noise3");
+        for (int i = 0; i < 400; ++i) {
+            const float v = a.density_at(i * 3.7f, i * 1.1f, i * -1.9f);
+            CHECK(v >= -1.5f && v <= 1.5f, "noise3 stays in range");
+        }
+    }
+    // ridge3 too, and its peaks must reach higher than plain noise does.
+    {
+        FieldRuntime f = make(
+            "ridge3 77 0.05 2 0.5 2\nconst 0.5\n"
+            "height r1\ndensity r0\nmoisture r1\nrelief r1\n"
+            "seaLevel -100\nbiome 0.65 0.35\n");
+        float hi = -2.0f;
+        for (int i = 0; i < 4000; ++i)
+            hi = std::fmax(hi, f.density_at(i * 0.7f, i * 0.31f, i * -0.53f));
+        CHECK(hi > 0.6f, "ridge3 produces crests -- what a tunnel field needs");
+    }
+
+    // --- the 2D-projection contract -----------------------------------------
+    // height/moisture/relief take no y, so a y-dependent register behind any of
+    // them would silently read a slice at whatever y the evaluator passed.
+    {
+        FieldProgram p; std::string err;
+        CHECK(!FieldProgram::parse(
+                  "input wy\nconst 0.5\n"
+                  "height r0\nmoisture r1\nrelief r1\nseaLevel 0\nbiome 0.65 0.35\n",
+                  p, err),
+              "a y-dependent height register is rejected");
+        CHECK(err.find("world y") != std::string::npos,
+              "and the rejection says why");
+        CHECK(!FieldProgram::parse(
+                  "noise3 5 0.1 2 0.5 2\nconst 1\nconst 0.5\n"
+                  "height r1\nmoisture r0\nrelief r2\nseaLevel 0\nbiome 0.65 0.35\n",
+                  p, err),
+              "y-dependence is rejected transitively, through moisture too");
+    }
+    // The *World 3D ops stay tape-only: a field program has no part-local frame
+    // to distinguish them from, so admitting both spellings would put two names
+    // for one op into the canonical text.
+    {
+        FieldProgram p; std::string err;
+        CHECK(!FieldProgram::parse(
+                  "noise3w 5 0.1 2 0.5 2\nconst 1\nconst 0.5\n"
+                  "height r1\nmoisture r2\nrelief r2\nseaLevel 0\nbiome 0.65 0.35\n",
+                  p, err),
+              "noise3w is not a field-program op");
+    }
+
+    // --- ColumnCache == the general evaluator, everywhere -------------------
+    // The mesher runs the y-independent prefix once per column and only the
+    // y-dependent tail per voxel. If those two ever disagree, terrain meshes
+    // differently from what every other consumer of the field believes.
+    {
+        // Deliberately exercises the awkward cases: a 2D warp under a 3D term,
+        // blend with a y-dependent selector, and min/max mixing the two.
+        FieldRuntime f = make(
+            "noise2 11 0.01 3 0.5 2\n"          // r0  surface, y-independent
+            "const 40\nmul r0 r1\n"             // r2
+            "ridge3 22 0.02 2 0.5 2\n"          // r3  y-dependent
+            "input wy\n"                        // r4
+            "sub r2 r4\n"                       // r5  height - y
+            "const 0.3\nsub r3 r6\n"            // r7
+            "const -1\nmul r7 r8\n"             // r9
+            "min r5 r9\n"                       // r10
+            "noise2 33 0.004 2 0.5 2\n"         // r11 y-independent
+            "smoothstep 0 1 r3\n"               // r12 y-dependent
+            "blend r11 r9 r12\n"                // r13 mixes both
+            "max r10 r13\n"                     // r14
+            "const 0.5\n"                       // r15
+            "height r2\ndensity r14\nmoisture r15\nrelief r15\n"
+            "seaLevel -100\nbiome 0.65 0.35\n");
+        CHECK(!f.is_heightfield(), "the mixed program is volumetric");
+        double worst = 0;
+        FieldRuntime::ColumnCache cc;
+        for (int i = 0; i < 25; ++i) {
+            const float x = float(i * 37 - 400), z = float(i * -53 + 90);
+            f.eval_column(cc, x, z);
+            for (float y = -300; y <= 300; y += 7.0f)
+                worst = std::fmax(worst,
+                    std::fabs(double(f.density_at(cc, y)) -
+                              double(f.density_at(x, y, z))));
+        }
+        CHECK(worst == 0.0, "column cache is bit-identical to the general path");
+    }
+    // ...and for a heightfield, where the tail is a single subtraction.
+    {
+        FieldRuntime f = make(
+            "noise2 11 0.01 3 0.5 2\nconst 40\nmul r0 r1\nconst 0.5\n"
+            "height r2\nmoisture r3\nrelief r3\nseaLevel 0\nbiome 0.65 0.35\n");
+        FieldRuntime::ColumnCache cc;
+        double worst = 0;
+        for (int i = 0; i < 25; ++i) {
+            const float x = float(i * 37), z = float(i * -53);
+            f.eval_column(cc, x, z);
+            for (float y = -100; y <= 100; y += 3.0f)
+                worst = std::fmax(worst,
+                    std::fabs(double(f.density_at(cc, y)) -
+                              double(f.density_at(x, y, z))));
+        }
+        CHECK(worst == 0.0, "column cache matches on the heightfield path too");
     }
     return check_summary();
 }

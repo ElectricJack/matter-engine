@@ -127,6 +127,15 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     const int reach_x = (edge_mask & kEdgeNegX) ? 2 : 0;
     const int reach_z = (edge_mask & kEdgeNegZ) ? 2 : 0;
 
+    // VOLUMETRIC = the world's density is not `height(x, z) - y`: tunnels,
+    // caverns, overhangs. Three things below specialise on it, and each of the
+    // heightfield versions is a PROVABLE consequence of that identity rather
+    // than an approximation -- the narrow Y slab, the analytic density gradient
+    // in y, and the boundary-polyline seam snap. A volumetric world takes the
+    // general form of all three; a heightfield world keeps every one of its
+    // shortcuts and meshes bit-identically to before the field became 3D.
+    const bool volumetric = !field.is_heightfield();
+
     // Evaluate height once per X/Z lattice point, then mesh only a narrow Y
     // slab snapped to the authored global lattice. Neighboring sectors can use
     // different depths without shifting their shared sample coordinates.
@@ -151,7 +160,15 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
             h_max = std::max(h_max, h);
         }
     }
-    // ---- Cross-rung seam closure ------------------------------------------
+    // ---- Cross-rung seam closure, heightfield -----------------------------
+    //
+    // Skipped when volumetric: this snaps `hat`, and the only two things that
+    // read `hat` are h_min/h_max (already computed, above) and the heightfield
+    // density fill (not taken). The volumetric world's equivalent snaps the
+    // boundary PLANE of the density lattice instead, and lives next to that
+    // fill further down -- one dimension up, same rule, and it covers the
+    // surface as well as the cave walls because there the surface is not a
+    // separate thing.
     //
     // The density below is h(x,z) - y, so the surface this mesher traces is
     // exactly the sampled height lattice. Two sectors at the SAME rung share
@@ -180,7 +197,7 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     // boundary, and they move the PARITY the snap walks. "Odd offsets" means
     // odd relative to the tile's own edge, not to the array -- the reach-back
     // extension is not part of the boundary polyline being matched.
-    {
+    if (!volumetric) {
         const auto snap_column = [&](int i) {          // vary k, fixed i
             for (int k = 2 + reach_z; k <= n + reach_z; k += 2)  // odd from edge
                 hat(i, k) = 0.5f * (hat(i, k - 1) + hat(i, k + 1));
@@ -200,10 +217,23 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
         return false;
     }
 
+    // ---- Y slab -------------------------------------------------------------
+    //
+    // A HEIGHTFIELD world meshes a few voxels either side of the sampled
+    // surface, and that narrowing is sound only because `density = h - y` says
+    // everything below the surface is solid and everything above it is air --
+    // there is provably nothing to mesh outside the band.
+    //
+    // A VOLUMETRIC world (tunnels, caverns, overhangs) has no such guarantee:
+    // air a kilometre down is exactly the point. So the slab runs from the
+    // authored floor up to just above the surface, and `yMin` becomes the
+    // world's cost dial -- the slab is (h_max - yMin) / voxel samples deep, and
+    // every one of them is a field evaluation.
     const int global_ny =
         std::max(1, int(std::ceil((y_max - y_min) / voxel)));
-    const int j0_global = std::max(
-        0, int(std::floor((h_min - y_min) / voxel)) - 2);
+    const int j0_global = volumetric
+        ? 0
+        : std::max(0, int(std::floor((h_min - y_min) / voxel)) - 2);
     const int j1_global = std::min(
         global_ny, int(std::ceil((h_max - y_min) / voxel)) + 2);
     const float y0 = y_min + float(j0_global) * voxel;
@@ -216,10 +246,93 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     auto at = [&](int i, int j, int k) -> float& {
         return d[(size_t(k) * size_t(sy) + size_t(j)) * size_t(sx) + size_t(i)];
     };
-    for (int k = 0; k < szn; ++k)
-        for (int j = 0; j < sy; ++j)
-            for (int i = 0; i < sx; ++i)
-                at(i, j, k) = hat(i, k) - (y0 + j * voxel);
+    if (!volumetric) {
+        for (int k = 0; k < szn; ++k)
+            for (int j = 0; j < sy; ++j)
+                for (int i = 0; i < sx; ++i)
+                    at(i, j, k) = hat(i, k) - (y0 + j * voxel);
+    } else {
+        // One ColumnCache per (x, z), reused down the column. The y-independent
+        // part of the program -- typically the whole multi-octave surface fbm --
+        // is evaluated once per column instead of once per voxel of depth, which
+        // at a 640-sample column is the difference between a usable world and an
+        // unusable one.
+        //
+        // Note this loop does NOT read `hat`: the density comes from the field
+        // directly, so the surface and the cave walls are the same lattice and
+        // get the same treatment (including the seam snap below). `hat` still
+        // earns its keep -- h_min/h_max bound the slab above.
+        terrain_field::FieldRuntime::ColumnCache cc;
+        for (int k = 0; k < szn; ++k) {
+            const float wz = float(oz + (k - 1 - reach_z) * double(voxel));
+            for (int i = 0; i < sx; ++i) {
+                const float wx = float(ox + (i - 1 - reach_x) * double(voxel));
+                field.eval_column(cc, wx, wz);
+                for (int j = 0; j < sy; ++j) {
+                    // Not `d` -- that is the lattice vector this writes into.
+                    const float dens = field.density_at(cc, y0 + j * voxel);
+                    if (!std::isfinite(dens)) {
+                        err = "terrain_mesher: non-finite density";
+                        return false;
+                    }
+                    at(i, j, k) = dens;
+                }
+            }
+        }
+
+        // ---- Cross-rung seam closure, volumetric ----------------------------
+        //
+        // The height snap above matches the SURFACE polyline against a coarser
+        // neighbour, and for a heightfield that is the whole shared boundary. A
+        // volumetric world's shared boundary is a PLANE, and a cave wall
+        // crossing it needs the same treatment or every terrain-band boundary
+        // rings the world in cracked tunnels.
+        //
+        // Same rule, one dimension up: the coarse neighbour samples every other
+        // point of this plane in BOTH directions and interpolates bilinearly
+        // between them, so each fine sample at an odd position is replaced by
+        // the interpolation of its even neighbours -- along k, along j, or
+        // (odd, odd) from the four surrounding evens. The fine plane then IS the
+        // coarse side's interpolant, by construction rather than by luck.
+        //
+        // Every formula reads only EVEN-EVEN samples, so the three cases cannot
+        // contaminate each other and the order they run in does not matter.
+        //
+        // Parity: k is odd relative to the TILE's own edge (the reach-back
+        // extension is not part of the boundary), while j is odd relative to the
+        // GLOBAL y lattice -- the coarse tile snaps its own j0 to a multiple of
+        // its own voxel, which is an even fine index, so `(j0_global + j) & 1`
+        // is what tells the two apart.
+        const auto snap_plane = [&](int fixed, bool vary_i) {
+            for (int j = 0; j < sy; ++j) {
+                const bool jodd = ((j0_global + j) & 1) != 0;
+                const int  n_t  = vary_i ? sx : szn;
+                const int  edge = vary_i ? (1 + reach_x) : (1 + reach_z);
+                for (int t = 0; t < n_t; ++t) {
+                    const bool todd = ((t - edge) & 1) != 0;
+                    if (!todd && !jodd) continue;              // a shared sample
+                    if (t == 0 || t + 1 >= n_t) continue;      // no even pair
+                    if (jodd && (j == 0 || j + 1 >= sy)) continue;
+                    // Index helper: on a +-x face `fixed` is i and `t` is k;
+                    // on a +-z face it is the other way round.
+                    const auto S = [&](int tt, int jj) -> float& {
+                        return vary_i ? at(tt, jj, fixed) : at(fixed, jj, tt);
+                    };
+                    if (todd && !jodd)
+                        S(t, j) = 0.5f * (S(t - 1, j) + S(t + 1, j));
+                    else if (!todd && jodd)
+                        S(t, j) = 0.5f * (S(t, j - 1) + S(t, j + 1));
+                    else
+                        S(t, j) = 0.25f * (S(t - 1, j - 1) + S(t + 1, j - 1) +
+                                           S(t - 1, j + 1) + S(t + 1, j + 1));
+                }
+            }
+        };
+        if (edge_mask & kEdgeNegX) snap_plane(1 + reach_x,     /*vary_i=*/false);
+        if (edge_mask & kEdgePosX) snap_plane(n + 1 + reach_x, /*vary_i=*/false);
+        if (edge_mask & kEdgeNegZ) snap_plane(1 + reach_z,     /*vary_i=*/true);
+        if (edge_mask & kEdgePosZ) snap_plane(n + 1 + reach_z, /*vary_i=*/true);
+    }
 
     // Surface-nets: one vertex per mixed-sign cell, placed at the centroid of
     // edge crossing positions. Normal from central-diff of the density field.
@@ -258,17 +371,26 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
         const float e2 = voxel;
         float wx = float(ox) + cv.p.x, wy = cv.p.y, wz = float(oz) + cv.p.z;
         float gx = field.density_at(wx + e2, wy, wz) - field.density_at(wx - e2, wy, wz);
-        // gy analytically: density = height(x,z) - y, so the y-difference is
-        // (h - (wy+e2)) - (h - (wy-e2)) = -2*e2 -- the height term cancels and
-        // the value is known without evaluating the field at all. The float
-        // version differed from -2*e2 only by cancellation noise (<= ~2 ulp of
-        // h, i.e. ~5e-4 against a magnitude of 2*voxel), and each of the two
-        // density_at calls it replaced was a full field-program evaluation.
-        float gy = -2.0f * e2;
+        // gy analytically FOR A HEIGHTFIELD: density = height(x,z) - y, so the
+        // y-difference is (h - (wy+e2)) - (h - (wy-e2)) = -2*e2 -- the height
+        // term cancels and the value is known without evaluating the field at
+        // all. The float version differed from -2*e2 only by cancellation noise
+        // (<= ~2 ulp of h, i.e. ~5e-4 against a magnitude of 2*voxel), and each
+        // of the two density_at calls it replaced was a full field-program
+        // evaluation.
+        //
+        // A volumetric density has no such cancellation -- the whole point is
+        // that it varies in y independently of the surface -- so it pays for the
+        // two probes. A cave roof's normal comes from nowhere else.
+        float gy = volumetric
+            ? field.density_at(wx, wy + e2, wz) - field.density_at(wx, wy - e2, wz)
+            : -2.0f * e2;
         float gz = field.density_at(wx, wy, wz + e2) - field.density_at(wx, wy, wz - e2);
         float len = std::sqrt(gx * gx + gy * gy + gz * gz);
-        // Density = height - y, so gradient points toward solid (downward for
-        // above-ground terrain). Negate to get the outward surface normal.
+        // Density is positive in solid, so its gradient points INTO the solid
+        // (downward for above-ground terrain, and upward off a cave floor).
+        // Negate to get the outward surface normal. True of any density field,
+        // which is why this line needs no volumetric case.
         cv.n = len > 1e-12f ? V3{-gx / len, -gy / len, -gz / len} : V3{0, 1, 0};
         return &(verts[key(ci, cj, ck)] = cv);
     };

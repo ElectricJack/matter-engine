@@ -9,6 +9,19 @@
 
 namespace terrain_field {
 
+// Hard cap on emitted (deduplicated) tape ops. THE authority for the surfaces
+// tape: terrain_field.cpp's kMaxOps and vt_compositor.cpp's kTapeSlotOps are
+// both aliases of this, so the only uncheckable mirror left is the shader's
+// VT_TAPE_MAX_OPS register file. Raised 64 -> 96 when the
+// StreamMountain P4 pass proved 64 binding (strata + speckle + seep terms were
+// cut for budget); the GPU cost is the register file and the arena slot, both
+// measured harmless at 64 with headroom.
+//
+// Declared here rather than down in the surfaces() section where it was born:
+// FieldRuntime::ColumnCache sizes a register file with it, and that class comes
+// first in this header.
+constexpr int kMaxSurfaceOps = 96;
+
 // ---------------------------------------------------------------------------
 // Op — single instruction in the field program.
 // ---------------------------------------------------------------------------
@@ -19,15 +32,20 @@ struct Op {
         Blend, Smoothstep, Abs, OneMinus, Pow,
         // Read a per-sample input (oct = a SurfaceInput code). Shared by both
         // tapes, but with different admissible codes: the surfaces() tape takes
-        // any of them, while FieldProgram::parse takes ONLY kSurfInWorldX and
-        // kSurfInWorldZ — a terrain field is a function of (x, z) and nothing
-        // else is defined there.
+        // any of them, while FieldProgram::parse takes ONLY kSurfInWorldX,
+        // kSurfInAltitude and kSurfInWorldZ — a terrain field is a function of
+        // (x, y, z) and nothing else is defined there.
         Input,
         // ---- surfaces() tape only (FieldProgram::parse never emits these) ----
         Noise2World,     // fbm over WORLD (x, z) — world-anchored variants
         Ridge2World,
         FieldCurv,       // field curvature probe at world (x, z), radius = f0
-        Noise3,          // 3D fbm over part-local (x, y, z), optional warp tail
+        // Noise3/Ridge3 are shared with FieldProgram (a 3D density's whole
+        // point), where the coordinates are always world coordinates and the
+        // warp tail is never emitted. Noise3World/Ridge3World stay tape-only:
+        // the tape samples PART-LOCAL space by default and has to opt into the
+        // world frame, a distinction the field program has never had.
+        Noise3,          // 3D fbm over (x, y, z), optional warp tail
         Ridge3,          // 3D ridge variant (same per-octave shape as Ridge2)
         Noise3World,     // 3D fbm over WORLD (x, y, z) — world-anchored variants
         Ridge3World,
@@ -63,6 +81,28 @@ struct FieldProgram {
     int height_reg  = -1;
     int moisture_reg = -1;
     int relief_reg  = -1;
+    // The 3D DENSITY register: positive is solid, the surface is the zero
+    // crossing. -1 means the `density` directive was absent, which is the
+    // heightfield case and is reconstructed as `height_reg - y` — see
+    // is_heightfield below.
+    int density_reg = -1;
+    // True when the density is exactly `height(x, z) - y`.
+    //
+    // This is not a second representation; the runtime is 3D either way. It is
+    // a RECOGNISER, and it exists because two specialisations downstream are
+    // provable equivalences rather than approximations:
+    //   * terrain_mesher narrows its Y slab to a few voxels around the sampled
+    //     surface, which is only sound when nothing below the surface can be
+    //     air and nothing above it can be solid;
+    //   * that same mesher takes the density gradient's y component as the
+    //     constant -2*eps, because the height term cancels exactly.
+    // A general 3D density supports neither, and a heightfield world must not
+    // pay for the loss.
+    bool is_heightfield = true;
+    // Per-op: does this register's value depend on world y? Computed in parse
+    // by propagating from `input wy` and the 3D noise ops along the operand
+    // edges. Drives the height-register contract check and the column cache.
+    std::vector<uint8_t> y_dependent;
     float sea_level = 0.0f;
     float mount_relief_thresh = 0.65f;
     float rocky_moist_thresh  = 0.35f;
@@ -78,9 +118,44 @@ class FieldRuntime {
 public:
     explicit FieldRuntime(FieldProgram p);
 
+    // The SURFACE height. Every heightfield consumer in the engine goes through
+    // here — scatter placement, biome_at, material_at, slope_at, curvature_at,
+    // the VT tape's `s.height`, the mesher's slab bounds — and a general 3D
+    // density cannot supply one without a ray march, so a field program is
+    // required to declare a y-INDEPENDENT height register (enforced in parse).
     float height_at(float x, float z) const;
-    float density_at(float x, float y, float z) const;  // height_at(x,z) - y
+    // The 3D density: positive solid, negative air, surface at zero. Equal to
+    // height_at(x, z) - y for a heightfield world, and a full evaluation of the
+    // density register otherwise.
+    float density_at(float x, float y, float z) const;
+    bool is_heightfield() const { return prog_.is_heightfield; }
     float slope_at(float x, float z) const;              // |grad h|, central diff eps=0.5
+
+    // ---- Column cache: one (x, z), many y -------------------------------------
+    //
+    // The voxel mesher walks a whole Y column at one (x, z), and for a cave
+    // world that column is hundreds of samples deep. Re-running the entire
+    // program per sample would re-evaluate the multi-octave SURFACE fbm — by far
+    // the most expensive part of a typical program, and entirely y-independent —
+    // once per voxel of depth.
+    //
+    // So: eval_column() runs every y-independent op once and holds the results;
+    // density_at(cache, y) then runs only the y-dependent tail. For a heightfield
+    // world the tail is a single subtraction, which is why the general path costs
+    // those worlds nothing even before the mesher's is_heightfield shortcut.
+    //
+    // The cache is caller-owned so it can be hoisted out of the column loop;
+    // it holds no pointer back to the runtime, so reusing one against a
+    // different FieldRuntime is a caller error, not a dangling reference.
+    struct ColumnCache {
+        // Sized by the op cap, same uninitialised-on-purpose argument as the
+        // register files in terrain_field.cpp: parse admits only backward
+        // register refs, so every slot is written before it is read.
+        float regs[kMaxSurfaceOps];
+        float x = 0.0f, z = 0.0f;
+    };
+    void eval_column(ColumnCache& cache, float x, float z) const;
+    float density_at(ColumnCache& cache, float y) const;
 
     // Height deficit vs the 4-neighbour ring average at probe distance
     // `radius` (metres, clamped to >= 0.25): positive = the point sits BELOW
@@ -108,10 +183,13 @@ private:
     // alias of kMaxSurfaceOps in terrain_field.cpp. An unused copy of a
     // mirrored constant is worse than no copy: it reads like the authority.)
 
-    // Evaluate register [0..target] into regs[], using (x, z) as world coords.
-    void eval_regs(float regs[], int count, float x, float z) const;
+    // Evaluate register [0..target] into regs[], using (x, y, z) as world
+    // coords. `y` is read only by `input wy` and the 3D noise ops; for a
+    // y-independent target (height/moisture/relief) any value gives the same
+    // answer, and those callers pass 0.
+    void eval_regs(float regs[], int count, float x, float y, float z) const;
 
-    float eval_reg(int target, float x, float z) const;
+    float eval_reg(int target, float x, float y, float z) const;
 };
 
 // ---------------------------------------------------------------------------
@@ -157,14 +235,9 @@ constexpr int kSurfaceInputWorldFirst = kSurfInWorldX;
 // mesh vertex — keep the two in sync).
 constexpr int kMaxSurfaceMaterials = 8;
 
-// Hard cap on emitted (deduplicated) tape ops. THE authority for the surfaces
-// tape: terrain_field.cpp's kMaxOps and vt_compositor.cpp's kTapeSlotOps are
-// both aliases of this, so the only uncheckable mirror left is the shader's
-// VT_TAPE_MAX_OPS register file. Raised 64 -> 96 when the
-// StreamMountain P4 pass proved 64 binding (strata + speckle + seep terms were
-// cut for budget); the GPU cost is the register file and the arena slot, both
-// measured harmless at 64 with headroom.
-constexpr int kMaxSurfaceOps = 96;
+// (kMaxSurfaceOps is declared at the top of this header — FieldRuntime's column
+// cache needs it to size a register file, and that class comes first. Its
+// authority note lives with the declaration.)
 
 // ---------------------------------------------------------------------------
 // P3 appearance lanes (texel-tape spec §5). Three optional output directives

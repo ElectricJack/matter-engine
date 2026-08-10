@@ -18,6 +18,12 @@ globalThis.__world_ops = [];
 function __emit(line) { globalThis.__world_ops.push(line); return globalThis.__world_ops.length - 1; }
 function __reg(v) {
   if (v instanceof FieldNode) return v.r;
+  // A DensityNode used as an OPERAND is being read as a density, so it
+  // materialises here exactly as it would under its own methods. Without this
+  // case `blend(heightToDensity(h), ...)` or `warp2(density, ...)` would fall
+  // through to the numeric branch and emit `const NaN`. (Declared below; this
+  // body only runs after the whole prelude has evaluated.)
+  if (v instanceof DensityNode) return v.__3d().r;
   return __emit('const ' + (+v));
 }
 class FieldNode {
@@ -51,6 +57,29 @@ function warp2(src, seed, freq, strength) {
   return new FieldNode(__emit('warp2 r' + __reg(src) + ' ' + (seed >>> 0) + ' ' +
                               (+freq) + ' ' + (+strength)));
 }
+// 3D fbm over WORLD (x, y, z), in metres. There is no `*World` variant here the
+// way the surfaces() tape has one: the tape samples part-local coordinates by
+// default and has to opt into the world frame, while a field program has only
+// ever had world coordinates, so these ARE the world-frame ops.
+//
+// A field that reads y is what makes terrain volumetric — tunnels, caverns,
+// overhangs, arches. See the DensityNode block below for how a program that
+// uses one still declares a surface height for everything (scatter, biomes,
+// LOD) that needs a heightfield.
+function noise3(seed, freq, octaves, gain, lacunarity) {
+  if (octaves === undefined) octaves = 3;
+  if (gain === undefined) gain = 0.5;
+  if (lacunarity === undefined) lacunarity = 2.0;
+  return new FieldNode(__emit('noise3 ' + (seed >>> 0) + ' ' + (+freq) + ' ' +
+                              (octaves | 0) + ' ' + (+gain) + ' ' + (+lacunarity)));
+}
+function ridge3(seed, freq, octaves, gain, lacunarity) {
+  if (octaves === undefined) octaves = 3;
+  if (gain === undefined) gain = 0.5;
+  if (lacunarity === undefined) lacunarity = 2.0;
+  return new FieldNode(__emit('ridge3 ' + (seed >>> 0) + ' ' + (+freq) + ' ' +
+                              (octaves | 0) + ' ' + (+gain) + ' ' + (+lacunarity)));
+}
 function blend(a, b, t) {
   return new FieldNode(__emit('blend r' + __reg(a) + ' r' + __reg(b) + ' r' + __reg(t)));
 }
@@ -59,9 +88,14 @@ function blend(a, b, t) {
 // terrain — an AUTHORED shape at an AUTHORED place (a dome at (cx, cz), a
 // road, a crater) is not expressible without these. Memoised so a world that
 // reads worldX() in five expressions still costs one op of the 96-op budget.
-let __wxNode = null, __wzNode = null;
+let __wxNode = null, __wyNode = null, __wzNode = null;
 function worldX() { return (__wxNode ||= new FieldNode(__emit('input wx'))); }
 function worldZ() { return (__wzNode ||= new FieldNode(__emit('input wz'))); }
+// World ALTITUDE. Memoised like the other two, and for a stronger reason: the
+// heightfield recogniser in FieldProgram::parse looks for the exact shape
+// `sub(height, input wy)`, and a second `input wy` op would still parse but
+// would leave a dead op line in the canonical text.
+function worldY() { return (__wyNode ||= new FieldNode(__emit('input wy'))); }
 // Radial dome / spherical cap centred at (cx, cz): an exact hemisphere of
 // radius `radius` when `height` is omitted, otherwise that hemisphere scaled
 // vertically to `height` at the crown. Zero outside the footprint, so it
@@ -86,7 +120,63 @@ function dome(cx, cz, radius, height) {
   // negative, so .max(ground) leaves the ground untouched there.
   return d2.mul(1 / (radius * radius)).oneMinus().clamp(0, 1).pow(0.5).mul(height);
 }
-function heightToDensity(h) { return h; }   // v1 identity marker: density == height field
+// ---------------------------------------------------------------------------
+// heightToDensity — the 3D density of a 2D heightfield.
+//
+// A field program's output is DENSITY, a function of (x, y, z): positive is
+// solid, and the surface is the zero crossing. A heightfield is not a different
+// kind of field, it is the density
+//
+//     d(x, y, z) = h(x, z) - y
+//
+// and that is what this returns. `// v1 identity marker`, which is what stood
+// here while density was literally the height register, is now real.
+//
+// It is LAZY, and that is load-bearing rather than a micro-optimisation. The
+// canonical program text is the compatibility surface: its hash gates sector
+// re-bakes, so emitting `input wy` + `sub` for every existing world would
+// re-bake every streamed world to express something the engine can already
+// prove. An untouched DensityNode therefore emits NO ops — its register is
+// still the height register, script_host sees density_reg == height_reg, emits
+// only the `height rN` directive it always emitted, and the text is byte-
+// identical. FieldProgram::parse reconstructs the `- y` internally.
+//
+// Operate on it (`.min(caves)`, `.max(...)`, blend, anything) and it
+// materialises `h.sub(worldY())` FIRST, so what the operator composes with is
+// the real 3D density and not a height. That is the whole authoring contract:
+// the world writes `heightToDensity(surface).min(caves)` and means it.
+//
+// Either way the surface height is recorded in __world_height_reg. Every
+// consumer of a heightfield still needs one and cannot get it from a general
+// 3D density without a ray march: scatter's heightAt, biome_at, material_at,
+// slope_at, curvature_at, the VT tape's `s.height`, and the mesher's slab
+// bounds. FieldProgram::parse requires that register to be y-independent.
+globalThis.__world_height_reg = -1;
+class DensityNode {
+  constructor(h) {
+    this.hr = __reg(h);
+    this.r = this.hr;          // untouched: density register IS the height
+    this.__solid = null;
+    globalThis.__world_height_reg = this.hr;
+  }
+  // Materialise h - y once, on first use. Returns a plain FieldNode, so
+  // everything downstream of the first operator is ordinary field algebra.
+  __3d() {
+    return (this.__solid ||=
+      new FieldNode(__emit('sub r' + this.hr + ' r' + worldY().r)));
+  }
+  add(o)  { return this.__3d().add(o); }
+  sub(o)  { return this.__3d().sub(o); }
+  mul(o)  { return this.__3d().mul(o); }
+  min(o)  { return this.__3d().min(o); }
+  max(o)  { return this.__3d().max(o); }
+  abs()   { return this.__3d().abs(); }
+  oneMinus() { return this.__3d().oneMinus(); }
+  pow(e)  { return this.__3d().pow(e); }
+  clamp(lo, hi) { return this.__3d().clamp(lo, hi); }
+  smoothstep(e0, e1) { return this.__3d().smoothstep(e0, e1); }
+}
+function heightToDensity(h) { return new DensityNode(h); }
 // ---------------------------------------------------------------------------
 // surfaces() classifier tape (chart-VT spec Phase 4, contract C4).
 // A world may define `surfaces(s)`; the host calls it with the argument built
