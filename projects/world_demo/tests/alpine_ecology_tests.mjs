@@ -4,7 +4,7 @@ import {
   TREE_CANOPY_CLEARANCE, TREE_EXCLUSION_RADIUS_SCALE,
   TREE_NEIGHBOR_PADDING,
   FAMILY_SLOPE_MAX, isAlpineProfile, alpineAssetVariants,
-  selectVegetationCatalog, environmentalDryness, sampleHabitat,
+  selectVegetationCatalog, HABITAT,
   selectDrynessState, selectAlpineAsset, familiesForRung,
   isWithinVegetationCeiling, treeAltitudeGrowth, treeHeightMultiplier,
   treeCanopyRadius, treeExclusionRadius,
@@ -51,35 +51,6 @@ assert.deepEqual(Object.fromEntries(
   AlpineGrass: 4, AlpineFlower: 3, AlpineShrub: 4,
   AlpineGroundCover: 2, AlpineConifer: 3, AlpineDeciduous: 3,
 });
-
-const base = { x: 125.5, z: -81.25, altitude: 180, slope: 0.2, worldSeed: 77 };
-assert.deepEqual(sampleHabitat(base), sampleHabitat(base));
-const sampled = sampleHabitat(base);
-for (const field of [
-  'moisture', 'exposure', 'dryness', 'forest', 'forestEdge', 'shrubPatch',
-  'treeCluster', 'meadowPatch', 'flowerPatch', 'groundCoverPatch',
-]) {
-  assert.ok(Number.isFinite(sampled[field]));
-  assert.ok(sampled[field] >= 0 && sampled[field] <= 1);
-}
-assert.equal(sampleHabitat({ x: NaN, z: 0, altitude: 100, slope: 0.1, worldSeed: 1 }).valid, false);
-const clusterSamples = [];
-for (let z = -600; z <= 600; z += 40)
-  for (let x = -600; x <= 600; x += 40)
-    clusterSamples.push(sampleHabitat({
-      x, z, altitude: 180, slope: 0.1, worldSeed: 77,
-    }).treeCluster);
-assert.ok(Math.min(...clusterSamples) < 0.05);
-assert.ok(Math.max(...clusterSamples) > 0.95);
-
-assert.ok(environmentalDryness(
-  { moisture: 0.2, exposure: 0.5, altitude: 200, slope: 0.2 }) >
-  environmentalDryness(
-    { moisture: 0.8, exposure: 0.5, altitude: 200, slope: 0.2 }));
-assert.ok(environmentalDryness(
-  { moisture: 0.5, exposure: 0.8, altitude: 350, slope: 0.4 }) >
-  environmentalDryness(
-    { moisture: 0.5, exposure: 0.2, altitude: 100, slope: 0.1 }));
 
 assert.equal(selectDrynessState(-1, 0.2), 0);
 assert.equal(selectDrynessState(2, 0.2), 1);
@@ -206,10 +177,57 @@ for (const family of ['tree', 'shrub', 'groundCover', 'flower', 'grass']) {
 
 const flatHeight = () => 180;
 const gentleSlope = () => 0.1;
+
+// planAlpineSector reads altitude/slope/environment off a habitat TAPE now
+// (see plannedCandidate in alpine_ecology.js) -- the interpreted
+// sampleHabitat() fallback it used to fall back to is gone. This is a small
+// self-contained stand-in tape for these tests, independent of the deleted
+// noise stack: it is not diffed against anything and only needs to vary
+// smoothly enough to exercise selection/spacing/exclusion, while still
+// routing altitude/slope through the heightAt/slopeAt this test overrides.
+function testHash(ix, iz, seed) {
+  let h = (Math.imul(ix, 0x27d4eb2d) ^ Math.imul(iz, 0x165667b1) ^ seed) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35) >>> 0;
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+function testNoise01(x, z, seed) {
+  const ix = Math.floor(x), iz = Math.floor(z);
+  const fx = x - ix, fz = z - iz;
+  const sm = t => t * t * (3 - 2 * t);
+  const a = testHash(ix, iz, seed), b = testHash(ix + 1, iz, seed);
+  const c = testHash(ix, iz + 1, seed), d = testHash(ix + 1, iz + 1, seed);
+  const u = sm(fx), v = sm(fz);
+  return (a + (b - a) * u) * (1 - v) + (c + (d - c) * u) * v;
+}
+function makeHabitatAt(heightAt, slopeAt, worldSeed) {
+  return (x, z, out) => {
+    out[HABITAT.altitude] = heightAt(x, z);
+    out[HABITAT.slope] = slopeAt(x, z);
+    out[HABITAT.moisture] = testNoise01(x, z, worldSeed + 11);
+    out[HABITAT.exposure] = testNoise01(x, z, worldSeed + 23);
+    out[HABITAT.dryness] = testNoise01(x, z, worldSeed + 5);
+    out[HABITAT.forest] = testNoise01(x, z, worldSeed + 31);
+    out[HABITAT.forestEdge] = testNoise01(x, z, worldSeed + 37);
+    out[HABITAT.treeCluster] = testNoise01(x, z, worldSeed + 83);
+    out[HABITAT.shrubPatch] = testNoise01(x, z, worldSeed + 41);
+    out[HABITAT.meadowPatch] = testNoise01(x, z, worldSeed + 53);
+    out[HABITAT.flowerPatch] = testNoise01(x, z, worldSeed + 67);
+    out[HABITAT.groundCoverPatch] = testNoise01(x, z, worldSeed + 79);
+  };
+}
 const sectorArgs = {
   worldSeed: 20260722, ox: 0, oz: 0, sectorSize: 64,
   heightAt: flatHeight, slopeAt: gentleSlope, candidatesInRect,
+  habitatAt: makeHabitatAt(flatHeight, gentleSlope, 20260722),
 };
+// Overriding heightAt/slopeAt alone no longer changes what the planner sees
+// -- altitude/slope come off the tape (habitatAt), so tests that need a
+// different terrain must rebuild the stand-in tape from the same functions.
+const withTerrain = (heightAt, slopeAt) => ({
+  ...sectorArgs, heightAt, slopeAt,
+  habitatAt: makeHabitatAt(heightAt, slopeAt, sectorArgs.worldSeed),
+});
 const scatterCalls = [];
 planAlpineSector({
   ...sectorArgs,
@@ -251,12 +269,12 @@ assert.deepEqual(mid.map(placementKey).sort(),
   near.filter(p => p.family === 'tree' || p.family === 'shrub')
     .map(placementKey).sort());
 
-assert.equal(planAlpineSector({ ...sectorArgs, rung: 2,
-  heightAt: () => 456 }).filter(p => p.family === 'tree').length, 0);
-assert.equal(planAlpineSector({ ...sectorArgs, rung: 2,
-  heightAt: () => 521 }).length, 0);
-assert.equal(planAlpineSector({ ...sectorArgs, rung: 2,
-  slopeAt: () => 1 }).length, 0);
+assert.equal(planAlpineSector({ ...withTerrain(() => 456, gentleSlope), rung: 2 })
+  .filter(p => p.family === 'tree').length, 0);
+assert.equal(planAlpineSector({ ...withTerrain(() => 521, gentleSlope), rung: 2 })
+  .length, 0);
+assert.equal(planAlpineSector({ ...withTerrain(flatHeight, () => 1), rung: 2 })
+  .length, 0);
 
 for (const family of Object.keys(FAMILY_CAPS))
   assert.ok(near.filter(p => p.family === family).length <= FAMILY_CAPS[family]);

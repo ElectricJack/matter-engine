@@ -105,35 +105,12 @@ export function isWithinVegetationCeiling(altitude) {
   return finite(altitude) && altitude <= 520;
 }
 
+// Only remaining consumer: placementIdentity() below (rotation/scale/priority
+// hashing for surviving placements). The value-noise/fbm stack that used to
+// sit on top of this for the interpreted habitat sampler is gone with
+// sampleHabitat -- do not delete this as an orphan.
 function hash2(x, z, seed) {
   return fract(Math.sin(x * 127.1 + z * 311.7 + seed * 74.7) * 43758.5453123);
-}
-
-function valueNoise(x, z, seed) {
-  const ix = Math.floor(x);
-  const iz = Math.floor(z);
-  const tx = x - ix;
-  const tz = z - iz;
-  const fadeX = tx * tx * (3 - 2 * tx);
-  const fadeZ = tz * tz * (3 - 2 * tz);
-  const lower = hash2(ix, iz, seed) * (1 - fadeX) +
-    hash2(ix + 1, iz, seed) * fadeX;
-  const upper = hash2(ix, iz + 1, seed) * (1 - fadeX) +
-    hash2(ix + 1, iz + 1, seed) * fadeX;
-  return lower * (1 - fadeZ) + upper * fadeZ;
-}
-
-function fbm(x, z, seed, frequency, octaves = 3) {
-  let amplitude = 0.5;
-  let total = 0;
-  let weight = 0;
-  for (let octave = 0; octave < octaves; ++octave) {
-    total += valueNoise(x * frequency, z * frequency, seed + octave * 101) * amplitude;
-    weight += amplitude;
-    frequency *= 2;
-    amplitude *= 0.5;
-  }
-  return total / weight;
 }
 
 function identityChannel(identity, channel) {
@@ -146,16 +123,6 @@ function identityChannel(identity, channel) {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0) / 4294967296;
-}
-
-export function environmentalDryness({ moisture, exposure, altitude, slope }) {
-  if (![moisture, exposure, altitude, slope].every(finite)) return 1;
-  return saturate(
-    0.45 * (1 - saturate(moisture)) +
-    0.25 * saturate(exposure) +
-    0.20 * saturate((altitude - 100) / 420) +
-    0.10 * saturate(slope / 0.8),
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -291,65 +258,6 @@ export function alpineHabitat(h, worldSeed) {
   h.channel('meadowPatch',      meadowSignal.smoothstep(0.37, 0.64));
   h.channel('flowerPatch',      flowerSignal.smoothstep(0.45, 0.70));
   h.channel('groundCoverPatch', groundCoverSignal.smoothstep(0.39, 0.67));
-}
-
-export function sampleHabitat({ x, z, altitude, slope, worldSeed }) {
-  if (![x, z, altitude, slope, worldSeed].every(finite)) {
-    return {
-      valid: false, moisture: 0, exposure: 0, dryness: 1, forest: 0,
-      forestEdge: 0, shrubPatch: 0, treeCluster: 0,
-      meadowPatch: 0, flowerPatch: 0,
-      groundCoverPatch: 0,
-    };
-  }
-  const moisture = saturate(0.18 + 0.62 * fbm(x, z, worldSeed + 11, 1 / 300) +
-    0.20 * fbm(x, z, worldSeed + 17, 1 / 55));
-  const exposure = saturate(0.10 + 0.80 * fbm(x, z, worldSeed + 23, 1 / 340));
-  // Broad signals establish whole forest/meadow regions; finer signals break
-  // their edges and create natural clearings. Thresholding the blend gives
-  // contiguous interiors instead of evenly thinned vegetation everywhere.
-  const forestSignal =
-    0.72 * fbm(x, z, worldSeed + 31, 1 / 520, 4) +
-    0.23 * fbm(x, z, worldSeed + 37, 1 / 140) +
-    0.05 * fbm(x, z, worldSeed + 39, 1 / 55, 2);
-  const forest = smoothstep(0.40, 0.61, forestSignal);
-  const forestEdge = 1 - smoothstep(
-    0.045, 0.145, Math.abs(forestSignal - 0.505));
-  const groveSignal =
-    0.68 * fbm(x, z, worldSeed + 83, 1 / 95, 3) +
-    0.32 * fbm(x, z, worldSeed + 89, 1 / 34, 2);
-  const treeCluster = smoothstep(
-    0.42, 0.60, 0.55 * forestSignal + 0.45 * groveSignal);
-
-  const shrubSignal =
-    0.62 * fbm(x, z, worldSeed + 41, 1 / 190) +
-    0.38 * fbm(x, z, worldSeed + 47, 1 / 62);
-  const meadowSignal =
-    0.76 * fbm(x, z, worldSeed + 53, 1 / 240, 4) +
-    0.24 * fbm(x, z, worldSeed + 59, 1 / 75);
-  const flowerSignal =
-    0.68 * meadowSignal +
-    0.32 * fbm(x, z, worldSeed + 67, 1 / 52);
-  const groundCoverSignal =
-    0.58 * forestSignal +
-    0.42 * fbm(x, z, worldSeed + 79, 1 / 48);
-  const shrubPatch = smoothstep(0.38, 0.67, shrubSignal);
-  const meadowPatch = smoothstep(0.37, 0.64, meadowSignal);
-  const flowerPatch = smoothstep(0.45, 0.70, flowerSignal);
-  const groundCoverPatch = smoothstep(0.39, 0.67, groundCoverSignal);
-  return {
-    valid: true,
-    moisture,
-    exposure,
-    dryness: environmentalDryness({ moisture, exposure, altitude, slope }),
-    forest,
-    forestEdge,
-    shrubPatch,
-    treeCluster,
-    meadowPatch,
-    flowerPatch,
-    groundCoverPatch,
-  };
 }
 
 export function selectDrynessState(dryness, identity) {
@@ -587,32 +495,16 @@ function plannedCandidate({
     biomeAt(candidate.x, candidate.z) === 'ocean') return null;
   // ---- REJECT ON THE CHEAP TESTS FIRST -----------------------------------
   //
-  // sampleHabitat below is the expensive call by a wide margin -- 14 fbm at
-  // 3-4 octaves each, roughly 180 interpreted hash evaluations per candidate --
-  // and the tree planner runs it about 3,385 times per 64 m cell (1.65 m
-  // candidate spacing over a rect padded by 16 m on every side). Measured at
-  // ~332 ms of scatter per cell on StreamMountain, which is ~99% of a far
-  // sector's bake.
-  //
-  // The gates that reject most of those candidates are the terrain ones --
-  // above the tree line, or too steep -- and they used to run inside
-  // selectAlpineAsset, i.e. AFTER the habitat sample they make pointless. On a
-  // world whose peaks reach 650 m against a 455 m tree cap, and whose median
-  // slope is ~35 degrees, that is most of the work thrown away at the last
-  // step.
-  //
-  // Hoisting them changes nothing about WHICH candidates survive: the
-  // predicate is identical and selectAlpineAsset still applies it, so this is
-  // an evaluation-order change with a bitwise-identical placement list.
-  // Ordered heightAt -> altitude, then slopeAt -> slope, because slopeAt
-  // finite-differences the field and so costs several heightAt calls.
+  // The terrain gates below (above the tree line, or too steep) run BEFORE
+  // asset selection rather than inside it: on a world whose peaks reach
+  // 650 m against a 455 m tree cap, and whose median slope is ~35 degrees,
+  // selecting first would throw away most of the habitat sample's work.
   let altitude;
   let slope;
   let habitat;
   if (typeof habitatAt === 'function') {
-    // ONE crossing for what used to be heightAt + slopeAt + 14 interpreted
-    // fbm: altitude and slope are channels of the same tape, so the terrain
-    // gates below cost nothing extra to evaluate.
+    // ONE crossing: altitude and slope are channels of the same tape, so the
+    // terrain gates below cost nothing extra to evaluate.
     pbegin(P_HABITAT);
     habitatAt(candidate.x, candidate.z, HABITAT_OUT);
     pend(P_HABITAT);
@@ -631,18 +523,14 @@ function plannedCandidate({
     HABITAT_SCRATCH.groundCoverPatch = HABITAT_OUT[HABITAT.groundCoverPatch];
     habitat = HABITAT_SCRATCH;
   } else {
-    // JS fallback, kept: a world without a habitat() tape (and any consumer of
-    // planAlpineSector that predates one) still plans exactly as before.
-    altitude = heightAt(candidate.x, candidate.z);
-    if (!isWithinVegetationCeiling(altitude) ||
-        (family === 'tree' && altitude > 455)) return null;
-    slope = slopeAt(candidate.x, candidate.z);
-    if (!withinTerrainGates(family, altitude, slope)) return null;
-    pbegin(P_HABITAT);
-    habitat = sampleHabitat({
-      x: candidate.x, z: candidate.z, altitude, slope, worldSeed,
-    });
-    pend(P_HABITAT);
+    // No interpreted fallback: the alpine-lush profile requires a bound
+    // habitat tape. A quiet fallback here is exactly what let the old
+    // interpreted sampler sit dead and unnoticed -- fail loudly instead, and
+    // name the world hook that is missing.
+    throw new Error(
+      "planAlpineSector: no habitat tape is bound. The world's script must " +
+      'define a habitat(h) hook (see StreamMountain.js) before scattering ' +
+      'under the alpine-lush vegetation profile.');
   }
   pbegin(P_SELECT);
   const asset = selectAlpineAsset(family, { ...habitat, altitude, slope },

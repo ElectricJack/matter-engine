@@ -10,16 +10,15 @@ import {
 //
 // p.rung is a SCATTER DETAIL TIER (see matter_engine.cpp rings), NOT a mesh
 // resolution -- that is p.terrainLod, which now selects a VOXEL rung rather
-// than choosing between two different terrain representations.
-//   tier 0 (far):  trees + landmark boulders
-//   tier 1 (mid):  + rocks and pebbles
-//   tier 2 (near): + grass
+// than choosing between two different terrain representations. Landmark
+// boulders place at every rung; rocks gate on `p.rung >= 1`; vegetation
+// (trees, shrubs, grass, ...) is the alpine planner's call, driven by the
+// habitat tape -- see shared-lib/alpine_ecology.js.
 //
-// Scatter is NOT uniform random: each kind is gated by a world-space FBM
-// patch channel, so trees form groves, rocks form scree fields, and grass
-// grows in clumps. Patch channels and cross-sector candidate grids depend
-// only on worldSeed + world position, never on the tier, so placements are
-// stable as tiers change underfoot.
+// Scatter is NOT uniform random: rocks are gated by a world-space FBM patch
+// channel so they form scree fields, and landmark boulders use a minimum-
+// distance candidate grid. Both depend only on worldSeed + world position,
+// never on the tier, so placements are stable as tiers change underfoot.
 
 // The SCATTER CELL, and the level-0 tile size. Under nested sector LOD a tile
 // may be 2^level of these across (p.sectorSize), but scatter is always
@@ -45,8 +44,7 @@ const P_BOULDERS = pslot('sector.boulders');
 const P_PLAN     = pslot('sector.plan');
 const P_PLACE    = pslot('sector.place');
 const P_ROCKS    = pslot('sector.rocks');
-const ROCK_VARIANTS    = 8, PEBBLE_VARIANTS = 6, GRASS_VARIANTS = 5;
-const TREE_VARIANTS    = 3;
+const ROCK_VARIANTS    = 8;
 // Reuse the modest cached rock meshes and scale their instances to colossal
 // proportions. Baking 25/40 m Rock variants blocks world connection while
 // eight new procedural meshes are generated; 2.5/4 m meshes at 10x have the
@@ -54,9 +52,6 @@ const TREE_VARIANTS    = 3;
 const BOULDER_SIZES    = [2.5, 4.0], BOULDER_SEEDS = 4;
 const BOULDER_SCALE    = 10.0;
 const BOULDER_MIN_DIST = 180.0;
-const TREE_MIN_DIST    = 9.0;
-const GRASS_SLOPE_MAX  = 0.5;
-const TREE_SLOPE_MAX   = 0.5;
 // The farthest terrain band that still plants vegetation. p.terrainLod counts
 // DOWN with distance (5 = nearest), so this is "bands 5,4,3 plant; 2,1,0 do
 // not". See the long note at the gate in build() for why this exists and why
@@ -65,6 +60,9 @@ const TREE_SLOPE_MAX   = 0.5;
 const VEGETATION_MIN_LOD = 3;
 
 // ---- patch noise: value-noise FBM in [-1, 1], world-space ------------------
+// Only remaining consumer: the SCREE channel in scatterRocks() below (the
+// grove/tuft channels that used to read this were removed with the legacy
+// scatter path). Do not delete this trio as an orphan.
 function hash2(ix, iz, seed) {
   let h = (Math.imul(ix, 0x27d4eb2d) ^ Math.imul(iz, 0x165667b1) ^ seed) >>> 0;
   h = Math.imul(h ^ (h >>> 15), 0x85ebca6b) >>> 0;
@@ -89,16 +87,10 @@ function patch(x, z, seed, freq) {
   return sum / norm;
 }
 
-// `biomesJson` is this world's biomes() table (the same string build() gets as
-// p.biomes). Only the TREE entries consult it: a Tree bakes in ~5.5 s, so a
-// world that never places one — StreamMeadow, which has `trees` commented out
-// of its table — should not pay for three of them. Every other asset stays
-// unconditional.
-//
-// This still satisfies the "same list for every sector" requirement below: the
-// biomes table is world-level, so every sector of a given world sees the same
-// string and therefore the same variant list. It varies per WORLD, not per
-// sector, which is what the child-hash stability actually needs.
+// `biomesJson` is this world's biomes() table (the same string build() gets
+// as p.biomes) -- world-level, so every sector of a given world sees the same
+// string and therefore the same variant list, which is what the child-hash
+// stability requires.
 function assetVariants(biomesJson) {
   const req = [];
   for (let s = 0; s < ROCK_VARIANTS; ++s)
@@ -108,36 +100,10 @@ function assetVariants(biomesJson) {
     for (let s = 0; s < BOULDER_SEEDS; ++s)
       req.push({ module: 'Rock', params: { seed: s, size: sz } });
 
-  //for (let s = 0; s < PEBBLE_VARIANTS; ++s)
-  //  req.push({ module: 'Pebble', params: { seed: s } });
-
-  const vegetation = [];
-  for (let s = 0; s < GRASS_VARIANTS; ++s)
-    vegetation.push({ module: 'Grass', params: { seed: s } });
-
-  if (anyBiomeWantsTrees(biomesJson))
-    for (let s = 0; s < TREE_VARIANTS; ++s)
-      vegetation.push({ module: 'Tree', params: { seed: s } });
-
   let table = null;
   try { table = biomesJson ? JSON.parse(biomesJson) : null; } catch (e) {}
-  req.push(...selectVegetationCatalog(table, vegetation));
+  req.push(...selectVegetationCatalog(table, []));
   return req;
-}
-
-// True when at least one biome asks for trees. Fail-OPEN: an absent or
-// unparseable table keeps Tree required, so the only way to drop the Tree
-// bakes is a table that demonstrably never places one. (MeadowWorld asks for
-// 6-10 trees and is unaffected; StreamMeadow asks for none and skips them.)
-function anyBiomeWantsTrees(biomesJson) {
-  if (!biomesJson) return true;
-  let table;
-  try { table = JSON.parse(biomesJson); } catch (e) { return true; }
-  if (!table || typeof table !== 'object') return true;
-  for (const k of Object.keys(table)) {
-    if (((table[k] || {}).trees | 0) > 0) return true;
-  }
-  return false;
 }
 
 class WorldSector extends Part {
@@ -156,10 +122,6 @@ class WorldSector extends Part {
                     worldSeed: 0, fieldHash: '', biomes: '' };
   // FIXED variant list — independent of tx/tz so the whole asset set installs
   // once at world load and every sector bake hits the same child hashes.
-  // Method form (script_host eval_requires calls `static requires` with the
-  // merged params when it is a function) so the Tree entries can consult the
-  // world's biome table; p.biomes is world-level, so this is still constant
-  // across every sector of a world.
   static requires(p) { return assetVariants(p && p.biomes); }
 
   build(p) {
@@ -226,14 +188,11 @@ class WorldSector extends Part {
     const tileOx = p.tx * TILE, tileOz = p.tz * TILE;
     const baseCx = p.tx * cells, baseCz = p.tz * cells;
     const seed = p.worldSeed >>> 0;
-    const GROVE = (seed ^ 0xA51) >>> 0;   // tree groves,   wavelength ~110
     const SCREE = (seed ^ 0xB62) >>> 0;   // rock fields,   wavelength ~70
-    const TUFT  = (seed ^ 0xC73) >>> 0;   // grass clumps,  wavelength ~30
 
-    // One 64 m cell. A function rather than an inlined loop body so the tier
-    // gates below stay `return`s -- they read as "this cell is done", and
-    // rewriting them as `continue` is the kind of edit that quietly changes
-    // which of them still guards what.
+    // One 64 m cell. A function rather than an inlined loop body so the
+    // VEGETATION_MIN_LOD gate below stays a `return` -- it reads as "this
+    // cell is done".
     //
     // At cells === 1 -- every level-0 tile, and every tile in uniform mode --
     // the cell coordinates ARE the tile coordinates and every expression below
@@ -360,55 +319,6 @@ class WorldSector extends Part {
       for (const placement of planned) putPlanned(placement);
       pend(P_PLACE);
       return;
-    }
-
-    // ---- every tier: tree groves (cross-sector deterministic) --------------
-    // Candidate grid gives even in-grove spacing; the grove channel gates
-    // which candidates exist, ramping density toward the grove core.
-    for (const c of candidatesInRect(seed, 3, TREE_MIN_DIST, ox, oz, SECTOR, SECTOR)) {
-      const treeCap = (table[this.biomeAt(c.x, c.z)] || {}).trees | 0;
-      if (!treeCap) continue;                       // no trees in this biome
-      const g = patch(c.x, c.z, GROVE, 1 / 110);
-      if (g < 0.10 || c.u > (g - 0.10) * 4) continue;
-      if (this.slopeAt(c.x, c.z) > TREE_SLOPE_MAX) continue;
-      // Scale 1..3, long-tail: raw blends candidate jitter with grove
-      // strength so giants only appear deep in grove cores.
-      const gN = Math.min(1, Math.max(0, (g - 0.10) / 0.90));
-      const s  = 1 + 2 * Math.pow(0.65 * c.v + 0.35 * gN, 1.7);
-      this.pushMatrix();
-      this.translate(c.x - tileOx, this.heightAt(c.x, c.z) - 0.4 * s,
-                     c.z - tileOz);
-      this.rotateY(c.rot);
-      this.scale(s, s, s);
-      this.placeChild('Tree', { seed: (c.u * 16 | 0) % TREE_VARIANTS });
-      this.popMatrix();
-    }
-
-    if (p.rung < 1) return;
-
-    scatterRocks();
-    // Pebble variants are intentionally omitted from assetVariants(), so do
-    // not emit pebble children here either. Keeping placement enabled without
-    // declared variants rejects every sector that contains a pebble.
-
-    if (p.rung < 2) return;
-
-    // ---- tier 2: grass clumps ------------------------------------------------
-    // Double the attempts, keep only positions inside a tuft patch, cap at the
-    // biome count — same overall density as before, but clumped.
-    let placed = 0;
-    const grassMax = counts.grass | 0;
-    for (let i = 0, n = grassMax * 2; i < n && placed < grassMax; ++i) {
-      const [wx, wz] = inSector();
-      if (this.biomeAt(wx, wz) === 'ocean') continue;
-      const t = patch(wx, wz, TUFT, 1 / 30);
-      if (t < -0.05) continue;
-      if (this.slopeAt(wx, wz) > GRASS_SLOPE_MAX && r.random() < 0.7) continue;
-      // Scale 1..5, long-tail: mostly 1-2x, rare 4-5x clumps at tuft cores.
-      const tuftN = Math.min(1, Math.max(0, (t + 0.05) / 1.05));
-      const gs = 1 + 4 * Math.pow(r.random(), 2.5) * (0.5 + 0.5 * tuftN);
-      put('Grass', { seed: r.int(GRASS_VARIANTS) }, wx, wz, gs, 0.02);
-      ++placed;
     }
     };
 

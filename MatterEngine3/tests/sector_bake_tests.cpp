@@ -49,7 +49,21 @@ int main() {
         prog, err), err.c_str());
     terrain_field::FieldRuntime field(std::move(prog));
 
-    std::string src = slurp("../../projects/world_demo/scenes/StreamMountain/objects/WorldSector.js");
+    // The PROJECT-TIER WorldSector.js, deliberately -- not a scene's copy.
+    //
+    // This suite uses WorldSector as a GENERIC scatter testbed: it drives the
+    // nested-sector-LOD invariant (a level-1 tile emits exactly what its four
+    // level-0 cells emit) and the vegetation LOD gate, with hand-built biomes
+    // JSON that sets no `__vegetation` profile. That fixture exercises the
+    // legacy scatter path, which every non-alpine streaming scene still uses.
+    //
+    // The scene-layout migration briefly pointed this at
+    // scenes/StreamMountain/objects/WorldSector.js, which coupled a generic
+    // invariant to one scene's copy -- and StreamMountain's copy is exactly the
+    // one that drops the legacy path (it always sets the alpine profile). Keep
+    // this on the project tier; scene-specific behaviour belongs in
+    // sector_scatter_profile.cpp, which does point at StreamMountain on purpose.
+    std::string src = slurp("../../projects/world_demo/objects/WorldSector.js");
     CHECK(!src.empty(), "WorldSector.js readable");
 
     ScriptHost host;
