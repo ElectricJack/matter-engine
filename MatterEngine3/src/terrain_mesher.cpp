@@ -258,7 +258,13 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
         const float e2 = voxel;
         float wx = float(ox) + cv.p.x, wy = cv.p.y, wz = float(oz) + cv.p.z;
         float gx = field.density_at(wx + e2, wy, wz) - field.density_at(wx - e2, wy, wz);
-        float gy = field.density_at(wx, wy + e2, wz) - field.density_at(wx, wy - e2, wz);
+        // gy analytically: density = height(x,z) - y, so the y-difference is
+        // (h - (wy+e2)) - (h - (wy-e2)) = -2*e2 -- the height term cancels and
+        // the value is known without evaluating the field at all. The float
+        // version differed from -2*e2 only by cancellation noise (<= ~2 ulp of
+        // h, i.e. ~5e-4 against a magnitude of 2*voxel), and each of the two
+        // density_at calls it replaced was a full field-program evaluation.
+        float gy = -2.0f * e2;
         float gz = field.density_at(wx, wy, wz + e2) - field.density_at(wx, wy, wz - e2);
         float len = std::sqrt(gx * gx + gy * gy + gz * gz);
         // Density = height - y, so gradient points toward solid (downward for
