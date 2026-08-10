@@ -14,6 +14,8 @@ extern "C" {
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <set>
 #include <initializer_list>
 #include <string>
 
@@ -422,6 +424,64 @@ void test_every_shipped_world_loads() {
     }
     std::printf("  every shipped world loads: %zu/%zu\n",
                 loaded, world_files.size());
+}
+
+// shared-lib is SHARED, so anything it names must be shared too.
+//
+// A shared-lib module is folded into every scene that imports it, and it may
+// name object modules as plain strings -- alpine_ecology.js's vegetation
+// catalog is a table of ['AlpineConifer', ...] rows. Such a module is reachable
+// from every scene importing that library, so it belongs in the PROJECT object
+// tier; parked in one scene's objects/ it is invisible to all the others, and
+// the failure is invisible too until a cold bake of a sector that actually
+// places it (a warm cache serves the old placement happily).
+//
+// This is not hypothetical: the scene-layout migration moved all six Alpine*
+// vegetation modules into scenes/VegetationGallery/objects/ on the strength of
+// a reference scan that read worlds/ and objects/ but not shared-lib/, breaking
+// cold vegetated bakes for the eight scenes that reach them through
+// alpine_ecology.js.
+void test_shared_lib_only_names_shared_objects() {
+    const fs::path project = fs::path("../../projects/world_demo");
+    const fs::path shared_lib = project / "shared-lib";
+    const fs::path objects = project / "objects";
+    CHECK(fs::is_directory(shared_lib), "world_demo exposes shared-lib/");
+
+    // Every module name any scene could own, so we only flag strings that are
+    // really object modules rather than arbitrary identifiers.
+    std::set<std::string> scene_local;
+    const fs::path scenes = project / "scenes";
+    for (const auto& scene : fs::directory_iterator(scenes)) {
+        if (!scene.is_directory()) continue;
+        std::error_code ec;
+        const fs::path dir = scene.path() / "objects";
+        if (!fs::is_directory(dir, ec)) continue;
+        for (const auto& obj : fs::directory_iterator(dir))
+            if (obj.path().extension() == ".js")
+                scene_local.insert(obj.path().stem().string());
+    }
+
+    std::size_t checked = 0;
+    for (const auto& entry : fs::directory_iterator(shared_lib)) {
+        if (!entry.is_regular_file() || entry.path().extension() != ".js") continue;
+        std::ifstream in(entry.path(), std::ios::binary);
+        std::string src((std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
+        for (const std::string& module : scene_local) {
+            // Quoted whole-word occurrence: the form a module reference takes.
+            for (const char quote : {'\'', '"'}) {
+                const std::string needle = std::string(1, quote) + module + quote;
+                if (src.find(needle) == std::string::npos) continue;
+                ++checked;
+                CHECK(fs::is_regular_file(objects / (module + ".js")),
+                      (entry.path().filename().string() + " names '" + module +
+                       "', which lives only in a scene folder -- shared-lib is "
+                       "reachable from every importing scene, so it must be in "
+                       "the project objects/ tier").c_str());
+            }
+        }
+    }
+    std::printf("  shared-lib module references checked: %zu\n", checked);
 }
 
 void test_example_worlds_preserve_manifest_authoring() {
@@ -1719,6 +1779,7 @@ void test_slot_binder_reports_displaced_materials() {
 int main() {
     test_project_layout_derives_runtime_paths();
     test_scene_layout_derives_runtime_paths();
+    test_shared_lib_only_names_shared_objects();
     test_scene_without_objects_falls_back_to_project_tier();
     test_flat_layout_still_resolves_when_scene_script_absent();
     test_scene_object_shadows_project_object();

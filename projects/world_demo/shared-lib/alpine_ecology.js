@@ -227,12 +227,13 @@ export function alpineHabitat(h, worldSeed) {
   // what lets plannedCandidate replace heightAt + slopeAt + sampleHabitat with
   // a single crossing.
   const altitude = h.height;
-  const slope = h.fieldSlope;
+  const slope    = h.fieldSlope;
 
   const moisture = h.value(0.59)                    // 0.18 + (0.62+0.20)/2
     .add(n(11, 1 / 300).mul(0.31))
     .add(n(17, 1 / 55).mul(0.10))
     .clamp(0, 1);
+
   const exposure = h.value(0.50)                    // 0.10 + 0.80/2
     .add(n(23, 1 / 340).mul(0.40))
     .clamp(0, 1);
@@ -243,13 +244,14 @@ export function alpineHabitat(h, worldSeed) {
     .add(n(31, 1 / 520, 4).mul(0.36))
     .add(n(37, 1 / 140).mul(0.115))
     .add(n(39, 1 / 55, 2).mul(0.025));
+
   const forest = forestSignal.smoothstep(0.40, 0.61);
-  const forestEdge =
-    forestSignal.sub(0.505).abs().smoothstep(0.045, 0.145).oneMinus();
+  const forestEdge = forestSignal.sub(0.505).abs().smoothstep(0.045, 0.145).oneMinus();
 
   const groveSignal = h.value(0.5)                  // (0.68+0.32)/2
     .add(n(83, 1 / 95, 3).mul(0.34))
     .add(n(89, 1 / 34, 2).mul(0.16));
+
   const treeCluster = forestSignal.mul(0.55)
     .add(groveSignal.mul(0.45))
     .smoothstep(0.42, 0.60);
@@ -257,13 +259,17 @@ export function alpineHabitat(h, worldSeed) {
   const shrubSignal = h.value(0.5)
     .add(n(41, 1 / 190).mul(0.31))
     .add(n(47, 1 / 62).mul(0.19));
+
   const meadowSignal = h.value(0.5)
     .add(n(53, 1 / 240, 4).mul(0.38))
     .add(n(59, 1 / 75).mul(0.12));
+
   // meadowSignal is ALREADY in [0,1] form, so only the raw noise term needs
   // the half-and-offset treatment here.
+
   const flowerSignal = meadowSignal.mul(0.68)
     .add(n(67, 1 / 52).mul(0.16)).add(0.16);
+
   const groundCoverSignal = forestSignal.mul(0.58)
     .add(n(79, 1 / 48).mul(0.21)).add(0.21);
 
@@ -273,17 +279,17 @@ export function alpineHabitat(h, worldSeed) {
     .add(slope.mul(1 / 0.8).clamp(0, 1).mul(0.10))
     .clamp(0, 1);
 
-  h.channel('altitude', altitude);
-  h.channel('slope', slope);
-  h.channel('moisture', moisture);
-  h.channel('exposure', exposure);
-  h.channel('dryness', dryness);
-  h.channel('forest', forest);
-  h.channel('forestEdge', forestEdge);
-  h.channel('treeCluster', treeCluster);
-  h.channel('shrubPatch', shrubSignal.smoothstep(0.38, 0.67));
-  h.channel('meadowPatch', meadowSignal.smoothstep(0.37, 0.64));
-  h.channel('flowerPatch', flowerSignal.smoothstep(0.45, 0.70));
+  h.channel('altitude',         altitude);
+  h.channel('slope',            slope);
+  h.channel('moisture',         moisture);
+  h.channel('exposure',         exposure);
+  h.channel('dryness',          dryness);
+  h.channel('forest',           forest);
+  h.channel('forestEdge',       forestEdge);
+  h.channel('treeCluster',      treeCluster);
+  h.channel('shrubPatch',       shrubSignal.smoothstep(0.38, 0.67));
+  h.channel('meadowPatch',      meadowSignal.smoothstep(0.37, 0.64));
+  h.channel('flowerPatch',      flowerSignal.smoothstep(0.45, 0.70));
   h.channel('groundCoverPatch', groundCoverSignal.smoothstep(0.39, 0.67));
 }
 
@@ -387,18 +393,19 @@ function formSuitabilities(family, habitat) {
         treeMass * inRange(altitude, 260, 330, 445, 470) * (0.35 + 0.65 * dryness) * (0.35 + 0.65 * exposure),
         treeMass * (0.35 + 0.65 * moisture) * inRange(altitude, 130, 205, 335, 430) * lowerThan(exposure, 0.45, 0.95),
         treeMass * moisture * inRange(altitude, 80, 150, 245, 315) * lowerThan(exposure, 0.25, 0.70),
+        
         // European beech, birch/aspen, sycamore maple.
-        treeMass * moisture * lowerThan(altitude, 190, 295) * lowerThan(exposure, 0.18, 0.62) * lowerThan(forestEdge, 0.35, 0.85),
-        cluster * forestEdge * inRange(altitude, 120, 190, 335, 370) * (0.45 + 0.55 * exposure),
-        cluster * moisture * lowerThan(altitude, 180, 305) * (0.35 + 0.65 * forestEdge),
+        treeMass * moisture   * lowerThan(altitude, 190, 295)         * lowerThan(exposure, 0.18, 0.62) * lowerThan(forestEdge, 0.35, 0.85),
+        cluster  * forestEdge * inRange(altitude, 120, 190, 335, 370) * (0.45 + 0.55 * exposure),
+        cluster  * moisture   * lowerThan(altitude, 180, 305)         * (0.35 + 0.65 * forestEdge),
       ];
     }
     case 'shrub':
       return [
         meadowPatch * shrubPatch * higherThan(altitude, 360, 440) * (0.4 + 0.6 * exposure) * (0.35 + 0.65 * dryness),
-        shrubPatch * moisture * lowerThan(altitude, 170, 250) * (0.35 + 0.65 * (1 - forest)),
-        shrubPatch * inRange(altitude, 190, 260, 445, 500) * (0.35 + 0.65 * dryness) * (0.35 + 0.65 * exposure),
-        shrubPatch * moisture * forestEdge * inRange(altitude, 130, 170, 290, 360),
+        shrubPatch  * moisture * lowerThan(altitude, 170, 250) * (0.35 + 0.65 * (1 - forest)),
+        shrubPatch  * inRange(altitude, 190, 260, 445, 500) * (0.35 + 0.65 * dryness) * (0.35 + 0.65 * exposure),
+        shrubPatch  * moisture * forestEdge * inRange(altitude, 130, 170, 290, 360),
       ];
     case 'groundCover':
       return [
