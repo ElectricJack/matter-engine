@@ -975,6 +975,11 @@ void EditorProps::init(ViewerStats& stats, CameraPrefs& camera,
     overlay_ = registry_.bind(s_overlay, &stats.animation_overlay,
                               Scope::Session);
     viewer_debug_ = registry_.bind(s_viewer_debug, &stats, Scope::Session);
+    viewer_session_status_ = registry_.bind(
+        viewer_session_status_group(), &stats.session_status, Scope::Session);
+    viewer_atmosphere_status_ = registry_.bind(
+        viewer_atmosphere_status_group(), &stats.atmosphere_status,
+        Scope::Session);
 
     // User groups have no world-JS layer (S4): their baseline IS the compiled
     // default, which is what bind() already captured.
@@ -1072,6 +1077,12 @@ matter::props::Binding* EditorProps::animation_overlay() {
 }
 matter::props::Binding* EditorProps::viewer_debug() {
     return registry_.get(viewer_debug_);
+}
+matter::props::Binding* EditorProps::viewer_session_status() {
+    return registry_.get(viewer_session_status_);
+}
+matter::props::Binding* EditorProps::viewer_atmosphere_status() {
+    return registry_.get(viewer_atmosphere_status_);
 }
 
 matter::props::Binding* EditorProps::world_props() {

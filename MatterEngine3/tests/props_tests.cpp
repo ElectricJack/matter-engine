@@ -33,6 +33,7 @@ struct Tunables {
     float          density  = 0.25f;
     int32_t        steps    = 30;
     uint32_t       budget   = 1024u;
+    uint64_t       serial   = 4294967297ull;
     bool           enabled  = true;
     int32_t        mode     = 1;
     float          color[3] = {0.9f, 0.92f, 0.95f};
@@ -50,6 +51,7 @@ const auto& tunables_schema() {
         props::prop(&Tunables::steps, "steps").range(1.0f, 64.0f)
             .env("MATTER_PROPS_TEST_STEPS"),
         props::prop(&Tunables::budget, "budget"),
+        props::prop(&Tunables::serial, "serial"),
         props::prop(&Tunables::enabled, "enabled").env("MATTER_PROPS_TEST_ENABLED"),
         props::prop(&Tunables::mode, "mode").enums(kModeLabels, 3),
         props::prop(&Tunables::color, "color").color(),
@@ -93,7 +95,7 @@ jsondoc::Value doc_from_string(const char* text) {
 
 void test_builder_layout() {
     const props::Group& g = tunables_schema().group();
-    CHECK(g.field_count == 9, "builder: field count");
+    CHECK(g.field_count == 10, "builder: field count");
     CHECK(!strcmp(g.path, "test.tunables"), "builder: group path");
     CHECK(!strcmp(g.label, "Tunables"), "builder: group label");
     CHECK(g.struct_size == sizeof(Tunables), "builder: struct size");
@@ -101,6 +103,7 @@ void test_builder_layout() {
     CHECK(field("density").type == Type::Float, "builder: float type");
     CHECK(field("steps").type == Type::Int, "builder: int type");
     CHECK(field("budget").type == Type::UInt, "builder: uint type");
+    CHECK(field("serial").type == Type::UInt64, "builder: uint64 type");
     CHECK(field("enabled").type == Type::Bool, "builder: bool type");
     CHECK(field("mode").type == Type::Enum, "builder: enum type");
     CHECK(field("color").type == Type::Color3, "builder: color3 type");
@@ -111,6 +114,7 @@ void test_builder_layout() {
     CHECK(field("density").offset == offset_of(t, &t.density), "builder: density offset");
     CHECK(field("steps").offset == offset_of(t, &t.steps), "builder: steps offset");
     CHECK(field("budget").offset == offset_of(t, &t.budget), "builder: budget offset");
+    CHECK(field("serial").offset == offset_of(t, &t.serial), "builder: serial offset");
     CHECK(field("enabled").offset == offset_of(t, &t.enabled), "builder: enabled offset");
     CHECK(field("mode").offset == offset_of(t, &t.mode), "builder: mode offset");
     CHECK(field("color").offset == offset_of(t, &t.color), "builder: color offset");
@@ -143,6 +147,8 @@ void test_defaults_and_reset() {
     CHECK(props::get_float(*b, field("density")) == 0.25f, "defaults: density");
     CHECK(props::get_int(*b, field("steps")) == 30, "defaults: steps");
     CHECK(props::get_uint(*b, field("budget")) == 1024u, "defaults: budget");
+    CHECK(props::get_uint64(*b, field("serial")) == 4294967297ull,
+          "defaults: uint64 retains values above uint32");
     CHECK(props::get_bool(*b, field("enabled")), "defaults: enabled");
     CHECK(props::get_string(*b, field("title")) == "default", "defaults: title");
     float xyz[3];
@@ -202,6 +208,9 @@ void test_range_clamping() {
     // Unranged fields are untouched by clamping.
     props::set_uint(*b, field("budget"), 999999u);
     CHECK(inst.budget == 999999u, "clamp: unranged uint passes through");
+    props::set_uint64(*b, field("serial"), 8589934593ull);
+    CHECK(inst.serial == 8589934593ull,
+          "clamp: unranged uint64 passes through without truncation");
 }
 
 void test_sparse_save() {
@@ -251,6 +260,7 @@ void test_round_trip() {
     props::set_float(*sb, field("density"), 0.5f);
     props::set_int(*sb, field("steps"), 12);
     props::set_uint(*sb, field("budget"), 77u);
+    props::set_uint64(*sb, field("serial"), 8589934593ull);
     props::set_bool(*sb, field("enabled"), false);
     props::set_enum(*sb, field("mode"), 2);
     const float col[3] = {0.1f, 0.25f, 0.5f};
@@ -274,6 +284,7 @@ void test_round_trip() {
     CHECK(dst.density == 0.5f, "round trip: float");
     CHECK(dst.steps == 12, "round trip: int");
     CHECK(dst.budget == 77u, "round trip: uint");
+    CHECK(dst.serial == 8589934593ull, "round trip: uint64 JSON number");
     CHECK(dst.enabled == false, "round trip: bool");
     CHECK(dst.mode == 2, "round trip: enum");
     CHECK(dst.color[0] == 0.1f && dst.color[1] == 0.25f && dst.color[2] == 0.5f,
@@ -614,6 +625,9 @@ void test_parse_and_set() {
           "parse: uint");
     CHECK(props::parse_and_set(&t, field("budget"), "-3") && t.budget == 0u,
           "parse: negative uint floors at 0");
+    CHECK(props::parse_and_set(&t, field("serial"), "4294967297") &&
+              t.serial == 4294967297ull,
+          "parse: uint64 decimal remains exact above uint32");
     CHECK(props::parse_and_set(&t, field("enabled"), "off") && !t.enabled,
           "parse: bool word");
     CHECK(props::parse_and_set(&t, field("enabled"), "1") && t.enabled,
@@ -657,10 +671,36 @@ void test_parse_and_set() {
           "parse: a successful set dirties the binding");
 
     CHECK(props::format_value(&t, field("steps")) == "5", "format: int");
+    CHECK(props::format_value(&t, field("serial")) == "4294967297",
+          "format: uint64 decimal remains exact above uint32");
     CHECK(props::format_value(&t, field("enabled")) == "true", "format: bool");
     CHECK(props::format_value(&t, field("mode")) == "off", "format: enum label");
     CHECK(props::format_value(&t, field("title")) == "hello world", "format: string");
     CHECK(props::format_value(&t, field("wind")) == "4, 5, 6", "format: float3");
+}
+
+void test_uint64_copy_equality_and_reset() {
+    Tunables source;
+    Tunables destination;
+    source.serial = 8589934593ull;
+    destination.serial = 7ull;
+    CHECK(!props::fields_equal(&source, &destination, field("serial")),
+          "uint64 equality observes the full 64-bit value");
+    props::copy_field(&destination, &source, field("serial"));
+    CHECK(destination.serial == 8589934593ull &&
+              props::fields_equal(&source, &destination, field("serial")),
+          "uint64 copy preserves the full 64-bit value");
+
+    Registry registry;
+    Tunables reset_target;
+    Binding* binding = registry.get(
+        registry.bind(tunables_schema(), &reset_target, Scope::World));
+    CHECK(binding != nullptr, "uint64 reset: binding exists");
+    CHECK(props::set_uint64(*binding, field("serial"), 17ull),
+          "uint64 reset: setter reports a full-width change");
+    props::reset_field(*binding, field("serial"));
+    CHECK(reset_target.serial == 4294967297ull,
+          "uint64 reset restores the compiled default exactly");
 }
 
 void test_resolve_field() {
@@ -1231,6 +1271,7 @@ int main() {
     test_json_doc();
     test_draft_lifecycle();
     test_parse_and_set();
+    test_uint64_copy_equality_and_reset();
     test_resolve_field();
     test_dump_modified();
     test_load_group();

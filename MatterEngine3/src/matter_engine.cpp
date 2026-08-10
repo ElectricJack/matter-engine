@@ -537,6 +537,7 @@ struct WorldSession::Impl {
     viewer::TemporalState vk_temporal;
     uint64_t vk_temporal_serial = 0;
     uint64_t vk_temporal_token = 0;
+    bool vk_atmosphere_history_reset_pending = false;
     // C2 skin arena reuse follows actual frame completion, not submission.
     uint64_t vk_skin_completed_serial = 0;
     // Renderer-side bounds copies are immutable. Track the active ECS asset
@@ -7568,6 +7569,19 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // LUT work. Unchanged settings are a no-op inside VkAtmosphere.
     impl_->vk_scene->set_atmosphere_settings(opts.atmosphere);
     impl_->vk_scene->set_lighting(lighting);
+    if (impl_->vk_atmosphere_history_reset_pending) {
+        // kAtmosphereChangeEmission is the one existing renderer signal that
+        // invalidates all three presentation histories. Stage an unrecorded
+        // temporary value and immediately restore the real one: prepare_frame
+        // observes the accumulated change mask, while every shader sees only
+        // the restored lighting and the atmosphere generation is untouched.
+        viewer::VkSceneLighting reset_signal = lighting;
+        reset_signal.emission_multiplier =
+            lighting.emission_multiplier == 0.0f ? 1.0f : 0.0f;
+        impl_->vk_scene->set_lighting(reset_signal);
+        impl_->vk_scene->set_lighting(lighting);
+        impl_->vk_atmosphere_history_reset_pending = false;
+    }
     impl_->vk_scene->set_display_exposure(controls.exposure_ev);
     impl_->vk_scene->set_composite_debug_view(controls.composite_debug_view);
     {
@@ -7789,6 +7803,31 @@ void WorldSession::finish_vulkan_frame(uint64_t frame_serial, bool presented) {
     impl_->vk_temporal_token = 0;
 }
 
+bool WorldSession::resolved_atmosphere_status(
+    ResolvedAtmospherePresentationStatus& out) const {
+    if (!impl_ || !impl_->vk_scene) return false;
+    const viewer::ResolvedAtmosphereStatus& committed =
+        impl_->vk_scene->resolved_atmosphere_status();
+    out.generation_serial = committed.generation_serial;
+    out.resolved_elevation_deg = committed.resolved_elevation_deg;
+    out.atmospheric_direct_base_rgb =
+        committed.atmospheric_direct_base_rgb;
+    out.atmospheric_noon_direct_base_rgb =
+        committed.atmospheric_noon_direct_base_rgb;
+    out.direct_world_ratio = committed.direct_world_ratio;
+    out.direct_base_rgb = committed.direct_base_rgb;
+    out.direct_world_sun_rgb = committed.direct_world_sun_rgb;
+    out.sky_ambient_ratio = committed.sky_ambient_ratio;
+    out.sky_display_modifier_rgb = committed.sky_display_modifier_rgb;
+    out.sky_irradiance_modifier_rgb =
+        committed.sky_irradiance_modifier_rgb;
+    return true;
+}
+
+void WorldSession::request_atmosphere_history_reset() {
+    if (impl_) impl_->vk_atmosphere_history_reset_pending = true;
+}
+
 bool WorldSession::readback_swapchain_rgba8(
     const VulkanFrame& frame, std::vector<uint8_t>& rgba, std::string& err) {
     if (!impl_->engine->render_device) {
@@ -7802,6 +7841,13 @@ bool WorldSession::readback_swapchain_rgba8(
 
 #ifndef MATTER_VULKAN_VIEWER
 void WorldSession::finish_vulkan_frame(uint64_t, bool) {}
+
+bool WorldSession::resolved_atmosphere_status(
+    ResolvedAtmospherePresentationStatus&) const {
+    return false;
+}
+
+void WorldSession::request_atmosphere_history_reset() {}
 
 bool WorldSession::render(const CameraDesc&, const VulkanFrame&,
                           const RenderOptions&, std::string& err) {

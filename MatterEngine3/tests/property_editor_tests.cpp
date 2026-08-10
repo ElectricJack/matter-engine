@@ -7,6 +7,12 @@
 
 #include "../../MatterEditor/src/property_editor.h"
 #include "../../MatterEditor/src/streaming_lod_prefs.h"
+#define VIEWER_UI_STATUS_ONLY
+#include "../../MatterEditor/src/ui.h"
+#undef VIEWER_UI_STATUS_ONLY
+#define VIEWER_FIFO_PROPERTY_HELPERS_ONLY
+#include "../../MatterEditor/src/viewer_commands.h"
+#undef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
 #include "matter/json_doc.h"
 #include "matter/atmosphere_lighting.h"
 #include "matter/world_definition.h"   // FogSettings — the render.fog group
@@ -980,6 +986,101 @@ void test_atmosphere_lighting_property_defaults_metadata_and_round_trip() {
               "production lighting documentation states control independence explicitly");
 }
 
+void test_viewer_status_groups_are_exact_read_only_session_state() {
+    viewer::ViewerSessionStatus session{};
+    viewer::ViewerAtmosphereStatus atmosphere{};
+    session.render_path = viewer::ViewerRenderPathStatus::NativeRt;
+    session.presented_frame_serial = 4294967297ull;
+    session.native_rt_available = true;
+    atmosphere.generation_serial = 8589934593ull;
+    atmosphere.resolved_elevation_deg = 5.0f;
+    atmosphere.atmospheric_direct_base_rgb = {1.0f, 2.0f, 3.0f};
+
+    props::Registry registry;
+    props::Binding* session_binding = registry.get(registry.bind(
+        viewer::viewer_session_status_group(), &session,
+        props::Scope::Session));
+    props::Binding* atmosphere_binding = registry.get(registry.bind(
+        viewer::viewer_atmosphere_status_group(), &atmosphere,
+        props::Scope::Session));
+    CHECK(session_binding && atmosphere_binding,
+          "viewer status groups bind at Session scope");
+
+    struct Expected {
+        const char* path;
+        props::Type type;
+    };
+    const Expected expected[] = {
+        {"viewer.session.render_path", Type::Enum},
+        {"viewer.session.presented_frame_serial", Type::UInt64},
+        {"viewer.session.native_rt_available", Type::Bool},
+        {"viewer.atmosphere_status.generation_serial", Type::UInt64},
+        {"viewer.atmosphere_status.resolved_elevation_deg", Type::Float},
+        {"viewer.atmosphere_status.atmospheric_direct_base_rgb", Type::Float3},
+        {"viewer.atmosphere_status.atmospheric_noon_direct_base_rgb", Type::Float3},
+        {"viewer.atmosphere_status.direct_world_ratio", Type::Float},
+        {"viewer.atmosphere_status.direct_base_rgb", Type::Float3},
+        {"viewer.atmosphere_status.direct_world_sun_rgb", Type::Float3},
+        {"viewer.atmosphere_status.sky_ambient_ratio", Type::Float},
+        {"viewer.atmosphere_status.sky_display_modifier_rgb", Type::Float3},
+        {"viewer.atmosphere_status.sky_irradiance_modifier_rgb", Type::Float3},
+    };
+    for (const Expected& item : expected) {
+        props::Binding* binding = nullptr;
+        const props::Desc* desc = nullptr;
+        CHECK(props::resolve_field(registry, item.path, binding, desc) &&
+                  binding && desc && desc->type == item.type,
+              "viewer status field has exact path and type");
+        CHECK(desc && (desc->flags & props::ReadOnly) != 0 &&
+                  (desc->flags & props::NoSerialize) != 0,
+              "every viewer status field is read-only and non-serializing");
+    }
+
+    const props::Desc& render_path = session_binding->schema().fields[0];
+    CHECK(render_path.enum_count == 3 && render_path.enum_labels &&
+              std::strcmp(render_path.enum_labels[0], "raster") == 0 &&
+              std::strcmp(render_path.enum_labels[1], "native_rt") == 0 &&
+              std::strcmp(render_path.enum_labels[2],
+                          "native_rt_unavailable") == 0,
+          "viewer render-path status labels are exact");
+
+    const auto path_get = viewer::fifo_get_property(
+        registry, "viewer.session.render_path");
+    const auto serial_get = viewer::fifo_get_property(
+        registry, "viewer.session.presented_frame_serial");
+    const auto triple_get = viewer::fifo_get_property(
+        registry,
+        "viewer.atmosphere_status.atmospheric_direct_base_rgb");
+    CHECK(path_get.success &&
+              path_get.line == "get: viewer.session.render_path = native_rt",
+          "FIFO get formats the render-path enum label exactly");
+    CHECK(serial_get.success && serial_get.line ==
+              "get: viewer.session.presented_frame_serial = 4294967297",
+          "FIFO get formats UInt64 without truncation");
+    CHECK(triple_get.success && triple_get.line ==
+              "get: viewer.atmosphere_status.atmospheric_direct_base_rgb = (1, 2, 3)",
+          "FIFO get formats status triples in the strict metrics grammar");
+
+    const auto rejected = viewer::fifo_set_property(
+        registry, "viewer.session.presented_frame_serial", "7");
+    CHECK(!rejected.success && rejected.line ==
+              "set: viewer.session.presented_frame_serial is read-only" &&
+              session.presented_frame_serial == 4294967297ull,
+          "FIFO setter rejects ReadOnly before parsing and leaves status intact");
+
+    jsondoc::Value session_doc;
+    props::save_scope(registry, props::Scope::Session, session_doc);
+    jsondoc::Value world_doc;
+    props::save_scope(registry, props::Scope::World, world_doc);
+    const std::string session_json = jsondoc::write_json(session_doc);
+    const std::string world_json = jsondoc::write_json(world_doc);
+    CHECK(session_json.find("viewer.session") == std::string::npos &&
+              session_json.find("viewer.atmosphere_status") == std::string::npos &&
+              world_json.find("viewer.session") == std::string::npos &&
+              world_json.find("viewer.atmosphere_status") == std::string::npos,
+          "viewer status groups are absent from saved Session and World JSON");
+}
+
 }  // namespace
 
 int main() {
@@ -1000,5 +1101,6 @@ int main() {
     test_physical_atmosphere_quality_property_contract();
     test_physical_atmosphere_editor_source_contract();
     test_atmosphere_lighting_property_defaults_metadata_and_round_trip();
+    test_viewer_status_groups_are_exact_read_only_session_state();
     return check_summary();
 }

@@ -189,6 +189,8 @@ public:
     // vol_debug_view, edited by the raw Combo widgets in Viewer Debug. Same
     // reason as console().
     matter::props::Binding* viewer_debug();
+    matter::props::Binding* viewer_session_status();
+    matter::props::Binding* viewer_atmosphere_status();
 
     // ---- Tunables de-duplication (issue dd98763c) --------------------------
     //
@@ -280,6 +282,10 @@ private:
     matter::props::BindingId console_ = matter::props::kInvalidBinding;
     matter::props::BindingId overlay_ = matter::props::kInvalidBinding;
     matter::props::BindingId viewer_debug_ = matter::props::kInvalidBinding;
+    matter::props::BindingId viewer_session_status_ =
+        matter::props::kInvalidBinding;
+    matter::props::BindingId viewer_atmosphere_status_ =
+        matter::props::kInvalidBinding;
     matter::props::BindingId gpu_ = matter::props::kInvalidBinding;
     StreamingLodPrefs streaming_prefs_{};
     GpuPrefs gpu_prefs_{};

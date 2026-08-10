@@ -46,6 +46,7 @@ inline PropWidget prop_widget_for(const matter::props::Desc& d) {
         case Type::Float:  return d.has_range ? PropWidget::FloatSlider : PropWidget::FloatDrag;
         case Type::Int:    return d.has_range ? PropWidget::IntSlider : PropWidget::IntDrag;
         case Type::UInt:   return d.has_range ? PropWidget::UIntSlider : PropWidget::UIntDrag;
+        case Type::UInt64: return PropWidget::ReadOnlyText;
         case Type::Bool:   return PropWidget::Checkbox;
         case Type::Enum:   return PropWidget::EnumCombo;
         case Type::Color3: return PropWidget::ColorEdit3;

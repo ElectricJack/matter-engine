@@ -38,11 +38,96 @@
 #include "provider/sector_resolver.h"
 #include "tileset_gtex.h"
 #include "../../MatterEditor/src/ui.h"
+#include "../../MatterEditor/src/viewer_commands.h"
 // LAST on purpose: impostor_bake.h reaches precomp.h, whose `using namespace
 // std;` makes `byte` ambiguous inside any <windows.h> pulled in after it.
 #include "impostor_bake.h"   // M2.5 kQuadMarker, the billboard sentinel
 
 namespace {
+
+void test_atmosphere_acceptance_fifo_parser_and_present_sequencer() {
+    {
+        const auto parsed = viewer::parse_fifo_line("render_path raster");
+        const auto* command =
+            std::get_if<viewer::FifoRenderPath>(&parsed.command);
+        CHECK(parsed.recognized && parsed.success && command &&
+                  command->requested == matter::RenderPath::GpuDriven,
+              "FIFO parser types render_path raster");
+    }
+    {
+        const auto parsed = viewer::parse_fifo_line("render_path native_rt");
+        const auto* command =
+            std::get_if<viewer::FifoRenderPath>(&parsed.command);
+        CHECK(parsed.recognized && parsed.success && command &&
+                  command->requested == matter::RenderPath::Raytrace,
+              "FIFO parser types render_path native_rt");
+    }
+    {
+        const auto parsed = viewer::parse_fifo_line("history_reset");
+        CHECK(parsed.recognized && parsed.success &&
+                  std::holds_alternative<viewer::FifoHistoryReset>(
+                      parsed.command),
+              "FIFO parser types history_reset");
+    }
+    {
+        const auto parsed = viewer::parse_fifo_line("wait_frames 3");
+        const auto* command =
+            std::get_if<viewer::FifoWaitFrames>(&parsed.command);
+        CHECK(parsed.recognized && parsed.success && command &&
+                  command->count == 3u,
+              "FIFO parser types a positive wait_frames count");
+    }
+    {
+        const auto parsed =
+            viewer::parse_fifo_line("shot_now C:\\absolute\\frame.png");
+        const auto* command =
+            std::get_if<viewer::FifoScreenshotNow>(&parsed.command);
+        CHECK(parsed.recognized && parsed.success && command &&
+                  command->path == "C:\\absolute\\frame.png",
+              "FIFO parser types an absolute shot_now path");
+    }
+
+    for (const char* line : {"wait_frames 0", "wait_frames -1",
+                             "wait_frames 1.5", "wait_frames 4294967296",
+                             "shot_now relative.png",
+                             "render_path pathtrace"}) {
+        const auto parsed = viewer::parse_fifo_line(line);
+        CHECK(parsed.recognized && !parsed.success,
+              "FIFO parser rejects malformed presentation commands");
+    }
+
+    viewer::FifoPresentSequencer sequencing;
+    sequencing.queue_wait(3u);
+    sequencing.queue_screenshot("C:\\absolute\\next.png");
+    CHECK(sequencing.presented_frame_serial() == 0u &&
+              sequencing.pending_screenshot_path() ==
+                  "C:\\absolute\\next.png",
+          "present sequencer queues wait and zero-settle screenshot");
+    const auto failed = sequencing.advance(false);
+    CHECK(sequencing.presented_frame_serial() == 0u &&
+              failed.completed_waits.empty() &&
+              failed.screenshot_path.empty() &&
+              sequencing.pending_screenshot_path() ==
+                  "C:\\absolute\\next.png",
+          "failed/acquire-only frame neither advances nor consumes queued work");
+    const auto first = sequencing.advance(true);
+    CHECK(sequencing.presented_frame_serial() == 1u &&
+              first.completed_waits.empty() &&
+              first.screenshot_path == "C:\\absolute\\next.png",
+          "shot_now captures the next successful present with zero settle");
+    const auto intervening_failure = sequencing.advance(false);
+    CHECK(sequencing.presented_frame_serial() == 1u &&
+              intervening_failure.completed_waits.empty(),
+          "intervening failed present cannot complete a queued wait");
+    const auto second = sequencing.advance(true);
+    CHECK(second.completed_waits.empty(),
+          "wait_frames does not print success before its target serial");
+    const auto third = sequencing.advance(true);
+    CHECK(third.completed_waits.size() == 1u &&
+              third.completed_waits[0].count == 3u &&
+              third.completed_waits[0].frame_serial == 3u,
+          "wait_frames completes on the third successful present only");
+}
 
 bool close4(matter::Float4 actual, matter::Float4 expected, float epsilon);
 
@@ -8917,6 +9002,23 @@ void run_frame_upload_tests(matter::VulkanDevice& vulkan) {
           error.empty() ? "initialize renderer before immediate-submit baseline"
                         : error.c_str());
     const matter::Mat4f identity = identity_matrix();
+    const FixedCullScene scene = make_fixed_cull_scene();
+    const auto prepare = [&](const viewer::FrameMatrices& matrices,
+                             uint32_t* frame_slot = nullptr) {
+        matter::VulkanFrame frame{};
+        if (!vulkan.begin_frame(frame, error)) return false;
+        if (frame_slot) *frame_slot = frame.frame_slot;
+        const bool prepared = renderer.prepare_frame(frame, matrices, scene.eye,
+                                                     1.0f, error);
+        const bool ended = vulkan.end_frame(frame, error);
+        return prepared && ended;
+    };
+    // Atmosphere LUT initialization legitimately uses immediate submissions
+    // on the first prepared frame. Warm that independent one-shot before this
+    // test establishes the steady-state frame-upload baseline.
+    CHECK(prepare(scene.frame),
+          error.empty() ? "warm atmosphere before frame-upload baseline"
+                        : error.c_str());
     const viewer::VkScenePart first = known_raster_triangle(970);
     const viewer::VkScenePart second = known_raster_triangle(971);
     std::vector<MaterialGpuRecord> materials(8);
@@ -8930,18 +9032,6 @@ void run_frame_upload_tests(matter::VulkanDevice& vulkan) {
                                                     {970, identity}};
     CHECK(renderer.update_instances(instances, error),
           error.empty() ? "upload persistent Vulkan instances" : error.c_str());
-
-    const FixedCullScene scene = make_fixed_cull_scene();
-    const auto prepare = [&](const viewer::FrameMatrices& matrices,
-                             uint32_t* frame_slot = nullptr) {
-        matter::VulkanFrame frame{};
-        if (!vulkan.begin_frame(frame, error)) return false;
-        if (frame_slot) *frame_slot = frame.frame_slot;
-        const bool prepared = renderer.prepare_frame(frame, matrices, scene.eye,
-                                                     1.0f, error);
-        const bool ended = vulkan.end_frame(frame, error);
-        return prepared && ended;
-    };
 
     const uint64_t immediate_before_material = matter::immediate_submit_count();
     uint32_t first_material_slot = UINT32_MAX;
@@ -10642,6 +10732,7 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 }  // namespace
 
 int main() {
+    test_atmosphere_acceptance_fifo_parser_and_present_sequencer();
     const char* startup_smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
     const bool animation_skin_only = startup_smoke_mode &&
         (std::string(startup_smoke_mode) == "animation-skin" ||

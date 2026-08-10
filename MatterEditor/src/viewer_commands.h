@@ -22,13 +22,29 @@
 // commands indirectly through the plain-std::function ViewerCommands bridge in
 // ui.h (same idiom as SceneCommands / FieldCommands).
 
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <deque>
+#include <limits>
+#include <sstream>
 #include <string>
+#include <variant>
+#include <vector>
+#include <utility>
 
+#ifndef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
 #include "matter/event/command.h"
+#endif
+#include "matter/props.h"
+#ifndef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
 #include "matter/scene.h"  // SceneEntityId / SceneEditResult receipts (E5c)
+#include "matter/world_session.h"
+#endif
 
 namespace viewer {
 
+#ifndef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
 // --- E5c scene-edit commands (event-system.md S I.14) -----------------------
 // The FIRST ActiveSession-scoped commands: each mutates world entity state, so
 // each is stamped with the SessionBinding's ActiveSession epoch token and
@@ -136,6 +152,29 @@ struct FifoScreenshot {
     std::string path;
 };
 
+struct FifoRenderPath {
+    MT_COMMAND_NAME("fifo.render_path");
+    using Result = matter::evt::CommandResult<bool>;
+    matter::RenderPath requested = matter::RenderPath::GpuDriven;
+};
+
+struct FifoHistoryReset {
+    MT_COMMAND_NAME("fifo.history_reset");
+    using Result = matter::evt::CommandResult<bool>;
+};
+
+struct FifoWaitFrames {
+    MT_COMMAND_NAME("fifo.wait_frames");
+    using Result = matter::evt::CommandResult<bool>;
+    uint32_t count = 0;
+};
+
+struct FifoScreenshotNow {
+    MT_COMMAND_NAME("fifo.screenshot_now");
+    using Result = matter::evt::CommandResult<bool>;
+    std::string path;
+};
+
 struct FifoStatsLabel {
     MT_COMMAND_NAME("fifo.stats_label");
     using Result = matter::evt::CommandResult<bool>;
@@ -194,6 +233,222 @@ struct FifoSimTransport {
     enum class Action { Play, Pause, Step, Stop };
     Action action = Action::Play;
 };
+
+using FifoParsedCommand =
+    std::variant<std::monostate, FifoRenderPath, FifoHistoryReset,
+                 FifoWaitFrames, FifoScreenshotNow>;
+
+struct FifoParseResult {
+    bool recognized = false;
+    bool success = false;
+    FifoParsedCommand command{};
+    std::string error;
+};
+
+inline bool fifo_absolute_path(const std::string& path) {
+    if (path.empty()) return false;
+    if (path[0] == '/' || path[0] == '\\') return true;
+    return path.size() >= 3 && std::isalpha(static_cast<unsigned char>(path[0])) &&
+           path[1] == ':' && (path[2] == '/' || path[2] == '\\');
+}
+
+inline FifoParseResult parse_fifo_line(const std::string& line) {
+    FifoParseResult result;
+    if (line.rfind("render_path", 0) == 0) {
+        result.recognized = true;
+        std::istringstream input(line);
+        std::string command;
+        std::string path;
+        std::string extra;
+        input >> command >> path;
+        if (path.empty() || (input >> extra)) {
+            result.error = "render_path: expected raster or native_rt";
+            return result;
+        }
+        FifoRenderPath parsed;
+        if (path == "raster")
+            parsed.requested = matter::RenderPath::GpuDriven;
+        else if (path == "native_rt")
+            parsed.requested = matter::RenderPath::Raytrace;
+        else {
+            result.error = "render_path: expected raster or native_rt";
+            return result;
+        }
+        result.success = true;
+        result.command = parsed;
+        return result;
+    }
+    if (line == "history_reset") {
+        result.recognized = true;
+        result.success = true;
+        result.command = FifoHistoryReset{};
+        return result;
+    }
+    if (line.rfind("history_reset", 0) == 0) {
+        result.recognized = true;
+        result.error = "history_reset: takes no arguments";
+        return result;
+    }
+    if (line.rfind("wait_frames", 0) == 0) {
+        result.recognized = true;
+        std::istringstream input(line);
+        std::string command;
+        std::string count_text;
+        std::string extra;
+        input >> command >> count_text;
+        if (count_text.empty() || (input >> extra) ||
+            !std::all_of(count_text.begin(), count_text.end(), [](char c) {
+                return c >= '0' && c <= '9';
+            })) {
+            result.error = "wait_frames: expected a positive uint32 count";
+            return result;
+        }
+        uint64_t count = 0;
+        try {
+            count = std::stoull(count_text);
+        } catch (...) {
+            result.error = "wait_frames: expected a positive uint32 count";
+            return result;
+        }
+        if (count == 0 || count > std::numeric_limits<uint32_t>::max()) {
+            result.error = "wait_frames: expected a positive uint32 count";
+            return result;
+        }
+        result.success = true;
+        result.command = FifoWaitFrames{static_cast<uint32_t>(count)};
+        return result;
+    }
+    if (line.rfind("shot_now", 0) == 0) {
+        result.recognized = true;
+        if (line.size() <= 9 || line[8] != ' ') {
+            result.error = "shot_now: expected an absolute path";
+            return result;
+        }
+        size_t first = 9;
+        while (first < line.size() && line[first] == ' ') ++first;
+        const std::string path = line.substr(first);
+        if (!fifo_absolute_path(path)) {
+            result.error = "shot_now: expected an absolute path";
+            return result;
+        }
+        result.success = true;
+        result.command = FifoScreenshotNow{path};
+        return result;
+    }
+    return result;
+}
+
+struct FifoCompletedWait {
+    uint32_t count = 0;
+    uint64_t frame_serial = 0;
+};
+
+struct FifoPresentUpdate {
+    std::vector<FifoCompletedWait> completed_waits;
+    std::string screenshot_path;
+};
+
+class FifoPresentSequencer {
+public:
+    void queue_wait(uint32_t count) {
+        const uint64_t remaining =
+            std::numeric_limits<uint64_t>::max() - presented_frame_serial_;
+        const uint64_t target = count > remaining
+                                    ? std::numeric_limits<uint64_t>::max()
+                                    : presented_frame_serial_ + count;
+        waits_.push_back({count, target});
+    }
+
+    void queue_screenshot(std::string path) {
+        screenshots_.push_back(std::move(path));
+    }
+
+    uint64_t presented_frame_serial() const { return presented_frame_serial_; }
+
+    std::string pending_screenshot_path() const {
+        return screenshots_.empty() ? std::string() : screenshots_.front();
+    }
+
+    FifoPresentUpdate advance(bool presented,
+                              bool screenshot_readback_ready = true) {
+        FifoPresentUpdate update;
+        if (!presented) return update;
+        ++presented_frame_serial_;
+        while (!waits_.empty() &&
+               waits_.front().target <= presented_frame_serial_) {
+            update.completed_waits.push_back(
+                {waits_.front().count, presented_frame_serial_});
+            waits_.pop_front();
+        }
+        if (screenshot_readback_ready && !screenshots_.empty()) {
+            update.screenshot_path = std::move(screenshots_.front());
+            screenshots_.pop_front();
+        }
+        return update;
+    }
+
+private:
+    struct PendingWait {
+        uint32_t count = 0;
+        uint64_t target = 0;
+    };
+    uint64_t presented_frame_serial_ = 0;
+    std::deque<PendingWait> waits_;
+    std::deque<std::string> screenshots_;
+};
+#endif
+
+struct FifoPropertyResult {
+    bool success = false;
+    std::string line;
+};
+
+inline std::string fifo_property_value(const void* instance,
+                                       const matter::props::Desc& desc) {
+    std::string value = matter::props::format_value(instance, desc);
+    if (desc.type == matter::props::Type::Float3 ||
+        desc.type == matter::props::Type::Color3)
+        value = "(" + value + ")";
+    return value;
+}
+
+inline FifoPropertyResult fifo_get_property(matter::props::Registry& registry,
+                                            const std::string& path) {
+    matter::props::Binding* binding = nullptr;
+    const matter::props::Desc* desc = nullptr;
+    if (!matter::props::resolve_field(registry, path.c_str(), binding, desc))
+        return {false, "get: unknown property '" + path + "'"};
+    return {true, "get: " + path + " = " +
+                      fifo_property_value(binding->instance(), *desc)};
+}
+
+inline FifoPropertyResult fifo_set_property(matter::props::Registry& registry,
+                                            const std::string& path,
+                                            const std::string& value) {
+    matter::props::Binding* binding = nullptr;
+    const matter::props::Desc* desc = nullptr;
+    if (!matter::props::resolve_field(registry, path.c_str(), binding, desc))
+        return {false, "set: unknown property '" + path + "'"};
+    if ((desc->flags & matter::props::ReadOnly) != 0)
+        return {false, "set: " + path + " is read-only"};
+    const uint32_t index = static_cast<uint32_t>(
+        desc - binding->schema().fields);
+    if (binding->env_forced(index))
+        return {false, "set: " + path + " is forced by " +
+                           (desc->env ? desc->env : "env") + "; ignored"};
+    void* target = matter::props::group_requires_reload(binding->schema())
+                       ? matter::props::ensure_draft(*binding)
+                       : binding->instance();
+    if (!target ||
+        !matter::props::parse_and_set(target, *desc, value.c_str()))
+        return {false, "set: cannot parse '" + value + "' for " + path};
+    if (target == binding->instance()) binding->set_dirty(true);
+    return {true, "set: " + path + " = " +
+                      fifo_property_value(target, *desc) +
+                      (target == binding->instance()
+                           ? ""
+                           : "  (draft; `reload` to apply)")};
+}
 
 }  // namespace viewer
 

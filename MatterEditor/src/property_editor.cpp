@@ -34,6 +34,8 @@ void apply_registered_fields(Binding& binding, const T& target) {
         case Type::Bool: set_bool(binding, d, get_bool(source, d)); break;
         case Type::Enum: set_enum(binding, d, get_enum(source, d)); break;
         case Type::Int: set_int(binding, d, get_int(source, d)); break;
+        case Type::UInt: set_uint(binding, d, get_uint(source, d)); break;
+        case Type::UInt64: set_uint64(binding, d, get_uint64(source, d)); break;
         case Type::Float: set_float(binding, d, get_float(source, d)); break;
         default: break;
         }
@@ -100,6 +102,10 @@ std::string value_text(const void* inst, const Desc& d) {
             break;
         case Type::UInt:
             std::snprintf(buf, sizeof(buf), fmt.c_str(), get_uint(inst, d));
+            break;
+        case Type::UInt64:
+            std::snprintf(buf, sizeof(buf), "%llu",
+                          static_cast<unsigned long long>(get_uint64(inst, d)));
             break;
         case Type::Enum: {
             const int32_t v = get_enum(inst, d);

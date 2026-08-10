@@ -29,7 +29,9 @@ namespace props {
 // safe. The cost is that a Group must be able to construct AND destroy a
 // default instance — hence destruct_default alongside the spec's
 // construct_default.
-enum class Type : uint8_t { Float, Int, UInt, Bool, Enum, Float3, Color3, String };
+enum class Type : uint8_t {
+    Float, Int, UInt, UInt64, Bool, Enum, Float3, Color3, String
+};
 
 enum Flags : uint32_t {
     None           = 0,
@@ -123,6 +125,8 @@ constexpr Type deduce_type() {
         return Type::Int;
     } else if constexpr (std::is_same_v<M, uint32_t>) {
         return Type::UInt;
+    } else if constexpr (std::is_same_v<M, uint64_t>) {
+        return Type::UInt64;
     } else if constexpr (std::is_same_v<M, float[3]>) {
         return Type::Float3;
     } else if constexpr (std::is_same_v<M, Float3>) {
@@ -345,6 +349,7 @@ private:
 float       get_float(const void* instance, const Desc& d);
 int32_t     get_int(const void* instance, const Desc& d);
 uint32_t    get_uint(const void* instance, const Desc& d);
+uint64_t    get_uint64(const void* instance, const Desc& d);
 bool        get_bool(const void* instance, const Desc& d);
 int32_t     get_enum(const void* instance, const Desc& d);
 void        get_float3(const void* instance, const Desc& d, float out[3]);
@@ -353,6 +358,7 @@ std::string get_string(const void* instance, const Desc& d);
 bool set_float(void* instance, const Desc& d, float v);
 bool set_int(void* instance, const Desc& d, int32_t v);
 bool set_uint(void* instance, const Desc& d, uint32_t v);
+bool set_uint64(void* instance, const Desc& d, uint64_t v);
 bool set_bool(void* instance, const Desc& d, bool v);
 bool set_enum(void* instance, const Desc& d, int32_t v);
 bool set_float3(void* instance, const Desc& d, const float v[3]);
@@ -361,6 +367,7 @@ bool set_string(void* instance, const Desc& d, const std::string& v);
 float       get_float(const Binding& b, const Desc& d);
 int32_t     get_int(const Binding& b, const Desc& d);
 uint32_t    get_uint(const Binding& b, const Desc& d);
+uint64_t    get_uint64(const Binding& b, const Desc& d);
 bool        get_bool(const Binding& b, const Desc& d);
 int32_t     get_enum(const Binding& b, const Desc& d);
 void        get_float3(const Binding& b, const Desc& d, float out[3]);
@@ -369,6 +376,7 @@ std::string get_string(const Binding& b, const Desc& d);
 bool set_float(Binding& b, const Desc& d, float v);
 bool set_int(Binding& b, const Desc& d, int32_t v);
 bool set_uint(Binding& b, const Desc& d, uint32_t v);
+bool set_uint64(Binding& b, const Desc& d, uint64_t v);
 bool set_bool(Binding& b, const Desc& d, bool v);
 bool set_enum(Binding& b, const Desc& d, int32_t v);
 bool set_float3(Binding& b, const Desc& d, const float v[3]);
@@ -544,7 +552,7 @@ struct DynamicField {
     float min = 0.0f, max = 0.0f, step = 0.0f;
     uint32_t flags = 0;
     // The declared default, read according to `type`.
-    double      number_default = 0.0;   // Float / Int / UInt / Enum
+    double      number_default = 0.0;   // Float / Int / UInt / UInt64 / Enum
     bool        bool_default = false;   // Bool
     std::string string_default;         // String
     float       float3_default[3] = {0.0f, 0.0f, 0.0f};  // Float3 / Color3
@@ -579,6 +587,7 @@ public:
     float       get_float(uint32_t index) const;
     int32_t     get_int(uint32_t index) const;
     uint32_t    get_uint(uint32_t index) const;
+    uint64_t    get_uint64(uint32_t index) const;
     bool        get_bool(uint32_t index) const;
     int32_t     get_enum(uint32_t index) const;
     void        get_float3(uint32_t index, float out[3]) const;
@@ -587,6 +596,7 @@ public:
     bool set_float(uint32_t index, float v);
     bool set_int(uint32_t index, int32_t v);
     bool set_uint(uint32_t index, uint32_t v);
+    bool set_uint64(uint32_t index, uint64_t v);
     bool set_bool(uint32_t index, bool v);
     bool set_enum(uint32_t index, int32_t v);
     bool set_float3(uint32_t index, const float v[3]);

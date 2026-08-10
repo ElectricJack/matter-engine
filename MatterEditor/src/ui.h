@@ -2,6 +2,9 @@
 #define VIEWER_UI_H
 
 #include <cstdint>
+#include "matter/props.h"
+
+#ifndef VIEWER_UI_STATUS_ONLY
 #include <functional>
 #include <string>
 #include <vector>
@@ -25,12 +28,16 @@
 #include "asset_browser.h"
 #include "property_editor.h"
 #include "streaming_lod_prefs.h"
+#endif
 
+#ifndef VIEWER_UI_STATUS_ONLY
 struct GLFWwindow;
 namespace matter { class VulkanDevice; struct VulkanFrame; namespace evt { class Hub; } }
+#endif
 
 namespace viewer {
 
+#ifndef VIEWER_UI_STATUS_ONLY
 struct ViewportRect { float x = 0, y = 0, w = 0, h = 0; };
 
 // One available world for the runtime picker. Populated by scan_worlds at
@@ -65,10 +72,84 @@ struct ViewerCommands {
     // it; reports to the console when the module isn't loaded here.
     std::function<void(const std::string& module)> reveal_part;
 };
+#endif
 
+enum class ViewerRenderPathStatus : int32_t {
+    Raster = 0, NativeRt = 1, NativeRtUnavailable = 2
+};
+struct ViewerSessionStatus {
+    ViewerRenderPathStatus render_path = ViewerRenderPathStatus::Raster;
+    uint64_t presented_frame_serial = 0;
+    bool native_rt_available = false;
+};
+struct ViewerAtmosphereStatus {
+    uint64_t generation_serial = 0;
+    float resolved_elevation_deg = 0.0f;
+    matter::Float3 atmospheric_direct_base_rgb{};
+    matter::Float3 atmospheric_noon_direct_base_rgb{};
+    float direct_world_ratio = 0.0f;
+    matter::Float3 direct_base_rgb{};
+    matter::Float3 direct_world_sun_rgb{};
+    float sky_ambient_ratio = 0.0f;
+    matter::Float3 sky_display_modifier_rgb{};
+    matter::Float3 sky_irradiance_modifier_rgb{};
+};
+
+inline const matter::props::Group& viewer_session_status_group() {
+    static const char* const render_path_labels[] = {
+        "raster", "native_rt", "native_rt_unavailable"};
+    using S = ViewerSessionStatus;
+    static const auto definition = matter::props::group<S>(
+        "viewer.session", "Viewer Session Status",
+        matter::props::prop(&S::render_path, "render_path")
+            .enums(render_path_labels, 3).read_only().no_serialize(),
+        matter::props::prop(&S::presented_frame_serial,
+                            "presented_frame_serial")
+            .read_only().no_serialize(),
+        matter::props::prop(&S::native_rt_available, "native_rt_available")
+            .read_only().no_serialize());
+    return definition.group();
+}
+
+inline const matter::props::Group& viewer_atmosphere_status_group() {
+    using S = ViewerAtmosphereStatus;
+    static const auto definition = matter::props::group<S>(
+        "viewer.atmosphere_status", "Viewer Atmosphere Status",
+        matter::props::prop(&S::generation_serial, "generation_serial")
+            .read_only().no_serialize(),
+        matter::props::prop(&S::resolved_elevation_deg,
+                            "resolved_elevation_deg")
+            .read_only().no_serialize(),
+        matter::props::prop(&S::atmospheric_direct_base_rgb,
+                            "atmospheric_direct_base_rgb")
+            .read_only().no_serialize(),
+        matter::props::prop(&S::atmospheric_noon_direct_base_rgb,
+                            "atmospheric_noon_direct_base_rgb")
+            .read_only().no_serialize(),
+        matter::props::prop(&S::direct_world_ratio, "direct_world_ratio")
+            .read_only().no_serialize(),
+        matter::props::prop(&S::direct_base_rgb, "direct_base_rgb")
+            .read_only().no_serialize(),
+        matter::props::prop(&S::direct_world_sun_rgb,
+                            "direct_world_sun_rgb")
+            .read_only().no_serialize(),
+        matter::props::prop(&S::sky_ambient_ratio, "sky_ambient_ratio")
+            .read_only().no_serialize(),
+        matter::props::prop(&S::sky_display_modifier_rgb,
+                            "sky_display_modifier_rgb")
+            .read_only().no_serialize(),
+        matter::props::prop(&S::sky_irradiance_modifier_rgb,
+                            "sky_irradiance_modifier_rgb")
+            .read_only().no_serialize());
+    return definition.group();
+}
+
+#ifndef VIEWER_UI_STATUS_ONLY
 // Read-only stats the HUD displays each frame; the resolver selector is the one
 // field the panel writes back. Everything else is filled by main/composer/provider.
 struct ViewerStats {
+    ViewerSessionStatus session_status{};
+    ViewerAtmosphereStatus atmosphere_status{};
     float    fps = 0.0f;
     float    frame_ms = 0.0f;
     float    cam_pos[3] = {0,0,0};
@@ -480,6 +561,7 @@ private:
     PropertiesPanelState properties_state_;
     TunablesPanelState tunables_state_;
 };
+#endif
 
 } // namespace viewer
 

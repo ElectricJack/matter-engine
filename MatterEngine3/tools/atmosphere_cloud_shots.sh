@@ -70,6 +70,62 @@ wait_for_streaming_settle() {
   return 1
 }
 
+log_line_count() {
+  wc -l < "$LOG" 2>/dev/null || printf '0\n'
+}
+
+wait_for_log_after() {
+  local first_line="$1" literal="$2" row=""
+  for _ in $(seq 1 240); do
+    row="$(sed -n "$((first_line + 1)),\$p" "$LOG" 2>/dev/null | \
+      grep -F -- "$literal" | tail -n 1 || true)"
+    if [ -n "$row" ]; then
+      printf '%s\n' "$row"
+      return 0
+    fi
+    kill -0 "$PID" 2>/dev/null || break
+    sleep 0.25
+  done
+  echo "ERROR: timed out waiting for '$literal'" >&2
+  return 1
+}
+
+wait_for_present_count() {
+  local first_line="$1" count="$2" row=""
+  for _ in $(seq 1 240); do
+    row="$(sed -n "$((first_line + 1)),\$p" "$LOG" 2>/dev/null | \
+      grep -E "^wait_frames: complete ${count} frame_serial=[0-9]+$" | \
+      tail -n 1 || true)"
+    if [ -n "$row" ]; then
+      printf '%s\n' "$row"
+      return 0
+    fi
+    kill -0 "$PID" 2>/dev/null || break
+    sleep 0.25
+  done
+  echo "ERROR: timed out waiting for $count successful presents" >&2
+  return 1
+}
+
+request_property() {
+  local path="$1" first_line row
+  first_line="$(log_line_count)"
+  send "get $path"
+  row="$(wait_for_log_after "$first_line" "get: $path = ")" || return 1
+  printf '%s\n' "${row#* = }"
+}
+
+wait_for_shot_done() {
+  local png="$1"
+  for _ in $(seq 1 240); do
+    [ -e "${png}.done" ] && return 0
+    kill -0 "$PID" 2>/dev/null || break
+    sleep 0.25
+  done
+  echo "ERROR: screenshot timed out: $png" >&2
+  return 1
+}
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE/../../MatterEditor"
 EDITOR_EXE="${MATTER_EDITOR_EXE:-./build/windows/editor.exe}"
@@ -113,6 +169,7 @@ trap cleanup EXIT INT TERM
 WORLD="${MATTER_WORLD:-StreamMountain}"
 FROXEL_PERF_WARMUP_SECONDS=140
 CLOUD_SHADOW_PERF_WARMUP_SECONDS=180
+ATMOSPHERE_PRESENTATION_PERF_WARMUP_SECONDS=600
 PERF_WARMUP_SECONDS="${MATTER_PERF_WARMUP_SECONDS:-20}"
 # The one-process froxel lane spends 25 seconds on the matrix, then settles
 # and captures four representatives.  Do not let the editor's perf timer end
@@ -122,6 +179,10 @@ if [ "$SUITE" = "froxel" ] && [ "$PERF_WARMUP_SECONDS" -lt "$FROXEL_PERF_WARMUP_
 fi
 if [ "$SUITE" = "cloud-shadows" ] && [ "$PERF_WARMUP_SECONDS" -lt "$CLOUD_SHADOW_PERF_WARMUP_SECONDS" ]; then
   PERF_WARMUP_SECONDS="$CLOUD_SHADOW_PERF_WARMUP_SECONDS"
+fi
+if [ "$SUITE" = "atmosphere-presentation" ] && \
+   [ "$PERF_WARMUP_SECONDS" -lt "$ATMOSPHERE_PRESENTATION_PERF_WARMUP_SECONDS" ]; then
+  PERF_WARMUP_SECONDS="$ATMOSPHERE_PRESENTATION_PERF_WARMUP_SECONDS"
 fi
 MATTER_WORLD="$WORLD" \
 MATTER_CMD_FIFO="$FIFO" \
@@ -257,6 +318,146 @@ case "$SUITE" in
     for _ in $(seq 1 30); do [ -s "$PERF_OUTPUT" ] && break; sleep 1; done
     [ -s "$PERF_OUTPUT" ] || {
       echo "ERROR: telemetry timed out: $PERF_OUTPUT" >&2
+      exit 1
+    }
+    ;;
+  atmosphere-presentation)
+    [ "$WORLD" = AtmospherePresentationFixture ] || {
+      echo "ERROR: atmosphere-presentation suite requires AtmospherePresentationFixture" >&2
+      exit 2
+    }
+    [ "$LABEL" = acceptance ] || {
+      echo "ERROR: atmosphere-presentation suite label must be acceptance" >&2
+      exit 2
+    }
+    send "cam 0 2 12 0 1 0"
+    for path in raster native_rt; do
+      first_line="$(log_line_count)"
+      send "render_path $path"
+      wait_for_log_after "$first_line" "render_path: $path" >/dev/null
+      session_path="$(request_property viewer.session.render_path)"
+      [ "$session_path" = "$path" ] || {
+        echo "ERROR: render path status is '$session_path', expected '$path'" >&2
+        exit 1
+      }
+      native_available="$(request_property viewer.session.native_rt_available)"
+      if [ "$path" = native_rt ]; then
+        [ "$native_available" = true ] || {
+          echo "ERROR: native RT is unavailable" >&2
+          exit 1
+        }
+      fi
+      request_property render.lighting.sun_multiplier >/dev/null
+      request_property render.lighting.sun_tint >/dev/null
+
+      # The fixture's authored sun is exactly the first 90-degree target, and
+      # the preceding path ends at -12. Commit one uncaptured non-target value
+      # so every matrix target, including the first on each path, must advance
+      # the renderer generation after its own S0 sample.
+      precondition_s0="$(request_property viewer.atmosphere_status.generation_serial)"
+      send "set render.lighting.sun_elevation_deg -11"
+      preconditioned=0
+      for _ in $(seq 1 240); do
+        first_line="$(log_line_count)"
+        send "wait_frames 1"
+        wait_for_present_count "$first_line" 1 >/dev/null
+        precondition_generation="$(request_property viewer.atmosphere_status.generation_serial)"
+        precondition_resolved="$(request_property viewer.atmosphere_status.resolved_elevation_deg)"
+        if awk -v generation="$precondition_generation" \
+               -v start="$precondition_s0" \
+               -v resolved="$precondition_resolved" \
+               'BEGIN { d=resolved+11; if (d<0) d=-d;
+                        exit !(generation>start && d<=0.0001) }'; then
+          preconditioned=1
+          break
+        fi
+      done
+      [ "$preconditioned" = 1 ] || {
+        echo "ERROR: committed atmosphere precondition failed for $path" >&2
+        exit 1
+      }
+
+      for elevation in 90 5 0 -5 -12; do
+        s0="$(request_property viewer.atmosphere_status.generation_serial)"
+        case "$s0" in ''|*[!0-9]*)
+          echo "ERROR: malformed starting generation serial '$s0'" >&2
+          exit 1
+        esac
+
+        send "set render.lighting.exposure_ev -2"
+        send "set render.lighting.day_ambient_multiplier 0.25"
+        send "set render.lighting.twilight_ambient_multiplier 1"
+        send "set render.lighting.sky_irradiance_multiplier 1"
+        send "set render.lighting.sunset_direct_ratio 0.25"
+        send "set render.lighting.sun_elevation_deg $elevation"
+
+        converged=0
+        for _ in $(seq 1 240); do
+          first_line="$(log_line_count)"
+          send "wait_frames 1"
+          wait_for_present_count "$first_line" 1 >/dev/null
+          generation="$(request_property viewer.atmosphere_status.generation_serial)"
+          resolved="$(request_property viewer.atmosphere_status.resolved_elevation_deg)"
+          if awk -v generation="$generation" -v start="$s0" \
+                 -v resolved="$resolved" -v requested="$elevation" \
+                 'BEGIN { d=resolved-requested; if (d<0) d=-d;
+                          exit !(generation>start && d<=0.0001) }'; then
+            converged=1
+            break
+          fi
+        done
+        [ "$converged" = 1 ] || {
+          echo "ERROR: committed atmosphere did not converge for $path $elevation (S0=$s0 generation=$generation resolved=$resolved)" >&2
+          exit 1
+        }
+
+        first_line="$(log_line_count)"
+        send "history_reset"
+        wait_for_log_after "$first_line" "history_reset: requested" >/dev/null
+        first_line="$(log_line_count)"
+        send "wait_frames 3"
+        wait_for_present_count "$first_line" 3 >/dev/null
+        send "get viewer.session.render_path"
+        send "get viewer.session.presented_frame_serial"
+        send "get viewer.atmosphere_status.atmospheric_direct_base_rgb"
+        send "get viewer.atmosphere_status.atmospheric_noon_direct_base_rgb"
+        send "get viewer.atmosphere_status.direct_world_ratio"
+        send "get viewer.atmosphere_status.direct_base_rgb"
+        send "get viewer.atmosphere_status.direct_world_sun_rgb"
+        send "get viewer.atmosphere_status.sky_ambient_ratio"
+        send "get viewer.atmosphere_status.sky_display_modifier_rgb"
+        send "get viewer.atmosphere_status.sky_irradiance_modifier_rgb"
+        send "stats atmosphere-presentation-$elevation"
+        png="$OUT/${LABEL}_${path}_${elevation}.png"
+        shot_path="$png"
+        if [ "$WINDOWS_COMMAND_FILE" = 1 ]; then
+          shot_path="$(cygpath -w "$png")"
+        fi
+        rm -f "$png" "${png}.done"
+        send "shot_now $shot_path"
+        wait_for_shot_done "$png"
+      done
+    done
+
+    if grep -Eqi 'native_rt unavailable|FATAL:|Validation Error|VUID-|renderer[^:]*:.*(error|failed)|ERROR:' "$LOG"; then
+      echo "ERROR: renderer or validation failure found in $LOG" >&2
+      exit 1
+    fi
+    first_line="$(log_line_count)"
+    send "quit"
+    for _ in $(seq 1 240); do
+      kill -0 "$PID" 2>/dev/null || break
+      sleep 0.25
+    done
+    if kill -0 "$PID" 2>/dev/null; then
+      echo "ERROR: viewer remained alive after quit" >&2
+      exit 1
+    fi
+    editor_status=0
+    wait "$PID" || editor_status=$?
+    PID=""
+    [ "$editor_status" = 0 ] || {
+      echo "ERROR: viewer exited with status $editor_status" >&2
       exit 1
     }
     ;;
@@ -578,7 +779,7 @@ PY
     exit 2
     ;;
   *)
-    echo "ERROR: unknown suite '$SUITE' (baseline, atmosphere, froxel, cloud-lighting, cloud-shadows, final)" >&2
+    echo "ERROR: unknown suite '$SUITE' (baseline, atmosphere, atmosphere-presentation, froxel, cloud-lighting, cloud-shadows, final)" >&2
     exit 2
     ;;
 esac
@@ -591,9 +792,11 @@ grep '^STATS,' "$LOG" > "$OUT/${LABEL}_stats.log" || true
   echo "ERROR: no positional STATS rows in $LOG" >&2
   exit 1
 }
-grep '"gpu_volumetrics_ms"' "$PERF_OUTPUT" > "$OUT/${LABEL}_metrics.log" || true
-[ -s "$OUT/${LABEL}_metrics.log" ] || {
-  echo "ERROR: no gpu_volumetrics_ms telemetry in $PERF_OUTPUT" >&2
-  exit 1
-}
+if [ "$SUITE" != atmosphere-presentation ]; then
+  grep '"gpu_volumetrics_ms"' "$PERF_OUTPUT" > "$OUT/${LABEL}_metrics.log" || true
+  [ -s "$OUT/${LABEL}_metrics.log" ] || {
+    echo "ERROR: no gpu_volumetrics_ms telemetry in $PERF_OUTPUT" >&2
+    exit 1
+  }
+fi
 echo "--- $LABEL: $SUITE capture and telemetry in $OUT"

@@ -54,6 +54,23 @@ enum class RenderPath { GpuDriven, Raytrace };
 enum class ResolverKind { SectorLod, PassThrough };
 enum class DlssMode : uint8_t { Native, Quality, Balanced, Performance };
 
+// Public, renderer-type-free copy-out of the atmosphere snapshot that actually
+// committed. The Vulkan renderer's richer viewer::ResolvedAtmosphereStatus
+// remains private to the render implementation; editor automation must read
+// this copy instead of reconstructing status from requested controls.
+struct ResolvedAtmospherePresentationStatus {
+    uint64_t generation_serial = 0;
+    float resolved_elevation_deg = 0.0f;
+    Float3 atmospheric_direct_base_rgb{};
+    Float3 atmospheric_noon_direct_base_rgb{};
+    float direct_world_ratio = 0.0f;
+    Float3 direct_base_rgb{};
+    Float3 direct_world_sun_rgb{};
+    float sky_ambient_ratio = 0.0f;
+    Float3 sky_display_modifier_rgb{};
+    Float3 sky_irradiance_modifier_rgb{};
+};
+
 const char* dlss_mode_name(DlssMode mode) noexcept;
 
 struct RenderOptions {
@@ -303,6 +320,12 @@ public:
     // Resolve the temporal candidate recorded by render(). Call exactly once
     // with the result returned by VulkanDevice::end_frame.
     void finish_vulkan_frame(uint64_t frame_serial, bool presented);
+
+    bool resolved_atmosphere_status(
+        ResolvedAtmospherePresentationStatus& out) const;
+    // Queues one one-shot reset of diffuse-GI, reflection/miss and volumetric
+    // histories without changing the committed atmosphere generation.
+    void request_atmosphere_history_reset();
 
     bool readback_swapchain_rgba8(const VulkanFrame& frame,
                                   std::vector<uint8_t>& rgba,
