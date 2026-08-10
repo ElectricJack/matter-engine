@@ -4,6 +4,17 @@ import {
   isAlpineProfile, planAlpineSector, selectVegetationCatalog,
 } from 'shared-lib/alpine_ecology';
 
+// TEMPLATE COPY -- no shipped scene resolves to this file.
+//
+// The engine loads "WorldSector" by that fixed name through the object search
+// path (scenes/<S>/objects first, then this project tier), so every streaming
+// scene owns its own copy under scenes/<S>/objects/WorldSector.js and edits it
+// without touching any other scene. This copy is what a NEW streaming scene
+// starts from: copy it into the scene's objects/ and change it there.
+//
+// Editing this file directly is almost never what you want -- it changes
+// nothing about the scenes that exist, because each of them shadows it.
+//
 // One streamed column of the infinite world. Terrain comes from the native
 // world field (terrainVolume); scatter reads the biomes table passed down
 // from the world definition. Geometry is sector-local in x/z, world y.

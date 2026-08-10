@@ -38,15 +38,31 @@ struct ResolveCachePayload {
 };
 
 // Compute the cache key by folding:
-//   - bytes of worlds/<name>.js
+//   - bytes of the scene script (scenes/<name>/<name>.js, or worlds/<name>.js)
 //   - root_params_json string (empty when unset)
-//   - for every file under objects_dir, project_shared_lib_dir, and
-//     engine_shared_lib_dir: sorted relative
+//   - for every file under scene_objects_dir, objects_dir,
+//     project_shared_lib_dir, and engine_shared_lib_dir: sorted relative
 //     path + fnv1a64(file bytes) pairs
 //   - the version vector (matter_version::fold, version_vector.h) -- M4
 // Returns 0 on any filesystem error (caller treats as a miss).
+//
+// Flat-layout overload: no scene object tier. Kept so callers that genuinely
+// have one object directory (tests, tools) do not have to invent an empty
+// argument, and so their keys stay bit-identical to pre-scene-layout values.
 uint64_t compute_key(const std::string& world_path,
                      const std::string& root_params_json,
+                     const std::string& objects_dir,
+                     const std::string& project_shared_lib_dir,
+                     const std::string& engine_shared_lib_dir);
+
+// Scene-layout overload. scene_objects_dir may be "" (treated exactly as the
+// overload above). Passing the scene tier is NOT optional for a scene that has
+// one: leave it out and an edit to a scene-local object -- including a scene's
+// own WorldSector.js -- does not move the key, so the stale resolve payload is
+// restored and the edit appears to do nothing.
+uint64_t compute_key(const std::string& world_path,
+                     const std::string& root_params_json,
+                     const std::string& scene_objects_dir,
                      const std::string& objects_dir,
                      const std::string& project_shared_lib_dir,
                      const std::string& engine_shared_lib_dir);

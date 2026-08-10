@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <set>          // scene-vs-flat layout dedup in scan_worlds
 #include <vector>
 #include <filesystem>
 #include <system_error>
@@ -38,23 +39,61 @@ std::vector<WorldEntry> scan_worlds(const std::string& examples_root) {
     std::vector<WorldEntry> out;
     std::error_code ec;
 
+    // A project is anything holding scenes/ or worlds/. objects/ is NOT
+    // required: under the scene layout a project's shared object tier can be
+    // legitimately absent when every scene carries its own.
+    auto add_entry = [&](const fs::path& project, const std::string& name) {
+        WorldEntry e;
+        e.label = name;
+        e.project_dir = project.string();
+        e.world_name = name;
+        out.push_back(std::move(e));
+    };
+
     auto scan_project = [&](const fs::path& project) {
         std::error_code project_ec;
-        const fs::path objects = project / "objects";
+        const fs::path scenes = project / "scenes";
         const fs::path worlds = project / "worlds";
-        if (!fs::is_directory(objects, project_ec) ||
-            !fs::is_directory(worlds, project_ec)) return;
-        for (auto wit = fs::directory_iterator(worlds, project_ec);
-             !project_ec && wit != fs::directory_iterator();
-             wit.increment(project_ec)) {
-            const fs::path world_file = wit->path();
-            if (!fs::is_regular_file(world_file, project_ec) ||
-                world_file.extension() != ".js") continue;
-            WorldEntry e;
-            e.label = world_file.stem().string();
-            e.project_dir = project.string();
-            e.world_name = world_file.stem().string();
-            out.push_back(std::move(e));
+        const bool has_scenes = fs::is_directory(scenes, project_ec);
+        project_ec.clear();
+        const bool has_worlds = fs::is_directory(worlds, project_ec);
+        if (!has_scenes && !has_worlds) return;
+
+        // Scene layout: scenes/<Name>/<Name>.js. A directory without its
+        // matching script is skipped silently rather than offered as a world
+        // that cannot open -- that is the shape a half-finished rename leaves
+        // behind, and listing it only produces a load error on click.
+        std::set<std::string> seen;
+        if (has_scenes) {
+            project_ec.clear();
+            for (auto sit = fs::directory_iterator(scenes, project_ec);
+                 !project_ec && sit != fs::directory_iterator();
+                 sit.increment(project_ec)) {
+                if (!fs::is_directory(sit->path(), project_ec)) continue;
+                const std::string name = sit->path().filename().string();
+                std::error_code file_ec;
+                if (!fs::is_regular_file(sit->path() / (name + ".js"), file_ec))
+                    continue;
+                seen.insert(name);
+                add_entry(project, name);
+            }
+        }
+
+        // Flat layout: worlds/<Name>.js. Still scanned so a project can be
+        // migrated one scene at a time; a name present in both layouts is
+        // listed once, from scenes/, matching which one for_project() picks.
+        if (has_worlds) {
+            project_ec.clear();
+            for (auto wit = fs::directory_iterator(worlds, project_ec);
+                 !project_ec && wit != fs::directory_iterator();
+                 wit.increment(project_ec)) {
+                const fs::path world_file = wit->path();
+                if (!fs::is_regular_file(world_file, project_ec) ||
+                    world_file.extension() != ".js") continue;
+                const std::string name = world_file.stem().string();
+                if (seen.count(name)) continue;
+                add_entry(project, name);
+            }
         }
     };
 

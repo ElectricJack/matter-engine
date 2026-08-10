@@ -75,6 +75,11 @@ private:
                                    // placeChild()/requires() elsewhere in the
                                    // project.
         std::string source_path;  // absolute .js path.
+        // Owning scene for a scene-local object (scenes/<scene>/objects/), or
+        // "" for one in the project-wide objects/ tier. This is the blast
+        // radius, spelled out: "" means editing it can affect any scene in the
+        // project, a name means it can affect only that one.
+        std::string scene;
         std::string source_text;  // cached file contents; reloaded when
                                    // mtime_ns changes (see AssetBrowser::draw).
         Kind kind = Kind::Support;

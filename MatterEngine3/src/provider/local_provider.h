@@ -37,8 +37,19 @@ namespace viewer {
 
 struct LocalProviderConfig {
     std::string project_dir;
+    // The PROJECT-WIDE object tier: objects shared by every scene. Changing a
+    // file here can affect any scene in the project, and that is exactly what
+    // its location is meant to signal.
     std::string objects_dir;
-    std::string worlds_dir;
+    // The SCENE-LOCAL object tier: <scene_dir>/objects. Empty for a project
+    // still on the flat worlds/ layout. A module found here shadows the
+    // project tier, so a scene owns its own copy of anything it wants to vary
+    // independently -- WorldSector.js above all, which describes how ONE
+    // scene's sectors are populated and has no business being shared.
+    std::string scene_objects_dir;
+    std::string worlds_dir;   // legacy flat layout: <project>/worlds
+    std::string scenes_dir;   // scene layout: <project>/scenes
+    std::string scene_dir;    // <project>/scenes/<name>, empty on the flat layout
     std::string world_path;
     std::string project_shared_lib_dir;
     std::string engine_shared_lib_dir;
@@ -48,7 +59,40 @@ struct LocalProviderConfig {
         const std::string& world_name,
         const std::string& engine_shared_lib_dir);
 
+    // The object search path, most-specific first. Callers resolving a module
+    // name must walk this in order and take the FIRST hit; callers that need
+    // to observe every object file (cache key, live-edit watches) must cover
+    // every entry. Deliberately shaped like shared_lib_roots() below, which
+    // has stacked project-over-engine the same way since it was written.
+    std::vector<std::string> object_roots() const {
+        std::vector<std::string> roots;
+        if (!scene_objects_dir.empty())
+            roots.push_back(scene_objects_dir);
+        if (!objects_dir.empty())
+            roots.push_back(objects_dir);
+        return roots;
+    }
+    // The project tier alone. For callers that mean "where this project keeps
+    // its shared objects" rather than "where do I find module X" -- resolving
+    // a module through this and not object_roots() silently ignores the
+    // scene's own copy.
     const std::string& object_sources_dir() const { return objects_dir; }
+
+    // Absolute path of the file that defines `module`, or "" if no root has
+    // it. Mirrors FileModuleResolver::load_source exactly so the two can never
+    // disagree about which copy of a shadowed module wins; every caller that
+    // needs a module's path on disk must come through here rather than
+    // concatenating against a single root.
+    std::string resolve_object_path(const std::string& module) const {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        for (const std::string& root : object_roots()) {
+            const std::string path = (fs::path(root) / (module + ".js")).string();
+            ec.clear();
+            if (fs::is_regular_file(path, ec)) return path;
+        }
+        return {};
+    }
     std::vector<std::string> shared_lib_roots() const {
         std::vector<std::string> roots;
         if (!project_shared_lib_dir.empty())
@@ -162,8 +206,27 @@ inline LocalProviderConfig LocalProviderConfig::for_project(
     cfg.project_dir = project.string();
     cfg.objects_dir = (project / "objects").string();
     cfg.worlds_dir = (project / "worlds").string();
+    cfg.scenes_dir = (project / "scenes").string();
     cfg.world_name = world_name_value;
-    cfg.world_path = (project / "worlds" / (world_name_value + ".js")).string();
+
+    // Scene layout (preferred): scenes/<name>/<name>.js, with the scene's own
+    // objects beside it. Flat layout (legacy): worlds/<name>.js against the
+    // project object tier alone. The scene script existing is what selects the
+    // layout -- not the scenes/ directory existing -- so a project part-way
+    // through migration resolves each scene by where its script actually is.
+    const fs::path scene_dir = project / "scenes" / world_name_value;
+    const fs::path scene_script = scene_dir / (world_name_value + ".js");
+    ec.clear();
+    if (fs::is_regular_file(scene_script, ec)) {
+        cfg.scene_dir = scene_dir.string();
+        cfg.world_path = scene_script.string();
+        const fs::path scene_objects = scene_dir / "objects";
+        ec.clear();
+        if (fs::is_directory(scene_objects, ec))
+            cfg.scene_objects_dir = scene_objects.string();
+    } else {
+        cfg.world_path = (project / "worlds" / (world_name_value + ".js")).string();
+    }
     const fs::path project_shared = project / "shared-lib";
     ec.clear();
     if (fs::is_directory(project_shared, ec))
@@ -459,12 +522,23 @@ private:
 
     // State produced by install_graph(), consumed by compose_world().
     // Valid only after a successful install_graph() call.
+    // The PROJECT object tier, absolutized. Not a resolution path on its own:
+    // anything looking up a module must use abs_object_roots_ so a scene-local
+    // override is honoured.
     std::string abs_schemas_;
+    // The full object search path, absolutized, scene tier first. Mirrors
+    // abs_shared_lib_roots_ below.
+    std::vector<std::string> abs_object_roots_;
     std::string abs_world_path_;
     std::string abs_project_shared_lib_;
     std::string abs_engine_shared_lib_;
     std::vector<std::string> abs_shared_lib_roots_;
     std::string abs_cache_root_;
+
+    // First entry of abs_object_roots_ that actually holds <module>.js, or ""
+    // when none does. The absolutized twin of LocalProviderConfig::
+    // resolve_object_path.
+    std::string resolve_object_path(const std::string& module) const;
 
     // Select scratch for a transient hash only when its current .part is
     // compatible; all flat probe/load/expansion paths must reuse this decision.

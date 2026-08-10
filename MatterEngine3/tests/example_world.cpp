@@ -1,7 +1,7 @@
 // End-to-end MatterEngine3 example world: terrain, trees, and grass.
 //
 // Drives the WHOLE pipeline on committed assets under
-// ../../projects/world_demo (objects + worlds/Demo.js) and the shared script
+// ../../projects/world_demo (objects + scenes/Demo/Demo.js) and the shared script
 // library under ../shared-lib:
 //
 //   SP-3  load_world_definition -> PartGraph::install (walk + dedup + cache)
@@ -92,13 +92,14 @@ int main() {
     // --- SP-2/SP-3/SP-7 wiring. set_shared_lib_root enables `import` resolution. ---
     script_host::ScriptHost host;
     host.set_shared_lib_root(shared_lib);
-    FileModuleResolver resolver(host, objects);
+    FileModuleResolver resolver(host, std::vector<std::string>{
+        project + "/scenes/Demo/objects", objects});
     HostBaker baker(host, ".");            // parts_dir_ is PARENT of parts/ (== cwd)
     PartGraph graph(resolver, baker);
 
     // --- SP-3: load world definition into root parts, then install (bake) them. ---
     matter::WorldLoadDesc load_desc;
-    load_desc.world_path = project + "/worlds/Demo.js";
+    load_desc.world_path = project + "/scenes/Demo/Demo.js";
     load_desc.objects_dir = objects;
     load_desc.engine_shared_lib_dir = shared_lib;
     matter::WorldDefinition definition;

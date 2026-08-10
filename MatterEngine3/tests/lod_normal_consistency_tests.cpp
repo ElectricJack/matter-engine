@@ -613,7 +613,14 @@ namespace {
 
 int run_tree(int form) {
     using namespace part_graph;
-    const std::string schemas = abspath("../../projects/world_demo/objects");
+    // Both object roots, scene tier first — the same search path the editor
+    // resolves against. AlpineDeciduous (the module this probe bakes) lives in
+    // the VegetationGallery scene; Leaf and the rest of its children are in the
+    // project tier, so a single root would resolve one and not the other.
+    const std::vector<std::string> schemas = {
+        abspath("../../projects/world_demo/scenes/VegetationGallery/objects"),
+        abspath("../../projects/world_demo/objects"),
+    };
     // Both shared-lib roots: the engine's (shared-lib/rng) and the project's
     // (shared-lib/vegetation) — the same pair the editor resolves against.
     const std::vector<std::string> shared_libs = {

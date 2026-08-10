@@ -157,25 +157,59 @@ void AssetBrowser::rescan(const std::vector<WorldEntry>& worlds,
             project.cache_roots.push_back(
                 (fs::path(project.path) / ".cache" / wref.world_name).string());
 
-        // objects/*.js
-        const fs::path objects_dir = fs::path(project.path) / "objects";
-        std::vector<fs::path> object_files;
-        for (auto dit = fs::directory_iterator(objects_dir, ec);
-             !ec && dit != fs::directory_iterator(); dit.increment(ec)) {
-            if (fs::is_regular_file(dit->path(), ec) && dit->path().extension() == ".js")
-                object_files.push_back(dit->path());
-        }
-        std::sort(object_files.begin(), object_files.end());
+        // Objects, shared tier first then each scene's own. `scene` is carried
+        // per object so the browser can show where a module lives, which is
+        // the whole point of the split layout.
+        auto collect_js = [&](const fs::path& dir) {
+            std::vector<fs::path> files;
+            std::error_code dir_ec;
+            for (auto dit = fs::directory_iterator(dir, dir_ec);
+                 !dir_ec && dit != fs::directory_iterator(); dit.increment(dir_ec)) {
+                if (fs::is_regular_file(dit->path(), dir_ec) &&
+                    dit->path().extension() == ".js")
+                    files.push_back(dit->path());
+            }
+            std::sort(files.begin(), files.end());
+            return files;
+        };
 
-        for (const fs::path& path : object_files) {
-            AssetObject obj;
-            obj.module = path.stem().string();
-            obj.source_path = path.string();
-            obj.source_text = read_file(obj.source_path);
-            obj.kind = classify_kind(obj.source_text);
-            obj.mtime_ns = read_mtime(obj.source_path);
-            project.module_to_index[obj.module] = static_cast<int>(project.objects.size());
-            project.objects.push_back(std::move(obj));
+        auto add_objects = [&](const std::vector<fs::path>& files,
+                               const std::string& scene) {
+            for (const fs::path& path : files) {
+                AssetObject obj;
+                obj.module = path.stem().string();
+                obj.source_path = path.string();
+                obj.scene = scene;
+                obj.source_text = read_file(obj.source_path);
+                obj.kind = classify_kind(obj.source_text);
+                obj.mtime_ns = read_mtime(obj.source_path);
+                // First writer wins, and the shared tier is added first. A
+                // module name can now legitimately exist in several scenes at
+                // once (WorldSector above all), so this index cannot name "the"
+                // definition -- it names one, deterministically, for the
+                // required-child cross-references. Rows below still show every
+                // copy; only this lookup collapses them.
+                project.module_to_index.emplace(obj.module,
+                                                static_cast<int>(project.objects.size()));
+                project.objects.push_back(std::move(obj));
+            }
+        };
+
+        add_objects(collect_js(fs::path(project.path) / "objects"), std::string());
+
+        const fs::path scenes_dir = fs::path(project.path) / "scenes";
+        std::error_code scenes_ec;
+        if (fs::is_directory(scenes_dir, scenes_ec)) {
+            std::vector<fs::path> scene_dirs;
+            for (auto sit = fs::directory_iterator(scenes_dir, scenes_ec);
+                 !scenes_ec && sit != fs::directory_iterator(); sit.increment(scenes_ec)) {
+                if (fs::is_directory(sit->path(), scenes_ec))
+                    scene_dirs.push_back(sit->path());
+            }
+            std::sort(scene_dirs.begin(), scene_dirs.end());
+            for (const fs::path& scene_path : scene_dirs)
+                add_objects(collect_js(scene_path / "objects"),
+                            scene_path.filename().string());
         }
 
         // shared-lib listing: names only, not interactive (part-workbench.md

@@ -1518,7 +1518,7 @@ static bool test_production_animated_gallery_binding() {
     const fs::path example_root = fs::absolute("../../projects/world_demo");
     std::error_code ec;
     fs::copy_file(
-        example_root / "objects" / "AnimatedRigGallery.js",
+        example_root / "scenes" / "AnimatedRigGallery" / "objects" / "AnimatedRigGallery.js",
         project_root / "objects" / "AnimatedRigGallery.js",
         fs::copy_options::overwrite_existing, ec);
     if (!ec)
@@ -1528,7 +1528,7 @@ static bool test_production_animated_gallery_binding() {
             fs::copy_options::overwrite_existing, ec);
     if (!ec)
         fs::copy_file(
-            example_root / "worlds" / "AnimatedRigGallery.js",
+            example_root / "scenes" / "AnimatedRigGallery" / "AnimatedRigGallery.js",
             project_root / "worlds" / "AnimatedRigGallery.js",
             fs::copy_options::overwrite_existing, ec);
     std::string gallery_part_source;

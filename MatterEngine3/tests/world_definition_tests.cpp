@@ -90,6 +90,90 @@ void test_project_layout_derives_runtime_paths() {
           "project shared roots preserve project-first engine-fallback order");
 }
 
+// Scene layout: scenes/<Name>/<Name>.js with the scene's own objects beside
+// it, resolved ahead of the project-wide tier.
+void test_scene_layout_derives_runtime_paths() {
+    Fixture fixture;
+    fs::create_directories(fixture.root / "scenes" / "Demo" / "objects");
+    fixture.write("scenes/Demo/Demo.js", "class Demo extends World {}\n");
+
+    auto cfg = viewer::LocalProviderConfig::for_project(
+        fixture.root.string(), "Demo", (fixture.root / "engine-shared").string());
+
+    CHECK(cfg.world_path ==
+              (fixture.root / "scenes" / "Demo" / "Demo.js").string(),
+          "scene source is <project>/scenes/<name>/<name>.js");
+    CHECK(cfg.scene_dir == (fixture.root / "scenes" / "Demo").string(),
+          "scene_dir points at the scene folder");
+    CHECK(cfg.scene_objects_dir ==
+              (fixture.root / "scenes" / "Demo" / "objects").string(),
+          "an existing scene objects/ becomes the scene tier");
+    CHECK(cfg.object_roots() == std::vector<std::string>({
+              (fixture.root / "scenes" / "Demo" / "objects").string(),
+              (fixture.root / "objects").string()}),
+          "object roots are scene-first, project-fallback");
+    CHECK(cfg.cache_root == (fixture.root / ".cache" / "Demo").string(),
+          "cache root is unchanged by the layout");
+}
+
+// A scene with no objects/ of its own must degrade to the project tier alone,
+// NOT to an empty search path -- 9 of the shipped scenes own no objects.
+void test_scene_without_objects_falls_back_to_project_tier() {
+    Fixture fixture;
+    fixture.write("scenes/Bare/Bare.js", "class Bare extends World {}\n");
+
+    auto cfg = viewer::LocalProviderConfig::for_project(
+        fixture.root.string(), "Bare", (fixture.root / "engine-shared").string());
+
+    CHECK(cfg.scene_objects_dir.empty(), "no scene objects/ means no scene tier");
+    CHECK(cfg.object_roots() ==
+              std::vector<std::string>({(fixture.root / "objects").string()}),
+          "the project tier alone remains the search path");
+}
+
+// The flat worlds/ layout must keep working: sandbox projects built by
+// async_bake/demand_bake still use it, and a project may migrate one scene at
+// a time. A scenes/ DIRECTORY without the scene's script must not capture the
+// lookup -- it is the script that selects the layout.
+void test_flat_layout_still_resolves_when_scene_script_absent() {
+    Fixture fixture;
+    fs::create_directories(fixture.root / "worlds");
+    fs::create_directories(fixture.root / "scenes" / "Demo");  // folder, no Demo.js
+    fixture.write("worlds/Demo.js", "class Demo extends World {}\n");
+
+    auto cfg = viewer::LocalProviderConfig::for_project(
+        fixture.root.string(), "Demo", (fixture.root / "engine-shared").string());
+
+    CHECK(cfg.world_path == (fixture.root / "worlds" / "Demo.js").string(),
+          "an empty scene folder does not shadow the flat world script");
+    CHECK(cfg.scene_dir.empty(), "no scene layout was selected");
+}
+
+// resolve_object_path is the ONE place module -> file is decided, and the
+// scene copy must win. This is what lets each streaming scene own its own
+// WorldSector.js while the engine still loads it by that fixed name.
+void test_scene_object_shadows_project_object() {
+    Fixture fixture;
+    fs::create_directories(fixture.root / "objects");
+    fs::create_directories(fixture.root / "scenes" / "Demo" / "objects");
+    fixture.write("scenes/Demo/Demo.js", "class Demo extends World {}\n");
+    fixture.write("objects/WorldSector.js", "// shared\n");
+    fixture.write("objects/Rock.js", "// shared\n");
+    fixture.write("scenes/Demo/objects/WorldSector.js", "// scene\n");
+
+    auto cfg = viewer::LocalProviderConfig::for_project(
+        fixture.root.string(), "Demo", (fixture.root / "engine-shared").string());
+
+    CHECK(cfg.resolve_object_path("WorldSector") ==
+              (fixture.root / "scenes" / "Demo" / "objects" / "WorldSector.js").string(),
+          "the scene's WorldSector.js shadows the project template");
+    CHECK(cfg.resolve_object_path("Rock") ==
+              (fixture.root / "objects" / "Rock.js").string(),
+          "a module only the project tier has still resolves");
+    CHECK(cfg.resolve_object_path("Missing").empty(),
+          "an unresolvable module reports empty, not a composed guess");
+}
+
 // Phase 1 (repo-layout-and-cache-consolidation plan) cache-leak fix:
 // LocalProviderConfig::for_project() must never hand back a relative
 // cache_root. Before the fix, cache_root was built by appending
@@ -300,13 +384,24 @@ bool nearly_equal(float a, float b) {
 // part_base.js.h and world_base.js.h -- and this is the only gate on it.
 void test_every_shipped_world_loads() {
     const fs::path project = fs::path("../../projects/world_demo");
-    const fs::path worlds_dir = project / "worlds";
-    CHECK(fs::is_directory(worlds_dir), "world_demo exposes worlds/");
+    const fs::path scenes_dir = project / "scenes";
+    CHECK(fs::is_directory(scenes_dir), "world_demo exposes scenes/");
 
+    // Walk scenes/<Name>/<Name>.js. Walking the DIRECTORY rather than a pinned
+    // list is the whole point of this gate: a scene added later is covered
+    // without anyone remembering to add it. A scene folder whose script is
+    // missing or misnamed is a hard failure here, not a silent skip -- that is
+    // exactly the state a half-finished rename leaves behind, and the editor
+    // would simply stop listing the scene.
     std::vector<fs::path> world_files;
-    for (const auto& entry : fs::directory_iterator(worlds_dir))
-        if (entry.is_regular_file() && entry.path().extension() == ".js")
-            world_files.push_back(entry.path());
+    for (const auto& entry : fs::directory_iterator(scenes_dir)) {
+        if (!entry.is_directory()) continue;
+        const std::string name = entry.path().filename().string();
+        const fs::path script = entry.path() / (name + ".js");
+        CHECK(fs::is_regular_file(script),
+              (name + " scene folder contains " + name + ".js").c_str());
+        if (fs::is_regular_file(script)) world_files.push_back(script);
+    }
     std::sort(world_files.begin(), world_files.end());
     CHECK(world_files.size() >= 6, "found the shipped worlds");
 
@@ -358,11 +453,11 @@ void test_example_worlds_preserve_manifest_authoring() {
 
     for (const ExpectedExampleWorld& expected : worlds) {
         CHECK(fs::is_regular_file(
-                  project / "worlds" / (std::string(expected.name) + ".js")),
+                  project / "scenes" / expected.name / (std::string(expected.name) + ".js")),
               (std::string(expected.name) + " remains a selectable identity").c_str());
         matter::WorldLoadDesc desc;
         desc.world_path =
-            (project / "worlds" / (std::string(expected.name) + ".js")).string();
+            (project / "scenes" / expected.name / (std::string(expected.name) + ".js")).string();
         desc.objects_dir = (project / "objects").string();
         desc.project_shared_lib_dir = (project / "shared-lib").string();
         desc.engine_shared_lib_dir = "../shared-lib";
@@ -375,9 +470,19 @@ void test_example_worlds_preserve_manifest_authoring() {
               (std::string(expected.name) + " root count").c_str());
         std::size_t index = 0;
         for (const ExpectedExampleRoot& root : expected.roots) {
-            CHECK(fs::is_regular_file(
-                      project / "objects" / (std::string(root.module) + ".js")),
-                  (std::string(root.module) + " moved under objects/").c_str());
+            // The module must resolve through the SEARCH PATH -- the scene's
+            // own objects/ first, then the project tier -- not sit at one
+            // pinned location. Asserting the project tier specifically is what
+            // this used to do, and it would now fail for every scene that owns
+            // its objects while still passing for a module that had been
+            // deleted from the scene and left behind in the shared tier.
+            const fs::path scene_copy = project / "scenes" / expected.name /
+                                        "objects" / (std::string(root.module) + ".js");
+            const fs::path shared_copy =
+                project / "objects" / (std::string(root.module) + ".js");
+            CHECK(fs::is_regular_file(scene_copy) || fs::is_regular_file(shared_copy),
+                  (std::string(root.module) +
+                   " resolves in the scene or project object tier").c_str());
             if (index >= definition.roots.size()) break;
             const matter::WorldRoot& actual = definition.roots[index];
             CHECK(actual.module == root.module,
@@ -1613,6 +1718,10 @@ void test_slot_binder_reports_displaced_materials() {
 
 int main() {
     test_project_layout_derives_runtime_paths();
+    test_scene_layout_derives_runtime_paths();
+    test_scene_without_objects_falls_back_to_project_tier();
+    test_flat_layout_still_resolves_when_scene_script_absent();
+    test_scene_object_shadows_project_object();
     test_relative_project_dir_yields_absolute_cache_root();
     test_every_shipped_world_loads();
     test_example_worlds_preserve_manifest_authoring();

@@ -54,6 +54,12 @@ int main() {
     const fs::path original = fs::current_path();
     const fs::path project = fs::absolute("../../projects/world_demo");
     const fs::path objects = fs::absolute("../../projects/world_demo/objects");
+    // LightingGarden.js is the scene's own object, so the scene tier leads the
+    // search path exactly as the engine builds it.
+    const std::vector<std::string> object_roots = {
+        (project / "scenes" / "LightingGarden" / "objects").string(),
+        objects.string(),
+    };
     const fs::path shared_lib = fs::absolute("../shared-lib");
     const fs::path sandbox = fs::temp_directory_path() / "me3_lighting_garden";
     fs::remove_all(sandbox);
@@ -63,12 +69,13 @@ int main() {
 
     script_host::ScriptHost host;
     host.set_shared_lib_root(shared_lib.string());
-    FileModuleResolver resolver(host, objects.string());
+    FileModuleResolver resolver(host, object_roots);
     HostBaker baker(host, ".");
     PartGraph graph(resolver, baker);
 
     matter::WorldLoadDesc load_desc;
-    load_desc.world_path = (project / "worlds" / "LightingGarden.js").string();
+    load_desc.world_path =
+        (project / "scenes" / "LightingGarden" / "LightingGarden.js").string();
     load_desc.objects_dir = objects.string();
     load_desc.engine_shared_lib_dir = shared_lib.string();
     matter::WorldDefinition definition;

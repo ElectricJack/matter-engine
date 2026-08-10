@@ -199,23 +199,33 @@ private:
 
 namespace part_graph {
 
-// Reads .js modules from <schemas_dir> and evaluates `static requires` via the host's
-// top-level eval (no build()).
+// Reads .js modules from a SEARCH PATH of object roots, most-specific first,
+// and evaluates `static requires` via the host's top-level eval (no build()).
+//
+// First match wins: with roots {scenes/<S>/objects, <project>/objects}, a
+// module present in the scene shadows the project-wide copy of the same name.
+// That is how a scene owns its own WorldSector.js -- the engine still asks for
+// the module by its fixed name and gets the scene's version -- and it is why
+// resolution must never be done by composing a path against one root by hand.
 class FileModuleResolver : public ModuleResolver {
 public:
+    // Single-root convenience: the flat layout, and every test/tool that has
+    // exactly one object directory.
     FileModuleResolver(script_host::ScriptHost& host, std::string schemas_dir);
+    FileModuleResolver(script_host::ScriptHost& host, std::vector<std::string> roots);
     bool load_source(const std::string& module, std::string& source_out) override;
     bool get_requires(const std::string& module, const Params& params,
                       std::vector<ChildRequest>& children_out) override;
-    // Task 9: returns <schemas_dir>/<module>.js for snapshot source_path recording.
-    std::string source_path_for(const std::string& module) const override {
-        return schemas_dir_ + "/" + module + ".js";
-    }
+    // Task 9: the path load_source would actually read, for snapshot
+    // source_path recording. Falls back to the LAST (least specific) root when
+    // the module resolves nowhere, so a miss still names the place it was
+    // most likely meant to live rather than returning nothing.
+    std::string source_path_for(const std::string& module) const override;
     std::vector<std::pair<std::string, std::string>>
     shared_sources_for(const std::string& source) override;
 private:
-    script_host::ScriptHost& host_;
-    std::string              schemas_dir_;
+    script_host::ScriptHost&  host_;
+    std::vector<std::string>  roots_;
 };
 
 // Checks parts/<hash>.part existence (SP-1 cache_path_resolved) and delegates hashing/baking to

@@ -48,4 +48,19 @@ bool run_tileset_phase_from_objects(
     const std::vector<std::string>& shared_lib_roots,
     std::vector<uint64_t>* out_sorted_child_hashes = nullptr);
 
+// Scene-layout entry point: object_roots is the search path (scene tier first,
+// project tier second), resolved first-match-wins exactly as FileModuleResolver
+// does. Use this rather than the single-dir form above wherever a scene may
+// carry its own copy of a tileset root or of the children it requires --
+// otherwise the tileset settles against the project copy while the rest of the
+// bake uses the scene's, and the atlas silently disagrees with the geometry.
+bool run_tileset_phase_from_object_roots(
+    const std::vector<std::string>& object_roots,
+    const std::string& root_module,
+    const std::string& canonical_root_params_json,
+    const std::string& parts_cache_dir,
+    SettledTorus& out, std::string& err,
+    const std::vector<std::string>& shared_lib_roots,
+    std::vector<uint64_t>* out_sorted_child_hashes = nullptr);
+
 } // namespace tileset

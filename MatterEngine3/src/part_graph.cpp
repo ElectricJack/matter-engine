@@ -505,8 +505,10 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
 } // namespace part_graph
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
+#include <algorithm>   // std::remove_if (object-root search path)
 #include <cstdlib>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -516,14 +518,42 @@ namespace part_graph {
 // child placements by it); the host path reuses it for resolve_hash/bake.
 
 FileModuleResolver::FileModuleResolver(script_host::ScriptHost& host, std::string schemas_dir)
-    : host_(host), schemas_dir_(std::move(schemas_dir)) {}
+    : host_(host) {
+    if (!schemas_dir.empty()) roots_.push_back(std::move(schemas_dir));
+}
+
+FileModuleResolver::FileModuleResolver(script_host::ScriptHost& host,
+                                       std::vector<std::string> roots)
+    : host_(host), roots_(std::move(roots)) {
+    // Empty roots would make every module silently unresolvable; drop them so
+    // an unset scene tier degrades to "project tier only" rather than to
+    // "reads from the process cwd".
+    roots_.erase(std::remove_if(roots_.begin(), roots_.end(),
+                                [](const std::string& r) { return r.empty(); }),
+                 roots_.end());
+}
 
 bool FileModuleResolver::load_source(const std::string& module, std::string& out) {
-    std::ifstream in(schemas_dir_ + "/" + module + ".js", std::ios::binary);
-    if (!in) return false;
-    std::ostringstream ss; ss << in.rdbuf();
-    out = ss.str();
-    return true;
+    for (const std::string& root : roots_) {
+        std::ifstream in((std::filesystem::path(root) / (module + ".js")).string(),
+                         std::ios::binary);
+        if (!in) continue;
+        std::ostringstream ss; ss << in.rdbuf();
+        out = ss.str();
+        return true;
+    }
+    return false;
+}
+
+std::string FileModuleResolver::source_path_for(const std::string& module) const {
+    if (roots_.empty()) return {};
+    for (const std::string& root : roots_) {
+        const std::string path =
+            (std::filesystem::path(root) / (module + ".js")).string();
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(path, ec)) return path;
+    }
+    return (std::filesystem::path(roots_.back()) / (module + ".js")).string();
 }
 
 bool FileModuleResolver::get_requires(const std::string& module, const Params& params,

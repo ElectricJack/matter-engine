@@ -3,7 +3,7 @@
 // Loads the PhysicsPlayground world definition (declarative static roots +
 // static entities, plus procedural buildEntities()) and verifies the loader
 // merges both authoring styles into a single entity stream, matching the
-// authored projects/world_demo/{objects,worlds}/*.js sources.
+// authored projects/world_demo/scenes/PhysicsPlayground/*.js sources.
 #include "check.h"
 #include "../src/script/world_definition_loader.h"
 
@@ -46,7 +46,7 @@ struct Fixture {
 
 // PhysicsPlayground.js and its two object dependencies, inlined so the test
 // is hermetic (no dependency on example-tree layout at test run time). These
-// mirror projects/world_demo/{objects,worlds}/*.js exactly.
+// mirror projects/world_demo/scenes/PhysicsPlayground/**/*.js exactly.
 
 const char* kPlaygroundFloorJs = R"JS(
 class PlaygroundFloor extends Part {

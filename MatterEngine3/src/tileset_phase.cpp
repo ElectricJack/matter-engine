@@ -22,6 +22,7 @@
 #include "tileset_bake.h"    // settle_tileset, BakeInputs, SettledTorus
 #include "part_asset.h"      // fnv1a64 (settle cache key: script source hash)
 
+#include <filesystem>   // object-root search path
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -37,7 +38,22 @@ static bool read_file_str(const std::string& path, std::string& out) {
     return true;
 }
 
-static bool run_tileset_phase_impl(const std::string& schemas_dir,
+// First object root holding <module>.js, else "". Same first-match-wins order
+// as FileModuleResolver, so the tileset root and the children installed below
+// always come from the same tier.
+static std::string find_object_source(const std::vector<std::string>& object_roots,
+                                      const std::string& module) {
+    std::error_code ec;
+    for (const std::string& root : object_roots) {
+        const std::string path =
+            (std::filesystem::path(root) / (module + ".js")).string();
+        ec.clear();
+        if (std::filesystem::is_regular_file(path, ec)) return path;
+    }
+    return {};
+}
+
+static bool run_tileset_phase_impl(const std::vector<std::string>& object_roots,
                                    const std::string& root_module,
                                    const std::string& canonical_root_params_json,
                                    const std::string& parts_cache_dir,
@@ -50,11 +66,13 @@ static bool run_tileset_phase_impl(const std::string& schemas_dir,
     //    The root is NOT a Part (no .part output) — we only read its source to
     //    discover children and evaluate the tileset spec.
     // -----------------------------------------------------------------------
-    const std::string root_path   = schemas_dir + "/" + root_module + ".js";
+    const std::string root_path = find_object_source(object_roots, root_module);
 
     std::string root_source;
-    if (!read_file_str(root_path, root_source)) {
-        err = "tileset_phase: cannot read root module source: " + root_path;
+    if (root_path.empty() || !read_file_str(root_path, root_source)) {
+        err = "tileset_phase: cannot read root module source for '" + root_module +
+              "' in any object root";
+        for (const std::string& root : object_roots) err += " [" + root + "]";
         return false;
     }
 
@@ -77,7 +95,7 @@ static bool run_tileset_phase_impl(const std::string& schemas_dir,
     //    The graph resolves requires recursively, deduplicates, and bakes in
     //    topo order.  parts_cache_dir is the directory that CONTAINS parts/.
     // -----------------------------------------------------------------------
-    part_graph::FileModuleResolver resolver(host, schemas_dir);
+    part_graph::FileModuleResolver resolver(host, object_roots);
     part_graph::HostBaker baker(host, parts_cache_dir);
     part_graph::PartGraph graph(resolver, baker);
 
@@ -213,7 +231,8 @@ bool run_tileset_phase_from_objects(const std::string& objects_dir,
     const std::vector<std::string> roots = shared_lib_root.empty()
         ? std::vector<std::string>{}
         : std::vector<std::string>{shared_lib_root};
-    return run_tileset_phase_impl(objects_dir, root_module, "{}",
+    return run_tileset_phase_impl(std::vector<std::string>{objects_dir},
+                                  root_module, "{}",
                                   parts_cache_dir, out, err, roots);
 }
 
@@ -226,7 +245,22 @@ bool run_tileset_phase_from_objects(
     const std::vector<std::string>& shared_lib_roots,
     std::vector<uint64_t>* out_sorted_child_hashes)
 {
-    return run_tileset_phase_impl(objects_dir, root_module,
+    return run_tileset_phase_impl(std::vector<std::string>{objects_dir}, root_module,
+                                  canonical_root_params_json,
+                                  parts_cache_dir, out, err,
+                                  shared_lib_roots, out_sorted_child_hashes);
+}
+
+bool run_tileset_phase_from_object_roots(
+    const std::vector<std::string>& object_roots,
+    const std::string& root_module,
+    const std::string& canonical_root_params_json,
+    const std::string& parts_cache_dir,
+    SettledTorus& out, std::string& err,
+    const std::vector<std::string>& shared_lib_roots,
+    std::vector<uint64_t>* out_sorted_child_hashes)
+{
+    return run_tileset_phase_impl(object_roots, root_module,
                                   canonical_root_params_json,
                                   parts_cache_dir, out, err,
                                   shared_lib_roots, out_sorted_child_hashes);

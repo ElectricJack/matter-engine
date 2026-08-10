@@ -80,9 +80,9 @@ int main(int argc, char** argv) {
 #endif
 
     const std::string world_src =
-        slurp("../../projects/world_demo/worlds/StreamMountain.js");
+        slurp("../../projects/world_demo/scenes/StreamMountain/StreamMountain.js");
     const std::string sector_src =
-        slurp("../../projects/world_demo/objects/WorldSector.js");
+        slurp("../../projects/world_demo/scenes/StreamMountain/objects/WorldSector.js");
     if (world_src.empty() || sector_src.empty()) {
         std::fprintf(stderr,
                      "cannot read StreamMountain.js / WorldSector.js "
@@ -107,7 +107,7 @@ int main(int argc, char** argv) {
     // interpreted JS fallback while claiming to measure the tape.
     {
         matter::WorldLoadDesc desc;
-        desc.world_path = "../../projects/world_demo/worlds/StreamMountain.js";
+        desc.world_path = "../../projects/world_demo/scenes/StreamMountain/StreamMountain.js";
         desc.objects_dir = "../../projects/world_demo/objects";
         desc.project_shared_lib_dir = "../../projects/world_demo/shared-lib";
         desc.engine_shared_lib_dir = "../shared-lib";

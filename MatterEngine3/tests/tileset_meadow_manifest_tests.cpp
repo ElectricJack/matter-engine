@@ -25,13 +25,13 @@ namespace fs = std::filesystem;
 int main() {
     // Try both paths: relative to viewer/ (normal test run) and relative to
     // repo-root (build-all.sh).
-    fs::path worlds_dir = "../../projects/world_demo/worlds";
+    fs::path scenes_dir = "../../projects/world_demo/scenes";
     std::error_code ec;
-    if (!fs::is_directory(worlds_dir, ec)) {
-        worlds_dir = "projects/world_demo/worlds";
+    if (!fs::is_directory(scenes_dir, ec)) {
+        scenes_dir = "projects/world_demo/scenes";
     }
 
-    const fs::path world_path = worlds_dir / "Meadow.js";
+    const fs::path world_path = scenes_dir / "Meadow" / "Meadow.js";
     REQUIRE(fs::exists(world_path, ec));
 
     matter::WorldLoadDesc desc;
@@ -63,7 +63,8 @@ int main() {
         matter::WorldDefinition legacy;
         matter::WorldLoadError legacy_err;
         matter::WorldLoadDesc legacy_desc;
-        legacy_desc.world_path = (worlds_dir / world).string();
+        legacy_desc.world_path =
+            (scenes_dir / fs::path(world).stem() / world).string();
         if (!matter::load_world_definition(legacy_desc, legacy, legacy_err)) {
             std::fprintf(stderr, "  %s: %s\n", world, legacy_err.message.c_str());
             REQUIRE(false);
@@ -98,7 +99,8 @@ int main() {
         matter::WorldDefinition mountain;
         matter::WorldLoadError mountain_err;
         matter::WorldLoadDesc mountain_desc;
-        mountain_desc.world_path = (worlds_dir / "StreamMountain.js").string();
+        mountain_desc.world_path =
+            (scenes_dir / "StreamMountain" / "StreamMountain.js").string();
         const bool mountain_ok = matter::load_world_definition(
             mountain_desc, mountain, mountain_err);
         if (!mountain_ok)

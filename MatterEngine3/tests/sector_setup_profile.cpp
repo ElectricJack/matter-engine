@@ -121,7 +121,7 @@ int main(int argc, char** argv) {
     }
     terrain_field::FieldRuntime field(std::move(prog));
 
-    const std::string src = slurp("../../projects/world_demo/objects/WorldSector.js");
+    const std::string src = slurp("../../projects/world_demo/scenes/StreamMountain/objects/WorldSector.js");
     if (src.empty()) {
         std::fprintf(stderr, "cannot read WorldSector.js (run from MatterEngine3/tests)\n");
         return 1;

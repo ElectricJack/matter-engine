@@ -200,6 +200,17 @@ std::string class_name_from_source(const std::string& source) {
 
 LocalProvider::LocalProvider(LocalProviderConfig cfg) : cfg_(std::move(cfg)) {}
 
+std::string LocalProvider::resolve_object_path(const std::string& module) const {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (const std::string& root : abs_object_roots_) {
+        const std::string path = (fs::path(root) / (module + ".js")).string();
+        ec.clear();
+        if (fs::is_regular_file(path, ec)) return path;
+    }
+    return {};
+}
+
 bool LocalProvider::prepare_paths(std::string& err) {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -212,6 +223,9 @@ bool LocalProvider::prepare_paths(std::string& err) {
 
     abs_cache_root_ = abspath(cfg_.cache_root);
     abs_schemas_ = abspath(cfg_.object_sources_dir());
+    abs_object_roots_.clear();
+    for (const std::string& root : cfg_.object_roots())
+        abs_object_roots_.push_back(abspath(root));
     abs_shared_lib_roots_.clear();
     abs_project_shared_lib_.clear();
     abs_engine_shared_lib_.clear();
@@ -383,7 +397,7 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     // paths (Task 3 Phase B: no chdir required).
     host_ = std::make_unique<script_host::ScriptHost>();
     host_->set_shared_lib_roots(abs_shared_lib_roots_);
-    resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_schemas_);
+    resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_object_roots_);
     // Task 13 (Phase C): create a shared HostBaker that persists beyond install_graph()
     // so ensure_part_baked() can reuse it without reconstructing a ScriptHost.
     host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
@@ -863,8 +877,8 @@ bool LocalProvider::run_tileset_deferred(
                               std::vector<uint64_t>& sorted_child_hashes,
                               std::string& settle_err) -> bool {
         sorted_child_hashes.clear();
-        return tileset::run_tileset_phase_from_objects(
-            abs_schemas_, root_module, root_params_json, abs_cache_root_,
+        return tileset::run_tileset_phase_from_object_roots(
+            abs_object_roots_, root_module, root_params_json, abs_cache_root_,
             settled, settle_err, abs_shared_lib_roots_, &sorted_child_hashes);
     };
 
@@ -980,7 +994,7 @@ bool LocalProvider::run_tileset_deferred(
         // This value flows on to cfg_.vk_tileset_bake as well, so the bake's
         // own `expected` recomputation (tileset_bake_vk.cpp) stays in lockstep
         // with the probe below without a second signature change.
-        const std::string root_js_path = abs_schemas_ + "/" + root_module + ".js";
+        const std::string root_js_path = resolve_object_path(root_module);
         uint64_t script_source_hash = 0;
         {
             std::ifstream jf(root_js_path, std::ios::binary);
@@ -1338,7 +1352,7 @@ bool LocalProvider::restore_from_cache(
     // individual cache-miss parts without running a global resolve.
     host_ = std::make_unique<script_host::ScriptHost>();
     host_->set_shared_lib_roots(abs_shared_lib_roots_);
-    resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_schemas_);
+    resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_object_roots_);
     host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
     // W3: thread the optional per-rung bake observer (null in production).
     host_baker_->set_bake_observer(cfg_.bake_observer);

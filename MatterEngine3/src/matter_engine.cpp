@@ -2061,6 +2061,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         rc_cache_key = resolve_cache::compute_key(
             cfg.world_path,
             cfg.root_params_json,
+            cfg.scene_objects_dir,
             cfg.object_sources_dir(),
             cfg.project_shared_lib_dir,
             cfg.engine_shared_lib_dir);
@@ -3358,12 +3359,21 @@ bool WorldSession::Impl::install_world(
         store->set_bake_observer(cfg.bake_observer);  // W3
     }
 
-    // 7. Read sector source: <schemas_dir>/WorldSector.js
+    // 7. Read sector source: WorldSector.js, resolved through the object search
+    //    path. The name is fixed by the engine but the FILE is not shared: a
+    //    scene that keeps its own scenes/<S>/objects/WorldSector.js shadows the
+    //    project copy here, which is how two streaming scenes populate their
+    //    sectors differently without either having to know the other exists.
     {
-        const std::string sector_js =
-            cfg.object_sources_dir() + "/WorldSector.js";
-        std::ifstream in(sector_js, std::ios::binary);
-        if (!in) { err = "install_world: cannot read " + sector_js; return false; }
+        const std::string sector_js = cfg.resolve_object_path("WorldSector");
+        std::ifstream in(sector_js.empty() ? std::string() : sector_js,
+                         std::ios::binary);
+        if (sector_js.empty() || !in) {
+            err = "install_world: cannot read WorldSector.js in any object root";
+            for (const std::string& root : cfg.object_roots())
+                err += " [" + root + "]";
+            return false;
+        }
         std::ostringstream ss; ss << in.rdbuf();
         world_sector_source = ss.str();
     }
@@ -3436,15 +3446,21 @@ bool WorldSession::Impl::install_world(
 
         std::string source;
         {
-            const std::string child_js =
-                cfg.object_sources_dir() + "/" + module + ".js";
-            std::ifstream in(child_js, std::ios::binary);
-            if (!in) {
-                fprintf(stderr, "install_world: cannot read child %s (skipping)\n", child_js.c_str());
+            const std::string child_js = cfg.resolve_object_path(module);
+            std::ifstream in(child_js.empty() ? std::string() : child_js,
+                             std::ios::binary);
+            if (child_js.empty() || !in) {
+                // Name the module, not a composed path: with a search path there
+                // is no single path that "should" have existed, and printing one
+                // root's guess sent readers looking in the wrong tier.
+                std::string where = "cannot read child " + module + ".js in any object root";
+                for (const std::string& root : cfg.object_roots())
+                    where += " [" + root + "]";
+                fprintf(stderr, "install_world: %s (skipping)\n", where.c_str());
                 events::BakeError ev;
                 ev.code = BakeErrorCode::ScriptError;
                 ev.phase = "install";
-                ev.message = "cannot read child " + child_js;
+                ev.message = where;
                 hub_.emit(std::move(ev));
                 return false;
             }
@@ -6127,10 +6143,21 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
         simpl->cfg = viewer::LocalProviderConfig::for_project(
             desc.project_dir, desc.world_name,
             desc.engine_shared_lib_dir ? desc.engine_shared_lib_dir : "");
+        // At least ONE object root must exist. Requiring the project tier
+        // specifically would reject a scene that carries all of its own
+        // objects and shares nothing -- which is a legitimate, and in fact the
+        // most self-contained, way to author a scene.
         std::error_code ec;
-        if (!fs::is_directory(simpl->cfg.objects_dir, ec)) {
-            err = "open_world: objects directory not found: " +
-                  simpl->cfg.objects_dir;
+        bool any_object_root = false;
+        for (const std::string& root : simpl->cfg.object_roots()) {
+            ec.clear();
+            if (fs::is_directory(root, ec)) { any_object_root = true; break; }
+        }
+        if (!any_object_root) {
+            err = "open_world: no object directory found for world '" +
+                  simpl->cfg.world_name + "'; looked in";
+            for (const std::string& root : simpl->cfg.object_roots())
+                err += " [" + root + "]";
             return nullptr;
         }
         ec.clear();
@@ -6146,8 +6173,17 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
     simpl->enable_live_edit = desc.enable_live_edit;
     if (desc.enable_live_edit && !simpl->cfg.object_sources_dir().empty()) {
         simpl->inotify_watcher = std::make_unique<live_edit::InotifyWatcher>();
-        simpl->inotify_watcher->add_watch(simpl->cfg.object_sources_dir());
+        // EVERY object root, not just the project tier: a scene-local object is
+        // the one most likely to be under active edit, and watching only the
+        // shared tier would make live-edit silently dead for exactly those files.
+        std::string watched;
+        for (const std::string& root : simpl->cfg.object_roots()) {
+            simpl->inotify_watcher->add_watch(root);
+            watched += (watched.empty() ? "" : ", ") + root;
+        }
         simpl->inotify_watcher->add_watch(simpl->cfg.worlds_dir);
+        if (!simpl->cfg.scene_dir.empty())
+            simpl->inotify_watcher->add_watch(simpl->cfg.scene_dir);
         if (!simpl->cfg.project_shared_lib_dir.empty())
             simpl->inotify_watcher->add_watch(
                 simpl->cfg.project_shared_lib_dir);
@@ -6155,8 +6191,7 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
             simpl->inotify_watcher->add_watch(
                 simpl->cfg.engine_shared_lib_dir);
         simpl->inotify_watching = true;
-        printf("live-edit: watching %s\n",
-               simpl->cfg.object_sources_dir().c_str());
+        printf("live-edit: watching %s\n", watched.c_str());
     }
 #else
     if (desc.enable_live_edit)

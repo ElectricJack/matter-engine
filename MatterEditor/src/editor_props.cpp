@@ -11,11 +11,31 @@
 
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
 namespace viewer {
 namespace {
+
+// Where a scene's authored property overrides live.
+//
+// Scene layout keeps them WITH the scene (scenes/<name>/props.json) so that
+// copying, renaming or deleting a scene folder takes its tuning along -- under
+// the old editor/worlds/<name>.props.json split those silently desynced, and a
+// deleted world left its props behind forever.
+//
+// The legacy path is still honoured when there is no scene folder, so a
+// project part-way through migration keeps loading what it already has.
+std::string world_props_path(const std::string& project_dir,
+                             const std::string& world_name) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path scene_dir = fs::path(project_dir) / "scenes" / world_name;
+    if (fs::is_directory(scene_dir, ec))
+        return (scene_dir / "props.json").string();
+    return project_dir + "/editor/worlds/" + world_name + ".props.json";
+}
 
 using matter::props::prop;
 using matter::props::Scope;
@@ -1062,7 +1082,7 @@ void EditorProps::set_world(const std::string& project_dir,
     // connect can rebuild it when the module set changes, and the Binding
     // holds bare pointers into its Descs, strings and value buffer.
     release_draw_overrides();
-    world_path_ = project_dir + "/editor/worlds/" + world_name + ".props.json";
+    world_path_ = world_props_path(project_dir, world_name);
     clear_world_dirty();
     // RequiresReload groups are consumed BY the connect, so they must be read
     // before it. Everything else waits for on_world_connected, which needs the

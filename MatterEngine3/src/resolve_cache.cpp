@@ -256,6 +256,16 @@ uint64_t compute_key(const std::string& world_path,
                      const std::string& objects_dir,
                      const std::string& project_shared_lib_dir,
                      const std::string& engine_shared_lib_dir) {
+    return compute_key(world_path, root_params_json, std::string(), objects_dir,
+                       project_shared_lib_dir, engine_shared_lib_dir);
+}
+
+uint64_t compute_key(const std::string& world_path,
+                     const std::string& root_params_json,
+                     const std::string& scene_objects_dir,
+                     const std::string& objects_dir,
+                     const std::string& project_shared_lib_dir,
+                     const std::string& engine_shared_lib_dir) {
     // Start with FNV-1a offset basis.
     uint64_t h = 14695981039346656037ull;
 
@@ -273,11 +283,20 @@ uint64_t compute_key(const std::string& world_path,
 
     // 3. Every file under the object and both shared-library tiers. Fold an
     //    explicit tier tag so identical relative names cannot alias tiers.
-    const std::pair<const char*, const std::string*> tiers[] = {
-        {"objects", &objects_dir},
-        {"project-shared", &project_shared_lib_dir},
-        {"engine-shared", &engine_shared_lib_dir},
-    };
+    //
+    //    The scene tier is folded ONLY when the scene actually has one. Folding
+    //    its tag unconditionally would change the key of every flat-layout
+    //    project that has no scene objects at all, invalidating caches for a
+    //    tier those projects do not have; skipping it entirely keeps
+    //    flat-layout keys bit-identical to what they were before the scene
+    //    layout existed. It leads the list because it is the tier that wins
+    //    resolution, so the order here matches the order in object_roots().
+    std::vector<std::pair<const char*, const std::string*>> tiers;
+    if (!scene_objects_dir.empty())
+        tiers.push_back({"scene-objects", &scene_objects_dir});
+    tiers.push_back({"objects", &objects_dir});
+    tiers.push_back({"project-shared", &project_shared_lib_dir});
+    tiers.push_back({"engine-shared", &engine_shared_lib_dir});
     for (const auto& tier : tiers) {
         h = fold_str(h, tier.first);
         const std::string* dir_ptr = tier.second;

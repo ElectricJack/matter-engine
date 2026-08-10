@@ -379,7 +379,7 @@ class TapePlain extends World {
     // loader assigned; mirror the loader by registering the three materials
     // dynamically first, then evaluate the real world source.
     {
-        std::ifstream in("../../projects/world_demo/worlds/ChartVtProof.js",
+        std::ifstream in("../../projects/world_demo/scenes/ChartVtProof/ChartVtProof.js",
                          std::ios::binary);
         CHECK(bool(in), "ChartVtProof.js readable from the tests directory");
         std::ostringstream ss;
@@ -434,7 +434,7 @@ class TapePlain extends World {
     // relief/moisture channels come from — that all four classes actually occur
     // across the range and land where alpine photographs put them.
     {
-        std::ifstream in("../../projects/world_demo/worlds/StreamMountain.js",
+        std::ifstream in("../../projects/world_demo/scenes/StreamMountain/StreamMountain.js",
                          std::ios::binary);
         CHECK(bool(in), "StreamMountain.js readable from the tests directory");
         std::ostringstream ss;

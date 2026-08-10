@@ -398,6 +398,65 @@ static void test_project_sources_define_key_and_stale_manifest_is_ignored() {
     remove_dir(root);
 }
 
+// The scene object tier must reach the key. Without it, editing a scene's own
+// WorldSector.js leaves the key unmoved, the stale resolve payload is restored,
+// and the edit appears to do nothing at all.
+//
+// The other half matters just as much: a project with NO scene tier must key
+// EXACTLY as it did before the scene layout existed, so migrating the engine
+// does not invalidate every flat-layout project's cache for a tier it lacks.
+static void test_scene_object_tier_enters_the_key() {
+    printf("[resolve_cache] scene_object_tier_enters_the_key\n");
+    const std::string root = sandbox_root("rc_test_scene_objects");
+    REQUIRE(build_key_sandbox(root));
+
+    const std::string world = root + "/worlds/TestWorld.js";
+    const std::string scene_objects = root + "/scenes/TestWorld/objects";
+
+    // No scene tier: the 6-arg form with "" must equal the 5-arg form bit for
+    // bit. This is the compatibility guarantee, asserted rather than assumed.
+    const uint64_t flat5 = resolve_cache::compute_key(
+        world, "{}", root + "/objects", root + "/shared-lib", root + "/engine-shared");
+    const uint64_t flat6 = resolve_cache::compute_key(
+        world, "{}", "", root + "/objects", root + "/shared-lib",
+        root + "/engine-shared");
+    CHECK(flat5 != 0);
+    CHECK(flat5 == flat6);
+
+    // An EMPTY scene objects/ directory is still a tier, and folding its tag
+    // must change the key -- otherwise "this scene has its own objects" and
+    // "this scene has none" are indistinguishable to the cache.
+    fs::create_directories(scene_objects);
+    const uint64_t with_tier = resolve_cache::compute_key(
+        world, "{}", scene_objects, root + "/objects", root + "/shared-lib",
+        root + "/engine-shared");
+    CHECK(with_tier != flat5);
+
+    // A scene-local module changes the key.
+    REQUIRE(write_file(scene_objects + "/WorldSector.js", "// scene v1\n"));
+    const uint64_t v1 = resolve_cache::compute_key(
+        world, "{}", scene_objects, root + "/objects", root + "/shared-lib",
+        root + "/engine-shared");
+    CHECK(v1 != with_tier);
+
+    // Editing it changes the key again -- the regression this test exists for.
+    REQUIRE(write_file(scene_objects + "/WorldSector.js", "// scene v2\n"));
+    const uint64_t v2 = resolve_cache::compute_key(
+        world, "{}", scene_objects, root + "/objects", root + "/shared-lib",
+        root + "/engine-shared");
+    CHECK(v1 != v2);
+
+    // Same relative name in two tiers must not alias: the shared copy having
+    // the bytes the scene copy just had is a different world state.
+    REQUIRE(write_file(root + "/objects/WorldSector.js", "// scene v2\n"));
+    const uint64_t v3 = resolve_cache::compute_key(
+        world, "{}", scene_objects, root + "/objects", root + "/shared-lib",
+        root + "/engine-shared");
+    CHECK(v3 != v2);
+
+    remove_dir(root);
+}
+
 static void test_world_definition_adapter_preserves_runtime_semantics() {
     printf("[resolve_cache] world_definition_adapter\n");
     matter::WorldDefinition definition;
@@ -610,6 +669,7 @@ int main() {
     test_round_trip_basic();
     test_snapshot_indices();
     test_project_sources_define_key_and_stale_manifest_is_ignored();
+    test_scene_object_tier_enters_the_key();
     test_world_definition_adapter_preserves_runtime_semantics();
     test_project_procedural_settings_drive_profile_and_binding();
     test_key_changes_on_seed();
