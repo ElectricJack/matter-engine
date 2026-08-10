@@ -107,6 +107,16 @@ wait_for_present_count() {
   return 1
 }
 
+settle_volumetrics() {
+  local count="${1:-4}" first_line
+  first_line="$(log_line_count)"
+  send "history_reset"
+  wait_for_log_after "$first_line" "history_reset: requested" >/dev/null
+  first_line="$(log_line_count)"
+  send "wait_frames $count"
+  wait_for_present_count "$first_line" "$count" >/dev/null
+}
+
 request_property() {
   local path="$1" first_line row
   first_line="$(log_line_count)"
@@ -168,6 +178,7 @@ trap cleanup EXIT INT TERM
 
 WORLD="${MATTER_WORLD:-StreamMountain}"
 FROXEL_PERF_WARMUP_SECONDS=140
+CLOUD_LIGHTING_PERF_WARMUP_SECONDS=180
 CLOUD_SHADOW_PERF_WARMUP_SECONDS=180
 ATMOSPHERE_PRESENTATION_PERF_WARMUP_SECONDS=600
 PERF_WARMUP_SECONDS="${MATTER_PERF_WARMUP_SECONDS:-20}"
@@ -176,6 +187,10 @@ PERF_WARMUP_SECONDS="${MATTER_PERF_WARMUP_SECONDS:-20}"
 # the process halfway through that required proof.
 if [ "$SUITE" = "froxel" ] && [ "$PERF_WARMUP_SECONDS" -lt "$FROXEL_PERF_WARMUP_SECONDS" ]; then
   PERF_WARMUP_SECONDS="$FROXEL_PERF_WARMUP_SECONDS"
+fi
+if [ "$SUITE" = "cloud-lighting" ] && \
+   [ "$PERF_WARMUP_SECONDS" -lt "$CLOUD_LIGHTING_PERF_WARMUP_SECONDS" ]; then
+  PERF_WARMUP_SECONDS="$CLOUD_LIGHTING_PERF_WARMUP_SECONDS"
 fi
 if [ "$SUITE" = "cloud-shadows" ] && [ "$PERF_WARMUP_SECONDS" -lt "$CLOUD_SHADOW_PERF_WARMUP_SECONDS" ]; then
   PERF_WARMUP_SECONDS="$CLOUD_SHADOW_PERF_WARMUP_SECONDS"
@@ -612,6 +627,109 @@ case "$SUITE" in
     sleep 4
     capture "cloud_improved_density" "${LABEL}_improved-density"
     send "set viewer.debug.vol_debug_view 0"
+
+    # Fixed enhanced-lighting proof matrix. Camera, cloud field, sun,
+    # exposure, froxel dimensions, and clipmaps stay byte-for-byte unchanged
+    # while only the selectable order count advances from 1 through 4.
+    send "set render.clouds.layer0_enabled true"
+    send "set render.clouds.layer0_min_height 140"
+    send "set render.clouds.layer0_max_height 226"
+    send "set render.clouds.layer0_max_density 0.008"
+    send "set render.clouds.layer0_falloff_min 0"
+    send "set render.clouds.layer0_falloff_max 86"
+    send "set render.clouds.layer0_noise_scale 0.00022"
+    send "set render.clouds.layer0_octaves 3"
+    send "set render.clouds.layer0_lacunarity 2.03"
+    send "set render.clouds.layer0_gain 0.5"
+    send "set render.clouds.layer0_coverage 0.55"
+    send "set render.clouds.layer0_wind 0,0,0"
+    send "set render.volumetrics.local_sun_march_steps 8"
+    send "set render.volumetrics.local_sun_march_distance_m 250"
+    send "set render.volumetrics.multiple_scattering_strength 0.6"
+    send "set render.volumetrics.powder_strength 0.35"
+    send "set render.cloud_shadows.enabled true"
+    send "set render.cloud_shadows.near_resolution 256"
+    send "set render.cloud_shadows.near_depth_slices 32"
+    send "set render.cloud_shadows.near_coverage_m 1800"
+    send "set render.cloud_shadows.far_resolution 128"
+    send "set render.cloud_shadows.far_depth_slices 24"
+    send "set render.cloud_shadows.far_coverage_m 4000"
+    send "set render.cloud_shadows.filter_scale 1"
+    send "set render.cloud_shadows.update_fraction 1"
+    send "set render.lighting.sun_elevation_deg 45"
+    for property in \
+      render.volumetrics.froxel_xy_scale \
+      render.volumetrics.froxel_depth_slices \
+      render.volumetrics.local_sun_march_steps \
+      render.volumetrics.local_sun_march_distance_m \
+      render.volumetrics.multiple_scattering_strength \
+      render.volumetrics.powder_strength \
+      render.cloud_shadows.enabled \
+      render.cloud_shadows.near_resolution \
+      render.cloud_shadows.near_depth_slices \
+      render.cloud_shadows.near_coverage_m \
+      render.cloud_shadows.far_resolution \
+      render.cloud_shadows.far_depth_slices \
+      render.cloud_shadows.far_coverage_m \
+      render.cloud_shadows.filter_scale \
+      render.cloud_shadows.update_fraction \
+      render.lighting.exposure_ev \
+      render.lighting.sun_azimuth_deg \
+      render.lighting.sun_elevation_deg; do
+      send "get $property"
+    done
+    if ! wait_for_streaming_settle; then
+      echo "NOTE: StreamMountain did not settle before the bounded cloud-lighting matrix; preserving captures as diagnostic evidence" >&2
+    fi
+    for order in 1 2 3 4; do
+      send "set render.volumetrics.multiple_scattering_orders $order"
+      send "get render.volumetrics.multiple_scattering_orders"
+      settle_volumetrics 4
+      capture "cloud_order_${order}" "${LABEL}_order-${order}"
+    done
+
+    # Local-shadow A/B: all settings above remain fixed, including clipmap
+    # shadowing, so the only difference is the detailed full-density march.
+    send "set render.volumetrics.multiple_scattering_orders 1"
+    for steps in 0 8; do
+      send "set render.volumetrics.local_sun_march_steps $steps"
+      send "get render.volumetrics.local_sun_march_steps"
+      settle_volumetrics 4
+      capture "cloud_march_${steps}" "${LABEL}_march-${steps}"
+    done
+
+    # FIFO property writes do not seed an empty deck. Spell out every layer-1
+    # field, and keep layers 0/1 contiguous, for a reproducible cross-shadow.
+    send "set render.clouds.layer1_min_height 255"
+    send "set render.clouds.layer1_max_height 345"
+    send "set render.clouds.layer1_max_density 0.005"
+    send "set render.clouds.layer1_falloff_min 20"
+    send "set render.clouds.layer1_falloff_max 35"
+    send "set render.clouds.layer1_noise_scale 0.0007"
+    send "set render.clouds.layer1_octaves 2"
+    send "set render.clouds.layer1_lacunarity 2"
+    send "set render.clouds.layer1_gain 0.5"
+    send "set render.clouds.layer1_coverage 0.68"
+    send "set render.clouds.layer1_weather_scale 0.00025"
+    send "set render.clouds.layer1_weather_influence 0"
+    send "set render.clouds.layer1_detail_scale 0.012"
+    send "set render.clouds.layer1_detail_erosion 0"
+    send "set render.clouds.layer1_shape_bias 0"
+    send "set render.clouds.layer1_wind 0,0,0"
+    send "set render.clouds.layer1_enabled true"
+    send "set render.volumetrics.local_sun_march_steps 8"
+    send "set render.volumetrics.multiple_scattering_orders 2"
+    for control in enabled min_height max_height max_density falloff_min \
+                   falloff_max noise_scale octaves lacunarity gain coverage \
+                   weather_scale weather_influence detail_scale \
+                   detail_erosion shape_bias wind; do
+      send "get render.clouds.layer1_${control}"
+    done
+    send "get render.volumetrics.local_sun_march_steps"
+    send "get render.volumetrics.multiple_scattering_orders"
+    settle_volumetrics 4
+    capture "cloud_cross_layer" "${LABEL}_cross-layer"
+
     CLOUD_CURRENT_BASELINE="${MATTER_CLOUD_CURRENT_BASELINE:-$HERE/../../MatterEditor/build/validation/atmosphere-clouds/task7/physical-sky_current-cost.png}"
     [ -f "$CLOUD_CURRENT_BASELINE" ] || {
       echo "ERROR: accepted Current-cost baseline missing: $CLOUD_CURRENT_BASELINE" >&2
@@ -643,7 +761,10 @@ case "$SUITE" in
     fi
     "$IMAGE_PYTHON" "$HERE/img_diff.py" "$OUT/${LABEL}_current-parity.png" \
       "$OUT/${LABEL}_current-repeat.png" --max-diff-pct 10.0
-    for _ in $(seq 1 30); do [ -s "$PERF_OUTPUT" ] && break; sleep 1; done
+    for _ in $(seq 1 $((CLOUD_LIGHTING_PERF_WARMUP_SECONDS + 30))); do
+      [ -s "$PERF_OUTPUT" ] && break
+      sleep 1
+    done
     [ -s "$PERF_OUTPUT" ] || {
       echo "ERROR: telemetry timed out: $PERF_OUTPUT" >&2
       exit 1

@@ -12094,8 +12094,10 @@ bool VkSceneRenderer::record_cull_and_render(
         gi_trans_atrous_[0].lifetime, gi_trans_atrous_[1].lifetime};
     if (volumetrics_ && volumetrics_->active()) {
         attachments.push_back(volumetrics_->vol_integrated().lifetime);
-        if (volumetrics_debug_view_ > 3.5f)
-            attachments.push_back(volumetrics_->cloud_density_or_dummy().lifetime);
+        // Task 12 scatter samples this image in enhanced mode. Current cost
+        // retains only the stable 1^3 dummy, so keeping the descriptor backing
+        // alive changes no grid-sized footprint.
+        attachments.push_back(volumetrics_->cloud_density_or_dummy().lifetime);
     }
     if (cloud_shadows_)
         cloud_shadows_->append_frame_lifetimes(frame.frame_slot, attachments);

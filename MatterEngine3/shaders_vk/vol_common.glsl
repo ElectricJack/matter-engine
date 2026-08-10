@@ -30,6 +30,13 @@ float hg_phase(float cos_theta, float g) {
     return (1.0 - g2) / (4.0 * 3.14159265 * denom * sqrt(denom));
 }
 
+// Cloud-only dual lobe: a strong forward lobe preserves silver linings while
+// the small backward lobe keeps the dark side from collapsing to black.
+float cloud_phase(float mu, float anisotropy_scale) {
+    return 0.8 * hg_phase(mu, 0.85 * anisotropy_scale) +
+           0.2 * hg_phase(mu, -0.30 * anisotropy_scale);
+}
+
 // Must match C++ GpuCloudLayer in matter/cloud_layers.h (96 bytes std430).
 // All-float, like GpuVolumeEmitter below and for the same reason: the struct
 // alignment stays 4 and the std430 array stride is exactly sizeof, so the C++

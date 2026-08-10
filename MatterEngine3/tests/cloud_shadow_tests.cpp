@@ -1,5 +1,6 @@
 #include "matter/cloud_shadow_settings.h"
 #include "../src/render/vk_cloud_shadows.h"
+#include "../src/render/vk_volumetrics.h"
 #include "check.h"
 
 #include <array>
@@ -342,6 +343,96 @@ void test_task11_rotating_tile_scheduler_and_horizon_contract() {
           "incoming/from-sun direction is negated once for the geometric horizon");
 }
 
+void test_task12_constant_slab_local_march_and_remaining_coarse_tau() {
+    constexpr float sigma = 0.02f;
+    constexpr float requested_distance_m = 250.0f;
+    constexpr uint32_t steps = 8u;
+    const auto slab = viewer::cloud_self_shadow_constant_slab_reference(
+        sigma, requested_distance_m, requested_distance_m, steps,
+        4.0f, 2.0f);
+    const float expected_transmittance =
+        std::exp(-sigma * requested_distance_m - 2.0f);
+    // R16F accumulation can move by roughly one half ULP per step around the
+    // 0.625-tau increment used by this fixture.
+    constexpr float half_float_per_step_tolerance = steps * 0.0005f;
+    CHECK(slab.samples_taken == steps &&
+              std::fabs(slab.marched_distance_m - requested_distance_m) <
+                  1.0e-6f &&
+              std::fabs(slab.tau_local_full - 5.0f) <
+                  half_float_per_step_tolerance &&
+              std::fabs(slab.transmittance - expected_transmittance) <
+                  half_float_per_step_tolerance,
+          "constant full-density slab local march matches exp(-sigma times marched distance)");
+
+    const auto no_overlap = viewer::cloud_self_shadow_constant_slab_reference(
+        0.01f, 250.0f, 250.0f, steps, 4.0f, 2.0f);
+    CHECK(std::fabs(no_overlap.tau_local_full - 2.5f) < 1.0e-6f &&
+              no_overlap.tau_remaining_coarse == 2.0f &&
+              std::fabs(no_overlap.tau_total - 4.5f) < 1.0e-6f &&
+              std::fabs(no_overlap.tau_total - 6.5f) > 1.0f,
+          "local full-density tau replaces the coarse start segment instead of double counting it");
+
+    const auto exits = viewer::cloud_self_shadow_constant_slab_reference(
+        sigma, requested_distance_m, 75.0f, steps, 4.0f, 2.0f);
+    CHECK(exits.stopped_at_froxel_exit && exits.samples_taken == steps &&
+              std::fabs(exits.marched_distance_m - 75.0f) < 1.0e-6f &&
+              std::fabs(exits.tau_local_full - 1.5f) < 1.0e-6f &&
+              exits.tau_remaining_coarse == 2.0f &&
+              std::fabs(exits.tau_total - 3.5f) < 1.0e-6f &&
+              std::isfinite(exits.transmittance),
+          "camera-frustum exit stops the detailed loop while the sun-space remainder stays active");
+}
+
+void test_task12_bounded_cloud_orders_and_ground_fog_separation() {
+    constexpr float cloud_extinction = 0.02f;
+    constexpr float fog_scattering = 0.004f;
+    constexpr float tau_total = 4.0f;
+    constexpr float mu = 0.15f;
+    constexpr float strength = 0.55f;
+    constexpr float direct = 2.0f;
+    constexpr float ambient = 0.25f;
+    std::array<viewer::CloudLightingReference, 4> orders{};
+    for (int order = 1; order <= 4; ++order) {
+        orders[static_cast<size_t>(order - 1)] =
+            viewer::cloud_lighting_reference(
+                cloud_extinction, fog_scattering, tau_total, 2.5f, mu,
+                order, strength, 0.25f, direct, ambient, 0.3f);
+    }
+    CHECK(orders[1].cloud_radiance > orders[0].cloud_radiance &&
+              orders[2].cloud_radiance > orders[1].cloud_radiance &&
+              orders[3].cloud_radiance > orders[2].cloud_radiance,
+          "orders two three and four monotonically brighten an optically thick shadowed cloud");
+    bool bounded = true;
+    for (const auto& value : orders)
+        bounded = bounded && std::isfinite(value.cloud_radiance) &&
+            value.normalized_order_energy <= 1.0f + 2.0f * strength;
+    CHECK(bounded,
+          "normalized cloud order energy remains below one plus twice the strength");
+
+    const auto order1_zero = viewer::cloud_lighting_reference(
+        cloud_extinction, fog_scattering, tau_total, 2.5f, mu,
+        1, 0.0f, 0.25f, direct, ambient, 0.3f);
+    const auto order1_full = viewer::cloud_lighting_reference(
+        cloud_extinction, fog_scattering, tau_total, 2.5f, mu,
+        1, 1.0f, 0.25f, direct, ambient, 0.3f);
+    CHECK(std::fabs(order1_zero.cloud_radiance - order1_full.cloud_radiance) <
+              1.0e-7f,
+          "single-scattering order is independent of the multiple-scattering strength knob");
+
+    bool fog_unchanged = true;
+    for (const auto& value : orders)
+        fog_unchanged = fog_unchanged &&
+            std::fabs(value.fog_radiance - orders[0].fog_radiance) < 1.0e-7f;
+    CHECK(fog_unchanged && orders[0].fog_radiance > 0.0f,
+          "changing cloud scattering orders leaves ground fog single-scattered");
+
+    const auto fog_lab = viewer::cloud_lighting_reference(
+        0.0f, fog_scattering, 0.0f, 0.0f, mu,
+        4, strength, 0.25f, direct, ambient, 0.3f);
+    CHECK(fog_lab.cloud_radiance == 0.0f && fog_lab.fog_radiance > 0.0f,
+          "FogLab without cloud layers has a zero cloud-only channel and nonzero low haze");
+}
+
 } // namespace
 
 int main() {
@@ -354,5 +445,7 @@ int main() {
     test_task11_prefix_integrates_sunward_density_fail_closed();
     test_task11_reprojection_maps_world_overlap_and_exposed_border();
     test_task11_rotating_tile_scheduler_and_horizon_contract();
+    test_task12_constant_slab_local_march_and_remaining_coarse_tau();
+    test_task12_bounded_cloud_orders_and_ground_fog_separation();
     return check_summary();
 }

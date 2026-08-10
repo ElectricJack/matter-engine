@@ -12,6 +12,9 @@
 
 #include <vulkan/vulkan.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -53,6 +56,118 @@ struct FroxelDispatchGrid {
     uint32_t integrate_x = 0;
     uint32_t integrate_y = 0;
 };
+
+// Independent CPU references for the numerical Task 12 gates. They use
+// literal coefficients from the approved shader contract and deliberately
+// accept both start/end coarse tau so the no-overlap test can catch choosing
+// the wrong cumulative sample.
+struct CloudSelfShadowReference {
+    float marched_distance_m = 0.0f;
+    float tau_local_full = 0.0f;
+    float tau_remaining_coarse = 0.0f;
+    float tau_total = 0.0f;
+    float transmittance = 1.0f;
+    uint32_t samples_taken = 0;
+    bool stopped_at_froxel_exit = false;
+};
+
+inline CloudSelfShadowReference cloud_self_shadow_constant_slab_reference(
+    float sigma, float requested_distance_m, float froxel_exit_distance_m,
+    uint32_t steps, float coarse_start_tau, float coarse_end_tau) {
+    CloudSelfShadowReference result{};
+    (void)coarse_start_tau;  // The start prefix is exactly the overlap to omit.
+    if (!std::isfinite(sigma) || sigma < 0.0f) sigma = 0.0f;
+    if (!std::isfinite(requested_distance_m) || requested_distance_m < 0.0f)
+        requested_distance_m = 0.0f;
+    if (!std::isfinite(froxel_exit_distance_m) ||
+        froxel_exit_distance_m < 0.0f)
+        froxel_exit_distance_m = 0.0f;
+    steps = std::min(steps, 32u);
+    if (steps > 0 && requested_distance_m > 0.0f &&
+        froxel_exit_distance_m > 0.0f) {
+        result.marched_distance_m =
+            std::min(requested_distance_m, froxel_exit_distance_m);
+        const float step_m = result.marched_distance_m /
+                             static_cast<float>(steps);
+        for (uint32_t i = 0; i < steps; ++i) {
+            result.tau_local_full += sigma * step_m;
+            ++result.samples_taken;
+        }
+        result.stopped_at_froxel_exit =
+            froxel_exit_distance_m < requested_distance_m;
+    }
+    result.tau_remaining_coarse =
+        std::isfinite(coarse_end_tau) ? std::clamp(coarse_end_tau, 0.0f, 80.0f)
+                                      : 0.0f;
+    result.tau_total = std::clamp(
+        result.tau_local_full + result.tau_remaining_coarse, 0.0f, 80.0f);
+    result.transmittance = std::exp(-result.tau_total);
+    return result;
+}
+
+struct CloudLightingReference {
+    float cloud_radiance = 0.0f;
+    float fog_radiance = 0.0f;
+    float normalized_order_energy = 0.0f;
+};
+
+inline float cloud_hg_phase_reference(float mu, float g) {
+    constexpr float pi = 3.14159265358979323846f;
+    const float g2 = g * g;
+    const float denominator = std::max(
+        1.0f + g2 - 2.0f * g * std::clamp(mu, -1.0f, 1.0f), 1.0e-6f);
+    return (1.0f - g2) /
+           (4.0f * pi * denominator * std::sqrt(denominator));
+}
+
+inline CloudLightingReference cloud_lighting_reference(
+    float cloud_extinction, float fog_scattering, float tau_total,
+    float tau_local_full, float mu, int orders, float strength,
+    float powder_strength, float direct, float ambient, float fog_phase_g) {
+    CloudLightingReference result{};
+    cloud_extinction = std::isfinite(cloud_extinction)
+        ? std::max(cloud_extinction, 0.0f) : 0.0f;
+    fog_scattering = std::isfinite(fog_scattering)
+        ? std::max(fog_scattering, 0.0f) : 0.0f;
+    tau_total = std::isfinite(tau_total)
+        ? std::clamp(tau_total, 0.0f, 80.0f) : 0.0f;
+    tau_local_full = std::isfinite(tau_local_full)
+        ? std::clamp(tau_local_full, 0.0f, 80.0f) : 0.0f;
+    orders = std::clamp(orders, 1, 4);
+    strength = std::isfinite(strength)
+        ? std::clamp(strength, 0.0f, 1.0f) : 0.0f;
+    powder_strength = std::isfinite(powder_strength)
+        ? std::clamp(powder_strength, 0.0f, 1.0f) : 0.0f;
+    float weighted_orders = 0.0f;
+    float order_energy = 0.0f;
+    for (int order = 0; order < orders; ++order) {
+        const float extinction_scale = std::pow(0.55f, float(order));
+        const float anisotropy_scale = std::pow(0.5f, float(order));
+        const float energy = order == 0
+            ? 1.0f : strength * std::pow(0.5f, float(order - 1));
+        const float phase =
+            0.8f * cloud_hg_phase_reference(mu, 0.85f * anisotropy_scale) +
+            0.2f * cloud_hg_phase_reference(mu, -0.30f * anisotropy_scale);
+        weighted_orders += energy * std::exp(-tau_total * extinction_scale) *
+                           phase;
+        order_energy += energy;
+    }
+    const float maximum_energy = 1.0f + 2.0f * strength;
+    if (order_energy > maximum_energy && order_energy > 0.0f)
+        weighted_orders *= maximum_energy / order_energy;
+    result.normalized_order_energy = std::min(order_energy, maximum_energy);
+    const float powder = 1.0f + powder_strength *
+        (std::min(2.0f, 1.0f + (1.0f - std::exp(-2.0f * tau_local_full))) -
+         1.0f);
+    result.cloud_radiance = 0.99f * cloud_extinction *
+        (std::max(direct, 0.0f) * weighted_orders +
+         std::max(ambient, 0.0f)) * powder;
+    result.fog_radiance = fog_scattering *
+        (std::max(direct, 0.0f) *
+             cloud_hg_phase_reference(mu, std::clamp(fog_phase_g, -0.99f, 0.99f)) +
+         std::max(ambient, 0.0f));
+    return result;
+}
 
 class VkVolumetrics {
 public:
@@ -161,15 +276,27 @@ private:
         float camera_pos[3];
         uint32_t frame_index;
         float sun_dir[3];
-        float sun_intensity;
+        uint32_t local_sun_march_steps;
         float phase_g;
         float temporal_blend;
         uint32_t history_valid;
         float camera_near;
         float camera_far;
-        float pad[3];
+        uint32_t multiple_scattering_orders;
+        float multiple_scattering_strength;
+        float powder_strength;
+        float camera_fwd[3];
+        float tan_half_fov;
+        float camera_right[3];
+        float aspect_ratio;
+        float camera_up[3];
+        float local_march_distance_m;
     };
-    static_assert(sizeof(ScatterConstants) == 192);
+    static_assert(sizeof(ScatterConstants) == 240);
+    static_assert(offsetof(ScatterConstants, camera_pos) == 128);
+    static_assert(offsetof(ScatterConstants, local_sun_march_steps) == 156);
+    static_assert(offsetof(ScatterConstants, camera_fwd) == 192);
+    static_assert(offsetof(ScatterConstants, local_march_distance_m) == 236);
 
     bool create_noise_texture(matter::VulkanDevice& vulkan, std::string& error);
     struct FroxelBundle {
@@ -249,7 +376,7 @@ private:
     VkDescriptorSetLayout scatter_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout environment_set_layout_ = VK_NULL_HANDLE;  // borrowed
     VkPipelineLayout scatter_pipeline_layout_ = VK_NULL_HANDLE;
-    VkPipeline scatter_pipeline_ = VK_NULL_HANDLE;
+    VkPipeline scatter_pipelines_[2] = {};
     VkDescriptorSet environment_descriptor_set_ = VK_NULL_HANDLE;
 
     // Integrate pass resources.
@@ -277,6 +404,12 @@ private:
     float fog_falloff_ = 30.0f;
     float fog_color_[3] = {0.9f, 0.92f, 0.95f};
     float fog_wind_[3] = {0.0f, 0.0f, 0.0f};
+    uint32_t local_sun_march_steps_ = 8;
+    float local_march_distance_m_ = 250.0f;
+    uint32_t multiple_scattering_orders_ = 2;
+    float multiple_scattering_strength_ = 0.55f;
+    float powder_strength_ = 0.25f;
+    bool settings_initialized_ = false;
     // Live cloud decks. cloud_count_ is the number of leading entries that
     // are enabled AND well formed — the same number that selects the density
     // pipeline, so the shader can never read past what was uploaded.
@@ -286,7 +419,6 @@ private:
 
     // Lighting state (set externally before record).
     float sun_direction_[3] = {-0.45f, -0.80f, -0.35f};
-    float sun_intensity_ = 1.0f;
 
 public:
     // Set lighting state that the scatter pass needs.

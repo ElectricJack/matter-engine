@@ -6715,6 +6715,118 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
           error.empty() ? "enhanced cloud delta preserves nonzero fog and adds only 0.99 cloud scattering"
                         : error.c_str());
 
+    // Task 12 RED/GREEN: exercise the production scatter and integration
+    // pipelines with fixed physical direct/ambient inputs. Four frames cover
+    // the complete 2x2 Bayer schedule after every lighting-history reset.
+    viewer::VkSceneLighting task12_lighting{};
+    task12_lighting.sun_direction = {0.0f, -1.0f, 0.0f};
+    task12_lighting.sun_intensity = 1.0f;
+    task12_lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+        {0.0f, 0.0f, 0.0f};
+    task12_lighting.atmosphere_sources.live_sun_tint_rgb =
+        {1.0f, 1.0f, 1.0f};
+    task12_lighting.atmosphere_sources.sun_multiplier = 1.0f;
+    renderer.set_lighting(task12_lighting);
+    matter::CloudShadowSettings task12_no_shadows{};
+    task12_no_shadows.enabled = false;
+    matter::VulkanVolumetricsSettings task12_settings = improved_clouds;
+    task12_settings.temporal_blend = 0.0f;
+    task12_settings.local_sun_march_steps = 8;
+    task12_settings.local_sun_march_distance_m = 250.0f;
+    task12_settings.multiple_scattering_strength = 0.55f;
+    task12_settings.powder_strength = 0.0f;
+    matter::FogSettings task12_cloud = cloud_fog;
+    task12_cloud.clouds[0].max_density = 0.004f;
+    const auto task12_capture = [&](int orders, float strength,
+                                    const matter::FogSettings& fixture,
+                                    matter::Float4& sample) {
+        task12_settings.multiple_scattering_orders = orders;
+        task12_settings.multiple_scattering_strength = strength;
+        renderer.set_volumetrics_settings(task12_settings, fixture,
+                                          task12_no_shadows);
+        bool rendered = true;
+        for (int frame = 0; frame < 4; ++frame)
+            rendered = rendered && warm_rt_tlas();
+        return rendered &&
+            renderer.readback_volumetrics_integrated_voxel_for_test(
+                80u, 45u, 100u, sample, error);
+    };
+    const auto luminance = [](const matter::Float4& value) {
+        return value.x * 0.2126f + value.y * 0.7152f + value.z * 0.0722f;
+    };
+    matter::Float4 task12_orders[4]{};
+    const uint64_t task12_enhanced_generation =
+        renderer.volumetrics_resource_generation();
+    bool task12_orders_read = true;
+    for (int order = 1; order <= 4; ++order)
+        task12_orders_read = task12_orders_read &&
+            task12_capture(order, 0.55f, task12_cloud,
+                           task12_orders[order - 1]);
+    const float task12_luma[4]{luminance(task12_orders[0]),
+                               luminance(task12_orders[1]),
+                               luminance(task12_orders[2]),
+                               luminance(task12_orders[3])};
+    std::fprintf(stderr,
+                 "task12 orders: %.7f %.7f %.7f %.7f generation=%llu\n",
+                 task12_luma[0], task12_luma[1], task12_luma[2],
+                 task12_luma[3],
+                 static_cast<unsigned long long>(
+                     renderer.volumetrics_resource_generation()));
+    CHECK(task12_orders_read && std::isfinite(task12_luma[0]) &&
+              task12_luma[0] > 0.0f &&
+              task12_luma[1] > task12_luma[0] &&
+              task12_luma[2] > task12_luma[1] &&
+              task12_luma[3] > task12_luma[2] &&
+              renderer.volumetrics_resource_generation() ==
+                  task12_enhanced_generation,
+          error.empty()
+              ? "real enhanced scatter monotonically brightens bounded orders one through four without resource recreation"
+              : error.c_str());
+
+    matter::Float4 task12_order1_zero{}, task12_order1_full{};
+    const bool task12_strength_read =
+        task12_capture(1, 0.0f, task12_cloud, task12_order1_zero) &&
+        task12_capture(1, 1.0f, task12_cloud, task12_order1_full);
+    CHECK(task12_strength_read &&
+              std::fabs(luminance(task12_order1_zero) -
+                        luminance(task12_order1_full)) < 2.0e-4f,
+          error.empty()
+              ? "real order-one cloud lighting is independent of multiple-scattering strength"
+              : error.c_str());
+
+    matter::FogSettings task12_fog_only{};
+    task12_fog_only.density = 0.004f;
+    task12_fog_only.floor = -10000.0f;
+    task12_fog_only.falloff = 100000.0f;
+    task12_fog_only.color[0] = 0.21f;
+    task12_fog_only.color[1] = 0.37f;
+    task12_fog_only.color[2] = 0.58f;
+    matter::Float4 task12_fog_order1{}, task12_fog_order4{};
+    const bool task12_fog_read =
+        task12_capture(1, 0.55f, task12_fog_only, task12_fog_order1) &&
+        task12_capture(4, 0.55f, task12_fog_only, task12_fog_order4);
+    matter::Float4 task12_fog_media{};
+    float task12_fog_cloud_density = -1.0f;
+    const bool task12_fog_density_read =
+        renderer.readback_volumetrics_density_voxel_for_test(
+            80u, 45u, 64u, task12_fog_media,
+            task12_fog_cloud_density, error);
+    CHECK(task12_fog_read && task12_fog_density_read &&
+              task12_fog_cloud_density == 0.0f &&
+              task12_fog_media.w > 0.0f &&
+              luminance(task12_fog_order1) > 0.0f &&
+              std::fabs(task12_fog_order1.x - task12_fog_order4.x) < 2.0e-4f &&
+              std::fabs(task12_fog_order1.y - task12_fog_order4.y) < 2.0e-4f &&
+              std::fabs(task12_fog_order1.z - task12_fog_order4.z) < 2.0e-4f,
+          error.empty()
+              ? "real FogLab-style no-cloud fixture retains haze with a zero cloud channel independent of cloud orders"
+              : error.c_str());
+
+    // Restore the Task 9 constant fog+cloud fixture expected by the following
+    // stale-low-slice regression; Task 12's no-cloud isolation must not leak
+    // into an older fixture.
+    renderer.set_volumetrics_settings(improved_clouds, fog_plus_cloud);
+
     // Regression: the same enhanced bundle first writes a positive low-z
     // voxel with a permissive camera near, then must clear it when that slice
     // becomes invalid under a higher near plane.  Reallocation would hide the

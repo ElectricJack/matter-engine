@@ -12,6 +12,9 @@ layout(rgba16f, set = 0, binding = 1) uniform writeonly image3D vol_scatter_out;
 layout(set = 0, binding = 2) uniform sampler3D vol_scatter_history;
 layout(set = 0, binding = 3) uniform sampler2D depth_tex;
 layout(set = 0, binding = 4) uniform accelerationStructureEXT tlas;
+layout(set = 0, binding = 5) uniform sampler3D vol_cloud_density;
+
+layout(constant_id = 0) const bool ENHANCED_CLOUD_LIGHTING = false;
 
 layout(push_constant) uniform ScatterConstants {
     mat4 clip_to_world;
@@ -19,20 +22,135 @@ layout(push_constant) uniform ScatterConstants {
     vec3 camera_pos;
     uint frame_index;
     vec3 sun_dir;
-    float sun_intensity;
+    uint local_sun_march_steps;
     float phase_g;
     float temporal_blend;
     uint history_valid;
     float camera_near;
     float camera_far;
-    float pad0;
-    float pad1;
-    float pad2;
+    uint multiple_scattering_orders;
+    float multiple_scattering_strength;
+    float powder_strength;
+    vec3 camera_fwd;
+    float tan_half_fov;
+    vec3 camera_right;
+    float aspect_ratio;
+    vec3 camera_up;
+    float local_march_distance_m;
 } pc;
 
 // 2x2 Bayer pattern index for temporal subsampling.
 int bayer2x2(ivec2 pixel) {
     return (pixel.x & 1) + (pixel.y & 1) * 2;
+}
+
+uint scatter_hash(uvec3 voxel, uint frame_index) {
+    uint value = voxel.x * 0x8da6b343u ^ voxel.y * 0xd8163841u ^
+                 voxel.z * 0xcb1ab31fu ^ frame_index * 0x9e3779b9u;
+    value ^= value >> 16u;
+    value *= 0x7feb352du;
+    value ^= value >> 15u;
+    return value;
+}
+
+bool world_to_froxel_uvw(vec3 world_pos, ivec3 grid, out vec3 uvw) {
+    uvw = vec3(-1.0);
+    vec3 relative = world_pos - pc.camera_pos;
+    float view_depth = dot(relative, pc.camera_fwd);
+    float tan_y = pc.tan_half_fov;
+    float tan_x = tan_y * pc.aspect_ratio;
+    if (isnan(view_depth) || isinf(view_depth) || view_depth < pc.camera_near ||
+        view_depth > VOL_FROXEL_FAR || tan_x <= 0.0 || tan_y <= 0.0) return false;
+    vec2 ndc = vec2(dot(relative, pc.camera_right) / (view_depth * tan_x),
+                    dot(relative, pc.camera_up) / (view_depth * tan_y));
+    vec2 candidate_uv = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    if (any(isnan(candidate_uv)) || any(isinf(candidate_uv)) ||
+        any(lessThan(candidate_uv, vec2(0.0))) ||
+        any(greaterThan(candidate_uv, vec2(1.0)))) return false;
+    uvw = vec3(candidate_uv,
+               depth_to_slice_n(view_depth, float(grid.z)));
+    return uvw.z >= 0.0 && uvw.z <= 1.0;
+}
+
+float froxel_ray_exit_distance(vec3 world_pos, vec3 ray_direction) {
+    vec3 relative = world_pos - pc.camera_pos;
+    vec3 point = vec3(dot(relative, pc.camera_right),
+                      dot(relative, pc.camera_up),
+                      dot(relative, pc.camera_fwd));
+    vec3 direction = vec3(dot(ray_direction, pc.camera_right),
+                          dot(ray_direction, pc.camera_up),
+                          dot(ray_direction, pc.camera_fwd));
+    float tan_y = max(pc.tan_half_fov, 1.0e-6);
+    float tan_x = max(tan_y * pc.aspect_ratio, 1.0e-6);
+    float exit_distance = 1.0e20;
+    // Each frustum plane is a +inside linear inequality a + b*t >= 0.
+    float a[6] = float[6](
+        point.z - pc.camera_near,
+        VOL_FROXEL_FAR - point.z,
+        point.z * tan_x - point.x,
+        point.z * tan_x + point.x,
+        point.z * tan_y - point.y,
+        point.z * tan_y + point.y);
+    float b[6] = float[6](
+        direction.z, -direction.z,
+        direction.z * tan_x - direction.x,
+        direction.z * tan_x + direction.x,
+        direction.z * tan_y - direction.y,
+        direction.z * tan_y + direction.y);
+    for (int plane = 0; plane < 6; ++plane) {
+        if (a[plane] < -1.0e-4) return 0.0;
+        if (b[plane] < -1.0e-7)
+            exit_distance = min(exit_distance, max(a[plane], 0.0) / -b[plane]);
+    }
+    return isinf(exit_distance) || isnan(exit_distance)
+        ? 0.0 : max(exit_distance, 0.0);
+}
+
+float remaining_coarse_tau(vec3 world_pos) {
+    if (environment.cloud_state.x == 0.0 ||
+        isnan(environment.cloud_state.x) ||
+        isinf(environment.cloud_state.x)) return 0.0;
+    vec3 near_uvw = (environment.cloud_world_to_uvw[0] *
+                     vec4(world_pos, 1.0)).xyz;
+    vec3 far_uvw = (environment.cloud_world_to_uvw[1] *
+                    vec4(world_pos, 1.0)).xyz;
+    float far_tau = cloud_shadow_tau_level(1, far_uvw, 0.0);
+    float tau = far_tau;
+    if (cloud_shadow_inside(near_uvw)) {
+        float near_weight = cloud_shadow_edge_fade(near_uvw);
+        float near_tau = cloud_shadow_tau_level(0, near_uvw, 0.0);
+        tau = mix(far_tau, near_tau, near_weight);
+    }
+    return cloud_shadow_finite(tau) ? clamp(tau, 0.0, 80.0) : 0.0;
+}
+
+float local_cloud_tau(vec3 world_pos, vec3 to_sun, ivec3 grid,
+                      ivec3 voxel, out vec3 end_pos) {
+    end_pos = world_pos;
+    int steps = clamp(int(pc.local_sun_march_steps), 0, 32);
+    float requested_distance = clamp(pc.local_march_distance_m, 0.0, 1000.0);
+    if (steps == 0 || requested_distance <= 0.0) return 0.0;
+    float march_distance = min(requested_distance,
+                               froxel_ray_exit_distance(world_pos, to_sun));
+    if (march_distance <= 0.0) return 0.0;
+    float step_m = march_distance / float(steps);
+    float random = float(scatter_hash(uvec3(voxel), pc.frame_index) & 0xffffu) /
+                   65535.0;
+    float midpoint_jitter = 0.5 + (random - 0.5) * 0.5;
+    float tau_local_full = 0.0;
+    float covered_distance = 0.0;
+    for (int sample_index = 0; sample_index < steps; ++sample_index) {
+        float distance_m = (float(sample_index) + midpoint_jitter) * step_m;
+        vec3 sample_uvw;
+        if (!world_to_froxel_uvw(world_pos + to_sun * distance_m,
+                                 grid, sample_uvw)) break;
+        float extinction = texture(vol_cloud_density, sample_uvw).r;
+        if (!isnan(extinction) && !isinf(extinction))
+            tau_local_full += max(extinction, 0.0) * step_m;
+        covered_distance = float(sample_index + 1) * step_m;
+    }
+    end_pos = world_pos + to_sun * covered_distance;
+    return clamp(tau_local_full, 0.0, 80.0);
 }
 
 void main() {
@@ -83,19 +201,71 @@ void main() {
                 shadow = 0.0;
             }
 
-            // Henyey-Greenstein phase for sun contribution.
             float cos_theta = dot(view_dir, to_sun);
-            float phase = hg_phase(cos_theta, pc.phase_g);
+            if (!ENHANCED_CLOUD_LIGHTING) {
+                // Current cost keeps the established single-medium, single-HG
+                // path. Specialization removes every cloud-density/clipmap
+                // read while retaining the physical EnvironmentBlock lanes.
+                float phase = hg_phase(cos_theta, pc.phase_g);
+                vec3 sun_contrib = scattering * shadow * phase *
+                                   environment.direct_world_sun_ratio.rgb;
+                vec3 sky_contrib = scattering * sample_sky_irradiance(
+                    vec3(0.0, 1.0, 0.0));
+                scatter_result = vec4(sun_contrib + sky_contrib, extinction);
+            } else {
+                float cloud_extinction = texture(vol_cloud_density, uvw).r;
+                if (isnan(cloud_extinction) || isinf(cloud_extinction))
+                    cloud_extinction = 0.0;
+                cloud_extinction = clamp(cloud_extinction, 0.0, extinction);
+                vec3 cloud_scattering = vec3(0.99) * cloud_extinction;
+                vec3 fog_emitter_scattering =
+                    max(scattering - cloud_scattering, vec3(0.0));
 
-            // Sun in-scattering.
-            vec3 sun_contrib = scattering * shadow * phase *
+                float fog_phase = hg_phase(cos_theta, pc.phase_g);
+                vec3 fog_sun = fog_emitter_scattering * shadow * fog_phase *
                                environment.direct_world_sun_ratio.rgb;
+                vec3 fog_ambient = fog_emitter_scattering *
+                    sample_sky_irradiance(vec3(0.0, 1.0, 0.0));
 
-            // Sky ambient (isotropic approximation using upward hemisphere).
-            vec3 sky_contrib = scattering * sample_sky_irradiance(
-                vec3(0.0, 1.0, 0.0));
+                vec3 end_pos;
+                float tau_local_full = local_cloud_tau(
+                    world_pos, to_sun, grid, ivec3(voxel.xy, z), end_pos);
+                float tau_remaining_coarse = remaining_coarse_tau(end_pos);
+                float tau_total = clamp(tau_local_full + tau_remaining_coarse,
+                                        0.0, 80.0);
 
-            scatter_result = vec4(sun_contrib + sky_contrib, extinction);
+                int orders = clamp(int(pc.multiple_scattering_orders), 1, 4);
+                float strength = clamp(pc.multiple_scattering_strength,
+                                       0.0, 1.0);
+                float weighted_orders = 0.0;
+                float normalized_order_energy = 0.0;
+                for (int order = 0; order < orders; ++order) {
+                    float extinction_scale = pow(0.55, float(order));
+                    float anisotropy_scale = pow(0.5, float(order));
+                    float energy = order == 0 ? 1.0 :
+                        strength * pow(0.5, float(order - 1));
+                    weighted_orders += energy *
+                        exp(-tau_total * extinction_scale) *
+                        cloud_phase(cos_theta, anisotropy_scale);
+                    normalized_order_energy += energy;
+                }
+                float maximum_order_energy = 1.0 + 2.0 * strength;
+                if (normalized_order_energy > maximum_order_energy)
+                    weighted_orders *= maximum_order_energy /
+                        normalized_order_energy;
+                float powder = mix(
+                    1.0,
+                    min(2.0, 1.0 + (1.0 - exp(-2.0 * tau_local_full))),
+                    clamp(pc.powder_strength, 0.0, 1.0));
+                vec3 cloud_sun = cloud_scattering * shadow * weighted_orders *
+                                 environment.direct_world_sun_ratio.rgb;
+                vec3 cloud_ambient = cloud_scattering *
+                    sample_sky_irradiance(vec3(0.0, 1.0, 0.0));
+                scatter_result = vec4(
+                    fog_sun + fog_ambient +
+                        (cloud_sun + cloud_ambient) * powder,
+                    extinction);
+            }
         }
 
         // Temporal reprojection — always sample history (clamp-to-edge

@@ -113,6 +113,37 @@ int main() {
     assert(volume.find("environment.direct_world_sun_ratio.rgb") !=
                std::string::npos &&
            volume.find("sample_sky_irradiance") != std::string::npos);
+    // Task 12: one superset scatter shader specializes the enhanced cloud
+    // path away for Current cost, reads the R16F detail grid only when live,
+    // and consumes the post-adjustment environment lighting ABI.
+    for (const char* required : {
+             "layout(constant_id = 0) const bool ENHANCED_CLOUD_LIGHTING",
+             "uniform sampler3D vol_cloud_density",
+             "world_to_froxel_uvw",
+             "tau_local_full + tau_remaining_coarse"})
+        assert(volume.find(required) != std::string::npos);
+    const std::string volume_common =
+        read_shader("../shaders_vk/vol_common.glsl");
+    assert(volume_common.find(
+               "0.8 * hg_phase(mu, 0.85 * anisotropy_scale)") !=
+               std::string::npos &&
+           volume_common.find(
+               "0.2 * hg_phase(mu, -0.30 * anisotropy_scale)") !=
+               std::string::npos);
+    assert(volume.find("pc.sun_color") == std::string::npos &&
+           volume.find("pc.sky_color") == std::string::npos &&
+           volume.find("sun_intensity") == std::string::npos);
+    const std::string volumetrics_header =
+        read_shader("../src/render/vk_volumetrics.h");
+    assert(volumetrics_header.find(
+               "static_assert(sizeof(ScatterConstants) == 240)") !=
+               std::string::npos);
+    for (const char* offset : {"offsetof(ScatterConstants, camera_pos) == 128",
+                               "offsetof(ScatterConstants, local_sun_march_steps) == 156",
+                               "offsetof(ScatterConstants, camera_fwd) == 192",
+                               "offsetof(ScatterConstants, local_march_distance_m) == 236"})
+        assert(volumetrics_header.find(offset) != std::string::npos);
+    assert(volumetrics_header.find("sun_intensity") == std::string::npos);
     const std::string sky_view =
         read_shader("../shaders_vk/atmosphere_sky_view.comp");
     assert(sky_view.find("(float(pixel.x) + 0.5) / 192.0") !=

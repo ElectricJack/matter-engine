@@ -366,7 +366,7 @@ bool VkVolumetrics::create_bundle_descriptors(FroxelBundle& bundle,
                                               std::string& error) {
     const VkDescriptorPoolSize sizes[] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 8},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 15},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 19},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
         {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 4},
     };
@@ -456,7 +456,14 @@ bool VkVolumetrics::create_bundle_descriptors(FroxelBundle& bundle,
         history.sampler = linear_clamp_sampler_;
         history.imageView = bundle.scatter[1 - i].view;
         history.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        VkWriteDescriptorSet writes[3]{};
+        VkDescriptorImageInfo cloud{};
+        cloud.sampler = linear_clamp_sampler_;
+        cloud.imageView = (bundle.enhanced_clouds ? bundle.cloud_density
+                                                  : cloud_density_dummy_).view;
+        cloud.imageLayout = bundle.enhanced_clouds
+            ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            : VK_IMAGE_LAYOUT_GENERAL;
+        VkWriteDescriptorSet writes[4]{};
         writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[0].dstSet = bundle.scatter_sets[slot][i];
         writes[0].dstBinding = 0; writes[0].descriptorCount = 1;
         writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[0].pImageInfo = &media;
@@ -466,7 +473,10 @@ bool VkVolumetrics::create_bundle_descriptors(FroxelBundle& bundle,
         writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[2].dstSet = bundle.scatter_sets[slot][i];
         writes[2].dstBinding = 2; writes[2].descriptorCount = 1;
         writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[2].pImageInfo = &history;
-        vkUpdateDescriptorSets(device_, 3, writes, 0, nullptr);
+        writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[3].dstSet = bundle.scatter_sets[slot][i];
+        writes[3].dstBinding = 5; writes[3].descriptorCount = 1;
+        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[3].pImageInfo = &cloud;
+        vkUpdateDescriptorSets(device_, 4, writes, 0, nullptr);
     }
     for (int i = 0; i < 2; ++i) {
         VkDescriptorImageInfo scatter{};
@@ -780,6 +790,7 @@ bool VkVolumetrics::create_scatter_pipeline(matter::VulkanDevice& vulkan,
     //   2 = combined image sampler (vol_scatter[history], read)
     //   3 = combined image sampler (depth texture)
     //   4 = acceleration structure (TLAS)
+    //   5 = combined image sampler (full-resolution cloud extinction)
     const VkDescriptorSetLayoutBinding bindings[] = {
         make_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                      VK_SHADER_STAGE_COMPUTE_BIT),
@@ -791,18 +802,21 @@ bool VkVolumetrics::create_scatter_pipeline(matter::VulkanDevice& vulkan,
                      VK_SHADER_STAGE_COMPUTE_BIT),
         make_binding(4, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
                      VK_SHADER_STAGE_COMPUTE_BIT),
+        make_binding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                     VK_SHADER_STAGE_COMPUTE_BIT),
     };
 
     VkDescriptorSetLayoutCreateInfo set_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    set_info.bindingCount = 5;
+    set_info.bindingCount = 6;
     set_info.pBindings = bindings;
     VkResult result = vkCreateDescriptorSetLayout(device_, &set_info, nullptr,
                                                   &scatter_set_layout_);
     if (result != VK_SUCCESS)
         return vk_fail("vkCreateDescriptorSetLayout(scatter)", result, error);
 
-    // Push constants: ScatterConstants (208 bytes).
+    // Push constants: the post-lighting-adjustment 192-byte prefix plus the
+    // exact Task 12 48-byte camera-basis tail (240 bytes total).
     VkPushConstantRange push{};
     push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     push.offset = 0;
@@ -827,22 +841,42 @@ bool VkVolumetrics::create_scatter_pipeline(matter::VulkanDevice& vulkan,
                                          shader, error)) {
         return false;
     }
-    VkPipelineShaderStageCreateInfo stage{
-        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = shader;
-    stage.pName = "main";
-    VkComputePipelineCreateInfo create{
-        VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    create.stage = stage;
-    create.layout = scatter_pipeline_layout_;
-    result = vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &create,
-                                      nullptr, &scatter_pipeline_);
+    bool created = true;
+    for (uint32_t enhanced = 0; enhanced < 2; ++enhanced) {
+        const VkSpecializationMapEntry entry{0, 0, sizeof(uint32_t)};
+        const VkSpecializationInfo specialization{
+            1, &entry, sizeof(enhanced), &enhanced};
+        VkPipelineShaderStageCreateInfo stage{
+            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage.module = shader;
+        stage.pName = "main";
+        stage.pSpecializationInfo = &specialization;
+        VkComputePipelineCreateInfo create{
+            VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        create.stage = stage;
+        create.layout = scatter_pipeline_layout_;
+        result = vkCreateComputePipelines(
+            device_, VK_NULL_HANDLE, 1, &create, nullptr,
+            &scatter_pipelines_[enhanced]);
+        if (result != VK_SUCCESS) {
+            vk_fail(enhanced == 0
+                        ? "vkCreateComputePipelines(scatter Current)"
+                        : "vkCreateComputePipelines(scatter enhanced)",
+                    result, error);
+            created = false;
+            break;
+        }
+    }
     vkDestroyShaderModule(device_, shader, nullptr);
-    if (result != VK_SUCCESS)
-        return vk_fail("vkCreateComputePipelines(scatter)", result, error);
-
-    return true;
+    if (!created) {
+        for (VkPipeline& pipeline : scatter_pipelines_) {
+            if (pipeline != VK_NULL_HANDLE)
+                vkDestroyPipeline(device_, pipeline, nullptr);
+            pipeline = VK_NULL_HANDLE;
+        }
+    }
+    return created;
 }
 
 // ---------------------------------------------------------------------------
@@ -913,12 +947,51 @@ void VkVolumetrics::update_settings(
     const matter::VulkanVolumetricsSettings& vol,
     const matter::FogSettings& fog,
     const matter::CloudShadowSettings& shadows) {
+    const uint32_t next_steps = static_cast<uint32_t>(
+        std::clamp(vol.local_sun_march_steps, 0, 32));
+    const float next_distance = std::isfinite(vol.local_sun_march_distance_m)
+        ? std::clamp(vol.local_sun_march_distance_m, 0.0f, 1000.0f)
+        : 0.0f;
+    const uint32_t next_orders = static_cast<uint32_t>(
+        std::clamp(vol.multiple_scattering_orders, 1, 4));
+    const float next_strength = std::isfinite(vol.multiple_scattering_strength)
+        ? std::clamp(vol.multiple_scattering_strength, 0.0f, 1.0f)
+        : 0.0f;
+    const float next_powder = std::isfinite(vol.powder_strength)
+        ? std::clamp(vol.powder_strength, 0.0f, 1.0f)
+        : 0.0f;
+    const int next_cloud_count = matter::active_cloud_count(fog);
+    bool cloud_shape_changed = next_cloud_count != cloud_count_;
+    if (settings_initialized_ && !cloud_shape_changed) {
+        matter::GpuCloudLayer previous[matter::kMaxCloudLayers]{};
+        matter::GpuCloudLayer incoming[matter::kMaxCloudLayers]{};
+        for (int i = 0; i < next_cloud_count; ++i) {
+            matter::pack_cloud_layer(cloud_layers_[i], i, previous[i]);
+            matter::pack_cloud_layer(fog.clouds[i], i, incoming[i]);
+        }
+        cloud_shape_changed =
+            std::memcmp(previous, incoming, sizeof(previous)) != 0;
+    }
+    const bool scatter_lighting_changed = settings_initialized_ &&
+        (next_steps != local_sun_march_steps_ ||
+         next_distance != local_march_distance_m_ ||
+         next_orders != multiple_scattering_orders_ ||
+         next_strength != multiple_scattering_strength_ ||
+         next_powder != powder_strength_ || vol.phase_g != phase_g_);
+    if (cloud_shape_changed || scatter_lighting_changed)
+        has_prev_matrices_ = false;
+
     enabled_ = vol.enabled;
     temporal_blend_ = vol.temporal_blend;
     phase_g_ = vol.phase_g;
+    local_sun_march_steps_ = next_steps;
+    local_march_distance_m_ = next_distance;
+    multiple_scattering_orders_ = next_orders;
+    multiple_scattering_strength_ = next_strength;
+    powder_strength_ = next_powder;
     requested_dimensions_ = matter::resolve_froxel_grid(vol);
-    enhanced_clouds_requested_ =
-        matter::enhanced_cloud_lighting(vol, shadows);
+    enhanced_clouds_requested_ = next_steps > 0 || next_orders > 1 ||
+        next_powder > 0.0f || shadows.enabled;
 
     fog_density_ = fog.density;
     fog_floor_ = fog.floor;
@@ -948,8 +1021,9 @@ void VkVolumetrics::update_settings(
                      static_cast<int>(fog.cloud_count), matter::kMaxCloudLayers);
     }
     (void)requested;
-    cloud_count_ = matter::active_cloud_count(fog);
+    cloud_count_ = next_cloud_count;
     for (int i = 0; i < matter::kMaxCloudLayers; ++i) cloud_layers_[i] = fog.clouds[i];
+    settings_initialized_ = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -960,7 +1034,6 @@ void VkVolumetrics::set_lighting(const VkSceneLighting& lighting) {
     sun_direction_[0] = lighting.sun_direction.x;
     sun_direction_[1] = lighting.sun_direction.y;
     sun_direction_[2] = lighting.sun_direction.z;
-    sun_intensity_ = lighting.sun_intensity;
 }
 
 // ---------------------------------------------------------------------------
@@ -1063,7 +1136,8 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
             active_bundle_.cloud_density.layout == VK_IMAGE_LAYOUT_UNDEFINED
                 ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
                 : (active_bundle_.cloud_density.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                       ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
+                       ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
                        : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT),
             active_bundle_.cloud_density.layout == VK_IMAGE_LAYOUT_UNDEFINED
                 ? VkAccessFlags2(0)
@@ -1155,16 +1229,16 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
-    // The enhanced density image is also sampled by the composite debug view.
-    // Keep its independently produced extinction visible to that fragment
-    // consumer before scatter/integration proceed with the packed media.
+    // The enhanced density image is sampled by Task 12 scatter and by the
+    // composite debug view. Publish the density write to both consumers.
     if (active_bundle_.enhanced_clouds) {
         matter::record_image_transition(
             cmd, active_bundle_.cloud_density,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
     }
 
@@ -1219,7 +1293,7 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     scatter_pc.sun_dir[0] = sun_direction_[0];
     scatter_pc.sun_dir[1] = sun_direction_[1];
     scatter_pc.sun_dir[2] = sun_direction_[2];
-    scatter_pc.sun_intensity = sun_intensity_;
+    scatter_pc.local_sun_march_steps = local_sun_march_steps_;
     scatter_pc.phase_g = phase_g_;
     scatter_pc.temporal_blend = temporal_blend_;
     scatter_pc.history_valid = has_prev_matrices_ ? 1u : 0u;
@@ -1229,8 +1303,27 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
                              (matrices.view_to_clip.m[10] + 1.0f);
     scatter_pc.camera_far = matrices.view_to_clip.m[11] /
                             matrices.view_to_clip.m[10];
+    scatter_pc.multiple_scattering_orders = multiple_scattering_orders_;
+    scatter_pc.multiple_scattering_strength = multiple_scattering_strength_;
+    scatter_pc.powder_strength = powder_strength_;
+    scatter_pc.camera_fwd[0] = -matrices.world_to_view.m[8];
+    scatter_pc.camera_fwd[1] = -matrices.world_to_view.m[9];
+    scatter_pc.camera_fwd[2] = -matrices.world_to_view.m[10];
+    scatter_pc.tan_half_fov = matrices.view_to_clip.m[5] != 0.0f
+        ? 1.0f / matrices.view_to_clip.m[5] : 1.0f;
+    scatter_pc.camera_right[0] = matrices.world_to_view.m[0];
+    scatter_pc.camera_right[1] = matrices.world_to_view.m[1];
+    scatter_pc.camera_right[2] = matrices.world_to_view.m[2];
+    scatter_pc.aspect_ratio = matrices.view_to_clip.m[0] != 0.0f
+        ? matrices.view_to_clip.m[5] / matrices.view_to_clip.m[0] : 1.0f;
+    scatter_pc.camera_up[0] = matrices.world_to_view.m[4];
+    scatter_pc.camera_up[1] = matrices.world_to_view.m[5];
+    scatter_pc.camera_up[2] = matrices.world_to_view.m[6];
+    scatter_pc.local_march_distance_m = local_march_distance_m_;
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, scatter_pipeline_);
+    vkCmdBindPipeline(
+        cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+        scatter_pipelines_[active_bundle_.enhanced_clouds ? 1 : 0]);
     const VkDescriptorSet scatter_sets[] = {
                                              active_bundle_.scatter_sets[frame_slot][current],
                                              environment_descriptor_set_};
@@ -1492,8 +1585,9 @@ void VkVolumetrics::destroy() {
         p = VK_NULL_HANDLE;
     }
     cloud_density_dummy_.reset();
-    if (scatter_pipeline_ != VK_NULL_HANDLE)
-        vkDestroyPipeline(device_, scatter_pipeline_, nullptr);
+    for (VkPipeline& pipeline : scatter_pipelines_)
+        if (pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device_, pipeline, nullptr);
     if (integrate_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device_, integrate_pipeline_, nullptr);
 
@@ -1533,7 +1627,7 @@ void VkVolumetrics::destroy() {
     cloud_ssbo_.reset();
 
     // Zero out all handles.
-    scatter_pipeline_ = VK_NULL_HANDLE;
+    scatter_pipelines_[0] = scatter_pipelines_[1] = VK_NULL_HANDLE;
     integrate_pipeline_ = VK_NULL_HANDLE;
     density_pipeline_layout_ = VK_NULL_HANDLE;
     scatter_pipeline_layout_ = VK_NULL_HANDLE;
