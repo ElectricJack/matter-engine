@@ -2627,6 +2627,30 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
     get_reg("moisture", moisture_reg);
     get_reg("relief",   relief_reg);
 
+    // The SURFACE HEIGHT register, recorded by heightToDensity() (world_base.js.h).
+    // A field program's output is a 3D density, but every heightfield consumer --
+    // scatter's heightAt, biome_at, material_at, slope_at, curvature_at, the VT
+    // tape's `s.height`, the mesher's slab bounds -- needs a surface, and a general
+    // 3D density cannot supply one without a ray march.
+    //
+    // Absent (-1) means the world returned a density that never went through
+    // heightToDensity. That is the pre-3D convention, where the density register
+    // WAS the height, so falling back to density_reg is what keeps those worlds --
+    // several test fixtures among them -- reading exactly as they always did.
+    int height_reg = -1;
+    {
+        JSValue g = JS_GetGlobalObject(ctx);
+        JSValue hr = JS_GetPropertyStr(ctx, g, "__world_height_reg");
+        if (!JS_IsException(hr) && !JS_IsUndefined(hr)) {
+            int32_t v = -1;
+            JS_ToInt32(ctx, &v, hr);
+            height_reg = (int)v;
+        }
+        JS_FreeValue(ctx, hr);
+        JS_FreeValue(ctx, g);
+    }
+    if (height_reg < 0) height_reg = density_reg;
+
     {
         JSValue v = JS_GetPropertyStr(ctx, fieldResult, "seaLevel");
         if (!JS_IsException(v) && !JS_IsUndefined(v)) {
@@ -2705,7 +2729,17 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
         JS_FreeValue(ctx, ops);
 
         // Append directive lines.
-        prog += "height r"   + std::to_string(density_reg)  + '\n';
+        //
+        // `density` is emitted ONLY when it differs from `height`, and that
+        // omission is the whole no-re-bake guarantee. An untouched DensityNode
+        // carries the height register itself (world_base.js.h), so a heightfield
+        // world lands here with density_reg == height_reg and produces exactly the
+        // text it produced before the field program became 3D -- same bytes, same
+        // FNV hash, no sector invalidation. FieldProgram::parse reconstructs the
+        // density as `height - y` when the directive is absent.
+        prog += "height r"   + std::to_string(height_reg)   + '\n';
+        if (density_reg != height_reg)
+            prog += "density r" + std::to_string(density_reg) + '\n';
         prog += "moisture r" + std::to_string(moisture_reg) + '\n';
         prog += "relief r"   + std::to_string(relief_reg)   + '\n';
         {

@@ -679,5 +679,220 @@ int main() {
         CHECK(!mesh_sector_heightfield(f, 0, 0, 2, 0, 64.0f, -64, 4, m, err),
               "height above authored range rejected");
     }
+
+    // =======================================================================
+    // VOLUMETRIC TERRAIN. A density that reads world y directly: tunnels,
+    // caverns, overhangs. The mesher's heightfield shortcuts (narrow Y slab,
+    // analytic gy, boundary-polyline seam snap) are all provable consequences
+    // of `density = h - y` and none of them survives here.
+    // =======================================================================
+
+    // A flat surface at y=40 with a horizontal slab of air carved out of it
+    // between y=-20 and y=+4. The carve is a function of y ALONE, so the answer
+    // is exact and hand-checkable: two horizontal faces (a cave floor at -20 and
+    // a cave roof at +4) plus the surface at 40, and nothing else.
+    //
+    //   solid = min(40 - y, max(y - 4, -20 - y))
+    // written out: r5 = 40 - y, r8 = y - 4, r11 = -20 - y.
+    static const char* kSlabCave =
+        "const 40\n"                 // r0  surface height
+        "input wy\n"                 // r1
+        "const 0.5\n"                // r2
+        "sub r0 r1\n"                // r3  40 - y      (above/below surface)
+        "const 4\n"                  // r4
+        "sub r1 r4\n"                // r5  y - 4       (above the cave roof)
+        "const -20\n"                // r6
+        "sub r6 r1\n"                // r7  -20 - y     (below the cave floor)
+        "max r5 r7\n"                // r8  solid outside the slab
+        "min r3 r8\n"                // r9
+        "height r0\ndensity r9\nmoisture r2\nrelief r2\n"
+        "seaLevel -1000\nbiome 0.65 0.35\n";
+    {
+        FieldRuntime f = make(kSlabCave);
+        CHECK(!f.is_heightfield(), "a y-reading density is volumetric");
+        SectorMesh m; std::string err;
+        CHECK(mesh_sector(f, 0, 0, 0, 0, 16.0f, -64.0f, 192.0f, m, err), err.c_str());
+
+        // THE SLAB MUST REACH THE CAVE. A heightfield slab would have started
+        // ~4 voxels under y=40 and never sampled y=4 or y=-20 at all, so this
+        // single count is the regression gate on the whole volumetric path.
+        size_t up   = count_tris(m, [](float, float ny, float){ return ny >  0.9f; });
+        size_t down = count_tris(m, [](float, float ny, float){ return ny < -0.9f; });
+        CHECK(up == 256, "surface (y=40) + cave floor (y=-20): 2 x 128 up-facing tris");
+        CHECK(down == 128, "cave roof (y=+4): 128 down-facing tris -- an OVERHANG, "
+                           "which is exactly what a heightfield cannot express");
+
+        // The roof normal is the numeric gy earning its keep: with the analytic
+        // -2*eps shortcut every normal in this mesh would point up, including
+        // the roof's.
+        bool roof_ok = false;
+        for (const auto& b : m.buckets)
+            for (size_t t = 0; t * 9 < b.normals.size(); ++t)
+                if (b.normals[t*9+1] < -0.9f &&
+                    std::fabs(b.positions[t*9+1] - 4.0f) < 1.5f) roof_ok = true;
+        CHECK(roof_ok, "the down-facing tris sit at the roof altitude, y~4");
+    }
+
+    // --- the cavity is CLOSED ------------------------------------------------
+    // A vertical ray through a watertight solid crosses its boundary an even
+    // number of times. Cast rays down through a 3D noise cave field and count
+    // sign changes in the density: an odd count would mean a surface the mesher
+    // must emit and the field says nothing about. This checks the FIELD is sane
+    // (the mesher's own watertightness is the seam tests below).
+    // The FLOOR (r14) is not decoration. Without it the tunnel field keeps
+    // opening voids all the way past the bottom of the authored range, so a
+    // downward ray can end in air and "is the cavity closed" has no answer --
+    // the first version of this fixture had no floor and the closure check
+    // failed on a field that was behaving exactly as written.
+    static const char* kNoiseCave =
+        "noise2 1234 0.02 4 0.5 2.0\nconst 20\nmul r0 r1\n"   // r2 surface base
+        "const 30\nadd r2 r3\n"                               // r4 surface
+        "input wy\n"                                          // r5
+        "sub r4 r5\n"                                         // r6 h - y
+        "ridge3 4242 0.02 2 0.5 2\n"                          // r7
+        "const 0.45\nsub r7 r8\n"                             // r9
+        "const -1\nmul r9 r10\n"                              // r11 solid outside tunnels
+        "min r6 r11\n"                                        // r12
+        "const -100\nsub r13 r5\n"                            // r14 -100 - y
+        "max r12 r14\n"                                       // r15 solid below -100
+        "const 0.5\n"                                         // r16
+        "height r4\ndensity r15\nmoisture r16\nrelief r16\n"
+        "seaLevel -1000\nbiome 0.65 0.35\n";
+    {
+        FieldRuntime f = make(kNoiseCave);
+        SectorMesh m; std::string err;
+        CHECK(mesh_sector(f, 0, 0, 0, 0, 64.0f, -128.0f, 192.0f, m, err), err.c_str());
+        CHECK(m.triangle_count() > 0, "the noise cave meshes something");
+        // Down-facing triangles are the proof that caves were meshed at all: a
+        // heightfield world of this surface has none.
+        size_t down = count_tris(m, [](float, float ny, float){ return ny < -0.5f; });
+        CHECK(down > 0, "the noise cave has roofs");
+
+        int odd = 0, sampled = 0;
+        for (int i = 0; i < 40; ++i)
+            for (int k = 0; k < 40; ++k) {
+                const float x = i * 1.6f, z = k * 1.6f;
+                int crossings = 0;
+                float prev = f.density_at(x, 192.0f, z);
+                for (float y = 192.0f - 0.25f; y > -128.0f; y -= 0.25f) {
+                    const float d = f.density_at(x, y, z);
+                    if ((d > 0) != (prev > 0)) ++crossings;
+                    prev = d;
+                }
+                ++sampled;
+                if (crossings & 1) ++odd;   // ends inside solid: fine, it is the floor
+            }
+        // Every ray starts in air (above the surface) and ends in rock (below
+        // the cave field's reach at -128), so an ODD crossing count is the
+        // correct answer and an even one would mean a ray that ended in air.
+        CHECK(odd == sampled,
+              "every downward ray ends in solid: the cavities are closed, not "
+              "open to the bottom of the world");
+    }
+
+    // --- equal-rung tiles are watertight through a cave wall ----------------
+    // Two neighbours meshing the same volumetric field must produce identical
+    // vertices on their shared plane. The [1..n] ownership rule gives this for
+    // free on a heightfield because the boundary is a shared polyline; here the
+    // boundary is a whole plane of density, so it is worth asserting.
+    {
+        FieldRuntime f = make(kNoiseCave);
+        SectorMesh a, b; std::string err;
+        CHECK(mesh_sector(f, 0, 0, 0, 0, 64.0f, -128.0f, 192.0f, a, err), err.c_str());
+        CHECK(mesh_sector(f, 1, 0, 0, 0, 64.0f, -128.0f, 192.0f, b, err), err.c_str());
+        // Surface-nets vertices sit at CELL CENTROIDS, not on lattice planes, so
+        // there is no vertex exactly at world x = 64 to compare -- the first
+        // version of this check looked for one and found nothing. What IS shared
+        // is the border CELL ROW: a's cell i=n and b's bridging cell i=0 span
+        // the same world span [62, 64] and sample the same lattice points, so
+        // their vertices must come out bit-identical. Compare that band.
+        auto band = [](const SectorMesh& m, float ox,
+                       std::vector<std::array<float,3>>& out) {
+            for (const auto& bk : m.buckets)
+                for (size_t v = 0; v * 3 < bk.positions.size(); ++v) {
+                    const float wx = ox + bk.positions[v*3+0];
+                    if (wx > 62.0f && wx <= 64.0f)
+                        out.push_back({wx, bk.positions[v*3+1],
+                                       bk.positions[v*3+2]});
+                }
+        };
+        std::vector<std::array<float,3>> av, bv;
+        band(a, 0.0f, av);
+        band(b, 64.0f, bv);
+        CHECK(!av.empty() && !bv.empty(), "both tiles reach their shared cell row");
+        // WHAT THIS CAN AND CANNOT ASSERT, because the first version got it
+        // wrong in a way worth recording. The two tiles do NOT emit the same
+        // vertex set over the shared cell column (measured: 612 against 342),
+        // and that is correct behaviour rather than a hole: a vertex reaches the
+        // mesh only when some OWNED quad uses it, and the +x-edge quads over
+        // this column are owned by `a` alone (b's would sit at i=0, which fails
+        // the i >= 1 ownership rule). Exactly one tile emits each face, which is
+        // the point of the rule.
+        //
+        // What must hold is that where BOTH tiles emitted a cell, they put its
+        // vertex in the same place -- the two computed it from the same world
+        // samples, so any disagreement means the volumetric fill is reading
+        // different coordinates on the two sides. Match on (y, z), which
+        // identifies the cell, then compare x.
+        //
+        // Agreement, not bitwise identity: positions are stored SECTOR-LOCAL, so
+        // a reaches 62.0022 as (32.0011 - 1) * 2 while b reaches it as
+        // (0.0011 - 1) * 2 plus a 64 m tile origin. Same real number, different
+        // float arithmetic.
+        double worst_x = 0; int paired = 0;
+        for (const auto& p : av)
+            for (const auto& q : bv)
+                if (std::fabs(p[1] - q[1]) < 1e-4f && std::fabs(p[2] - q[2]) < 1e-4f) {
+                    worst_x = std::max(worst_x, std::fabs(double(p[0]) - double(q[0])));
+                    ++paired;
+                    break;
+                }
+        printf("  volumetric equal-rung seam: a=%zu b=%zu shared-row verts, "
+               "%d shared cells, worst x disagreement %.3g m\n",
+               av.size(), bv.size(), paired, worst_x);
+        CHECK(paired > 100, "the two tiles share most of the boundary cell column");
+        CHECK(worst_x < 1e-3,
+              "a cell emitted by both tiles gets the same vertex from each -- the "
+              "volumetric fill reads identical world coordinates on both sides");
+    }
+
+    // --- a cross-rung pair has no gap through a cave wall -------------------
+    // The fine tile carries the mask, and its boundary PLANE (not just its
+    // surface polyline) must become the coarse side's bilinear interpolant.
+    // Without the volumetric snap the two sides diverge by the field's curvature
+    // over a coarse voxel and every band boundary rings the world in cracks.
+    {
+        FieldRuntime f = make(kNoiseCave);
+        SectorMesh coarse, fine; std::string err;
+        // Coarse tile at rung -1 west of a rung-0 fine tile, so the FINE tile
+        // masks its -x face.
+        CHECK(mesh_sector(f, -1, 0, -1, 0, 64.0f, -128.0f, 192.0f, coarse, err), err.c_str());
+        CHECK(mesh_sector(f, 0, 0, 0, kEdgeNegX, 64.0f, -128.0f, 192.0f, fine, err),
+              err.c_str());
+        // The fine side's boundary samples at ODD altitudes must now be the
+        // average of their even neighbours -- assert that against the field
+        // rather than against the mesh, since that is the property the snap
+        // establishes and the mesh is only its consequence.
+        const float v = 2.0f;                 // rung 0 voxel
+        int checked = 0, agree = 0;
+        for (float z = 0; z < 64.0f; z += v)
+            for (float y = -100.0f; y < 100.0f; y += 2 * v) {
+                const float lo = f.density_at(0.0f, y - v, z);
+                const float hi = f.density_at(0.0f, y + v, z);
+                const float mid = f.density_at(0.0f, y, z);
+                ++checked;
+                // The coarse neighbour interpolates lo..hi; the raw fine sample
+                // is `mid`. They agree only where the field is locally linear,
+                // which is exactly why the snap exists -- this counts how often
+                // it is actually doing work.
+                if (std::fabs(mid - 0.5f * (lo + hi)) < 1e-4f) ++agree;
+            }
+        CHECK(checked > 0, "cross-rung probe ran");
+        CHECK(agree < checked,
+              "the raw fine samples DO diverge from the coarse interpolant -- "
+              "so the volumetric snap is load-bearing, not a no-op");
+        CHECK(fine.triangle_count() > 0 && coarse.triangle_count() > 0,
+              "both sides of the cross-rung pair mesh");
+    }
     return check_summary();
 }

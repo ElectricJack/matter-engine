@@ -694,5 +694,119 @@ class BothWorld extends World {
         MaterialRegistryResetDynamic();
     }
 
+    // =======================================================================
+    // 3D DENSITY: the no-re-bake guarantee, and the volumetric path.
+    //
+    // The field program is a function of (x, y, z). A heightfield is the
+    // density `h(x, z) - y`, and heightToDensity() is LAZY precisely so that a
+    // world which never touches it emits no ops for the subtraction: the
+    // canonical text -- whose hash gates sector re-bakes -- comes out byte for
+    // byte what it was before the field program became 3D.
+    //
+    // This block is that guarantee. If it fails, every streamed world in the
+    // project re-bakes on the next load.
+    // =======================================================================
+    {
+        ScriptHost h2;
+        WorldEvalResult r2 = h2.eval_world(kWorld, "{}");
+        CHECK(r2.ok, r2.message.c_str());
+        CHECK(r2.field_program.find("input wy") == std::string::npos,
+              "a heightfield world emits NO 'input wy' op");
+        CHECK(r2.field_program.find("\ndensity ") == std::string::npos,
+              "a heightfield world emits NO 'density' directive");
+        // Byte-identity, pinned. The `height r6` line is what proves the
+        // directive still names the surface register and not something the
+        // laziness shifted.
+        const char* kExpected =
+            "noise2 43 0.0011111111111111111 3 0.5 2\n"
+            "noise2 41 0.00625 4 0.5 2\n"
+            "const 8\n"
+            "mul r1 r2\n"
+            "ridge2 46 0.0029411764705882353 5 0.5 2\n"
+            "const 110\n"
+            "mul r4 r5\n"
+            "smoothstep 0.45 0.75 r0\n"
+            "blend r3 r6 r7\n"
+            "const -6\n"
+            "add r8 r9\n"
+            "noise2 40 0.0014285714285714286 3 0.5 2\n"
+            "height r10\n"
+            "moisture r11\n"
+            "relief r0\n"
+            "seaLevel 0\n"
+            "biome 0.65 0.35\n";
+        CHECK(r2.field_program == kExpected,
+              "the heightfield canonical text is byte-identical -- no world "
+              "re-bakes because the field program became 3D");
+
+        terrain_field::FieldProgram hp2; std::string he;
+        CHECK(terrain_field::FieldProgram::parse(r2.field_program, hp2, he),
+              he.c_str());
+        CHECK(hp2.is_heightfield, "and it parses back as a heightfield");
+    }
+
+    // --- a volumetric world round-trips -------------------------------------
+    // heightToDensity(h).min(caves): the node materialises `h - y` on the first
+    // operator, the host emits both directives, and the parser reports a
+    // volumetric program whose surface height is still the authored one.
+    {
+        static const char* kCaveWorld = R"JS(
+class CaveWorld extends World {
+  static params = { worldSeed: 7 };
+  static world  = { sectorSize: 64, yMin: -512, yMax: 128 };
+  field(p) {
+    const height = noise2(p.worldSeed ^ 1, 1/400, 3).mul(30).add(60);
+    const caves  = ridge3(p.worldSeed ^ 2, 1/90, 2, 0.5, 2.0)
+                     .sub(0.55).mul(-1);
+    const floor  = worldY().sub(-500).mul(-1);
+    const inert  = blend(0.0, 0.0, 0.0);
+    return {
+      density: heightToDensity(height).min(caves).max(floor),
+      moisture: inert, relief: inert, seaLevel: -1000.0,
+    };
+  }
+  biomes() { return { foothills: {}, ocean: {} }; }
+}
+)JS";
+        ScriptHost h3;
+        WorldEvalResult r3 = h3.eval_world(kCaveWorld, "{}");
+        CHECK(r3.ok, r3.message.c_str());
+        CHECK(r3.field_program.find("input wy") != std::string::npos,
+              "a volumetric world emits 'input wy'");
+        CHECK(r3.field_program.find("ridge3 ") != std::string::npos,
+              "and its 3D noise op");
+        CHECK(r3.field_program.find("\ndensity r") != std::string::npos,
+              "and the 'density' directive that distinguishes it from height");
+
+        terrain_field::FieldProgram cp; std::string ce;
+        CHECK(terrain_field::FieldProgram::parse(r3.field_program, cp, ce),
+              ce.c_str());
+        CHECK(!cp.is_heightfield, "it parses as volumetric");
+        CHECK(cp.height_reg != cp.density_reg,
+              "height and density are different registers");
+        CHECK(!cp.y_dependent[cp.height_reg] && cp.y_dependent[cp.density_reg],
+              "the surface is y-independent and the density is not");
+
+        terrain_field::FieldRuntime cf(std::move(cp));
+        // The surface still reads as the authored 30..90 m, and there is air
+        // under it somewhere -- otherwise the caves carved nothing.
+        const float hgt = cf.height_at(100, 100);
+        CHECK(hgt > 20.0f && hgt < 100.0f, "authored surface height survives");
+        bool any_air = false, floor_solid = true;
+        for (int i = 0; i < 200 && (!any_air || floor_solid); ++i) {
+            const float x = float(i * 13), z = float(i * -7);
+            for (float y = 0; y > -480.0f; y -= 4.0f)
+                if (cf.density_at(x, y, z) <= 0) { any_air = true; break; }
+            if (cf.density_at(x, -505.0f, z) <= 0) floor_solid = false;
+        }
+        CHECK(any_air, "the cave field actually carves air below the surface");
+        CHECK(floor_solid, "and the authored floor is solid below -500");
+
+        // Determinism, the same property the heightfield path has.
+        WorldEvalResult r3b = h3.eval_world(kCaveWorld, "{}");
+        CHECK(r3b.field_program == r3.field_program,
+              "volumetric program deterministic");
+    }
+
     return check_summary();
 }
