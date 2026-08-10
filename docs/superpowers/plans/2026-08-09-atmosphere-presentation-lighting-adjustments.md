@@ -4,7 +4,7 @@
 
 **Goal:** Remove visible sky-view banding, add deterministic half-LSB scene dither, and separate visible-sky, physical irradiance, direct-world, and analytic-disc lighting through one atomic resolved atmosphere transaction with reproducible raster/native-RT/fog acceptance evidence.
 
-**Architecture:** Keep the `192x108` physical sky-view LUT and fix its presentation at the environment descriptor with one dedicated periodic linear sampler plus a shared centred-bin UV helper. Resolve all atmosphere and lighting policy on the CPU into one committed snapshot whose four RGB lanes are uploaded through the shared environment UBO; candidate LUT images, direction, nine SH coefficients, atmospheric direct base, and descriptors commit together or the renderer replays current non-atmosphere controls against the complete last-valid atmosphere state. The display pass adds the exact static 8x8 achromatic pattern after ACES and explicit sRGB encoding, while the editor exposes only requested controls and a separate read-only resolved-status surface for deterministic FIFO capture.
+**Architecture:** Keep the `192x108` physical sky-view LUT and fix its presentation at the environment descriptor with one dedicated periodic linear sampler plus a shared centred-bin UV helper. Resolve all atmosphere and lighting policy on the CPU into one committed snapshot whose four RGB lanes are uploaded through the shared environment UBO; candidate LUT images, direction, nine SH coefficients, current-elevation and same-altitude zenith/noon atmospheric direct bases, and descriptors commit together or the renderer replays current non-atmosphere controls against the complete last-valid atmosphere state. The display pass adds the exact static 8x8 achromatic pattern after ACES and explicit sRGB encoding, while the editor exposes only requested controls and a separate read-only resolved-status surface for deterministic FIFO capture.
 
 **Tech Stack:** C++17, Vulkan 1.3, GLSL 460 compute/fragment/ray-tracing shaders, SPIR-V embedding through the existing Makefiles, Matter property registry/ImGui/FIFO commands, QuickJS world fixtures, Bash/Python image metrics, and the existing CPU and Vulkan smoke harnesses.
 
@@ -17,7 +17,7 @@
 - Dither is achromatic, deterministic, viewport/scene-only, after tone mapping and explicit sRGB OETF, before 8-bit quantization, and before ImGui composition. It never reads frame index, jitter, time, camera state, DLSS phase, or random state.
 - The atmosphere irradiance resource remains a `3x3` image containing nine directional SH coefficients. Every diffuse/fog/cloud consumer evaluates 9 SH before multiplying `sky_irradiance_modifier_rgb`.
 - Raster, native RT, GI, and volumetrics receive one committed resolved snapshot per frame. No shader derives elevation, direct-world ratio, ambient ratio, or a substitute flat ambient colour.
-- Candidate generation/allocation/validation/descriptor-publication is transactional. Failure retains the complete last-valid LUT set, direction, nine SH coefficients, `atmospheric_direct_base_rgb`, generation serial, and descriptors, then resolves current sanitized non-atmosphere controls against that last-valid state.
+- Candidate generation/allocation/validation/descriptor-publication is transactional. Failure retains the complete last-valid LUT set, direction, nine SH coefficients, `atmospheric_direct_base_rgb`, `atmospheric_noon_direct_base_rgb`, generation serial, and descriptors, then resolves current sanitized non-atmosphere controls against that last-valid state.
 - The four new editable fields remain in `render.lighting`, use the generic property panel/FIFO path, default old settings/worlds without schema conversion, and are registered to their exact `MATTER_*` environment names.
 - Use `C:/msys64/ucrt64/bin/g++.exe`. Pass `TMP=C:/Users/webde/AppData/Local/Temp` and `TEMP=C:/Users/webde/AppData/Local/Temp` as explicit make variables, and set them explicitly for every native test/editor process; exporting them alone is insufficient because MSYS2 make overwrites them.
 - When GLSL changes, build in this order: `make -C MatterEngine3 vulkan-spirv`, `make -C MatterEngine3`, `make -C MatterEditor windows`. Run C++ targets sequentially with `GRAPHICS=GRAPHICS_API_OPENGL_43`; do not run the repository test suite in parallel.
@@ -78,6 +78,7 @@ Float3 apply_display_dither_code(Float3 encoded_code,
 namespace matter {
 struct AtmosphereLightingSources {
     Float3 atmospheric_direct_base_rgb{};
+    Float3 atmospheric_noon_direct_base_rgb{};
     Float3 authored_display_sky_chroma_rgb{};
     Float3 authored_irradiance_chroma_rgb{};
     Float3 live_sun_tint_rgb{1.0f, 1.0f, 1.0f};
@@ -93,6 +94,7 @@ struct AtmosphereLightingSources {
 
 struct ResolvedAtmosphereLighting {
     Float3 atmospheric_direct_base_rgb{};
+    Float3 atmospheric_noon_direct_base_rgb{};
     Float3 direct_base_rgb{};
     Float3 direct_world_sun_rgb{};
     Float3 sun_disc_rgb{};
@@ -145,14 +147,24 @@ sky_ambient_ratio(e) = mix(d,t,twilight_mix(e))
 
 direct_base_rgb = atmospheric_direct_base_rgb * live_sun_tint_rgb
                   * sun_multiplier
+noon_direct_base_rgb = atmospheric_noon_direct_base_rgb * live_sun_tint_rgb
+                       * sun_multiplier
 sun_disc_rgb = direct_base_rgb
-direct_world_sun_rgb = direct_base_rgb * direct_world_ratio(e)
+current_luma = dot(direct_base_rgb, (0.2126, 0.7152, 0.0722))
+noon_luma = dot(noon_direct_base_rgb, (0.2126, 0.7152, 0.0722))
+if direct_world_ratio(e) <= 0 or either current_luma or noon_luma is non-finite or <= 0:
+    direct_world_sun_rgb = (0, 0, 0)
+otherwise:
+    direct_world_sun_rgb = direct_base_rgb
+                         * (direct_world_ratio(e) * noon_luma / current_luma)
 sky_display_modifier_rgb = authored_display_sky_chroma_rgb
                            * sky_multiplier * live_sky_tint_rgb
 sky_irradiance_modifier_rgb = authored_irradiance_chroma_rgb
                               * sky_irradiance_multiplier
                               * sky_ambient_ratio(e)
 ```
+
+Here `direct_world_ratio(e)` is the target published pre-BRDF Rec.709 luminance ratio versus a physically computed zenith/noon reference at the same camera altitude and atmosphere. `direct_base_rgb` and `sun_disc_rgb` remain the current-elevation physically attenuated values; the luminance normalization changes magnitude while preserving that current physical chroma. Receiver `N dot L` is downstream and is not part of this target.
 
 The committed atmosphere and GPU ABI are:
 
@@ -170,6 +182,7 @@ struct AtmosphereCommittedState {
     float camera_world_y = 0.0f;
     std::array<matter::Float3, 9> irradiance_sh{};
     matter::Float3 atmospheric_direct_base_rgb{};
+    matter::Float3 atmospheric_noon_direct_base_rgb{};
     uint64_t generation_serial = 0;
 };
 
@@ -366,7 +379,7 @@ git commit -m "fix: smooth sky presentation and add stable display dither"
 
 - [ ] **Step 1: Write failing curve, sanitization, independence, and backwards-default tests**
 
-In `atmosphere_tests.cpp`, add exact anchor checks for elevations `{90,45,5,0,-5,-12}` and ratios `{1,1,0.25,0,0,0}`; sample `[-90,90]` in `0.01` degree increments to require finite `[0,1]`, monotonic direct ratio, and one-sided differences within `1e-5` at `0`, `5`, and `45`. Require ambient endpoints `sky_ambient_ratio(5,0.25,1)==0.25` and `sky_ambient_ratio(-6,0.25,1)==1`, finite continuity across every dense sample, direct zero at `-5`, and a positive 9-SH upward/fog reference at `-5` without adding a constant at `-12`.
+In `atmosphere_tests.cpp`, add exact target-anchor checks for elevations `{90,45,5,0,-5,-12}` and ratios `{1,1,0.25,0,0,0}`; sample `[-90,90]` in `0.01` degree increments to require finite `[0,1]`, monotonic direct ratio, and one-sided differences within `1e-5` at `0`, `5`, and `45`. With distinct non-white current/noon atmospheric bases and live tint/multiplier, require `luma(direct_world_sun_rgb) / luma(noon_direct_base_rgb)` to equal the target, `direct_world_sun_rgb` to preserve current-base chroma, and a zero result whenever the target is nonpositive or either Rec.709 luminance is non-finite/nonpositive. Require ambient endpoints `sky_ambient_ratio(5,0.25,1)==0.25` and `sky_ambient_ratio(-6,0.25,1)==1`, finite continuity across every dense sample, direct zero at `-5`, and a positive 9-SH upward/fog reference at `-5` without adding a constant at `-12`.
 
 Resolve a fixture with non-white chroma/tints and assert component-wise equations exactly. Copy the result, change only display authored chroma/multiplier/tint, and `memcmp` all nine SH inputs, irradiance modifier, direct ratio, direct-world RGB, and exposure fixture bytes. In a second copy change only authored irradiance chroma/multiplier/day/twilight and `memcmp` background/miss/reflection display RGB. Feed NaN/inf and out-of-range controls through `sanitize_vulkan_lighting_overrides` and require day/twilight/irradiance fallback `{0.25,1,1}` clamped `[0,4]`, sunset fallback `0.25` clamped `[0,1]`, and unchanged elevation fallback/clamp `[-90,90]`.
 
@@ -376,13 +389,13 @@ In `property_editor_tests.cpp`, load old JSON with no new keys and assert the fo
 
 In `shader_source_tests.cpp`, reject `lighting.sky_color`, `lighting.sun_color`, `constants.sky_color`, `constants.sun_color`, `pc.sky_color`, and `pc.sun_color` in the three consumers. Require the four exact UBO names, nine-iteration SH evaluation before the irradiance multiply, display modifier only on background/miss/reflection helpers, world sun only on direct terms, disc RGB only on analytic disc terms, and no shader-side `smoothstep(-6`, `smoothstep(0,5`, elevation property, or ambient/direct ratio reconstruction.
 
-Extend the existing physical-atmosphere GPU fixture in `vulkan_smoke_tests.cpp` to render both raster and native RT at `{90,45,5,0,-5,-12}` with a forced history reset. Before implementation, assert the GPU-published direct ratios equal `{1,1,0.25,0,0,0}` within `1e-6`, raster/native-RT resolved direct RGB channels agree within `2e-3`, raster/RT/fog direct contributions are exactly zero at and below zero elevation, and the `-5` upward receiver plus fog remain over `1e-4` linear from evaluated SH. Treat native RT unavailable as fixture failure. This is the required RED GPU-ratio gate: it must fail on the current atmosphere-transmittance-only sunlight and shared `sky_color` ABI.
+Extend the existing physical-atmosphere GPU fixture in `vulkan_smoke_tests.cpp` to render both raster and native RT at `{90,45,5,0,-5,-12}` with a forced history reset. Before implementation, assert the GPU-published curve scalars equal `{1,1,0.25,0,0,0}` within `1e-6` and the published pre-BRDF Rec.709 luminance ratios `luma(direct_world_sun_rgb) / luma(atmospheric_noon_direct_base_rgb * live_sun_tint_rgb * sun_multiplier)` equal those anchors within absolute `2e-3`. Separately assert raster/native-RT resolved direct RGB channels agree within `2e-3`, raster/RT/fog direct contributions are exactly zero at and below zero elevation, and the `-5` upward receiver plus fog remain over `1e-4` linear from evaluated SH. Do not use a receiver's `N dot L` to judge the published-light ratio. Treat native RT unavailable as fixture failure. This is the required RED GPU-ratio gate: it must fail while the sunset scalar merely multiplies the already attenuated current-elevation sunlight and while the shared `sky_color` ABI remains.
 
 - [ ] **Step 3: Write failing candidate failure/replay/history tests**
 
-Add `test_fail_next_atmosphere_generation()`, `test_fail_next_atmosphere_descriptor_publication()`, `test_atmosphere_lut_handles()`, `test_atmosphere_history_counters()`, and `test_resolved_atmosphere_status()` accessors under the existing fault-injection define. Establish a committed baseline, then inject generation and descriptor-publication failure separately with no concurrent live edit; assert byte-identical LUT handles, direction, nine SH, atmospheric direct base, resolved direct/ambient/display values, generation serial, and all three history counters.
+Add `test_fail_next_atmosphere_generation()`, `test_fail_next_atmosphere_descriptor_publication()`, `test_atmosphere_lut_handles()`, `test_atmosphere_history_counters()`, and `test_resolved_atmosphere_status()` accessors under the existing fault-injection define. Establish a committed baseline, then inject generation and descriptor-publication failure separately with no concurrent live edit; assert byte-identical LUT handles, direction, nine SH, current-elevation and noon atmospheric direct bases, resolved direct/ambient/display values, generation serial, and all three history counters.
 
-Repeat each failure while changing every replay category in one batch: sun multiplier/tint, display sky multiplier/tint/chroma, authored irradiance chroma, irradiance multiplier, day/twilight ambient, sunset direct, emission, exposure, sun diameter, and shadow samples. Require old LUT/direction/SH/atmospheric base/serial, but current sanitized controls in `direct_base_rgb`, direct ratio/RGB, display/irradiance modifiers, disc/exposure/emission/shadow constants. Assert the failure itself adds no reset; the combined edit adds exactly the union of prescribed narrow resets once. Finally allow a successful candidate and require exactly one serial advance, one diffuse-GI reset, and one volumetric reset.
+Repeat each failure while changing every replay category in one batch: sun multiplier/tint, display sky multiplier/tint/chroma, authored irradiance chroma, irradiance multiplier, day/twilight ambient, sunset direct, emission, exposure, sun diameter, and shadow samples. Require old LUT/direction/SH/current atmospheric base/noon atmospheric base/serial, but current sanitized controls in `direct_base_rgb`, direct ratio/RGB, display/irradiance modifiers, disc/exposure/emission/shadow constants. Assert the failure itself adds no reset; the combined edit adds exactly the union of prescribed narrow resets once. Finally allow a successful candidate and require exactly one serial advance, one diffuse-GI reset, and one volumetric reset.
 
 - [ ] **Step 4: Run the focused targets and verify RED**
 
@@ -395,7 +408,7 @@ C:\msys64\usr\bin\make.exe -C MatterEditor build/windows/vulkan_smoke_tests.exe 
 $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE='atmosphere'; & MatterEditor/build/windows/vulkan_smoke_tests.exe
 ```
 
-Expected: RED on missing fields/interfaces, shared sky/sun ABI, noon ambient remaining at the former value, 5-degree direct ratio not being exactly `0.25`, and in-place LUT mutation/failure semantics.
+Expected: RED on missing fields/interfaces, shared sky/sun ABI, noon ambient remaining at the former value, 5-degree published direct-world luminance being below the `0.25` noon target, and in-place LUT mutation/failure semantics.
 
 - [ ] **Step 5: Add the four properties and central resolver**
 
@@ -425,11 +438,11 @@ prop(&V::sunset_direct_ratio, "sunset_direct_ratio")
  .doc("Direct-world ratio at +5 deg. Sunset direct does not affect disc presentation.")
 ```
 
-Implement `atmosphere_lighting.h` exactly as specified above. Invalid derived direct RGB becomes zero; invalid irradiance uses the last-valid irradiance modifier when available, otherwise zero-safe RGB. `matter_engine.cpp` passes authored display and authored irradiance chroma as two independent copies of `manifest.lights.sky_color`, computes elevation from the requested/committed sun direction with `sun_angles_from_direction`, and never derives a value from tone-mapped pixels.
+Implement `atmosphere_lighting.h` exactly as specified above, including Rec.709 coefficients `(0.2126,0.7152,0.0722)`, the live-tinted/multiplied current and noon bases, and the zero guard before division. Invalid derived direct RGB becomes zero; invalid irradiance uses the last-valid irradiance modifier when available, otherwise zero-safe RGB. `matter_engine.cpp` passes authored display and authored irradiance chroma as two independent copies of `manifest.lights.sky_color`, computes elevation from the requested/committed sun direction with `sun_angles_from_direction`, and never derives a value from receiver `N dot L` or tone-mapped pixels.
 
 - [ ] **Step 6: Replace in-place atmosphere writes with a candidate/commit transaction**
 
-Refactor `VkAtmosphere` so `build_candidate(const AtmosphereRequest&, Candidate&, error)` allocates a complete LUT image set, records all dirty compute passes into an immediate submission, reads/validates all nine irradiance texels, computes `atmospheric_direct_base_rgb = extraterrestrial_solar_rgb * atmospheric_transmittance_rgb * authored_sun_rgb`, and leaves the active state untouched. `commit_candidate(Candidate&&, protected_frame_slot)` increments serial exactly once and retires the prior LUT set behind the frame-slot fence. `discard_candidate` destroys only uncommitted resources. Initialization commits the existing neutral emergency set as serial zero.
+Refactor `VkAtmosphere` so `build_candidate(const AtmosphereRequest&, Candidate&, error)` allocates a complete LUT image set, records all dirty compute passes into an immediate submission, reads/validates all nine irradiance texels, computes and stores both `atmospheric_direct_base_rgb = extraterrestrial_solar_rgb * atmospheric_transmittance_rgb * authored_sun_rgb` at the current direction and `atmospheric_noon_direct_base_rgb = extraterrestrial_solar_rgb * atmospheric_noon_transmittance_rgb * authored_sun_rgb` from a zenith evaluation at the same camera altitude and atmosphere, and leaves the active state untouched. Both bases validate and commit transactionally with the candidate. `commit_candidate(Candidate&&, protected_frame_slot)` increments serial exactly once and retires the prior LUT set behind the frame-slot fence. `discard_candidate` destroys only uncommitted resources. Initialization commits the existing neutral emergency set as serial zero.
 
 In `VkSceneRenderer::prepare_frame`, compare the requested atmosphere settings/camera altitude/normalized direction/authored sun chroma with the committed state. Build a candidate only for atmosphere-linked changes. Publish candidate binding 0 with Task 1's sampler and binding 1 with its irradiance image into the selected completed-slot descriptor; after the injected/publication checks succeed, commit the candidate and publish resolved constants from the current sanitized live controls. On failure, report the precise error, preserve the complete committed state/descriptors, and call the constants-only resolver against current controls and the last-valid committed atmosphere. Requested elevation remains untouched and is never substituted into the committed state after failure.
 
@@ -465,7 +478,7 @@ C:\msys64\usr\bin\make.exe -C MatterEngine3/tests run-vk-scene-renderer TMP=C:/U
 $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE='atmosphere'; & MatterEditor/build/windows/vulkan_smoke_tests.exe
 ```
 
-Expected: all gates PASS; default noon ambient is 0.25 of the former effective linear irradiance input, `-5` has zero direct with positive SH-lit receiver/fog, `-12` has no injected floor, raster/native RT direct RGB agrees, failure retains the full prior atmosphere transaction, replay applies every current live value once, and Vulkan validation is clean.
+Expected: all gates PASS; default noon ambient is 0.25 of the former effective linear irradiance input, published pre-BRDF world-sun luminance matches the six noon-relative targets within `2e-3`, `-5` has zero direct with positive SH-lit receiver/fog, `-12` has no injected floor, raster/native RT direct RGB agrees, failure retains both atmospheric direct bases with the full prior atmosphere transaction, replay applies every current live value once, and Vulkan validation is clean.
 
 - [ ] **Step 9: Commit the independently reviewable lighting/transaction change**
 
@@ -521,6 +534,7 @@ struct ViewerAtmosphereStatus {
     uint64_t generation_serial = 0;
     float resolved_elevation_deg = 0.0f;
     matter::Float3 atmospheric_direct_base_rgb{};
+    matter::Float3 atmospheric_noon_direct_base_rgb{};
     float direct_world_ratio = 0.0f;
     matter::Float3 direct_base_rgb{};
     matter::Float3 direct_world_sun_rgb{};
@@ -629,6 +643,7 @@ wait_frames 3
 get viewer.session.render_path
 get viewer.session.presented_frame_serial
 get viewer.atmosphere_status.atmospheric_direct_base_rgb
+get viewer.atmosphere_status.atmospheric_noon_direct_base_rgb
 get viewer.atmosphere_status.direct_world_ratio
 get viewer.atmosphere_status.direct_base_rgb
 get viewer.atmosphere_status.direct_world_sun_rgb
@@ -643,7 +658,7 @@ Wait for `.done` before proceeding. Parse requested lighting values separately f
 
 - [ ] **Step 7: Implement strict status and image metrics**
 
-The Python tool accepts `--log`, `--capture-dir`, and `--width 1280 --height 720`. Parse triples only in `(r,g,b)` form and exact `get:` grammar. For each path/elevation require CPU ratios within `1e-6`, raster/native-RT direct RGB channel agreement within `2e-3`, and identical exposure `-2` across all ten captures. Decode PNG sRGB to display-linear, invert the ACES rational curve using the non-negative root of `(2.43*y-2.51)x^2+(0.59*y-0.03)x+0.14*y=0`, then divide by `2^-2` to recover scene-linear ROI values.
+The Python tool accepts `--log`, `--capture-dir`, and `--width 1280 --height 720`. Parse triples only in `(r,g,b)` form and exact `get:` grammar. For each path/elevation require CPU curve scalars within `1e-6`, derive the live-tinted/multiplied noon base from `atmospheric_noon_direct_base_rgb` and the separately recorded requested controls, and require the published pre-BRDF Rec.709 luminance ratio to match the applicable noon-relative anchor within absolute `2e-3`. Require raster/native-RT direct RGB channel agreement within `2e-3` and identical exposure `-2` across all ten captures. This status ratio is independent of receiver `N dot L`. Decode PNG sRGB to display-linear, invert the ACES rational curve using the non-negative root of `(2.43*y-2.51)x^2+(0.59*y-0.03)x+0.14*y=0`, then divide by `2^-2` to recover scene-linear ROI values.
 
 Measure inclusive ROIs lit `[420,300]..[460,340]`, shadow `[500,300]..[540,340]`, and upward/fog `[430,260]..[470,290]`. Require at `-5`: direct ratio and direct RGB exactly zero and upward/fog mean `>1e-4`; at noon: lit mean `>=1.10*shadow mean`; at `-12`: no non-finite pixel and upward/fog mean lower than at `-5` for each path, proving no permanent ambient floor. Emit a JSON summary containing every requested/resolved value, per-ROI linear mean, raster/native-RT RGB delta, and PASS/FAIL gate.
 
@@ -664,7 +679,7 @@ $env:TMP='C:/Users/webde/AppData/Local/Temp'; $env:TEMP=$env:TMP; $env:MATTER_WO
 C:\msys64\usr\bin\python3.exe MatterEngine3/tools/atmosphere_presentation_metrics.py --log MatterEditor/build/validation/atmosphere-presentation/acceptance_viewer.log --capture-dir MatterEditor/build/validation/atmosphere-presentation --width 1280 --height 720
 ```
 
-Expected: every target PASS sequentially; all ten `.done`-guarded captures exist; native RT was available and exercised; resolved ratios/status and raster/native-RT agreement pass; fixed-exposure fog remains positive at `-5`, direct is zero, noon receiver separation is at least 10%, deep night fades without a floor, and no Vulkan validation issue is introduced.
+Expected: every target PASS sequentially; all ten `.done`-guarded captures exist; native RT was available and exercised; resolved curve targets, published pre-BRDF noon-relative world-sun luminance, and raster/native-RT agreement pass; fixed-exposure fog remains positive at `-5`, direct is zero, noon receiver separation is at least 10%, deep night fades without a floor, and no Vulkan validation issue is introduced.
 
 - [ ] **Step 9: Inspect and present capture evidence**
 
@@ -691,9 +706,9 @@ git commit -m "test: automate atmosphere presentation acceptance"
 - [ ] Dedicated sky sampler is linear/repeat-U/clamp-VW; G-buffer remains nearest; `192x108` remains unchanged because all sampling gates pass.
 - [ ] Dither table FNV is `0xdc0d948b`, offsets are equal RGB and exactly bounded by plus/minus `0.5/255`, complete interior tiles have zero mean, static frames match, rails clamp, and UNORM/sRGB branches agree in encoded code space.
 - [ ] Visible sky, post-9SH irradiance, direct-world sun, and analytic disc use four independent RGB lanes from one committed UBO snapshot.
-- [ ] Direct ratios are exactly `90=1`, `45=1`, `5=0.25`, `0=0`, `-5=0`, `-12=0`; noon ambient defaults to `0.25`; twilight remains physical/directional without an artificial deep-night floor.
+- [ ] Direct curve targets are exactly `90=1`, `45=1`, `5=0.25`, `0=0`, `-5=0`, `-12=0`; published pre-BRDF Rec.709 `direct_world_sun_rgb` luminance ratios versus the live-tinted/multiplied same-altitude physical noon base match those anchors within absolute `2e-3`, independently of receiver `N dot L`; noon ambient defaults to `0.25`; twilight remains physical/directional without an artificial deep-night floor.
 - [ ] Four property paths, labels, ranges, environment variables, docs, old-state defaults, generic FIFO access, and sanitization match the approved design.
-- [ ] Generation and descriptor failure retain the full last-valid atmosphere; concurrent live edits replay exhaustively against it; histories and serials advance only by the exact table.
+- [ ] Generation and descriptor failure retain both current-elevation and noon atmospheric direct bases with the full last-valid atmosphere; concurrent live edits replay exhaustively against it; histories and serials advance only by the exact table.
 - [ ] Read-only status reports committed state, while requested `render.lighting.*` continues to report requested sanitized state; a failed elevation request can therefore differ visibly and intentionally.
 - [ ] `render_path`, `history_reset`, `wait_frames`, and `shot_now` obey exact grammar and success lines; waiting counts successful presents only.
 - [ ] Same-exposure `90/5/0/-5/-12` raster and native-RT captures, fog/ROI metrics, builds, source tests, CPU tests, GPU tests, screenshots, and validation all pass, with native RT unavailable treated as failure.

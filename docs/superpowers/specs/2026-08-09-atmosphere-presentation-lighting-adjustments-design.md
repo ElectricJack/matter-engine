@@ -97,13 +97,23 @@ Use these exact direct equations, with component-wise multiplication written as 
 ```text
 atmospheric_direct_base_rgb = extraterrestrial_solar_rgb
                             * atmospheric_transmittance_rgb * authored_sun_rgb
+atmospheric_noon_direct_base_rgb = extraterrestrial_solar_rgb
+                                 * atmospheric_noon_transmittance_rgb * authored_sun_rgb
 direct_base_rgb = atmospheric_direct_base_rgb * live_sun_tint_rgb
                 * sun_multiplier
+noon_direct_base_rgb = atmospheric_noon_direct_base_rgb * live_sun_tint_rgb
+                     * sun_multiplier
 sun_disc_rgb = direct_base_rgb
-direct_world_sun_rgb = direct_base_rgb * direct_world_ratio(e)
+current_luma = dot(direct_base_rgb, (0.2126, 0.7152, 0.0722))
+noon_luma = dot(noon_direct_base_rgb, (0.2126, 0.7152, 0.0722))
+if direct_world_ratio(e) <= 0 or either current_luma or noon_luma is non-finite or <= 0:
+    direct_world_sun_rgb = (0, 0, 0)
+otherwise:
+    direct_world_sun_rgb = direct_base_rgb
+                         * (direct_world_ratio(e) * noon_luma / current_luma)
 ```
 
-Thus `direct_base_rgb` is exactly extraterrestrial solar RGB times atmospheric transmittance times authored sun RGB, live sun tint, and sun multiplier. `sun_disc_rgb` deliberately does not inherit `direct_world_ratio`. Existing disc size/edge/core presentation remains unchanged. `direct_world_sun_rgb` receives the scalar last, preserving atmosphere chroma. Never derive any of these values from post-tone-mapped pixels.
+`atmospheric_direct_base_rgb`, `direct_base_rgb`, and `sun_disc_rgb` remain the physically attenuated current-elevation values. The noon base is a second physical evaluation at zenith using the same camera altitude, atmosphere settings, extraterrestrial solar RGB, and authored sun RGB; it receives the same live sun tint and multiplier during resolution. `direct_world_ratio(e)` is the target pre-BRDF Rec.709 luminance ratio relative to that physical noon reference, not an additional multiplier on the already attenuated current-elevation base. The luminance normalization preserves the current physical chroma. `sun_disc_rgb` deliberately does not inherit `direct_world_ratio`; existing disc size/edge/core presentation remains unchanged. Never derive any of these values from a receiver's `N dot L` term or post-tone-mapped pixels.
 
 Display-modifier edits must leave resolved SH irradiance, diffuse GI, fog/cloud ambient, direct-world RGB, and exposure unchanged. They do change background/miss/reflection radiance, so they invalidate only reflection/miss temporal history where that history exists; they do not reset diffuse-GI or volumetric history. Irradiance-modifier edits do not change background/miss/reflection display radiance and do reset diffuse-GI and volumetric ambient history.
 
@@ -118,9 +128,9 @@ e <= 0:        0
 e >= 45:       1
 ```
 
-Initial anchors are exact: `90° = 1.00`, `5° = 0.25`, `0° = 0`, and every negative elevation is `0`. The initial `s` is `0.25`; it is user-editable, so only that 5° anchor changes when the property is edited. `0–5°` and `5–45°` are the complete transitions. There is no hidden below-horizon tail or discontinuity at 5°.
+Initial target anchors are exact: `90° = 1.00`, `45° = 1.00`, `5° = 0.25`, `0° = 0`, and every negative elevation is `0`. The initial `s` is `0.25`; it is user-editable, so only that 5° target anchor changes when the property is edited. `0–5°` and `5–45°` are the complete transitions. There is no hidden below-horizon tail or discontinuity at 5°. These targets describe published direct-world luminance before the BRDF; receiver orientation and its `N dot L` attenuation are separate.
 
-Apply this exact resolved scalar to raster primary direct lighting, RT primary/secondary direct lighting, shadowed direct terms, cloud-shadow inputs, and volumetric direct scattering. Solid/cloud shadows can attenuate direct light but cannot restore it when `e <= 0`. The analytic disc is intentionally separate.
+Publish the noon-normalized `direct_world_sun_rgb` produced from this exact target to raster primary direct lighting, RT primary/secondary direct lighting, shadowed direct terms, cloud-shadow inputs, and volumetric direct scattering. Solid/cloud shadows can attenuate direct light but cannot restore it when `e <= 0`. The analytic disc is intentionally separate.
 
 ## Day and Twilight Ambient
 
@@ -159,16 +169,16 @@ Older worlds/property state omit the new fields and receive these defaults. Exis
 
 ## History, Resource, and Path Consistency
 
-Atmosphere coefficient and sun-direction changes use an explicit candidate transaction. A candidate contains the complete LUT image set, its settings and normalized sun direction, its 9 SH coefficients, and `atmospheric_direct_base_rgb`. Generate/validate all of it off the currently committed descriptor set. Only after successful generation and descriptor publication may the renderer atomically replace the committed atmosphere transaction and its direction. Constants derived from live non-atmosphere controls are then resolved from that atomically committed atmosphere state. If a live control changes while an atmosphere candidate is pending, fold its current sanitized value into the constants published with that candidate; until then, retain the complete committed transaction rather than mixing old LUTs with a requested atmosphere direction.
+Atmosphere coefficient and sun-direction changes use an explicit candidate transaction. A candidate contains the complete LUT image set, its settings and normalized sun direction, its 9 SH coefficients, `atmospheric_direct_base_rgb` for the current elevation, and `atmospheric_noon_direct_base_rgb` from a zenith/noon physical evaluation at the same camera altitude and atmosphere. Generate/validate all of it off the currently committed descriptor set. Only after successful generation and descriptor publication may the renderer atomically replace the committed atmosphere transaction and its direction. Constants derived from live non-atmosphere controls are then resolved from that atomically committed atmosphere state. If a live control changes while an atmosphere candidate is pending, fold its current sanitized value into the constants published with that candidate; until then, retain the complete committed transaction rather than mixing old LUTs with a requested atmosphere direction.
 
-On candidate generation, validation, allocation, or descriptor-publication failure, retain the entire last-valid atmosphere transaction: old atmosphere LUTs, old direction, old 9 SH, old `atmospheric_direct_base_rgb`, and old environment descriptors. Do not advance one light direction while retaining LUTs from another direction. Immediately after recording the failure, resolve every current sanitized non-atmosphere live source against that last-valid atmosphere state in a separate constants-only transaction. The replay list is exhaustive:
+On candidate generation, validation, allocation, or descriptor-publication failure, retain the entire last-valid atmosphere transaction: old atmosphere LUTs, old direction, old 9 SH, old `atmospheric_direct_base_rgb`, old `atmospheric_noon_direct_base_rgb`, and old environment descriptors. Do not advance one light direction while retaining LUTs from another direction. Immediately after recording the failure, resolve every current sanitized non-atmosphere live source against that last-valid atmosphere state in a separate constants-only transaction. The replay list is exhaustive:
 
 - Direct-world inputs: `sun_multiplier`, `live_sun_tint_rgb`, and `sunset_direct_ratio`.
 - Sky-display inputs: authored display-sky chroma, `sky_multiplier`, and `sky_tint` (the inputs of `sky_display_modifier_rgb`).
 - Sky-irradiance inputs: `authored_irradiance_chroma_rgb`, `sky_irradiance_multiplier`, `day_ambient_multiplier`, and `twilight_ambient_multiplier` (the inputs of `sky_irradiance_modifier_rgb`).
 - Other named live presentation/light sources: `emission_multiplier`, `exposure_ev`, `sun_angular_diameter_deg`, and `sun_shadow_samples`.
 
-The constants-only transaction may update the display modifier, irradiance modifier/ratio, resolved `direct_base_rgb`, `direct_world_sun_rgb`, disc size/presentation constants, emission, exposure, and shadow sampling from those current values. It never changes LUT handles, atmosphere direction, coefficients, 9 SH, or `atmospheric_direct_base_rgb`. Requested sun azimuth/elevation are atmosphere-direction inputs and are expressly not replayed after a failed candidate.
+The constants-only transaction may update the display modifier, irradiance modifier/ratio, resolved `direct_base_rgb`, `direct_world_sun_rgb`, disc size/presentation constants, emission, exposure, and shadow sampling from those current values. It never changes LUT handles, atmosphere direction, coefficients, 9 SH, `atmospheric_direct_base_rgb`, or `atmospheric_noon_direct_base_rgb`. Requested sun azimuth/elevation are atmosphere-direction inputs and are expressly not replayed after a failed candidate.
 
 The constants-only transaction follows normal narrow replay rules: `sun_multiplier`, `live_sun_tint_rgb`, `sunset_direct_ratio`, `authored_irradiance_chroma_rgb`, `sky_irradiance_multiplier`, or either day/twilight ambient input requests one diffuse-GI reset and invalidates volumetric history; a display-sky chroma/multiplier/tint change invalidates reflection/miss history only; `emission_multiplier` follows its existing emission-source reset rule; `exposure_ev` and `sun_shadow_samples` reset no radiance history; `sun_angular_diameter_deg` follows its existing direct/disc/reflection reset rule. It does not increment atmosphere generation serial. An atmosphere failure without concurrent live edits resets no history. On successful full atmosphere commit only, increment atmosphere generation serial and request exactly one diffuse-GI and volumetric-history reset. This replaces any partial dirty/reset behavior for atmosphere-linked updates.
 
@@ -184,12 +194,12 @@ FIFO `set render.lighting.*` and `get render.lighting.*` always expose the reque
 
 ### CPU and property gates
 
-- Test default direct ratios at `90`, `45`, `5`, `0`, `-5`, and `-12`: `1`, `1`, `0.25`, `0`, `0`, `0`; dense `[-90,90]` samples are monotonic and continuous at `0`, `5`, and `45`.
+- Test default target direct ratios at `90`, `45`, `5`, `0`, `-5`, and `-12`: `1`, `1`, `0.25`, `0`, `0`, `0`; dense `[-90,90]` samples are monotonic and continuous at `0`, `5`, and `45`. With non-white current/noon bases and live tint/multiplier, verify the resolved `direct_world_sun_rgb` Rec.709 luminance divided by resolved noon-base luminance matches the target and retains the current-base chroma; zero/non-finite/nonpositive ratio or luminance inputs resolve direct world RGB to zero.
 - Verify noon ambient is 0.25 of the former effective lighting input, not 25% of tone-mapped screen colour. Verify the `+5..-6°` blend is finite/continuous and its endpoint values are exact.
 - At `-5°`, verify resolved direct is zero and physical ambient is positive for an upward receiver and fog. At `-12°`, verify no artificial floor has been added.
 - Verify sanitization/fallbacks and older-settings defaults. Changing `sky_display_modifier_rgb` must leave all nine SH coefficients, `sky_irradiance_modifier_rgb`, direct ratio, and `direct_world_sun_rgb` byte-identical; changing `sky_irradiance_modifier_rgb` must leave background/miss/reflection display RGB byte-identical.
-- Atmosphere-only failure test injects LUT-generation and descriptor-publication failure with no concurrent live edit. It proves every resolved status value is unchanged: LUT handles, committed direction, all nine SH, `atmospheric_direct_base_rgb`, resolved direct/ambient/display values, generation serial, and all reset counters.
-- Concurrent-live-edit failure test injects the same candidate failure while changing every replayable category: sun multiplier/tint, display sky multiplier/tint/chroma, `authored_irradiance_chroma_rgb`, `sky_irradiance_multiplier`, day/twilight ambient, Sunset direct, emission, exposure, sun angular diameter, and shadow samples. It proves LUT handles, direction, nine SH, `atmospheric_direct_base_rgb`, and generation serial remain last-valid; `direct_base_rgb`, direct ratio/RGB, display modifier, irradiance modifier/ratio, disc/exposure/emission/shadow constants equal the current sanitized requested controls resolved against that last-valid atmosphere state. It also proves only the prescribed narrow history counters for the changed categories advance, and the candidate-failure path itself advances none. A successful candidate proves one atomic serial advance and one atmosphere-linked reset.
+- Atmosphere-only failure test injects LUT-generation and descriptor-publication failure with no concurrent live edit. It proves every resolved status value is unchanged: LUT handles, committed direction, all nine SH, `atmospheric_direct_base_rgb`, `atmospheric_noon_direct_base_rgb`, resolved direct/ambient/display values, generation serial, and all reset counters.
+- Concurrent-live-edit failure test injects the same candidate failure while changing every replayable category: sun multiplier/tint, display sky multiplier/tint/chroma, `authored_irradiance_chroma_rgb`, `sky_irradiance_multiplier`, day/twilight ambient, Sunset direct, emission, exposure, sun angular diameter, and shadow samples. It proves LUT handles, direction, nine SH, `atmospheric_direct_base_rgb`, `atmospheric_noon_direct_base_rgb`, and generation serial remain last-valid; `direct_base_rgb`, direct ratio/RGB, display modifier, irradiance modifier/ratio, disc/exposure/emission/shadow constants equal the current sanitized requested controls resolved against that last-valid atmosphere state. It also proves only the prescribed narrow history counters for the changed categories advance, and the candidate-failure path itself advances none. A successful candidate proves one atomic serial advance and one atmosphere-linked reset.
 
 ### GPU/image gates
 
@@ -198,7 +208,7 @@ FIFO `set render.lighting.*` and `get render.lighting.*` always expose the reque
 - V=0/V=1 samples are finite and within the min/max of their clamped edge texel pairs. For 256 direction pairs immediately across the U wrap, relative RGB difference is at most `0.5%` (absolute `1e-3` near black), and seam finite difference is no more than twice the median adjacent-U finite difference.
 - Dither oracle test checks the exact table and FNV checksum above. On uniform interior encoded values `code=(0.5,0.5,0.5)` in a multiple-of-8 viewport, measure `code_dithered-code` before quantization: every value is within `[-0.5/255,+0.5/255]`, extrema occur, RGB offsets are equal, each 8x8 mean has absolute value at most `1e-8`, and two static frames match exactly. Rail cases `code=0` and `code=1` are separate: after clamp they may have non-zero mean, but every code stays in `[0,1]` and the un-clamped offset still meets the same bound. The test also proves the sRGB and UNORM branches yield the same pre-quantization encoded code values. Shader/ABI inspection rejects temporal inputs.
 - Use the deterministic `AtmospherePresentationFixture`: white Lambert up-facing 8 m x 8 m ground receiver centred at origin; 2 m vertical occluder centred at `(0,1,0)`; camera exactly `cam 0 2 12 0 1 0`; clouds disabled; fog enabled with `density=0.002`, `floor=0`, `falloff=30`, `color=(0.9,0.92,0.95)`, `wind=(0,0,0)`. The lit ROI is pixels `[420,300]..[460,340]`, shadow ROI `[500,300]..[540,340]`, upward/fog ROI `[430,260]..[470,290]` at 1280x720.
-- Run both raster and native RT fixture paths at `90`, `5`, `0`, `-5`, and `-12` degrees after three warm-up frames plus a forced history reset. Emit and assert the resolved elevation, `atmospheric_direct_base_rgb`, `direct_world_ratio`, `direct_base_rgb`, `direct_world_sun_rgb`, `sky_ambient_ratio`, `sky_display_modifier_rgb`, and `sky_irradiance_modifier_rgb`. Ratios must match CPU within `1e-6`; raster/RT direct RGB channels within `2e-3`; and fog/upward ROI mean at `-5` must exceed `1e-4` linear while direct contribution is exactly zero. Noon lit ROI must exceed shadow ROI by at least 10% after the day-ambient reduction. Native RT unavailable is an explicit acceptance-fixture failure, not a skipped RT comparison.
+- Run both raster and native RT fixture paths at `90`, `45`, `5`, `0`, `-5`, and `-12` degrees after three warm-up frames plus a forced history reset. Emit and assert the resolved elevation, `atmospheric_direct_base_rgb`, `atmospheric_noon_direct_base_rgb`, `direct_world_ratio`, `direct_base_rgb`, `direct_world_sun_rgb`, `sky_ambient_ratio`, `sky_display_modifier_rgb`, and `sky_irradiance_modifier_rgb`. Curve scalars must match CPU within `1e-6`; published pre-BRDF Rec.709 luminance ratios `luma(direct_world_sun_rgb) / luma(atmospheric_noon_direct_base_rgb * live_sun_tint_rgb * sun_multiplier)` must match `{1,1,0.25,0,0,0}` within absolute `2e-3`; raster/native-RT direct RGB channels must agree within `2e-3`. This published-light gate is separate from receiver `N dot L`. Raster/RT/fog direct contributions are exactly zero at and below zero elevation, and fog/upward ROI mean at `-5` must exceed `1e-4` linear while direct contribution is exactly zero. Noon lit ROI must exceed shadow ROI by at least 10% after the day-ambient reduction. Native RT unavailable is an explicit acceptance-fixture failure, not a skipped RT comparison.
 
 ### CLI/FIFO captures
 
@@ -212,6 +222,7 @@ Implementation scope adds the following read-only session properties to the exis
 | `viewer.atmosphere_status.generation_serial` | unsigned committed-atmosphere generation serial |
 | `viewer.atmosphere_status.resolved_elevation_deg` | committed atmosphere direction elevation, decimal degrees |
 | `viewer.atmosphere_status.atmospheric_direct_base_rgb` | committed solar/transmittance/authored-sun RGB triple, `(r,g,b)` |
+| `viewer.atmosphere_status.atmospheric_noon_direct_base_rgb` | committed zenith/noon solar/transmittance/authored-sun RGB triple at the same camera altitude and atmosphere, `(r,g,b)` |
 | `viewer.atmosphere_status.direct_world_ratio` | resolved scalar |
 | `viewer.atmosphere_status.direct_base_rgb` | resolved RGB triple, `(r,g,b)` |
 | `viewer.atmosphere_status.direct_world_sun_rgb` | resolved RGB triple, `(r,g,b)` |
@@ -252,6 +263,7 @@ wait_frames 3
 get viewer.session.render_path
 get viewer.session.presented_frame_serial
 get viewer.atmosphere_status.atmospheric_direct_base_rgb
+get viewer.atmosphere_status.atmospheric_noon_direct_base_rgb
 get viewer.atmosphere_status.direct_world_ratio
 get viewer.atmosphere_status.direct_base_rgb
 get viewer.atmosphere_status.direct_world_sun_rgb
@@ -269,6 +281,6 @@ The harness first sends `render_path <path>` and then requires `get viewer.sessi
 - The `192x108` LUT is linear with a correct periodic U seam; G-buffer sampling stays nearest; resolution changes only after a metric failure.
 - Dither is deterministic, scene-viewport-only, code-space correct for UNORM and sRGB presentation, bounded at exact plus/minus 0.5 LSB before quantization, and zero-mean on interior values without shimmer. ImGui is unaffected because it is composited after the display pass.
 - `sky_display_modifier_rgb` and post-SH `sky_irradiance_modifier_rgb` are independent. Noon ambient defaults to 25% of today's effective value while the physical 9 SH remain directional.
-- Direct world lighting preserves atmospheric chroma and defaults to `90=100%`, `5=25%`, `0=0`, `<0=0`; analytic-disc presentation remains separate.
+- Direct world lighting preserves current-elevation atmospheric chroma and its published pre-BRDF Rec.709 luminance defaults to `90=100%`, `45=100%`, `5=25%`, `0=0`, `<0=0` of the same-altitude physical noon reference within the GPU tolerance; receiver `N dot L` and analytic-disc presentation remain separate.
 - At `-5°`, direct is zero while upward receivers/fog remain positive/readable; deep night has no permanent ambient floor.
 - Atmosphere direction/LUT/direct/ambient changes commit atomically or retain a complete last-valid transaction. New controls are manual existing-Lighting properties, sanitize predictably, preserve old content, work through FIFO, and are consistent in raster, RT, and volumetrics.
