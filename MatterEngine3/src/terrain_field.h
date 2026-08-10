@@ -383,6 +383,11 @@ public:
     void channels_at(float world_x, float world_z, const FieldRuntime* field,
                      float* out_channels) const;
     int channel_count() const { return prog_.channel_count; }
+    // Real op count -- the thing that actually predicts eval cost. The scatter
+    // profiler used to print channel_count twice under an "ops" label, which
+    // sent a tape-cost investigation chasing a 31-op program when the real one
+    // is far larger.
+    int op_count() const { return (int)prog_.ops.size(); }
 
     // P3 appearance lanes for one sample, CLAMPED to their documented ranges
     // (tint [0, kSurfaceTintMax], rough_bias +-kSurfaceRoughBiasLimit, wetness

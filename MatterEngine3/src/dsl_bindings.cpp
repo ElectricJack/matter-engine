@@ -6,6 +6,7 @@
 #include "tileset_layout.h"
 #include "part_graph.h"   // params_from_json, params_to_json — canonical JSON normalizer
 #include "terrain_mesher.h"
+#include "scatter_grid_native.h"   // the scatter candidate grid (shared with tests)
 #include "triangle_emit.hpp"
 #include <atomic>   // terrain_verb_census() + script_profile backing counters
 #include <algorithm>
@@ -1251,60 +1252,12 @@ static JSValue j_habitatAt(JSContext* c, JSValueConst, int argc,
 //
 // sector_bake_tests cross-checks this against the JS implementation over the
 // real rects rather than taking the argument above on trust.
-namespace {
-
-inline uint32_t sg_mix(uint32_t h, uint32_t c) {
-    h = (h ^ (h >> 15)) * (c | 1u);
-    h ^= h + (h ^ (h >> 7)) * (h | 61u);
-    return h ^ (h >> 14);
-}
-inline uint32_t sg_base_hash(uint32_t seed, uint32_t kind,
-                             int32_t cx, int32_t cz) {
-    uint32_t h = seed ^ (kind * 374761393u);
-    h = sg_mix(h ^ ((uint32_t)cx * 668265263u), 2246822519u);
-    h = sg_mix(h ^ ((uint32_t)cz * 1274126177u), 374761393u);
-    return h;
-}
-inline double sg_unit(uint32_t h) { return (double)h / 4294967296.0; }
-
-struct SgCandidate {
-    double x, z, rot, u, v;
-    uint32_t pri;
-};
-inline SgCandidate sg_cell_candidate(uint32_t seed, uint32_t kind,
-                                     int32_t cx, int32_t cz, double min_dist) {
-    const uint32_t h = sg_base_hash(seed, kind, cx, cz);
-    const double jx = sg_unit(sg_mix(h, 0x9E3779B1u));
-    const double jz = sg_unit(sg_mix(h, 0x85EBCA77u));
-    SgCandidate c;
-    c.x = ((double)cx + 0.25 + 0.5 * jx) * min_dist;
-    c.z = ((double)cz + 0.25 + 0.5 * jz) * min_dist;
-    c.rot = sg_unit(sg_mix(h, 0xC2B2AE3Du)) * 3.141592653589793 * 2.0;
-    c.u = sg_unit(sg_mix(h, 0x27D4EB2Fu));
-    c.v = sg_unit(sg_mix(h, 0x165667B1u));
-    c.pri = h;
-    return c;
-}
-// Neighbour-priority rejection: an exact min-distance guarantee that is
-// order-independent, so a candidate's fate is the same from any sector that
-// happens to look at it. Identical rule and identical tie-break to the JS.
-inline bool sg_survives(uint32_t seed, uint32_t kind, int32_t cx, int32_t cz,
-                        double min_dist, const SgCandidate& c) {
-    for (int dz = -1; dz <= 1; ++dz)
-        for (int dx = -1; dx <= 1; ++dx) {
-            if (dx == 0 && dz == 0) continue;
-            const int32_t nx = cx + dx, nz = cz + dz;
-            const SgCandidate o =
-                sg_cell_candidate(seed, kind, nx, nz, min_dist);
-            const double ddx = c.x - o.x, ddz = c.z - o.z;
-            if (ddx * ddx + ddz * ddz >= min_dist * min_dist) continue;
-            if (o.pri > c.pri) return false;
-            if (o.pri == c.pri && (nz < cz || (nz == cz && nx < cx)))
-                return false;
-        }
-    return true;
-}
-}  // namespace
+// The algorithm now lives in scatter_grid_native.h so the binding and the
+// benchmark share one definition (a copy here would be free to drift, and a
+// last-bit divergence moves every tree in every world).
+using scatter_grid::SgCandidate;
+using scatter_grid::sg_cell_candidate;
+using scatter_grid::sg_survives;
 
 static JSValue j_candidatesInRect(JSContext* c, JSValueConst, int argc,
                                   JSValueConst* a) {
@@ -1393,6 +1346,19 @@ static JSValue j_candidatesInRect(JSContext* c, JSValueConst, int argc,
 // is usable by scenes with no habitat tape bound, unlike __habitatAt, which
 // fails loudly in that case.) This comment is the only contract; the JS side
 // indexes the array by hand against it.
+// Native-side breakdown of j_planCandidates, reported by script_profile::report
+// under the JS slot table. It exists because the JS-side `plan.candidates` slot
+// measures the whole crossing and three successive guesses about what dominates
+// it were all wrong (the crossing, the channel count, the register zeroing).
+// These counters split the native body into its three real phases so the answer
+// comes from a number rather than an argument. Relaxed atomics: they are
+// diagnostics, and contention on them would itself distort what they measure.
+std::atomic<unsigned long long> g_pc_calls{0};
+std::atomic<unsigned long long> g_pc_cands{0};
+std::atomic<unsigned long long> g_pc_gen_ns{0};    // grid + survives
+std::atomic<unsigned long long> g_pc_tape_ns{0};   // channels_at per survivor
+std::atomic<unsigned long long> g_pc_pack_ns{0};   // vector fill + typed array
+
 static JSValue j_planCandidates(JSContext* c, JSValueConst, int argc,
                                 JSValueConst* a) {
     DslState* st = state_of(c);
@@ -1426,6 +1392,12 @@ static JSValue j_planCandidates(JSContext* c, JSValueConst, int argc,
     data.push_back(0.0);  // candidateCount, patched below
     uint32_t n = 0;
     float ch[terrain_field::kMaxHabitatChannels];
+    unsigned long long tape_ns = 0;
+    // Per-candidate timing is opt-in: two clock reads per candidate is
+    // cheap against a 21 us sample but must not be paid when nobody is
+    // profiling. The per-CALL timers below are always on (40 calls a bake).
+    const bool prof = script_profile::enabled();
+    const auto pc_t0 = std::chrono::steady_clock::now();
     for (double dcz = r0; dcz <= r1; dcz += 1.0)
         for (double dcx = c0; dcx <= c1; dcx += 1.0) {
             const int32_t cx = (int32_t)dcx, cz = (int32_t)dcz;
@@ -1441,14 +1413,21 @@ static JSValue j_planCandidates(JSContext* c, JSValueConst, int argc,
             data.push_back(cand.u);
             data.push_back(cand.v);
             if (channel_count > 0) {
+                const auto tt0 = prof ? std::chrono::steady_clock::now()
+                                      : std::chrono::steady_clock::time_point{};
                 wb.habitat->channels_at((float)cand.x, (float)cand.z,
                                         wb.field, ch);
+                if (prof)
+                    tape_ns += (unsigned long long)std::chrono::duration_cast<
+                        std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - tt0).count();
                 for (int i = 0; i < channel_count; ++i)
                     data.push_back((double)ch[i]);
             }
             ++n;
         }
     data[1] = (double)n;
+    const auto pc_t1 = std::chrono::steady_clock::now();
 
     JSValue buf = JS_NewArrayBufferCopy(
         c, reinterpret_cast<const uint8_t*>(data.data()),
@@ -1460,6 +1439,18 @@ static JSValue j_planCandidates(JSContext* c, JSValueConst, int argc,
     JSValue argv[3] = {buf, JS_UNDEFINED, JS_UNDEFINED};
     JSValue ta = JS_NewTypedArray(c, 3, argv, JS_TYPED_ARRAY_FLOAT64);
     JS_FreeValue(c, buf);
+    {
+        const auto pc_t2 = std::chrono::steady_clock::now();
+        const auto ns = [](auto d) {
+            return (unsigned long long)std::chrono::duration_cast<
+                std::chrono::nanoseconds>(d).count(); };
+        g_pc_calls.fetch_add(1, std::memory_order_relaxed);
+        g_pc_cands.fetch_add(n, std::memory_order_relaxed);
+        g_pc_tape_ns.fetch_add(tape_ns, std::memory_order_relaxed);
+        g_pc_gen_ns.fetch_add(ns(pc_t1 - pc_t0) - tape_ns,
+                              std::memory_order_relaxed);
+        g_pc_pack_ns.fetch_add(ns(pc_t2 - pc_t1), std::memory_order_relaxed);
+    }
     return ta;
 }
 
@@ -1946,6 +1937,23 @@ std::string report() {
     std::snprintf(line, sizeof line, "  %-28s %10s %12.1f\n",
                   "(sum of self)", "", self_total / 1e6);
     out += line;
+    // Native breakdown of __planCandidates (see the counters by its definition).
+    {
+        const unsigned long long pc = g_pc_calls.load(std::memory_order_relaxed);
+        if (pc) {
+            const unsigned long long cd = g_pc_cands.load(std::memory_order_relaxed);
+            const double gen = g_pc_gen_ns.load(std::memory_order_relaxed) / 1e6;
+            const double tap = g_pc_tape_ns.load(std::memory_order_relaxed) / 1e6;
+            const double pak = g_pc_pack_ns.load(std::memory_order_relaxed) / 1e6;
+            char nl_[320];
+            std::snprintf(nl_, sizeof nl_,
+                "  [native __planCandidates] calls=%llu candidates=%llu | "
+                "grid+survives %.1f ms | tape %.1f ms | pack+typedarray %.1f ms"
+                " | native total %.1f ms\n",
+                pc, cd, gen, tap, pak, gen + tap + pak);
+            out += nl_;
+        }
+    }
     const unsigned long long mm = g_mismatches.load(std::memory_order_relaxed);
     if (mm) {
         std::snprintf(line, sizeof line,

@@ -193,7 +193,7 @@ int main(int argc, char** argv) {
         habitat = std::make_unique<terrain_field::SurfaceRuntime>(
             std::move(hprog));
         std::printf("habitat tape: %d channels, %zu ops\n",
-                    habitat->channel_count(), wr.habitat_channels.size());
+                    habitat->channel_count(), (size_t)habitat->op_count());
     } else {
         std::printf("habitat tape: NONE (ecology will use the JS fallback)\n");
     }
