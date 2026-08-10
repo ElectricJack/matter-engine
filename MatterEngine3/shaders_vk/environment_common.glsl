@@ -30,8 +30,18 @@ float sample_cloud_transmittance(vec3 world_pos, float receiver_distance_m) {
     // contents. Active sampling remains binding-free in cloud_shadow_common.
     if (environment.cloud_state.x == 0.0 ||
         isnan(environment.cloud_state.x) ||
-        isinf(environment.cloud_state.x)) return 1.0;
+        isinf(environment.cloud_state.x) ||
+        any(isnan(world_pos)) || any(isinf(world_pos)) ||
+        isnan(receiver_distance_m) || isinf(receiver_distance_m)) return 1.0;
     return cloud_shadow_sample_active(world_pos, receiver_distance_m);
+}
+
+float cloud_receiver_distance_to_top(vec3 world_pos, vec3 to_sun) {
+    float cloud_top = environment.cloud_state.w;
+    if (any(isnan(world_pos)) || any(isinf(world_pos)) ||
+        any(isnan(to_sun)) || any(isinf(to_sun)) ||
+        isnan(cloud_top) || isinf(cloud_top)) return uintBitsToFloat(0x7fc00000u);
+    return max(cloud_top - world_pos.y, 0.0) / max(to_sun.y, 1e-3);
 }
 #endif
 

@@ -7,6 +7,7 @@
 #include "sun_angles.h"
 #include "volumetric_quality.h"
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -110,6 +111,16 @@ inline int32_t active_cloud_count(const FogSettings& fog) {
         ++n;
     }
     return n;
+}
+
+inline float active_cloud_top(const FogSettings& fog) {
+    const int32_t count = active_cloud_count(fog);
+    float top = 0.0f;
+    for (int32_t i = 0; i < count; ++i) {
+        if (std::isfinite(fog.clouds[i].max_height))
+            top = std::fmax(top, fog.clouds[i].max_height);
+    }
+    return top;
 }
 
 // Slides every enabled layer down to the front, so `clouds[0 .. count)` is

@@ -2516,6 +2516,254 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
         g_atmosphere_raster_direct_rgb[index] =
             atmosphere_cases[index].status.direct_world_sun_rgb;
     }
+
+    // Task 13 RED/GREEN: production composite lighting must consume the same
+    // cumulative cloud field as the diagnostic, without touching evaluated SH
+    // ambient. The fixed triangle is a depth-covered object receiver at y=0;
+    // slice 12 is an overhead slab while slice 2 is wholly below it.
+    const auto raster_receiver_capture = [&](float sun_intensity,
+                                             viewer::VkRasterPixel& pixel,
+                                             float cloud_debug = 0.0f,
+                                             float cloud_top = 5.0f) {
+        viewer::VkSceneLighting receiver_lighting{};
+        receiver_lighting.sun_direction = {0.0f, -1.0f, 0.0f};
+        receiver_lighting.sun_intensity = sun_intensity;
+        receiver_lighting.authored_sun_rgb = {1.0f, 1.0f, 1.0f};
+        receiver_lighting.atmosphere_sources.authored_display_sky_chroma_rgb =
+            {1.0f, 1.0f, 1.0f};
+        receiver_lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+            {0.35f, 0.35f, 0.35f};
+        receiver_lighting.atmosphere_sources.sun_multiplier = 1.0f;
+        receiver_lighting.atmosphere_sources.sky_multiplier = 1.0f;
+        receiver_lighting.camera_near = camera.near_plane;
+        receiver_lighting.camera_far = camera.far_plane;
+        receiver_lighting.vol_cloud_top = cloud_top;
+        receiver_lighting.vol_debug_view = cloud_debug;
+        renderer.set_lighting(receiver_lighting);
+        return renderer.render_gbuffer_and_composite(width, height, error) &&
+               renderer.readback_raster_pixel(width / 2, height / 2, pixel,
+                                              error);
+    };
+    const auto receiver_luma = [](const matter::Float4& value) {
+        return value.x * 0.2126f + value.y * 0.7152f + value.z * 0.0722f;
+    };
+    matter::VulkanVolumetricsSettings receiver_volumetrics{};
+    receiver_volumetrics.enabled = false;
+    matter::FogSettings receiver_deck{};
+    receiver_deck.cloud_count = 1;
+    receiver_deck.clouds[0].enabled = true;
+    receiver_deck.clouds[0].min_height = 4.0f;
+    receiver_deck.clouds[0].max_height = 5.0f;
+    receiver_deck.clouds[0].coverage = 1.0f;
+    receiver_deck.clouds[0].max_density = 0.0f;
+    matter::CloudShadowSettings receiver_shadows{};
+    receiver_shadows.enabled = true;
+    receiver_shadows.near_resolution = 0;
+    receiver_shadows.near_depth_slices = 0;
+    receiver_shadows.near_coverage_m = 16.0f;
+    receiver_shadows.far_resolution = 0;
+    receiver_shadows.far_depth_slices = 0;
+    receiver_shadows.far_coverage_m = 16.0f;
+    receiver_shadows.filter_scale = 0.0f;
+    receiver_shadows.update_fraction = 1.0f;
+    matter::CloudShadowSettings receiver_shadows_disabled = receiver_shadows;
+    receiver_shadows_disabled.enabled = false;
+
+    renderer.set_volumetrics_settings(receiver_volumetrics, receiver_deck,
+                                      receiver_shadows_disabled);
+    CHECK(renderer.generate_cloud_shadows_for_test(
+              0u, camera.position, {0.0f, -1.0f, 0.0f}, 0.0f, error),
+          error.empty() ? "generate disabled raster cloud receiver control"
+                        : error.c_str());
+    viewer::VkRasterPixel raster_clear_sun{}, raster_clear_ambient{};
+    const bool raster_clear_read =
+        raster_receiver_capture(1.0f, raster_clear_sun) &&
+        raster_receiver_capture(0.0f, raster_clear_ambient);
+
+    renderer.set_volumetrics_settings(receiver_volumetrics, receiver_deck,
+                                      receiver_shadows);
+    renderer.set_cloud_shadow_density_layers_for_test(
+        12u, 2.0f, 2u, 0.0f, true);
+    CHECK(renderer.generate_cloud_shadows_for_test(
+              0u, camera.position, {0.0f, -1.0f, 0.0f}, 1.0f, error),
+          error.empty() ? "generate overhead raster cloud slab"
+                        : error.c_str());
+    viewer::VkRasterPixel raster_shadow_sun{}, raster_shadow_ambient{};
+    const bool raster_shadow_read =
+        raster_receiver_capture(1.0f, raster_shadow_sun) &&
+        raster_receiver_capture(0.0f, raster_shadow_ambient);
+    viewer::VkRasterPixel raster_shadow_debug{};
+    const bool raster_shadow_debug_read =
+        raster_receiver_capture(1.0f, raster_shadow_debug, 5.0f);
+    const float raster_clear_direct = receiver_luma({
+        raster_clear_sun.hdr.x - raster_clear_ambient.hdr.x,
+        raster_clear_sun.hdr.y - raster_clear_ambient.hdr.y,
+        raster_clear_sun.hdr.z - raster_clear_ambient.hdr.z, 0.0f});
+    const float raster_shadow_direct = receiver_luma({
+        raster_shadow_sun.hdr.x - raster_shadow_ambient.hdr.x,
+        raster_shadow_sun.hdr.y - raster_shadow_ambient.hdr.y,
+        raster_shadow_sun.hdr.z - raster_shadow_ambient.hdr.z, 0.0f});
+    std::fprintf(stderr,
+                 "task13 raster direct clear=%.7f shadow=%.7f debug=%d/%.5f cloud_state=%.1f/%.1f/%.1f/%.1f\n",
+                 raster_clear_direct, raster_shadow_direct,
+                 raster_shadow_debug_read ? 1 : 0, raster_shadow_debug.hdr.x,
+                 renderer.cloud_shadow_environment_state_for_test(0),
+                 renderer.cloud_shadow_environment_state_for_test(1),
+                 renderer.cloud_shadow_environment_state_for_test(2),
+                 renderer.cloud_shadow_environment_state_for_test(3));
+    CHECK(raster_clear_read && raster_shadow_read &&
+              raster_clear_direct > 1.0e-4f &&
+              raster_shadow_direct < raster_clear_direct * 0.35f,
+          error.empty()
+              ? "overhead cloud slab attenuates raster object direct lighting"
+              : error.c_str());
+    CHECK((materials[7].flags_misc[0] & MATERIAL_ALPHA_TESTED) != 0u &&
+              raster_shadow_read &&
+              raster_shadow_direct < raster_clear_direct * 0.35f,
+          "overhead cloud slab attenuates alpha-tested vegetation-style geometry");
+    CHECK(raster_clear_read && raster_shadow_read &&
+              close4(raster_clear_ambient.hdr, raster_shadow_ambient.hdr,
+                     2.0e-4f),
+          "raster cloud attenuation leaves evaluated SH ambient unchanged");
+
+    renderer.set_cloud_shadow_density_layers_for_test(
+        2u, 2.0f, 1u, 0.0f, true);
+    CHECK(renderer.generate_cloud_shadows_for_test(
+              0u, camera.position, {0.0f, -1.0f, 0.0f}, 2.0f, error),
+          error.empty() ? "generate below-receiver raster cloud slab"
+                        : error.c_str());
+    viewer::VkRasterPixel raster_above_sun{}, raster_above_ambient{};
+    const bool raster_above_read =
+        raster_receiver_capture(1.0f, raster_above_sun) &&
+        raster_receiver_capture(0.0f, raster_above_ambient);
+    const float raster_above_direct = receiver_luma({
+        raster_above_sun.hdr.x - raster_above_ambient.hdr.x,
+        raster_above_sun.hdr.y - raster_above_ambient.hdr.y,
+        raster_above_sun.hdr.z - raster_above_ambient.hdr.z, 0.0f});
+    CHECK(raster_above_read &&
+              std::fabs(raster_above_direct - raster_clear_direct) <
+                  raster_clear_direct * 0.05f,
+          "raster receiver above the authored slab remains clear");
+
+    renderer.set_volumetrics_settings(receiver_volumetrics, receiver_deck,
+                                      receiver_shadows_disabled);
+    CHECK(renderer.generate_cloud_shadows_for_test(
+              0u, camera.position, {0.0f, -1.0f, 0.0f}, 3.0f, error),
+          error.empty() ? "disable raster receiver cloud shadows"
+                        : error.c_str());
+    viewer::VkRasterPixel raster_disabled_sun{}, raster_disabled_ambient{};
+    const bool raster_disabled_read =
+        raster_receiver_capture(1.0f, raster_disabled_sun) &&
+        raster_receiver_capture(0.0f, raster_disabled_ambient);
+    const float raster_disabled_direct = receiver_luma({
+        raster_disabled_sun.hdr.x - raster_disabled_ambient.hdr.x,
+        raster_disabled_sun.hdr.y - raster_disabled_ambient.hdr.y,
+        raster_disabled_sun.hdr.z - raster_disabled_ambient.hdr.z, 0.0f});
+    CHECK(raster_disabled_read &&
+              std::fabs(raster_disabled_direct - raster_clear_direct) <
+                  raster_clear_direct * 0.05f,
+          "disabled raster cloud shadows return the receiver to clear control");
+
+    matter::FogSettings receiver_prefix_hole = receiver_deck;
+    receiver_prefix_hole.clouds[1].enabled = false;
+    receiver_prefix_hole.clouds[2].enabled = true;
+    receiver_prefix_hole.clouds[2].min_height = 900.0f;
+    receiver_prefix_hole.clouds[2].max_height = 1000.0f;
+    renderer.set_volumetrics_settings(receiver_volumetrics,
+                                      receiver_prefix_hole,
+                                      receiver_shadows);
+    CHECK(renderer.generate_cloud_shadows_for_test(
+              0u, camera.position, {0.0f, -1.0f, 0.0f}, 3.5f, error) &&
+              renderer.cloud_shadow_environment_state_for_test(3) == 5.0f,
+          error.empty()
+              ? "receiver cloud top ignores enabled layers parked after a prefix hole"
+              : error.c_str());
+
+    // A high cloud top and nonzero filter scale must widen the transition
+    // across the deterministic checker deck while conserving mean optical
+    // depth. This reads the production fragment receiver sampler, not a CPU
+    // approximation, and therefore exercises receiver-distance filtering.
+    matter::FogSettings receiver_high_deck = receiver_deck;
+    receiver_high_deck.clouds[0].min_height = 999.0f;
+    receiver_high_deck.clouds[0].max_height = 1000.0f;
+    const auto read_filter_profile = [&](std::vector<float>& tau) {
+        viewer::VkRasterPixel rendered{};
+        if (!raster_receiver_capture(1.0f, rendered, 5.0f, 1000.0f))
+            return false;
+        for (uint32_t x = width / 2 - 24; x <= width / 2 + 24; ++x) {
+            viewer::VkRasterPixel sample{};
+            if (!renderer.readback_raster_pixel(x, height / 2, sample, error))
+                return false;
+            if (sample.depth <= 0.0f) continue;
+            tau.push_back(-std::log(std::max(sample.hdr.x, 1.0e-6f)));
+        }
+        return !tau.empty();
+    };
+    matter::CloudShadowSettings receiver_sharp_filter = receiver_shadows;
+    receiver_sharp_filter.filter_scale = 0.0f;
+    renderer.set_volumetrics_settings(receiver_volumetrics,
+                                      receiver_high_deck,
+                                      receiver_sharp_filter);
+    renderer.set_cloud_shadow_density_checker_for_test(0.0f, 0.25f, true);
+    CHECK(renderer.generate_cloud_shadows_for_test(
+              0u, camera.position, {0.0f, -1.0f, 0.0f}, 4.0f, error),
+          error.empty() ? "generate sharp high-cloud receiver checker"
+                        : error.c_str());
+    std::vector<float> sharp_tau;
+    const bool sharp_profile_read = read_filter_profile(sharp_tau);
+
+    matter::CloudShadowSettings receiver_wide_filter = receiver_shadows;
+    receiver_wide_filter.filter_scale = 4.0f;
+    renderer.set_volumetrics_settings(receiver_volumetrics,
+                                      receiver_high_deck,
+                                      receiver_wide_filter);
+    CHECK(renderer.generate_cloud_shadows_for_test(
+              0u, camera.position, {0.0f, -1.0f, 0.0f}, 5.0f, error),
+          error.empty() ? "generate filtered high-cloud receiver checker"
+                        : error.c_str());
+    std::vector<float> wide_tau;
+    const bool wide_profile_read = read_filter_profile(wide_tau);
+    const auto profile_stats = [](const std::vector<float>& values) {
+        std::array<float, 4> result{
+            std::numeric_limits<float>::max(),
+            std::numeric_limits<float>::lowest(), 0.0f, 0.0f};
+        for (float value : values) {
+            result[0] = std::min(result[0], value);
+            result[1] = std::max(result[1], value);
+            result[2] += value;
+        }
+        if (!values.empty()) result[2] /= static_cast<float>(values.size());
+        return result;
+    };
+    const auto sharp_stats = profile_stats(sharp_tau);
+    const auto wide_stats = profile_stats(wide_tau);
+    const float sharp_range = sharp_stats[1] - sharp_stats[0];
+    const float penumbra_low = sharp_stats[0] + sharp_range * 0.15f;
+    const float penumbra_high = sharp_stats[1] - sharp_range * 0.15f;
+    uint32_t sharp_penumbra = 0u;
+    uint32_t wide_penumbra = 0u;
+    for (float value : sharp_tau)
+        if (value > penumbra_low && value < penumbra_high)
+            ++sharp_penumbra;
+    for (float value : wide_tau)
+        if (value > penumbra_low && value < penumbra_high)
+            ++wide_penumbra;
+    std::fprintf(stderr,
+                 "task13 filter sharp=%.4f..%.4f mean=%.4f penumbra=%.0f "
+                 "wide=%.4f..%.4f mean=%.4f penumbra=%.0f samples=%zu/%zu\n",
+                 sharp_stats[0], sharp_stats[1], sharp_stats[2],
+                 static_cast<double>(sharp_penumbra), wide_stats[0],
+                 wide_stats[1], wide_stats[2],
+                 static_cast<double>(wide_penumbra),
+                 sharp_tau.size(), wide_tau.size());
+    CHECK(sharp_profile_read && wide_profile_read &&
+              sharp_tau.size() == wide_tau.size() && sharp_tau.size() >= 16u &&
+              sharp_range > 0.5f &&
+              wide_stats[1] - wide_stats[0] < sharp_range * 0.6f &&
+              wide_penumbra > sharp_penumbra &&
+              std::fabs(wide_stats[2] - sharp_stats[2]) < sharp_range * 0.12f,
+          "high-cloud receiver filtering widens penumbra while conserving mean optical depth");
+    renderer.clear_cloud_shadow_density_override_for_test(true);
     g_atmosphere_raster_direct_valid = true;
     const AtmosphereRasterCase& noon = atmosphere_cases[0];
     const AtmosphereRasterCase& low_sun = atmosphere_cases[2];
@@ -6980,6 +7228,73 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
           error.empty()
               ? "out-of-frustum lateral endpoint retains seeded coarse remainder"
               : error.c_str());
+
+    // Task 13 RED/GREEN: the same seeded cumulative field must attenuate only
+    // enhanced low-fog direct sun. Fog has no cloud-density channel here, so
+    // this cannot pass by changing Task 12's cloud self-lighting term.
+    const auto capture_task13_fog = [&] (
+        const viewer::VkSceneLighting& fixture_lighting,
+        const matter::CloudShadowSettings& shadows,
+        matter::Float4& sample) {
+        renderer.set_lighting(fixture_lighting);
+        renderer.set_volumetrics_settings(task12_tau_settings,
+                                          task12_fog_only, shadows);
+        bool rendered = true;
+        for (int frame = 0; frame < 4; ++frame)
+            rendered = rendered && warm_rt_tlas();
+        const auto& point = task12_tau_points[0];
+        return rendered &&
+            renderer.readback_volumetrics_scatter_voxel_for_test(
+                point.x, point.y, point.z, sample, error);
+    };
+    matter::Float4 task13_fog_clear{}, task13_fog_shadowed{};
+    const bool task13_fog_direct_read =
+        capture_task13_fog(task12_lighting, task12_no_shadows,
+                           task13_fog_clear) &&
+        capture_task13_fog(task12_lighting, task12_seeded_shadows,
+                           task13_fog_shadowed);
+    const float task13_fog_clear_luma = luminance(task13_fog_clear);
+    const float task13_fog_shadowed_luma = luminance(task13_fog_shadowed);
+    CHECK(task13_fog_direct_read && task13_fog_clear_luma > 1.0e-5f &&
+              task13_fog_shadowed_luma < task13_fog_clear_luma * 0.35f,
+          error.empty()
+              ? "overhead cumulative cloud slab attenuates enhanced low-fog direct sun"
+              : error.c_str());
+
+    viewer::VkSceneLighting task13_ambient_lighting = task12_lighting;
+    task13_ambient_lighting.sun_intensity = 0.0f;
+    task13_ambient_lighting.atmosphere_sources.authored_irradiance_chroma_rgb =
+        {0.45f, 0.45f, 0.45f};
+    matter::Float4 task13_fog_ambient_clear{}, task13_fog_ambient_shadowed{};
+    const bool task13_fog_ambient_read =
+        capture_task13_fog(task13_ambient_lighting, task12_no_shadows,
+                           task13_fog_ambient_clear) &&
+        capture_task13_fog(task13_ambient_lighting, task12_seeded_shadows,
+                           task13_fog_ambient_shadowed);
+    CHECK(task13_fog_ambient_read && luminance(task13_fog_ambient_clear) > 0.0f &&
+              close4(task13_fog_ambient_clear, task13_fog_ambient_shadowed,
+                     2.0e-4f),
+          "enhanced fog cloud attenuation leaves evaluated SH ambient unchanged");
+
+    renderer.set_cloud_shadow_density_layers_for_test(
+        2u, 1.0f, 1u, 0.0f, true);
+    matter::Float4 task13_fog_above{};
+    const bool task13_fog_above_read = capture_task13_fog(
+        task12_lighting, task12_seeded_shadows, task13_fog_above);
+    CHECK(task13_fog_above_read &&
+              std::fabs(luminance(task13_fog_above) -
+                        task13_fog_clear_luma) <
+                  task13_fog_clear_luma * 0.05f,
+          "enhanced fog receiver above the cloud slab remains clear");
+    matter::Float4 task13_fog_disabled{};
+    const bool task13_fog_disabled_read = capture_task13_fog(
+        task12_lighting, task12_no_shadows, task13_fog_disabled);
+    CHECK(task13_fog_disabled_read &&
+              std::fabs(luminance(task13_fog_disabled) -
+                        task13_fog_clear_luma) <
+                  task13_fog_clear_luma * 0.05f,
+          "disabled cloud shadows restore enhanced low-fog direct sun");
+    renderer.set_lighting(task12_lighting);
     renderer.clear_cloud_shadow_density_override_for_test(true);
 
     // Restore the Task 9 constant fog+cloud fixture expected by the following
@@ -7565,6 +7880,7 @@ static void rt_scenario_secondary_sun_visibility(RtPathContext& ctx) {
         CHECK(render_sun_probe(lighting.sun_intensity, 303,
                                restored_unblocked_raw),
               "rerender unblocked receiver before visibility comparison");
+
         CHECK(renderer.test_rt_blas_built(920) &&
                   renderer.test_rt_blas_candidate_serial(920) == 0,
               "successful retry publishes candidate BLAS state");
@@ -8855,6 +9171,10 @@ void run_atmosphere_real_gpu_gate(matter::VulkanDevice& vulkan) {
                     native_direct_on = pixel;
                     native_receiver_x = x;
                     native_receiver_y = y;
+                    if (index == 0) {
+                        retry_x = x;
+                        retry_y = y;
+                    }
                     native_receiver_found = true;
                     break;
                 }
@@ -8967,6 +9287,126 @@ void run_atmosphere_real_gpu_gate(matter::VulkanDevice& vulkan) {
                   "-5 degree native RT receiver/fog remains positive from evaluated SH");
         }
     }
+
+    // Task 13 native-RT receiver gate runs after the atmosphere ratio loop so
+    // no command buffer is open while cloud resources/descriptors transition.
+    // The retained material-1 pixel is the same secondary-hit receiver used by
+    // the established native fixture; raw_diffuse excludes raster direct sun.
+    const auto task13_native_capture = [&](float sun_intensity,
+                                           uint64_t attempt_token,
+                                           matter::Float4& raw) {
+        viewer::VkSceneLighting probe = native_lighting;
+        probe.sun_direction = {0.0f, -1.0f, 0.0f};
+        probe.sun_intensity = sun_intensity;
+        probe.authored_sun_rgb = {1.0f, 1.0f, 1.0f};
+        probe.atmosphere_sources.authored_display_sky_chroma_rgb =
+            {1.0f, 1.0f, 1.0f};
+        probe.atmosphere_sources.authored_irradiance_chroma_rgb =
+            {0.35f, 0.35f, 0.35f};
+        probe.atmosphere_sources.sun_multiplier = 1.0f;
+        probe.atmosphere_sources.sky_multiplier = 1.0f;
+        native.set_lighting(probe);
+        temporal.reset = true;
+        temporal.attempt_token = attempt_token;
+        native.set_temporal_frame(temporal);
+        matter::VulkanFrame frame{};
+        const bool rendered = vulkan.begin_frame(frame, error) &&
+            native.prepare_frame(frame, native_matrices,
+                                 native_camera.position, 1.0f, error) &&
+            native.record_cull_and_render(frame, native_matrices,
+                                          native_camera.position, 1.0f,
+                                          error) &&
+            native.record_composite_to_swapchain(frame, error) &&
+            vulkan.end_frame(frame, error);
+        native.finish_ray_tracing_frame(frame.serial, rendered);
+        if (!rendered) return false;
+        vulkan.wait_idle();
+        viewer::VkRasterPixel pixel{};
+        const bool read = native.readback_raster_pixel(
+            retry_x, retry_y, pixel, error);
+        raw = pixel.raw_diffuse;
+        return read && pixel.material_index == 1u;
+    };
+    const auto task13_raw_luma = [](matter::Float4 value) {
+        return value.x * 0.2126f + value.y * 0.7152f + value.z * 0.0722f;
+    };
+    matter::VulkanVolumetricsSettings task13_rt_volumetrics{};
+    task13_rt_volumetrics.enabled = false;
+    matter::FogSettings task13_rt_deck{};
+    task13_rt_deck.cloud_count = 1;
+    task13_rt_deck.clouds[0].enabled = true;
+    task13_rt_deck.clouds[0].min_height = 4.0f;
+    task13_rt_deck.clouds[0].max_height = 5.0f;
+    task13_rt_deck.clouds[0].coverage = 1.0f;
+    task13_rt_deck.clouds[0].max_density = 0.0f;
+    matter::CloudShadowSettings task13_rt_shadows{};
+    task13_rt_shadows.enabled = true;
+    task13_rt_shadows.near_resolution = 0;
+    task13_rt_shadows.near_depth_slices = 0;
+    task13_rt_shadows.near_coverage_m = 16.0f;
+    task13_rt_shadows.far_resolution = 0;
+    task13_rt_shadows.far_depth_slices = 0;
+    task13_rt_shadows.far_coverage_m = 16.0f;
+    task13_rt_shadows.filter_scale = 0.0f;
+    task13_rt_shadows.update_fraction = 1.0f;
+    matter::CloudShadowSettings task13_rt_disabled = task13_rt_shadows;
+    task13_rt_disabled.enabled = false;
+    native.set_volumetrics_settings(task13_rt_volumetrics, task13_rt_deck,
+                                    task13_rt_disabled);
+    matter::Float4 task13_rt_clear_zero{}, task13_rt_clear_high{};
+    const bool task13_rt_clear_read =
+        task13_native_capture(0.0f, 4000, task13_rt_clear_zero) &&
+        task13_native_capture(100.0f, 4001, task13_rt_clear_high);
+    const float task13_rt_clear_delta =
+        task13_raw_luma(task13_rt_clear_high) -
+        task13_raw_luma(task13_rt_clear_zero);
+
+    native.set_volumetrics_settings(task13_rt_volumetrics, task13_rt_deck,
+                                    task13_rt_shadows);
+    native.set_cloud_shadow_density_layers_for_test(
+        12u, 2.0f, 2u, 0.0f, true);
+    matter::Float4 task13_rt_shadow_zero{}, task13_rt_shadow_high{};
+    const bool task13_rt_shadow_read =
+        task13_native_capture(0.0f, 4002, task13_rt_shadow_zero) &&
+        task13_native_capture(100.0f, 4003, task13_rt_shadow_high);
+    const float task13_rt_shadow_delta =
+        task13_raw_luma(task13_rt_shadow_high) -
+        task13_raw_luma(task13_rt_shadow_zero);
+    CHECK(task13_rt_clear_read && task13_rt_shadow_read &&
+              task13_rt_clear_delta > 0.05f &&
+              task13_rt_shadow_delta < task13_rt_clear_delta * 0.35f,
+          "overhead cloud slab attenuates native RT secondary-hit direct sun");
+    CHECK(task13_rt_clear_read && task13_rt_shadow_read &&
+              close4(task13_rt_clear_zero, task13_rt_shadow_zero, 2.0e-4f),
+          "native RT cloud attenuation leaves secondary-hit SH ambient unchanged");
+
+    native.set_cloud_shadow_density_layers_for_test(
+        2u, 2.0f, 1u, 0.0f, true);
+    matter::Float4 task13_rt_above_zero{}, task13_rt_above_high{};
+    const bool task13_rt_above_read =
+        task13_native_capture(0.0f, 4004, task13_rt_above_zero) &&
+        task13_native_capture(100.0f, 4005, task13_rt_above_high);
+    const float task13_rt_above_delta =
+        task13_raw_luma(task13_rt_above_high) -
+        task13_raw_luma(task13_rt_above_zero);
+    CHECK(task13_rt_above_read &&
+              std::fabs(task13_rt_above_delta - task13_rt_clear_delta) <
+                  task13_rt_clear_delta * 0.05f,
+          "native RT secondary receiver above the slab remains clear");
+    native.set_volumetrics_settings(task13_rt_volumetrics, task13_rt_deck,
+                                    task13_rt_disabled);
+    matter::Float4 task13_rt_disabled_zero{}, task13_rt_disabled_high{};
+    const bool task13_rt_disabled_read =
+        task13_native_capture(0.0f, 4006, task13_rt_disabled_zero) &&
+        task13_native_capture(100.0f, 4007, task13_rt_disabled_high);
+    const float task13_rt_disabled_delta =
+        task13_raw_luma(task13_rt_disabled_high) -
+        task13_raw_luma(task13_rt_disabled_zero);
+    CHECK(task13_rt_disabled_read &&
+              std::fabs(task13_rt_disabled_delta - task13_rt_clear_delta) <
+                  task13_rt_clear_delta * 0.05f,
+          "disabled cloud shadows restore native RT secondary direct sun");
+    native.clear_cloud_shadow_density_override_for_test(true);
 
     matter::VulkanVolumetricsSettings twilight_volume{};
     twilight_volume.enabled = true;

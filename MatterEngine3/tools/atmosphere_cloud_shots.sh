@@ -771,6 +771,116 @@ case "$SUITE" in
     }
     ;;
   cloud-shadows)
+    if [ "$LABEL" = receivers ]; then
+      [ "$WORLD" = AtmospherePresentationFixture ] || {
+        echo "ERROR: cloud-shadow receiver suite requires AtmospherePresentationFixture" >&2
+        exit 2
+      }
+      first_line="$(log_line_count)"
+      send "render_path native_rt"
+      wait_for_log_after "$first_line" "render_path: native_rt" >/dev/null
+      send "set render.volumetrics.enabled true"
+      send "set render.volumetrics.local_sun_march_steps 8"
+      send "set render.volumetrics.multiple_scattering_orders 2"
+      send "set render.volumetrics.multiple_scattering_strength 0.55"
+      send "set render.volumetrics.powder_strength 0.25"
+      send "set render.cloud_shadows.near_resolution 128"
+      send "set render.cloud_shadows.near_depth_slices 16"
+      send "set render.cloud_shadows.near_coverage_m 64"
+      send "set render.cloud_shadows.far_resolution 64"
+      send "set render.cloud_shadows.far_depth_slices 16"
+      send "set render.cloud_shadows.far_coverage_m 128"
+      send "set render.cloud_shadows.filter_scale 1"
+      send "set render.cloud_shadows.update_fraction 1"
+      send "set render.clouds.layer0_enabled true"
+      send "set render.clouds.layer0_min_height 4"
+      send "set render.clouds.layer0_max_height 6"
+      send "set render.clouds.layer0_max_density 0.35"
+      send "set render.clouds.layer0_falloff_min 0"
+      send "set render.clouds.layer0_falloff_max 0"
+      send "set render.clouds.layer0_noise_scale 0.08"
+      send "set render.clouds.layer0_octaves 3"
+      send "set render.clouds.layer0_lacunarity 2.03"
+      send "set render.clouds.layer0_gain 0.5"
+      send "set render.clouds.layer0_coverage 0.58"
+      send "set render.clouds.layer0_wind 0,0,0"
+      send "set render.lighting.sun_azimuth_deg -25"
+      send "set render.lighting.sun_elevation_deg 60"
+      send "set render.lighting.sun_angular_diameter_deg 0.53"
+      send "set render.lighting.exposure_ev -1"
+      send "set render.fog.density 0"
+      send "set viewer.debug.vol_debug_view 0"
+      send "cam 0 2 12 0 1 0"
+      send "set render.cloud_shadows.enabled false"
+      settle_volumetrics 8
+      capture "ground_object_disabled"
+      send "set render.cloud_shadows.enabled true"
+      settle_volumetrics 8
+      capture "ground_object_enabled"
+
+      send "set render.clouds.layer1_enabled true"
+      send "set render.clouds.layer1_min_height 8"
+      send "set render.clouds.layer1_max_height 10"
+      send "set render.clouds.layer1_max_density 0.22"
+      send "set render.clouds.layer1_falloff_min 0"
+      send "set render.clouds.layer1_falloff_max 0"
+      send "set render.clouds.layer1_noise_scale 0.06"
+      send "set render.clouds.layer1_octaves 3"
+      send "set render.clouds.layer1_lacunarity 2.03"
+      send "set render.clouds.layer1_gain 0.5"
+      send "set render.clouds.layer1_coverage 0.62"
+      send "set render.clouds.layer1_wind 0,0,0"
+      send "set render.cloud_shadows.enabled false"
+      settle_volumetrics 8
+      capture "cross_layer_disabled"
+      send "set render.cloud_shadows.enabled true"
+      settle_volumetrics 8
+      capture "cross_layer_enabled"
+
+      send "set render.fog.density 0.025"
+      send "set render.fog.floor 0"
+      send "set render.fog.falloff 18"
+      send "set render.fog.color 0.72,0.79,0.9"
+      send "cam 0 0.8 12 0 0.8 0"
+      send "set render.cloud_shadows.enabled false"
+      settle_volumetrics 8
+      capture "low_fog_disabled"
+      send "set render.cloud_shadows.enabled true"
+      settle_volumetrics 8
+      capture "low_fog_enabled"
+
+      for property in \
+        render.clouds.layer0_min_height \
+        render.clouds.layer0_max_height \
+        render.clouds.layer0_max_density \
+        render.clouds.layer0_coverage \
+        render.clouds.layer1_min_height \
+        render.clouds.layer1_max_height \
+        render.clouds.layer1_max_density \
+        render.clouds.layer1_coverage \
+        render.lighting.sun_elevation_deg \
+        render.lighting.sun_angular_diameter_deg \
+        render.cloud_shadows.near_coverage_m \
+        render.cloud_shadows.far_coverage_m \
+        render.cloud_shadows.filter_scale \
+        render.cloud_shadows.update_fraction \
+        render.fog.density \
+        render.fog.floor \
+        render.fog.falloff; do
+        send "get $property"
+      done
+      IMAGE_PYTHON="${MATTER_IMAGE_PYTHON:-python3}"
+      "$IMAGE_PYTHON" "$HERE/img_diff.py" \
+        "$OUT/${LABEL}_ground_object_disabled.png" \
+        "$OUT/${LABEL}_ground_object_enabled.png" --max-diff-pct 30
+      "$IMAGE_PYTHON" "$HERE/img_diff.py" \
+        "$OUT/${LABEL}_cross_layer_disabled.png" \
+        "$OUT/${LABEL}_cross_layer_enabled.png" --max-diff-pct 70
+      "$IMAGE_PYTHON" "$HERE/img_diff.py" \
+        "$OUT/${LABEL}_low_fog_disabled.png" \
+        "$OUT/${LABEL}_low_fog_enabled.png" --max-diff-pct 90
+      exit 0
+    fi
     [ "$WORLD" = StreamMountain ] || {
       echo "ERROR: cloud-shadows suite requires StreamMountain" >&2
       exit 2

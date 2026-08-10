@@ -733,6 +733,9 @@ struct VkSceneLighting {
     // few ULP at 0.9997 moves the visible edge of the disc.
     float sun_disc_cos_edge = 0.99975f;
     float sun_disc_cos_core = 0.99995f;
+    // Appended push-constant lanes. Preserve every legacy offset above.
+    float camera_pos_x = 0.0f;
+    float camera_pos_z = 0.0f;
     // CPU-only atmosphere transaction inputs; not part of the composite push
     // prefix above.
     matter::Float3 authored_sun_rgb{2.2f, 2.05f, 1.8f};
@@ -744,7 +747,9 @@ struct VkSceneLighting {
 };
 inline constexpr uint32_t kVkSceneLightingPushBytes =
     static_cast<uint32_t>(offsetof(VkSceneLighting, authored_sun_rgb));
-static_assert(kVkSceneLightingPushBytes == 96);
+static_assert(offsetof(VkSceneLighting, camera_pos_x) == 96);
+static_assert(offsetof(VkSceneLighting, camera_pos_z) == 100);
+static_assert(kVkSceneLightingPushBytes == 104);
 
 struct VkSceneUploadCounters {
     uint64_t vertex_uploads = 0;
@@ -1073,6 +1078,12 @@ public:
         uint32_t sunward_slice, float sunward_sigma,
         uint32_t receiverward_slice, float receiverward_sigma,
         bool invalidate_history);
+    void set_cloud_shadow_density_checker_for_test(
+        float even_sigma, float odd_sigma, bool invalidate_history);
+    bool generate_cloud_shadows_for_test(
+        uint32_t frame_slot, const matter::Float3& camera,
+        const matter::Float3& sun_direction, float frame_time,
+        std::string& error);
     void clear_cloud_shadow_density_override_for_test(bool invalidate_history);
     bool cloud_shadows_active() const;
     uint64_t cloud_shadow_persistent_bytes() const;

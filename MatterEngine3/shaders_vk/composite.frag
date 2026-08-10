@@ -67,6 +67,8 @@ layout(push_constant) uniform SceneLighting {
     float sun_angular_diameter_deg;
     float sun_disc_cos_edge;
     float sun_disc_cos_core;
+    float camera_pos_x;
+    float camera_pos_z;
 } lighting;
 
 #include "environment_common.glsl"
@@ -270,6 +272,21 @@ void main() {
         }
         return;
     }
+    float receiver_hw_depth = texture(depth_texture, in_uv).r;
+    float receiver_linear_depth = composite_linear_depth(receiver_hw_depth);
+    vec3 receiver_view_ray = compute_view_ray(in_uv);
+    vec3 camera_forward = normalize(vec3(
+        lighting.camera_fwd_x, lighting.camera_fwd_y, lighting.camera_fwd_z));
+    float receiver_ray_t = receiver_linear_depth /
+        max(dot(receiver_view_ray, camera_forward), 1e-4);
+    vec3 receiver_world_pos =
+        vec3(lighting.camera_pos_x, lighting.camera_y, lighting.camera_pos_z) +
+        receiver_view_ray * receiver_ray_t;
+    float cloud_visibility = sample_cloud_transmittance(
+        receiver_world_pos,
+        cloud_receiver_distance_to_top(receiver_world_pos, to_sun));
+    vec3 visible_direct_sun = environment.direct_world_sun_ratio.rgb *
+                              visibility * cloud_visibility;
     // Mask gbuffer.frag's impostor bit out of .x before using it as an index.
     // Without the mask an impostor pixel fails the bounds test below and
     // silently loses its subsurface term -- a wrong-but-plausible result, not
@@ -322,8 +339,7 @@ void main() {
             }
         }
     }
-    vec3 sun = sun_response * environment.direct_world_sun_ratio.rgb *
-               visibility;
+    vec3 sun = sun_response * visible_direct_sun;
     // Per-texel metalness (G-buffer ORM.y, the VT surfaces() tape 'metallic'
     // lane): metals have no diffuse, so `sun_response` above is zero for
     // them, and the traced reflection lane only sees the sun through its
@@ -356,7 +372,7 @@ void main() {
             (vec3(1.0) - albedo.rgb) * pow(1.0 - v_dot_h, 5.0);
         sun += metallic * metal_f * ggx_d * g1v * g1l /
                max(4.0 * n_dot_v * direct, 1e-6) * direct *
-               environment.direct_world_sun_ratio.rgb * visibility;
+               visible_direct_sun;
     }
     float encoded_emission = normal_payload.w;
     float emission_strength =

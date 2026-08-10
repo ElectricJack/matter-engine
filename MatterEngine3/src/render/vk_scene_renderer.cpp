@@ -8807,6 +8807,29 @@ void VkSceneRenderer::set_cloud_shadow_density_layers_for_test(
             receiverward_sigma, invalidate_history);
 }
 
+void VkSceneRenderer::set_cloud_shadow_density_checker_for_test(
+    float even_sigma, float odd_sigma, bool invalidate_history) {
+    if (cloud_shadows_)
+        cloud_shadows_->set_density_override_for_test(
+            even_sigma, -1, odd_sigma, invalidate_history);
+}
+
+bool VkSceneRenderer::generate_cloud_shadows_for_test(
+    uint32_t frame_slot, const matter::Float3& camera,
+    const matter::Float3& sun_direction, float frame_time,
+    std::string& error) {
+    if (!cloud_shadows_) {
+        error = "cloud shadows are unavailable for test generation";
+        return false;
+    }
+    if (!cloud_shadows_->generate_for_test(
+            frame_slot, camera, sun_direction, frame_time, error))
+        return false;
+    for (auto& frame : frames_)
+        if (!update_environment_descriptor(frame, error)) return false;
+    return true;
+}
+
 void VkSceneRenderer::clear_cloud_shadow_density_override_for_test(
     bool invalidate_history) {
     if (cloud_shadows_)
@@ -12244,6 +12267,8 @@ bool VkSceneRenderer::record_cull_and_render(
     frame_lighting.camera_near = matrices.view_to_clip.m[11] /
                                  (matrices.view_to_clip.m[10] + 1.0f);
     frame_lighting.camera_y = camera_eye.y;
+    frame_lighting.camera_pos_x = camera_eye.x;
+    frame_lighting.camera_pos_z = camera_eye.z;
     frame_lighting.vol_cloud_top = volumetrics_cloud_top_;
     frame_lighting.vol_height_layer =
         volumetrics_height_layer_ ? 1.0f : 0.0f;

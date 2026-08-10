@@ -334,6 +334,7 @@ void VkCloudShadows::request_cloud_layers(const matter::FogSettings& fog) {
     for (uint32_t index = 0; index < count; ++index)
         matter::pack_cloud_layer(fog.clouds[index], static_cast<int>(index),
                                  packed[index]);
+    requested_cloud_top_ = matter::active_cloud_top(fog);
     if (count != cloud_layer_count_ ||
         std::memcmp(packed.data(), packed_cloud_layers_.data(),
                     sizeof(packed)) != 0) {
@@ -823,6 +824,7 @@ std::array<float, 40> VkCloudShadows::environment_block() const {
                                    (generation_pending_ ? 1u : 0u));
     block[34] = static_cast<float>(active_levels_[1].active_index ^
                                    (generation_pending_ ? 1u : 0u));
+    block[35] = requested_cloud_top_;
     block[36] = active_levels_[0].current_frame.voxel_xy_m;
     block[37] = active_levels_[1].current_frame.voxel_xy_m;
     block[38] = sun_angular_radius_;

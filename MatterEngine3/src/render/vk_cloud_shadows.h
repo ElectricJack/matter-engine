@@ -266,6 +266,7 @@ private:
     matter::CloudShadowSettings requested_settings_{};
     std::array<matter::CloudShadowLevelDesc, 2> requested_levels_{};
     float sun_angular_radius_ = 0.0f;
+    float requested_cloud_top_ = 0.0f;
     bool active_ = false;
     bool initialized_ = false;
     bool request_failed_ = false;

@@ -347,7 +347,11 @@ vec3 hit_radiance_sunlit(RtSurface surface, vec3 to_sun) {
         }
         radiance += base * 0.31830988618 *
                     environment.direct_world_sun_ratio.rgb * ndotl *
-                    visibility_payload.visibility;
+                    visibility_payload.visibility *
+                    sample_cloud_transmittance(
+                        surface.position,
+                        cloud_receiver_distance_to_top(surface.position,
+                                                       to_sun));
     }
     return radiance;
 }
@@ -574,7 +578,11 @@ void main() {
             bounce += throughput * horizon_ray_scale * hit_base *
                       0.31830988618 *
                       environment.direct_world_sun_ratio.rgb * ndotl *
-                      visibility_payload.visibility;
+                      visibility_payload.visibility *
+                      sample_cloud_transmittance(
+                          hit.surface.position,
+                          cloud_receiver_distance_to_top(hit.surface.position,
+                                                         to_sun));
         }
         if (final_vertex) break;
         throughput *= hit_base;

@@ -224,7 +224,10 @@ void main() {
 
                 float fog_phase = hg_phase(cos_theta, pc.phase_g);
                 vec3 fog_sun = fog_emitter_scattering * shadow * fog_phase *
-                               environment.direct_world_sun_ratio.rgb;
+                               environment.direct_world_sun_ratio.rgb *
+                    sample_cloud_transmittance(
+                        world_pos,
+                        cloud_receiver_distance_to_top(world_pos, to_sun));
                 vec3 fog_ambient = fog_emitter_scattering *
                     sample_sky_irradiance(vec3(0.0, 1.0, 0.0));
 
