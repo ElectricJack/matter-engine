@@ -9045,6 +9045,18 @@ void run_atmosphere_real_gpu_gate(matter::VulkanDevice& vulkan) {
                                                direct_on, error),
               error.empty() ? "render atmosphere raster direct-on frame"
                             : error.c_str());
+        if (index == 0 && raster.gpu_timers_supported()) {
+            const float dirty_atmosphere_ms = raster.gpu_zone_ms(
+                viewer::VkSceneRenderer::kGpuZoneAtmosphere);
+            CHECK(dirty_atmosphere_ms > 0.0f,
+                  "dirty atmosphere candidate publishes a positive GPU timestamp");
+            CHECK(raster.render_gbuffer_and_composite(width, height, error),
+                  error.empty() ? "render steady atmosphere timing frame"
+                                : error.c_str());
+            CHECK(raster.gpu_zone_ms(
+                      viewer::VkSceneRenderer::kGpuZoneAtmosphere) == 0.0f,
+                  "steady atmosphere frame resets its GPU timing lane to zero");
+        }
         const auto status = raster.test_resolved_atmosphere_status();
         g_atmosphere_raster_direct_rgb[index] =
             status.direct_world_sun_rgb;

@@ -823,11 +823,16 @@ void test_physical_atmosphere_editor_source_contract() {
     const std::string issue_source = read("../../MatterEditor/src/issue_reporter.cpp");
     const std::string session_source = read("../include/matter/world_session.h");
     const std::string renderer_source = read("../src/render/vk_scene_renderer.h");
+    const std::string renderer_impl_source = read("../src/render/vk_scene_renderer.cpp");
+    const std::string atmosphere_source = read("../src/render/vk_atmosphere.cpp");
     const std::string volumetrics_source = read("../src/render/vk_volumetrics.h");
+    const std::string shots_source = read("../tools/atmosphere_cloud_shots.sh");
     CHECK(!props_source.empty() && !editor_source.empty() && !reset_source.empty() &&
               !main_source.empty() && !ui_source.empty() && !issue_source.empty() &&
               !session_source.empty() && !renderer_source.empty() &&
-              !volumetrics_source.empty(),
+              !renderer_impl_source.empty() &&
+              !atmosphere_source.empty() && !volumetrics_source.empty() &&
+              !shots_source.empty(),
           "physical atmosphere: editor sources are available from the test cwd");
     for (const char* token : {"\"render.atmosphere\", \"Atmosphere\"",
                               "\"render.volumetrics\", \"Volumetrics\"",
@@ -900,6 +905,14 @@ void test_physical_atmosphere_editor_source_contract() {
               "physical atmosphere: Lighting, Performance, and issue reports retain timing lanes");
     CHECK(issue_source.find("cloud_shadow_memory_bytes") != std::string::npos,
           "physical atmosphere: issue reports retain actual cloud-shadow memory");
+    CHECK(atmosphere_source.find("candidate_timestamp_pool_") != std::string::npos &&
+              atmosphere_source.find("vkGetQueryPoolResults") != std::string::npos &&
+              renderer_impl_source.find("last_generation_gpu_ms") != std::string::npos,
+          "physical atmosphere: the immediate LUT candidate publishes a GPU query result");
+    for (const char* token : {"FINAL_STAGE_DIR", "expect_property", "ffmpeg",
+                              "verify_final_capture", "promote_final_evidence"})
+        CHECK(shots_source.find(token) != std::string::npos,
+              "physical atmosphere: final acceptance validates and promotes staged evidence");
 }
 
 const auto& atmosphere_lighting_controls_schema() {

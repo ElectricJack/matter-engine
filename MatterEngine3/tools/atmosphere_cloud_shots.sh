@@ -4,13 +4,26 @@
 set -euo pipefail
 SUITE="${1:?usage: atmosphere_cloud_shots.sh <suite> <label> <out-dir>}"
 LABEL="${2:?usage: atmosphere_cloud_shots.sh <suite> <label> <out-dir>}"
-OUT="${3:?usage: atmosphere_cloud_shots.sh <suite> <label> <out-dir>}"
-mkdir -p "$OUT"
-OUT="$(cd "$OUT" && pwd)"
+OUT_INPUT="${3:?usage: atmosphere_cloud_shots.sh <suite> <label> <out-dir>}"
+mkdir -p "$OUT_INPUT"
+FINAL_CANONICAL_DIR="$(cd "$OUT_INPUT" && pwd)"
+FINAL_STAGE_DIR=""
+# Final acceptance must never erase a previously accepted capture while a
+# replacement is still baking, starting, or running its checks. Keep the run
+# private until the child exits cleanly and every assertion has passed.
+if [ "$SUITE" = final ]; then
+  FINAL_STAGE_DIR="${OUT_INPUT}/.${LABEL}-staging-$$"
+  mkdir -p "$FINAL_STAGE_DIR"
+  OUT="$(cd "$FINAL_STAGE_DIR" && pwd)"
+else
+  OUT="$FINAL_CANONICAL_DIR"
+fi
 FIFO="${TMPDIR:-/tmp}/matter_atmosphere_clouds_$$.fifo"
 LOG="$OUT/${LABEL}_viewer.log"
 COMMANDS="$OUT/${LABEL}_commands.log"
 PERF_OUTPUT="$OUT/${LABEL}_telemetry.json"
+FINAL_VERIFY_SETS=0
+EDITOR_EXIT_STATUS=0
 WINDOWS_COMMAND_FILE=0
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) WINDOWS_COMMAND_FILE=1 ;; esac
 PERF_OUTPUT_ENV="$PERF_OUTPUT"
@@ -19,10 +32,14 @@ if [ "$WINDOWS_COMMAND_FILE" = 1 ]; then
 fi
 
 send() {
+  local line="$*"
   if [ "$WINDOWS_COMMAND_FILE" = 1 ]; then
-    printf '%s\n' "$*" | tee -a "$COMMANDS" >> "$FIFO"
+    printf '%s\n' "$line" | tee -a "$COMMANDS" >> "$FIFO"
   else
-    printf '%s\n' "$*" | tee -a "$COMMANDS" > "$FIFO"
+    printf '%s\n' "$line" | tee -a "$COMMANDS" > "$FIFO"
+  fi
+  if [ "$FINAL_VERIFY_SETS" = 1 ] && [[ "$line" == set\ * ]]; then
+    final_set_round_trip "$line"
   fi
 }
 capture() {
@@ -36,7 +53,15 @@ capture() {
   rm -f "$png" "${png}.done"
   send "stats $name"
   send "shot $shot_path"
-  for _ in $(seq 1 60); do [ -e "${png}.done" ] && return; sleep 1; done
+  for _ in $(seq 1 60); do
+    if [ -e "${png}.done" ]; then
+      if [ "$SUITE" = final ]; then
+        verify_final_capture "$name" "$png"
+      fi
+      return
+    fi
+    sleep 1
+  done
   echo "ERROR: screenshot timed out: $png" >&2
   exit 1
 }
@@ -125,6 +150,58 @@ request_property() {
   printf '%s\n' "${row#* = }"
 }
 
+expect_property() {
+  local path="$1" expected="$2" actual
+  actual="$(request_property "$path")" || return 1
+  if [ "$actual" = "$expected" ]; then
+    return 0
+  fi
+  if awk -v actual="$actual" -v expected="$expected" \
+      'BEGIN { if (actual !~ /^-?[0-9]+(\.[0-9]+)?$/ || expected !~ /^-?[0-9]+(\.[0-9]+)?$/) exit 1;
+               d=actual-expected; if (d<0) d=-d; exit !(d <= 0.00001) }'; then
+    return 0
+  fi
+  {
+    echo "ERROR: property '$path' is '$actual', expected '$expected'" >&2
+    return 1
+  }
+}
+
+final_expected_value() {
+  local value="$1"
+  case "$value" in
+    *,*) printf '(%s)\n' "$(printf '%s' "$value" | sed 's/,/, /g')" ;;
+    *) printf '%s\n' "$value" ;;
+  esac
+}
+
+final_update_expected_grid() {
+  local scale="${FINAL_EXPECT_XY%x}"
+  FINAL_EXPECT_GRID_W="$(awk -v s="$scale" 'BEGIN { print int((1280*s + 7) / 8) }')"
+  FINAL_EXPECT_GRID_H="$(awk -v s="$scale" 'BEGIN { print int((720*s + 7) / 8) }')"
+  FINAL_EXPECT_MEMORY_MIB="$(awk -v w="$FINAL_EXPECT_GRID_W" -v h="$FINAL_EXPECT_GRID_H" \
+    -v d="$FINAL_EXPECT_DEPTH" 'BEGIN { printf "%.2f", w*h*d*34/1048576.0 }')"
+}
+
+final_set_round_trip() {
+  local command="$1" payload path value expected
+  payload="${command#set }"
+  path="${payload%% *}"
+  value="${payload#"$path" }"
+  expected="$(final_expected_value "$value")"
+  expect_property "$path" "$expected"
+  case "$path" in
+    render.volumetrics.froxel_xy_scale)
+      FINAL_EXPECT_XY="$value"
+      final_update_expected_grid
+      ;;
+    render.volumetrics.froxel_depth_slices)
+      FINAL_EXPECT_DEPTH="$value"
+      final_update_expected_grid
+      ;;
+  esac
+}
+
 wait_for_shot_done() {
   local png="$1"
   for _ in $(seq 1 240); do
@@ -151,25 +228,31 @@ rm -f "$LOG" "$COMMANDS" "$PERF_OUTPUT" \
 : > "$COMMANDS"
 PID=""
 cleanup() {
-  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-    if [ "$WINDOWS_COMMAND_FILE" = 1 ]; then
-      send "quit" || true
-    else
-      (send "quit") &
-      local quit_pid=$!
-      for _ in $(seq 1 5); do
-        kill -0 "$quit_pid" 2>/dev/null || break
+  if [ -n "$PID" ]; then
+    if kill -0 "$PID" 2>/dev/null; then
+      if [ "$WINDOWS_COMMAND_FILE" = 1 ]; then
+        send "quit" || true
+      else
+        (send "quit") &
+        local quit_pid=$!
+        for _ in $(seq 1 5); do
+          kill -0 "$quit_pid" 2>/dev/null || break
+          sleep 1
+        done
+        kill "$quit_pid" 2>/dev/null || true
+        wait "$quit_pid" 2>/dev/null || true
+      fi
+      for _ in $(seq 1 30); do
+        kill -0 "$PID" 2>/dev/null || break
         sleep 1
       done
-      kill "$quit_pid" 2>/dev/null || true
-      wait "$quit_pid" 2>/dev/null || true
+      if kill -0 "$PID" 2>/dev/null; then kill "$PID" 2>/dev/null || true; fi
     fi
-    for _ in $(seq 1 30); do
-      kill -0 "$PID" 2>/dev/null || break
-      sleep 1
-    done
-    if kill -0 "$PID" 2>/dev/null; then kill "$PID" 2>/dev/null || true; fi
-    wait "$PID" 2>/dev/null || true
+    if wait "$PID" 2>/dev/null; then
+      EDITOR_EXIT_STATUS=0
+    else
+      EDITOR_EXIT_STATUS=$?
+    fi
   fi
   PID=""
   rm -f "$FIFO"
@@ -181,7 +264,6 @@ FROXEL_PERF_WARMUP_SECONDS=140
 CLOUD_LIGHTING_PERF_WARMUP_SECONDS=180
 CLOUD_SHADOW_PERF_WARMUP_SECONDS=180
 ATMOSPHERE_PRESENTATION_PERF_WARMUP_SECONDS=600
-FINAL_PERF_WARMUP_SECONDS=120
 PERF_WARMUP_SECONDS="${MATTER_PERF_WARMUP_SECONDS:-20}"
 # The one-process froxel lane spends 25 seconds on the matrix, then settles
 # and captures four representatives.  Do not let the editor's perf timer end
@@ -200,18 +282,27 @@ if [ "$SUITE" = "atmosphere-presentation" ] && \
    [ "$PERF_WARMUP_SECONDS" -lt "$ATMOSPHERE_PRESENTATION_PERF_WARMUP_SECONDS" ]; then
   PERF_WARMUP_SECONDS="$ATMOSPHERE_PRESENTATION_PERF_WARMUP_SECONDS"
 fi
-if [ "$SUITE" = "final" ] && [ "$PERF_WARMUP_SECONDS" -lt "$FINAL_PERF_WARMUP_SECONDS" ]; then
-  PERF_WARMUP_SECONDS="$FINAL_PERF_WARMUP_SECONDS"
+# The final lane owns its lifetime through the FIFO. MATTER_PERF_* exits the
+# editor after a wall-clock sample and previously cut the final capture set in
+# half; final timing evidence is the explicit STATS rows instead.
+if [ "$SUITE" = final ]; then
+  MATTER_WORLD="$WORLD" \
+  MATTER_CMD_FIFO="$FIFO" \
+  TMP="${TMP:?TMP must be set for the Windows editor}" \
+  TEMP="${TEMP:?TEMP must be set for the Windows editor}" \
+  MATTER_HIDE_UI="${MATTER_HIDE_UI:-1}" \
+  stdbuf -oL "$EDITOR_EXE" > "$LOG" 2>&1 &
+else
+  MATTER_WORLD="$WORLD" \
+  MATTER_CMD_FIFO="$FIFO" \
+  TMP="${TMP:?TMP must be set for the Windows editor}" \
+  TEMP="${TEMP:?TEMP must be set for the Windows editor}" \
+  MATTER_HIDE_UI="${MATTER_HIDE_UI:-1}" \
+  MATTER_PERF_OUTPUT="$PERF_OUTPUT_ENV" \
+  MATTER_PERF_WARMUP_SECONDS="$PERF_WARMUP_SECONDS" \
+  MATTER_PERF_SAMPLE_SECONDS="${MATTER_PERF_SAMPLE_SECONDS:-1}" \
+  stdbuf -oL "$EDITOR_EXE" > "$LOG" 2>&1 &
 fi
-MATTER_WORLD="$WORLD" \
-MATTER_CMD_FIFO="$FIFO" \
-TMP="${TMP:?TMP must be set for the Windows editor}" \
-TEMP="${TEMP:?TEMP must be set for the Windows editor}" \
-MATTER_HIDE_UI="${MATTER_HIDE_UI:-1}" \
-MATTER_PERF_OUTPUT="$PERF_OUTPUT_ENV" \
-MATTER_PERF_WARMUP_SECONDS="$PERF_WARMUP_SECONDS" \
-MATTER_PERF_SAMPLE_SECONDS="${MATTER_PERF_SAMPLE_SECONDS:-1}" \
-stdbuf -oL "$EDITOR_EXE" > "$LOG" 2>&1 &
 PID=$!
 
 # Both markers matter: baking can finish before the command transport is ready.
@@ -1020,42 +1111,114 @@ PY
       echo "ERROR: final suite requires StreamMountain" >&2
       exit 2
     }
-    # This is the final one-process acceptance lane. It intentionally revisits
-    # all 25 froxel pairs as get/restore stability cases, but only captures the
-    # representative preset frames below; the exhaustive visual grid is already
-    # proven by the froxel suite and would dominate an overnight final run.
-    final_get_properties() {
-      for property in \
-        render.volumetrics.enabled \
-        render.volumetrics.froxel_xy_scale \
-        render.volumetrics.froxel_depth_slices \
-        render.volumetrics.local_sun_march_steps \
-        render.volumetrics.local_sun_march_distance_m \
-        render.volumetrics.multiple_scattering_orders \
-        render.volumetrics.multiple_scattering_strength \
-        render.volumetrics.powder_strength \
-        render.cloud_shadows.enabled \
-        render.cloud_shadows.near_resolution \
-        render.cloud_shadows.near_depth_slices \
-        render.cloud_shadows.near_coverage_m \
-        render.cloud_shadows.far_resolution \
-        render.cloud_shadows.far_depth_slices \
-        render.cloud_shadows.far_coverage_m \
-        render.cloud_shadows.filter_scale \
-        render.cloud_shadows.update_fraction \
-        render.lighting.exposure_ev \
-        render.lighting.sun_elevation_deg \
-        render.fog.density \
-        render.fog.floor \
-        render.fog.falloff \
-        render.clouds.layer0_enabled \
-        render.clouds.layer0_min_height \
-        render.clouds.layer0_max_height \
-        render.clouds.layer0_max_density \
-        render.clouds.layer0_coverage \
-        render.clouds.layer0_wind; do
-        request_property "$property" >/dev/null
+    # This is the final one-process acceptance lane. It round-trips every set
+    # through the live FIFO, stages outputs privately, and only promotes them
+    # after image, STATS, log, and child-exit checks pass.
+    FINAL_VERIFY_SETS=1
+    FINAL_EXPECT_XY=1x
+    FINAL_EXPECT_DEPTH=128
+    final_update_expected_grid
+
+    verify_final_stats() {
+      local label="$1" row="" index field actual_memory
+      for _ in $(seq 1 240); do
+        row="$(grep "^STATS,$label," "$LOG" 2>/dev/null | tail -n 1 || true)"
+        [ -n "$row" ] && break
+        kill -0 "$PID" 2>/dev/null || break
+        sleep 0.25
       done
+      [ -n "$row" ] || {
+        echo "ERROR: missing STATS row for final capture '$label'" >&2
+        return 1
+      }
+      IFS=, read -r -a field <<< "$row"
+      [ "${field[16]:-}" = "$FINAL_EXPECT_GRID_W" ] &&
+      [ "${field[17]:-}" = "$FINAL_EXPECT_GRID_H" ] &&
+      [ "${field[18]:-}" = "$FINAL_EXPECT_DEPTH" ] || {
+        echo "ERROR: STATS '$label' froxel grid is ${field[16]:-?}x${field[17]:-?}x${field[18]:-?}, expected ${FINAL_EXPECT_GRID_W}x${FINAL_EXPECT_GRID_H}x${FINAL_EXPECT_DEPTH}" >&2
+        return 1
+      }
+      actual_memory="${field[19]:-}"
+      awk -v actual="$actual_memory" -v expected="$FINAL_EXPECT_MEMORY_MIB" \
+          'BEGIN { d=actual-expected; if (d<0) d=-d; exit !(d <= 0.011) }' || {
+        echo "ERROR: STATS '$label' froxel memory is $actual_memory MiB, expected $FINAL_EXPECT_MEMORY_MIB MiB" >&2
+        return 1
+      }
+      for index in 21 22 23 24 25 26; do
+        awk -v value="${field[$index]:-}" 'BEGIN { exit !(value ~ /^-?[0-9]+(\.[0-9]+)?$/) }' || {
+          echo "ERROR: STATS '$label' has malformed Task14 timing/memory lane $index" >&2
+          return 1
+        }
+      done
+    }
+
+    verify_final_capture() {
+      local label="$1" png="$2"
+      [ -s "$png" ] && [ -e "${png}.done" ] || {
+        echo "ERROR: final capture '$label' is missing image bytes or .done" >&2
+        return 1
+      }
+      verify_final_stats "$label"
+    }
+
+    FINAL_FFMPEG="${MATTER_FFMPEG:-}"
+    if [ -z "$FINAL_FFMPEG" ]; then
+      if command -v ffmpeg >/dev/null 2>&1; then
+        FINAL_FFMPEG="$(command -v ffmpeg)"
+      elif [ -x /d/Dev/ffmpeg/bin/ffmpeg.exe ]; then
+        FINAL_FFMPEG=/d/Dev/ffmpeg/bin/ffmpeg.exe
+      fi
+    fi
+    [ -n "$FINAL_FFMPEG" ] || {
+      echo "ERROR: final acceptance requires ffmpeg for image metrics" >&2
+      exit 1
+    }
+
+    final_ssim() {
+      "$FINAL_FFMPEG" -hide_banner -nostdin -i "$1" -i "$2" \
+        -lavfi ssim -f null - 2>&1 | \
+        sed -n 's/.*All:\([0-9.]*\).*/\1/p' | tail -n 1
+    }
+
+    require_images_differ() {
+      local first="$1" second="$2" description="$3" first_hash second_hash metric
+      [ -s "$first" ] && [ -s "$second" ] || {
+        echo "ERROR: $description image is missing" >&2
+        return 1
+      }
+      first_hash="$(sha256sum "$first" | awk '{print $1}')"
+      second_hash="$(sha256sum "$second" | awk '{print $1}')"
+      [ "$first_hash" != "$second_hash" ] || {
+        echo "ERROR: $description images are byte-identical" >&2
+        return 1
+      }
+      metric="$(final_ssim "$first" "$second")"
+      awk -v value="$metric" 'BEGIN { exit !(value >= 0 && value < 0.999999) }' || {
+        echo "ERROR: $description ffmpeg SSIM metric is invalid or identical: '$metric'" >&2
+        return 1
+      }
+      printf 'FINAL_DIFF,%s,sha256=%s/%s,ssim=%s\n' "$description" \
+        "$first_hash" "$second_hash" "$metric" >> "$COMMANDS"
+    }
+
+    verify_moving_pair() {
+      local first="$1" second="$2" metric
+      metric="$(final_ssim "$first" "$second")"
+      awk -v value="$metric" 'BEGIN { exit !(value >= 0.90 && value < 1.0) }' || {
+        echo "ERROR: moving cloud transition '$first' -> '$second' fails seam/flash SSIM bound: '$metric'" >&2
+        return 1
+      }
+      printf 'FINAL_MOVING,%s,%s,ssim=%s\n' "$first" "$second" "$metric" >> "$COMMANDS"
+    }
+
+    promote_final_evidence() {
+      local artifact
+      for artifact in "$OUT"/*; do
+        [ -f "$artifact" ] || continue
+        cp -f "$artifact" "$FINAL_CANONICAL_DIR/"
+      done
+      printf 'FINAL_ACCEPTED_STAGE,%s\n' "$FINAL_STAGE_DIR" \
+        >> "$FINAL_CANONICAL_DIR/${LABEL}_commands.log"
     }
     final_preset() {
       local preset="$1"
@@ -1135,8 +1298,6 @@ PY
       for depth in 64 96 128 192 256; do
         send "set render.volumetrics.froxel_xy_scale $xy"
         send "set render.volumetrics.froxel_depth_slices $depth"
-        request_property render.volumetrics.froxel_xy_scale >/dev/null
-        request_property render.volumetrics.froxel_depth_slices >/dev/null
       done
     done
     send "set render.clouds.layer0_enabled true"
@@ -1150,7 +1311,6 @@ PY
     send "set render.fog.falloff 18"
     for elevation in 90 45 5 0 -5; do
       send "set render.lighting.sun_elevation_deg $elevation"
-      request_property render.lighting.sun_elevation_deg >/dev/null
       settle_volumetrics 4
       case "$elevation" in
         90) capture "sun_90" "${LABEL}_noon" ;;
@@ -1161,7 +1321,6 @@ PY
     send "set render.lighting.sun_elevation_deg 45"
     for preset in current improved high ultra; do
       final_preset "$preset"
-      final_get_properties
       settle_volumetrics 4
       capture "preset_${preset}" "${LABEL}_${preset}"
     done
@@ -1173,12 +1332,10 @@ PY
     send "set render.volumetrics.multiple_scattering_orders 2"
     send "set render.volumetrics.multiple_scattering_strength 0.4"
     send "set render.volumetrics.powder_strength 0.2"
-    final_get_properties
     settle_volumetrics 4
     capture custom "${LABEL}_custom"
     for order in 1 2 4; do
       send "set render.volumetrics.multiple_scattering_orders $order"
-      request_property render.volumetrics.multiple_scattering_orders >/dev/null
       settle_volumetrics 4
       capture "order_${order}" "${LABEL}_order-${order}"
     done
@@ -1193,23 +1350,17 @@ PY
     send "set render.clouds.layer1_max_density 0.005"
     send "set render.clouds.layer1_coverage 0.68"
     send "set render.clouds.layer1_wind 0,0,0"
-    for property in render.clouds.layer1_enabled render.clouds.layer1_min_height \
-                    render.clouds.layer1_max_height render.clouds.layer1_max_density \
-                    render.clouds.layer1_coverage; do request_property "$property" >/dev/null; done
     settle_volumetrics 4
     capture cloud_cross "${LABEL}_cross-shadow"
     send "cam 20 450 350 0 150 0"
     wait_for_streaming_settle
     send "set render.cloud_shadows.enabled false"
-    request_property render.cloud_shadows.enabled >/dev/null
     settle_volumetrics 4
     capture shadow_ground_disabled "${LABEL}_ground-object-shadow-disabled"
     send "set render.cloud_shadows.enabled true"
-    request_property render.cloud_shadows.enabled >/dev/null
     settle_volumetrics 4
     capture shadow_ground "${LABEL}_ground-object-shadow"
     send "set render.fog.density 0.035"
-    request_property render.fog.density >/dev/null
     settle_volumetrics 4
     capture shadow_fog "${LABEL}_fog-shadow"
     send "cam 650 450 350 630 150 0"
@@ -1220,23 +1371,22 @@ PY
     capture boundary "${LABEL}_near-far-boundary"
     send "cam 20 450 350 0 150 0"
     send "set render.clouds.layer0_wind 25,0,0"
-    request_property render.clouds.layer0_wind >/dev/null
     for frame in 0 1 2 3; do sleep 2; capture "moving_${frame}" "${LABEL}_moving-${frame}"; done
-    IMAGE_PYTHON="${MATTER_IMAGE_PYTHON:-python3}"
-    "$IMAGE_PYTHON" "$HERE/img_diff.py" "$OUT/${LABEL}_order-1.png" \
-      "$OUT/${LABEL}_order-4.png" --max-diff-pct 95
-    "$IMAGE_PYTHON" "$HERE/img_diff.py" "$OUT/${LABEL}_near-far-translated.png" \
-      "$OUT/${LABEL}_near-far-boundary.png" --max-diff-pct 95
-    "$IMAGE_PYTHON" "$HERE/img_diff.py" "$OUT/${LABEL}_ground-object-shadow-disabled.png" \
-      "$OUT/${LABEL}_ground-object-shadow.png" --max-diff-pct 95
-    for _ in $(seq 1 $((FINAL_PERF_WARMUP_SECONDS + 30))); do
-      [ -s "$PERF_OUTPUT" ] && break
-      sleep 1
-    done
-    [ -s "$PERF_OUTPUT" ] || {
-      echo "ERROR: telemetry timed out: $PERF_OUTPUT" >&2
+    require_images_differ "$OUT/${LABEL}_ground-object-shadow-disabled.png" \
+      "$OUT/${LABEL}_ground-object-shadow.png" "enabled-disabled ground shadow"
+    require_images_differ "$OUT/${LABEL}_order-1.png" \
+      "$OUT/${LABEL}_order-4.png" "multiple-scattering order"
+    require_images_differ "$OUT/${LABEL}_self-shadow.png" \
+      "$OUT/${LABEL}_cross-shadow.png" "self-cross cloud receiver"
+    verify_moving_pair "$OUT/${LABEL}_moving-0.png" "$OUT/${LABEL}_moving-1.png"
+    verify_moving_pair "$OUT/${LABEL}_moving-1.png" "$OUT/${LABEL}_moving-2.png"
+    verify_moving_pair "$OUT/${LABEL}_moving-2.png" "$OUT/${LABEL}_moving-3.png"
+    if grep -Eqi 'FATAL:|Validation Error|VUID-|renderer[^:]*:.*(error|failed)|^ERROR:' "$LOG" || \
+       grep -Eq 'validation errors: [1-9][0-9]*' "$LOG"; then
+      echo "ERROR: renderer or Vulkan validation failure found in $LOG" >&2
       exit 1
-    }
+    fi
+    FINAL_VERIFY_SETS=0
     ;;
   *)
     echo "ERROR: unknown suite '$SUITE' (baseline, atmosphere, atmosphere-presentation, froxel, cloud-lighting, cloud-shadows, final)" >&2
@@ -1247,16 +1397,24 @@ esac
 cleanup
 trap - EXIT INT TERM
 
+if [ "$SUITE" = final ] && [ "$EDITOR_EXIT_STATUS" -ne 0 ]; then
+  echo "ERROR: final editor child exited with status $EDITOR_EXIT_STATUS" >&2
+  exit 1
+fi
+
 grep '^STATS,' "$LOG" > "$OUT/${LABEL}_stats.log" || true
 [ -s "$OUT/${LABEL}_stats.log" ] || {
   echo "ERROR: no positional STATS rows in $LOG" >&2
   exit 1
 }
-if [ "$SUITE" != atmosphere-presentation ]; then
+if [ "$SUITE" != atmosphere-presentation ] && [ "$SUITE" != final ]; then
   grep '"gpu_volumetrics_ms"' "$PERF_OUTPUT" > "$OUT/${LABEL}_metrics.log" || true
   [ -s "$OUT/${LABEL}_metrics.log" ] || {
     echo "ERROR: no gpu_volumetrics_ms telemetry in $PERF_OUTPUT" >&2
     exit 1
   }
+fi
+if [ "$SUITE" = final ]; then
+  promote_final_evidence
 fi
 echo "--- $LABEL: $SUITE capture and telemetry in $OUT"

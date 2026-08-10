@@ -48,16 +48,16 @@ public:
         matter::VkImageResource sky_view;
         matter::VkImageResource irradiance_sh;
         AtmosphereCommittedState state{};
+        // Measured inside build_candidate's immediate command buffer.  It is
+        // carried with the uncommitted images so a rejected candidate cannot
+        // leak a timing sample into the live renderer state.
+        float gpu_generation_ms = 0.0f;
         bool valid = false;
     };
     bool init(matter::VulkanDevice&, std::string& error);
     void request_settings(const matter::AtmosphereSettings&);
     bool record(VkCommandBuffer, float camera_world_y,
                 const matter::Float3& to_sun, std::string& error);
-    // record() successfully early-outs on steady LUTs; renderer timing must
-    // therefore consult this predicate before writing a query pair.
-    bool generation_pending(float camera_world_y,
-                            const matter::Float3& to_sun) const;
     const matter::VkImageResource& sky_view() const;
     const matter::VkImageResource& irradiance_sh() const;
     const matter::VkImageResource& transmittance() const;
@@ -92,6 +92,11 @@ public:
                                          std::string& error) const;
     uint64_t generation_serial() const { return generation_serial_; }
     bool generated_this_frame() const { return generated_this_frame_; }
+    // Last atomically committed candidate's GPU-only LUT dispatch duration.
+    // The renderer clears its public zone on a steady transaction.
+    float last_generation_gpu_ms() const noexcept {
+        return last_generation_gpu_ms_;
+    }
     void destroy();
 
 private:
@@ -139,6 +144,12 @@ private:
     ComputePass sky_view_pass_;
     ComputePass irradiance_pass_;
     VkSampler linear_sampler_ = VK_NULL_HANDLE;
+    // Candidate generation is an immediate, synchronous command submission.
+    // It therefore owns a tiny query pool rather than borrowing a frame pool
+    // whose reset/collection occurs later in prepare_frame().
+    VkQueryPool candidate_timestamp_pool_ = VK_NULL_HANDLE;
+    float candidate_timestamp_period_ns_ = 0.0f;
+    float last_generation_gpu_ms_ = 0.0f;
 
     matter::AtmosphereSettings requested_settings_{};
     matter::AtmosphereSettings committed_settings_{};

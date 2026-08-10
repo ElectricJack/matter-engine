@@ -6136,6 +6136,10 @@ bool VkSceneRenderer::resolve_atmosphere_transaction(
         different3(to_sun, requested_atmosphere_to_sun_) ||
         different3(authored, requested_atmosphere_authored_sun_);
     if (!request_changed) {
+        // Candidate LUT work is submitted synchronously above the frame
+        // command buffer.  A steady request submits no candidate, so its lane
+        // must be exact zero instead of decaying an old dirty-frame EMA.
+        gpu_smoothed_ms_[kGpuZoneAtmosphere] = 0.0f;
         resolve_live_atmosphere(pending_atmosphere_change_mask_, false);
         return update_environment_descriptor(frame, error);
     }
@@ -6153,6 +6157,7 @@ bool VkSceneRenderer::resolve_atmosphere_transaction(
     }
 #endif
     if (!atmosphere_->build_candidate(request, candidate, error)) {
+        gpu_smoothed_ms_[kGpuZoneAtmosphere] = 0.0f;
         resolve_live_atmosphere(pending_atmosphere_change_mask_, false);
         if (error.empty()) error = "atmosphere candidate generation failed";
         return false;
@@ -6225,6 +6230,12 @@ bool VkSceneRenderer::resolve_atmosphere_transaction(
     }
     atmosphere_->commit_candidate(std::move(candidate),
                                   static_cast<uint32_t>(&frame - frames_.data()));
+    const float atmosphere_generation_ms = atmosphere_->last_generation_gpu_ms();
+    gpu_smoothed_ms_[kGpuZoneAtmosphere] =
+        std::isfinite(atmosphere_generation_ms) && atmosphere_generation_ms > 0.0f
+            ? gpu_smoothed_ms_[kGpuZoneAtmosphere] * 0.9f +
+                  atmosphere_generation_ms * 0.1f
+            : 0.0f;
     resolved_atmosphere_status_ = committed;
     if (irradiance_sources_valid)
         has_valid_sky_irradiance_modifier_ = true;
@@ -12060,19 +12071,14 @@ bool VkSceneRenderer::record_cull_and_render(
         const matter::Float3 to_sun{-lighting_.sun_direction.x,
                                     -lighting_.sun_direction.y,
                                     -lighting_.sun_direction.z};
-        FrameResources& atmosphere_frame = frames_[frame.frame_slot];
-        const bool atmosphere_work =
-            atmosphere_->generation_pending(camera_eye.y, to_sun);
-        if (atmosphere_work)
-            write_gpu_timestamp(frame.command_buffer, kGpuZoneAtmosphere,
-                                false, atmosphere_frame);
+        // Dirty LUT dispatches are synchronously submitted and timestamped by
+        // VkAtmosphere::build_candidate during prepare_frame(). This record is
+        // intentionally a no-op on committed/steady candidates, so bracketing
+        // it with the frame query pool would manufacture a zero-duration lane.
         if (!atmosphere_->record(frame.command_buffer, camera_eye.y, to_sun, error)) {
             error = "atmosphere LUT generation failed: " + error;
             return false;
         }
-        if (atmosphere_work)
-            write_gpu_timestamp(frame.command_buffer, kGpuZoneAtmosphere,
-                                true, atmosphere_frame);
     }
     if (limits_.max_draw_indirect_count < 1) {
         error = "Vulkan maxDrawIndirectCount cannot support grouped indirect draws";

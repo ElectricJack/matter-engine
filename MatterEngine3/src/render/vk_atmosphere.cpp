@@ -100,6 +100,18 @@ bool VkAtmosphere::init(matter::VulkanDevice& vulkan, std::string& error) {
         destroy();
         return false;
     }
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(vulkan.physical_device(), &properties);
+    if (properties.limits.timestampComputeAndGraphics &&
+        properties.limits.timestampPeriod > 0.0f) {
+        VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        info.queryCount = 2;
+        if (vkCreateQueryPool(vulkan.device(), &info, nullptr,
+                              &candidate_timestamp_pool_) == VK_SUCCESS) {
+            candidate_timestamp_period_ns_ = properties.limits.timestampPeriod;
+        }
+    }
     initialized_ = true;
     return true;
 }
@@ -449,14 +461,6 @@ bool VkAtmosphere::record(VkCommandBuffer command_buffer, float camera_world_y,
     return true;
 }
 
-bool VkAtmosphere::generation_pending(
-    float camera_world_y, const matter::Float3& to_sun_input) const {
-    if (!initialized_ || !std::isfinite(camera_world_y)) return false;
-    matter::Float3 to_sun = to_sun_input;
-    if (!normalize(to_sun)) return false;
-    return coefficient_change_pending() || view_change_pending(camera_world_y, to_sun);
-}
-
 bool VkAtmosphere::readback_irradiance(
     matter::VkImageResource& image,
     std::array<matter::Float3, 9>& output, std::string& error) {
@@ -562,9 +566,21 @@ bool VkAtmosphere::build_candidate(const AtmosphereRequest& input,
     const auto record_candidate = [](VkCommandBuffer command_buffer,
                                      void* opaque) {
         auto& value = *static_cast<Dispatch*>(opaque);
+        const VkQueryPool timer = value.self->candidate_timestamp_pool_;
+        if (timer != VK_NULL_HANDLE) {
+            vkCmdResetQueryPool(command_buffer, timer, 0, 2);
+            vkCmdWriteTimestamp2(command_buffer,
+                                 VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                 timer, 0);
+        }
         value.ok = value.self->record_dispatches(
             command_buffer, true, value.camera_world_y, value.to_sun,
             *value.error);
+        if (timer != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp2(command_buffer,
+                                 VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                 timer, 1);
+        }
     };
     const bool dispatched = matter::submit_immediate(
         *vulkan_, record_candidate, &dispatch, error,
@@ -572,6 +588,18 @@ bool VkAtmosphere::build_candidate(const AtmosphereRequest& input,
         {transmittance_.lifetime, multiscatter_.lifetime,
          sky_view_.lifetime, irradiance_sh_.lifetime});
     bool valid = dispatched && dispatch.ok;
+    if (valid && candidate_timestamp_pool_ != VK_NULL_HANDLE) {
+        uint64_t timestamps[2]{};
+        if (vkGetQueryPoolResults(
+                vulkan_->device(), candidate_timestamp_pool_, 0, 2,
+                sizeof(timestamps), timestamps, sizeof(uint64_t),
+                VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS &&
+            timestamps[1] >= timestamps[0]) {
+            candidate.gpu_generation_ms = static_cast<float>(
+                static_cast<double>(timestamps[1] - timestamps[0]) *
+                candidate_timestamp_period_ns_ / 1e6);
+        }
+    }
     if (valid)
         valid = readback_irradiance(irradiance_sh_,
                                     candidate.state.irradiance_sh, error);
@@ -633,6 +661,7 @@ bool VkAtmosphere::build_candidate(const AtmosphereRequest& input,
 void VkAtmosphere::commit_candidate(Candidate&& candidate,
                                     uint32_t protected_frame_slot) {
     if (!candidate.valid) return;
+    last_generation_gpu_ms_ = candidate.gpu_generation_ms;
     retired_luts_.erase(
         std::remove_if(retired_luts_.begin(), retired_luts_.end(),
                        [protected_frame_slot](const RetiredLuts& retired) {
@@ -767,6 +796,11 @@ void VkAtmosphere::destroy() {
     if (device != VK_NULL_HANDLE && linear_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device, linear_sampler_, nullptr);
     linear_sampler_ = VK_NULL_HANDLE;
+    if (device != VK_NULL_HANDLE && candidate_timestamp_pool_ != VK_NULL_HANDLE)
+        vkDestroyQueryPool(device, candidate_timestamp_pool_, nullptr);
+    candidate_timestamp_pool_ = VK_NULL_HANDLE;
+    candidate_timestamp_period_ns_ = 0.0f;
+    last_generation_gpu_ms_ = 0.0f;
     emergency_irradiance_sh_.reset(); emergency_sky_view_.reset(); emergency_multiscatter_.reset(); emergency_transmittance_.reset();
     irradiance_sh_.reset(); sky_view_.reset(); multiscatter_.reset(); transmittance_.reset();
     retired_luts_.clear();
