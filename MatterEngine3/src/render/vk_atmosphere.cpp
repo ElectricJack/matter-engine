@@ -350,7 +350,8 @@ bool VkAtmosphere::coefficient_change_pending() const {
 bool VkAtmosphere::view_change_pending(float camera_world_y,
                                        const matter::Float3& to_sun) const {
     if (!has_committed_settings_) return true;
-    return std::fabs(camera_world_y - committed_camera_world_y_) > 10.0f ||
+    return std::fabs(camera_world_y - committed_camera_world_y_) >
+               kAtmosphereObserverAltitudeRebuildThresholdMeters ||
            dot(to_sun, committed_to_sun_) < 0.999999f;
 }
 

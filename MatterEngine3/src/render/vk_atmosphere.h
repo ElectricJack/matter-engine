@@ -17,6 +17,9 @@ class VulkanDevice;
 
 namespace viewer {
 
+inline constexpr float kAtmosphereObserverAltitudeRebuildThresholdMeters =
+    10.0f;
+
 struct AtmosphereRequest {
     matter::AtmosphereSettings settings{};
     float camera_world_y = 0.0f;

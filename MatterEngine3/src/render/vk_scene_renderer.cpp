@@ -5999,22 +5999,16 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
 
 void VkSceneRenderer::update_atmosphere_replay_constants() noexcept {
     AtmosphereReplayConstants result{};
-    result.composite_sun_direction = lighting_.sun_direction;
+    const matter::Float3 committed_to_sun =
+        resolved_atmosphere_status_.normalized_to_sun;
+    result.composite_sun_direction = {-committed_to_sun.x,
+                                      -committed_to_sun.y,
+                                      -committed_to_sun.z};
     result.composite_emission_multiplier = lighting_.emission_multiplier;
     result.display_exposure_ev = display_exposure_ev_;
     result.composite_sun_disc_cos_edge = lighting_.sun_disc_cos_edge;
     result.composite_sun_disc_cos_core = lighting_.sun_disc_cos_core;
-    const float length = std::sqrt(
-        lighting_.sun_direction.x * lighting_.sun_direction.x +
-        lighting_.sun_direction.y * lighting_.sun_direction.y +
-        lighting_.sun_direction.z * lighting_.sun_direction.z);
-    if (length > 0.0f && std::isfinite(length)) {
-        result.rt_to_sun = {-lighting_.sun_direction.x / length,
-                            -lighting_.sun_direction.y / length,
-                            -lighting_.sun_direction.z / length};
-    } else {
-        result.rt_to_sun = {0.0f, 1.0f, 0.0f};
-    }
+    result.rt_to_sun = committed_to_sun;
     result.rt_shadow_samples =
         std::max(1u, ray_tracing_settings_.samples);
     result.rt_shadow_sun_cone_scale =
@@ -6123,7 +6117,8 @@ bool VkSceneRenderer::resolve_atmosphere_transaction(
         atmosphere_settings_.mie_anisotropy != committed_atmosphere_settings_.mie_anisotropy ||
         atmosphere_settings_.ozone_scale != committed_atmosphere_settings_.ozone_scale ||
         atmosphere_settings_.ground_albedo != committed_atmosphere_settings_.ground_albedo ||
-        camera_world_y != requested_atmosphere_camera_y_ ||
+        std::fabs(camera_world_y - requested_atmosphere_camera_y_) >
+            kAtmosphereObserverAltitudeRebuildThresholdMeters ||
         different3(to_sun, requested_atmosphere_to_sun_) ||
         different3(authored, requested_atmosphere_authored_sun_);
     if (!request_changed) {
