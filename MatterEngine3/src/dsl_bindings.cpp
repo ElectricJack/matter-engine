@@ -1352,6 +1352,117 @@ static JSValue j_candidatesInRect(JSContext* c, JSValueConst, int argc,
     return out;
 }
 
+// __planCandidates(seed, kind, minDist, x0, z0, w, h) -> Float64Array
+//
+// The fused form of __candidatesInRect + __habitatAt. It runs the exact same
+// cell loop as j_candidatesInRect above -- same candidate generation, same
+// survival test, same order -- and, for every surviving candidate, evaluates
+// the bound habitat tape's channels via SurfaceRuntime::channels_at (the same
+// call j_habitatAt makes) before the candidate ever crosses into JS.
+//
+// WHY: profiling a StreamMountain bake found plan.habitat costing 19.2 us per
+// call at 7,899 calls/bake, of which the native tape math itself is only
+// ~3-4 us. The cost is the JS<->C crossing, not the math, so the fix is fewer
+// crossings: one call per RECT instead of one call per CANDIDATE. This does
+// not replace __habitatAt / __candidatesInRect -- other callers (the boulder
+// loop, contexts with no tape bound) still use them.
+//
+// ENGINE-PURITY: the only thing this teaches the engine is "evaluate the
+// bound tape at each surviving grid candidate and return channels by index."
+// Channel geometry (count, order) comes from channel_regs, which is already
+// index-keyed -- no channel NAME, no species/family/ecology concept crosses
+// into C++. This is the same abstraction level channels_at itself already
+// sits at, one level down.
+//
+// Returns ONE flat, self-describing Float64Array (no per-candidate object
+// allocation -- that allocation is a large part of what this eliminates).
+// Layout, header + repeated records:
+//
+//   data[0]                       = channelCount (0 if no habitat tape bound)
+//   data[1]                       = candidateCount
+//   for i in 0 .. candidateCount-1, record at
+//   offset = 2 + i * (5 + channelCount):
+//     record[0] = x
+//     record[1] = z
+//     record[2] = rot
+//     record[3] = u
+//     record[4] = v
+//     record[5 .. 5+channelCount-1] = habitat channels, in channel_regs order
+//
+// (If channelCount is 0 the record is just [x, z, rot, u, v] -- the binding
+// is usable by scenes with no habitat tape bound, unlike __habitatAt, which
+// fails loudly in that case.) This comment is the only contract; the JS side
+// indexes the array by hand against it.
+static JSValue j_planCandidates(JSContext* c, JSValueConst, int argc,
+                                JSValueConst* a) {
+    DslState* st = state_of(c);
+    if (argc < 7) {
+        st->set_error("planCandidates: expected "
+                      "(seed, kind, minDist, x0, z0, w, h)");
+        return JS_UNDEFINED;
+    }
+    const uint32_t seed = (uint32_t)(int64_t)argd(c, a[0]);
+    const uint32_t kind = (uint32_t)(int64_t)argd(c, a[1]);
+    const double min_dist = argd(c, a[2]);
+    const double x0 = argd(c, a[3]), z0 = argd(c, a[4]);
+    const double w = argd(c, a[5]), h = argd(c, a[6]);
+    // Same guard as j_candidatesInRect: a non-positive spacing makes the cell
+    // loop unbounded and would hang a bake worker.
+    if (!(min_dist > 0.0)) {
+        st->set_error("planCandidates: minDist must be > 0");
+        return JS_UNDEFINED;
+    }
+
+    const WorldBinding& wb = st->world();
+    const int channel_count = wb.habitat ? wb.habitat->channel_count() : 0;
+    const size_t stride = (size_t)(5 + channel_count);
+
+    const double c0 = std::floor(x0 / min_dist), c1 = std::floor((x0 + w) / min_dist);
+    const double r0 = std::floor(z0 / min_dist), r1 = std::floor((z0 + h) / min_dist);
+
+    std::vector<double> data;
+    data.reserve(2 + stride * 64);  // rough guess, grows as needed
+    data.push_back((double)channel_count);
+    data.push_back(0.0);  // candidateCount, patched below
+    uint32_t n = 0;
+    float ch[terrain_field::kMaxHabitatChannels];
+    for (double dcz = r0; dcz <= r1; dcz += 1.0)
+        for (double dcx = c0; dcx <= c1; dcx += 1.0) {
+            const int32_t cx = (int32_t)dcx, cz = (int32_t)dcz;
+            const SgCandidate cand =
+                sg_cell_candidate(seed, kind, cx, cz, min_dist);
+            // Rect test BEFORE the survives() scan, as in j_candidatesInRect.
+            if (cand.x < x0 || cand.x >= x0 + w ||
+                cand.z < z0 || cand.z >= z0 + h) continue;
+            if (!sg_survives(seed, kind, cx, cz, min_dist, cand)) continue;
+            data.push_back(cand.x);
+            data.push_back(cand.z);
+            data.push_back(cand.rot);
+            data.push_back(cand.u);
+            data.push_back(cand.v);
+            if (channel_count > 0) {
+                wb.habitat->channels_at((float)cand.x, (float)cand.z,
+                                        wb.field, ch);
+                for (int i = 0; i < channel_count; ++i)
+                    data.push_back((double)ch[i]);
+            }
+            ++n;
+        }
+    data[1] = (double)n;
+
+    JSValue buf = JS_NewArrayBufferCopy(
+        c, reinterpret_cast<const uint8_t*>(data.data()),
+        data.size() * sizeof(double));
+    if (JS_IsException(buf)) return buf;
+    // Pass buf + two JS_UNDEFINED placeholders: js_typed_array_constructor
+    // unconditionally reads argv[1] (offset) and argv[2] (length), so argc
+    // must be 3 even though both are meant to take their defaults.
+    JSValue argv[3] = {buf, JS_UNDEFINED, JS_UNDEFINED};
+    JSValue ta = JS_NewTypedArray(c, 3, argv, JS_TYPED_ARRAY_FLOAT64);
+    JS_FreeValue(c, buf);
+    return ta;
+}
+
 // __profSlot(name) -> int, __profBegin(slot), __profEnd(slot)
 //
 // The script side of ScriptProfile. Split into an intern call and two int
@@ -1649,6 +1760,7 @@ void install_bindings(JSContext* ctx) {
     bind("__habitatAt",j_habitatAt,3);
     bind("__hasHabitat",j_hasHabitat,0);
     bind("__candidatesInRect", j_candidatesInRect, 7);
+    bind("__planCandidates", j_planCandidates, 7);
     bind("__profSlot", j_profSlot, 1);
     bind("__profBegin",j_profBegin,1);
     bind("__profEnd",  j_profEnd,  1);
