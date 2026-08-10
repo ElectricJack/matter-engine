@@ -301,6 +301,51 @@ void test_round_trip() {
     (void)db;
 }
 
+void test_uint64_json_exactness_and_rejections() {
+    const uint64_t exact_values[] = {
+        9007199254740993ull,
+        std::numeric_limits<uint64_t>::max(),
+    };
+    for (uint64_t expected : exact_values) {
+        Registry source_registry;
+        Tunables source;
+        Binding* source_binding = source_registry.get(source_registry.bind(
+            tunables_schema(), &source, Scope::World));
+        props::set_uint64(*source_binding, field("serial"), expected);
+
+        jsondoc::Value saved;
+        props::save_scope(source_registry, Scope::World, saved);
+        const std::string text = doc_to_string(saved);
+        CHECK(text.find("\"serial\":" + std::to_string(expected)) !=
+                  std::string::npos,
+              "uint64 JSON: exact decimal token is written");
+
+        jsondoc::Value reparsed;
+        CHECK(jsondoc::parse_json(text, reparsed),
+              "uint64 JSON: exact decimal token reparses");
+        Registry destination_registry;
+        Tunables destination;
+        destination_registry.bind(tunables_schema(), &destination, Scope::World);
+        props::load_scope(destination_registry, Scope::World, reparsed);
+        CHECK(destination.serial == expected,
+              "uint64 JSON: values above 2^53 round-trip exactly");
+    }
+
+    for (const char* invalid : {"1.5", "18446744073709551616"}) {
+        Registry registry;
+        Tunables value;
+        value.serial = 17ull;
+        registry.bind(tunables_schema(), &value, Scope::World);
+        const std::string text =
+            std::string("{\"version\":1,\"groups\":{\"test.tunables\":{") +
+            "\"serial\":" + invalid + "}}}";
+        props::load_scope(registry, Scope::World,
+                          doc_from_string(text.c_str()));
+        CHECK(value.serial == 17ull,
+              "uint64 JSON: fractional and overflowing values are rejected");
+    }
+}
+
 void test_tolerant_load() {
     Registry reg;
     Tunables inst;
@@ -899,6 +944,19 @@ void test_dynamic_group_rejections() {
     CHECK(cg && cg->get_enum(0) == 1, "dynamic: enum default clamped to the last label");
 }
 
+void test_dynamic_uint64_default_lane() {
+    props::DynamicGroupBuilder builder("viewer.status", "Viewer Status");
+    props::DynamicField serial;
+    serial.name = "serial";
+    serial.type = Type::UInt64;
+    serial.uint64_default = std::numeric_limits<uint64_t>::max();
+    CHECK(builder.add(serial), "dynamic uint64: field accepted");
+    auto group = builder.build();
+    CHECK(group && group->get_uint64(0) ==
+                       std::numeric_limits<uint64_t>::max(),
+          "dynamic uint64: exact full-width default lane");
+}
+
 void test_dynamic_group_registry() {
     auto dg = build_demo_group();
     Registry reg;
@@ -1264,6 +1322,7 @@ int main() {
     test_non_finite();
     test_sparse_save();
     test_round_trip();
+    test_uint64_json_exactness_and_rejections();
     test_tolerant_load();
     test_unknown_content_preserved();
     test_env_layer();
@@ -1277,6 +1336,7 @@ int main() {
     test_load_group();
     test_dynamic_group_build();
     test_dynamic_group_rejections();
+    test_dynamic_uint64_default_lane();
     test_dynamic_group_registry();
     test_dynamic_group_draft();
     test_dynamic_group_teardown();

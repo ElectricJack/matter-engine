@@ -378,6 +378,12 @@ case "$SUITE" in
       }
 
       for elevation in 90 5 0 -5 -12; do
+        # The metrics parser treats every screenshot as a self-contained
+        # evidence record. Repeat unchanged path-wide values in each block so
+        # no capture can inherit them from an earlier screenshot.
+        request_property viewer.session.native_rt_available >/dev/null
+        request_property render.lighting.sun_multiplier >/dev/null
+        request_property render.lighting.sun_tint >/dev/null
         s0="$(request_property viewer.atmosphere_status.generation_serial)"
         case "$s0" in ''|*[!0-9]*)
           echo "ERROR: malformed starting generation serial '$s0'" >&2

@@ -59,6 +59,7 @@ const char* kind_name(Value::Kind k) {
         case Value::Kind::Null:   return "null";
         case Value::Kind::Bool:   return "bool";
         case Value::Kind::Number: return "number";
+        case Value::Kind::UInt64: return "number";
         case Value::Kind::String: return "string";
         case Value::Kind::Array:  return "array";
         case Value::Kind::Object: return "object";
@@ -76,6 +77,13 @@ Value number(double n) {
     Value v;
     v.kind = Value::Kind::Number;
     v.num = n;
+    return v;
+}
+
+Value uint64_number(uint64_t n) {
+    Value v;
+    v.kind = Value::Kind::UInt64;
+    v.uint64_value = n;
     return v;
 }
 
@@ -105,7 +113,7 @@ Value encode_field(const void* instance, const Desc& d) {
         case Type::Float:  return number(get_float(instance, d));
         case Type::Int:    return number(get_int(instance, d));
         case Type::UInt:   return number(get_uint(instance, d));
-        case Type::UInt64: return number(static_cast<double>(get_uint64(instance, d)));
+        case Type::UInt64: return uint64_number(get_uint64(instance, d));
         case Type::Enum:   return number(get_enum(instance, d));
         case Type::Bool:
             v.kind = Value::Kind::Bool;
@@ -146,9 +154,15 @@ bool decode_field(void* instance, const Desc& d, const Value& v) {
             set_uint(instance, d, v.num < 0.0 ? 0u : static_cast<uint32_t>(v.num));
             return true;
         case Type::UInt64:
-            if (v.kind != Value::Kind::Number || !std::isfinite(v.num)) return false;
-            set_uint64(instance, d,
-                       v.num < 0.0 ? 0ull : static_cast<uint64_t>(v.num));
+            if (v.kind == Value::Kind::UInt64) {
+                set_uint64(instance, d, v.uint64_value);
+                return true;
+            }
+            if (v.kind != Value::Kind::Number || !std::isfinite(v.num) ||
+                v.num < 0.0 || v.num > 9007199254740992.0 ||
+                std::trunc(v.num) != v.num)
+                return false;
+            set_uint64(instance, d, static_cast<uint64_t>(v.num));
             return true;
         case Type::Enum:
             if (v.kind != Value::Kind::Number) return false;
@@ -951,10 +965,7 @@ void DynamicGroup::construct_values(void* p) const {
                                            : static_cast<uint32_t>(f.number_default);
                 break;
             case Type::UInt64:
-                *static_cast<uint64_t*>(lane) =
-                    f.number_default < 0.0
-                        ? 0ull
-                        : static_cast<uint64_t>(f.number_default);
+                *static_cast<uint64_t*>(lane) = f.uint64_default;
                 break;
             case Type::Bool:
                 *static_cast<bool*>(lane) = f.bool_default;

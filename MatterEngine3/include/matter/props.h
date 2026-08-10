@@ -524,6 +524,7 @@ bool load_group_file(Binding& b, const std::string& path);
 //     Float                -> float
 //     Int, Enum            -> int32_t
 //     UInt                 -> uint32_t
+//     UInt64               -> uint64_t
 //     Bool                 -> bool
 //     Float3, Color3       -> float[3]
 //     String               -> std::string (placement-new'd, destroyed by
@@ -552,7 +553,8 @@ struct DynamicField {
     float min = 0.0f, max = 0.0f, step = 0.0f;
     uint32_t flags = 0;
     // The declared default, read according to `type`.
-    double      number_default = 0.0;   // Float / Int / UInt / UInt64 / Enum
+    double      number_default = 0.0;   // Float / Int / UInt / Enum
+    uint64_t    uint64_default = 0;     // UInt64 (never routed through double)
     bool        bool_default = false;   // Bool
     std::string string_default;         // String
     float       float3_default[3] = {0.0f, 0.0f, 0.0f};  // Float3 / Color3

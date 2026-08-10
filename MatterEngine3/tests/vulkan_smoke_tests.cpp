@@ -96,6 +96,25 @@ void test_atmosphere_acceptance_fifo_parser_and_present_sequencer() {
               "FIFO parser rejects malformed presentation commands");
     }
 
+    for (const char* line : {"render_pathology native_rt",
+                             "history_reset_extra",
+                             "wait_frames_extra 3",
+                             "shot_now_extra C:\\absolute\\frame.png"}) {
+        const auto parsed = viewer::parse_fifo_line(line);
+        CHECK(!parsed.recognized,
+              "FIFO parser requires an exact presentation command token");
+    }
+
+    for (const char* line : {"shot_now \\frame.png",
+                             "shot_now /frame.png",
+                             "shot_now C:\\absolute\\frame.jpg",
+                             "shot_now C:\\absolute\\..\\frame.png",
+                             "shot_now \\\\server\\..\\frame.png"}) {
+        const auto parsed = viewer::parse_fifo_line(line);
+        CHECK(parsed.recognized && !parsed.success,
+              "FIFO parser rejects drive-relative, non-PNG, and traversal shots");
+    }
+
     viewer::FifoPresentSequencer sequencing;
     sequencing.queue_wait(3u);
     sequencing.queue_screenshot("C:\\absolute\\next.png");
@@ -1352,14 +1371,12 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
         expected_sources.elevation_deg = baseline_status.resolved_elevation_deg;
         const auto expected = matter::resolve_atmosphere_lighting(expected_sources);
         const auto push = renderer.test_atmosphere_replay_constants();
-        const float direction_length = std::sqrt(
-            live.sun_direction.x * live.sun_direction.x +
-            live.sun_direction.y * live.sun_direction.y +
-            live.sun_direction.z * live.sun_direction.z);
-        const matter::Float3 expected_to_sun{
-            -live.sun_direction.x / direction_length,
-            -live.sun_direction.y / direction_length,
-            -live.sun_direction.z / direction_length};
+        const matter::Float3 expected_composite_direction{
+            -baseline_status.normalized_to_sun.x,
+            -baseline_status.normalized_to_sun.y,
+            -baseline_status.normalized_to_sun.z};
+        const matter::Float3 expected_to_sun =
+            baseline_status.normalized_to_sun;
         CHECK(same_atmosphere_handles(
                   baseline_handles,
                   renderer.test_atmosphere_lut_handles()) &&
@@ -1383,8 +1400,11 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
                               sizeof(matter::Float3)) == 0,
               message);
         CHECK(std::memcmp(&push.composite_sun_direction,
-                          &live.sun_direction,
+                          &expected_composite_direction,
                           sizeof(matter::Float3)) == 0 &&
+                  std::memcmp(&live.sun_direction,
+                              &expected_composite_direction,
+                              sizeof(matter::Float3)) != 0 &&
                   push.composite_emission_multiplier ==
                       live.emission_multiplier &&
                   push.display_exposure_ev == expected_exposure &&
@@ -1412,7 +1432,7 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
                   push.rt_gi_sun_size_scale ==
                       matter::sun_size_scale(
                           live.sun_angular_diameter_deg),
-              "failure replay exposes every current composite/display/RT push input while physical direction stays committed");
+              "failure replay keeps composite/RT direction committed while exposing every permitted live push input");
     };
 
     const viewer::VkSceneLighting generation_replay = make_replay(1.0f);
@@ -1484,6 +1504,56 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
               after_success.reflection_miss == before_success.reflection_miss &&
               after_success.volumetric == before_success.volumetric + 1,
           "successful candidate advances serial, diffuse GI, and volumetrics exactly once");
+
+    const auto altitude_counters_before =
+        renderer.test_atmosphere_candidate_counters();
+    const auto altitude_histories_before =
+        renderer.test_atmosphere_history_counters();
+    const uint64_t altitude_serial_before =
+        renderer.test_resolved_atmosphere_status().generation_serial;
+    for (float camera_y : {2.0f, 7.5f, 10.0f}) {
+        camera.position.y = camera_y;
+        CHECK(prepare_once(error),
+              error.empty() ? "prepare sub-threshold atmosphere altitude motion"
+                            : error.c_str());
+    }
+    const auto altitude_counters_subthreshold =
+        renderer.test_atmosphere_candidate_counters();
+    const auto altitude_histories_subthreshold =
+        renderer.test_atmosphere_history_counters();
+    CHECK(std::memcmp(&altitude_counters_before,
+                      &altitude_counters_subthreshold,
+                      sizeof(altitude_counters_before)) == 0 &&
+              std::memcmp(&altitude_histories_before,
+                          &altitude_histories_subthreshold,
+                          sizeof(altitude_histories_before)) == 0 &&
+              renderer.test_resolved_atmosphere_status().generation_serial ==
+                  altitude_serial_before,
+          "cumulative camera altitude motion through 10 m does not rebuild atmosphere resources");
+
+    camera.position.y = 10.25f;
+    CHECK(prepare_once(error),
+          error.empty() ? "prepare meaningful atmosphere altitude motion"
+                        : error.c_str());
+    const auto altitude_counters_after =
+        renderer.test_atmosphere_candidate_counters();
+    const auto altitude_histories_after =
+        renderer.test_atmosphere_history_counters();
+    CHECK(altitude_counters_after.image_sets_allocated ==
+                  altitude_counters_before.image_sets_allocated + 1 &&
+              altitude_counters_after.generation_stages_completed ==
+                  altitude_counters_before.generation_stages_completed + 1 &&
+              altitude_counters_after.image_sets_discarded ==
+                  altitude_counters_before.image_sets_discarded &&
+              renderer.test_resolved_atmosphere_status().generation_serial ==
+                  altitude_serial_before + 1 &&
+              altitude_histories_after.diffuse_gi ==
+                  altitude_histories_before.diffuse_gi + 1 &&
+              altitude_histories_after.reflection_miss ==
+                  altitude_histories_before.reflection_miss &&
+              altitude_histories_after.volumetric ==
+                  altitude_histories_before.volumetric + 1,
+          "camera altitude motion above 10 m rebuilds and commits one atmosphere transaction");
 }
 
 void test_atmosphere_irradiance_dispatch_contract() {

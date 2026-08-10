@@ -245,16 +245,88 @@ struct FifoParseResult {
     std::string error;
 };
 
-inline bool fifo_absolute_path(const std::string& path) {
-    if (path.empty()) return false;
-    if (path[0] == '/' || path[0] == '\\') return true;
-    return path.size() >= 3 && std::isalpha(static_cast<unsigned char>(path[0])) &&
-           path[1] == ':' && (path[2] == '/' || path[2] == '\\');
+inline bool fifo_path_separator(char c) { return c == '/' || c == '\\'; }
+
+inline bool fifo_reserved_windows_component(const std::string& component) {
+    std::string stem = component.substr(0, component.find('.'));
+    std::transform(stem.begin(), stem.end(), stem.begin(), [](char c) {
+        return static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    });
+    if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL")
+        return true;
+    return stem.size() == 4 &&
+           (stem.rfind("COM", 0) == 0 || stem.rfind("LPT", 0) == 0) &&
+           stem[3] >= '1' && stem[3] <= '9';
+}
+
+inline bool fifo_safe_windows_component(const std::string& component) {
+    return !component.empty() && component != "." && component != ".." &&
+           component.back() != '.' && component.back() != ' ' &&
+           !fifo_reserved_windows_component(component);
+}
+
+inline bool fifo_safe_absolute_png_path(const std::string& path) {
+    if (path.size() < 7) return false;
+    size_t component_start = 0;
+    if (std::isalpha(static_cast<unsigned char>(path[0])) && path[1] == ':' &&
+        fifo_path_separator(path[2])) {
+        component_start = 3;
+    } else if (path.size() >= 6 && fifo_path_separator(path[0]) &&
+               fifo_path_separator(path[1])) {
+        const size_t server_end = path.find_first_of("/\\", 2);
+        if (server_end == std::string::npos || server_end == 2) return false;
+        const size_t share_end = path.find_first_of("/\\", server_end + 1);
+        if (share_end == std::string::npos || share_end == server_end + 1)
+            return false;
+        const std::string server = path.substr(2, server_end - 2);
+        const std::string share =
+            path.substr(server_end + 1, share_end - server_end - 1);
+        if (!fifo_safe_windows_component(server) ||
+            !fifo_safe_windows_component(share))
+            return false;
+        component_start = share_end + 1;
+    } else {
+        // A single leading slash is relative to the current drive on Windows.
+        return false;
+    }
+
+    std::string lower_path = path;
+    std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(),
+                   [](char c) {
+                       return static_cast<char>(
+                           std::tolower(static_cast<unsigned char>(c)));
+                   });
+    if (lower_path.size() < 4 ||
+        lower_path.compare(lower_path.size() - 4, 4, ".png") != 0)
+        return false;
+
+    for (size_t i = 0; i < path.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(path[i]);
+        if (c < 32 || path[i] == '"' || path[i] == '<' || path[i] == '>' ||
+            path[i] == '|' || path[i] == '*' || path[i] == '?' ||
+            (path[i] == ':' && i != 1))
+            return false;
+    }
+    while (component_start <= path.size()) {
+        const size_t end = path.find_first_of("/\\", component_start);
+        const size_t component_end =
+            end == std::string::npos ? path.size() : end;
+        if (component_end == component_start) return false;
+        const std::string component =
+            path.substr(component_start, component_end - component_start);
+        if (!fifo_safe_windows_component(component))
+            return false;
+        if (end == std::string::npos) break;
+        component_start = end + 1;
+    }
+    return true;
 }
 
 inline FifoParseResult parse_fifo_line(const std::string& line) {
     FifoParseResult result;
-    if (line.rfind("render_path", 0) == 0) {
+    const size_t token_end = line.find_first_of(" \t");
+    const std::string token = line.substr(0, token_end);
+    if (token == "render_path") {
         result.recognized = true;
         std::istringstream input(line);
         std::string command;
@@ -284,12 +356,12 @@ inline FifoParseResult parse_fifo_line(const std::string& line) {
         result.command = FifoHistoryReset{};
         return result;
     }
-    if (line.rfind("history_reset", 0) == 0) {
+    if (token == "history_reset") {
         result.recognized = true;
         result.error = "history_reset: takes no arguments";
         return result;
     }
-    if (line.rfind("wait_frames", 0) == 0) {
+    if (token == "wait_frames") {
         result.recognized = true;
         std::istringstream input(line);
         std::string command;
@@ -318,7 +390,7 @@ inline FifoParseResult parse_fifo_line(const std::string& line) {
         result.command = FifoWaitFrames{static_cast<uint32_t>(count)};
         return result;
     }
-    if (line.rfind("shot_now", 0) == 0) {
+    if (token == "shot_now") {
         result.recognized = true;
         if (line.size() <= 9 || line[8] != ' ') {
             result.error = "shot_now: expected an absolute path";
@@ -327,8 +399,8 @@ inline FifoParseResult parse_fifo_line(const std::string& line) {
         size_t first = 9;
         while (first < line.size() && line[first] == ' ') ++first;
         const std::string path = line.substr(first);
-        if (!fifo_absolute_path(path)) {
-            result.error = "shot_now: expected an absolute path";
+        if (!fifo_safe_absolute_png_path(path)) {
+            result.error = "shot_now: expected a safe absolute PNG path";
             return result;
         }
         result.success = true;

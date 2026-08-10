@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import sys
 from pathlib import Path
@@ -169,10 +170,16 @@ def roi_metrics(image: Image.Image, roi, exposure_ev: float):
     }
 
 
-def parse_captures(log_path: Path):
+def normalized_path(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(str(path.resolve(strict=False))))
+
+
+def parse_captures(log_path: Path, capture_dir: Path | None = None):
     state = {}
     captures = {}
     parse_errors = []
+    normalized_capture_dir = (
+        normalized_path(capture_dir) if capture_dir is not None else None)
     for line_number, line in enumerate(log_path.read_text(
             encoding="utf-8", errors="replace").splitlines(), 1):
         property_match = PROPERTY_RE.fullmatch(line)
@@ -183,14 +190,17 @@ def parse_captures(log_path: Path):
                 try:
                     state[path] = parse_value(property_match.group(3), kind)
                 except ValueError as exc:
+                    state.pop(path, None)
                     parse_errors.append(f"line {line_number}: {path}: {exc}")
             continue
         shot_match = SHOT_RE.fullmatch(line)
         if not shot_match:
             continue
-        filename = Path(shot_match.group(1).replace("\\", "/")).name
+        logged_path = Path(shot_match.group(1))
+        filename = logged_path.name
         capture_match = CAPTURE_RE.fullmatch(filename)
         if not capture_match:
+            state = {}
             continue
         key = (capture_match.group(1), int(capture_match.group(2)))
         if key in captures:
@@ -198,13 +208,28 @@ def parse_captures(log_path: Path):
         captures[key] = dict(state)
         captures[key]["capture_filename"] = filename
         captures[key]["shot_log_line"] = line_number
+        if normalized_capture_dir is not None:
+            expected_path = capture_dir / filename
+            if (not logged_path.is_absolute()
+                    or normalized_path(logged_path) != normalized_path(expected_path)
+                    or normalized_path(logged_path.parent) != normalized_capture_dir):
+                parse_errors.append(
+                    f"line {line_number}: logged capture {logged_path} does not "
+                    f"match capture directory {capture_dir}")
+            else:
+                captures[key]["capture_path"] = str(logged_path.resolve(strict=False))
+                done_path = Path(f"{logged_path}.done")
+                if not done_path.is_file():
+                    parse_errors.append(
+                        f"line {line_number}: missing .done guard {done_path}")
+        state = {}
     return captures, parse_errors
 
 
 def main() -> int:
     args = parse_args()
     failures = []
-    captures, parse_errors = parse_captures(args.log)
+    captures, parse_errors = parse_captures(args.log, args.capture_dir)
     failures.extend(parse_errors)
     expected_keys = {(path, elevation) for path in PATHS for elevation in ELEVATIONS}
     missing = sorted(expected_keys - set(captures))
@@ -266,7 +291,10 @@ def main() -> int:
             if state["render.lighting.exposure_ev"] != -2.0:
                 failures.append(f"{key}: exposure is not exactly -2")
 
-            image_path = args.capture_dir / state["capture_filename"]
+            capture_path = state.get("capture_path")
+            if capture_path is None:
+                continue
+            image_path = Path(capture_path)
             if not image_path.is_file():
                 failures.append(f"{key}: missing PNG {image_path}")
                 continue
