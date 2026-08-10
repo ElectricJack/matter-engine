@@ -1,6 +1,7 @@
 // terrain_field.cpp — native field program interpreter for infinite-world terrain.
 // Pure CPU module: no JS, no GL, no engine subsystem dependencies.
 
+#include <cassert>
 #include "terrain_field.h"
 
 #include <cmath>
@@ -21,6 +22,23 @@ static constexpr int kMaxOps = terrain_field::kMaxSurfaceOps;
 // The register file every tape evaluator puts on the stack. Sized for the
 // LARGER of the two caps: a surfaces tape is bounded at kMaxOps because the
 // GPU mirrors it, a habitat tape at kMaxHabitatOps because nothing does.
+//
+// It lives on the STACK, one array per eval call, and is deliberately NOT
+// zero-initialised. `= {}` on this array made every caller memset 4 KB to run a
+// program that typically uses ~31 registers -- pure waste, and it is provably
+// unnecessary: SurfaceProgram::parse resolves every operand and every
+// `channel` target through resolve_reg(), which rejects any reference that is
+// not already emitted (`r >= src_map.size()` -> parse error). So a program can
+// only ever reference registers written by EARLIER ops, and the forward
+// evaluation loop writes regs[i] at step i. Every register that is read has
+// been written in the same pass.
+//
+// It must stay a stack local rather than a static or a member: a
+// SurfaceRuntime is shared by every bake worker, so shared mutable scratch
+// would be a data race (see kMaxHabitatOps' note in terrain_field.h).
+//
+// If a forward-referencing op kind is ever added, this becomes a read of
+// uninitialised stack -- the assert in eval_regs is the tripwire for that.
 static constexpr int kMaxTapeRegs = terrain_field::kMaxHabitatOps;
 
 // ---------------------------------------------------------------------------
@@ -551,7 +569,7 @@ void FieldRuntime::eval_regs(float regs[], int count, float x, float z) const {
 }
 
 float FieldRuntime::eval_reg(int target, float x, float z) const {
-    float regs[kMaxTapeRegs] = {};
+    float regs[kMaxTapeRegs];   // uninitialised on purpose -- see kMaxTapeRegs
     eval_regs(regs, target + 1, x, z);
     return regs[target];
 }
@@ -1021,6 +1039,17 @@ SurfaceRuntime::SurfaceRuntime(SurfaceProgram p)
 void SurfaceRuntime::eval_regs(const float pos[3], const float nrm[3],
                                const SurfaceWorldContext* world,
                                float* regs) const {
+    // `regs` is deliberately uninitialised (see kMaxTapeRegs). That is only
+    // sound while every operand is a BACKWARD reference, which the parser
+    // enforces -- assert it here so a forward-referencing op added later trips
+    // in debug rather than silently reading stack garbage in release.
+#ifndef NDEBUG
+    for (size_t i = 0; i < prog_.ops.size(); ++i) {
+        const Op& dop = prog_.ops[i];
+        for (int r : {dop.a, dop.b, dop.c})
+            assert(r < (int)i && "tape operand must reference an earlier op");
+    }
+#endif
     // ---- per-sample input vector ----
     float in[kSurfInCount];
     in[kSurfInLocalX] = pos[0];
@@ -1182,7 +1211,7 @@ void SurfaceRuntime::eval_regs(const float pos[3], const float nrm[3],
 void SurfaceRuntime::weights_at(const float pos[3], const float nrm[3],
                                 const SurfaceWorldContext* world,
                                 float* out_weights) const {
-    float regs[kMaxTapeRegs] = {};
+    float regs[kMaxTapeRegs];   // uninitialised on purpose -- see kMaxTapeRegs
     eval_regs(pos, nrm, world, regs);
     for (size_t k = 0; k < prog_.materials.size(); ++k)
         out_weights[k] = std::max(0.0f, regs[prog_.materials[k].reg]);
@@ -1207,7 +1236,7 @@ void SurfaceRuntime::channels_at(float world_x, float world_z,
     ctx.field = field;
     ctx.local_to_world = kIdentity;
 
-    float regs[kMaxTapeRegs] = {};
+    float regs[kMaxTapeRegs];   // uninitialised on purpose -- see kMaxTapeRegs
     eval_regs(pos, nrm, &ctx, regs);
     for (int i = 0; i < kMaxHabitatChannels; ++i) {
         const int reg = prog_.channel_regs[i];
@@ -1220,7 +1249,7 @@ void SurfaceRuntime::appearance_at(const float pos[3], const float nrm[3],
                                    SurfaceAppearance& out) const {
     out = SurfaceAppearance{};   // identity for every absent directive
     if (!prog_.has_appearance()) return;
-    float regs[kMaxTapeRegs] = {};
+    float regs[kMaxTapeRegs];   // uninitialised on purpose -- see kMaxTapeRegs
     eval_regs(pos, nrm, world, regs);
     auto clamp_to = [](float v, float lo, float hi) {
         return std::max(lo, std::min(hi, v));
