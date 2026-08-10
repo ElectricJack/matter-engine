@@ -1305,8 +1305,8 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
     CHECK(baseline_status.generation_serial == 1 &&
               baseline_histories.diffuse_gi == 1 &&
               baseline_histories.reflection_miss == 0 &&
-              baseline_histories.volumetric == 1,
-          "baseline atmosphere commit advances serial and narrow histories once");
+              baseline_histories.volumetric == 0,
+          "baseline atmosphere commit advances serial and diffuse GI while retaining volumetrics");
 
     matter::AtmosphereSettings pending{};
     pending.mie_scale = 1.25f;
@@ -1482,8 +1482,8 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
               after_generation_replay.reflection_miss ==
                   before_generation_replay.reflection_miss + 1 &&
               after_generation_replay.volumetric ==
-                  before_generation_replay.volumetric + 1,
-          "combined generation-failure replay applies the union of narrow resets once");
+                  before_generation_replay.volumetric,
+          "combined generation-failure replay retains volumetrics while applying surface resets once");
 
     renderer.set_atmosphere_settings({});
     renderer.set_lighting(baseline_lighting);
@@ -1513,8 +1513,8 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
               after_publication_replay.reflection_miss ==
                   before_publication_replay.reflection_miss + 1 &&
               after_publication_replay.volumetric ==
-                  before_publication_replay.volumetric + 1,
-          "combined publication-failure replay applies the union of narrow resets once");
+                  before_publication_replay.volumetric,
+          "combined publication-failure replay retains volumetrics while applying surface resets once");
 
     const auto before_success = renderer.test_atmosphere_history_counters();
     const uint64_t serial_before_success =
@@ -1527,8 +1527,8 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
                   serial_before_success + 1 &&
               after_success.diffuse_gi == before_success.diffuse_gi + 1 &&
               after_success.reflection_miss == before_success.reflection_miss &&
-              after_success.volumetric == before_success.volumetric + 1,
-          "successful candidate advances serial, diffuse GI, and volumetrics exactly once");
+              after_success.volumetric == before_success.volumetric,
+          "successful candidate advances serial and diffuse GI while retaining volumetrics");
 
     const auto altitude_counters_before =
         renderer.test_atmosphere_candidate_counters();
@@ -1577,8 +1577,8 @@ void run_atmosphere_transaction_failure_tests(matter::VulkanDevice& vulkan) {
               altitude_histories_after.reflection_miss ==
                   altitude_histories_before.reflection_miss &&
               altitude_histories_after.volumetric ==
-                  altitude_histories_before.volumetric + 1,
-          "camera altitude motion above 10 m rebuilds and commits one atmosphere transaction");
+                  altitude_histories_before.volumetric,
+          "camera altitude motion above 10 m rebuilds atmosphere while retaining volumetric history");
 }
 
 void test_atmosphere_irradiance_dispatch_contract() {

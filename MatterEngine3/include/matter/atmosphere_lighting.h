@@ -181,12 +181,10 @@ inline AtmosphereHistoryDecision atmosphere_history_decision(
     AtmosphereHistoryDecision result{};
     if (full_commit) {
         result.reset_diffuse_gi = true;
-        result.reset_volumetric = true;
     }
     if ((change_mask & (kAtmosphereChangeDirect |
                         kAtmosphereChangeIrradiance)) != 0) {
         result.reset_diffuse_gi = true;
-        result.reset_volumetric = true;
     }
     if ((change_mask & kAtmosphereChangeDisplay) != 0)
         result.reset_reflection_miss = true;
@@ -194,7 +192,6 @@ inline AtmosphereHistoryDecision atmosphere_history_decision(
                         kAtmosphereChangeDisc)) != 0) {
         result.reset_diffuse_gi = true;
         result.reset_reflection_miss = true;
-        result.reset_volumetric = true;
     }
     return result;
 }

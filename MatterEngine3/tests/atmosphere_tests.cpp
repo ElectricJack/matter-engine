@@ -357,8 +357,8 @@ void test_atmosphere_history_decisions_are_narrow() {
     const auto full = matter::atmosphere_history_decision(
         matter::kAtmosphereChangeNone, true);
     CHECK(full.reset_diffuse_gi && !full.reset_reflection_miss &&
-              full.reset_volumetric,
-          "a successful atmosphere commit resets diffuse GI and volumetrics only");
+              !full.reset_volumetric,
+          "a successful atmosphere commit retains volumetric history while resetting diffuse GI");
     const auto display = matter::atmosphere_history_decision(
         matter::kAtmosphereChangeDisplay, false);
     CHECK(!display.reset_diffuse_gi && display.reset_reflection_miss &&
@@ -367,13 +367,20 @@ void test_atmosphere_history_decisions_are_narrow() {
     const auto direct = matter::atmosphere_history_decision(
         matter::kAtmosphereChangeDirect, false);
     CHECK(direct.reset_diffuse_gi && !direct.reset_reflection_miss &&
-              direct.reset_volumetric,
-          "direct-world edits reset diffuse GI and volumetrics only");
+              !direct.reset_volumetric,
+          "direct-world edits retain volumetric history while resetting diffuse GI");
     const auto irradiance = matter::atmosphere_history_decision(
         matter::kAtmosphereChangeIrradiance, false);
     CHECK(irradiance.reset_diffuse_gi && !irradiance.reset_reflection_miss &&
-              irradiance.reset_volumetric,
-          "irradiance edits reset diffuse GI and volumetrics only");
+              !irradiance.reset_volumetric,
+          "irradiance edits retain volumetric history while resetting diffuse GI");
+    const auto emission_disc = matter::atmosphere_history_decision(
+        matter::kAtmosphereChangeEmission | matter::kAtmosphereChangeDisc,
+        false);
+    CHECK(emission_disc.reset_diffuse_gi &&
+              emission_disc.reset_reflection_miss &&
+              !emission_disc.reset_volumetric,
+          "emission and disc edits retain volumetric history while resetting surface histories");
     const auto inert = matter::atmosphere_history_decision(
         matter::kAtmosphereChangeExposure | matter::kAtmosphereChangeShadow,
         false);
