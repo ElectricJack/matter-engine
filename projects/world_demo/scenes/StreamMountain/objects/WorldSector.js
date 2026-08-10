@@ -60,9 +60,9 @@ const BOULDER_MIN_DIST = 180.0;
 const VEGETATION_MIN_LOD = 3;
 
 // ---- patch noise: value-noise FBM in [-1, 1], world-space ------------------
-// Only remaining consumer: the SCREE channel in scatterRocks() below (the
-// grove/tuft channels that used to read this were removed with the legacy
-// scatter path). Do not delete this trio as an orphan.
+// Only remaining consumer: the SCREE channel in scatterRocks() below.
+// Deliberately NOT a tape channel -- that would re-pattern every rock field
+// on the next tape-hash change, a placement reshuffle needing a human call.
 function hash2(ix, iz, seed) {
   let h = (Math.imul(ix, 0x27d4eb2d) ^ Math.imul(iz, 0x165667b1) ^ seed) >>> 0;
   h = Math.imul(h ^ (h >>> 15), 0x85ebca6b) >>> 0;
@@ -107,16 +107,13 @@ function assetVariants(biomesJson) {
 }
 
 class WorldSector extends Part {
-  // terrainLod: 5 = native voxel mesh (near), 0-4 = heightfield LOD grids
-  // (1x1 .. 16x16 cells) — see the alpine terrain design. edgeMask marks
-  // cardinal neighbors exactly one LOD coarser (bit 0 = +x, 1 = -x, 2 = +z,
-  // 3 = -z); the mesher stitches those borders 2:1. Defaults keep older
-  // engines (which send neither) on the voxel path.
-  // sectorSize: the TILE's own width. Under nested sector LOD a level-L tile
-  // is 64 << L metres across and meshes at voxel rung -L, so cells-per-tile is
-  // constant; the engine sends the size because only the streamer knows a
-  // request's level. Defaults to 64 so an older engine (which sends neither
-  // this nor terrainLod) still bakes a level-0 tile.
+  // terrainLod: 5 = native voxel mesh (rung 0), 0-4 coarsen 2x per step (see
+  // PHASE 1 below). edgeMask marks cardinal neighbors exactly one LOD
+  // coarser (bit 0 = +x, 1 = -x, 2 = +z, 3 = -z) for the mesher's 2:1 border
+  // stitch. sectorSize is the TILE's own width -- a level-L tile is 64 << L
+  // metres and meshes at voxel rung -L, so cells-per-tile stays constant.
+  // Defaults (5, 0, SECTOR) keep an older engine, which sends none of these,
+  // on the voxel path at a level-0 tile.
   static params = { tx: 0, tz: 0, rung: 0, terrainLod: 5, edgeMask: 0,
                     sectorSize: SECTOR,
                     worldSeed: 0, fieldHash: '', biomes: '' };
@@ -131,16 +128,12 @@ class WorldSector extends Part {
     const terrainMaterials = oneDirtMaterial
       ? [MAT.dirt, MAT.dirt, MAT.dirt, MAT.dirt]
       : [MAT.grass, MAT.dirt, MAT.rock, MAT.snow];
-    // ALL-VOXEL TERRAIN LADDER.
-    //
-    // terrainLod used to select a REPRESENTATION: 5 meshed the world field as
-    // voxels, 4..0 dropped to a regular height grid. That switch was the seam
-    // between near and far terrain -- the two sides were different surfaces,
-    // not different resolutions of one, so no band tuning could line them up,
-    // and the heightfield could not express anything the field does that a
-    // height grid cannot (overhangs, arches, caves).
-    //
-    // Now every rung is the same voxel mesher, coarsening 2x per step:
+
+    // ==== PHASE 1: TERRAIN ===================================================
+    // ALL-VOXEL TERRAIN LADDER: every rung is the same voxel mesher,
+    // coarsening 2x per step (no separate heightfield representation below
+    // terrainLod 5 anymore -- that old seam could not express overhangs,
+    // arches, or caves and no band tuning could line the two sides up):
     //   terrainLod 5 -> voxel rung  0 ->  2 m   (unchanged near appearance)
     //   terrainLod 4 -> voxel rung -1 ->  4 m
     //   terrainLod 3 -> voxel rung -2 ->  8 m
@@ -148,12 +141,10 @@ class WorldSector extends Part {
     //   terrainLod 1 -> voxel rung -4 -> 32 m
     //   terrainLod 0 -> voxel rung -5 -> 64 m   (one cell per sector)
     //
-    // edgeMask still matters, and for the same reason it always did. The
-    // [1..n] ownership rule only makes EQUAL-rung neighbours watertight; across
-    // rungs the coarse side interpolates between every other sample while the
-    // fine side follows the field, and the two part company. That never showed
-    // before because terrainVolume was always called at rung 0 -- one rung
-    // everywhere, so no unequal pair existed to crack.
+    // edgeMask still matters: the [1..n] ownership rule only makes
+    // EQUAL-rung neighbours watertight, and across rungs the coarse side
+    // interpolates every other sample while the fine side follows the field
+    // -- an unequal pair that never showed before every rung shared rung 0.
     const terrainLod = p.terrainLod === undefined ? 5 : (p.terrainLod | 0);
     const voxelRung = Math.max(-5, Math.min(0, terrainLod - 5));
     pbegin(P_TERRAIN);
@@ -161,28 +152,19 @@ class WorldSector extends Part {
     pend(P_TERRAIN);
     if (!table) return;   // no biome table -> terrain only
 
-    // ---- SCATTER RUNS PER FIXED 64 m CELL, NOT PER TILE --------------------
-    //
-    // Terrain meshes as one whole tile above; scatter does not. A level-L tile
-    // covers 4^L of the 64 m cells the world has always scattered in, and the
-    // loop at the end of build() walks them one at a time with exactly the
-    // arguments a level-0 bake would have used: the cell's own origin, its own
-    // biome lookup, its own RNG seeded from its own cell coordinates, its own
-    // candidate rects, its own caps.
-    //
-    // That is what keeps placements STABLE ACROSS LEVEL TRANSITIONS. The
-    // candidate grids are world-keyed and would have survived on their own, but
-    // `r` is seeded from tile coordinates and drives the rock scatter, every
-    // rotation and the grass -- so a tile that changed size would reshuffle all
-    // of it, at the ranges (<= 500 m) where a rock teleporting is exactly what
-    // the eye catches. Sub-celling makes that impossible rather than unlikely,
-    // because the cell grid never changes.
-    //
-    // It also keeps COST linear in area: planAlpineSector runs an O(viable^2)
-    // exclusion loop per call, and `viable` is tens per 64 m cell but thousands
-    // over a 2 km level-5 tile. And it keeps CAPS meaning what they mean --
-    // FAMILY_CAPS and the biome counts are per-64-m densities, so applying them
-    // per tile would thin the far field by 4^L.
+    // ==== PHASES 2-4: BOULDERS / ROCKS / ALPINE PLAN+PLACE ===================
+    // SCATTER RUNS PER FIXED 64 m CELL, NOT PER TILE. Terrain meshes as one
+    // whole tile above; a level-L tile covers 4^L of the 64 m cells the world
+    // has always scattered in, and the loop at the end of build() walks them
+    // one at a time with a level-0 bake's own origin/biome/RNG/candidates/caps.
+    // That is what keeps placements STABLE ACROSS LEVEL TRANSITIONS -- `r` is
+    // seeded from CELL coordinates (not tile), so a tile that changed size
+    // never reshuffles a rock's rotation or a grass blade's seed at the
+    // ranges (<= 500 m) where teleporting is exactly what the eye catches.
+    // It also keeps COST and CAPS linear in area: planAlpineSector's
+    // exclusion pass is O(viable^2) and FAMILY_CAPS/biome counts are
+    // per-64-m densities, so applying either per tile would thin or
+    // over-cost the far field by 4^L.
     const TILE   = p.sectorSize > 0 ? p.sectorSize : SECTOR;
     const cells  = Math.max(1, Math.round(TILE / SECTOR));
     const tileOx = p.tx * TILE, tileOz = p.tz * TILE;
@@ -192,17 +174,13 @@ class WorldSector extends Part {
 
     // One 64 m cell. A function rather than an inlined loop body so the
     // VEGETATION_MIN_LOD gate below stays a `return` -- it reads as "this
-    // cell is done".
+    // cell is done". At cells === 1 the cell coordinates ARE the tile
+    // coordinates, so every expression below is the one a level-0 bake
+    // always ran -- the emitted placement list is bitwise identical.
     //
-    // At cells === 1 -- every level-0 tile, and every tile in uniform mode --
-    // the cell coordinates ARE the tile coordinates and every expression below
-    // is the one that ran before this change, so the emitted placement list is
-    // bitwise identical. That is this change's acceptance gate.
-    // Is a habitat tape bound? Asked once per bake with the PREDICATE, not by
-    // calling habitatAt and catching: a missing tape arms the sticky DSL error,
-    // which a JS try/catch cannot see and which fails the bake at the end. A
-    // world with no habitat() keeps the interpreted sampleHabitat and behaves
-    // exactly as it did -- adopting the tape is opting in, not a dependency.
+    // hasHabitat is asked once per bake with the PREDICATE, not by calling
+    // habitatAt and catching: a missing tape arms the sticky DSL error, which
+    // a JS try/catch cannot see. A world with no habitat() opts out, not in.
     const hasHabitat = this.hasHabitat();
 
     const scatterCell = (cellTx, cellTz) => {
@@ -211,83 +189,59 @@ class WorldSector extends Part {
     const r = rng((seed ^ Math.imul(cellTx | 0, 73856093)
                         ^ Math.imul(cellTz | 0, 19349663)) >>> 0);
 
-    // Placements are TILE-local (the part's own frame) while scatter reasons in
-    // world space off the CELL -- hence tileOx here against ox above.
-    const put = (module, params, wx, wz, s, sinkY) => {
+    // The one placement primitive every tier below uses. Random scatter
+    // (boulders, rocks) and planned scatter (alpine) used to go through two
+    // near-identical helpers, put/putPlanned; the only real difference was
+    // rotation and Y-scale, both plain arguments here. Placements are
+    // TILE-local (the part's own frame) while scatter reasons in world space
+    // off the CELL -- hence tileOx/tileOz against wx/wz.
+    const place = (module, params, wx, wz, rotation, sx, sy, sz, sinkY) => {
       this.pushMatrix();
       this.translate(wx - tileOx, this.heightAt(wx, wz) - sinkY, wz - tileOz);
-      this.rotateY(r.range(0, Math.PI * 2));
-      this.scale(s, s, s);
-      this.placeChild(module, params);
-      this.popMatrix();
-    };
-    const putPlanned = ({
-      x, z, rotation, scale, heightScale = 1, sinkY, module, params,
-    }) => {
-      this.pushMatrix();
-      this.translate(x - tileOx, this.heightAt(x, z) - sinkY, z - tileOz);
       this.rotateY(rotation);
-      this.scale(scale, scale * heightScale, scale);
+      this.scale(sx, sy, sz);
       this.placeChild(module, params);
       this.popMatrix();
     };
     const inSector = () => [ox + r.range(0, SECTOR), oz + r.range(0, SECTOR)];
 
-    // ---- every tier: landmark boulders --------------------------------------
+    // ---- PHASE 2: BOULDERS (every tier) -------------------------------------
     pbegin(P_BOULDERS);
     for (const c of candidatesInRect(seed, 2, BOULDER_MIN_DIST, ox, oz, SECTOR, SECTOR)) {
       if (this.biomeAt(c.x, c.z) === 'ocean') continue;
-      const sz = BOULDER_SIZES[(c.u * BOULDER_SIZES.length) | 0];
+      const bsz = BOULDER_SIZES[(c.u * BOULDER_SIZES.length) | 0];
       const s = (0.8 + 0.4 * c.v) * BOULDER_SCALE;
-      this.pushMatrix();
-      this.translate(c.x - tileOx, this.heightAt(c.x, c.z) - 0.15 * sz * s,
-                     c.z - tileOz);
-      this.rotateY(c.rot);
-      this.scale(s, s, s);
-      this.placeChild('Rock', { seed: (c.u * 16 | 0) % BOULDER_SEEDS, size: sz });
-      this.popMatrix();
+      place('Rock', { seed: (c.u * 16 | 0) % BOULDER_SEEDS, size: bsz },
+        c.x, c.z, c.rot, s, s, s, 0.15 * bsz * s);
     }
     pend(P_BOULDERS);
 
     // ---- VEGETATION STOPS WHERE IT CANNOT BE RESOLVED ----------------------
-    //
     // Everything below this line is planted vegetation, and it dominates a
-    // sector bake: at the far band it is ~96% of profiled self time against
-    // the native terrain mesher's ~4%, and the ring table extends that band to
-    // 10,095 m -- tens of thousands of cells per world fill.
+    // sector bake: ~96% of profiled self time at the far band against the
+    // native terrain mesher's ~4% (ScriptProfile: MATTER_SCRIPT_PROFILE=1, or
+    // `make -C MatterEngine3/tests run-scatterprof`), over a ring table that
+    // extends this band to 10,095 m -- tens of thousands of cells per fill.
     //
-    // (An earlier note here said "~99%" and "334 ms per 64 m cell". Both were
-    // pre-tape, pre-native-grid figures, and the 99% was itself an estimate
-    // rather than a measurement. The current split comes from ScriptProfile:
-    // MATTER_SCRIPT_PROFILE=1, or `make -C MatterEngine3/tests run-scatterprof`.)
+    // The far tier is not the cheap one: `familiesForRung(rung <= 0)` is
+    // ['tree'], and the tree planner is the expensive family (a padded
+    // candidate grid, a habitat sample per candidate, an O(viable^2)
+    // exclusion pass capped at 1080/cell) -- grass has no exclusion pass and
+    // is already gated to the nearest tier, so the old gating had it backwards.
     //
-    // The far tier is not the cheap one, which is the assumption that let this
-    // happen. `familiesForRung(rung <= 0)` is ['tree'], and the tree planner is
-    // the expensive family: a candidate grid over the cell plus 16 m of padding,
-    // a habitat sample per candidate, then an O(viable^2) exclusion pass, capped
-    // at 1080 trees per cell. Grass -- the family everyone thinks of as the
-    // expensive one -- is a flat loop with no exclusion pass, and is already
-    // gated to the nearest tier. The gating was backwards with respect to cost.
+    // p.terrainLod is the DISTANCE BAND in both tiling modes (5 - level under
+    // nested sectors, the terrain band directly on the uniform grid). A tree
+    // here is 6-15 m tall, subtending ~15 px at 1.2 km down to <2 px at
+    // 10 km; band 3 keeps them where they still read as forest.
     //
-    // p.terrainLod is the DISTANCE BAND and is the right handle in both tiling
-    // modes: under nested sectors it is 5 - level, and on the uniform grid it
-    // is the terrain band the sector fell in. Both mean "how far away".
-    //
-    // A tree here is 6-15 m tall, so it subtends roughly 15 px at 1.2 km, 7 px
-    // at 2.6 km, 4 px at 4.7 km and under 2 px at 10 km. Band 3 keeps them
-    // wherever they still read as a forest and drops them where they are
-    // speckle. Raise this to spend more; lower it to spend less.
-    //
-    // LANDMARK BOULDERS ARE DELIBERATELY ABOVE THIS GATE. They are 25-40 m
-    // across -- still ~9 px at 4.7 km -- and nearly free: a 180 m minimum
-    // distance puts about 0.13 candidates in a 64 m cell, so they cost a couple
-    // of field queries rather than a planner. They are exactly what should
-    // survive at range.
+    // LANDMARK BOULDERS ARE DELIBERATELY ABOVE THIS GATE: 25-40 m across
+    // (~9 px at 4.7 km) and nearly free at a 180 m minimum distance (~0.13
+    // candidates per 64 m cell) -- exactly what should survive at range.
     if (terrainLod < VEGETATION_MIN_LOD) return;
 
+    // ---- PHASE 3: ROCKS (tier >= 1, scree fields + pebbles) -----------------
+    // Baseline sparse rocks everywhere; full density inside scree patches.
     const scatterRocks = () => {
-      // ---- tier >= 1: rocks (scree fields) and pebbles ----------------------
-      // Baseline sparse rocks everywhere; full density inside scree patches.
       pbegin(P_ROCKS);
       for (let i = 0, n = (counts.rocks | 0) * 3; i < n; ++i) {
         const [wx, wz] = inSector();
@@ -295,18 +249,20 @@ class WorldSector extends Part {
         const inField = patch(wx, wz, SCREE, 1 / 70) > 0.2;
         if (!inField && r.random() > 0.18) continue;
         const s = r.range(0.6, 1.8);
-        put('Rock', { seed: r.int(ROCK_VARIANTS) }, wx, wz, s, 0.15 * s);
+        place('Rock', { seed: r.int(ROCK_VARIANTS) }, wx, wz,
+          r.range(0, Math.PI * 2), s, s, s, 0.15 * s);
       }
       pend(P_ROCKS);
     };
 
+    // ---- PHASE 4: ALPINE PLAN + PLACE ---------------------------------------
+    // Split PLAN from PLACE. They look like one loop and are not: planning is
+    // field sampling and asset selection, while placing is matrix pushes and
+    // one placeChild per survivor -- and placeChild's cost is the engine's,
+    // not the ecology's. Reading them as a single number is how a scatter
+    // investigation ends up optimizing the wrong half.
     if (isAlpineProfile(table)) {
       if (p.rung >= 1) scatterRocks();
-      // Split PLAN from PLACE. They look like one loop and are not: planning
-      // is field sampling and asset selection, while placing is matrix pushes
-      // and one placeChild per survivor -- and placeChild's cost is the
-      // engine's, not the ecology's. Reading them as a single number is how a
-      // scatter investigation ends up optimizing the wrong half.
       pbegin(P_PLAN);
       const planned = planAlpineSector({
         rung: p.rung, worldSeed: seed, ox, oz, sectorSize: SECTOR,
@@ -319,7 +275,11 @@ class WorldSector extends Part {
       });
       pend(P_PLAN);
       pbegin(P_PLACE);
-      for (const placement of planned) putPlanned(placement);
+      for (const pl of planned) {
+        const heightScale = pl.heightScale === undefined ? 1 : pl.heightScale;
+        place(pl.module, pl.params, pl.x, pl.z, pl.rotation,
+          pl.scale, pl.scale * heightScale, pl.scale, pl.sinkY);
+      }
       pend(P_PLACE);
       return;
     }
