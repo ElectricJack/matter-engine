@@ -1398,6 +1398,78 @@ static JSValue j_planCandidates(JSContext* c, JSValueConst, int argc,
     // profiling. The per-CALL timers below are always on (40 calls a bake).
     const bool prof = script_profile::enabled();
     const auto pc_t0 = std::chrono::steady_clock::now();
+    // PROTOTYPE opt-in (MATTER_SCATTER_HEIGHT_LATTICE=1): pre-sample the field
+    // over this rect on a world-aligned 1 m lattice and let channels_at
+    // reconstruct the tape's `height`/`fieldSlope` inputs from it instead of
+    // paying 5 field-program evaluations per candidate. Reconstruction is an
+    // approximation (bilinear height; slope over a 2 m baseline instead of
+    // slope_at's 1 m), so placements MOVE when this is on -- measured drift is
+    // reported next to the prototype, and the flag defaults OFF until that
+    // trade is accepted. Spacing is fixed (never rung-derived) so results stay
+    // LOD-rung-invariant, the property kSurfInFieldSlope exists to provide.
+    // Build cost lands in the gen bucket (it is part of this call's crossing).
+    static const bool use_lattice = []() {
+        const char* e = std::getenv("MATTER_SCATTER_HEIGHT_LATTICE");
+        return e && e[0] == '1';
+    }();
+    const terrain_field::HeightLattice* lat = nullptr;
+    // Cost gate: a lattice node costs one field evaluation; a candidate that
+    // reaches the tape costs five, and every family that plans over the SAME
+    // sector rect (StreamMountain runs five, minDist 0.63..1.65) shares one
+    // lattice through the cache below, so the build amortizes across calls.
+    // Sparse rects where even amortized nodes would outnumber the evals they
+    // replace keep the exact path. Deterministic: the decision depends only on
+    // the call's own arguments.
+    const double lat_nodes =
+        (std::ceil((x0 + w) / 1.0) - std::floor(x0 / 1.0) + 5.0) *
+        (std::ceil((z0 + h) / 1.0) - std::floor(z0 / 1.0) + 5.0);
+    const double grid_cells = (c1 - c0 + 1.0) * (r1 - r0 + 1.0);
+    if (use_lattice && channel_count > 0 && wb.field &&
+        (wb.habitat->program().input_mask() &
+         ((1u << terrain_field::kSurfInHeight) |
+          (1u << terrain_field::kSurfInFieldSlope)))) {
+        // One-entry per-thread cache. The lattice is a pure function of
+        // (field, spacing, snapped rect) -- world-aligned by construction --
+        // so reuse is safe whenever the key matches; the field hash keys out
+        // cross-world staleness. thread_local because a sector's family
+        // passes run back-to-back on one bake worker; a production home would
+        // be the WorldBinding itself (PROTOTYPE note, as above).
+        struct LatticeCache {
+            uint64_t field_hash = 0;
+            float x0 = 0, z0 = 0;
+            int nx = 0, nz = 0;
+            terrain_field::HeightLattice lattice;
+        };
+        static thread_local LatticeCache cache;
+        // Recompute the snapped extents the build would use, to key the cache.
+        const float fx0 = (float)x0, fz0 = (float)z0;
+        const float fx1 = (float)(x0 + w), fz1 = (float)(z0 + h);
+        const int gi0 = (int)std::floor(fx0 / 1.0f) - 2;
+        const int gk0 = (int)std::floor(fz0 / 1.0f) - 2;
+        const int nx = (int)std::ceil(fx1 / 1.0f) + 2 - gi0 + 1;
+        const int nz = (int)std::ceil(fz1 / 1.0f) + 2 - gk0 + 1;
+        const uint64_t fh = wb.field->hash();
+        const bool hit = cache.field_hash == fh && cache.x0 == float(gi0) &&
+                         cache.z0 == float(gk0) && cache.nx == nx &&
+                         cache.nz == nz;
+        // A cache hit is free -- use it regardless of this call's own
+        // cost balance. A miss only builds when the gate says the build is
+        // cheaper than the exact evaluations it will replace (with the
+        // cross-family amortization the cache provides priced in at 2x).
+        if (hit) {
+            lat = &cache.lattice;
+        } else if (lat_nodes < 2.0 * grid_cells) {
+            cache.lattice =
+                terrain_field::build_height_lattice(*wb.field, fx0, fz0,
+                                                    fx1, fz1, 1.0f);
+            cache.field_hash = fh;
+            cache.x0 = float(gi0);
+            cache.z0 = float(gk0);
+            cache.nx = nx;
+            cache.nz = nz;
+            lat = &cache.lattice;
+        }
+    }
     for (double dcz = r0; dcz <= r1; dcz += 1.0)
         for (double dcx = c0; dcx <= c1; dcx += 1.0) {
             const int32_t cx = (int32_t)dcx, cz = (int32_t)dcz;
@@ -1416,7 +1488,7 @@ static JSValue j_planCandidates(JSContext* c, JSValueConst, int argc,
                 const auto tt0 = prof ? std::chrono::steady_clock::now()
                                       : std::chrono::steady_clock::time_point{};
                 wb.habitat->channels_at((float)cand.x, (float)cand.z,
-                                        wb.field, ch);
+                                        wb.field, lat, ch);
                 if (prof)
                     tape_ns += (unsigned long long)std::chrono::duration_cast<
                         std::chrono::nanoseconds>(

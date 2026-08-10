@@ -506,7 +506,14 @@ void FieldRuntime::eval_regs(float regs[], int count, float x, float z) const {
             float dx = (value_noise(x * freq, z * freq, o.seed)              * 2.0f - 1.0f) * strength;
             float dz = (value_noise(x * freq, z * freq, o.seed ^ 0x9e37u)   * 2.0f - 1.0f) * strength;
             // Evaluate rSrc at displaced coords using a scratch register file.
-            float scratch[kMaxOps] = {};
+            // Uninitialised on purpose, same argument as kMaxTapeRegs: the
+            // parser admits only backward register refs, and eval_regs writes
+            // regs[i] for every i < count before anything reads it, so no
+            // uninitialised slot is ever consumed. Zeroing all kMaxOps floats
+            // here ran once per warp2 op per field evaluation (StreamMountain
+            // has two warp2 ops, and the habitat tape triggers five field
+            // evaluations per scatter candidate).
+            float scratch[kMaxOps];
             eval_regs(scratch, o.a + 1, x + dx, z + dz);
             regs[i] = scratch[o.a];
             break;
@@ -613,6 +620,72 @@ float FieldRuntime::slope_at(float x, float z) const {
     float gx = (hx1 - hx0) / (2.0f * eps);
     float gz = (hz1 - hz0) / (2.0f * eps);
     return std::sqrt(gx * gx + gz * gz);
+}
+
+// ---------------------------------------------------------------------------
+// HeightLattice — see terrain_field.h for the determinism/approximation
+// contract. Reconstruction is deliberately boring: bilinear height, bilinear-
+// blended central-difference gradient for slope.
+// ---------------------------------------------------------------------------
+float HeightLattice::height(float x, float z) const {
+    const float u = (x - x0) / spacing, v = (z - z0) / spacing;
+    const int i = (int)u, k = (int)v;              // contains() => in range
+    const float fu = u - float(i), fv = v - float(k);
+    const float* row0 = &h[size_t(k) * size_t(nx)];
+    const float* row1 = row0 + nx;
+    const float a = row0[i] + (row0[i + 1] - row0[i]) * fu;
+    const float b = row1[i] + (row1[i + 1] - row1[i]) * fu;
+    return a + (b - a) * fv;
+}
+
+float HeightLattice::slope(float x, float z) const {
+    const float u = (x - x0) / spacing, v = (z - z0) / spacing;
+    const int i = (int)u, k = (int)v;
+    const float fu = u - float(i), fv = v - float(k);
+    const float inv2s = 1.0f / (2.0f * spacing);
+    // Central-difference gradient at the four surrounding nodes, then the same
+    // bilinear blend height() uses. contains() guarantees the +-1 reach.
+    auto node = [&](int ii, int kk) -> float {
+        return h[size_t(kk) * size_t(nx) + size_t(ii)];
+    };
+    auto gxn = [&](int ii, int kk) -> float {
+        return (node(ii + 1, kk) - node(ii - 1, kk)) * inv2s;
+    };
+    auto gzn = [&](int ii, int kk) -> float {
+        return (node(ii, kk + 1) - node(ii, kk - 1)) * inv2s;
+    };
+    const float gx0 = gxn(i, k)     + (gxn(i + 1, k)     - gxn(i, k))     * fu;
+    const float gx1 = gxn(i, k + 1) + (gxn(i + 1, k + 1) - gxn(i, k + 1)) * fu;
+    const float gx  = gx0 + (gx1 - gx0) * fv;
+    const float gz0 = gzn(i, k)     + (gzn(i + 1, k)     - gzn(i, k))     * fu;
+    const float gz1 = gzn(i, k + 1) + (gzn(i + 1, k + 1) - gzn(i, k + 1)) * fu;
+    const float gz  = gz0 + (gz1 - gz0) * fv;
+    return std::sqrt(gx * gx + gz * gz);
+}
+
+HeightLattice build_height_lattice(const FieldRuntime& field,
+                                   float x0, float z0, float x1, float z1,
+                                   float spacing) {
+    HeightLattice lat;
+    lat.spacing = spacing;
+    // Snap OUTWARD to world-aligned node indices, +-2 nodes of margin: one so
+    // bilinear cells cover the rect edge, one more for slope's node-gradient
+    // reach. Node index space keeps the world-alignment exact.
+    const int gi0 = (int)std::floor(x0 / spacing) - 2;
+    const int gi1 = (int)std::ceil (x1 / spacing) + 2;
+    const int gk0 = (int)std::floor(z0 / spacing) - 2;
+    const int gk1 = (int)std::ceil (z1 / spacing) + 2;
+    lat.x0 = float(gi0) * spacing;
+    lat.z0 = float(gk0) * spacing;
+    lat.nx = gi1 - gi0 + 1;
+    lat.nz = gk1 - gk0 + 1;
+    lat.h.resize(size_t(lat.nx) * size_t(lat.nz));
+    for (int k = 0; k < lat.nz; ++k)
+        for (int i = 0; i < lat.nx; ++i)
+            lat.h[size_t(k) * size_t(lat.nx) + size_t(i)] =
+                field.height_at(float(gi0 + i) * spacing,
+                                float(gk0 + k) * spacing);
+    return lat;
 }
 
 float FieldRuntime::curvature_at(float x, float z, float radius) const {
@@ -1114,8 +1187,15 @@ void SurfaceRuntime::eval_regs(const float pos[3], const float nrm[3],
         in[kSurfInWorldZ]   = wz;
         if (world->field) {
             const uint32_t mask = prog_.input_mask();
+            // height / fieldSlope: the pre-sampled lattice, when present and
+            // covering, stands in for the field program (5 evaluations per
+            // sample otherwise -- see HeightLattice). Out-of-bounds samples
+            // take the exact path so a lattice is never a correctness gate.
+            const HeightLattice* lat = world->height_lattice;
+            const bool lat_hit = lat && lat->contains(wx, wz);
             if (mask & (1u << kSurfInHeight))
-                in[kSurfInHeight]   = world->field->height_at(wx, wz);
+                in[kSurfInHeight]   = lat_hit ? lat->height(wx, wz)
+                                              : world->field->height_at(wx, wz);
             if (mask & (1u << kSurfInMoisture))
                 in[kSurfInMoisture] = world->field->moisture_at(wx, wz);
             if (mask & (1u << kSurfInRelief))
@@ -1123,7 +1203,8 @@ void SurfaceRuntime::eval_regs(const float pos[3], const float nrm[3],
             if (mask & (1u << kSurfInBiome))
                 in[kSurfInBiome]    = (float)world->field->biome_at(wx, wz);
             if (mask & (1u << kSurfInFieldSlope))
-                in[kSurfInFieldSlope] = world->field->slope_at(wx, wz);
+                in[kSurfInFieldSlope] = lat_hit ? lat->slope(wx, wz)
+                                                : world->field->slope_at(wx, wz);
         }
     }
 
@@ -1242,6 +1323,13 @@ void SurfaceRuntime::weights_at(const float pos[3], const float nrm[3],
 void SurfaceRuntime::channels_at(float world_x, float world_z,
                                  const FieldRuntime* field,
                                  float* out_channels) const {
+    channels_at(world_x, world_z, field, nullptr, out_channels);
+}
+
+void SurfaceRuntime::channels_at(float world_x, float world_z,
+                                 const FieldRuntime* field,
+                                 const HeightLattice* lattice,
+                                 float* out_channels) const {
     for (int i = 0; i < kMaxHabitatChannels; ++i) out_channels[i] = 0.0f;
     if (prog_.channel_regs.empty()) return;
 
@@ -1257,6 +1345,7 @@ void SurfaceRuntime::channels_at(float world_x, float world_z,
     SurfaceWorldContext ctx;
     ctx.field = field;
     ctx.local_to_world = kIdentity;
+    ctx.height_lattice = lattice;
 
     float regs[kMaxTapeRegs];   // uninitialised on purpose -- see kMaxTapeRegs
     eval_regs(pos, nrm, &ctx, regs);

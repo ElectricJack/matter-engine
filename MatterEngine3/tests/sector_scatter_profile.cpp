@@ -345,6 +345,22 @@ int main(int argc, char** argv) {
                 placement_hash = fnv1a64_string(placement_hash, cparams[vi]);
                 placement_hash = fnv1a64_transform(placement_hash, c.transform);
                 ++placement_count;
+                // MATTER_PLACEMENT_DUMP=path: one line per folded placement,
+                // full transform bits, so two runs can be diffed as multisets
+                // to MEASURE drift (% placements changed) instead of only
+                // seeing a hash mismatch. Diagnostic only; no effect on the
+                // gate above.
+                static FILE* dump = []() -> FILE* {
+                    const char* p = std::getenv("MATTER_PLACEMENT_DUMP");
+                    return p ? std::fopen(p, "w") : nullptr;
+                }();
+                if (dump) {
+                    std::fprintf(dump, "%s %s|%s", label, mods[vi].c_str(),
+                                 cparams[vi].c_str());
+                    for (int t = 0; t < 16; ++t)
+                        std::fprintf(dump, " %.9g", (double)c.transform[t]);
+                    std::fprintf(dump, "\n");
+                }
             }
         }
         const double wall_ms = std::chrono::duration<double, std::milli>(

@@ -342,13 +342,69 @@ private:
 float surface_op_fbm2(const Op& op, float x, float z, bool ridged);
 float surface_op_fbm3(const Op& op, float x, float y, float z, bool ridged);
 
+// ---------------------------------------------------------------------------
+// HeightLattice — a rectangle of pre-sampled field heights on a WORLD-ALIGNED
+// grid, with bilinear height and central-difference slope reconstruction.
+//
+// PROTOTYPE (2026-08-10 scatter-cost investigation). Why this exists: a
+// habitat tape that reads `height` + `fieldSlope` costs FIVE full field-
+// program evaluations per sample (one direct, four inside slope_at's finite
+// differences) — measured at 63% of the tape's cost and 93%-of-scatter
+// territory. Sampling the field once per lattice node and reconstructing
+// amortizes those five evaluations across every sample that lands in the
+// rectangle.
+//
+// Determinism contract: nodes sit at integer multiples of `spacing` in world
+// space (the build SNAPS the requested rect outward), so two overlapping
+// rectangles built at the same spacing sample identical world positions and
+// reconstruct identical values — the result is a pure function of (field,
+// spacing, query point), never of the rect that happened to trigger the
+// build. Keep spacing FIXED per consumer (not rung-derived): kSurfInFieldSlope
+// documents rung-invariance as the reason it exists, and a rung-dependent
+// lattice would silently take that away.
+//
+// What changes vs the exact path: height is the bilinear interpolant (exact
+// at nodes), and slope is the |grad| of central differences over 2*spacing
+// instead of slope_at's 2*eps = 1 m baseline — a slightly wider low-pass.
+// Values move; consumers gate on this being acceptable, which is why the
+// scatter binding keeps it behind an opt-in.
+// ---------------------------------------------------------------------------
+struct HeightLattice {
+    float x0 = 0.0f, z0 = 0.0f;   // world position of node (0, 0); multiples of spacing
+    float spacing = 1.0f;
+    int nx = 0, nz = 0;
+    std::vector<float> h;         // nz rows of nx, row-major [k * nx + i]
+
+    // True when (x, z) can be reconstructed with the full stencil: bilinear
+    // needs nodes (i..i+1, k..k+1), slope's node gradients reach one further.
+    bool contains(float x, float z) const {
+        const float u = (x - x0) / spacing, v = (z - z0) / spacing;
+        return u >= 1.0f && v >= 1.0f && u < float(nx - 2) && v < float(nz - 2);
+    }
+    float height(float x, float z) const;   // bilinear; caller checked contains()
+    float slope(float x, float z) const;    // |grad h|; caller checked contains()
+};
+
+// Sample `field` over the rect [x0, x1] x [z0, z1] snapped outward to the
+// world-aligned lattice, with enough margin that contains() holds on the
+// whole requested rect.
+HeightLattice build_height_lattice(const FieldRuntime& field,
+                                   float x0, float z0, float x1, float z1,
+                                   float spacing);
+
 // World-frame evaluation context. `field` supplies height/moisture/relief/
 // biome; `local_to_world` is a row-major float[16] (null = identity). Passing
 // no context at all (null SurfaceWorldContext*) makes every world input
 // evaluate to its deterministic fallback constant.
+//
+// `height_lattice` (optional) short-circuits the `height` and `fieldSlope`
+// inputs to lattice reconstruction when the sample is inside it; out-of-bounds
+// samples fall back to the exact field-program path. See HeightLattice for the
+// approximation contract.
 struct SurfaceWorldContext {
     const FieldRuntime* field = nullptr;
     const float* local_to_world = nullptr;
+    const HeightLattice* height_lattice = nullptr;
 };
 
 class SurfaceRuntime {
@@ -382,6 +438,11 @@ public:
     // read 0.
     void channels_at(float world_x, float world_z, const FieldRuntime* field,
                      float* out_channels) const;
+    // Lattice-accelerated variant: `lattice` (may be null = exact path)
+    // short-circuits the height / fieldSlope inputs per SurfaceWorldContext's
+    // contract. Same registers, same channels out.
+    void channels_at(float world_x, float world_z, const FieldRuntime* field,
+                     const HeightLattice* lattice, float* out_channels) const;
     int channel_count() const { return prog_.channel_count; }
     // Real op count -- the thing that actually predicts eval cost. The scatter
     // profiler used to print channel_count twice under an "ops" label, which
