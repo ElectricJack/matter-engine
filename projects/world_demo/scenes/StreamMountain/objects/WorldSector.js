@@ -313,6 +313,9 @@ class WorldSector extends Part {
         heightAt: this.heightAt.bind(this), slopeAt: this.slopeAt.bind(this),
         candidatesInRect, biomeAt: this.biomeAt.bind(this),
         habitatAt: hasHabitat ? this.habitatAt.bind(this) : undefined,
+        // Fused candidatesInRect + habitatAt: one crossing per rect instead
+        // of one per candidate (see __planCandidates in dsl_bindings.cpp).
+        planCandidates: hasHabitat ? this.planCandidates.bind(this) : undefined,
       });
       pend(P_PLAN);
       pbegin(P_PLACE);

@@ -207,6 +207,12 @@ globalThis.Part = class Part {
   // Ask WITHOUT arming habitatAt's error: a missing tape is reported by
   // setting the sticky DSL error, which a try/catch cannot see.
   hasHabitat() { return __hasHabitat(); }
+  // Fused candidatesInRect + habitatAt: one crossing per RECT instead of one
+  // per candidate. See dsl_bindings.cpp's j_planCandidates for the returned
+  // Float64Array's layout -- callers index it by hand against that comment.
+  planCandidates(seed,kind,minDist,x0,z0,w,h) {
+    return __planCandidates(seed,kind,minDist,x0,z0,w,h);
+  }
   biomeAt(x,z)    { return __biomeAt(x,z); }
 };
 )JS";

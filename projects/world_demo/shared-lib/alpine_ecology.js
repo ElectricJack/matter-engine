@@ -481,15 +481,27 @@ const P_SELECT     = pslot('plan.select');
 const P_EXCLUDE    = pslot('plan.exclude');
 const P_OTHER      = pslot('plan.otherFamilies');
 
-const HABITAT_OUT = [];
+// Reused across candidates on purpose -- see the note this replaced above
+// P_CANDIDATES. Nothing downstream retains it: selectAlpineAsset SPREADS the
+// habitat into a fresh object.
 const HABITAT_SCRATCH = {
   valid: true, moisture: 0, exposure: 0, dryness: 0, forest: 0, forestEdge: 0,
   treeCluster: 0, shrubPatch: 0, meadowPatch: 0, flowerPatch: 0,
   groundCoverPatch: 0,
 };
 
+const NO_HABITAT_TAPE_ERROR =
+  "planAlpineSector: no habitat tape is bound. The world's script must " +
+  'define a habitat(h) hook (see StreamMountain.js) before scattering ' +
+  'under the alpine-lush vegetation profile.';
+
+// Legacy per-candidate path: one habitatAt() crossing per candidate. Kept for
+// contexts with no fused __planCandidates binding (the alpine_ecology_tests.mjs
+// Node harness, which has no QuickJS bindings at all) and as the executable
+// spec the fused path below is checked against (sector_bake_tests.cpp's
+// "planCandidates: native fused vs native two-step" test).
 function plannedCandidate({
-  family, candidate, worldSeed, kind, heightAt, slopeAt, biomeAt, habitatAt,
+  family, candidate, worldSeed, kind, biomeAt, habitatAt,
 }) {
   if (typeof biomeAt === 'function' &&
     biomeAt(candidate.x, candidate.z) === 'ocean') return null;
@@ -499,54 +511,82 @@ function plannedCandidate({
   // asset selection rather than inside it: on a world whose peaks reach
   // 650 m against a 455 m tree cap, and whose median slope is ~35 degrees,
   // selecting first would throw away most of the habitat sample's work.
-  let altitude;
-  let slope;
-  let habitat;
-  if (typeof habitatAt === 'function') {
-    // ONE crossing: altitude and slope are channels of the same tape, so the
-    // terrain gates below cost nothing extra to evaluate.
-    pbegin(P_HABITAT);
-    habitatAt(candidate.x, candidate.z, HABITAT_OUT);
-    pend(P_HABITAT);
-    altitude = HABITAT_OUT[HABITAT.altitude];
-    slope = HABITAT_OUT[HABITAT.slope];
-    if (!withinTerrainGates(family, altitude, slope)) return null;
-    HABITAT_SCRATCH.moisture = HABITAT_OUT[HABITAT.moisture];
-    HABITAT_SCRATCH.exposure = HABITAT_OUT[HABITAT.exposure];
-    HABITAT_SCRATCH.dryness = HABITAT_OUT[HABITAT.dryness];
-    HABITAT_SCRATCH.forest = HABITAT_OUT[HABITAT.forest];
-    HABITAT_SCRATCH.forestEdge = HABITAT_OUT[HABITAT.forestEdge];
-    HABITAT_SCRATCH.treeCluster = HABITAT_OUT[HABITAT.treeCluster];
-    HABITAT_SCRATCH.shrubPatch = HABITAT_OUT[HABITAT.shrubPatch];
-    HABITAT_SCRATCH.meadowPatch = HABITAT_OUT[HABITAT.meadowPatch];
-    HABITAT_SCRATCH.flowerPatch = HABITAT_OUT[HABITAT.flowerPatch];
-    HABITAT_SCRATCH.groundCoverPatch = HABITAT_OUT[HABITAT.groundCoverPatch];
-    habitat = HABITAT_SCRATCH;
-  } else {
+  if (typeof habitatAt !== 'function') {
     // No interpreted fallback: the alpine-lush profile requires a bound
     // habitat tape. A quiet fallback here is exactly what let the old
     // interpreted sampler sit dead and unnoticed -- fail loudly instead, and
     // name the world hook that is missing.
-    throw new Error(
-      "planAlpineSector: no habitat tape is bound. The world's script must " +
-      'define a habitat(h) hook (see StreamMountain.js) before scattering ' +
-      'under the alpine-lush vegetation profile.');
+    throw new Error(NO_HABITAT_TAPE_ERROR);
   }
+  // ONE crossing: altitude and slope are channels of the same tape, so the
+  // terrain gates below cost nothing extra to evaluate.
+  pbegin(P_HABITAT);
+  const out = [];
+  habitatAt(candidate.x, candidate.z, out);
+  pend(P_HABITAT);
+  const altitude = out[HABITAT.altitude];
+  const slope = out[HABITAT.slope];
+  if (!withinTerrainGates(family, altitude, slope)) return null;
+  HABITAT_SCRATCH.moisture = out[HABITAT.moisture];
+  HABITAT_SCRATCH.exposure = out[HABITAT.exposure];
+  HABITAT_SCRATCH.dryness = out[HABITAT.dryness];
+  HABITAT_SCRATCH.forest = out[HABITAT.forest];
+  HABITAT_SCRATCH.forestEdge = out[HABITAT.forestEdge];
+  HABITAT_SCRATCH.treeCluster = out[HABITAT.treeCluster];
+  HABITAT_SCRATCH.shrubPatch = out[HABITAT.shrubPatch];
+  HABITAT_SCRATCH.meadowPatch = out[HABITAT.meadowPatch];
+  HABITAT_SCRATCH.flowerPatch = out[HABITAT.flowerPatch];
+  HABITAT_SCRATCH.groundCoverPatch = out[HABITAT.groundCoverPatch];
+  return finishCandidate(family, candidate.x, candidate.z, worldSeed, kind,
+    altitude, slope, HABITAT_SCRATCH);
+}
+
+// Fused path: the candidate AND its habitat channels already crossed into JS
+// together in __planCandidates' one Float64Array (dsl_bindings.cpp,
+// j_planCandidates). `base` is the record's start offset; channels sit at
+// base + 5 .. base + 5 + channelCount - 1, in HABITAT.* order (channel_regs
+// is index-keyed, same order alpineHabitat() calls h.channel() in). No
+// per-candidate crossing, no HABITAT_OUT hop -- selection reads the flat
+// array by HABITAT.* index straight into the reused scratch object.
+function plannedCandidateFused(family, worldSeed, kind, biomeAt, flat, base) {
+  const x = flat[base];
+  const z = flat[base + 1];
+  if (typeof biomeAt === 'function' && biomeAt(x, z) === 'ocean') return null;
+  const ch = base + 5;
+  const altitude = flat[ch + HABITAT.altitude];
+  const slope = flat[ch + HABITAT.slope];
+  if (!withinTerrainGates(family, altitude, slope)) return null;
+  HABITAT_SCRATCH.moisture = flat[ch + HABITAT.moisture];
+  HABITAT_SCRATCH.exposure = flat[ch + HABITAT.exposure];
+  HABITAT_SCRATCH.dryness = flat[ch + HABITAT.dryness];
+  HABITAT_SCRATCH.forest = flat[ch + HABITAT.forest];
+  HABITAT_SCRATCH.forestEdge = flat[ch + HABITAT.forestEdge];
+  HABITAT_SCRATCH.treeCluster = flat[ch + HABITAT.treeCluster];
+  HABITAT_SCRATCH.shrubPatch = flat[ch + HABITAT.shrubPatch];
+  HABITAT_SCRATCH.meadowPatch = flat[ch + HABITAT.meadowPatch];
+  HABITAT_SCRATCH.flowerPatch = flat[ch + HABITAT.flowerPatch];
+  HABITAT_SCRATCH.groundCoverPatch = flat[ch + HABITAT.groundCoverPatch];
+  return finishCandidate(family, x, z, worldSeed, kind, altitude, slope,
+    HABITAT_SCRATCH);
+}
+
+// Shared tail: asset selection + placement record, identical for both paths
+// above (bitwise identity depends on that).
+function finishCandidate(family, x, z, worldSeed, kind, altitude, slope, habitat) {
   pbegin(P_SELECT);
   const asset = selectAlpineAsset(family, { ...habitat, altitude, slope },
-    placementIdentity(worldSeed, kind, candidate.x, candidate.z, 1));
+    placementIdentity(worldSeed, kind, x, z, 1));
   pend(P_SELECT);
   if (!asset) return null;
   return {
     family,
-    x: candidate.x,
-    z: candidate.z,
-    rotation: placementIdentity(
-      worldSeed, kind, candidate.x, candidate.z, 2) * Math.PI * 2,
+    x,
+    z,
+    rotation: placementIdentity(worldSeed, kind, x, z, 2) * Math.PI * 2,
     scale: asset.scale,
     heightScale: family === 'tree'
       ? treeHeightMultiplier(altitude, placementIdentity(
-        worldSeed, kind, candidate.x, candidate.z, 8))
+        worldSeed, kind, x, z, 8))
       : 1,
     sinkY: asset.sinkY,
     module: asset.module,
@@ -561,34 +601,58 @@ function higherTreePriority(a, b) {
 }
 
 function planTrees({
-  worldSeed, ox, oz, sectorSize, heightAt, slopeAt, candidatesInRect, biomeAt,
-  habitatAt,
+  worldSeed, ox, oz, sectorSize, candidatesInRect, biomeAt, habitatAt,
+  planCandidates,
 }) {
   const { kind, minDistance } = FAMILY_SCATTER.tree;
-  pbegin(P_CANDIDATES);
-  const candidates = candidatesInRect(
-    worldSeed, kind, minDistance,
-    ox - TREE_NEIGHBOR_PADDING, oz - TREE_NEIGHBOR_PADDING,
-    sectorSize + TREE_NEIGHBOR_PADDING * 2,
-    sectorSize + TREE_NEIGHBOR_PADDING * 2,
-  );
-  pend(P_CANDIDATES);
+  const x0 = ox - TREE_NEIGHBOR_PADDING, z0 = oz - TREE_NEIGHBOR_PADDING;
+  const w = sectorSize + TREE_NEIGHBOR_PADDING * 2;
+  const h = w;
   const viable = [];
-  pbegin(P_EVAL);
-  for (const candidate of candidates) {
-    const placement = plannedCandidate({
-      family: 'tree', candidate, worldSeed, kind, heightAt, slopeAt, biomeAt,
-      habitatAt,
-    });
-    if (!placement) continue;
-    viable.push({
-      ...placement,
-      exclusionRadius: treeExclusionRadius(placement),
-      priority: placementIdentity(
-        worldSeed, kind, candidate.x, candidate.z, 7),
-    });
+  if (typeof planCandidates === 'function') {
+    // Fused: ONE crossing for the whole rect, candidates + habitat channels
+    // together, instead of one candidatesInRect crossing plus one habitatAt
+    // crossing per surviving candidate.
+    pbegin(P_CANDIDATES);
+    const flat = planCandidates(worldSeed, kind, minDistance, x0, z0, w, h);
+    pend(P_CANDIDATES);
+    const channelCount = flat[0];
+    const count = flat[1];
+    if (channelCount === 0) throw new Error(NO_HABITAT_TAPE_ERROR);
+    const stride = 5 + channelCount;
+    pbegin(P_EVAL);
+    for (let i = 0; i < count; ++i) {
+      const base = 2 + i * stride;
+      const placement =
+        plannedCandidateFused('tree', worldSeed, kind, biomeAt, flat, base);
+      if (!placement) continue;
+      viable.push({
+        ...placement,
+        exclusionRadius: treeExclusionRadius(placement),
+        priority: placementIdentity(
+          worldSeed, kind, flat[base], flat[base + 1], 7),
+      });
+    }
+    pend(P_EVAL);
+  } else {
+    pbegin(P_CANDIDATES);
+    const candidates = candidatesInRect(worldSeed, kind, minDistance, x0, z0, w, h);
+    pend(P_CANDIDATES);
+    pbegin(P_EVAL);
+    for (const candidate of candidates) {
+      const placement = plannedCandidate({
+        family: 'tree', candidate, worldSeed, kind, biomeAt, habitatAt,
+      });
+      if (!placement) continue;
+      viable.push({
+        ...placement,
+        exclusionRadius: treeExclusionRadius(placement),
+        priority: placementIdentity(
+          worldSeed, kind, candidate.x, candidate.z, 7),
+      });
+    }
+    pend(P_EVAL);
   }
-  pend(P_EVAL);
 
   // The O(viable^2) pass. Instrumented because it was ONCE ASSERTED to be the
   // bake's dominant cost, on arithmetic that matched the measured total to
@@ -625,7 +689,7 @@ function planTrees({
 
 export function planAlpineSector({
   rung, worldSeed, ox, oz, sectorSize,
-  heightAt, slopeAt, candidatesInRect, biomeAt, habitatAt,
+  heightAt, slopeAt, candidatesInRect, biomeAt, habitatAt, planCandidates,
 }) {
   if (![worldSeed, ox, oz, sectorSize].every(finite) ||
     typeof heightAt !== 'function' || typeof slopeAt !== 'function' ||
@@ -635,17 +699,42 @@ export function planAlpineSector({
   for (const family of familiesForRung(rung)) {
     if (family === 'tree') {
       placements.push(...planTrees({
-        worldSeed, ox, oz, sectorSize, heightAt, slopeAt,
-        candidatesInRect, biomeAt, habitatAt,
+        worldSeed, ox, oz, sectorSize,
+        candidatesInRect, biomeAt, habitatAt, planCandidates,
       }));
       continue;
     }
     // shrub / groundCover / flower / grass. These already route through
-    // plannedCandidate, so they already read the habitat tape -- they are
-    // grouped under one label because they are the same loop four times, and
-    // what matters is their total against the tree planner's.
+    // plannedCandidate / plannedCandidateFused, so they already read the
+    // habitat tape -- they are grouped under one label because they are the
+    // same loop four times, and what matters is their total against the tree
+    // planner's.
     const { kind, minDistance } = FAMILY_SCATTER[family];
     let placed = 0;
+    if (typeof planCandidates === 'function') {
+      // Fused: ONE crossing for the whole rect instead of one candidatesInRect
+      // crossing plus one habitatAt crossing per surviving candidate.
+      pbegin(P_CANDIDATES);
+      const flat =
+        planCandidates(worldSeed, kind, minDistance, ox, oz, sectorSize, sectorSize);
+      pend(P_CANDIDATES);
+      const channelCount = flat[0];
+      const count = flat[1];
+      if (channelCount === 0) throw new Error(NO_HABITAT_TAPE_ERROR);
+      const stride = 5 + channelCount;
+      pbegin(P_OTHER);
+      for (let i = 0; i < count; ++i) {
+        if (placed >= FAMILY_CAPS[family]) break;
+        const base = 2 + i * stride;
+        const placement =
+          plannedCandidateFused(family, worldSeed, kind, biomeAt, flat, base);
+        if (!placement) continue;
+        placements.push(placement);
+        ++placed;
+      }
+      pend(P_OTHER);
+      continue;
+    }
     // Generation is timed SEPARATELY from evaluation here, as it is for trees.
     // Folding them together is what hid the answer the first time: measured as
     // one number, `plan.otherFamilies` looked like per-candidate evaluation
@@ -661,8 +750,7 @@ export function planAlpineSector({
     for (const candidate of family_candidates) {
       if (placed >= FAMILY_CAPS[family]) break;
       const placement = plannedCandidate({
-        family, candidate, worldSeed, kind, heightAt, slopeAt, biomeAt,
-        habitatAt,
+        family, candidate, worldSeed, kind, biomeAt, habitatAt,
       });
       if (!placement) continue;
       placements.push(placement);
