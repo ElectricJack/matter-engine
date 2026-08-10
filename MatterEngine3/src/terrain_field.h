@@ -206,7 +206,18 @@ inline bool surface_variant_world_anchored(uint32_t instance_count) {
 // CANDIDATE at bake time, so the cost that matters is the crossing, not the
 // channel count; this exists to bound the fixed-size output buffer callers put
 // on the stack rather than because more would be expensive.
-constexpr int kMaxHabitatChannels = 16;
+//
+// Raised 16 -> 32 for WP3 (docs/streammountain-refactor-implementation-
+// 2026-08-09.md §4.2): alpine_ecology.js's formSuitabilities measured as
+// plan.select's dominant half (~2x plan.identity, every band and run), so
+// its per-form suitability products move into anonymous tape channels
+// (12 base + up to 19 form scores). Still a pure stack-budget constant with
+// no GPU mirror -- confirmed by re-reading the comment above before this
+// edit -- and the only stack cost that scales with it is the fixed-size
+// `float ch[kMaxHabitatChannels]` buffers in dsl_bindings.cpp (j_habitatAt,
+// j_planCandidates): 64 bytes -> 128 bytes, immaterial next to
+// kMaxHabitatOps' 4 KB register-file budget below.
+constexpr int kMaxHabitatChannels = 32;
 
 // Op cap for a HABITAT tape, distinct from the surfaces cap.
 //

@@ -113,16 +113,27 @@ function hash2(x, z, seed) {
   return fract(Math.sin(x * 127.1 + z * 311.7 + seed * 74.7) * 43758.5453123);
 }
 
+// Instrumented at the one choke point every caller already goes through,
+// rather than at each of the half-dozen call sites in selectedForm /
+// selectAlpineAsset / selectDrynessState -- see P_IDENTITY below (§4.1 of
+// the refactor plan: this is the "identityChannel" half of the plan.select
+// fork, measured against P_SUITABILITY's formSuitabilities half).
 function identityChannel(identity, channel) {
-  if (finite(identity))
-    return fract(identity * (channel === 0 ? 1 : 17.989 + channel * 0.001) + channel * 0.123);
-  const text = String(identity);
-  let hash = 2166136261 ^ channel;
-  for (let index = 0; index < text.length; ++index) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
+  pbegin(P_IDENTITY);
+  let result;
+  if (finite(identity)) {
+    result = fract(identity * (channel === 0 ? 1 : 17.989 + channel * 0.001) + channel * 0.123);
+  } else {
+    const text = String(identity);
+    let hash = 2166136261 ^ channel;
+    for (let index = 0; index < text.length; ++index) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    result = (hash >>> 0) / 4294967296;
   }
-  return (hash >>> 0) / 4294967296;
+  pend(P_IDENTITY);
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,12 +190,25 @@ function identityChannel(identity, channel) {
 // The underlying hashes still differ (JS hash2 vs the tape's xxHash-prime
 // hash2i), so this is a deliberate re-authoring: placements move once. That is
 // the accepted cost, recorded in the sketch.
+// Channels 12..30 are WP3 (§4.2): the formSuitabilities product chain,
+// pre-evaluated on the tape instead of recomputed in JS per candidate --
+// measured as plan.select's dominant half (~2x plan.identity, every band).
+// Anonymous to the engine (channel_regs is index-keyed; these names are only
+// this module's own bookkeeping for FAMILY_SUITABILITY_CHANNELS below), but
+// named here in FORM_TABLE row order per family so a diff against
+// formSuitabilities' arrays is direct.
 export const HABITAT = Object.freeze({
   altitude: 0, slope: 1, moisture: 2, exposure: 3, dryness: 4,
   forest: 5, forestEdge: 6, treeCluster: 7, shrubPatch: 8,
   meadowPatch: 9, flowerPatch: 10, groundCoverPatch: 11,
+  treeSuit0: 12, treeSuit1: 13, treeSuit2: 14,
+  treeSuit3: 15, treeSuit4: 16, treeSuit5: 17,
+  shrubSuit0: 18, shrubSuit1: 19, shrubSuit2: 20, shrubSuit3: 21,
+  groundCoverSuit0: 22, groundCoverSuit1: 23,
+  flowerSuit0: 24, flowerSuit1: 25, flowerSuit2: 26,
+  grassSuit0: 27, grassSuit1: 28, grassSuit2: 29, grassSuit3: 30,
 });
-export const HABITAT_CHANNEL_COUNT = 12;
+export const HABITAT_CHANNEL_COUNT = 31;
 
 export function alpineHabitat(h, worldSeed) {
   const seed = worldSeed >>> 0;
@@ -246,6 +270,11 @@ export function alpineHabitat(h, worldSeed) {
     .add(slope.mul(1 / 0.8).clamp(0, 1).mul(0.10))
     .clamp(0, 1);
 
+  const shrubPatch       = shrubSignal.smoothstep(0.38, 0.67);
+  const meadowPatch      = meadowSignal.smoothstep(0.37, 0.64);
+  const flowerPatch      = flowerSignal.smoothstep(0.45, 0.70);
+  const groundCoverPatch = groundCoverSignal.smoothstep(0.39, 0.67);
+
   h.channel('altitude',         altitude);
   h.channel('slope',            slope);
   h.channel('moisture',         moisture);
@@ -254,10 +283,25 @@ export function alpineHabitat(h, worldSeed) {
   h.channel('forest',           forest);
   h.channel('forestEdge',       forestEdge);
   h.channel('treeCluster',      treeCluster);
-  h.channel('shrubPatch',       shrubSignal.smoothstep(0.38, 0.67));
-  h.channel('meadowPatch',      meadowSignal.smoothstep(0.37, 0.64));
-  h.channel('flowerPatch',      flowerSignal.smoothstep(0.45, 0.70));
-  h.channel('groundCoverPatch', groundCoverSignal.smoothstep(0.39, 0.67));
+  h.channel('shrubPatch',       shrubPatch);
+  h.channel('meadowPatch',      meadowPatch);
+  h.channel('flowerPatch',      flowerPatch);
+  h.channel('groundCoverPatch', groundCoverPatch);
+
+  // WP3 (§4.2): the same formSuitabilities product chain (below), in tape
+  // register ops instead of JS float64 math -- see formSuitabilitiesTape's
+  // comment for why this is bit-for-bit at the FORMULA level but not at the
+  // FLOAT level (channels_at is float32; drift is real and measured, not
+  // claimed identical).
+  const tapeHabitat = {
+    altitude, moisture, exposure, dryness, forest, forestEdge, treeCluster,
+    shrubPatch, meadowPatch, flowerPatch, groundCoverPatch,
+  };
+  for (const family of Object.keys(FAMILY_SUITABILITY_CHANNELS)) {
+    const scores = formSuitabilitiesTape(family, tapeHabitat);
+    const names = FAMILY_SUITABILITY_NAMES[family];
+    for (let i = 0; i < names.length; ++i) h.channel(names[i], scores[i]);
+  }
 }
 
 export function selectDrynessState(dryness, identity) {
@@ -289,7 +333,16 @@ const FAMILY_FORMS = Object.freeze({
   grass: Object.freeze(FORM_TABLE.filter(row => row[0] === 'AlpineGrass')),
 });
 
+// WP3 (§4.2): FAMILY_SUITABILITY_CHANNELS/NAMES/formSuitabilitiesTape below
+// pre-evaluate this on the habitat tape; formSuitabilities here is now BOTH
+// the runtime fallback (a caller with no precomputed `habitat.suitability` --
+// selectAlpineAsset is exported and called directly with plain scalar
+// fixtures by alpine_ecology_tests.mjs, which has no tape) and the
+// executable spec formSuitabilitiesTape is checked against, exactly the
+// candidatesInRect / candidatesInRectJs shape from Step 1.
 function formSuitabilities(family, habitat) {
+  if (Array.isArray(habitat.suitability) && finite(habitat.suitability[0]))
+    return habitat.suitability;
   const { altitude, moisture, exposure, dryness, forest, forestEdge, treeCluster,
     shrubPatch, meadowPatch, flowerPatch, groundCoverPatch } = habitat;
   switch (family) {
@@ -338,10 +391,114 @@ function formSuitabilities(family, habitat) {
   }
 }
 
+// The HABITAT.*Suit* channel names, in the same order formSuitabilities'
+// arrays are indexed -- this order is what makes reading
+// flat[ch + HABITAT.treeSuit0 + i] line up with scores[i] above.
+const FAMILY_SUITABILITY_NAMES = Object.freeze({
+  tree: Object.freeze(['treeSuit0', 'treeSuit1', 'treeSuit2',
+    'treeSuit3', 'treeSuit4', 'treeSuit5']),
+  shrub: Object.freeze(['shrubSuit0', 'shrubSuit1', 'shrubSuit2', 'shrubSuit3']),
+  groundCover: Object.freeze(['groundCoverSuit0', 'groundCoverSuit1']),
+  flower: Object.freeze(['flowerSuit0', 'flowerSuit1', 'flowerSuit2']),
+  grass: Object.freeze(['grassSuit0', 'grassSuit1', 'grassSuit2', 'grassSuit3']),
+});
+const FAMILY_SUITABILITY_CHANNELS = Object.freeze(
+  Object.fromEntries(Object.entries(FAMILY_SUITABILITY_NAMES).map(
+    ([family, names]) => [family, Object.freeze(names.map(name => HABITAT[name]))])));
+
+// value.smoothstep(a, b) IS higherThan(value, a, b) already -- these two only
+// exist because lowerThan/inRange compose smoothstep further, and a
+// SurfaceNode has no operator overloading to write `1 - x` or `a * b` with.
+const tapeHigherThan = (node, start, end) => node.smoothstep(start, end);
+const tapeLowerThan = (node, start, end) => node.smoothstep(start, end).oneMinus();
+const tapeInRange = (node, start, peakStart, peakEnd, end) =>
+  tapeHigherThan(node, start, peakStart).mul(tapeLowerThan(node, peakEnd, end));
+
+// The tape twin of formSuitabilities: same formulas, SurfaceNode ops instead
+// of JS float64 arithmetic, called once per HABITAT TAPE COMPILE (not once
+// per candidate) from alpineHabitat below. It is not "the same function" --
+// a SurfaceNode program can't share source with float math -- but every
+// factor and constant here must match formSuitabilities' term for term, and
+// that correspondence is what sector_bake_tests.cpp's suitability-drift
+// check verifies. Unlike candidatesInRect/candidatesInRectJs this is NOT
+// bitwise-checked: channels_at evaluates in float32, so this is expected to
+// drift from the float64 spec at near-ties (docs/streammountain-refactor-
+// implementation-2026-08-09.md §4.2 -- report the measured %, do not claim
+// identical).
+function formSuitabilitiesTape(family, hb) {
+  const { altitude, moisture, exposure, dryness, forest, forestEdge, treeCluster,
+    shrubPatch, meadowPatch, flowerPatch, groundCoverPatch } = hb;
+  switch (family) {
+    case 'tree': {
+      const cluster = treeCluster;
+      const treeMass = forest.mul(cluster);
+      return [
+        treeMass.mul(tapeInRange(altitude, 260, 330, 445, 470))
+          .mul(dryness.mul(0.65).add(0.35)).mul(exposure.mul(0.65).add(0.35)),
+        treeMass.mul(moisture.mul(0.65).add(0.35))
+          .mul(tapeInRange(altitude, 130, 205, 335, 430))
+          .mul(tapeLowerThan(exposure, 0.45, 0.95)),
+        treeMass.mul(moisture).mul(tapeInRange(altitude, 80, 150, 245, 315))
+          .mul(tapeLowerThan(exposure, 0.25, 0.70)),
+        treeMass.mul(moisture).mul(tapeLowerThan(altitude, 190, 295))
+          .mul(tapeLowerThan(exposure, 0.18, 0.62))
+          .mul(tapeLowerThan(forestEdge, 0.35, 0.85)),
+        cluster.mul(forestEdge).mul(tapeInRange(altitude, 120, 190, 335, 370))
+          .mul(exposure.mul(0.55).add(0.45)),
+        cluster.mul(moisture).mul(tapeLowerThan(altitude, 180, 305))
+          .mul(forestEdge.mul(0.65).add(0.35)),
+      ];
+    }
+    case 'shrub':
+      return [
+        meadowPatch.mul(shrubPatch).mul(tapeHigherThan(altitude, 360, 440))
+          .mul(exposure.mul(0.6).add(0.4)).mul(dryness.mul(0.65).add(0.35)),
+        shrubPatch.mul(moisture).mul(tapeLowerThan(altitude, 170, 250))
+          .mul(forest.oneMinus().mul(0.65).add(0.35)),
+        shrubPatch.mul(tapeInRange(altitude, 190, 260, 445, 500))
+          .mul(dryness.mul(0.65).add(0.35)).mul(exposure.mul(0.65).add(0.35)),
+        shrubPatch.mul(moisture).mul(forestEdge)
+          .mul(tapeInRange(altitude, 130, 170, 290, 360)),
+      ];
+    case 'groundCover':
+      return [
+        groundCoverPatch.mul(moisture).mul(forest.mul(0.65).add(0.35))
+          .mul(tapeLowerThan(exposure, 0.25, 0.70)),
+        groundCoverPatch.mul(moisture).mul(meadowPatch).mul(flowerPatch)
+          .mul(forest.oneMinus().mul(0.65).add(0.35)),
+      ];
+    case 'flower':
+      return [
+        flowerPatch.mul(meadowPatch).mul(tapeInRange(altitude, 50, 120, 240, 330))
+          .mul(tapeInRange(moisture, 0.30, 0.52, 0.78, 0.92)),
+        flowerPatch.mul(meadowPatch).mul(moisture)
+          .mul(tapeInRange(altitude, 140, 210, 340, 430))
+          .mul(forestEdge.mul(0.65).add(0.35)),
+        flowerPatch.mul(meadowPatch).mul(moisture).mul(tapeLowerThan(altitude, 70, 155))
+          .mul(forest.oneMinus().mul(0.65).add(0.35)),
+      ];
+    case 'grass':
+      return [
+        meadowPatch.mul(tapeInRange(moisture, 0.55, 0.75, 0.92, 1.01))
+          .mul(tapeInRange(altitude, 40, 95, 145, 215)),
+        meadowPatch.mul(tapeInRange(moisture, 0.35, 0.55, 0.85, 1.01))
+          .mul(tapeInRange(altitude, 90, 150, 280, 380)),
+        meadowPatch.mul(tapeHigherThan(moisture, 0.78, 0.94))
+          .mul(tapeLowerThan(altitude, 60, 150)),
+        meadowPatch.mul(dryness.mul(0.7).add(0.3))
+          .mul(tapeHigherThan(altitude, 240, 335)).mul(exposure.mul(0.7).add(0.3)),
+      ];
+    default:
+      return [];
+  }
+}
+
 function selectedForm(family, habitat, identity) {
   const rows = FAMILY_FORMS[family];
   if (!rows || !habitat?.valid) return null;
+  pbegin(P_SUITABILITY);
   const scores = formSuitabilities(family, habitat);
+  pend(P_SUITABILITY);
   let bestIndex = -1;
   let bestScore = 0;
   let totalWeight = 0;
@@ -469,11 +626,18 @@ const pslot  = typeof profSlot  === 'function' ? profSlot  : () => -1;
 const pbegin = typeof profBegin === 'function' ? profBegin : () => {};
 const pend   = typeof profEnd   === 'function' ? profEnd   : () => {};
 
-const P_CANDIDATES = pslot('plan.candidates');
-const P_EVAL       = pslot('plan.evaluate');
-const P_SELECT     = pslot('plan.select');
-const P_EXCLUDE    = pslot('plan.exclude');
-const P_OTHER      = pslot('plan.otherFamilies');
+const P_CANDIDATES   = pslot('plan.candidates');
+const P_EVAL         = pslot('plan.evaluate');
+const P_SELECT       = pslot('plan.select');
+const P_EXCLUDE      = pslot('plan.exclude');
+const P_OTHER        = pslot('plan.otherFamilies');
+// Step 4.1's measurement fork: these two split plan.select into the
+// formSuitabilities product chain vs the identityChannel jitter hashes, so
+// the WP3 "move suitability into the tape" decision is settled by a number,
+// not a guess (see docs/streammountain-refactor-implementation-2026-08-09.md
+// §4.1 -- two prior hot-path guesses in this file were both wrong).
+const P_SUITABILITY  = pslot('plan.suitability');
+const P_IDENTITY     = pslot('plan.identity');
 
 // Reused across candidates on purpose: allocating a fresh habitat object per
 // candidate would hand back a good part of what fusing the crossing buys.
@@ -482,8 +646,26 @@ const P_OTHER      = pslot('plan.otherFamilies');
 const HABITAT_SCRATCH = {
   valid: true, moisture: 0, exposure: 0, dryness: 0, forest: 0, forestEdge: 0,
   treeCluster: 0, shrubPatch: 0, meadowPatch: 0, flowerPatch: 0,
-  groundCoverPatch: 0,
+  groundCoverPatch: 0, suitability: undefined,
 };
+// One reused array per family (never resized down across calls) so reading
+// the WP3 suitability channels out of the flat array costs no allocation --
+// same reuse argument as HABITAT_SCRATCH itself.
+const SUITABILITY_SCRATCH = Object.freeze({
+  tree: [], shrub: [], groundCover: [], flower: [], grass: [],
+});
+// Reads this family's precomputed suitability channels out of the flat
+// array, or undefined if the tape that produced it didn't carry them (the
+// JS twin's fallback candidateFlatJs, or any producer built before this
+// habitat tape adopted WP3) -- formSuitabilities' own `Array.isArray` check
+// is what turns that into "recompute in JS" rather than a crash.
+function readSuitability(family, flat, ch) {
+  const channels = FAMILY_SUITABILITY_CHANNELS[family];
+  if (flat[0] <= channels[channels.length - 1]) return undefined;
+  const scratch = SUITABILITY_SCRATCH[family];
+  for (let i = 0; i < channels.length; ++i) scratch[i] = flat[ch + channels[i]];
+  return scratch;
+}
 
 const NO_HABITAT_TAPE_ERROR =
   "planAlpineSector: no habitat tape is bound. The world's script must " +
@@ -578,6 +760,7 @@ function plannedCandidateFused(family, worldSeed, kind, biomeAt, flat, base) {
   HABITAT_SCRATCH.meadowPatch = flat[ch + HABITAT.meadowPatch];
   HABITAT_SCRATCH.flowerPatch = flat[ch + HABITAT.flowerPatch];
   HABITAT_SCRATCH.groundCoverPatch = flat[ch + HABITAT.groundCoverPatch];
+  HABITAT_SCRATCH.suitability = readSuitability(family, flat, ch);
   return finishCandidate(family, x, z, worldSeed, kind, altitude, slope,
     HABITAT_SCRATCH);
 }
