@@ -6043,6 +6043,68 @@ static void rt_scenario_froxel_resize(
           error.empty() ? "RT resized froxel composite remains finite"
                         : error.c_str());
 
+    // Timestamp queries are asynchronous, so recycle both frame slots before
+    // reading the EMA lanes.  The combined Volumetrics bracket deliberately
+    // encloses the three actual pass brackets and must track their sum.  This
+    // catches a missing child boundary even when a dispatch still looks valid.
+    const auto render_timing_frame = [&]() {
+        error.clear();
+        matter::VulkanFrame timing{};
+        const bool rendered = vulkan.begin_frame(timing, error) &&
+            renderer.prepare_frame(timing, matrices, camera.position, 1.0f,
+                                   error) &&
+            renderer.record_cull_and_render(timing, matrices, camera.position,
+                                            1.0f, error) &&
+            renderer.record_composite_to_swapchain(timing, error) &&
+            vulkan.end_frame(timing, error);
+        renderer.finish_ray_tracing_frame(timing.serial, rendered);
+        vulkan.wait_idle();
+        return rendered;
+    };
+    if (renderer.gpu_timers_supported()) {
+        for (int frame = 0; frame < 4; ++frame)
+            CHECK(render_timing_frame(),
+                  error.empty() ? "record enabled RT timing frame" : error.c_str());
+        const float combined_ms = renderer.gpu_zone_ms(
+            viewer::VkSceneRenderer::kGpuZoneVolumetrics);
+        const float density_ms = renderer.gpu_zone_ms(
+            viewer::VkSceneRenderer::kGpuZoneVolDensity);
+        const float scatter_ms = renderer.gpu_zone_ms(
+            viewer::VkSceneRenderer::kGpuZoneVolScatter);
+        const float integrate_ms = renderer.gpu_zone_ms(
+            viewer::VkSceneRenderer::kGpuZoneVolIntegrate);
+        const float children_ms = density_ms + scatter_ms + integrate_ms;
+        // Every lane has the same EMA cadence, but timestamps can land in a
+        // neighboring recycled slot.  A quarter of the child total leaves
+        // that jitter headroom without accepting a missing pass boundary.
+        const float combined_tolerance = std::max(0.10f, children_ms * 0.25f);
+        std::printf("froxel GPU timing: combined=%.4f density=%.4f scatter=%.4f "
+                    "integrate=%.4f tolerance=%.4f\n",
+                    combined_ms, density_ms, scatter_ms, integrate_ms,
+                    combined_tolerance);
+        CHECK(combined_ms > 0.0f && density_ms > 0.0f && scatter_ms > 0.0f &&
+                  integrate_ms > 0.0f &&
+                  std::fabs(combined_ms - children_ms) <= combined_tolerance,
+              "RT froxel combined timestamp approximately covers density, scatter, and integrate");
+
+        settings.enabled = false;
+        renderer.set_volumetrics_settings(settings, fog);
+        for (int frame = 0; frame < 4; ++frame)
+            CHECK(render_timing_frame(),
+                  error.empty() ? "record disabled RT timing frame" : error.c_str());
+        CHECK(renderer.gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolumetrics) ==
+                      0.0f &&
+                  renderer.gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolDensity) ==
+                      0.0f &&
+                  renderer.gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolScatter) ==
+                      0.0f &&
+                  renderer.gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolIntegrate) ==
+                      0.0f,
+              "disabled RT froxel frame resets combined and child timestamp lanes to zero");
+        settings.enabled = true;
+        renderer.set_volumetrics_settings(settings, fog);
+    }
+
     const auto before_failure = renderer.volumetrics_dimensions();
     const uint64_t generation_before_failure =
         renderer.volumetrics_resource_generation();

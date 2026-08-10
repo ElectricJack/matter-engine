@@ -1242,6 +1242,16 @@ PY
       echo "ERROR: final acceptance requires ffmpeg for image metrics" >&2
       exit 1
     }
+    FINAL_IMAGE_PYTHON="${MATTER_IMAGE_PYTHON:-python3}"
+    command -v "$FINAL_IMAGE_PYTHON" >/dev/null 2>&1 || {
+      echo "ERROR: final acceptance requires python3 for dependency-free image metrics" >&2
+      exit 1
+    }
+    FINAL_IMAGE_METRICS="$HERE/cloud_image_metrics.py"
+    [ -f "$FINAL_IMAGE_METRICS" ] || {
+      echo "ERROR: final acceptance image-metrics helper is missing: $FINAL_IMAGE_METRICS" >&2
+      exit 1
+    }
 
     final_ssim() {
       "$FINAL_FFMPEG" -hide_banner -nostdin -i "$1" -i "$2" \
@@ -1250,7 +1260,9 @@ PY
     }
 
     require_images_differ() {
-      local first="$1" second="$2" description="$3" first_hash second_hash metric
+      local first="$1" second="$2" description="$3" min_mean="${4:-0.50}" \
+        min_changed_pct="${5:-2.0}" min_active_tiles="${6:-2}" first_hash \
+        second_hash metric image_metrics
       [ -s "$first" ] && [ -s "$second" ] || {
         echo "ERROR: $description image is missing" >&2
         return 1
@@ -1266,18 +1278,31 @@ PY
         echo "ERROR: $description ffmpeg SSIM metric is invalid or identical: '$metric'" >&2
         return 1
       }
-      printf 'FINAL_DIFF,%s,sha256=%s/%s,ssim=%s\n' "$description" \
-        "$first_hash" "$second_hash" "$metric" >> "$COMMANDS"
+      image_metrics="$("$FINAL_IMAGE_PYTHON" "$FINAL_IMAGE_METRICS" effect \
+        "$first" "$second" --ffmpeg "$FINAL_FFMPEG" --min-mean "$min_mean" \
+        --min-changed-pct "$min_changed_pct" --min-active-tiles "$min_active_tiles")" || {
+        echo "ERROR: $description lacks a meaningful localized image effect" >&2
+        return 1
+      }
+      printf 'FINAL_DIFF,%s,sha256=%s/%s,ssim=%s,%s\n' "$description" \
+        "$first_hash" "$second_hash" "$metric" "$image_metrics" >> "$COMMANDS"
     }
 
     verify_moving_pair() {
-      local first="$1" second="$2" metric
+      local first="$1" second="$2" metric image_metrics
       metric="$(final_ssim "$first" "$second")"
       awk -v value="$metric" 'BEGIN { exit !(value >= 0.90 && value < 1.0) }' || {
         echo "ERROR: moving cloud transition '$first' -> '$second' fails seam/flash SSIM bound: '$metric'" >&2
         return 1
       }
-      printf 'FINAL_MOVING,%s,%s,ssim=%s\n' "$first" "$second" "$metric" >> "$COMMANDS"
+      image_metrics="$("$FINAL_IMAGE_PYTHON" "$FINAL_IMAGE_METRICS" motion \
+        "$first" "$second" --ffmpeg "$FINAL_FFMPEG" --min-mean 0.50 \
+        --min-changed-pct 2.0 --max-edge-mean 25.0 --max-tile-mean 40.0)" || {
+        echo "ERROR: moving cloud transition '$first' -> '$second' fails localized seam/flash checks" >&2
+        return 1
+      }
+      printf 'FINAL_MOVING,%s,%s,ssim=%s,%s\n' "$first" "$second" "$metric" \
+        "$image_metrics" >> "$COMMANDS"
     }
 
     promote_final_evidence() {
@@ -1454,6 +1479,9 @@ PY
       "$OUT/${LABEL}_order-4.png" "multiple-scattering order"
     require_images_differ "$OUT/${LABEL}_self-shadow.png" \
       "$OUT/${LABEL}_cross-shadow.png" "self-cross cloud receiver"
+    require_images_differ "$OUT/${LABEL}_near-far-translated.png" \
+      "$OUT/${LABEL}_near-far-boundary.png" "near-far cloud-shadow coverage" \
+      0.50 2.0 2
     verify_moving_pair "$OUT/${LABEL}_moving-0.png" "$OUT/${LABEL}_moving-1.png"
     verify_moving_pair "$OUT/${LABEL}_moving-1.png" "$OUT/${LABEL}_moving-2.png"
     verify_moving_pair "$OUT/${LABEL}_moving-2.png" "$OUT/${LABEL}_moving-3.png"

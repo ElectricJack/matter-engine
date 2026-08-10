@@ -435,6 +435,18 @@ void test_active_cloud_count_ignores_a_stale_cloud_count() {
           "a cloud_count ahead of the layers still yields no live decks");
 }
 
+void test_active_cloud_top_keeps_negative_live_decks_and_zeroes_empty_prefix() {
+    matter::FogSettings fog;
+    fog.clouds[0] = make_layer(-420.0f, -120.0f, 0.03f, 0.0f, 0.0f);
+    fog.clouds[1] = make_layer(-90.0f, -30.0f, 0.02f, 0.0f, 0.0f);
+    CHECK(nearly_equal(matter::active_cloud_top(fog), -30.0f),
+          "negative active decks keep their true highest altitude");
+
+    fog.clouds[0].enabled = false;
+    CHECK(nearly_equal(matter::active_cloud_top(fog), 0.0f),
+          "an empty active prefix keeps the no-cloud top at zero");
+}
+
 void test_compact_clouds_closes_holes() {
     matter::FogSettings fog;
     fog.cloud_count = 3;
@@ -813,6 +825,7 @@ int main() {
     test_two_separated_layers_leave_clear_air();
     test_active_cloud_count_stops_at_the_first_hole();
     test_active_cloud_count_ignores_a_stale_cloud_count();
+    test_active_cloud_top_keeps_negative_live_decks_and_zeroes_empty_prefix();
     test_compact_clouds_closes_holes();
     test_disabled_layer_survives_compaction_and_reenable();
     test_seed_default_cloud_layer_makes_a_degenerate_layer_live();

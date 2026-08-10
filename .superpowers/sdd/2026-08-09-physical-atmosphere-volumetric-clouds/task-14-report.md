@@ -179,3 +179,53 @@ remain the retained inspected visual evidence.
 - No StreamMountain/final visual run was launched for this review closure.
   The earlier bounded-run concern and preserved Task 13 visual evidence remain
   unchanged.  Generated shader cache was removed before staging.
+
+## Final review closure -- cloud-top, timing composition, and image metrics
+
+### RED to GREEN
+
+- `cloud_layer_tests` first failed cleanly on
+  `negative active decks keep their true highest altitude`: the old
+  `active_cloud_top()` seeded its maximum at zero and therefore elevated an
+  entirely negative active prefix.  It now uses a first-active `-infinity`
+  seed, returning zero only for an empty/non-finite prefix.  The regression
+  also verifies the empty-prefix result.
+- The new stdlib image-metric unit test first failed cleanly with
+  `ModuleNotFoundError: cloud_image_metrics`.  The added helper decodes RGB24
+  through the already-required ffmpeg/ffprobe pair, so the final gate has no
+  Pillow dependency.  Its unit cases require a meaningful changed area and
+  reject both an outer-edge seam and an aligned one-tile flash.
+- The final harness retains hash and ffmpeg SSIM checks, then additionally
+  requires `mean_abs >= 0.50`, at least `2.0%` changed pixels, and two active
+  tiles for effect/receiver/near-far pairs.  Adjacent moving frames also
+  require that minimum effect while bounding outer-edge mean to `25.0` and
+  the brightest 4x4-grid tile mean to `40.0`.  Near/far translated/boundary
+  captures now have their own explicit coverage comparison.
+- The real RTX froxel-resize scenario now recycles both query slots and checks
+  that combined zone 9 is positive and approximately the sum of density,
+  scatter, and integrate (zones 14--16), then disables volumetrics and
+  requires all four lanes to be exactly zero.  This is an actual production
+  `prepare/record/composite/end` path, not a CPU timer or synthetic query.
+
+### Focused verification
+
+- `make -C MatterEngine3/tests run-property-editor ...`, cloud-layer CPU
+  regression, `cloud_image_metrics_tests.py`, and
+  `bash -n atmosphere_cloud_shots.sh` -- all pass.
+- The UCRT64 `-Werror` Vulkan smoke target relinked successfully.  Its
+  `MATTER_VK_SMOKE_MODE=froxel-resize` gate passed on NVIDIA GeForce RTX 4090
+  (driver 610.74, Vulkan 1.4.341): combined `0.9541 ms`; density/scatter/
+  integrate `0.1946/0.6095/0.1492 ms`; tolerance `0.2383 ms`; validation
+  errors `0`.  The disabled/no-work exact-zero assertions also passed.
+- The retained deterministic Task 13 images satisfy the hardened helper:
+  ground enabled/disabled `mean_abs=1.7563`, `changed=9.3706%`, `tiles=3`;
+  translated/boundary near-far `2.3596`, `14.2719%`, `tiles=6`; moving pairs
+  `3.6092/35.1696%/edge=4.8247/tile=9.1427` and
+  `3.5991/33.1702%/edge=2.4136/tile=11.6664`.
+
+### Scope and remaining concern
+
+No StreamMountain or screenshot rerun was launched.  The strengthened metrics
+are demonstrated against the retained six deterministic Task 13 receiver/
+cloud-shadow images, while the prior final-run readiness concern remains the
+only acceptance limitation.  No protected dirty path was touched.
