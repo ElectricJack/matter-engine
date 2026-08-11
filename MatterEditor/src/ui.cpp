@@ -1562,6 +1562,20 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
             "back off when vegetation visibly thins.\n\n"
             "Unlike a frustum cull this is stable under rotation, so turning "
             "around costs nothing and shadows from behind the camera survive.");
+    // Freeze the streaming anchor. A raw widget like the rest of this panel:
+    // main.cpp reads ViewerStats::freeze_stream_anchor straight into the
+    // update_sector_streaming call, so this checkbox IS the backing value.
+    ImGui::Checkbox("Freeze terrain streaming", &s.freeze_stream_anchor);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Stops the camera dragging the streaming anchor. Sector levels, "
+            "the drawn tile set and the seam welds all hold where they are, so "
+            "you can fly up to a seam and inspect the geometry that was chosen "
+            "from a distance instead of watching it refine as you approach.\n\n"
+            "Still following the real camera: the virtual texture (looking "
+            "closely is the point) and the GPU cull's per-cluster rung. Force "
+            "that separately with a draw.overrides per-module LOD.\n\n"
+            "Unfreezing snaps the anchor to wherever the camera now is.");
     ImGui::Checkbox("Impostor parallax", &s.impostor_parallax);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(

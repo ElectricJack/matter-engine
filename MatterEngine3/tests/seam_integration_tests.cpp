@@ -689,8 +689,29 @@ struct Totals {
     // make this gate an opinion about steepness. `severe` is dot < -0.5, which
     // no bridging triangle reaches and only an actual reversal does.
     long long wind_severe = 0, fan_severe = 0;
+    long long mesh_checked = 0, mesh_wrong = 0, mesh_severe = 0;
+    double    mesh_worst = 1.0;
+    long long band_checked = 0, band_wrong = 0, band_severe = 0;
+    double    band_worst = 1.0;
+    // Same three again, but only over the HEIGHTFIELD fixtures. Surface nets
+    // legitimately emits a quad whose geometric normal opposes its corners'
+    // averaged gradient normals wherever the field has a feature thinner than
+    // a voxel -- the four cells' gradients genuinely disagree there, and no
+    // winding rule can fix it. A heightfield has no such feature: it is one
+    // single-valued sheet. So a reversal that survives on kNoise is a WINDING
+    // BUG, and one that appears only on kCave0 is the field being pathological.
+    long long hf_mesh_severe = 0, hf_band_severe = 0, hf_fan_severe = 0;
+    long long hf_mesh_checked = 0, hf_band_checked = 0, hf_fan_checked = 0;
+    // Heightfield fan reversals broken out by the plane's normal axis, which
+    // is what `reverse_frame` switches on.
+    long long hf_fan_severe_axis[3] = {0, 0, 0};
+    long long hf_fan_checked_axis[3] = {0, 0, 0};
 };
 static Totals g_tot;
+// True while the fixture in flight is a single-valued heightfield.
+static bool g_heightfield = false;
+// Plane normal axis of the weld in flight, for the per-axis breakdown.
+static int g_face_axis = 0;
 
 // Every triangle's geometric normal (from its winding) must agree with the mean
 // of its three corners' stored normals -- the same check seam_weld_tests.cpp [4]
@@ -707,6 +728,68 @@ static Totals g_tot;
 //
 // Slivers with no defined plane, and corners whose normals cancel, are skipped
 // rather than guessed at.
+// Winding scan over one flat triangle soup. `Pos` is float for a SectorMesh /
+// WeldMesh and double for an OverlapBand, which is the only reason this is a
+// template. Counts into the caller's three accumulators.
+template <typename Pos>
+static void winding_scan(const Pos* P0, const float* N0, size_t tris,
+                         long long& checked, long long& wrong,
+                         long long& severe, double& worst) {
+    for (size_t t = 0; t < tris; ++t) {
+        const Pos* P = P0 + t * 9;
+        const float* N = N0 + t * 9;
+        const double e1[3] = {double(P[3]-P[0]), double(P[4]-P[1]), double(P[5]-P[2])};
+        const double e2[3] = {double(P[6]-P[0]), double(P[7]-P[1]), double(P[8]-P[2])};
+        const double g[3] = {e1[1]*e2[2] - e1[2]*e2[1],
+                             e1[2]*e2[0] - e1[0]*e2[2],
+                             e1[0]*e2[1] - e1[1]*e2[0]};
+        const double gl = std::sqrt(g[0]*g[0] + g[1]*g[1] + g[2]*g[2]);
+        if (gl < 1e-12) continue;
+        double mn[3] = {0, 0, 0};
+        for (int v = 0; v < 3; ++v)
+            for (int c = 0; c < 3; ++c) mn[c] += N[v*3 + c];
+        const double ml = std::sqrt(mn[0]*mn[0] + mn[1]*mn[1] + mn[2]*mn[2]);
+        if (ml < 1e-6) continue;
+        const double dot = (g[0]*mn[0] + g[1]*mn[1] + g[2]*mn[2]) / (gl * ml);
+        ++checked;
+        if (dot <= 0) ++wrong;
+        if (dot < -0.5) ++severe;
+        worst = std::min(worst, dot);
+    }
+}
+
+// The mesher's OWN mesh, and the band it exports, scanned by the same rule as
+// the weld. This is what splits the failure three ways: if the mesher's mesh
+// reverses, the defect is not the welder's at all and every terrain tile in
+// the world carries it.
+static void account_mesh(const SectorMesh& m) {
+    for (const terrain_mesher::MaterialBucket& b : m.buckets) {
+        winding_scan(b.positions.data(), b.normals.data(),
+                     b.positions.size() / 9, g_tot.mesh_checked,
+                     g_tot.mesh_wrong, g_tot.mesh_severe, g_tot.mesh_worst);
+        if (g_heightfield) {
+            long long w = 0; double d = 1.0;
+            winding_scan(b.positions.data(), b.normals.data(),
+                         b.positions.size() / 9, g_tot.hf_mesh_checked, w,
+                         g_tot.hf_mesh_severe, d);
+        }
+    }
+}
+
+static void account_band(const seam::OverlapBand& band) {
+    for (const seam::OverlapBucket& b : band.buckets) {
+        winding_scan(b.positions.data(), b.normals.data(),
+                     b.positions.size() / 9, g_tot.band_checked,
+                     g_tot.band_wrong, g_tot.band_severe, g_tot.band_worst);
+        if (g_heightfield) {
+            long long w = 0; double d = 1.0;
+            winding_scan(b.positions.data(), b.normals.data(),
+                         b.positions.size() / 9, g_tot.hf_band_checked, w,
+                         g_tot.hf_band_severe, d);
+        }
+    }
+}
+
 static void account_winding(const seam::WeldMesh& m, bool fan_only = false) {
     long long* checked = fan_only ? &g_tot.fan_checked : &g_tot.wind_checked;
     long long* wrong   = fan_only ? &g_tot.fan_wrong   : &g_tot.wind_wrong;
@@ -730,6 +813,25 @@ static void account_winding(const seam::WeldMesh& m, bool fan_only = false) {
             const double dot = (g[0]*mn[0] + g[1]*mn[1] + g[2]*mn[2]) / (gl * ml);
             ++*checked;
             if (dot <= 0) ++*wrong;
+            if (fan_only && g_heightfield) {
+                ++g_tot.hf_fan_checked;
+                ++g_tot.hf_fan_checked_axis[g_face_axis];
+                if (dot < -0.5) {
+                    ++g_tot.hf_fan_severe;
+                    ++g_tot.hf_fan_severe_axis[g_face_axis];
+                    static int shown = 0;
+                    if (shown < 6) {
+                        ++shown;
+                        printf("      REV[%d] axis %d cos %.4f area %.4f\n",
+                               shown, g_face_axis, dot, 0.5 * gl);
+                        for (int v = 0; v < 3; ++v)
+                            printf("            p%d (%9.3f %9.3f %9.3f)  n%d "
+                                   "(%6.3f %6.3f %6.3f)\n",
+                                   v, P[v*3], P[v*3+1], P[v*3+2], v,
+                                   N[v*3], N[v*3+1], N[v*3+2]);
+                    }
+                }
+            }
             if (dot < -0.5) ++(fan_only ? g_tot.fan_severe : g_tot.wind_severe);
             *worst = std::min(*worst, dot);
         }
@@ -850,6 +952,7 @@ static MissDiag diag_for(int face_axis, const seam::WeldSide& neg,
 static void run_neg_x(const FieldRuntime& f, const char* field_name,
                       float y_min, float y_max, int max_level,
                       bool one_sheet) {
+    g_heightfield = one_sheet;
     printf("  [1] -x pairing (coarse WEST of fine -- the orientation the [1..n]"
            " ownership rule leaves open), field %s\n", field_name);
     for (int L = 0; L <= max_level; ++L) {
@@ -882,6 +985,7 @@ static void run_neg_x(const FieldRuntime& f, const char* field_name,
               "-x weld: the band is emitted VERBATIM -- every triangle, none "
               "added, none filtered");
         account(ws, wm);
+        account_mesh(fm); account_mesh(cm); account_band(band);
 
         // The same weld with the band withheld. Not a second configuration --
         // the same two tiles -- purely so the scan below can separate what the
@@ -890,7 +994,7 @@ static void run_neg_x(const FieldRuntime& f, const char* field_name,
         seam::WeldMesh wf; seam::WeldStats wsf;
         CHECK(weld_pair(0, neg, pos_nb, fb, seam::kFaceNegX, wf, wsf, err),
               err.c_str());
-        account_winding(wf, /*fan_only=*/true);
+        g_face_axis = 0; account_winding(wf, /*fan_only=*/true);
         CHECK(wsf.band_tris == 0 && wsf.crossings == ws.crossings &&
               wsf.quads == ws.quads && wsf.tris == ws.tris,
               "-x weld: the band changes NOTHING about the fan -- same crossings, "
@@ -941,6 +1045,7 @@ static void run_neg_x(const FieldRuntime& f, const char* field_name,
 static void run_neg_z(const FieldRuntime& f, const char* field_name,
                       float y_min, float y_max, int max_level,
                       bool one_sheet) {
+    g_heightfield = one_sheet;
     printf("  [2] -z mirror (coarse SOUTH of fine), field %s\n", field_name);
     for (int L = 0; L <= max_level; ++L) {
         const float SL = 64.0f * float(1 << L);
@@ -969,7 +1074,7 @@ static void run_neg_z(const FieldRuntime& f, const char* field_name,
         seam::WeldMesh wf; seam::WeldStats wsf;
         CHECK(weld_pair(2, neg, pos_nb, fb, seam::kFaceNegZ, wf, wsf, err),
               err.c_str());
-        account_winding(wf, /*fan_only=*/true);
+        g_face_axis = 2; account_winding(wf, /*fan_only=*/true);
         CHECK(wsf.band_tris == 0 && wsf.crossings == ws.crossings &&
               wsf.quads == ws.quads && wsf.tris == ws.tris,
               "-z weld: the band changes nothing about the fan");
@@ -1230,6 +1335,7 @@ static void run_corner_and_partition(const FieldRuntime& f, const char* field_na
 // sides disagreeing about the shared plane's samples.
 static void run_neg_y(const FieldRuntime& f, const char* field_name,
                       int max_level, bool one_sheet) {
+    g_heightfield = one_sheet;
     printf("  [8] -y pairing (coarse BELOW fine -- the vertical orientation the"
            " [1..n] ownership rule leaves open), field %s\n", field_name);
     for (int L = 0; L <= max_level; ++L) {
@@ -1244,6 +1350,11 @@ static void run_neg_y(const FieldRuntime& f, const char* field_name,
         CHECK(mesh_sector_tiled(f, 0, -1, 0, -(L + 1), 2.0f * SL, cm, &cb, err),
               err.c_str());
         CHECK(mesh_sector_tiled(f, 0, 0, 0, -L, SL, fm, &fb, err), err.c_str());
+        // The Y-TILED mesher's own output, scanned by the same rule. Without
+        // this the "mesher is clean" reading covers only the column path -- the
+        // -x/-z runs -- and says nothing about mesh_sector_tiled.
+        account_mesh(fm); account_mesh(cm);
+        account_band(fb.faces[seam::kFaceNegY].band);
 
         const seam::OverlapBand& band = fb.faces[seam::kFaceNegY].band;
         seam::WeldSide neg = side_of(-(L + 1), {&cb.faces[seam::kFacePosY]});
@@ -1265,7 +1376,7 @@ static void run_neg_y(const FieldRuntime& f, const char* field_name,
         seam::WeldMesh wf; seam::WeldStats wsf;
         CHECK(weld_pair(1, neg, pos_nb, fb, seam::kFaceNegY, wf, wsf, err),
               err.c_str());
-        account_winding(wf, /*fan_only=*/true);
+        g_face_axis = 1; account_winding(wf, /*fan_only=*/true);
         CHECK(wsf.band_tris == 0 && wsf.crossings == ws.crossings &&
               wsf.quads == ws.quads && wsf.tris == ws.tris,
               "-y weld: the band changes NOTHING about the fan");
@@ -1808,6 +1919,25 @@ int main() {
            "opposed (%lld severe), worst cos = %.4f\n",
            g_tot.fan_checked, g_tot.fan_wrong, g_tot.fan_severe,
            g_tot.fan_worst);
+    printf("      mesher's OWN mesh: %lld testable, %lld opposed (%lld severe),"
+           " worst cos = %.4f\n",
+           g_tot.mesh_checked, g_tot.mesh_wrong, g_tot.mesh_severe,
+           g_tot.mesh_worst);
+    printf("      overlap band alone: %lld testable, %lld opposed (%lld severe),"
+           " worst cos = %.4f\n",
+           g_tot.band_checked, g_tot.band_wrong, g_tot.band_severe,
+           g_tot.band_worst);
+    printf("      HEIGHTFIELD ONLY (no sub-voxel feature can excuse a "
+           "reversal): mesh %lld severe / %lld, band %lld / %lld, fan %lld / "
+           "%lld\n",
+           g_tot.hf_mesh_severe, g_tot.hf_mesh_checked,
+           g_tot.hf_band_severe, g_tot.hf_band_checked,
+           g_tot.hf_fan_severe, g_tot.hf_fan_checked);
+    printf("      heightfield fan by plane normal axis: x %lld/%lld, y %lld/%lld,"
+           " z %lld/%lld\n",
+           g_tot.hf_fan_severe_axis[0], g_tot.hf_fan_checked_axis[0],
+           g_tot.hf_fan_severe_axis[1], g_tot.hf_fan_checked_axis[1],
+           g_tot.hf_fan_severe_axis[2], g_tot.hf_fan_checked_axis[2]);
     CHECK(g_tot.wind_severe == 0,
           "every emitted weld triangle -- fan AND band -- is wound to agree "
           "with the stored normals it carries, so it shades as the surface it "
