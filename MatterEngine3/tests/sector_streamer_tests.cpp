@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <functional>
 #include <map>
+#include <set>
 #include <tuple>
 #include <vector>
 
@@ -1604,6 +1605,132 @@ int main() {
         }
         printf("  refused without nesting, and refused when the band table "
                "resolves no level ladder\n");
+    }
+
+    // --- the octree descent (M3-WP2) ----------------------------------------
+    {
+        printf("== volumetric sectors: the octree descent ==\n");
+        Config base;
+        base.sector_size = 64.0f;
+        base.nested_sectors = true;
+        base.rings = { {128.0f, 2}, {512.0f, 1}, {2048.0f, 0} };
+        base.terrain_bands = { {128.0f, 5}, {256.0f, 4}, {512.0f, 3},
+                               {1024.0f, 2}, {2048.0f, 1}, {4096.0f, 0} };
+        base.y_min = -1024.0f;
+        base.y_max = 1024.0f;
+
+        // Drive one settle and return the full desired set as (level,tx,ty,tz).
+        auto settle = [](Config cfg, float ax, float ay, float az) {
+            SectorStreamer s(cfg);
+            for (int i = 0; i < 40; ++i) {
+                s.update(ax, ay, az);
+                SectorRequest q;
+                while (s.next_request(q)) s.on_published(q.tx, q.ty, q.tz, q.rung);
+                s.take_evictions();
+            }
+            s.update(ax, ay, az);
+            std::vector<std::tuple<long long,long long,long long,int>> out;
+            SectorRequest q;
+            while (s.next_request(q))
+                out.push_back({q.tx, q.ty, q.tz, q.rung});
+            return std::make_pair(s.resident_count(), out);
+        };
+
+        // 1. THE ROLLBACK POSITION, and the assertion the whole WP rests on:
+        //    with the flag off, an anchor 900 m underground selects exactly
+        //    what it selected when last_anchor_y_ was documented "stored, never
+        //    read". If this moves, the octree leaked into the column path.
+        {
+            Config c = base;
+            const auto ground = settle(c, 0.0f, 0.0f, 0.0f);
+            const auto deep   = settle(c, 0.0f, -900.0f, 0.0f);
+            CHECK(ground.first > 0, "the flag-off world streams something");
+            CHECK(ground.first == deep.first,
+                  "flag OFF: anchor altitude changes no residency at all");
+        }
+        // 2. Flag ON, and the point of the milestone: the desired set is a
+        //    STACK. Count distinct ty values among resident tiles by walking
+        //    the request stream of a cold streamer.
+        {
+            Config c = base;
+            c.volumetric_sectors = true;
+            SectorStreamer s(c);
+            std::set<long long> tys;
+            std::set<std::tuple<long long,long long,long long>> cells;
+            for (int i = 0; i < 60; ++i) {
+                s.update(0.0f, 0.0f, 0.0f);
+                SectorRequest q;
+                while (s.next_request(q)) {
+                    tys.insert((long long)q.ty);
+                    cells.insert({(long long)q.tx, (long long)q.ty, (long long)q.tz});
+                    s.on_published(q.tx, q.ty, q.tz, q.rung);
+                }
+                s.take_evictions();
+            }
+            CHECK(tys.size() > 1,
+                  "flag ON: the desired set spans more than one ty -- tiles are "
+                  "cubes stacked in y, not columns");
+            CHECK(tys.count(0) == 1, "including the row the anchor sits in");
+            printf("  octree: %zu distinct ty rows, %zu distinct (tx,ty,tz) "
+                   "cells requested from a cold start\n",
+                   tys.size(), cells.size());
+        }
+        // 3. THE EXTENT BOUNDS THE TREE. No tile may be requested whose cube
+        //    lies wholly outside [y_min, y_max] -- x and z are unbounded and
+        //    stopped only by the reach, but y is authored and the selector must
+        //    honour it or it streams rock the world does not define.
+        {
+            Config c = base;
+            c.volumetric_sectors = true;
+            c.y_min = -128.0f;      // deliberately tight: two level-0 tiles
+            c.y_max =  128.0f;
+            SectorStreamer s(c);
+            long long lo_violations = 0, hi_violations = 0;
+            for (int i = 0; i < 60; ++i) {
+                s.update(0.0f, 0.0f, 0.0f);
+                SectorRequest q;
+                while (s.next_request(q)) {
+                    const float S = c.sector_size *
+                                    float(1 << matter_stream::variant_level(q.rung));
+                    const float y0 = float(q.ty) * S;
+                    if (y0 + S <= c.y_min) ++lo_violations;
+                    if (y0 >= c.y_max)     ++hi_violations;
+                    s.on_published(q.tx, q.ty, q.tz, q.rung);
+                }
+                s.take_evictions();
+            }
+            CHECK(lo_violations == 0 && hi_violations == 0,
+                  "no tile is requested wholly outside the authored extent");
+            printf("  extent [%.0f, %.0f]: %lld tiles below, %lld above\n",
+                   c.y_min, c.y_max, lo_violations, hi_violations);
+        }
+        // 4. ALTITUDE NOW SELECTS. The mirror of case 1: with the flag on, the
+        //    same anchor moved 900 m down must NOT produce the same tiles, or
+        //    the y term never reached tile_near_dist.
+        {
+            Config c = base;
+            c.volumetric_sectors = true;
+            auto cells_at = [&](float ay) {
+                SectorStreamer s(c);
+                std::set<std::tuple<long long,long long,long long,int>> cells;
+                for (int i = 0; i < 60; ++i) {
+                    s.update(0.0f, ay, 0.0f);
+                    SectorRequest q;
+                    while (s.next_request(q)) {
+                        cells.insert({(long long)q.tx, (long long)q.ty,
+                                      (long long)q.tz, q.rung});
+                        s.on_published(q.tx, q.ty, q.tz, q.rung);
+                    }
+                    s.take_evictions();
+                }
+                return cells;
+            };
+            const auto ground = cells_at(0.0f);
+            const auto deep   = cells_at(-900.0f);
+            CHECK(!ground.empty() && ground != deep,
+                  "flag ON: the bands are spheres -- a camera 900 m down "
+                  "refines the rock around it, not the surface above it");
+        }
     }
 
     return check_summary();

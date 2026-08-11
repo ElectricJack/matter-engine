@@ -246,7 +246,16 @@ float SectorStreamer::tile_centre_dist(int level, int64_t tx, int64_t tz) const 
 // anchor is inside it. The split test uses this rather than the centre so that
 // a tile splits when any part of it is close enough, which is what makes the
 // desired set cover every world column exactly once.
-float SectorStreamer::tile_near_dist(int level, int64_t tx, int64_t tz) const {
+//
+// UNDER `volumetric_sectors` THIS IS THE ONLY PLACE THE BANDS BECOME SPHERES.
+// A column tile is unbounded in y for selection purposes, so its distance is
+// the XZ one and always has been; a cube tile is bounded on all six sides, so
+// the same "closest point of the box" formula simply gains its third term. The
+// band radii are unchanged and uninterpreted -- what changes is that they now
+// measure through the air as well as across the ground, which is what makes a
+// camera 900 m down refine the rock around it instead of the surface above it.
+float SectorStreamer::tile_near_dist(int level, int64_t tx, int64_t ty,
+                                     int64_t tz) const {
     const float S = level_size(level);
     const float x0 = float(tx) * S, x1 = x0 + S;
     const float z0 = float(tz) * S, z1 = z0 + S;
@@ -254,7 +263,11 @@ float SectorStreamer::tile_near_dist(int level, int64_t tx, int64_t tz) const {
                               last_anchor_x_ - x1);
     const float dz = std::max(std::max(z0 - last_anchor_z_, 0.0f),
                               last_anchor_z_ - z1);
-    return std::sqrt(dx * dx + dz * dz);
+    if (!cfg_.volumetric_sectors) return std::sqrt(dx * dx + dz * dz);
+    const float y0 = float(ty) * S, y1 = y0 + S;
+    const float dy = std::max(std::max(y0 - last_anchor_y_, 0.0f),
+                              last_anchor_y_ - y1);
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
 int SectorStreamer::nested_scatter_tier(float d) const {
@@ -265,30 +278,46 @@ int SectorStreamer::nested_scatter_tier(float d) const {
     return cfg_.rings.empty() ? 0 : cfg_.rings.back().rung;
 }
 
+// `probe_y` is the world y the edge is walked at: the centre of the tile's own
+// vertical span under the octree, and ignored with the flag off. The edge stays
+// a LINE rather than becoming an area -- this pass still tests the four lateral
+// faces, and it tests them within the probing tile's own horizontal slab, which
+// is the honest generalisation of "the four cardinal neighbours". The two ±y
+// faces are M3-WP3.
 int SectorStreamer::min_edge_level(bool vary_z, float fixed, float t0, float t1,
+                                   float probe_y,
                                    int seg_level, int stop_below) const {
     // Probe the segment's own CENTRE -- an interior point of whichever tile
     // covers it, never a tile boundary, so the answer is unambiguous.
     const float mid = 0.5f * (t0 + t1);
-    const int m = vary_z ? desired_level_at(fixed, mid)
-                         : desired_level_at(mid, fixed);
+    const int m = vary_z ? desired_level_at(fixed, probe_y, mid)
+                         : desired_level_at(mid, probe_y, fixed);
     // Nothing desired out there (past the reach): no adjacency constraint.
     if (m < 0) return kMaxLevel + 1;
     // A tile at or above this segment's level spans the whole segment, because
     // the grids nest. That is the early exit that makes this cheap.
     if (m >= seg_level || seg_level <= 0) return m;
-    const int a = min_edge_level(vary_z, fixed, t0, mid, seg_level - 1, stop_below);
+    const int a = min_edge_level(vary_z, fixed, t0, mid, probe_y,
+                                 seg_level - 1, stop_below);
     if (a < stop_below) return a;                 // already a violation
-    const int b = min_edge_level(vary_z, fixed, mid, t1, seg_level - 1, stop_below);
+    const int b = min_edge_level(vary_z, fixed, mid, t1, probe_y,
+                                 seg_level - 1, stop_below);
     return std::min(a, b);
 }
 
-int SectorStreamer::desired_level_at(float wx, float wz) const {
+// `wy` is floored per level exactly as wx/wz are, so a probe point resolves to
+// whichever tile actually contains it at each level -- the same rule in three
+// axes rather than two. With the octree off it collapses to kFlatTy and the
+// argument is ignored, which is why callers may pass anything there.
+int SectorStreamer::desired_level_at(float wx, float wy, float wz) const {
     for (int L = 0; L <= max_level(); ++L) {
         const float S = level_size(L);
         const int64_t tx = int64_t(std::floor(wx / S));
         const int64_t tz = int64_t(std::floor(wz / S));
-        auto it = sectors_.find(nested_key(L, tx, kFlatTy, tz));
+        const int64_t ty = cfg_.volumetric_sectors
+                               ? int64_t(std::floor(wy / S))
+                               : kFlatTy;
+        auto it = sectors_.find(nested_key(L, tx, ty, tz));
         if (it != sectors_.end() && it->second.desired_level == L) return L;
     }
     return -1;
@@ -298,8 +327,11 @@ int SectorStreamer::desired_level_at(float wx, float wz) const {
 // Nested mode: the desired set
 // ---------------------------------------------------------------------------
 
-void SectorStreamer::mark_desired(int level, int64_t tx, int64_t tz) {
-    auto& st = sectors_[nested_key(level, tx, kFlatTy, tz)];
+void SectorStreamer::mark_desired(int level, int64_t tx, int64_t ty,
+                                  int64_t tz) {
+    auto& st = sectors_[nested_key(level, tx, ty, tz)];
+    // XZ on purpose even under the octree -- this drives the SCATTER TIER, and
+    // scatter is a horizontal notion. See the note on the declaration.
     st.dist          = tile_centre_dist(level, tx, tz);
     st.desired_level = level;
     st.desired_lod   = kMaxLevel - level;
@@ -338,9 +370,22 @@ void SectorStreamer::mark_desired(int level, int64_t tx, int64_t tz) {
 }
 
 void SectorStreamer::descend(
-    int level, int64_t tx, int64_t tz,
+    int level, int64_t tx, int64_t ty, int64_t tz,
     const std::unordered_map<uint64_t, char, KeyHash>& finer_resident) {
-    const float nd = tile_near_dist(level, tx, tz);
+    // THE OCTREE EXTENT, tested per node rather than only at the root -- and
+    // the root clamp is not enough, which is the whole reason this is here. A
+    // top-level tile is `sector_size << kMaxLevel` tall (2048 m at a 64 m
+    // world), so the row containing y_min straddles it by design; its lower
+    // children then subdivide ground the world never claimed. Clamping only the
+    // root bounds the tree by a tile of the COARSEST size, which is not a bound
+    // at all at the levels that matter.
+    if (cfg_.volumetric_sectors) {
+        const float S  = level_size(level);
+        const float y0 = float(ty) * S;
+        if (y0 + S <= cfg_.y_min || y0 >= cfg_.y_max) return;
+    }
+
+    const float nd = tile_near_dist(level, tx, ty, tz);
 
     // A tile with anything of its own resident -- itself, or something finer
     // under it -- is OCCUPIED, and every boundary it can cross gets hysteresis
@@ -350,18 +395,18 @@ void SectorStreamer::descend(
     // a metre outward and re-requests them when it drifts back -- the uniform
     // path has always held that edge with `outer_r + hysteresis`.
     const bool is_split =
-        finer_resident.find(nested_key(level, tx, kFlatTy, tz)) !=
+        finer_resident.find(nested_key(level, tx, ty, tz)) !=
         finer_resident.end();
     bool self_resident = false;
     {
-        auto it = sectors_.find(nested_key(level, tx, kFlatTy, tz));
+        auto it = sectors_.find(nested_key(level, tx, ty, tz));
         self_resident = it != sectors_.end() &&
                         (it->second.resident_rung >= 0 ||
                          it->second.inflight_rung >= 0);
     }
     const bool occupied = is_split || self_resident;
     if (nd > reach() + (occupied ? cfg_.hysteresis : 0.0f)) return;
-    if (level == 0) { mark_desired(0, tx, tz); return; }
+    if (level == 0) { mark_desired(0, tx, ty, tz); return; }
 
     // Level-(L-1) tiles live inside this radius.
     const float split_r = level_radius_[level - 1];
@@ -546,13 +591,23 @@ void SectorStreamer::descend(
     }
 
     if (split) {
-        // Hysteresis acts on the whole sibling quad, never on one child: a tile
-        // cannot be half-merged, so the four children are decided together.
-        for (int c = 0; c < 4; ++c)
-            descend(level - 1, 2 * tx + (c & 1), 2 * tz + (c >> 1),
+        // Hysteresis acts on the whole SIBLING GROUP, never on one child: a
+        // tile cannot be half-merged, so the children are decided together.
+        // Four of them under the quadtree, eight under the octree -- the child
+        // count is the entire structural difference between the two modes.
+        //
+        // Bit assignment is x, then z, then y, so the low two bits reproduce
+        // the quadtree's exact child order and a flag-off run walks the
+        // children in the order it always did.
+        const int kids = cfg_.volumetric_sectors ? 8 : 4;
+        for (int c = 0; c < kids; ++c)
+            descend(level - 1,
+                    2 * tx + (c & 1),
+                    cfg_.volumetric_sectors ? 2 * ty + ((c >> 2) & 1) : kFlatTy,
+                    2 * tz + ((c >> 1) & 1),
                     finer_resident);
     } else {
-        mark_desired(level, tx, tz);
+        mark_desired(level, tx, ty, tz);
     }
 }
 
@@ -640,38 +695,51 @@ void SectorStreamer::restrict_levels() {
     // annulus is wider than one tile of the coarser level -- but bands are
     // authorable and hysteresis can locally hold a stale level, which is the
     // same reason the uniform path keeps its balance pass.
+    struct Split { int lvl; int64_t tx, ty, tz; };
     for (int sweep = 0; sweep < 8; ++sweep) {
-        std::vector<std::pair<int, std::pair<int64_t, int64_t>>> to_split;
+        std::vector<Split> to_split;
         for (const auto& [k, st] : sectors_) {
             if (st.desired_level < 1) continue;
             int lvl; int64_t tx, ty, tz;
             nested_unkey(k, lvl, tx, ty, tz);
-            (void)ty;   // M1: one row; restrict_levels is an XZ pass
             const float S = level_size(lvl);
             const float ox = float(tx) * S, oz = float(tz) * S;
+            // The y the four lateral edges are walked at: the centre of THIS
+            // tile's own vertical span, so a probe lands inside the slab whose
+            // neighbours we are asking about. Ignored with the octree off.
+            const float py = (float(ty) + 0.5f) * S;
             const float out = 0.5f * cfg_.sector_size;   // just outside an edge
             // The whole edge, not a midpoint sample: a lone over-fine
             // neighbour against a long coarse edge is exactly the case that
             // matters, and a midpoint probe would walk past it.
             const int worst = std::min(
-                std::min(min_edge_level(true,  ox + S + out, oz, oz + S, lvl, lvl - 1),
-                         min_edge_level(true,  ox - out,     oz, oz + S, lvl, lvl - 1)),
-                std::min(min_edge_level(false, oz + S + out, ox, ox + S, lvl, lvl - 1),
-                         min_edge_level(false, oz - out,     ox, ox + S, lvl, lvl - 1)));
-            if (worst < lvl - 1) to_split.push_back({lvl, {tx, tz}});
+                std::min(min_edge_level(true,  ox + S + out, oz, oz + S, py, lvl, lvl - 1),
+                         min_edge_level(true,  ox - out,     oz, oz + S, py, lvl, lvl - 1)),
+                std::min(min_edge_level(false, oz + S + out, ox, ox + S, py, lvl, lvl - 1),
+                         min_edge_level(false, oz - out,     ox, ox + S, py, lvl, lvl - 1)));
+            if (worst < lvl - 1) to_split.push_back({lvl, tx, ty, tz});
         }
         if (to_split.empty()) return;
-        for (const auto& e : to_split) {
-            const int lvl = e.first;
-            const int64_t tx = e.second.first, tz = e.second.second;
-            auto it = sectors_.find(nested_key(lvl, tx, kFlatTy, tz));
+        for (const Split& e : to_split) {
+            auto it = sectors_.find(nested_key(e.lvl, e.tx, e.ty, e.tz));
             if (it != sectors_.end()) {
                 it->second.desired_level = -1;
                 it->second.desired_lod   = -1;
                 it->second.desired_rung  = -1;
             }
-            for (int c = 0; c < 4; ++c)
-                mark_desired(lvl - 1, 2 * tx + (c & 1), 2 * tz + (c >> 1));
+            // EIGHT children under the octree, and this is not cosmetic: this
+            // pass clears the parent's desired flag before marking the
+            // children, so replacing a cube with four of its eight octants
+            // would leave the other four covered by nothing at all -- a hole in
+            // the desired map rather than a level violation. Same child bit
+            // assignment as descend().
+            const int kids = cfg_.volumetric_sectors ? 8 : 4;
+            for (int c = 0; c < kids; ++c)
+                mark_desired(e.lvl - 1,
+                             2 * e.tx + (c & 1),
+                             cfg_.volumetric_sectors ? 2 * e.ty + ((c >> 2) & 1)
+                                                     : kFlatTy,
+                             2 * e.tz + ((c >> 1) & 1));
         }
     }
 }
@@ -785,9 +853,44 @@ void SectorStreamer::update_nested(float anchor_x, float anchor_y,
     const int64_t tx_max = int64_t(std::floor((anchor_x + margin) / S));
     const int64_t tz_min = int64_t(std::floor((anchor_z - margin) / S));
     const int64_t tz_max = int64_t(std::floor((anchor_z + margin) / S));
-    for (int64_t tz = tz_min; tz <= tz_max; ++tz)
-        for (int64_t tx = tx_min; tx <= tx_max; ++tx)
-            descend(top, tx, tz, finer_resident);
+
+    // The vertical span of the scan. One row at ty = 0 unless the octree is on,
+    // which is what keeps the column path's request stream bit-for-bit.
+    //
+    // Two independent bounds, INTERSECTED, and both are needed:
+    //
+    //   * the REACH, mirroring x and z -- without it a world whose authored
+    //     extent is 1700 m tall (StreamCaverns: -1024..704) scans every
+    //     top-level row on every tick regardless of where the camera is;
+    //   * the OCTREE EXTENT, which x and z have no equivalent of -- they are
+    //     unbounded and the reach is the only thing that stops them. y is
+    //     authored, and descending outside it would request tiles over a
+    //     region the world does not claim to define.
+    //
+    // The extent's upper edge is EXCLUSIVE, so a y_max landing exactly on a
+    // tile boundary does not pull in a row of tiles that begins where the world
+    // ends. y_min is inclusive for the mirror-image reason: a tile starting
+    // exactly at y_min is inside.
+    int64_t ty_min = kFlatTy, ty_max = kFlatTy;
+    if (cfg_.volumetric_sectors) {
+        const int64_t reach_lo = int64_t(std::floor((anchor_y - margin) / S));
+        const int64_t reach_hi = int64_t(std::floor((anchor_y + margin) / S));
+        const int64_t ext_lo   = int64_t(std::floor(cfg_.y_min / S));
+        const int64_t ext_hi   = int64_t(std::ceil(cfg_.y_max / S)) - 1;
+        ty_min = std::max(reach_lo, ext_lo);
+        ty_max = std::min(reach_hi, ext_hi);
+        // An empty intersection is a legitimate outcome, not an error: the
+        // camera is outside the world's authored vertical extent by more than
+        // the whole reach, and nothing should be resident. The loop below
+        // simply does not run, every resident tile stops being desired, and
+        // the eviction pass tears the world down -- which is what flying out
+        // of a world's bounds should do.
+    }
+
+    for (int64_t ty = ty_min; ty <= ty_max; ++ty)
+        for (int64_t tz = tz_min; tz <= tz_max; ++tz)
+            for (int64_t tx = tx_min; tx <= tx_max; ++tx)
+                descend(top, tx, ty, tz, finer_resident);
 
     // The variant is packed inside mark_desired() now; there is no third sweep
     // here any more, because nothing about a tile's request depends on its

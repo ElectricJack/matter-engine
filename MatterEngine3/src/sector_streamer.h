@@ -220,6 +220,17 @@ struct Config {
     // Forced off when `nested_sectors` is off -- see the note there.
     bool volumetric_sectors = false;
 
+    // The OCTREE'S VERTICAL EXTENT, and only that (volumetric_sectors only).
+    // The selector will not descend outside [y_min, y_max] and no tile is
+    // requested there, which is what stops an octree over an unbounded axis.
+    // These are the world's authored yMin/yMax -- the same two numbers that
+    // bound a COLUMN tile's mesh slab today, reinterpreted rather than added,
+    // because a cube tile is its own slab (mesh_sector_tiled takes no y range).
+    //
+    // Ignored entirely with the flag off, where a column already spans them.
+    float y_min = -64.0f;
+    float y_max = 192.0f;
+
     // STAGED REFINEMENT (docs/volumetric-sectors-design-2026-08-10.md §4.5,
     // first half). Nested only, default ON.
     //
@@ -405,13 +416,17 @@ private:
     std::vector<Eviction> evictions_;
     int inflight_ = 0;
     float last_anchor_x_ = 0.0f;
-    // STORED, NEVER READ (M1). Nothing below consults it: sector_dist,
-    // tile_centre_dist and tile_near_dist are XZ distances and the descent is
-    // an XZ quadtree, so a camera 900 m underground selects exactly the tiles
-    // it selected before this field existed. M3's octree is what starts reading
-    // it. Kept rather than dropped at the boundary so that the anchor's route
-    // -- WorldTransform m[7] -> submit_anchor -> AnchorSample -> here -- is
-    // proven end to end before any selection rule depends on it.
+    // READ ONLY UNDER `volumetric_sectors` (M3-WP2; stored and unread in M1).
+    // `tile_near_dist` adds the y term and the top-level scan sweeps a `ty`
+    // range only when the flag is on, so with it off a camera 900 m underground
+    // still selects exactly the tiles it selected before this field existed --
+    // asserted, not assumed (sector_streamer_tests' flag-off trace).
+    //
+    // It was threaded in M1, one milestone before anything consulted it,
+    // precisely so that the anchor's route -- WorldTransform m[7] ->
+    // submit_anchor -> AnchorSample -> here -- was proven end to end before a
+    // selection rule depended on it. A wrong altitude and a wrong octree would
+    // otherwise have been indistinguishable.
     float last_anchor_y_ = 0.0f;
     float last_anchor_z_ = 0.0f;
 
@@ -443,15 +458,29 @@ private:
     // test uses the nearest point (a tile splits if any of it is close enough),
     // which is what makes the desired set a coverage-rule quadtree; everything
     // that ranks or bands a tile as a whole uses the centre.
+    //
+    // THE TWO DIVERGE UNDER `volumetric_sectors`, on purpose.
+    //
+    // `tile_near_dist` becomes 3D: it takes `ty` and measures to the cube, so
+    // the bands become spheres and the descent an octree. That is the selection
+    // rule and it has to see altitude.
+    //
+    // `tile_centre_dist` stays an XZ distance. It feeds `st.dist`, which grades
+    // the SCATTER TIER, and scatter is vegetation standing on the surface -- a
+    // horizontal notion. Adding the y term there would coarsen a surface tile's
+    // vegetation because the camera happens to be flying above it, and would
+    // make a tile 500 m underground compete for a scatter tier it must not have
+    // at all. What that tile actually needs is to own no scatter, which is the
+    // column-ownership rule (M3-WP5), not a distance.
     float tile_centre_dist(int level, int64_t tx, int64_t tz) const;
-    float tile_near_dist(int level, int64_t tx, int64_t tz) const;
+    float tile_near_dist(int level, int64_t tx, int64_t ty, int64_t tz) const;
     // The scatter tier for a tile centre. In nested mode the rings no longer
     // bound residency, so past the last ring this clamps to the coarsest tier
     // instead of returning "not desired".
     int nested_scatter_tier(float centre_dist) const;
     // Which level is desired at a world point right now, or -1. Exactly one
     // level covers any point (coverage rule), so this walks 0..max_level.
-    int desired_level_at(float wx, float wz) const;
+    int desired_level_at(float wx, float wy, float wz) const;
     // (desired_at() lived here. Its only caller was assign_nested_masks, which
     // the edge-mask retirement deleted; desired_level_at above is the survivor
     // and answers the geometric question the descent actually asks.)
@@ -462,7 +491,7 @@ private:
     // a level low enough to be a violation. Probing the edge at the finest tile
     // pitch instead -- the obvious implementation -- costs 2^level probes per
     // side and made update() the most expensive thing in the streamer.
-    int min_edge_level(bool vary_z, float fixed, float t0, float t1,
+    int min_edge_level(bool vary_z, float fixed, float t0, float t1, float probe_y,
                        int seg_level, int stop_below) const;
 
     // TRANSITION GROUPS. A tile that stops being desired under nesting has
@@ -484,14 +513,20 @@ private:
                       bool& any_desired, bool& all_resident) const;
 
     void update_nested(float anchor_x, float anchor_y, float anchor_z);
-    // Quadtree descent: mark (level, tx, tz) desired or recurse into its four
-    // children. `finer_resident` holds the ancestors of every resident tile, so
-    // a tile that is currently SPLIT can be told apart from one that is not --
-    // which is the difference between promotion (no hysteresis) and a merge
-    // (hysteresis), exactly as the uniform path distinguishes them.
-    void descend(int level, int64_t tx, int64_t tz,
+    // Tree descent: mark (level, tx, ty, tz) desired or recurse into its
+    // children -- FOUR under the quadtree, EIGHT under `volumetric_sectors`,
+    // which is the only structural difference between the two modes here.
+    // `finer_resident` holds the ancestors of every resident tile, so a tile
+    // that is currently SPLIT can be told apart from one that is not -- which is
+    // the difference between promotion (no hysteresis) and a merge (hysteresis),
+    // exactly as the uniform path distinguishes them.
+    //
+    // With the flag off `ty` is pinned to kFlatTy on every path, so the octree
+    // code is inert rather than bypassed: one descent, one set of hysteresis
+    // rules, no second implementation to drift.
+    void descend(int level, int64_t tx, int64_t ty, int64_t tz,
                  const std::unordered_map<uint64_t, char, KeyHash>& finer_resident);
-    void mark_desired(int level, int64_t tx, int64_t tz);
+    void mark_desired(int level, int64_t tx, int64_t ty, int64_t tz);
     // Cardinal-adjacent desired tiles must differ by at most one level. Splits
     // the coarser side to a fixpoint; a no-op for band tables whose every
     // annulus is wider than one tile of the coarser level, which the default

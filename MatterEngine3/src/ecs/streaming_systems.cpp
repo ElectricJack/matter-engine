@@ -93,11 +93,12 @@ void sample_streaming_anchor(
         entity.try_get<ecs::WorldTransform>();
     if (transform != nullptr) {
         // m[7] is the transform's Y translation, threaded alongside m[3]/m[11]
-        // by volumetric-sectors M1. It reaches SectorStreamer::update and is
-        // read by nothing there: selection is still an XZ problem until M3
-        // turns the quadtree into an octree. Wired now so that when it does,
-        // the anchor's route is already proven and the diff is the selection
-        // rule alone.
+        // by volumetric-sectors M1 and READ since M3-WP2: under
+        // `volumetricSectors` it is the third term in `tile_near_dist`, which
+        // is what turns the bands from cylinders into spheres. With the flag
+        // off it still reaches SectorStreamer::update and is still read by
+        // nothing there. Wiring it a milestone early is why the octree's first
+        // diff was the selection rule alone.
         coordinator.submit_anchor(
             owner,
             transform->matrix.m[3],

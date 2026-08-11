@@ -459,6 +459,24 @@ matter_stream::Config make_streaming_profile(
                      "running the column path\n");
         profile.volumetric_sectors = false;
     }
+    // The octree's vertical extent (M3-WP2). The world's authored yMin/yMax
+    // REINTERPRETED, not duplicated: with columns they bound a tile's mesh
+    // slab, with cubes they bound the tree. Copied unconditionally because
+    // the streamer only reads them under the flag, and a value that is only
+    // sometimes populated is harder to reason about than one that is always
+    // right and sometimes unused.
+    profile.y_min = world_settings.y_min;
+    profile.y_max = world_settings.y_max;
+    if (profile.volumetric_sectors && !(profile.y_max > profile.y_min)) {
+        // An inverted or empty extent would make the ty range empty on every
+        // tick -- a world that streams nothing, with no other symptom. Refuse
+        // the mode rather than the world: columns do not consult these.
+        std::fprintf(stderr,
+                     "[stream] volumetricSectors needs yMax > yMin (got "
+                     "%.3f..%.3f); running the column path\n",
+                     profile.y_min, profile.y_max);
+        profile.volumetric_sectors = false;
+    }
 
     // ---- the 20-bit reach check (volumetric-sectors M1, design risk §7.8) ---
     //
