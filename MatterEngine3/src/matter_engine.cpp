@@ -217,6 +217,13 @@ thread_local double g_pub_cpu_ms = 0.0;
 thread_local double g_pub_gpu_ms = 0.0;
 thread_local double g_pub_vertexloop_ms = 0.0;
 
+// Declared outside the viewer guard purely so WorldSession::Impl can name it in
+// a member declaration. MatterEngine3's own build does not define
+// MATTER_VULKAN_VIEWER (see its Makefile), so there the struct stays incomplete
+// and the one member taking a pointer to it is never defined or called; only
+// MatterEditor's compile of this TU sees the definition below.
+struct VtSurfaceClassifier;
+
 #ifdef MATTER_VULKAN_VIEWER
 // WP-F (chart-VT Phase 4, contract C4): everything the surfaces()-tape
 // classification of one part registration needs. `tape` is the world's
@@ -1951,8 +1958,10 @@ struct WorldSession::Impl {
     static uint32_t weld_instance_id(const WeldPairKey& pair,
                                      uint64_t part_hash);
     // WeldMesh (triangle soup in material buckets) -> VkScenePart. Returns
-    // false when there is nothing to draw.
+    // false when there is nothing to draw. `surface` (may be null) is the
+    // world's surfaces() tape; see the definition for why a weld needs it.
     static bool build_weld_part(uint64_t part_hash, const seam::WeldMesh& mesh,
+                                const VtSurfaceClassifier* surface,
                                 viewer::VkScenePart& out);
     // Register `rec`'s geometry and stage its instance into `txn`. Leaves the
     // record undrawn (and both attempted flags clear) on any failure.
@@ -5074,8 +5083,34 @@ uint32_t WorldSession::Impl::weld_instance_id(const WeldPairKey& pair,
 // guarded, so a headless session keeps the welds in memory exactly as before
 // this work package.
 #ifdef MATTER_VULKAN_VIEWER
+// WHY A WELD IS CLASSIFIED HERE, AND NOT LEFT ON ITS BAKED MATERIAL.
+//
+// The mesher writes each boundary vertex's material from `field.material_at()`
+// -- the PRE-TAPE bake output. For a sector that value is overwritten before it
+// ever reaches the shader: build_vulkan_part's legacy-parity block (search
+// "Fail-closed parity for the LEGACY path") re-classifies every rung's vertices
+// through the world's surfaces() tape and writes the argmax into
+// material_index, precisely because a rung drawn without a VT slot honours that
+// field and would otherwise "render as if the surfaces() classification did not
+// exist (the uniform tan far field)".
+//
+// A weld is permanently such a rung -- `chart_rung` stays UINT32_MAX below, so
+// it has no VT slot ever -- and it was the one geometry on screen that still
+// skipped the override. Measured on StreamMountain at a settled pose: 2987
+// pixels where the weld's albedo read [100,80,57] (untextured rock) against the
+// [129,116,103] the tape gives the snow around it, and 0.38-0.52 of the
+// neighbouring luminance at every sun azimuth and elevation. That is the defect
+// reported as "gaps in the mountain terrain": the strips are not holes -- depth
+// is continuous across them and RT sun visibility matches their neighbours --
+// they are the seam fix drawing itself in the wrong material, which reads as a
+// black crack against lit snow.
+//
+// So: same tape, same argmax, same `surface.w = 1` marker as the sector path.
+// The classifier is per-weld rather than per-world because `local_to_world`
+// carries the mesh's rebased origin, which is the coarse tile's.
 bool WorldSession::Impl::build_weld_part(uint64_t part_hash,
                                          const seam::WeldMesh& mesh,
+                                         const VtSurfaceClassifier* surface,
                                          viewer::VkScenePart& out) {
     out = viewer::VkScenePart{};
     out.part_hash = part_hash;
@@ -5089,7 +5124,10 @@ bool WorldSession::Impl::build_weld_part(uint64_t part_hash,
     float mx[3] = {-std::numeric_limits<float>::max(),
                    -std::numeric_limits<float>::max(),
                    -std::numeric_limits<float>::max()};
+    std::vector<uint32_t> bucket_first_vertex;
+    bucket_first_vertex.reserve(mesh.buckets.size());
     for (const seam::WeldBucket& b : mesh.buckets) {
+        bucket_first_vertex.push_back((uint32_t)out.vertices.size());
         const size_t verts = b.positions.size() / 3;
         const bool have_normals = b.normals.size() >= b.positions.size();
         for (size_t v = 0; v < verts; ++v) {
@@ -5116,6 +5154,51 @@ bool WorldSession::Impl::build_weld_part(uint64_t part_hash,
         }
     }
     if (out.vertices.empty() || out.indices.size() % 3 != 0) return false;
+
+    // ---- the surfaces() argmax override (see the note above this function) --
+    //
+    // Deliberately a straight transcription of build_vulkan_part's legacy-parity
+    // block rather than a shared helper: that one walks LoadedPart rungs and
+    // reuses a chart rung's weights when it has them, and a weld has neither.
+    // What must stay in step is the RULE -- argmax over the weight columns,
+    // all-zero columns keep the baked material, `surface.w = 1` -- and that is
+    // small enough to state twice and check by reading.
+    if (surface && surface->tape && surface->tape->material_count() > 0) {
+        const uint32_t columns = surface->tape->material_count();
+        out.surface_tape_hash = surface->tape_hash;
+        out.surface_materials.reserve(columns);
+        for (uint32_t k = 0; k < columns; ++k)
+            out.surface_materials.push_back(
+                static_cast<uint32_t>(surface->tape->material_handle(k)));
+        std::vector<uint8_t> weights;
+        for (size_t bi = 0; bi < mesh.buckets.size(); ++bi) {
+            const seam::WeldBucket& b = mesh.buckets[bi];
+            const uint32_t verts = (uint32_t)(b.positions.size() / 3);
+            if (verts == 0) continue;
+            vt_classify_chart_vertices(
+                *surface, b.positions.data(),
+                b.normals.size() >= b.positions.size() ? b.normals.data()
+                                                       : nullptr,
+                verts, weights);
+            if (weights.size() != (size_t)verts * columns) continue;
+            for (uint32_t v = 0; v < verts; ++v) {
+                const uint8_t* w = weights.data() + (size_t)v * columns;
+                uint32_t best = 0, best_weight = 0, total = 0;
+                for (uint32_t k = 0; k < columns; ++k) {
+                    total += w[k];
+                    if (w[k] > best_weight) { best_weight = w[k]; best = k; }
+                }
+                // A vertex the tape does not claim keeps its baked material,
+                // matching the sector path and the compositor.
+                if (total == 0) continue;
+                viewer::VkRasterVertex& vertex =
+                    out.vertices[bucket_first_vertex[bi] + v];
+                vertex.material_index = out.surface_materials[best];
+                vertex.surface.w = 1.0f;
+            }
+        }
+    }
+
     viewer::VkSceneCluster cluster;
     cluster.aabb_min = {mn[0], mn[1], mn[2]};
     cluster.aabb_max = {mx[0], mx[1], mx[2]};
@@ -5191,8 +5274,31 @@ bool WorldSession::Impl::publish_weld_draw(const WeldPairKey& pair,
             return false;
         }
     }
+    // The world's surfaces() tape, anchored on THIS weld's origin. Same shape
+    // as the sector publish job's `sector_surface`, and world_anchored is 1 for
+    // the same reason: a weld part hash names exactly one instance (the pair),
+    // so the variant is never shared and world inputs are legitimate.
+    VtSurfaceClassifier weld_surface;
+    const VtSurfaceClassifier* weld_surface_ptr = nullptr;
+    if (world_surface) {
+        weld_surface.tape = world_surface.get();
+        weld_surface.field = world_field.get();
+        weld_surface.tape_hash = world_surface_hash;
+        weld_surface.world_anchored =
+            terrain_field::surface_variant_world_anchored(1);
+        std::memset(weld_surface.local_to_world, 0,
+                    sizeof(weld_surface.local_to_world));
+        weld_surface.local_to_world[0] = 1.0f;
+        weld_surface.local_to_world[5] = 1.0f;
+        weld_surface.local_to_world[10] = 1.0f;
+        weld_surface.local_to_world[15] = 1.0f;
+        weld_surface.local_to_world[3] = (float)rec.mesh.origin_x;
+        weld_surface.local_to_world[7] = (float)rec.mesh.origin_y;
+        weld_surface.local_to_world[11] = (float)rec.mesh.origin_z;
+        weld_surface_ptr = &weld_surface;
+    }
     viewer::VkScenePart part;
-    if (!build_weld_part(hash, rec.mesh, part)) return false;
+    if (!build_weld_part(hash, rec.mesh, weld_surface_ptr, part)) return false;
     const uint32_t id = weld_instance_id(pair, hash);
     // Non-zero and out of the authored counters' range by construction (the
     // 0x80000000 fold). Asserted rather than assumed because a zero stable_id
