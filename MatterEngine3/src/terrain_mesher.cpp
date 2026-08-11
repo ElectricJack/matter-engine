@@ -2,6 +2,7 @@
 // Pure CPU; no JS, no GL.
 
 #include "terrain_mesher.h"
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <unordered_map>
@@ -32,6 +33,31 @@ void push_tri(MaterialBucket& b,
     }
 }
 
+// --- overlap band (M0-WP7) -------------------------------------------------
+// Same two helpers against seam::OverlapBand. Positions go out WORLD-absolute
+// and in double (CellVert stores x/z tile-local, y world), because the band is
+// consumed by the welder, which spans two tiles and rebases against an origin of
+// its own. See the long note in seam_boundary.h.
+seam::OverlapBucket& band_bucket_for(seam::OverlapBand& band, uint32_t mat) {
+    for (auto& b : band.buckets) if (b.material == mat) return b;
+    band.buckets.push_back(seam::OverlapBucket{});
+    band.buckets.back().material = mat;
+    return band.buckets.back();
+}
+
+void push_band_tri(seam::OverlapBucket& b, double ox, double oz,
+                   const CellVert& a, const CellVert& c, const CellVert& d) {
+    const CellVert* vs[3] = {&a, &c, &d};
+    for (const CellVert* v : vs) {
+        b.positions.push_back(ox + double(v->p.x));
+        b.positions.push_back(double(v->p.y));
+        b.positions.push_back(oz + double(v->p.z));
+        b.normals.push_back(v->n.x);
+        b.normals.push_back(v->n.y);
+        b.normals.push_back(v->n.z);
+    }
+}
+
 // 12 cell edges as corner-offset pairs (i0,j0,k0, i1,j1,k1).
 const int kEdges[12][6] = {
     {0,0,0,1,0,0},{0,1,0,1,1,0},{0,0,1,1,0,1},{0,1,1,1,1,1},
@@ -42,9 +68,10 @@ const int kEdges[12][6] = {
 } // namespace
 
 bool mesh_sector(const terrain_field::FieldRuntime& field,
-                 int64_t tx, int64_t tz, int rung, int edge_mask,
+                 int64_t tx, int64_t tz, int rung,
                  float sector_size, float y_min, float y_max,
-                 SectorMesh& out, std::string& err) {
+                 SectorMesh& out, seam::SectorBoundary* boundary_out,
+                 std::string& err) {
     // Rung is a power-of-two voxel ladder around a 2 m base, extending in BOTH
     // directions:
     //   rung  3 -> 0.25 m      rung  0 -> 2 m (the base)
@@ -57,19 +84,19 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     // the far field, and no amount of band tuning could hide it because the two
     // sides were different surfaces, not different resolutions of one.
     //
-    // Coarsening is safe across rungs by construction -- the [1..n] ownership
-    // rule below already makes any LOD pair watertight, which is why the border
-    // skirts could be deleted in 2026-07. Nothing extra is needed to stitch a
-    // 4 m sector to a 2 m one.
+    // This function meshes ONE tile from the field alone. It is told nothing
+    // about its neighbours and there is nothing it could be told: the mask that
+    // used to name them described the level the streamer WANTED next door, not
+    // the tile actually on screen, so it was wrong for the whole duration of
+    // every split, merge, park and pending bake -- and it forced a re-bake under
+    // a new cache key whenever a distant neighbour changed level. See the note
+    // on mesh_sector in terrain_mesher.h for the retraction in full. Cross-level
+    // seams are welded at runtime from `boundary_out` instead.
     //
     // -5 is the floor because a 64 m sector at 64 m voxels is a single cell;
     // anything coarser has no lattice left to march.
     if (rung < -5 || rung > 3) {
         err = "terrain_mesher: rung out of -5..3";
-        return false;
-    }
-    if (edge_mask < 0 || edge_mask > 15) {
-        err = "terrain_mesher: edge mask out of 0..15";
         return false;
     }
     if (sector_size <= 0.0f || y_min >= y_max) {
@@ -83,133 +110,166 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     const double ox   = double(tx) * double(sector_size);
     const double oz   = double(tz) * double(sector_size);
 
-    // ---- Reach-back on a coarser -x / -z neighbour --------------------------
+    // ---- The direction-asymmetric bridge, and what is NOT done about it -----
     //
     // Face ownership below is `i in [1..n]`, and a +y quad at sample i uses
     // cells ci in {i-1, i}. So a tile's surface reaches ONE OF ITS OWN VOXELS
     // back past its -x border and stops half a voxel short of its +x border:
     // every shared plane is bridged by the tile on its EAST/NORTH side, using
-    // THAT tile's voxel size.
+    // THAT tile's voxel size. That is intentional and stays.
     //
     // At equal size the bridge lands exactly on the neighbour's last vertex
     // (same world samples, bitwise-identical) and the pair is watertight -- the
-    // property that let the border skirts go. Across a 2:1 size step it is
-    // asymmetric:
+    // property that let the border skirts go, and the only seam guarantee this
+    // function makes. Across a 2:1 size step it is asymmetric:
     //
     //   fine west / coarse east -- the COARSE tile bridges, with a 2v-wide ring
     //     cell reaching back to ~X0-v, past the fine mesh's last vertex at
-    //     ~X0-v/2. Overlaps. Closed, which is why this was never noticed.
+    //     ~X0-v/2. Overlaps. Closed.
     //   coarse west / fine east -- the FINE tile bridges, reaching back only
     //     ~v/2, while the coarse mesh's last vertex is at ~X0-v. The strip
     //     between them is emitted by NEITHER tile: a one-voxel gap running the
     //     length of the seam. Measured at 0.88-1.12 fine voxels, every level.
     //
-    // Fix: on a masked -x / -z face, extend this tile's lattice ONE COARSE
-    // VOXEL (two fine samples) outward on that side and let ownership reach
-    // into it. The fine bridge then starts at ~X0-2.5v, comfortably west of the
-    // coarse tile's last vertex, and the two meshes overlap instead of parting
-    // -- the mirror of what already closes the +x/+z direction.
+    // There USED to be a `reach_x`/`reach_z` here that extended the lattice one
+    // coarse voxel outward on a MASKED -x/-z face so the fine bridge overshot
+    // the coarse tile's last vertex. The mechanism worked; the mask gate is what
+    // made it unusable — it could only fire when the bake had guessed the
+    // neighbour's level correctly, and the mask is a statement about the level
+    // map the streamer WANTS, which disagrees with what is drawn throughout
+    // every split, merge, park and pending bake. A seam closer that is correct
+    // only in the steady state closes a seam that was not open, and a tile whose
+    // lattice depends on a neighbour guess is a tile that cannot be cached by
+    // its own identity.
     //
-    // The extension carries raw fine samples, so within the overlap strip the
-    // fine surface deviates from the coarse one by the field's curvature over a
-    // coarse voxel. That is exactly the behaviour the +x/+z direction has
-    // always had (see terrain_mesher_tests: "an overlap is all the seam
-    // needs"). Making the two COINCIDE needs a real 2:1 stitch that
-    // reconstructs the coarse border cell's vertices; this closes the hole
-    // without that machinery.
+    // The strip is therefore closed at RUNTIME instead, in two layers, and this
+    // function's only remaining job is to export what each needs:
     //
-    // Nothing changes for an unmasked face: px == pz == 0 makes every
-    // expression below identical to what it was.
+    //   1. The seam welder builds a crossing band out of the two tiles' own
+    //      boundary vertices (`boundary_out`, exported at the bottom). That is
+    //      the watertight layer, and it closes the strip wherever both sides
+    //      have a vertex to land on.
+    //   2. Where the COARSE side has no vertex at all -- at 2x the voxel a
+    //      boundary cell can see no sign change, so there is no surface anywhere
+    //      near the plane and nothing to land on -- no fan among the fine
+    //      vertices can help. M0-WP6 measured exactly that: four heightfield
+    //      scans, one gapped row each, 0.75-0.88 fine voxels. So the OVERLAP
+    //      band below carries the old reach-back geometry, and the welder draws
+    //      it or not from the pair actually on screen.
     //
-    // This is NOT nested-specific. The uniform ladder has the same hole
+    // ---- The overlap band (M0-WP7) ------------------------------------------
+    //
+    // `kBandCells` extra lattice columns are sampled on the -x and -z sides,
+    // UNCONDITIONALLY: no mask, no neighbour, nothing about this tile's identity
+    // changes. 2 is the old `reach` and is what one COARSE voxel costs.
+    //
+    // THE EMITTED MESH IS BITWISE UNCHANGED, and that is a gate, not a hope
+    // (terrain_mesher_tests "M0-WP7: the overlap band does not move the mesh"
+    // pins mesh AND record hashes taken from the pre-band build). Three things
+    // make it hold, all of them about NOT letting the extension shift an index:
+    //
+    //   * The lattice index `i` keeps its meaning: world x = ox + (i-1)*voxel,
+    //     exactly as before. The band is reached by letting `i` go NEGATIVE, not
+    //     by re-basing it -- only the STORAGE offset moves (`kBandCells` is
+    //     added inside the accessors and nowhere else). Every float expression
+    //     that computes a vertex position sees the identical operands.
+    //   * `h_min`/`h_max`, and therefore the Y slab (`j0_global`, `y0`, `sy`),
+    //     are reduced over the tile's OWN sample box only. Feeding band columns
+    //     into them would move `y0` and shift every vertex in the tile.
+    //   * `owned` is untouched: [1..n] in world terms, as it always was. The
+    //     band is emitted by a SEPARATE predicate into a separate soup.
+    //
+    // The band is precisely "the triangles the mesher would have emitted with
+    // ownership extended into those columns" -- with `reach = 2` the old owned
+    // box was `i in [1, n+2]` in a lattice shifted down by 2, i.e. `i in [-1, n]`
+    // in this one. So the extra samples are the L-shaped set
+    // `[-1,n]x[-1,n] \ [1,n]x[1,n]`, split between the two faces by
+    //
+    //     kFaceNegX band: the extra samples with i <= 0
+    //     kFaceNegZ band: the extra samples with k <= 0
+    //
+    // which covers the L exactly and puts the 2x2 CORNER block (i<=0 and k<=0)
+    // in BOTH. That duplication is deliberate. The corner block's coverage must
+    // not depend on which of the two faces happens to be the cross-level one; if
+    // both are, the two copies are bit-identical triangles drawn twice, which
+    // for opaque geometry is nothing at all, whereas a corner hole is exactly
+    // the defect this band exists to remove.
+    //
+    // Within the band the fine surface deviates from the coarse one by the
+    // field's curvature over a coarse voxel. It is an OVERLAP, not a stitch --
+    // the same thing the +x/+z direction has always done, and the reason the
+    // welder's vertex fan stays: the two close different failures.
+    //
+    // This was never nested-specific. The uniform ladder has the same hole
     // wherever a coarse tile sits west or south of a fine one; nesting only
     // made those borders common and put them near the camera.
-    const int reach_x = (edge_mask & kEdgeNegX) ? 2 : 0;
-    const int reach_z = (edge_mask & kEdgeNegZ) ? 2 : 0;
+    const int kBandCells = 2;
 
     // VOLUMETRIC = the world's density is not `height(x, z) - y`: tunnels,
-    // caverns, overhangs. Three things below specialise on it, and each of the
-    // heightfield versions is a PROVABLE consequence of that identity rather
-    // than an approximation -- the narrow Y slab, the analytic density gradient
-    // in y, and the boundary-polyline seam snap. A volumetric world takes the
-    // general form of all three; a heightfield world keeps every one of its
-    // shortcuts and meshes bit-identically to before the field became 3D.
+    // caverns, overhangs. Two things below still specialise on it, and each of
+    // the heightfield versions is a PROVABLE consequence of that identity rather
+    // than an approximation -- the narrow Y slab and the analytic density
+    // gradient in y. A volumetric world takes the general form of both; a
+    // heightfield world keeps both shortcuts and meshes bit-identically to
+    // before the field became 3D.
+    //
+    // There was a THIRD: the cross-rung seam snap, in a heightfield form that
+    // rewrote the boundary height polyline and a volumetric form one dimension
+    // up that rewrote the boundary density PLANE. Both are deleted with the
+    // edge mask that drove them (see the retraction above). Nothing here reads
+    // a neighbour any more, so nothing here has to guess about one.
     const bool volumetric = !field.is_heightfield();
 
     // Evaluate height once per X/Z lattice point, then mesh only a narrow Y
     // slab snapped to the authored global lattice. Neighboring sectors can use
     // different depths without shifting their shared sample coordinates.
-    const int sx = n + 3 + reach_x, szn = n + 3 + reach_z;
+    //
+    // LATTICE INDEXING. Lattice index i sits at world x = ox + (i-1)*voxel, so
+    // the tile's own edges are i == 1 and i == n+1. Unconditional, and unchanged
+    // by the band: the tile's own n+1 lattice points plus one ghost ring on each
+    // side run i in [0, n+2], and the band simply lets i reach `kBandCells`
+    // further NEGATIVE. Nothing is re-based; only `idx_i`/`idx_k` know about the
+    // extension, so every world-coordinate expression below is untouched.
+    const int i_lo = -kBandCells, i_hi = n + 2;   // inclusive lattice bounds
+    const int k_lo = -kBandCells, k_hi = n + 2;
+    const int sx = i_hi - i_lo + 1, szn = k_hi - k_lo + 1;   // n + 3 + kBandCells
+    const auto idx_i = [&](int i) { return size_t(i - i_lo); };
+    const auto idx_k = [&](int k) { return size_t(k - k_lo); };
+
     std::vector<float> heights(size_t(sx) * size_t(szn));
     auto hat = [&](int i, int k) -> float& {
-        return heights[size_t(k) * size_t(sx) + size_t(i)];
+        return heights[idx_k(k) * size_t(sx) + idx_i(i)];
     };
+    // h_min/h_max are reduced over the tile's OWN sample box [0, n+2]^2 ONLY.
+    // The band columns are sampled but excluded, because these two drive the Y
+    // slab (j0_global -> y0) and every vertex position in the tile is measured
+    // from y0. Letting a band column widen the slab would move the whole mesh --
+    // the one place where "sample more" would not have been free.
+    //
+    // The band therefore lives inside a slab chosen without it. That is sound
+    // and not merely convenient: the slab already carries a +/-2 voxel margin
+    // past the sampled surface, and the band reaches 2 voxels tangentially, so
+    // it is clipped only where the surface moves more than two voxels of height
+    // across two voxels of ground -- terrain steeper than 45 degrees at the
+    // sampling scale, where the mesh itself is already a stack of vertical
+    // faces and an overlap band would add nothing.
     float h_min = std::numeric_limits<float>::infinity();
     float h_max = -std::numeric_limits<float>::infinity();
-    for (int k = 0; k < szn; ++k) {
-        for (int i = 0; i < sx; ++i) {
+    for (int k = k_lo; k <= k_hi; ++k) {
+        for (int i = i_lo; i <= i_hi; ++i) {
             const float h = field.height_at(
-                float(ox + (i - 1 - reach_x) * double(voxel)),
-                float(oz + (k - 1 - reach_z) * double(voxel)));
+                float(ox + (i - 1) * double(voxel)),
+                float(oz + (k - 1) * double(voxel)));
             if (!std::isfinite(h)) {
                 err = "terrain_mesher: non-finite height";
                 return false;
             }
             hat(i, k) = h;
-            h_min = std::min(h_min, h);
-            h_max = std::max(h_max, h);
+            if (i >= 0 && k >= 0) {           // the tile's own box; see above
+                h_min = std::min(h_min, h);
+                h_max = std::max(h_max, h);
+            }
         }
-    }
-    // ---- Cross-rung seam closure, heightfield -----------------------------
-    //
-    // Skipped when volumetric: this snaps `hat`, and the only two things that
-    // read `hat` are h_min/h_max (already computed, above) and the heightfield
-    // density fill (not taken). The volumetric world's equivalent snaps the
-    // boundary PLANE of the density lattice instead, and lives next to that
-    // fill further down -- one dimension up, same rule, and it covers the
-    // surface as well as the cave walls because there the surface is not a
-    // separate thing.
-    //
-    // The density below is h(x,z) - y, so the surface this mesher traces is
-    // exactly the sampled height lattice. Two sectors at the SAME rung share
-    // their boundary samples and meet exactly -- that is the [1..n] ownership
-    // rule, and why the skirts could go. Across DIFFERENT rungs they do not:
-    // the coarse side interpolates linearly between every OTHER sample, while
-    // the fine side follows h at each one, so the two polylines diverge by up
-    // to the field's curvature over a coarse voxel. That is the grid of cracks
-    // an all-voxel ladder shows and a single-rung world never could.
-    //
-    // Fix on the FINE side, matching what the heightfield mesher does with the
-    // same mask: on a face whose neighbour is one rung coarser, replace each
-    // odd boundary sample with the average of its two even neighbours. The
-    // fine boundary polyline then IS the coarse neighbour's linear
-    // interpolation, so the two agree by construction rather than by luck.
-    //
-    // edge_mask bits match mesh_sector_heightfield exactly (0 = +x, 1 = -x,
-    // 2 = +z, 3 = -z) so the streamer's existing masks carry over unchanged.
-    //
-    // Boundary sample indices: hat(i,k) is sampled at ox + (i-1-reach_x)*voxel, so
-    // the sector's own edges are i == 1+reach_x (x = ox) and i == n+1+reach_x
-    // (x = ox + S), and likewise for k. Interior samples are untouched -- this
-    // only moves the one row or column that has to agree with someone else.
-    //
-    // The reach offsets matter here twice over: they move which index IS the
-    // boundary, and they move the PARITY the snap walks. "Odd offsets" means
-    // odd relative to the tile's own edge, not to the array -- the reach-back
-    // extension is not part of the boundary polyline being matched.
-    if (!volumetric) {
-        const auto snap_column = [&](int i) {          // vary k, fixed i
-            for (int k = 2 + reach_z; k <= n + reach_z; k += 2)  // odd from edge
-                hat(i, k) = 0.5f * (hat(i, k - 1) + hat(i, k + 1));
-        };
-        const auto snap_row = [&](int k) {             // vary i, fixed k
-            for (int i = 2 + reach_x; i <= n + reach_x; i += 2)
-                hat(i, k) = 0.5f * (hat(i - 1, k) + hat(i + 1, k));
-        };
-        if (edge_mask & kEdgeNegX) snap_column(1 + reach_x);
-        if (edge_mask & kEdgePosX) snap_column(n + 1 + reach_x);
-        if (edge_mask & kEdgeNegZ) snap_row(1 + reach_z);
-        if (edge_mask & kEdgePosZ) snap_row(n + 1 + reach_z);
     }
 
     if (h_min < y_min || h_max > y_max) {
@@ -240,16 +300,17 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
     const int sy = j1_global - j0_global + 1;
 
     // Narrow density lattice dimensions:
-    //   x/z: (n+3) samples — one ring outside on each side (i=-1..n+1)
+    //   x/z: sx samples — the tile's n+1 lattice points, one ghost ring on each
+    //        side, and kBandCells more on the -x/-z sides (i, k in [i_lo, i_hi])
     //   y: globally aligned samples from j0_global through j1_global
     std::vector<float> d(size_t(sx) * size_t(sy) * size_t(szn));
     auto at = [&](int i, int j, int k) -> float& {
-        return d[(size_t(k) * size_t(sy) + size_t(j)) * size_t(sx) + size_t(i)];
+        return d[(idx_k(k) * size_t(sy) + size_t(j)) * size_t(sx) + idx_i(i)];
     };
     if (!volumetric) {
-        for (int k = 0; k < szn; ++k)
+        for (int k = k_lo; k <= k_hi; ++k)
             for (int j = 0; j < sy; ++j)
-                for (int i = 0; i < sx; ++i)
+                for (int i = i_lo; i <= i_hi; ++i)
                     at(i, j, k) = hat(i, k) - (y0 + j * voxel);
     } else {
         // One ColumnCache per (x, z), reused down the column. The y-independent
@@ -260,13 +321,13 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
         //
         // Note this loop does NOT read `hat`: the density comes from the field
         // directly, so the surface and the cave walls are the same lattice and
-        // get the same treatment (including the seam snap below). `hat` still
-        // earns its keep -- h_min/h_max bound the slab above.
+        // get the same treatment. `hat` still earns its keep -- h_min/h_max
+        // bound the slab above.
         terrain_field::FieldRuntime::ColumnCache cc;
-        for (int k = 0; k < szn; ++k) {
-            const float wz = float(oz + (k - 1 - reach_z) * double(voxel));
-            for (int i = 0; i < sx; ++i) {
-                const float wx = float(ox + (i - 1 - reach_x) * double(voxel));
+        for (int k = k_lo; k <= k_hi; ++k) {
+            const float wz = float(oz + (k - 1) * double(voxel));
+            for (int i = i_lo; i <= i_hi; ++i) {
+                const float wx = float(ox + (i - 1) * double(voxel));
                 field.eval_column(cc, wx, wz);
                 for (int j = 0; j < sy; ++j) {
                     // Not `d` -- that is the lattice vector this writes into.
@@ -280,69 +341,40 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
             }
         }
 
-        // ---- Cross-rung seam closure, volumetric ----------------------------
+        // The volumetric cross-rung seam snap USED TO BE HERE, and its deletion
+        // is worth recording because the mechanism it described is real and the
+        // premise it rested on was not. It rewrote this tile's boundary density
+        // PLANE -- each fine sample at an odd position replaced by the bilinear
+        // interpolation of its even neighbours, along k, along j, or from the
+        // four surrounding evens -- so the fine plane BECAME the coarse
+        // neighbour's interpolant and a cave wall crossing the seam met exactly.
+        // That derivation is sound.
         //
-        // The height snap above matches the SURFACE polyline against a coarser
-        // neighbour, and for a heightfield that is the whole shared boundary. A
-        // volumetric world's shared boundary is a PLANE, and a cave wall
-        // crossing it needs the same treatment or every terrain-band boundary
-        // rings the world in cracked tunnels.
-        //
-        // Same rule, one dimension up: the coarse neighbour samples every other
-        // point of this plane in BOTH directions and interpolates bilinearly
-        // between them, so each fine sample at an odd position is replaced by
-        // the interpolation of its even neighbours -- along k, along j, or
-        // (odd, odd) from the four surrounding evens. The fine plane then IS the
-        // coarse side's interpolant, by construction rather than by luck.
-        //
-        // Every formula reads only EVEN-EVEN samples, so the three cases cannot
-        // contaminate each other and the order they run in does not matter.
-        //
-        // Parity: k is odd relative to the TILE's own edge (the reach-back
-        // extension is not part of the boundary), while j is odd relative to the
-        // GLOBAL y lattice -- the coarse tile snaps its own j0 to a multiple of
-        // its own voxel, which is an even fine index, so `(j0_global + j) & 1`
-        // is what tells the two apart.
-        const auto snap_plane = [&](int fixed, bool vary_i) {
-            for (int j = 0; j < sy; ++j) {
-                const bool jodd = ((j0_global + j) & 1) != 0;
-                const int  n_t  = vary_i ? sx : szn;
-                const int  edge = vary_i ? (1 + reach_x) : (1 + reach_z);
-                for (int t = 0; t < n_t; ++t) {
-                    const bool todd = ((t - edge) & 1) != 0;
-                    if (!todd && !jodd) continue;              // a shared sample
-                    if (t == 0 || t + 1 >= n_t) continue;      // no even pair
-                    if (jodd && (j == 0 || j + 1 >= sy)) continue;
-                    // Index helper: on a +-x face `fixed` is i and `t` is k;
-                    // on a +-z face it is the other way round.
-                    const auto S = [&](int tt, int jj) -> float& {
-                        return vary_i ? at(tt, jj, fixed) : at(fixed, jj, tt);
-                    };
-                    if (todd && !jodd)
-                        S(t, j) = 0.5f * (S(t - 1, j) + S(t + 1, j));
-                    else if (!todd && jodd)
-                        S(t, j) = 0.5f * (S(t, j - 1) + S(t, j + 1));
-                    else
-                        S(t, j) = 0.25f * (S(t - 1, j - 1) + S(t + 1, j - 1) +
-                                           S(t - 1, j + 1) + S(t + 1, j + 1));
-                }
-            }
-        };
-        if (edge_mask & kEdgeNegX) snap_plane(1 + reach_x,     /*vary_i=*/false);
-        if (edge_mask & kEdgePosX) snap_plane(n + 1 + reach_x, /*vary_i=*/false);
-        if (edge_mask & kEdgeNegZ) snap_plane(1 + reach_z,     /*vary_i=*/true);
-        if (edge_mask & kEdgePosZ) snap_plane(n + 1 + reach_z, /*vary_i=*/true);
+        // Its premise was "I know which of my faces has a coarser neighbour",
+        // and the mask that answered was a statement about the level map the
+        // streamer wants, not about the tile drawn next door. Every split,
+        // merge, park and pending bake made the two disagree, and a plane
+        // snapped for a neighbour that is not there is worse than one not
+        // snapped at all: it bends the fine surface away from a coarse tile that
+        // was never drawn. The lattice this tile writes is now the raw field,
+        // full stop, and the boundary records exported below carry it to a
+        // welder that can see both actual tiles.
     }
 
     // Surface-nets: one vertex per mixed-sign cell, placed at the centroid of
     // edge crossing positions. Normal from central-diff of the density field.
+    // Cell ci spans lattice [ci, ci+1], so cells run [i_lo, i_hi-1]. Only the
+    // LOWER bound moved (from 0 to -kBandCells) and only the storage offset in
+    // `key` moved with it: no cell the owned mesh ever asks for -- ci in [0, n],
+    // ck in [0, n] -- changes its bound test, its centroid arithmetic, or its
+    // resulting position by so much as an ulp.
     std::unordered_map<int64_t, CellVert> verts;
     auto key = [&](int ci, int cj, int ck) -> int64_t {
-        return (int64_t(ck) * sy + cj) * sx + ci;
+        return (int64_t(idx_k(ck)) * sy + cj) * sx + int64_t(idx_i(ci));
     };
     auto get_vert = [&](int ci, int cj, int ck) -> const CellVert* {
-        if (ci < 0 || cj < 0 || ck < 0 ||
-            ci >= sx - 1 || cj >= sy - 1 || ck >= szn - 1) return nullptr;
+        if (ci < i_lo || cj < 0 || ck < k_lo ||
+            ci > i_hi - 1 || cj >= sy - 1 || ck > k_hi - 1) return nullptr;
         auto it = verts.find(key(ci, cj, ck));
         if (it != verts.end()) return &it->second;
         float px = 0, py = 0, pz = 0; int cnt = 0;
@@ -358,14 +390,13 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
         }
         if (!cnt) return nullptr;
         CellVert cv;
-        // Local x/z: (lattice_index - 1 - reach) * voxel — undoes the ring
-        // offset AND the -x/-z reach-back extension, so local (0,0) is still
-        // the tile's own corner and a reach-back vertex is simply negative.
-        // World y: y0 + lattice_j * voxel
+        // Local x/z: (lattice_index - 1) * voxel — undoes the ghost-ring offset,
+        // so local (0,0) is the tile's own corner and a bridging vertex in the
+        // ring is simply negative. World y: y0 + lattice_j * voxel.
         cv.p = {
-            (px / cnt - 1.0f - float(reach_x)) * voxel,
+            (px / cnt - 1.0f) * voxel,
             y0 + (py / cnt) * voxel,
-            (pz / cnt - 1.0f - float(reach_z)) * voxel
+            (pz / cnt - 1.0f) * voxel
         };
         // Gradient normal from the WORLD position.
         const float e2 = voxel;
@@ -408,58 +439,277 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
         push_tri(b, *v00, *v10, *v11);
         push_tri(b, *v00, *v11, *v01);
     };
-    // Ownership predicate. Without reach-back this is exactly [1..n], the
-    // lattice indices mapping to sector-local [0, S): integer comparison, no
-    // float precision gaps at sector boundaries. Each sector's mesh then ends
-    // EXACTLY at its +x/+z border, and its -x/-z bridge lands on the
-    // neighbour's last vertex because the border cell rows are shared (same
-    // world samples -> bitwise-identical verts).
+    // Ownership predicate: exactly [1..n], the lattice indices mapping to
+    // sector-local [0, S). Integer comparison, no float precision gaps at
+    // sector boundaries. Each sector's mesh then ends EXACTLY at its +x/+z
+    // border, and its -x/-z bridge lands on an EQUAL-rung neighbour's last
+    // vertex because the border cell rows are shared (same world samples ->
+    // bitwise-identical verts). That is the whole seam guarantee, and it is
+    // exact.
     //
-    // The UPPER bound is still the tile's own last sample in world terms
-    // (n + reach): the reach-back only moves indices, it does not extend the
-    // tile eastward. The LOWER bound stays at 1 so ownership reaches into the
-    // reach-back columns and the bridge is emitted over them -- that is the
-    // whole mechanism (see the reach_x/reach_z note at the top).
-    //
-    // Do not widen this any further. Ownership past the tile's own +x/+z border
-    // would double-emit the border quads that the neighbour already owns.
+    // Do not widen this in either direction. Past the tile's own +x/+z border
+    // it would double-emit the border quads the neighbour already owns; below
+    // 1 it would emit into the ghost ring the neighbour bridges. The upper
+    // bound used to read `n + reach_x` to let a masked tile reach into an
+    // extended lattice -- that machinery is gone, and it is NOT what the
+    // overlap band re-introduces: the band goes to a separate soup that the
+    // welder may or may not draw, and `owned` still says exactly what the tile
+    // itself puts on screen.
     auto owned = [&](int i, int k) -> bool {
-        return i >= 1 && i <= n + reach_x && k >= 1 && k <= n + reach_z;
+        return i >= 1 && i <= n && k >= 1 && k <= n;
     };
 
-    for (int k = 0; k < szn; ++k)
+    // ---- Band emission (M0-WP7) ---------------------------------------------
+    //
+    // `emit_band_quad` is `emit_quad` against an OverlapBand: same four cells,
+    // same flip, same material query, positions rebased to world on the way out.
+    //
+    // The extra owned box the retired `reach = 2` produced is `[-1,n]^2`, so the
+    // band samples are that box minus the tile's own `[1,n]^2`. `-x` takes the
+    // ones with i <= 0 and `-z` the ones with k <= 0, which covers the L exactly
+    // and puts the 2x2 corner block in both (see the note at the top of this
+    // function for why the duplication is wanted).
+    //
+    // Emitted only when there is a record to carry it. `boundary_out == nullptr`
+    // means the caller wants a mesh and nothing else -- a tile that will never be
+    // welded -- and the band's per-cell gradient normals are real field probes,
+    // not free. The SAMPLING above is unconditional either way; what is skipped
+    // here is only writing down a soup with nowhere to go.
+    seam::OverlapBand band_neg_x, band_neg_z;
+    auto emit_band_quad = [&](seam::OverlapBand& band,
+                              const CellVert* v00, const CellVert* v10,
+                              const CellVert* v11, const CellVert* v01,
+                              bool flip, float wxc, float wzc) {
+        if (!v00 || !v10 || !v11 || !v01) return;
+        seam::OverlapBucket& b = band_bucket_for(band,
+            uint32_t(field.material_at(wxc, wzc)));
+        if (flip) std::swap(v10, v01);
+        push_band_tri(b, ox, oz, *v00, *v10, *v11);
+        push_band_tri(b, ox, oz, *v00, *v11, *v01);
+    };
+    const bool want_band = boundary_out != nullptr;
+    auto band_extra = [&](int i, int k) -> bool {
+        return !owned(i, k) && i >= -1 && i <= n && k >= -1 && k <= n;
+    };
+
+    for (int k = k_lo; k <= k_hi; ++k)
         for (int j = 0; j < sy; ++j)
-            for (int i = 0; i < sx; ++i) {
+            for (int i = i_lo; i <= i_hi; ++i) {
+                const bool own   = owned(i, k);
+                const bool extra = want_band && band_extra(i, k);
+                if (!own && !extra) continue;
                 float a = at(i, j, k);
                 // World coords of this sample (for material query midpoint).
-                float wxs = float(ox) + float(i - 1 - reach_x) * voxel;
-                float wzs = float(oz) + float(k - 1 - reach_z) * voxel;
+                float wxs = float(ox) + float(i - 1) * voxel;
+                float wzs = float(oz) + float(k - 1) * voxel;
 
                 // +y edge — the typical terrain surface case (horizontal face).
-                if (j + 1 < sy && owned(i, k)) {
+                if (j + 1 <= sy - 1) {
                     float b = at(i, j + 1, k);
-                    if ((a > 0) != (b > 0))
-                        emit_quad(get_vert(i - 1, j, k - 1), get_vert(i, j, k - 1),
-                                  get_vert(i, j, k),         get_vert(i - 1, j, k),
-                                  /*flip=*/a > 0, wxs, wzs);
+                    if ((a > 0) != (b > 0)) {
+                        const CellVert* q0 = get_vert(i - 1, j, k - 1);
+                        const CellVert* q1 = get_vert(i,     j, k - 1);
+                        const CellVert* q2 = get_vert(i,     j, k);
+                        const CellVert* q3 = get_vert(i - 1, j, k);
+                        if (own)
+                            emit_quad(q0, q1, q2, q3, /*flip=*/a > 0, wxs, wzs);
+                        if (extra && i <= 0)
+                            emit_band_quad(band_neg_x, q0, q1, q2, q3, a > 0, wxs, wzs);
+                        if (extra && k <= 0)
+                            emit_band_quad(band_neg_z, q0, q1, q2, q3, a > 0, wxs, wzs);
+                    }
                 }
                 // +x edge (vertical face in x direction).
-                if (i + 1 < sx && owned(i, k)) {
+                if (i + 1 <= i_hi) {
                     float b = at(i + 1, j, k);
-                    if ((a > 0) != (b > 0))
-                        emit_quad(get_vert(i, j - 1, k - 1), get_vert(i, j, k - 1),
-                                  get_vert(i, j, k),         get_vert(i, j - 1, k),
-                                  /*flip=*/a <= 0, wxs + 0.5f * voxel, wzs);
+                    if ((a > 0) != (b > 0)) {
+                        const CellVert* q0 = get_vert(i, j - 1, k - 1);
+                        const CellVert* q1 = get_vert(i, j,     k - 1);
+                        const CellVert* q2 = get_vert(i, j,     k);
+                        const CellVert* q3 = get_vert(i, j - 1, k);
+                        const float mx = wxs + 0.5f * voxel;
+                        if (own)
+                            emit_quad(q0, q1, q2, q3, /*flip=*/a <= 0, mx, wzs);
+                        if (extra && i <= 0)
+                            emit_band_quad(band_neg_x, q0, q1, q2, q3, a <= 0, mx, wzs);
+                        if (extra && k <= 0)
+                            emit_band_quad(band_neg_z, q0, q1, q2, q3, a <= 0, mx, wzs);
+                    }
                 }
                 // +z edge (vertical face in z direction).
-                if (k + 1 < szn && owned(i, k)) {
+                if (k + 1 <= k_hi) {
                     float b = at(i, j, k + 1);
-                    if ((a > 0) != (b > 0))
-                        emit_quad(get_vert(i - 1, j - 1, k), get_vert(i, j - 1, k),
-                                  get_vert(i, j, k),         get_vert(i - 1, j, k),
-                                  /*flip=*/a <= 0, wxs, wzs + 0.5f * voxel);
+                    if ((a > 0) != (b > 0)) {
+                        const CellVert* q0 = get_vert(i - 1, j - 1, k);
+                        const CellVert* q1 = get_vert(i,     j - 1, k);
+                        const CellVert* q2 = get_vert(i,     j,     k);
+                        const CellVert* q3 = get_vert(i - 1, j,     k);
+                        const float mz = wzs + 0.5f * voxel;
+                        if (own)
+                            emit_quad(q0, q1, q2, q3, /*flip=*/a <= 0, wxs, mz);
+                        if (extra && i <= 0)
+                            emit_band_quad(band_neg_x, q0, q1, q2, q3, a <= 0, wxs, mz);
+                        if (extra && k <= 0)
+                            emit_band_quad(band_neg_z, q0, q1, q2, q3, a <= 0, wxs, mz);
+                    }
                 }
             }
+
+    // ---- Boundary record export (M0-WP2) ------------------------------------
+    //
+    // What the seam welder gets instead of a baked-in stitch: for each of the
+    // four XZ faces, the boundary cells of THIS tile that produced a vertex,
+    // named by GLOBAL cell index at this tile's rung. Nothing here reads a
+    // neighbour, so nothing here belongs in the tile's bake identity.
+    //
+    // INDEXING, derived. With `reach` deleted the lattice map is unconditional:
+    // lattice index i sits at world x = ox + (i-1)*voxel, and cell ci spans
+    // lattice [ci, ci+1], i.e. world x in [ox + (ci-1)*v, ox + ci*v]. A global
+    // cell is named by its minimum lattice corner divided by the voxel, so
+    //
+    //     gx = (ox + (ci-1)*v) / v = tx*S/v + ci - 1 = tx*n + ci - 1
+    //
+    // using S = n*v. Interior (owned) cells are ci in [1..n], which is exactly
+    // gx in [tx*n, tx*n + n - 1] -- n cells, no overlap with either neighbour,
+    // and the fine cells 2g/2g+1 of a rung-(r) tile sit inside coarse cell g of
+    // rung (r-1) by construction. Same in z. For y there is no tiling yet: the
+    // slab is already anchored to the global lattice at y_min, so cell cj is
+    // global cell gy = j0_global + cj.
+    //
+    // Per face, then:
+    //   kFaceNegX  cell layer ci = 1      cell_layer = tx*n            plane = tx*n
+    //   kFacePosX  cell layer ci = n      cell_layer = tx*n + n - 1    plane = (tx+1)*n
+    //   kFaceNegZ / kFacePosZ  the same in z.
+    // (`plane` is the shared LATTICE index -- for a +side face it is
+    // cell_layer + 1, for a -side face it equals cell_layer. seam_boundary.h
+    // states that relation; this is where it comes from.)
+    //
+    // The tangential index order is NOT ours to choose: seam::face_tangent_axes
+    // fixes it so both sides of a plane agree without negotiating. Normal x ->
+    // (a, b) = (global y cell, global z cell); normal z -> (a, b) = (global x
+    // cell, global y cell). The welder joins the two sides by (a, b) alone.
+    //
+    // WHY FOUR SIGN BITS PER ENTRY REPLACE A DENSE (n+1)^2 SIGN IMAGE. The
+    // welder needs to know which edges of the shared plane the surface crosses.
+    // An edge crosses iff its two endpoint signs differ; and if it crosses, then
+    // BOTH plane cells adjacent to that edge have a sign change among their four
+    // corners, so both are in this list with the bits to prove it. So the sparse
+    // list plus its corner bits determines every crossing edge on the plane --
+    // an edge that no listed cell reports cannot be a crossing edge. Cells with
+    // no vertex are cells the surface misses entirely, and they carry no
+    // crossing to lose.
+    //
+    // +y/-y stay empty in M0: the grid is still XZ-columnar and there is no
+    // neighbour above or below to weld against until Y is tiled (M2).
+    if (boundary_out) {
+        seam::SectorBoundary& sb = *boundary_out;
+        sb = seam::SectorBoundary{};
+        sb.rung  = rung;
+        sb.cells = n;
+        sb.tx    = tx;
+        sb.tz    = tz;
+        sb.ty    = 0;
+
+        const int64_t gx0 = tx * int64_t(n);      // global x cell of ci == 1
+        const int64_t gz0 = tz * int64_t(n);      // global z cell of ck == 1
+        const int64_t gy0 = int64_t(j0_global);   // global y cell of cj == 0
+
+        const auto build_face = [&](int face) {
+            seam::FaceRecord& fr = sb.faces[face];
+            fr.face = face;
+            const int  axis     = seam::face_axis(face);        // 0 = x, 2 = z
+            const bool positive = seam::face_is_positive(face);
+            const int  layer    = positive ? n : 1;             // local CELL index
+            const int  plane    = positive ? n + 1 : 1;         // local LATTICE index
+            const int64_t gt0   = (axis == 0) ? gz0 : gx0;      // tangential base
+            const int64_t gn0   = (axis == 0) ? gx0 : gz0;      // normal-axis base
+            fr.cell_layer = gn0 + int64_t(layer - 1);
+            fr.plane      = gn0 + int64_t(plane - 1);
+
+            // `t` is the in-plane HORIZONTAL cell index (z on a +-x face, x on
+            // a +-z face); `cj` is the vertical one.
+            const auto cell_vert = [&](int t, int cj) -> const CellVert* {
+                return axis == 0 ? get_vert(layer, cj, t) : get_vert(t, cj, layer);
+            };
+            // Density at a corner of the cell's face ON THE PLANE, offset by
+            // (dt, dj) cells along the two tangential axes.
+            const auto corner = [&](int t, int cj, int dt, int dj) -> float {
+                return axis == 0 ? at(plane, cj + dj, t + dt)
+                                 : at(t + dt, cj + dj, plane);
+            };
+            const auto emit_vert = [&](int t, int cj) {
+                const CellVert* v = cell_vert(t, cj);
+                if (!v) return;
+                seam::BoundaryVert bv;
+                if (axis == 0) {                     // (a, b) = (y cell, z cell)
+                    bv.a = gy0 + int64_t(cj);
+                    bv.b = gt0 + int64_t(t - 1);
+                } else {                             // (a, b) = (x cell, y cell)
+                    bv.a = gt0 + int64_t(t - 1);
+                    bv.b = gy0 + int64_t(cj);
+                }
+                // WORLD position, in double. The mesh stores x/z tile-local, so
+                // the origin goes back on here rather than in the welder, which
+                // must never have to know how this tile was rebased.
+                bv.px = ox + double(v->p.x);
+                bv.py = double(v->p.y);
+                bv.pz = oz + double(v->p.z);
+                bv.nx = v->n.x; bv.ny = v->n.y; bv.nz = v->n.z;
+                // RAW field material, the same 0..3 space MaterialBucket uses --
+                // callers that remap buckets through a palette must remap these
+                // identically (j_terrainVolume does).
+                const int ci = (axis == 0) ? layer : t;
+                const int ck = (axis == 0) ? t : layer;
+                bv.material = uint32_t(field.material_at(
+                    float(ox + (double(ci) - 0.5) * double(voxel)),
+                    float(oz + (double(ck) - 0.5) * double(voxel))));
+                // bit0 (a,b)  bit1 (a+1,b)  bit2 (a,b+1)  bit3 (a+1,b+1),
+                // with `> 0` = solid, matching the mesher's own sign test.
+                const int da1 = (axis == 0) ? 0 : 1;   // "+1 in a" as (dt, dj)
+                const int dj1 = (axis == 0) ? 1 : 0;
+                const int db1 = (axis == 0) ? 1 : 0;   // "+1 in b" as (dt, dj)
+                const int dk1 = (axis == 0) ? 0 : 1;
+                uint8_t bits = 0;
+                if (corner(t, cj, 0, 0) > 0)                     bits |= 1u << 0;
+                if (corner(t, cj, da1, dj1) > 0)                 bits |= 1u << 1;
+                if (corner(t, cj, db1, dk1) > 0)                 bits |= 1u << 2;
+                if (corner(t, cj, da1 + db1, dj1 + dk1) > 0)     bits |= 1u << 3;
+                bv.corner_signs = bits;
+                fr.verts.push_back(bv);
+            };
+
+            // Loop so that (a, b) comes out ascending without a sort: on a +-x
+            // face `a` is the y cell, so cj is the outer loop; on a +-z face `a`
+            // is the x cell, so `t` is. The std::sort below is a no-op given
+            // that, and is kept because FaceRecord::find binary-searches and a
+            // byte-identical record across two bakes is a determinism gate --
+            // the invariant should not rest on reading the loop nesting right.
+            if (axis == 0) {
+                for (int cj = 0; cj + 1 < sy; ++cj)
+                    for (int t = 1; t <= n; ++t) emit_vert(t, cj);
+            } else {
+                for (int t = 1; t <= n; ++t)
+                    for (int cj = 0; cj + 1 < sy; ++cj) emit_vert(t, cj);
+            }
+            std::sort(fr.verts.begin(), fr.verts.end(),
+                      [](const seam::BoundaryVert& p, const seam::BoundaryVert& q) {
+                          return p.a != q.a ? p.a < q.a : p.b < q.b;
+                      });
+        };
+        build_face(seam::kFacePosX);
+        build_face(seam::kFaceNegX);
+        build_face(seam::kFacePosZ);
+        build_face(seam::kFaceNegZ);
+        sb.faces[seam::kFacePosY].face = seam::kFacePosY;
+        sb.faces[seam::kFaceNegY].face = seam::kFaceNegY;
+
+        // The overlap bands (M0-WP7), on the two -side faces only. Like the
+        // vertex records they depend on nothing but this tile and the field, so
+        // they are not part of its bake identity either; unlike them they are
+        // finished geometry, emitted verbatim by the welder rather than joined.
+        sb.faces[seam::kFaceNegX].band = std::move(band_neg_x);
+        sb.faces[seam::kFaceNegZ].band = std::move(band_neg_z);
+    }
 
     // Border skirts REMOVED 2026-07-30. This path used to hang a vertical
     // curtain (>= 8 m, wound outward) under all four sector edges, inherited

@@ -176,6 +176,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/resolve_cache.cpp \
           src/terrain_field.cpp \
           src/terrain_mesher.cpp \
+          src/seam_weld.cpp \
           src/sector_streamer.cpp \
           src/animation/ozz_adapter.cpp \
           src/animation/ozz_bake.cpp \

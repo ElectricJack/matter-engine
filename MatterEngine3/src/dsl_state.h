@@ -5,6 +5,7 @@
 #include "terrain_field.h"
 #include "tileset_spec.h"
 #include "dsl_animation.h"
+#include "seam_boundary.h"   // seam::SectorBoundary (dependency-free by contract)
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -502,6 +503,34 @@ public:
     void emit_volume(const VolumeEmitter& e);
     const std::vector<VolumeEmitter>& emitters() const { return emitters_; }
 
+    // --- Seam boundary record (volumetric-sectors M0-WP3a) -------------------
+    //
+    // The sparse per-face vertex set terrainVolume's mesher exports for this
+    // tile (docs/volumetric-sectors-design-2026-08-10.md §4.1). j_terrainVolume
+    // hands the mesher's out-param here; script_host lifts it onto
+    // BakedGeometry, and from there it rides the staged part all the way to the
+    // engine's resident SectorEntry, where the runtime seam welder reads it.
+    //
+    // It is NOT part of the tile's bake identity and never enters the params
+    // hash: every field of it describes THIS tile only, which is the entire
+    // point of the change (nothing about a neighbour is baked in).
+    //
+    // LAST WRITE WINS, deliberately. A streamed sector calls terrainVolume
+    // exactly once, so the case cannot arise there. A hand-authored part that
+    // meshes two terrain volumes is not a streamed tile, has no sector key, and
+    // is never welded — keeping the newest record is meaningless-but-harmless
+    // rather than an error the author cannot act on.
+    void set_sector_boundary(seam::SectorBoundary boundary) {
+        sector_boundary_ = std::move(boundary);
+        has_sector_boundary_ = true;
+    }
+    // False for every part that never meshed a terrain volume — which is most
+    // of them. Consumers must treat absence as "no seam data", never as a
+    // failure: the welder's contract is fail-soft (no record => no weld, i.e.
+    // exactly today's overlap behaviour).
+    bool has_sector_boundary() const { return has_sector_boundary_; }
+    const seam::SectorBoundary& sector_boundary() const { return sector_boundary_; }
+
 private:
     std::unique_ptr<tileset::TilesetState> tileset_;
     std::vector<mm::Mat4> stack_;   // never empty (seeded with identity)
@@ -538,6 +567,8 @@ private:
     std::chrono::steady_clock::time_point budget_deadline_{};
     bool budget_bounded_ = false;
     WorldBinding world_;  // terrain field binding (null by default)
+    seam::SectorBoundary sector_boundary_;      // M0-WP3a; see set_sector_boundary
+    bool                 has_sector_boundary_ = false;
     std::vector<VolumeEmitter> emitters_;  // volumetric emitters (emitVolume)
     std::unique_ptr<AnimationBuildBuffer> animation_;
     struct BindingScope {

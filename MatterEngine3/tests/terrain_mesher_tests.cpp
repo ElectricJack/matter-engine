@@ -37,7 +37,7 @@ int main() {
     {
         FieldRuntime f = make(kFlat5);
         SectorMesh m; std::string err;
-        CHECK(mesh_sector(f, 0, 0, 0, 0, 16.0f, -64.0f, 192.0f, m, err), err.c_str());
+        CHECK(mesh_sector(f, 0, 0, 0, 16.0f, -64.0f, 192.0f, m, nullptr, err), err.c_str());
         size_t up    = count_tris(m, [](float, float ny, float){ return ny >  0.9f; });
         // Border skirts were removed on 2026-07-30 (see terrain_mesher.cpp): a
         // flat sector is surface and nothing else. This was 64 -- 4 sides x 8
@@ -66,8 +66,8 @@ int main() {
     {
         FieldRuntime f = make(kFlat5);
         SectorMesh m0, m1; std::string err;
-        CHECK(mesh_sector(f, 0, 0, 0, 0, 16.0f, -64, 192, m0, err), "rung0");
-        CHECK(mesh_sector(f, 0, 0, 1, 0, 16.0f, -64, 192, m1, err), "rung1");
+        CHECK(mesh_sector(f, 0, 0, 0, 16.0f, -64, 192, m0, nullptr, err), "rung0");
+        CHECK(mesh_sector(f, 0, 0, 1, 16.0f, -64, 192, m1, nullptr, err), "rung1");
         size_t up0 = count_tris(m0, [](float,float ny,float){ return ny > 0.9f; });
         size_t up1 = count_tris(m1, [](float,float ny,float){ return ny > 0.9f; });
         CHECK(up1 == 4 * up0, "rung1 surface = 4x rung0");
@@ -76,8 +76,8 @@ int main() {
     {
         FieldRuntime f = make(kNoise);
         SectorMesh a, b; std::string err;
-        CHECK(mesh_sector(f, 3, -2, 2, 0, 16.0f, -64, 192, a, err), "a");
-        CHECK(mesh_sector(f, 3, -2, 2, 0, 16.0f, -64, 192, b, err), "b");
+        CHECK(mesh_sector(f, 3, -2, 2, 16.0f, -64, 192, a, nullptr, err), "a");
+        CHECK(mesh_sector(f, 3, -2, 2, 16.0f, -64, 192, b, nullptr, err), "b");
         CHECK(a.buckets.size() == b.buckets.size(), "same bucket count");
         bool same = true;
         for (size_t i = 0; i < a.buckets.size(); ++i)
@@ -101,8 +101,8 @@ int main() {
     {
         FieldRuntime f = make(kNoise);
         SectorMesh a, b; std::string err;
-        CHECK(mesh_sector(f, 0, 0, 1, 0, 16.0f, -64, 192, a, err), "a");
-        CHECK(mesh_sector(f, 1, 0, 1, 0, 16.0f, -64, 192, b, err), "b");
+        CHECK(mesh_sector(f, 0, 0, 1, 16.0f, -64, 192, a, nullptr, err), "a");
+        CHECK(mesh_sector(f, 1, 0, 1, 16.0f, -64, 192, b, nullptr, err), "b");
         // Neither sector's surface stops AT the border: the shared border cell
         // row (world x in [15,16] at rung 1) is emitted by BOTH sectors, from
         // the same world samples. Measured: A spans local x -0.5000..15.6741
@@ -144,8 +144,8 @@ int main() {
     {
         FieldRuntime f = make(kFlat5);
         SectorMesh m; std::string err;
-        CHECK(!mesh_sector(f, 0, 0, 4, 0, 16.0f, -64, 192, m, err), "rung 4 rejected");
-        CHECK(!mesh_sector(f, 0, 0, 0, 0, 16.0f, 10, -10, m, err), "bad slab rejected");
+        CHECK(!mesh_sector(f, 0, 0, 4, 16.0f, -64, 192, m, nullptr, err), "rung 4 rejected");
+        CHECK(!mesh_sector(f, 0, 0, 0, 16.0f, 10, -10, m, nullptr, err), "bad slab rejected");
     }
 
     // =======================================================================
@@ -250,12 +250,12 @@ int main() {
             const float bx = 2.0f * SL;              // the shared border
             SectorMesh fine, nested_c, uniform_c;
             std::string err;
-            CHECK(mesh_sector(f, 1, 0, -L, kEdgePosX, SL, -300, 300, fine, err),
+            CHECK(mesh_sector(f, 1, 0, -L, SL, -300, 300, fine, nullptr, err),
                   err.c_str());
-            CHECK(mesh_sector(f, 1, 0, -(L + 1), 0, 2.0f * SL, -300, 300,
-                              nested_c, err), err.c_str());
-            CHECK(mesh_sector(f, 2, 0, -(L + 1), 0, SL, -300, 300,
-                              uniform_c, err), err.c_str());
+            CHECK(mesh_sector(f, 1, 0, -(L + 1), 2.0f * SL, -300, 300,
+                              nested_c, nullptr, err), err.c_str());
+            CHECK(mesh_sector(f, 2, 0, -(L + 1), SL, -300, 300,
+                              uniform_c, nullptr, err), err.c_str());
 
             const SeamStat ns = seam_stats(fine, SL, 0.0f, nested_c,
                                            2.0f * SL, 0.0f, bx,
@@ -293,13 +293,12 @@ int main() {
               "at the same voxels -- sector size drops out");
     }
 
-    // --- NO GAP when the coarse neighbour is on the fine tile's -x / -z ------
+    // --- THE STRIP when the coarse neighbour is on the fine tile's -x / -z ---
     //
-    // The seam tests above all put the fine tile WEST of the coarse one
-    // (kEdgePosX) and probe INWARD from the border on the fine side. That is
-    // the orientation the ownership rule happens to close, and the probe walks
-    // away from where the other orientation leaks -- so between them they could
-    // not see this.
+    // The seam tests above all put the fine tile WEST of the coarse one and
+    // probe INWARD from the border on the fine side. That is the orientation
+    // the ownership rule happens to close, and the probe walks away from where
+    // the other orientation leaks -- so between them they could not see this.
     //
     // Reported from a real session: adjacent tiles of DIFFERENT SIZE show a
     // one-triangle-strip gap along the shared edge.
@@ -322,10 +321,23 @@ int main() {
     // uniform grid whenever a coarse tile sits west or south of a fine one.
     // Nesting made those borders common and put them near the camera.
     //
-    // Measured as UNION coverage per row, absolutely: for each z row, scan x
-    // across the border and fail on any run covered by NEITHER mesh. It cannot
-    // be measured against the uniform grid as a control the way the tests above
-    // do, because the uniform grid has the identical hole.
+    // WHAT THIS BLOCK ASSERTS, AND WHY IT CHANGED (M0-WP1, 2026-08-10). It used
+    // to gate the gap at ZERO, and it passed, because mesh_sector took an
+    // `edge_mask` and extended its lattice one coarse voxel outward on a masked
+    // -x/-z face so the fine bridge overshot the coarse tile's last vertex. The
+    // mask is deleted: it named the neighbour level the streamer WANTED, not
+    // the tile drawn, so the closure it bought held only in the steady state,
+    // and it put a neighbour guess into the tile's bake identity. See the
+    // retraction at the top of mesh_sector.
+    //
+    // So the strip is open again BY CONSTRUCTION and this is no longer a gate
+    // on the mesher -- the mesher is not what closes it. What survives is the
+    // measurement, kept whole: the same union-coverage probe, the same printf,
+    // and a bound saying the hole is still the known one-voxel strip and not
+    // something wider that an ownership change quietly opened. The ZERO-GAP
+    // GATE RETURNS IN THE WELDER SUITE, where mesh_sector's output and
+    // seam_weld's band are measured together -- which is the only place the
+    // question "is the seam closed" now has a meaningful answer.
     {
         FieldRuntime f = make(kNoise);
         int worst_level = -1;
@@ -341,9 +353,9 @@ int main() {
             // The coarse tile is on the fine tile's -x side, so the FINE tile
             // carries kEdgeNegX. The coarse tile carries nothing: the mask
             // marks neighbours one rung COARSER, and its +x neighbour is finer.
-            CHECK(mesh_sector(f, 0, 0, -(L + 1), 0, 2.0f * SL, -300, 300,
-                              coarse_m, err), err.c_str());
-            CHECK(mesh_sector(f, 2, 0, -L, kEdgeNegX, SL, -300, 300, fine, err),
+            CHECK(mesh_sector(f, 0, 0, -(L + 1), 2.0f * SL, -300, 300,
+                              coarse_m, nullptr, err), err.c_str());
+            CHECK(mesh_sector(f, 2, 0, -L, SL, -300, 300, fine, nullptr, err),
                   err.c_str());
 
             const float step = v / 8.0f;
@@ -364,14 +376,20 @@ int main() {
             printf("  seam -x L%d/%d (voxel %.0f/%.0f m): %d/%d rows gapped, "
                    "worst run %.3f m (%.2f fine voxels)\n",
                    L, L + 1, v, 2 * v, gapped, rows, worst_run, worst_run / v);
-            CHECK(gapped == 0,
-                  "coarse neighbour on the fine tile's -x side: every row of "
-                  "the shared border is covered by one mesh or the other");
+            // Characterization, not a gate. 1.5 fine voxels is the known
+            // one-voxel strip with headroom: measured 0.88-1.12 at every level
+            // both before the reach-back existed and after it was deleted. A
+            // failure here means the hole grew to something the welder's
+            // one-cell-wide band cannot span, which IS a mesher regression.
+            CHECK(worst_run <= 1.5f * v,
+                  "coarse neighbour on the fine tile's -x side: the uncovered "
+                  "strip is still the known ~1 fine voxel, not wider");
             if (worst_run / v > worst_gap_v) {
                 worst_gap_v = worst_run / v; worst_level = L;
             }
         }
-        printf("  seam -x: worst uncovered run %.2f fine voxels (level %d)\n",
+        printf("  seam -x: worst uncovered run %.2f fine voxels (level %d) "
+               "-- open by construction until the welder runs\n",
                worst_gap_v, worst_level);
 
         // The -z mirror. Same rule, other axis: a coarse neighbour to the
@@ -382,9 +400,9 @@ int main() {
             const float Z0 = 2.0f * SL;
             SectorMesh coarse_m, fine;
             std::string err;
-            CHECK(mesh_sector(f, 0, 0, -(L + 1), 0, 2.0f * SL, -300, 300,
-                              coarse_m, err), err.c_str());
-            CHECK(mesh_sector(f, 0, 2, -L, kEdgeNegZ, SL, -300, 300, fine, err),
+            CHECK(mesh_sector(f, 0, 0, -(L + 1), 2.0f * SL, -300, 300,
+                              coarse_m, nullptr, err), err.c_str());
+            CHECK(mesh_sector(f, 0, 2, -L, SL, -300, 300, fine, nullptr, err),
                   err.c_str());
             const float step = v / 8.0f;
             int rows = 0, gapped = 0;
@@ -404,51 +422,36 @@ int main() {
             printf("  seam -z L%d/%d: %d/%d rows gapped, worst run %.3f m "
                    "(%.2f fine voxels)\n",
                    L, L + 1, gapped, rows, worst_run, worst_run / v);
-            CHECK(gapped == 0,
-                  "coarse neighbour on the fine tile's -z side: every row of "
-                  "the shared border is covered by one mesh or the other");
+            CHECK(worst_run <= 1.5f * v,
+                  "coarse neighbour on the fine tile's -z side: the uncovered "
+                  "strip is still the known ~1 fine voxel, not wider");
         }
     }
 
-    // --- the edge mask still does its job across sizes -----------------------
-    // The snap replaces each odd boundary sample with the average of its even
-    // neighbours, so the fine boundary LATTICE becomes the coarse side's linear
-    // interpolation. Its premise -- "the neighbour samples every other one of
-    // my boundary samples" -- is about the VOXEL RATIO, which nesting holds at
-    // exactly 2, not about sector size. Measured at the boundary lattice rather
-    // than at the emitted surface: surface nets blends the boundary column with
-    // the one a voxel inside, which dilutes the snap's effect on the mesh (the
-    // mismatch above is dominated by that blend, not by the snap), but the
-    // lattice agreement is what the mask promises and what a future exact
-    // stitch would build on.
-    {
-        FieldRuntime f = make(kNoise);
-        const float SL = 128.0f, v = 4.0f;       // level 1: 128 m tile, 4 m voxel
-        const float bx = 2.0f * SL;              // border at world x = 256
-        // Fine boundary samples along the border, at the fine spacing.
-        // Odd ones (z = 4, 12, 20 ...) are the ones the snap rewrites; even
-        // ones (z = 0, 8, 16 ...) are shared with the coarse lattice.
-        float worst_snap = 0.0f, worst_raw = 0.0f;
-        for (int i = 1; i < 31; i += 2) {          // odd sample indices
-            const float z = float(i) * v;
-            const float h_raw = f.height_at(bx, z);
-            const float h_lin =
-                0.5f * (f.height_at(bx, z - v) + f.height_at(bx, z + v));
-            worst_raw = std::max(worst_raw, std::fabs(h_raw - h_lin));
-            // What the snap writes IS h_lin, so its residual is zero by
-            // construction; assert that the field actually has curvature here,
-            // or the previous line proves nothing.
-            worst_snap = std::max(worst_snap, 0.0f);
-        }
-        printf("  nested snap: unsnapped odd-sample error up to %.4f m "
-               "(the snap drives it to 0)\n", worst_raw);
-        CHECK(worst_raw > 0.5f,
-              "the test field has real curvature across a coarse voxel, so the "
-              "snap is doing something rather than closing an already-closed "
-              "gap");
-        (void)worst_snap;
-        (void)SL;
-    }
+    // --- RETIRED: "the edge mask still does its job across sizes" ------------
+    //
+    // What used to be here proved the SNAP WAS LOAD-BEARING: it sampled the
+    // field along a shared border at the fine spacing and showed that a raw odd
+    // sample differs from the average of its two even neighbours by up to
+    // 1.665 m on kNoise -- i.e. that the coarse side's linear interpolation and
+    // the fine side's raw lattice genuinely disagree across a coarse voxel, so
+    // rewriting the fine boundary samples onto that interpolation was closing a
+    // real divergence rather than an already-closed one.
+    //
+    // The measurement was true and stays true. Its PREMISE is retired, not
+    // forgotten: making the fine lattice agree with the coarse one requires
+    // knowing which neighbour is coarse at bake time, and the mask that
+    // answered was a statement about the level map the streamer wanted rather
+    // than about the tile on screen. A snap aimed at a neighbour that is not
+    // drawn bends the fine surface for nothing. Agreement across levels now
+    // comes from the runtime welder, which reads BOTH sides' actual boundary
+    // records (the export tests at the end of this file) and therefore cannot
+    // be wrong about who is next door.
+    //
+    // The field-curvature fact this rested on -- ~1.7 m of divergence over a
+    // 4 m coarse voxel on kNoise -- is exactly what makes the welded band a
+    // real interpolation problem rather than a formality, so it is recorded
+    // here rather than deleted outright.
 
     // --- three-tile corner: two fine siblings meeting one coarse edge --------
     // World (256, 128) is the corner shared by both level-1 fine tiles and is
@@ -462,11 +465,11 @@ int main() {
         std::string err;
         // Fine tiles (1,0) and (1,1) at 128 m: x [128,256), z [0,128) and
         // [128,256). Coarse tile (1,0) at 256 m: x [256,512), z [0,256).
-        CHECK(mesh_sector(f, 1, 0, -1, kEdgePosX, SL, -300, 300, fine_lo, err),
+        CHECK(mesh_sector(f, 1, 0, -1, SL, -300, 300, fine_lo, nullptr, err),
               err.c_str());
-        CHECK(mesh_sector(f, 1, 1, -1, kEdgePosX, SL, -300, 300, fine_hi, err),
+        CHECK(mesh_sector(f, 1, 1, -1, SL, -300, 300, fine_hi, nullptr, err),
               err.c_str());
-        CHECK(mesh_sector(f, 1, 0, -2, 0, 2.0f * SL, -300, 300, coarse, err),
+        CHECK(mesh_sector(f, 1, 0, -2, 2.0f * SL, -300, 300, coarse, nullptr, err),
               err.c_str());
 
         const SeamStat lo = seam_stats(fine_lo, SL, 0.0f, coarse,
@@ -711,7 +714,7 @@ int main() {
         FieldRuntime f = make(kSlabCave);
         CHECK(!f.is_heightfield(), "a y-reading density is volumetric");
         SectorMesh m; std::string err;
-        CHECK(mesh_sector(f, 0, 0, 0, 0, 16.0f, -64.0f, 192.0f, m, err), err.c_str());
+        CHECK(mesh_sector(f, 0, 0, 0, 16.0f, -64.0f, 192.0f, m, nullptr, err), err.c_str());
 
         // THE SLAB MUST REACH THE CAVE. A heightfield slab would have started
         // ~4 voxels under y=40 and never sampled y=4 or y=-20 at all, so this
@@ -761,7 +764,7 @@ int main() {
     {
         FieldRuntime f = make(kNoiseCave);
         SectorMesh m; std::string err;
-        CHECK(mesh_sector(f, 0, 0, 0, 0, 64.0f, -128.0f, 192.0f, m, err), err.c_str());
+        CHECK(mesh_sector(f, 0, 0, 0, 64.0f, -128.0f, 192.0f, m, nullptr, err), err.c_str());
         CHECK(m.triangle_count() > 0, "the noise cave meshes something");
         // Down-facing triangles are the proof that caves were meshed at all: a
         // heightfield world of this surface has none.
@@ -798,8 +801,8 @@ int main() {
     {
         FieldRuntime f = make(kNoiseCave);
         SectorMesh a, b; std::string err;
-        CHECK(mesh_sector(f, 0, 0, 0, 0, 64.0f, -128.0f, 192.0f, a, err), err.c_str());
-        CHECK(mesh_sector(f, 1, 0, 0, 0, 64.0f, -128.0f, 192.0f, b, err), err.c_str());
+        CHECK(mesh_sector(f, 0, 0, 0, 64.0f, -128.0f, 192.0f, a, nullptr, err), err.c_str());
+        CHECK(mesh_sector(f, 1, 0, 0, 64.0f, -128.0f, 192.0f, b, nullptr, err), err.c_str());
         // Surface-nets vertices sit at CELL CENTROIDS, not on lattice planes, so
         // there is no vertex exactly at world x = 64 to compare -- the first
         // version of this check looked for one and found nothing. What IS shared
@@ -856,43 +859,538 @@ int main() {
               "volumetric fill reads identical world coordinates on both sides");
     }
 
-    // --- a cross-rung pair has no gap through a cave wall -------------------
-    // The fine tile carries the mask, and its boundary PLANE (not just its
-    // surface polyline) must become the coarse side's bilinear interpolant.
-    // Without the volumetric snap the two sides diverge by the field's curvature
-    // over a coarse voxel and every band boundary rings the world in cracks.
+    // --- REPURPOSED: the volumetric cross-rung pair --------------------------
+    //
+    // This block used to prove the VOLUMETRIC snap was load-bearing, in the same
+    // shape as the heightfield one retired further up: it walked a shared
+    // boundary plane and counted how often a raw fine density sample differs
+    // from the average of the two even samples the coarse neighbour would have
+    // interpolated between. It always differed, which was the point -- without
+    // the snap, a cave wall crossing a band boundary parts on the two sides.
+    //
+    // The premise is retired with the mask that carried it. What is NOT retired
+    // is the fact underneath: across a cave field a coarse voxel's worth of
+    // curvature is large, so the cross-rung boundary really does need
+    // reconciling and the welder really does have work to do. Kept as that
+    // measurement, plus the plain gate that both sides of a cross-rung pair
+    // still mesh through a cave at all now that neither knows about the other.
     {
         FieldRuntime f = make(kNoiseCave);
         SectorMesh coarse, fine; std::string err;
-        // Coarse tile at rung -1 west of a rung-0 fine tile, so the FINE tile
-        // masks its -x face.
-        CHECK(mesh_sector(f, -1, 0, -1, 0, 64.0f, -128.0f, 192.0f, coarse, err), err.c_str());
-        CHECK(mesh_sector(f, 0, 0, 0, kEdgeNegX, 64.0f, -128.0f, 192.0f, fine, err),
+        // Coarse tile at rung -1 west of a rung-0 fine tile. Neither is told.
+        CHECK(mesh_sector(f, -1, 0, -1, 64.0f, -128.0f, 192.0f, coarse, nullptr, err), err.c_str());
+        CHECK(mesh_sector(f, 0, 0, 0, 64.0f, -128.0f, 192.0f, fine, nullptr, err),
               err.c_str());
-        // The fine side's boundary samples at ODD altitudes must now be the
-        // average of their even neighbours -- assert that against the field
-        // rather than against the mesh, since that is the property the snap
-        // establishes and the mesh is only its consequence.
         const float v = 2.0f;                 // rung 0 voxel
         int checked = 0, agree = 0;
+        float worst = 0.0f;
         for (float z = 0; z < 64.0f; z += v)
             for (float y = -100.0f; y < 100.0f; y += 2 * v) {
                 const float lo = f.density_at(0.0f, y - v, z);
                 const float hi = f.density_at(0.0f, y + v, z);
                 const float mid = f.density_at(0.0f, y, z);
                 ++checked;
-                // The coarse neighbour interpolates lo..hi; the raw fine sample
-                // is `mid`. They agree only where the field is locally linear,
-                // which is exactly why the snap exists -- this counts how often
-                // it is actually doing work.
-                if (std::fabs(mid - 0.5f * (lo + hi)) < 1e-4f) ++agree;
+                const float e = std::fabs(mid - 0.5f * (lo + hi));
+                worst = std::max(worst, e);
+                if (e < 1e-4f) ++agree;
             }
+        printf("  volumetric cross-rung plane: %d/%d samples where the raw fine "
+               "density equals the coarse interpolant, worst delta %.4f\n",
+               agree, checked, worst);
         CHECK(checked > 0, "cross-rung probe ran");
         CHECK(agree < checked,
-              "the raw fine samples DO diverge from the coarse interpolant -- "
-              "so the volumetric snap is load-bearing, not a no-op");
+              "the raw fine samples DO diverge from the coarse interpolant, so "
+              "the cross-rung boundary is a real reconciliation problem -- it "
+              "is now the welder's, not the mesher's");
         CHECK(fine.triangle_count() > 0 && coarse.triangle_count() > 0,
-              "both sides of the cross-rung pair mesh");
+              "both sides of the cross-rung pair mesh through the cave with "
+              "neither told anything about the other");
     }
+
+    // =======================================================================
+    // BOUNDARY RECORD EXPORT (M0-WP2, seam_boundary.h)
+    //
+    // What a tile hands the seam welder in place of the baked-in stitch the
+    // edge mask used to do. Every property below is about ONE tile or about two
+    // tiles that never spoke to each other, which is the whole point: the
+    // record is not part of the bake identity and cannot be, because no field
+    // of it depends on a neighbour.
+    // =======================================================================
+
+    // --- (a) a face record holds exactly the surface-crossing cells ----------
+    //
+    // On kFlat5 the answer is exact and hand-checkable, which is why it is the
+    // fixture: a flat surface at y = 5 crosses every column ONCE, so each of the
+    // n cells along a face's cell layer contributes exactly one entry and no
+    // other cell in the layer contributes any. n = 8 at rung 0 on a 16 m tile.
+    // Anything else means the layer is being scanned over the wrong range.
+    {
+        FieldRuntime f = make(kFlat5);
+        SectorMesh m; seam::SectorBoundary sb; std::string err;
+        CHECK(mesh_sector(f, 3, -2, 0, 16.0f, -64.0f, 192.0f, m, &sb, err), err.c_str());
+        CHECK(sb.rung == 0 && sb.cells == 8, "record carries rung and cells/axis");
+        CHECK(sb.tx == 3 && sb.tz == -2 && sb.ty == 0,
+              "record carries the tile index; ty is 0 until Y is tiled (M2)");
+        CHECK(sb.faces[seam::kFacePosY].verts.empty() &&
+              sb.faces[seam::kFaceNegY].verts.empty(),
+              "the +y/-y faces stay empty in M0");
+        const seam::FaceRecord& nx = sb.faces[seam::kFaceNegX];
+        const seam::FaceRecord& px = sb.faces[seam::kFacePosX];
+        printf("  boundary flat: -x %zu verts (plane %lld, layer %lld), "
+               "+x %zu verts (plane %lld, layer %lld)\n",
+               nx.verts.size(), (long long)nx.plane, (long long)nx.cell_layer,
+               px.verts.size(), (long long)px.plane, (long long)px.cell_layer);
+        CHECK(nx.verts.size() == 8 && px.verts.size() == 8,
+              "flat field: one crossing cell per column, n per face");
+        CHECK(sb.faces[seam::kFaceNegZ].verts.size() == 8 &&
+              sb.faces[seam::kFacePosZ].verts.size() == 8,
+              "and the same on the two z faces");
+        // Indexing, checked against the derivation rather than against itself:
+        // tx = 3, n = 8, so -x sits on global lattice/cell 24 and +x on 32/31.
+        CHECK(nx.plane == 24 && nx.cell_layer == 24,
+              "-x: plane == cell_layer == tx*n");
+        CHECK(px.plane == 32 && px.cell_layer == 31,
+              "+x: plane == (tx+1)*n, cell layer one below it");
+        // (a, b) on a +-x face is (global y cell, global z cell): one y value
+        // shared by all eight, and the eight consecutive z cells of tz = -2.
+        bool one_a = true, b_ok = true;
+        for (size_t i = 0; i < nx.verts.size(); ++i) {
+            if (nx.verts[i].a != nx.verts[0].a) one_a = false;
+            if (nx.verts[i].b != -2 * 8 + int64_t(i)) b_ok = false;
+        }
+        CHECK(one_a, "flat surface: every -x entry is in the same y cell layer");
+        CHECK(b_ok, "-x entries run over the tile's own z cells, tz*n .. tz*n+n-1");
+        // corner_signs on a flat field is fully determined: density = 5 - y, so
+        // the cell's lower corners (a, b) and (a, b+1) are solid and its upper
+        // ones (a+1, b) and (a+1, b+1) are air -> bits 0 and 2 set, 1 and 3 not.
+        bool signs_ok = true;
+        for (const seam::BoundaryVert& v : nx.verts)
+            if (v.corner_signs != 0x5) signs_ok = false;
+        CHECK(signs_ok,
+              "flat field: bit0|bit2 (the two lower plane corners) solid, "
+              "bit1|bit3 air -- the sign layout the welder reads edges from");
+        // World position, not tile-local: the tile origin is x = 48, and the
+        // -x cell's vertex sits half a voxel east of the plane at the surface.
+        bool pos_ok = true;
+        for (const seam::BoundaryVert& v : nx.verts)
+            if (std::fabs(v.px - 49.0) > 1e-6 || std::fabs(v.py - 5.0) > 1e-3)
+                pos_ok = false;
+        CHECK(pos_ok,
+              "positions are WORLD-absolute doubles: x = 48 + voxel/2, y = 5");
+        // Sorted by (a, b): FaceRecord::find binary-searches it.
+        bool sorted = true;
+        for (size_t i = 1; i < nx.verts.size(); ++i)
+            if (!(nx.verts[i-1].a < nx.verts[i].a ||
+                  (nx.verts[i-1].a == nx.verts[i].a &&
+                   nx.verts[i-1].b < nx.verts[i].b))) sorted = false;
+        CHECK(sorted, "-x record is sorted ascending by (a, b)");
+        CHECK(nx.find(nx.verts[0].a, nx.verts[0].b) == &nx.verts[0] &&
+              nx.find(nx.verts[0].a, nx.verts[0].b - 1) == nullptr,
+              "FaceRecord::find locates a present cell and rejects an absent one");
+    }
+
+    // --- (a2) every entry sits inside the cell its indices name --------------
+    // The flat case above pins the indexing where the answer is known; this one
+    // holds it on a real cave field, where the only thing that can be asserted
+    // without re-implementing the mesher is the invariant that matters: an
+    // entry's WORLD position must lie in the cell (a, b, cell_layer) claims it
+    // is in. If a/b were off by one, or the tile origin were added at the wrong
+    // rung, every entry would fall outside its own box.
+    {
+        FieldRuntime f = make(kNoiseCave);
+        SectorMesh m; seam::SectorBoundary sb; std::string err;
+        CHECK(mesh_sector(f, -3, 2, -1, 128.0f, -128.0f, 192.0f, m, &sb, err),
+              err.c_str());
+        const double v = seam::rung_voxel(-1);
+        CHECK(v == 4.0, "rung -1 is a 4 m voxel");
+        int outside = 0, total = 0;
+        double worst = 0.0;
+        for (int fa = 0; fa < 4; ++fa) {          // the four XZ faces
+            const seam::FaceRecord& fr = sb.faces[fa];
+            const int axis = seam::face_axis(fa);
+            for (const seam::BoundaryVert& bv : fr.verts) {
+                ++total;
+                // Cell box from the indices alone.
+                const double nlo = double(fr.cell_layer) * v;   // normal axis
+                const double ylo = double(axis == 0 ? bv.a : bv.b) * v - 128.0;
+                const double tlo = double(axis == 0 ? bv.b : bv.a) * v;
+                const double px = axis == 0 ? bv.px : bv.pz;    // along normal
+                const double pt = axis == 0 ? bv.pz : bv.px;    // tangential
+                const double e = std::max(std::max(
+                        std::max(nlo - px, px - (nlo + v)),
+                        std::max(ylo - bv.py, bv.py - (ylo + v))),
+                        std::max(tlo - pt, pt - (tlo + v)));
+                worst = std::max(worst, e);
+                if (e > 1e-3) ++outside;
+            }
+        }
+        printf("  boundary cell-box: %d entries, %d outside their own cell, "
+               "worst overshoot %.6f m\n", total, outside, worst);
+        CHECK(total > 100, "the cave tile exported a substantial boundary");
+        CHECK(outside == 0,
+              "every entry's world position lies inside the cell its global "
+              "(a, b) and cell_layer name -- the indexing is self-consistent");
+    }
+
+    // --- (b) two bakes of one tile give byte-identical records ---------------
+    // Records ride on the bake artifact, so this is the same determinism gate
+    // the mesh itself has: a record that reorders between bakes invalidates
+    // every cache comparison downstream of it.
+    {
+        FieldRuntime f = make(kNoiseCave);
+        SectorMesh m1, m2; seam::SectorBoundary s1, s2; std::string err;
+        CHECK(mesh_sector(f, 1, 1, 0, 64.0f, -128.0f, 192.0f, m1, &s1, err), err.c_str());
+        CHECK(mesh_sector(f, 1, 1, 0, 64.0f, -128.0f, 192.0f, m2, &s2, err), err.c_str());
+        bool same = s1.vert_count() == s2.vert_count();
+        size_t differing = 0;
+        for (int fa = 0; fa < seam::kFaceCount && same; ++fa) {
+            const auto& A = s1.faces[fa];
+            const auto& B = s2.faces[fa];
+            if (A.verts.size() != B.verts.size() || A.plane != B.plane ||
+                A.cell_layer != B.cell_layer) { same = false; break; }
+            for (size_t i = 0; i < A.verts.size(); ++i)
+                if (std::memcmp(&A.verts[i], &B.verts[i],
+                                sizeof(seam::BoundaryVert)) != 0) ++differing;
+        }
+        printf("  boundary determinism: %zu verts across 6 faces, %zu differing "
+               "bytes-wise\n", s1.vert_count(), differing);
+        CHECK(same && differing == 0,
+              "two bakes of one tile produce byte-identical boundary records");
+        CHECK(s1.vert_count() > 0, "the cave tile actually exported something");
+    }
+
+    // --- (c) THE CROSS-TILE INVARIANT: equal-rung neighbours agree -----------
+    //
+    // This is the one that matters. Tile A's +x record and tile B's -x record
+    // describe the SAME world plane, and neither tile was told the other
+    // exists. If the global indexing is right they name it with the same
+    // `plane`, their (a, b) index sets coincide, and -- because both sampled
+    // the identical world points -- their corner_signs match BIT FOR BIT. Any
+    // disagreement here is an indexing bug that would make the welder join the
+    // wrong cells, silently, at every seam in the world.
+    {
+        FieldRuntime f = make(kNoiseCave);
+        SectorMesh ma, mb; seam::SectorBoundary sa, sb; std::string err;
+        CHECK(mesh_sector(f, 0, 0, 0, 64.0f, -128.0f, 192.0f, ma, &sa, err), err.c_str());
+        CHECK(mesh_sector(f, 1, 0, 0, 64.0f, -128.0f, 192.0f, mb, &sb, err), err.c_str());
+        const seam::FaceRecord& A = sa.faces[seam::kFacePosX];
+        const seam::FaceRecord& B = sb.faces[seam::kFaceNegX];
+        CHECK(A.plane == B.plane,
+              "equal-rung neighbours name the shared plane identically");
+        CHECK(A.plane == 32 && A.cell_layer == 31 && B.cell_layer == 32,
+              "A's +x cell layer is its last, B's -x cell layer is its first, "
+              "and the plane sits between them");
+        int shared = 0, sign_mismatch = 0;
+        double worst_pos = 0.0;
+        for (const seam::BoundaryVert& va : A.verts) {
+            const seam::BoundaryVert* vb = B.find(va.a, va.b);
+            if (!vb) continue;
+            ++shared;
+            if (va.corner_signs != vb->corner_signs) ++sign_mismatch;
+            // The two cells are DIFFERENT cells -- one either side of the plane
+            // -- so their vertices are NOT the same point and nothing here
+            // claims they should be. Only the plane-corner signs, which are
+            // literally the same eight world samples read twice, must agree.
+            // The separation is printed as context for the welder, which has to
+            // span exactly this distance.
+            const double dx = va.px - vb->px, dy = va.py - vb->py,
+                         dz = va.pz - vb->pz;
+            worst_pos = std::max(worst_pos, std::sqrt(dx*dx + dy*dy + dz*dz));
+        }
+        printf("  boundary equal-rung: A+x %zu verts, B-x %zu verts, %d shared "
+               "(a,b), %d sign mismatches, worst vertex separation %.3f m\n",
+               A.verts.size(), B.verts.size(), shared, sign_mismatch, worst_pos);
+        CHECK(shared > 50, "the two records overlap over most of the plane");
+        CHECK(sign_mismatch == 0,
+              "corner_signs match bit-for-bit where the two records overlap -- "
+              "both tiles sampled the same world points on the shared plane");
+        // The index SETS coincide too, not just their intersection: a cell with
+        // a crossing on the plane has a sign change on both sides of it.
+        int a_only = 0, b_only = 0;
+        for (const seam::BoundaryVert& va : A.verts)
+            if (!B.find(va.a, va.b)) ++a_only;
+        for (const seam::BoundaryVert& vb : B.verts)
+            if (!A.find(vb.a, vb.b)) ++b_only;
+        printf("  boundary equal-rung: %d cells only in A, %d only in B "
+               "(cells whose crossing is off the shared plane)\n",
+               a_only, b_only);
+        CHECK(a_only + b_only < shared,
+              "the shared cells dominate: the two records describe one plane");
+    }
+
+    // --- (d) a 2:1 pair maps through floor_div2 ------------------------------
+    // The welder's fan rests on `coarse = floor_div2(fine)` -- a coarse cell at
+    // rung r-1 covers exactly the fine cells 2g and 2g+1 at rung r. Assert that
+    // the fine face's indices land inside the coarse record's range under that
+    // map, on a NESTED pair (fine 64 m tile at rung 0, coarse 128 m tile at
+    // rung -1) where the tile sizes differ as well as the voxels.
+    {
+        FieldRuntime f = make(kNoiseCave);
+        SectorMesh mf, mc; seam::SectorBoundary sf, sc; std::string err;
+        // Coarse tile 0 at 128 m / rung -1 covers world x,z in [0, 128).
+        // Fine tile 2 at 64 m / rung 0 covers x in [128, 192), z in [0, 64).
+        // They share the plane at world x = 128.
+        CHECK(mesh_sector(f, 0, 0, -1, 128.0f, -128.0f, 192.0f, mc, &sc, err), err.c_str());
+        CHECK(mesh_sector(f, 2, 0, 0, 64.0f, -128.0f, 192.0f, mf, &sf, err), err.c_str());
+        const seam::FaceRecord& F = sf.faces[seam::kFaceNegX];   // fine, -x
+        const seam::FaceRecord& C = sc.faces[seam::kFacePosX];   // coarse, +x
+        // Planes are in DIFFERENT units (each is a lattice index at its own
+        // rung), so they compare through the same halving: world x = 128 is
+        // fine lattice 64 at 2 m and coarse lattice 32 at 4 m.
+        CHECK(F.plane == 64 && C.plane == 32,
+              "each side names the shared plane at its own rung");
+        CHECK(seam::floor_div2(F.plane) == C.plane,
+              "floor_div2 carries the fine plane index onto the coarse one");
+        // The coarse side's TANGENTIAL DOMAIN, from its own tile identity rather
+        // than from which of its cells happen to hold a vertex: b on a +-x face
+        // is the global z cell, and a tile owns exactly [tz*n, tz*n + n - 1].
+        // That is the structural claim -- every fine boundary cell must halve
+        // into a z cell the coarse tile actually owns, or the welder would be
+        // asked to fan onto a tile that does not cover the seam.
+        const int64_t c_b_lo = sc.tz * sc.cells;
+        const int64_t c_b_hi = c_b_lo + sc.cells - 1;
+        int64_t c_a_lo = 0, c_a_hi = 0, f_a_lo = 0, f_a_hi = 0;
+        bool first = true;
+        for (const seam::BoundaryVert& v : C.verts) {
+            if (first) { c_a_lo = c_a_hi = v.a; first = false; }
+            c_a_lo = std::min(c_a_lo, v.a); c_a_hi = std::max(c_a_hi, v.a);
+        }
+        first = true;
+        for (const seam::BoundaryVert& v : F.verts) {
+            if (first) { f_a_lo = f_a_hi = v.a; first = false; }
+            f_a_lo = std::min(f_a_lo, v.a); f_a_hi = std::max(f_a_hi, v.a);
+        }
+        int in_b = 0, hit = 0;
+        for (const seam::BoundaryVert& v : F.verts) {
+            const int64_t ca = seam::floor_div2(v.a), cb = seam::floor_div2(v.b);
+            if (cb >= c_b_lo && cb <= c_b_hi) ++in_b;
+            if (C.find(ca, cb)) ++hit;
+        }
+        printf("  boundary 2:1: fine %zu verts (y cells %lld..%lld -> %lld..%lld), "
+               "coarse %zu verts (y cells %lld..%lld); %d/%zu land in the coarse "
+               "z domain, %d onto a coarse cell\n",
+               F.verts.size(), (long long)f_a_lo, (long long)f_a_hi,
+               (long long)seam::floor_div2(f_a_lo),
+               (long long)seam::floor_div2(f_a_hi),
+               C.verts.size(), (long long)c_a_lo, (long long)c_a_hi,
+               in_b, F.verts.size(), hit);
+        CHECK(!F.verts.empty() && !C.verts.empty(), "both sides exported a face");
+        CHECK(in_b == int(F.verts.size()),
+              "every fine boundary cell halves onto a z cell the coarse tile "
+              "owns -- the 2:1 fan has somewhere to land");
+        CHECK(seam::floor_div2(f_a_lo) >= c_a_lo - 1 &&
+              seam::floor_div2(f_a_hi) <= c_a_hi + 1,
+              "the fine face's y-cell span halves onto the coarse face's, to "
+              "within the one cell the two slabs' different voxel heights allow");
+        // Not every fine cell lands ON a coarse cell that HAS a vertex: a
+        // feature thinner than a coarse voxel is resolved on one side only.
+        // That is precisely the case the welder must synthesize geometry for,
+        // so it is measured rather than gated.
+        CHECK(hit > 0, "fine cells do find their coarse parent");
+    }
+
+    // =======================================================================
+    // M0-WP7 — the overlap band, and the proof it does not move the mesh
+    // =======================================================================
+    //
+    // WHAT CHANGED. `mesh_sector` now samples two extra lattice columns on its
+    // -x and -z sides -- the retired `reach = 2`, with no mask and no condition
+    // -- and exports the triangles it WOULD have emitted with ownership extended
+    // into them as `FaceRecord::band` on kFaceNegX / kFaceNegZ. Ownership in
+    // world terms is untouched, so the emitted mesh is supposed to be bitwise
+    // what it was. "Supposed to be" is not good enough for a change that widens
+    // an array everything else is indexed by: shifting a base by one would still
+    // produce a plausible mesh, and the seam suites would still pass.
+    //
+    // So the mesh is pinned. The hashes below were taken from the build IMMEDIATELY
+    // BEFORE the band existed, over configurations chosen to exercise the parts
+    // most likely to move: a flat field where every vertex is at a known height,
+    // a NEGATIVE tile index (the direction the band extends), both halves of a
+    // cross-level pair, and volumetric tiles (whose Y slab is derived from the
+    // sampled height range -- the one quantity that WOULD have moved if the band
+    // columns were allowed into h_min/h_max, dragging every vertex in the tile
+    // with it via y0).
+    //
+    // The record is pinned alongside the mesh, because the band arrives on the
+    // record and a change there would be just as silent.
+    //
+    // If one of these fires, the band has shifted an index; it is not a licence
+    // to re-record the constants.
+    {
+        static const char* kCave =
+            "noise2 1234 0.02 4 0.5 2.0\nconst 20\nmul r0 r1\n"
+            "const 30\nadd r2 r3\n"
+            "input wy\n"
+            "sub r4 r5\n"
+            "ridge3 4242 0.02 2 0.5 2\n"
+            "const 0.45\nsub r7 r8\n"
+            "const -1\nmul r9 r10\n"
+            "min r6 r11\n"
+            "const -100\nsub r13 r5\n"
+            "max r12 r14\n"
+            "const 0.5\n"
+            "height r4\ndensity r15\nmoisture r16\nrelief r16\n"
+            "seaLevel -1000\nbiome 0.65 0.35\n";
+
+        // FNV-1a over the raw bytes. Any stable hash would do; this one is here
+        // rather than in a shared header so the constants and the function that
+        // produced them cannot drift apart.
+        struct H {
+            unsigned long long h = 1469598103934665603ULL;
+            void feed(const void* p, size_t n) {
+                const unsigned char* b = (const unsigned char*)p;
+                for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ULL; }
+            }
+        };
+        const auto hash_mesh = [](const SectorMesh& m) {
+            H s;
+            unsigned long long nb = m.buckets.size(); s.feed(&nb, sizeof nb);
+            for (const MaterialBucket& b : m.buckets) {
+                s.feed(&b.material, sizeof b.material);
+                unsigned long long np = b.positions.size(); s.feed(&np, sizeof np);
+                if (np) s.feed(b.positions.data(), np * sizeof(float));
+                unsigned long long nn = b.normals.size(); s.feed(&nn, sizeof nn);
+                if (nn) s.feed(b.normals.data(), nn * sizeof(float));
+            }
+            return s.h;
+        };
+        const auto hash_record = [](const seam::SectorBoundary& sb) {
+            H s;
+            s.feed(&sb.rung, sizeof sb.rung); s.feed(&sb.cells, sizeof sb.cells);
+            s.feed(&sb.tx, sizeof sb.tx); s.feed(&sb.tz, sizeof sb.tz);
+            for (const seam::FaceRecord& fr : sb.faces) {
+                s.feed(&fr.face, sizeof fr.face);
+                s.feed(&fr.plane, sizeof fr.plane);
+                s.feed(&fr.cell_layer, sizeof fr.cell_layer);
+                unsigned long long n = fr.verts.size(); s.feed(&n, sizeof n);
+                for (const seam::BoundaryVert& v : fr.verts) {
+                    s.feed(&v.a, sizeof v.a); s.feed(&v.b, sizeof v.b);
+                    s.feed(&v.px, sizeof v.px); s.feed(&v.py, sizeof v.py);
+                    s.feed(&v.pz, sizeof v.pz);
+                    s.feed(&v.nx, sizeof v.nx); s.feed(&v.ny, sizeof v.ny);
+                    s.feed(&v.nz, sizeof v.nz);
+                    s.feed(&v.material, sizeof v.material);
+                    s.feed(&v.corner_signs, sizeof v.corner_signs);
+                }
+            }
+            return s.h;
+        };
+
+        struct Pin {
+            const char* tag; int field;      // 0 flat, 1 noise, 2 cave
+            long long tx, tz; int rung;
+            float S, y0, y1;
+            unsigned long long mesh, rec;
+        };
+        // Recorded from the pre-band build. DO NOT re-record to make a failure
+        // go away -- see the note above.
+        static const Pin kPins[] = {
+            {"flat rung0",       0,  0,  0,  0,  16.0f,  -64.0f, 192.0f,
+             0xf365ecbc92387da2ULL, 0x30e41a9fde0d546aULL},
+            {"flat rung2 (3,-2)",0,  3, -2,  2,  16.0f,  -64.0f, 192.0f,
+             0x50d71bf78f1283aaULL, 0xf933a0523773e7aaULL},
+            {"noise coarse L2",  1,  0,  0, -3, 512.0f, -300.0f, 300.0f,
+             0x94b8bb96f2e6bd14ULL, 0x43b395d3b009718cULL},
+            {"noise fine L2",    1,  2,  0, -2, 256.0f, -300.0f, 300.0f,
+             0xaee3860b7951bd1bULL, 0xc918717a908ded36ULL},
+            {"cave rung0 (1,1)", 2,  1,  1,  0,  64.0f, -128.0f, 192.0f,
+             0x75518d8f48d68a54ULL, 0x3a13b481acc73546ULL},
+            {"cave rung-1(-3,2)",2, -3,  2, -1, 128.0f, -128.0f, 192.0f,
+             0x654236bd591865a9ULL, 0x7a22b1626ce78d5fULL},
+        };
+        FieldRuntime ff = make(kFlat5), fn = make(kNoise), fc = make(kCave);
+        int pinned = 0;
+        for (const Pin& p : kPins) {
+            const FieldRuntime& f = p.field == 0 ? ff : (p.field == 1 ? fn : fc);
+            SectorMesh m; seam::SectorBoundary sb; std::string err;
+            CHECK(mesh_sector(f, p.tx, p.tz, p.rung, p.S, p.y0, p.y1, m, &sb, err),
+                  err.c_str());
+            const unsigned long long hm = hash_mesh(m), hr = hash_record(sb);
+            if (hm != p.mesh || hr != p.rec)
+                printf("      PIN %-18s mesh %016llx (want %016llx)  record %016llx"
+                       " (want %016llx)\n", p.tag, hm, p.mesh, hr, p.rec);
+            CHECK(hm == p.mesh,
+                  "M0-WP7: the overlap band does not move the MESH by one byte");
+            CHECK(hr == p.rec,
+                  "M0-WP7: the overlap band does not move the boundary RECORD "
+                  "by one byte");
+            ++pinned;
+        }
+        printf("  M0-WP7 mesh identity: %d configurations pinned bitwise against "
+               "the pre-band build (mesh + boundary record)\n", pinned);
+
+        // Passing a null boundary_out must produce the same mesh as asking for
+        // one. It is the only remaining way the band could leak into geometry,
+        // and it is the path the engine takes for tiles it will never weld.
+        {
+            SectorMesh a, b; seam::SectorBoundary sb; std::string err;
+            CHECK(mesh_sector(fc, 1, 1, 0, 64.0f, -128.0f, 192.0f, a, nullptr, err),
+                  err.c_str());
+            CHECK(mesh_sector(fc, 1, 1, 0, 64.0f, -128.0f, 192.0f, b, &sb, err),
+                  err.c_str());
+            CHECK(hash_mesh(a) == hash_mesh(b),
+                  "asking for a boundary record (and therefore a band) does not "
+                  "change the mesh that comes back");
+        }
+
+        // --- what the band actually IS ---------------------------------------
+        {
+            const float S = 64.0f;
+            SectorMesh m; seam::SectorBoundary sb; std::string err;
+            CHECK(mesh_sector(fc, 2, 3, 0, S, -128.0f, 192.0f, m, &sb, err),
+                  err.c_str());
+            const double v = seam::rung_voxel(0);
+            const seam::OverlapBand& bx = sb.faces[seam::kFaceNegX].band;
+            const seam::OverlapBand& bz = sb.faces[seam::kFaceNegZ].band;
+            CHECK(bx.triangle_count() > 0 && bz.triangle_count() > 0,
+                  "a tile with surface at its -x/-z borders exports both bands");
+            CHECK(sb.faces[seam::kFacePosX].band.empty() &&
+                  sb.faces[seam::kFacePosZ].band.empty() &&
+                  sb.faces[seam::kFacePosY].band.empty() &&
+                  sb.faces[seam::kFaceNegY].band.empty(),
+                  "bands exist on the -x and -z faces ONLY: the [1..n] rule is "
+                  "direction-asymmetric and the +side is bridged by the "
+                  "neighbour, so a band there would be overlap on overlap");
+
+            // The band lies WEST of the tile's own -x border and reaches about
+            // 2.5 fine voxels back -- one coarse voxel past the ~v/2 the mesh
+            // itself already bridges. That is the number the whole mechanism is
+            // for: the coarse neighbour's last vertex sits at ~v back, so the
+            // band must clear it.
+            const double x0 = double(2) * double(S);   // this tile's -x border
+            double west = 0.0, east = -1e30;
+            for (const seam::OverlapBucket& bk : bx.buckets)
+                for (size_t i = 0; i < bk.positions.size(); i += 3) {
+                    const double dx = bk.positions[i] - x0;
+                    west = std::min(west, dx);
+                    east = std::max(east, dx);
+                }
+            printf("  M0-WP7 band extent: -x band %zu tris spanning x-x0 in "
+                   "[%.2f, %.2f] m = [%.2f, %.2f] voxels; -z band %zu tris\n",
+                   bx.triangle_count(), west, east, west / v, east / v,
+                   bz.triangle_count());
+            CHECK(west <= -1.5 * v,
+                  "the -x band reaches at least 1.5 fine voxels west of the "
+                  "tile's border -- past the coarse neighbour's last vertex at "
+                  "~1 voxel, which is the entire point of it");
+            CHECK(east <= 0.5 * v + 1e-6,
+                  "the band stays WEST: it is the strip the tile does not own, "
+                  "not a second copy of the tile's own surface");
+
+            // Determinism, on the same terms as the record's: two bakes of the
+            // same tile are byte-identical, so a band can ride a cache entry.
+            SectorMesh m2; seam::SectorBoundary sb2;
+            CHECK(mesh_sector(fc, 2, 3, 0, S, -128.0f, 192.0f, m2, &sb2, err),
+                  err.c_str());
+            const seam::OverlapBand& bx2 = sb2.faces[seam::kFaceNegX].band;
+            bool same = bx.buckets.size() == bx2.buckets.size();
+            for (size_t i = 0; same && i < bx.buckets.size(); ++i)
+                same = bx.buckets[i].material == bx2.buckets[i].material &&
+                       bx.buckets[i].positions == bx2.buckets[i].positions &&
+                       bx.buckets[i].normals == bx2.buckets[i].normals;
+            CHECK(same, "two bakes of one tile produce byte-identical bands");
+        }
+    }
+
     return check_summary();
 }

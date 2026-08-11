@@ -853,6 +853,24 @@ TERRAINFIELD_CPP    = terrain_field_tests.cpp ../src/terrain_field.cpp
 TERRAINMESH_TARGET = build/terrain_mesher_tests
 TERRAINMESH_CPP    = terrain_mesher_tests.cpp ../src/terrain_field.cpp ../src/terrain_mesher.cpp
 
+# M0-WP3 — cross-level seam welder (pure geometry: seam_boundary.h + seam_weld,
+# no terrain_field, no raylib, no GL, no JS). The suite builds its FaceRecords
+# from an analytic density function, so it links against nothing else.
+SEAMWELD_TARGET = build/seam_weld_tests
+SEAMWELD_CPP    = seam_weld_tests.cpp ../src/seam_weld.cpp
+SEAMWELD_HEADERS = check.h ../src/seam_boundary.h ../src/seam_weld.h
+
+# M0-WP6 — the seam INTEGRATION gate: mesh_sector and seam_weld run together,
+# measured with terrain_mesher_tests' plumb-line probe over a three-way union
+# (coarse mesh OR fine mesh OR weld band). Same no-raylib/no-GL/no-JS link line
+# as SEAMWELD above, plus the mesher and the field interpreter it needs to
+# produce real tiles (cf. TERRAINMESH_CPP).
+SEAMINTEGRATION_TARGET = build/seam_integration_tests
+SEAMINTEGRATION_CPP    = seam_integration_tests.cpp ../src/seam_weld.cpp \
+                         ../src/terrain_mesher.cpp ../src/terrain_field.cpp
+SEAMINTEGRATION_HEADERS = check.h ../src/seam_boundary.h ../src/seam_weld.h \
+                          ../src/terrain_mesher.h ../src/terrain_field.h
+
 # Phase C Task 5 — terrain verb (sh flavor: bake_source + WorldBinding + terrainVolume).
 TERRAINVERB_TARGET = build/terrain_verb_tests
 TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
@@ -1381,6 +1399,8 @@ def_CPP_SRCS := $(sort \
     $(MODAPPLY_CPP) \
     $(TERRAINFIELD_CPP) \
     $(TERRAINMESH_CPP) \
+    $(SEAMWELD_CPP) \
+    $(SEAMINTEGRATION_CPP) \
     $(PARTSTORE_CPP))
 
 qjs_CPP_SRCS := $(sort \
@@ -1558,6 +1578,8 @@ RESOLVECACHE_OBJS = $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,msl
 MODAPPLY_OBJS = $(call obj_list,def,$(MODAPPLY_CPP))
 TERRAINFIELD_OBJS = $(call obj_list,def,$(TERRAINFIELD_CPP))
 TERRAINMESH_OBJS  = $(call obj_list,def,$(TERRAINMESH_CPP))
+SEAMWELD_OBJS     = $(call obj_list,def,$(SEAMWELD_CPP))
+SEAMINTEGRATION_OBJS = $(call obj_list,def,$(SEAMINTEGRATION_CPP))
 TERRAINVERB_OBJS  = $(call obj_list,sh,$(TERRAINVERB_CPP)) $(call obj_list,mslc,$(TERRAINVERB_C)) $(qjsc_C_OBJS)
 SECTORBAKE_OBJS   = $(call obj_list,sh,$(SECTORBAKE_CPP)) $(call obj_list,mslc,$(SECTORBAKE_C)) $(qjsc_C_OBJS)
 SECTORPROF_OBJS = $(call obj_list,sh,$(SECTORPROF_CPP)) $(call obj_list,mslc,$(SECTORPROF_C)) $(qjsc_C_OBJS)
@@ -1602,7 +1624,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,m
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
+.PHONY: clean run-warp-field run-lod-distance run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-seamweld run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1927,6 +1949,26 @@ $(TERRAINMESH_TARGET): $(TERRAINMESH_OBJS)
 
 run-terrainmesh: $(TERRAINMESH_TARGET)
 	./$(TERRAINMESH_TARGET)
+
+# M0-WP3 — cross-level seam welder. Pure CPU and pure geometry: no raylib, no
+# GL, no X11, so the link line stays minimal on every platform (the MINGW*_NT
+# branch above only matters for suites that pull in raylib).
+$(SEAMWELD_TARGET): $(SEAMWELD_OBJS) $(SEAMWELD_HEADERS)
+	$(CC) $(SEAMWELD_OBJS) -o $@ $(CFLAGS) -I../src -lm -lpthread
+
+run-seamweld: $(SEAMWELD_TARGET)
+	./$(SEAMWELD_TARGET)
+
+# M0-WP6 — mesh + weld together. Same minimal link line as the welder suite:
+# the mesher and the field interpreter are pure CPU too, so no raylib, no GL,
+# no X11 on any platform. Meshes ~25 real tiles (including volumetric cave
+# slabs) and still runs in a few seconds unoptimized, because the coverage probe
+# band-filters the triangle soup to the seam before scanning it.
+$(SEAMINTEGRATION_TARGET): $(SEAMINTEGRATION_OBJS) $(SEAMINTEGRATION_HEADERS)
+	$(CC) $(SEAMINTEGRATION_OBJS) -o $@ $(CFLAGS) -I../src -lm -lpthread
+
+run-seamintegration: $(SEAMINTEGRATION_TARGET)
+	./$(SEAMINTEGRATION_TARGET)
 
 # Phase C Task 5 — terrainVolume verb through ScriptHost::bake_source.
 $(TERRAINVERB_TARGET): $(TERRAINVERB_OBJS)

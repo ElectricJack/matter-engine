@@ -8,6 +8,7 @@
 #include "part_asset_v2.h"      // part_asset::ChildInstance
 #include "impostor_bake.h"      // terminal impostor rep (M2.5)
 #include "raster_mesh.h"        // RasterMeshData
+#include "seam_boundary.h"      // seam::SectorBoundary (stdlib-only by contract)
 #include "animation/animation_asset_store.h"
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 
@@ -45,6 +46,23 @@ struct BakedGeometry {
     std::vector<part_asset::ChildInstance>        children;  // the child table save_v2 wrote
     part_asset::LodLevels                         lods;      // empty for every static bake
     std::vector<part_asset::VolumeEmitter>        emitters;  // the EMIT trailer's contents
+    // Volumetric-sectors M0-WP3a: the seam boundary record terrainVolume's
+    // mesher exported for this tile, lifted off DslState by bake_source. Null
+    // for every part that meshed no terrain volume (i.e. almost all of them).
+    //
+    // Deliberately NOT serialized into the .part. It is derived data about a
+    // tile the engine only ever needs while that tile is resident, and the
+    // artifact is a content-addressed cache shared across engine versions — a
+    // new trailer would invalidate every part on disk to carry something the
+    // bake can always recompute. The consequence is that the disk fallback
+    // (PartStore::stage_load / get_or_load, taken when the in-memory hand-off
+    // is unavailable) produces no record, and the welder must fail soft there:
+    // no record means no weld, which is exactly today's overlap behaviour.
+    //
+    // shared_ptr because three owners hold it in turn (this, the LoadedPart it
+    // stages into, the engine's SectorEntry) and the record is immutable after
+    // bake, so copying the pointer is both correct and free.
+    std::shared_ptr<const seam::SectorBoundary>   boundary;
 };
 
 } // namespace script_host
@@ -153,6 +171,20 @@ struct LoadedPart {
     // demand-registration path on the app thread. Empty for every part whose
     // world has no surfaces() tape.
     SurfaceClassCache surface_cache;
+
+    // Volumetric-sectors M0-WP3a: this tile's seam boundary record, carried
+    // across from script_host::BakedGeometry by stage_from_bake and surviving
+    // commit_staged's move into the store. Null for every non-terrain part and
+    // for any sector staged off disk instead of from its bake.
+    //
+    // It lives HERE rather than only on the engine's SectorEntry because the
+    // welder's read pattern is neighbour-driven: when tile B publishes, the
+    // welds along B's faces are built from A's record as well as B's, and A
+    // may have published minutes earlier. The record therefore has to persist
+    // for the whole of a tile's residency, which is exactly the lifetime the
+    // resident LoadedPart already has (PartStore::release, driven by sector
+    // eviction, ends both at once).
+    std::shared_ptr<const seam::SectorBoundary> boundary;
 
     // M2.5 terminal impostors, one per cluster that earned one. `mesh_index`
     // is the index into lod_mesh_data of the billboard rung, so the renderer
@@ -468,7 +500,10 @@ private:
 // triangle and TriEx bytes. Floats are compared by memcmp rather than ==, so a
 // NaN that matches bit-for-bit counts as equal and -0.0f/+0.0f do not.
 //
-// The timing fields (read/prep/ladder/tail_ms) are deliberately NOT compared.
+// The timing fields (read/prep/ladder/tail_ms) are deliberately NOT compared,
+// and neither is LoadedPart::boundary: it is a property of the BAKE, not of
+// the artifact, so only the stage_from_bake side of this comparison can have
+// one and requiring equality would fail the gate on every terrain sector.
 // `first_difference`, when non-null, receives the name of the first field that
 // differed (untouched on a match).
 bool staged_parts_equal(const PartStore::StagedPart& a,

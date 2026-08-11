@@ -13,24 +13,50 @@ struct Ring { float radius; int rung; };
 // When Config::terrain_lod_enabled is set, the int the streamer hands out in
 // SectorRequest/Eviction/on_published is a packed VARIANT, not a bare scatter
 // rung: bits 0-3 scatter tier, bits 4-6 terrain LOD (0 coarsest .. 5 = native
-// voxel), bits 7-10 coarser-neighbor edge mask (bit layout matches
-// terrain_mesher::EdgeMaskBits). The packed value flows through the
-// coordinator and resident bookkeeping opaquely — equality is identity — and
-// is unpacked only where the bake request JSON is built. With the flag off
-// the value is the bare scatter rung, exactly as before.
+// voxel). The packed value flows through the coordinator and resident
+// bookkeeping opaquely — equality is identity — and is unpacked only where the
+// bake request JSON is built. With the flag off the value is the bare scatter
+// rung, exactly as before.
+// ---------------------------------------------------------------------------
+// THE EDGE MASK IS GONE FROM THIS ENCODING. Bits 7-10 used to carry a
+// four-bit "which cardinal neighbours are one level coarser" mask, matching
+// terrain_mesher::EdgeMaskBits, and the mesher gated its cross-level ownership
+// reach on it. Two things killed it
+// (docs/volumetric-sectors-design-2026-08-10.md §2.4, §4.1 "Consequences" 2):
+//
+//   * The mask was a promise about the DESIRED map that the DRAWN map
+//     routinely broke. It was computed from desired_at(level+1, ...), but the
+//     neighbour that is actually on screen is a different tile whenever it is
+//     mid-split, mid-merge, held by the transition-group rule, parked, or
+//     still baking. When drawn state and baked assumption disagreed the reach
+//     was 0 where it needed to be 2 and a one-voxel strip of triangles was
+//     emitted by neither tile — the "minor gaps while terrain is baking /
+//     changing LOD" report, filed after the gap fix itself had landed.
+//   * The mask was part of the BAKE IDENTITY, so every neighbour level change
+//     forced a full rebake of this tile — and the two tiles' rebakes finished
+//     seconds apart, which maximized rather than minimized the window in which
+//     they disagreed. The mechanism meant to close the seam was the mechanism
+//     widening it.
+//
+// The retracted premise was that cross-level seam geometry can be baked at
+// all. It cannot be baked neighbour-independently (§4.1 records the proof:
+// a shared boundary vertex set forces one canonical resolution for every
+// border in the world), and baking it neighbour-DEPENDENTLY is what the above
+// two bullets cost. So cross-level seams left the bake entirely: an engine-side
+// welder now generates them at runtime from the two tiles that are actually
+// drawn, and the streamer no longer knows seams exist. Bits 7-10 join 12-14 in
+// the reserved pool; nothing is written there.
 // ---------------------------------------------------------------------------
 // Bit 11 marks a packed variant, making the encoding self-identifying: a bare
 // scatter rung (any legacy value < 16) decodes as terrain LOD 5 (native
-// voxel) with an empty edge mask, so consumers can unpack unconditionally.
+// voxel), so consumers can unpack unconditionally.
 constexpr int kVariantMarker = 1 << 11;
-constexpr int pack_variant(int scatter, int terrain_lod, int edge_mask) {
-    return kVariantMarker | (scatter & 0xF) | ((terrain_lod & 0x7) << 4) |
-           ((edge_mask & 0xF) << 7);
+constexpr int pack_variant(int scatter, int terrain_lod) {
+    return kVariantMarker | (scatter & 0xF) | ((terrain_lod & 0x7) << 4);
 }
 constexpr bool variant_packed(int v)     { return v >= 0 && (v & kVariantMarker) != 0; }
 constexpr int variant_scatter(int v)     { return variant_packed(v) ? (v & 0xF) : v; }
 constexpr int variant_terrain_lod(int v) { return variant_packed(v) ? ((v >> 4) & 0x7) : 5; }
-constexpr int variant_edge_mask(int v)   { return variant_packed(v) ? ((v >> 7) & 0xF) : 0; }
 
 // ---------------------------------------------------------------------------
 // NESTED SECTOR LOD (docs/terrain-nested-sector-lod-2026-08-08.md)
@@ -96,6 +122,25 @@ struct Config {
     //     rule), not if its centre is. That is what makes the desired set a
     //     hole-free quadtree.
     bool nested_sectors = false;
+
+    // STAGED REFINEMENT (docs/volumetric-sectors-design-2026-08-10.md §4.5,
+    // first half). Nested only, default ON.
+    //
+    // `restrict_levels` constrains the DESIRED map. Nothing constrained the
+    // DRAWN one: under fast flight a region's desired level jumps several
+    // levels at once (3 -> 0), the tiles rebake independently, and whichever
+    // finishes first is drawn at level 0 beside a neighbour still showing
+    // level 3. That is both the 8x-detail pop and a face pair outside the seam
+    // welder's +-1 domain entirely.
+    //
+    // On, a tile is never REQUESTED more than one level finer than the
+    // resident coverage over its own footprint, so a multi-level jump is
+    // served as monotone coarse->fine waves (3, then 2, then 1, then 0), each
+    // wave fully resident before the next is requested. Off is the rollback
+    // position and the A/B baseline; MATTER_STREAM_NO_STAGING=1 forces it off
+    // globally without a rebuild. The rule itself lives in descend(), where
+    // the split decision is made — see the long block there.
+    bool staged_refinement = true;
 };
 
 // Fill Config::terrain_bands with the default radial profile (scaled by
@@ -227,8 +272,8 @@ private:
     // anchor-to-sector-centre distance
     float sector_dist(int64_t tx, int64_t tz) const;
     // terrain-LOD pass over the freshly scanned desired map: per-sector band
-    // lookup with demotion hysteresis, 2:1 balance relaxation, edge masks,
-    // then repack every desired_rung as a variant.
+    // lookup with demotion hysteresis, 2:1 balance relaxation, then repack
+    // every desired_rung as a variant.
     void assign_terrain_lods();
 
     // ---- nested mode ------------------------------------------------------
@@ -257,10 +302,9 @@ private:
     // Which level is desired at a world point right now, or -1. Exactly one
     // level covers any point (coverage rule), so this walks 0..max_level.
     int desired_level_at(float wx, float wz) const;
-    bool desired_at(int level, int64_t tx, int64_t tz) const {
-        auto it = sectors_.find(nested_key(level, tx, tz));
-        return it != sectors_.end() && it->second.desired_level == level;
-    }
+    // (desired_at() lived here. Its only caller was assign_nested_masks, which
+    // the edge-mask retirement deleted; desired_level_at above is the survivor
+    // and answers the geometric question the descent actually asks.)
     // The finest level found along one edge, by recursive halving. A neighbour
     // at or above a segment's own level covers that whole segment (grids nest),
     // so a well-formed ladder costs ONE probe per side; only where the far side
@@ -303,10 +347,25 @@ private:
     // annulus is wider than one tile of the coarser level, which the default
     // profile satisfies by construction.
     void restrict_levels();
-    // Bit n iff the cardinal neighbour on side n is exactly one level coarser.
-    // A tile's whole edge abuts exactly one coarser tile (grids nest), so four
-    // bits still suffice and no half-edge generalisation is needed.
-    void assign_nested_masks();
+
+    // STAGED REFINEMENT. The COARSEST level at which anything is RESIDENT over
+    // this tile's footprint, searching the tile itself and then its ancestors,
+    // or -1 when nothing at or above `level` is resident. Six hash lookups
+    // worst case (the ancestor chain), which is what keeps the staging gate off
+    // update()'s critical path — the naive alternative, probing residency per
+    // finest-grid cell, is the mistake min_edge_level's comment records.
+    // Coarsest rather than finest because the resident map transiently stacks
+    // levels over one column (the transition-group hold); the .cpp records what
+    // answering with the finest one broke.
+    //
+    // -1 deliberately means "no clamp", not "clamp to the coarsest". Two
+    // distinct situations produce it and both want the desired level directly:
+    // a COLD region (nothing resident anywhere near — a fresh world, or a
+    // frontier tile entering reach), and a region whose only residency is
+    // FINER than `level` (a merge in progress; waves are a coarse->fine idea
+    // and merging coarser is a single bake with nothing to stage).
+    int  resident_level_over(int level, int64_t tx, int64_t tz) const;
+    bool staged_refinement_active() const;
 };
 
 } // namespace matter_stream

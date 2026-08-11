@@ -2356,6 +2356,17 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                 retained->children = kids;
                 retained->lods = lods;
                 retained->emitters = emitters;
+                // Volumetric-sectors M0-WP3a: the seam boundary record
+                // terrainVolume's mesher deposited on the DslState. Rides the
+                // SAME in-memory hand-off as the geometry, because the two
+                // have the same consumer (the staged part) and the same
+                // reason to exist (never read the artifact back). A part that
+                // meshed no terrain volume leaves this null.
+                if (state.has_sector_boundary()) {
+                    retained->boundary =
+                        std::make_shared<const seam::SectorBoundary>(
+                            state.sector_boundary());
+                }
                 r.geometry = std::move(retained);
             }
         }

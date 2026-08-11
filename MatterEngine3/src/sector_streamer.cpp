@@ -31,6 +31,26 @@ static bool stream_no_evict() {
     return value;
 }
 
+// A/B kill switch for staged refinement (Config::staged_refinement, §4.5 of
+// docs/volumetric-sectors-design-2026-08-10.md). With
+// MATTER_STREAM_NO_STAGING=1 the descent ignores resident coverage and jumps
+// straight to the banded level, which is exactly the pre-M0-WP4 behaviour —
+// the baseline every "did staging cost us bake work / did it fix the pop"
+// measurement has to be taken against, and one we must be able to take without
+// a rebuild because the interesting runs are captured flights in the editor.
+static bool stream_no_staging() {
+    static const bool value = [] {
+        const char* env = std::getenv("MATTER_STREAM_NO_STAGING");
+        const bool active = env != nullptr && env[0] == '1';
+        if (active)
+            std::fprintf(stderr,
+                         "[stream] MATTER_STREAM_NO_STAGING=1: staged "
+                         "refinement DISABLED (A/B baseline)\n");
+        return active;
+    }();
+    return value;
+}
+
 void resolve_terrain_defaults(Config& cfg) {
     if (!cfg.terrain_lod_enabled || !cfg.terrain_bands.empty()) return;
     // Radial profile in sector sizes: near disc native voxel (LOD 5),
@@ -106,9 +126,9 @@ int SectorStreamer::desired_lod_for_dist(float d) const {
 }
 
 // Terrain-LOD pass (terrain_lod_enabled): band lookup with demotion
-// hysteresis, 2:1 cardinal balance, edge masks, variant repack. Runs after
-// the scatter scan/hysteresis has finalized desired_rung as a bare-or-packed
-// value whose scatter bits are authoritative.
+// hysteresis, 2:1 cardinal balance, variant repack. Runs after the scatter
+// scan/hysteresis has finalized desired_rung as a bare-or-packed value whose
+// scatter bits are authoritative.
 void SectorStreamer::assign_terrain_lods() {
     // Pass 1: per-sector band LOD with demotion hysteresis.
     for (auto& [k, st] : sectors_) {
@@ -160,23 +180,22 @@ void SectorStreamer::assign_terrain_lods() {
         if (!changed) break;
     }
 
-    // Pass 3: coarser-neighbor edge masks + repack. Bit layout matches
-    // terrain_mesher::EdgeMaskBits (bit 0 = +x, 1 = -x, 2 = +z, 3 = -z).
+    // Pass 3: repack. This pass used to compute a four-bit coarser-neighbour
+    // edge mask here as well, and packing was deferred to it precisely BECAUSE
+    // the mask needed every neighbour's LOD to be final first. The mask is gone
+    // (sector_streamer.h documents why: it was a promise about the desired map
+    // that the drawn map broke, and it sat inside the bake identity, so every
+    // neighbour level change forced a full rebake of this tile). What survives
+    // is the packing itself — scatter tier plus this tile's own terrain LOD,
+    // neither of which depends on a neighbour — so the pass could in principle
+    // be folded into pass 1. It is kept separate because pass 2 rewrites
+    // desired_lod, and a variant packed before the balance sweep would carry a
+    // level the balance pass then contradicts.
     for (auto& [k, st] : sectors_) {
         if (st.desired_rung < 0 || st.desired_lod < 0) continue;
         if (stream_no_evict() && st.resident_rung >= 0) continue;
-        int64_t tx, tz;
-        unkey(k, tx, tz);
-        const int64_t ntx[4] = {tx + 1, tx - 1, tx, tx};
-        const int64_t ntz[4] = {tz, tz, tz + 1, tz - 1};
-        int mask = 0;
-        for (int n = 0; n < 4; ++n) {
-            auto it = sectors_.find(key(ntx[n], ntz[n]));
-            if (it == sectors_.end() || it->second.desired_lod < 0) continue;
-            if (it->second.desired_lod == st.desired_lod - 1) mask |= 1 << n;
-        }
         st.desired_rung = pack_variant(variant_scatter(st.desired_rung),
-                                       st.desired_lod, mask);
+                                       st.desired_lod);
     }
 }
 
@@ -268,9 +287,23 @@ void SectorStreamer::mark_desired(int level, int64_t tx, int64_t tz) {
             if (st.dist <= ring_radius + cfg_.hysteresis) tier = res_tier;
         }
     }
-    // Scatter bits only for now; assign_nested_masks() packs the variant once
-    // every level is final, because the edge mask depends on the neighbours.
-    st.desired_rung = tier;
+    // Pack the variant HERE, which is the new home for the nested path.
+    //
+    // It used to happen in a separate assign_nested_masks() sweep after the
+    // whole descent and restrict_levels() had run, for one reason only: the
+    // edge mask was a function of the NEIGHBOURS' final levels, so nothing
+    // could be packed until every level in the map was settled. With the mask
+    // retired (sector_streamer.h carries the rationale — a baked promise about
+    // the desired map that the drawn map kept breaking, and one that put every
+    // neighbour's level inside this tile's bake identity) the variant depends
+    // on nothing but this tile: its own scatter tier and its own level. So it
+    // belongs at the point the tile is decided, and the extra whole-map sweep
+    // is gone with it.
+    //
+    // restrict_levels() calls mark_desired() again for tiles it splits; the
+    // pack is a pure function of `tier` and `desired_lod`, so re-marking is
+    // idempotent and needs no second pass to fix up.
+    st.desired_rung = pack_variant(tier, st.desired_lod);
 }
 
 void SectorStreamer::descend(
@@ -306,7 +339,108 @@ void SectorStreamer::descend(
     // is whether to merge; otherwise it is whether to split.
     const float thresh = is_split ? split_r + cfg_.hysteresis : split_r;
 
-    if (nd <= thresh) {
+    bool split = nd <= thresh;
+
+    // ---- STAGED REFINEMENT ------------------------------------------------
+    // (docs/volumetric-sectors-design-2026-08-10.md §4.5, first half.)
+    //
+    // Everything above decides the DESIRED level. restrict_levels() then makes
+    // the desired map 2:1-balanced, and that used to be the whole story. But
+    // nothing above constrains the DRAWN map, and the drawn map is what a seam
+    // exists between. Fly in fast and a region's desired level jumps 3 -> 0 in
+    // a single update: sixty-four independent bakes are launched, they land in
+    // whatever order the worker pool finishes them, and the first one to land
+    // is drawn at level 0 with a neighbour still showing the level-3 tile. Two
+    // separate costs, and neither is fixed by the seam welder:
+    //
+    //   * the welder implements exactly one level of difference across a face
+    //     (§4.4), so a three-level face pair is outside its domain entirely —
+    //     not a worse seam, no seam;
+    //   * an 8x detail step arriving as a single pop after a long hold, which
+    //     is what the ladder exists to avoid.
+    //
+    // So clamp the REQUEST, not just the desire: a tile is never requested more
+    // than one level finer than the resident coverage over its own footprint.
+    // effective_level = max(desired_level, resident_level_over(...) - 1),
+    // expressed here as a stop condition on the descent because the descent is
+    // where the level is chosen. A 3 -> 0 jump becomes monotone waves — 3, then
+    // 2, then 1, then 0 — with each wave fully RESIDENT (not merely visible;
+    // parking can hold a resident tile back for a while and waiting on
+    // visibility would couple the streamer to the draw side) before the next is
+    // requested. What the eye gets is progressively refining terrain instead of
+    // a hold followed by an 8^n pop.
+    //
+    // The footprint, not the neighbourhood at large, is the right region to ask
+    // about. Asking about cardinal neighbours too would fight the legitimate
+    // band gradient: a level-0 tile near the anchor is *supposed* to sit beside
+    // level-1 tiles, and a clamp that took the coarsest neighbour would pin the
+    // whole disc at the outermost band's level forever. What we want to detect
+    // is specifically "this patch of world is currently being drawn coarse",
+    // and the tile that is drawing it coarse is this tile's own ancestor.
+    //
+    // COLD START IS NOT CLAMPED, and that falls out rather than being a special
+    // case: resident_level_over returns -1 when nothing at or above this level
+    // is resident, and -1 means no clamp. A fresh world, a `clear()`, or a tile
+    // entering reach at the frontier all have nothing resident over them, so
+    // they descend straight to their banded level on the first update — the
+    // wave rule must never turn "there is nothing here yet" into "so show the
+    // coarsest thing first", which would make every world load in six visible
+    // stages. Only a region that already HAS coarse residency is staged,
+    // because only that region has something to be inconsistent with.
+    //
+    // NO DEADLOCK against the transition-group hold (see update_nested below).
+    // The hold keeps a superseded tile resident until every desired tile over
+    // its footprint is resident. Staging only ever makes the desired set
+    // COARSER than the bands asked for; it never removes a tile from the
+    // desired set, never marks one undesired without marking its replacement,
+    // and never gates on anything but residency. So every wave's tiles are
+    // desired, therefore requested, therefore eventually resident, therefore
+    // the hold releases and the next wave is admitted. The two rules run in
+    // opposite directions on the same clock and cannot wait on each other: the
+    // hold waits for the CURRENT wave to become resident, and staging waits for
+    // exactly the same event. (The one thing that could deadlock them is a wave
+    // that can never complete — a permanently failing bake — and that is
+    // already the fail-safe case both rules are designed around: the parent
+    // stays held and drawn, which beats a hole.)
+    //
+    // INTERACTION WITH restrict_levels(). That pass runs after the descent and
+    // splits tiles to enforce the 2:1 desired invariant, calling mark_desired()
+    // directly rather than descend(), so it bypasses this clamp. That is
+    // deliberate and the priority order is right: §4.4 makes the 2:1
+    // restriction mandatory (it is the premise the welder's fan logic is built
+    // on) while staging is a smoothing on top of it. In practice it costs a
+    // one-tile-wide rim at the boundary between a staged region and an
+    // unstaged one, which restrict_levels pulls finer than the wave would have.
+    //
+    // Splitting hysteresis is evaluated FIRST and independently: the clamp can
+    // only ever suppress a split, never force one, so a clamped tile is exactly
+    // as stable on the split radius as it was before.
+    //
+    // COST. The design bounds the intermediate waves at sum(8^-k) ~ +14% bake
+    // work, which is the VOLUMETRIC number -- one level coarser is 8x the
+    // volume per tile. This descent is still the 2D quadtree, so the same
+    // argument gives sum(4^-k) = 1/3 and the honest M0 ceiling is +33%; the
+    // +14% arrives with the third axis. Measured on a four-level teleport with
+    // the test band table: +18.9% (sector_streamer_tests.cpp prints it).
+    //
+    // ONE CONSEQUENCE CALLERS SEE: a quiet update no longer means "settled".
+    // A wave is admitted by the ABSENCE of coarser residency, and the coarse
+    // tile is evicted at the end of the update in which its replacement quad
+    // completes -- so there is exactly one update per wave in which the desired
+    // map already equals the resident map and next_request() returns nothing.
+    // The engine pumps every frame and never notices. Anything that loops
+    // "update until no requests" stops mid-jump, which is a test-harness trap
+    // rather than an engine one, and it is why the staged tests wait for
+    // several consecutive silent updates.
+    if (split && staged_refinement_active()) {
+        const int resident_level = resident_level_over(level, tx, tz);
+        // Descending to level-1 asks for level-1; the clamp floor is
+        // resident_level - 1, so the descent is admissible iff
+        // level - 1 >= resident_level - 1.
+        if (resident_level >= 0 && level < resident_level) split = false;
+    }
+
+    if (split) {
         // Hysteresis acts on the whole sibling quad, never on one child: a tile
         // cannot be half-merged, so the four children are decided together.
         for (int c = 0; c < 4; ++c)
@@ -315,6 +449,47 @@ void SectorStreamer::descend(
     } else {
         mark_desired(level, tx, tz);
     }
+}
+
+bool SectorStreamer::staged_refinement_active() const {
+    return cfg_.staged_refinement && !stream_no_staging();
+}
+
+int SectorStreamer::resident_level_over(int level, int64_t tx,
+                                        int64_t tz) const {
+    // Walk this tile and then its ancestors -- the same ancestor chain
+    // scan_footprint walks for the merge case. Arithmetic shift is floor
+    // division, which is what nesting means for negative tile indices.
+    //
+    // Only at-or-above is searched. Residency strictly FINER than `level` means
+    // the region is already at least as detailed as the request, so there is
+    // nothing to stage; returning -1 there is not an approximation, it is the
+    // answer.
+    //
+    // THE COARSEST match wins, not the first (finest) one, and the difference
+    // is not cosmetic -- it was a bug, caught by the superseded-tile dwell
+    // gate in sector_streamer_tests.cpp. Unlike the DESIRED map, where exactly
+    // one level covers any column, the RESIDENT map transiently holds several
+    // levels over one column: the transition-group rule keeps a superseded
+    // tile resident until every tile replacing it is resident, so for a window
+    // both the coarse parent and its complete replacement quad are up. Return
+    // the finest of those and the descent reads "this region is already at
+    // level 2" while a level-3 tile is still drawn over it, so wave 3 gets
+    // requested before wave 2 has retired anything -- the coarse tile is then
+    // held through every remaining wave (measured: 68 ticks of dwell against
+    // the 1 tick that is inherent), and the drawn set ends up holding exactly
+    // the multi-level spread staged refinement exists to prevent. Answering
+    // with the coarsest resident level instead means a wave is admitted only
+    // once the previous wave is resident AND the layer above it has been torn
+    // down, which is what "each wave fully resident before the next is
+    // requested" has to mean to be worth anything.
+    int coarsest = -1;
+    for (int up = level; up <= max_level(); ++up) {
+        const int sh = up - level;
+        auto it = sectors_.find(nested_key(up, tx >> sh, tz >> sh));
+        if (it != sectors_.end() && it->second.resident_rung >= 0) coarsest = up;
+    }
+    return coarsest;
 }
 
 void SectorStreamer::restrict_levels() {
@@ -362,26 +537,28 @@ void SectorStreamer::restrict_levels() {
     }
 }
 
-void SectorStreamer::assign_nested_masks() {
-    for (auto& [k, st] : sectors_) {
-        if (st.desired_level < 0) continue;
-        int lvl; int64_t tx, tz;
-        nested_unkey(k, lvl, tx, tz);
-        // A coarser neighbour spans this tile's WHOLE edge -- the tile's edge
-        // is half of the coarser tile's, because the grids nest -- so the
-        // question "is side n one level coarser" is a single lookup at the
-        // level-(L+1) tile that would contain that neighbour, and no half-edge
-        // mask bits are needed. Arithmetic shift, which is exact for negative
-        // tile indices (floor division, which is what nesting means here).
-        const int64_t ntx[4] = {(tx + 1) >> 1, (tx - 1) >> 1, tx >> 1, tx >> 1};
-        const int64_t ntz[4] = {tz >> 1, tz >> 1, (tz + 1) >> 1, (tz - 1) >> 1};
-        int mask = 0;
-        for (int n = 0; n < 4; ++n)
-            if (desired_at(lvl + 1, ntx[n], ntz[n])) mask |= 1 << n;
-        st.desired_rung = pack_variant(variant_scatter(st.desired_rung),
-                                       st.desired_lod, mask);
-    }
-}
+// assign_nested_masks() used to live here. It walked every desired tile,
+// looked up the level-(L+1) tile on each of the four cardinal sides, and
+// packed a "this side is one level coarser" bit into the variant for the
+// mesher to gate its cross-level ownership reach on.
+//
+// It is deleted, not disabled (design §4.1, "Consequences" 2). The premise it
+// rested on -- that a tile can be baked with a correct assumption about which
+// level its neighbour will be drawn at -- was retracted: the mask was computed
+// from the DESIRED map, while the neighbour actually on screen is a different
+// tile whenever it is mid-split, mid-merge, held by the transition rule below,
+// parked, or still baking, and each of those disagreements printed as a
+// one-voxel strip of triangles emitted by neither side. Worse, the mask was
+// part of the BAKE IDENTITY, so a neighbour changing level forced a full
+// rebake of this tile too -- and the pair's rebakes finished seconds apart,
+// which is precisely the window in which the two disagree. The mechanism meant
+// to close the seam was what held it open.
+//
+// Cross-level seam geometry is now generated engine-side at runtime from the
+// two tiles that are actually DRAWN, so it cannot disagree with them by
+// construction. The streamer no longer knows seams exist, and -- the practical
+// win for this file -- a neighbour's level change no longer invalidates this
+// tile's bake at all.
 
 void SectorStreamer::scan_subtree(int level, int64_t tx, int64_t tz,
                                   bool& any_desired, bool& all_resident) const {
@@ -458,8 +635,10 @@ void SectorStreamer::update_nested(float anchor_x, float anchor_z) {
         for (int64_t tx = tx_min; tx <= tx_max; ++tx)
             descend(top, tx, tz, finer_resident);
 
+    // The variant is packed inside mark_desired() now; there is no third sweep
+    // here any more, because nothing about a tile's request depends on its
+    // neighbours once the edge mask is gone.
     restrict_levels();
-    assign_nested_masks();
 
     // Evict and prune -- with the transition-group rule.
     //

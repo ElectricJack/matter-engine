@@ -209,7 +209,16 @@ int main() {
         printf("  long flight: peak=%zu end=%zu\n", peak, at_end);
     }
 
-    // --- terrain LOD ladder: bands, 2:1 balance, edge masks ------------------
+    // --- terrain LOD ladder: bands, 2:1 balance ------------------------------
+    // This block used to assert a third property, that the packed variant's
+    // edge-mask bits named exactly the one-level-coarser cardinal neighbours.
+    // The mask is gone from the variant (sector_streamer.h records why: it was
+    // a promise about the DESIRED map that the DRAWN map broke, and living in
+    // the bake identity it made every neighbour level change a rebake of this
+    // tile). Cross-level seam geometry is welded engine-side at runtime from
+    // the drawn pair, so there is nothing here for a test to check. What
+    // remains -- the bands and the 2:1 balance -- is untouched and still the
+    // invariant the welder's one-level fan logic is built on.
     {
         Config tcfg;
         tcfg.sector_size = 64.0f;
@@ -237,7 +246,7 @@ int main() {
         CHECK(!final_variant.empty(), "terrain ladder settled");
 
         bool all_packed = true, near_is_voxel = true, far_is_coarse = true;
-        bool balanced = true, masks_ok = true;
+        bool balanced = true;
         int seen_lods = 0;
         for (const auto& [k, v] : final_variant) {
             if (!variant_packed(v)) { all_packed = false; continue; }
@@ -251,7 +260,6 @@ int main() {
             if (d < 150.0f && lod != 5) near_is_voxel = false;
             if (d > 1700.0f && lod > 1) far_is_coarse = false;
 
-            int expect_mask = 0;
             const int64_t ntx[4] = {tx + 1, tx - 1, tx, tx};
             const int64_t ntz[4] = {tz, tz, tz + 1, tz - 1};
             for (int n = 0; n < 4; ++n) {
@@ -259,16 +267,22 @@ int main() {
                 if (it == final_variant.end()) continue;
                 const int nlod = variant_terrain_lod(it->second);
                 if (nlod - lod > 1 || lod - nlod > 1) balanced = false;
-                if (nlod == lod - 1) expect_mask |= 1 << n;
             }
-            if (variant_edge_mask(v) != expect_mask) masks_ok = false;
         }
         CHECK(all_packed, "every terrain-ladder variant carries the marker");
         CHECK(near_is_voxel, "sectors inside 3S stay native voxel (lod 5)");
         CHECK(far_is_coarse, "outer-band sectors coarsen to lod <= 1");
         CHECK(seen_lods == 0x3F, "all six LOD levels appear in the settled disc");
         CHECK(balanced, "settled cardinal neighbors differ by at most one LOD");
-        CHECK(masks_ok, "edge masks name exactly the one-coarser neighbors");
+        // Bits 7-10 are now reserved and must read back as zero: a stray
+        // writer there would be invisible to every decode helper but would
+        // still change the bake identity, which is the failure mode the mask
+        // itself was.
+        bool reserved_clear = true;
+        for (const auto& [k, v] : final_variant)
+            if (variant_packed(v) && ((v >> 7) & 0xF) != 0) reserved_clear = false;
+        CHECK(reserved_clear,
+              "the retired edge-mask bits 7-10 are left clear by every packer");
 
         // Legacy path untouched: same rings without the flag produce bare rungs.
         Config bare = tcfg; bare.terrain_lod_enabled = false;
@@ -422,6 +436,16 @@ int main() {
     // --- restriction: cardinal neighbours differ by at most one level -------
     // Checked at the finest pitch along every edge, so a lone over-fine
     // neighbour against a long coarse edge cannot hide.
+    //
+    // This block also used to assert that the packed variant's edge mask named
+    // exactly the one-level-COARSER cardinal neighbours. That half is retired
+    // with the mask itself: cross-level seam geometry is welded engine-side
+    // from the two tiles actually drawn, so the streamer emits no claim about
+    // neighbours for a test to check (design §4.1). The +-1 restriction half
+    // below is NOT retired and matters more than it used to -- the welder's fan
+    // logic implements exactly one level of difference across a face and
+    // nothing wider (§4.4), so this is the invariant that makes the welder
+    // sufficient rather than merely the invariant the old snap assumed.
     {
         SectorStreamer s(nested_cfg());
         auto live = settle_nested(s, 3.2f, 3.2f);
@@ -434,7 +458,7 @@ int main() {
             }
             return -1;
         };
-        int violations = 0, mask_errors = 0;
+        int violations = 0;
         for (const auto& [k, v] : live) {
             const int L = std::get<0>(k);
             const float S = S0 * float(1 << L);
@@ -448,22 +472,10 @@ int main() {
                     if (nl >= 0 && std::abs(nl - L) > 1) ++violations;
                 }
             }
-            // The mask must name exactly the sides whose neighbour is one
-            // level COARSER -- probed at the edge midpoint, which is where a
-            // coarser neighbour necessarily is (it spans the whole edge).
-            int expect = 0;
-            const float mid = 0.5f * S;
-            const float mx[4] = {ox + S + 0.5f*S0, ox - 0.5f*S0, ox + mid, ox + mid};
-            const float mz[4] = {oz + mid, oz + mid, oz + S + 0.5f*S0, oz - 0.5f*S0};
-            for (int n = 0; n < 4; ++n)
-                if (level_at(mx[n], mz[n]) == L + 1) expect |= 1 << n;
-            if (variant_edge_mask(v) != expect) ++mask_errors;
         }
         CHECK(violations == 0,
               "nested restriction: cardinal neighbours differ by at most one "
               "level, checked at the finest pitch along every edge");
-        CHECK(mask_errors == 0,
-              "nested edge masks name exactly the one-level-coarser neighbours");
     }
 
     // --- restriction under a PATHOLOGICAL band table ------------------------
@@ -905,6 +917,274 @@ int main() {
         CHECK(s.resident_count() < settled * 2,
               "transition groups: abandoning a transition releases the held "
               "tiles rather than stranding them");
+    }
+
+    // =======================================================================
+    // STAGED REFINEMENT (docs/volumetric-sectors-design-2026-08-10.md §4.5)
+    //
+    // restrict_levels() constrains the DESIRED map. Nothing constrained the
+    // DRAWN one, and the drawn map is what a seam exists between: under fast
+    // flight a region's desired level jumps several levels at once, the tiles
+    // rebake independently, and whichever lands first is drawn at level 0 next
+    // to a neighbour still showing level 3. That is outside the seam welder's
+    // one-level domain entirely (§4.4) and it is also the 8x-detail pop.
+    //
+    // The rule under test: a tile is never REQUESTED more than one level finer
+    // than the resident coverage over its own footprint, so a multi-level jump
+    // is served as monotone coarse->fine waves. Every block below runs the same
+    // scenario twice, with Config::staged_refinement ON and OFF, because the
+    // OFF run is what makes these checks failable -- "0 violations" means
+    // nothing unless the same probe reports thousands with the rule removed.
+    // =======================================================================
+
+    // One scripted run: settle at `from`, TELEPORT to `to`, then keep pumping
+    // until quiet, measuring only the second half. Requests are serviced
+    // instantly, which is the harshest case for staging (a wave completes in
+    // one update, so nothing is hidden by bake latency).
+    struct StageRun {
+        std::map<std::tuple<int,long long,long long>, int> resident;
+        long long requests   = 0;   // requests issued during the measured half
+        int updates          = 0;   // updates taken to go quiet after the jump
+        int clamp_violations = 0;   // requested > 1 level finer than resident
+        int probes           = 0;   // requests whose footprint had ANY residency
+        int skips            = 0;   // a column's request sequence skipped a level
+        int deepest_wave     = 0;   // distinct levels requested in one column
+    };
+    auto teleport_run = [&](bool staged, float fx, float fz,
+                            float tox, float toz) {
+        Config c = nested_cfg();
+        c.staged_refinement = staged;
+        SectorStreamer s(c);
+        StageRun r;
+        // Coarsest resident level at or above L over the footprint of
+        // (L, tx, tz) in `snap`, or -1. This is the same ancestor walk
+        // SectorStreamer::resident_level_over does, rebuilt here from nothing
+        // but the public request/publish/evict stream -- the test must not be
+        // able to agree with the implementation by sharing its code.
+        auto resident_level_over =
+            [](const std::map<std::tuple<int,long long,long long>, int>& snap,
+               int L, long long tx, long long tz) {
+                int coarsest = -1;
+                for (int up = L; up <= 5; ++up) {
+                    const int sh = up - L;
+                    if (snap.count({up, tx >> sh, tz >> sh})) coarsest = up;
+                }
+                return coarsest;
+            };
+        // Per level-5 column: the finest level requested so far. A request more
+        // than one level finer than that is a skipped wave.
+        std::map<std::pair<long long,long long>, int> col_min;
+        std::map<std::pair<long long,long long>, std::vector<int>> col_seq;
+
+        auto pump = [&](float x, float z, bool measure) {
+            s.update(x, z);
+            // Residency AS THE STREAMER SAW IT when it built this desired map:
+            // publishes serviced below would otherwise let the model run ahead
+            // of the decision being judged.
+            const auto snap = r.resident;
+            SectorRequest q;
+            bool any = false;
+            while (s.next_request(q)) {
+                any = true;
+                const int L = variant_level(q.rung);
+                if (measure) {
+                    ++r.requests;
+                    const int R = resident_level_over(snap, L, q.tx, q.tz);
+                    if (R >= 0) {
+                        ++r.probes;
+                        if (L < R - 1) ++r.clamp_violations;
+                    }
+                    const int sh = 5 - L;
+                    const std::pair<long long,long long> col{q.tx >> sh,
+                                                             q.tz >> sh};
+                    auto it = col_min.find(col);
+                    if (it != col_min.end() && L < it->second - 1) ++r.skips;
+                    if (it == col_min.end() || L < it->second) {
+                        col_min[col] = L;
+                        col_seq[col].push_back(L);
+                        r.deepest_wave = std::max(
+                            r.deepest_wave, (int)col_seq[col].size());
+                    }
+                }
+                if (s.on_published(q.tx, q.tz, q.rung))
+                    r.resident[{L, (long long)q.tx, (long long)q.tz}] = q.rung;
+            }
+            for (const auto& e : s.take_evictions()) {
+                // Guarded erase, for the reason the transition-group test spells
+                // out: a 1:1 variant swap publishes the new value first, so a
+                // blind erase would delete a tile that is still resident.
+                const auto k = std::make_tuple(variant_level(e.rung),
+                                               (long long)e.tx,
+                                               (long long)e.tz);
+                auto it = r.resident.find(k);
+                if (it != r.resident.end() && it->second == e.rung)
+                    r.resident.erase(it);
+            }
+            if (measure) ++r.updates;
+            return any;
+        };
+
+        // QUIET IS NOT DONE under staged refinement, and this is the one place
+        // the rule leaks into callers. A wave is admitted by the ABSENCE of
+        // coarser residency, and the coarse tile is evicted at the END of the
+        // update in which its replacement quad completes -- so there is exactly
+        // one update per wave in which the desired map still equals the
+        // resident map and next_request() has nothing to say. The engine pumps
+        // every frame regardless and never notices; a settle loop that breaks
+        // on the first silent update stops mid-jump (measured: it stopped at
+        // 852 of 1188 tiles). So require several consecutive silent updates.
+        auto run = [&](float x, float z, bool measure) {
+            int quiet = 0;
+            for (int i = 0; i < 4000 && quiet < 8; ++i)
+                quiet = pump(x, z, measure) ? 0 : quiet + 1;
+        };
+        run(fx, fz, false);
+        run(tox, toz, true);
+        return r;
+    };
+
+    // --- a multi-level jump refines in monotone waves ------------------------
+    // The anchor teleports 600 m, so the region it lands in was resident at
+    // level 4 (the 775 m band) and is now wanted at level 0 -- a four-level
+    // jump in a single update. No request may be issued more than one level
+    // finer than what is resident over it.
+    {
+        const auto on  = teleport_run(true,  3.2f, 3.2f, 600.0f, 0.0f);
+        const auto off = teleport_run(false, 3.2f, 3.2f, 600.0f, 0.0f);
+        printf("  staged jump ON : %lld requests over %d updates, "
+               "%d/%d over-fine, %d wave skips, deepest wave chain %d\n",
+               on.requests, on.updates, on.clamp_violations, on.probes,
+               on.skips, on.deepest_wave);
+        printf("  staged jump OFF: %lld requests over %d updates, "
+               "%d/%d over-fine, %d wave skips, deepest wave chain %d\n",
+               off.requests, off.updates, off.clamp_violations, off.probes,
+               off.skips, off.deepest_wave);
+        CHECK(on.probes > 100,
+              "the jump actually landed on ground that already had residency -- "
+              "otherwise there is nothing for the clamp to clamp against");
+        CHECK(on.clamp_violations == 0,
+              "staged refinement: no tile is ever requested more than one level "
+              "finer than the resident coverage over its own footprint");
+        CHECK(on.skips == 0,
+              "staged refinement: the levels requested for a column step down "
+              "one at a time -- monotone, no skipped wave");
+        // Failability. Without the rule the same probe must light up, or the
+        // two CHECKs above are measuring nothing.
+        CHECK(off.clamp_violations > 100,
+              "with staged refinement OFF the same jump requests far finer than "
+              "what is resident -- the probe above is failable");
+        CHECK(on.deepest_wave >= 3,
+              "staged refinement: a four-level jump is served as a chain of "
+              "intermediate waves, not one step");
+    }
+
+    // --- cold start is not clamped ------------------------------------------
+    // The wave rule keys off resident coverage, and a fresh world has none. If
+    // "no coverage" were treated as "coverage at the coarsest level" then every
+    // world would load in six visible stages and the first frame of every scene
+    // would be a single quad. -1 must mean NO CLAMP, and the proof is that a
+    // cold settle is request-for-request identical with the flag either way.
+    {
+        auto cold = [&](bool staged) {
+            Config c = nested_cfg();
+            c.staged_refinement = staged;
+            SectorStreamer s(c);
+            std::vector<std::tuple<long long,long long,int>> trace;
+            std::map<std::tuple<int,long long,long long>, int> live;
+            for (int i = 0; i < 20000; ++i) {
+                s.update(3.2f, 3.2f);
+                SectorRequest q; bool any = false;
+                while (s.next_request(q)) {
+                    any = true;
+                    trace.push_back({q.tx, q.tz, q.rung});
+                    if (s.on_published(q.tx, q.tz, q.rung))
+                        live[{variant_level(q.rung), (long long)q.tx,
+                              (long long)q.tz}] = q.rung;
+                }
+                for (const auto& e : s.take_evictions())
+                    live.erase({variant_level(e.rung), (long long)e.tx,
+                                (long long)e.tz});
+                if (!any && i > 2) break;
+            }
+            return std::make_pair(trace, live);
+        };
+        const auto on  = cold(true);
+        const auto off = cold(false);
+        int by_level[6] = {0, 0, 0, 0, 0, 0};
+        for (const auto& [k, v] : on.second) by_level[std::get<0>(k)]++;
+        printf("  staged cold start: %zu requests ON vs %zu OFF, settled "
+               "L0..L5 = %d %d %d %d %d %d\n",
+               on.first.size(), off.first.size(), by_level[0], by_level[1],
+               by_level[2], by_level[3], by_level[4], by_level[5]);
+        CHECK(!on.first.empty() && on.first == off.first,
+              "cold start is not clamped: with nothing resident anywhere the "
+              "staged and unstaged descents issue the identical request stream");
+        CHECK(on.second == off.second,
+              "cold start settles to the same set either way");
+        for (int L = 0; L <= 5; ++L)
+            CHECK(by_level[L] > 0,
+                  "cold start still reaches every authored desired level -- the "
+                  "wave rule does not stall a fresh world at the coarse end");
+    }
+
+    // --- no deadlock: same steady state, different path ---------------------
+    // Staging interacts with two existing rules that can both WITHHOLD work:
+    // the split/merge hysteresis in descend() and the transition-group hold in
+    // update_nested(). The hold waits for the current desired set to become
+    // resident; staging waits for exactly the same event before admitting the
+    // next wave, so they run on one clock and cannot wait on each other. This
+    // asserts that claim rather than trusting the argument: the settle
+    // terminates, and it terminates at the same place the unstaged one does.
+    {
+        const auto on  = teleport_run(true,  3.2f, 3.2f, 600.0f, 0.0f);
+        const auto off = teleport_run(false, 3.2f, 3.2f, 600.0f, 0.0f);
+        printf("  staged converge: %d updates ON vs %d OFF (%.2fx), "
+               "%zu resident tiles ON vs %zu OFF\n",
+               on.updates, off.updates,
+               off.updates ? double(on.updates) / double(off.updates) : 0.0,
+               on.resident.size(), off.resident.size());
+        CHECK(on.updates < 3999 && off.updates < 3999,
+              "staged refinement terminates: neither settle ran out of updates");
+        CHECK(on.resident == off.resident,
+              "staged refinement converges to exactly the same steady state as "
+              "the unstaged descent -- same destination, different path");
+        // The extra updates are the intermediate waves, and the cost is per
+        // LEVEL CROSSED, not per tile: measured 15 vs 9 for a four-level jump,
+        // which is the four waves plus the silent update each one needs before
+        // its successor is admitted. A bound proportional to the tile count
+        // would mean staging had turned into serialization.
+        CHECK(on.updates <= off.updates + 24,
+              "staged refinement's extra updates are bounded by the wave count, "
+              "not proportional to the tile count");
+    }
+
+    // --- the intermediate-wave work bound -----------------------------------
+    // Design §4.5 bounds the intermediate waves at sum(8^-k) ~ +14%, and that
+    // number does not apply here: it is the VOLUMETRIC octree's, where a tile
+    // one level coarser covers 8x the volume. This streamer is still the 2D
+    // quadtree, where the same argument gives sum(4^-k) = 1/3, so the honest
+    // ceiling for M0 is about +33% and the +14% arrives with the third axis.
+    //
+    // MEASURED, this four-level jump: 1296 requests staged vs 1090 direct,
+    // +18.9%, comfortably inside the 2D ceiling. That number is a
+    // CHARACTERIZATION of this scenario -- one band table, one jump distance --
+    // and not a derived bound; a different table moves it. The assertion is
+    // pinned at the +33% ceiling rather than tight to the measurement so that
+    // band tuning does not make it flaky, while a regression that re-requests
+    // waves (the plausible failure: a clamp that oscillates and re-issues an
+    // already-resident level) blows straight through it.
+    {
+        const auto on  = teleport_run(true,  3.2f, 3.2f, 600.0f, 0.0f);
+        const auto off = teleport_run(false, 3.2f, 3.2f, 600.0f, 0.0f);
+        const double ratio = off.requests
+            ? double(on.requests) / double(off.requests) : 0.0;
+        printf("  staged work: %lld requests ON vs %lld OFF (%.3fx, +%.1f%%) "
+               "-- 2D quadtree ceiling sum(4^-k) = +33%%\n",
+               on.requests, off.requests, ratio, 100.0 * (ratio - 1.0));
+        CHECK(off.requests > 100, "the work comparison serviced a real jump");
+        CHECK(ratio < 1.35,
+              "staged refinement's intermediate waves cost a bounded fraction "
+              "of the direct jump, not a multiple of it");
     }
 
     // --- legacy: the flag off is the old streamer, request for request ------

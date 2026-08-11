@@ -75,6 +75,10 @@ namespace viewer { struct VkScenePart; }
 // Runtime-owned sector streaming coordinator and world profile.
 #include "streaming/sector_streaming_coordinator.h"
 #include "terrain_field.h"
+// Volumetric-sectors M0-WP3b: the runtime cross-level seam welder. Pure
+// geometry (see seam_weld.h); this file supplies the two WeldSide lookups over
+// the drawn sector map and owns the resulting weld pool.
+#include "seam_weld.h"
 
 // Phase C Task 17: resolve/manifest cache for instant warm relaunch.
 #include "resolve_cache.h"
@@ -105,6 +109,7 @@ namespace viewer { struct VkScenePart; }
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace matter {
@@ -1176,6 +1181,25 @@ struct WorldSession::Impl {
         bool parked = false;
         std::chrono::steady_clock::time_point parked_at{};
         viewer::WorldManifestEntry pending_instance{};
+        // ---- seam welding (volumetric-sectors M0-WP3a) ----------------------
+        // This tile's exported boundary record
+        // (docs/volumetric-sectors-design-2026-08-10.md §4.1), copied off the
+        // committed LoadedPart at publish.
+        //
+        // A shared_ptr, not a raw pointer into the LoadedPart and not a deep
+        // copy. The record is immutable after bake, so sharing it is free and
+        // safe; a raw pointer would be a dangling hazard because the two
+        // lifetimes are only USUALLY the same -- release_sector_entry can call
+        // store->release(part_hash) and then FAIL a later release step, which
+        // leaves this SectorEntry alive in sector_map with its LoadedPart
+        // already gone. A deep copy would be correct too, but it would put a
+        // few kB x ~1,200 resident tiles of duplicate data behind a pointer
+        // copy that is already exact.
+        //
+        // Null is normal and never an error: non-terrain publications have no
+        // record, and neither does a sector staged off disk instead of from
+        // its bake. The welder treats absence as "no weld here".
+        std::shared_ptr<const seam::SectorBoundary> boundary;
     };
     struct SectorKey {
         int64_t tx, tz; int rung;
@@ -1263,6 +1287,386 @@ struct WorldSession::Impl {
     // int compare instead of walking the ledger and scheduling a GpuJob.
     int parked_sectors = 0;
     void unpark_ready_sectors();
+
+    // ---- Seam welding (volumetric-sectors M0-WP3a) --------------------------
+    //
+    // The boundary record of a tile that is actually DRAWN, or null.
+    //
+    // "Drawn" is `!parked && resources.world_state_attempted`, the same truth
+    // sector_blocked_by_visible reads (:1255) -- NOT `resident`, which is set
+    // for parked publications too. That distinction is the whole point of
+    // generating seams from the drawn set: a weld built against a tile the
+    // renderer is not showing is exactly the stale-neighbour bug this design
+    // removes, wearing new clothes.
+    //
+    // O(1). sector_blocked_by_visible is already an O(sector_map) scan run per
+    // publish and per unpark pass, and it is a live suspect for the sub-second
+    // hitches a 2026-08-09 capture caught; the welder must not add a second
+    // one, so this is a single hash lookup and every caller is expected to
+    // drive it from a bounded set of keys (a tile and its face neighbours),
+    // never from a sweep.
+    //
+    // THE definition of "drawn" for the welder and the +-1 gate alike. Both
+    // resolve neighbours several ways (by key, by tile coordinate and level, by
+    // tile coordinate and mesher rung) and every one of them funnels through
+    // here, so there is exactly one place the predicate can be got wrong.
+    const SectorEntry* drawn_entry(const SectorKey& key) const {
+        const auto it = sector_map.find(key);
+        if (it == sector_map.end()) return nullptr;
+        const SectorEntry& entry = it->second;
+        if (entry.parked) return nullptr;
+        if (!entry.resources.world_state_attempted) return nullptr;
+        return &entry;
+    }
+    const seam::SectorBoundary* drawn_sector_boundary(
+            const SectorKey& key) const {
+        const SectorEntry* entry = drawn_entry(key);
+        return entry ? entry->boundary.get() : nullptr;
+    }
+
+    // ---- Tile index (M0-WP3b) ----------------------------------------------
+    //
+    // (tx,tz) -> the rungs resident at that tile coordinate: a grouped mirror of
+    // sector_map's key set, so that "which tile occupies this footprint" is one
+    // hash lookup rather than a sweep.
+    //
+    // It exists because both halves of M0-WP3b resolve neighbours by tile
+    // COORDINATE, while sector_map is keyed by (tx, tz, RUNG) and the rung is a
+    // packed variant carrying the scatter tier in its low four bits. A
+    // neighbour's key therefore cannot be constructed, only searched -- 16
+    // probes per footprint without this, which the +-1 gate's fine-side
+    // enumeration multiplies into thousands of lookups per publish. R2's O(1)
+    // bound is about world SIZE; this is what keeps the constant small enough
+    // for the bound to be worth having.
+    //
+    // Maintained at the only three sites that mutate sector_map: the publish
+    // emplace, the eviction erase and the terminal clear. MATTER_SEAM_VERIFY=1
+    // cross-checks it against sector_map on every weld rebuild, so a missed
+    // site surfaces as a loud mismatch instead of as silently absent seams.
+    struct TileXZ {
+        int64_t tx = 0, tz = 0;
+        bool operator==(const TileXZ& o) const {
+            return tx == o.tx && tz == o.tz;
+        }
+    };
+    struct TileXZHash {
+        size_t operator()(const TileXZ& k) const {
+            uint64_t h = uint64_t(k.tx) * 0x9e3779b97f4a7c15ull;
+            h ^= uint64_t(k.tz) + 0xbf58476d1ce4e5b9ull + (h << 6) + (h >> 2);
+            h ^= h >> 31;
+            return (size_t)h;
+        }
+    };
+    std::unordered_map<TileXZ, std::vector<int>, TileXZHash> sector_tile_index;
+    void tile_index_add(const SectorKey& key) {
+        auto& rungs = sector_tile_index[TileXZ{key.tx, key.tz}];
+        for (int r : rungs) if (r == key.rung) return;
+        rungs.push_back(key.rung);
+    }
+    void tile_index_remove(const SectorKey& key) {
+        const auto it = sector_tile_index.find(TileXZ{key.tx, key.tz});
+        if (it == sector_tile_index.end()) return;
+        auto& rungs = it->second;
+        for (size_t i = 0; i < rungs.size(); ++i) {
+            if (rungs[i] != key.rung) continue;
+            rungs[i] = rungs.back();
+            rungs.pop_back();
+            break;
+        }
+        if (rungs.empty()) sector_tile_index.erase(it);
+    }
+
+    // The DRAWN entry at a tile coordinate, or null. `level` is a sector level
+    // (kMaxLevel..0, coarser is larger); pass kAnyLevel to accept whatever is
+    // there, which is what the uniform grid needs (every tile is S_0 across and
+    // the "level" is only a terrain-LOD label).
+    static constexpr int kAnyLevel = std::numeric_limits<int>::min();
+    const SectorEntry* drawn_tile_entry(int64_t tx, int64_t tz, int level,
+                                        SectorKey* out_key = nullptr) const {
+        const auto it = sector_tile_index.find(TileXZ{tx, tz});
+        if (it == sector_tile_index.end()) return nullptr;
+        for (int rung : it->second) {
+            if (level != kAnyLevel && sector_level_of(rung) != level) continue;
+            const SectorKey k{tx, tz, rung};
+            const SectorEntry* e = drawn_entry(k);
+            if (!e) continue;
+            if (out_key) *out_key = k;
+            return e;
+        }
+        return nullptr;
+    }
+    // The drawn boundary record at a tile coordinate whose MESHER rung is
+    // exactly `mesher_rung`. Identity by rung rather than by level is what makes
+    // the welder's side lookups work in both tiling modes: a WeldSide IS a rung,
+    // and a record that disagrees is a different lattice.
+    const seam::SectorBoundary* drawn_boundary_with_rung(
+            int64_t tx, int64_t tz, int mesher_rung) const {
+        const auto it = sector_tile_index.find(TileXZ{tx, tz});
+        if (it == sector_tile_index.end()) return nullptr;
+        for (int rung : it->second) {
+            const SectorEntry* e = drawn_entry(SectorKey{tx, tz, rung});
+            if (!e || !e->boundary) continue;
+            if (e->boundary->rung != mesher_rung) continue;
+            return e->boundary.get();
+        }
+        return nullptr;
+    }
+
+    // The tiles at `level` that touch `key` across `face`, as a tile index on
+    // the face's normal axis plus an INCLUSIVE range on the tangential one.
+    //
+    // Everything is computed in LEVEL-0 tile units and then shifted down, so the
+    // three cases the 2:1 invariant permits (one tile at the same level, one
+    // coarser tile, 2^(L-m) finer tiles) fall out of one expression instead of
+    // three. Arithmetic right shift is floor division for negative indices --
+    // every quadrant but one has them -- which is the same assumption
+    // sector_footprints_overlap already makes.
+    struct FaceNeighbourSpan {
+        int64_t normal = 0;              // tile index along the face's normal axis
+        int64_t tan_lo = 0, tan_hi = 0;  // inclusive tile range along the tangent
+        bool    axis_x = true;           // normal is a tx (else a tz)
+    };
+    bool face_neighbour_span(const SectorKey& key, int face, int level,
+                             FaceNeighbourSpan& out) const {
+        const int axis = seam::face_axis(face);
+        if (axis == 1) return false;             // +-y is not tiled in M0
+        out.axis_x = (axis == 0);
+        if (!world_nested_sectors) {
+            // Uniform grid: every tile is S_0 across, so the neighbour is the
+            // adjacent tile index whatever its rung, and `level` is not a size.
+            const int64_t step = seam::face_is_positive(face) ? 1 : -1;
+            out.normal = (axis == 0) ? key.tx + step : key.tz + step;
+            out.tan_lo = out.tan_hi = (axis == 0) ? key.tz : key.tx;
+            return true;
+        }
+        const int L = sector_level_of(key.rung);
+        // Both levels must be inside the ladder: `level` because a tile at it
+        // is what we are asking for, and L because the shifts below are how the
+        // tile's own footprint is expressed. variant_level() can return a
+        // negative for a terrain LOD above kMaxLevel (unused encodings), and a
+        // negative shift is undefined rather than merely wrong.
+        if (L < 0 || L > matter_stream::kMaxLevel) return false;
+        if (level < 0 || level > matter_stream::kMaxLevel) return false;
+        const int64_t nx0 = key.tx << L, nz0 = key.tz << L;   // level-0 span
+        const int64_t span = int64_t(1) << L;
+        // The level-0 coordinate of the column immediately across the face.
+        const int64_t across = seam::face_is_positive(face)
+            ? ((axis == 0 ? nx0 : nz0) + span)
+            : ((axis == 0 ? nx0 : nz0) - 1);
+        const int64_t tan0 = (axis == 0) ? nz0 : nx0;
+        out.normal = across >> level;
+        out.tan_lo = tan0 >> level;
+        out.tan_hi = (tan0 + span - 1) >> level;
+        return true;
+    }
+    SectorKey neighbour_key(const FaceNeighbourSpan& s, int64_t tan,
+                            int rung) const {
+        return s.axis_x ? SectorKey{s.normal, tan, rung}
+                        : SectorKey{tan, s.normal, rung};
+    }
+
+    // ---- The seam pool (M0-WP3b) -------------------------------------------
+    //
+    // KEYED BY THE COARSE SIDE. A cross-level face pair is named by (the coarse
+    // tile's key, that tile's face), never by the fine tile, for two reasons:
+    //
+    //   * the coarse tile is always exactly ONE tile, while the fine side is
+    //     two (2D) or four (3D) siblings, so the coarse face is the natural
+    //     complete extent of the crossing band; and
+    //   * it makes the region partition trivial and total. Keying by the fine
+    //     tile would leave the edge row on the sibling-sibling border owned by
+    //     whichever sibling happened to be drawn.
+    //
+    // Adding or retiring one pair touches no other pair, which is what R2's
+    // fan-out bound is for.
+    struct WeldPairKey {
+        SectorKey coarse{0, 0, 0};
+        int face = 0;
+        bool operator==(const WeldPairKey& o) const {
+            return coarse == o.coarse && face == o.face;
+        }
+    };
+    struct WeldPairKeyHash {
+        size_t operator()(const WeldPairKey& k) const {
+            size_t h = SectorKeyHash{}(k.coarse);
+            h ^= size_t(k.face) * 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+    struct WeldRecord {
+        seam::WeldMesh  mesh;
+        seam::WeldStats stats;
+        // Diagnostics that weld_face cannot report because it does not know
+        // what a tile is. See SeamWeldStatus for what each one means.
+        int fine_sides_expected = 0;
+        int fine_sides_drawn = 0;
+        int coarse_side_nulls = 0;
+
+        // ---- the DRAWN representation (M0-WP8, resolution R3) --------------
+        //
+        // One content-addressed part per face pair, registered through the
+        // existing ensure_part path, plus one WorldManifestEntry. NOT the
+        // dynamic vertex/index pool §4.2 sketches: VkSceneRenderer has no
+        // in-place part mutation (registered_part_slot early-outs make
+        // re-registering one hash a no-op, and release_part + ensure_part under
+        // a NEW hash is the only update path), so a pool is a new renderer
+        // capability rather than plumbing -- and §4.1 consequence 4 promises
+        // "v1 needs zero renderer changes". Content addressing also makes the
+        // update naturally per-face-pair, which is what R2's fan-out bound is
+        // for. The pool is a later optimisation, once measured.
+        //
+        // Both are 0 while the pair carries geometry but is not drawn: a
+        // headless session (no vk_scene), MATTER_NO_SEAM_WELD_DRAW=1, or a
+        // registration that failed. Absence of a drawn weld is fail-soft --
+        // the tiles' own baked border bands still overlap the gap, which is
+        // exactly today's behaviour (§4.1 consequence 4).
+        uint64_t part_hash = 0;
+        uint32_t instance_id = 0;
+        // The attempted-flag discipline PublicationResources establishes for
+        // sectors (streaming/sector_streaming_coordinator.h:126-132), applied
+        // to the two external calls a weld makes. Each is set BEFORE the call
+        // and cleared only after its release succeeds, so a weld that fails
+        // halfway leaks neither a part registration nor an instance.
+        bool part_attempted = false;
+        bool world_state_attempted = false;
+    };
+    std::unordered_map<WeldPairKey, WeldRecord, WeldPairKeyHash> seam_welds;
+    // Every part hash the renderer currently holds on the welder's behalf.
+    //
+    // Load-bearing in three places, not bookkeeping:
+    //   * WorldSession::render resolves a manifest entry through
+    //     store->get_or_load and SKIPS it on null. A weld has no PartStore
+    //     artifact by design (it is derived from two tiles' boundary records at
+    //     runtime; there is nothing content-addressed to cache), so this set is
+    //     what tells the expansion loop to use the already-registered part
+    //     instead of trying to load one.
+    //   * ensure_tracer builds the CPU BVH from world state and would probe
+    //     the disk for every weld hash on every rebuild, forever (the hash
+    //     changes with the geometry, so the "logged once per hash" dedupe never
+    //     catches up). Welds are excluded there.
+    //   * it makes a hash collision with a real baked part DETECTABLE rather
+    //     than silent -- see weld_part_hash().
+    std::unordered_set<uint64_t> weld_parts;
+    // Reused across weld_face calls: one call per contiguous run of anchor
+    // points, so a fresh mesh per call would be pure allocator churn.
+    seam::WeldMesh seam_scratch;
+    // Cumulative counters for things that are EVENTS rather than pool state.
+    struct SeamCounters {
+        uint64_t drawn_without_record = 0;
+        uint64_t level_gap_pairs = 0;
+        uint64_t build_errors = 0;
+        uint64_t drawn_level_violations = 0;
+        uint64_t level_holds = 0;
+        // ---- draw-side (M0-WP8) --------------------------------------------
+        uint64_t parts_registered = 0;   // ensure_part calls that took
+        uint64_t parts_released = 0;     // release_part calls
+        uint64_t noop_rebuilds = 0;      // rebuilds whose content hash matched
+        uint64_t register_failures = 0;  // ensure_part refused the part
+        uint64_t hash_collisions = 0;    // a weld hash named a non-weld part
+        uint64_t id_collisions = 0;      // a weld instance id was already live
+        int      pairs_peak = 0;         // high-water mark of the pool
+    };
+    SeamCounters seam_counters{};
+    // MATTER_NO_SEAM_WELD=1 disables the welder outright (the rollback
+    // position for the geometry).
+    bool seam_welds_enabled = std::getenv("MATTER_NO_SEAM_WELD") == nullptr;
+    // MATTER_NO_SEAM_WELD_DRAW=1 keeps the pool but draws nothing -- the
+    // rollback position for THIS work package alone, so that a rendering
+    // regression can be bisected against the welder's geometry without also
+    // switching the geometry off. Sampled once: flipping it mid-session would
+    // leave already-registered parts with no owner.
+    bool seam_weld_draw_enabled =
+        std::getenv("MATTER_NO_SEAM_WELD_DRAW") == nullptr;
+    bool seam_verify = std::getenv("MATTER_SEAM_VERIFY") != nullptr;
+
+    // One transaction's worth of weld draw changes.
+    //
+    // §4.1: "weld add/remove must be transactionally coupled to the
+    // publish/evict batch it belongs to". A weld therefore appears and
+    // disappears in the SAME state.apply as the sector whose visibility changed
+    // it -- not in an apply of its own afterwards. A park/unpark window that
+    // showed the sector without its weld would be a hole; one that showed the
+    // weld without the sector would be a doubled seam.
+    //
+    // `delta` is BORROWED from the call site's own batch (the publish job's
+    // single add, the unpark sweep's accumulated adds, the eviction batch's
+    // accumulated removals) so there is exactly one apply per transaction.
+    // `retired_parts` is drained AFTER that apply by finish_weld_txn: R3's
+    // update order is ensure_part(new) -> swap the instance -> release_part(old),
+    // and releasing before the removal is applied would leave world state
+    // naming a part the renderer no longer has.
+    struct WeldTxn {
+        viewer::WorldDelta* delta = nullptr;
+        std::vector<uint64_t> retired_parts;
+        bool touched = false;   // anything added or removed
+    };
+
+    // Rebuild every cross-level weld touching `key`'s faces.
+    //
+    // Called from the three places the DRAWN neighbourhood changes: publish,
+    // the unpark sweep, and the eviction batch. Deliberately wired at those
+    // three sites and nowhere else -- the design (§4.1) requires weld
+    // add/remove to be transactionally coupled to the publish/evict batch it
+    // belongs to, so that drawn state and seam geometry can never be observed
+    // disagreeing, rather than reconciled later on a sweep of its own.
+    //
+    // App/GL thread only (every call site is inside a GpuJob with
+    // assert_gl_thread).
+    void rebuild_welds_for(const SectorKey& key, WeldTxn& txn);
+    // Self-applying wrapper for a call site that has no batch of its own (the
+    // PARKED publish branch, where the drawn set does not change and the
+    // transaction is therefore empty in every case that matters). Mirrors
+    // release_sector_entry's `batch == nullptr` behaviour: own the delta, own
+    // the apply, own the tracer reset.
+    void rebuild_welds_for(const SectorKey& key);
+    // Build or retire one face pair. Idempotent, and the only writer of
+    // seam_welds.
+    void rebuild_weld_pair(const WeldPairKey& pair, WeldTxn& txn);
+
+    // ---- weld draw plumbing (M0-WP8) ---------------------------------------
+    //
+    // The weld's part hash: a CONTENT hash over the pair key and every emitted
+    // float. Identical geometry therefore re-derives the identical hash, and
+    // rebuild_weld_pair can drop the whole update on the floor -- which is what
+    // makes a per-publish fan-out over ~8 pairs cost nothing in the steady
+    // state, where the pair's two tiles have not changed.
+    static uint64_t weld_part_hash(const WeldPairKey& pair,
+                                   const seam::WeldMesh& mesh);
+    // The weld's instance id, on sector_instance_id's discipline (:1267-1323):
+    // content-derived, never a counter, folded to 31 bits under the 0x80000000
+    // range tag. See the definition for why each input is there.
+    static uint32_t weld_instance_id(const WeldPairKey& pair,
+                                     uint64_t part_hash);
+    // WeldMesh (triangle soup in material buckets) -> VkScenePart. Returns
+    // false when there is nothing to draw.
+    static bool build_weld_part(uint64_t part_hash, const seam::WeldMesh& mesh,
+                                viewer::VkScenePart& out);
+    // Register `rec`'s geometry and stage its instance into `txn`. Leaves the
+    // record undrawn (and both attempted flags clear) on any failure.
+    bool publish_weld_draw(const WeldPairKey& pair, WeldRecord& rec,
+                           WeldTxn& txn);
+    // Undo publish_weld_draw: stage the world-state removal into `txn` and
+    // queue the part for release after the apply. Idempotent.
+    void retire_weld_draw(WeldRecord& rec, WeldTxn& txn);
+    // Drain `txn` after its caller's state.apply.
+    void finish_weld_txn(WeldTxn& txn);
+    // Release every weld part outright, ignoring world state. Teardown only --
+    // sector_map and the world state are being discarded wholesale.
+    void release_all_weld_draws_noexcept() noexcept;
+
+    // §4.5 half 2 -- the drawn +-1 backstop. True when some DRAWN tile touching
+    // `key` across one of its faces is two or more levels away, which is
+    // outside the welder's domain entirely (§4.4) and is also the 8x detail pop.
+    bool sector_drawn_level_conflict(const SectorKey& key,
+                                     int* out_other_level = nullptr) const;
+    // The gate as it is actually applied: a level conflict may only WITHHOLD a
+    // tile whose footprint some drawn tile is still covering. See the definition
+    // for why that qualifier is not optional.
+    bool sector_level_hold(const SectorKey& key) const;
+    // Count (and, for the first few, log) a tile that became drawn anyway with
+    // a >= 2-level drawn face neighbour. Called at the two sites a tile enters
+    // the world state.
+    void note_drawn_level_violation(const SectorKey& key);
 
     // Instance id for a streamed sector placement: CONTENT-DERIVED, never an
     // allocation counter.
@@ -4101,6 +4505,980 @@ bool WorldSession::Impl::release_sector_entry(
         !entry.resources.transient_artifact;
 }
 
+// The four XZ faces. +y/-y are unwelded in M0 (the grid is still columnar in
+// Y); M2 tiles Y and this becomes seam::kFaceCount.
+static constexpr int kSeamFaces[4] = {
+    seam::kFacePosX, seam::kFaceNegX, seam::kFacePosZ, seam::kFaceNegZ};
+
+// ---------------------------------------------------------------------------
+// Weld draw plumbing (volumetric-sectors M0-WP8, resolution R3)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The pool size past which the seam machinery is doing something nobody
+// designed for, logged once and loudly.
+//
+// THE CEILING QUESTION (R3's "count it, do not hope"). Three candidates in this
+// tree, in decreasing order of how badly they fail:
+//
+//   * TLASManager::draw drops instances past max_instances_ with only a printf
+//     (libs/MatterSurfaceLib/src/tlas_manager.cpp:116). Its ceiling is 65536,
+//     set at construction. Welds NEVER REACH IT: the only TLASManagers the
+//     engine builds are per-part scratch managers inside PartStore's artifact
+//     decode (part_store.cpp:430/798/920) and WorldTracer's per-part loader,
+//     and a weld has no artifact and is excluded from the tracer. Its draw
+//     records count one part's own BLAS entries, not the world's instances.
+//   * The Vulkan RT lane's TLAS is built from rt_instances_, a plain vector
+//     grown through ensure_build_buffer; over-capacity surfaces as a returned
+//     error string, never a silent drop.
+//   * VkSceneRenderer::ensure_part's own limits (draw-command buffer vs
+//     maxStorageBufferRange, uint32 vertex/index capacity) likewise FAIL with
+//     an error rather than truncating -- and publish_weld_draw treats that
+//     failure as "this pair is not drawn", which is fail-soft by construction.
+//
+// So there is no silent-drop ceiling on this path. What is worth guarding is
+// GROWTH, because the pool is keyed by (coarse tile, face) and its structural
+// bound is 4 x the drawn tile count -- ~4,800 on a StreamMountain-sized nested
+// world (1,207 drawn tiles, docs/nested-sector-lod-effort). The geometric
+// expectation is two orders smaller: with the default six-band nested profile
+// (3S->L0, 5S->L1, 8S->L2, 14S->L3, 24S->L4, 40S->L5) each level boundary is
+// the perimeter of the finer region measured in COARSE tiles -- 2 to 3 tiles
+// per side at every boundary, i.e. 8-16 faces per boundary and ~50-70 pairs in
+// total, independent of view distance because the annuli are constant-width.
+// 4096 is ~60x that and still below the structural bound, so it fires only if
+// the keying or the fan-out is wrong, never because the world got bigger.
+constexpr int kSeamWeldPairAlarm = 4096;
+
+// FNV-1a over raw bytes. Local rather than part_asset::fnv1a64 so that a weld
+// hash is visibly NOT produced by the same call the bake identity uses.
+inline uint64_t weld_fnv(uint64_t h, const void* data, size_t bytes) {
+    const auto* p = static_cast<const unsigned char*>(data);
+    for (size_t i = 0; i < bytes; ++i) {
+        h ^= p[i];
+        h *= 0x100000001b3ull;
+    }
+    return h;
+}
+
+}  // namespace
+
+// The weld's part hash.
+//
+// CONTENT, not identity: every float the welder emitted, in emission order,
+// plus the material of each bucket and the rebasing origin, plus the pair key.
+// Two consequences, and both are the point:
+//
+//   * A rebuild that reproduces the same geometry reproduces the same hash, so
+//     rebuild_weld_pair returns without touching the renderer or world state.
+//     This is what keeps R2's <= 8 pairs per publish free in the steady state:
+//     a publish reaches its neighbours' pairs, and those pairs' two tiles have
+//     not changed, so the identical band is rebuilt and discarded.
+//   * A changed weld is a NEW part. Since ensure_part early-outs on a
+//     registered hash, a mutated weld under a stable hash would silently keep
+//     drawing the old triangles -- the failure R3 exists to avoid.
+//
+// The pair key is mixed even though the geometry alone would usually separate
+// pairs, because two pairs that happened to agree byte-for-byte would SHARE one
+// renderer part, and retiring either would unregister the other's geometry.
+// Renderer parts are not reference counted; disjointness has to be structural.
+//
+// Not disjoint from bake hashes by construction: a .part identity is a
+// full-width content hash with no reserved bits, so no range tag is available
+// to carve out. The residual 2^-64 case is DETECTED instead -- publish_weld_draw
+// refuses a hash that already names a registered non-weld part or a resident
+// PartStore part, counts it, and leaves the pair undrawn.
+uint64_t WorldSession::Impl::weld_part_hash(const WeldPairKey& pair,
+                                            const seam::WeldMesh& mesh) {
+    // Domain separation: a weld and a hypothetical part with identical bytes
+    // cannot collide through the prefix.
+    uint64_t h = 0xcbf29ce484222325ull;
+    static constexpr char kDomain[] = "seam.weld.v1";
+    h = weld_fnv(h, kDomain, sizeof(kDomain));
+    h = weld_fnv(h, &pair.coarse.tx, sizeof(pair.coarse.tx));
+    h = weld_fnv(h, &pair.coarse.tz, sizeof(pair.coarse.tz));
+    h = weld_fnv(h, &pair.coarse.rung, sizeof(pair.coarse.rung));
+    h = weld_fnv(h, &pair.face, sizeof(pair.face));
+    h = weld_fnv(h, &mesh.origin_x, sizeof(mesh.origin_x));
+    h = weld_fnv(h, &mesh.origin_y, sizeof(mesh.origin_y));
+    h = weld_fnv(h, &mesh.origin_z, sizeof(mesh.origin_z));
+    for (const seam::WeldBucket& b : mesh.buckets) {
+        h = weld_fnv(h, &b.material, sizeof(b.material));
+        const uint64_t np = (uint64_t)b.positions.size();
+        h = weld_fnv(h, &np, sizeof(np));
+        if (!b.positions.empty())
+            h = weld_fnv(h, b.positions.data(),
+                         b.positions.size() * sizeof(float));
+        if (!b.normals.empty())
+            h = weld_fnv(h, b.normals.data(),
+                         b.normals.size() * sizeof(float));
+    }
+    return h;
+}
+
+// The weld's instance id.
+//
+// sector_instance_id's discipline verbatim (:1267-1323), because the reason it
+// exists applies here unchanged: instance_id -> ResolvedInstance::stable_id ->
+// GpuInstance::instance_token feeds temporal reprojection history and the
+// per-source expansion memo, and the M1d fly-through determinism gate reads
+// those tokens. An allocation counter would make a weld's identity a function
+// of the order publishes and evictions happened to interleave in -- which is
+// exactly the bug the sector path was rewritten to remove, and welds churn
+// more than sectors do.
+//
+// Inputs, and why each:
+//   coarse tx/tz/rung  the pool's key. Full 64-bit two's complement, never
+//                      folded through abs(): three quadrants of every world are
+//                      negative.
+//   face               the other half of the key. Two faces of one coarse tile
+//                      are two independent welds and must not share an id.
+//   part_hash          the content. A weld whose geometry CHANGES becomes a new
+//                      instance rather than a moved one, which is what makes
+//                      the swap a clean remove+add in a single delta (WorldState
+//                      ::apply processes removals first, so even an id reused in
+//                      one delta would work -- but a changed id also correctly
+//                      resets the temporal history for geometry that changed).
+//
+// Folded to 31 bits under 0x80000000: non-zero (vk_scene_renderer falls back to
+// source_index + 1 on a zero stable_id, reintroducing allocation order), and
+// range-disjoint from the authored counters, which start at 1 and reach the low
+// thousands. Disjointness from the STREAMED half is not claimed and is not
+// needed -- both halves are content-derived and a collision between them is
+// caught by the state.find check in publish_weld_draw, exactly as the sector
+// path catches its own.
+uint32_t WorldSession::Impl::weld_instance_id(const WeldPairKey& pair,
+                                              uint64_t part_hash) {
+    const auto mix = [](uint64_t hash, uint64_t value) {
+        return hash ^ (value + 0x9e3779b97f4a7c15ull + (hash << 6) +
+                       (hash >> 2));
+    };
+    uint64_t hash = mix(0x9e3779b97f4a7c15ull, 0x5EA3E1D0ull);  // domain
+    hash = mix(hash, (uint64_t)pair.coarse.tx);
+    hash = mix(hash, (uint64_t)pair.coarse.tz);
+    hash = mix(hash, (uint64_t)(int64_t)pair.coarse.rung);
+    hash = mix(hash, (uint64_t)(int64_t)pair.face);
+    hash = mix(hash, part_hash);
+    const uint64_t folded = hash ^ (hash >> 32);
+    return 0x80000000u | (uint32_t)(folded & 0x7fffffffull);
+}
+
+// WeldMesh -> VkScenePart.
+//
+// A weld is a triangle soup with no vertex sharing and no LOD ladder: one
+// cluster, one rung, indices 0..3N-1. That is not a simplification of the tile
+// path, it is what the band IS -- tens to hundreds of quads spanning one voxel
+// of a plane, with no ladder to descend because it exists precisely at the
+// resolution boundary the ladder already produced.
+//
+// TEXTURING (§4.2): welds do not enter the chart/VT pipeline. lod_charts and
+// vt_deferred_rung_mask stay empty/zero, chart_rung stays UINT32_MAX, so the
+// renderer takes the legacy flat-material path. The band is one voxel wide and
+// sits exactly where the LOD ladder has already dropped fidelity; §4.2 says
+// revisit only if a captured A/B shows it.
+//
+// Defined only for the viewer build: without MATTER_VULKAN_VIEWER, VkScenePart
+// is a forward declaration (see the include block at the top) and there is no
+// renderer to hand one to. publish_weld_draw is the only caller and is itself
+// guarded, so a headless session keeps the welds in memory exactly as before
+// this work package.
+#ifdef MATTER_VULKAN_VIEWER
+bool WorldSession::Impl::build_weld_part(uint64_t part_hash,
+                                         const seam::WeldMesh& mesh,
+                                         viewer::VkScenePart& out) {
+    out = viewer::VkScenePart{};
+    out.part_hash = part_hash;
+    const size_t tris = mesh.triangle_count();
+    if (tris == 0) return false;
+    out.vertices.reserve(tris * 3);
+    out.indices.reserve(tris * 3);
+    float mn[3] = {std::numeric_limits<float>::max(),
+                   std::numeric_limits<float>::max(),
+                   std::numeric_limits<float>::max()};
+    float mx[3] = {-std::numeric_limits<float>::max(),
+                   -std::numeric_limits<float>::max(),
+                   -std::numeric_limits<float>::max()};
+    for (const seam::WeldBucket& b : mesh.buckets) {
+        const size_t verts = b.positions.size() / 3;
+        const bool have_normals = b.normals.size() >= b.positions.size();
+        for (size_t v = 0; v < verts; ++v) {
+            const size_t p = v * 3;
+            viewer::VkRasterVertex vertex{};
+            vertex.position = {b.positions[p], b.positions[p + 1],
+                               b.positions[p + 2]};
+            vertex.normal = have_normals
+                ? matter::Float3{b.normals[p], b.normals[p + 1],
+                                 b.normals[p + 2]}
+                : matter::Float3{0.0f, 1.0f, 0.0f};
+            vertex.tint = {1.0f, 1.0f, 1.0f, 0.0f};
+            // (u, v, baked AO, has-material). The welder carries no UVs and no
+            // AO; 1.0 AO is the same "unoccluded" default build_vulkan_part
+            // uses for a mesh without a baked_ao array.
+            vertex.surface = {0.0f, 0.0f, 1.0f, 1.0f};
+            vertex.material_index = b.material;
+            for (int a = 0; a < 3; ++a) {
+                mn[a] = std::min(mn[a], b.positions[p + a]);
+                mx[a] = std::max(mx[a], b.positions[p + a]);
+            }
+            out.indices.push_back((uint32_t)out.vertices.size());
+            out.vertices.push_back(vertex);
+        }
+    }
+    if (out.vertices.empty() || out.indices.size() % 3 != 0) return false;
+    viewer::VkSceneCluster cluster;
+    cluster.aabb_min = {mn[0], mn[1], mn[2]};
+    cluster.aabb_max = {mx[0], mx[1], mx[2]};
+    const float dx = mx[0] - mn[0], dy = mx[1] - mn[1], dz = mx[2] - mn[2];
+    cluster.radius =
+        std::max(0.001f, 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz));
+    // One ladder step: cull.comp's selection loop can only land on 0, so the
+    // threshold is inert. chart_rung stays UINT32_MAX -- "no VT for this step".
+    cluster.lods.push_back({0u, (uint32_t)out.indices.size(), 0.0f,
+                            UINT32_MAX});
+    out.clusters.push_back(std::move(cluster));
+    return true;
+}
+#endif  // MATTER_VULKAN_VIEWER
+
+// Register the weld's part and stage its instance.
+//
+// RASTER AND RT, DECIDED (§4.2 requires the choice to be explicit).
+//
+// §4.2 offers "v1 may ship raster-only welds", but taking it here would mean
+// deliberately building a divergence: VkSceneRenderer::update_instances emits
+// one RtInstance for EVERY instance it accepts (:9511-9513), and ensure_part
+// builds the RT geometry records for every part it registers (:6896-6912), so a
+// weld that draws in raster traces in RT for free. Suppressing it would need a
+// per-instance exclusion the renderer does not have -- i.e. an actual renderer
+// change, which is what R3 exists to avoid -- and it would plant exactly the
+// class of unflagged raster/RT difference that the replay diffing loop surfaces
+// months later as a failed bisect (cf. the "invalidate_part logged as a failed
+// bisect" lesson). Welds are view-independent world state, so feeding the TLAS
+// is doctrine-legal (matter/draw_overrides.h:16-22).
+//
+// So: welds are in BOTH lanes, and the RT lane is not a pooled seam BLAS as
+// §4.2 plans but one BLAS per weld part, sharing the content-addressed
+// lifecycle below. Consequence to know before reading a capture: a weld change
+// bumps rt_geometry_epoch_ (release_part does), which retires the cached TLAS
+// and forces a rebuild that frame. That is the same cost a sector publish
+// already pays, and the no-op path above is what keeps it from happening on
+// every publish.
+//
+// R3's update order, and the ONLY point that touches the renderer on this path:
+// ensure_part(new) -> add the instance -> (caller applies) -> release_part(old).
+// Registering first means a failure here costs nothing: the record stays
+// undrawn, the old weld (if any) has already been retired into the same
+// transaction, and the seam falls back to the tiles' own overlapping border
+// bands -- today's behaviour, which §4.1 consequence 4 keeps valid on purpose.
+bool WorldSession::Impl::publish_weld_draw(const WeldPairKey& pair,
+                                           WeldRecord& rec, WeldTxn& txn) {
+    rec.part_hash = 0;
+    rec.instance_id = 0;
+    rec.part_attempted = false;
+    rec.world_state_attempted = false;
+    if (!seam_weld_draw_enabled || !txn.delta) return false;
+#ifdef MATTER_VULKAN_VIEWER
+    if (!vk_scene) return false;
+    const uint64_t hash = weld_part_hash(pair, rec.mesh);
+    // The residual collision case weld_part_hash cannot design away. Both
+    // probes are needed: registered_part_slot catches a hash the renderer holds
+    // for a sector drawn right now, store->find catches one a resident-but-
+    // undrawn part owns and would re-register later.
+    if (weld_parts.find(hash) == weld_parts.end()) {
+        const bool taken =
+            vk_scene->registered_part_slot(hash) >= 0 ||
+            (store && store->find(hash) != nullptr);
+        if (taken) {
+            ++seam_counters.hash_collisions;
+            fprintf(stderr,
+                    "[seam] weld (%lld,%lld r%d face %d) hashed to %016llx, "
+                    "which already names a baked part -- leaving this pair "
+                    "undrawn rather than aliasing it\n",
+                    (long long)pair.coarse.tx, (long long)pair.coarse.tz,
+                    pair.coarse.rung, pair.face,
+                    (unsigned long long)hash);
+            return false;
+        }
+    }
+    viewer::VkScenePart part;
+    if (!build_weld_part(hash, rec.mesh, part)) return false;
+    const uint32_t id = weld_instance_id(pair, hash);
+    // Non-zero and out of the authored counters' range by construction (the
+    // 0x80000000 fold). Asserted rather than assumed because a zero stable_id
+    // silently degrades to allocation order in vk_scene_renderer.
+    if ((id & 0x80000000u) == 0 || id == 0) {
+        ++seam_counters.id_collisions;
+        return false;
+    }
+    // A live id would be REPLACED by WorldState::apply, silently swapping some
+    // other instance's geometry for this weld's. Check world state and the
+    // adds already staged in this same transaction, since the apply has not
+    // happened yet.
+    if (state.find(id) != nullptr) {
+        ++seam_counters.id_collisions;
+        return false;
+    }
+    for (const viewer::WorldManifestEntry& staged : txn.delta->added) {
+        if (staged.instance_id != id) continue;
+        ++seam_counters.id_collisions;
+        return false;
+    }
+    std::string error;
+    rec.part_attempted = true;
+    if (vk_scene->ensure_part(part, error) < 0) {
+        rec.part_attempted = false;
+        ++seam_counters.register_failures;
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            fprintf(stderr,
+                    "[seam] weld part registration refused (%s) -- this pair "
+                    "draws nothing; the tiles' own border bands still overlap "
+                    "the gap\n",
+                    error.empty() ? "no detail" : error.c_str());
+        }
+        return false;
+    }
+    weld_parts.insert(hash);
+    ++seam_counters.parts_registered;
+    rec.part_hash = hash;
+    rec.instance_id = id;
+
+    viewer::WorldManifestEntry instance;
+    instance.instance_id = id;
+    instance.part_hash = hash;
+    // Documentation, not a hook. DrawOverrideResolver learns modules from the
+    // provider's catalog (add_module, :1786-1798), which lists baked hashes; a
+    // weld hash is in no module's list, so per-module overrides -- INCLUDING
+    // `hide` -- do not reach welds. Hiding WorldSector therefore leaves the
+    // seam strips floating. That is a debug-view artifact only, and wiring
+    // welds into the catalog means keying it by a hash set that changes every
+    // rebuild; noted here so the next reader does not diagnose it twice.
+    instance.module = "SeamWeld";
+    std::memset(instance.transform, 0, sizeof(instance.transform));
+    instance.transform[0] = 1.0f;
+    instance.transform[5] = 1.0f;
+    instance.transform[10] = 1.0f;
+    instance.transform[15] = 1.0f;
+    // The mesh is rebased on the coarse tile's origin (rebuild_weld_pair), so
+    // the placement is that origin. Row-major translation column, matching the
+    // sector publish path.
+    instance.transform[3] = (float)rec.mesh.origin_x;
+    instance.transform[7] = (float)rec.mesh.origin_y;
+    instance.transform[11] = (float)rec.mesh.origin_z;
+    rec.world_state_attempted = true;
+    txn.delta->added.push_back(std::move(instance));
+    txn.touched = true;
+    return true;
+#else
+    (void)pair;
+    return false;
+#endif
+}
+
+// Undo publish_weld_draw. Each half clears its flag only once its release is
+// staged, mirroring release_sector_entry's release_attempt: a partially retired
+// weld retried later removes exactly what is still owed.
+void WorldSession::Impl::retire_weld_draw(WeldRecord& rec, WeldTxn& txn) {
+    if (rec.world_state_attempted && txn.delta) {
+        txn.delta->removed.push_back(rec.instance_id);
+        txn.touched = true;
+        rec.world_state_attempted = false;
+    }
+    if (rec.part_attempted) {
+        txn.retired_parts.push_back(rec.part_hash);
+        rec.part_attempted = false;
+    }
+    rec.instance_id = 0;
+    rec.part_hash = 0;
+}
+
+// Drain the transaction. Called by each of the three sites immediately after
+// its own state.apply, with nothing rendering in between (every call site is
+// inside one GpuJob on the app/GL thread).
+void WorldSession::Impl::finish_weld_txn(WeldTxn& txn) {
+#ifdef MATTER_VULKAN_VIEWER
+    for (uint64_t hash : txn.retired_parts) {
+        weld_parts.erase(hash);
+        if (vk_scene) vk_scene->release_part(hash);
+        ++seam_counters.parts_released;
+    }
+    // invalidate_EXPANSION, not invalidate(), even though parts were released.
+    //
+    // The full invalidate() exists for releases that could leave a memoised
+    // expansion naming a freed part. A weld cannot: its instance's removal is
+    // in the very delta the caller just applied, so the next rebuild does not
+    // see that source at all and prune_sources drops its memo; and a weld part
+    // is never a CHILD of anything, so no surviving memo can reference it. That
+    // is the same argument sector eviction makes (:4352-4368), and taking the
+    // full invalidate here would re-expand every source on every weld change --
+    // the cost that made eviction 841 ms in issues/bfb5f13e.
+    if (txn.touched) vk_instance_cache.invalidate_expansion();
+#endif
+    txn.retired_parts.clear();
+    txn.touched = false;
+}
+
+void WorldSession::Impl::release_all_weld_draws_noexcept() noexcept {
+#ifdef MATTER_VULKAN_VIEWER
+    try {
+        for (uint64_t hash : weld_parts) {
+            if (vk_scene) vk_scene->release_part(hash);
+            ++seam_counters.parts_released;
+        }
+        if (!weld_parts.empty() && vk_scene) vk_instance_cache.invalidate();
+    } catch (...) {
+    }
+#endif
+    weld_parts.clear();
+}
+
+// Rebuild the cross-level welds along one tile's faces.
+//
+// THE FAN-OUT, AND WHY IT IS O(1) (resolution R2). A publish of tile K changes
+// the pairing on K's own faces AND on the facing side of K's neighbours, so the
+// call sites pass one key and the welder enumerates from it. Per face K takes
+// part in at most two pairs:
+//
+//   (a) K as the COARSE side -- pair (K, face). Enumerated unconditionally,
+//       because "K is no longer drawn" must RETIRE this pair, and a retired K
+//       cannot be found by any lookup.
+//   (b) K as the FINE side -- pair (C, opposite(face)), where C is the drawn
+//       tile one level coarser across that face. C is a single tile: the 2:1
+//       `restrict_levels` invariant admits exactly one coarser neighbour per
+//       face, and the coarse side of a pair is where the pool is keyed.
+//
+// That is <= 8 pairs, four lookups each, INDEPENDENT OF WORLD SIZE. The bound
+// is the whole point: a per-publish sweep of sector_map here would be the next
+// issues/bfb5f13e cascade, next to a sector_blocked_by_visible that is already
+// O(sector_map) and already a hitch suspect.
+//
+// Equal-level pairs are never built. They meet bitwise through shared density
+// samples (§4, the [1..n] ownership rule) and weld_face returns empty for them
+// anyway; not building the sides at all is what keeps the common case free.
+void WorldSession::Impl::rebuild_welds_for(const SectorKey& key) {
+    // No batch of its own: own the delta, the apply and the tracer reset, the
+    // way release_sector_entry does for a non-batched eviction. Used only by
+    // the PARKED publish branch, where the drawn set did not change and this
+    // transaction is empty in every case that matters.
+    viewer::WorldDelta delta;
+    WeldTxn txn;
+    txn.delta = &delta;
+    rebuild_welds_for(key, txn);
+    if (!delta.added.empty() || !delta.removed.empty()) {
+        state.apply(delta);
+        // Load-bearing: WorldTracer holds raw PartStore pointers, so every
+        // state.apply in this file is accompanied by these two.
+        tracer_dirty = true;
+        tracer.reset();
+    }
+    finish_weld_txn(txn);
+}
+
+void WorldSession::Impl::rebuild_welds_for(const SectorKey& key,
+                                           WeldTxn& txn) {
+    matter_async::assert_gl_thread("stream.rebuild_welds");
+    if (!seam_welds_enabled) return;
+    PROFILE_SCOPE("stream.weld");
+
+    if (seam_verify) {
+        size_t indexed = 0;
+        for (const auto& [tile, rungs] : sector_tile_index) {
+            indexed += rungs.size();
+            for (int rung : rungs) {
+                if (sector_map.count(SectorKey{tile.tx, tile.tz, rung})) continue;
+                fprintf(stderr,
+                        "[seam] tile index holds (%lld,%lld r%d) which is not "
+                        "in sector_map\n",
+                        (long long)tile.tx, (long long)tile.tz, rung);
+            }
+        }
+        if (indexed != sector_map.size()) {
+            fprintf(stderr,
+                    "[seam] tile index holds %zu keys, sector_map holds %zu\n",
+                    indexed, sector_map.size());
+        }
+    }
+
+    WeldPairKey pairs[8];
+    int pair_count = 0;
+    const auto push_pair = [&](const WeldPairKey& p) {
+        for (int i = 0; i < pair_count; ++i)
+            if (pairs[i] == p) return;
+        if (pair_count < 8) pairs[pair_count++] = p;
+    };
+
+    const int level = sector_level_of(key.rung);
+    for (const int face : kSeamFaces) {
+        push_pair(WeldPairKey{key, face});
+        // (b): the drawn tile one level COARSER across this face. Under the
+        // uniform grid `level + 1` is a terrain-LOD label rather than a size,
+        // and face_neighbour_span ignores it -- the neighbour is the adjacent
+        // tile index and the rung filter below is what makes the pair
+        // cross-level.
+        FaceNeighbourSpan span;
+        if (!face_neighbour_span(key, face, level + 1, span)) continue;
+        for (int64_t t = span.tan_lo; t <= span.tan_hi; ++t) {
+            const int64_t nx = span.axis_x ? span.normal : t;
+            const int64_t nz = span.axis_x ? t : span.normal;
+            SectorKey coarse{};
+            const SectorEntry* entry = drawn_tile_entry(
+                nx, nz, world_nested_sectors ? level + 1 : kAnyLevel, &coarse);
+            if (!entry) continue;
+            if (sector_level_of(coarse.rung) != level + 1) continue;
+            push_pair(WeldPairKey{coarse, seam::face_opposite(face)});
+        }
+    }
+
+    for (int i = 0; i < pair_count; ++i) rebuild_weld_pair(pairs[i], txn);
+    PROFILE_COUNT("stream.seam_pairs", double(seam_welds.size()));
+    PROFILE_COUNT("stream.seam_parts", double(weld_parts.size()));
+
+    // The growth guard (see kSeamWeldPairAlarm for the ceiling survey). Fired
+    // once, on the high-water mark, with the numbers a reader needs to decide
+    // whether the keying broke or the world genuinely got that big.
+    if ((int)seam_welds.size() > seam_counters.pairs_peak) {
+        seam_counters.pairs_peak = (int)seam_welds.size();
+        static bool alarmed = false;
+        if (!alarmed && seam_counters.pairs_peak >= kSeamWeldPairAlarm) {
+            alarmed = true;
+            fprintf(stderr,
+                    "[seam] the weld pool reached %d face pairs (%zu registered "
+                    "parts) against %zu resident sectors. The structural bound "
+                    "is 4 x drawn tiles and the geometric expectation for a "
+                    "nested world is two orders below that (~50-70), so this "
+                    "means the pool is being keyed or fanned out wrongly, not "
+                    "that the world grew.\n",
+                    seam_counters.pairs_peak, weld_parts.size(),
+                    sector_map.size());
+        }
+    }
+}
+
+// Build or retire one cross-level face pair.
+//
+// THE REGION PARTITION -- the part that decides whether two fine siblings
+// double-emit the same triangles.
+//
+// `weld_face` enumerates at the FINE resolution over a rectangle of ANCHOR
+// lattice points, emitting the a-edge and the b-edge anchored at each. Every
+// plane edge is anchored at exactly one lattice point, so partitioning the
+// anchors partitions the edges exactly. The rule used here is:
+//
+//     the anchor (A,B) belongs to the FINE CELL of the same index, and this
+//     pair enumerates exactly the anchors of the cells listed in the drawn
+//     fine tiles' boundary records for this face.
+//
+// Complete: an edge crosses only if BOTH its adjacent fine cells have a sign
+// change on the plane, so both produced a vertex and both are in the record
+// (terrain_mesher.cpp:423-431). The anchor of an a-edge at (A,B) is the index
+// of cell (A,B), one of those two; likewise for b-edges. So no crossing edge is
+// missed.
+// Non-duplicating: fine cell indices are disjoint across tiles (the [1..n]
+// ownership rule), so two siblings across one coarse face can never enumerate
+// the same anchor -- including on their shared border, where the edge's OTHER
+// cells come from the sibling through the side closure rather than from a
+// second enumeration. Corners are the same statement one axis over, which is
+// why there is no corner case here or in seam_weld.cpp.
+//
+// It also bounds the work by CONTENT rather than by extent. The rectangular
+// alternative -- the coarse tile's whole face -- is (y cells) x (z cells), and
+// in M0 a tile spans the entire Y slab: hundreds of rows of empty air per face.
+// The records hold tens of entries.
+void WorldSession::Impl::rebuild_weld_pair(const WeldPairKey& pair,
+                                           WeldTxn& txn) {
+    // Retiring a pair is not an erase any more: the record may own a renderer
+    // part and a world-state instance, and both have to leave in THIS
+    // transaction -- the same one that carries the visibility change which made
+    // the pair go away. A weld that outlived its tile by one apply would be a
+    // strip of terrain hanging in the air.
+    const auto drop = [&] {
+        const auto it = seam_welds.find(pair);
+        if (it == seam_welds.end()) return;
+        retire_weld_draw(it->second, txn);
+        seam_welds.erase(it);
+    };
+
+    const int cface = pair.face;
+    const int axis  = seam::face_axis(cface);
+    if (axis == 1) { drop(); return; }          // +-y untiled in M0
+
+    // ---- coarse side --------------------------------------------------------
+    const SectorEntry* centry = drawn_entry(pair.coarse);
+    if (!centry) { drop(); return; }
+    const seam::SectorBoundary* cb = centry->boundary.get();
+    if (!cb) {
+        // R4: fail-soft, and counted APART from missing_landing. A sector
+        // staged off disk (staged_load->ok == false -> get_or_load) carries no
+        // boundary record, so it welds nothing and draws with today's overlap
+        // behaviour. The absence of a weld is therefore not by itself evidence
+        // of a welder bug, and a bisect that assumes otherwise burns.
+        ++seam_counters.drawn_without_record;
+        drop();
+        return;
+    }
+    const seam::FaceRecord& cfr = cb->faces[cface];
+    const int     crung  = cb->rung;
+    const int     frung  = crung + 1;           // finer = larger rung
+    const int     clevel = sector_level_of(pair.coarse.rung);
+    const int     flevel = clevel - 1;
+    const int     fface  = seam::face_opposite(cface);
+
+    // ---- fine side: the tiles across this face one rung finer ---------------
+    FaceNeighbourSpan span;
+    if (!face_neighbour_span(pair.coarse, cface, flevel, span)) { drop(); return; }
+
+    const seam::SectorBoundary* fine_tiles[8];
+    int fine_count = 0, fine_expected = 0;
+    for (int64_t t = span.tan_lo; t <= span.tan_hi && fine_count < 8; ++t) {
+        ++fine_expected;
+        const int64_t ftx = span.axis_x ? span.normal : t;
+        const int64_t ftz = span.axis_x ? t : span.normal;
+        // Identity by MESHER RUNG, not by level: a WeldSide *is* a rung, and a
+        // record at another rung is a different lattice. This is also what
+        // makes the lookup mode-independent -- under the uniform grid the
+        // neighbour shares the tile coordinate and only the rung separates it.
+        const seam::SectorBoundary* fb =
+            drawn_boundary_with_rung(ftx, ftz, frung);
+        if (!fb) {
+            const SectorEntry* drawn_here = drawn_tile_entry(
+                ftx, ftz, world_nested_sectors ? flevel : kAnyLevel);
+            if (drawn_here && !drawn_here->boundary)
+                ++seam_counters.drawn_without_record;
+            continue;
+        }
+        // Both sides must name the same plane. The fine lattice is half the
+        // coarse one, so the shared plane is `2 * coarse_plane` in fine
+        // indices; a mismatch means these two records do not touch.
+        if (fb->faces[fface].plane != cfr.plane * 2) continue;
+        fine_tiles[fine_count++] = fb;
+    }
+    if (fine_count == 0) { drop(); return; }
+
+    // ---- the two WeldSide closures -----------------------------------------
+    //
+    // A plane edge near a tile's tangential border draws cells from a DIAGONAL
+    // neighbour tile, which is why the welder asks a closure instead of
+    // resolving records itself. Resolve the global tangential cell index to the
+    // tile that owns it, then index into THAT tile's FaceRecord.
+    //
+    // CONTRACT (seam_weld.h): the returned pointers must be stable and
+    // canonical, because the 2:1 collapse -- the thing that turns a quad into
+    // the fan's triangle -- is detected by pointer equality among the four
+    // resolved cells. FaceRecord::find returns &verts[i] into the record's own
+    // storage, the records are immutable after bake and held alive by
+    // SectorEntry::boundary's shared_ptr, and nothing here merges tiles into a
+    // temporary. Both halves hold.
+    struct SideCtx {
+        int64_t normal = 0;      // tile index on the face's normal axis
+        int     face = 0;        // which FaceRecord to read
+        int     rung = 0;        // the rung that identifies this side
+        int     cells = 1;       // cells per axis at that rung
+        int64_t cell_layer = 0;  // the layer this side must be describing
+        bool    axis_x = true;   // true: the tiled tangential index is b
+        // One-entry memo. weld_face walks the tangent, so the owning tile
+        // changes once every `cells` steps; without this every lookup is a
+        // hash probe.
+        int64_t memo_tile = 0;
+        const seam::FaceRecord* memo_rec = nullptr;
+        bool    memo_valid = false;
+        int     nulls = 0;
+    };
+    const auto floor_div = [](int64_t v, int64_t n) -> int64_t {
+        return v >= 0 ? v / n : -(((-v) + n - 1) / n);
+    };
+    const auto side_at = [&](SideCtx& c, int64_t a,
+                             int64_t b) -> const seam::BoundaryVert* {
+        const int64_t tangential = c.axis_x ? b : a;
+        const int64_t tile = floor_div(tangential, int64_t(c.cells));
+        if (!c.memo_valid || c.memo_tile != tile) {
+            c.memo_tile = tile;
+            c.memo_valid = true;
+            c.memo_rec = nullptr;
+            const int64_t tx = c.axis_x ? c.normal : tile;
+            const int64_t tz = c.axis_x ? tile : c.normal;
+            if (const seam::SectorBoundary* sb =
+                    drawn_boundary_with_rung(tx, tz, c.rung)) {
+                const seam::FaceRecord& fr = sb->faces[c.face];
+                if (fr.cell_layer == c.cell_layer) c.memo_rec = &fr;
+            }
+        }
+        if (!c.memo_rec) { ++c.nulls; return nullptr; }
+        const seam::BoundaryVert* v = c.memo_rec->find(a, b);
+        if (!v) ++c.nulls;
+        return v;
+    };
+
+    SideCtx cctx;
+    cctx.normal     = span.axis_x ? pair.coarse.tx : pair.coarse.tz;
+    cctx.face       = cface;
+    cctx.rung       = crung;
+    cctx.cells      = cb->cells > 0 ? cb->cells : 1;
+    cctx.cell_layer = cfr.cell_layer;
+    cctx.axis_x     = span.axis_x;
+
+    SideCtx fctx;
+    fctx.normal     = span.normal;
+    fctx.face       = fface;
+    fctx.rung       = frung;
+    fctx.cells      = fine_tiles[0]->cells > 0 ? fine_tiles[0]->cells : 1;
+    fctx.cell_layer = fine_tiles[0]->faces[fface].cell_layer;
+    fctx.axis_x     = span.axis_x;
+
+    seam::WeldSide cside;
+    cside.rung = crung;
+    cside.at = [&](int64_t a, int64_t b) { return side_at(cctx, a, b); };
+    seam::WeldSide fside;
+    fside.rung = frung;
+    fside.at = [&](int64_t a, int64_t b) { return side_at(fctx, a, b); };
+
+    // A +side face puts the coarse tile BELOW the plane.
+    const bool coarse_is_neg = seam::face_is_positive(cface);
+    const seam::WeldSide& neg = coarse_is_neg ? cside : fside;
+    const seam::WeldSide& pos = coarse_is_neg ? fside : cside;
+
+    // ---- emit, one call per contiguous run of anchors -----------------------
+    WeldRecord rec;
+    rec.fine_sides_expected = fine_expected;
+    rec.fine_sides_drawn    = fine_count;
+    // Weld positions are rebased on the COARSE tile's origin. A weld spans two
+    // tiles with two different origins, which is exactly why the records carry
+    // world doubles and the rebasing happens once, here.
+    const double corigin = double(sector_size_for(pair.coarse.rung));
+    rec.mesh.origin_x = double(pair.coarse.tx) * corigin;
+    rec.mesh.origin_y = 0.0;
+    rec.mesh.origin_z = double(pair.coarse.tz) * corigin;
+    seam_scratch.origin_x = rec.mesh.origin_x;
+    seam_scratch.origin_y = rec.mesh.origin_y;
+    seam_scratch.origin_z = rec.mesh.origin_z;
+
+    const auto append_mesh = [](seam::WeldMesh& dst, const seam::WeldMesh& src) {
+        for (const seam::WeldBucket& sb : src.buckets) {
+            if (sb.positions.empty()) continue;
+            seam::WeldBucket* d = nullptr;
+            for (seam::WeldBucket& b : dst.buckets)
+                if (b.material == sb.material) { d = &b; break; }
+            if (!d) {
+                dst.buckets.push_back(seam::WeldBucket{});
+                d = &dst.buckets.back();
+                d->material = sb.material;
+            }
+            d->positions.insert(d->positions.end(),
+                                sb.positions.begin(), sb.positions.end());
+            d->normals.insert(d->normals.end(),
+                              sb.normals.begin(), sb.normals.end());
+        }
+    };
+
+    std::string err;
+    for (int i = 0; i < fine_count; ++i) {
+        const std::vector<seam::BoundaryVert>& verts =
+            fine_tiles[i]->faces[fface].verts;
+        // ---- M0-WP7: this fine tile's overlap band, emitted EXACTLY ONCE -----
+        //
+        // `weld_face` copies the whole band it is handed, once per call, before
+        // it walks the region -- the band is not indexed by anchor, so there is
+        // nothing for it to clip against. This loop calls `weld_face` once per
+        // contiguous RUN of anchors, so handing the band to every call would
+        // stamp the same triangles down once per run: dozens of coincident
+        // copies, invisible to a coverage probe (they are exactly coplanar) and
+        // visible only as z-fighting and a triangle count that scales with how
+        // fragmented the record happens to be.
+        //
+        // So the band rides the first call for this tile and is withheld from
+        // the rest. It is per-FINE-TILE, not per-pair: on a multi-tile side each
+        // sibling contributes its own band, covering its own stretch of plane.
+        //
+        // `fside` is what `neg`/`pos` alias, so mutating it here is what the
+        // next `weld_face` call sees.
+        fside.band = fine_tiles[i]->faces[fface].band.empty()
+                         ? nullptr
+                         : &fine_tiles[i]->faces[fface].band;
+        size_t j = 0;
+        while (j < verts.size()) {
+            // Records are sorted by (a, b), so a run of consecutive b at one a
+            // is one rectangular call instead of one call per cell.
+            size_t k = j + 1;
+            while (k < verts.size() && verts[k].a == verts[j].a &&
+                   verts[k].b == verts[k - 1].b + 1) {
+                ++k;
+            }
+            seam::WeldStats s;
+            if (!seam::weld_face(axis, neg, pos,
+                                 verts[j].a, verts[j].a + 1,
+                                 verts[j].b, verts[k - 1].b + 1,
+                                 seam_scratch, s, err)) {
+                // Only a configuration error reaches here, and the one that
+                // matters is a rung gap of 2+: `restrict_levels` guarantees +-1
+                // across faces and the fan implements exactly one level, so a
+                // 4:1 face is REJECTED rather than approximated.
+                ++seam_counters.build_errors;
+                ++seam_counters.level_gap_pairs;
+                static bool warned = false;
+                if (!warned) {
+                    warned = true;
+                    fprintf(stderr,
+                            "[seam] weld (%lld,%lld r%d face %d): %s\n",
+                            (long long)pair.coarse.tx,
+                            (long long)pair.coarse.tz, pair.coarse.rung,
+                            cface, err.c_str());
+                }
+                drop();
+                return;
+            }
+            rec.stats.crossings       += s.crossings;
+            rec.stats.quads           += s.quads;
+            rec.stats.tris            += s.tris;
+            rec.stats.missing_landing += s.missing_landing;
+            rec.stats.sign_conflicts  += s.sign_conflicts;
+            rec.stats.degenerate      += s.degenerate;
+            rec.stats.band_tris       += s.band_tris;
+            append_mesh(rec.mesh, seam_scratch);
+            fside.band = nullptr;   // consumed; see the note above the loop
+            j = k;
+        }
+        // A tile whose face record has a band but no verts never entered the
+        // run loop, so its band would be dropped. That is a real configuration
+        // -- the band is the fine surface extended past the plane, and it can
+        // exist where the plane itself carries no crossing at all. Emit it on
+        // its own with an empty region.
+        if (fside.band) {
+            seam::WeldStats s;
+            if (seam::weld_face(axis, neg, pos, 0, 0, 0, 0,
+                                seam_scratch, s, err)) {
+                rec.stats.band_tris += s.band_tris;
+                append_mesh(rec.mesh, seam_scratch);
+            }
+            fside.band = nullptr;
+        }
+    }
+    rec.coarse_side_nulls = cctx.nulls;
+
+    // Nothing crossed this plane: keep the pool to pairs that actually carry
+    // something, so its size is a usable measure of the seam surface.
+    if (rec.stats.crossings == 0 && rec.mesh.buckets.empty()) {
+        drop();
+        return;
+    }
+
+    // ---- the drawn swap (M0-WP8) -------------------------------------------
+    //
+    // THE NO-OP. Rebuilding a pair whose two tiles have not changed reproduces
+    // the same triangles, hence the same content hash, and the live part and
+    // instance are left strictly alone. That matters because the fan-out
+    // deliberately reaches every neighbour of a published tile: without this,
+    // one publish would churn up to 8 renderer parts per frame while a world
+    // streams, for geometry that did not move.
+    const uint64_t new_hash =
+        seam_weld_draw_enabled ? weld_part_hash(pair, rec.mesh) : 0;
+    const auto existing = seam_welds.find(pair);
+    if (existing != seam_welds.end() && existing->second.part_hash != 0 &&
+        existing->second.part_hash == new_hash) {
+        ++seam_counters.noop_rebuilds;
+        // The diagnostics still refresh: fine_sides_drawn and coarse_side_nulls
+        // describe the LOOKUP, which can change (a fine sibling parked) while
+        // the emitted band does not.
+        WeldRecord& live = existing->second;
+        live.stats = rec.stats;
+        live.fine_sides_expected = rec.fine_sides_expected;
+        live.fine_sides_drawn = rec.fine_sides_drawn;
+        live.coarse_side_nulls = rec.coarse_side_nulls;
+        live.mesh = std::move(rec.mesh);
+        return;
+    }
+
+    // Content changed (or this is a new pair). Retire the old drawn
+    // representation into this transaction FIRST, so the delta carries the
+    // removal and the add together and the renderer never holds two parts for
+    // one seam; then register the new one. R3's swap order -- ensure_part(new),
+    // swap the instance, release_part(old) -- is preserved because
+    // retire_weld_draw only STAGES the release, and finish_weld_txn performs it
+    // after the caller's apply.
+    if (existing != seam_welds.end()) retire_weld_draw(existing->second, txn);
+    WeldRecord& live = (seam_welds[pair] = std::move(rec));
+    publish_weld_draw(pair, live, txn);
+}
+
+// §4.5 half 2 -- is some DRAWN tile touching `key` across a face two or more
+// levels away?
+//
+// `restrict_levels` constrains the DESIRED map. Parking and the transition hold
+// make the DRAWN map lag it, so a tile that finishes early can be drawn several
+// levels finer than a neighbour still showing the old level. That is outside
+// the welder's domain entirely (§4.4: the fan implements exactly one level) and
+// it is also the 8x detail pop.
+//
+// The scan is bounded, not swept: per face it enumerates the tiles at each
+// offending level over `key`'s own tangential span -- 2^(L-m) at level m below,
+// one at each level above -- which is at most 2^(L+1) + kMaxLevel tiles per
+// face, independent of world size. Every probe is a single tile-index lookup.
+//
+// NOT ASSUMED FROM STAGED REFINEMENT. The streamer's staging measurement showed
+// the RESIDENT set briefly stacking three levels over one column during a wave
+// chain; residency is not drawn-ness (parking is what stops the double draw),
+// but "staging is on" is not a proof about the drawn set, so this enumerates
+// every level rather than only +-2.
+bool WorldSession::Impl::sector_drawn_level_conflict(const SectorKey& key,
+                                                     int* out_other_level) const {
+    if (!world_nested_sectors) return false;
+    const int level = sector_level_of(key.rung);
+    for (const int face : kSeamFaces) {
+        for (int other = 0; other <= matter_stream::kMaxLevel; ++other) {
+            if (other >= level - 1 && other <= level + 1) continue;
+            FaceNeighbourSpan span;
+            if (!face_neighbour_span(key, face, other, span)) continue;
+            for (int64_t t = span.tan_lo; t <= span.tan_hi; ++t) {
+                const int64_t nx = span.axis_x ? span.normal : t;
+                const int64_t nz = span.axis_x ? t : span.normal;
+                if (!drawn_tile_entry(nx, nz, other)) continue;
+                if (out_other_level) *out_other_level = other;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// The gate as it is actually applied.
+//
+// A level conflict may only WITHHOLD a tile whose footprint some drawn tile is
+// still covering. Withholding an uncovered tile trades a one-voxel seam for a
+// missing tile, and a hole is strictly worse -- the same ordering kMaxParkedTime
+// already encodes ("overlap beats a hole").
+//
+// Note what that qualifier costs: `sector_blocked_by_visible` IS the coverage
+// test (two drawn tiles overlap footprints only at different levels, and same
+// level means same tile), so today this clause can never park anything the
+// existing predicate did not already park. It is wired and counted anyway,
+// because the fix for the case it wants to catch is a streamer-side one (the
+// coarse tile must not be evicted while a neighbour is more than one level
+// away), and `seam_counters.drawn_level_violations` is the measurement that
+// says whether that case is real. Making the gate park an uncovered tile would
+// be the wrong fix wearing the right name.
+bool WorldSession::Impl::sector_level_hold(const SectorKey& key) const {
+    if (!world_nested_sectors) return false;
+    if (!sector_blocked_by_visible(key)) return false;
+    return sector_drawn_level_conflict(key);
+}
+
+// One line per tile that becomes drawn in violation of the +-1 invariant.
+// Firing this signals a STREAMER bug (staged refinement should make level
+// changes monotone coarse->fine per region), not an accepted race.
+void WorldSession::Impl::note_drawn_level_violation(const SectorKey& key) {
+    if (!world_nested_sectors || !seam_welds_enabled) return;
+    int other = 0;
+    if (!sector_drawn_level_conflict(key, &other)) return;
+    ++seam_counters.drawn_level_violations;
+    if (seam_counters.drawn_level_violations > 16) return;
+    fprintf(stderr,
+            "[stream] sector (%lld,%lld r%d) shown at level %d beside a DRAWN "
+            "level-%d face neighbour -- the +-1 drawn invariant is broken, "
+            "which means staged refinement let a multi-level jump through "
+            "(the welder spans exactly one level, so this face gets no seam)\n",
+            (long long)key.tx, (long long)key.tz, key.rung,
+            sector_level_of(key.rung), other);
+}
+
 // Show every parked publication whose blocker has left.
 //
 // Runs on the app/GL thread right after evictions are applied, so the removal
@@ -4131,6 +5509,10 @@ void WorldSession::Impl::unpark_ready_sectors() {
     for (;;) {
         viewer::WorldDelta delta;
         std::vector<SectorEntry*> shown;
+        // Parallel to `shown`: the keys whose welds this pass must rebuild.
+        // Kept as a separate vector rather than read back off the entries
+        // because SectorEntry does not carry its own key.
+        std::vector<SectorKey> shown_keys;
         for (auto& [key, entry] : sector_map) {
             if (!entry.parked) continue;
             // The safety valve. A park is an optimisation against a cosmetic
@@ -4140,17 +5522,37 @@ void WorldSession::Impl::unpark_ready_sectors() {
             const auto parked_for = std::chrono::steady_clock::now() -
                                     entry.parked_at;
             const bool stuck = parked_for > kMaxParkedTime;
-            if (!stuck && sector_blocked_by_visible(key)) continue;
+            // Two reasons to keep holding, sharing this one sweep: the
+            // footprint is still covered by a visible other-level tile, or
+            // (§4.5 half 2) a drawn face neighbour is two or more levels away.
+            // The second is qualified by the first inside sector_level_hold,
+            // because withholding an uncovered tile trades a seam for a hole.
+            const bool blocked = sector_blocked_by_visible(key);
+            const bool level_hold = !blocked && sector_level_hold(key);
+            if (level_hold) ++seam_counters.level_holds;
+            if (!stuck && (blocked || level_hold)) continue;
             if (stuck) {
+                // Which condition was still holding matters for triage: a
+                // surviving level conflict is a STREAMER bug (staged refinement
+                // should make level changes monotone coarse->fine per region),
+                // whereas a surviving blocker is the older transition race.
                 fprintf(stderr,
                         "[stream] sector (%lld,%lld r%d) parked %.1f s "
-                        "without its blocker leaving -- showing it anyway "
-                        "(overlap beats a hole)\n",
+                        "without its %s leaving -- showing it anyway "
+                        "(overlap beats a hole)%s\n",
                         (long long)key.tx, (long long)key.tz, key.rung,
-                        std::chrono::duration<double>(parked_for).count());
+                        std::chrono::duration<double>(parked_for).count(),
+                        blocked ? "blocker" : "hold",
+                        (world_nested_sectors &&
+                         sector_drawn_level_conflict(key))
+                            ? "; a drawn face neighbour is still more than one "
+                              "level away, which signals a staged-refinement "
+                              "bug rather than an accepted race"
+                            : "");
             }
             delta.added.push_back(entry.pending_instance);
             shown.push_back(&entry);
+            shown_keys.push_back(key);
         }
         if (shown.empty()) return;
         // MATTER_STREAM_PARK_PROFILE=1: one line per swap. The thing worth
@@ -4171,9 +5573,22 @@ void WorldSession::Impl::unpark_ready_sectors() {
             e->resources.world_state_attempted = true;
             --parked_sectors;
         }
+        // Seam welds ride the SAME transaction -- the same `delta`, the same
+        // single apply -- as the visibility change that made them necessary
+        // (§4.1). These tiles are already marked drawn one statement above, and
+        // drawn_entry reads that flag rather than world state, so a newly shown
+        // pair welds against itself on the first pass even though the apply is
+        // still ahead. O(shown), not O(sector_map).
+        WeldTxn weld_txn;
+        weld_txn.delta = &delta;
+        for (const SectorKey& shown_key : shown_keys) {
+            note_drawn_level_violation(shown_key);
+            rebuild_welds_for(shown_key, weld_txn);
+        }
         state.apply(delta);
         tracer_dirty = true;
         tracer.reset();
+        finish_weld_txn(weld_txn);
     }
 }
 
@@ -4204,6 +5619,12 @@ bool WorldSession::Impl::apply_sector_evictions(
     // commute (they are matched by instance id), the expansion rebuild is
     // idempotent, and the tracer reset just marks it dirty.
     viewer::WorldDelta batch_delta;
+    // Keys that actually left the drawn set in this batch. Their welds are
+    // retired after the batch's single world-state pass, for the same reason
+    // the removals are batched: one bounded pass per batch, never one per
+    // eviction (issues/bfb5f13e -- per-entry whole-world work in this exact
+    // loop measured 841 ms).
+    std::vector<SectorKey> weld_dirty;
     PROFILE_SCOPE("stream.evict_batch");
     for (const auto& eviction : evictions) {
         const SectorKey key{
@@ -4225,14 +5646,27 @@ bool WorldSession::Impl::apply_sector_evictions(
             // sweep runs forever on entries that no longer exist.
             if (found->second.parked && parked_sectors > 0) --parked_sectors;
             sector_map.erase(found);
+            tile_index_remove(key);
+            weld_dirty.push_back(key);
             ++evictions_applied;
         } else {
             ok = false;
         }
     }
+    // Retire the welds of everything this batch removed, into the batch's OWN
+    // delta so that the removals and the weld changes reach world state in one
+    // apply (§4.1). The entries are already erased, so drawn_entry reports
+    // these keys as not drawn and the welder's job on them is mostly removal --
+    // though not purely: losing one of two fine siblings re-welds the surviving
+    // pair, which is an add. That is why the apply condition below is not
+    // `removed.empty()` any more.
+    WeldTxn weld_txn;
+    weld_txn.delta = &batch_delta;
+    for (const SectorKey& evicted_key : weld_dirty)
+        rebuild_welds_for(evicted_key, weld_txn);
     // The batch's single world-state pass, plus the one invalidation and one
     // tracer reset the per-entry path used to do `evictions_applied` times.
-    if (!batch_delta.removed.empty()) {
+    if (!batch_delta.removed.empty() || !batch_delta.added.empty()) {
         state.apply(batch_delta);
         tracer_dirty = true;
         tracer.reset();
@@ -4240,6 +5674,7 @@ bool WorldSession::Impl::apply_sector_evictions(
         vk_instance_cache.invalidate_expansion();
 #endif
     }
+    finish_weld_txn(weld_txn);
     PROFILE_COUNT("stream.evictions_applied", evictions_applied);
     // Same frame as the removals above: the parent leaves and its children
     // appear without anything rendering in between.
@@ -4485,6 +5920,13 @@ void WorldSession::Impl::terminal_streaming_teardown_noexcept() noexcept {
         release_sector_entry(pair.second, ignored);
     }
     sector_map.clear();
+    sector_tile_index.clear();
+    // Weld parts are engine-owned and reachable from nowhere else, so they are
+    // released outright rather than through a transaction: the world state and
+    // sector_map they were coupled to are being discarded in the same breath.
+    release_all_weld_draws_noexcept();
+    seam_welds.clear();
+    seam_counters = SeamCounters{};
     parked_sectors = 0;
     pending_sector_evictions.abandon_noexcept();
     streaming_profile_activation.finish_clear();
@@ -4672,16 +6114,37 @@ void WorldSession::Impl::bake_and_stage_sector(
 
         // req.rung is a packed terrain variant when the streamer runs the
         // heightfield LOD ladder; the decode helpers pass bare legacy rungs
-        // through as (scatter, terrain LOD 5, empty mask). WorldSector's
-        // `rung` stays the SCATTER TIER so child-asset hashes remain stable
-        // across terrain LOD changes.
+        // through as (scatter, terrain LOD 5). WorldSector's `rung` stays the
+        // SCATTER TIER so child-asset hashes remain stable across terrain LOD
+        // changes.
+        //
+        // NO edgeMask (volumetric-sectors M0-WP3a, design §4.1 consequence 2).
+        // This string is the bake cache key input, so anything in it is part of
+        // the tile's identity -- and edgeMask was a baked-in GUESS about what
+        // level the streamer currently wanted the four cardinal NEIGHBOURS to
+        // be. That made a tile's content depend on state outside the tile:
+        // every neighbour level change forced this tile to rebake (the cascade
+        // documented in docs/terrain-nested-sector-lod-2026-08-08.md:154-159),
+        // and until the rebake landed the drawn mask disagreed with the drawn
+        // neighbour and a one-voxel strip of triangles went missing. Cross-
+        // level seams are now generated at runtime from the two ACTUAL drawn
+        // tiles (rebuild_welds_for), so a sector's bake identity depends on
+        // nothing outside the tile itself: its coordinates, its level, and the
+        // world's field/biomes/seed.
+        //
+        // CACHE CONSEQUENCE, expected and correct: every tile the streamer used
+        // to assign a non-zero mask -- i.e. every tile on a level boundary --
+        // hashes differently now, and its existing `.cache` entries are dead
+        // weight that will simply never be hit again. Interior tiles (mask 0)
+        // keep their hashes only because WorldSector.js still declares
+        // `edgeMask: 0` in its static params, which is what the merged params
+        // now always resolve to. Delete the caches; do not try to migrate them.
         char params_buf[1024];
         std::snprintf(params_buf, sizeof(params_buf),
-            R"({"tx":%lld,"tz":%lld,"rung":%d,"terrainLod":%d,"edgeMask":%d,"sectorSize":%.6g,"worldSeed":%llu,"fieldHash":"%s","biomes":"%s"})",
+            R"({"tx":%lld,"tz":%lld,"rung":%d,"terrainLod":%d,"sectorSize":%.6g,"worldSeed":%llu,"fieldHash":"%s","biomes":"%s"})",
             (long long)req.tx, (long long)req.tz,
             matter_stream::variant_scatter(req.rung),
             matter_stream::variant_terrain_lod(req.rung),
-            matter_stream::variant_edge_mask(req.rung),
             (double)sector_size,
             (unsigned long long)world_seed, world_field_hash.c_str(),
             biomes_escaped.c_str());
@@ -5150,6 +6613,11 @@ void WorldSession::Impl::bake_and_stage_sector(
                     }
                     completion->ledger_inserted = true;
                     completion->transient_artifact = false;
+                    // Tile index (M0-WP3b): one of the three sites that mutate
+                    // sector_map, and therefore one of the three that must
+                    // mutate its grouped mirror. A rollback from here goes
+                    // through apply_sector_evictions, which removes it again.
+                    tile_index_add(key);
                     SectorEntry& published = inserted.first->second;
 
                     // Mark every external call before attempting it. The release
@@ -5197,6 +6665,18 @@ void WorldSession::Impl::bake_and_stage_sector(
                         return fail_publication(
                             "sector PartStore load failed");
                     }
+                    // Volumetric-sectors M0-WP3a: adopt this tile's seam
+                    // boundary record. Read from the COMMITTED part, not from
+                    // `staged_load`, because commit_staged takes its argument
+                    // by value and has already moved the staged LoadedPart
+                    // into the store -- reading the staged copy here would
+                    // silently yield an empty record, which the welder could
+                    // only report much later as missing seam geometry.
+                    //
+                    // Null on the get_or_load fallback branch (the artifact
+                    // carries no record) and for any world whose sectors do
+                    // not mesh a terrain volume. Both are fail-soft.
+                    published.boundary = loaded->boundary;
 
                     PROFILE_SCOPE_NAMED(pub_apply, "publish.apply");
                     viewer::WorldManifestEntry instance;
@@ -5226,20 +6706,53 @@ void WorldSession::Impl::bake_and_stage_sector(
                     // streamer must still be told this sector is published, or
                     // its hold rule would wait forever for a child that has
                     // already baked and the parent would never be released.
+                    //
+                    // §4.5 half 2 rides the same decision: a tile may become
+                    // visible only if every DRAWN face neighbour is within one
+                    // level of it. sector_level_hold is the parking predicate
+                    // generalised -- same sweep, same kMaxParkedTime valve, same
+                    // withhold-from-WorldState behaviour -- and it carries the
+                    // coverage qualifier that keeps its failure mode a park
+                    // rather than a hole (see its definition).
                     published.pending_instance = instance;
+                    const bool level_hold =
+                        world_nested_sectors && sector_level_hold(key);
+                    if (level_hold) ++seam_counters.level_holds;
                     const bool park = world_nested_sectors &&
-                                      sector_blocked_by_visible(key);
+                                      (sector_blocked_by_visible(key) ||
+                                       level_hold);
                     if (park) {
                         published.parked = true;
                         published.parked_at = std::chrono::steady_clock::now();
                         ++parked_sectors;
+                        // A PARKED publication changes nothing about the drawn
+                        // set, so the welder correctly finds it undrawn and
+                        // does nothing -- it gets its welds from the unpark
+                        // sweep instead. The call stays unconditional so that
+                        // "publish touched this key" is the trigger rather than
+                        // a second copy of the park predicate; this overload
+                        // owns the (empty) transaction.
+                        rebuild_welds_for(key);
                     } else {
+                        // ONE state.apply carrying the sector AND every weld
+                        // its appearance changed (§4.1: "weld add/remove must
+                        // be transactionally coupled to the publish/evict batch
+                        // it belongs to"). The welder reads world_state_attempted,
+                        // not world state, so marking the flag first is what
+                        // lets it see this tile as drawn while the apply is
+                        // still ahead of it -- and that is what collapses the
+                        // two applies into one.
                         viewer::WorldDelta delta;
                         delta.added.push_back(instance);
                         published.resources.world_state_attempted = true;
+                        WeldTxn weld_txn;
+                        weld_txn.delta = &delta;
+                        rebuild_welds_for(key, weld_txn);
                         state.apply(delta);
                         tracer_dirty = true;
                         tracer.reset();
+                        finish_weld_txn(weld_txn);
+                        note_drawn_level_violation(key);
                     }
                     t_state = pub_split();
                     t_tracer = pub_split();
@@ -6011,6 +7524,14 @@ bool WorldSession::Impl::ensure_tracer() const {
     std::vector<world_tracer::TraceInstance> trace_instances;
     trace_instances.reserve(entries.size());
     for (const auto& e : entries) {
+        // M0-WP8: seam welds are not traced. They have no .part artifact and
+        // are absent from PartStore by design, so the resident source misses
+        // and the tracer falls through to a disk probe for a file that will
+        // never exist -- once per weld, on every rebuild, and the "logged once
+        // per hash" dedupe never catches up because a rebuilt weld is a NEW
+        // hash. What is given up is sub-voxel: the band lies between two tiles
+        // that ARE traced, on the surface they already describe.
+        if (weld_parts.find(e.part_hash) != weld_parts.end()) continue;
         world_tracer::TraceInstance ti;
         ti.part_hash = e.part_hash;
         std::memcpy(ti.transform, e.transform, sizeof(ti.transform));
@@ -7721,6 +9242,34 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 rebuilt.insert(rebuilt.end(), memo->begin(), memo->end());
                 continue;
             }
+            // Seam welds (volumetric-sectors M0-WP8). A weld is an ENGINE-owned
+            // part: built at runtime from two tiles' boundary records, handed
+            // straight to ensure_part, and deliberately never written to
+            // PartStore -- there is no artifact to content-address, and the
+            // records the band is derived from are not serialized either (see
+            // BakedGeometry::boundary). get_or_load would therefore miss and
+            // the `continue` below would silently drop every weld, which is the
+            // one way this whole work package can fail invisibly.
+            //
+            // The expansion is a single instance with no children, so it is
+            // memoised like any other source and pruned when the weld's
+            // instance leaves world state.
+            if (impl_->weld_parts.find(source.part_hash) !=
+                impl_->weld_parts.end()) {
+                if (impl_->vk_scene->registered_part_slot(source.part_hash) < 0)
+                    continue;
+                expanded.clear();
+                viewer::VkSceneInstance instance;
+                instance.part_hash = source.part_hash;
+                instance.instance_id = viewer::temporal_instance_id(
+                    source.stable_id, source.part_hash, 0);
+                std::memcpy(instance.object_to_world.m, source.transform,
+                            sizeof(instance.object_to_world.m));
+                expanded.push_back(instance);
+                rebuilt.insert(rebuilt.end(), expanded.begin(), expanded.end());
+                impl_->vk_instance_cache.store_source(source, expanded);
+                continue;
+            }
             const viewer::LoadedPart* root =
                 impl_->store->get_or_load(source.part_hash);
             if (!root) continue;
@@ -8535,6 +10084,43 @@ AnimationRuntimeStats WorldSession::animation_runtime_stats() const {
 streaming::SectorStreamingStatus WorldSession::streaming_status() const {
     std::lock_guard<std::mutex> lock(impl_->streaming_status_mutex);
     return impl_->streaming_status_copy;
+}
+
+WorldSession::SeamWeldStatus WorldSession::seam_weld_status() const {
+    SeamWeldStatus out{};
+    const Impl& impl = *impl_;
+    out.pairs = (int)impl.seam_welds.size();
+    for (const auto& [pair_key, rec] : impl.seam_welds) {
+        (void)pair_key;
+        out.triangles       += (uint64_t)rec.mesh.triangle_count();
+        out.crossings       += rec.stats.crossings;
+        out.quads           += rec.stats.quads;
+        out.tris            += rec.stats.tris;
+        out.missing_landing += rec.stats.missing_landing;
+        out.sign_conflicts  += rec.stats.sign_conflicts;
+        out.degenerate      += rec.stats.degenerate;
+        out.coarse_side_nulls += rec.coarse_side_nulls;
+        if (rec.fine_sides_drawn < rec.fine_sides_expected)
+            ++out.fine_side_incomplete;
+        if (rec.part_hash != 0) {
+            ++out.drawn_pairs;
+            out.drawn_triangles += (uint64_t)rec.mesh.triangle_count();
+        }
+    }
+    out.drawn_without_record     = impl.seam_counters.drawn_without_record;
+    out.level_gap_pairs          = impl.seam_counters.level_gap_pairs;
+    out.build_errors             = impl.seam_counters.build_errors;
+    out.level_holds              = impl.seam_counters.level_holds;
+    out.drawn_level_violations   = impl.seam_counters.drawn_level_violations;
+    out.registered_parts         = (int)impl.weld_parts.size();
+    out.parts_registered         = impl.seam_counters.parts_registered;
+    out.parts_released           = impl.seam_counters.parts_released;
+    out.noop_rebuilds            = impl.seam_counters.noop_rebuilds;
+    out.register_failures        = impl.seam_counters.register_failures;
+    out.hash_collisions          = impl.seam_counters.hash_collisions;
+    out.id_collisions            = impl.seam_counters.id_collisions;
+    out.pairs_peak               = impl.seam_counters.pairs_peak;
+    return out;
 }
 
 bool WorldSession::gpu_jobs_idle() const {

@@ -553,6 +553,91 @@ public:
     // the worker/app boundary.
     streaming::SectorStreamingStatus streaming_status() const;
 
+    // ---- Seam welding (volumetric-sectors M0-WP3b) --------------------------
+    //
+    // Accounting for the runtime cross-level seam welder
+    // (docs/volumetric-sectors-design-2026-08-10.md §4.1). The geometry figures
+    // describe the pool; the draw figures below describe what M0-WP8 put on
+    // screen from it (resolution R3: one content-addressed part per cross-level
+    // face pair through the existing ensure_part path).
+    //
+    // App thread. Pool figures are recomputed from the live pool on each call;
+    // the counters are cumulative since the last world teardown.
+    struct SeamWeldStatus {
+        // ---- live pool ----
+        int      pairs = 0;         // cross-level face pairs currently welded
+        uint64_t triangles = 0;     // triangles across the pool
+        // seam::WeldStats summed over the pool. The identity
+        // crossings == quads + tris + missing_landing + degenerate holds here
+        // too, because it holds per weld_face call and all four are sums.
+        int crossings = 0;
+        int quads = 0;
+        int tris = 0;
+        int missing_landing = 0;
+        int sign_conflicts = 0;
+        int degenerate = 0;
+
+        // ---- cumulative counters ----
+        //
+        // R4: a MISSING RECORD is not a missing weld's fault. A sector staged
+        // off disk (the staged_load->ok == false -> get_or_load fallback) has no
+        // boundary record at all, so it welds nothing and draws with today's
+        // overlap behaviour. Counted apart from missing_landing precisely so
+        // that a future bisect does not read "no weld here" as a welder bug.
+        uint64_t drawn_without_record = 0;
+        // Pairs built while fewer fine tiles were drawn than the 2:1 pairing
+        // expects. A FINE-side gap is a transient the publish gate is meant to
+        // shrink; a coarse-side one is irreducible geometry. weld_face reports
+        // one missing_landing number and cannot tell them apart, so these two
+        // fields carry the attribution the pair's shape can prove.
+        int      fine_side_incomplete = 0;   // live pairs, not cumulative
+        int      coarse_side_nulls = 0;      // live pairs, not cumulative
+        // Face pairs rejected because the two sides were more than one level
+        // apart. Non-zero means the drawn +-1 invariant broke (§4.4/§4.5).
+        uint64_t level_gap_pairs = 0;
+        uint64_t build_errors = 0;
+        // §4.5 half 2. `level_holds` counts tiles the gate withheld;
+        // `drawn_level_violations` counts tiles that became drawn anyway with a
+        // >= 2-level drawn face neighbour -- i.e. what the gate could not
+        // safely stop, which is the number that says whether the streamer's
+        // staged refinement is doing its job.
+        uint64_t level_holds = 0;
+        uint64_t drawn_level_violations = 0;
+
+        // ---- the drawn representation (M0-WP8) ----
+        //
+        // `drawn_pairs` <= `pairs`: a pair carries geometry but draws nothing
+        // in a headless session, under MATTER_NO_SEAM_WELD_DRAW=1, or when a
+        // registration was refused. That gap is fail-soft by design -- the
+        // tiles' own baked border bands still overlap the seam (§4.1
+        // consequence 4) -- so a non-zero difference is a diagnostic, not an
+        // error.
+        int      drawn_pairs = 0;        // live pairs with a registered part
+        int      registered_parts = 0;   // renderer parts the welder holds
+        uint64_t drawn_triangles = 0;    // triangles across the drawn pairs
+        // Cumulative. `noop_rebuilds` is the one to watch: the fan-out reaches
+        // every neighbour of a published tile, so in the steady state almost
+        // every rebuild must re-derive the same content hash and change
+        // nothing. A ratio of parts_registered to noop_rebuilds that is not
+        // small means the pool is churning renderer parts for geometry that did
+        // not move.
+        uint64_t parts_registered = 0;
+        uint64_t parts_released = 0;
+        uint64_t noop_rebuilds = 0;
+        uint64_t register_failures = 0;
+        // A weld part hash that already named a baked part, or a weld instance
+        // id that was already live. Both are ~2^-64 events that would corrupt
+        // an unrelated instance if acted on, so they are refused and counted
+        // rather than assumed away.
+        uint64_t hash_collisions = 0;
+        uint64_t id_collisions = 0;
+        // High-water mark of `pairs`. The structural bound is 4 x drawn tiles;
+        // see kSeamWeldPairAlarm in matter_engine.cpp for the ceiling survey
+        // this number is judged against.
+        int      pairs_peak = 0;
+    };
+    SeamWeldStatus seam_weld_status() const;
+
     // Phase B: asynchronous — enqueues a bake and returns immediately. Progress
     // arrives via poll_event(); GL-side work runs inside pump_gpu_jobs(). A new
     // request_bake()/reload() supersedes (cancels) an in-flight bake. Fail-closed:

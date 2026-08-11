@@ -1379,6 +1379,210 @@ int main() {
     uint32_t reported_vk_rt_dispatches = UINT32_MAX;
     std::string reported_vk_rt_reason;
     bool reported_vk_rt_once = false;
+
+    // ---- MATTER_SEAM_TRACE: the seam welder's only reader --------------------
+    //
+    // WorldSession::seam_weld_status() (world_session.h) had ZERO callers: the
+    // welder's whole accounting existed and nothing ever printed it. The
+    // profiler's `#stream.seam_pairs` is not a substitute — it is a
+    // PROFILE_COUNT summed over rebuild_welds_for calls, i.e. a rate, not the
+    // pool gauge — and closing that gap is why the accessor exists.
+    //
+    // This is the M0 acceptance instrument (design §6): drive a
+    // MATTER_CAM_PATH fly-through across nested-sector band boundaries and read
+    // the welder every frame. It is deliberately NOT a second camera driver;
+    // MATTER_CAM_PATH already is one.
+    //
+    // Rows print ON CHANGE ONLY, the idiom the DLSS reporter below uses, so a
+    // 3000-pose path emits tens of lines rather than thousands. Rows are
+    // stamped with lod_trace::frame_label — the cam-path POSE index, which is
+    // run-independent by construction — so a seam row and an LOD-trace row from
+    // the same frame join on #f<n>.
+    //
+    // Reading happens beside session->frame_stats() on the APP THREAD, which is
+    // what world_session.h requires of this accessor.
+    const bool seam_trace = std::getenv("MATTER_SEAM_TRACE") != nullptr;
+    // Only the fields whose change should cost a line. The live-pool geometry
+    // (crossings/quads/tris) moves on almost every publish, so gating on it
+    // would print every frame and defeat the point; it rides along on rows the
+    // fields below trigger.
+    struct SeamTraceKey {
+        int pairs = -1;
+        int drawn_pairs = -1;
+        int registered_parts = -1;
+        int missing_landing = -1;
+        int sign_conflicts = -1;
+        int degenerate = -1;
+        int fine_side_incomplete = -1;
+        int coarse_side_nulls = -1;
+        uint64_t level_gap_pairs = UINT64_MAX;
+        uint64_t build_errors = UINT64_MAX;
+        uint64_t level_holds = UINT64_MAX;
+        uint64_t drawn_level_violations = UINT64_MAX;
+        uint64_t drawn_without_record = UINT64_MAX;
+        uint64_t register_failures = UINT64_MAX;
+        uint64_t hash_collisions = UINT64_MAX;
+        uint64_t id_collisions = UINT64_MAX;
+        bool operator!=(const SeamTraceKey& o) const {
+            return pairs != o.pairs || drawn_pairs != o.drawn_pairs ||
+                   registered_parts != o.registered_parts ||
+                   missing_landing != o.missing_landing ||
+                   sign_conflicts != o.sign_conflicts ||
+                   degenerate != o.degenerate ||
+                   fine_side_incomplete != o.fine_side_incomplete ||
+                   coarse_side_nulls != o.coarse_side_nulls ||
+                   level_gap_pairs != o.level_gap_pairs ||
+                   build_errors != o.build_errors ||
+                   level_holds != o.level_holds ||
+                   drawn_level_violations != o.drawn_level_violations ||
+                   drawn_without_record != o.drawn_without_record ||
+                   register_failures != o.register_failures ||
+                   hash_collisions != o.hash_collisions ||
+                   id_collisions != o.id_collisions;
+        }
+    };
+    SeamTraceKey seam_last;
+    // Run accumulators. Live-pool fields are gauges, so their verdict over a run
+    // is the MAXIMUM; the cumulative counters only rise, so theirs is the last
+    // value. Keeping the two shapes apart is the difference between "this never
+    // happened" and "this is not happening right now".
+    struct SeamTraceRun {
+        uint64_t samples = 0;
+        int peak_pairs = 0;
+        int peak_drawn_pairs = 0;
+        int peak_registered_parts = 0;
+        int peak_missing_landing = 0;
+        int peak_sign_conflicts = 0;
+        int peak_degenerate = 0;
+        int peak_fine_side_incomplete = 0;
+        int peak_coarse_side_nulls = 0;
+        uint64_t peak_triangles = 0;
+        uint64_t peak_drawn_triangles = 0;
+        // crossings == quads + tris + missing_landing + degenerate, per
+        // world_session.h. It holds per weld_face call and all four are sums,
+        // so it must hold on every sample; a break means the pool's accounting
+        // is wrong, not that the geometry is.
+        uint64_t identity_breaks = 0;
+        // drawn_pairs <= pairs. Fail-soft by design (headless, the draw kill
+        // switch, or a refused registration), so a gap is a diagnostic, but
+        // drawn_pairs EXCEEDING pairs would be nonsense.
+        uint64_t drawn_exceeds_pairs = 0;
+        int64_t first_sign_conflict = -1;
+        int64_t first_level_gap = -1;
+        int64_t first_build_error = -1;
+        int64_t first_id_collision = -1;
+        int64_t first_level_violation = -1;
+        int64_t first_identity_break = -1;
+        matter::WorldSession::SeamWeldStatus last{};
+    };
+    SeamTraceRun seam_run;
+    // Printed unconditionally at the MATTER_CAM_PATH completion seam (and again
+    // at shutdown if the run ended some other way), so a soak always leaves a
+    // verdict even when nothing ever changed. Idempotent.
+    bool seam_summary_printed = false;
+    auto print_seam_summary = [&](const char* reason) {
+        if (!seam_trace || seam_summary_printed) return;
+        seam_summary_printed = true;
+        const matter::WorldSession::SeamWeldStatus& s = seam_run.last;
+        std::printf("\n==== seam-weld summary (%s) ====\n", reason);
+        std::printf("  samples                    %llu\n",
+                    (unsigned long long)seam_run.samples);
+        if (seam_run.samples == 0) {
+            std::printf("  NO SAMPLES — the world never drew. No verdict.\n");
+            std::printf("==== end seam-weld summary ====\n");
+            return;
+        }
+        std::printf("  -- live pool (peak over the run) --\n");
+        std::printf("  pairs                      %d\n", seam_run.peak_pairs);
+        std::printf("  drawn_pairs                %d\n", seam_run.peak_drawn_pairs);
+        std::printf("  registered_parts           %d\n",
+                    seam_run.peak_registered_parts);
+        std::printf("  triangles                  %llu\n",
+                    (unsigned long long)seam_run.peak_triangles);
+        std::printf("  drawn_triangles            %llu\n",
+                    (unsigned long long)seam_run.peak_drawn_triangles);
+        std::printf("  degenerate                 %d\n", seam_run.peak_degenerate);
+        std::printf("  -- diagnostics: NUMBERS, NOT GATES --\n");
+        std::printf("  missing_landing peak       %d\n",
+                    seam_run.peak_missing_landing);
+        std::printf("  fine_side_incomplete peak  %d\n",
+                    seam_run.peak_fine_side_incomplete);
+        std::printf("  coarse_side_nulls peak     %d\n",
+                    seam_run.peak_coarse_side_nulls);
+        std::printf("  drawn_without_record       %llu\n",
+                    (unsigned long long)s.drawn_without_record);
+        std::printf("  level_holds                %llu\n",
+                    (unsigned long long)s.level_holds);
+        std::printf("  drawn_level_violations     %llu",
+                    (unsigned long long)s.drawn_level_violations);
+        if (seam_run.first_level_violation >= 0)
+            std::printf("  (first at #f%lld)",
+                        (long long)seam_run.first_level_violation);
+        std::printf("\n");
+        std::printf("  parts_registered           %llu\n",
+                    (unsigned long long)s.parts_registered);
+        std::printf("  parts_released             %llu\n",
+                    (unsigned long long)s.parts_released);
+        // world_session.h calls this "the one to watch": the fan-out reaches
+        // every neighbour of a published tile, so in the steady state almost
+        // every rebuild must re-derive the same content hash and change
+        // nothing. A parts_registered : noop_rebuilds ratio that is NOT small
+        // means the pool is churning renderer parts for geometry that did not
+        // move.
+        std::printf("  noop_rebuilds              %llu\n",
+                    (unsigned long long)s.noop_rebuilds);
+        if (s.noop_rebuilds != 0)
+            std::printf("    parts_registered : noop  1 : %.1f\n",
+                        s.parts_registered != 0
+                            ? (double)s.noop_rebuilds / (double)s.parts_registered
+                            : 0.0);
+        std::printf("  register_failures          %llu\n",
+                    (unsigned long long)s.register_failures);
+        std::printf("  hash_collisions            %llu\n",
+                    (unsigned long long)s.hash_collisions);
+        std::printf("  pairs_peak                 %d\n", s.pairs_peak);
+        std::printf("  -- invariants --\n");
+        struct Gate { const char* name; unsigned long long value;
+                      int64_t first; const char* note; };
+        const Gate gates[] = {
+            {"sign_conflicts", (unsigned long long)seam_run.peak_sign_conflicts,
+             seam_run.first_sign_conflict, "both sides read the same samples"},
+            {"level_gap_pairs", (unsigned long long)s.level_gap_pairs,
+             seam_run.first_level_gap, "drawn +-1 invariant"},
+            {"build_errors", (unsigned long long)s.build_errors,
+             seam_run.first_build_error, ""},
+            {"id_collisions", (unsigned long long)s.id_collisions,
+             seam_run.first_id_collision, ""},
+            {"identity_breaks", (unsigned long long)seam_run.identity_breaks,
+             seam_run.first_identity_break,
+             "crossings == quads+tris+missing_landing+degenerate"},
+            {"drawn_pairs>pairs", (unsigned long long)seam_run.drawn_exceeds_pairs,
+             -1, ""},
+        };
+        bool held = true;
+        for (const Gate& g : gates) {
+            const bool ok = g.value == 0;
+            held = held && ok;
+            std::printf("  %-26s %-10llu %s", g.name, g.value,
+                        ok ? "OK" : "VIOLATED");
+            if (!ok && g.first >= 0)
+                std::printf(" (first at #f%lld)", (long long)g.first);
+            if (g.note[0]) std::printf("   [%s]", g.note);
+            std::printf("\n");
+        }
+        // kSeamWeldPairAlarm (matter_engine.cpp): not a silent-drop ceiling,
+        // a GROWTH guard. ~60x the geometric expectation, so exceeding it means
+        // the keying or the fan-out is wrong, never that the world got bigger.
+        const bool under_alarm = s.pairs_peak < 4096;
+        held = held && under_alarm;
+        std::printf("  %-26s %-10d %s   [kSeamWeldPairAlarm 4096]\n",
+                    "pairs_peak < 4096", s.pairs_peak,
+                    under_alarm ? "OK" : "VIOLATED");
+        std::printf("  VERDICT: %s\n",
+                    held ? "PASS — every M0 seam invariant held"
+                         : "FAIL — an M0 seam invariant was violated");
+        std::printf("==== end seam-weld summary ====\n");
+    };
     viewer::CameraController camera_controller;
     // Bake Lab shell (task 2.1): window drawn with the other panels below;
     // tick_frame runs each frame beside session tick/pump.
@@ -2683,6 +2887,11 @@ int main() {
                     viewer::lod_trace::set_capture_enabled(false);
                     viewer::lod_trace::close();
                     std::printf("MATTER_CAM_PATH: complete\n");
+                    // The soak's verdict, at the seam that ends the soak.
+                    // Unconditional: a run in which nothing ever changed emits
+                    // no [seam] rows at all, and silence must not read as a
+                    // pass.
+                    print_seam_summary("MATTER_CAM_PATH complete");
                     if (cam_path_exit) quit_requested = true;
                 }
             }
@@ -3174,6 +3383,89 @@ int main() {
             }
         }
         const matter::FrameStats& frame_stats = session->frame_stats();
+        // MATTER_SEAM_TRACE (declared above): app-thread poll of the seam
+        // welder, change-only, stamped with the cam-path pose clock.
+        if (seam_trace && bake_ready) {
+            const matter::WorldSession::SeamWeldStatus s =
+                session->seam_weld_status();
+            const uint64_t label = viewer::lod_trace::frame_label(frame.serial);
+            SeamTraceKey key;
+            key.pairs = s.pairs;
+            key.drawn_pairs = s.drawn_pairs;
+            key.registered_parts = s.registered_parts;
+            key.missing_landing = s.missing_landing;
+            key.sign_conflicts = s.sign_conflicts;
+            key.degenerate = s.degenerate;
+            key.fine_side_incomplete = s.fine_side_incomplete;
+            key.coarse_side_nulls = s.coarse_side_nulls;
+            key.level_gap_pairs = s.level_gap_pairs;
+            key.build_errors = s.build_errors;
+            key.level_holds = s.level_holds;
+            key.drawn_level_violations = s.drawn_level_violations;
+            key.drawn_without_record = s.drawn_without_record;
+            key.register_failures = s.register_failures;
+            key.hash_collisions = s.hash_collisions;
+            key.id_collisions = s.id_collisions;
+            if (key != seam_last) {
+                seam_last = key;
+                std::printf(
+                    "[seam] #f%llu eye=(%.0f,%.0f,%.0f) sect=%u pairs=%d "
+                    "drawn=%d parts=%d tri=%llu dtri=%llu | cross=%d q=%d t=%d "
+                    "miss=%d sign=%d degen=%d fine_inc=%d coarse_null=%d | "
+                    "gap=%llu err=%llu holds=%llu viol=%llu norec=%llu "
+                    "reg=%llu rel=%llu noop=%llu regfail=%llu hcol=%llu "
+                    "icol=%llu peak=%d\n",
+                    (unsigned long long)label, frame_camera.position.x,
+                    frame_camera.position.y, frame_camera.position.z,
+                    frame_stats.resident_sectors, s.pairs, s.drawn_pairs,
+                    s.registered_parts, (unsigned long long)s.triangles,
+                    (unsigned long long)s.drawn_triangles, s.crossings, s.quads,
+                    s.tris, s.missing_landing, s.sign_conflicts, s.degenerate,
+                    s.fine_side_incomplete, s.coarse_side_nulls,
+                    (unsigned long long)s.level_gap_pairs,
+                    (unsigned long long)s.build_errors,
+                    (unsigned long long)s.level_holds,
+                    (unsigned long long)s.drawn_level_violations,
+                    (unsigned long long)s.drawn_without_record,
+                    (unsigned long long)s.parts_registered,
+                    (unsigned long long)s.parts_released,
+                    (unsigned long long)s.noop_rebuilds,
+                    (unsigned long long)s.register_failures,
+                    (unsigned long long)s.hash_collisions,
+                    (unsigned long long)s.id_collisions, s.pairs_peak);
+            }
+            auto hi = [](auto& slot, auto value) { if (value > slot) slot = value; };
+            hi(seam_run.peak_pairs, s.pairs);
+            hi(seam_run.peak_drawn_pairs, s.drawn_pairs);
+            hi(seam_run.peak_registered_parts, s.registered_parts);
+            hi(seam_run.peak_missing_landing, s.missing_landing);
+            hi(seam_run.peak_sign_conflicts, s.sign_conflicts);
+            hi(seam_run.peak_degenerate, s.degenerate);
+            hi(seam_run.peak_fine_side_incomplete, s.fine_side_incomplete);
+            hi(seam_run.peak_coarse_side_nulls, s.coarse_side_nulls);
+            hi(seam_run.peak_triangles, s.triangles);
+            hi(seam_run.peak_drawn_triangles, s.drawn_triangles);
+            if (s.crossings !=
+                s.quads + s.tris + s.missing_landing + s.degenerate) {
+                if (seam_run.first_identity_break < 0)
+                    seam_run.first_identity_break = (int64_t)label;
+                ++seam_run.identity_breaks;
+            }
+            if (s.drawn_pairs > s.pairs) ++seam_run.drawn_exceeds_pairs;
+            if (seam_run.first_sign_conflict < 0 && s.sign_conflicts != 0)
+                seam_run.first_sign_conflict = (int64_t)label;
+            if (seam_run.first_level_gap < 0 && s.level_gap_pairs != 0)
+                seam_run.first_level_gap = (int64_t)label;
+            if (seam_run.first_build_error < 0 && s.build_errors != 0)
+                seam_run.first_build_error = (int64_t)label;
+            if (seam_run.first_id_collision < 0 && s.id_collisions != 0)
+                seam_run.first_id_collision = (int64_t)label;
+            if (seam_run.first_level_violation < 0 &&
+                s.drawn_level_violations != 0)
+                seam_run.first_level_violation = (int64_t)label;
+            seam_run.last = s;
+            ++seam_run.samples;
+        }
         dlss_modes_supported = vulkan->dlss_available() &&
                                frame_stats.dlss_reason.empty();
         if (!frame_stats.dlss_reason.empty())
@@ -3895,6 +4187,9 @@ int main() {
     // run that ended some other way (window closed, fatal error) so the trace
     // still gets its summary line rather than being silently truncated.
     viewer::lod_trace::close();
+    // Same reasoning for the seam summary: a run cut short by the window
+    // closing still has to say what it saw. Idempotent.
+    print_seam_summary("shutdown");
 
 #ifndef _WIN32
     if (cmd_fd >= 0) close(cmd_fd);

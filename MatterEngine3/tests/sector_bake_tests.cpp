@@ -205,8 +205,9 @@ int main() {
         auto tile = [&](int64_t tx, int64_t tz, int rung, float size,
                         terrain_mesher::SectorMesh& out) {
             std::string e;
-            return terrain_mesher::mesh_sector(field, tx, tz, rung, 0, size,
-                                               -300.0f, 300.0f, out, e);
+            return terrain_mesher::mesh_sector(field, tx, tz, rung, size,
+                                               -300.0f, 300.0f, out,
+                                               /*boundary_out=*/nullptr, e);
         };
         terrain_mesher::SectorMesh l0, l1, l2;
         CHECK(tile(1, 0, 0, 64.0f, l0),   "level 0: 64 m tile at rung 0");

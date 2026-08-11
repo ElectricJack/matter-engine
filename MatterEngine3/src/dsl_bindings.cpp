@@ -1578,10 +1578,11 @@ static JSValue j_biomeAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
     return JS_NewString(c, s);
 }
 
-// terrainVolume(tx, tz, rung, matArray)
+// terrainVolume(tx, tz, rung[, edgeMask][, matArray])
 // Meshes one sector of the bound terrain field using native surface-nets and
 // pushes the result directly into the triangle buffer. matArray is an array of
 // four material IDs [grass, dirt, rock, snow] indexed by the field's material_at.
+// edgeMask is ACCEPTED AND IGNORED (M0-WP1) -- see the note at the argument.
 // Fails loudly if no world binding is installed.
 static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     DslState* st = state_of(c);
@@ -1601,12 +1602,19 @@ static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* 
     JS_ToInt64(c, &tz, a[1]);
     int32_t rung = 0;
     JS_ToInt32(c, &rung, a[2]);
-    // Cardinal neighbours exactly one rung COARSER, same bit layout as
-    // terrainHeightfield (0 = +x, 1 = -x, 2 = +z, 3 = -z). Optional and 0 by
-    // default, which is correct for a uniform ladder; the argument order now
-    // matches terrainHeightfield's so the two verbs read alike.
-    int32_t edge_mask = 0;
-    if (n >= 4) JS_ToInt32(c, &edge_mask, a[3]);
+    // The 4th argument was `edgeMask`: cardinal neighbours exactly one rung
+    // coarser, which the voxel mesher used to bake a cross-level stitch from.
+    // ACCEPTED AND IGNORED as of M0-WP1 -- mesh_sector no longer takes a mask,
+    // because the mask named the level the streamer WANTED next door rather
+    // than the tile actually drawn, and it put a neighbour guess into the
+    // tile's bake identity (terrain_mesher.h has the full retraction).
+    // Cross-level seams are welded at runtime from the boundary record below.
+    //
+    // It is still read off the argument list rather than dropped because ~8
+    // copies of WorldSector.js across the scene tree still pass
+    // `p.edgeMask | 0` here, and this repo does not edit JS from the C++ side
+    // of a migration. Delete this once those copies are swept.
+    if (n >= 4) { int32_t ignored_edge_mask = 0; JS_ToInt32(c, &ignored_edge_mask, a[3]); }
 
     // Optional material array: up to 4 entries [grass, dirt, rock, snow].
     // Defaults to 0..3 if not supplied.
@@ -1623,15 +1631,41 @@ static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* 
     }
 
     terrain_mesher::SectorMesh mesh;
+    seam::SectorBoundary boundary;
     std::string err;
     {
         VerbTimer _vt(g_volume_us, g_volume_calls);
-        if (!terrain_mesher::mesh_sector(*w.field, tx, tz, rung, edge_mask,
-                                          w.sector_size, w.y_min, w.y_max, mesh, err)) {
+        if (!terrain_mesher::mesh_sector(*w.field, tx, tz, rung,
+                                          w.sector_size, w.y_min, w.y_max, mesh,
+                                          &boundary, err)) {
             st->set_error("terrainVolume: " + err);
             return JS_UNDEFINED;
         }
     }
+    // The record carries RAW field materials (0..3), the same space the mesh
+    // buckets use; remap them through the caller's palette here so that every
+    // downstream consumer -- mesh and seam band alike -- sees final material
+    // ids and the welded strip cannot come out a different colour from the
+    // triangles it joins. Identical expression to the bucket remap below;
+    // if one changes, so must the other.
+    for (auto& fr : boundary.faces) {
+        for (auto& bv : fr.verts)
+            bv.material = bv.material < 4 ? mat[bv.material] : mat[0];
+        // The overlap band (M0-WP7) is the mesher's own emitted quads, so its
+        // buckets carry raw field materials too and need the identical remap.
+        // Missing this does not fail any test -- the band would simply render
+        // in the wrong palette entry, which reads as a mis-shaded strip rather
+        // than as a bug in the remap.
+        for (auto& ob : fr.band.buckets)
+            ob.material = ob.material < 4 ? mat[ob.material] : mat[0];
+    }
+    // Hand the record to the bake. This is the ONLY route from the mesher to
+    // the engine's resident ledger: DslState -> BakedGeometry -> stage_from_bake
+    // -> LoadedPart -> SectorEntry, where the welder reads it for the drawn
+    // pair. Without this line the runtime welder is dead code -- and silently
+    // so, because every seam test drives mesh_sector directly and never touches
+    // the DSL path, so the whole suite stays green while no world ever welds.
+    st->set_sector_boundary(std::move(boundary));
     for (const auto& bkt : mesh.buckets)
         g_volume_tris.fetch_add(bkt.positions.size() / 9,
                                 std::memory_order_relaxed);

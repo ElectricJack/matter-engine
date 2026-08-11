@@ -1366,6 +1366,12 @@ PartStore::StagedPart PartStore::stage_from_bake(
         stage_from_snapshot(part_hash, snapshot, nullptr, first_rung,
                             terrain_sector, warp);
     out.read_ms = read_ms;
+    // Volumetric-sectors M0-WP3a. Carried HERE and not inside
+    // stage_from_snapshot because the snapshot is the artifact's contents and
+    // the artifact carries no seam record (see BakedGeometry::boundary): this
+    // is the one staging path holding the bake's own output. A pointer copy,
+    // so it costs nothing and cannot diverge from what the bake produced.
+    out.lp.boundary = baked.boundary;
     return out;
 }
 
