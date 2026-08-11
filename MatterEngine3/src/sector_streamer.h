@@ -491,7 +491,22 @@ private:
     // a level low enough to be a violation. Probing the edge at the finest tile
     // pitch instead -- the obvious implementation -- costs 2^level probes per
     // side and made update() the most expensive thing in the streamer.
+    // THE COLUMN PATH'S adjacency probe: a LINE walked along one horizontal
+    // axis at a fixed other. Correct while a tile is unbounded in y, because
+    // then a lateral face is fully described by the line across it.
     int min_edge_level(bool vary_z, float fixed, float t0, float t1, float probe_y,
+                       int seg_level, int stop_below) const;
+
+    // THE OCTREE'S adjacency probe: a FACE, walked as a 2-D quadtree over the
+    // square rather than a 1-D one over a line. A cube's lateral face is no
+    // longer described by any single line across it -- a neighbour may be
+    // over-fine in one corner and correct everywhere else -- so the line probe
+    // that serves the column path would walk straight past exactly the
+    // violation this pass exists to find. `axis` names the face NORMAL
+    // (0 = x, 1 = y, 2 = z); (u, v) are the two in-plane world axes in the
+    // order x < y < z with the normal removed.
+    int min_face_level(int axis, float fixed, float u0, float u1,
+                       float v0, float v1,
                        int seg_level, int stop_below) const;
 
     // TRANSITION GROUPS. A tile that stops being desired under nesting has
@@ -507,9 +522,9 @@ private:
     // Coverage makes this cheap and exact: at most one ANCESTOR can be desired
     // (a merge), and otherwise the desired tiles under it tile its footprint
     // exactly (a split, possibly of differing depths after a restriction pass).
-    void scan_footprint(int level, int64_t tx, int64_t tz,
+    void scan_footprint(int level, int64_t tx, int64_t ty, int64_t tz,
                         bool& any_desired, bool& all_resident) const;
-    void scan_subtree(int level, int64_t tx, int64_t tz,
+    void scan_subtree(int level, int64_t tx, int64_t ty, int64_t tz,
                       bool& any_desired, bool& all_resident) const;
 
     void update_nested(float anchor_x, float anchor_y, float anchor_z);
@@ -549,7 +564,8 @@ private:
     // frontier tile entering reach), and a region whose only residency is
     // FINER than `level` (a merge in progress; waves are a coarse->fine idea
     // and merging coarser is a single bake with nothing to stage).
-    int  resident_level_over(int level, int64_t tx, int64_t tz) const;
+    int  resident_level_over(int level, int64_t tx, int64_t ty,
+                             int64_t tz) const;
     bool staged_refinement_active() const;
 
     // LATERAL STAGING. "Is anything resident STRICTLY COARSER than `level`
@@ -574,7 +590,8 @@ private:
     // comment is about: probing the face at the finest tile pitch would be
     // 2^level lookups a side and would put update() back at the top of the
     // profile.
-    bool coarser_resident_beside(int level, int64_t tx, int64_t tz) const;
+    bool coarser_resident_beside(int level, int64_t tx, int64_t ty,
+                                 int64_t tz) const;
     bool lateral_staging_active() const;
 
     // Resident tile count per level, refreshed at the top of update_nested()

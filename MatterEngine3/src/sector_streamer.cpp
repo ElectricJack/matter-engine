@@ -309,6 +309,46 @@ int SectorStreamer::min_edge_level(bool vary_z, float fixed, float t0, float t1,
 // whichever tile actually contains it at each level -- the same rule in three
 // axes rather than two. With the octree off it collapses to kFlatTy and the
 // argument is ignored, which is why callers may pass anything there.
+// The octree's face probe. Same shape as min_edge_level one dimension up: probe
+// the square's own centre, stop early when the answer already spans it, else
+// recurse into four quadrants a level finer.
+//
+// WHY A FACE AND NOT A LINE. Under the column path a tile is unbounded in y, so
+// a lateral face is fully characterised by one horizontal line across it and
+// min_edge_level is exact. A cube's face is a square, and a neighbour can be
+// over-fine in one corner of it while every line the old probe would have
+// walked reports a legal level. Keeping the line probe would not have made this
+// pass approximate -- it would have made it silently blind to the vertical half
+// of the violations, which is the half the octree introduces.
+int SectorStreamer::min_face_level(int axis, float fixed, float u0, float u1,
+                                   float v0, float v1,
+                                   int seg_level, int stop_below) const {
+    const float um = 0.5f * (u0 + u1);
+    const float vm = 0.5f * (v0 + v1);
+    // Rebuild a world point from the face's normal axis and its two in-plane
+    // coordinates. u < v in the x,y,z ordering with the normal dropped.
+    float p[3];
+    p[axis] = fixed;
+    switch (axis) {
+        case 0: p[1] = um; p[2] = vm; break;   // x-normal: (u,v) = (y,z)
+        case 1: p[0] = um; p[2] = vm; break;   // y-normal: (u,v) = (x,z)
+        default: p[0] = um; p[1] = vm; break;  // z-normal: (u,v) = (x,y)
+    }
+    const int m = desired_level_at(p[0], p[1], p[2]);
+    if (m < 0) return kMaxLevel + 1;           // past the reach: no constraint
+    if (m >= seg_level || seg_level <= 0) return m;
+    int worst = kMaxLevel + 1;
+    for (int q = 0; q < 4; ++q) {
+        const float qu0 = (q & 1) ? um : u0, qu1 = (q & 1) ? u1 : um;
+        const float qv0 = (q & 2) ? vm : v0, qv1 = (q & 2) ? v1 : vm;
+        const int r = min_face_level(axis, fixed, qu0, qu1, qv0, qv1,
+                                     seg_level - 1, stop_below);
+        worst = std::min(worst, r);
+        if (worst < stop_below) return worst;  // already a violation
+    }
+    return worst;
+}
+
 int SectorStreamer::desired_level_at(float wx, float wy, float wz) const {
     for (int L = 0; L <= max_level(); ++L) {
         const float S = level_size(L);
@@ -507,7 +547,7 @@ void SectorStreamer::descend(
     // rather than an engine one, and it is why the staged tests wait for
     // several consecutive silent updates.
     if (split && staged_refinement_active()) {
-        const int resident_level = resident_level_over(level, tx, tz);
+        const int resident_level = resident_level_over(level, tx, ty, tz);
         // Descending to level-1 asks for level-1; the clamp floor is
         // resident_level - 1, so the descent is admissible iff
         // level - 1 >= resident_level - 1.
@@ -586,7 +626,7 @@ void SectorStreamer::descend(
         // instead (sector_streamer_tests.cpp reports the merge direction
         // separately).
         if (split && lateral_staging_active() &&
-            coarser_resident_beside(level, tx, tz))
+            coarser_resident_beside(level, tx, ty, tz))
             split = false;
     }
 
@@ -622,25 +662,31 @@ bool SectorStreamer::lateral_staging_active() const {
            !stream_no_lateral();
 }
 
-bool SectorStreamer::coarser_resident_beside(int level, int64_t tx,
+bool SectorStreamer::coarser_resident_beside(int level, int64_t tx, int64_t ty,
                                              int64_t tz) const {
-    // The four face neighbours AT THIS LEVEL. Only one tile per side exists at
-    // this level, and every resident tile coarser than this one that touches a
-    // side must cover that side's whole face -- the grids nest and are aligned,
-    // so a bigger tile adjacent to any part of the face spans all of it, and
-    // therefore contains the level-`level` neighbour column probed here. Four
-    // ancestor chains are the exact answer, not a sample of it.
-    const int64_t ntx[4] = {tx + 1, tx - 1, tx, tx};
-    const int64_t ntz[4] = {tz, tz, tz + 1, tz - 1};
-    // Rank-major so the census filter skips four probes at a time. Arithmetic
-    // shift is floor division, which is what nesting means for negative tile
-    // indices (same convention as resident_level_over and scan_footprint).
+    // The face neighbours AT THIS LEVEL -- four under the quadtree, SIX under
+    // the octree. Only one tile per side exists at this level, and every
+    // resident tile coarser than this one that touches a side must cover that
+    // side's whole face: the grids nest and are aligned, so a bigger tile
+    // adjacent to any part of the face spans all of it and therefore contains
+    // the neighbour probed here. These ancestor chains are the exact answer,
+    // not a sample of it -- which is why the count has to grow with the tree
+    // rather than stay at four and be "close enough".
+    const int n_faces = cfg_.volumetric_sectors ? 6 : 4;
+    const int64_t ntx[6] = {tx + 1, tx - 1, tx, tx, tx, tx};
+    const int64_t ntz[6] = {tz, tz, tz + 1, tz - 1, tz, tz};
+    const int64_t nty[6] = {ty, ty, ty, ty, ty + 1, ty - 1};
+    // Rank-major so the census filter skips a whole face set at a time.
+    // Arithmetic shift is floor division, which is what nesting means for
+    // negative tile indices (same convention as resident_level_over and
+    // scan_footprint).
     for (int up = level + 1; up <= max_level(); ++up) {
         if (resident_at_level_[up] == 0) continue;
         const int sh = up - level;
-        for (int n = 0; n < 4; ++n) {
+        for (int n = 0; n < n_faces; ++n) {
+            const int64_t ky = cfg_.volumetric_sectors ? (nty[n] >> sh) : kFlatTy;
             auto it = sectors_.find(
-                nested_key(up, ntx[n] >> sh, kFlatTy, ntz[n] >> sh));
+                nested_key(up, ntx[n] >> sh, ky, ntz[n] >> sh));
             if (it != sectors_.end() && it->second.resident_rung >= 0)
                 return true;
         }
@@ -648,7 +694,7 @@ bool SectorStreamer::coarser_resident_beside(int level, int64_t tx,
     return false;
 }
 
-int SectorStreamer::resident_level_over(int level, int64_t tx,
+int SectorStreamer::resident_level_over(int level, int64_t tx, int64_t ty,
                                         int64_t tz) const {
     // Walk this tile and then its ancestors -- the same ancestor chain
     // scan_footprint walks for the merge case. Arithmetic shift is floor
@@ -679,7 +725,8 @@ int SectorStreamer::resident_level_over(int level, int64_t tx,
     int coarsest = -1;
     for (int up = level; up <= max_level(); ++up) {
         const int sh = up - level;
-        auto it = sectors_.find(nested_key(up, tx >> sh, kFlatTy, tz >> sh));
+        const int64_t ky = cfg_.volumetric_sectors ? (ty >> sh) : kFlatTy;
+        auto it = sectors_.find(nested_key(up, tx >> sh, ky, tz >> sh));
         if (it != sectors_.end() && it->second.resident_rung >= 0) coarsest = up;
     }
     return coarsest;
@@ -704,19 +751,36 @@ void SectorStreamer::restrict_levels() {
             nested_unkey(k, lvl, tx, ty, tz);
             const float S = level_size(lvl);
             const float ox = float(tx) * S, oz = float(tz) * S;
-            // The y the four lateral edges are walked at: the centre of THIS
-            // tile's own vertical span, so a probe lands inside the slab whose
-            // neighbours we are asking about. Ignored with the octree off.
-            const float py = (float(ty) + 0.5f) * S;
-            const float out = 0.5f * cfg_.sector_size;   // just outside an edge
-            // The whole edge, not a midpoint sample: a lone over-fine
-            // neighbour against a long coarse edge is exactly the case that
+            const float oy = float(ty) * S;
+            const float out = 0.5f * cfg_.sector_size;   // just outside a face
+            // The whole face, not a midpoint sample: a lone over-fine
+            // neighbour against a long coarse face is exactly the case that
             // matters, and a midpoint probe would walk past it.
-            const int worst = std::min(
-                std::min(min_edge_level(true,  ox + S + out, oz, oz + S, py, lvl, lvl - 1),
-                         min_edge_level(true,  ox - out,     oz, oz + S, py, lvl, lvl - 1)),
-                std::min(min_edge_level(false, oz + S + out, ox, ox + S, py, lvl, lvl - 1),
-                         min_edge_level(false, oz - out,     ox, ox + S, py, lvl, lvl - 1)));
+            int worst;
+            if (cfg_.volumetric_sectors) {
+                // SIX faces of the cube. The two y-normal ones are what the
+                // octree adds, and they are not optional decoration: a vertical
+                // 2:1 violation puts a face pair outside the weld fan's domain
+                // entirely -- seam_weld rejects a rung gap of 2 outright -- so
+                // without them the octree produces seams the welder refuses to
+                // close, which is a hole rather than a blemish.
+                worst = std::min(std::min(
+                    std::min(min_face_level(0, ox + S + out, oy, oy + S, oz, oz + S, lvl, lvl - 1),
+                             min_face_level(0, ox - out,     oy, oy + S, oz, oz + S, lvl, lvl - 1)),
+                    std::min(min_face_level(2, oz + S + out, ox, ox + S, oy, oy + S, lvl, lvl - 1),
+                             min_face_level(2, oz - out,     ox, ox + S, oy, oy + S, lvl, lvl - 1))),
+                    std::min(min_face_level(1, oy + S + out, ox, ox + S, oz, oz + S, lvl, lvl - 1),
+                             min_face_level(1, oy - out,     ox, ox + S, oz, oz + S, lvl, lvl - 1)));
+            } else {
+                // The column path, byte-for-byte: four lateral EDGES, because a
+                // tile unbounded in y is fully described by a line across each.
+                const float py = (float(ty) + 0.5f) * S;   // kFlatTy: unused
+                worst = std::min(
+                    std::min(min_edge_level(true,  ox + S + out, oz, oz + S, py, lvl, lvl - 1),
+                             min_edge_level(true,  ox - out,     oz, oz + S, py, lvl, lvl - 1)),
+                    std::min(min_edge_level(false, oz + S + out, ox, ox + S, py, lvl, lvl - 1),
+                             min_edge_level(false, oz - out,     ox, ox + S, py, lvl, lvl - 1)));
+            }
             if (worst < lvl - 1) to_split.push_back({lvl, tx, ty, tz});
         }
         if (to_split.empty()) return;
@@ -767,28 +831,38 @@ void SectorStreamer::restrict_levels() {
 // win for this file -- a neighbour's level change no longer invalidates this
 // tile's bake at all.
 
-void SectorStreamer::scan_subtree(int level, int64_t tx, int64_t tz,
+void SectorStreamer::scan_subtree(int level, int64_t tx, int64_t ty, int64_t tz,
                                   bool& any_desired, bool& all_resident) const {
-    auto it = sectors_.find(nested_key(level, tx, kFlatTy, tz));
+    auto it = sectors_.find(nested_key(level, tx, ty, tz));
     if (it != sectors_.end() && it->second.desired_level == level) {
         any_desired = true;
         if (it->second.resident_rung < 0) all_resident = false;
         return;                       // this tile covers its own footprint
     }
-    if (level == 0) return;           // nothing desired covers this column
-    for (int c = 0; c < 4; ++c)
-        scan_subtree(level - 1, 2 * tx + (c & 1), 2 * tz + (c >> 1),
+    if (level == 0) return;           // nothing desired covers this cell
+    // Eight children under the octree. This is the TRANSITION-GROUP test -- it
+    // decides whether a superseded tile may be torn down -- so scanning four of
+    // eight octants would report "the replacement is complete" while half the
+    // volume it covered has nothing resident, and evict the coarse tile into a
+    // hole. Same child bit assignment as descend().
+    const int kids = cfg_.volumetric_sectors ? 8 : 4;
+    for (int c = 0; c < kids; ++c)
+        scan_subtree(level - 1,
+                     2 * tx + (c & 1),
+                     cfg_.volumetric_sectors ? 2 * ty + ((c >> 2) & 1) : kFlatTy,
+                     2 * tz + ((c >> 1) & 1),
                      any_desired, all_resident);
 }
 
-void SectorStreamer::scan_footprint(int level, int64_t tx, int64_t tz,
-                                    bool& any_desired,
+void SectorStreamer::scan_footprint(int level, int64_t tx, int64_t ty,
+                                    int64_t tz, bool& any_desired,
                                     bool& all_resident) const {
     // A merge: one coarser tile has taken over this footprint. At most one
-    // ancestor can be desired, because exactly one level covers any column.
+    // ancestor can be desired, because exactly one level covers any cell.
     for (int up = level + 1; up <= max_level(); ++up) {
         const int sh = up - level;
-        auto it = sectors_.find(nested_key(up, tx >> sh, kFlatTy, tz >> sh));
+        const int64_t ky = cfg_.volumetric_sectors ? (ty >> sh) : kFlatTy;
+        auto it = sectors_.find(nested_key(up, tx >> sh, ky, tz >> sh));
         if (it != sectors_.end() && it->second.desired_level == up) {
             any_desired = true;
             if (it->second.resident_rung < 0) all_resident = false;
@@ -796,7 +870,7 @@ void SectorStreamer::scan_footprint(int level, int64_t tx, int64_t tz,
         }
     }
     // Otherwise a split (or nothing at all).
-    scan_subtree(level, tx, tz, any_desired, all_resident);
+    scan_subtree(level, tx, ty, tz, any_desired, all_resident);
 }
 
 void SectorStreamer::update_nested(float anchor_x, float anchor_y,
@@ -921,7 +995,7 @@ void SectorStreamer::update_nested(float anchor_x, float anchor_y,
             int lvl; int64_t tx, ty, tz;
             nested_unkey(k, lvl, tx, ty, tz);
             bool any_desired = false, all_resident = true;
-            scan_footprint(lvl, tx, tz, any_desired, all_resident);
+            scan_footprint(lvl, tx, ty, tz, any_desired, all_resident);
             if (any_desired && !all_resident) continue;   // hold: still baking
             evictions_.push_back({tx, ty, tz, st.resident_rung});
             if (st.inflight_rung >= 0) --inflight_;

@@ -1731,6 +1731,79 @@ int main() {
                   "flag ON: the bands are spheres -- a camera 900 m down "
                   "refines the rock around it, not the surface above it");
         }
+        // 5. THE 2:1 RULE HOLDS ON ALL SIX FACES (M3-WP3). This is the gate the
+        //    whole mode depends on: seam_weld rejects a rung gap of 2 outright
+        //    (seam_weld_tests [2]), so a face pair two levels apart is not a
+        //    blemish, it is a seam the welder REFUSES to close -- a hole. The
+        //    ±y pair is what the octree adds and what a 4-face pass would miss.
+        {
+            Config c = base;
+            c.volumetric_sectors = true;
+            SectorStreamer s(c);
+            for (int i = 0; i < 80; ++i) {
+                s.update(0.0f, 0.0f, 0.0f);
+                SectorRequest q;
+                while (s.next_request(q)) s.on_published(q.tx, q.ty, q.tz, q.rung);
+                s.take_evictions();
+            }
+            s.update(0.0f, 0.0f, 0.0f);
+            // Rebuild the desired map from the settled request stream, then
+            // check every face-adjacent pair directly. Levels come from the
+            // variant, which is where the streamer actually publishes them.
+            std::map<std::tuple<long long,long long,long long>, int> lvl_at;
+            {
+                SectorStreamer t(c);
+                for (int i = 0; i < 80; ++i) {
+                    t.update(0.0f, 0.0f, 0.0f);
+                    SectorRequest q;
+                    while (t.next_request(q)) {
+                        lvl_at[{(long long)q.tx, (long long)q.ty, (long long)q.tz}] =
+                            matter_stream::variant_level(q.rung);
+                        t.on_published(q.tx, q.ty, q.tz, q.rung);
+                    }
+                    t.take_evictions();
+                }
+            }
+            // A cell's neighbours at ITS OWN level: walk world space so tiles of
+            // different sizes are compared at a shared point rather than by
+            // index arithmetic that only works within one level.
+            long long worst_gap = 0, pairs = 0;
+            auto level_at_point = [&](float x, float y, float z) -> int {
+                for (int L = 0; L <= matter_stream::kMaxLevel; ++L) {
+                    const float S = c.sector_size * float(1 << L);
+                    auto it = lvl_at.find({(long long)std::floor(x / S),
+                                           (long long)std::floor(y / S),
+                                           (long long)std::floor(z / S)});
+                    if (it != lvl_at.end() && it->second == L) return L;
+                }
+                return -1;
+            };
+            for (const auto& [cell, L] : lvl_at) {
+                const auto [tx, ty, tz] = cell;
+                const float S = c.sector_size * float(1 << L);
+                const float cx = (float(tx) + 0.5f) * S;
+                const float cy = (float(ty) + 0.5f) * S;
+                const float cz = (float(tz) + 0.5f) * S;
+                const float o = 0.5f * c.sector_size;
+                const float probes[6][3] = {
+                    {cx + 0.5f * S + o, cy, cz}, {cx - 0.5f * S - o, cy, cz},
+                    {cx, cy + 0.5f * S + o, cz}, {cx, cy - 0.5f * S - o, cz},
+                    {cx, cy, cz + 0.5f * S + o}, {cx, cy, cz - 0.5f * S - o},
+                };
+                for (const auto& p : probes) {
+                    const int n = level_at_point(p[0], p[1], p[2]);
+                    if (n < 0) continue;               // past the reach
+                    ++pairs;
+                    worst_gap = std::max<long long>(worst_gap, std::abs(n - L));
+                }
+            }
+            CHECK(pairs > 0, "there are face-adjacent pairs to check");
+            CHECK(worst_gap <= 1,
+                  "every face-adjacent pair differs by at most one level, on "
+                  "all six faces -- the domain the weld fan is defined on");
+            printf("  6-face 2:1: %lld adjacent pairs, worst level gap %lld\n",
+                   pairs, worst_gap);
+        }
     }
 
     return check_summary();
