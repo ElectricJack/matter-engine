@@ -162,7 +162,13 @@ class WorldSector extends Part {
   // constant; the engine sends the size because only the streamer knows a
   // request's level. Defaults to 64 so an older engine (which sends neither
   // this nor terrainLod) still bakes a level-0 tile.
-  static params = { tx: 0, tz: 0, rung: 0, terrainLod: 5,
+  // `ty` is the VERTICAL tile index and `volumetric` says whether it means
+  // anything (volumetric-sectors M3). Both are 0 for every request unless the
+  // world declares `streaming.volumetricSectors`. They are in the params, not
+  // inferred, because they are part of the tile's BAKE IDENTITY: a stack of
+  // tiles at one (tx, tz) differs in nothing else, and the same (tx, ty, tz,
+  // rung) means different geometry in the two modes.
+  static params = { tx: 0, ty: 0, tz: 0, rung: 0, terrainLod: 5, volumetric: 0,
                     sectorSize: SECTOR,
                     worldSeed: 0, fieldHash: '', biomes: '' };
   // FIXED variant list — independent of tx/tz so the whole asset set installs
@@ -208,7 +214,14 @@ class WorldSector extends Part {
     const terrainLod = p.terrainLod === undefined ? 5 : (p.terrainLod | 0);
     const voxelRung = Math.max(-5, Math.min(0, terrainLod - 5));
     pbegin(P_TERRAIN);
-    this.terrainVolume(p.tx, p.tz, voxelRung, terrainMaterials);
+    // COLUMN OR CUBE, never both: the two verbs describe the same matter at
+    // different extents, so calling both would mesh the whole column and then
+    // a slice of it again.
+    if ((p.volumetric | 0) !== 0) {
+      this.terrainVolumeTiled(p.tx, p.ty | 0, p.tz, voxelRung, terrainMaterials);
+    } else {
+      this.terrainVolume(p.tx, p.tz, voxelRung, terrainMaterials);
+    }
     pend(P_TERRAIN);
     if (!table) return;   // no biome table -> terrain only
 
@@ -237,6 +250,14 @@ class WorldSector extends Part {
     const TILE   = p.sectorSize > 0 ? p.sectorSize : SECTOR;
     const cells  = Math.max(1, Math.round(TILE / SECTOR));
     const tileOx = p.tx * TILE, tileOz = p.tz * TILE;
+    // The tile's Y ORIGIN. Zero on the column path -- a column has no y origin
+    // to be local to, which is why terrainVolume returns world-absolute y and
+    // `place` below has always used heightAt directly. A CUBE tile has one, and
+    // the engine's publish transform supplies transform[7] = ty * S to put it
+    // back, so every y this file emits must be relative to it or the whole
+    // scatter layer floats `ty * S` metres above the ground it belongs to.
+    const volumetric = (p.volumetric | 0) !== 0;
+    const tileOy = volumetric ? (p.ty | 0) * TILE : 0;
     const baseCx = p.tx * cells, baseCz = p.tz * cells;
     const seed = p.worldSeed >>> 0;
     const GROVE = (seed ^ 0xA51) >>> 0;   // tree groves,   wavelength ~110
@@ -261,6 +282,25 @@ class WorldSector extends Part {
 
     const scatterCell = (cellTx, cellTz) => {
     const ox = cellTx * SECTOR, oz = cellTz * SECTOR;
+    // COLUMN OWNERSHIP (design 3.4). Under the octree a column of world passes
+    // through a STACK of tiles, and every one of them would otherwise scatter
+    // the same cell -- the same tree planted once per 64 m of altitude. So a
+    // tile owns a cell iff the surface at the cell centre falls inside its own
+    // vertical span. Exactly one tile per column satisfies that at any level,
+    // which makes the rule total and disjoint without any tile knowing what the
+    // others decided.
+    //
+    // Tested at the CELL CENTRE, one sample, not per placement: the cell is the
+    // unit scatter has always been planned in (caps, RNG seed and the exclusion
+    // pass are all per-cell), so splitting one cell across two owners would
+    // change the plan rather than just move it. A cell whose surface straddles a
+    // tile boundary therefore goes wholly to the tile holding its centre, and a
+    // few of its placements sit outside that tile's span -- which is fine, since
+    // a placed child is not clipped to the tile that placed it.
+    if (volumetric) {
+      const h = this.heightAt(ox + SECTOR / 2, oz + SECTOR / 2);
+      if (h < tileOy || h >= tileOy + TILE) return;
+    }
     const counts = table[this.biomeAt(ox + SECTOR / 2, oz + SECTOR / 2)] || {};
     const r = rng((seed ^ Math.imul(cellTx | 0, 73856093)
                         ^ Math.imul(cellTz | 0, 19349663)) >>> 0);
@@ -269,7 +309,7 @@ class WorldSector extends Part {
     // world space off the CELL -- hence tileOx here against ox above.
     const put = (module, params, wx, wz, s, sinkY) => {
       this.pushMatrix();
-      this.translate(wx - tileOx, this.heightAt(wx, wz) - sinkY, wz - tileOz);
+      this.translate(wx - tileOx, this.heightAt(wx, wz) - sinkY - tileOy, wz - tileOz);
       this.rotateY(r.range(0, Math.PI * 2));
       this.scale(s, s, s);
       this.placeChild(module, params);

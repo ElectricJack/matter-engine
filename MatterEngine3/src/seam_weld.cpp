@@ -227,6 +227,20 @@ bool weld_face(int face_axis,
                 // under the flip below, so this is order-independent.
                 const uint32_t material = (neg_is_fine ? q[2] : q[0])->material;
 
+                // The frame table. For an edge along `a`, the four cells around
+                // it differ in (b, normal), and the base corner order is CCW in
+                // the (b, n) plane -- so the emitted normal is `b x n`, which
+                // equals +a exactly when (a, b, n) is right-handed. With
+                // face_tangent_axes' ordering that holds for x-normal (y,z,x)
+                // and z-normal (x,y,z) but NOT y-normal (x,z,y). Along `b` the
+                // roles swap and so does the answer.
+                //
+                // MEASURED, not asserted (2026-08-11). Inverting the y-normal
+                // entries alone takes the single-sheet y reversals from 29/617
+                // to 559/617 -- the table is right for ~95% of crossings, so
+                // the residue is a PER-CASE condition and not a table entry.
+                // Perturbing an entry across all axes is worse still (x 0->182,
+                // z 0->43, y 29->278). Do not "fix" the reversals here.
                 const bool reverse_frame = along_a ? (face_axis == 1)
                                                    : (face_axis != 1);
                 const bool flip = reverse_frame != (s0 == 0);
